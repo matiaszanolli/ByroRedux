@@ -1,11 +1,39 @@
 //! Scene graph walking — hierarchical and flat traversal.
+//!
+//! #3856 — the three independent satellite walkers (`walk_node_lights`,
+//! `walk_node_texture_effects`, `walk_node_particle_emitters_flat`) are
+//! entry points called only from `import/mod.rs`, never from
+//! `walk_node_hierarchical` or `walk_node_flat`. That made them free to
+//! extract with no shared-state threading, so this file now holds just the
+//! two scene-graph walkers and their immediate helpers; the satellites and
+//! the small per-node attribute readers live in the siblings below.
+
+mod emitter;
+mod lights;
+mod node_attrs;
+mod texture_effect;
+
+pub(super) use emitter::{
+    collect_force_fields, extract_emitter_max_particles, extract_emitter_params,
+    extract_emitter_rate, extract_first_color_curve, walk_node_particle_emitters_flat,
+};
+#[cfg(test)]
+pub(super) use lights::attenuation_radius;
+pub(super) use lights::walk_node_lights;
+pub(super) use node_attrs::{
+    extract_bs_ordered_node, extract_bs_value_node, extract_lod_group, extract_range_kind,
+    extract_tree_bones,
+};
+pub(super) use texture_effect::walk_node_texture_effects;
+
+use emitter::extract_particle_material;
+use node_attrs::{extract_billboard_mode, is_editor_marker};
 
 use crate::blocks::bs_geometry::BSGeometry;
-use crate::blocks::light::{NiAmbientLight, NiDirectionalLight, NiPointLight, NiSpotLight};
 use crate::blocks::node::{
     BsDistantObjectInstancedNode, BsMultiBoundNode, BsOrderedNode, BsRangeNode, BsTreeNode,
-    BsValueNode, BsWeakReferenceNode, NiBillboardNode, NiLODNode, NiNode, NiRangeLODData,
-    NiSortAdjustNode, NiSwitchNode,
+    BsValueNode, BsWeakReferenceNode, NiBillboardNode, NiLODNode, NiNode, NiSortAdjustNode,
+    NiSwitchNode,
 };
 use crate::blocks::tri_shape::{BsTriShape, NiLodTriShape, NiTriShape};
 use crate::blocks::NiObject;
@@ -19,84 +47,9 @@ use super::mesh::{
     extract_bs_tri_shape_local, extract_mesh, extract_mesh_local,
 };
 use super::transform::compose_transforms;
-use super::{
-    ImportedCollision, ImportedLight, ImportedMesh, ImportedNode, ImportedScene, LightKind,
-    LodGroupData, MeshResolver, TreeBones,
-};
+use super::{ImportedCollision, ImportedMesh, ImportedNode, ImportedScene, MeshResolver};
 use crate::blocks::extra_data::BsPackedCombinedGeomDataExtra;
-use crate::blocks::node::BsRangeKind;
 use byroredux_core::string::StringPool;
-
-/// Extract the sprite texture, blend factors and `BSEffectShaderProperty`
-/// payload attached to a particle system. Particle systems carry the same
-/// shader/property references as geometry, so route them through the shared
-/// material walker instead of silently replacing the authored sprite with
-/// bindless slot zero.
-///
-/// #2610 — the walker already builds the full [`MaterialInfo`] here, so the
-/// authored BGEM effect payload (`effect_soft` / `effect_lit` / the two
-/// greyscale-palette bits / `lighting_influence`) comes for free. It used to
-/// be dropped on the floor, which is why every particle `DrawCommand`
-/// hardcoded `effect_shader_flags: 0`.
-///
-/// [`MaterialInfo`]: super::material::MaterialInfo
-fn extract_particle_material(
-    scene: &NifScene,
-    ps: &crate::blocks::particle::NiParticleSystem,
-    inherited_props: &[BlockRef],
-    pool: &mut StringPool,
-) -> ParticleMaterial {
-    let info = super::material::extract_material_info_from_refs(
-        scene,
-        ps.shader_property_ref,
-        ps.alpha_property_ref,
-        &ps.properties,
-        inherited_props,
-        pool,
-    );
-    let texture_path = info
-        .texture_path
-        .and_then(|path| pool.resolve(path).map(str::to_owned));
-    let authored_blend = info.alpha_blend || info.alpha_blend_authored;
-    // #3590 — the greyscale→palette LUT texture the two `effect_shader`
-    // palette bits (`effect_palette_color`/`effect_palette_alpha`) index.
-    // Mirrors the mesh path's exact resolution order
-    // (`crates/nif/src/import/material/mod.rs`'s `greyscale_lut_map.or_else`
-    // fallback to `effect_shader.greyscale_texture`): prefer the dedicated
-    // `BSShaderTextureSet` slot 3 (FO4/FO76), fall back to the BGEM
-    // `greyscale_texture` field (the older/common authoring path) when the
-    // NIF didn't bind slot 3. Without this, `pack_effect_shader_flags`
-    // still sets the palette bits from `effect_shader` below, but nothing
-    // ever carries the palette itself past this boundary — see the issue.
-    let greyscale_lut_map = info
-        .greyscale_lut_map
-        .and_then(|path| pool.resolve(path).map(str::to_owned))
-        .or_else(|| {
-            info.effect_shader
-                .as_ref()
-                .and_then(|data| data.greyscale_texture.clone())
-        });
-    ParticleMaterial {
-        texture_path,
-        src_blend: authored_blend.then_some(info.src_blend_mode),
-        dst_blend: authored_blend.then_some(info.dst_blend_mode),
-        effect_shader: info.effect_shader,
-        greyscale_lut_map,
-    }
-}
-
-/// Return of [`extract_particle_material`] — the authored material state a
-/// particle system contributes to its spawned emitter.
-struct ParticleMaterial {
-    texture_path: Option<String>,
-    src_blend: Option<u8>,
-    dst_blend: Option<u8>,
-    effect_shader: Option<crate::import::BsEffectShaderData>,
-    /// #3590 — the greyscale→palette LUT texture path, when authored. See
-    /// [`extract_particle_material`]'s doc comment for the resolution
-    /// order.
-    greyscale_lut_map: Option<String>,
-}
 
 /// SK-D4-04 / #564 — return `true` when any of `node`'s extra_data refs
 /// resolves to a `BSPackedCombinedGeomDataExtra` (or its Shared
@@ -708,550 +661,6 @@ pub(super) fn walk_node_hierarchical(
     }
 }
 
-/// Walk a `NiParticleSystem.modifier_refs` chain and collect every
-/// `NiPSys{Gravity,Vortex,Drag,Turbulence,Air,Radial}FieldModifier`
-/// into an `ImportedParticleForceField` list. Inactive modifiers
-/// (per [`NiPSysModifierBase::active`]) and stale refs are skipped.
-/// See #984 / NIF-D5-ORPHAN-A2.
-pub(super) fn collect_force_fields(
-    scene: &NifScene,
-    modifier_refs: &[crate::types::BlockRef],
-) -> Vec<crate::import::ImportedParticleForceField> {
-    use crate::blocks::particle::{
-        NiPSysAirFieldModifier, NiPSysDragFieldModifier, NiPSysGravityFieldModifier,
-        NiPSysRadialFieldModifier, NiPSysTurbulenceFieldModifier, NiPSysVortexFieldModifier,
-    };
-    use crate::import::ImportedParticleForceField as F;
-
-    let mut out = Vec::new();
-    for r in modifier_refs {
-        let Some(idx) = r.index() else { continue };
-        let Some(block) = scene.blocks.get(idx) else {
-            continue;
-        };
-        let any = block.as_any();
-        if let Some(g) = any.downcast_ref::<NiPSysGravityFieldModifier>() {
-            if !g.modifier_base.active {
-                continue;
-            }
-            out.push(F::Gravity {
-                direction: g.direction,
-                strength: g.field_base.magnitude,
-                decay: g.field_base.attenuation,
-            });
-        } else if let Some(v) = any.downcast_ref::<NiPSysVortexFieldModifier>() {
-            if !v.modifier_base.active {
-                continue;
-            }
-            out.push(F::Vortex {
-                axis: v.direction,
-                strength: v.field_base.magnitude,
-                decay: v.field_base.attenuation,
-            });
-        } else if let Some(d) = any.downcast_ref::<NiPSysDragFieldModifier>() {
-            if !d.modifier_base.active {
-                continue;
-            }
-            out.push(F::Drag {
-                strength: d.field_base.magnitude,
-                direction: d.direction,
-                use_direction: d.use_direction,
-            });
-        } else if let Some(t) = any.downcast_ref::<NiPSysTurbulenceFieldModifier>() {
-            if !t.modifier_base.active {
-                continue;
-            }
-            out.push(F::Turbulence {
-                frequency: t.frequency,
-                scale: t.field_base.magnitude,
-            });
-        } else if let Some(a) = any.downcast_ref::<NiPSysAirFieldModifier>() {
-            if !a.modifier_base.active {
-                continue;
-            }
-            out.push(F::Air {
-                direction: a.direction,
-                strength: a.field_base.magnitude,
-                falloff: a.field_base.attenuation,
-            });
-        } else if let Some(rd) = any.downcast_ref::<NiPSysRadialFieldModifier>() {
-            if !rd.modifier_base.active {
-                continue;
-            }
-            out.push(F::Radial {
-                strength: rd.field_base.magnitude,
-                falloff: rd.field_base.attenuation,
-            });
-        }
-    }
-    out
-}
-
-/// Scan the parsed NIF scene for the first authored particle colour ramp.
-/// Two sources, in priority order:
-///   1. `NiPSysColorModifier` → `NiColorData` keyframe stream (Oblivion /
-///      Skyrim-era + the modern reference-based modifier). Returns the
-///      t=0 and t=last RGBA keys.
-///   2. `BSPSysSimpleColorModifier` (#1345) — the dominant FO3/FNV-era
-///      modifier, which embeds its 3-key ramp INLINE rather than
-///      referencing a `NiColorData` block. Returns `Colors[0]` (birth) and
-///      `Colors[2]` (death).
-///
-/// `None` when neither is present (→ fall back to the heuristic preset).
-///
-/// First-pass scope per the issue body — this is a scene-level scan
-/// rather than per-emitter, which is exact for the dominant single-
-/// emitter-per-NIF case (every Bethesda hearth / torch / spell-cast /
-/// geyser NIF). Multi-emitter NIFs would need to walk each
-/// `NiParticleSystem.modifiers` list to attribute curves to specific
-/// emitters; deferred until a multi-emitter regression surfaces. See
-/// #707 / FX-2 + #1345 + #1402.
-pub(super) fn extract_first_color_curve(
-    scene: &NifScene,
-) -> Option<crate::import::ParticleColorCurve> {
-    use crate::blocks::interpolator::NiColorData;
-    use crate::blocks::particle::{BSPSysSimpleColorModifier, NiPSysColorModifier};
-
-    // Reject NaN, ±Inf, and the nif.xml FLT_MAX sentinel (≥ 3.0e38) in any
-    // component.  Analogous to `sane()` in `extract_emitter_rate` — authored
-    // RGBA values are always in a normal float range; a sentinel or corrupt
-    // parse would otherwise reach the shader as a wildly out-of-range colour.
-    fn is_valid_color(c: [f32; 4]) -> bool {
-        c.iter().all(|&x| x.is_finite() && x < 3.0e38)
-    }
-
-    // 1. Legacy reference-based modifier → NiColorData keyframe stream.
-    if let Some(modifier) = scene
-        .blocks
-        .iter()
-        .find_map(|b| b.as_any().downcast_ref::<NiPSysColorModifier>())
-    {
-        if let Some(data_idx) = modifier.color_data_ref.index() {
-            if let Some(data) = scene.get_as::<NiColorData>(data_idx) {
-                let keys = &data.keys.keys;
-                if !keys.is_empty() {
-                    let start = keys[0].value;
-                    let end = keys.last().expect("non-empty checked above").value;
-                    if is_valid_color(start) && is_valid_color(end) {
-                        return Some(crate::import::ParticleColorCurve { start, end });
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. #1345 — fall back to the inline BSPSysSimpleColorModifier ramp.
-    if let Some(scm) = scene
-        .blocks
-        .iter()
-        .find_map(|b| b.as_any().downcast_ref::<BSPSysSimpleColorModifier>())
-    {
-        let start = scm.colors[0];
-        let end = scm.colors[2];
-        if is_valid_color(start) && is_valid_color(end) {
-            return Some(crate::import::ParticleColorCurve { start, end });
-        }
-    }
-
-    None
-}
-
-/// Scan the parsed NIF scene for the first `NiPSysEmitter` and return its
-/// decoded base spawn parameters. `None` when the scene has no emitter
-/// block (→ fall back to the heuristic preset). Same scene-level first-
-/// match scope as [`extract_first_color_curve`] — exact for the dominant
-/// single-emitter-per-NIF case; multi-emitter NIFs would need per-system
-/// attribution (deferred until a regression surfaces). See
-/// `docs/engine/nifal.md` — particles slice.
-pub(super) fn extract_emitter_params(
-    scene: &NifScene,
-) -> Option<crate::import::ImportedEmitterParams> {
-    use crate::blocks::particle::NiPSysEmitter;
-
-    let emitter = scene
-        .blocks
-        .iter()
-        .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitter>())?;
-    let p = &emitter.params;
-    // Pair the emitter base with the first grow/fade modifier's
-    // base_scale (size multiplier), if any. NIFAL-S5 (#1434) — reject a
-    // non-finite or non-positive raw scale here: it feeds `initial_radius ×
-    // base_scale` (systems/particle.rs), so 0.0/negative spawns zero-or-
-    // inverted-size particles and NaN/Inf poisons the product. Dropping just
-    // the modifier to `None` falls back to the ×1.0 default rather than
-    // rejecting the whole (otherwise valid) emitter — sibling of the
-    // NIFAL-S3 finite filter below.
-    let base_scale = scene
-        .blocks
-        .iter()
-        .find_map(|b| {
-            b.as_any()
-                .downcast_ref::<crate::blocks::particle::NiPSysGrowFadeModifier>()
-        })
-        .and_then(|m| m.base_scale)
-        .filter(|s| s.is_finite() && *s > 0.0);
-    // NIFAL-S3 (#1411) — reject corrupt emitter scalars before they reach
-    // `apply_emitter_params`, which copies every one straight into the
-    // particle preset. A single non-finite value (NaN/Inf from a malformed
-    // NIF) poisons every spawned particle's per-frame integration, and a
-    // non-positive `life_span` spawns already-dead particles. Fall back to
-    // the heuristic preset (`None`) rather than leak garbage. Sibling of
-    // `extract_emitter_rate`'s `sane()` finite filter; the positivity
-    // checks match the issue's `life_span > 0` / `initial_radius >= 0`.
-    let all_finite = p.speed.is_finite()
-        && p.speed_variation.is_finite()
-        && p.declination.is_finite()
-        && p.declination_variation.is_finite()
-        // #1445 — planar_angle / planar_angle_variation were lifted into
-        // EmitterBaseParams but omitted from this sweep. Harmless today
-        // (apply_emitter_params doesn't read them yet) but a latent NaN trap
-        // the moment planar angle is wired into the spawn cone; include them
-        // now so the guard can't be silently outrun by a future consumer.
-        && p.planar_angle.is_finite()
-        && p.planar_angle_variation.is_finite()
-        && p.initial_radius.is_finite()
-        // #1775 — radius_variation is now forwarded + consumed as per-particle
-        // size jitter, so it joins the finite sweep (a NaN/Inf spread would
-        // poison every spawned particle's start_size). Negative is tolerated:
-        // the consumer (apply_emitter_params) takes its magnitude.
-        && p.radius_variation.is_finite()
-        && p.life_span.is_finite()
-        && p.life_span_variation.is_finite();
-    if !(all_finite && p.life_span > 0.0 && p.initial_radius >= 0.0) {
-        log::debug!(
-            "Rejecting NiPSysEmitter params (non-finite or non-positive): \
-             speed={} speed_var={} decl={} decl_var={} radius={} life_span={} \
-             life_var={} base_scale={:?} — falling back to heuristic preset",
-            p.speed,
-            p.speed_variation,
-            p.declination,
-            p.declination_variation,
-            p.initial_radius,
-            p.life_span,
-            p.life_span_variation,
-            base_scale,
-        );
-        return None;
-    }
-    Some(crate::import::ImportedEmitterParams {
-        speed: p.speed,
-        speed_variation: p.speed_variation,
-        declination: p.declination,
-        declination_variation: p.declination_variation,
-        initial_color: p.initial_color,
-        initial_radius: p.initial_radius,
-        life_span: p.life_span,
-        life_span_variation: p.life_span_variation,
-        base_scale,
-        radius_variation: p.radius_variation,
-    })
-}
-
-/// Scan for the emitter's authored birth rate (particles/sec) and return
-/// a single representative scalar. Modern path: the first
-/// `NiPSysEmitterCtlr`'s interpolator → `NiFloatData` first key value, or
-/// the `NiFloatInterpolator`'s constant value. Legacy fallback: the first
-/// `NiPSysEmitterCtlrData` birth-rate key. `None` when no controller is
-/// present (→ keep the preset's rate). Non-finite, negative, exactly `0.0`
-/// (a ramp-up emitter's t=0 key → keep the preset rate, #1771), and
-/// `FLT_MAX`-sentinel (`>= 3.0e38`) values are rejected: the sentinel on
-/// `NiFloatInterpolator.value` is nif.xml's "use the keyed data" marker, so
-/// even when the keyed `data_ref` is NULL it must not leak through the
-/// constant-value branch as a ~3.4e38 spawn rate (cap-spawning every frame,
-/// #1364). Scene-level first-match, same scope caveat as
-/// [`extract_first_color_curve`] — secondary emitters in a multi-emitter NIF
-/// share the first emitter's rate; deferred until a regression surfaces (#1402).
-/// See `docs/engine/nifal.md` — particles spawn-rate follow-up.
-/// Authored particle budget from the scene's `NiPSysData` block — nif.xml
-/// `NiParticlesData.Num Vertices`, *"the maximum number of particles"*, which
-/// on Bethesda `#BS202#` streams is the `BS Max Vertices` upper bound (#3344).
-/// `None` when the scene has no particle-data block or it authored `0`.
-///
-/// Scene-level first-match, the same scope caveat carried by
-/// [`extract_emitter_params`] and [`extract_emitter_rate`]: exact for the
-/// dominant single-emitter-per-NIF case, and secondary emitters in a
-/// multi-emitter NIF share the first block's budget. Following the particle
-/// system's own `data_ref` would be exact, but that ref is only serialized on
-/// the pre-SSE branch — `BS_GTE_SSE` streams replace it with a bounding
-/// sphere + skin ref — so a per-system link would work on FO3/FNV/Oblivion
-/// and silently fall back to this same scan everywhere else.
-pub(super) fn extract_emitter_max_particles(scene: &NifScene) -> Option<u32> {
-    // Find the first block that actually *carries* a budget, not the first
-    // `NiPSysBlock`: 27 other `NiPSys*` types deserialise to that same marker
-    // struct with `max_particles: None`, so `find_map(downcast).and_then(..)`
-    // stops at whichever marker happens to come first in block order and
-    // reports no budget at all. Caught by the #3343 magnitude floors, which
-    // read 0/346 on FNV against a measured 1,262 budget-bearing blocks.
-    scene
-        .blocks
-        .iter()
-        .find_map(|b| {
-            b.as_any()
-                .downcast_ref::<crate::blocks::particle::NiPSysBlock>()
-                .and_then(|d| d.max_particles)
-        })
-        .filter(|m| *m > 0)
-}
-
-pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
-    use crate::anim::resolve_blend_interpolator_target;
-    use crate::blocks::interpolator::{NiBlendFloatInterpolator, NiFloatData, NiFloatInterpolator};
-    use crate::blocks::particle::{NiPSysEmitterCtlr, NiPSysEmitterCtlrData};
-
-    fn sane(r: f32) -> Option<f32> {
-        // Reject non-finite, negative, the FLT_MAX sentinel (`>= 3.0e38`, the
-        // shader rimlight/backlight threshold + nif.xml's "use the keyed data"
-        // marker — blocks/shader.rs), AND an exact 0.0. A zero first-key is a
-        // ramp-up emitter (rate climbs from 0 over the clip — geyser/steam/
-        // ignition FX); taking it as a permanent-zero constant rate makes the
-        // spawn guard (`em.rate > 0.0`) kill the emitter for the whole clip, so
-        // fall back to the preset spawn rate instead (#1771). Rate-curve
-        // sampling over time is the fuller fix (#1402).
-        (r.is_finite() && 0.0 < r && r < 3.0e38).then_some(r)
-    }
-
-    // NiFloatInterpolator → (keyed data | constant). Shared by the direct
-    // case below and the NiBlendFloatInterpolator sub-interpolator case
-    // (#2548), so the two chains can't silently diverge.
-    fn float_interpolator_rate(
-        scene: &NifScene,
-        interp_idx: usize,
-        curves: CurveTier,
-    ) -> Option<f32> {
-        let interp = scene.get_as::<NiFloatInterpolator>(interp_idx)?;
-        if let Some(data_idx) = interp.data_ref.index() {
-            if let Some(keys) = scene.get_as::<NiFloatData>(data_idx).map(|d| &d.keys.keys) {
-                if let Some(r) = keys.first().and_then(|k| sane(k.value)) {
-                    return Some(r);
-                }
-                // #3754 — the first key was rejected (a `0.0` ramp-up start,
-                // per `sane`'s note), but the rest of the curve is right
-                // here and used to be discarded whole: the interpolator's
-                // own `value` on this shape is the `-FLT_MAX` "use the keyed
-                // data" sentinel, which `sane` also rejects, so the emitter
-                // fell all the way through to `fog.rs::particle_preset`'s
-                // name-heuristic guess.
-                if curves == CurveTier::Allowed {
-                    if let Some(r) = curve_mean_rate(keys) {
-                        return Some(r);
-                    }
-                }
-            }
-        }
-        sane(interp.value)
-    }
-
-    /// The constant spawn rate that reproduces an authored rate curve's
-    /// particle count — its **time-weighted mean**, by trapezoid over the
-    /// authored keys (#3754).
-    ///
-    /// Why the mean and not the peak: `ParticleEmitter::rate` is particles
-    /// *per second*, applied continuously and forever, so the faithful
-    /// scalar reduction of a curve is the one that emits the same number of
-    /// particles per clip cycle. The curves this reaches are not the
-    /// ramp-to-plateau shape they were assumed to be — measured off the
-    /// three meshes the report cites:
-    ///
-    /// ```text
-    /// tenpengate01     `Close` 2 s  : 0,0,600,0,0     — a 0.13 s spike
-    /// fxfallingrocks01 `Idle` 20 s  : two 300 spikes + two 120 spikes
-    /// fxbubblestall01  `Idle` 16.7 s: ramp to a 30 plateau, then holds
-    /// ```
-    ///
-    /// Only the third is a plateau. Taking each curve's maximum would run
-    /// Tenpenny's gate at 600 /s forever against an authored average of
-    /// ~20 /s, and the falling-rock ambient at 300 /s against ~19 /s — 30×
-    /// and 16× overshoots, i.e. *further* from the file than the 35 /s
-    /// preset this replaces. The mean is within a factor of two on all
-    /// three.
-    ///
-    /// Sampling the curve over time is still the fuller fix (#1402); this is
-    /// the best constant the file supports until an emitter can hold one.
-    ///
-    /// Returns `None` — leaving the existing fallbacks intact — when the
-    /// curve carries no positive area, spans no time, or contains a
-    /// non-finite / sentinel key. Negative key values are clamped to zero
-    /// rather than subtracting area: a negative spawn rate has no meaning,
-    /// and letting one cancel real emission would silently mute the emitter.
-    fn curve_mean_rate(keys: &[crate::blocks::interpolator::FloatKey]) -> Option<f32> {
-        let mut area = 0.0f64;
-        let mut span = 0.0f64;
-        for w in keys.windows(2) {
-            let (a, b) = (&w[0], &w[1]);
-            // A sentinel or garbage key poisons the whole average, so bail
-            // to the caller's fallbacks rather than averaging it in.
-            if !a.value.is_finite()
-                || !b.value.is_finite()
-                || a.value.abs() >= 3.0e38
-                || b.value.abs() >= 3.0e38
-            {
-                return None;
-            }
-            let dt = f64::from(b.time) - f64::from(a.time);
-            if !dt.is_finite() || dt <= 0.0 {
-                continue;
-            }
-            area += 0.5 * (f64::from(a.value.max(0.0)) + f64::from(b.value.max(0.0))) * dt;
-            span += dt;
-        }
-        if span <= 0.0 {
-            return None;
-        }
-        sane((area / span) as f32)
-    }
-
-    /// #3329 tier (d) — recover the authored rate from the scene's embedded
-    /// `NiControllerSequence` blocks when the emitter controller's own
-    /// interpolator is a manager-driven blend with no items.
-    ///
-    /// Walks every sequence's `controlled_blocks` for one whose resolved
-    /// `controller_type` names an emitter controller, and runs its
-    /// `interpolator_ref` through the same `float_interpolator_rate` the
-    /// direct tiers use — so the four chains cannot diverge.
-    ///
-    /// Steady-state sequences win over transient ones. A single NIF commonly
-    /// carries several (`Idle`, `Forward`, `OFF`, `Open`, …) and they author
-    /// *different* rates: an ignition ramp or a one-shot burst is not the
-    /// density the emitter runs at while the player is looking at it. Names
-    /// are ranked, and a tie falls back to block order.
-    fn sequence_emitter_rate(scene: &NifScene, curves: CurveTier) -> Option<f32> {
-        use crate::anim::{resolve_cb_string, CbString};
-        use crate::blocks::controller::NiControllerSequence;
-
-        /// Lower is preferred. `Idle`/`SpecialIdle` are the steady-state
-        /// loops; everything else is a transition whose rate is only correct
-        /// for the moment it plays.
-        fn sequence_rank(name: Option<&str>) -> u8 {
-            match name.map(str::to_ascii_lowercase).as_deref() {
-                Some("idle") => 0,
-                Some(n) if n.ends_with("idle") => 1,
-                Some(_) => 2,
-                None => 3,
-            }
-        }
-
-        let mut best: Option<(u8, f32)> = None;
-        for seq in scene
-            .blocks
-            .iter()
-            .filter_map(|b| b.as_any().downcast_ref::<NiControllerSequence>())
-        {
-            let rank = sequence_rank(seq.name.as_deref());
-            // Nothing here can beat an already-found better-ranked hit.
-            if best.as_ref().is_some_and(|(r, _)| *r <= rank) {
-                continue;
-            }
-            for cb in &seq.controlled_blocks {
-                let Some(ctype) = resolve_cb_string(scene, cb, CbString::ControllerType) else {
-                    continue;
-                };
-                if !ctype.contains("EmitterCtlr") {
-                    continue;
-                }
-                let Some(idx) = cb.interpolator_ref.index() else {
-                    continue;
-                };
-                if let Some(r) = float_interpolator_rate(scene, idx, curves) {
-                    best = Some((rank, r));
-                    break;
-                }
-            }
-        }
-        best.map(|(_, r)| r)
-    }
-
-    /// Whether this pass may fall back to a rate curve's time-weighted mean
-    /// (#3754). The whole tier chain runs once with [`Self::Rejected`] and,
-    /// only if that finds nothing at all, again with [`Self::Allowed`].
-    ///
-    /// Two passes rather than one because the tiers resolve on the *first*
-    /// emitter controller that yields a rate, so enabling the curve tier
-    /// inline does not merely fill gaps — it lets an earlier controller win
-    /// a mesh that already resolved. Measured over `Fallout - Meshes.bsa`:
-    /// inline, 10 meshes gained a rate but 5 that already had one changed
-    /// (`fxharoldfire` 90 → 41 /s, `ppurityfxtankfog01` 7.5 → 86.5 /s).
-    /// Those five are not the defect being fixed, and re-ranking a mesh's
-    /// emitters is #1402's business, not this fix's. Split into passes, the
-    /// change is exactly additive: same 10 gained, zero changed.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum CurveTier {
-        Rejected,
-        Allowed,
-    }
-
-    fn resolve(scene: &NifScene, curves: CurveTier) -> Option<f32> {
-        // Modern: controller → interpolator → (keyed data | constant).
-        if let Some(ctlr) = scene
-            .blocks
-            .iter()
-            .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlr>())
-        {
-            if let Some(interp_idx) = ctlr.interpolator_ref.index() {
-                if let Some(r) = float_interpolator_rate(scene, interp_idx, curves) {
-                    return Some(r);
-                }
-                // #2548 — 78% of real FO3 NiPSysEmitterCtlr.interpolator_ref
-                // targets are NiBlendFloatInterpolator (most of FO3's fire/
-                // explosion/dust/blood/gore VFX library), a weighted-array
-                // wrapper this branch never followed at all — only the bare
-                // NiFloatInterpolator case above, on 22% of real targets.
-                // `resolve_blend_interpolator_target` (#334 / AR-08, already
-                // used by the KF channel-extraction path) picks the highest-
-                // `normalized_weight` sub-interpolator; `None` for the
-                // manager-controlled case (no items to pick from — those are
-                // driven externally and don't apply to a particle emitter
-                // rate anyway). Fall back to the blend interpolator's own
-                // constant `value` if no item resolves.
-                if let Some(sub_idx) = resolve_blend_interpolator_target(scene, interp_idx) {
-                    if let Some(r) = float_interpolator_rate(scene, sub_idx, curves) {
-                        return Some(r);
-                    }
-                }
-                if let Some(blend) = scene.get_as::<NiBlendFloatInterpolator>(interp_idx) {
-                    if let Some(r) = sane(blend.value) {
-                        return Some(r);
-                    }
-                }
-                // #3329 — the manager-controlled residual #2548 left behind. When
-                // the controller's interpolator is a `NiBlendFloatInterpolator`
-                // with an EMPTY `items` array, tier (b) above cannot resolve a
-                // sub-interpolator (`resolve_blend_interpolator_target` returns
-                // `None` by design for that shape — those blends are driven
-                // externally by a `NiControllerManager`, not from their own array)
-                // and tier (c) reads a non-positive `value`. On vanilla FNV that
-                // is 168 of the 307 emitter-bearing meshes: every single affected
-                // file's blend has `items.len() == 0`.
-                //
-                // The authored rate is still in the file — it lives on the
-                // sibling `NiControllerSequence`'s controlled block for the same
-                // emitter controller. Scanning those recovers 155 of the 168
-                // (`fxambdust*` 25/s, snowglobes 6/s, Lucky 38 reactor, the Strip
-                // fountain, Helios steam, `dlc04fxcrashthroughfloor` 510/s).
-                // Without it `apply_emitter_overlays` leaves the density at
-                // `fog.rs::particle_preset`'s name-heuristic guess — off by ~6×
-                // for snowglobes and ~15× for the DLC04 crash FX.
-                if scene
-                    .get_as::<NiBlendFloatInterpolator>(interp_idx)
-                    .is_some()
-                {
-                    if let Some(r) = sequence_emitter_rate(scene, curves) {
-                        return Some(r);
-                    }
-                }
-            }
-        }
-        // Legacy: NiPSysEmitterCtlrData first birth-rate key.
-        scene
-            .blocks
-            .iter()
-            .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlrData>())
-            .and_then(|d| d.birth_rate_first)
-            .and_then(sane)
-    }
-
-    resolve(scene, CurveTier::Rejected).or_else(|| resolve(scene, CurveTier::Allowed))
-}
-
 /// Long-lived context threaded through [`walk_node_flat`]'s recursion:
 /// the read-only scene + resolver, the mutable mesh/collision out-lists,
 /// the inherited-property accumulator, and the string pool. Bundling
@@ -1572,349 +981,15 @@ pub(super) fn walk_node_flat(
     }
 }
 
-/// Recursively walk the scene graph accumulating world-space transforms
-/// and collecting any NiLight subclass encountered.
-pub(super) fn walk_node_lights(
-    scene: &NifScene,
-    block_idx: usize,
-    parent_transform: &NiTransform,
-    out: &mut Vec<ImportedLight>,
-) {
-    let Some(block) = scene.get(block_idx) else {
-        return;
-    };
+#[cfg(test)]
+mod tests;
 
-    // NiSwitchNode / NiLODNode: only walk the active children (#718).
-    if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        if is_editor_marker(node.av.net.name.as_deref()) {
-            return;
-        }
-        let world_transform = compose_transforms(parent_transform, &node.av.transform);
-        for idx in active_children {
-            walk_node_lights(scene, idx, &world_transform, out);
-        }
-        return;
-    }
-
-    if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        if is_editor_marker(node.av.net.name.as_deref()) {
-            return;
-        }
-        let world_transform = compose_transforms(parent_transform, &node.av.transform);
-        for child_ref in &node.children {
-            if let Some(idx) = child_ref.index() {
-                walk_node_lights(scene, idx, &world_transform, out);
-            }
-        }
-        return;
-    }
-
-    // NiLight subclasses — extract using the world transform composed from
-    // the parent chain plus the light's own local transform.
-    if let Some(l) = block.as_any().downcast_ref::<NiPointLight>() {
-        let world = compose_transforms(parent_transform, &l.base.av.transform);
-        let radius = attenuation_radius(
-            l.constant_attenuation,
-            l.linear_attenuation,
-            l.quadratic_attenuation,
-        );
-        out.push(imported_light_from_base(
-            scene,
-            &world,
-            &l.base,
-            LightKind::Point,
-            radius,
-            0.0,
-        ));
-        return;
-    }
-    if let Some(l) = block.as_any().downcast_ref::<NiSpotLight>() {
-        let world = compose_transforms(parent_transform, &l.point.base.av.transform);
-        let radius = attenuation_radius(
-            l.point.constant_attenuation,
-            l.point.linear_attenuation,
-            l.point.quadratic_attenuation,
-        );
-        out.push(imported_light_from_base(
-            scene,
-            &world,
-            &l.point.base,
-            LightKind::Spot,
-            radius,
-            l.outer_spot_angle,
-        ));
-        return;
-    }
-    if let Some(l) = block.as_any().downcast_ref::<NiAmbientLight>() {
-        let world = compose_transforms(parent_transform, &l.base.av.transform);
-        out.push(imported_light_from_base(
-            scene,
-            &world,
-            &l.base,
-            LightKind::Ambient,
-            0.0,
-            0.0,
-        ));
-        return;
-    }
-    if let Some(l) = block.as_any().downcast_ref::<NiDirectionalLight>() {
-        let world = compose_transforms(parent_transform, &l.base.av.transform);
-        out.push(imported_light_from_base(
-            scene,
-            &world,
-            &l.base,
-            LightKind::Directional,
-            0.0,
-            0.0,
-        ));
-        // no return — directional lights are leaves
-    }
-}
-
-/// Flat counterpart to the particle-emitter detection in
-/// `walk_node_hierarchical`: walks the scene graph accumulating world-
-/// space transforms and emits one [`crate::import::ImportedParticleEmitterFlat`]
-/// per renderable particle block (`NiParticleSystem` and friends). Used
-/// by the cell loader, which spawns one entity per emitter at the
-/// composed REFR-times-host-NIF-local world position. See #401.
-pub(super) fn walk_node_particle_emitters_flat(
-    scene: &NifScene,
-    block_idx: usize,
-    parent_transform: &NiTransform,
-    parent_node_name: Option<std::sync::Arc<str>>,
-    inherited_props: &mut Vec<BlockRef>,
-    pool: &mut StringPool,
-    out: &mut Vec<crate::import::ImportedParticleEmitterFlat>,
-) {
-    let Some(block) = scene.get(block_idx) else {
-        return;
-    };
-
-    // NiSwitchNode / NiLODNode: only walk the active children (#718).
-    if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        let world_transform = compose_transforms(parent_transform, &node.av.transform);
-        let new_parent_name = node.av.net.name.clone().or(parent_node_name);
-        let prev_len = inherited_props.len();
-        inherited_props.extend_from_slice(&node.av.properties);
-        for idx in active_children {
-            walk_node_particle_emitters_flat(
-                scene,
-                idx,
-                &world_transform,
-                new_parent_name.clone(),
-                inherited_props,
-                pool,
-                out,
-            );
-        }
-        inherited_props.truncate(prev_len);
-        return;
-    }
-
-    if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        let world_transform = compose_transforms(parent_transform, &node.av.transform);
-        // Pass this node's name down so descendant emitters inherit a
-        // sensible host name even when the emitter block itself is
-        // unnamed (the common case in vanilla content).
-        let new_parent_name = node.av.net.name.clone().or(parent_node_name);
-        let prev_len = inherited_props.len();
-        inherited_props.extend_from_slice(&node.av.properties);
-        for child_ref in &node.children {
-            if let Some(idx) = child_ref.index() {
-                walk_node_particle_emitters_flat(
-                    scene,
-                    idx,
-                    &world_transform,
-                    new_parent_name.clone(),
-                    inherited_props,
-                    pool,
-                    out,
-                );
-            }
-        }
-        inherited_props.truncate(prev_len);
-        return;
-    }
-
-    // Mirror the hierarchical-walk dispatch (#984): handle the typed
-    // `NiParticleSystem` (carries `modifier_refs`). The legacy controller
-    // / particle types dispatch to `legacy_particle::*`, not `NiPSysBlock`,
-    // so the old `NiPSysBlock` fall-through never matched them — that dead
-    // arm was removed in #1327.
-    if let Some(ps) = block
-        .as_any()
-        .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
-    {
-        // Compose the particle block's own local TRS onto the host-node
-        // world transform (#1333). Pre-fix only `parent_transform` (the
-        // host world) was used, zeroing any authored emitter offset —
-        // smoke spawned inside the fire instead of above it.
-        let world_transform = compose_transforms(parent_transform, &ps.transform);
-        let pmat = extract_particle_material(scene, ps, inherited_props, pool);
-        out.push(crate::import::ImportedParticleEmitterFlat {
-            local_position: zup_point_to_yup(&world_transform.translation),
-            host_name: parent_node_name,
-            original_type: ps.original_type.clone(),
-            texture_path: pmat.texture_path,
-            src_blend: pmat.src_blend,
-            dst_blend: pmat.dst_blend,
-            effect_shader: pmat.effect_shader,
-            greyscale_lut_map: pmat.greyscale_lut_map,
-            color_curve: extract_first_color_curve(scene),
-            force_fields: collect_force_fields(scene, &ps.modifier_refs),
-            emitter_params: extract_emitter_params(scene),
-            emitter_rate: extract_emitter_rate(scene),
-            max_particles: extract_emitter_max_particles(scene),
-        });
-    }
-}
-
-fn imported_light_from_base(
-    scene: &NifScene,
-    world: &NiTransform,
-    base: &crate::blocks::light::NiLightBase,
-    kind: LightKind,
-    radius: f32,
-    outer_angle: f32,
-) -> ImportedLight {
-    let translation = zup_point_to_yup(&world.translation);
-
-    // Gamebryo lights point down the local -Z axis in their own space.
-    // Transform that via the world rotation, then convert to Y-up.
-    let rot = &world.rotation;
-    // Extract local -Z column (light points along -Z in Gamebryo), then
-    // convert Z-up to Y-up via the same [x, z, -y] swap that zup_point_to_yup uses.
-    let [dx, dy, dz] = [-rot.rows[0][2], -rot.rows[1][2], -rot.rows[2][2]];
-    let direction = byroredux_core::math::coord::zup_to_yup_pos([dx, dy, dz]);
-
-    // Dimmer scales the diffuse contribution — the only channel the
-    // engine currently consumes. Ambient/specular are stored for later.
-    // Gamebryo stores light colors as raw floats in "monitor space" —
-    // effectively sRGB values used as-is with no gamma conversion.  We
-    // pass them through unchanged because the legacy content was
-    // authored for this non-linear-aware pipeline.
-    let d = base.dimmer;
-    let diffuse = base.diffuse_color;
-    let color = [diffuse.r * d, diffuse.g * d, diffuse.b * d];
-
-    let affected_node_names = resolve_affected_node_names(scene, &base.affected_nodes);
-
-    ImportedLight {
-        translation,
-        direction,
-        color,
-        radius,
-        kind,
-        outer_angle,
-        affected_node_names,
-        // #983 — surface the light's NIF block name so the cell
-        // loader can spawn a matching `Name` component; the
-        // animation system resolves NiLight*Controller channels by
-        // that name. `None` for anonymous lights (rare).
-        name: base.av.net.name.clone(),
-    }
-}
-
-/// Recursively walk the scene graph accumulating world-space transforms
-/// and collecting any `NiTextureEffect` block encountered. Mirrors
-/// [`walk_node_lights`] one-for-one — the only difference is the
-/// downcast type and the data captured at the leaf. See #891.
-pub(super) fn walk_node_texture_effects(
-    scene: &NifScene,
-    block_idx: usize,
-    parent_transform: &NiTransform,
-    pool: &mut byroredux_core::string::StringPool,
-    out: &mut Vec<crate::import::ImportedTextureEffect>,
-) {
-    let Some(block) = scene.get(block_idx) else {
-        return;
-    };
-
-    // NiSwitchNode / NiLODNode: only walk the active children (#718).
-    if let Some((node, active_children)) = switch_active_children(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        if is_editor_marker(node.av.net.name.as_deref()) {
-            return;
-        }
-        let world_transform = compose_transforms(parent_transform, &node.av.transform);
-        for idx in active_children {
-            walk_node_texture_effects(scene, idx, &world_transform, pool, out);
-        }
-        return;
-    }
-
-    if let Some(node) = as_ni_node(block) {
-        if node.av.flags & 0x01 != 0 {
-            return;
-        }
-        if is_editor_marker(node.av.net.name.as_deref()) {
-            return;
-        }
-        let world_transform = compose_transforms(parent_transform, &node.av.transform);
-        for child_ref in &node.children {
-            if let Some(idx) = child_ref.index() {
-                walk_node_texture_effects(scene, idx, &world_transform, pool, out);
-            }
-        }
-        return;
-    }
-
-    // NiTextureEffect leaf — extract using the world transform composed
-    // from the parent chain plus the effect's own local transform.
-    if let Some(eff) = block
-        .as_any()
-        .downcast_ref::<crate::blocks::texture::NiTextureEffect>()
-    {
-        let world = compose_transforms(parent_transform, &eff.av.transform);
-        let translation = zup_point_to_yup(&world.translation);
-        let rotation = zup_matrix_to_yup_quat(&world.rotation);
-        let scale = world.scale;
-
-        // Resolve source_texture_ref → NiSourceTexture → filename →
-        // interned FixedString. Same `tex_desc_source_path` shape used
-        // by material slots (#609 / D6-NEW-01); centralised here rather
-        // than re-importing the helper because that one takes a TexDesc.
-        let texture_path = eff
-            .source_texture_ref
-            .index()
-            .and_then(|idx| scene.get_as::<crate::blocks::texture::NiSourceTexture>(idx))
-            .and_then(|src| src.filename.as_deref())
-            .and_then(|name| {
-                if name.is_empty() {
-                    None
-                } else {
-                    Some(pool.intern(name))
-                }
-            });
-
-        let affected_node_names = resolve_affected_node_names(scene, &eff.affected_nodes);
-
-        out.push(crate::import::ImportedTextureEffect {
-            translation,
-            rotation,
-            scale,
-            texture_path,
-            texture_type: eff.texture_type,
-            coordinate_generation_type: eff.coordinate_generation_type,
-            affected_node_names,
-        });
-    }
-}
-
+// #3856 — `resolve_affected_node_names` / `resolve_block_ref_names` live here
+// rather than in `texture_effect.rs` (where the issue's table put them)
+// because `imported_light_from_base` needs them too: a light's
+// `affected_nodes` list resolves through exactly the same block-ref-to-name
+// walk. One shared home beats a cross-sibling import in one direction or a
+// duplicate in both.
 /// Resolve the `NiDynamicEffect.Affected Nodes` Ptr list to a list of
 /// node names. The on-disk values are 4-byte `Ptr<NiAVObject>` entries:
 /// `u32::MAX` = null pointer, otherwise a block index. Names are
@@ -1923,7 +998,10 @@ pub(super) fn walk_node_texture_effects(
 /// dropped silently — empty list = "no restriction" by convention,
 /// so partial restrictions stay meaningful even with unresolvable
 /// pointers (corrupt content). See #335.
-fn resolve_affected_node_names(scene: &NifScene, ptrs: &[u32]) -> Vec<std::sync::Arc<str>> {
+pub(crate) fn resolve_affected_node_names(
+    scene: &NifScene,
+    ptrs: &[u32],
+) -> Vec<std::sync::Arc<str>> {
     let mut out: Vec<std::sync::Arc<str>> = Vec::with_capacity(ptrs.len());
     for &p in ptrs {
         if p == u32::MAX {
@@ -1962,7 +1040,10 @@ fn resolve_affected_node_names(scene: &NifScene, ptrs: &[u32]) -> Vec<std::sync:
 /// null refs and refs that don't resolve to a named NiObjectNET-bearing
 /// block. Mirrors [`resolve_affected_node_names`] but operates on
 /// `BlockRef` (the type [`BSTreeNode`] uses for its bone lists).
-fn resolve_block_ref_names(scene: &NifScene, refs: &[BlockRef]) -> Vec<std::sync::Arc<str>> {
+pub(crate) fn resolve_block_ref_names(
+    scene: &NifScene,
+    refs: &[BlockRef],
+) -> Vec<std::sync::Arc<str>> {
     let mut out: Vec<std::sync::Arc<str>> = Vec::with_capacity(refs.len());
     for r in refs {
         let Some(idx) = r.index() else { continue };
@@ -1989,290 +1070,61 @@ fn resolve_block_ref_names(scene: &NifScene, refs: &[BlockRef]) -> Vec<std::sync
     out
 }
 
-/// Extract the [`crate::import::TreeBones`] payload when `block` is a
-/// [`BSTreeNode`]. Returns `None` for any other block type (including
-/// the regular `NiNode` and its non-tree subclasses). See #363.
-pub(super) fn extract_tree_bones(scene: &NifScene, block: &dyn NiObject) -> Option<TreeBones> {
-    let tree = block.as_any().downcast_ref::<BsTreeNode>()?;
-    let branch_roots = resolve_block_ref_names(scene, &tree.bones_1);
-    let trunk = resolve_block_ref_names(scene, &tree.bones_2);
-    if branch_roots.is_empty() && trunk.is_empty() {
-        // No surviving bones — treat as if the wire data was absent so
-        // the consumer doesn't have to filter out empty-payload tree
-        // nodes downstream.
-        None
-    } else {
-        Some(TreeBones {
-            branch_roots,
-            trunk,
-        })
-    }
-}
-
-/// Extract the [`BsRangeKind`] discriminator when `block` is a
-/// [`BsRangeNode`] (or one of its dispatcher-aliased subclasses
-/// `BSDamageStage` / `BSBlastNode` / `BSDebrisNode`). Returns `None`
-/// for any other block type. See #364.
-pub(super) fn extract_range_kind(block: &dyn NiObject) -> Option<BsRangeKind> {
-    block.as_any().downcast_ref::<BsRangeNode>().map(|n| n.kind)
-}
-
-/// Extract the [`LodGroupData`] (LOD center + per-level near/far ranges) when
-/// `block` is a [`NiLODNode`] whose `lod_level_data` resolves to a
-/// [`NiRangeLODData`]. Center is converted NIF-Z-up → engine-Y-up. Returns
-/// `None` for any other node type, a NULL/legacy ref, or empty ranges.
-/// In-cell-LOD foundation: surfaced for a future distance-switch consumer;
-/// the walker still imports only child 0 (highest detail).
-pub(super) fn extract_lod_group(scene: &NifScene, block: &dyn NiObject) -> Option<LodGroupData> {
-    let lod = block.as_any().downcast_ref::<NiLODNode>()?;
-    let data_idx = lod.lod_level_data.index()?;
-    let data = scene.get_as::<NiRangeLODData>(data_idx)?;
-    if data.lod_levels.is_empty() {
-        return None;
-    }
-    Some(LodGroupData {
-        center: zup_point_to_yup(&data.lod_center),
-        levels: data.lod_levels.clone(),
-    })
-}
-
-/// Extract a `BSValueNode`'s `(value, value_flags)` pair. Pre-#625
-/// `as_ni_node` unwrapped the wrapper to plain `NiNode`, dropping
-/// these fields. Returns `None` for any block that isn't a
-/// `BsValueNode`. See #625 (SK-D4-02).
-pub(super) fn extract_bs_value_node(block: &dyn NiObject) -> Option<super::BsValueNodeData> {
-    block
-        .as_any()
-        .downcast_ref::<crate::blocks::node::BsValueNode>()
-        .map(|n| super::BsValueNodeData {
-            value: n.value,
-            flags: n.value_flags,
-        })
-}
-
-/// Extract a `BSOrderedNode`'s draw-order metadata. Pre-#625
-/// `as_ni_node` unwrapped the wrapper to plain `NiNode`, dropping
-/// `alpha_sort_bound` + `is_static_bound`. Returns `None` for any
-/// block that isn't a `BsOrderedNode`. See #625 (SK-D4-03).
+/// #3856 — pin the property that made the satellite extraction safe.
 ///
-/// #2008 — `alpha_sort_bound`'s `[x, y, z]` center is a point (unlike
-/// `BsBound.dimensions`, an unsigned half-extent), so it gets the full
-/// Z-up → Y-up swap-and-negate like every other node-local position on
-/// `ImportedNode` and its siblings, not the magnitude-only axis reorder
-/// `BsBound.dimensions` uses. `radius` is a magnitude and is unaffected
-/// by the rotation.
-pub(super) fn extract_bs_ordered_node(block: &dyn NiObject) -> Option<super::BsOrderedNodeData> {
-    block.as_any().downcast_ref::<BsOrderedNode>().map(|n| {
-        let [x, y, z, radius] = n.alpha_sort_bound;
-        let center = byroredux_core::math::coord::zup_to_yup_pos([x, y, z]);
-        super::BsOrderedNodeData {
-            alpha_sort_bound: [center[0], center[1], center[2], radius],
-            is_static_bound: n.is_static_bound,
-        }
-    })
-}
-
-/// Solve `1 / (const + lin·d + quad·d²) = THRESHOLD` for distance.
-/// A light's "effective radius" is the distance at which its contribution
-/// drops below a small fraction of its peak. We use 1/256 (~0.4%) which
-/// matches what Bethesda shaders use as a cull threshold.
-fn attenuation_radius(k_const: f32, k_lin: f32, k_quad: f32) -> f32 {
-    const THRESHOLD: f32 = 1.0 / 256.0;
-    // Find distance d where k_quad·d² + k_lin·d + k_const = 1/THRESHOLD
-    let target = 1.0 / THRESHOLD;
-    if k_quad > 1e-6 {
-        // Quadratic: d = (-b + sqrt(b² - 4a(c - target))) / 2a
-        let a = k_quad;
-        let b = k_lin;
-        let c = k_const - target;
-        let disc = b * b - 4.0 * a * c;
-        if disc >= 0.0 {
-            return ((-b + disc.sqrt()) / (2.0 * a)).max(0.0);
-        }
-    }
-    if k_lin > 1e-6 {
-        return ((target - k_const) / k_lin).max(0.0);
-    }
-    // #2210 (NIFAL-D3-02) — no attenuation → effectively infinite. This is
-    // the OPERATIVE case, not a rare fallback: FNV/FO3 spawnable point
-    // lights ship a zero-only attenuation triple (radius control is
-    // deferred to the ESM LIGH record instead — see
-    // `cell_loader/spawn.rs::spawn_nif_lights`'s ESM-radius preference),
-    // so this branch is what 82/82 measured FNV lights actually hit.
-    //
-    // Pre-fix this returned a bare, uncited `2048.0`. `EXTERIOR_CELL_UNITS`
-    // is a genuine citation instead of a nicer-looking guess: it's the
-    // spec-defined Bethesda exterior cell size (4096 units on a side,
-    // every Gamebryo/Creation title Oblivion→Starfield — see its own doc
-    // comment) and `cell_loader/spawn.rs::light_radius_or_default` already
-    // uses it as the sibling "we don't know this light's true radius, make
-    // it at least visible across a cell" fallback for the exact same
-    // semantic gap. Reusing it here (rather than an unrelated magic
-    // number) keeps both "no radius info" fallbacks in this engine
-    // grounded in the same cited constant instead of two independent
-    // guesses that happen to differ.
-    byroredux_core::math::coord::EXTERIOR_CELL_UNITS
-}
-
-/// Extract a NiBillboardNode mode from a block, if any.
+/// `walk_node_lights`, `walk_node_texture_effects` and
+/// `walk_node_particle_emitters_flat` are *independent entry points*: they are
+/// invoked from `import/mod.rs` and never from `walk_node_hierarchical` or
+/// `walk_node_flat`. That is the whole reason they could move to sibling files
+/// verbatim, with no shared traversal state to thread.
 ///
-/// From 10.1.0.0 onward (all Bethesda games) the mode is a trailing u16
-/// field on the block. Pre-10.1.0.0 the mode is packed into NiAVObject
-/// flags bits 5-6 — we translate that back out so the consumer always
-/// sees the modern `BillboardMode` value regardless of source version.
-///
-/// Returns `None` for non-billboard nodes.
-fn extract_billboard_mode(block: &dyn NiObject, av_flags: u32) -> Option<u16> {
-    if let Some(bb) = block.as_any().downcast_ref::<NiBillboardNode>() {
-        if bb.billboard_mode != 0 {
-            return Some(bb.billboard_mode);
-        }
-        // 10.1.0.0+ NIF with mode 0 is still a valid "always face camera"
-        // billboard — preserve the fact that this is a billboard.
-        // Fall through to the legacy flags check in case the parser
-        // defaulted to 0 for a pre-10.1.0.0 NIF.
-        let legacy = (av_flags >> 5) & 0x3;
-        return Some(legacy as u16);
-    }
-    None
-}
-
-/// Check if a node name is an editor marker that should be skipped.
-///
-/// Matches the NiNode name prefixes Bethesda uses for editor-only
-/// geometry across Oblivion / FO3 / FNV / Skyrim / FO4 / FO76 /
-/// Starfield:
-///
-/// - `EditorMarker*` — catch-all Bethesda placeholder (every game).
-/// - `marker_*` / `marker:*` / `MarkerX` — Gamebryo editor pins
-///   (quest / patrol / navmesh markers).
-/// - `MapMarker` — exterior-cell world map pin. Skyrim+ ships one
-///   of these per settlement / POI; without the match they render
-///   as untextured pyramids scattered across the overworld
-///   (audit N26-4-06 / #165).
-fn is_editor_marker(name: Option<&str>) -> bool {
-    let Some(name) = name else { return false };
-    fn starts_with_ci(s: &str, prefix: &str) -> bool {
-        s.len() >= prefix.len()
-            && s.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
-    }
-    starts_with_ci(name, "editormarker")
-        || starts_with_ci(name, "marker_")
-        || name.eq_ignore_ascii_case("markerx")
-        || starts_with_ci(name, "marker:")
-        || starts_with_ci(name, "mapmarker")
-}
-
+/// If a future edit calls one of them from inside a scene-graph walker, the
+/// files stop being independent and the next person to move code between them
+/// inherits a coupling nothing announced. A source-shape check is the right
+/// shape here for the same reason the light-dispatch sibling above uses one:
+/// the property is about *call structure*, and a behavioural test would pass
+/// just as happily with the call present.
 #[cfg(test)]
-mod tests;
-
-#[cfg(test)]
-mod light_dispatch_coverage_tests {
-    //! #2532 (NIFAL-D9-04) — the Lights half of the canonical-tier
-    //! completeness guard, mirroring `import::collision`'s
-    //! `dispatch_coverage_tests`.
-    //!
-    //! `LightKind` resolution is the same shape as `resolve_shape_inner`: a
-    //! `downcast_ref::<…>` chain over block types the parser dispatches. It
-    //! has the same failure mode too — a light block that is parse-dispatched
-    //! in `blocks/mod.rs` but has no arm here parses for byte correctness and
-    //! is then silently dropped, with no warning and no missing-block
-    //! diagnostic. One of the six translate-boundary bugs a prior sweep cited
-    //! as evidence this guard was needed was in Lights, and it was found by
-    //! manual code tracing, not by a test.
-    //!
-    //! Structural rather than value-based, deliberately: the property that
-    //! actually rots is "every dispatched kind reaches the boundary", and a
-    //! per-field value harness would not catch a whole type going missing.
-    use std::collections::HashSet;
-
-    /// Every `Ni…Light` struct produced by a dispatch arm whose match key is a
-    /// quoted `"Ni…Light"`. Mirrors `constructed_shape` in the collision
-    /// sibling; kept as its own copy rather than shared because the two scan
-    /// different files for different identifier shapes, and a shared helper
-    /// parameterised on both would be longer than either.
-    fn dispatched_light_structs() -> HashSet<String> {
-        let src = include_str!("../../blocks/mod.rs");
-        let lines: Vec<&str> = src.lines().collect();
-        let mut out = HashSet::new();
-        for (i, line) in lines.iter().enumerate() {
-            let is_light_arm = line.contains("=>")
-                && line
-                    .split('"')
-                    .any(|tok| tok.starts_with("Ni") && tok.ends_with("Light"));
-            if !is_light_arm {
-                continue;
-            }
-            for candidate in &lines[i..=(i + 2).min(lines.len() - 1)] {
-                let Some(after) = candidate.split("Box::new(").nth(1) else {
-                    continue;
-                };
-                // Light arms are module-qualified (`light::NiPointLight::parse`)
-                // where the collision sibling's shapes are not, so take the LAST
-                // path segment before `::parse` rather than the first
-                // identifier. Reading only the first would yield `light` and
-                // silently produce an empty set — the anti-vacuity assertions
-                // below exist because that is exactly what happened first.
-                let Some(path) = after.split("::parse").next() else {
-                    continue;
-                };
-                let ident: String = path
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or(path)
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                if ident.starts_with("Ni") && ident.ends_with("Light") {
-                    out.insert(ident);
-                    break;
-                }
-            }
+mod satellite_independence_tests {
+    /// The two scene-graph walkers, as source text.
+    fn scene_graph_walkers() -> String {
+        let src = include_str!("mod.rs");
+        let mut out = String::new();
+        for name in ["fn walk_node_hierarchical(", "fn walk_node_flat("] {
+            let start = src
+                .find(name)
+                .unwrap_or_else(|| panic!("{name} must exist in walk/mod.rs"));
+            // Body ends at the first column-0 closing brace after the start.
+            let end = src[start..]
+                .find("\n}")
+                .map(|i| start + i)
+                .expect("walker body must terminate at column 0");
+            out.push_str(&src[start..end]);
         }
         out
     }
 
-    /// Every `Ni…Light` struct with a `downcast_ref::<…>` arm in this module.
-    fn resolved_light_structs() -> HashSet<String> {
-        let src = include_str!("mod.rs");
-        src.split("downcast_ref::<")
-            .skip(1)
-            .filter_map(|part| {
-                let ident: String = part
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                (ident.starts_with("Ni") && ident.ends_with("Light")).then_some(ident)
-            })
-            .collect()
-    }
-
     #[test]
-    fn every_dispatched_light_reaches_the_lightkind_boundary() {
-        let dispatched = dispatched_light_structs();
-        let resolved = resolved_light_structs();
-
-        // Anti-vacuity, same reasoning as the collision sibling: a reformat
-        // that empties either set must fail loudly rather than pass silently.
+    fn the_scene_graph_walkers_never_call_a_satellite_walker() {
+        let walkers = scene_graph_walkers();
         assert!(
-            dispatched.contains("NiPointLight") && dispatched.contains("NiSpotLight"),
-            "dispatch extractor regressed; found {dispatched:?}"
+            walkers.contains("switch_active_children"),
+            "sanity: the extracted walker bodies must be non-empty — if this fires, \
+             the slicing above broke and the assertions below are vacuous"
         );
-        assert!(
-            dispatched.len() >= 4,
-            "expected >=4 dispatched Ni*Light structs, found {}: {dispatched:?}",
-            dispatched.len()
-        );
-        assert!(
-            resolved.contains("NiPointLight"),
-            "resolve extractor regressed; found {resolved:?}"
-        );
-
-        let missing: Vec<_> = dispatched.difference(&resolved).cloned().collect();
-        assert!(
-            missing.is_empty(),
-            "these Ni*Light blocks are parse-dispatched but never reach a \
-             LightKind arm — the authored light is silently dropped: {missing:?}"
-        );
+        for satellite in [
+            "walk_node_lights",
+            "walk_node_texture_effects",
+            "walk_node_particle_emitters_flat",
+        ] {
+            assert!(
+                !walkers.contains(satellite),
+                "`{satellite}` is now called from a scene-graph walker. It lives in a \
+                 sibling file precisely because it was an independent entry point \
+                 invoked only from `import/mod.rs` (#3856) — calling it from here \
+                 reintroduces the shared-state coupling the split removed. Either \
+                 keep the call out, or move the satellite back and say so."
+            );
+        }
     }
 }
