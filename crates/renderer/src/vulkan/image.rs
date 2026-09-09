@@ -438,7 +438,6 @@ mod tests {
         const PENDING: &[&str] = &[
             "composite.rs",
             "context/helpers.rs",
-            "exposure.rs",
             "frame_upscaler.rs",
             "gbuffer.rs",
             "groundcover_bench.rs",
