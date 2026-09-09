@@ -1506,7 +1506,6 @@ mod tests {
 #[cfg(test)]
 mod bind_failure_frees_allocation_tests {
     const FRAME_UPSCALER_RS: &str = include_str!("frame_upscaler.rs");
-    const GBUFFER_RS: &str = include_str!("gbuffer.rs");
 
     /// Slice of `source` from the first `bind_image_memory` mention to the
     /// end of the enclosing statement's error branch — in practice, up to
@@ -1541,16 +1540,12 @@ mod bind_failure_frees_allocation_tests {
         );
     }
 
-    #[test]
-    fn gbuffer_create_attachment_frees_on_bind_failure() {
-        let branch = bind_branch(GBUFFER_RS, "self.allocations.push(Some(alloc));");
-        assert!(
-            branch.contains(".free(alloc)"),
-            "gbuffer's attachment loop no longer frees its sub-allocation when \
-             bind_image_memory fails — same shape as the frame_upscaler site \
-             (#2178). Branch was:\n{branch}",
-        );
-    }
+    // #3860 — `gbuffer_create_attachment_frees_on_bind_failure` lived here
+    // too, scanning `gbuffer.rs` for the same ordering. That file no longer
+    // hand-rolls the chain, so the assertion moved to
+    // `image.rs::the_bind_and_view_error_arms_free_before_destroying`, which
+    // covers every migrated site at once instead of one per copy. The
+    // frame_upscaler assertion above stays until that file migrates.
 }
 
 /// #2200 / TD2-NEW-01 — the extracted FSR input barrier keeps the exact field

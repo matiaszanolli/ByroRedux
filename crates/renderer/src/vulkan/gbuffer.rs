@@ -29,10 +29,10 @@
 //! shaders in later phases.
 
 use super::allocator::SharedAllocator;
+use super::image::{GpuImage, GpuImageDesc};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ash::vk;
-use gpu_allocator::vulkan as vk_alloc;
 
 /// Octahedral-encoded normal (2 channels). RGBA16_SNORM→RG16_SNORM saves
 /// 50% bandwidth (4B vs 8B/pixel). The fragment shader encodes via
@@ -85,19 +85,17 @@ pub const ALBEDO_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 pub const FSR_MASK_FORMAT: vk::Format = vk::Format::R8_UNORM;
 
 /// A single G-buffer attachment slot (one image per frame-in-flight).
+/// #3860 — was three parallel `Vec`s (`images`, `views`, `allocations`) whose
+/// indices had to be kept in step by hand; #2178 is what happens when they
+/// come apart (a sub-allocation stranded on bind failure). One
+/// `Vec<GpuImage>` makes the correspondence structural.
 struct Attachment {
-    images: Vec<vk::Image>,
-    views: Vec<vk::ImageView>,
-    allocations: Vec<Option<vk_alloc::Allocation>>,
+    slots: Vec<GpuImage>,
 }
 
 impl Attachment {
     fn new_empty() -> Self {
-        Self {
-            images: Vec::new(),
-            views: Vec::new(),
-            allocations: Vec::new(),
-        }
+        Self { slots: Vec::new() }
     }
 
     fn allocate(
@@ -110,82 +108,23 @@ impl Attachment {
         name_prefix: &str,
     ) -> Result<()> {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let img_info = vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(format)
-                .extent(vk::Extent3D {
+            // #3860 — was ~85 lines of create → allocate → bind → view with
+            // its own three-arm cleanup. #2178 (PERF-D3-03) was diagnosed in
+            // this copy: on bind failure the sub-allocation was stranded. Its
+            // comment read "Same shape as the sibling site in
+            // `frame_upscaler.rs::create_outputs` and the established pattern
+            // in `exposure.rs`" — three copies hand-checked for one fix.
+            self.slots.push(GpuImage::create(
+                device,
+                allocator,
+                &GpuImageDesc::color_2d(
+                    &format!("{name_prefix}{i}"),
                     width,
                     height,
-                    depth: 1,
-                })
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .initial_layout(vk::ImageLayout::UNDEFINED);
-            // SAFETY: `img_info` is a fully-populated builder with extent /
-            // format / usage set above. `device` is the engine's live ash
-            // device. On Ok, `img` becomes a fresh handle owned by this
-            // attachment vec and freed by `destroy()` below.
-            let img = unsafe {
-                device
-                    .create_image(&img_info, None)
-                    .with_context(|| format!("Failed to create {name_prefix} image"))?
-            };
-            self.images.push(img);
-
-            let alloc = allocator
-                .lock()
-                .expect("allocator lock")
-                .allocate(&vk_alloc::AllocationCreateDesc {
-                    name: &format!("{name_prefix}_{i}"),
-                    // SAFETY: `img` was just created on the previous line
-                    // and pushed into `self.images`; the handle is live
-                    // until `destroy()` releases it.
-                    requirements: unsafe { device.get_image_memory_requirements(img) },
-                    location: gpu_allocator::MemoryLocation::GpuOnly,
-                    linear: false,
-                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-                })
-                .with_context(|| format!("Failed to allocate {name_prefix} memory"))?;
-            // #2178 / PERF-D3-03 — free the sub-allocation on bind failure.
-            // Until the `push` below, `alloc` is a local that `destroy()`
-            // cannot see, so an early return would strand the memory outside
-            // the allocator's free list. `img` is already in `self.images`
-            // and is destroyed normally. Same shape as the sibling site in
-            // `frame_upscaler.rs::create_outputs` and the established pattern
-            // in `exposure.rs`.
-            if let Err(error) = unsafe {
-                // SAFETY: `img` is the freshly-created image; `alloc.memory()`
-                // is the matching allocation gpu-allocator returned for `img`'s
-                // memory requirements. Bound once — the `Drop` path on `alloc`
-                // is the only thing that releases the memory, and we own `alloc`
-                // in `self.allocations` until `destroy()` runs.
-                device.bind_image_memory(img, alloc.memory(), alloc.offset())
-            } {
-                allocator.lock().expect("allocator lock").free(alloc).ok();
-                return Err(error).context(format!("bind {name_prefix} image memory"));
-            }
-            self.allocations.push(Some(alloc));
-
-            // SAFETY: `img` is bound to backing memory (line above) and
-            // the view-create-info references its format / aspect / mips.
-            // The resulting view is owned by `self.views` until `destroy()`.
-            let view = unsafe {
-                device
-                    .create_image_view(
-                        &vk::ImageViewCreateInfo::default()
-                            .image(img)
-                            .view_type(vk::ImageViewType::TYPE_2D)
-                            .format(format)
-                            .subresource_range(super::descriptors::color_subresource_single_mip()),
-                        None,
-                    )
-                    .with_context(|| format!("Failed to create {name_prefix} image view"))?
-            };
-            self.views.push(view);
+                    format,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                ),
+            )?);
         }
         Ok(())
     }
@@ -199,65 +138,25 @@ impl Attachment {
     /// `device` must be the same logical device the images/views/
     /// allocations were created against.
     unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        for &view in &self.views {
-            // SAFETY: caller of `destroy` (an `unsafe fn`) guarantees no
-            // in-flight command buffer or descriptor set references `view`.
-            unsafe { device.destroy_image_view(view, None) };
-        }
-        self.views.clear();
-        for &img in &self.images {
-            // SAFETY: same caller contract as `destroy_image_view` — the
-            // view-destroy above already broke any descriptor-bound
-            // references, and the caller fences the queue separately.
-            unsafe { device.destroy_image(img, None) };
-        }
-        self.images.clear();
-        for a in self.allocations.drain(..).flatten() {
-            allocator.lock().expect("allocator lock").free(a).ok();
+        for mut slot in self.slots.drain(..) {
+            // #3860 — view, image and slab in one call, in that order.
+            slot.destroy(device, allocator);
         }
     }
 }
 
-impl Drop for Attachment {
-    /// Safety net for `Attachment`'s manual `destroy(device, allocator)`
-    /// contract. Mirrors the `GpuBuffer::Drop` pattern (#656) without
-    /// the recovery branch — `Attachment` doesn't stash device or
-    /// allocator handles internally (the parent `GBuffer::destroy`
-    /// passes them in), so the safety net can't clean up by itself;
-    /// it can only scream so the leak surfaces in tests and dev logs.
-    ///
-    /// `debug_assert!` fires in tests + dev builds the moment any
-    /// path drops a populated `Attachment` without calling
-    /// `destroy()` first; the `log::error!` carries the same signal
-    /// into release builds. Pre-fix release builds silently leaked
-    /// (7 attachments × 2 FIF slots × image + view + alloc per
-    /// attachment = up to 42 leaked Vulkan handles per `GBuffer` —
-    /// grew from 5/30 with the FSR 3.1 `reactive`/`transparency`
-    /// attachments, `5c56e311`/`5c7acfe2`).
-    /// See REN-D2-NEW-01 (audit 2026-05-09).
-    fn drop(&mut self) {
-        if self.images.is_empty() && self.views.is_empty() && self.allocations.is_empty() {
-            return;
-        }
-        log::error!(
-            "Attachment leaked into Drop: {} images, {} views, {} allocations — \
-             destroy(device, allocator) was not called. See REN-D2-NEW-01.",
-            self.images.len(),
-            self.views.len(),
-            self.allocations.len(),
-        );
-        // Skip the debug_assert during unwind so a panic mid-`GBuffer::new`
-        // (e.g. allocator lock poisoned on the 3rd of 5 attachments) doesn't
-        // turn one panic into six. The locally-built `gb` Drop runs across
-        // every partially-initialised attachment during the unwind; without
-        // this guard each one fires its own debug_assert and clobbers the
-        // original panic's stack. Mirrors the `GpuBuffer::Drop` guard
-        // established by #656. See #1128 / REN-D4-NEW-01.
-        if !std::thread::panicking() {
-            debug_assert!(false, "Attachment dropped without destroy()");
-        }
-    }
-}
+// #3860 — `Attachment` no longer needs a `Drop` of its own.
+//
+// The old one could only *scream*: its doc said it "doesn't stash device or
+// allocator handles internally (the parent `GBuffer::destroy` passes them
+// in), so the safety net can't clean up by itself; it can only scream so the
+// leak surfaces in tests and dev logs" (REN-D2-NEW-01). The leak it was
+// screaming about was the largest in the renderer — up to 42 Vulkan handles
+// per `GBuffer` (7 attachments × 2 frames in flight × image + view + alloc).
+//
+// Each `GpuImage` now carries its own cheap Arc-backed device and allocator
+// clones, so the same escape is *recovered* rather than merely reported, and
+// the warning still fires once per leaked image.
 
 /// Owns the G-buffer attachment images (normal, motion, mesh_id,
 /// raw_indirect, albedo, reactive, transparency) + their views and
@@ -357,43 +256,43 @@ impl GBuffer {
 
     /// Image view for the normal attachment in the given frame-in-flight slot.
     pub fn normal_view(&self, frame: usize) -> vk::ImageView {
-        self.normal.views[frame]
+        self.normal.slots[frame].view
     }
     /// Image view for the motion vector attachment in the given frame slot.
     pub fn motion_view(&self, frame: usize) -> vk::ImageView {
-        self.motion.views[frame]
+        self.motion.slots[frame].view
     }
     /// Image handle for FSR motion-vector input in the given frame slot.
     pub fn motion_image(&self, frame: usize) -> vk::Image {
-        self.motion.images[frame]
+        self.motion.slots[frame].image
     }
     /// Image view for the mesh ID attachment in the given frame slot.
     pub fn mesh_id_view(&self, frame: usize) -> vk::ImageView {
-        self.mesh_id.views[frame]
+        self.mesh_id.slots[frame].view
     }
     /// Image view for the raw (pre-denoise) indirect light, per frame.
     pub fn raw_indirect_view(&self, frame: usize) -> vk::ImageView {
-        self.raw_indirect.views[frame]
+        self.raw_indirect.slots[frame].view
     }
     /// Image view for the albedo attachment in the given frame slot.
     pub fn albedo_view(&self, frame: usize) -> vk::ImageView {
-        self.albedo.views[frame]
+        self.albedo.slots[frame].view
     }
     /// Image view for the FSR reactive mask in the given frame slot.
     pub fn reactive_view(&self, frame: usize) -> vk::ImageView {
-        self.reactive.views[frame]
+        self.reactive.slots[frame].view
     }
     /// Image handle for the FSR reactive-mask dispatch input.
     pub fn reactive_image(&self, frame: usize) -> vk::Image {
-        self.reactive.images[frame]
+        self.reactive.slots[frame].image
     }
     /// Image view for the FSR transparency-and-composition mask.
     pub fn transparency_view(&self, frame: usize) -> vk::ImageView {
-        self.transparency.views[frame]
+        self.transparency.slots[frame].view
     }
     /// Image handle for the FSR transparency-and-composition dispatch input.
     pub fn transparency_image(&self, frame: usize) -> vk::Image {
-        self.transparency.images[frame]
+        self.transparency.slots[frame].image
     }
 
     /// One-time layout transition UNDEFINED → SHADER_READ_ONLY_OPTIMAL for
@@ -424,7 +323,7 @@ impl GBuffer {
             ];
             let mut barriers = Vec::with_capacity(attachments.len() * MAX_FRAMES_IN_FLIGHT);
             for att in &attachments {
-                for &img in &att.images {
+                for &img in att.slots.iter().map(|s| &s.image) {
                     barriers.push(
                         vk::ImageMemoryBarrier::default()
                             .src_access_mask(vk::AccessFlags::empty())

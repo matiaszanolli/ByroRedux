@@ -411,6 +411,55 @@ mod tests {
         );
     }
 
+    /// #2178 / PERF-D3-03, now pinned once instead of once per copy.
+    ///
+    /// On bind or view failure the sub-allocation must be freed BEFORE the
+    /// image is destroyed; otherwise the slab is stranded for the process
+    /// lifetime. This was asserted separately against `gbuffer.rs` and
+    /// `frame_upscaler.rs` (in `frame_upscaler.rs`'s own
+    /// `bind_failure_frees_allocation_tests`) because each carried its own
+    /// copy of the chain. One copy, one assertion.
+    ///
+    /// Source-shape because the failure needs a real allocator that fails a
+    /// real bind, which `cargo test` has no device for.
+    #[test]
+    fn the_bind_and_view_error_arms_free_before_destroying() {
+        let src = include_str!("image.rs");
+        let production = src
+            .split_once("\n#[cfg(test)]")
+            .expect("image.rs lost its test module")
+            .0;
+        // Anchor on the call syntax, not the bare name: the module doc above
+        // names both functions in prose, and matching that slices the wrong
+        // branch — it did, the first time this was written.
+        for (arm, anchor) in [
+            ("bind", ".bind_image_memory("),
+            ("view", ".create_image_view("),
+        ] {
+            let start = production
+                .find(anchor)
+                .unwrap_or_else(|| panic!("the {arm} call disappeared"));
+            let rest = &production[start..];
+            let end = rest
+                .find("return Err(e);")
+                .unwrap_or_else(|| panic!("the {arm} arm no longer returns the error"));
+            let branch = &rest[..end];
+            let free = branch
+                .find("free_allocation(")
+                .unwrap_or_else(|| panic!("the {arm} error arm no longer frees the allocation"));
+            let destroy = branch
+                .find("destroy_image(")
+                .unwrap_or_else(|| panic!("the {arm} error arm no longer destroys the image"));
+            assert!(
+                free < destroy,
+                "the {arm} error arm must free the sub-allocation BEFORE destroying the \
+                 image, or the slab is stranded for the process lifetime (#2178). This \
+                 assertion used to exist once per copy of the chain; it now covers every \
+                 migrated site at once, which is the point of the consolidation."
+            );
+        }
+    }
+
     /// #3860 — the consolidation, enforced.
     ///
     /// The finding is not that the chain was long; it is that a fix to its
@@ -439,7 +488,6 @@ mod tests {
             "composite.rs",
             "context/helpers.rs",
             "frame_upscaler.rs",
-            "gbuffer.rs",
             "groundcover_bench.rs",
             "volumetrics/init.rs",
         ];
