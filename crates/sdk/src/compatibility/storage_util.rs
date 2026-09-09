@@ -1299,122 +1299,146 @@ pub(crate) fn encode_storage_util_form(value: FormRef) -> Vec<u8> {
     encoded
 }
 
+/// Creation Engine record signature → legacy `FormType` id, sorted by
+/// signature (#3859).
+///
+/// Data, not behaviour: this was 106 `b"XXXX" => <i32>` match arms, where a
+/// wrong or missing signature is invisible in the wall and nothing could
+/// assert a property *about* the mapping. As a table, `form_type_table_is_
+/// sorted_and_unique` can — and does — check the two invariants the lookup
+/// depends on.
+///
+/// Sorted by signature rather than by id because [`storage_util_form_type_id`]
+/// binary-searches it. `NPC_` and `CREA` both map to 43, the one many-to-one
+/// relation in the set, and are two explicit rows rather than an alias arm.
+/// Ids 96, 97, 106 and 107 are deliberately absent — the engine skips them.
+///
+/// This is the only copy of the mapping in the workspace (`grep -rn 'b"KYWD"'`
+/// finds this site alone). If a canonical `RecordType` table ever lands in
+/// `crates/plugin`, this becomes a duplication finding rather than a table.
+static FORM_TYPE_IDS: &[(&[u8; 4], i32)] = &[
+    (b"AACT", 6),
+    (b"ACHR", 62),
+    (b"ACTI", 24),
+    (b"ADDN", 94),
+    (b"ALCH", 46),
+    (b"AMMO", 42),
+    (b"ANIO", 83),
+    (b"APPA", 33),
+    (b"ARMA", 102),
+    (b"ARMO", 26),
+    (b"ASPC", 16),
+    (b"AVIF", 95),
+    (b"BOOK", 27),
+    (b"BPTD", 93),
+    (b"CELL", 60),
+    (b"CLAS", 10),
+    (b"CLMT", 55),
+    (b"COBJ", 49),
+    (b"CONT", 28),
+    (b"CREA", 43),
+    (b"CSTY", 80),
+    (b"DEBR", 88),
+    (b"DIAL", 75),
+    (b"DOOR", 29),
+    (b"ECZN", 103),
+    (b"EFSH", 85),
+    (b"ENCH", 21),
+    (b"EXPL", 87),
+    (b"EYES", 13),
+    (b"FACT", 11),
+    (b"FLOR", 39),
+    (b"FLST", 91),
+    (b"FSTP", 110),
+    (b"FSTS", 111),
+    (b"FURN", 40),
+    (b"GLOB", 9),
+    (b"GMST", 3),
+    (b"GRAS", 37),
+    (b"HAZD", 51),
+    (b"HDPT", 12),
+    (b"IDLE", 78),
+    (b"IDLM", 47),
+    (b"IMAD", 90),
+    (b"IMGS", 89),
+    (b"INFO", 76),
+    (b"INGR", 30),
+    (b"IPCT", 100),
+    (b"IPDS", 101),
+    (b"KEYM", 45),
+    (b"KYWD", 4),
+    (b"LAND", 72),
+    (b"LCRT", 5),
+    (b"LCTN", 104),
+    (b"LGTM", 108),
+    (b"LIGH", 31),
+    (b"LSCR", 81),
+    (b"LTEX", 20),
+    (b"LVLI", 53),
+    (b"LVLN", 44),
+    (b"LVSP", 82),
+    (b"MATT", 99),
+    (b"MESG", 105),
+    (b"MGEF", 18),
+    (b"MISC", 32),
+    (b"MSTT", 36),
+    (b"MUSC", 109),
+    (b"NAVI", 59),
+    (b"NAVM", 73),
+    (b"NOTE", 48),
+    (b"NPC_", 43),
+    (b"PACK", 79),
+    (b"PARW", 64),
+    (b"PBAR", 69),
+    (b"PBEA", 66),
+    (b"PCON", 68),
+    (b"PERK", 92),
+    (b"PFLA", 67),
+    (b"PGRE", 65),
+    (b"PHZD", 70),
+    (b"PMIS", 63),
+    (b"PROJ", 50),
+    (b"QUST", 77),
+    (b"RACE", 14),
+    (b"REFR", 61),
+    (b"REGN", 58),
+    (b"RFCT", 57),
+    (b"SCOL", 35),
+    (b"SCPT", 19),
+    (b"SCRL", 23),
+    (b"SKIL", 17),
+    (b"SLGM", 52),
+    (b"SOUN", 15),
+    (b"SPEL", 22),
+    (b"SPGD", 56),
+    (b"STAT", 34),
+    (b"TACT", 25),
+    (b"TES4", 1),
+    (b"TLOD", 74),
+    (b"TOFT", 86),
+    (b"TREE", 38),
+    (b"TXST", 7),
+    (b"VTYP", 98),
+    (b"WATR", 84),
+    (b"WEAP", 41),
+    (b"WRLD", 71),
+    (b"WTHR", 54),
+];
+
 /// Resolve the stable Creation Engine `FormType` value for one cataloged form.
 ///
 /// The catalog stores parser-independent record signatures, so this mapping
 /// is deliberately centralized at the SDK boundary. Unknown or game-specific
 /// signatures return `None` and are omitted from typed compatibility filters
 /// instead of being guessed from a transient ECS object.
+///
+/// #3859 — the mapping itself is [`FORM_TYPE_IDS`]; this is the lookup.
 pub fn storage_util_form_type_id(catalog: &ContentCatalog, form: FormRef) -> Option<i32> {
     let record_type = catalog.record(form)?.record_type();
-    Some(match &record_type {
-        b"TES4" => 1,
-        b"GMST" => 3,
-        b"KYWD" => 4,
-        b"LCRT" => 5,
-        b"AACT" => 6,
-        b"TXST" => 7,
-        b"GLOB" => 9,
-        b"CLAS" => 10,
-        b"FACT" => 11,
-        b"HDPT" => 12,
-        b"EYES" => 13,
-        b"RACE" => 14,
-        b"SOUN" => 15,
-        b"ASPC" => 16,
-        b"SKIL" => 17,
-        b"MGEF" => 18,
-        b"SCPT" => 19,
-        b"LTEX" => 20,
-        b"ENCH" => 21,
-        b"SPEL" => 22,
-        b"SCRL" => 23,
-        b"ACTI" => 24,
-        b"TACT" => 25,
-        b"ARMO" => 26,
-        b"BOOK" => 27,
-        b"CONT" => 28,
-        b"DOOR" => 29,
-        b"INGR" => 30,
-        b"LIGH" => 31,
-        b"MISC" => 32,
-        b"APPA" => 33,
-        b"STAT" => 34,
-        b"SCOL" => 35,
-        b"MSTT" => 36,
-        b"GRAS" => 37,
-        b"TREE" => 38,
-        b"FLOR" => 39,
-        b"FURN" => 40,
-        b"WEAP" => 41,
-        b"AMMO" => 42,
-        b"NPC_" | b"CREA" => 43,
-        b"LVLN" => 44,
-        b"KEYM" => 45,
-        b"ALCH" => 46,
-        b"IDLM" => 47,
-        b"NOTE" => 48,
-        b"COBJ" => 49,
-        b"PROJ" => 50,
-        b"HAZD" => 51,
-        b"SLGM" => 52,
-        b"LVLI" => 53,
-        b"WTHR" => 54,
-        b"CLMT" => 55,
-        b"SPGD" => 56,
-        b"RFCT" => 57,
-        b"REGN" => 58,
-        b"NAVI" => 59,
-        b"CELL" => 60,
-        b"REFR" => 61,
-        b"ACHR" => 62,
-        b"PMIS" => 63,
-        b"PARW" => 64,
-        b"PGRE" => 65,
-        b"PBEA" => 66,
-        b"PFLA" => 67,
-        b"PCON" => 68,
-        b"PBAR" => 69,
-        b"PHZD" => 70,
-        b"WRLD" => 71,
-        b"LAND" => 72,
-        b"NAVM" => 73,
-        b"TLOD" => 74,
-        b"DIAL" => 75,
-        b"INFO" => 76,
-        b"QUST" => 77,
-        b"IDLE" => 78,
-        b"PACK" => 79,
-        b"CSTY" => 80,
-        b"LSCR" => 81,
-        b"LVSP" => 82,
-        b"ANIO" => 83,
-        b"WATR" => 84,
-        b"EFSH" => 85,
-        b"TOFT" => 86,
-        b"EXPL" => 87,
-        b"DEBR" => 88,
-        b"IMGS" => 89,
-        b"IMAD" => 90,
-        b"FLST" => 91,
-        b"PERK" => 92,
-        b"BPTD" => 93,
-        b"ADDN" => 94,
-        b"AVIF" => 95,
-        b"VTYP" => 98,
-        b"MATT" => 99,
-        b"IPCT" => 100,
-        b"IPDS" => 101,
-        b"ARMA" => 102,
-        b"ECZN" => 103,
-        b"LCTN" => 104,
-        b"MESG" => 105,
-        b"LGTM" => 108,
-        b"MUSC" => 109,
-        b"FSTP" => 110,
-        b"FSTS" => 111,
-        _ => return None,
-    })
+    FORM_TYPE_IDS
+        .binary_search_by_key(&&record_type, |(sig, _)| sig)
+        .ok()
+        .map(|i| FORM_TYPE_IDS[i].1)
 }
 
 fn checked_int(
@@ -2123,5 +2147,72 @@ fn default_storage_util_list_value(kind: StorageUtilListKind) -> StorageUtilList
         StorageUtilListKind::Float => StorageUtilListValue::Float(0.0),
         StorageUtilListKind::String => StorageUtilListValue::String(String::new()),
         StorageUtilListKind::Form => StorageUtilListValue::Form(None),
+    }
+}
+
+/// #3859 — the two invariants [`storage_util_form_type_id`]'s lookup depends
+/// on, plus a behavioural anchor.
+///
+/// As 106 match arms none of these were checkable: a match cannot be asked
+/// whether it is sorted, whether it repeats a signature, or how many entries
+/// it has. That is the whole reason the table is worth more than the arms —
+/// the runtime cost was always identical (the compiler builds a jump table
+/// either way).
+#[cfg(test)]
+mod form_type_table_tests {
+    use super::FORM_TYPE_IDS;
+
+    /// `binary_search_by_key` returns garbage — silently, and only for some
+    /// inputs — on an unsorted slice, and a duplicate signature means one row
+    /// is unreachable. Both are invisible at the call site.
+    #[test]
+    fn form_type_table_is_sorted_and_unique() {
+        for pair in FORM_TYPE_IDS.windows(2) {
+            let (a, b) = (pair[0].0, pair[1].0);
+            assert!(
+                a < b,
+                "FORM_TYPE_IDS must be sorted by signature and contain no duplicates — \
+                 `{}` is not strictly before `{}`. `storage_util_form_type_id` \
+                 binary-searches this table, so an out-of-order row makes some lookups \
+                 miss a signature that is present, with no error anywhere.",
+                String::from_utf8_lossy(a),
+                String::from_utf8_lossy(b),
+            );
+        }
+    }
+
+    /// Anti-vacuity plus the one many-to-one relation, spelled out so a future
+    /// edit that collapses it (or drops half of it) is loud.
+    #[test]
+    fn the_table_keeps_its_size_and_its_one_alias() {
+        assert_eq!(
+            FORM_TYPE_IDS.len(),
+            106,
+            "the signature set changed size — update this count deliberately, so a \
+             row silently lost in a merge cannot pass as an intentional edit"
+        );
+        let id = |sig: &[u8; 4]| {
+            FORM_TYPE_IDS
+                .iter()
+                .find(|(s, _)| *s == sig)
+                .map(|(_, id)| *id)
+        };
+        assert_eq!(id(b"NPC_"), Some(43));
+        assert_eq!(
+            id(b"CREA"),
+            Some(43),
+            "NPC_ and CREA share FormType 43 — the set's only many-to-one relation, \
+             carried as two rows rather than an alias arm"
+        );
+        // Endpoints, so a truncated table cannot pass the sortedness check alone.
+        assert_eq!(id(b"TES4"), Some(1));
+        assert_eq!(id(b"FSTS"), Some(111));
+        // The four ids the engine skips must stay skipped.
+        for skipped in [96, 97, 106, 107] {
+            assert!(
+                !FORM_TYPE_IDS.iter().any(|(_, id)| *id == skipped),
+                "FormType {skipped} is deliberately unassigned in the engine's numbering"
+            );
+        }
     }
 }
