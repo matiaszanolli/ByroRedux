@@ -154,12 +154,19 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 ///   exact skill roster, and its sourced Health curve. See
 ///   [`derive_autocalc_actor_values`].
 ///
-/// `TPLT`/`Use Stats` template inheritance is resolved first for **every**
-/// stat model (#2956, #3381, #3382, [`crate::equip::resolve_inherited_stats`])
-/// — a templated shell's own `class_form_id`/level/`PRPS`/`DNAM`/race offsets
-/// are frequently not what the engine actually uses, and
-/// `stamp_character_components` resolves the same chain for the
+/// `TPLT` template inheritance is resolved first for **every** stat model
+/// (#2956, #3381, #3382, [`crate::equip::resolve_inherited_stats`]) — a
+/// templated shell's own `class_form_id`/level/`PRPS`/`DNAM`/race offsets are
+/// frequently not what the engine actually uses, and
+/// `stamp_character_components` resolves the same chains for the
 /// `CharacterLevel`/`Background` it writes on the same entity.
+///
+/// **Two** chains, not one (#3480): `Use Stats` (`0x0002`) for the stat
+/// fields and `Use Traits` (`0x0001`) for race, gated by independently-set
+/// bits and walked by [`crate::equip::resolve_inherited_traits`]. Each arm is
+/// handed the record whose fields it reads. An *absent* field on the resolved
+/// record falls back to the shell rather than erasing the shell's own value
+/// (#3481) — see [`baked_or_shell`].
 ///
 /// Empty for every other game (Oblivion), a Skyrim NPC whose race has no
 /// usable pool values, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
@@ -184,22 +191,35 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
     // components sitting beside them. Resolving once here also keeps the arms
     // from drifting apart again — the gap arose because only one of three
     // resolved.
-    let npc = crate::equip::resolve_inherited_stats(npc, effective_actor_level(npc), index);
+    let level = effective_actor_level(npc);
+    let stats = crate::equip::resolve_inherited_stats(npc, level, index);
+    // #3480 — race is NOT a stat. It rides the independently-set "Use
+    // Traits" bit (`TEMPLATE_FLAG_USE_TRAITS`), which the same codebase
+    // resolves with `resolve_inherited_traits` and which
+    // `stamp_character_components` already uses for the `Background` it
+    // writes on this same entity. Reading `race_form_id` off the *stats*
+    // record made 1,180 vanilla Skyrim NPCs contradict their own
+    // `Background`, 118 of them landing on a different `RACE.DATA` triple
+    // (and `00109C7C`, one of the wrong races, authors no starting Magicka
+    // at all — those actors lost the pool outright). The two chains are
+    // resolved separately here and each arm is handed the record whose
+    // fields it actually reads.
+    let traits = crate::equip::resolve_inherited_traits(npc, level, index);
     // #3390 — creatures and NPCs are different stat models *within* one
     // game, so the model is chosen by record kind and the profile still
     // owns which model that is. Consumers never branch on game identity.
-    let model = if npc.is_creature {
+    let model = if stats.is_creature {
         index.character_rules.creature_stat_model()
     } else {
         index.character_rules.npc_stat_model()
     };
     match model {
-        NpcStatModel::Stored => derive_stored_actor_values(npc, index),
-        NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(npc, index),
+        NpcStatModel::Stored => derive_stored_actor_values(npc, stats, index),
+        NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(stats, traits, index),
         NpcStatModel::ClassAutoCalc { health } => {
-            derive_autocalc_actor_values(npc, index, index.character_rules, health)
+            derive_autocalc_actor_values(stats, index, index.character_rules, health)
         }
-        NpcStatModel::CreatureData => derive_creature_actor_values(npc, index),
+        NpcStatModel::CreatureData => derive_creature_actor_values(stats, index),
         NpcStatModel::None => Vec::new(),
     }
 }
@@ -240,15 +260,28 @@ fn derive_creature_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, 
 
 /// TES5 NPC resource pools are authored as race starting values plus signed
 /// actor offsets. Each resolves independently through its authored AVIF.
-fn derive_skyrim_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
-    let Some(race) = index.races.get(&npc.race_form_id) else {
+///
+/// #3480 — the two inputs come off **different** `TPLT` chains and the
+/// caller resolves both: `stats` (the "Use Stats" record) carries the signed
+/// `ACBS` offsets, which really are stats, while `traits` (the "Use Traits"
+/// record) carries `race_form_id`. The bits are independently set, so a shell
+/// routinely has one without the other — reading race off the stats record
+/// put 1,180 vanilla Skyrim actors' pools on a race their own `Background`
+/// disagreed with. `Background.race_form_id` is stamped from
+/// `resolve_inherited_traits` too, so the two now agree by construction.
+fn derive_skyrim_actor_values(
+    stats: &NpcRecord,
+    traits: &NpcRecord,
+    index: &EsmIndex,
+) -> Vec<(u32, f32)> {
+    let Some(race) = index.races.get(&traits.race_form_id) else {
         return Vec::new();
     };
     let mut out = Vec::with_capacity(3);
     for (name, starting, offset) in [
-        ("Health", race.starting_health, npc.health_offset),
-        ("Magicka", race.starting_magicka, npc.magicka_offset),
-        ("Stamina", race.starting_stamina, npc.stamina_offset),
+        ("Health", race.starting_health, stats.health_offset),
+        ("Magicka", race.starting_magicka, stats.magicka_offset),
+        ("Stamina", race.starting_stamina, stats.stamina_offset),
     ] {
         let Some((key, starting)) = index.actor_value_form_id(name).zip(starting) else {
             continue;
@@ -267,12 +300,39 @@ fn derive_skyrim_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f3
 /// Health / Action Points lookups resolve-or-skip, matching the auto-calc
 /// path's contract for an index missing an `AVIF`. One allocation; the
 /// `PRPS` slice is `memcpy`'d, the ≤2 baked stats pushed.
-fn derive_stored_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
-    let mut out = Vec::with_capacity(npc.actor_value_props.len() + 2);
-    out.extend_from_slice(&npc.actor_value_props);
+fn derive_stored_actor_values(
+    shell: &NpcRecord,
+    stats: &NpcRecord,
+    index: &EsmIndex,
+) -> Vec<(u32, f32)> {
+    // #3481 — template precedence is only correct for a field the template
+    // actually carries. `0` is the documented "absent" sentinel on both baked
+    // `DNAM` values (`NpcRecord::calculated_health`), and an empty `PRPS` is
+    // the same statement for the property array, so an absent value must fall
+    // back down the chain exactly the way `resolve_inherited_record` falls
+    // back to the shell when the flag or the template is missing. Taking the
+    // resolved record unconditionally cost 54 vanilla FO4 actors their own
+    // authored Health — and `stamp_actor_values` only inserts `ActorVitals`
+    // when the Health key is present, so those actors spawned undamageable.
+    let props = if stats.actor_value_props.is_empty() {
+        &shell.actor_value_props
+    } else {
+        &stats.actor_value_props
+    };
+    let mut out = Vec::with_capacity(props.len() + 2);
+    out.extend_from_slice(props);
     for (avif_editor_id, baked) in [
-        ("Health", npc.calculated_health),
-        ("ActionPoints", npc.calculated_action_points),
+        (
+            "Health",
+            baked_or_shell(stats.calculated_health, shell.calculated_health),
+        ),
+        (
+            "ActionPoints",
+            baked_or_shell(
+                stats.calculated_action_points,
+                shell.calculated_action_points,
+            ),
+        ),
     ] {
         if baked > 0 {
             if let Some(fid) = index.actor_value_form_id(avif_editor_id) {
@@ -281,6 +341,22 @@ fn derive_stored_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f3
         }
     }
     out
+}
+
+/// Resolve one baked `DNAM` stat across `TPLT` inheritance (#3481).
+///
+/// `0` means *absent*, not zero — no live FO4 actor has 0 base Health or 0
+/// base Action Points, which is what makes the sentinel unambiguous and lets
+/// `NpcRecord` skip an `Option` discriminant. So the "Use Stats" record wins
+/// when it authors the field, and an unauthored one defers to the shell
+/// rather than erasing it.
+#[inline]
+fn baked_or_shell(resolved: u16, shell: u16) -> u16 {
+    if resolved > 0 {
+        resolved
+    } else {
+        shell
+    }
 }
 
 /// FNV / FO3 auto-calc: SPECIAL = the NPC's class base attributes, skills
@@ -566,6 +642,11 @@ mod tests {
     /// shell `NPC_`'s own race and offsets, contradicting the
     /// `CharacterLevel`/`Background` that `stamp_character_components`
     /// resolves through the same chain onto the same entity.
+    ///
+    /// #3480 — the shell now sets **both** template bits. Race rides "Use
+    /// Traits", so with only "Use Stats" set the template's race is no longer
+    /// the right answer; the divergent case is pinned separately by
+    /// [`skyrim_race_follows_use_traits_while_offsets_follow_use_stats`].
     #[test]
     fn skyrim_pools_follow_use_stats_template() {
         let mut index = EsmIndex::default();
@@ -613,7 +694,8 @@ mod tests {
             magicka_offset: -1,
             stamina_offset: -1,
             template_form_id: 0x0010_0001,
-            template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS,
+            template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS
+                | crate::equip::TEMPLATE_FLAG_USE_TRAITS,
             ..Default::default()
         };
 
@@ -633,6 +715,239 @@ mod tests {
             val(0x3EA),
             Some(105.0),
             "Stamina must come from the template"
+        );
+    }
+
+    /// #3480 — the two `TPLT` chains are independent, and each arm must read
+    /// the record its fields actually live on. A shell with `Use Stats` set
+    /// and `Use Traits` clear keeps its **own** `RNAM` race while still taking
+    /// the template's signed `ACBS` offsets.
+    ///
+    /// Measured on vanilla `Skyrim.esm`: 1,180 of 5,118 `NPC_` resolve a
+    /// different race through the two chains, 118 of them onto a different
+    /// `RACE.DATA` (H, M, S) triple. `MS07LvlBlackbloodMissileNordM`
+    /// (`000DC8DC`) is the shape below — stats-race `00109C7C` authors no
+    /// starting Magicka at all, so before this fix the actor lost the pool
+    /// outright rather than merely getting a wrong number.
+    #[test]
+    fn skyrim_race_follows_use_traits_while_offsets_follow_use_stats() {
+        let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::SKYRIM;
+        index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
+        index.actor_values.insert(0x3E9, avif(0x3E9, "AVMagicka"));
+        index.actor_values.insert(0x3EA, avif(0x3EA, "AVStamina"));
+        // The shell's own race — a NordRace stand-in, the one `Background`
+        // will carry because `Use Traits` is clear.
+        index.races.insert(
+            0x13746,
+            RaceRecord {
+                form_id: 0x13746,
+                starting_health: Some(50.0),
+                starting_magicka: Some(50.0),
+                starting_stamina: Some(50.0),
+                ..Default::default()
+            },
+        );
+        // The stats template's race — `00109C7C`'s shape, Magicka unauthored.
+        index.races.insert(
+            0x109C7C,
+            RaceRecord {
+                form_id: 0x109C7C,
+                starting_health: Some(12.0),
+                starting_magicka: None,
+                starting_stamina: Some(200.0),
+                ..Default::default()
+            },
+        );
+
+        let template = NpcRecord {
+            form_id: 0x0010_0001,
+            race_form_id: 0x109C7C,
+            health_offset: 20,
+            magicka_offset: 10,
+            stamina_offset: 5,
+            ..Default::default()
+        };
+        index.npcs.insert(template.form_id, template);
+
+        let shell = NpcRecord {
+            form_id: 0x0010_0000,
+            race_form_id: 0x13746,
+            health_offset: -1,
+            magicka_offset: -1,
+            stamina_offset: -1,
+            template_form_id: 0x0010_0001,
+            // Use Stats WITHOUT Use Traits — 23.1 % of vanilla Skyrim's
+            // templated actors are in exactly this state.
+            template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS,
+            ..Default::default()
+        };
+
+        let pairs = derive_npc_actor_values(&shell, &index);
+        let val = |fid: u32| pairs.iter().find(|(f, _)| *f == fid).map(|(_, v)| *v);
+        assert_eq!(
+            val(0x3E8),
+            Some(70.0),
+            "race start from the shell's own RNAM (50) + the template's \
+             Use Stats offset (+20)"
+        );
+        assert_eq!(
+            val(0x3E9),
+            Some(60.0),
+            "Magicka must survive: the stats-chain race authors none, but race \
+             is not a stat and the traits chain resolves to the shell's own"
+        );
+        assert_eq!(val(0x3EA), Some(55.0), "same split for Stamina");
+
+        // The same-entity contract the whole finding is about: the race behind
+        // the pools is the race `stamp_character_components` stamps onto
+        // `Background`, which resolves the traits chain.
+        assert_eq!(
+            crate::equip::resolve_inherited_traits(&shell, effective_actor_level(&shell), &index)
+                .race_form_id,
+            0x13746,
+            "Background's race and the pools' race must be the same FormID"
+        );
+    }
+
+    /// #3480, the other half: when the shell *does* set `Use Traits`, race
+    /// follows the chain — the fix must not simply pin race to the shell.
+    #[test]
+    fn skyrim_race_follows_the_template_when_use_traits_is_set() {
+        let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::SKYRIM;
+        index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
+        index.races.insert(
+            0x1000,
+            RaceRecord {
+                form_id: 0x1000,
+                starting_health: Some(100.0),
+                ..Default::default()
+            },
+        );
+        index.races.insert(
+            0x2000,
+            RaceRecord {
+                form_id: 0x2000,
+                starting_health: Some(5.0),
+                ..Default::default()
+            },
+        );
+        let template = NpcRecord {
+            form_id: 0x0010_0001,
+            race_form_id: 0x1000,
+            ..Default::default()
+        };
+        index.npcs.insert(template.form_id, template);
+        let shell = NpcRecord {
+            form_id: 0x0010_0000,
+            race_form_id: 0x2000,
+            health_offset: 7,
+            template_form_id: 0x0010_0001,
+            // Traits only: the offsets stay the shell's own.
+            template_flags: crate::equip::TEMPLATE_FLAG_USE_TRAITS,
+            ..Default::default()
+        };
+
+        let pairs = derive_npc_actor_values(&shell, &index);
+        assert_eq!(
+            pairs.iter().find(|(f, _)| *f == 0x3E8).map(|(_, v)| *v),
+            Some(107.0),
+            "template race start (100) + the shell's own offset (+7)"
+        );
+    }
+
+    /// #3481 — `0` is the "absent" sentinel on the baked `DNAM` pair, so a
+    /// template that authors neither must not erase the shell's own values.
+    ///
+    /// Measured on vanilla `Fallout4.esm`: 54 of 3,015 actors author a
+    /// `DNAM` Health their `Use Stats` template does not, and lost it. That
+    /// matters beyond the number — `stamp_actor_values` only inserts
+    /// `ActorVitals` when the Health key is present, so those actors spawned
+    /// with no vitals and could not be damaged or killed at all.
+    #[test]
+    fn fo4_absent_baked_stats_fall_back_to_the_shell() {
+        let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        index.actor_values.insert(0x3E8, avif(0x3E8, "Health"));
+        index
+            .actor_values
+            .insert(0x3E9, avif(0x3E9, "ActionPoints"));
+        index.actor_values.insert(0x3EA, avif(0x3EA, "Strength"));
+
+        // A template that authors no DNAM pair and no PRPS at all.
+        let template = NpcRecord {
+            form_id: 0x0010_0001,
+            ..Default::default()
+        };
+        index.npcs.insert(template.form_id, template);
+
+        let shell = NpcRecord {
+            form_id: 0x0010_0000,
+            actor_value_props: vec![(0x3EA, 4.0)],
+            calculated_health: 130,
+            calculated_action_points: 70,
+            template_form_id: 0x0010_0001,
+            template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS,
+            ..Default::default()
+        };
+
+        let pairs = derive_npc_actor_values(&shell, &index);
+        let val = |fid: u32| pairs.iter().find(|(f, _)| *f == fid).map(|(_, v)| *v);
+        assert_eq!(
+            val(0x3E8),
+            Some(130.0),
+            "an absent template DNAM Health must not erase the shell's own — \
+             without Health there is no ActorVitals and the actor is unkillable"
+        );
+        assert_eq!(
+            val(0x3E9),
+            Some(70.0),
+            "the identical sentinel governs ActionPoints"
+        );
+        assert_eq!(
+            val(0x3EA),
+            Some(4.0),
+            "an empty template PRPS is the same 'absent' statement"
+        );
+    }
+
+    /// #3481, the precedence half: a template that *does* author the field
+    /// still wins. `1` is a live authored value, not the sentinel.
+    #[test]
+    fn fo4_authored_template_baked_stats_still_win_over_the_shell() {
+        let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        index.actor_values.insert(0x3E8, avif(0x3E8, "Health"));
+        index
+            .actor_values
+            .insert(0x3E9, avif(0x3E9, "ActionPoints"));
+
+        let template = NpcRecord {
+            form_id: 0x0010_0001,
+            calculated_health: 1,
+            // AP absent on the template — mixed, so one field falling back
+            // cannot drag the other with it.
+            ..Default::default()
+        };
+        index.npcs.insert(template.form_id, template);
+
+        let shell = NpcRecord {
+            form_id: 0x0010_0000,
+            calculated_health: 999,
+            calculated_action_points: 42,
+            template_form_id: 0x0010_0001,
+            template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS,
+            ..Default::default()
+        };
+
+        let pairs = derive_npc_actor_values(&shell, &index);
+        let val = |fid: u32| pairs.iter().find(|(f, _)| *f == fid).map(|(_, v)| *v);
+        assert_eq!(val(0x3E8), Some(1.0), "authored template Health wins");
+        assert_eq!(
+            val(0x3E9),
+            Some(42.0),
+            "and the absent AP independently falls back"
         );
     }
 
