@@ -164,7 +164,7 @@ impl SwfPlayer {
         movie_path: &str,
         width: u32,
         height: u32,
-        profile: ScaleformProfile,
+        profile: Option<ScaleformProfile>,   // None = let prepare_movie detect (#3771)
     ) -> anyhow::Result<Self>;
     pub fn tick(&mut self, dt: f64);          // seconds; wrapped in FloatDuration internally
     pub fn render(&mut self) -> Option<&[u8]>; // borrows pixel_buffer; None if the pixels are unchanged
@@ -192,7 +192,17 @@ bootstrap immediately after it initializes `BGSCodeObj`; the source asset on
 disk is never modified.
 
 `from_resource_provider()` loads the root and relative dependencies through
-the same source. `Ba2Archive` and `BsaArchive` implement
+the same source. Its `profile` is `Option<ScaleformProfile>`, and **`None` is
+the normal production value** (#3771): `prepare_movie` detects the profile from
+the header of the decode it already performed, so passing `Some(..)` only makes
+sense for a caller holding an *independent* profile source — it re-arms the
+mismatch guard, which is a real check, but a caller that obtains the value by
+extracting the archive entry and running `ScaleformProfile::detect` itself is
+spending a second archive extraction and a second whole-stream inflate to
+answer this module's own detection with itself. `--menu` did exactly that until
+#3771 and now passes `None`, reading `UiManager::menu_profile()` afterward.
+`load_swf_with_profile()` is the separate explicit-profile entry and keeps a
+plain `ScaleformProfile`. `Ba2Archive` and `BsaArchive` implement
 `ScaleformResourceProvider`; other overlay/mod stacks can implement the
 one-method trait without coupling Ruffle to a particular archive format.
 The virtual root URL preserves the menu's archive directory, so Fallout 4's
@@ -256,7 +266,7 @@ impl UiManager {
         provider: Arc<dyn ScaleformResourceProvider>,
         movie_path: &str,
         name: &str,
-        profile: ScaleformProfile,
+        profile: Option<ScaleformProfile>,   // None = let prepare_movie detect (#3771)
     ) -> anyhow::Result<()>;
     pub fn tick(&mut self, dt: f64);             // forwards to the active player when visible
     pub fn render(&mut self) -> UiFrame<'_>;     // Fresh / Unchanged / Hidden (#2972)

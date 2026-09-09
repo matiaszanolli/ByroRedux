@@ -402,3 +402,66 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod ui_doc_signature_pin {
+    //! #UI-D1-2026-09-09-02 — pin `docs/engine/ui.md`'s documented `profile`
+    //! parameters against the real ones.
+    //!
+    //! The doc carried `profile: ScaleformProfile` on both resource-provider
+    //! constructors for the whole window after #3771 changed them to
+    //! `Option<ScaleformProfile>`. That is not a cosmetic type slip: the
+    //! `Option` *is* #3771's contract, and a caller written against the
+    //! documented non-`Option` form has to source a profile from somewhere.
+    //! The only source available is a pre-extract of the archive entry plus an
+    //! independent `ScaleformProfile::detect` — precisely the second archive
+    //! extraction and third whole-stream inflate #3771 deleted. The stale doc
+    //! did not merely describe the old shape, it instructed the regression.
+    //!
+    //! Pinned per-parameter rather than by whole-signature diff: the doc
+    //! blocks are hand-maintained prose approximations (elided lifetimes,
+    //! trailing comments), so a strict diff would fail on formatting and get
+    //! deleted. The `profile` type is the part that carries meaning.
+    //!
+    //! `load_swf_with_profile` is included deliberately as the negative
+    //! control: it legitimately takes a plain `ScaleformProfile`, so a
+    //! well-meaning sweep that "fixes" every occurrence to `Option` fails here.
+
+    const DOC: &str = include_str!("../../../docs/engine/ui.md");
+    const LIB_RS: &str = include_str!("lib.rs");
+    const PLAYER_RS: &str = include_str!("player.rs");
+
+    /// The `profile:` parameter line from the first `pub fn <name>(` in `src`,
+    /// whitespace-normalized and stripped of any trailing `//` comment.
+    fn profile_param(src: &str, name: &str) -> Option<String> {
+        let after = src.split_once(&format!("pub fn {name}("))?.1;
+        let body = after.split_once(')')?.0;
+        let line = body
+            .lines()
+            .find(|line| line.trim_start().starts_with("profile:"))?;
+        let line = line.split("//").next().unwrap_or(line);
+        Some(line.split_whitespace().collect::<Vec<_>>().join(" "))
+    }
+
+    #[test]
+    fn documented_profile_parameters_match_the_real_signatures() {
+        for (name, code) in [
+            ("from_resource_provider", PLAYER_RS),
+            ("load_swf_from_resource_provider", LIB_RS),
+            // Negative control — must stay non-Option on both sides.
+            ("load_swf_with_profile", LIB_RS),
+        ] {
+            let documented = profile_param(DOC, name)
+                .unwrap_or_else(|| panic!("docs/engine/ui.md no longer documents `{name}`"));
+            let actual = profile_param(code, name)
+                .unwrap_or_else(|| panic!("`{name}` no longer takes a `profile` parameter"));
+            assert_eq!(
+                documented, actual,
+                "docs/engine/ui.md documents `{name}` as taking `{documented}` but it \
+                 takes `{actual}`. If this is the Option/non-Option distinction, note \
+                 that `None` means \"let prepare_movie detect\" — a caller following \
+                 the wrong form re-adds the pre-extract-and-detect step #3771 removed."
+            );
+        }
+    }
+}

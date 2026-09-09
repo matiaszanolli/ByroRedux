@@ -720,3 +720,86 @@ fn installed_fallout4_representative_menus_obey_host_object_lifecycle() {
         );
     }
 }
+
+/// #UI-D2-2026-09-09-01 — a response handler may re-enter its own bridge.
+///
+/// `record_call` clones the handler out of `response_handlers` and lets the
+/// immutable borrow expire *before* invoking it:
+///
+/// ```ignore
+/// let response_handler = self.state.borrow()
+///     .response_handlers.get(&normalized.method).cloned();   // borrow ends
+/// let dynamic_response = response_handler.map(|h| h(&normalized.arguments));
+/// let mut state = self.state.borrow_mut();                   // re-borrow
+/// ```
+///
+/// That ordering is the only thing making this safe, and nothing else records
+/// it. The obvious tidier refactor — hold one borrow and call through the map
+/// to skip the clone — compiles and passes every other test in this file,
+/// then panics the moment a handler touches the bridge.
+///
+/// Handlers run on Ruffle's owning thread inside `ExternalInterface.call`, so
+/// a real engine handler answering `RequestPlayerInfo` by consulting live
+/// state and registering a follow-up method is the expected shape, not an
+/// exotic one. There are no production handlers yet (they are the Pending
+/// row), which is exactly why the invariant needs pinning now rather than
+/// after the first one lands and the panic gets attributed to it.
+///
+/// Both borrow kinds are exercised deliberately: `queued_call_count` takes a
+/// shared borrow (fails if the caller held `borrow_mut`), `register_method`
+/// takes a mutable one (fails if the caller held *any* borrow). One test
+/// therefore catches both shapes of the refactor.
+#[test]
+fn a_response_handler_may_re_enter_its_own_bridge() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::SkyrimAvm1);
+
+    // `set_response_handler` takes `&self`, so the closure can capture a
+    // clone of the very bridge it is being installed on — the handle is
+    // `Rc`-based and shares one `RefCell` with the original.
+    let reentrant = bridge.clone();
+    bridge.set_response_handler("RequestPlayerInfo", move |arguments| {
+        // Shared borrow, then mutable borrow, both while the outer
+        // `record_call` is mid-flight.
+        let queued = reentrant.queued_call_count();
+        reentrant.register_method("ReentrantlyRegisteredMethod");
+        vec![
+            ScaleformValue::Bool(arguments == [ScaleformValue::from("inventory")]),
+            ScaleformValue::from(queued as f64),
+        ]
+    });
+
+    let outcome = bridge.record_call(
+        "RequestPlayerInfo",
+        &[ExternalValue::from(7_i32), ExternalValue::from("inventory")],
+    );
+
+    // The handler ran and its return values reached the transport.
+    assert_eq!(
+        outcome.callback_response,
+        Some(vec![
+            ExternalValue::from(7_i32),
+            ExternalValue::Bool(true),
+            ExternalValue::from(0_f64),
+        ]),
+        "the re-entrant handler's values must still become the GameDelegate \
+         respond arguments"
+    );
+
+    // And its *mutation* landed on the shared state — proving the re-entry
+    // actually took effect rather than merely not panicking. A method the
+    // catalog does not know dispatches as `Unknown` unless something
+    // registered it; the handler registered it from inside the call.
+    let follow_up = bridge.record_call("ReentrantlyRegisteredMethod", &[]);
+    assert_eq!(follow_up.return_value, ExternalValue::Null);
+    let calls = bridge.drain_calls();
+    let registered = calls
+        .iter()
+        .find(|call| call.method == "ReentrantlyRegisteredMethod")
+        .expect("the re-entrantly registered method must have been recorded");
+    assert_eq!(
+        registered.dispatch,
+        ScaleformHostDispatch::Queued,
+        "the handler's `register_method` must have taken effect — `Unknown` \
+         here means the re-entrant borrow silently did nothing"
+    );
+}
