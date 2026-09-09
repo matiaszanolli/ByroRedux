@@ -382,9 +382,36 @@ fn normalize_noise_uv_scale(value: f32) -> f32 {
     }
 }
 
-/// Parse the short Oblivion/synthetic WATR.DATA shape. Full FO3/FNV records
-/// are dispatched to [`decode_data_fo3nv`] because their visual fields use a
-/// different offset map after the shared 0..28 prefix:
+/// Dispatch a non-Oblivion `WATR.DATA` payload to the decoder for its shape.
+///
+/// A length census over the installed masters (#3146) found exactly two
+/// reachable shapes on every supported game:
+///
+/// ```text
+/// Fallout3.esm    DATA  2×42  186×11
+/// FalloutNV.esm   DATA  2×70  186×8
+/// Skyrim.esm      DATA  2×34
+/// Fallout4.esm    DATA  0×42
+/// SeventySix.esm  DATA  0×47
+/// Starfield.esm   DATA  0×15
+/// ```
+///
+/// — a 2-byte damage-only stub, or the 186-byte FO3/FNV visual record.
+/// Nothing in between ships, which is why [`decode_data_short`] decodes only
+/// the shared prefix and stops: a tail that no reachable length can reach is
+/// not a fallback, it is a second offset map for fields the long decoder
+/// already owns.
+fn decode_data(data: &[u8]) -> WaterParams {
+    if data.len() >= 186 {
+        return decode_data_fo3nv(data);
+    }
+    decode_data_short(data)
+}
+
+/// Parse the short WATR.DATA compatibility shape — damage-only stubs and
+/// synthetic fixtures. Full FO3/FNV records go to [`decode_data_fo3nv`],
+/// whose visual fields use a different offset map after the shared 0..28
+/// prefix:
 ///
 /// ```text
 /// offset  size  field
@@ -401,12 +428,17 @@ fn normalize_noise_uv_scale(value: f32) -> f32 {
 /// 36      …     colour block — offset is game-dependent (see below)
 /// ```
 ///
-/// The compatibility path remains bounds-checked, so damage-only stubs and
-/// short records retain canonical defaults.
-fn decode_data(data: &[u8]) -> WaterParams {
-    if data.len() >= 186 {
-        return decode_data_fo3nv(data);
-    }
+/// Every read is bounds-checked, so damage-only stubs and short records
+/// retain canonical defaults.
+///
+/// Reads stop after the colour block at 36..48. Everything past it —
+/// underwater fog at 144/148, noise UV scales at 172/176/180, amplitude
+/// scales, depth weights and effect controls — belongs to the 186-byte
+/// layout and is decoded by [`decode_data_fo3nv`]; those reads used to sit
+/// here too, structurally unreachable behind the `len >= 186` delegation
+/// above and assigning offsets that contradicted the long decoder for the
+/// same fields (#3146).
+fn decode_data_short(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
     let mut r = SubReader::new(data);
     if let Ok(v) = r.f32_finite() {
@@ -437,64 +469,30 @@ fn decode_data(data: &[u8]) -> WaterParams {
     if let Ok(v) = r.f32_finite() {
         p.fog_far = v.max(p.fog_near + 1.0);
     }
-    // FO3/FNV DNAM/DATA tail: Under Water fog near/far at 144/148.
-    // Short Oblivion-style records do not carry this tail and retain the
-    // zero sentinel, which makes the renderer reuse the above-water ramp.
-    if let Some(v) = read_f32_at(data, 144) {
-        p.underwater_fog_near = v.max(0.0);
-    }
-    if let Some(v) = read_f32_at(data, 148) {
-        p.underwater_fog_far = v.max(p.underwater_fog_near + 1.0);
-    }
-    // FO3/FNV long DATA tail: Noise Layer 1/2 UV scales. These are
-    // independent authored tiling controls, not the wind/wave prefix.
-    if let Some(v) = read_f32_at(data, 172) {
-        p.noise_uv_scale_a = normalize_noise_uv_scale(v);
-    }
-    if let Some(v) = read_f32_at(data, 176) {
-        p.noise_uv_scale_b = normalize_noise_uv_scale(v);
-    }
-    if let Some(v) = read_f32_at(data, 180) {
-        p.noise_uv_scale_c = normalize_noise_uv_scale(v);
-    }
-    for (slot, offset) in p.noise_amplitude_scales.iter_mut().zip([184, 188, 192]) {
-        if let Some(v) = read_f32_at(data, offset) {
-            *slot = v.max(0.0);
-        }
-    }
-    for (slot, offset) in p.depth_weights.iter_mut().zip([208, 212, 216, 220]) {
-        if let Some(v) = read_f32_at(data, offset) {
-            *slot = v.max(0.0);
-        }
-    }
-    for (slot, offset) in p.effect_controls.iter_mut().zip([152, 156, 196, 204]) {
-        if let Some(v) = read_f32_at(data, offset) {
-            *slot = v.max(0.0);
-        }
-    }
-    // The 186-byte FO3/FNV record has an extra fog-distance f32 at
-    // offset 36 that shifts the colour block 4 bytes forward (#1778);
-    // shorter records (Oblivion, the 2-byte stub) keep the legacy base.
-    let color_base = if data.len() >= 186 { 40 } else { 36 };
-    if data.len() >= color_base + 4 {
+    // The colour block starts at 36 here. The 186-byte FO3/FNV record has an
+    // extra fog-distance f32 at offset 36 that shifts it to 40 (#1778), but
+    // that record never reaches this function — `decode_data` delegates it —
+    // so the base is a constant, not a per-game branch (#3146).
+    const COLOR_BASE: usize = 36;
+    if data.len() >= COLOR_BASE + 4 {
         p.shallow_color = [
-            u8_to_linear(data[color_base]),
-            u8_to_linear(data[color_base + 1]),
-            u8_to_linear(data[color_base + 2]),
+            u8_to_linear(data[COLOR_BASE]),
+            u8_to_linear(data[COLOR_BASE + 1]),
+            u8_to_linear(data[COLOR_BASE + 2]),
         ];
     }
-    if data.len() >= color_base + 8 {
+    if data.len() >= COLOR_BASE + 8 {
         p.deep_color = [
-            u8_to_linear(data[color_base + 4]),
-            u8_to_linear(data[color_base + 5]),
-            u8_to_linear(data[color_base + 6]),
+            u8_to_linear(data[COLOR_BASE + 4]),
+            u8_to_linear(data[COLOR_BASE + 5]),
+            u8_to_linear(data[COLOR_BASE + 6]),
         ];
     }
-    if data.len() >= color_base + 12 {
+    if data.len() >= COLOR_BASE + 12 {
         p.reflection_color = [
-            u8_to_linear(data[color_base + 8]),
-            u8_to_linear(data[color_base + 9]),
-            u8_to_linear(data[color_base + 10]),
+            u8_to_linear(data[COLOR_BASE + 8]),
+            u8_to_linear(data[COLOR_BASE + 9]),
+            u8_to_linear(data[COLOR_BASE + 10]),
         ];
     }
     p
@@ -1830,6 +1828,125 @@ mod tests {
         assert!(
             (w.params.shallow_color[2] - 218.0 / 255.0).abs() > 1e-3,
             "shallow colour read from the fog f32 at offset 36 (off-by-4 regression)"
+        );
+    }
+
+    /// #3146 — the short `DATA` arm reads nothing past the colour block.
+    ///
+    /// It used to carry ~40 lines of tail reads (underwater fog at 144/148,
+    /// noise UV scales at 172/176/180, amplitude scales, depth weights,
+    /// effect controls) that were structurally unreachable behind
+    /// `decode_data`'s `len >= 186` delegation, and that mapped those
+    /// offsets to *different* fields than `decode_data_fo3nv` does for the
+    /// same bytes. A length census over every installed master found no
+    /// `DATA` payload in `[148, 185]`, so nothing could ever take them.
+    ///
+    /// Filling the whole dead window with a recognisable pattern and
+    /// requiring the result to equal the 48-byte decode is what makes the
+    /// deletion a proof rather than an assertion: if any read past the
+    /// colour block came back, one of those fields would move off its
+    /// default.
+    #[test]
+    fn the_short_data_arm_ignores_every_byte_past_the_colour_block() {
+        let mut short = Vec::with_capacity(48);
+        for value in [1.5f32, 0.25, 0.10, 0.80, 37.0, 0.65, 0.04, 50.0, 400.0] {
+            short.extend_from_slice(&value.to_le_bytes());
+        }
+        short.extend_from_slice(&[0x20, 0x60, 0x80, 0xFF]);
+        short.extend_from_slice(&[0x05, 0x0F, 0x18, 0xFF]);
+        short.extend_from_slice(&[0xC0, 0xD0, 0xE0, 0xFF]);
+        assert_eq!(short.len(), 48);
+
+        // The longest payload that still reaches the short arm — one byte
+        // under `decode_data`'s delegation threshold — with every byte past
+        // the colour block set to a value no field would produce by default.
+        let mut padded = short.clone();
+        padded.resize(185, 0u8);
+        for slot in padded[48..].iter_mut() {
+            *slot = 0x7F;
+        }
+
+        let a = parse_watr(0x1146, &[sub(b"DATA", &short)], GameKind::Fallout3NV, &None);
+        let b = parse_watr(0x1146, &[sub(b"DATA", &padded)], GameKind::Fallout3NV, &None);
+
+        // Named field by field rather than as a whole-struct compare: these
+        // are exactly the fields the deleted tail wrote, so a failure points
+        // at the offset that came back rather than at "something differs".
+        let d = WaterParams::default();
+        for (label, got, base, default) in [
+            (
+                "underwater_fog_near",
+                b.params.underwater_fog_near,
+                a.params.underwater_fog_near,
+                d.underwater_fog_near,
+            ),
+            (
+                "underwater_fog_far",
+                b.params.underwater_fog_far,
+                a.params.underwater_fog_far,
+                d.underwater_fog_far,
+            ),
+            (
+                "noise_uv_scale_a",
+                b.params.noise_uv_scale_a,
+                a.params.noise_uv_scale_a,
+                d.noise_uv_scale_a,
+            ),
+            (
+                "noise_uv_scale_b",
+                b.params.noise_uv_scale_b,
+                a.params.noise_uv_scale_b,
+                d.noise_uv_scale_b,
+            ),
+            (
+                "noise_uv_scale_c",
+                b.params.noise_uv_scale_c,
+                a.params.noise_uv_scale_c,
+                d.noise_uv_scale_c,
+            ),
+        ] {
+            assert_eq!(got, base, "{label} moved when the dead tail was padded");
+            assert_eq!(got, default, "{label} must stay at its default");
+        }
+        assert_eq!(b.params.noise_amplitude_scales, a.params.noise_amplitude_scales);
+        assert_eq!(b.params.noise_amplitude_scales, d.noise_amplitude_scales);
+        assert_eq!(b.params.depth_weights, a.params.depth_weights);
+        assert_eq!(b.params.depth_weights, d.depth_weights);
+        assert_eq!(b.params.effect_controls, a.params.effect_controls);
+        assert_eq!(b.params.effect_controls, d.effect_controls);
+
+        // ...and the fields the short arm does own are unchanged by the padding.
+        assert_eq!(b.params.wind_speed, a.params.wind_speed);
+        assert_eq!(b.params.fog_far, a.params.fog_far);
+        assert_eq!(b.params.shallow_color, a.params.shallow_color);
+        assert_eq!(b.params.reflection_color, a.params.reflection_color);
+    }
+
+    /// #3146 — the delegation boundary itself. 186 is the only reachable
+    /// long shape, so the dispatcher must hand exactly that to
+    /// `decode_data_fo3nv` and everything shorter to the compatibility arm.
+    ///
+    /// Pinned because collapsing `color_base` to a constant is only correct
+    /// while this boundary holds: the long layout's colour block sits at 40,
+    /// the short one's at 36, and the short arm now hardcodes 36.
+    #[test]
+    fn the_data_dispatcher_switches_arms_at_186_bytes() {
+        let mut data = vec![0u8; 186];
+        // Colour bytes at BOTH candidate bases, distinguishable from each
+        // other, so the assertion reads which map actually ran.
+        data[36..40].copy_from_slice(&[0x11, 0x11, 0x11, 0xFF]);
+        data[40..44].copy_from_slice(&[0xEE, 0xEE, 0xEE, 0xFF]);
+
+        let long = decode_data(&data);
+        let short = decode_data(&data[..185]);
+
+        assert!(
+            (long.shallow_color[0] - 0xEE as f32 / 255.0).abs() < 1e-6,
+            "at 186 bytes the long layout's base-40 colour block must win"
+        );
+        assert!(
+            (short.shallow_color[0] - 0x11 as f32 / 255.0).abs() < 1e-6,
+            "one byte shorter, the compatibility arm's base-36 block must win"
         );
     }
 
