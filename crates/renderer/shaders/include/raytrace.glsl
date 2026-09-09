@@ -7,8 +7,15 @@
 
 // Defined by lighting.glsl later in triangle.frag's include sequence. A
 // prototype lets reflection-hit shading use its deliberately bounded
-// one-light evaluator. Diffuse GI and refraction termini retain the wider
-// locally-selected light set in `giHitIrradiance`.
+// one-light evaluator — it returns after the FIRST visible light.
+//
+// #4017 — this used to say diffuse GI and refraction termini "retain the
+// wider locally-selected light set in `giHitIrradiance`". Neither is true:
+// `6c56e311` moved the refraction terminus onto this same
+// `reflectionHitIrradiance`, `f8efde63` moved the GI bounce onto
+// `pathHitRadiance` (whose breadth is the caller-supplied
+// `visibleLightLimit`, capped at `GI_VISIBLE_LIGHT_CAP` on the first hit),
+// and `giHitIrradiance` has been deleted.
 vec3 reflectionHitIrradiance(vec3 p, vec3 n, uint dbgFlags);
 
 // ── RT Reflection ───────────────────────────────────────────────────

@@ -1152,30 +1152,103 @@ fn composite_screen_to_world_dir_subtracts_camera_pos() {
 /// indices) or `+ 20` / `+ 21` (splat weights) — that ISN'T
 /// wrapped in `floatBitsToUint(…)` or `unpackUnorm4x8(…)`.
 ///
-/// `caustic_splat.comp` and `ui.vert` don't bind GlobalVertices
-/// at all and aren't checked. `skin_vertices.comp` reads bone
-/// indices but does so through `floatBitsToUint`; the regex
-/// excludes that pattern.
+/// `skin_vertices.comp` reads bone indices but does so through
+/// `floatBitsToUint`; the check excludes that pattern.
+///
+/// #4018 (REN-2026-09-06-D2-03) — the source list is DISCOVERED, not
+/// hardcoded. It used to be a literal array, and by the time this was filed
+/// it covered three of the eight shaders that index a raw-float vertex SSBO:
+/// `caustic_splat.comp` (its own private `GlobalVertices` at set 0 binding 9),
+/// `volumetrics_inject.comp` (`boundaryVertexData`), and the three
+/// ground-cover stages had all drifted outside it. Nothing failed when they
+/// did, because the test had no completeness half — the same shape as #3829,
+/// where a hardcoded shader list without one let `volumetrics_inject.comp`
+/// sit outside a GPU-layout contract for 13 days and cost a CRITICAL.
+///
+/// The walk is two passes so a new *buffer name* is picked up as well as a new
+/// reader: pass 1 collects every `float <name>[];` array declaration whose
+/// name contains `ertex` (`vertexData`, `boundaryVertexData`, and whatever a
+/// future skinned or instanced variant is called), pass 2 puts every file that
+/// indexes one of those names under the guard.
 #[test]
 fn rt_hit_shaders_have_no_unsafe_vertex_data_reads() {
-    let sources = [
-        (
-            "triangle.frag",
-            include_str!("../../../shaders/triangle.frag"),
-        ),
-        (
-            "ray_hit.glsl",
-            include_str!("../../../shaders/include/ray_hit.glsl"),
-        ),
-        // #4052 — the ground-cover terrain sampler is the first non-RT
-        // consumer of `vertexData`, and the first to read the splat lanes
-        // at all. It belongs under this guard for the same reason the RT
-        // hit path does.
-        (
-            "terrain_sample.glsl",
-            include_str!("../../../shaders/include/terrain_sample.glsl"),
-        ),
-    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let mut files = Vec::new();
+    collect_shader_files(&root, &mut files);
+    files.sort();
+
+    let loaded: Vec<(String, String)> = files
+        .iter()
+        .map(|path| {
+            let name = path
+                .strip_prefix(&root)
+                .expect("under shaders root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            (
+                name,
+                std::fs::read_to_string(path).expect("shader readable"),
+            )
+        })
+        .collect();
+
+    // Pass 1 — the raw-float vertex array names actually declared anywhere.
+    let mut array_names: Vec<String> = Vec::new();
+    for (_, src) in &loaded {
+        for raw in src.lines() {
+            let code = match raw.find("//") {
+                Some(i) => &raw[..i],
+                None => raw,
+            };
+            let Some(rest) = code.trim_start().strip_prefix("float ") else {
+                continue;
+            };
+            let Some(name) = rest.split_once("[]").map(|(n, _)| n.trim()) else {
+                continue;
+            };
+            if name.is_empty() || !name.contains("ertex") {
+                continue;
+            }
+            if !array_names.iter().any(|n| n == name) {
+                array_names.push(name.to_owned());
+            }
+        }
+    }
+    assert!(
+        array_names.len() >= 2,
+        "the vertex-SSBO name scan found only {array_names:?} — the extraction \
+         broke, not the shaders. At minimum `vertexData` (the global bindless \
+         buffer) and `boundaryVertexData` (volumetrics) are declared."
+    );
+
+    // Pass 2 — every file that indexes one of them is under the guard.
+    let sources: Vec<(&str, &str)> = loaded
+        .iter()
+        .filter(|(_, src)| {
+            array_names
+                .iter()
+                .any(|name| src.contains(&format!("{name}[")))
+        })
+        .map(|(name, src)| (name.as_str(), src.as_str()))
+        .collect();
+    // The floor that separates "the walk found nothing" from "nothing is
+    // wrong". Deliberately NOT including `triangle.frag`: it was in the old
+    // hardcoded list, but it reaches vertex data through `ray_hit.glsl`'s
+    // helpers and indexes no array itself — the walk is self-correcting there,
+    // since a direct read added to it later selects it automatically.
+    for required in [
+        "include/ray_hit.glsl",
+        "include/terrain_sample.glsl",
+        "caustic_splat.comp",
+        "volumetrics_inject.comp",
+    ] {
+        assert!(
+            sources.iter().any(|(name, _)| *name == required),
+            "{required} indexes a raw-float vertex SSBO but the discovery walk \
+             did not select it — the walk broke, not the shader. Selected: {:?}",
+            sources.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+        );
+    }
 
     // Strip safe-recovery wrappers so a forbidden raw read
     // surfaces as a literal `vertexData[... + 11..14|19|20]`.
@@ -1736,7 +1809,18 @@ fn every_gram_schmidt_tangent_frame_guards_the_projected_length() {
     let lighting = include_str!("../../../shaders/include/lighting.glsl");
 
     for (label, src, decl) in [
-        ("perturbNormal", material_sampling, "vec3 perturbNormal("),
+        // #4016 re-point — `perturbNormal`'s body moved to
+        // `perturbNormalGrad` when the explicit-gradient core was extracted;
+        // `perturbNormal` is now a thin wrapper that supplies the four
+        // derivatives and delegates. The guard this enumerates lives with the
+        // body, so the pin follows it (the shape `d9a7e75c` used for the
+        // #3282 split). `the_perturb_normal_wrapper_only_delegates` below
+        // keeps the wrapper from growing a second, unguarded frame.
+        (
+            "perturbNormalGrad",
+            material_sampling,
+            "vec3 perturbNormalGrad(",
+        ),
         (
             "parallaxDisplaceUV",
             material_sampling,
@@ -2358,31 +2442,34 @@ fn bloom_dispatches_after_composite_and_applies_itself_downstream() {
 #[test]
 fn perturb_normal_guards_post_projection_tangent_length() {
     let src = include_str!("../../../shaders/include/material_sampling.glsl");
+    // #4016 re-point — see `every_gram_schmidt_tangent_frame_guards_the_
+    // projected_length`: the two tangent paths live in `perturbNormalGrad`
+    // now, and `perturbNormal` is the implicit-derivative wrapper over it.
     let fn_start = src
-        .find("vec3 perturbNormal(")
-        .expect("perturbNormal must exist");
+        .find("vec3 perturbNormalGrad(")
+        .expect("perturbNormalGrad must exist");
     // Path 1 ends where Path 2's comment begins.
     let path2_start = src[fn_start..]
         .find("// Path 2")
         .map(|i| fn_start + i)
-        .expect("perturbNormal must have a Path 2");
+        .expect("perturbNormalGrad must have a Path 2");
     let path1_body = &src[fn_start..path2_start];
 
     assert!(
         path1_body.contains("vec3 Tproj = T - dot(T, N) * N;"),
-        "perturbNormal Path 1: the Gram-Schmidt projection must be bound \
+        "perturbNormalGrad Path 1: the Gram-Schmidt projection must be bound \
          to a name so it can be guarded before normalizing — see \
          #2815 / REN-D19-04."
     );
     assert!(
         path1_body.contains("if (dot(Tproj, Tproj) < 1e-8)") && path1_body.contains("return N;"),
-        "perturbNormal Path 1 must bail to the unperturbed geometric \
+        "perturbNormalGrad Path 1 must bail to the unperturbed geometric \
          normal when the projected tangent is near-zero (T ∥ N), before \
          ever normalizing it — see #2815 / REN-D19-04."
     );
     assert!(
         !path1_body.contains("normalize(T - dot(T, N) * N)"),
-        "perturbNormal Path 1 must not reintroduce the unguarded \
+        "perturbNormalGrad Path 1 must not reintroduce the unguarded \
          normalize-of-a-possibly-zero-vector expression."
     );
 }
@@ -4690,4 +4777,238 @@ fn shader_pipeline_doc_does_not_advertise_live_lanes_as_free() {
             .contains("`material_flag::BGSM_AUTHORED` (Rust-side bit 10) is"),
         "the \"intentionally NOT emitted\" note the doc row cites must still exist"
     );
+}
+
+/// #4019 (REN-2026-09-06-D2-04) — `shader-pipeline.md`'s Set-0/Set-1
+/// descriptor table must not credit the two private-layout passes with global
+/// bindings they cannot see.
+///
+/// `CausticPipeline` and the volumetrics pipelines each build their
+/// `VkPipelineLayout` from a single descriptor set layout — their own private
+/// `set = 0` — so neither the bindless Set 0 nor the scene Set 1 is reachable
+/// from them. The table nonetheless listed `caustic`/`caustic_splat` under
+/// Set-0 bindings 0-1 and Set-1 bindings 0, 1, 2 and 4, and `volumetrics`
+/// under Set-0 binding 0 and Set-1 bindings 1 and 2 — while the page's own
+/// prose three paragraphs later said volumetrics "neither binds any Set-1
+/// resource above".
+///
+/// This is the table every audit is told to prefer over re-deriving descriptor
+/// facts from source, and the one that answers "which pipelines must be
+/// re-bound when Set 1 changes". Reading it the other way — that
+/// `caustic_splat`'s instance reads are covered by the Set-1 lockstep guards —
+/// is the mistake that produced #3829; they are a separate private mirror.
+#[test]
+fn the_descriptor_table_does_not_credit_private_layout_passes_with_global_sets() {
+    const DOC: &str = include_str!("../../../../../docs/engine/shader-pipeline.md");
+    const CAUSTIC_SRC: &str = include_str!("../caustic.rs");
+    const VOLUMETRICS_SRC: &str = include_str!("../volumetrics.rs");
+
+    // Ground truth: one set layout per pipeline layout. Needle composed at
+    // runtime so this test's own text cannot satisfy the scan.
+    let single_set = format!("set_layouts(std::slice::from_ref{}", "(");
+    for (name, src) in [
+        ("caustic.rs", CAUSTIC_SRC),
+        ("volumetrics.rs", VOLUMETRICS_SRC),
+    ] {
+        assert!(
+            src.contains(&single_set),
+            "{name} no longer builds its pipeline layout from a single set \
+             layout — if it now binds a global set, the descriptor table in \
+             shader-pipeline.md must gain those rows back rather than this \
+             test being deleted (#4019)"
+        );
+    }
+
+    // The Set-0 / Set-1 block runs from the table header to the first `| 2 |`
+    // row (set 2 is water's own, and legitimately private).
+    let table_start = DOC
+        .find("| Set | Binding | Type | Resource | Used by |")
+        .expect("shader-pipeline.md has a descriptor-set table");
+    let table_end = table_start
+        + DOC[table_start..]
+            .find("\n| 2 | 0 |")
+            .expect("the table reaches set 2");
+    let global_rows = &DOC[table_start..table_end];
+
+    for pass in ["caustic", "volumetrics"] {
+        let offenders: Vec<&str> = global_rows
+            .lines()
+            .filter(|line| line.starts_with("| 0 |") || line.starts_with("| 1 |"))
+            .filter(|line| {
+                // Only the trailing "Used by" cell names pipelines; the
+                // Resource cell legitimately mentions e.g. "caustic
+                // accumulator".
+                line.rsplit('|')
+                    .nth(1)
+                    .is_some_and(|used_by| used_by.contains(pass))
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "shader-pipeline.md credits `{pass}` with a Set-0/Set-1 binding, but \
+             its pipeline layout has one set — its own private `set = 0`. \
+             Offending row(s):\n{}",
+            offenders.join("\n")
+        );
+    }
+}
+
+/// #4016 (REN-2026-09-06-D19-01) — every LAND TX01 splat sampler uses explicit
+/// gradients, because every one of them sits under a per-fragment `continue`.
+///
+/// The three loops (diffuse, specular, normal) each skip layers with
+/// `if (w <= 0.0) continue`, and `w` is an interpolated per-fragment splat
+/// weight — so at a splat boundary one lane of a quad reaches the sampler on
+/// iteration k while its neighbour has already continued. Implicit derivatives
+/// are spec-undefined there: the class #3622 converted `parallaxDisplaceUV`
+/// away from, and that `ray_hit.glsl`'s `resolveRayHitUV` has always avoided.
+///
+/// Pins the shape rather than the count: a fourth splat loop added later with
+/// a plain `texture()` fails this.
+#[test]
+fn every_terrain_splat_sampler_uses_explicit_gradients() {
+    const FRAG: &str = include_str!("../../../shaders/triangle.frag");
+
+    // The gradients must be captured once, OUTSIDE any splat loop.
+    for capture in [
+        "vec2 splatUVdx = dFdx(sampleUV);",
+        "vec3 splatPosdx = dFdx(fragWorldPosRel);",
+    ] {
+        assert!(
+            FRAG.contains(capture),
+            "triangle.frag no longer captures `{capture}` — the splat loops \
+             need gradients from quad-uniform flow (#4016)"
+        );
+    }
+
+    // Walk each `for` loop that reads a terrain splat weight and require every
+    // sampler inside it to be an explicit-gradient form.
+    let lines: Vec<&str> = FRAG.lines().collect();
+    let mut checked = 0usize;
+    for (start, line) in lines.iter().enumerate() {
+        if !line.contains("for (uint i = 0u; i < 8u; ++i)") {
+            continue;
+        }
+        let body: Vec<&str> = lines[start..]
+            .iter()
+            .take_while(|l| !l.trim_start().starts_with("}\n"))
+            .take(20)
+            .copied()
+            .collect();
+        let body_text = body.join("\n");
+        if !body_text.contains("terrainSplat[i / 4u][i & 3u]") {
+            continue;
+        }
+        checked += 1;
+        for l in &body {
+            let code = l.split("//").next().unwrap_or("");
+            let implicit = code.contains("= texture(")
+                || code.contains("texture(\n")
+                || (code.contains("perturbNormal(") && !code.contains("perturbNormalGrad("));
+            assert!(
+                !implicit,
+                "triangle.frag:{}: a terrain-splat loop samples with an \
+                 implicit-derivative form under a per-fragment `continue`. Use \
+                 `textureGrad` / `perturbNormalGrad` with the gradients captured \
+                 before the loop (#4016).\nLine: {}",
+                start + 1,
+                code.trim()
+            );
+        }
+    }
+    assert_eq!(
+        checked, 3,
+        "expected the three LAND TX01 splat loops (diffuse, specular, normal); \
+         found {checked} — the scan broke, or a loop was added/removed without \
+         updating this pin"
+    );
+}
+
+/// #4017 (REN-2026-09-06-D2-02) — `GI_VISIBLE_LIGHT_CAP` has a live consumer.
+///
+/// The constant was promoted into `shader_constants_data.rs` on the strength
+/// of `giHitIrradiance`'s copy, but that function had had no caller since
+/// `f8efde63` (2026-07-29). Retuning the constant changed nothing on screen
+/// while the number that actually ran sat in `triangle.frag` as a bare `2u`.
+/// #3880's gate cannot catch that: it matches *declarations*, and a literal
+/// inlined into an expression is invisible to it by construction.
+#[test]
+fn the_gi_visible_light_cap_is_wired_to_the_live_path_budget() {
+    const FRAG: &str = include_str!("../../../shaders/triangle.frag");
+    const LIGHTING: &str = include_str!("../../../shaders/include/lighting.glsl");
+    const RAYTRACE: &str = include_str!("../../../shaders/include/raytrace.glsl");
+
+    // Needle composed at runtime — this test names the function it forbids.
+    //
+    // Comments are stripped before the scan. The three sites #4017 corrected
+    // explain *why* the function is gone and necessarily name it; that prose
+    // is the record and must stay legal. What must not come back is a
+    // reference in code — a call, or a prototype for a function with no
+    // caller, which is the state this closed.
+    let dead = format!("giHit{}", "Irradiance");
+    for (name, src) in [
+        ("lighting.glsl", LIGHTING),
+        ("triangle.frag", FRAG),
+        ("include/raytrace.glsl", RAYTRACE),
+    ] {
+        let offender = src.lines().enumerate().find(|(_, raw)| {
+            let code = match raw.find("//") {
+                Some(i) => &raw[..i],
+                None => raw,
+            };
+            code.contains(&dead)
+        });
+        assert!(
+            offender.is_none(),
+            "{name}:{} references `{dead}` in code, which #4017 deleted as \
+             unreachable. If it is being reinstated it needs a caller — and \
+             `GI_VISIBLE_LIGHT_CAP` then has two consumers again, which is the \
+             state #3880 removed.\nLine: {}",
+            offender.expect("checked").0 + 1,
+            offender.expect("checked").1.trim()
+        );
+    }
+
+    assert!(
+        FRAG.contains("shadedHits == 0 ? GI_VISIBLE_LIGHT_CAP : 1u"),
+        "triangle.frag's `visibleLightLimit` no longer reads \
+         `GI_VISIBLE_LIGHT_CAP`. That call site is the only live consumer of the \
+         constant; inlining the value back makes retuning it in \
+         shader_constants_data.rs a silent no-op (#4017)"
+    );
+}
+
+/// #4016 — the implicit-derivative wrapper must stay a pure delegation.
+///
+/// Two pins above (`every_gram_schmidt_tangent_frame_guards_the_projected_length`
+/// and `perturb_normal_guards_post_projection_tangent_length`) follow the TBN
+/// guards into `perturbNormalGrad`, where the body now lives. That is only
+/// sound while `perturbNormal` contains no tangent-frame construction of its
+/// own — a second, unguarded frame grown in the wrapper would be invisible to
+/// both of them, which is precisely the hole a rename can open.
+#[test]
+fn the_perturb_normal_wrapper_only_delegates() {
+    let src = include_str!("../../../shaders/include/material_sampling.glsl");
+    let body = glsl_fn_body(src, "vec3 perturbNormal(vec3 N, vec3 worldPos");
+
+    assert!(
+        body.contains("return perturbNormalGrad("),
+        "perturbNormal must delegate to the guarded explicit-gradient core \
+         rather than carry a body of its own (#4016)"
+    );
+    for forbidden in [
+        "mat3(",
+        "dot(T, N)",
+        "cross(N,",
+        "textureGrad(",
+        "= texture(",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "perturbNormal grew `{forbidden}` — it is the delegation wrapper, \
+             and the TBN guards two other tests enumerate live in \
+             `perturbNormalGrad`. A frame built here is guarded by nothing \
+             (#4016 / #2815 / #3984)"
+        );
+    }
 }

@@ -171,9 +171,32 @@ vec2 parallaxDisplaceUV(
 //      but acceptable on synthetic / particle content where mesh
 //      boundaries are simpler. See revert chain at 8305456.
 
-vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 vertexTangent) {
+// #4016 (REN-2026-09-06-D19-01) — the explicit-gradient core. Every
+// derivative this needs is a parameter, so unlike the implicit-derivative
+// wrapper below it is legal in non-uniform control flow. Callers that sample
+// under a per-fragment `continue`/`break` — the three LAND TX01 splat loops in
+// `triangle.frag` — capture their gradients once in quad-uniform flow and pass
+// them in, exactly as `parallaxDisplaceUV` captures `parallaxLod` once for
+// `sampleParallaxHeight` (#3622).
+//
+// `textureGrad` rather than a hoisted `textureQueryLod` + `textureLod`: the mip
+// a query returns is computed against ONE texture's dimensions, and a splat
+// tile's eight layer maps are not guaranteed to share a resolution. Gradients
+// are resolution-independent — the hardware derives each texture's own LOD from
+// them — so this stays correct whatever the layers turn out to be.
+vec3 perturbNormalGrad(
+    vec3 N,
+    vec2 uv,
+    uint normalMapIdx,
+    vec4 vertexTangent,
+    vec3 dPdx,
+    vec3 dPdy,
+    vec2 dUVdx,
+    vec2 dUVdy
+) {
     // Sample normal map (tangent-space, [0,1] → [-1,1]).
-    vec3 tangentNormal = texture(textures[nonuniformEXT(normalMapIdx)], uv).rgb;
+    vec3 tangentNormal =
+        textureGrad(textures[nonuniformEXT(normalMapIdx)], uv, dUVdx, dUVdy).rgb;
     tangentNormal = tangentNormal * 2.0 - 1.0;
     // Reconstruct Z from XY. Bethesda normal maps (Skyrim+/FO4 standard)
     // ship as BC5_UNORM_BLOCK (DDS FourCC `ATI2` / `BC5U` / DX10
@@ -234,10 +257,11 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 verte
     }
 
     // Path 2 — screen-space derivative fallback (no authored tangent).
-    vec3 dPdx = dFdx(worldPos);
-    vec3 dPdy = dFdy(worldPos);
-    vec2 dUVdx = dFdx(uv);
-    vec2 dUVdy = dFdy(uv);
+    // #4016 — `dPdx`/`dPdy`/`dUVdx`/`dUVdy` arrive as parameters. The wrapper
+    // below computes them with `dFdx`/`dFdy` exactly as this block used to;
+    // a divergent caller passes gradients it captured in uniform flow, so
+    // this path is well-defined there too rather than silently trading one
+    // undefined derivative for another.
 
     // Solve the linear system for T (Lengyel's method, un-divided by the
     // UV-Jacobian determinant). #2245 (REN-D19-01) — this numerator's own
@@ -259,5 +283,22 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 verte
 
     mat3 TBN = mat3(T, B, N);
     return normalize(TBN * tangentNormal);
+}
+
+// Implicit-derivative form — the original signature, unchanged for callers in
+// quad-uniform control flow. #4016 split the body out above rather than
+// duplicating the TBN construction: this is the same function, with the four
+// derivatives it always used supplied explicitly.
+vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 vertexTangent) {
+    return perturbNormalGrad(
+        N,
+        uv,
+        normalMapIdx,
+        vertexTangent,
+        dFdx(worldPos),
+        dFdy(worldPos),
+        dFdx(uv),
+        dFdy(uv)
+    );
 }
 

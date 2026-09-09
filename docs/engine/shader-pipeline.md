@@ -501,13 +501,13 @@ pipeline. Defined in
 
 | Set | Binding | Type | Resource | Used by |
 |---|---|---|---|---|
-| 0 | 0 | `COMBINED_IMAGE_SAMPLER` (bindless array) | All scene textures | triangle, water, ui, composite, caustic, volumetrics |
-| 0 | 1 | `STORAGE_IMAGE` (bindless) | Per-pass read/write images | bloom, svgf, taa, caustic |
-| 1 | 0 | `STORAGE_BUFFER` | Light buffer (`u32 count` + `GpuLight[]`) | triangle, cluster_cull, caustic_splat |
-| 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (368 B) | triangle, water, cluster_cull, caustic_splat, volumetrics |
-| 1 | 2 | `ACCELERATION_STRUCTURE` | TLAS | triangle, water, caustic_splat, volumetrics |
+| 0 | 0 | `COMBINED_IMAGE_SAMPLER` (bindless array) | All scene textures | triangle, water, ui, composite |
+| 0 | 1 | `STORAGE_IMAGE` (bindless) | Per-pass read/write images | bloom, svgf, taa |
+| 1 | 0 | `STORAGE_BUFFER` | Light buffer (`u32 count` + `GpuLight[]`) | triangle, cluster_cull |
+| 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (368 B) | triangle, water, cluster_cull |
+| 1 | 2 | `ACCELERATION_STRUCTURE` | TLAS | triangle, water |
 | 1 | 3 | `STORAGE_BUFFER` | Bone palette (current frame) | triangle |
-| 1 | 4 | `STORAGE_BUFFER` | `GpuInstance[]` | triangle, ui, water, caustic_splat |
+| 1 | 4 | `STORAGE_BUFFER` | `GpuInstance[]` | triangle, ui, water |
 | 1 | 5 | `STORAGE_BUFFER` | Cluster grid (`ClusterEntry[]`) | triangle |
 | 1 | 6 | `STORAGE_BUFFER` | Cluster light index list | triangle |
 | 1 | 7 | `COMBINED_IMAGE_SAMPLER` | SSAO texture | triangle |
@@ -525,6 +525,23 @@ pipeline. Defined in
 | 1 | 19 | `STORAGE_BUFFER` (`coherent`) | `SelectedRayProbeBuffer` — the debug ray-probe readback for the currently-selected pixel: control (generation, state, pixel xy), ids (light index, mask, hit instance, flags), origin+tMin, direction+tMax, hit distance + averaged visibility | triangle (debug ray-probe path) |
 | 2 | 0 | `STORAGE_IMAGE` (`R32_UINT`) | Water caustic accumulator | water.frag (atomic add) |
 | 2 | 1 | `STORAGE_BUFFER` (std430, growable) | Unsized `GpuWaterParams[]` table, 368 B per active water draw | water.vert, water.frag |
+
+`caustic_splat.comp` likewise uses its own private `set = 0` layout — one
+descriptor set layout, bindings 0-10 (`depthTex`, `normalTex`, `meshIdTex`, its
+own `LightBuffer`, its own `CameraUBO`, its own `InstanceBuffer`, TLAS,
+`causticAccum`, `CausticParams`, and its own `GlobalVertices`/`GlobalIndices`).
+It binds neither the bindless Set 0 nor the scene Set 1, which is *why* it
+declares its own `GpuInstance` mirror and its own vertex/index SSBOs rather
+than reusing Set 1's. Those private mirrors are outside the Set-1 lockstep
+guards — assuming otherwise is the class of mistake that produced #3829.
+
+#4019 — until then the table above credited `caustic`/`caustic_splat` with
+Set-0 bindings 0-1 and Set-1 bindings 0, 1, 2 and 4, and `volumetrics` with
+Set-0 binding 0 and Set-1 bindings 1 and 2. Ground truth is
+`caustic.rs`/`volumetrics.rs`, both of which build their
+`VkPipelineLayout` with `set_layouts(std::slice::from_ref(&…))` — a single
+set — and both shaders declare `set = 0` exclusively. The `volumetrics` cells
+were additionally contradicted by the very next paragraph:
 
 Volumetrics uses its own private `set = 0` layout, split across two shaders
 that do NOT share one binding scheme — neither binds any Set-1 resource

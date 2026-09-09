@@ -283,6 +283,28 @@ void main() {
         );
     }
 
+    // #4016 (REN-2026-09-06-D19-01) — screen-space gradients for `sampleUV`,
+    // captured ONCE here in quad-uniform control flow and reused by all three
+    // LAND TX01 splat loops below (diffuse, specular, normal).
+    //
+    // Each of those loops skips layers with `if (w <= 0.0) continue`, and `w`
+    // is a per-fragment interpolated splat weight — so at any splat boundary
+    // one lane of a quad reaches the sampler on iteration k while its
+    // neighbour has already continued. An implicit-LOD `texture()` there is
+    // spec-undefined (GLSL/Vulkan: implicit derivatives require uniform
+    // control flow), the class #3622 converted `parallaxDisplaceUV` away from
+    // and that `ray_hit.glsl`'s `resolveRayHitUV` has always avoided.
+    //
+    // Computed unconditionally rather than inside `if (terrainSplatActive)`:
+    // that flag is instance-uniform, not quad-uniform — a quad straddling an
+    // instance silhouette diverges on it — so deriving inside the branch would
+    // reintroduce the defect one level up. Four ALU quad-ops on every fragment
+    // is the price of that being unambiguous.
+    vec2 splatUVdx = dFdx(sampleUV);
+    vec2 splatUVdy = dFdy(sampleUV);
+    vec3 splatPosdx = dFdx(fragWorldPosRel);
+    vec3 splatPosdy = dFdy(fragWorldPosRel);
+
     bool terrainSplatActive =
         (inst.flags & INSTANCE_FLAG_TERRAIN_SPLAT) != 0u;
     GpuTerrainTile terrainTile;
@@ -354,8 +376,11 @@ void main() {
             if (w <= 0.0) continue;
             uint layerIdx = terrainTile.layerDiffuseIndex[i];
             if (layerIdx == 0u) continue; // layer slot unused
-            vec4 layerColor = texture(
-                textures[nonuniformEXT(layerIdx)], sampleUV);
+            // #4016 — explicit gradients: this fetch sits under the
+            // per-fragment `continue` above.
+            vec4 layerColor = textureGrad(
+                textures[nonuniformEXT(layerIdx)], sampleUV,
+                splatUVdx, splatUVdy);
             texColor.rgb = mix(texColor.rgb, layerColor.rgb, w);
             // Keep texColor.a from the base — terrain is opaque,
             // the alpha-test / alpha-blend machinery below must see
@@ -449,8 +474,10 @@ void main() {
             float w = terrainSplat[i / 4u][i & 3u];
             uint specIdx = terrainTile.layerSpecularIndex[i];
             if (w <= 0.0 || specIdx == 0u) continue;
-            vec3 layerSpec = texture(
-                textures[nonuniformEXT(specIdx)], sampleUV
+            // #4016 — explicit gradients: see the diffuse loop above.
+            vec3 layerSpec = textureGrad(
+                textures[nonuniformEXT(specIdx)], sampleUV,
+                splatUVdx, splatUVdy
             ).rgb;
             specColor = mix(specColor, layerSpec, w);
         }
@@ -563,12 +590,19 @@ void main() {
             float w = terrainSplat[i / 4u][i & 3u];
             uint layerNormalIdx = terrainTile.layerNormalIndex[i];
             if (w <= 0.0 || layerNormalIdx == 0u) continue;
-            vec3 layerNormal = perturbNormal(
+            // #4016 — the gradient form. `perturbNormal`'s normal-map fetch
+            // is implicit-LOD, and Path 2's `dFdx(worldPos)` fallback would be
+            // undefined here too, so both sets of derivatives come from the
+            // uniform-flow capture above.
+            vec3 layerNormal = perturbNormalGrad(
                 terrainGeometryNormal,
-                fragWorldPosRel,
                 sampleUV,
                 layerNormalIdx,
-                fragTangent
+                fragTangent,
+                splatPosdx,
+                splatPosdy,
+                splatUVdx,
+                splatUVdy
             );
             N = normalize(mix(N, layerNormal, w));
         }
@@ -2336,9 +2370,9 @@ void main() {
                 // untextured content that scene is made of.
                 vec3 tColor = rayHitAlbedo(tMat, tAlbedo);
 
-                // Light the refracted surface with the SAME real one-bounce
-                // direct-light evaluation the GI bounce uses (giHitIrradiance:
-                // per-light N·L + shadow ray), instead of a flat ambient
+                // Light the refracted surface with a real one-bounce
+                // direct-light evaluation (per-light N·L + shadow ray),
+                // instead of a flat ambient
                 // floor. The old `tColor * (cell_ambient + 0.6)` model washed
                 // every refracted surface to ~0.6×albedo with no contrast or
                 // shadowing, so the scene behind glass read as a flat,
@@ -3942,12 +3976,25 @@ void main() {
                 vec3 hitAlbedo = clamp(
                     rayHitAlbedo(hitMat, hitBase.rgb), vec3(0.0), vec3(1.0));
                 vec3 viewDir = -pathDir;
-                // The first two material hits get 2 then 1 strongest local
-                // lights. Later specular hits still carry environment and
-                // emission, but cannot expand the accepted shadow-query cap.
+                // The first two material hits get GI_VISIBLE_LIGHT_CAP then 1
+                // strongest local lights. Later specular hits still carry
+                // environment and emission, but cannot expand the accepted
+                // shadow-query cap.
+                //
+                // #4017 — this is the LIVE instance of the cap. #3880 promoted
+                // `GI_VISIBLE_LIGHT_CAP` into the generated header on the
+                // strength of `giHitIrradiance`'s copy, but that function had
+                // had no caller since `f8efde63` and has now been deleted, so
+                // the promotion was anchored to unreachable code while the
+                // number that actually runs sat here as a bare `2u`. The gate
+                // #3880 widened matches declarations (`const T` /
+                // object-like `#define`), and a literal inlined into an
+                // expression is invisible to it by construction — so it could
+                // never have closed this copy on its own.
                 vec3 hitDirect = vec3(0.0);
                 if (shadedHits < min(int(MAX_SHADED_HITS), shadedHitLimit)) {
-                    uint visibleLightLimit = shadedHits == 0 ? 2u : 1u;
+                    uint visibleLightLimit =
+                        shadedHits == 0 ? GI_VISIBLE_LIGHT_CAP : 1u;
                     hitDirect = pathHitRadiance(
                         hitPos, hitN, viewDir,
                         hitMat, hitAlbedo, dbgFlags, visibleLightLimit);

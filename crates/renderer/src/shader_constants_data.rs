@@ -696,6 +696,13 @@ pub const GI_HIT_LIGHT_CAP: u32 = 8;
 // link between them; the provenance gate could not see it because include
 // files were never scanned. Editing one and not the other changed what the
 // pool means without changing what it does.
+//
+// #4017 — the consumer named above was `giHitIrradiance`, which had had no
+// caller since `f8efde63` (2026-07-29) and has been deleted. The live
+// consumer is `triangle.frag`'s `visibleLightLimit` at the
+// `pathHitRadiance` call site, which #4017 repointed from a bare `2u` at
+// the same time. Retuning this value now changes what renders; before, it
+// changed nothing.
 pub const GI_VISIBLE_LIGHT_CAP: u32 = 2;
 
 // Mesh-ID G-buffer attachment (`R32_UINT`) ABI. Bit 31 is the
