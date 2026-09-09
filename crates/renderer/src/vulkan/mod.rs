@@ -17,6 +17,7 @@ pub mod gbuffer;
 pub mod gpu_timers;
 pub mod groundcover;
 pub mod groundcover_bench;
+pub mod image;
 pub mod instance;
 pub mod material;
 pub mod morph_compute;
