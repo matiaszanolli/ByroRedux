@@ -6,6 +6,49 @@ use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use gpu_allocator::MemoryLocation;
 
+/// Destroy a readback staging buffer and return its allocation.
+///
+/// The screenshot and depth-capture paths own byte-identical staging buffers
+/// and freed them with byte-identical code under two SAFETY comments that
+/// justified the same `unsafe` on different grounds. One of the two was wrong
+/// and was corrected in isolation (#3628), leaving the original it was copied
+/// from asserting a caller that has never existed (#4039). Sharing the free —
+/// and therefore the contract — is what stops them diverging a third time.
+///
+/// # Safety
+/// Both owners have exactly two callers, and neither can leave a submitted
+/// copy targeting `buffer`:
+///
+/// - The grow branch of their own `ensure_*_staging`, reached only from
+///   `screenshot_record_copy` / `depth_capture_record_copy`. Those run DURING
+///   command-buffer recording, not between frames — neither path has a resize
+///   call site. It is sound regardless, because `draw_frame` waits BOTH
+///   frames-in-flight fences before recording anything, so every previously
+///   submitted copy has retired. That both-slots wait is the real invariant
+///   here; see the `#870` remediation block in `vulkan/sync.rs`, which lists
+///   `screenshot_staging` and `depth_capture_staging` among the resources
+///   whose safety rests on it. That wait is itself pinned since `ac48ab63`
+///   (#3442) — both #4039 and its sibling audit note describe it as the one
+///   correct reason that nothing guards, which stopped being true the day
+///   after they were written.
+/// - Shutdown teardown, after `device_wait_idle`.
+pub(super) fn destroy_staging_buffer(
+    device: &ash::Device,
+    allocator: Option<&SharedAllocator>,
+    staging: Option<(vk::Buffer, vk_alloc::Allocation, vk::DeviceSize)>,
+) {
+    let Some((buffer, allocation, _)) = staging else {
+        return;
+    };
+    // SAFETY: the fn-level contract above — no in-flight command buffer can
+    // still reference `buffer` at either call site.
+    unsafe { device.destroy_buffer(buffer, None) };
+    if let Some(alloc) = allocator {
+        let mut allocator = alloc.lock().unwrap();
+        let _ = allocator.free(allocation);
+    }
+}
+
 /// Query the physical device for a supported depth format.
 ///
 /// #948 / REN-D4-NEW-02 — restricted to pure-depth formats. The packed
@@ -1363,5 +1406,74 @@ mod pipeline_cache_header_tests {
         // ignores (driver consumes them; we don't).
         data.resize(64, 0);
         assert!(validate_pipeline_cache_header(&data, 0x1002, 0x73BF, &uuid));
+    }
+}
+
+#[cfg(test)]
+mod staging_destroy_contract_tests {
+    /// #4039 (REN-2026-09-06-D5-05) — the screenshot and depth-capture
+    /// staging frees must keep sharing one contract.
+    ///
+    /// They were byte-identical code under two SAFETY comments making
+    /// different claims. #3628 corrected the depth-capture one and left the
+    /// screenshot original — which justified an `unsafe` free by "the resize
+    /// path in `ensure_screenshot_staging` (only reached between frames)",
+    /// a caller that has never existed: `ensure_screenshot_staging`'s sole
+    /// caller is `screenshot_record_copy`, which runs DURING recording, and
+    /// `resize.rs` contains no screenshot call site at all. The free was
+    /// sound the whole time, for the reason the sibling states and this one
+    /// did not — `draw_frame`'s both-slots fence wait.
+    ///
+    /// Re-inlining either free brings the second comment back with it, so
+    /// this pins the delegation rather than the prose.
+    #[test]
+    fn both_staging_frees_delegate_to_the_shared_helper() {
+        for (label, src, needle) in [
+            (
+                "screenshot",
+                include_str!("screenshot.rs"),
+                "pub(super) fn destroy_screenshot_staging(&mut self) {",
+            ),
+            (
+                "depth_capture",
+                include_str!("depth_capture.rs"),
+                "pub(super) fn destroy_depth_capture_staging(&mut self) {",
+            ),
+        ] {
+            let body = src
+                .split_once(needle)
+                .unwrap_or_else(|| panic!("{label}: destroy fn must keep its name"))
+                .1
+                .split_once("\n    }")
+                .expect("destroy fn must be brace-terminated")
+                .0;
+
+            assert!(
+                body.contains("helpers::destroy_staging_buffer("),
+                "{label}'s staging free must delegate to the shared helper — \
+                 an inlined free grows its own SAFETY comment, which is how \
+                 these two diverged in the first place (#4039)"
+            );
+            assert!(
+                !body.contains("destroy_buffer(buffer"),
+                "{label}'s staging free re-inlined the raw destroy; the \
+                 contract now lives in one place (#4039)"
+            );
+        }
+
+        // The specific retired claim, in either file. `ensure_*_staging` has
+        // no resize call site, so nothing may justify the free by one.
+        for (label, src) in [
+            ("screenshot", include_str!("screenshot.rs")),
+            ("depth_capture", include_str!("depth_capture.rs")),
+        ] {
+            assert!(
+                !src.contains("only reached between frames"),
+                "{label} claims its staging free happens between frames — it \
+                 does not: the grow branch runs during command-buffer \
+                 recording, and soundness rests on draw_frame's both-slots \
+                 fence wait instead (#4039 / #3628)"
+            );
+        }
     }
 }

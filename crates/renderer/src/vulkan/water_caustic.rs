@@ -295,11 +295,16 @@ impl WaterCausticAccum {
         let pre_clear = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
             .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            // First use of this slot is UNDEFINED → GENERAL via a
-            // discarding layout transition. Subsequent frames go
-            // GENERAL → GENERAL (no discard, no data preserved by
-            // the clear that immediately follows). Either way the
-            // clear writes every texel.
+            // GENERAL → GENERAL on every frame, frame 0 included: this
+            // barrier never performs the discarding UNDEFINED → GENERAL
+            // transition, and could not — `old_layout` is a constant here.
+            // [`Self::initialize_layouts`] does that once per FIF slot on a
+            // fenced one-time submit before any frame, which is precisely why
+            // `oldLayout = GENERAL` is legal on the first use of a slot
+            // (VUID-vkCmdDraw-None-09600). Do not delete that call believing
+            // this barrier covers it (#4037). No data need be preserved
+            // either way — the clear that immediately follows writes every
+            // texel.
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
             .image(slot.image)

@@ -749,7 +749,7 @@ find a gap in it. One is known and unquantified:
   above. The pool's budget is a *retention* bound (128 MiB default), not an
   in-flight bound, and texture uploads share it.
 
-Both are listed rather than estimated on purpose: a fabricated number on
+It is listed rather than estimated on purpose: a fabricated number on
 this page is worse than an acknowledged hole, because the page is cited as
 authoritative rather than re-derived.
 

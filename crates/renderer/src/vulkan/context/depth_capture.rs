@@ -330,22 +330,13 @@ impl VulkanContext {
         self.depth_capture_staging = Some((buffer, allocation, required_size));
     }
 
+    /// Free the depth-capture staging buffer. The contract — #3628's
+    /// correction, now stated once — lives on
+    /// [`super::helpers::destroy_staging_buffer`], shared with the screenshot
+    /// twin this path was copied from (#4039).
     pub(super) fn destroy_depth_capture_staging(&mut self) {
-        if let Some((buffer, allocation, _)) = self.depth_capture_staging.take() {
-            // SAFETY: the only caller of `ensure_depth_capture_staging` is
-            // `depth_capture_record_copy` (its grow branch), which runs
-            // DURING command-buffer recording (`draw.rs`), not between
-            // frames — there is no resize call site for depth-capture
-            // staging. Sound anyway: `draw_frame` waits BOTH FIF fences
-            // before any recording, so no submitted copy can still target
-            // the buffer being freed here. The other caller is shutdown
-            // teardown, after `device_wait_idle`.
-            unsafe { self.device.destroy_buffer(buffer, None) };
-            if let Some(ref alloc) = self.allocator {
-                let mut allocator = alloc.lock().unwrap();
-                let _ = allocator.free(allocation);
-            }
-        }
+        let staging = self.depth_capture_staging.take();
+        super::helpers::destroy_staging_buffer(&self.device, self.allocator.as_ref(), staging);
     }
 }
 

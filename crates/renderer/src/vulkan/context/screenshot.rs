@@ -337,18 +337,14 @@ impl VulkanContext {
         self.screenshot_staging = Some((buffer, allocation, required_size));
     }
 
+    /// Free the screenshot staging buffer. The contract — why this is sound
+    /// at both call sites — lives on [`super::helpers::destroy_staging_buffer`],
+    /// shared with the depth-capture twin so the two cannot drift apart again
+    /// (#4039). The claim removed here named a resize call site that has never
+    /// existed: `ensure_screenshot_staging`'s only caller is
+    /// `screenshot_record_copy`, which runs during command-buffer recording.
     pub(super) fn destroy_screenshot_staging(&mut self) {
-        if let Some((buffer, allocation, _)) = self.screenshot_staging.take() {
-            // SAFETY: callers are the resize path in `ensure_screenshot_staging`
-            // (only reached between frames, before any copy is recorded
-            // against the new-sized buffer) and shutdown teardown (after
-            // `device_wait_idle`) — in both cases no command buffer can
-            // still reference `buffer`.
-            unsafe { self.device.destroy_buffer(buffer, None) };
-            if let Some(ref alloc) = self.allocator {
-                let mut allocator = alloc.lock().unwrap();
-                let _ = allocator.free(allocation);
-            }
-        }
+        let staging = self.screenshot_staging.take();
+        super::helpers::destroy_staging_buffer(&self.device, self.allocator.as_ref(), staging);
     }
 }
