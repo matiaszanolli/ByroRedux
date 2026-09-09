@@ -4,7 +4,7 @@ use super::super::descriptors::memory_barrier;
 use super::super::frame_upscaler::FsrFrameParameters;
 use super::super::material::GpuMaterial;
 use super::super::pipeline::PipelineKey;
-use super::super::presentation::ImageSpaceModifierView;
+use super::super::presentation::ImageSpaceModifier;
 use super::super::scene_buffer::{
     self, MATERIAL_KIND_GLASS, MATERIAL_KIND_MULTI_LAYER_PARALLAX, MAX_INDIRECT_DRAWS,
 };
@@ -1572,7 +1572,7 @@ pub struct FrameInputs<'a> {
     /// underwater FX.
     pub underwater: [f32; 4],
     /// Timed Bethesda IMAD lens and color-grade channels.
-    pub image_space_modifier: ImageSpaceModifierView,
+    pub image_space_modifier: ImageSpaceModifier,
     /// #1195 / PERF-DIM7-01 — per-frame dirty set for the skin compute
     /// dispatch + skinned-BLAS refit gate. Entities NOT in this set whose
     /// slots already have `has_populated_output = true` AND a live BLAS skip

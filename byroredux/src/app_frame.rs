@@ -17,7 +17,7 @@ use byroredux_core::ecs::components::groundcover::{GroundCoverDimmer, WindField}
 use byroredux_core::ecs::{DebugStats, DeltaTime, ScratchTelemetry};
 use byroredux_renderer::vulkan::context::FrameInputs;
 use byroredux_renderer::vulkan::GpuUploadCtx;
-use byroredux_renderer::ImageSpaceModifierView;
+use byroredux_renderer::ImageSpaceModifier;
 use byroredux_ui::{ScaleformHostDispatch, MAX_DISTINCT_HOST_METHOD_NAMES};
 use std::time::Instant;
 use winit::event_loop::ActiveEventLoop;
@@ -666,27 +666,16 @@ impl App {
                 wind.gust_amplitude.max(0.0),
             ];
             let wind_gust = [wind.gust_frequency.max(0.0), 0.0, 0.0, 0.0];
+            // #3861 — one type now, so this is a read, not a 14-field copy.
+            // It used to spell out every field from the scripting struct into
+            // the renderer struct; a fifteenth IMAD field added to both
+            // definitions but forgotten here would simply never reach the GPU,
+            // with nothing to fail.
             let image_space_modifier = self
                 .world
                 .try_resource::<byroredux_scripting::CinematicPresentationState>()
-                .map_or_else(ImageSpaceModifierView::default, |state| {
-                    let frame = state.image_space_modifier_frame;
-                    ImageSpaceModifierView {
-                        blur_radius_pixels: frame.blur_radius_pixels,
-                        double_vision_strength: frame.double_vision_strength,
-                        motion_blur_strength: frame.motion_blur_strength,
-                        radial_blur_strength: frame.radial_blur_strength,
-                        radial_blur_ramp_up: frame.radial_blur_ramp_up,
-                        radial_blur_start: frame.radial_blur_start,
-                        radial_blur_ramp_down: frame.radial_blur_ramp_down,
-                        radial_blur_down_start: frame.radial_blur_down_start,
-                        radial_blur_center: frame.radial_blur_center,
-                        saturation: frame.saturation,
-                        brightness: frame.brightness,
-                        contrast: frame.contrast,
-                        tint_color: frame.tint_color,
-                        fade_color: frame.fade_color,
-                    }
+                .map_or_else(ImageSpaceModifier::default, |state| {
+                    state.image_space_modifier_frame
                 });
             let draw_result = ctx.draw_frame(FrameInputs {
                 clear_color,

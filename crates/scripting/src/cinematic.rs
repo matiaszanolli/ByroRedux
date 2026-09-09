@@ -45,47 +45,11 @@ pub struct ImageSpaceModifierApplication {
     pub strength: f32,
 }
 
-/// Fully sampled image-space state for the current frame. Identity values
-/// make the renderer path a no-op outside authored cinematic effects.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct ImageSpaceModifierFrame {
-    pub blur_radius_pixels: f32,
-    pub double_vision_strength: f32,
-    pub motion_blur_strength: f32,
-    pub radial_blur_strength: f32,
-    pub radial_blur_ramp_up: f32,
-    pub radial_blur_start: f32,
-    pub radial_blur_ramp_down: f32,
-    pub radial_blur_down_start: f32,
-    pub radial_blur_center: [f32; 2],
-    pub saturation: f32,
-    pub brightness: f32,
-    pub contrast: f32,
-    pub tint_color: [f32; 4],
-    pub fade_color: [f32; 4],
-}
-
-impl Default for ImageSpaceModifierFrame {
-    fn default() -> Self {
-        Self {
-            blur_radius_pixels: 0.0,
-            double_vision_strength: 0.0,
-            motion_blur_strength: 0.0,
-            radial_blur_strength: 0.0,
-            radial_blur_ramp_up: 0.0,
-            radial_blur_start: 0.0,
-            radial_blur_ramp_down: 0.0,
-            radial_blur_down_start: 1.0,
-            radial_blur_center: [0.5, 0.5],
-            saturation: 1.0,
-            brightness: 1.0,
-            contrast: 1.0,
-            tint_color: [1.0, 1.0, 1.0, 0.0],
-            fade_color: [0.0, 0.0, 0.0, 0.0],
-        }
-    }
-}
+/// #3861 — `ImageSpaceModifier` was an identical twin of the renderer's
+/// `ImageSpaceModifierView`, down to the non-obvious identity defaults, with a
+/// hand-written 14-assignment bridge between them. One definition now lives in
+/// `byroredux-core` and both crates re-export it.
+pub use byroredux_core::imagespace::ImageSpaceModifier;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
@@ -214,7 +178,7 @@ pub struct CinematicPresentationState {
     /// Historical IMAD applications issued by animation callbacks.
     pub applied_image_space_modifiers: Vec<ImageSpaceModifierApplication>,
     /// Sampled aggregate consumed by the renderer this frame.
-    pub image_space_modifier_frame: ImageSpaceModifierFrame,
+    pub image_space_modifier_frame: ImageSpaceModifier,
     image_space_modifier_catalog: HashMap<u32, ImadRecord>,
     active_image_space_modifiers: Vec<ActiveImageSpaceModifier>,
     player_imod_event: Option<PlayerAnimationEventRegistration>,
@@ -228,7 +192,7 @@ impl Default for CinematicPresentationState {
             last_player_animation_event: None,
             player_animation_event_serial: 0,
             applied_image_space_modifiers: Vec::new(),
-            image_space_modifier_frame: ImageSpaceModifierFrame::default(),
+            image_space_modifier_frame: ImageSpaceModifier::default(),
             image_space_modifier_catalog: HashMap::new(),
             active_image_space_modifiers: Vec::new(),
             player_imod_event: None,
@@ -378,8 +342,8 @@ pub fn image_space_modifier_system(world: &World, dt: f32) {
 fn assemble_image_space_frame(
     catalog: &HashMap<u32, ImadRecord>,
     active: &[ActiveImageSpaceModifier],
-) -> ImageSpaceModifierFrame {
-    let mut frame = ImageSpaceModifierFrame::default();
+) -> ImageSpaceModifier {
+    let mut frame = ImageSpaceModifier::default();
     let mut radial_center_weight = 0.0;
     let mut radial_center_sum = [0.0; 2];
 
@@ -715,7 +679,7 @@ mod tests {
             world
                 .resource::<CinematicPresentationState>()
                 .image_space_modifier_frame,
-            ImageSpaceModifierFrame::default()
+            ImageSpaceModifier::default()
         );
     }
 

@@ -46,53 +46,17 @@ struct PresentationPushConstants {
     fade_color: [f32; 4],
 }
 
-/// Output-resolution image-space state supplied by the gameplay runtime.
-/// Defaults are exact identity, so games and frames without active IMADs pay
-/// only the shader's uniform branch.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ImageSpaceModifierView {
-    pub blur_radius_pixels: f32,
-    pub double_vision_strength: f32,
-    pub motion_blur_strength: f32,
-    pub radial_blur_strength: f32,
-    pub radial_blur_ramp_up: f32,
-    pub radial_blur_start: f32,
-    pub radial_blur_ramp_down: f32,
-    pub radial_blur_down_start: f32,
-    pub radial_blur_center: [f32; 2],
-    pub saturation: f32,
-    pub brightness: f32,
-    pub contrast: f32,
-    pub tint_color: [f32; 4],
-    pub fade_color: [f32; 4],
-}
-
-impl Default for ImageSpaceModifierView {
-    fn default() -> Self {
-        Self {
-            blur_radius_pixels: 0.0,
-            double_vision_strength: 0.0,
-            motion_blur_strength: 0.0,
-            radial_blur_strength: 0.0,
-            radial_blur_ramp_up: 0.0,
-            radial_blur_start: 0.0,
-            radial_blur_ramp_down: 0.0,
-            radial_blur_down_start: 1.0,
-            radial_blur_center: [0.5, 0.5],
-            saturation: 1.0,
-            brightness: 1.0,
-            contrast: 1.0,
-            tint_color: [1.0, 1.0, 1.0, 0.0],
-            fade_color: [0.0, 0.0, 0.0, 0.0],
-        }
-    }
-}
+/// #3861 — `ImageSpaceModifier` was an identical twin of the scripting
+/// crate's `ImageSpaceModifierFrame`, bridged by a field-by-field copy in
+/// `app_frame.rs`. One definition now lives in `byroredux-core`; the copy is
+/// gone because there is nothing left to copy between.
+pub use byroredux_core::imagespace::ImageSpaceModifier;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PresentationFrame {
     pub exposure: f32,
     pub underwater: [f32; 4],
-    pub image_space: ImageSpaceModifierView,
+    pub image_space: ImageSpaceModifier,
     pub render_debug_flags: u32,
     pub render_debug_mode: u32,
 }
@@ -970,7 +934,7 @@ mod tests {
 
     #[test]
     fn image_space_defaults_are_identity() {
-        let view = ImageSpaceModifierView::default();
+        let view = ImageSpaceModifier::default();
         assert_eq!(view.saturation, 1.0);
         assert_eq!(view.brightness, 1.0);
         assert_eq!(view.contrast, 1.0);

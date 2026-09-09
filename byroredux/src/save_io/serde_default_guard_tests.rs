@@ -445,8 +445,28 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // line, the `Effect` enum itself. So this is a real saved-shape change
     // (a variant insertion, which shifts later discriminants), not a
     // file-scoping artefact, and the bump is required rather than blanket.
+    // #3861 — the fingerprint moved WITHOUT a FORMAT_MAJOR bump, and this is
+    // the #3852 case again (a naming/file-scoping artefact, not a data-shape
+    // change) rather than a fifth category. `ImageSpaceModifierFrame` in
+    // `crates/scripting/src/cinematic.rs` and `ImageSpaceModifierView` in
+    // `crates/renderer` were identical 14-field twins bridged by a
+    // hand-written copy; one definition now lives in
+    // `crates/core/src/imagespace.rs` as `ImageSpaceModifier`.
+    //
+    // Verified rather than assumed, per the #3852 note above. Dumping
+    // `normalized_serialized_shapes()` either side of the change gives 149
+    // shapes both times, with exactly TWO differing lines, and both differ
+    // only in the type's *name* and the file it was found in:
+    //   - the struct itself: same 14 fields, same order, same types;
+    //   - `CinematicPresentationState`'s `image_space_modifier_frame` field,
+    //     whose name and position are unchanged — only its type's spelling.
+    // The save format is `serde_json` (`crates/save/src/snapshot.rs:212`), and
+    // `serialize_struct`'s `name` argument is not emitted by that serializer:
+    // serializing the type and asserting the JSON contains no occurrence of
+    // "ImageSpaceModifier" passes. Field names and order are what JSON
+    // encodes, and neither moved, so every existing save still loads.
     const BASELINE_MAJOR: u16 = 22;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x146a_8fc6_b82a_86f6;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xd2c2_e262_5d71_2646;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

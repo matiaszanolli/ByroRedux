@@ -9,7 +9,7 @@
 
 use super::super::descriptors::memory_barrier;
 use super::super::frame_upscaler::{FsrFrameParameters, UpscaleDispatchInputs};
-use super::super::presentation::{ImageSpaceModifierView, PresentationFrame, UiOverlayDraw};
+use super::super::presentation::{ImageSpaceModifier, PresentationFrame, UiOverlayDraw};
 use super::{SkyParams, VulkanContext};
 use ash::vk;
 
@@ -239,7 +239,7 @@ impl VulkanContext {
         fog_volumes: &[super::super::volumetrics::GpuFogVolume],
         fsr_frame: Option<FsrFrameParameters>,
         underwater: [f32; 4],
-        image_space_modifier: ImageSpaceModifierView,
+        image_space_modifier: ImageSpaceModifier,
         ui_instance_idx: Option<u32>,
     ) {
         self.record_svgf_pass(cmd, frame);
@@ -1175,7 +1175,7 @@ impl VulkanContext {
         frame: usize,
         img: usize,
         underwater: [f32; 4],
-        image_space_modifier: ImageSpaceModifierView,
+        image_space_modifier: ImageSpaceModifier,
         ui_instance_idx: Option<u32>,
     ) {
         // SAFETY: `cmd` is recording outside a render pass, and presentation,

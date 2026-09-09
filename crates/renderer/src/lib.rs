@@ -39,7 +39,7 @@ pub use vulkan::context::{
 };
 pub use vulkan::material::{GpuMaterial, MaterialTable};
 pub use vulkan::morph_compute::MorphSlot;
-pub use vulkan::presentation::ImageSpaceModifierView;
+pub use vulkan::presentation::ImageSpaceModifier;
 pub use vulkan::render_debug::{RenderDebugMode, SelectedRayProbeResult};
 pub use vulkan::scene_buffer::{
     GpuLight, MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS,

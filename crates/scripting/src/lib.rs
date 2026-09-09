@@ -36,8 +36,8 @@ pub mod vm_state;
 pub use cinematic::{
     dispatch_player_cinematic_animation_event, image_space_modifier_system,
     install_image_space_modifiers, ActorCinematicState, CinematicAnimationEvent,
-    CinematicPresentationState, HorseTetherState, ImageSpaceModifierApplication,
-    ImageSpaceModifierFrame, MotionTypeChangeRequest,
+    CinematicPresentationState, HorseTetherState, ImageSpaceModifier,
+    ImageSpaceModifierApplication, MotionTypeChangeRequest,
 };
 pub use cleanup::event_cleanup_system;
 pub use compatibility::{
