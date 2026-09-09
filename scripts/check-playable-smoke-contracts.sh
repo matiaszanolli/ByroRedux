@@ -102,4 +102,20 @@ grep -Fq 'ui.menu: loaded' "$ROOT_DIR/docs/smoke-tests/m48-menu-load.sh" \
 grep -Fq 'Failed to register UI texture' "$ROOT_DIR/docs/smoke-tests/m48-menu-load.sh" \
     || fail "M48 no longer checks the final (texture registration) failure arm"
 
+# #3160 — M47's recognition gate was SOFT, so deleting `attach_vmad_scripts`
+# outright left the domain's only engine-side gate on real game data green.
+# It is now HARD on the pinned default cell with the script archive
+# resolved. Run the harness's own decision-table self-test (no engine, no
+# game data) so the promotion cannot be silently reverted, and so this
+# check does not merely assert that some text is present.
+M47_SMOKE="$ROOT_DIR/docs/smoke-tests/m47-triggers.sh"
+bash "$M47_SMOKE" --self-test > /dev/null \
+    || fail "m47-triggers.sh --self-test failed (recognition gate decision table)"
+# The self-test must keep covering the regression case itself — a decision
+# table that dropped the FAIL row would pass while proving nothing.
+grep -Fq 'check FAIL 0 1 1' "$M47_SMOKE" \
+    || fail "m47-triggers.sh --self-test no longer covers the zero-recognized HARD-fail case"
+grep -Fq 'hard_fail=1' "$M47_SMOKE" \
+    || fail "m47-triggers.sh no longer has a HARD failure path for zero recognized REFRs"
+
 echo "playable-smoke-contracts: PASS"
