@@ -36,6 +36,7 @@ use super::descriptors::{
     image_barrier_general_write_to_read, image_barrier_undef_to_general,
     write_combined_image_sampler, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
+use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::svgf::should_force_history_reset;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -43,7 +44,6 @@ use super::GpuUploadCtx;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
-use gpu_allocator::vulkan as vk_alloc;
 
 // #918 / REN-D10-NEW-04 — TAA's read-previous / write-current ping-pong
 // (`prev` in `write_descriptor_sets`, history-slot indexing throughout)
@@ -93,11 +93,11 @@ pub struct TaaParams {
 // SAFETY: two `[f32; 4]` fields — no implicit padding possible (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for TaaParams {}
 
-struct HistorySlot {
-    image: vk::Image,
-    view: vk::ImageView,
-    allocation: Option<vk_alloc::Allocation>,
-}
+/// #3860 — the history slots are plain owned images, so they are
+/// [`GpuImage`]s. The struct this replaced held exactly `image` / `view` /
+/// `allocation`, the same three fields under the same names, so every read
+/// site is unchanged.
+type HistorySlot = GpuImage;
 
 pub struct TaaPipeline {
     pipeline: vk::Pipeline,
@@ -421,6 +421,9 @@ impl TaaPipeline {
         Ok(partial)
     }
 
+    /// #3860 — was ~85 lines of create → allocate → bind → view with its own
+    /// three-arm cleanup, line-for-line identical to `svgf.rs`'s sibling down
+    /// to the SAFETY comments. `GpuImage::create` owns that chain now.
     fn create_history_image(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -428,96 +431,17 @@ impl TaaPipeline {
         height: u32,
         name: &str,
     ) -> Result<HistorySlot> {
-        let img_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(HISTORY_FORMAT)
-            .extent(vk::Extent3D {
+        GpuImage::create(
+            device,
+            allocator,
+            &GpuImageDesc::color_2d(
+                name,
                 width,
                 height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-        // SAFETY: `img_info` fully populated above (TYPE_2D, HISTORY_FORMAT,
-        // STORAGE | SAMPLED usage). On Ok, ownership transfers to the
-        // caller's HistorySlot; on Err the `?` bubbles up before any
-        // bind/view runs.
-        let image = unsafe {
-            device
-                .create_image(&img_info, None)
-                .with_context(|| format!("create {name}"))?
-        };
-
-        let alloc = match allocator
-            .lock()
-            .expect("allocator lock")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name,
-                // SAFETY: `image` just created above; handle is live.
-                requirements: unsafe { device.get_image_memory_requirements(image) },
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .with_context(|| format!("allocate {name}"))
-        {
-            Ok(a) => a,
-            Err(e) => {
-                // SAFETY: cleanup-on-error — `image` was created above
-                // but never bound; no other reference exists.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-
-        // SAFETY: `image` matches the memory requirements that produced
-        // `alloc`; bound once per image.
-        if let Err(e) = unsafe {
-            device
-                .bind_image_memory(image, alloc.memory(), alloc.offset())
-                .with_context(|| format!("bind {name}"))
-        } {
-            allocator.lock().expect("allocator lock").free(alloc).ok();
-            // SAFETY: same as the destroy in the alloc-error arm above —
-            // image is never bound to a live allocation after the free.
-            unsafe { device.destroy_image(image, None) };
-            return Err(e);
-        }
-
-        // SAFETY: `image` is bound (line above). View ownership transfers
-        // to caller's HistorySlot on Ok.
-        let view = match unsafe {
-            device
-                .create_image_view(
-                    &vk::ImageViewCreateInfo::default()
-                        .image(image)
-                        .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(HISTORY_FORMAT)
-                        .subresource_range(super::descriptors::color_subresource_single_mip()),
-                    None,
-                )
-                .with_context(|| format!("view {name}"))
-        } {
-            Ok(v) => v,
-            Err(e) => {
-                allocator.lock().expect("allocator lock").free(alloc).ok();
-                // SAFETY: image was bound (above); free the alloc first,
-                // then destroy the image. No view was created on this arm.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-
-        Ok(HistorySlot {
-            image,
-            view,
-            allocation: Some(alloc),
-        })
+                HISTORY_FORMAT,
+                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+            ),
+        )
     }
 
     fn write_descriptor_sets(
@@ -844,18 +768,14 @@ impl TaaPipeline {
             mesh_id_views,
             normal_views,
         } = views;
-        for slot in self.history.drain(..) {
-            // SAFETY: `recreate_on_resize` is called from the swapchain-
-            // resize path which fences both frames-in-flight first
-            // (see `VulkanContext::recreate_swapchain`). View / image
-            // handles are not referenced by any in-flight command.
-            unsafe {
-                device.destroy_image_view(slot.view, None);
-                device.destroy_image(slot.image, None);
-            }
-            if let Some(a) = slot.allocation {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+        for mut slot in self.history.drain(..) {
+            // `recreate_on_resize` is called from the swapchain-resize path,
+            // which fences both frames-in-flight first (see
+            // `VulkanContext::recreate_swapchain`), so no in-flight command
+            // references these handles. #3860 — `GpuImage::destroy` frees the
+            // allocation before destroying the image and takes the allocator
+            // lock exactly once.
+            slot.destroy(device, allocator);
         }
 
         self.width = width;
@@ -965,17 +885,10 @@ impl TaaPipeline {
             };
             self.point_sampler = vk::Sampler::null();
         }
-        for slot in self.history.drain(..) {
-            unsafe {
-                // SAFETY: each history `slot`'s view and image were created by this
-                // `device`; per the whole-function contract no in-flight command
-                // buffer references them at teardown.
-                device.destroy_image_view(slot.view, None);
-                device.destroy_image(slot.image, None);
-            }
-            if let Some(a) = slot.allocation {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+        for mut slot in self.history.drain(..) {
+            // Per the whole-function contract, no in-flight command buffer
+            // references these handles at teardown (#3860).
+            slot.destroy(device, allocator);
         }
     }
 }

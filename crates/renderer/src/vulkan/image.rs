@@ -447,7 +447,6 @@ mod tests {
             "placeholder.rs",
             "ssao.rs",
             "svgf.rs",
-            "taa.rs",
             "volumetrics/init.rs",
             "water_caustic.rs",
         ];
