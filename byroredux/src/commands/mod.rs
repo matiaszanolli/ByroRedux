@@ -120,6 +120,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(WorldOwnersCommand);
     registry.register(RenderHealthCommand);
     registry.register(RtIntegrityCommand);
+    registry.register(ShadowMasksCommand);
     registry.register(LodCoverageCommand);
     registry.register(TerrainSeamsCommand);
     registry.register(CellOwnersCommand);

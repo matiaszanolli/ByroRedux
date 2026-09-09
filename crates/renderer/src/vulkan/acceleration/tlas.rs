@@ -8,9 +8,10 @@ use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::constants::{MIN_TLAS_INSTANCE_RESERVE, UPDATABLE_AS_FLAGS};
 use super::predicates::{
-    align_scratch_address, decide_use_update, draw_command_eligible_for_tlas,
+    align_scratch_address, decide_use_update, draw_command_eligible_for_tlas, mask_divert_cause,
     scratch_alignment_padding, scratch_needs_growth, shadow_mask_for_instance,
     shrink_scratch_if_oversized, sort_tlas_instances_by_blas_address, tlas_instance_transform,
+    MaskDivertCause,
 };
 use super::types::TlasState;
 use super::AccelerationManager;
@@ -483,6 +484,8 @@ impl AccelerationManager {
         let mut missing_rigid_blas: usize = 0;
         let mut missing_ssbo_instance: usize = 0;
         let mut eligible_instances: usize = 0;
+        // #3305 — shadow-mask census, gathered in this same pass.
+        let mut census = super::ShadowMaskSnapshot::default();
         // REN-D8-NEW-14 — capture the first few offenders so the
         // warn-rate-limited log below identifies which meshes /
         // entities are dropping out of the TLAS instead of just
@@ -649,6 +652,37 @@ impl AccelerationManager {
                 draw_cmd.alpha_blend,
                 draw_cmd.multi_layer_refraction_scale,
             );
+            // #3305 — census the assignment. `VISIBILITY_LAYER_EFFECT` and
+            // `_GLASS` sit outside `VISIBILITY_MASK_ALL_OPAQUE`, so an
+            // instance routed there casts no shadow; the actor breakdown
+            // below is what makes "this creature has no ground shadow"
+            // answerable from the console instead of a GPU capture.
+            use crate::shader_constants as sc;
+            match shadow_mask as u32 {
+                x if x == sc::VISIBILITY_LAYER_ARCHITECTURE => census.architecture += 1,
+                x if x == sc::VISIBILITY_LAYER_STATIC_PROP => census.static_prop += 1,
+                x if x == sc::VISIBILITY_LAYER_DYNAMIC_ACTOR => census.dynamic_actor += 1,
+                x if x == sc::VISIBILITY_LAYER_FOLIAGE => census.foliage += 1,
+                x if x == sc::VISIBILITY_LAYER_EFFECT => census.effect += 1,
+                x if x == sc::VISIBILITY_LAYER_GLASS => census.glass += 1,
+                _ => {}
+            }
+            if draw_cmd.render_layer == byroredux_core::ecs::components::RenderLayer::Actor {
+                census.actor_layer_total += 1;
+                match mask_divert_cause(
+                    draw_cmd.material_kind,
+                    draw_cmd.alpha_blend,
+                    draw_cmd.multi_layer_refraction_scale,
+                ) {
+                    Some(MaskDivertCause::RefractiveGlass) => census.actor_diverted_glass += 1,
+                    Some(MaskDivertCause::AlphaBlend) => census.actor_diverted_alpha_blend += 1,
+                    Some(MaskDivertCause::EffectShader) => census.actor_diverted_effect_shader += 1,
+                    Some(MaskDivertCause::FireRefraction) => {
+                        census.actor_diverted_fire_refraction += 1
+                    }
+                    None => {}
+                }
+            }
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,
                 // #419 — SSBO-compacted index from the shared map, NOT
@@ -677,6 +711,8 @@ impl AccelerationManager {
 
         let instance_count = instances.len() as u32;
         let missing_blas_total = missing_skinned_blas + missing_rigid_blas + missing_ssbo_instance;
+        census.frame = self.frame_counter;
+        self.shadow_mask_census = census;
         self.tlas_integrity = super::TlasIntegritySnapshot {
             frame: self.frame_counter,
             eligible: eligible_instances as u32,
@@ -1074,5 +1110,10 @@ impl AccelerationManager {
     /// Most recent CPU-side TLAS membership accounting.
     pub fn integrity_snapshot(&self) -> super::TlasIntegritySnapshot {
         self.tlas_integrity
+    }
+
+    /// #3305 — shadow-mask census from the most recent instance gather.
+    pub fn shadow_mask_snapshot(&self) -> super::ShadowMaskSnapshot {
+        self.shadow_mask_census
     }
 }

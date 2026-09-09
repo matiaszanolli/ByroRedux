@@ -216,6 +216,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SkinCoverageStats", "renderer coverage telemetry recomputed from current draws"),
         ("ImageHealth", "swapchain/frame health telemetry"),
         ("RtIntegrityStats", "ray-tracing integrity telemetry recomputed from renderer state"),
+        ("ShadowMaskCensus", "shadow-ray visibility-mask telemetry recomputed from the current TLAS gather (#3305)"),
         ("LodCoverageStats", "LOD diagnostic telemetry recomputed from resident content (#3166)"),
         ("TerrainSeamStats", "terrain diagnostic telemetry recomputed from resident tiles"),
         ("SelectedRef", "debug-console selection using session-local entity identity"),

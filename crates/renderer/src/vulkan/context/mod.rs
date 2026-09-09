@@ -2662,6 +2662,33 @@ impl VulkanContext {
         }
     }
 
+    /// #3305 — publish the shadow-mask census from the last TLAS gather.
+    ///
+    /// Kept separate from [`Self::fill_rt_integrity_stats`] rather than
+    /// folded into it: the two answer different questions (did every
+    /// eligible draw reach the TLAS, versus which visibility bucket did the
+    /// ones that arrived land in), and a missing-BLAS investigation and a
+    /// mask investigation want to read them independently.
+    pub fn fill_shadow_mask_census(&self, census: &mut byroredux_core::ecs::ShadowMaskCensus) {
+        let Some(accel) = self.accel_manager.as_ref() else {
+            return;
+        };
+        let snapshot = accel.shadow_mask_snapshot();
+        census.frame = snapshot.frame;
+        census.sampled = self.frame_counter > 0;
+        census.architecture = snapshot.architecture;
+        census.static_prop = snapshot.static_prop;
+        census.dynamic_actor = snapshot.dynamic_actor;
+        census.foliage = snapshot.foliage;
+        census.effect = snapshot.effect;
+        census.glass = snapshot.glass;
+        census.actor_layer_total = snapshot.actor_layer_total;
+        census.actor_diverted_glass = snapshot.actor_diverted_glass;
+        census.actor_diverted_alpha_blend = snapshot.actor_diverted_alpha_blend;
+        census.actor_diverted_effect_shader = snapshot.actor_diverted_effect_shader;
+        census.actor_diverted_fire_refraction = snapshot.actor_diverted_fire_refraction;
+    }
+
     // draw_frame is in draw.rs
     // register_ui_quad, swapchain_extent, log_memory_usage are in resources.rs
     // recreate_swapchain is in resize.rs

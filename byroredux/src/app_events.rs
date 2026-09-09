@@ -14,7 +14,7 @@
 
 use byroredux_core::ecs::{
     ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, RtIntegrityStats, ScratchTelemetry,
-    SkinCoverageStats, TotalTime,
+    ShadowMaskCensus, SkinCoverageStats, TotalTime,
 };
 use byroredux_core::settings::SettingsRegistry;
 use byroredux_platform::window::{self, WindowConfig};
@@ -781,6 +781,10 @@ impl ApplicationHandler for App {
         if let Some(ref ctx) = self.renderer {
             let mut integrity = self.world.resource_mut::<RtIntegrityStats>();
             ctx.fill_rt_integrity_stats(&mut integrity);
+        }
+        if let Some(ref ctx) = self.renderer {
+            let mut census = self.world.resource_mut::<ShadowMaskCensus>();
+            ctx.fill_shadow_mask_census(&mut census);
         }
 
         // Refresh the upscaler line `ctx.upscaler` prints — the FSR provider

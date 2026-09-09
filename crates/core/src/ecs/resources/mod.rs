@@ -1122,6 +1122,149 @@ impl LodCoverageStats {
 
 impl Resource for LodCoverageStats {}
 
+/// Shadow-ray visibility-mask census over the instances the most recent
+/// TLAS build emitted (#3305).
+///
+/// `acceleration::predicates::shadow_mask_for_instance` assigns each
+/// instance one visibility bucket, and the exterior sun's shadow rays cull
+/// on `VISIBILITY_MASK_ALL_OPAQUE` (bits 0–3). `VISIBILITY_LAYER_EFFECT` is
+/// bit 5, so an instance routed there casts no shadow — deliberately, since
+/// #2224/#2227 established that blended proxies must not become structural
+/// occluders.
+///
+/// The routing is by *precedence*, not by render layer: refractive glass
+/// wins first, then `alpha_blend` or an effect/fire-refraction material
+/// kind, and only then does `RenderLayer` decide. So an actor draw carrying
+/// any of those never reaches `VISIBILITY_LAYER_DYNAMIC_ACTOR` at all.
+///
+/// That is the hypothesis #3305 needs to test against a live scene, and it
+/// was previously only readable from a RenderDoc capture of one instance's
+/// mask byte. The `actor_diverted_*` counters make it readable from
+/// `byro-dbg` instead: with a creature on screen and no ground-contact
+/// shadow, a non-zero divert count names the cause, and an all-zero one
+/// clears the mask system and sends the search back to the BLAS/refit
+/// candidates.
+///
+/// Counted at the point the mask is assigned, so these describe instances
+/// that actually reached the TLAS. A draw that lost its BLAS never appears
+/// here — [`RtIntegrityStats`]'s `missing_*` counters own that case, and the
+/// two commands are meant to be read together.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ShadowMaskCensus {
+    /// Monotonic renderer frame this census was gathered on.
+    pub frame: u64,
+    /// At least one TLAS build has populated this resource.
+    pub sampled: bool,
+
+    // ── emitted instances by assigned visibility bucket ──
+    /// `VISIBILITY_LAYER_ARCHITECTURE` (bit 0).
+    pub architecture: u32,
+    /// `VISIBILITY_LAYER_STATIC_PROP` (bit 1).
+    pub static_prop: u32,
+    /// `VISIBILITY_LAYER_DYNAMIC_ACTOR` (bit 2).
+    pub dynamic_actor: u32,
+    /// `VISIBILITY_LAYER_FOLIAGE` (bit 3).
+    pub foliage: u32,
+    /// `VISIBILITY_LAYER_EFFECT` (bit 5) — outside `ALL_OPAQUE`, so these
+    /// cast no shadow.
+    pub effect: u32,
+    /// `VISIBILITY_LAYER_GLASS` (bit 4) — also outside `ALL_OPAQUE`.
+    pub glass: u32,
+
+    // ── the #3305 question ──
+    /// Emitted instances whose draw declared `RenderLayer::Actor`.
+    pub actor_layer_total: u32,
+    /// ...of those, diverted to `GLASS` by the refractive-glass test.
+    pub actor_diverted_glass: u32,
+    /// ...diverted to `EFFECT` by `alpha_blend`.
+    pub actor_diverted_alpha_blend: u32,
+    /// ...diverted to `EFFECT` by `MATERIAL_KIND_EFFECT_SHADER`.
+    pub actor_diverted_effect_shader: u32,
+    /// ...diverted to `EFFECT` by `MATERIAL_KIND_FIRE_REFRACTION`.
+    pub actor_diverted_fire_refraction: u32,
+}
+
+impl ShadowMaskCensus {
+    /// Actor-layer instances that did not reach
+    /// `VISIBILITY_LAYER_DYNAMIC_ACTOR`, and therefore cast no shadow.
+    ///
+    /// The four causes partition this total: they are attributed in the
+    /// same precedence order `shadow_mask_for_instance` tests them, so an
+    /// instance that is both refractive glass and `alpha_blend` is counted
+    /// once, under glass.
+    pub fn actor_diverted(&self) -> u32 {
+        self.actor_diverted_glass
+            + self.actor_diverted_alpha_blend
+            + self.actor_diverted_effect_shader
+            + self.actor_diverted_fire_refraction
+    }
+
+    /// Total emitted instances the census accounted for.
+    pub fn total(&self) -> u32 {
+        self.architecture
+            + self.static_prop
+            + self.dynamic_actor
+            + self.foliage
+            + self.effect
+            + self.glass
+    }
+
+    /// Instances in a bucket the sun's `ALL_OPAQUE` shadow rays cannot see.
+    pub fn shadow_invisible(&self) -> u32 {
+        self.effect + self.glass
+    }
+
+    /// `PENDING` before the first build; `CLEAR` when no actor-layer
+    /// instance was diverted (the mask system is not the cause of a missing
+    /// actor shadow); `DIVERTED` when at least one was.
+    ///
+    /// `DIVERTED` is not by itself a defect — a blended fur or effect
+    /// sub-mesh on an otherwise opaque actor is normal and still leaves the
+    /// body casting a shadow. It is a defect only when it accounts for
+    /// *every* draw of an actor that visibly has no shadow, which is why
+    /// `actor_layer_total` is reported next to it.
+    pub fn verdict(&self) -> &'static str {
+        if !self.sampled {
+            "PENDING"
+        } else if self.actor_diverted() == 0 {
+            "CLEAR"
+        } else {
+            "DIVERTED"
+        }
+    }
+
+    /// Machine-readable line shared by the console command and any harness
+    /// — same convention as [`RtIntegrityStats::machine_line`].
+    pub fn machine_line(&self) -> String {
+        format!(
+            "shadow-masks: frame={} sampled={} total={} architecture={} static_prop={} \
+             dynamic_actor={} foliage={} effect={} glass={} shadow_invisible={} \
+             actor_layer_total={} actor_diverted={} actor_diverted_glass={} \
+             actor_diverted_alpha_blend={} actor_diverted_effect_shader={} \
+             actor_diverted_fire_refraction={} verdict={}",
+            self.frame,
+            u8::from(self.sampled),
+            self.total(),
+            self.architecture,
+            self.static_prop,
+            self.dynamic_actor,
+            self.foliage,
+            self.effect,
+            self.glass,
+            self.shadow_invisible(),
+            self.actor_layer_total,
+            self.actor_diverted(),
+            self.actor_diverted_glass,
+            self.actor_diverted_alpha_blend,
+            self.actor_diverted_effect_shader,
+            self.actor_diverted_fire_refraction,
+            self.verdict(),
+        )
+    }
+}
+
+impl Resource for ShadowMaskCensus {}
+
 /// Adjacent-loaded-cell terrain-seam agreement audit (EX-10/11 item 7,
 /// #2371) — the live consumer of
 /// `byroredux::cell_loader::terrain_seam::check_seam`. Sampled from
@@ -1972,5 +2115,109 @@ mod tests {
         *bridge.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(vec![0xAA]);
         bridge.request();
         assert!(bridge.cancel(), "cancel recovers + reports mutated state");
+    }
+
+    // ---- #3305 shadow-mask census ----
+
+    /// `actor_layer_total` is an exact partition: every actor-layer
+    /// instance either reached the actor bucket or was diverted by one
+    /// cause. `rt.masks` reports both halves next to each other, so a
+    /// residual would read as unexplained instances and undermine the one
+    /// question the command exists to answer.
+    #[test]
+    fn the_actor_census_partitions_into_bucketed_plus_diverted() {
+        // Every cause distinct and non-zero: a zero in any of them would let
+        // that term be dropped from the sum without the assertion noticing.
+        let census = ShadowMaskCensus {
+            sampled: true,
+            dynamic_actor: 9,
+            actor_layer_total: 24,
+            actor_diverted_glass: 1,
+            actor_diverted_alpha_blend: 3,
+            actor_diverted_effect_shader: 4,
+            actor_diverted_fire_refraction: 7,
+            ..Default::default()
+        };
+        assert_eq!(census.actor_diverted(), 15);
+        assert_eq!(
+            census.dynamic_actor + census.actor_diverted(),
+            census.actor_layer_total
+        );
+    }
+
+    /// The verdict is the triage signal: `CLEAR` acquits the mask system
+    /// and sends a missing-shadow investigation back to the BLAS/refit
+    /// candidates; `DIVERTED` names it as a live suspect.
+    #[test]
+    fn the_census_verdict_distinguishes_pending_clear_and_diverted() {
+        assert_eq!(ShadowMaskCensus::default().verdict(), "PENDING");
+
+        let clear = ShadowMaskCensus {
+            sampled: true,
+            dynamic_actor: 4,
+            actor_layer_total: 4,
+            ..Default::default()
+        };
+        assert_eq!(clear.verdict(), "CLEAR");
+
+        let diverted = ShadowMaskCensus {
+            sampled: true,
+            actor_layer_total: 4,
+            actor_diverted_alpha_blend: 4,
+            ..Default::default()
+        };
+        assert_eq!(diverted.verdict(), "DIVERTED");
+    }
+
+    /// `shadow_invisible` is the pair of buckets outside the sun's
+    /// `ALL_OPAQUE` cull mask, and `total` covers every bucket — so a
+    /// census whose `total` disagrees with the TLAS's emitted count means
+    /// an unaccounted bucket, not a quiet miscount.
+    #[test]
+    fn the_census_totals_cover_every_bucket() {
+        let census = ShadowMaskCensus {
+            sampled: true,
+            architecture: 100,
+            static_prop: 50,
+            dynamic_actor: 7,
+            foliage: 20,
+            effect: 6,
+            glass: 3,
+            ..Default::default()
+        };
+        assert_eq!(census.total(), 186);
+        assert_eq!(census.shadow_invisible(), 9);
+    }
+
+    /// The machine line is what `byro-dbg` prints and what a harness would
+    /// parse, so the fields the #3305 triage reads must actually be in it.
+    #[test]
+    fn the_census_machine_line_carries_the_triage_fields() {
+        let census = ShadowMaskCensus {
+            frame: 42,
+            sampled: true,
+            dynamic_actor: 2,
+            effect: 5,
+            actor_layer_total: 7,
+            actor_diverted_alpha_blend: 5,
+            ..Default::default()
+        };
+        let line = census.machine_line();
+        for needle in [
+            "shadow-masks:",
+            "frame=42",
+            "sampled=1",
+            "dynamic_actor=2",
+            "effect=5",
+            "actor_layer_total=7",
+            "actor_diverted=5",
+            "actor_diverted_alpha_blend=5",
+            "verdict=DIVERTED",
+        ] {
+            assert!(
+                line.contains(needle),
+                "machine_line missing `{needle}`: {line}"
+            );
+        }
     }
 }

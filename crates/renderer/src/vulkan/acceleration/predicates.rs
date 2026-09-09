@@ -959,6 +959,54 @@ pub(super) fn shadow_mask_for_instance(
     }
 }
 
+/// Why `shadow_mask_for_instance` routed an instance away from the bucket
+/// its [`RenderLayer`] alone would have chosen (#3305).
+///
+/// The mask function tests refractive glass, then the effect family, and
+/// only then the render layer — so these are ordered, mutually exclusive
+/// causes, not independent flags. Returning the *first* match is what makes
+/// the census counters partition rather than double-count.
+///
+/// `None` means the render layer decided, which for `RenderLayer::Actor` is
+/// `VISIBILITY_LAYER_DYNAMIC_ACTOR` — inside `ALL_OPAQUE`, so the instance
+/// casts a shadow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MaskDivertCause {
+    RefractiveGlass,
+    AlphaBlend,
+    EffectShader,
+    FireRefraction,
+}
+
+/// The cause, if any, that overrode the render layer for this instance.
+///
+/// Deliberately re-derives the same predicates in the same order as
+/// [`shadow_mask_for_instance`] rather than having that function return a
+/// pair: the mask is on the per-instance hot path of every TLAS build and
+/// this is diagnostic-only. `divert_cause_matches_the_mask_it_explains`
+/// pins the two against each other over the whole input space, so the
+/// duplication cannot drift into a lie.
+pub(super) fn mask_divert_cause(
+    material_kind: u32,
+    alpha_blend: bool,
+    multi_layer_refraction_scale: f32,
+) -> Option<MaskDivertCause> {
+    let is_refractive_glass = material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_GLASS
+        || (material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_MULTI_LAYER_PARALLAX
+            && multi_layer_refraction_scale > 0.0);
+    if is_refractive_glass {
+        Some(MaskDivertCause::RefractiveGlass)
+    } else if alpha_blend {
+        Some(MaskDivertCause::AlphaBlend)
+    } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_EFFECT_SHADER {
+        Some(MaskDivertCause::EffectShader)
+    } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION {
+        Some(MaskDivertCause::FireRefraction)
+    } else {
+        None
+    }
+}
+
 /// How many missing static BLAS the per-frame recovery pass should
 /// rebuild this frame. #3540.
 ///

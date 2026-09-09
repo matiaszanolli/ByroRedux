@@ -666,3 +666,142 @@ fn stamp_precedes_the_ssbo_drop_in_build_tlas_instances() {
          over every draw command, every frame (#2769)"
     );
 }
+
+// ---- #3305 shadow-mask census ----
+
+/// `mask_divert_cause` re-derives `shadow_mask_for_instance`'s precedence
+/// chain so the census can attribute a cause. Duplicated predicates drift;
+/// this is what stops them.
+///
+/// The contract in both directions, over the whole reachable input space:
+///
+/// * a cause is reported **iff** the render layer did not decide the mask
+///   (checked against `RenderLayer::Actor`, whose own bucket is distinct
+///   from every divert target);
+/// * the reported cause names a bucket the mask actually landed in.
+#[test]
+fn divert_cause_matches_the_mask_it_explains() {
+    use super::super::predicates::{mask_divert_cause, MaskDivertCause};
+    use crate::shader_constants::{
+        VISIBILITY_LAYER_DYNAMIC_ACTOR, VISIBILITY_LAYER_EFFECT, VISIBILITY_LAYER_GLASS,
+    };
+    use crate::vulkan::scene_buffer::{
+        MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS,
+        MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+    };
+    use byroredux_core::ecs::components::RenderLayer;
+
+    let kinds = [
+        0u32,
+        MATERIAL_KIND_GLASS,
+        MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+        MATERIAL_KIND_EFFECT_SHADER,
+        MATERIAL_KIND_FIRE_REFRACTION,
+    ];
+    let mut saw_each = [false; 4];
+
+    for kind in kinds {
+        for alpha_blend in [false, true] {
+            for scale in [0.0f32, 1.0] {
+                let mask = shadow_mask_for_instance(kind, RenderLayer::Actor, alpha_blend, scale);
+                let cause = mask_divert_cause(kind, alpha_blend, scale);
+
+                match cause {
+                    None => assert_eq!(
+                        mask,
+                        VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
+                        "no divert cause reported, so the render layer must have                          decided (kind={kind} alpha_blend={alpha_blend} scale={scale})"
+                    ),
+                    Some(c) => {
+                        assert_ne!(
+                            mask,
+                            VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
+                            "cause {c:?} reported but the mask is still the actor                              bucket (kind={kind} alpha_blend={alpha_blend} scale={scale})"
+                        );
+                        let expected = match c {
+                            MaskDivertCause::RefractiveGlass => VISIBILITY_LAYER_GLASS as u8,
+                            MaskDivertCause::AlphaBlend
+                            | MaskDivertCause::EffectShader
+                            | MaskDivertCause::FireRefraction => VISIBILITY_LAYER_EFFECT as u8,
+                        };
+                        assert_eq!(
+                            mask, expected,
+                            "cause {c:?} names the wrong bucket                              (kind={kind} alpha_blend={alpha_blend} scale={scale})"
+                        );
+                        saw_each[match c {
+                            MaskDivertCause::RefractiveGlass => 0,
+                            MaskDivertCause::AlphaBlend => 1,
+                            MaskDivertCause::EffectShader => 2,
+                            MaskDivertCause::FireRefraction => 3,
+                        }] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // The sweep must actually exercise all four causes, or "they all agree"
+    // is a statement about an input space that never reached them.
+    assert_eq!(
+        saw_each, [true; 4],
+        "the input sweep did not reach every divert cause"
+    );
+}
+
+/// The census's actor arithmetic is an identity, not an approximation:
+/// every actor-layer instance either lands in the actor bucket or is
+/// diverted by exactly one cause. That is what lets `rt.masks` report
+/// `actor_layer_total = dynamic_actor + actor_diverted` without a residual
+/// bucket, and what makes `actor_diverted == 0` a genuine acquittal of the
+/// mask system rather than an absence of evidence.
+#[test]
+fn every_actor_instance_is_either_bucketed_or_diverted_exactly_once() {
+    use super::super::predicates::mask_divert_cause;
+    use crate::shader_constants::VISIBILITY_LAYER_DYNAMIC_ACTOR;
+    use crate::vulkan::scene_buffer::{
+        MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS,
+        MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+    };
+    use byroredux_core::ecs::components::RenderLayer;
+
+    for kind in [
+        0u32,
+        MATERIAL_KIND_GLASS,
+        MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+        MATERIAL_KIND_EFFECT_SHADER,
+        MATERIAL_KIND_FIRE_REFRACTION,
+    ] {
+        for alpha_blend in [false, true] {
+            for scale in [0.0f32, 1.0] {
+                let bucketed =
+                    shadow_mask_for_instance(kind, RenderLayer::Actor, alpha_blend, scale)
+                        == VISIBILITY_LAYER_DYNAMIC_ACTOR as u8;
+                let diverted = mask_divert_cause(kind, alpha_blend, scale).is_some();
+                assert!(
+                    bucketed ^ diverted,
+                    "exactly one of bucketed/diverted must hold                      (kind={kind} alpha_blend={alpha_blend} scale={scale}):                      bucketed={bucketed} diverted={diverted}"
+                );
+            }
+        }
+    }
+}
+
+/// The premise the census exists to test: the two buckets an actor can be
+/// diverted into are both invisible to the sun's shadow rays.
+///
+/// If this ever stopped holding, a non-zero `actor_diverted` would no
+/// longer imply a missing shadow and `rt.masks` would be misleading rather
+/// than merely uninformative.
+#[test]
+fn both_divert_targets_are_outside_the_opaque_shadow_cull_mask() {
+    use crate::shader_constants::{
+        VISIBILITY_LAYER_DYNAMIC_ACTOR, VISIBILITY_LAYER_EFFECT, VISIBILITY_LAYER_GLASS,
+    };
+    use byroredux_core::lighting::VisibilityMask;
+
+    let opaque = VisibilityMask::ALL_OPAQUE.bits();
+    assert_eq!(opaque & VISIBILITY_LAYER_EFFECT as u8, 0);
+    assert_eq!(opaque & VISIBILITY_LAYER_GLASS as u8, 0);
+    // ...and the bucket a healthy actor lands in is inside it.
+    assert_ne!(opaque & VISIBILITY_LAYER_DYNAMIC_ACTOR as u8, 0);
+}

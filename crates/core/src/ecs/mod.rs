@@ -49,7 +49,8 @@ pub use resources::{
     DepthCaptureBridge, EngineConfig, FindingKind, ImageHealth, LodCoverageStats, OwnerClass,
     OwnershipFinding, OwnershipSnapshot, OwnershipTelemetry, OwnershipTracker, ReclaimPolicy,
     RtIntegrityStats, SchedulerAccessReport, ScratchRow, ScratchTelemetry, ScreenshotBridge,
-    SelectedRef, SkinCoverageStats, SystemList, TerrainSeamStats, TotalTime, UpscalerTelemetry,
+    SelectedRef, ShadowMaskCensus, SkinCoverageStats, SystemList, TerrainSeamStats, TotalTime,
+    UpscalerTelemetry,
 };
 pub use scheduler::{
     AccessReport, Scheduler, SchedulerSystemTimings, Stage, StageConflictRow, StageReport,

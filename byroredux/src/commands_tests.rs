@@ -1008,6 +1008,48 @@ fn r_health_without_the_resource_says_so_rather_than_panicking() {
     assert!(text.contains("not present"), "{text}");
 }
 
+// ── `rt.masks` — #3305 shadow-ray visibility-mask census ──────────
+
+/// The command exists so the #3305 hypothesis — actor draws routed to
+/// `VISIBILITY_LAYER_EFFECT` instead of `DYNAMIC_ACTOR`, and therefore
+/// invisible to the sun's `ALL_OPAQUE` shadow rays — is answerable from
+/// `byro-dbg` against a live scene rather than from a RenderDoc capture of
+/// one instance's mask byte.
+#[test]
+fn rt_masks_prints_the_shared_machine_line() {
+    let mut world = World::new();
+    world.insert_resource(byroredux_core::ecs::ShadowMaskCensus {
+        frame: 11,
+        sampled: true,
+        architecture: 400,
+        static_prop: 120,
+        dynamic_actor: 0,
+        foliage: 60,
+        effect: 6,
+        glass: 2,
+        // The shape the investigation is looking for: every actor-layer
+        // instance diverted, none left in the shadow-casting bucket.
+        actor_layer_total: 6,
+        actor_diverted_alpha_blend: 6,
+        ..Default::default()
+    });
+    let text = ShadowMasksCommand.execute(&world, "").lines.join("\n");
+    assert!(text.starts_with("shadow-masks: frame=11"), "{text}");
+    assert!(text.contains("actor_layer_total=6"), "{text}");
+    assert!(text.contains("actor_diverted=6"), "{text}");
+    assert!(text.contains("verdict=DIVERTED"), "{text}");
+}
+
+/// The absent-resource arm — the command must say so rather than print a
+/// zeroed census that reads as an acquittal.
+#[test]
+fn rt_masks_reports_a_missing_resource_rather_than_a_false_clear() {
+    let world = World::new();
+    let text = ShadowMasksCommand.execute(&world, "").lines.join("\n");
+    assert!(text.contains("not present"), "{text}");
+    assert!(!text.contains("CLEAR"), "{text}");
+}
+
 // ── `rt.integrity` — RT publication / TLAS / cluster oracle ────────
 
 #[test]

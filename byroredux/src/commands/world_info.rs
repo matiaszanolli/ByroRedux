@@ -672,6 +672,37 @@ impl ConsoleCommand for RtIntegrityCommand {
     }
 }
 
+/// `rt.masks` — shadow-ray visibility-mask census over the current TLAS
+/// (#3305).
+///
+/// Answers the question that previously needed a RenderDoc capture: when a
+/// creature casts no ground-contact shadow, is its instance actually being
+/// routed to `VISIBILITY_LAYER_EFFECT` (bit 5, outside the sun's
+/// `ALL_OPAQUE` cull mask) instead of `DYNAMIC_ACTOR`?
+///
+/// Read it with the subject on screen. `actor_diverted=0` clears the mask
+/// system and points the search back at the BLAS/refit candidates; a
+/// non-zero count names which predicate did it. Read alongside
+/// `rt.integrity`, which owns the "did the draw reach the TLAS at all" half
+/// — an instance with no BLAS never gets a mask and so never appears here.
+pub(crate) struct ShadowMasksCommand;
+impl ConsoleCommand for ShadowMasksCommand {
+    fn name(&self) -> &str {
+        "rt.masks"
+    }
+
+    fn description(&self) -> &str {
+        "Shadow-ray visibility-mask census over the current TLAS (#3305)"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(census) = world.try_resource::<byroredux_core::ecs::ShadowMaskCensus>() else {
+            return CommandOutput::line("ShadowMaskCensus resource not present");
+        };
+        CommandOutput::line(census.machine_line())
+    }
+}
+
 /// `lod.coverage` — exterior distant-LOD residency audit (EX-10/11 /
 /// #2371): resident-quad overlap, LOD-vs-full-detail overlap, streaming
 /// settledness, and per-scheme churn.

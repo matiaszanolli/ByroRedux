@@ -70,6 +70,29 @@ pub struct TlasIntegritySnapshot {
     pub missing_ssbo_instance: u32,
 }
 
+/// Shadow-mask census over the instances the most recent TLAS build
+/// emitted (#3305). The renderer-side mirror of
+/// `byroredux_core::ecs::ShadowMaskCensus`, which carries the field
+/// documentation and the reporting.
+///
+/// Gathered in the same pass that assigns each instance its mask, so it is
+/// free apart from the counter increments.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ShadowMaskSnapshot {
+    pub frame: u64,
+    pub architecture: u32,
+    pub static_prop: u32,
+    pub dynamic_actor: u32,
+    pub foliage: u32,
+    pub effect: u32,
+    pub glass: u32,
+    pub actor_layer_total: u32,
+    pub actor_diverted_glass: u32,
+    pub actor_diverted_alpha_blend: u32,
+    pub actor_diverted_effect_shader: u32,
+    pub actor_diverted_fire_refraction: u32,
+}
+
 /// Manages BLAS and TLAS for RT ray queries.
 ///
 /// TLAS state is double-buffered per frame-in-flight to avoid
@@ -170,6 +193,8 @@ pub struct AccelerationManager {
     /// for a clean frame so consumers can distinguish "zero missing" from
     /// "the warning did not happen to fire".
     pub(super) tlas_integrity: TlasIntegritySnapshot,
+    /// #3305 — shadow-mask census from the same gather.
+    pub(super) shadow_mask_census: ShadowMaskSnapshot,
     /// Monotonic frame counter for BLAS LRU tracking. **Shared across
     /// every TLAS slot** — there's no per-slot counter. Each TLAS slot's
     /// `last_used_frame` field on its `BlasEntry` references stamp this
@@ -374,6 +399,7 @@ impl AccelerationManager {
             tlas_addresses_scratch: Vec::new(),
             tlas_missing_samples_scratch: Vec::new(),
             tlas_integrity: TlasIntegritySnapshot::default(),
+            shadow_mask_census: ShadowMaskSnapshot::default(),
             frame_counter: 0,
             total_blas_bytes: 0,
             static_blas_bytes: 0,
