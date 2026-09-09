@@ -994,10 +994,40 @@ fn advance_runtime_unit(
                 }
             }
             apply_ai_package_behavior(world, state.placement_root, npc, index);
+            // #3299 / EX-16 item 4 — if this actor's tile was evicted and is
+            // now coming back, correct the state the attach above just chose
+            // afresh. Deliberately after the attach, not instead of it: the
+            // attach establishes the components (and their storages) and the
+            // restore fixes only the ones that had progressed. An actor with
+            // no snapshot — the overwhelming majority — is untouched.
+            //
+            // Both of this file's spawn tails need it: the pre-baked and the
+            // runtime path reach the same `UnitOutcome::Complete`, and a
+            // restore on only one would make carry-over depend on which
+            // equip route the actor happened to take.
+            restore_stream_snapshot(world, state.placement_root, npc.form_id);
             tag_descendants_as_actor(world, state.placement_root);
             UnitOutcome::Complete(Some(state.placement_root))
         }
     }
+}
+
+/// #3299 — re-apply any carried-over state for a respawning actor.
+///
+/// Reads the authored placement off the entity itself: the spawn path has
+/// just put it there, so it is the divergence baseline
+/// `restore_actor_snapshot` needs and requires no extra plumbing.
+fn restore_stream_snapshot(world: &mut World, placement_root: EntityId, form_id: u32) {
+    let authored_position = world
+        .get::<byroredux_core::ecs::Transform>(placement_root)
+        .map(|transform| transform.translation)
+        .unwrap_or_default();
+    crate::cell_loader::stream_snapshot::restore_actor_snapshot(
+        world,
+        placement_root,
+        form_id,
+        authored_position,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1335,6 +1365,18 @@ fn advance_prebaked_unit(
                 );
             }
             apply_ai_package_behavior(world, state.placement_root, npc, index);
+            // #3299 / EX-16 item 4 — if this actor's tile was evicted and is
+            // now coming back, correct the state the attach above just chose
+            // afresh. Deliberately after the attach, not instead of it: the
+            // attach establishes the components (and their storages) and the
+            // restore fixes only the ones that had progressed. An actor with
+            // no snapshot — the overwhelming majority — is untouched.
+            //
+            // Both of this file's spawn tails need it: the pre-baked and the
+            // runtime path reach the same `UnitOutcome::Complete`, and a
+            // restore on only one would make carry-over depend on which
+            // equip route the actor happened to take.
+            restore_stream_snapshot(world, state.placement_root, npc.form_id);
             tag_descendants_as_actor(world, state.placement_root);
             UnitOutcome::Complete(Some(state.placement_root))
         }

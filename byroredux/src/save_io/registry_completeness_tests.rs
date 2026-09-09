@@ -220,6 +220,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("LodCoverageStats", "LOD diagnostic telemetry recomputed from resident content (#3166)"),
         ("TerrainSeamStats", "terrain diagnostic telemetry recomputed from resident tiles"),
         ("SelectedRef", "debug-console selection using session-local entity identity"),
+        ("StreamStateSnapshots", "actor state parked between an ordinary stream-tile eviction and that same tile's reload within one worldspace session (#3299) — cleared wholesale on drain_streaming_state, and a row is consumed by the restore that claims it, so nothing here outlives the round trip it exists for. A save reloads cells from authored data and the real registry saves resident actors' own components, so persisting this scratch would be a second, staler source of truth for state the save system already owns"),
         ("SkinSlotPool", "GPU bone-palette allocation bookkeeping rebuilt as skinned meshes spawn"),
         ("OwnershipTracker", "derived entity-ownership index rebuilt by spawn/stamp paths"),
         ("OwnershipTelemetry", "diagnostic counters derived from OwnershipTracker"),

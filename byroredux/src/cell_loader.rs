@@ -73,6 +73,7 @@ pub(crate) mod precombined;
 pub(crate) mod references;
 mod refr;
 pub(crate) mod spawn;
+pub(crate) mod stream_snapshot;
 mod terrain;
 mod terrain_lod;
 mod terrain_lod_btr;

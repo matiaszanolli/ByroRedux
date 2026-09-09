@@ -486,6 +486,15 @@ pub fn drain_streaming_state(
     if let Some(job) = state.persistent_apply.take() {
         job.cancel(world);
     }
+    // #3299 §5 — the snapshot store's bound. A carried-over actor state is
+    // only meaningful for "the player might walk back to this tile in this
+    // worldspace session"; a drain is exactly when that stops being true,
+    // so this is the choke point rather than a TTL.
+    if let Some(mut snapshots) =
+        world.try_resource_mut::<crate::cell_loader::stream_snapshot::StreamStateSnapshots>()
+    {
+        snapshots.clear();
+    }
     let cells: Vec<_> = state.loaded.drain().collect();
     let persistent_root = state.persistent_root.take();
     // #1536 — LOD blocks (terrain + object) carry no `CellRoot`, so

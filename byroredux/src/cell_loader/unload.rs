@@ -237,6 +237,13 @@ fn unload_cell_inner(
     }
     timings.ownership_index = phase_started.elapsed();
 
+    // #3299 / EX-16 item 4 — carry the small set of actor state that must
+    // survive an ordinary radius-streaming eviction (position, active
+    // package, Travel progress, seat) across the despawn below. Keyed by
+    // FormID, so the restore never depends on an `EntityId` that respawn
+    // will not reissue. Actors with nothing accumulated produce no row.
+    crate::cell_loader::stream_snapshot::capture_actor_snapshots(world, &victims);
+
     // Collect every GPU handle the victims hold (mesh / texture /
     // terrain-tile slot) in one fan-out walk, then release them below.
     // Extracted into a pure fn over the `World` so its handle-coverage
