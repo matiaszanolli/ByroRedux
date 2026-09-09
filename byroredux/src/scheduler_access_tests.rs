@@ -17,7 +17,12 @@
 //! `scheduler_access_invariants_hold_on_the_real_schedule` below.
 
 const MAIN_RS: &str = include_str!("main.rs");
-const BOOT_RS: &str = include_str!("boot.rs");
+/// #3855 — `boot.rs` became the `boot/` directory, so this is now the
+/// concatenation of every file it split into rather than one `include_str!`.
+/// Every assertion below still sees the same text: a registration that moves
+/// between stage files stays findable, which a per-file include would have
+/// turned into a vacuous pass rather than a failure.
+const BOOT_RS: &str = crate::boot::SOURCES;
 
 /// #1785 / CONC-D3-02 and #3252 — the animation system declaration must
 /// cover every animated-channel sink written by its bool, color, float,
