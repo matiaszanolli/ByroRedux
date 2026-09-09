@@ -36,22 +36,32 @@ use super::descriptors::{
     color_subresource_single_mip, image_barrier_general_write_to_read,
     image_barrier_undef_to_general,
 };
+use super::image::{GpuImage, GpuImageDesc};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ash::vk;
-use gpu_allocator::vulkan as vk_alloc;
 
 /// One per-FIF accumulator slot. Layout follows the same shape as
 /// `caustic::CausticSlot` so the two paths stay reviewer-friendly:
 /// `image` is the GPU resource, `storage_view` is the `r32ui`
 /// view bound to `water.frag` for `imageAtomicAdd`, `sampled_view`
-/// is the view bound to `composite.frag` as `usampler2D`.
-struct Slot {
-    image: vk::Image,
-    storage_view: vk::ImageView,
-    sampled_view: vk::ImageView,
-    allocation: Option<vk_alloc::Allocation>,
-}
+
+/// #3860 — an accumulator slot is an owned image plus its view, so it is a
+/// [`GpuImage`].
+///
+/// **This collapses two byte-identical views into one, which is #2779's fix
+/// applied to the file that sibling missed.** `storage_view` and
+/// `sampled_view` were built by the *same closure* here — same image, view
+/// type, format and subresource range — and the code said as much ("the same
+/// handle backs both the storage and sampled views (legal because they
+/// specify identical subresources + format)"). #2779 established for
+/// `caustic.rs` that a view carries no usage or layout state, since the
+/// descriptor type and the barrier's `image_layout` supply both, so nothing
+/// distinguished the pair; the same reasoning holds verbatim here. Both
+/// accessors are kept — their call sites mean different things even though
+/// the handle is now the same one — and each frame in flight stops paying for
+/// a redundant `VkImageView` and a second destroy.
+type Slot = GpuImage;
 
 /// Per-frame water-side caustic accumulator (Phase C of #1210).
 ///
@@ -103,6 +113,9 @@ impl WaterCausticAccum {
         })
     }
 
+    /// #3860 — was ~100 lines of create → allocate → bind → view ×2 with a
+    /// four-arm cleanup; `GpuImage::create` owns that chain now, and the
+    /// second view is gone (see [`Slot`]).
     fn create_slot(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -110,117 +123,19 @@ impl WaterCausticAccum {
         height: u32,
         slot_idx: usize,
     ) -> Result<Slot> {
-        let info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(CAUSTIC_FORMAT)
-            .extent(vk::Extent3D {
+        GpuImage::create(
+            device,
+            allocator,
+            &GpuImageDesc::color_2d(
+                &format!("water_caustic_accum_{slot_idx}"),
                 width,
                 height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(
+                CAUSTIC_FORMAT,
                 vk::ImageUsageFlags::STORAGE
                     | vk::ImageUsageFlags::SAMPLED
                     | vk::ImageUsageFlags::TRANSFER_DST,
-            )
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-
-        // SAFETY: `info` fully populated above (TYPE_2D, R32_UINT,
-        // STORAGE | SAMPLED | TRANSFER_DST). On Err, no resource is
-        // returned and no follow-on allocator state is touched.
-        let image = unsafe {
-            device
-                .create_image(&info, None)
-                .context("water-caustic image")?
-        };
-
-        let alloc = match allocator
-            .lock()
-            .expect("allocator lock")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name: &format!("water_caustic_accum_{slot_idx}"),
-                // SAFETY: `image` just created above.
-                requirements: unsafe { device.get_image_memory_requirements(image) },
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("water-caustic image allocate")
-        {
-            Ok(a) => a,
-            Err(e) => {
-                // SAFETY: alloc failed; image was created but never bound.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-
-        // SAFETY: `image` matches the memory requirements that produced
-        // `alloc`; bound once per image.
-        if let Err(e) = unsafe {
-            device
-                .bind_image_memory(image, alloc.memory(), alloc.offset())
-                .context("water-caustic bind image memory")
-        } {
-            allocator.lock().expect("allocator lock").free(alloc).ok();
-            // SAFETY: bind failed; free alloc first, then destroy unbound image.
-            unsafe { device.destroy_image(image, None) };
-            return Err(e);
-        }
-
-        let make_view = |img: vk::Image| -> Result<vk::ImageView> {
-            // SAFETY: `img` is the bound `image` above; the same handle
-            // backs both the storage and sampled views (legal because
-            // they specify identical subresources + format).
-            Ok(unsafe {
-                device
-                    .create_image_view(
-                        &vk::ImageViewCreateInfo::default()
-                            .image(img)
-                            .view_type(vk::ImageViewType::TYPE_2D)
-                            .format(CAUSTIC_FORMAT)
-                            .subresource_range(color_subresource_single_mip()),
-                        None,
-                    )
-                    .context("water-caustic image view")?
-            })
-        };
-        let storage_view = match make_view(image) {
-            Ok(v) => v,
-            Err(e) => {
-                allocator.lock().expect("allocator lock").free(alloc).ok();
-                // SAFETY: storage view creation failed; free alloc first,
-                // destroy bound image.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-        let sampled_view = match make_view(image) {
-            Ok(v) => v,
-            Err(e) => {
-                // SAFETY: sampled view creation failed; tear down the
-                // already-created storage view, free alloc, destroy image.
-                unsafe { device.destroy_image_view(storage_view, None) };
-                allocator.lock().expect("allocator lock").free(alloc).ok();
-                // SAFETY: `image` was created by this device and is destroyed here
-                // at teardown, when the device is idle (frames-in-flight fenced /
-                // device_wait_idle), so no in-flight command buffer references it.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-
-        Ok(Slot {
-            image,
-            storage_view,
-            sampled_view,
-            allocation: Some(alloc),
-        })
+            ),
+        )
     }
 
     /// One-time UNDEFINED → GENERAL transition on every per-FIF slot
@@ -396,14 +311,14 @@ impl WaterCausticAccum {
     /// Storage view for the per-FIF slot — bound by WaterPipeline as
     /// `r32ui uimage2D` for `imageAtomicAdd`.
     pub fn storage_view(&self, frame: usize) -> vk::ImageView {
-        self.slots[frame].storage_view
+        self.slots[frame].view
     }
 
     /// Sampled view for the per-FIF slot — bound by composite as
     /// `usampler2D` (NEAREST sampler, per composite.rs's existing
     /// integer-format-sampling rule).
     pub fn sampled_view(&self, frame: usize) -> vk::ImageView {
-        self.slots[frame].sampled_view
+        self.slots[frame].view
     }
 
     /// Recreate every slot at a new resolution. Caller must have
@@ -450,16 +365,13 @@ impl WaterCausticAccum {
     /// # Safety
     /// Caller guarantees no in-flight command buffer references any
     /// resource owned by `slot`.
-    unsafe fn destroy_slot(device: &ash::Device, allocator: &SharedAllocator, slot: Slot) {
-        // SAFETY: caller's contract — no in-flight refs.
-        unsafe {
-            device.destroy_image_view(slot.storage_view, None);
-            device.destroy_image_view(slot.sampled_view, None);
-            device.destroy_image(slot.image, None);
-        }
-        if let Some(a) = slot.allocation {
-            allocator.lock().expect("allocator lock").free(a).ok();
-        }
+    /// #3860 — `GpuImage::destroy` frees the allocation before destroying the
+    /// image and takes the allocator lock exactly once.
+    ///
+    /// # Safety
+    /// Caller must ensure no in-flight command buffer references the slot.
+    unsafe fn destroy_slot(device: &ash::Device, allocator: &SharedAllocator, mut slot: Slot) {
+        slot.destroy(device, allocator);
     }
 
     /// # Safety

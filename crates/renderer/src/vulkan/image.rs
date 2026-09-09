@@ -445,7 +445,6 @@ mod tests {
             "placeholder.rs",
             "ssao.rs",
             "volumetrics/init.rs",
-            "water_caustic.rs",
         ];
 
         let mut offenders = Vec::new();
