@@ -61,10 +61,26 @@ impl VulkanContext {
         // first to keep the validation layer quiet. The ordering
         // also matches the static `accel_manager` teardown
         // pattern (skinned_blas before pipeline scratch buffers).
-        if let Some(ref skin) = self.skin_compute {
-            let slots = std::mem::take(&mut self.skin_slots);
-            for (_eid, slot) in slots {
+        //
+        // #3657 — the *drain* is unconditional; only the descriptor-set
+        // free is gated on the pipeline, because only that half needs it.
+        // This is the same shape #3374 un-nested for `morph_slots` below,
+        // and here the consequence of skipping was worse than a plain leak:
+        // each `SkinSlot::output_buffer` holds its own
+        // `Arc<Mutex<Allocator>>` clone, so leaving the slots in place
+        // released those clones only in the natural `Drop` pass that runs
+        // *after* the `Arc::try_unwrap` at the end of this destructor has
+        // already given up — taking the #665 leak-guard branch that
+        // deliberately leaks the device, surface, instance and debug
+        // messenger. Not reachable at HEAD (`skin_compute` is assigned once
+        // and every `skin_slots.insert` sits inside a `skin_compute` guard);
+        // pinned by `skin_slot_drain_is_not_nested_under_skin_compute_tests`
+        // so a device-lost recovery or RT-optional path cannot reintroduce it.
+        for (_eid, mut slot) in std::mem::take(&mut self.skin_slots) {
+            if let Some(ref skin) = self.skin_compute {
                 skin.destroy_slot(&self.device, alloc, slot);
+            } else {
+                slot.destroy(&self.device, alloc);
             }
         }
         // #3231 — MorphSlot owns its private weight buffer and an Arc to a
@@ -436,5 +452,72 @@ impl Drop for VulkanContext {
             self.instance.destroy_instance(None);
         }
         log::info!("Vulkan context destroyed cleanly");
+    }
+}
+
+/// #3657 — source-shape pin for the `skin_slots` drain, mirroring the #3374
+/// pin `skinned_blas_refit.rs` added for the `morph_slots` half.
+///
+/// The property is a *nesting* property, and nesting is not observable at
+/// runtime without a live device configured with no skin-compute pipeline —
+/// which is precisely the configuration that does not exist yet and which the
+/// gap is defence against. Source position is what is checkable without a GPU.
+#[cfg(test)]
+mod skin_slot_drain_is_not_nested_under_skin_compute_tests {
+    /// The drain must be a bare `for` over `std::mem::take(&mut
+    /// self.skin_slots)`, not a loop inside `if let Some(ref skin) =
+    /// self.skin_compute`.
+    ///
+    /// `SkinSlot::destroy` needs only the device and the allocator; only the
+    /// `free_descriptor_sets` half needs the pipeline, and pool destruction
+    /// frees those sets implicitly anyway. If the drain is ever re-nested, a
+    /// `skin_compute == None` shutdown leaks every live skinned output buffer
+    /// *and* the `Arc<Mutex<Allocator>>` clone each one holds — which trips
+    /// the #665 outstanding-references guard and leaks the `VkDevice`,
+    /// `VkSurfaceKHR`, `VkInstance` and debug messenger along with it.
+    #[test]
+    fn skin_slot_drain_sits_outside_the_skin_compute_guard() {
+        let src = include_str!("teardown.rs");
+
+        let drain_pos = src
+            .find("for (_eid, mut slot) in std::mem::take(&mut self.skin_slots)")
+            .expect(
+                "the skin_slots drain must be an unconditional `for` over the take — \
+                 re-nesting it under `if let Some(ref skin) = self.skin_compute` leaks \
+                 every output buffer and its allocator Arc clone on any configuration \
+                 where the pipeline is None (#3657, the #3374 shape for the skin half)",
+            );
+        // The pipeline is still consulted, but only for the descriptor-set
+        // free, and only from *inside* the loop body.
+        let guarded_free_pos = src[drain_pos..]
+            .find("if let Some(ref skin) = self.skin_compute {")
+            .map(|off| drain_pos + off)
+            .expect("the descriptor-set free must still be gated on the pipeline");
+        let fallback_pos = src[drain_pos..]
+            .find("slot.destroy(&self.device, alloc);")
+            .map(|off| drain_pos + off)
+            .expect(
+                "the pipeline-free path must still destroy the slot's own buffer via \
+                 SkinSlot::destroy",
+            );
+        assert!(
+            drain_pos < guarded_free_pos && guarded_free_pos < fallback_pos,
+            "the skin_compute guard must sit INSIDE the drain loop (drain → guarded \
+             free → pipeline-less fallback), not around it"
+        );
+
+        // The load-bearing local ordering #3657's DROP check calls out: slots
+        // must still drain before the pipeline's own pool destroy, or the
+        // free_descriptor_sets above is a
+        // VUID-vkFreeDescriptorSets-descriptorPool-parameter violation.
+        let pipeline_destroy_pos = src
+            .find("if let Some(ref mut sc) = self.skin_compute {\n            sc.destroy(&self.device);")
+            .expect("the SkinComputePipeline destroy must exist");
+        assert!(
+            drain_pos < pipeline_destroy_pos,
+            "skin_slots must drain BEFORE SkinComputePipeline::destroy tears down the \
+             descriptor pool those sets were allocated from (M29 / \
+             VUID-vkFreeDescriptorSets-descriptorPool-parameter)"
+        );
     }
 }

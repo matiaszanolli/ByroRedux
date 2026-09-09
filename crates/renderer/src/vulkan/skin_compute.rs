@@ -177,6 +177,28 @@ impl SkinSlot {
     pub fn output_address(&self) -> vk::DeviceAddress {
         self.output_address
     }
+
+    /// Release the slot's own allocation — the half of teardown that needs
+    /// **no** [`SkinComputePipeline`] (#3657).
+    ///
+    /// A `SkinSlot` owns exactly one `GpuBuffer`, and that `GpuBuffer` holds
+    /// its own `Arc<Mutex<Allocator>>` clone. Its descriptor sets are freed
+    /// back to the pipeline's pool by [`SkinComputePipeline::destroy_slot`]
+    /// when a pipeline is available, but pool destruction frees them
+    /// implicitly anyway — so the *buffer* must never be gated on the
+    /// pipeline's existence. Gating it meant a `skin_compute == None`
+    /// shutdown released those allocator clones only in the natural `Drop`
+    /// pass that runs after `VulkanContext::drop` has already given up on
+    /// `Arc::try_unwrap`, taking the #665 leak-guard branch that
+    /// intentionally leaks the device, surface, instance and debug
+    /// messenger. Mirrors `MorphSlot::destroy`, whose sibling drain #3374
+    /// un-nested for exactly this reason.
+    ///
+    /// Caller must ensure no in-flight command buffer still references the
+    /// output buffer (same contract as [`SkinComputePipeline::destroy_slot`]).
+    pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        self.output_buffer.destroy(device, allocator);
+    }
 }
 
 /// Per-frame counter snapshot for the skinned-BLAS coverage path.
@@ -571,6 +593,11 @@ impl SkinComputePipeline {
     /// slot's output buffer isn't referenced by an in-flight command
     /// buffer (typical pattern: defer via the `MeshRegistry`'s
     /// `deferred_destroy` slot, or call after a `device_wait_idle`).
+    ///
+    /// #3657 — the descriptor-set free is the *only* half that needs the
+    /// pipeline; the allocation half is [`SkinSlot::destroy`], callable
+    /// without one. Keep this the composition of the two rather than a
+    /// second copy of the buffer teardown.
     pub fn destroy_slot(
         &self,
         device: &ash::Device,
@@ -588,7 +615,7 @@ impl SkinComputePipeline {
             // until pool reset / destruction.
             let _ = device.free_descriptor_sets(self.descriptor_pool, &slot.descriptor_sets);
         }
-        slot.output_buffer.destroy(device, allocator);
+        slot.destroy(device, allocator);
     }
 
     /// Record a dispatch into `cmd` that pre-skins this slot's
