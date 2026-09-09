@@ -25,14 +25,13 @@ use super::composite::HDR_FORMAT;
 use super::descriptors::color_subresource_single_mip;
 use super::exposure::EXPOSURE_FORMAT;
 use super::gbuffer::{FSR_MASK_FORMAT, MOTION_FORMAT};
+use super::image::{GpuImage, GpuImageDesc};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::{fsr_motion_vector_scale, FrameExtentSet, UpscalerMode};
 use anyhow::{Context, Result};
 use ash::vk::{self, Handle};
 use byroredux_core::ecs::components::camera::ACTIVE_DEPTH_MAPPING;
 use byroredux_fsr3_sys as fsr3;
-use gpu_allocator::vulkan as vk_alloc;
-use gpu_allocator::MemoryLocation;
 use std::ffi::c_void;
 
 /// Metres per unit of the engine's **view space**, for
@@ -135,9 +134,10 @@ pub fn upscale_output_bytes(output: vk::Extent2D) -> vk::DeviceSize {
 pub struct FrameUpscaler {
     mode: UpscalerMode,
     context: Option<fsr3::Context>,
-    output_images: Vec<vk::Image>,
-    output_views: Vec<vk::ImageView>,
-    output_allocations: Vec<Option<vk_alloc::Allocation>>,
+    /// #3860 — was three parallel `Vec`s. This is the file whose
+    /// `create_outputs` #2178's own comment named as the shape to copy; there
+    /// is now one shape to copy from instead.
+    outputs: Vec<GpuImage>,
     extents: FrameExtentSet,
     dispatched_this_frame: bool,
     /// Set when a recorded dispatch returned an SDK error. The context is kept
@@ -203,9 +203,7 @@ impl FrameUpscaler {
             mode,
             shader_float16,
             context: None,
-            output_images: Vec::new(),
-            output_views: Vec::new(),
-            output_allocations: Vec::new(),
+            outputs: Vec::new(),
             extents,
             dispatched_this_frame: false,
             dispatch_failure: None,
@@ -272,86 +270,23 @@ impl FrameUpscaler {
 
     fn create_outputs(&mut self, device: &ash::Device, allocator: &SharedAllocator) -> Result<()> {
         for frame in 0..MAX_FRAMES_IN_FLIGHT {
-            let info = vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(HDR_FORMAT)
-                .extent(vk::Extent3D {
-                    width: self.extents.output.width,
-                    height: self.extents.output.height,
-                    depth: 1,
-                })
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(
+            // #3860 — was ~90 lines of create → allocate → bind → view with a
+            // three-arm cleanup. #2178 was diagnosed against this exact body
+            // (a sub-allocation stranded on bind failure) and `gbuffer.rs`'s
+            // copy was fixed by comparing against it; both now share one.
+            self.outputs.push(GpuImage::create(
+                device,
+                allocator,
+                &GpuImageDesc::color_2d(
+                    &format!("fsr upscaled output {frame}"),
+                    self.extents.output.width,
+                    self.extents.output.height,
+                    HDR_FORMAT,
                     vk::ImageUsageFlags::STORAGE
                         | vk::ImageUsageFlags::SAMPLED
                         | vk::ImageUsageFlags::TRANSFER_DST,
-                )
-                .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .initial_layout(vk::ImageLayout::UNDEFINED);
-            let image = unsafe {
-                // SAFETY: `info` is fully initialized and the returned image
-                // is stored immediately for cleanup on every later failure.
-                device
-                    .create_image(&info, None)
-                    .context("create upscale output image")?
-            };
-            self.output_images.push(image);
-            self.output_allocations.push(None);
-
-            let requirements = unsafe {
-                // SAFETY: `image` was just created by this device and is live.
-                device.get_image_memory_requirements(image)
-            };
-            let allocation = allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .allocate(&vk_alloc::AllocationCreateDesc {
-                    name: &format!("upscale_output_{frame}"),
-                    requirements,
-                    location: MemoryLocation::GpuOnly,
-                    linear: false,
-                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-                })
-                .context("allocate upscale output image")?;
-            // #2178 / PERF-D3-03 — return the sub-allocation to the allocator
-            // before bailing. `allocation` is still a local at this point:
-            // `output_allocations[frame]` holds `None`, so neither `destroy`
-            // nor `Drop` can reach it, and the memory would stay off the free
-            // list for the process lifetime. The image itself is already in
-            // `output_images` and is cleaned up normally. Mirrors
-            // `exposure.rs`'s bind-failure branch.
-            if let Err(error) = unsafe {
-                // SAFETY: `allocation` was created from this image's exact
-                // requirements and the image has not been bound before.
-                device.bind_image_memory(image, allocation.memory(), allocation.offset())
-            } {
-                allocator
-                    .lock()
-                    .expect("allocator lock poisoned")
-                    .free(allocation)
-                    .ok();
-                return Err(error).context("bind upscale output image");
-            }
-            self.output_allocations[frame] = Some(allocation);
-
-            let view = unsafe {
-                // SAFETY: the image is live, bound, and format-compatible with
-                // this single-mip 2D color view.
-                device
-                    .create_image_view(
-                        &vk::ImageViewCreateInfo::default()
-                            .image(image)
-                            .view_type(vk::ImageViewType::TYPE_2D)
-                            .format(HDR_FORMAT)
-                            .subresource_range(color_subresource_single_mip()),
-                        None,
-                    )
-                    .context("create upscale output view")?
-            };
-            self.output_views.push(view);
+                ),
+            )?);
         }
         Ok(())
     }
@@ -364,9 +299,10 @@ impl FrameUpscaler {
     ) -> Result<()> {
         super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
             let barriers: Vec<_> = self
-                .output_images
+                .outputs
                 .iter()
-                .map(|&image| {
+                .map(|output| {
+                    let image = output.image;
                     vk::ImageMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::empty())
                         .dst_access_mask(vk::AccessFlags::SHADER_READ)
@@ -394,12 +330,12 @@ impl FrameUpscaler {
         .context("initialize upscale output layouts")
     }
 
-    pub fn output_views(&self) -> &[vk::ImageView] {
-        &self.output_views
+    pub fn output_views(&self) -> Vec<vk::ImageView> {
+        self.outputs.iter().map(|output| output.view).collect()
     }
 
     pub fn output_image(&self, frame: usize) -> vk::Image {
-        self.output_images[frame]
+        self.outputs[frame].image
     }
 
     pub fn is_fsr_dispatch_active(&self) -> bool {
@@ -581,7 +517,7 @@ impl FrameUpscaler {
 
         let render_size = [self.extents.render.width, self.extents.render.height];
         let output_size = [self.extents.output.width, self.extents.output.height];
-        let output = self.output_images[frame];
+        let output = self.outputs[frame].image;
         let context = self
             .context
             .as_mut()
@@ -758,7 +694,7 @@ impl FrameUpscaler {
     ///
     /// `cmd` must be recording outside a render pass. `scene_color` must be
     /// in `SHADER_READ_ONLY_OPTIMAL` (composition's output layout) and
-    /// `self.output_images[frame]` must currently be in `output_layout`
+    /// `self.outputs[frame].image` must currently be in `output_layout`
     /// (the caller-declared parameter — `SHADER_READ_ONLY_OPTIMAL` on the
     /// steady-state bridge path, `GENERAL` on the dispatch-failure recovery
     /// path). Both images must remain live through submission. This is the
@@ -773,7 +709,7 @@ impl FrameUpscaler {
         output_layout: vk::ImageLayout,
     ) {
         let range = color_subresource_single_mip();
-        let output = self.output_images[frame];
+        let output = self.outputs[frame].image;
         let output_src_access = blit_output_src_access(output_layout);
         let before = [
             vk::ImageMemoryBarrier::default()
@@ -884,7 +820,7 @@ impl FrameUpscaler {
     /// must each be in `SHADER_READ_ONLY_OPTIMAL` (their producing render
     /// pass's output layout — this barrier is execution-only for the four,
     /// no layout change). `inputs.depth` must be in
-    /// `DEPTH_STENCIL_READ_ONLY_OPTIMAL`. `self.output_images[frame]` must
+    /// `DEPTH_STENCIL_READ_ONLY_OPTIMAL`. `self.outputs[frame].image` must
     /// be in `SHADER_READ_ONLY_OPTIMAL` (this frame slot's steady-state
     /// layout from the prior blit/dispatch). All named images must remain
     /// live through submission.
@@ -925,7 +861,7 @@ impl FrameUpscaler {
                 .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
                 .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .new_layout(vk::ImageLayout::GENERAL)
-                .image(self.output_images[frame])
+                .image(self.outputs[frame].image)
                 .subresource_range(color),
         ];
         unsafe {
@@ -1017,7 +953,7 @@ impl FrameUpscaler {
     /// # Safety
     ///
     /// `cmd` must be recording outside a render pass. `depth_image` must be
-    /// in `SHADER_READ_ONLY_OPTIMAL` and `self.output_images[frame]` must be
+    /// in `SHADER_READ_ONLY_OPTIMAL` and `self.outputs[frame].image` must be
     /// in `GENERAL` — the layouts the validated SDK contract above claims
     /// the FFX Vulkan backend leaves them in. The SDK dispatch's compute
     /// accesses must already be recorded into this same `cmd` before this
@@ -1048,7 +984,7 @@ impl FrameUpscaler {
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.output_images[frame])
+                .image(self.outputs[frame].image)
                 .subresource_range(color_subresource_single_mip()),
         ];
         unsafe {
@@ -1145,24 +1081,10 @@ impl FrameUpscaler {
         device: &ash::Device,
         allocator: &SharedAllocator,
     ) {
-        for view in self.output_views.drain(..) {
-            // SAFETY: `view` was created by this device and, per this fn's
-            // `# Safety` contract, no command buffer referencing it is still
-            // executing.
-            unsafe { device.destroy_image_view(view, None) };
-        }
-        for image in self.output_images.drain(..) {
-            // SAFETY: `image` was created by this device; every view onto it
-            // is destroyed above, and per this fn's contract the device is
-            // idle.
-            unsafe { device.destroy_image(image, None) };
-        }
-        for allocation in self.output_allocations.drain(..).flatten() {
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(allocation)
-                .ok();
+        for mut output in self.outputs.drain(..) {
+            // #3860 — view, image and slab in one call, in that order. Device
+            // is idle per this fn's `# Safety` contract.
+            output.destroy(device, allocator);
         }
     }
 
@@ -1494,59 +1416,14 @@ mod tests {
     }
 }
 
-/// #2178 / PERF-D3-03 — both image-creation loops must return their
-/// gpu-allocator sub-allocation on a `bind_image_memory` failure.
-///
-/// Static assertions: the branch fires only on a real allocator/driver
-/// failure, which `cargo test` has no way to induce. What is checkable is
-/// that the bind result is inspected rather than `?`-propagated past the
-/// still-local allocation — the `?` form is precisely what leaked, because
-/// at that point the allocation is not yet in `output_allocations` /
-/// `allocations`, so neither `destroy()` nor `Drop` can reach it.
-#[cfg(test)]
-mod bind_failure_frees_allocation_tests {
-    const FRAME_UPSCALER_RS: &str = include_str!("frame_upscaler.rs");
-
-    /// Slice of `source` from the first `bind_image_memory` mention to the
-    /// end of the enclosing statement's error branch — in practice, up to
-    /// the following `self.` push/assign that takes ownership.
-    fn bind_branch(source: &str, terminator: &str) -> String {
-        let start = source
-            .find("bind_image_memory")
-            .expect("bind_image_memory disappeared");
-        let rest = &source[start..];
-        let end = rest
-            .find(terminator)
-            .unwrap_or_else(|| panic!("`{terminator}` not found after the bind call"));
-        rest[..end].to_string()
-    }
-
-    #[test]
-    fn frame_upscaler_create_outputs_frees_on_bind_failure() {
-        let production = FRAME_UPSCALER_RS
-            .split_once("\n#[cfg(test)]")
-            .expect("frame_upscaler.rs lost its test modules")
-            .0;
-        let branch = bind_branch(
-            production,
-            "self.output_allocations[frame] = Some(allocation);",
-        );
-        assert!(
-            branch.contains(".free(allocation)"),
-            "create_outputs no longer frees its sub-allocation when \
-             bind_image_memory fails — the allocation is still a local there \
-             (output_allocations[frame] is None), so nothing else can reclaim \
-             it (#2178). Branch was:\n{branch}",
-        );
-    }
-
-    // #3860 — `gbuffer_create_attachment_frees_on_bind_failure` lived here
-    // too, scanning `gbuffer.rs` for the same ordering. That file no longer
-    // hand-rolls the chain, so the assertion moved to
-    // `image.rs::the_bind_and_view_error_arms_free_before_destroying`, which
-    // covers every migrated site at once instead of one per copy. The
-    // frame_upscaler assertion above stays until that file migrates.
-}
+// #3860 — `bind_failure_frees_allocation_tests` lived here, pinning #2178's
+// free-before-destroy ordering once per copy of the image chain: one
+// assertion scanning this file, one scanning `gbuffer.rs`. Both files now use
+// `GpuImage::create`, so the assertion moved to
+// `image.rs::the_bind_and_view_error_arms_free_before_destroying`, which
+// checks the single helper's bind AND view arms and therefore covers every
+// migrated site at once. That is the consolidation working as intended: one
+// place to state the rule, one place to check it.
 
 /// #2200 / TD2-NEW-01 — the extracted FSR input barrier keeps the exact field
 /// values the four hand-rolled copies had.

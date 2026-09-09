@@ -486,7 +486,6 @@ mod tests {
         // into a blanket exemption. When it empties, delete it and that check.
         const PENDING: &[&str] = &[
             "context/helpers.rs",
-            "frame_upscaler.rs",
             "groundcover_bench.rs",
             "volumetrics/init.rs",
         ];
