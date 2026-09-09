@@ -1321,7 +1321,7 @@ impl VulkanContext {
         let hdr_views_owned: Vec<vk::ImageView> = composite
             .as_ref()
             .expect("composite must exist after construction")
-            .hdr_image_views
+            .hdr_views()
             .clone();
 
         // 14d. TAA resolve pass — needs the composite's HDR views (created

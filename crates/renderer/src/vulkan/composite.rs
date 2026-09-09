@@ -29,12 +29,12 @@ use super::descriptors::{
     write_combined_image_sampler, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::gbuffer::FSR_MASK_FORMAT;
+use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::FrameExtentSet;
 use anyhow::{Context, Result};
 use ash::vk;
-use gpu_allocator::vulkan as vk_alloc;
 
 const COMPOSITE_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
 const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.spv");
@@ -184,17 +184,13 @@ pub const COMPOSITE_BYTES_PER_PIXEL: u32 = 2 /* hdr_images + scene_images */ * 8
 /// Owns the HDR intermediates + composite pipeline + composite render pass.
 pub struct CompositePipeline {
     /// HDR color images (one per frame-in-flight slot).
-    pub hdr_images: Vec<vk::Image>,
-    /// HDR color image views (parallel to hdr_images).
-    pub hdr_image_views: Vec<vk::ImageView>,
-    /// GPU-local allocations backing hdr_images.
-    hdr_allocations: Vec<Option<vk_alloc::Allocation>>,
-
-    /// Complete render-resolution linear-HDR scene, one per frame slot.
-    pub scene_images: Vec<vk::Image>,
-    /// Views parallel to `scene_images`.
-    pub scene_image_views: Vec<vk::ImageView>,
-    scene_allocations: Vec<Option<vk_alloc::Allocation>>,
+    /// #3860 — was six parallel `Vec`s (`hdr_images` / `hdr_image_views` /
+    /// `hdr_allocations` and the same three for `scene`), whose indices had to
+    /// be kept in step by hand. Two `Vec<GpuImage>` make that structural.
+    pub hdr: Vec<GpuImage>,
+    /// The fully composited scene, written after `record_composite_pass` and
+    /// read by bloom and by the FSR upscaler.
+    pub scene: Vec<GpuImage>,
 
     /// Dedicated render pass for the composite step. Single color attachment
     /// = RGBA16F scene output, no depth.
@@ -311,12 +307,8 @@ impl CompositePipeline {
         // on any error. Fields that haven't been created yet use null
         // handles — destroy() calls vkDestroy* on null (always a no-op).
         let mut partial = Self {
-            hdr_images: Vec::new(),
-            hdr_image_views: Vec::new(),
-            hdr_allocations: Vec::new(),
-            scene_images: Vec::new(),
-            scene_image_views: Vec::new(),
-            scene_allocations: Vec::new(),
+            hdr: Vec::new(),
+            scene: Vec::new(),
             composite_render_pass: vk::RenderPass::null(),
             composite_framebuffers: Vec::new(),
             pipeline: vk::Pipeline::null(),
@@ -354,86 +346,21 @@ impl CompositePipeline {
 
         // ── 1. Create HDR images (one per frame-in-flight) ───────────
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let img_info = vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(HDR_FORMAT)
-                .extent(vk::Extent3D {
-                    width: extents.render.width,
-                    height: extents.render.height,
-                    depth: 1,
-                })
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .initial_layout(vk::ImageLayout::UNDEFINED);
-            // SAFETY: `img_info` fully populated above; the new image handle is
-            // owned by `partial.hdr_images` on Ok. On Err, `try_or_cleanup!`
-            // runs `partial.destroy` before returning.
-            let img = try_or_cleanup!(unsafe {
-                device
-                    .create_image(&img_info, None)
-                    .context("Failed to create HDR color image")
-            });
-            partial.hdr_images.push(img);
-            partial.hdr_allocations.push(None);
-
-            let alloc = try_or_cleanup!(allocator
-                .lock()
-                .expect("allocator lock")
-                .allocate(&vk_alloc::AllocationCreateDesc {
-                    name: &format!("hdr_color_{}", i),
-                    // SAFETY: `img` was just created above (this loop iteration) and is live.
-                    requirements: unsafe { device.get_image_memory_requirements(img) },
-                    location: gpu_allocator::MemoryLocation::GpuOnly,
-                    linear: false,
-                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-                })
-                .context("Failed to allocate HDR image memory"));
-            // #2178 / PERF-D3-03 — hand the sub-allocation to `partial` BEFORE
-            // the fallible bind. `try_or_cleanup!` reclaims whatever `partial`
-            // owns; with the store after the bind, a bind failure left
-            // `hdr_allocations[i]` as `None` and stranded the memory off the
-            // allocator's free list. Storing first is the smaller fix here than
-            // an explicit `free` (which would mean inlining the macro body);
-            // the sites that have no container to store into use the explicit
-            // form instead — see `frame_upscaler.rs` and `exposure.rs`.
-            partial.hdr_allocations[i] = Some(alloc);
-            let (memory, offset) = {
-                let alloc = partial.hdr_allocations[i]
-                    .as_ref()
-                    .expect("stored on the line above");
-                // SAFETY: reading the handle + offset of a live allocation this
-                // scope owns; nothing has aliased or freed it since `allocate`.
-                unsafe { (alloc.memory(), alloc.offset()) }
-            };
-            // SAFETY: `img` (created above) matches the memory requirements that
-            // produced the allocation; bound exactly once. On Err,
-            // `try_or_cleanup!` destroys the partial state, allocation included.
-            try_or_cleanup!(unsafe {
-                device
-                    .bind_image_memory(img, memory, offset)
-                    .context("bind HDR image memory")
-            });
-
-            // SAFETY: `img` is bound to memory (line above); the view handle is
-            // owned by `partial.hdr_image_views` on Ok, freed by `try_or_cleanup!`
-            // on Err.
-            let view = try_or_cleanup!(unsafe {
-                device
-                    .create_image_view(
-                        &vk::ImageViewCreateInfo::default()
-                            .image(img)
-                            .view_type(vk::ImageViewType::TYPE_2D)
-                            .format(HDR_FORMAT)
-                            .subresource_range(super::descriptors::color_subresource_single_mip()),
-                        None,
-                    )
-                    .context("HDR image view")
-            });
-            partial.hdr_image_views.push(view);
+            // #3860 — was ~85 lines of create → allocate → bind → view with a
+            // three-arm cleanup, times two (the scene loop below was the same
+            // body again).
+            let image = try_or_cleanup!(GpuImage::create(
+                device,
+                allocator,
+                &GpuImageDesc::color_2d(
+                    &format!("composite hdr {i}"),
+                    extents.render.width,
+                    extents.render.height,
+                    HDR_FORMAT,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                ),
+            ));
+            partial.hdr.push(image);
         }
 
         // The main HDR attachment above is deliberately still a distinct
@@ -441,90 +368,27 @@ impl CompositePipeline {
         // resolves every render-resolution contribution into the single image
         // that either FSR or the native bridge consumes.
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let img_info = vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(HDR_FORMAT)
-                .extent(vk::Extent3D {
-                    width: extents.render.width,
-                    height: extents.render.height,
-                    depth: 1,
-                })
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(
+            // #2796 / REN-D16-01 — `STORAGE` lets `BloomPipeline::apply_to_scene`
+            // read-modify-write this image in place (imageLoad current scene +
+            // imageStore scene + bloom*intensity) once bloom's pyramid has been
+            // built FROM this same image, so the sky/GI/caustics composite adds
+            // actually receive bloom instead of the pre-composite raw HDR that
+            // never contained them. `TRANSFER_SRC` is the native-bridge blit.
+            let image = try_or_cleanup!(GpuImage::create(
+                device,
+                allocator,
+                &GpuImageDesc::color_2d(
+                    &format!("composite scene {i}"),
+                    extents.render.width,
+                    extents.render.height,
+                    HDR_FORMAT,
                     vk::ImageUsageFlags::COLOR_ATTACHMENT
                         | vk::ImageUsageFlags::SAMPLED
                         | vk::ImageUsageFlags::TRANSFER_SRC
-                        // #2796 / REN-D16-01 — STORAGE lets
-                        // `BloomPipeline::apply_to_scene` read-modify-write
-                        // this image in place (imageLoad current scene +
-                        // imageStore scene + bloom*intensity) once bloom's
-                        // pyramid has been built FROM this same image, so
-                        // the sky/GI/caustics composite adds now actually
-                        // receive bloom instead of the pre-composite raw
-                        // HDR that never contained them.
                         | vk::ImageUsageFlags::STORAGE,
-                )
-                .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .initial_layout(vk::ImageLayout::UNDEFINED);
-            let image = try_or_cleanup!(unsafe {
-                // SAFETY: `img_info` is fully initialized and contains no
-                // pointers that outlive this call.
-                device
-                    .create_image(&img_info, None)
-                    .context("create composed scene image")
-            });
-            partial.scene_images.push(image);
-            partial.scene_allocations.push(None);
-
-            let allocation = try_or_cleanup!(allocator
-                .lock()
-                .expect("allocator lock")
-                .allocate(&vk_alloc::AllocationCreateDesc {
-                    name: &format!("composed_scene_{i}"),
-                    // SAFETY: `image` was just created by this device and
-                    // remains live.
-                    requirements: unsafe { device.get_image_memory_requirements(image) },
-                    location: gpu_allocator::MemoryLocation::GpuOnly,
-                    linear: false,
-                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-                })
-                .context("allocate composed scene image"));
-            // #2178 — store before binding, same reasoning as the HDR loop above.
-            partial.scene_allocations[i] = Some(allocation);
-            let (memory, offset) = {
-                let allocation = partial.scene_allocations[i]
-                    .as_ref()
-                    .expect("stored on the line above");
-                // SAFETY: as above — live, uniquely-owned allocation.
-                unsafe { (allocation.memory(), allocation.offset()) }
-            };
-            try_or_cleanup!(unsafe {
-                // SAFETY: the allocation satisfies the queried requirements for
-                // the still-unbound `image` and belongs to this logical
-                // device.
-                device
-                    .bind_image_memory(image, memory, offset)
-                    .context("bind composed scene image")
-            });
-
-            let view = try_or_cleanup!(unsafe {
-                // SAFETY: `image` is live and bound, and `HDR_FORMAT` matches
-                // the format it was created with above.
-                device
-                    .create_image_view(
-                        &vk::ImageViewCreateInfo::default()
-                            .image(image)
-                            .view_type(vk::ImageViewType::TYPE_2D)
-                            .format(HDR_FORMAT)
-                            .subresource_range(super::descriptors::color_subresource_single_mip()),
-                        None,
-                    )
-                    .context("create composed scene image view")
-            });
-            partial.scene_image_views.push(view);
+                ),
+            ));
+            partial.scene.push(image);
         }
 
         // ── 2. HDR sampler (linear filter for slight bilinear smoothing) ──
@@ -705,7 +569,7 @@ impl CompositePipeline {
         // ── 4. Composite framebuffers (one per frame slot) ──────────
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let attachments = [
-                partial.scene_image_views[i],
+                partial.scene[i].view,
                 reactive_views[i],
                 transparency_views[i],
             ];
@@ -889,7 +753,7 @@ impl CompositePipeline {
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let hdr_info = [vk::DescriptorImageInfo::default()
                 .sampler(partial.hdr_sampler)
-                .image_view(partial.hdr_image_views[i])
+                .image_view(partial.hdr[i].view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             // NEAREST: preserves per-pixel denoised values; LINEAR would add
             // a second spatial-blur pass on top of what SVGF already applied.
@@ -1190,44 +1054,9 @@ impl CompositePipeline {
         self.composite_framebuffers.clear();
 
         // Destroy old HDR images
-        for &view in &self.hdr_image_views {
-            // SAFETY: `view` was created by this device and is destroyed here
-            // at teardown, when the device is idle (frames-in-flight fenced /
-            // device_wait_idle), so no in-flight command buffer references it.
-            unsafe { device.destroy_image_view(view, None) };
-        }
-        self.hdr_image_views.clear();
-        for &img in &self.hdr_images {
-            // SAFETY: `img` was created by this device and is destroyed here
-            // at teardown, when the device is idle (frames-in-flight fenced /
-            // device_wait_idle), so no in-flight command buffer references it.
-            unsafe { device.destroy_image(img, None) };
-        }
-        self.hdr_images.clear();
-        for a in self.hdr_allocations.drain(..).flatten() {
-            allocator.lock().expect("allocator lock").free(a).ok();
-        }
-        for &view in &self.scene_image_views {
-            // SAFETY: `view` was created by this device and is destroyed here
-            // at teardown, when the device is idle (frames-in-flight fenced /
-            // device_wait_idle), so no in-flight command buffer references it.
-            unsafe { device.destroy_image_view(view, None) };
-        }
-        self.scene_image_views.clear();
-        for &image in &self.scene_images {
-            // SAFETY: `image` was created by this device and is destroyed
-            // here at teardown, when the device is idle (frames-in-flight
-            // fenced / device_wait_idle), so no in-flight command buffer
-            // references it.
-            unsafe { device.destroy_image(image, None) };
-        }
-        self.scene_images.clear();
-        for allocation in self.scene_allocations.drain(..).flatten() {
-            allocator
-                .lock()
-                .expect("allocator lock")
-                .free(allocation)
-                .ok();
+        for mut image in self.hdr.drain(..).chain(self.scene.drain(..)) {
+            // #3860 — view, image and slab in one call, in that order.
+            image.destroy(device, allocator);
         }
 
         self.render_extent = extents.render;
@@ -1236,136 +1065,38 @@ impl CompositePipeline {
         // already-allocated new resources. See #283.
         let result = (|| -> Result<()> {
             for i in 0..MAX_FRAMES_IN_FLIGHT {
-                let img_info = vk::ImageCreateInfo::default()
-                    .image_type(vk::ImageType::TYPE_2D)
-                    .format(HDR_FORMAT)
-                    .extent(vk::Extent3D {
-                        width: extents.render.width,
-                        height: extents.render.height,
-                        depth: 1,
-                    })
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .tiling(vk::ImageTiling::OPTIMAL)
-                    .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                    .initial_layout(vk::ImageLayout::UNDEFINED);
-                // SAFETY: `img_info` fully populated above; image owned
-                // by `self.hdr_images` on Ok. On Err the `?` bubbles up
-                // before any subsequent allocation runs.
-                let img = unsafe { device.create_image(&img_info, None)? };
-                self.hdr_images.push(img);
-
-                let alloc = allocator.lock().expect("allocator lock").allocate(
-                    &vk_alloc::AllocationCreateDesc {
-                        name: &format!("hdr_color_{}", i),
-                        // SAFETY: `img` just created above.
-                        requirements: unsafe { device.get_image_memory_requirements(img) },
-                        location: gpu_allocator::MemoryLocation::GpuOnly,
-                        linear: false,
-                        allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-                    },
-                )?;
-                // #2178 — push before the fallible bind so the `?` cannot
-                // strand the sub-allocation; `destroy` drains
-                // `hdr_allocations` and frees whatever is in it.
-                self.hdr_allocations.push(Some(alloc));
-                let (memory, offset) = {
-                    let alloc = self
-                        .hdr_allocations
-                        .last()
-                        .and_then(Option::as_ref)
-                        .expect("pushed on the line above");
-                    // SAFETY: as above — live, uniquely-owned allocation.
-                    unsafe { (alloc.memory(), alloc.offset()) }
-                };
-                // SAFETY: `img` matches the memory requirements that
-                // produced the allocation; bound once per image.
-                unsafe { device.bind_image_memory(img, memory, offset)? };
-
-                // SAFETY: `img` is bound (line above); view owned by
-                // `self.hdr_image_views` on Ok.
-                let view = unsafe {
-                    device.create_image_view(
-                        &vk::ImageViewCreateInfo::default()
-                            .image(img)
-                            .view_type(vk::ImageViewType::TYPE_2D)
-                            .format(HDR_FORMAT)
-                            .subresource_range(super::descriptors::color_subresource_single_mip()),
-                        None,
-                    )?
-                };
-                self.hdr_image_views.push(view);
+                // #3860 — the third copy of the chain in this file (init had
+                // two, resize has this one).
+                self.hdr.push(GpuImage::create(
+                    device,
+                    allocator,
+                    &GpuImageDesc::color_2d(
+                        &format!("composite hdr {i}"),
+                        extents.render.width,
+                        extents.render.height,
+                        HDR_FORMAT,
+                        vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    ),
+                )?);
             }
 
             for i in 0..MAX_FRAMES_IN_FLIGHT {
-                let info = vk::ImageCreateInfo::default()
-                    .image_type(vk::ImageType::TYPE_2D)
-                    .format(HDR_FORMAT)
-                    .extent(vk::Extent3D {
-                        width: extents.render.width,
-                        height: extents.render.height,
-                        depth: 1,
-                    })
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .tiling(vk::ImageTiling::OPTIMAL)
-                    .usage(
+                // #3860 — the fourth copy; same usage set as the init path
+                // (see the #2796 note there for why `STORAGE` is on it).
+                self.scene.push(GpuImage::create(
+                    device,
+                    allocator,
+                    &GpuImageDesc::color_2d(
+                        &format!("composite scene {i}"),
+                        extents.render.width,
+                        extents.render.height,
+                        HDR_FORMAT,
                         vk::ImageUsageFlags::COLOR_ATTACHMENT
                             | vk::ImageUsageFlags::SAMPLED
                             | vk::ImageUsageFlags::TRANSFER_SRC
-                            // #2796 / REN-D16-01 — see the matching comment
-                            // at the initial-creation site above.
                             | vk::ImageUsageFlags::STORAGE,
-                    )
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                    .initial_layout(vk::ImageLayout::UNDEFINED);
-                // SAFETY: `info` fully populated above; image owned
-                // by `self.scene_images` on Ok. On Err the `?` bubbles up
-                // before any subsequent allocation runs.
-                let image = unsafe { device.create_image(&info, None)? };
-                self.scene_images.push(image);
-                self.scene_allocations.push(None);
-
-                let allocation = allocator.lock().expect("allocator lock").allocate(
-                    &vk_alloc::AllocationCreateDesc {
-                        name: &format!("composed_scene_{i}"),
-                        // SAFETY: `image` just created above.
-                        requirements: unsafe { device.get_image_memory_requirements(image) },
-                        location: gpu_allocator::MemoryLocation::GpuOnly,
-                        linear: false,
-                        allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-                    },
-                )?;
-                // #2178 — store before the fallible bind, same as the HDR
-                // loop above.
-                self.scene_allocations[i] = Some(allocation);
-                let (memory, offset) = {
-                    let allocation = self.scene_allocations[i]
-                        .as_ref()
-                        .expect("stored on the line above");
-                    // SAFETY: as above — live, uniquely-owned allocation.
-                    unsafe { (allocation.memory(), allocation.offset()) }
-                };
-                // SAFETY: `image` matches the memory requirements that
-                // produced the allocation; bound once per image.
-                unsafe { device.bind_image_memory(image, memory, offset)? };
-
-                // SAFETY: `image` is bound (line above); view owned by
-                // `self.scene_image_views` on Ok.
-                let view = unsafe {
-                    device.create_image_view(
-                        &vk::ImageViewCreateInfo::default()
-                            .image(image)
-                            .view_type(vk::ImageViewType::TYPE_2D)
-                            .format(HDR_FORMAT)
-                            .subresource_range(super::descriptors::color_subresource_single_mip()),
-                        None,
-                    )?
-                };
-                self.scene_image_views.push(view);
+                    ),
+                )?);
             }
 
             // Rewrite descriptor sets to point at the new HDR, indirect,
@@ -1379,7 +1110,7 @@ impl CompositePipeline {
             for i in 0..MAX_FRAMES_IN_FLIGHT {
                 let hdr_info = [vk::DescriptorImageInfo::default()
                     .sampler(self.hdr_sampler)
-                    .image_view(self.hdr_image_views[i])
+                    .image_view(self.hdr[i].view)
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
                 // NEAREST: preserves per-pixel SVGF denoised values.
                 let indirect_info = [vk::DescriptorImageInfo::default()
@@ -1441,11 +1172,7 @@ impl CompositePipeline {
 
             // Recreate per-frame scene-composition framebuffers.
             for i in 0..MAX_FRAMES_IN_FLIGHT {
-                let attachments = [
-                    self.scene_image_views[i],
-                    reactive_views[i],
-                    transparency_views[i],
-                ];
+                let attachments = [self.scene[i].view, reactive_views[i], transparency_views[i]];
                 let fb_info = vk::FramebufferCreateInfo::default()
                     .render_pass(self.composite_render_pass)
                     .attachments(&attachments)
@@ -1476,41 +1203,11 @@ impl CompositePipeline {
                 unsafe { device.destroy_framebuffer(fb, None) };
             }
             self.composite_framebuffers.clear();
-            for &view in &self.hdr_image_views {
-                // SAFETY: `view` was created by this device and is destroyed here
-                // at teardown, when the device is idle (frames-in-flight fenced /
-                // device_wait_idle), so no in-flight command buffer references it.
-                unsafe { device.destroy_image_view(view, None) };
-            }
-            self.hdr_image_views.clear();
-            for &img in &self.hdr_images {
-                // SAFETY: `img` was created by this device and is destroyed here
-                // at teardown, when the device is idle (frames-in-flight fenced /
-                // device_wait_idle), so no in-flight command buffer references it.
-                unsafe { device.destroy_image(img, None) };
-            }
-            self.hdr_images.clear();
-            for a in self.hdr_allocations.drain(..).flatten() {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
-            for &view in &self.scene_image_views {
-                // SAFETY: covered by the four-loop comment above — fenced
-                // resize path, device idle, no in-flight references.
-                unsafe { device.destroy_image_view(view, None) };
-            }
-            self.scene_image_views.clear();
-            for &image in &self.scene_images {
-                // SAFETY: covered by the four-loop comment above — fenced
-                // resize path, device idle, no in-flight references.
-                unsafe { device.destroy_image(image, None) };
-            }
-            self.scene_images.clear();
-            for allocation in self.scene_allocations.drain(..).flatten() {
-                allocator
-                    .lock()
-                    .expect("allocator lock")
-                    .free(allocation)
-                    .ok();
+            for mut image in self.hdr.drain(..).chain(self.scene.drain(..)) {
+                // #3860 — the resize path's four teardown loops become one.
+                // Device is idle here (fenced resize), so no in-flight command
+                // references these handles.
+                image.destroy(device, allocator);
             }
         }
         result
@@ -1543,7 +1240,7 @@ impl CompositePipeline {
         // `rebind_hdr_views` contract (single source-of-views arg)
         // doesn't need to grow a borrow-self variant. Views are `Copy`-
         // like Vulkan handles — no actual allocation beyond the Vec.
-        let views = self.hdr_image_views.clone();
+        let views: Vec<vk::ImageView> = self.hdr.iter().map(|i| i.view).collect();
         self.rebind_hdr_views(device, &views, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
     }
 
@@ -1578,8 +1275,21 @@ impl CompositePipeline {
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(params))
     }
 
+    /// The HDR colour views, one per frame in flight.
+    ///
+    /// #3860 — replaces the `pub hdr_image_views` field. Three call sites
+    /// cloned it as a `Vec`; they now ask for the Vec they wanted.
+    pub fn hdr_views(&self) -> Vec<vk::ImageView> {
+        self.hdr.iter().map(|image| image.view).collect()
+    }
+
+    /// The composited scene view for one frame in flight.
+    pub fn scene_view(&self, frame: usize) -> vk::ImageView {
+        self.scene[frame].view
+    }
+
     pub fn scene_image(&self, frame: usize) -> vk::Image {
-        self.scene_images[frame]
+        self.scene[frame].image
     }
 
     /// Destroy all Vulkan objects. Must be called before the device/allocator
@@ -1661,44 +1371,11 @@ impl CompositePipeline {
             // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_sampler(self.nearest_sampler, None) };
         }
-        for &view in &self.hdr_image_views {
-            // SAFETY: `view` was created by this device and is destroyed here
-            // at teardown, when the device is idle (frames-in-flight fenced /
-            // device_wait_idle), so no in-flight command buffer references it.
-            unsafe { device.destroy_image_view(view, None) };
-        }
-        self.hdr_image_views.clear();
-        for &img in &self.hdr_images {
-            // SAFETY: `img` was created by this device and is destroyed here
-            // at teardown, when the device is idle (frames-in-flight fenced /
-            // device_wait_idle), so no in-flight command buffer references it.
-            unsafe { device.destroy_image(img, None) };
-        }
-        self.hdr_images.clear();
-        for a in self.hdr_allocations.drain(..).flatten() {
-            allocator.lock().expect("allocator lock").free(a).ok();
-        }
-        for &view in &self.scene_image_views {
-            // SAFETY: `view` was created by this device and is destroyed here
-            // at teardown, when the device is idle (frames-in-flight fenced /
-            // device_wait_idle), so no in-flight command buffer references it.
-            unsafe { device.destroy_image_view(view, None) };
-        }
-        self.scene_image_views.clear();
-        for &image in &self.scene_images {
-            // SAFETY: `image` was created by this device and is destroyed
-            // here at teardown, when the device is idle (frames-in-flight
-            // fenced / device_wait_idle), so no in-flight command buffer
-            // references it.
-            unsafe { device.destroy_image(image, None) };
-        }
-        self.scene_images.clear();
-        for allocation in self.scene_allocations.drain(..).flatten() {
-            allocator
-                .lock()
-                .expect("allocator lock")
-                .free(allocation)
-                .ok();
+        for mut image in self.hdr.drain(..).chain(self.scene.drain(..)) {
+            // #3860 — the teardown path's four loops become one. Device is
+            // idle here (frames-in-flight fenced / device_wait_idle), so no
+            // in-flight command buffer references these handles.
+            image.destroy(device, allocator);
         }
     }
 }

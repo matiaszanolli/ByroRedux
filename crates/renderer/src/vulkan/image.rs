@@ -485,7 +485,6 @@ mod tests {
         // The second assertion fails on a stale entry, so the list cannot rot
         // into a blanket exemption. When it empties, delete it and that check.
         const PENDING: &[&str] = &[
-            "composite.rs",
             "context/helpers.rs",
             "frame_upscaler.rs",
             "groundcover_bench.rs",

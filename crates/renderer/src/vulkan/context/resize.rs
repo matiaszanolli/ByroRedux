@@ -1055,7 +1055,7 @@ impl VulkanContext {
             .composite
             .as_ref()
             .expect("composite must exist during resize")
-            .hdr_image_views
+            .hdr_views()
             .clone();
 
         // Recreate TAA history images + descriptor sets. The
@@ -1345,7 +1345,7 @@ impl VulkanContext {
             // Composite has been sampling TAA's output; hand it back to the
             // raw HDR attachment before that output disappears.
             if let Some(ref mut composite) = self.composite {
-                let raw_hdr_views = composite.hdr_image_views.clone();
+                let raw_hdr_views = composite.hdr_views();
                 composite.rebind_hdr_views(
                     &self.device,
                     &raw_hdr_views,
@@ -1417,7 +1417,7 @@ impl VulkanContext {
         let Some(hdr_views) = self
             .composite
             .as_ref()
-            .map(|composite| composite.hdr_image_views.clone())
+            .map(|composite| composite.hdr_views())
         else {
             log::warn!("composite missing — TAA left disabled after upscaler switch");
             return;

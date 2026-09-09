@@ -807,7 +807,7 @@ impl VulkanContext {
     /// pixel is geometry.
     ///
     /// Not fixed here on purpose: the fix is to dispatch this on
-    /// `composite.scene_images[frame]` after `record_composite_pass`, and
+    /// `composite.scene_image(frame)` after `record_composite_pass`, and
     /// that image is `COLOR_ATTACHMENT | SAMPLED | TRANSFER_SRC | STORAGE`
     /// and already changes layout twice in the tail of the frame. Per the
     /// project's standing rule, a barrier/pass-order restructure whose
@@ -952,7 +952,7 @@ impl VulkanContext {
 
     /// Bloom pyramid (M58) (#2258 / TD1-080, extracted from
     /// `record_post_passes`; moved to run AFTER composite under #2796 /
-    /// REN-D16-01). Reads `composite.scene_image_views[frame]` — the
+    /// REN-D16-01). Reads `composite.scene_view(frame)` — the
     /// FULLY ASSEMBLED scene composite.frag just wrote (sky + demodulated
     /// GI + caustics + direct + fog) — builds the down/up mip pyramid
     /// from it, then [`bloom::BloomPipeline::apply_to_scene`] adds the
@@ -1018,8 +1018,8 @@ impl VulkanContext {
         unsafe {
             if let Some(ref mut bloom) = self.bloom {
                 if let Some(ref composite) = self.composite {
-                    let scene_image = composite.scene_images[frame];
-                    let scene_view = composite.scene_image_views[frame];
+                    let scene_image = composite.scene_image(frame);
+                    let scene_view = composite.scene_view(frame);
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_bloom_start(&self.device, cmd, frame);
                     }
