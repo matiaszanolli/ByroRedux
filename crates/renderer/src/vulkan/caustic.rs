@@ -48,13 +48,13 @@ use super::descriptors::{
     memory_barrier, write_acceleration_structure, write_combined_image_sampler,
     write_storage_buffer, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
+use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::CAUSTIC_FIXED_SCALE;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
-use gpu_allocator::vulkan as vk_alloc;
 
 const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_splat.comp.spv");
 
@@ -203,22 +203,21 @@ pub struct CausticParams {
 // struct's declared size with no implicit padding (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for CausticParams {}
 
-struct CausticSlot {
-    image: vk::Image,
-    /// The slot's only `VkImageView`, used for both roles: `r32ui` storage
-    /// for the compute shader's atomic writes, and `usampler2DArray` for
-    /// composite's sampling.
-    ///
-    /// These were two views until #2779. The `610cb170` RGB-array refactor
-    /// left both built from the same `ImageViewCreateInfo` — same image,
-    /// type, format and subresource range — so the pair was byte-identical,
-    /// costing two extra `VkImageView`s per frame in flight and a second
-    /// destroy on every teardown path. A view carries no usage or layout
-    /// state (the descriptor type and the barrier's `image_layout` supply
-    /// both), so nothing distinguished them.
-    view: vk::ImageView,
-    allocation: Option<vk_alloc::Allocation>,
-}
+/// #3860 — a caustic slot is exactly an owned image plus its view, so it is a
+/// [`GpuImage`]. The struct this replaced held `image` / `view` /
+/// `allocation` under those same names, so every read site is unchanged.
+///
+/// The slot has ONE `VkImageView`, used for both roles: `r32ui` storage for
+/// the compute shader's atomic writes, and `usampler2DArray` for composite's
+/// sampling. These were two views until #2779 — the `610cb170` RGB-array
+/// refactor left both built from the same `ImageViewCreateInfo` (same image,
+/// type, format and subresource range), so the pair was byte-identical,
+/// costing two extra `VkImageView`s per frame in flight and a second destroy
+/// on every teardown path. A view carries no usage or layout state (the
+/// descriptor type and the barrier's `image_layout` supply both), so nothing
+/// distinguished them. `GpuImage`'s single view is the same conclusion
+/// structurally.
+type CausticSlot = GpuImage;
 
 pub struct CausticPipeline {
     pipeline: vk::Pipeline,
@@ -573,6 +572,8 @@ impl CausticPipeline {
         Ok(partial)
     }
 
+    /// #3860 — was ~85 lines of create → allocate → bind → view with its own
+    /// three-arm cleanup; `GpuImage::create` owns that chain now.
     fn create_slot(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -580,109 +581,22 @@ impl CausticPipeline {
         height: u32,
         name: &str,
     ) -> Result<CausticSlot> {
-        // Single-mip image. The downstream `base_mip_level: 0` /
-        // `level_count: 1` literals (view subresource, clear range,
-        // pre/post barriers — all paired with this image) are pinned
-        // to that 1 here. Going wider (e.g. mipmapped for blur or
-        // half-res accumulation) requires updating every subresource
-        // range alongside the `mip_levels` bump. See REN-D13-NEW-06
-        // (audit 2026-05-09).
-        let info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(CAUSTIC_FORMAT)
-            .extent(vk::Extent3D {
+        GpuImage::create(
+            device,
+            allocator,
+            &GpuImageDesc::color_2d_array(
+                name,
                 width,
                 height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(CAUSTIC_COLOR_LAYERS)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(
+                CAUSTIC_COLOR_LAYERS,
+                CAUSTIC_FORMAT,
                 vk::ImageUsageFlags::STORAGE
                     | vk::ImageUsageFlags::SAMPLED
                     | vk::ImageUsageFlags::TRANSFER_DST,
-            )
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-
-        // SAFETY: `info` fully populated above (TYPE_2D, CAUSTIC_FORMAT,
-        // STORAGE | SAMPLED | TRANSFER_DST usage). On Err the `?` bubbles
-        // up before any subsequent allocation.
-        let image = unsafe { device.create_image(&info, None).context("caustic image")? };
-        // The MutexGuard from `.lock()` lives until the end of the `let`
-        // statement; the Err arm only destroys `image` — no allocator
-        // re-lock — so no deadlock. Cf. ssao.rs for the #1163 separate-let
-        // pattern required when an Err arm calls partial.destroy() which
-        // re-locks the allocator.
-        let alloc = match allocator
-            .lock()
-            .expect("allocator lock")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name,
-                // SAFETY: `image` just created above.
-                requirements: unsafe { device.get_image_memory_requirements(image) },
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("caustic image allocate")
-        {
-            Ok(a) => a,
-            Err(e) => {
-                // SAFETY: alloc failed; image was created but never bound.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-        // SAFETY: `image` matches the memory requirements that produced
-        // `alloc`; bound once per image.
-        if let Err(e) = unsafe {
-            device
-                .bind_image_memory(image, alloc.memory(), alloc.offset())
-                .context("caustic bind image memory")
-        } {
-            allocator.lock().expect("allocator lock").free(alloc).ok();
-            // SAFETY: bind failed; free alloc first, then destroy unbound image.
-            unsafe { device.destroy_image(image, None) };
-            return Err(e);
-        }
-
-        // One view serves both roles — see `CausticSlot::view` (#2779).
-        // SAFETY: `image` is bound above and the view is owned by the
-        // returned CausticSlot, which destroys it on teardown.
-        let view = unsafe {
-            device.create_image_view(
-                &vk::ImageViewCreateInfo::default()
-                    .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
-                    .format(CAUSTIC_FORMAT)
-                    .subresource_range(caustic_subresource_range()),
-                None,
-            )
-        };
-        let view = match view.context("caustic image view") {
-            Ok(v) => v,
-            Err(e) => {
-                allocator.lock().expect("allocator lock").free(alloc).ok();
-                // SAFETY: view creation failed; free alloc first, then
-                // destroy the bound image. It was created by this device
-                // just above and has not been bound to any in-flight
-                // command buffer on this error path.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-
-        Ok(CausticSlot {
-            image,
-            view,
-            allocation: Some(alloc),
-        })
+            ),
+        )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn write_descriptor_sets(
         &self,
         device: &ash::Device,
@@ -1234,18 +1148,12 @@ impl CausticPipeline {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        for slot in self.slots.drain(..) {
+        for mut slot in self.slots.drain(..) {
             // SAFETY: `recreate_on_resize` runs from the fenced
             // swapchain-resize path (`VulkanContext::recreate_swapchain`
             // waits both frames-in-flight first). Slot view / image
             // handles are unreferenced by any in-flight command.
-            unsafe {
-                device.destroy_image_view(slot.view, None);
-                device.destroy_image(slot.image, None);
-            }
-            if let Some(a) = slot.allocation {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+            slot.destroy(device, allocator);
         }
         self.width = width;
         self.height = height;
@@ -1339,16 +1247,10 @@ impl CausticPipeline {
             unsafe { device.destroy_sampler(self.point_sampler, None) };
             self.point_sampler = vk::Sampler::null();
         }
-        for slot in self.slots.drain(..) {
+        for mut slot in self.slots.drain(..) {
             // SAFETY: caller's unsafe-fn contract — no in-flight cmd
             // buffer references slot resources.
-            unsafe {
-                device.destroy_image_view(slot.view, None);
-                device.destroy_image(slot.image, None);
-            }
-            if let Some(a) = slot.allocation {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+            slot.destroy(device, allocator);
         }
     }
 }
