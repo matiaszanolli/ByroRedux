@@ -60,13 +60,13 @@ use super::descriptors::{
     image_barrier_general_write_to_read, image_barrier_undef_to_general,
     write_combined_image_sampler, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
+use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::GpuUploadCtx;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
-use gpu_allocator::vulkan as vk_alloc;
 
 // #918 / REN-D10-NEW-04 — SVGF's read-previous / write-current ping-pong
 // silently aliases to the same slot if the constant is ever lowered to 1
@@ -302,50 +302,18 @@ pub struct SvgfTemporalParams {
 // SAFETY: two `[f32; 4]` fields — no implicit padding possible (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for SvgfTemporalParams {}
 
-struct HistorySlot {
-    image: vk::Image,
-    view: vk::ImageView,
-    allocation: Option<vk_alloc::Allocation>,
-}
-
-impl Drop for HistorySlot {
-    /// Safety net mirroring `Attachment::Drop` in `gbuffer.rs` and
-    /// `GpuBuffer::Drop` (#656). `HistorySlot` doesn't stash device
-    /// or allocator handles internally — the parent
-    /// `SvgfPipeline::destroy` passes them in — so this Drop can't
-    /// clean up; it can only scream so a leak surfaces in tests +
-    /// release-log error stream.
-    ///
-    /// Gate on `allocation.is_some()` because the canonical destroy
-    /// path moves slots out of the parent Vec via `drain(..)`, calls
-    /// `destroy_image*` on the bare Vulkan handles, and consumes
-    /// `allocation` via `if let Some(a) = slot.allocation`. The
-    /// `vk::Image` / `vk::ImageView` handles stay non-null on the
-    /// dropped slot (Vulkan handles are integers; their value
-    /// doesn't change post-destroy), so checking those would
-    /// false-positive on every clean shutdown. The
-    /// `gpu_allocator::Allocation` is the load-bearing leak
-    /// indicator — its `Drop` is what releases the slab, and the
-    /// canonical path consumes it before the slot's Drop fires.
-    /// See REN-D2-NEW-01 (audit 2026-05-09).
-    fn drop(&mut self) {
-        if self.allocation.is_none() {
-            return;
-        }
-        log::error!(
-            "HistorySlot leaked into Drop: image={:?} view={:?} \
-             — SvgfPipeline::destroy(device, allocator) was not \
-             called and the gpu_allocator slab will leak. See REN-D2-NEW-01.",
-            self.image,
-            self.view,
-        );
-        // Skip the assert during unwind. See #1128 / REN-D4-NEW-01 + the
-        // matching guard on GpuBuffer / Attachment / Texture Drop impls.
-        if !std::thread::panicking() {
-            debug_assert!(false, "HistorySlot dropped without destroy()");
-        }
-    }
-}
+/// #3860 — the SVGF history/moments/atrous slots are plain owned images, so
+/// they are [`GpuImage`]s. The struct this replaced held exactly `image` /
+/// `view` / `allocation` under the same names, leaving every read site
+/// unchanged.
+///
+/// This is also a strict upgrade to the leak safety net. The old
+/// `HistorySlot::Drop` could only *scream* — it stashed no device or
+/// allocator, so its doc said outright that it "can't clean up; it can only
+/// scream so a leak surfaces in tests + release-log error stream"
+/// (REN-D2-NEW-01). `GpuImage` keeps cheap `Arc`-backed clones of both, so the
+/// same escape now actually reclaims the image, the view and the slab.
+type HistorySlot = GpuImage;
 
 pub struct SvgfPipeline {
     pipeline: vk::Pipeline,
@@ -760,6 +728,9 @@ impl SvgfPipeline {
         Ok(partial)
     }
 
+    /// #3860 — was ~85 lines of create → allocate → bind → view with its own
+    /// three-arm cleanup, line-for-line identical to `taa.rs`'s sibling apart
+    /// from taking `format` as a parameter where that one used a const.
     fn create_history_image(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -768,100 +739,17 @@ impl SvgfPipeline {
         format: vk::Format,
         name: &str,
     ) -> Result<HistorySlot> {
-        let img_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(format)
-            .extent(vk::Extent3D {
+        GpuImage::create(
+            device,
+            allocator,
+            &GpuImageDesc::color_2d(
+                name,
                 width,
                 height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-        // SAFETY: `img_info` fully populated above (TYPE_2D, history
-        // format, STORAGE | SAMPLED usage). Bubbling `?` on Err means
-        // no further allocation runs.
-        let image = unsafe {
-            device
-                .create_image(&img_info, None)
-                .with_context(|| format!("create {name}"))?
-        };
-
-        // The MutexGuard from `.lock()` lives until the end of the `let`
-        // statement; the Err arm only destroys `image` — no allocator
-        // re-lock — so no deadlock. Cf. ssao.rs for the #1163 separate-let
-        // pattern required when an Err arm calls partial.destroy() which
-        // re-locks the allocator.
-        let alloc = match allocator
-            .lock()
-            .expect("allocator lock")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name,
-                // SAFETY: `image` just created above.
-                requirements: unsafe { device.get_image_memory_requirements(image) },
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .with_context(|| format!("allocate {name}"))
-        {
-            Ok(a) => a,
-            Err(e) => {
-                // SAFETY: cleanup-on-error — `image` was created but
-                // never bound; no other reference exists.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-
-        // SAFETY: `image` matches the memory requirements that produced
-        // `alloc`; bound once per image.
-        if let Err(e) = unsafe {
-            device
-                .bind_image_memory(image, alloc.memory(), alloc.offset())
-                .with_context(|| format!("bind {name}"))
-        } {
-            allocator.lock().expect("allocator lock").free(alloc).ok();
-            // SAFETY: bind failed; free the alloc first, then destroy
-            // the unbound image.
-            unsafe { device.destroy_image(image, None) };
-            return Err(e);
-        }
-
-        // SAFETY: `image` is bound (line above); view owned by the
-        // returned HistorySlot on Ok.
-        let view = match unsafe {
-            device
-                .create_image_view(
-                    &vk::ImageViewCreateInfo::default()
-                        .image(image)
-                        .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(format)
-                        .subresource_range(super::descriptors::color_subresource_single_mip()),
-                    None,
-                )
-                .with_context(|| format!("view {name}"))
-        } {
-            Ok(v) => v,
-            Err(e) => {
-                allocator.lock().expect("allocator lock").free(alloc).ok();
-                // SAFETY: view creation failed; free alloc first then
-                // destroy the bound image.
-                unsafe { device.destroy_image(image, None) };
-                return Err(e);
-            }
-        };
-
-        Ok(HistorySlot {
-            image,
-            view,
-            allocation: Some(alloc),
-        })
+                format,
+                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+            ),
+        )
     }
 
     fn write_descriptor_sets(
@@ -1508,33 +1396,15 @@ impl SvgfPipeline {
             // swapchain-resize path (`VulkanContext::recreate_swapchain`
             // waits both frames-in-flight first). History image / view
             // handles are unreferenced by any in-flight command.
-            unsafe {
-                device.destroy_image_view(slot.view, None);
-                device.destroy_image(slot.image, None);
-            }
-            if let Some(a) = slot.allocation.take() {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+            slot.destroy(device, allocator);
         }
         for mut slot in self.moments_history.drain(..) {
-            // SAFETY: same fenced-resize contract as the indirect loop above.
-            unsafe {
-                device.destroy_image_view(slot.view, None);
-                device.destroy_image(slot.image, None);
-            }
-            if let Some(a) = slot.allocation.take() {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+            // same fenced-resize contract as the indirect loop above.
+            slot.destroy(device, allocator);
         }
         for mut slot in self.atrous_color.drain(..) {
-            // SAFETY: same fenced-resize contract as the loops above.
-            unsafe {
-                device.destroy_image_view(slot.view, None);
-                device.destroy_image(slot.image, None);
-            }
-            if let Some(a) = slot.allocation.take() {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+            // same fenced-resize contract as the loops above.
+            slot.destroy(device, allocator);
         }
 
         self.width = width;
@@ -1726,37 +1596,19 @@ impl SvgfPipeline {
             self.atrous_descriptor_set_layout = vk::DescriptorSetLayout::null();
         }
         for mut slot in self.atrous_color.drain(..) {
-            // SAFETY: same in-flight-free contract as the history loops below.
-            unsafe {
-                device.destroy_image_view(slot.view, None);
-                device.destroy_image(slot.image, None);
-            }
-            if let Some(a) = slot.allocation.take() {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+            // same in-flight-free contract as the history loops below.
+            slot.destroy(device, allocator);
         }
         for mut slot in self.indirect_history.drain(..) {
             // SAFETY: `recreate_on_resize` runs from the fenced
             // swapchain-resize path (`VulkanContext::recreate_swapchain`
             // waits both frames-in-flight first). History image / view
             // handles are unreferenced by any in-flight command.
-            unsafe {
-                device.destroy_image_view(slot.view, None);
-                device.destroy_image(slot.image, None);
-            }
-            if let Some(a) = slot.allocation.take() {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+            slot.destroy(device, allocator);
         }
         for mut slot in self.moments_history.drain(..) {
-            // SAFETY: same fenced-resize contract as the indirect loop above.
-            unsafe {
-                device.destroy_image_view(slot.view, None);
-                device.destroy_image(slot.image, None);
-            }
-            if let Some(a) = slot.allocation.take() {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+            // same fenced-resize contract as the indirect loop above.
+            slot.destroy(device, allocator);
         }
     }
 }

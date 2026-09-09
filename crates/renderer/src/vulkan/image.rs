@@ -446,7 +446,6 @@ mod tests {
             "groundcover_bench.rs",
             "placeholder.rs",
             "ssao.rs",
-            "svgf.rs",
             "volumetrics/init.rs",
             "water_caustic.rs",
         ];
