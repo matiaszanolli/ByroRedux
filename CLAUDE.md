@@ -36,9 +36,12 @@ Manual end-to-end checks that need a Vulkan device + on-disk game data
 `byro-dbg`-attach pattern documented in
 [`docs/smoke-tests/README.md`](docs/smoke-tests/README.md). Currently:
 [`docs/smoke-tests/m41-equip.sh`](docs/smoke-tests/m41-equip.sh)
-verifies Skyrim+ / FO4 NPC outfit equip end-to-end, and
+verifies Skyrim+ / FO4 NPC outfit equip end-to-end,
 [`docs/smoke-tests/m48-menu-load.sh`](docs/smoke-tests/m48-menu-load.sh)
-verifies the archive-backed `--menu` route on FO4 (AVM2) and Skyrim (AVM1).
+verifies the archive-backed `--menu` route on FO4 (AVM2) and Skyrim (AVM1), and
+[`docs/smoke-tests/w1-water-traversal.sh`](docs/smoke-tests/w1-water-traversal.sh)
+walks the real character capsule shore → swim → dive → surface → shore →
+cell boundary on FNV Lake Mead (WATAL W1).
 
 ### Shader Compilation
 ```bash

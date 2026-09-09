@@ -127,7 +127,8 @@ Order within the push:
 - W0: freeze camera/player poses and baseline artifacts on the two real-data
   profiles; use the new diagnostics before changing visuals.
 - W1: make kinematic character contact/swimming consume the canonical water
-  volume/flow; add enter/surface/exit and boundary regressions.
+  volume/flow; add enter/surface/exit and boundary regressions. **CLOSED
+  2026-09-09** — see the W1 block below.
 - W2: close default-water, CELL override, shoreline, and LOD coverage/seam gaps.
 - W3: tune reflection/refraction/absorption/normals/foam against the frozen
   captures, finishing only WATR fields whose real bytes are verified.
@@ -145,8 +146,37 @@ defect: the water shader built a complete reflected/refracted `surfaceColor`
 and then attenuated that result a second time with low authored alpha. Output
 coverage now includes the Schlick Fresnel share while preserving authored zero
 opacity as fully transparent. Skyrim mesh-bound water also no longer treats
-generic `Material` defaults as authored opacity/reflectivity. W1 traversal and
-the wider shoreline/LOD perceptual capture set remain open.
+generic `Material` defaults as authored opacity/reflectivity.
+
+**W1 closed 2026-09-09:**
+[`docs/smoke-tests/w1-water-traversal.sh`](../smoke-tests/w1-water-traversal.sh)
+drives the real `CharacterController` capsule shore → swim → dive → surface →
+shore → water-adjacent cell boundary on both frozen profiles, entirely through
+`ActionBindings` → `ActionState` → the Rapier KCC (`input.look` writes the same
+yaw/pitch accumulator mouse look owns, and here pitch is a *movement* input —
+no teleport participates in any route leg). Four reference-anchored controller
+corrections came out of it, each cited to OpenMW's movement solver (WATAL §9
+Q3) and unit-pinned: full 3D pitched swim movement, swim input taking
+precedence over the buoyancy spring (a held dive previously stalled ~23 BU
+below the neutral point — "swim down" did not exist), the
+"don't swim up into the air" surface clamp, a swimmer never reading grounded,
+and a water exit that starts from rest instead of inheriting the spring. The
+player also now publishes a canonical `WaterContact` — it is the one body the
+dynamic buoyancy pass structurally cannot see — so it appears in
+`water.contacts` and in a new `player.status` water line.
+
+Measured on the closing runs: FNV Lake Mead enters at the beach, dives past
+depth 100 (fully submerged, camera underwater), holds the waterline through
+240 frames of hard upward swim (`y=2577.28` against a 2600 surface), exits
+grounded at `vertical_velocity=0.00`, keeps support swimming across the
+(20,13)→(19,13) edge, and logs exactly one camera waterline enter/exit pair —
+no strobe. Skyrim's authored White River at Tamriel (4,-11) runs the same
+route; its water is ~96 BU deep bed-to-surface, so the fixture declares
+`W1_HEAD_SUBMERSION=0` and gates the descent on passing the passive float
+depth instead. Fixture geometry, not the engine, decides which side of the
+exit the boundary crossing falls on, so that too is a declared fixture field.
+
+The wider shoreline/LOD perceptual capture set (W2/W3) remains open.
 
 **Bootstrap landed 2026-08-10:** live dynamic-body current drag now consumes
 `WaterFlow` in the same pre-step as buoyancy, with bounded velocity matching and
@@ -251,13 +281,16 @@ Goal: the complete slice survives ordinary play behavior.
 
 ## Immediate queue
 
-1. Run W0 on Skyrim `(2,-10)`, freeze the waterline/shore/underwater/LOD poses,
-   and turn the retained diagnostics into hard assertions where the authored
-   values are stable.
-2. Implement W1 character swimming and current response through the canonical
-   action + water-contact boundaries; close enter → swim → surface → exit first.
-3. Use those captures to choose the first W2/W3 defect by evidence (coverage/seam
-   before local shading polish), then re-run the same fixture.
+1. ~~Run W0 on Skyrim `(2,-10)`, freeze the waterline/shore/underwater/LOD
+   poses~~ — closed 2026-09-04.
+2. ~~Implement W1 character swimming and current response through the canonical
+   action + water-contact boundaries; close enter → swim → surface → exit
+   first.~~ — closed 2026-09-09.
+3. Use the W0/W1 captures to choose the first W2/W3 defect by evidence
+   (coverage/seam before local shading polish), then re-run the same fixture.
 4. Add P1 gamepad physical sources and resume P2 combat readiness after the
    water gate, carrying the now-passing door-return boundary route through the
    eventual 30-minute soak.
+5. W4's underwater audio / breath feedback now has its traversal prerequisite:
+   the breath reserve and drowning damage are already live and observable on
+   `player.status`, so the remaining work there is presentation.

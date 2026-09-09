@@ -879,6 +879,14 @@ fn register_early_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::water::WaterPlane>()
             .reads::<byroredux_core::ecs::components::water::WaterVolume>()
             .reads::<byroredux_core::ecs::components::water::WaterFlow>()
+            // WATAL W1 — the character system owns the player's own
+            // `WaterContact` row (`sync_player_water_contact`): the dynamic
+            // buoyancy pass selects `MotionType::Dynamic` plus ragdoll bones
+            // and structurally cannot see a kinematic capsule. It reads last
+            // frame's row back to recover the swim-exit transition, so both
+            // halves are declared.
+            .reads::<byroredux_core::ecs::components::water::WaterContact>()
+            .writes::<byroredux_core::ecs::components::water::WaterContact>()
             .writes::<byroredux_core::ecs::components::ActorValues>()
             .writes::<byroredux_core::ecs::components::Dead>()
             .reads::<Transform>()

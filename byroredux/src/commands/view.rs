@@ -536,6 +536,46 @@ impl ConsoleCommand for PlayerStatusCommand {
                 )),
                 (None, _) => lines.push("  body=none".to_string()),
             }
+            // WATAL W1 — the traversal gate needs the walk/swim verdict, not
+            // just the pose. Read from the same `WaterContact` the character
+            // system publishes for the player and the same swimlevel
+            // predicate it decides on, so this can never report a swim state
+            // the controller disagrees with.
+            lines.push(match (
+                world.get::<byroredux_physics::CharacterController>(player),
+                world.get::<byroredux_core::ecs::components::water::WaterContact>(player),
+            ) {
+                (Some(controller), Some(contact)) => {
+                    let half_span = controller.half_height + controller.radius;
+                    format!(
+                        "  water=({}) swimming={} depth={:.2} fraction={:.3}                          submerged={} breath={:.1} flow={}",
+                        if contact.submerged_fraction > 0.0 {
+                            "wet"
+                        } else {
+                            "dry"
+                        },
+                        crate::systems::depth_reaches_swimlevel(
+                            contact.depth,
+                            half_span
+                        ),
+                        contact.depth,
+                        contact.submerged_fraction,
+                        contact.head_submerged,
+                        controller.breath_remaining,
+                        contact
+                            .flow
+                            .map(|flow| format!(
+                                "[{:.3},{:.3},{:.3}]@{:.1}",
+                                flow.direction[0], flow.direction[1], flow.direction[2], flow.speed
+                            ))
+                            .unwrap_or_else(|| "none".to_string()),
+                    )
+                }
+                // No contact row at all: the player has never touched water
+                // this session (the character system writes one on first
+                // contact and retains it thereafter).
+                _ => "  water=(never) swimming=false".to_string(),
+            });
         }
         lines.push(match camera {
             Some(camera) => format!(

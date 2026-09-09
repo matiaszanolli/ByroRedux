@@ -435,7 +435,47 @@ replaced by bounded buoyancy while the capsule overlaps a volume, the jump
 action becomes a capped swim stroke, and horizontal flow contributes a
 fractional current drift. Drowning, localized surface spray, transient
 splash/ripple markers, and listener-scoped underwater low-pass audio are live;
-water-walking and freezing remain open. SpeedTree billboard placements also
+water-walking and freezing remain open.
+
+**W1 traversal closed 2026-09-09.** The swim core is now a *traversable*
+one, with four reference-anchored corrections and one observability change
+(all in `byroredux/src/systems/character.rs`, reference = OpenMW's movement
+solver per §9 Q3):
+
+- **Full 3D swim movement** (`swim_motion`, `movementsolver.cpp:161-165`).
+  Below swimlevel the movement vector is rotated by pitch *and* yaw where a
+  walker's is rotated by yaw alone, so "look down, hold forward" is the dive
+  control — the reference engine has no separate ascend/descend axis and
+  neither do we. Strafe stays horizontal, as rotating about the pitch axis
+  requires.
+- **Input takes precedence over the buoyancy spring.** At the shipped
+  stiffness the restoring velocity cancelled the pitched swim input exactly
+  ~23 BU below the neutral point: measured live, a held dive stalled at depth
+  45 with the spring returning +13.9 BU/s. The reference gives a live swimmer
+  no restoring force at all, so an active stroke now drops the spring term and
+  keeps only water drag; releasing it hands the swimmer back to the spring.
+- **Surface clamp** (`clamp_swim_ascent`, `movementsolver.cpp:205-213` —
+  *"don't allow to swim up into the air"*). A swimmer starting below swimlevel
+  whose step would end above it has that vertical component rejected, velocity
+  included. This is what keeps the jump-stroke a stroke rather than a launch.
+- **A swimmer is never grounded** (`resolve_ground_contact`,
+  `movementsolver.cpp:379`). The reference ground-tests only at or above
+  swimlevel; `kcc_grounded` arrives from Rapier, which knows nothing about
+  water, so a capsule brushing the bed in the shallows used to read grounded
+  while buoyant — re-arming the terrestrial jump and the support probe.
+- **Water exit starts from rest** (`terrestrial_carry_velocity`,
+  `movementsolver.cpp:427-428`). The reference zeroes inertia on every
+  below-swimlevel frame; ours keeps the spring's state in
+  `vertical_velocity`, which the exit frame handed to `integrate_vertical` as
+  a launch (rising spring) or a phantom descent (sinking one).
+- **The player publishes a canonical `WaterContact`**
+  (`sync_player_water_contact`). It is the one body `apply_buoyancy_with_scratch`
+  structurally cannot reach — that pass selects `MotionType::Dynamic` plus
+  ragdoll bones, and `clear_stale_water_contacts` skips it for the same
+  reason — so the character system owns the row outright: wet each frame, the
+  dry sentinel once on exit. That puts the player in `water.contacts`, gives
+  `player.status` its water line, and is where the exit transition recovers
+  last frame's swim verdict from. SpeedTree billboard placements also
 consume the shared weather `WindField`, including direction changes while the
 camera is stationary.
 
@@ -655,11 +695,14 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    an unbounded constant acceleration. Water remains a trigger volume, not a
    solid Rapier plane, so entering it cannot block bodies or the character.
    W0's real-data waterline GPU smoke is closed. Remaining Phase 2 scope is a
-   real-data dynamic-body contact/current gate plus player traversal. The existing
+   real-data dynamic-body contact/current gate. **Player traversal closed
+   2026-09-09** — see the W1 block in §2 and the
+   `w1-water-traversal.sh` gate in §8. The existing
    dry→wet one-shot wake and settled-float sleep
    discipline remains load-bearing: water must never pin the exterior physics
    world awake. Test gate for body physics is closed (rise, settle, downstream
-   drift, calm-water quiescence); player traversal and real-data gates are open.
+   drift, calm-water quiescence); the remaining open real-data gate is the
+   dynamic-body contact/current one.
 
 4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH — OPEN.** The indexed per-frame
    water UBO, authored noise layers, bounded sunlight scattering, and the
@@ -689,7 +732,22 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
   It runs the Skyrim `(2,-10)` flowing-water fixture and FNV Lake Mead
   `(19,13)`, retaining paired above/below captures, `water.dump`,
   `water.contacts`, finite-output telemetry, and an image-delta verdict.
-  Dynamic-body contact and character traversal remain separate open gates.
+  Dynamic-body contact remains a separate open gate.
+- **Shipped 2026-09-09:** `docs/smoke-tests/w1-water-traversal.sh` is the W1
+  traversal gate — a real `CharacterController` capsule walking shore → swim →
+  dive → surface → shore → water-adjacent cell boundary on both frozen
+  profiles, driven entirely through `ActionBindings` → `ActionState` → the
+  Rapier KCC with no teleport in the route. It pins the swimming/grounded
+  exclusion, the player's canonical `WaterContact`, the surface clamp, the
+  from-rest water exit, support across the streaming boundary, and a bounded
+  camera-waterline transition count (the anti-strobe check). Fixtures declare
+  what their water can physically gate: FNV Lake Mead (deep, head submersion +
+  camera waterline) and Skyrim's White River at Tamriel (4,-11) (~96 BU deep,
+  so `W1_HEAD_SUBMERSION=0` and the descent is gated on depth alone).
+- **Shipped 2026-09-09:** `player.status` carries a water line — wet/dry, the
+  swim verdict through the same `depth_reaches_swimlevel` predicate the
+  controller decides on, depth, submerged fraction, the canonical
+  head-submerged flag, breath, and flow.
 - A per-game translate-up unit harness (Phase 1) asserting SENTINEL-identity across
   Oblivion / FNV / Skyrim WATR inputs.
 

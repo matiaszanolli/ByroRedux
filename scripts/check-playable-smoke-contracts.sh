@@ -21,7 +21,7 @@ mapfile -t GAMES < <(cd "$ROOT_DIR/docs/smoke-tests/fixtures" && ls ./*.env | se
     || fail "expected at least the skyrim_se and fnv fixtures, found ${#GAMES[@]}"
 echo "playable-smoke-contracts: fixtures = ${GAMES[*]}"
 
-for name in p0-door-interaction p1-character-traversal p2-melee-core; do
+for name in p0-door-interaction p1-character-traversal p2-melee-core w1-water-traversal; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     for game in "${GAMES[@]}"; do
         set +e
@@ -75,6 +75,45 @@ grep -Fq '"grounded=true"' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
     || fail "P2 no longer gates floor support"
 grep -Fq 'inventory.status' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
     || fail "P2 no longer derives damage from the live loadout"
+
+# WATAL W1 — the water gate's whole value is the four transitions it pins. A
+# gate that only proved "the player got wet" would pass on the pre-W1 engine,
+# where a dive stalled at the buoyancy spring's neutral point, an upward swim
+# could launch the capsule out of the lake, and the exit frame inherited the
+# spring as terrestrial momentum.
+W1_GATE="$ROOT_DIR/docs/smoke-tests/w1-water-traversal.sh"
+grep -Fq 'a swimmer must not report ground contact' "$W1_GATE" \
+    || fail "W1 no longer gates the swimming/grounded exclusion"
+grep -Fq 'the kinematic player did not reach the canonical WaterContact sink' "$W1_GATE" \
+    || fail "W1 no longer gates the player's canonical WaterContact publish"
+grep -Fq 'the swimmer left the water by swimming upward (surface clamp lost)' "$W1_GATE" \
+    || fail "W1 no longer gates the surface clamp"
+grep -Fq 'buoyancy spring leaked into gravity' "$W1_GATE" \
+    || fail "W1 no longer gates the water-exit velocity reset"
+w1_profiles=0
+for fixture in "$ROOT_DIR"/docs/smoke-tests/fixtures/*.env; do
+    game="$(basename "$fixture" .env)"
+    # A title without a measured W1 route declares none and the gate SKIPs it
+    # (77) — that is the SKIP != PASS contract applied to fixtures. A fixture
+    # that *does* declare one must pin the authored WATR form it traverses,
+    # and must state explicitly whether its water can submerge a head rather
+    # than leaving the script to infer it.
+    if ! grep -q '^W1_WATER_SOURCE=' "$fixture"; then
+        echo "playable-smoke-contracts: PASS -- $game declares no W1 route (gate SKIPs it)"
+        continue
+    fi
+    w1_profiles=$(( w1_profiles + 1 ))
+    grep -Eq '^W1_WATER_SOURCE="0x[0-9A-F]{8}"$' "$fixture" \
+        || fail "fixture $game does not pin a W1 WATR source form"
+    grep -Eq '^W1_HEAD_SUBMERSION=[01]$' "$fixture" \
+        || grep -Fq 'W1_DIVE_DEPTH' "$fixture" \
+        || fail "fixture $game declares neither head submersion nor a dive depth"
+    grep -Eq '^W1_BOUNDARY_PHASE=(after-exit|before-exit)$' "$fixture" \
+        || grep -Fvq 'W1_BOUNDARY_ACTION' "$fixture" \
+        || fail "fixture $game declares a W1 boundary leg without its phase"
+done
+(( w1_profiles >= 1 )) \
+    || fail "no fixture declares a W1 water route — the traversal gate would never run"
 # Post-#3039 these live in the Skyrim fixture rather than inline in P2.
 SKYRIM_FIXTURE="$ROOT_DIR/docs/smoke-tests/fixtures/skyrim_se.env"
 grep -Fq 'NPC ref=000383F7 base=000E9895' "$SKYRIM_FIXTURE" \

@@ -39,10 +39,51 @@ pub fn effective_args() -> Vec<String> {
     std::env::args().collect()
 }
 
+/// Read `--flag <value>`. **Only** the space-separated form is accepted; the
+/// `--flag=value` spelling is not a synonym here and never has been.
+///
+/// It used to be *silently* not a synonym, which is the trap this warning
+/// exists for: `--camera-pos=14976,-100,42000` matches no `a == flag`, so the
+/// override was dropped and the caller fell back to its computed default with
+/// no diagnostic anywhere. Two things it actually cost: the W1 water fixture's
+/// first two derivation runs (the engine kept spawning at the grid's default
+/// pose while the operator read coordinates off a pose that never applied),
+/// and `p1-character-traversal.sh`, which passes
+/// `--camera-pos="$P1_CAMERA_POS"` and has therefore been running with an
+/// inert fixture value — harmless there only because its spawn comes from the
+/// door ladder rather than the camera.
+///
+/// Accepting `=` would silently change the behaviour of every existing caller
+/// that has been passing it (P1 included), so this reports instead of
+/// guessing. The warning names the working form.
 pub fn parse_string_arg(args: &[String], flag: &str) -> Option<String> {
-    args.iter()
+    let matched = args
+        .iter()
         .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1).cloned())
+        .and_then(|i| args.get(i + 1).cloned());
+    if matched.is_none() {
+        warn_on_equals_form(args, flag);
+    }
+    matched
+}
+
+/// Emit the one diagnostic that would have made the trap above self-evident.
+/// Split out so it can be tested without a live arg vector, and kept pure:
+/// it returns the message rather than deciding to log it.
+pub(crate) fn equals_form_diagnostic(args: &[String], flag: &str) -> Option<String> {
+    let prefix = format!("{flag}=");
+    args.iter().find(|a| a.starts_with(&prefix)).map(|found| {
+        let value = &found[prefix.len()..];
+        format!(
+            "`{found}` was ignored — this CLI takes `{flag} {value}`              (space-separated); the `{flag}=value` form is not recognised"
+        )
+    })
+}
+
+fn warn_on_equals_form(args: &[String], flag: &str) {
+    if let Some(message) = equals_form_diagnostic(args, flag) {
+        log::warn!("{message}");
+    }
 }
 
 /// Parse the renderer selection once at application startup. Renderer code
@@ -210,6 +251,38 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// The `--flag=value` form is not accepted, and must not be dropped in
+    /// silence: that silence is what let `p1-character-traversal.sh` pass an
+    /// inert `--camera-pos=` for months and cost the W1 fixture two
+    /// derivation runs against a pose the engine never applied.
+    #[test]
+    fn the_equals_form_is_reported_rather_than_silently_dropped() {
+        let argv = args(&["byroredux", "--camera-pos=14976,-100,42000", "--player"]);
+        assert_eq!(
+            parse_string_arg(&argv, "--camera-pos"),
+            None,
+            "the equals form is still not a synonym — accepting it would \
+             silently change every caller that passes it"
+        );
+        let message = equals_form_diagnostic(&argv, "--camera-pos")
+            .expect("the ignored equals form must produce a diagnostic");
+        assert!(
+            message.contains("--camera-pos 14976,-100,42000"),
+            "the diagnostic must name the working form: {message}"
+        );
+
+        // The working form stays silent and keeps working.
+        let argv = args(&["byroredux", "--camera-pos", "1,2,3"]);
+        assert_eq!(
+            parse_string_arg(&argv, "--camera-pos"),
+            Some("1,2,3".to_owned())
+        );
+        assert_eq!(equals_form_diagnostic(&argv, "--camera-pos"), None);
+
+        // A flag that simply is not present must not invent a diagnostic.
+        assert_eq!(equals_form_diagnostic(&argv, "--grid"), None);
     }
 
     /// Every mode must survive `Display` -> `parse_upscaler_spec`. The

@@ -151,9 +151,31 @@ on 2026-09-04 with frozen, paired waterline captures for Skyrim
 membership, authored Skyrim flow, finite output, and a material above/below
 image delta. Its first run also fixed double attenuation of Fresnel reflection
 at low authored opacity and stopped Skyrim mesh water from treating generic
-material defaults as authored optics. W1's real-character enter/swim/surface/
-exit traversal is now the next water slice; dynamic-body contact/current and
-shoreline/LOD perceptual gates remain after it. The underlying closure contract
+material defaults as authored optics. **WATAL W1 — real-character water
+traversal — closed 2026-09-09** on the FNV Lake Mead profile:
+[`docs/smoke-tests/w1-water-traversal.sh`](docs/smoke-tests/w1-water-traversal.sh)
+drives the real KCC capsule shore → swim → dive → surface → shore →
+water-adjacent cell boundary through the production action pipeline with no
+teleport in the route. It found four controller defects, each fixed against
+OpenMW's movement solver as the cited reference (WATAL §9 Q3) and unit-pinned:
+"swim down" did not exist at all (the shipped buoyancy spring cancelled the
+pitched swim input ~23 BU below the neutral point, measured), an upward swim
+could launch the capsule out of the lake (no `reject`-style surface clamp), a
+swimmer brushing the lake bed read `grounded` and so kept its terrestrial jump,
+and the water-exit frame handed the spring's velocity to gravity instead of
+starting from rest. The player also now publishes a canonical `WaterContact` —
+it is the one body the dynamic buoyancy pass structurally cannot see — so it
+reaches `water.contacts` and a new `player.status` water line. The gate is
+game-parameterised and **SKIPs Skyrim (77) rather than weakening its route**:
+W0's frozen `(3,-11)` tile is a gorge with no capsule-climbable bank, and at
+`(4,-11)`, where the same river does have banks (enter/swim/clamp/exit all pass
+there), the boundary leg is blocked by a land-side KCC wedge — a grounded
+capsule at `(18441.87,-150.58,42821.87)` refuses all four horizontal directions
+while `phys.census` reports walkable ground 58 BU below it. Every measurement
+is recorded in `docs/smoke-tests/fixtures/skyrim_se.env` for the next attempt
+(fix that P1-class wedge, or pick a lake shore with no bank clutter).
+Dynamic-body contact/current and shoreline/LOD perceptual gates remain after
+it. The underlying closure contract
 remains in
 [`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md#water-focus--playable-traversal--ex-13-visual-closure),
 and the render/physics design remains in [`docs/engine/watal.md`](docs/engine/watal.md).

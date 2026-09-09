@@ -21,7 +21,7 @@
 
 use byroredux_core::ecs::components::actor_state::Dead;
 use byroredux_core::ecs::components::actor_values::{ActorValues, ActorVitals};
-use byroredux_core::ecs::components::water::{WaterFlow, WaterPlane, WaterVolume};
+use byroredux_core::ecs::components::water::{WaterContact, WaterFlow, WaterPlane, WaterVolume};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{ActiveCamera, GlobalTransform, TotalTime, Transform, World};
@@ -164,9 +164,13 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // all three cases; only suppress user-authored horizontal/jump intent.
     let accepts_movement_input = player_accepts_movement_input(world, player_entity);
 
-    let yaw = world
+    // Pitch as well as yaw: a swimmer's movement is rotated by both
+    // (WATAL W1, reference OpenMW `movementsolver.cpp:161-165`), so the look
+    // axis a walker only ever sends to the camera becomes a movement input
+    // the moment the capsule drops below swimlevel.
+    let (yaw, pitch) = world
         .try_resource::<InputState>()
-        .map(|input| input.yaw)
+        .map(|input| (input.yaw, input.pitch))
         .unwrap_or_default();
     let Some(actions) = world.try_resource::<ActionState>() else {
         return;
@@ -232,15 +236,28 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // center must pass the engine-defined fraction of the capsule height;
     // surface waves are already included in `surface_y`.
     let head_submerged = water_contact
-        .map(|(surface_y, _, _, _)| current_pos.y + controller.eye_height <= surface_y)
+        .map(|state| current_pos.y + controller.eye_height <= state.surface_y)
         .unwrap_or(false);
-    let swim = water_contact.filter(|(surface_y, _, _, _)| {
+    let swim = water_contact.filter(|state| {
         swimlevel_reached(
             current_pos.y,
-            *surface_y,
+            state.surface_y,
             controller.half_height + controller.radius,
         )
     });
+    // Last frame's swim state, recovered from the contact this system itself
+    // retained (see the `WaterContact` write at the end). The reference zeroes
+    // vertical carry on *every* below-swimlevel frame
+    // (`movementsolver.cpp:427-428`), so by the time an actor climbs out of a
+    // lake its inertia is already zero. Ours is not: while swimming
+    // `vertical_velocity` holds the buoyancy spring's own state, and handing
+    // that to `integrate_vertical` on the exit frame launches the player off
+    // the shoreline (rising spring) or slams them into it (sinking spring).
+    let was_swimming = world
+        .get::<WaterContact>(player_entity)
+        .is_some_and(|contact| {
+            depth_reaches_swimlevel(contact.depth, controller.half_height + controller.radius)
+        });
     let (breath_remaining, drowning_damage) = advance_breath(
         controller.breath_remaining,
         controller.drowning_damage_accumulator,
@@ -252,9 +269,25 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // The helper normalises the WASD vector before scaling so diagonal
     // strafe doesn't go √2× faster than pure forward.
     let speed_mul = if want_sprint { 2.0 } else { 1.0 };
-    let mut horizontal_translation =
-        horizontal_motion(yaw, move_dir, controller.move_speed * speed_mul, dt);
-    if let Some((_, fraction, Some(flow), _)) = swim {
+    // Swimming takes the pitched 3D form; walking keeps the yaw-only one. The
+    // vertical share is kept separate so it can be added to the buoyancy
+    // spring's own motion and clamped against the surface as one quantity.
+    let (mut horizontal_translation, swim_input_vertical) = match swim {
+        Some(_) => {
+            let motion = swim_motion(yaw, pitch, move_dir, controller.move_speed * speed_mul, dt);
+            (Vec3::new(motion.x, 0.0, motion.z), motion.y)
+        }
+        None => (
+            horizontal_motion(yaw, move_dir, controller.move_speed * speed_mul, dt),
+            0.0,
+        ),
+    };
+    if let Some(PlayerWaterState {
+        fraction,
+        flow: Some(flow),
+        ..
+    }) = swim
+    {
         // Currents push a swimmer, but are deliberately bounded below the
         // authored flow speed so a river cannot turn the controller into an
         // uncontrollable projectile. Waterfalls keep their vertical flow in
@@ -270,18 +303,19 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     let jump_fired =
         want_jump_now && (controller.is_grounded || swim.is_some()) && !controller.wants_jump;
     let vertical_velocity = match swim {
-        Some((surface_y, fraction, _, _)) => swim_vertical_velocity(
+        Some(state) => swim_vertical_velocity(
             controller.vertical_velocity,
             current_pos.y,
-            surface_y,
+            state.surface_y,
             controller.half_height + controller.radius,
-            fraction,
+            state.fraction,
             dt,
             controller.jump_velocity,
             jump_fired,
+            swim_input_vertical.abs() > f32::EPSILON,
         ),
         None => integrate_vertical(
-            controller.vertical_velocity,
+            terrestrial_carry_velocity(controller.vertical_velocity, was_swimming),
             controller.gravity,
             controller.terminal_velocity,
             dt,
@@ -399,6 +433,23 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     } else {
         vertical_velocity * dt
     };
+    // The swimmer's vertical share is the buoyancy spring plus the pitched
+    // movement input, clamped so neither can carry the capsule up through the
+    // surface (WATAL W1; reference `movementsolver.cpp:205-213`). The clamp
+    // rebinds `vertical_velocity` too, so the rejected ascent is not still
+    // sitting in the spring on the next tick — every consumer below
+    // (`resolve_ground_contact`, the controller write-back, the M28.5 log)
+    // sees the same clamped quantity.
+    let (desired_vertical, vertical_velocity) = match swim {
+        Some(state) => clamp_swim_ascent(
+            current_pos.y,
+            desired_vertical + swim_input_vertical,
+            vertical_velocity,
+            state.surface_y,
+            controller.half_height + controller.radius,
+        ),
+        None => (desired_vertical, vertical_velocity),
+    };
     let desired_translation = horizontal_translation + Vec3::Y * desired_vertical;
 
     // Ask Rapier's KCC for the collide-and-slide-corrected motion.
@@ -421,8 +472,12 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
 
     // #3799 — the frame's authoritative ground-contact bit. NOT
     // `result.grounded` on its own: see [`resolve_ground_contact`].
-    let (grounded, resolved_vertical_velocity) =
-        resolve_ground_contact(result.grounded, probe_found_support, vertical_velocity);
+    let (grounded, resolved_vertical_velocity) = resolve_ground_contact(
+        result.grounded,
+        probe_found_support,
+        vertical_velocity,
+        swim.is_some(),
+    );
 
     // Diagnostic for M28.5 smoke-testing — log body state for the
     // first 5 frames + when grounded transitions + every 60 frames
@@ -514,11 +569,15 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
             c.drowning_damage_accumulator = drowning_damage.remainder;
         }
     }
+    // Publish the sampled column as a real contact so the kinematic player is
+    // visible to `water.contacts` and to every other `WaterContact` consumer,
+    // and so the next tick can recover `was_swimming` from it.
+    sync_player_water_contact(world, player_entity, water_contact, current_pos.y);
     if drowning_damage.whole > 0.0 {
         apply_player_drowning_damage(world, player_entity, drowning_damage.whole);
     }
-    if let Some((_, fraction, _, damage_per_second)) = swim {
-        let damage = water_damage_for_contact(damage_per_second, fraction, dt);
+    if let Some(state) = swim {
+        let damage = water_damage_for_contact(state.damage_per_second, state.fraction, dt);
         if damage > 0.0 {
             apply_player_drowning_damage(world, player_entity, damage);
         }
@@ -956,16 +1015,32 @@ pub(crate) fn horizontal_motion(yaw: f32, move_dir: Vec3, speed: f32, dt: f32) -
     (forward * dir.z + right * dir.x) * speed * dt
 }
 
+/// The nearest water column intersecting the player capsule, as sampled from
+/// the canonical [`WaterPlane`] / [`WaterVolume`] pair.
+///
+/// This mirrors the dynamic-body buoyancy calculation for the one body that
+/// pass cannot see (the player is `KinematicPositionBased`, and
+/// `apply_buoyancy_with_scratch` selects `MotionType::Dynamic` plus ragdoll
+/// bones only). The result is published as a real [`WaterContact`] by
+/// [`sync_player_water_contact`], so the kinematic player reaches the same
+/// `water.contacts` diagnostic and the same downstream consumers as every
+/// other wet body.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlayerWaterState {
+    /// Wave-adjusted world Y of the water surface above the capsule.
+    pub(crate) surface_y: f32,
+    /// Fraction of the capsule's vertical span below `surface_y`.
+    pub(crate) fraction: f32,
+    /// The current acting on the capsule; `None` is calm water.
+    pub(crate) flow: Option<WaterFlow>,
+    /// FO3/FNV authored water damage per second. Zero is harmless water.
+    pub(crate) damage_per_second: f32,
+    /// Water-plane entity that supplied this state.
+    pub(crate) surface_entity: EntityId,
+}
+
 /// Return the nearest water column intersecting a capsule centred at `pos`.
-/// The fraction is the capsule's vertical span below the wave-adjusted surface.
-/// The final tuple element carries FO3/FNV authored water damage per second.
-/// This mirrors the dynamic-body `WaterContact` calculation without creating
-/// a transient component for the kinematic player.
-fn player_water_state(
-    world: &World,
-    pos: Vec3,
-    half_span: f32,
-) -> Option<(f32, f32, Option<WaterFlow>, f32)> {
+fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<PlayerWaterState> {
     // Frame-global inputs are sampled once before any water storage guard is
     // acquired. Besides avoiding one resource re-lock per plane, this keeps
     // the player path aligned with apply_buoyancy_with_scratch's
@@ -981,7 +1056,7 @@ fn player_water_state(
     let flow_q = world.query::<WaterFlow>();
     let bottom = pos.y - half_span;
     let top = pos.y + half_span;
-    let mut best: Option<(f32, f32, Option<WaterFlow>, f32, f32)> = None;
+    let mut best: Option<(PlayerWaterState, f32)> = None;
     for (entity, plane) in wq.iter() {
         let Some(volume) = vq.get(entity) else {
             continue;
@@ -1014,19 +1089,92 @@ fn player_water_state(
         }
         let distance = (surface_y - pos.y).abs();
         let flow = flow_q.as_ref().and_then(|q| q.get(entity).copied());
-        if best.as_ref().is_none_or(|candidate| distance < candidate.4) {
+        if best.as_ref().is_none_or(|candidate| distance < candidate.1) {
             best = Some((
-                surface_y,
-                fraction,
-                flow,
-                wq.get(entity)
-                    .map(|plane| plane.damage_per_second)
-                    .unwrap_or(0.0),
+                PlayerWaterState {
+                    surface_y,
+                    fraction,
+                    flow,
+                    damage_per_second: plane.damage_per_second,
+                    surface_entity: entity,
+                },
                 distance,
             ));
         }
     }
-    best.map(|(surface_y, fraction, flow, damage, _)| (surface_y, fraction, flow, damage))
+    best.map(|(state, _)| state)
+}
+
+/// The vertical velocity the *terrestrial* integrator inherits on a frame the
+/// player is not swimming.
+///
+/// Reference (OpenMW `movementsolver.cpp:427-428`): inertia is zeroed on every
+/// frame the actor is below swimlevel, so by the time it climbs out of a lake
+/// the carried vertical velocity is already zero. Ours is not — while swimming
+/// `CharacterController::vertical_velocity` holds the buoyancy spring's own
+/// state — so the transition needs an explicit reset. Without it the exit
+/// frame hands `integrate_vertical` whatever the spring was carrying: a
+/// swimmer rising at the waterline (the common case, the spring pushes toward
+/// it from below) is launched off the shoreline, and one that had just been
+/// pushed under lands with a phantom descent.
+///
+/// Extracted rather than inlined into `character_controller_system` on the
+/// #3972 lesson: a one-line `if` inside a system with no test caller is
+/// exactly the shape that gets deleted with the suite still green.
+#[inline]
+pub(crate) fn terrestrial_carry_velocity(stored_velocity: f32, was_swimming: bool) -> f32 {
+    if was_swimming {
+        0.0
+    } else {
+        stored_velocity
+    }
+}
+
+/// Publish the kinematic player's sampled water column as a canonical
+/// [`WaterContact`], the component every other wet body already carries.
+///
+/// The player is the one body `apply_buoyancy_with_scratch` structurally
+/// cannot reach (it selects `MotionType::Dynamic` plus ragdoll bones), and
+/// `clear_stale_water_contacts` skips it for the same reason — so this system
+/// owns the row outright and nothing else writes or clears it.
+///
+/// Depth is measured against the pose the column was sampled at, not the
+/// post-step pose, which is both what the dynamic path does (buoyancy runs
+/// pre-step) and what makes [`depth_reaches_swimlevel`] round-trip: next
+/// frame's `was_swimming` is then exactly this frame's swim verdict.
+///
+/// Leaving the water writes the dry sentinel exactly once and then leaves the
+/// row alone, mirroring the dynamic path's one-transition contract.
+fn sync_player_water_contact(
+    world: &World,
+    entity: EntityId,
+    state: Option<PlayerWaterState>,
+    center_y: f32,
+) {
+    let contact = match state {
+        Some(state) => WaterContact {
+            surface_entity: Some(state.surface_entity),
+            depth: state.surface_y - center_y,
+            submerged_fraction: state.fraction,
+            // The canonical AABB-top definition (see `WaterContact`), not the
+            // eye-height gate that drives breath: one component, one meaning.
+            head_submerged: state.fraction >= 1.0,
+            flow: state.flow,
+            damage_per_second: state.damage_per_second,
+        },
+        None => {
+            let already_dry = world
+                .get::<WaterContact>(entity)
+                .is_none_or(|contact| contact.submerged_fraction <= 0.0);
+            if already_dry {
+                return;
+            }
+            WaterContact::default()
+        }
+    };
+    if let Some(mut q) = world.query_mut::<WaterContact>() {
+        q.insert(entity, contact);
+    }
 }
 
 /// OpenMW's `swimlevel = waterLevel - halfExtentsZ * fSwimHeightScale`
@@ -1042,13 +1190,96 @@ const SWIM_DAMPING: f32 = 19.71;
 
 #[inline]
 fn swimlevel_reached(center_y: f32, surface_y: f32, half_span: f32) -> bool {
-    center_y < surface_y - half_span * SWIM_HEIGHT_SCALE
+    depth_reaches_swimlevel(surface_y - center_y, half_span)
+}
+
+/// The same swimlevel test expressed against a submersion *depth* rather than
+/// an absolute pair of world heights, so a retained [`WaterContact`] — whose
+/// `depth` is exactly `surface_y - center_y` — can be re-tested without having
+/// also stored the pose it was measured at.
+///
+/// One definition, two callers: [`swimlevel_reached`] delegates here, and the
+/// swim-exit transition reads last frame's contact through it. A second
+/// hand-inlined copy of `half_span * SWIM_HEIGHT_SCALE` is exactly how the
+/// walk/swim boundary would drift apart between the two.
+#[inline]
+pub(crate) fn depth_reaches_swimlevel(depth: f32, half_span: f32) -> bool {
+    depth > half_span * SWIM_HEIGHT_SCALE
+}
+
+/// Full 3D swim movement — the pitched-forward half of WATAL W1.
+///
+/// Reference (WATAL §9 Q3, OpenMW `movementsolver.cpp:161-165`): below
+/// swimlevel the movement vector is rotated by **pitch and yaw**, where a
+/// walker's is rotated by yaw alone (`:167`). That single difference is what
+/// makes "look down, hold forward" a dive and "look up, hold forward" a climb,
+/// with no separate ascend/descend axis to bind — the reference engine has
+/// none either.
+///
+/// Strafe deliberately stays horizontal: the reference rotates about the pitch
+/// axis, which leaves the strafe component of the movement vector untouched.
+/// Only forward/back tilts.
+pub(crate) fn swim_motion(yaw: f32, pitch: f32, move_dir: Vec3, speed: f32, dt: f32) -> Vec3 {
+    if move_dir == Vec3::ZERO {
+        return Vec3::ZERO;
+    }
+    let dir = move_dir.normalize();
+    // The same composition `camera_follow_system` builds, so "forward" is the
+    // direction the player is actually looking.
+    let forward = (Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch)) * -Vec3::Z;
+    let right = Quat::from_rotation_y(yaw) * Vec3::X;
+    (forward * dir.z + right * dir.x) * speed * dt
+}
+
+/// Reference (OpenMW `movementsolver.cpp:205-213`): *"If not able to fly, don't
+/// allow to swim up into the air"* — while the actor starts below swimlevel and
+/// the step would end above it, the vertical component of the motion is
+/// rejected outright and the step is recomputed.
+///
+/// Returned as a pair because the reference rejects the *velocity*, not just
+/// this frame's displacement: leaving a stale positive velocity in the swim
+/// spring would re-apply the same rejected ascent on the next tick and buzz the
+/// swimmer against the waterline. Zero is the reference's own answer for
+/// vertical carry below swimlevel (`:427-428`).
+///
+/// This is what keeps the shipped jump-stroke a *stroke*: it can still lift a
+/// swimmer off the lake bed, but it can no longer launch the capsule out of the
+/// water, which is the behaviour the reference explicitly forbids.
+#[inline]
+pub(crate) fn clamp_swim_ascent(
+    center_y: f32,
+    vertical_translation: f32,
+    vertical_velocity: f32,
+    surface_y: f32,
+    half_span: f32,
+) -> (f32, f32) {
+    let swimlevel = surface_y - half_span * SWIM_HEIGHT_SCALE;
+    let starts_submerged = center_y < swimlevel;
+    if starts_submerged && center_y + vertical_translation > swimlevel {
+        return (0.0, 0.0);
+    }
+    (vertical_translation, vertical_velocity)
 }
 
 /// Integrate a swimmer toward a neutral buoyancy point near the waterline.
 /// Gravity is replaced by a critically-damped buoyancy spring; jump remains a
 /// bounded upward stroke while submerged. This keeps entry/exit continuous and
 /// prevents a falling player from tunnelling through a shallow water volume.
+///
+/// `input_vertical_active` is the WATAL W1 precedence rule. The reference
+/// (OpenMW `movementsolver.cpp:161-165`) gives a live swimmer *no* restoring
+/// force at all — below swimlevel its velocity is the movement input and
+/// nothing else; buoyancy toward the surface applies only to inert bodies
+/// (`:155-161`). The spring here is an engine addition with its own stated
+/// job (replace gravity, keep entry/exit continuous, stop a falling player
+/// tunnelling a shallow volume), and it does that job for a *passive*
+/// swimmer. But it must not fight an active one: at the shipped stiffness a
+/// dive stalled ~23 BU below the neutral point — the restoring velocity grew
+/// until it exactly cancelled the pitched swim input, so "swim down" simply
+/// did not exist. While the player is actively swimming vertically the spring
+/// term is therefore dropped and only the water drag remains, which is the
+/// reference's own behaviour; releasing the input hands the swimmer back to
+/// the spring.
 #[allow(clippy::too_many_arguments)] // Pure scalar integrator; grouping would obscure units.
 pub(crate) fn swim_vertical_velocity(
     prev_velocity: f32,
@@ -1059,11 +1290,16 @@ pub(crate) fn swim_vertical_velocity(
     dt: f32,
     jump_velocity: f32,
     jump_fired: bool,
+    input_vertical_active: bool,
 ) -> f32 {
     if jump_fired {
         return jump_velocity
             .mul_add(0.55, prev_velocity * 0.15)
             .clamp(-120.0, 220.0);
+    }
+    if input_vertical_active {
+        // Drag only — the swimmer's own stroke owns the vertical this frame.
+        return (prev_velocity * (-SWIM_DAMPING * dt).exp()).clamp(-120.0, 160.0);
     }
     let target_y = surface_y - half_span * SWIM_HEIGHT_SCALE;
     let spring = (target_y - center_y) * (5.0 + 7.0 * fraction.clamp(0.0, 1.0));
@@ -1245,11 +1481,26 @@ pub(crate) fn support_probe_enabled(swimming: bool, was_grounded: bool, jump_fir
     !swimming && was_grounded && !jump_fired
 }
 
+/// `swimming` is a hard veto on both outputs, not a third input to the OR.
+///
+/// Reference (OpenMW `movementsolver.cpp:379`): the ground test runs only
+/// `if (forceGroundTest || (inertia.z <= 0 && newPosition.z >= swimlevel))` —
+/// an actor below swimlevel is never ground-tested at all, so it cannot come
+/// out of the solver grounded. [`support_probe_enabled`] already refuses to run
+/// the engine's own probe while swimming (#3972), but `kcc_grounded` arrives
+/// from Rapier, which knows nothing about water: a swimmer whose capsule brushes
+/// the lake bed — routine in the shallows of any authored river — otherwise
+/// reads `grounded=true` while buoyant, which re-enables the terrestrial jump
+/// and lets the next frame's `support_probe_enabled` fire off the bed.
 pub(crate) fn resolve_ground_contact(
     kcc_grounded: bool,
     probe_found_support: bool,
     vertical_velocity: f32,
+    swimming: bool,
 ) -> (bool, f32) {
+    if swimming {
+        return (false, vertical_velocity);
+    }
     let grounded = kcc_grounded || probe_found_support;
     // Landing zeroes residual downward momentum so the next frame's
     // gravity integration starts fresh.
@@ -1641,11 +1892,21 @@ mod tests {
 
     #[test]
     fn swimming_replaces_gravity_with_bounded_buoyancy() {
-        let v = swim_vertical_velocity(0.0, 0.0, 100.0, 50.0, 1.0, 1.0 / 60.0, 380.0, false);
+        let v = swim_vertical_velocity(0.0, 0.0, 100.0, 50.0, 1.0, 1.0 / 60.0, 380.0, false, false);
         assert!(v > 0.0, "a submerged swimmer below the neutral point rises");
         assert!(v < 160.0, "buoyancy must remain bounded");
 
-        let jump = swim_vertical_velocity(-80.0, 80.0, 100.0, 50.0, 0.5, 1.0 / 60.0, 380.0, true);
+        let jump = swim_vertical_velocity(
+            -80.0,
+            80.0,
+            100.0,
+            50.0,
+            0.5,
+            1.0 / 60.0,
+            380.0,
+            true,
+            false,
+        );
         assert!(
             jump > 0.0 && jump <= 220.0,
             "swim stroke is a bounded upward impulse"
@@ -1654,7 +1915,17 @@ mod tests {
 
     #[test]
     fn swimming_damps_downward_velocity_near_surface() {
-        let v = swim_vertical_velocity(-120.0, 82.5, 100.0, 50.0, 0.8, 1.0 / 60.0, 380.0, false);
+        let v = swim_vertical_velocity(
+            -120.0,
+            82.5,
+            100.0,
+            50.0,
+            0.8,
+            1.0 / 60.0,
+            380.0,
+            false,
+            false,
+        );
         assert!(v > -120.0, "water drag must reduce a falling speed");
     }
 
@@ -1675,6 +1946,7 @@ mod tests {
             1.0 / 60.0,
             jump_velocity,
             false,
+            false,
         );
         let half1 = swim_vertical_velocity(
             -40.0,
@@ -1685,6 +1957,7 @@ mod tests {
             1.0 / 120.0,
             jump_velocity,
             false,
+            false,
         );
         let half2 = swim_vertical_velocity(
             half1,
@@ -1694,6 +1967,7 @@ mod tests {
             fraction,
             1.0 / 120.0,
             jump_velocity,
+            false,
             false,
         );
         assert!(
@@ -1825,7 +2099,7 @@ mod tests {
             let kcc_grounded = !grounded;
 
             let (next_grounded, next_velocity) =
-                resolve_ground_contact(kcc_grounded, probe_found_support, vertical_velocity);
+                resolve_ground_contact(kcc_grounded, probe_found_support, vertical_velocity, false);
 
             assert!(
                 next_grounded,
@@ -1847,7 +2121,7 @@ mod tests {
     /// KCC sees nothing) has to stay airborne, momentum intact.
     #[test]
     fn no_support_probe_and_no_kcc_contact_stays_airborne() {
-        let (grounded, velocity) = resolve_ground_contact(false, false, -48.0);
+        let (grounded, velocity) = resolve_ground_contact(false, false, -48.0, false);
         assert!(!grounded);
         assert_eq!(velocity, -48.0, "free-fall momentum must survive");
     }
@@ -1858,9 +2132,12 @@ mod tests {
     #[test]
     fn landing_zeroes_descent_but_a_launch_keeps_its_impulse() {
         let human = byroredux_physics::CharacterController::HUMAN;
-        assert_eq!(resolve_ground_contact(true, false, -60.0), (true, 0.0));
         assert_eq!(
-            resolve_ground_contact(true, false, human.jump_velocity),
+            resolve_ground_contact(true, false, -60.0, false),
+            (true, 0.0)
+        );
+        assert_eq!(
+            resolve_ground_contact(true, false, human.jump_velocity, false),
             (true, human.jump_velocity),
             "upward velocity is not residual descent — it must not be cleared"
         );
@@ -1946,6 +2223,360 @@ mod tests {
             Vec3::ZERO,
             "the frozen fly-mode body must stay where it was"
         );
+    }
+
+    // ── WATAL W1 — character water traversal ─────────────────────────
+    //
+    // Reference for every row below is OpenMW's movement solver, cited per
+    // test (WATAL §9 Q3): swim state is *engine*-defined, so these are
+    // game-invariant and must hold on Skyrim, FNV, FO3 and Oblivion water
+    // alike.
+
+    /// One swimlevel definition, two entry points. `swimlevel_reached` takes a
+    /// pose pair; `depth_reaches_swimlevel` takes the depth a retained
+    /// `WaterContact` stores. They must agree for every sample, or the
+    /// walk/swim boundary the controller decides on and the one the exit
+    /// transition re-reads next frame drift apart.
+    #[test]
+    fn swimlevel_predicate_agrees_between_pose_and_depth_forms() {
+        let half_span = 64.0;
+        for center_y in [-100.0_f32, -17.5, 0.0, 17.5, 40.0, 200.0] {
+            let surface_y = 100.0;
+            assert_eq!(
+                swimlevel_reached(center_y, surface_y, half_span),
+                depth_reaches_swimlevel(surface_y - center_y, half_span),
+                "center_y={center_y} must resolve identically in both forms"
+            );
+        }
+    }
+
+    /// Reference `movementsolver.cpp:161-165` — below swimlevel the movement
+    /// vector is rotated by pitch **and** yaw, so looking down and holding
+    /// forward is the dive control. There is no separate descend axis to bind,
+    /// in the reference engine or here.
+    #[test]
+    fn swim_motion_dives_and_climbs_with_the_look_axis() {
+        let forward = Vec3::new(0.0, 0.0, 1.0);
+        let dt = 1.0 / 60.0;
+
+        let level = swim_motion(0.0, 0.0, forward, 220.0, dt);
+        assert!(
+            level.y.abs() < 1e-5,
+            "a level swimmer must not gain or lose depth: {level:?}"
+        );
+        assert!(
+            (level.z - (-220.0 * dt)).abs() < 1e-4,
+            "level swim must keep the full horizontal speed: {level:?}"
+        );
+
+        let dive = swim_motion(0.0, -45.0_f32.to_radians(), forward, 220.0, dt);
+        assert!(dive.y < 0.0, "looking down must descend: {dive:?}");
+        let climb = swim_motion(0.0, 45.0_f32.to_radians(), forward, 220.0, dt);
+        assert!(climb.y > 0.0, "looking up must ascend: {climb:?}");
+        assert!(
+            (dive.y + climb.y).abs() < 1e-5,
+            "symmetric pitch must give symmetric vertical motion"
+        );
+
+        // Speed is conserved: pitch redistributes the same displacement
+        // between horizontal and vertical, it does not add any.
+        assert!(
+            (dive.length() - level.length()).abs() < 1e-4,
+            "a dive must not be faster than level swimming: {} vs {}",
+            dive.length(),
+            level.length(),
+        );
+    }
+
+    /// The reference rotates about the pitch axis, which leaves the strafe
+    /// component of the movement vector untouched — a swimmer looking down and
+    /// strafing moves sideways, not diagonally into the lake bed.
+    #[test]
+    fn swim_motion_strafe_stays_horizontal_under_pitch() {
+        let strafe = swim_motion(
+            0.0,
+            -60.0_f32.to_radians(),
+            Vec3::new(1.0, 0.0, 0.0),
+            220.0,
+            1.0 / 60.0,
+        );
+        assert!(
+            strafe.y.abs() < 1e-5,
+            "strafe must not tilt with the look axis: {strafe:?}"
+        );
+        assert!(
+            strafe.x > 0.0,
+            "strafe right must still move +X: {strafe:?}"
+        );
+    }
+
+    /// Reference `movementsolver.cpp:205-213` — *"If not able to fly, don't
+    /// allow to swim up into the air"*. The rejected ascent must clear the
+    /// carried velocity too, or the spring re-applies it every tick and the
+    /// swimmer buzzes against the waterline.
+    #[test]
+    fn a_swimmer_cannot_rise_out_of_the_water() {
+        let half_span = 64.0;
+        let surface_y = 100.0;
+        let swimlevel = surface_y - half_span * SWIM_HEIGHT_SCALE;
+
+        // Deep ascent that stays submerged: untouched.
+        let (translation, velocity) =
+            clamp_swim_ascent(swimlevel - 50.0, 8.0, 90.0, surface_y, half_span);
+        assert_eq!(
+            (translation, velocity),
+            (8.0, 90.0),
+            "rising from depth is the whole point of the swim stroke"
+        );
+
+        // Ascent that would cross swimlevel: rejected, velocity cleared.
+        let (translation, velocity) =
+            clamp_swim_ascent(swimlevel - 2.0, 40.0, 160.0, surface_y, half_span);
+        assert_eq!(
+            (translation, velocity),
+            (0.0, 0.0),
+            "the stroke must not launch the capsule out of the lake"
+        );
+
+        // Descending is never clamped — diving must always work.
+        let (translation, velocity) =
+            clamp_swim_ascent(swimlevel - 1.0, -30.0, -120.0, surface_y, half_span);
+        assert_eq!((translation, velocity), (-30.0, -120.0));
+
+        // Already at or above swimlevel (wading out onto a beach): the clamp
+        // must not fire, or it would pin the player to the shoreline.
+        let (translation, velocity) =
+            clamp_swim_ascent(swimlevel + 1.0, 25.0, 100.0, surface_y, half_span);
+        assert_eq!(
+            (translation, velocity),
+            (25.0, 100.0),
+            "the clamp only applies to a capsule that starts submerged"
+        );
+    }
+
+    /// The precedence rule that makes vertical swim exist at all. The shipped
+    /// buoyancy spring is stiff enough that its restoring velocity cancels the
+    /// pitched swim input exactly ~23 BU below the neutral point: measured
+    /// live on FNV Lake Mead, a held dive stalled at depth 45 with the spring
+    /// returning +13.9 BU/s against it. The reference gives a live swimmer no
+    /// restoring force at all (`movementsolver.cpp:161-165`), so an active
+    /// stroke drops the spring term and keeps only water drag.
+    #[test]
+    fn an_active_dive_is_not_cancelled_by_the_buoyancy_spring() {
+        let (surface_y, half_span, fraction, jump_velocity) = (2600.0, 64.0, 0.85, 380.0);
+        let neutral_y = surface_y - half_span * SWIM_HEIGHT_SCALE;
+        let deep_y = neutral_y - 23.0;
+
+        // Passive: the spring lifts a swimmer below the neutral point.
+        let passive = swim_vertical_velocity(
+            0.0,
+            deep_y,
+            surface_y,
+            half_span,
+            fraction,
+            1.0 / 60.0,
+            jump_velocity,
+            false,
+            false,
+        );
+        assert!(
+            passive > 0.0,
+            "a released swimmer still floats back toward the waterline: {passive}"
+        );
+
+        // Active: no restoring term, so the stroke's own translation decides.
+        let active = swim_vertical_velocity(
+            0.0,
+            deep_y,
+            surface_y,
+            half_span,
+            fraction,
+            1.0 / 60.0,
+            jump_velocity,
+            false,
+            true,
+        );
+        assert_eq!(
+            active, 0.0,
+            "an active stroke must not be pushed back up by the spring"
+        );
+
+        // Residual velocity still bleeds off through water drag rather than
+        // persisting — the swim integrator never becomes frictionless.
+        let drag = swim_vertical_velocity(
+            -80.0,
+            deep_y,
+            surface_y,
+            half_span,
+            fraction,
+            1.0 / 60.0,
+            jump_velocity,
+            false,
+            true,
+        );
+        assert!(
+            drag > -80.0 && drag < 0.0,
+            "an active stroke keeps water drag on residual velocity: {drag}"
+        );
+    }
+
+    /// Reference `movementsolver.cpp:427-428` — inertia is zeroed on every
+    /// below-swimlevel frame, so the first terrestrial frame after an exit
+    /// starts from rest.
+    #[test]
+    fn leaving_the_water_starts_the_fall_from_rest() {
+        assert_eq!(
+            terrestrial_carry_velocity(140.0, true),
+            0.0,
+            "a rising buoyancy spring must not launch the player off the shore"
+        );
+        assert_eq!(
+            terrestrial_carry_velocity(-110.0, true),
+            0.0,
+            "nor may a sinking one land as a phantom descent"
+        );
+        assert_eq!(
+            terrestrial_carry_velocity(-48.0, false),
+            -48.0,
+            "an ordinary fall keeps its momentum"
+        );
+    }
+
+    /// Reference `movementsolver.cpp:379` — the ground test runs only at or
+    /// above swimlevel, so a swimmer is never grounded. `kcc_grounded` comes
+    /// from Rapier, which knows nothing about water: a capsule brushing the
+    /// lake bed in the shallows of an authored river is the live case.
+    #[test]
+    fn a_swimmer_is_never_grounded() {
+        assert_eq!(
+            resolve_ground_contact(true, true, -12.0, true),
+            (false, -12.0),
+            "swimming vetoes both ground authorities and preserves the spring"
+        );
+        assert_eq!(
+            resolve_ground_contact(true, true, -12.0, false),
+            (true, 0.0),
+            "the same inputs on land still resolve as a landing"
+        );
+    }
+
+    /// The kinematic player is invisible to `apply_buoyancy_with_scratch`
+    /// (Dynamic + ragdoll bones only) and to `clear_stale_water_contacts` (same
+    /// selection), so this system owns the row. Publishing it is what puts the
+    /// player in `water.contacts` and lets the next tick recover
+    /// `was_swimming`.
+    #[test]
+    fn the_player_publishes_and_retires_its_own_water_contact() {
+        let mut world = World::new();
+        let plane = world.spawn();
+        let player = world.spawn();
+        world.insert(player, WaterContact::default());
+
+        let half_span = byroredux_physics::CharacterController::HUMAN.half_height
+            + byroredux_physics::CharacterController::HUMAN.radius;
+        let state = PlayerWaterState {
+            surface_y: 100.0,
+            fraction: 0.8,
+            flow: Some(WaterFlow::new([1.0, 0.0, 0.0], 90.0)),
+            damage_per_second: 3.0,
+            surface_entity: plane,
+        };
+        sync_player_water_contact(&world, player, Some(state), 20.0);
+        let wet = world.get::<WaterContact>(player).map(|c| *c).unwrap();
+        assert_eq!(wet.surface_entity, Some(plane));
+        assert_eq!(wet.depth, 80.0, "depth is surface minus the sampled centre");
+        assert_eq!(wet.submerged_fraction, 0.8);
+        assert!(
+            !wet.head_submerged,
+            "a partially submerged capsule is not head-under"
+        );
+        assert_eq!(wet.damage_per_second, 3.0);
+        assert!(wet.flow.is_some());
+        // The published depth must round-trip through the swimlevel predicate
+        // the controller itself decided on this frame.
+        assert!(
+            depth_reaches_swimlevel(wet.depth, half_span),
+            "a contact published while swimming must read back as swimming"
+        );
+
+        // Leaving the water writes the dry sentinel exactly once...
+        sync_player_water_contact(&world, player, None, 20.0);
+        let dry = world.get::<WaterContact>(player).map(|c| *c).unwrap();
+        assert_eq!(dry.submerged_fraction, 0.0);
+        assert_eq!(dry.surface_entity, None);
+        assert!(!depth_reaches_swimlevel(dry.depth, half_span));
+        // ...and then leaves the row alone rather than rewriting it per frame.
+        sync_player_water_contact(&world, player, None, 20.0);
+        assert_eq!(
+            world
+                .get::<WaterContact>(player)
+                .map(|c| c.submerged_fraction),
+            Some(0.0)
+        );
+    }
+
+    /// A fully submerged capsule reports the canonical AABB-top definition of
+    /// `head_submerged` (`WaterContact`'s own contract), not the eye-height
+    /// gate that drives breath — one component, one meaning.
+    #[test]
+    fn full_submersion_sets_the_canonical_head_flag() {
+        let world = World::new();
+        let mut world = world;
+        let plane = world.spawn();
+        let player = world.spawn();
+        world.insert(player, WaterContact::default());
+        sync_player_water_contact(
+            &world,
+            player,
+            Some(PlayerWaterState {
+                surface_y: 400.0,
+                fraction: 1.0,
+                flow: None,
+                damage_per_second: 0.0,
+                surface_entity: plane,
+            }),
+            10.0,
+        );
+        assert!(world
+            .get::<WaterContact>(player)
+            .is_some_and(|contact| contact.head_submerged));
+    }
+
+    /// The three water clauses the system decides with are helpers, not inline
+    /// `if`s — the #3972 lesson applied to W1. A refactor that re-inlines any
+    /// of them puts the walk/swim boundary back out of reach of every test
+    /// above.
+    #[test]
+    fn the_swim_decisions_stay_in_pinnable_helpers() {
+        let production = include_str!("character.rs");
+        let body_start = production
+            .find("pub(crate) fn character_controller_system")
+            .expect("the production system must exist");
+        let body = &production[body_start..];
+        let body = &body[..body
+            .find("\n/// Pin the active camera")
+            .expect("camera_follow_system must follow the controller")];
+
+        for (call, why) in [
+            (
+                "swim_motion(yaw, pitch, move_dir",
+                "3D swim movement must come from swim_motion with the live look axis",
+            ),
+            (
+                "terrestrial_carry_velocity(controller.vertical_velocity, was_swimming)",
+                "the swim-exit reset must come from terrestrial_carry_velocity",
+            ),
+            (
+                "clamp_swim_ascent(",
+                "the surface clamp must come from clamp_swim_ascent",
+            ),
+            (
+                "swim.is_some(),\n    );",
+                "resolve_ground_contact must receive the live swim verdict",
+            ),
+        ] {
+            assert!(body.contains(call), "{why} (looked for `{call}`)");
+        }
     }
 
     /// #3972 / PHYS-D5-2026-09-06-02 — the truth table for #3799's entire
