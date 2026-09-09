@@ -4801,14 +4801,21 @@ fn shader_pipeline_doc_does_not_advertise_live_lanes_as_free() {
 fn the_descriptor_table_does_not_credit_private_layout_passes_with_global_sets() {
     const DOC: &str = include_str!("../../../../../docs/engine/shader-pipeline.md");
     const CAUSTIC_SRC: &str = include_str!("../caustic.rs");
+    // #2256 split the volumetrics construction path into `volumetrics/init.rs`,
+    // taking both `set_layouts` sites with it. Scanned as one string with the
+    // parent so this pin does not care which side of that seam the pipeline
+    // layout is built on — the property is "one set layout per pipeline
+    // layout", not "in this file".
     const VOLUMETRICS_SRC: &str = include_str!("../volumetrics.rs");
+    const VOLUMETRICS_INIT_SRC: &str = include_str!("../volumetrics/init.rs");
+    let volumetrics_all = format!("{VOLUMETRICS_SRC}{VOLUMETRICS_INIT_SRC}");
 
     // Ground truth: one set layout per pipeline layout. Needle composed at
     // runtime so this test's own text cannot satisfy the scan.
     let single_set = format!("set_layouts(std::slice::from_ref{}", "(");
     for (name, src) in [
         ("caustic.rs", CAUSTIC_SRC),
-        ("volumetrics.rs", VOLUMETRICS_SRC),
+        ("volumetrics.rs + volumetrics/init.rs", &volumetrics_all[..]),
     ] {
         assert!(
             src.contains(&single_set),

@@ -1094,6 +1094,14 @@ mod tests {
             ("svgf.rs", include_str!("vulkan/svgf.rs")),
             ("restir.rs", include_str!("vulkan/restir.rs")),
             ("volumetrics.rs", include_str!("vulkan/volumetrics.rs")),
+            // #2256 — the construction half moved to `volumetrics/init.rs`.
+            // This is a NEGATIVE scan, so dropping a file does not fail, it
+            // just stops looking: the same way #3442's own gap opened when
+            // #3282 moved the fence wait out of `draw.rs`.
+            (
+                "volumetrics/init.rs",
+                include_str!("vulkan/volumetrics/init.rs"),
+            ),
             ("context/draw.rs", include_str!("vulkan/context/draw.rs")),
             (
                 "context/sync_and_acquire_frame.rs",

@@ -135,17 +135,27 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    string `#[ignore]` (#2262).
    The **production**>2000-LOC set (Dim 1's actual subject, re-verified
    2026-09-05 with *prod_loc*) has more than doubled since the 2026-08-29
-   check — 5 files → **12**: `byroredux/src/extensions.rs` (~5920 — the
+   check — 5 files → **12** (11 after #2256, below): `byroredux/src/extensions.rs` (~5920 — the
    sandbox-runtime/ECS-event adapter bridging `crates/sdk`/`crates/mod-runtime`
    into the engine; 10 652 total lines, so a large test fraction, but still
-   far over threshold on production alone), `crates/renderer/src/vulkan/volumetrics.rs`
-   (~2940, up from ~2860), `crates/renderer/src/vulkan/context/mod.rs` (~2650,
+   far over threshold on production alone),
+   `crates/renderer/src/vulkan/context/mod.rs` (~2650,
    up from ~2470), `crates/scripting/src/fragment.rs` (~2540),
    `byroredux/src/boot.rs` (~2230, newly crossed — see the `main.rs`-split note
    below), `crates/renderer/src/mesh.rs` (~2230, up from ~2210),
    `crates/nif/src/import/walk/mod.rs` (~2170, newly crossed),
    `crates/renderer/src/texture_registry.rs` (~2060, up from ~2010) and
    `byroredux/src/asset_provider/material.rs` (~2040, newly crossed).
+   **`crates/renderer/src/vulkan/volumetrics.rs` dropped OUT of the bucket
+   (~2940 → ~1895 production)** — #2256 (2026-09-08) moved `new` / `new_inner`
+   / `create_volume` / `initialize_layouts` into a new
+   `crates/renderer/src/vulkan/volumetrics/init.rs` (~1160 production, itself
+   under threshold), keeping the per-frame recording path (`dispatch`,
+   `record_neutral_frame`, the `write_*` descriptor updates) plus every pure
+   helper and GPU-struct definition in the parent. Same construct-vs-record
+   seam as the `draw.rs` split below, and the same instruction: do not
+   re-propose splitting `volumetrics.rs` on the strength of a pre-2026-09-08
+   figure — re-measure first. The set is **11** files after this.
    `compatibility.rs`, `papyrus_provider.rs` and `runtime.rs` were split in
    2026-09 (#3851 / #3852 / #3853) and are no longer single files — see the
    young-crate note below. `extensions.rs` is the one that remains, and it is
