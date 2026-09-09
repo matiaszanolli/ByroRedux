@@ -258,6 +258,28 @@ impl GpuImage {
         })
     }
 
+    /// Hand the three handles out and disarm this `GpuImage` (#3860).
+    ///
+    /// A deliberate escape hatch, currently for exactly one caller:
+    /// `context/helpers.rs::create_depth_resources`, whose results are stored
+    /// as three separate flat fields on `VulkanContext` and freed by that
+    /// struct's own `destroy_depth_resources`. Reworking those fields into a
+    /// `GpuImage` would ripple across ~108 references and is really a
+    /// `VulkanContext` field-count question (#3736), so the chain is
+    /// consolidated here while the storage stays where it is.
+    ///
+    /// Taking the allocation out is what disarms `Drop`: the caller owns all
+    /// three handles afterwards and MUST free the allocation and destroy the
+    /// view and image itself. Prefer holding the `GpuImage`.
+    pub fn into_parts(mut self) -> (vk::Image, vk::ImageView, vk_alloc::Allocation) {
+        let allocation = self
+            .allocation
+            .take()
+            .expect("into_parts on an already-destroyed GpuImage");
+        self.allocator = None;
+        (self.image, self.view, allocation)
+    }
+
     /// Destroy the view and image and release the allocation.
     ///
     /// Idempotent: a second call is a no-op, and it disarms [`Drop`]'s safety
@@ -484,7 +506,11 @@ mod tests {
         // countable from the source and cannot be quietly abandoned half-done.
         // The second assertion fails on a stale entry, so the list cannot rot
         // into a blanket exemption. When it empties, delete it and that check.
-        const PENDING: &[&str] = &["context/helpers.rs"];
+        // The #3860 ledger is EMPTY: all fourteen sites are migrated. Kept as
+        // an empty list with its checks intact so a future site that genuinely
+        // cannot use `GpuImage` has a documented place to land, rather than
+        // being waved through the gate above.
+        const PENDING: &[&str] = &[];
 
         let mut offenders = Vec::new();
         let mut pending_still_rolling = Vec::new();

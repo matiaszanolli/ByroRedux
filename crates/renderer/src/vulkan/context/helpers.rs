@@ -4,7 +4,6 @@ use super::super::allocator::SharedAllocator;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
-use gpu_allocator::MemoryLocation;
 
 /// Destroy a readback staging buffer and return its allocation.
 ///
@@ -506,142 +505,28 @@ pub(super) fn create_depth_resources(
     usage: vk::ImageUsageFlags,
     name: &str,
 ) -> Result<(vk::Image, vk::ImageView, vk_alloc::Allocation)> {
-    let image_info = vk::ImageCreateInfo::default()
-        .image_type(vk::ImageType::TYPE_2D)
-        .format(depth_format)
-        .extent(vk::Extent3D {
-            width: extent.width,
-            height: extent.height,
-            depth: 1,
-        })
-        .mip_levels(1)
-        .array_layers(1)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .tiling(vk::ImageTiling::OPTIMAL)
-        .usage(usage)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .initial_layout(vk::ImageLayout::UNDEFINED);
-
-    // The early-exit leak path described in #96: previously, if `allocate`,
-    // `bind_image_memory`, or `create_image_view` returned `Err` after the
-    // image (and possibly the allocation) already existed, those handles
-    // were dropped on the floor and leaked until shutdown. Each fallible
-    // step below now owns its cleanup. The inline pattern (rather than a
-    // dedicated RAII guard) matches how the rest of this helpers.rs file
-    // handles resource creation.
-
-    let image = unsafe {
-        // SAFETY: `device` is the live logical device; `image_info` is a local
-        // that outlives this call and describes a self-contained image (no
-        // borrowed handles), so its pointers are valid for the call.
-        device
-            .create_image(&image_info, None)
-            .context("Failed to create depth image")?
-    };
-
-    let requirements = unsafe {
-        // SAFETY: pure query — `image` was just created by `device` above and
-        // has not been destroyed.
-        device.get_image_memory_requirements(image)
-    };
-
-    // Bind the allocate result to a local so the MutexGuard from
-    // `.lock()` drops at end-of-statement BEFORE the `match` runs.
-    // Inline as a match scrutinee, the temporary guard would live
-    // through the Err arm. Today the arm only calls `destroy_image`
-    // (no re-lock → no deadlock), but the lock is held across a
-    // Vulkan API call for no reason, and any future cleanup path that
-    // touched the allocator from this arm would silently introduce a
-    // deadlock identical to #1163. Fix #1165.
-    let alloc_result = allocator.lock().expect("allocator lock poisoned").allocate(
-        &vk_alloc::AllocationCreateDesc {
+    // #3860 — was ~110 lines of create → allocate → bind → view with its own
+    // three-arm cleanup, and the site of #1165 ("deadlock identical to
+    // #1163"): the allocator `MutexGuard` had to be bound to a local so it
+    // dropped before the error arms re-locked to free. `GpuImage::create`
+    // states that rule once.
+    //
+    // `into_parts` rather than returning the `GpuImage`: the three handles are
+    // stored as flat `VulkanContext` fields and freed by
+    // `destroy_depth_resources`, and reworking that is a `VulkanContext`
+    // field-count question (#3736) with ~108 references, not this issue's.
+    Ok(super::super::image::GpuImage::create(
+        device,
+        allocator,
+        &super::super::image::GpuImageDesc::depth_2d(
             name,
-            requirements,
-            location: MemoryLocation::GpuOnly,
-            linear: false,
-            allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-        },
-    );
-    let allocation = match alloc_result {
-        Ok(a) => a,
-        Err(e) => {
-            // Allocation failed — only `image` needs cleanup.
-            unsafe {
-                // SAFETY: `image` was created by `device` on line above
-                // and has not been destroyed or bound to memory yet.
-                device.destroy_image(image, None);
-            }
-            return Err(anyhow::Error::from(e).context("Failed to allocate depth image memory"));
-        }
-    };
-
-    if let Err(e) = unsafe {
-        // SAFETY: `image` was created by `device` above and not yet bound;
-        // `allocation` is a live gpu-allocator allocation whose `memory()` was
-        // minted by the same device and whose `offset()` satisfies the image's
-        // reported memory requirements.
-        device.bind_image_memory(image, allocation.memory(), allocation.offset())
-    } {
-        // Bind failed — destroy the image and release the allocation.
-        // Order matters: destroy the image first so the allocator isn't
-        // freeing memory that still has a live binding from the GPU's
-        // point of view (even though the bind call itself failed, be
-        // conservative).
-        unsafe {
-            // SAFETY: `image` was created above and never bound successfully.
-            device.destroy_image(image, None);
-        }
-        let _ = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .free(allocation);
-        return Err(anyhow::Error::from(e).context("Failed to bind depth image memory"));
-    }
-
-    let view_info = vk::ImageViewCreateInfo::default()
-        .image(image)
-        .view_type(vk::ImageViewType::TYPE_2D)
-        .format(depth_format)
-        .subresource_range(vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::DEPTH,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        });
-
-    let view = match unsafe {
-        // SAFETY: `device` is the live logical device; `view_info` is a local
-        // borrowing `image`, which was created and bound to memory by this
-        // device above and outlives the call.
-        device.create_image_view(&view_info, None)
-    } {
-        Ok(v) => v,
-        Err(e) => {
-            // View creation failed — image exists, memory bound. Free
-            // the allocation (gpu-allocator handles the Vulkan memory
-            // lifetime) and destroy the image.
-            unsafe {
-                // SAFETY: `image` was created and bound above. Destroying
-                // it before freeing the allocation is required by the
-                // Vulkan spec (image must not outlive its memory).
-                device.destroy_image(image, None);
-            }
-            let _ = allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(allocation);
-            return Err(anyhow::Error::from(e).context("Failed to create depth image view"));
-        }
-    };
-
-    log::info!(
-        "Depth buffer created: {}x{} {:?}",
-        extent.width,
-        extent.height,
-        depth_format
-    );
-    Ok((image, view, allocation))
+            extent.width,
+            extent.height,
+            depth_format,
+            usage,
+        ),
+    )?
+    .into_parts())
 }
 
 // --- Shared teardown helpers (#33 / R-10) -----------------------------------
