@@ -79,7 +79,7 @@ Risk is the *floor* severity for an un-disproven finding in that area.
 | `byroredux/src/systems/**`, `byroredux/src/render/**` | `/audit-ecs`, `/audit-renderer`, `/audit-performance` | MEDIUM |
 | `byroredux/src/scene/**` | per-game `/audit-<game>` | MEDIUM |
 | `byroredux/src/main.rs`, `byroredux/src/commands/**` | `/audit-ecs` | MEDIUM |
-| `byroredux/src/boot.rs` (scheduler registration + declared access) | `/audit-concurrency` Dim 4, `/audit-ecs` Dim 5 | HIGH |
+| `byroredux/src/boot/schedule/` (scheduler registration + declared access) | `/audit-concurrency` Dim 4, `/audit-ecs` Dim 5 | HIGH |
 | `crates/scripting/**`, `crates/pex/**`, `crates/papyrus/**` | `/audit-scripting` | MEDIUM |
 | `crates/save/**`, `byroredux/src/save_io.rs`, `byroredux/src/save_io/**` | `/audit-save` | MEDIUM |
 | `byroredux/src/streaming.rs`, `streaming_helpers.rs`, `byroredux/src/npc_spawn.rs`, `byroredux/src/npc_spawn/**` | `/audit-performance` Dim 7, `/audit-concurrency` Dim 7 | MEDIUM |

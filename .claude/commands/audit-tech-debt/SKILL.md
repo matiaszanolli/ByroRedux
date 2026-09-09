@@ -133,19 +133,30 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    (mostly Vulkan/smoke gating, not debt) — do not compare against a raw
    whole-repo grep, which also matches markdown prose mentioning the literal
    string `#[ignore]` (#2262).
-   The **production**>2000-LOC set (Dim 1's actual subject, re-verified
-   2026-09-05 with *prod_loc*) has more than doubled since the 2026-08-29
-   check — 5 files → **12** (11 after #2256, below): `byroredux/src/extensions.rs` (~5920 — the
+   The **production**>2000-LOC set (Dim 1's actual subject, re-measured
+   2026-09-09 with *prod_loc* over every `.rs` file in `crates/` + `byroredux/`)
+   is **6 files**, down from the 12 recorded on 2026-09-05:
+   `byroredux/src/extensions.rs` (5921 — the
    sandbox-runtime/ECS-event adapter bridging `crates/sdk`/`crates/mod-runtime`
    into the engine; 10 652 total lines, so a large test fraction, but still
    far over threshold on production alone),
-   `crates/renderer/src/vulkan/context/mod.rs` (~2650,
-   up from ~2470), `crates/scripting/src/fragment.rs` (~2540),
-   `byroredux/src/boot.rs` (~2230, newly crossed — see the `main.rs`-split note
-   below), `crates/renderer/src/mesh.rs` (~2230, up from ~2210),
-   `crates/nif/src/import/walk/mod.rs` (~2170, newly crossed),
-   `crates/renderer/src/texture_registry.rs` (~2060, up from ~2010) and
-   `byroredux/src/asset_provider/material.rs` (~2040, newly crossed).
+   `crates/renderer/src/vulkan/context/mod.rs` (2831, up from ~2650),
+   `crates/scripting/src/fragment.rs` (2682, up from ~2540),
+   `crates/sdk/src/compatibility/storage_util.rs` (2160, **newly crossed** —
+   it grew in `e142e3d4` when the FourCC→FormType mapping became a table),
+   `crates/renderer/src/texture_registry.rs` (2063, up from ~2060) and
+   `crates/nif/src/blocks/shader.rs` (2019, **newly crossed**).
+   **Four files left the bucket on 2026-09-09**, three of them by an actual
+   file-level split: *byroredux/src/boot.rs* → `byroredux/src/boot/`
+   (#3855, `8c5e02aa`; largest survivor `boot/mod.rs` at 606 total),
+   *byroredux/src/asset_provider/material.rs* →
+   `byroredux/src/asset_provider/material/` (#3857, `42f0ead4`; largest
+   survivor `material/merge.rs` at 1239 total),
+   `crates/nif/src/import/walk/mod.rs` → satellite walkers split out
+   (`9aae918b`; mod.rs now 1107 production), and
+   `crates/renderer/src/mesh.rs` (1439 production, down from ~2230 —
+   re-measure before attributing a cause; no split commit was identified).
+   Do **not** re-propose the boot / material / walk splits: they are done.
    **`crates/renderer/src/vulkan/volumetrics.rs` dropped OUT of the bucket
    (~2940 → ~1895 production)** — #2256 (2026-09-08) moved `new` / `new_inner`
    / `create_volume` / `initialize_layouts` into a new
@@ -244,12 +255,12 @@ previously-split module can grow back over threshold).
   composite / overlay) or struct+new() vs Drop vs accessors. Vulkan-recording
   splits are render-pass-adjacent — see `feedback_speculative_vulkan_fixes.md`
   before proposing barrier/order changes.
-- `byroredux/src/asset_provider/` → BSA/BA2 resolution vs TextureProvider vs mesh extraction — already split this way (`archive.rs`/`texture.rs`/`material.rs`/`script.rs` per the module map), but **`material.rs` itself has now grown past the 2000-production threshold** (~2040 LOC, newly crossed as of 2026-09-05) — the next split axis is within this one file (e.g. per-game material-path resolution vs the Starfield `materialsbeta.cdb` path it also owns).
-- ~~`byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.~~ **DONE (#2731)** — main.rs is 1267 LOC (re-measured 2026-09-05, up from 1053, up from 834 at the split); the ApplicationHandler moved to `byroredux/src/app_events.rs` and the frame driver to `byroredux/src/app_frame.rs`. Do not re-propose this split — it keeps drifting back up, not settling, so re-measure rather than trust either prior number. The live oversized-file candidates in the binary are now `byroredux/src/interaction.rs` (1626 total / 1140 production, and it mixes UI input routing with the canonical player-action/activation producer — a real seam), `byroredux/src/app_events.rs` (1310 total / 1289 production) and `byroredux/src/boot.rs` — **now over the primary 2000-production threshold** (2670 total / 2232 production, up from 2048/~1800; #3739, `d03f7a35`, 2026-09-03 split `build_scheduler` into five per-stage `register_*_systems` functions, a **function-level** split that left `build_scheduler` a thin 5-call orchestrator but *added* 26 net lines to the file — it does not reduce `boot.rs` below the file-level threshold; the two signals are independent, per the #2258/#2259 note below). `boot.rs` is now a real Dim 1 finding: propose a file-level split (e.g. one file per registration stage) rather than re-deriving the function-level history as evidence it's handled.
+- ~~*byroredux/src/asset_provider/material.rs* → per-game material-path resolution vs the Starfield `materialsbeta.cdb` path.~~ **DONE (#3857, `42f0ead4`, 2026-09-09)** — split into `byroredux/src/asset_provider/material/` along exactly that axis: `provider.rs` (archive-backed sidecar lookup + caches, 627), `cdb.rs` (Starfield CDB discovery/probe/fallback, 254), `merge.rs` (the NIFAL sidecar merge boundary, 1239) and `mod.rs` (345). No survivor is over threshold; do not re-propose this split. The rest of `byroredux/src/asset_provider/` (`archive.rs`/`texture.rs`/`script.rs`) was already split per the module map — check the submodules stay cohesive, not re-bloated.
+- ~~`byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.~~ **DONE (#2731)** — main.rs is 1267 LOC (re-measured 2026-09-05, up from 1053, up from 834 at the split); the ApplicationHandler moved to `byroredux/src/app_events.rs` and the frame driver to `byroredux/src/app_frame.rs`. Do not re-propose this split — it keeps drifting back up, not settling, so re-measure rather than trust either prior number. The live oversized-file candidates in the binary are now `byroredux/src/interaction.rs` (1626 total / 1141 production, and it mixes UI input routing with the canonical player-action/activation producer — a real seam) and `byroredux/src/app_events.rs` (1310 total / 1342 production). ***byroredux/src/boot.rs* is no longer one of them** — it is gone, split into `byroredux/src/boot/` under #3855 (`8c5e02aa`, 2026-09-09) along the axis this entry called for: `cli.rs` (532), `world.rs` (470), `registries.rs` (86), `mod.rs` (606) and a `schedule/` subdir carrying one file per registration stage (`early`/`update`/`physics`/`post_update`/`late` + `mod.rs`, 50–582 each). No survivor is near threshold. The earlier #3739 (`d03f7a35`, 2026-09-03) **function-level** split of `build_scheduler` into five per-stage `register_*_systems` functions did not by itself clear the file-level threshold — that took the #3855 file-level split, which is the worked example of why the two signals are independent (see the #2258/#2259 note below). Do not re-propose either split.
 - `byroredux/src/commands/` → console-command groups, already split per-domain (world_info / assets / view / scene / shared) under #1323; check the submodules stay cohesive, not re-bloated.
 - `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
 - `crates/nif/src/import/collision/mod.rs` → split per bhk shape family (primitive/compound/mesh/compressed), mirroring `crates/nif/src/blocks/collision/`.
-- `crates/nif/src/import/walk/mod.rs` → newly crossed the 2000-production threshold (~2170 LOC, first seen 2026-09-05) — already documented as holding both hierarchical/flat traversal (`walk_node_hierarchical`/`walk_node_flat`) and several satellite walkers (lights, particle emitters, emitter-param/rate extraction); split the satellite walkers out per the module doc's own category list rather than by traversal-order.
+- ~~`crates/nif/src/import/walk/mod.rs` → split the satellite walkers out per the module doc's own category list rather than by traversal-order.~~ **DONE (`9aae918b`, 2026-09-09)** — `emitter.rs` (736), `lights.rs` (318), `node_attrs.rs` (150) and `texture_effect.rs` (100) were lifted out; `mod.rs` retains hierarchical/flat traversal (`walk_node_hierarchical`/`walk_node_flat`) at 1107 production, under threshold. Do not re-propose.
 - `crates/core/src/ecs/resources/mod.rs` → partially split already (`SkinSlotPool` extracted to `skin_slot_pool.rs` under #1869; `mod.rs` was 1210 LOC after that split and is **1822 LOC as of 2026-08-29** — still under threshold, but it has re-bloated by half again, which is the condition the next line names). Split further per resource domain (rendering/world/audio/scripting).
 - Actor record split per NPC_ data-group (13 groups) — done (#2055): `crates/plugin/src/esm/records/actor/mod.rs` (+ `tests.rs`).
 - **New candidates from the young-crate sweep (first crossed 2026-09-05, no prior split proposal exists — read before proposing an axis, this is a first pass, not a re-derivation)**: `byroredux/src/extensions.rs` (~5920 production — the engine-side SDK/mod-runtime ECS-event adapter; per its own module doc it already separates "assigns opaque SDK handles" / "delivers canonical events" / "applies the returned principal-attributed command batch," which is a plausible split axis); `crates/scripting/src/fragment.rs` (~2540).

@@ -92,7 +92,7 @@ That paragraph and the `Material` doc used to call this "matching the existing
 `grayscale_to_palette_scale` precedent". It was not one, and the correction
 (#2592 / SKY-D7-04) is what kept this section's **converged** verdict honest:
 `grayscale_to_palette_scale` did not reach `Material` at all. It was captured on
-`ImportedMaterial` (`asset_provider/material.rs` reads it off the BGSM) and
+`ImportedMaterial` (`asset_provider/material/merge.rs` reads it off the BGSM) and
 then dropped by `translate_material` — an actual boundary omission, one tier
 earlier than the #2284 fields.
 
@@ -557,7 +557,7 @@ The material slice was executed this session as the template. Mechanics:
   External-material enrichment runs only when that source exists; the remaining
   sites form the common lowering path rather than renderer post-processes:
 
-  1. `byroredux/src/asset_provider/material.rs::merge_external_material` resolves
+  1. `byroredux/src/asset_provider/material/merge.rs::merge_external_material` resolves
      BGSM/BGEM data into `ImportedMaterial` before canonical lowering.
   2. `byroredux/src/material_translate.rs::translate_material` is the sole lowering
      step. Its live signature takes

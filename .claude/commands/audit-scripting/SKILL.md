@@ -1044,7 +1044,7 @@ Papyrus `GlobalVariable`, now save-serialized); `crates/scripting/src/recurring_
   safe because every system that touches those quest resources is registered
   `add_exclusive`") must hold for both callers, not just
   `quest_fragment_dispatch_system`; verify `scene_fragment_dispatch_system` is
-  also `add_exclusive` in `byroredux/src/boot.rs`. Investigate rather than
+  also `add_exclusive` in `byroredux/src/boot/schedule/`. Investigate rather than
   assume safe: (a) does any *other* code path acquire `Inventory`/`Transform`/
   `Globals` first and then try to acquire `QuestStageState`/`QuestObjectiveState`
   — the reverse order — on a path the scheduler could run concurrently with
@@ -1070,7 +1070,7 @@ Papyrus `GlobalVariable`, now save-serialized); `crates/scripting/src/recurring_
   no separate recognizer), and applies via the SAME shared `apply_effects`/
   `DeferredFragmentEffects` used by quest fragments — any `SetStage` a scene
   fragment performs enters the canonical `QuestStageAdvancedBatch` sink exactly
-  like a quest fragment's would. Scheduling order in `byroredux/src/boot.rs` is
+  like a quest fragment's would. Scheduling order in `byroredux/src/boot/schedule/` is
   load-bearing and explicitly documented in-line: `scene_playback_system` →
   `scene_fragment_dispatch_system` → … → `quest_fragment_dispatch_system`
   (called `quest_fragment_dispatch` there), all `add_exclusive` in

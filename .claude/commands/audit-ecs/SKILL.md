@@ -147,7 +147,7 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   The default for both `System::access()` and the per-entry override is `None`.
 - **M27 Phase 1+2** (`a9810d40`): every parallel-stage system on the engine
   binary declares reads/writes via `Scheduler::add_to_with_access` at the
-  registration site in `byroredux/src/boot.rs` (`build_scheduler`; closures
+  registration site in `byroredux/src/boot/schedule/mod.rs` (`build_scheduler`; closures
   can't impl `System::access`). Any parallel system registered via plain
   `add_to` (no declared access) is a regression. Do not pin the registration
   count: enumerate live declarations with
@@ -185,7 +185,7 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   `Early..=Late` exactly once. Reordering / merging / inserting a stage without
   updating this test is the regression pattern. (Correct chain:
   `Early → Update → PostUpdate → Physics → Late`.)
-- **Regression guard**: `byroredux/src/boot.rs` (`install_runtime_registries`)
+- **Regression guard**: `byroredux/src/boot/registries.rs` (`install_runtime_registries`)
   runs a release-level `assert_eq!(scheduler.access_report().undeclared_parallel_count(), 0)`
   after building the schedule (#1394) — this is the boot guard, NOT a log line,
   and NOT `debug_assert_eq!`: #2690's own comment states *"Keep these as
@@ -311,7 +311,7 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   single-frame lifetime.
 - **Gameplay slice (P2, added 2026-08-15/16 — no owner audit, so it is in scope
   here)**: three `add_exclusive_with_access(Stage::Update, …)` registrations in
-  `byroredux/src/boot.rs`, in this order — `interaction::interaction_system`,
+  `byroredux/src/boot/schedule/update.rs`, in this order — `interaction::interaction_system`,
   then `combat::combat_input_system`, then `combat::combat_damage_system`. #3473
   (2026-08-30) declared each one's `Access` — they had inherited plain
   `add_exclusive` and reported blank `sys.accesses` rows despite

@@ -48,7 +48,7 @@ read those at audit time. Snapshot of the shape, not the numbers:
   short-circuits when `Name` is a non-empty `.bgsm`/`.bgem` path and returns a
   material-reference stub; the real material is the external file, parsed by
   `crates/bgsm/` and folded in by `merge_external_material`
-  (`byroredux/src/asset_provider/material.rs`).
+  (`byroredux/src/asset_provider/material/merge.rs`).
 - **CDB material database** — vanilla Starfield ships all material data inside a
   single `materials\materialsbeta.cdb` Component Database (in
   `Starfield - Materials.ba2`), consumed by `crates/sfmaterial/` and extracted
@@ -158,12 +158,12 @@ set and Starfield's far-higher vertex counts.
 **Subagent**: `renderer-specialist`
 **Entry points**: `crates/sfmaterial/src/reader.rs` (`ComponentDatabaseFile::parse`,
 `index_chunks`), `crates/sfmaterial/src/chunk.rs`, `string_table.rs`, `types.rs`,
-`value.rs`, `byroredux/src/asset_provider/material.rs` (`--materials-ba2` wiring)
+`value.rs`, `byroredux/src/asset_provider/material/cdb.rs` (`--materials-ba2` wiring)
 **Checklist**: `ComponentDatabaseFile::parse` consumes `materials\materialsbeta.cdb`
 extracted from `Starfield - Materials.ba2` via `--materials-ba2`. **#762** —
 guard `index_chunks` against the chunk-index regression already referenced in
 `byroredux/src/asset_provider/tests/starfield_mat.rs`. **DLC/Creation CDB discovery by scanning (#1571, `8c99c50d`)** —
-`asset_provider/material.rs::discover_starfield_cdbs` scans each materials archive for
+`asset_provider/material/cdb.rs::discover_starfield_cdbs` scans each materials archive for
 **every** `materials\materialsbeta.cdb` AND DLC/Creation-namespaced
 `materials\creations\<plugin>\materialsbeta.cdb`, instead of extracting one
 hardcoded base path; a regression that re-hardcodes the single base path silently
@@ -220,7 +220,7 @@ reference's own suffix, and 17 of 57 `.bgsm`/`.bgem`-named paths in the sampled
 corpus resolve to real CDB materials. Neither "always CDB" nor "always BGSM" is
 correct — #3230 (`e3dd71e8`) made it **try-then-fall-through**: `.bgsm`/`.bgem`
 fall through to `resolve_bgsm` / `resolve_bgem` first and reach the CDB PBR flip
-(`apply_cdb_pbr_fallback`, `byroredux/src/asset_provider/material.rs`) only on a
+(`apply_cdb_pbr_fallback`, `byroredux/src/asset_provider/material/cdb.rs`) only on a
 resolver miss, while `.mat` keeps its early return. The short-circuit's premise
 is narrower than the comment used to claim (#3782): **vanilla** Starfield ships
 no `.mat`/`.bgsm`/`.bgem` sidecars, but an installed Creation/mod archive can (20
@@ -379,7 +379,7 @@ not from `crates/nif/src/import/collision/shape.rs`.
 ### Dimension 9: BGSM/BGEM External Material Flow
 **Subagent**: `renderer-specialist`
 **Entry points**: `crates/bgsm/src/bgsm.rs` + `crates/bgsm/src/bgem.rs` (external
-parser), `byroredux/src/asset_provider/material.rs` (`merge_external_material`),
+parser), `byroredux/src/asset_provider/material/merge.rs` (`merge_external_material`),
 `byroredux/src/cell_loader.rs` (`pack_imported_material_flags`)
 **Checklist**: The material-reference stub from `shader.rs` resolves to the
 external file — confirm the BGEM variant (`bgem.rs`) is handled distinctly from

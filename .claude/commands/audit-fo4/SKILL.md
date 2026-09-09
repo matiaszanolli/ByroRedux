@@ -81,7 +81,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 
 ### Dimension 2: BGSM / BGEM Consumption + Metalness-from-Chromaticity (regression pin #1476)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/bgsm/src/` (`lib`, `base`, `bgsm`, `bgem`, `reader`, `template`), `byroredux/src/asset_provider/material.rs` (`merge_external_material`).
+**Entry points**: `crates/bgsm/src/` (`lib`, `base`, `bgsm`, `bgem`, `reader`, `template`), `byroredux/src/asset_provider/material/merge.rs` (`merge_external_material`).
 **Checklist**:
 - **Single data source** — `merge_external_material` is the FO4 material merge: albedo/diffuse tint, specular, emissive, smoothness→roughness, translucency suite (#1147), model-space-normals bit, texture roles. It runs **before** `translate_material`.
 - **Narrowed merge signature (2026-07-27, `05d68926`)** — the fn takes `&mut ImportedMaterial`, *not* `&mut ImportedMesh`: an external BGSM/BGEM sidecar may patch material semantics but must not reach geometry, transforms, skinning, or scene ownership. A widened signature is a NIFAL boundary violation, report it as such. Material state now lives at `ImportedMesh.material`, not as flat fields.

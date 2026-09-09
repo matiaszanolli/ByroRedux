@@ -260,7 +260,7 @@ out of scope):
 | Health | **none** — no passive regen in classic Oblivion | deliberately unmodelled |
 
 **Mechanism BUILT, registered, and no-op.** `pool_regen_tick_system` is registered in
-`Stage::Update` (`byroredux/src/boot.rs`) and runs every frame, but early-returns
+`Stage::Update` (`byroredux/src/boot/schedule/update.rs`) and runs every frame, but early-returns
 forever: its required `PoolRegenConfig` is inserted only by unit tests, never by a
 live per-game path (`oblivion_pool_regen_config` builds one, nothing calls it at
 load). Same shape as §4.6 — mechanism ahead of its wiring. Stunted Magicka is

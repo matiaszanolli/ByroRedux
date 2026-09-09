@@ -25,7 +25,7 @@ stages 4 onward but branch earlier — noted inline where relevant.
 `fn main()` (`byroredux/src/main.rs:65`) is a one-line shell that calls
 `boot::run()`. Despite what [Game Loop](game-loop.md) currently says, the
 real CLI/boot logic doesn't live in `main.rs` — `pub(crate) fn run()`
-(`byroredux/src/boot.rs:65`) builds the `winit::EventLoop`, constructs the
+(`byroredux/src/boot/mod.rs:112`) builds the `winit::EventLoop`, constructs the
 `App`, and calls `event_loop.run_app(&mut app)`.
 
 `App` implements `winit::ApplicationHandler` (`main.rs:722`).

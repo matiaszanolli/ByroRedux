@@ -80,9 +80,10 @@ the crate; the crate audit is incomplete without it):
   hard-fails quickload).
 
 **Cross-cut ground truth — read before auditing the relevant dimension**:
-- `byroredux/src/boot.rs` — registry/state install at boot (~line 1963, also
-  installs `SaveLoadNotifications::default()` alongside `PendingSaveLoadSlot`,
-  ~line 1970/1974); `byroredux/src/app_events.rs` — the per-frame ordering of
+- `byroredux/src/boot/registries.rs` — registry/state install at boot
+  (`install_runtime_registries`, which installs `PendingSaveLoadSlot::default()`
+  and `SaveLoadNotifications::default()`; anchor on the names, not a line
+  number — the file is ~86 lines since the #3855 `boot.rs` split); `byroredux/src/app_events.rs` — the per-frame ordering of
   `capture_player_pose` THEN `step_save_loads` (in `about_to_wait`, ~line
   838/848; moved out of *main.rs* by the #2731 split); `byroredux/src/app_step.rs`
   — `step_save_loads` body (~line 734); `byroredux/src/app_frame.rs` — `render_one_frame` drains

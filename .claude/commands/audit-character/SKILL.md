@@ -272,7 +272,7 @@ per-game coverage matrix's construction seam
   zero dt cannot spin.
 - `PoolRegenConfig` holds per-game *resolved AVIF ids*. Verify it is only
   inserted once a live `CharacterRuleset` exists (see the comment in
-  `byroredux/src/boot.rs`), and that the declared resource access in the
+  `byroredux/src/boot/world.rs`), and that the declared resource access in the
   scheduler matches what the system actually touches — `/audit-concurrency` Dim 4
   owns the general rule; verify this specific declaration here.
 - Affliction is a **diff-and-reapply** driver: pool → threshold band → SPECIAL

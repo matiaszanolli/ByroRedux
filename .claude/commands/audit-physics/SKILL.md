@@ -346,7 +346,7 @@ preset); `byroredux/src/systems/character.rs` — `character_controller_system`,
   mark an actor `Dead` from different stages, so the structural consequences
   (AI-behaviour teardown, ragdoll activation) are applied by
   `reconcile_pending_dead_actors_system` — a `Stage::Late` exclusive in
-  `byroredux/src/boot.rs`, draining `PendingDeathReconciliations`. It is the
+  `byroredux/src/boot/schedule/late.rs`, draining `PendingDeathReconciliations`. It is the
   same reconciler combat and save-load use. A second site performing the
   teardown inline, from whichever producer noticed first, is the regression.
 **Output**: `/tmp/audit/physics/dim_6.md`
