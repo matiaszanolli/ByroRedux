@@ -423,32 +423,6 @@ pub(crate) fn convert_nif_clip(
         })
         .collect();
 
-    let convert_float_target = |t: na::FloatTarget| match t {
-        na::FloatTarget::Alpha => FloatTarget::Alpha,
-        na::FloatTarget::UvOffsetU => FloatTarget::UvOffsetU,
-        na::FloatTarget::UvOffsetV => FloatTarget::UvOffsetV,
-        na::FloatTarget::UvScaleU => FloatTarget::UvScaleU,
-        na::FloatTarget::UvScaleV => FloatTarget::UvScaleV,
-        na::FloatTarget::UvRotation => FloatTarget::UvRotation,
-        na::FloatTarget::ShaderFloat => FloatTarget::ShaderFloat,
-        na::FloatTarget::MorphWeight(idx) => FloatTarget::MorphWeight(idx),
-        na::FloatTarget::LightDimmer => FloatTarget::LightDimmer,
-        na::FloatTarget::LightIntensity => FloatTarget::LightIntensity,
-        na::FloatTarget::LightRadius => FloatTarget::LightRadius,
-        na::FloatTarget::EmissiveMultiple => FloatTarget::EmissiveMultiple,
-        na::FloatTarget::RefractionStrength => FloatTarget::RefractionStrength,
-    };
-
-    let convert_color_target = |t: na::ColorTarget| match t {
-        na::ColorTarget::Diffuse => ColorTarget::Diffuse,
-        na::ColorTarget::Ambient => ColorTarget::Ambient,
-        na::ColorTarget::Specular => ColorTarget::Specular,
-        na::ColorTarget::Emissive => ColorTarget::Emissive,
-        na::ColorTarget::ShaderColor => ColorTarget::ShaderColor,
-        na::ColorTarget::LightDiffuse => ColorTarget::LightDiffuse,
-        na::ColorTarget::LightAmbient => ColorTarget::LightAmbient,
-    };
-
     let float_channels = nif
         .float_channels
         .iter()
@@ -456,7 +430,7 @@ pub(crate) fn convert_nif_clip(
             (
                 pool.intern(name),
                 FloatChannel {
-                    target: convert_float_target(ch.target),
+                    target: ch.target,
                     keys: ch
                         .keys
                         .iter()
@@ -477,7 +451,7 @@ pub(crate) fn convert_nif_clip(
             (
                 pool.intern(name),
                 ColorChannel {
-                    target: convert_color_target(ch.target),
+                    target: ch.target,
                     keys: ch
                         .keys
                         .iter()

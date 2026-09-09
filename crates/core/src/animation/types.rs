@@ -69,14 +69,30 @@ pub struct TransformChannel {
 // ── Non-transform channel types ───────────────────────────────────────
 
 /// What a float channel targets.
+///
+/// #3862 — the canonical vocabulary for both sides of the NIF boundary.
+/// `crates/nif` re-exports this rather than declaring its own copy: the NIF
+/// side had an identical 13-variant enum, and `anim_convert.rs` bridged them
+/// with a pure identity match, so a new target cost four edits instead of
+/// one. The wire discriminators each variant is decoded from (documented per
+/// variant below) came across in that merge — `crates/nif/src/anim/channel.rs`
+/// is what maps `operation` / `target_color` onto these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FloatTarget {
+    /// Material alpha. `NiAlphaController`.
     Alpha,
+    /// UV offset U. `NiTextureTransformController` with `operation == 0`.
     UvOffsetU,
+    /// UV offset V. `operation == 1`.
     UvOffsetV,
+    /// UV scale U. `operation == 2`.
     UvScaleU,
+    /// UV scale V. `operation == 3`.
     UvScaleV,
+    /// UV rotation. `operation == 4`.
     UvRotation,
+    /// Shader float property — `BSEffectShader` / `BSLightingShader` float
+    /// controllers.
     ShaderFloat,
     /// Morph target weight (blend shape). The u32 is the morph index
     /// into the NiGeomMorpherController's target list.
@@ -104,13 +120,19 @@ pub enum FloatTarget {
     RefractionStrength,
 }
 
-/// What a color channel targets.
+/// What a color channel targets. Canonical for both sides of the NIF
+/// boundary — see [`FloatTarget`] for why (#3862).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColorTarget {
+    /// Diffuse color. `NiMaterialColorController` with `target_color == 0`.
     Diffuse,
+    /// Ambient color. `target_color == 1`.
     Ambient,
+    /// Specular color. `target_color == 2`.
     Specular,
+    /// Emissive color. `target_color == 3`.
     Emissive,
+    /// Shader color property.
     ShaderColor,
     /// NiLight diffuse color slot — animated by
     /// `NiLightColorController` with `target_color == 0`. Replaces

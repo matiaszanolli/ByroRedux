@@ -1574,7 +1574,11 @@ mod tests {
         real_layer.local_time = 0.4;
         two_pass_stack.layers.push(real_layer.clone());
         two_pass_stack.layers.push(AnimationLayer::new(h_excluded));
-        assert_eq!(two_pass_stack.layers.len(), 2, "must exercise the two-pass path");
+        assert_eq!(
+            two_pass_stack.layers.len(),
+            2,
+            "must exercise the two-pass path"
+        );
 
         // Single-layer path: the identical real contributor alone, which
         // must take the new short-circuit.
@@ -1584,7 +1588,11 @@ mod tests {
         let mut solo_layer = AnimationLayer::new(h_solo);
         solo_layer.local_time = 0.4;
         one_layer_stack.layers.push(solo_layer);
-        assert_eq!(one_layer_stack.layers.len(), 1, "must exercise the short-circuit");
+        assert_eq!(
+            one_layer_stack.layers.len(),
+            1,
+            "must exercise the short-circuit"
+        );
 
         let two_pass_result = sample_blended_transform(&two_pass_stack, &registry_two_pass, node)
             .expect("the one real contributor must still produce a transform");

@@ -507,7 +507,11 @@ mod tests {
             let h = reg.get_or_insert_by_path(key.to_string(), populated_clip);
             reg.release(h);
             assert_eq!(reg.stub_slot_count(), cycle);
-            assert_eq!(reg.len(), cycle, "each cycle allocates a fresh slot, never reuses one");
+            assert_eq!(
+                reg.len(),
+                cycle,
+                "each cycle allocates a fresh slot, never reuses one"
+            );
         }
     }
 }

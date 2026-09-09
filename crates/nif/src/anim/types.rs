@@ -84,60 +84,19 @@ pub struct ScaleKey {
     pub tbc: Option<[f32; 3]>,
 }
 
-/// What a float animation channel targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FloatTarget {
-    /// Material alpha (NiAlphaController).
-    Alpha,
-    /// UV offset U (NiTextureTransformController, operation=0).
-    UvOffsetU,
-    /// UV offset V (operation=1).
-    UvOffsetV,
-    /// UV scale U (operation=2).
-    UvScaleU,
-    /// UV scale V (operation=3).
-    UvScaleV,
-    /// UV rotation (operation=4).
-    UvRotation,
-    /// Shader float property (BSEffectShader/BSLightingShader float controllers).
-    ShaderFloat,
-    /// Morph target weight (NiGeomMorpherController blend shape).
-    MorphWeight(u32),
-    /// NiLight dimmer slot (NiLightDimmerController). See #983.
-    LightDimmer,
-    /// NiLight intensity multiplier (NiLightIntensityController). See #983.
-    LightIntensity,
-    /// NiLight radius (NiLightRadiusController). See #983.
-    LightRadius,
-    /// Material emissive multiplier (BSMaterialEmittanceMultController).
-    /// See #3327. No ECS/render consumer yet — the extracted channel
-    /// lands in `AnimationClip::float_channels` but isn't applied, the
-    /// same state `ShaderFloat` shipped in for #2221.
-    EmissiveMultiple,
-    /// Glass refraction strength (BSRefractionStrengthController) — the
-    /// Stealth Boy / heat-haze animation family. See #3327. No ECS/render
-    /// consumer yet, same caveat as `EmissiveMultiple` above.
-    RefractionStrength,
-}
-
-/// What a color animation channel targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ColorTarget {
-    /// Diffuse color (NiMaterialColorController, target_color=0).
-    Diffuse,
-    /// Ambient color (target_color=1).
-    Ambient,
-    /// Specular color (target_color=2).
-    Specular,
-    /// Emissive color (target_color=3).
-    Emissive,
-    /// Shader color property.
-    ShaderColor,
-    /// NiLight diffuse slot (NiLightColorController, target_color=0). See #983.
-    LightDiffuse,
-    /// NiLight ambient slot (NiLightColorController, target_color=1). See #983.
-    LightAmbient,
-}
+/// #3862 — `FloatTarget` and `ColorTarget` are re-exported from
+/// `byroredux-core`, not redeclared here.
+///
+/// They used to be a second, identical 13- and 7-variant copy, bridged to the
+/// core originals by a pure identity match in `byroredux/src/anim_convert.rs`
+/// (20 arms of `na::FloatTarget::X => FloatTarget::X`). Unlike [`KeyType`],
+/// whose NIF side is a genuine wire enum decoded from the file, these are
+/// *already* the post-translation vocabulary on both sides — `anim/channel.rs`
+/// maps the raw `operation` / `target_color` discriminators onto them — so the
+/// second copy added no translation, only a fourth place to edit for every new
+/// channel target. Same move `anim/coord.rs` already made for
+/// `byroredux_core::math::coord`.
+pub use byroredux_core::animation::types::{ColorTarget, FloatTarget};
 
 /// A float keyframe for non-transform channels.
 #[derive(Debug, Clone, Copy)]
@@ -234,4 +193,33 @@ pub struct AnimationClip {
     /// Text key events: (time, label). Imported from NiTextKeyExtraData.
     /// Emitted as transient ECS markers when crossed during playback.
     pub text_keys: Vec<(f32, String)>,
+}
+
+#[cfg(test)]
+mod target_enum_identity_tests {
+    //! #3862 — prove the NIF-side names ARE the core types, not a second copy.
+    //!
+    //! Deliberately not a source-shape scan: type identity is something the
+    //! compiler can check, and checking it that way makes the failure mode a
+    //! build error at the moment someone redeclares the enum, rather than a
+    //! test failure discovered later. If `pub use` above is ever replaced by a
+    //! `pub enum`, these bindings stop type-checking.
+
+    use byroredux_core::animation::types as core_types;
+
+    #[test]
+    fn the_nif_float_target_is_the_core_float_target() {
+        // No `as`, no `From`, no match: assignment across the two paths only
+        // compiles while they name one type.
+        let target: super::FloatTarget = core_types::FloatTarget::MorphWeight(7);
+        assert_eq!(target, core_types::FloatTarget::MorphWeight(7));
+        assert_ne!(target, core_types::FloatTarget::MorphWeight(8));
+    }
+
+    #[test]
+    fn the_nif_color_target_is_the_core_color_target() {
+        let target: super::ColorTarget = core_types::ColorTarget::LightAmbient;
+        assert_eq!(target, core_types::ColorTarget::LightAmbient);
+        assert_ne!(target, core_types::ColorTarget::LightDiffuse);
+    }
 }
