@@ -48,14 +48,20 @@
 //!   entities so they stay out of BLAS/TLAS. See EX-14/15 item C4 (#3809,
 //!   split from #2369).
 //! - Visibility / `.uvd` occlusion data — previs PVS keyed to visibility
-//!   groups. As of #3810 (2026-08-31) the outer envelope is decoded
-//!   (`byroredux_bsa::parse_uvd_header`): magic, tile size, a likely
-//!   world-space bounding volume, and a `table_offset` field confirmed
-//!   byte-identical (`336`) across every sampled file regardless of size.
-//!   The visibility-set payload itself (from `table_offset` onward) is
-//!   high-entropy, evidently bit-packed data — still uncracked. No
-//!   occlusion-volume or CPU coarse-cull consumer exists yet either way.
-//!   See EX-14/15 item C3 (#3810, split from #2369).
+//!   groups. As of #3810 (2026-09-09) the outer envelope is decoded
+//!   (`byroredux_bsa::parse_uvd_header`) and re-verified against the
+//!   **complete** 1 413-file corpus of the base game plus three DLCs, not
+//!   the 5-sample cross-section the first pass used: magic, tile size, a
+//!   six-float world-space AABB (the earlier pass read five and cut the
+//!   box mid-`max`), a 32-byte-stride entry table whose length is exactly
+//!   `32 * entry_count`, and a fixed `table_offset` of `336`. The parser
+//!   now validates those relations rather than merely reporting them.
+//!   Three plausible-looking relations were disproved on the full corpus —
+//!   see that module's "Rejected" list, which is the part a small sample
+//!   would have got wrong. The visibility-set payload itself (from
+//!   `table_offset` onward) is high-entropy, evidently bit-packed data —
+//!   still uncracked. No occlusion-volume or CPU coarse-cull consumer
+//!   exists yet either way. See EX-14/15 item C3 (#3810, split from #2369).
 
 use byroredux_bsa::CsgArchive;
 use byroredux_core::ecs::components::{PrecombinedMesh, RenderLayer};
