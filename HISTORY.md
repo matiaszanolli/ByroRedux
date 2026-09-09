@@ -26,6 +26,77 @@ Commits hold that record.
 
 ---
 
+## Session 82 — "Blow-Up": the audit wave lands, and the first trustworthy bench in 190 commits  (2026-09-07 → 2026-09-09, `e6282349..4c9a5b36`, 70 commits)
+
+Session 81 filed 76 renderer issues in a single sweep and, almost
+incidentally, corrected two claims about the bench harness itself
+(#4024/#4025) — the stamp that says which code produced a table, and the
+ROADMAP sentence that had asserted harness byte-stability twice while three
+commits sat against it. This session closed the wave and then spent the
+corrected tooling: the first bench-of-record refresh in 190 commits, on a
+machine with a GPU, with a same-machine control at the session's own start
+commit. Like the photographer enlarging his negative, the closer look is what
+made two regressions visible — neither of which any test can see.
+
+- **Renderer audit-wave closeout** — ~40 `Fix` commits against the
+  #3976–#4051 sweep. Real behaviour: the TAA/SVGF permanent-failure latches
+  made reachable (#3981), the specular-AA filter hoisted out of the per-light
+  loop into uniform control flow (#3983), the anisotropic GGX tangent frame
+  guarded against a collapsed Gram-Schmidt projection (#3984), the DoF camera
+  rebased before lens jitter (#4002), the TAA-failure composite rebind
+  deferred past the all-slots fence (#4006), and a live SVGF recovery window
+  allowed to outrank the camera-static alpha drop (#3995). Accounting: every
+  render-extent pass billed to the BLAS reservation (#3992), and the composite
+  HDR pair, depth attachments and cluster light-index buffers ledgered
+  (#3993). The sweep also retracted two findings that a stale skill claim had
+  manufactured (#3996).
+- **Reversed-Z** — `c8ac5328` (#3308) implements the convention behind a
+  single depth-mapping authority, with the depth gate made readable from both
+  sides (#3571). ROADMAP had scoped this as a multi-session effort touching
+  eight Gamebryo compare-op mappings, six shaders and the vendored FSR3 shim.
+- **ECS / scheduler** — declaration completeness now checked on the parallel
+  systems, where it is load-bearing (#4064); two exclusives declare what they
+  actually acquire (#3951); transform propagation seeds only the shallowest
+  dirty entities (#4060) and stops marking parents dirty to read them (#4062).
+- **Scripting, per-game, NIF** — PEX panic net widened to the whole sequence
+  (#3948), the debug-line table indexed once instead of rescanned per function
+  (#3938), Oblivion's parse rate re-measured against the corpus its row counts
+  (#3925), a present-only archive tier for Skyrim AE / Oblivion DLC (#3924),
+  the FO4 Commonwealth LAND crack confirmed vanilla and pinned (#3306), and
+  the `.uvd` envelope re-derived against the full 1413-file corpus (#3810).
+- **Gameplay runtime** — Lock/SetLockLevel effects so a locked door is not a
+  one-way door (#3159), actor package/seat state carried across ordinary
+  stream-tile eviction (#3299), and m47-triggers' recognition count made a
+  hard gate (#3160).
+- **WATAL W1 — character water traversal closed** (`4c9a5b36`). Driving the
+  real KCC capsule through W0's frozen water found four defects a fly-camera
+  gate structurally could not: "swim down" did not exist (the buoyancy spring
+  cancelled the pitched swim input ~23 BU below its neutral point), an upward
+  swim launched the capsule out of the lake, a swimmer brushing the bed read
+  `grounded`, and the exit frame handed the spring's velocity to gravity. Each
+  is fixed against OpenMW's movement solver as the cited reference and pinned
+  by a helper the suite can reach. The new gate SKIPs Skyrim rather than
+  weakening its route — that water body has no capsule-traversable shore, and
+  the one bank that exists wedges the controller (measured, and recorded in
+  the fixture for the next attempt).
+- **Bench-of-record refreshed** — 75 runs at `4c9a5b36`, zero rejections, all
+  state-hash gates passing, GPU documented near-idle. R6a-stale-21 resolved
+  after 190 commits. A 30-run same-machine control at `e6282349` then turned
+  two ambiguities into measurements: the FO4 Dugout Inn frame time regressed
+  ~10% inside this range (99.1 → 90.0 FPS, control vs HEAD, same harness and
+  hardware), and the engine now SIGSEGVs at process teardown on 75/75 runs
+  where the control crashes on 0/30 — preceded by the "GPU allocator has N
+  outstanding references" log that #927's own test comment names as the
+  regression signal. The refresh does not answer R6a-stale-21's ground-cover
+  question: every scene in the matrix is an interior, so that stratum never
+  engages.
+
+Net: tests 7440 → **7602** (+162, 0 failing); Rust `src/` LOC ~544 825 →
+**~556 183**; total `.rs` LOC ~585 913 → **~598 070**; source files 1034 →
+1037. Bench-of-record moved `2da754e7` → `4c9a5b36` (190 commits), archived at
+`docs/audits/BENCH_stepped-camera_4c9a5b36.tsv`, with the control at
+`docs/audits/BENCH_control_e6282349_vs_4c9a5b36.tsv`.
+
 ## Session 81 — "Rashomon": a 24-report audit wave, and the discovery that yesterday's fixes were half-done  (2026-09-04 → 2026-09-07, `07db6639..043dbbb9`, 118 commits)
 
 The session ran the audit suite far wider than usual — 24 reports across four
