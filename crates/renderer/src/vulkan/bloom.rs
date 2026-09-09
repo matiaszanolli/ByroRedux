@@ -55,12 +55,12 @@ use super::descriptors::{
     image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
     write_uniform_buffer, DescriptorPoolBuilder,
 };
+use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
-use gpu_allocator::vulkan as vk_alloc;
 
 const BLOOM_DOWNSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_downsample.comp.spv");
 const BLOOM_UPSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_upsample.comp.spv");
@@ -133,11 +133,12 @@ pub(crate) struct UpsampleParams {
 // SAFETY: one `[f32; 4]` field — no implicit padding possible (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for UpsampleParams {}
 
+/// #3860 — the image/view/allocation triple is a [`GpuImage`]; `extent` is
+/// the one field a bloom mip carries beyond it, so this stays a struct rather
+/// than becoming an alias the way `taa.rs`'s `HistorySlot` did.
 struct BloomMip {
-    image: vk::Image,
-    view: vk::ImageView,
+    gpu: GpuImage,
     extent: vk::Extent2D,
-    allocation: Option<vk_alloc::Allocation>,
 }
 
 struct BloomFrame {
@@ -522,7 +523,7 @@ impl BloomPipeline {
             let mut barriers = Vec::with_capacity(total);
             for frame in &self.frames {
                 for mip in frame.down_mips.iter().chain(frame.up_mips.iter()) {
-                    barriers.push(image_barrier_undef_to_general(mip.image));
+                    barriers.push(image_barrier_undef_to_general(mip.gpu.image));
                 }
             }
             // NONE as srcStageMask: UNDEFINED → GENERAL on the bloom
@@ -691,7 +692,7 @@ impl BloomPipeline {
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::GENERAL)
-                .image(f.down_mips[i].image)
+                .image(f.down_mips[i].gpu.image)
                 .subresource_range(subresource);
             device.cmd_pipeline_barrier(
                 cmd,
@@ -732,7 +733,7 @@ impl BloomPipeline {
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::GENERAL)
-                .image(f.up_mips[i].image)
+                .image(f.up_mips[i].gpu.image)
                 .subresource_range(subresource);
             // #2796 / REN-D16-01 — mip 0's consumer used to be composite's
             // fragment read; it's now `apply_to_scene`'s compute dispatch
@@ -757,11 +758,11 @@ impl BloomPipeline {
     /// pre-ACES math composite.frag used to do directly); no longer
     /// sampled by composite itself.
     pub fn output_view(&self, frame: usize) -> vk::ImageView {
-        self.frames[frame].up_mips[0].view
+        self.frames[frame].up_mips[0].gpu.view
     }
 
     pub fn output_views(&self) -> Vec<vk::ImageView> {
-        self.frames.iter().map(|f| f.up_mips[0].view).collect()
+        self.frames.iter().map(|f| f.up_mips[0].gpu.view).collect()
     }
 
     /// Add this frame's already-built bloom pyramid onto `scene_view` in
@@ -888,12 +889,9 @@ impl BloomPipeline {
     /// use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for mut frame in self.frames.drain(..) {
-            for mip in frame.down_mips.drain(..).chain(frame.up_mips.drain(..)) {
-                device.destroy_image_view(mip.view, None);
-                device.destroy_image(mip.image, None);
-                if let Some(a) = mip.allocation {
-                    allocator.lock().expect("allocator lock").free(a).ok();
-                }
+            for mut mip in frame.down_mips.drain(..).chain(frame.up_mips.drain(..)) {
+                // #3860 — one call for view + image + slab, in that order.
+                mip.gpu.destroy(device, allocator);
             }
             for buf in frame
                 .down_param_buffers
@@ -1057,7 +1055,7 @@ impl BloomFrame {
         // frame from `dispatch`).
         for i in 0..BLOOM_MIP_COUNT {
             let dst_info = [vk::DescriptorImageInfo::default()
-                .image_view(down_mips[i].view)
+                .image_view(down_mips[i].gpu.view)
                 .image_layout(vk::ImageLayout::GENERAL)];
             let ubo_info = [vk::DescriptorBufferInfo {
                 buffer: down_param_buffers[i].buffer,
@@ -1071,7 +1069,7 @@ impl BloomFrame {
             let src_info = if i >= 1 {
                 Some([vk::DescriptorImageInfo::default()
                     .sampler(sampler)
-                    .image_view(down_mips[i - 1].view)
+                    .image_view(down_mips[i - 1].gpu.view)
                     .image_layout(vk::ImageLayout::GENERAL)])
             } else {
                 None
@@ -1095,9 +1093,9 @@ impl BloomFrame {
         // same-resolution down_mip.
         for i in 0..(BLOOM_MIP_COUNT - 1) {
             let smaller_view = if i + 1 < BLOOM_MIP_COUNT - 1 {
-                up_mips[i + 1].view
+                up_mips[i + 1].gpu.view
             } else {
-                down_mips[BLOOM_MIP_COUNT - 1].view
+                down_mips[BLOOM_MIP_COUNT - 1].gpu.view
             };
             let smaller_info = [vk::DescriptorImageInfo::default()
                 .sampler(sampler)
@@ -1105,10 +1103,10 @@ impl BloomFrame {
                 .image_layout(vk::ImageLayout::GENERAL)];
             let same_info = [vk::DescriptorImageInfo::default()
                 .sampler(sampler)
-                .image_view(down_mips[i].view)
+                .image_view(down_mips[i].gpu.view)
                 .image_layout(vk::ImageLayout::GENERAL)];
             let dst_info = [vk::DescriptorImageInfo::default()
-                .image_view(up_mips[i].view)
+                .image_view(up_mips[i].gpu.view)
                 .image_layout(vk::ImageLayout::GENERAL)];
             let ubo_info = [vk::DescriptorBufferInfo {
                 buffer: up_param_buffers[i].buffer,
@@ -1145,7 +1143,7 @@ impl BloomFrame {
         };
         let bloom_result_info = [vk::DescriptorImageInfo::default()
             .sampler(sampler)
-            .image_view(up_mips[0].view)
+            .image_view(up_mips[0].gpu.view)
             .image_layout(vk::ImageLayout::GENERAL)];
         let apply_write = write_combined_image_sampler(apply_descriptor_set, 1, &bloom_result_info);
         // SAFETY: the written set and `up_mips[0]`'s view are both freshly
@@ -1164,99 +1162,27 @@ impl BloomFrame {
     }
 }
 
+/// #3860 — was ~85 lines of create → allocate → bind → view with its own
+/// three-arm cleanup; `GpuImage::create` owns that chain now.
 fn create_mip(
     device: &ash::Device,
     allocator: &SharedAllocator,
     extent: vk::Extent2D,
     name: &str,
 ) -> Result<BloomMip> {
-    let img_info = vk::ImageCreateInfo::default()
-        .image_type(vk::ImageType::TYPE_2D)
-        .format(BLOOM_FORMAT)
-        .extent(vk::Extent3D {
-            width: extent.width,
-            height: extent.height,
-            depth: 1,
-        })
-        .mip_levels(1)
-        .array_layers(1)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .tiling(vk::ImageTiling::OPTIMAL)
-        .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .initial_layout(vk::ImageLayout::UNDEFINED);
-    // SAFETY: trivial ash create call; `device` is live and `img_info` outlives
-    // the borrow held during the create.
-    let image = unsafe {
-        device
-            .create_image(&img_info, None)
-            .with_context(|| format!("create {name}"))?
-    };
-    let alloc = match allocator
-        .lock()
-        .expect("allocator lock")
-        .allocate(&vk_alloc::AllocationCreateDesc {
-            name,
-            // SAFETY: trivial ash get call; `image` was just created by us
-            // above and is still live; `device` outlives this call.
-            requirements: unsafe { device.get_image_memory_requirements(image) },
-            location: gpu_allocator::MemoryLocation::GpuOnly,
-            linear: false,
-            allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-        })
-        .with_context(|| format!("allocate {name}"))
-    {
-        Ok(a) => a,
-        Err(e) => {
-            // SAFETY: `image` was created by us just above and not yet
-            // destroyed; device is live and the image was never submitted to
-            // any queue.
-            unsafe { device.destroy_image(image, None) };
-            return Err(e);
-        }
-    };
-    // SAFETY: trivial ash bind call; `image` and `alloc`'s memory were both
-    // created by us above and are still live; `device` outlives the call.
-    if let Err(e) = unsafe {
-        device
-            .bind_image_memory(image, alloc.memory(), alloc.offset())
-            .with_context(|| format!("bind {name}"))
-    } {
-        allocator.lock().expect("allocator lock").free(alloc).ok();
-        // SAFETY: `image` was created by us above and not yet destroyed (its
-        // allocation was just freed); device is live, image never submitted.
-        unsafe { device.destroy_image(image, None) };
-        return Err(e);
-    }
-    // SAFETY: trivial ash create call; `image` was just created and bound by us
-    // and is still live; `device` outlives the borrow during create.
-    let view = match unsafe {
-        device
-            .create_image_view(
-                &vk::ImageViewCreateInfo::default()
-                    .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(BLOOM_FORMAT)
-                    .subresource_range(super::descriptors::color_subresource_single_mip()),
-                None,
-            )
-            .with_context(|| format!("view {name}"))
-    } {
-        Ok(v) => v,
-        Err(e) => {
-            allocator.lock().expect("allocator lock").free(alloc).ok();
-            // SAFETY: `image` was created by us above and not yet destroyed
-            // (its allocation was just freed); device is live, image never
-            // submitted.
-            unsafe { device.destroy_image(image, None) };
-            return Err(e);
-        }
-    };
     Ok(BloomMip {
-        image,
-        view,
+        gpu: GpuImage::create(
+            device,
+            allocator,
+            &GpuImageDesc::color_2d(
+                name,
+                extent.width,
+                extent.height,
+                BLOOM_FORMAT,
+                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+            ),
+        )?,
         extent,
-        allocation: Some(alloc),
     })
 }
 
