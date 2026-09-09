@@ -4,7 +4,7 @@
 //! single `unsafe` scope, barrier order, and recording order are
 //! unchanged from the pre-split `draw_frame`.
 
-use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
+use super::super::pipeline::{default_depth_compare_op, depth_compare_op, PipelineKey};
 use super::super::water::WaterDrawCommand;
 use super::draw::{group_state, needs_two_sided_blend_split, should_use_indirect_draws, DrawBatch};
 use super::{DrawCommand, VulkanContext};
@@ -313,8 +313,12 @@ impl VulkanContext {
                     last_z_write = batch.z_write;
                 }
                 if batch.z_function != last_z_function {
+                    // #3308 — `depth_compare_op`, not the raw
+                    // `gamebryo_to_vk_compare_op`: the authored Z-test has to
+                    // be mirrored when the depth buffer runs far→0, or every
+                    // material's authored occlusion semantics invert.
                     self.device
-                        .cmd_set_depth_compare_op(cmd, gamebryo_to_vk_compare_op(batch.z_function));
+                        .cmd_set_depth_compare_op(cmd, depth_compare_op(batch.z_function));
                     last_z_function = batch.z_function;
                 }
 
@@ -543,7 +547,7 @@ impl VulkanContext {
                         self.device.cmd_set_depth_test_enable(cmd, true);
                         self.device.cmd_set_depth_write_enable(cmd, false);
                         self.device
-                            .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
+                            .cmd_set_depth_compare_op(cmd, default_depth_compare_op());
                         // #1071 / F-WAT-11 — water pipeline declares CULL_MODE dynamic.
                         // Emit the runtime override here so the draw uses NONE (water
                         // surfaces are visible from above and below the camera plane).

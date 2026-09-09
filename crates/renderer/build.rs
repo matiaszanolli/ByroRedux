@@ -60,6 +60,14 @@ fn main() {
     writeln!(out, "#define BYRO_SHADER_CONSTANTS_GLSL").unwrap();
     writeln!(out).unwrap();
 
+    // #3308 — depth convention, mirrored from ACTIVE_DEPTH_MAPPING. No `u`
+    // suffix on the flag: it is consumed by `#if`, whose preprocessor
+    // arithmetic takes plain integers.
+    writeln!(out, "// Depth-buffer convention (#3308)").unwrap();
+    writeln!(out, "#define BYRO_REVERSED_Z {BYRO_REVERSED_Z}").unwrap();
+    writeln!(out, "#define BYRO_DEPTH_CLEAR {BYRO_DEPTH_CLEAR:?}").unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// Cluster grid").unwrap();
     writeln!(out, "#define CLUSTER_TILES_X {CLUSTER_TILES_X}u").unwrap();
     writeln!(out, "#define CLUSTER_TILES_Y {CLUSTER_TILES_Y}u").unwrap();

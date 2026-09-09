@@ -6,6 +6,19 @@
 // When updating a value here, rebuild with `cargo build -p byroredux-renderer`
 // to regenerate the GLSL header, then recompile the affected GLSL shaders.
 
+// Depth-buffer convention (#3308). Derived from the engine's single
+// authority, `ACTIVE_DEPTH_MAPPING`, so the GLSL side cannot disagree with
+// the projection / clear / compare state the Rust side installs — a stale
+// GLSL copy would make every shader's background test answer backwards.
+//
+// The SPIR-V is still precompiled and checked in, so flipping the mapping
+// means `cargo build -p byroredux-renderer` (regenerates the header) then
+// recompiling the shaders that include it.
+pub const BYRO_REVERSED_Z: u32 =
+    byroredux_core::ecs::components::camera::ACTIVE_DEPTH_MAPPING.is_reversed() as u32;
+pub const BYRO_DEPTH_CLEAR: f32 =
+    byroredux_core::ecs::components::camera::ACTIVE_DEPTH_MAPPING.clear_value();
+
 // Cluster grid
 pub const CLUSTER_TILES_X: u32 = 16;
 pub const CLUSTER_TILES_Y: u32 = 9;

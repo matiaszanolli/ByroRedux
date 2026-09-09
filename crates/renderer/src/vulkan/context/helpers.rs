@@ -769,7 +769,10 @@ pub(super) fn init_depth_history_layout(
             .image(image)
             .subresource_range(range);
         let clear = vk::ClearDepthStencilValue {
-            depth: 1.0,
+            // #3308 — far plane under the active depth mapping. The depth
+            // history starts out "nothing here", which is the far end
+            // whichever way the buffer runs.
+            depth: crate::vulkan::pipeline::DEPTH_CLEAR_VALUE,
             stencil: 0,
         };
         unsafe {

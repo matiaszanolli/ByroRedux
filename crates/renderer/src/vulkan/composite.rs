@@ -1866,16 +1866,30 @@ mod composite_params_layout_tests {
         assert!(!shader.contains("texelFetch(waterCausticTex, ivec2(gl_FragCoord.xy), 0)"));
     }
 
-    /// The depth clear value is exactly 1.0. A loose epsilon such as 0.9999
+    /// Background is the *exact* clear value. A loose epsilon such as 0.9999
     /// is not a harmless float comparison with the engine's long 300k far
     /// plane: it classifies ordinary geometry beyond ~997 game units as
     /// background, bypassing its direct and indirect lighting in composite.
+    ///
+    /// #3308 moved the comparison itself into
+    /// `include/depth_convention.glsl` so it flips with the depth mapping,
+    /// which splits this pin in two: composite must use the exact
+    /// `depthIsSurface`, and must *not* use the slack `depthIsBackgroundEps`
+    /// that SSAO deliberately does. That second half is stronger than the
+    /// literal check it replaces — it rejects every epsilon rather than the
+    /// two spellings that were enumerated here.
     #[test]
     fn background_classification_uses_exact_clear_depth() {
         let shader = include_str!("../../shaders/composite.frag");
 
         assert!(shader.contains("float depth = texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r;"));
-        assert!(shader.contains("bool has_surface = depth < 1.0;"));
+        assert!(shader.contains(r#"#include "include/depth_convention.glsl""#));
+        assert!(shader.contains("bool has_surface = depthIsSurface(depth);"));
+        assert!(
+            !shader.contains("depthIsBackgroundEps"),
+            "composite must classify background against the exact clear value, \
+             not the slack epsilon variant"
+        );
         assert!(shader.contains("bool is_sky = !has_surface"));
         // #2233 — the volumetric/height-fog block used to be gated on
         // `has_surface` alone (sky pixels never got fog, REN-D16-02). It now
@@ -1883,6 +1897,9 @@ mod composite_params_layout_tests {
         // stopping dead at the geometry silhouette; the exact-clear-depth
         // classification this test pins is otherwise unchanged.
         assert!(shader.contains("if (has_surface || is_sky) {"));
+        // `0.9999` still appears in this shader as a volume-fraction clamp and
+        // in the comment recording why it is not a depth sentinel, so this
+        // stays scoped to the comparison forms rather than the bare literal.
         assert!(
             !shader.contains("depth >= 0.9999") && !shader.contains("depth < 0.9999"),
             "composite depth classification must reserve only the exact clear value for background"

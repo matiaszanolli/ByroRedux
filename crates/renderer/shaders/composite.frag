@@ -6,6 +6,7 @@
 // src/shader_constants_data.rs. Compile with:
 //   glslangValidator -V -I crates/renderer/shaders composite.frag -o composite.frag.spv
 #include "include/shader_constants.glsl"
+#include "include/depth_convention.glsl"
 // #3742 — BLUE_NOISE_RANKS, shared verbatim with volumetrics_inject.comp.
 #include "include/blue_noise.glsl"
 
@@ -13,11 +14,11 @@
 // render-resolution linear-HDR image, with sky rendering for background
 // pixels. Upscaling and display mapping happen in later frame-graph passes.
 //
-//   For geometry pixels (depth < 1.0):
+//   For geometry pixels (`depthIsSurface`):
 //     final = direct + indirect
 //     output = final
 //
-//   For sky pixels (depth == 1.0, exterior only):
+//   For sky pixels (`depthIsBackground`, exterior only):
 //     Reconstruct world-space view direction from screen UV + inv_view_proj.
 //     Compute sky gradient (horizon → zenith) + cloud layer + sun disc.
 //     output = sky
@@ -130,11 +131,14 @@ float hybridSliceCoordinate(float distanceAlongRay) {
         * log(d / linearDepth) / log(farDistance / linearDepth);
 }
 
+// #3308 — delegates to `include/depth_convention.glsl` so the decode flips
+// with the depth mapping. The previous body inlined the conventional inverse
+// `n*f / (f - z*(f-n))`, which returns nonsense under reversed-Z; this
+// wrapper exists only to bind the near/far planes out of `fog_params`.
 float linearViewDepth(float deviceDepth) {
     float nearPlane = max(params.fog_params.x, 1.0e-4);
     float farPlane = max(params.fog_params.y, nearPlane + 1.0);
-    return nearPlane * farPlane
-        / max(farPlane - deviceDepth * (farPlane - nearPlane), 1.0e-4);
+    return depthLinearize(deviceDepth, nearPlane, farPlane);
 }
 
 // Depth-aware bilateral reconstruction of the coarse froxel image. Ordinary
@@ -157,8 +161,8 @@ float froxelColumnDepthWeight(
         depthSize - ivec2(1)
     );
     float candidateDepth = texelFetch(depthTex, representativePixel, 0).r;
-    bool referenceIsSurface = referenceDepth < 1.0;
-    bool candidateIsSurface = candidateDepth < 1.0;
+    bool referenceIsSurface = depthIsSurface(referenceDepth);
+    bool candidateIsSurface = depthIsSurface(candidateDepth);
     if (referenceIsSurface != candidateIsSurface) {
         return 0.0;
     }
@@ -764,7 +768,7 @@ void main() {
     // FO4), so valid geometry beyond that distance was mistaken for empty
     // depth and lost its direct + indirect lighting in this pass.
     float depth = texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r;
-    bool has_surface = depth < 1.0;
+    bool has_surface = depthIsSurface(depth);
     bool is_sky = !has_surface && (params.depth_params.x > 0.5);
 
     // REN-D8-02 / REN-D16-02 — bloom and the volumetric/height-fog term
@@ -910,7 +914,7 @@ void main() {
     // opaque structure boundaries and creates wall leaks.
     //
     // REN-D8-02 / REN-D16-02 — gated on `has_surface || is_sky`, not
-    // `has_surface` alone. `depth == 1.0` still reconstructs a valid
+    // `has_surface` alone. A cleared depth still reconstructs a valid
     // far-plane `worldPos` through the same `inv_view_proj` math
     // `screen_to_world_dir` uses for sky rays, so the froxel tap and the
     // analytic beyond-grid continuation both resolve correctly for sky

@@ -5019,3 +5019,298 @@ fn the_perturb_normal_wrapper_only_delegates() {
         );
     }
 }
+
+// ---- #3308 depth-convention parity ----
+
+/// The GLSL depth convention must come from the engine's constant, and from
+/// nowhere else.
+///
+/// `ACTIVE_DEPTH_MAPPING` (core) drives the projection, the depth clear and
+/// every pipeline's compare state; `build.rs` generates `BYRO_REVERSED_Z` /
+/// `BYRO_DEPTH_CLEAR` from it into `include/shader_constants.glsl`, which is
+/// what `include/depth_convention.glsl`'s predicates read.
+///
+/// **What this test does and does not guard.** The header-vs-constant
+/// comparison below cannot fail while generation is wired, because the build
+/// script regenerates the header before this crate compiles and `include_str!`
+/// therefore always reads a fresh one. That is the point: a hand-maintained
+/// GLSL copy could drift, a generated one cannot, and drift made impossible
+/// beats drift detected. The assertion stays as the executable statement of
+/// which value the shaders are entitled to see.
+///
+/// What it does catch is the two ways that wiring can be cut: a
+/// `DEPTH_CLEAR_VALUE` that stops deriving from the mapping, and a
+/// `depth_convention.glsl` that grows private `#define`s again instead of
+/// including the generated header. Either restores the drift this issue
+/// removed, and the consequence is not subtle — under reversed-Z with a stale
+/// `BYRO_REVERSED_Z == 0`, `depthIsBackground` answers "background" for every
+/// surface and "surface" for the sky, so composite swaps sky and geometry
+/// shading across the whole image.
+///
+/// Stale *SPIR-V* after a flip is the remaining hazard, and it belongs to
+/// `scripts/check-shader-artifacts.sh`, which recompiles every shader and
+/// compares bytes.
+#[test]
+fn the_shader_depth_convention_matches_the_engine_constant() {
+    use byroredux_core::ecs::components::camera::{DepthMapping, ACTIVE_DEPTH_MAPPING};
+
+    let generated = include_str!("../../../shaders/include/shader_constants.glsl");
+    let expected = match ACTIVE_DEPTH_MAPPING {
+        DepthMapping::Conventional => "#define BYRO_REVERSED_Z 0",
+        DepthMapping::Reversed => "#define BYRO_REVERSED_Z 1",
+    };
+    assert!(
+        generated.contains(expected),
+        "ACTIVE_DEPTH_MAPPING is {ACTIVE_DEPTH_MAPPING:?}, so the generated \
+         include/shader_constants.glsl must contain `{expected}` — if it does \
+         not, build.rs has stopped deriving it from the mapping"
+    );
+
+    // The clear value the shaders test against is the one the renderer writes.
+    let expected_clear = match ACTIVE_DEPTH_MAPPING {
+        DepthMapping::Conventional => "#define BYRO_DEPTH_CLEAR 1.0",
+        DepthMapping::Reversed => "#define BYRO_DEPTH_CLEAR 0.0",
+    };
+    assert!(
+        generated.contains(expected_clear),
+        "the generated GLSL clear constant must be `{expected_clear}` to match \
+         DEPTH_CLEAR_VALUE = {}",
+        crate::vulkan::pipeline::DEPTH_CLEAR_VALUE
+    );
+    assert_eq!(
+        crate::vulkan::pipeline::DEPTH_CLEAR_VALUE,
+        ACTIVE_DEPTH_MAPPING.clear_value()
+    );
+
+    // ...and the predicates are defined against those two, not against
+    // literals of their own.
+    let convention = include_str!("../../../shaders/include/depth_convention.glsl");
+    assert!(convention.contains(r#"#include "include/shader_constants.glsl""#));
+    assert!(!convention.contains("#define BYRO_REVERSED_Z"));
+    assert!(!convention.contains("#define BYRO_DEPTH_CLEAR"));
+    for predicate in [
+        "bool depthIsBackground(float z)",
+        "bool depthIsSurface(float z)",
+        "bool depthIsBackgroundEps(float z, float eps)",
+    ] {
+        assert!(convention.contains(predicate), "missing {predicate}");
+    }
+}
+
+/// No shader may test a depth sample against a raw end-of-range literal.
+///
+/// The #3308 conversion's whole cost was that this convention was restated in
+/// six places across three shaders, each of which had to be found by reading.
+/// `include/depth_convention.glsl` is now the single place that knows which
+/// way the buffer runs; a re-introduced `depth < 1.0` (or `>= 0.999`) would be
+/// correct today and silently wrong the moment the mapping flips — exactly the
+/// class of latent breakage this issue existed to remove.
+///
+/// The scan flags a **bare** identifier ending in `…epth` (so `depth`,
+/// `sampleDepth`, `candidateDepth`, `referenceDepth` — but not a struct member
+/// like `mat.softFalloffDepth`, which is a material distance, not a buffer
+/// sample) compared against a **complete** range-endpoint literal (`1.0`,
+/// `0.0`, `0.999`, `0.001` — not `1.0e-3`, which is how `opticalDepth`, an
+/// extinction integral rather than a depth sample, is compared). Both
+/// qualifiers are load-bearing: dropping either turns this into three false
+/// positives on shaders that have nothing to do with the depth buffer.
+///
+/// `the_depth_literal_scanner_recognises_the_shapes_it_exists_to_catch` is the
+/// completeness half — it holds the matcher to the forms actually removed
+/// here, so a scan narrowed until it passes vacuously fails there instead.
+#[test]
+fn no_shader_tests_depth_against_a_raw_range_literal() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let mut files = Vec::new();
+    collect_shader_files(&dir, &mut files);
+    assert!(
+        files.len() > 20,
+        "expected the full shader tree, got {}",
+        files.len()
+    );
+
+    let convention = dir.join("include").join("depth_convention.glsl");
+    let mut offenders = Vec::new();
+
+    for path in &files {
+        // The convention header is the one file allowed to name the range.
+        if *path == convention {
+            continue;
+        }
+        let src = std::fs::read_to_string(path).expect("read shader");
+        for (lineno, raw) in src.lines().enumerate() {
+            if raw_depth_range_test(raw) {
+                offenders.push(format!(
+                    "{}:{}: {}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    lineno + 1,
+                    raw.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these compare a depth sample against a raw range literal instead of \
+         using include/depth_convention.glsl's depthIsSurface / \
+         depthIsBackground / depthIsBackgroundEps — they would silently invert \
+         under reversed-Z (#3308):\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// True when a line of GLSL compares a bare `…epth` identifier against a
+/// complete depth-range endpoint literal. See
+/// `no_shader_tests_depth_against_a_raw_range_literal` for the rule.
+fn raw_depth_range_test(raw: &str) -> bool {
+    // Comments describe the convention; only code is scanned.
+    let line = match raw.find("//") {
+        Some(i) => &raw[..i],
+        None => raw,
+    };
+
+    let bytes = line.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find("epth") {
+        let at = from + rel;
+        from = at + 4;
+
+        // Bare identifier only: a member access names a material/push field,
+        // not a depth-buffer sample.
+        let ident_start = line[..at]
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .map_or(0, |i| i + 1);
+        if ident_start > 0 && bytes[ident_start - 1] == b'.' {
+            continue;
+        }
+        // ...and the identifier must *end* at "epth", not merely contain it.
+        let rest = &line[at + 4..];
+        if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.') {
+            continue;
+        }
+
+        let rest = rest.trim_start();
+        // Longest operator first so "<=" is not read as "<".
+        let Some(op) = ["<=", ">=", "==", "!=", "<", ">"]
+            .into_iter()
+            .find(|o| rest.starts_with(o))
+        else {
+            continue;
+        };
+        let value = rest[op.len()..].trim_start();
+
+        // A complete numeric token — `1.0e-3` is an extinction threshold, not
+        // an end of the normalised depth range.
+        let end = value
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(value.len());
+        let (number, tail) = value.split_at(end);
+        if tail.starts_with(['e', 'E', 'f', 'F']) {
+            continue;
+        }
+        if matches!(number, "1.0" | "0.0" | "0.999" | "0.001") {
+            return true;
+        }
+    }
+    false
+}
+
+/// The completeness half of the scan above: every form actually removed by
+/// #3308 must still be recognised, and the two shapes deliberately excluded
+/// must still be ignored.
+///
+/// Without this, narrowing `raw_depth_range_test` until the tree is clean
+/// would look like a passing suite.
+#[test]
+fn the_depth_literal_scanner_recognises_the_shapes_it_exists_to_catch() {
+    // The six real sites this issue converted, as they read before the fix.
+    for caught in [
+        "    bool has_surface = depth < 1.0;",
+        "    bool referenceIsSurface = referenceDepth < 1.0;",
+        "    bool candidateIsSurface = candidateDepth < 1.0;",
+        "    if (depth >= 0.999) {",
+        "        if (sampleDepth >= 0.999) continue;",
+        "    if (depth < 1.0) {",
+        // ...and the reversed-Z spellings, so a half-converted flip is caught too.
+        "    bool has_surface = depth > 0.0;",
+        "    if (depth <= 0.001) {",
+    ] {
+        assert!(
+            raw_depth_range_test(caught),
+            "scanner missed a raw depth-range test: {caught}"
+        );
+    }
+
+    // The three shapes that are not depth-buffer background tests.
+    for ignored in [
+        "        float sourceIntegral = opticalDepth < 1.0e-3",
+        "    float escapeProbability = opticalDepth > 1.0e-4",
+        "            && mat.softFalloffDepth > 0.0) {",
+        // A comment describing the old convention stays legal — the corrected
+        // prose explaining *why* the literals are gone is the record.
+        "//   For sky pixels (depth == 1.0, exterior only):",
+        // Reading a sample is not testing one.
+        "    float depth = texelFetch(depthTex, px, 0).r;",
+    ] {
+        assert!(
+            !raw_depth_range_test(ignored),
+            "scanner false-positived on: {ignored}"
+        );
+    }
+}
+
+/// A depth *decode* is the other half of the convention, and the easier half
+/// to miss.
+///
+/// Reconstructing a world position through `inv_view_proj` needs to know
+/// nothing about the mapping — the inverse matrix already carries it, which is
+/// why `composite.frag`, `ssao.comp` and `caustic_splat.comp` all reconstruct
+/// positions without touching `include/depth_convention.glsl`. Recovering a
+/// *linear eye distance* from a raw sample is different: it inverts the
+/// encoding directly, so it has to flip with it.
+///
+/// `composite.frag`'s `linearViewDepth` was exactly that — an inlined
+/// `n*f / (f - z*(f-n))`, correct today and silently wrong under reversed-Z,
+/// feeding the froxel bilateral's depth-compatibility test and the height-fog
+/// term. It now delegates to `depthLinearize`, whose two branches are the
+/// GLSL twins of `Camera::linear_distance_from_depth` and
+/// `linear_distance_from_depth_reversed`.
+///
+/// The scan below is the general form: no shader may divide by a
+/// `farPlane - <depth> * (...)` denominator of its own.
+#[test]
+fn every_depth_linearisation_goes_through_the_convention_header() {
+    let convention = include_str!("../../../shaders/include/depth_convention.glsl");
+    assert!(convention.contains("float depthLinearize(float z, float nearPlane, float farPlane)"));
+    // Both branches present — a header that lost the reversed arm would still
+    // compile and still be wrong the moment the mapping flips.
+    assert!(convention.contains("float denom = z * (1.0 - nOverF) + nOverF;"));
+    assert!(convention.contains("float denom = 1.0 - z * (1.0 - nOverF);"));
+
+    let composite = include_str!("../../../shaders/composite.frag");
+    assert!(
+        composite.contains("return depthLinearize(deviceDepth, nearPlane, farPlane);"),
+        "composite's linearViewDepth must delegate to the convention header"
+    );
+
+    // No shader may re-inline a conventional linearisation. The needle is the
+    // shape of that inverse's denominator — a `farPlane`/`far`-minus-depth
+    // product — composed at runtime so this test's own source cannot match it.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let mut files = Vec::new();
+    collect_shader_files(&dir, &mut files);
+    let needle = format!("{}{}", "farPlane - ", "deviceDepth");
+    let mut offenders = Vec::new();
+    for path in &files {
+        let src = std::fs::read_to_string(path).expect("read shader");
+        if src.contains(&needle) {
+            offenders.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these inline a conventional depth linearisation instead of calling \
+         depthLinearize (#3308): {offenders:?}"
+    );
+}

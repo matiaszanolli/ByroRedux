@@ -121,7 +121,10 @@ impl VulkanContext {
             zero_f, // fsr_transparency
             vk::ClearValue {
                 depth_stencil: vk::ClearDepthStencilValue {
-                    depth: 1.0,
+                    // #3308 — the far-plane encoding under the active depth
+                    // mapping, not a literal `1.0`. Clearing to the wrong
+                    // end of the range rejects every fragment drawn after.
+                    depth: crate::vulkan::pipeline::DEPTH_CLEAR_VALUE,
                     stencil: 0,
                 },
             },

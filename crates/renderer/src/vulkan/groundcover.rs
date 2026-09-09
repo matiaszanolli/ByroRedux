@@ -850,7 +850,7 @@ impl GroundCoverPipeline {
             let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
                 .depth_test_enable(true)
                 .depth_write_enable(true)
-                .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
+                .depth_compare_op(crate::vulkan::pipeline::default_depth_compare_op());
             // Eight attachments to match the main pass. Only 0 (HDR colour)
             // and 6/7 (the FSR masks) are written; the G-buffer's normal /
             // motion / mesh-ID attachments stay masked off, exactly as water

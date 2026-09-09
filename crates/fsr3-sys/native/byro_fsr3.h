@@ -26,6 +26,9 @@ typedef struct ByroFsr3CreateDesc {
     uint32_t max_upscale_height;
     bool high_dynamic_range;
     bool debug_checking;
+    /* #3308 — the depth attachment runs far->0 (reversed-Z). Selects the
+       SDK's inverted-depth shader permutation. */
+    bool depth_inverted;
 } ByroFsr3CreateDesc;
 
 typedef struct ByroFsr3MemoryUsage {
@@ -67,6 +70,11 @@ typedef struct ByroFsr3DispatchDesc {
     float view_space_to_meters_factor;
     bool enable_sharpening;
     float sharpness;
+    /* #3308 — must match the flag the context was created with.
+       `camera_near`/`camera_far` above stay the true frustum planes either
+       way; the shim swaps them for the SDK when this is set, which is the
+       ordering FSR3 expects under inverted depth. */
+    bool depth_inverted;
 } ByroFsr3DispatchDesc;
 
 uint32_t byro_fsr3_query_version(ByroFsr3Version* out_version);

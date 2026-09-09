@@ -3,6 +3,7 @@
 use crate::vertex::{UiVertex, Vertex};
 use anyhow::{Context, Result};
 use ash::vk;
+use byroredux_core::ecs::components::camera::ACTIVE_DEPTH_MAPPING;
 
 /// Main graphics pipeline SPIR-V bytes — exposed so other modules (scene_buffer,
 /// texture_registry) can reflect them during descriptor layout validation (#427).
@@ -154,6 +155,43 @@ pub fn gamebryo_to_vk_compare_op(v: u8) -> vk::CompareOp {
         7 => vk::CompareOp::NEVER,
         _ => vk::CompareOp::LESS_OR_EQUAL,
     }
+}
+
+/// The depth attachment's clear value under the engine's active depth
+/// mapping (#3308) — `1.0` conventionally, `0.0` under reversed-Z.
+///
+/// Every depth clear in the renderer reads this rather than restating a
+/// literal, because the clear and the projection have to move together: a
+/// `1.0` clear under reversed-Z encodes the *near* plane and rejects every
+/// fragment drawn after it.
+pub const DEPTH_CLEAR_VALUE: f32 = ACTIVE_DEPTH_MAPPING.clear_value();
+
+/// [`gamebryo_to_vk_compare_op`] for a **depth** test, with the engine's
+/// active depth mapping applied (#3308).
+///
+/// Gamebryo authors its Z-test functions against a conventional near→0
+/// buffer. Reversed-Z inverts the ordering, so preserving what the artist
+/// wrote means mirroring each ordered comparison — `LESS` becomes
+/// `GREATER`, and so on. `DepthMapping::map_z_function` owns that table;
+/// this is where the render path consults it.
+///
+/// The plain [`gamebryo_to_vk_compare_op`] deliberately does **not** apply
+/// the mapping: Gamebryo shares one `TestFunction` enum between depth and
+/// alpha test, and an alpha test has no depth convention to invert. Depth
+/// callers must use this function; alpha-test callers must use that one.
+pub fn depth_compare_op(z_function: u8) -> vk::CompareOp {
+    gamebryo_to_vk_compare_op(ACTIVE_DEPTH_MAPPING.map_z_function(z_function))
+}
+
+/// The engine's own default depth test (Gamebryo `LESSEQUAL`) under the
+/// active mapping — `LESS_OR_EQUAL` conventionally, `GREATER_OR_EQUAL`
+/// under reversed-Z.
+///
+/// Used by every pipeline that does not take a per-batch authored
+/// function, so that the static state and the dynamic default cannot
+/// disagree about the convention.
+pub fn default_depth_compare_op() -> vk::CompareOp {
+    depth_compare_op(3)
 }
 
 /// Convert a Gamebryo `AlphaFunction` enum value (from `NiAlphaProperty`
@@ -402,7 +440,8 @@ fn triangle_pipeline_inner(
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-    // LESS_OR_EQUAL matches draw.rs:cmd_set_depth_compare_op (the live source of truth).
+    // `default_depth_compare_op()` matches draw.rs:cmd_set_depth_compare_op (the
+    // live source of truth) and carries the active depth mapping (#3308).
     // depth_test/write/compare_op are all dynamic (#398); these static values are
     // ignored at runtime but must match the dynamic default to prevent silent breakage
     // if the dynamic-state declaration is ever dropped.
@@ -415,7 +454,7 @@ fn triangle_pipeline_inner(
     let depth_stencil_opaque = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(true)
         .depth_write_enable(true)
-        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+        .depth_compare_op(default_depth_compare_op())
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 
@@ -773,7 +812,8 @@ pub fn create_blend_pipeline(
     // Transparent surfaces never write depth — prevents z-fight with
     // other translucents at the same depth and keeps opaque geometry
     // visible behind glass / decals.
-    // LESS_OR_EQUAL matches draw.rs:cmd_set_depth_compare_op (the live source of truth).
+    // `default_depth_compare_op()` matches draw.rs:cmd_set_depth_compare_op (the
+    // live source of truth) and carries the active depth mapping (#3308).
     // `stencil_test_enable(false)` matches the opaque path — see the
     // stencil-deferral comment there. The blend pipeline would also
     // need stencil variants wired before #337's portal / shadow-volume
@@ -781,7 +821,7 @@ pub fn create_blend_pipeline(
     let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(true)
         .depth_write_enable(false)
-        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+        .depth_compare_op(default_depth_compare_op())
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 

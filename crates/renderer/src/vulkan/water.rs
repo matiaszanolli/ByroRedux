@@ -948,7 +948,7 @@ fn build_pipeline(
     let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(true)
         .depth_write_enable(false)
-        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+        .depth_compare_op(crate::vulkan::pipeline::default_depth_compare_op())
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 

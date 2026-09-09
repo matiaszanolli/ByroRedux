@@ -29,6 +29,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::{fsr_motion_vector_scale, FrameExtentSet, UpscalerMode};
 use anyhow::{Context, Result};
 use ash::vk::{self, Handle};
+use byroredux_core::ecs::components::camera::ACTIVE_DEPTH_MAPPING;
 use byroredux_fsr3_sys as fsr3;
 use gpu_allocator::vulkan as vk_alloc;
 use gpu_allocator::MemoryLocation;
@@ -241,6 +242,10 @@ impl FrameUpscaler {
                     max_upscale_size: [extents.output.width, extents.output.height],
                     high_dynamic_range: true,
                     debug_checking: cfg!(debug_assertions),
+                    // #3308 — must agree with the depth attachment the
+                    // dispatch hands over, and with every dispatch's own
+                    // `depth_inverted`. Both read the one engine constant.
+                    depth_inverted: ACTIVE_DEPTH_MAPPING.is_reversed(),
                 })
             };
             match create {
@@ -650,6 +655,7 @@ impl FrameUpscaler {
                 view_space_to_meters_factor: FSR_VIEW_SPACE_TO_METERS_FACTOR,
                 enable_sharpening: false,
                 sharpness: 0.0,
+                depth_inverted: ACTIVE_DEPTH_MAPPING.is_reversed(),
             })
         };
 

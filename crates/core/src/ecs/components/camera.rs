@@ -73,18 +73,28 @@ use super::transform::Transform;
 ///   conventional mapping moves ~50×. So the shipped near-plane fix reduced
 ///   the motivation for reversed-Z by 50× but left ~130 000× on the table:
 ///   745 BU is still ~10 m of depth quantisation at the ring, which distant
-///   LOD objects standing on LOD terrain sit well inside. It is deliberately
-///   *not* done: investigating it (#3308) found it touches the projection,
-///   the depth clear, both static AND dynamic pipeline compare state (the
-///   latter driven live, per draw batch, from authored Gamebryo Z-test
-///   functions — every one of its 8 compare-op mappings would need
-///   inverting to preserve authored semantics), at least 6 shader files'
-///   hardcoded depth-clear-convention checks, and FSR3's vendored C++
-///   FidelityFX shim (which needs its own depth-inverted context flag wired
-///   through). None of those failure modes are visible to `cargo test`, and
-///   this project has no RenderDoc GUI integration to validate a change
-///   this pervasive live. Left for a dedicated multi-session effort; #3308
-///   tracks it with the measured scope above.
+///   LOD objects standing on LOD terrain sit well inside.
+///
+///   It is now **implemented but not enabled** (#3308). Every site the
+///   investigation found is converted and derives from
+///   [`ACTIVE_DEPTH_MAPPING`]: the projection
+///   ([`Camera::projection_matrix_with`]), the depth clear, the static
+///   pipeline compare state, the per-draw-batch dynamic compare state
+///   (through [`DepthMapping::map_z_function`], which mirrors all 8 authored
+///   Gamebryo Z-test functions so artist-authored occlusion semantics
+///   survive the flip), the shader-side background tests (via the generated
+///   `BYRO_REVERSED_Z` / `BYRO_DEPTH_CLEAR` and
+///   `include/depth_convention.glsl`), and FSR3's vendored FidelityFX shim
+///   (whose SDK already ships the inverted-depth shader permutation — only
+///   the context flag and the plane ordering needed wiring).
+///
+///   The constant ships [`DepthMapping::Conventional`], under which every
+///   one of those is bit-for-bit its pre-conversion self, because
+///   reversed-Z's *visual* failure modes remain invisible to `cargo test`
+///   and this project has no RenderDoc GUI integration. What used to be a
+///   multi-session archaeology exercise is now a two-line flip plus a
+///   validation run — see [`ACTIVE_DEPTH_MAPPING`] for both lines and the
+///   gate.
 ///
 ///   The **comparison gate** that work needs does now exist, in both halves:
 ///   [`Camera::analyze_depth_field`] on the CPU side, and the `depth.stats`
@@ -94,10 +104,13 @@ use super::transform::Transform;
 ///   before/after evidence — the thing that was otherwise unobservable and
 ///   that made shipping reversed-Z speculative.
 ///
-///   The "after" half needs `depth.stats reversed` (#3571): the clear value
-///   and the decode both flip with the mapping, so a conventional read of a
-///   reversed capture classifies nothing as background and drops the whole
-///   sky into the far decade — the one band the gate exists to read.
+///   The "after" half's decode landed under #3571: the clear value and the
+///   decode both flip with the mapping, so a conventional read of a reversed
+///   capture classifies nothing as background and drops the whole sky into
+///   the far decade — the one band the gate exists to read. `depth.stats`
+///   now defaults to [`ACTIVE_DEPTH_MAPPING`], so it follows a flip on its
+///   own; `depth.stats conventional` / `depth.stats reversed` still force
+///   either reading.
 ///
 ///   **Measured baseline** (RTX 4070 Ti, `--game fnv --grid 0,0 --radius 3
 ///   --upscaler taa`, camera on the Mojave satellite-dish rise looking down
@@ -126,6 +139,43 @@ pub const DEFAULT_RENDER_DISTANCE: f32 = 400_000.0;
 /// ~50× depth-resolution improvement this buys over the unit-scale default,
 /// and [`Camera::for_content_scale`] for how callers select it.
 pub const NEAR_PLANE_BU_SCALE: f32 = 5.0;
+
+/// **The single flip point for #3308's reversed-Z conversion.**
+///
+/// Every depth-convention decision in the engine derives from this one
+/// constant: [`Camera::projection_matrix`]'s Z mapping, the depth
+/// attachment's clear value, both static and per-batch pipeline compare
+/// state, the FSR3 upscaler's `DEPTH_INVERTED` context flag, and — through
+/// the parity test described below — the GLSL side's background tests.
+///
+/// It ships [`DepthMapping::Conventional`], which is bit-for-bit what the
+/// engine rendered before the conversion: [`DepthMapping::map_z_function`]
+/// is the identity there, `clear_value` is `1.0`, and the projection takes
+/// the unmodified `perspective_rh` path. The conversion is therefore
+/// *present but not enabled* — deliberately, because reversed-Z's failure
+/// modes are invisible to `cargo test` and this project does not ship
+/// render-state changes it cannot see (see the depth-precision policy on
+/// [`DEFAULT_RENDER_DISTANCE`]).
+///
+/// # Flipping it
+///
+/// Flipping this to [`DepthMapping::Reversed`] requires **two** edits, not
+/// one, because SPIR-V is precompiled and checked in:
+///
+/// 1. this constant, and
+/// 2. `BYRO_REVERSED_Z` in `crates/renderer/shaders/include/depth_convention.glsl`,
+///    followed by recompiling the shaders that include it.
+///
+/// `the_shader_depth_convention_matches_the_engine_constant` (in the
+/// renderer's shader-contract suite) fails the build if those two disagree,
+/// so the pair cannot drift — a flip that forgets the shaders is caught by
+/// `cargo test`, not by a black frame.
+///
+/// Then validate on hardware with the gate #3308 step 2 built: run
+/// `depth.stats` before and `depth.stats reversed` after, and compare the
+/// far decade's `distinct_codes` against the recorded baseline (1 410
+/// samples sharing **104** codes at the 250 000 BU LOD ring).
+pub const ACTIVE_DEPTH_MAPPING: DepthMapping = DepthMapping::Conventional;
 
 /// Perspective camera parameters.
 ///
@@ -185,13 +235,47 @@ impl Camera {
         }
     }
 
-    /// Build a perspective projection matrix (Vulkan clip space: Y-down, Z 0..1).
+    /// Build a perspective projection matrix (Vulkan clip space: Y-down,
+    /// Z 0..1) under the engine's active depth mapping
+    /// ([`ACTIVE_DEPTH_MAPPING`]).
     pub fn projection_matrix(&self) -> Mat4 {
+        self.projection_matrix_with(ACTIVE_DEPTH_MAPPING)
+    }
+
+    /// [`Self::projection_matrix`] against an explicit depth mapping.
+    ///
+    /// Under [`DepthMapping::Conventional`] this is the plain
+    /// `perspective_rh` the engine has always used. Under
+    /// [`DepthMapping::Reversed`] it hands the *same* frustum to
+    /// `perspective_rh` with the two Z planes exchanged, which produces
+    /// `z_ndc(d) = (n/d − n/f) / (1 − n/f)` — exactly the encoding
+    /// [`Self::depth_resolution_at_reversed`] and
+    /// [`Self::linear_distance_from_depth_reversed`] already model, and
+    /// algebraically the affine flip `z_ndc ↦ 1 − z_ndc` of the
+    /// conventional one. Only the Z *encoding* changes: field of view,
+    /// aspect and the frustum planes themselves are untouched, so frustum
+    /// culling is unaffected.
+    ///
+    /// The plane swap is not merely a tidier spelling of that flip — it is
+    /// the numerically usable one. Applying `z_clip ↦ w_clip − z_clip` to
+    /// the built matrix computes the z row as `−1 − f/(n−f)`, a difference
+    /// of two values that are both within an ulp or two of `−1` for any
+    /// realistic `f/n` ratio; at this engine's 5 → 400 000 frustum that
+    /// cancellation leaves the leading coefficient with ~0.5% relative
+    /// error, which shows up as hundreds of world units of round-trip drift
+    /// at long range. Swapping the planes forms the same coefficient as
+    /// `n/(f−n)` directly, with no cancellation at all.
+    pub fn projection_matrix_with(&self, mapping: DepthMapping) -> Mat4 {
         // glam's perspective_rh already maps Z to [0, 1] (Vulkan/D3D convention).
         // Only the Y-flip is needed for Vulkan's inverted Y axis.
         // Note: the Y-flip reverses apparent triangle winding in clip space —
         // CW triangles (NIF/D3D) appear CCW after this, matching our front face setting.
-        let mut proj = Mat4::perspective_rh(self.fov_y, self.aspect, self.near, self.far);
+        let (z_near, z_far) = if mapping.is_reversed() {
+            (self.far, self.near)
+        } else {
+            (self.near, self.far)
+        };
+        let mut proj = Mat4::perspective_rh(self.fov_y, self.aspect, z_near, z_far);
         proj.col_mut(1).y *= -1.0;
         proj
     }
@@ -548,11 +632,12 @@ pub struct DepthBand {
 /// discriminant #3308's comparison gate needs in order to be runnable on
 /// both sides of a reversed-Z conversion (#3571).
 ///
-/// This describes a *capture*, not the engine: nothing in the render path
-/// reads it, and the engine ships [`Self::Conventional`] today. It exists so
-/// that whoever does the conversion can point the same analysis at the new
-/// depth buffer instead of having to repair the analysis inside the change
-/// they are trying to validate with it.
+/// Since #3308's conversion landed, this is also the engine's own
+/// single authority for the mapping in use: [`ACTIVE_DEPTH_MAPPING`] names
+/// it once, and the projection, the depth clear, and every pipeline's
+/// depth-compare state derive from it rather than hardcoding a convention
+/// apiece. Analysis of a *capture* still takes the mapping explicitly, so a
+/// frame grabbed under one mapping can be decoded under either.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DepthMapping {
     /// Near plane → `0.0`, far plane → `1.0`; clear value `1.0`. What the
@@ -563,6 +648,84 @@ pub enum DepthMapping {
     /// mapping #3308 exists to evaluate — it lands the far field near `0.0`
     /// where f32 steps are finest.
     Reversed,
+}
+
+impl DepthMapping {
+    /// The value a depth attachment is cleared to under this mapping — the
+    /// encoding of the **far** plane, so that "nothing drawn here" loses
+    /// every depth test an actual surface would win.
+    ///
+    /// The two halves must move together: clearing to `1.0` under
+    /// [`Self::Reversed`] would clear to the *near* plane and reject every
+    /// subsequent fragment, producing an empty frame rather than a subtly
+    /// wrong one.
+    pub const fn clear_value(self) -> f32 {
+        match self {
+            Self::Conventional => 1.0,
+            Self::Reversed => 0.0,
+        }
+    }
+
+    /// Whether this mapping runs far→0 (reversed) rather than near→0.
+    ///
+    /// Exists for the consumers that need a plain boolean rather than a
+    /// match — the FSR3 `DEPTH_INVERTED` context flag and the GLSL
+    /// `BYRO_REVERSED_Z` define.
+    pub const fn is_reversed(self) -> bool {
+        matches!(self, Self::Reversed)
+    }
+
+    /// Re-express an authored Gamebryo Z-test function so it keeps its
+    /// *semantics* under this mapping.
+    ///
+    /// Gamebryo's `NiZBufferProperty` test functions are authored against a
+    /// conventional near→0 buffer, where "in front" means a smaller depth
+    /// value. Reversed-Z inverts that ordering, so preserving what the
+    /// artist wrote means swapping each ordered comparison for its mirror
+    /// while leaving the order-free ones alone:
+    ///
+    /// | code | function | reversed |
+    /// |---|---|---|
+    /// | 0 | `ALWAYS` | `ALWAYS` (0) |
+    /// | 1 | `LESS` | `GREATER` (4) |
+    /// | 2 | `EQUAL` | `EQUAL` (2) |
+    /// | 3 | `LESS_OR_EQUAL` | `GREATER_OR_EQUAL` (6) |
+    /// | 4 | `GREATER` | `LESS` (1) |
+    /// | 5 | `NOT_EQUAL` | `NOT_EQUAL` (5) |
+    /// | 6 | `GREATER_OR_EQUAL` | `LESS_OR_EQUAL` (3) |
+    /// | 7 | `NEVER` | `NEVER` (7) |
+    ///
+    /// The inversion is expressible entirely inside Gamebryo's own code
+    /// space — every mirror is itself an authorable function — so this
+    /// stays a `u8 → u8` map in core and the renderer's existing
+    /// `gamebryo_to_vk_compare_op` needs no reversed sibling. Codes outside
+    /// `0..=7` are returned unchanged; that arm's fallback belongs to the
+    /// renderer's mapping, not here.
+    ///
+    /// This is an involution: applying it twice is the identity.
+    pub const fn map_z_function(self, z_function: u8) -> u8 {
+        match self {
+            Self::Conventional => z_function,
+            Self::Reversed => match z_function {
+                1 => 4,
+                3 => 6,
+                4 => 1,
+                6 => 3,
+                other => other,
+            },
+        }
+    }
+
+    /// The engine's own default depth test, as a Gamebryo Z-test code,
+    /// re-expressed for this mapping.
+    ///
+    /// `LESS_OR_EQUAL` (3) is what every pipeline that does not take a
+    /// per-batch authored function uses. Routing it through
+    /// [`Self::map_z_function`] rather than restating the mirror keeps one
+    /// inversion table in the codebase.
+    pub const fn default_z_function(self) -> u8 {
+        self.map_z_function(3)
+    }
 }
 
 /// Summary of one captured depth buffer. See [`Camera::analyze_depth_field`].
@@ -1118,5 +1281,244 @@ mod tests {
         // Point at (-5, 0, 0) should be in front of the camera.
         let point = view * Vec4::new(-5.0, 0.0, 0.0, 1.0);
         assert!(point.z < 0.0);
+    }
+
+    // ---- #3308 reversed-Z conversion ----
+
+    /// Encode a view-space eye distance through a projection and return the
+    /// post-divide NDC z, i.e. exactly what lands in the depth attachment.
+    fn encode_depth(proj: Mat4, distance: f32) -> f32 {
+        // Right-handed view space looks down -Z, so an eye distance `d` is
+        // the view-space point (0, 0, -d).
+        let clip = proj * Vec4::new(0.0, 0.0, -distance, 1.0);
+        clip.z / clip.w
+    }
+
+    #[test]
+    fn the_shipped_depth_mapping_is_conventional() {
+        // The conversion is present but deliberately not enabled: reversed-Z's
+        // failure modes are invisible to `cargo test`. If this ever flips, the
+        // shader define has to flip in the same commit — see
+        // `ACTIVE_DEPTH_MAPPING`'s doc.
+        assert_eq!(ACTIVE_DEPTH_MAPPING, DepthMapping::Conventional);
+    }
+
+    #[test]
+    fn the_conventional_projection_is_byte_identical_to_the_pre_conversion_one() {
+        // The pre-#3308 body, reproduced literally. Routing the projection
+        // through a mapping must not perturb what the engine ships.
+        let cam = Camera::new(
+            FRAC_PI_4,
+            16.0 / 9.0,
+            NEAR_PLANE_BU_SCALE,
+            DEFAULT_RENDER_DISTANCE,
+        );
+        let mut expected = Mat4::perspective_rh(cam.fov_y, cam.aspect, cam.near, cam.far);
+        expected.col_mut(1).y *= -1.0;
+
+        assert_eq!(
+            cam.projection_matrix_with(DepthMapping::Conventional),
+            expected
+        );
+        // ...and the no-argument entry point still resolves to it.
+        assert_eq!(cam.projection_matrix(), expected);
+    }
+
+    #[test]
+    fn the_reversed_projection_maps_near_to_one_and_far_to_zero() {
+        let cam = Camera::new(
+            FRAC_PI_4,
+            16.0 / 9.0,
+            NEAR_PLANE_BU_SCALE,
+            DEFAULT_RENDER_DISTANCE,
+        );
+        let conventional = cam.projection_matrix_with(DepthMapping::Conventional);
+        let reversed = cam.projection_matrix_with(DepthMapping::Reversed);
+
+        // The conventional mapping runs near→0, far→1.
+        assert!(encode_depth(conventional, cam.near).abs() < 1e-6);
+        assert!((encode_depth(conventional, cam.far) - 1.0).abs() < 1e-6);
+
+        // The reversed mapping runs near→1, far→0 — the whole point.
+        assert!((encode_depth(reversed, cam.near) - 1.0).abs() < 1e-6);
+        assert!(encode_depth(reversed, cam.far).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_reversed_projection_keeps_depth_monotonic_in_distance() {
+        // Reversed-Z must still be a total order on eye distance, just a
+        // descending one — otherwise no single compare op can express "in
+        // front of".
+        let cam = Camera::new(
+            FRAC_PI_4,
+            16.0 / 9.0,
+            NEAR_PLANE_BU_SCALE,
+            DEFAULT_RENDER_DISTANCE,
+        );
+        let reversed = cam.projection_matrix_with(DepthMapping::Reversed);
+
+        let mut previous = f32::INFINITY;
+        let mut d = cam.near;
+        while d < cam.far {
+            let z = encode_depth(reversed, d);
+            assert!(
+                z < previous,
+                "reversed depth must strictly decrease with distance; at d={d} got {z} after {previous}"
+            );
+            assert!((0.0..=1.0).contains(&z), "depth {z} out of range at d={d}");
+            previous = z;
+            d *= 1.5;
+        }
+    }
+
+    #[test]
+    fn the_reversed_projection_agrees_with_the_analysis_half() {
+        // The gate (#3571) models reversed-Z as
+        // `z_ndc(d) = (n/d - n/f) / (1 - n/f)`, and decodes with its inverse.
+        // If the projection this ships encodes anything else, the "after" run
+        // of the comparison gate measures a buffer it does not describe — the
+        // exact failure the gate was built to avoid.
+        let cam = Camera::new(
+            FRAC_PI_4,
+            16.0 / 9.0,
+            NEAR_PLANE_BU_SCALE,
+            DEFAULT_RENDER_DISTANCE,
+        );
+        let reversed = cam.projection_matrix_with(DepthMapping::Reversed);
+        let (n, f) = (cam.near, cam.far);
+
+        for &d in &[10.0f32, 100.0, 1_000.0, 10_000.0, 100_000.0, 250_000.0] {
+            let encoded = encode_depth(reversed, d);
+            let modelled = (n / d - n / f) / (1.0 - n / f);
+            assert!(
+                (encoded - modelled).abs() < 1e-6,
+                "at d={d}: projection encodes {encoded}, the analysis models {modelled}"
+            );
+
+            // And the decoder recovers the distance. The floor is the
+            // buffer's own resolution at that range — no decoder beats one
+            // f32 code — but reversed-Z's codes out here are finer than the
+            // f32 rounding the encode accumulates across the matrix
+            // multiply, so the round trip is limited by arithmetic rather
+            // than by quantisation and the tolerance has to say so. A part
+            // per million of the distance is what the stable plane-swap
+            // construction achieves; the cancelling clip-space-flip
+            // construction it replaced needed thirty times that.
+            let decoded = cam.linear_distance_from_depth_reversed(encoded);
+            let budget = cam.depth_resolution_at_reversed(d).max(d * 1e-6);
+            assert!(
+                (decoded - d).abs() <= budget,
+                "at d={d}: decoded {decoded}, budget {budget}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_reversed_mapping_inverts_every_ordered_gamebryo_z_function() {
+        // Authored semantics have to survive the conversion: an artist's
+        // "draw only in front of what is already there" must stay that, which
+        // under a descending encoding is the mirrored comparison.
+        //
+        // Codes: 0 ALWAYS, 1 LESS, 2 EQUAL, 3 LESS_OR_EQUAL, 4 GREATER,
+        //        5 NOT_EQUAL, 6 GREATER_OR_EQUAL, 7 NEVER.
+        const EXPECTED: [(u8, u8); 8] = [
+            (0, 0), // ALWAYS — order-free
+            (1, 4), // LESS → GREATER
+            (2, 2), // EQUAL — order-free
+            (3, 6), // LESS_OR_EQUAL → GREATER_OR_EQUAL
+            (4, 1), // GREATER → LESS
+            (5, 5), // NOT_EQUAL — order-free
+            (6, 3), // GREATER_OR_EQUAL → LESS_OR_EQUAL
+            (7, 7), // NEVER — order-free
+        ];
+
+        for (code, mirrored) in EXPECTED {
+            assert_eq!(
+                DepthMapping::Conventional.map_z_function(code),
+                code,
+                "the conventional mapping must be the identity on code {code}"
+            );
+            assert_eq!(
+                DepthMapping::Reversed.map_z_function(code),
+                mirrored,
+                "reversed code {code}"
+            );
+            // Involution — applying the mirror twice is the identity, which is
+            // what makes "authored semantics preserved" a round trip rather
+            // than an assertion.
+            assert_eq!(
+                DepthMapping::Reversed.map_z_function(mirrored),
+                code,
+                "code {code} does not round-trip through the reversed mirror"
+            );
+        }
+    }
+
+    #[test]
+    fn out_of_range_z_functions_pass_through_unchanged() {
+        // The renderer's `gamebryo_to_vk_compare_op` owns the fallback for
+        // codes outside 0..=7; this map must not silently claim one.
+        for code in 8u8..=255 {
+            assert_eq!(DepthMapping::Reversed.map_z_function(code), code);
+            assert_eq!(DepthMapping::Conventional.map_z_function(code), code);
+        }
+    }
+
+    #[test]
+    fn the_default_z_function_is_the_mirror_of_less_or_equal() {
+        assert_eq!(DepthMapping::Conventional.default_z_function(), 3);
+        assert_eq!(DepthMapping::Reversed.default_z_function(), 6);
+    }
+
+    #[test]
+    fn the_clear_value_is_the_far_plane_under_both_mappings() {
+        // A clear must encode "furthest possible", or nothing drawn later
+        // passes the depth test.
+        let cam = Camera::new(
+            FRAC_PI_4,
+            16.0 / 9.0,
+            NEAR_PLANE_BU_SCALE,
+            DEFAULT_RENDER_DISTANCE,
+        );
+
+        for mapping in [DepthMapping::Conventional, DepthMapping::Reversed] {
+            let at_far = encode_depth(cam.projection_matrix_with(mapping), cam.far);
+            assert!(
+                (mapping.clear_value() - at_far).abs() < 1e-6,
+                "{mapping:?}: clear value {} but the far plane encodes {at_far}",
+                mapping.clear_value()
+            );
+        }
+
+        assert!(!DepthMapping::Conventional.is_reversed());
+        assert!(DepthMapping::Reversed.is_reversed());
+    }
+
+    #[test]
+    fn reversed_z_resolves_the_lod_ring_orders_of_magnitude_better() {
+        // The motivating number, kept honest as a test rather than a doc
+        // claim: at the 250 000 BU LOD ring the conventional mapping's step is
+        // hundreds of world units, the reversed mapping's is a fraction of one.
+        let cam = Camera::new(
+            FRAC_PI_4,
+            16.0 / 9.0,
+            NEAR_PLANE_BU_SCALE,
+            DEFAULT_RENDER_DISTANCE,
+        );
+        let ring = 250_000.0;
+
+        let conventional = cam.depth_resolution_at(ring);
+        let reversed = cam.depth_resolution_at_reversed(ring);
+
+        assert!(
+            conventional > 100.0,
+            "conventional step at the ring: {conventional}"
+        );
+        assert!(reversed < 1.0, "reversed step at the ring: {reversed}");
+        assert!(
+            conventional / reversed > 10_000.0,
+            "expected >10 000x; got {}x ({conventional} vs {reversed})",
+            conventional / reversed
+        );
     }
 }

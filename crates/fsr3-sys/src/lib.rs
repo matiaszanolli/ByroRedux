@@ -33,6 +33,7 @@ struct RawCreateDesc {
     max_upscale_height: u32,
     high_dynamic_range: bool,
     debug_checking: bool,
+    depth_inverted: bool,
 }
 
 #[repr(C)]
@@ -80,6 +81,7 @@ struct RawDispatchDesc {
     view_space_to_meters_factor: f32,
     enable_sharpening: bool,
     sharpness: f32,
+    depth_inverted: bool,
 }
 
 extern "C" {
@@ -293,6 +295,10 @@ pub struct VulkanCreateInfo {
     pub max_upscale_size: [u32; 2],
     pub high_dynamic_range: bool,
     pub debug_checking: bool,
+    /// #3308 — the depth attachment this context will be handed runs far→0
+    /// (reversed-Z). Selects the SDK's inverted-depth shader permutation, so
+    /// it must agree with [`DispatchDesc::depth_inverted`] on every dispatch.
+    pub depth_inverted: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -338,6 +344,10 @@ pub struct DispatchDescription {
     pub view_space_to_meters_factor: f32,
     pub enable_sharpening: bool,
     pub sharpness: f32,
+    /// #3308 — must match the context's `depth_inverted`. `camera_near` and
+    /// `camera_far` stay the true frustum planes either way; the native shim
+    /// exchanges them for the SDK when this is set.
+    pub depth_inverted: bool,
 }
 
 /// GPU memory the SDK reserved for one upscaler context.
@@ -387,6 +397,7 @@ impl Context {
             max_upscale_height: info.max_upscale_size[1],
             high_dynamic_range: info.high_dynamic_range,
             debug_checking: info.debug_checking,
+            depth_inverted: info.depth_inverted,
         };
         let mut raw = std::ptr::null_mut();
         // SAFETY: upheld by this function's contract; the native shim copies
@@ -459,6 +470,7 @@ impl Context {
             view_space_to_meters_factor: desc.view_space_to_meters_factor,
             enable_sharpening: desc.enable_sharpening,
             sharpness: desc.sharpness,
+            depth_inverted: desc.depth_inverted,
         };
         // SAFETY: upheld by this method's contract. The native layer copies the
         // POD descriptor and records into (but never submits) the command buffer.

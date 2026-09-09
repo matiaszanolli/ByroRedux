@@ -21,6 +21,10 @@ namespace {
 
 constexpr uint32_t kHdrFlag = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE;
 constexpr uint32_t kDebugFlag = FFX_UPSCALE_ENABLE_DEBUG_CHECKING;
+// #3308 — the depth buffer runs far->0. The SDK selects a different shader
+// permutation for this, so it is a context-creation flag, not a per-dispatch
+// one, and the dispatch's plane ordering has to agree with it.
+constexpr uint32_t kDepthInvertedFlag = FFX_UPSCALE_ENABLE_DEPTH_INVERTED;
 
 void* aligned_allocate(void*, uint64_t size) {
 #ifdef _WIN32
@@ -188,7 +192,8 @@ extern "C" uint32_t byro_fsr3_context_create(
     upscale.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
     upscale.header.pNext = &backend.header;
     upscale.flags = (desc->high_dynamic_range ? kHdrFlag : 0u) |
-                    (desc->debug_checking ? kDebugFlag : 0u);
+                    (desc->debug_checking ? kDebugFlag : 0u) |
+                    (desc->depth_inverted ? kDepthInvertedFlag : 0u);
     upscale.maxRenderSize = {desc->max_render_width, desc->max_render_height};
     upscale.maxUpscaleSize = {desc->max_upscale_width, desc->max_upscale_height};
     upscale.fpMessage = nullptr;
@@ -249,8 +254,13 @@ extern "C" uint32_t byro_fsr3_context_dispatch(
     dispatch.frameTimeDelta = desc->frame_time_delta_ms;
     dispatch.preExposure = desc->pre_exposure;
     dispatch.reset = desc->reset;
-    dispatch.cameraNear = desc->camera_near;
-    dispatch.cameraFar = desc->camera_far;
+    // #3308 — FSR3 reads cameraNear/cameraFar as "the value encoded at depth
+    // 0" and "the value encoded at depth 1", so under inverted depth it wants
+    // them exchanged; its own validation warns when they are not. The shim's
+    // ABI keeps them as the true frustum planes so callers never have to know
+    // that, and does the exchange here.
+    dispatch.cameraNear = desc->depth_inverted ? desc->camera_far : desc->camera_near;
+    dispatch.cameraFar = desc->depth_inverted ? desc->camera_near : desc->camera_far;
     dispatch.cameraFovAngleVertical = desc->camera_fov_angle_vertical;
     dispatch.viewSpaceToMetersFactor = desc->view_space_to_meters_factor;
     dispatch.flags = 0;

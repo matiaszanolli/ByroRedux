@@ -16,6 +16,7 @@
 //! the same shape the screenshot path has, for the same reason.
 
 use super::shared::*;
+use byroredux_core::ecs::components::camera::ACTIVE_DEPTH_MAPPING;
 use byroredux_core::ecs::components::{Camera, DepthMapping};
 use byroredux_core::ecs::{ActiveCamera, DepthCaptureBridge};
 
@@ -33,14 +34,16 @@ impl ConsoleCommand for DepthStatsCommand {
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         // #3571 — the gate's whole contract is "run it before the conversion,
-        // run it after". The engine's projection is conventional today, so
-        // that is the default; the argument is what makes the "after" half
-        // runnable at all, without the operator having to patch the analysis
-        // inside the change they are using it to validate. It is a property
-        // of the CAPTURE, not of the camera, which is why it is an argument
-        // rather than read off `Camera`.
+        // run it after". The default is whatever mapping the engine is
+        // actually installing (`ACTIVE_DEPTH_MAPPING`, #3308), so a capture
+        // taken after a flip decodes correctly without the operator having to
+        // remember an argument — and an explicit argument still forces the
+        // other reading, because the mapping is ultimately a property of the
+        // CAPTURE rather than of the camera (a saved field, a capture taken
+        // across a flip).
         let mapping = match args.trim().to_ascii_lowercase().as_str() {
-            "" | "conventional" => DepthMapping::Conventional,
+            "" => ACTIVE_DEPTH_MAPPING,
+            "conventional" => DepthMapping::Conventional,
             "reversed" | "reverse" | "reversed-z" => DepthMapping::Reversed,
             other => {
                 return CommandOutput::line(format!(

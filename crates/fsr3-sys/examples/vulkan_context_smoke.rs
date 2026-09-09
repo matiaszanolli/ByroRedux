@@ -252,6 +252,10 @@ unsafe fn create_and_destroy_context(instance: &ash::Instance) -> Result<(), Box
             max_upscale_size: [1920, 1080],
             high_dynamic_range: true,
             debug_checking: true,
+            // This smoke test only proves the context creates and destroys
+            // cleanly; the conventional depth mapping is what the engine
+            // ships (#3308).
+            depth_inverted: false,
         })
     };
 

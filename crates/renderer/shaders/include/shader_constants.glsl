@@ -10,6 +10,10 @@
 #ifndef BYRO_SHADER_CONSTANTS_GLSL
 #define BYRO_SHADER_CONSTANTS_GLSL
 
+// Depth-buffer convention (#3308)
+#define BYRO_REVERSED_Z 0
+#define BYRO_DEPTH_CLEAR 1.0
+
 // Cluster grid
 #define CLUSTER_TILES_X 16u
 #define CLUSTER_TILES_Y 9u
