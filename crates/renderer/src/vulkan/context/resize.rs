@@ -459,7 +459,7 @@ impl VulkanContext {
                         self.scene_buffers.write_ao_texture(
                             &self.device,
                             f,
-                            new_ssao.ao_image_views[f],
+                            new_ssao.ao_image_view(f),
                             new_ssao.ao_sampler,
                         );
                     }

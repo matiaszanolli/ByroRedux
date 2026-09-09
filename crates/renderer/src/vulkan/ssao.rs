@@ -10,6 +10,7 @@ use super::descriptors::{
     memory_barrier, write_combined_image_sampler, write_storage_image, write_uniform_buffer,
     DescriptorPoolBuilder,
 };
+use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
@@ -54,9 +55,12 @@ pub struct SsaoPipeline {
     /// prevent cross-frame RAW hazards — each frame-in-flight slot writes
     /// its own image, so frame N's compute dispatch doesn't race with frame
     /// N-1's fragment shader read. See #267.
-    pub ao_images: Vec<vk::Image>,
-    pub ao_image_views: Vec<vk::ImageView>,
-    ao_allocations: Vec<Option<gpu_allocator::vulkan::Allocation>>,
+    /// #3860 — was three parallel `Vec`s (`ao_images`, `ao_image_views`,
+    /// `ao_allocations`) whose indices had to stay in step by hand; the whole
+    /// point of the #1164 "push the allocation before the bind" comment was
+    /// keeping that correspondence structural. One `Vec<GpuImage>` makes it
+    /// structural by construction — there is no index to desynchronise.
+    ao: Vec<GpuImage>,
     /// Sampler for the AO texture (used by the fragment shader).
     pub ao_sampler: vk::Sampler,
     /// Depth sampler for reading the depth buffer.
@@ -110,9 +114,7 @@ impl SsaoPipeline {
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
             param_buffers: Vec::new(),
-            ao_images: Vec::new(),
-            ao_image_views: Vec::new(),
-            ao_allocations: Vec::new(),
+            ao: Vec::new(),
             ao_sampler: vk::Sampler::null(),
             depth_sampler: vk::Sampler::null(),
             width,
@@ -122,112 +124,33 @@ impl SsaoPipeline {
         // Create per-frame AO output images (R8, full resolution).
         // Double-buffered to prevent cross-frame RAW hazards (#267).
         for fi in 0..max_frames {
-            let ao_image_info = vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::R8_UNORM)
-                .extent(vk::Extent3D {
+            // #3860 — was ~90 lines of create → allocate → bind → view with a
+            // three-arm cleanup, and the site where #1163 (allocator guard
+            // held across a re-locking error arm) and #1164 (bind ordering)
+            // were each first diagnosed. Both rules now live in
+            // `GpuImage::create`.
+            let ao = match GpuImage::create(
+                device,
+                allocator,
+                &GpuImageDesc::color_2d(
+                    "ssao ao image",
                     width,
                     height,
-                    depth: 1,
-                })
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(
+                    vk::Format::R8_UNORM,
                     vk::ImageUsageFlags::STORAGE
                         | vk::ImageUsageFlags::SAMPLED
                         | vk::ImageUsageFlags::TRANSFER_DST,
-                )
-                .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .initial_layout(vk::ImageLayout::UNDEFINED);
-
-            // SAFETY: `ao_image_info` is fully populated above with valid
-            // extent / format / usage. Handle is owned by `partial.ao_images`
-            // on Ok, freed by `partial.destroy()` on Err.
-            let ao_image = match unsafe { device.create_image(&ao_image_info, None) } {
-                Ok(img) => img,
+                ),
+            ) {
+                Ok(ao) => ao,
                 Err(e) => {
-                    // SAFETY: `partial` is local; no GPU work has begun
-                    // referencing any of its handles yet. Cleanup-on-error.
+                    // SAFETY: `partial` is local; no GPU work references any
+                    // of its handles yet. Cleanup-on-error.
                     unsafe { partial.destroy(device, allocator) };
                     return Err(anyhow::anyhow!("Failed to create AO image {fi}: {e}"));
                 }
             };
-            partial.ao_images.push(ao_image);
-
-            // Bind the allocate result to a local so the MutexGuard from
-            // `.lock()` drops at end-of-statement BEFORE the `match` runs.
-            // If kept inline as a match scrutinee, the temporary guard would
-            // live through the Err arm; that arm calls `partial.destroy`
-            // which re-locks the same non-reentrant `std::sync::Mutex` →
-            // single-thread deadlock on OOM. Fix #1163.
-            let alloc_result = allocator.lock().expect("allocator lock").allocate(
-                &gpu_allocator::vulkan::AllocationCreateDesc {
-                    name: &format!("ssao_output_{fi}"),
-                    // SAFETY: `ao_image` was just created above and pushed
-                    // into `partial.ao_images`; handle is live.
-                    requirements: unsafe { device.get_image_memory_requirements(ao_image) },
-                    location: gpu_allocator::MemoryLocation::GpuOnly,
-                    linear: false,
-                    allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-                },
-            );
-            let ao_allocation = match alloc_result {
-                Ok(a) => a,
-                Err(e) => {
-                    // SAFETY: see `partial.destroy` above — cleanup-on-error.
-                    // Allocator lock is dropped above; `partial.destroy`
-                    // safely re-acquires it.
-                    unsafe { partial.destroy(device, allocator) };
-                    return Err(anyhow::anyhow!("Failed to allocate AO memory {fi}: {e}"));
-                }
-            };
-
-            // Push the allocation BEFORE the bind so the partial-state
-            // invariant ("every pushed `ao_image` has a matching
-            // `ao_allocations` slot") is structural. On bind failure,
-            // `partial.destroy` then frees the allocation via the normal
-            // cleanup path — no separate explicit free, no asymmetry
-            // for a future reorder to turn into a double-free. #1164.
-            // SAFETY: `Allocation::memory` is `unsafe` because callers
-            // must not free the underlying `vk::DeviceMemory` directly;
-            // we never do — `partial.destroy` always routes through
-            // `allocator.free(allocation)`.
-            let mem = unsafe { ao_allocation.memory() };
-            let offset = ao_allocation.offset();
-            partial.ao_allocations.push(Some(ao_allocation));
-
-            // SAFETY: `ao_image` matches the memory requirements that
-            // produced the allocation just pushed; bound once per image.
-            if let Err(e) = unsafe { device.bind_image_memory(ao_image, mem, offset) } {
-                // SAFETY: bind failed; the allocation is already owned
-                // by `partial.ao_allocations`, so `partial.destroy`
-                // frees it symmetrically with `partial.ao_images`.
-                unsafe { partial.destroy(device, allocator) };
-                return Err(anyhow::anyhow!("Failed to bind AO image memory {fi}: {e}"));
-            }
-
-            // SAFETY: `ao_image` is bound to backing memory (line above).
-            // View ownership transfers to `partial.ao_image_views` on Ok.
-            let view = match unsafe {
-                device.create_image_view(
-                    &vk::ImageViewCreateInfo::default()
-                        .image(ao_image)
-                        .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(vk::Format::R8_UNORM)
-                        .subresource_range(super::descriptors::color_subresource_single_mip()),
-                    None,
-                )
-            } {
-                Ok(v) => v,
-                Err(e) => {
-                    // SAFETY: cleanup-on-error.
-                    unsafe { partial.destroy(device, allocator) };
-                    return Err(anyhow::anyhow!("Failed to create AO view {fi}: {e}"));
-                }
-            };
-            partial.ao_image_views.push(view);
+            partial.ao.push(ao);
         }
 
         // Macro to clean up partial state on error and return.
@@ -384,7 +307,7 @@ impl SsaoPipeline {
                 .image_view(depth_image_view)
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
             let ao_info = [vk::DescriptorImageInfo::default()
-                .image_view(partial.ao_image_views[i])
+                .image_view(partial.ao[i].view)
                 .image_layout(vk::ImageLayout::GENERAL)];
             let param_info = [vk::DescriptorBufferInfo {
                 buffer: partial.param_buffers[i].buffer,
@@ -420,6 +343,15 @@ impl SsaoPipeline {
     /// valid and live, `cmd` is in the recording state, the device is not
     /// lost, and the AO images are not concurrently accessed by another
     /// command buffer.
+    /// The AO output view for one frame in flight.
+    ///
+    /// #3860 — replaces the `pub ao_image_views` field, which existed only so
+    /// two call sites could index it. An accessor keeps the storage private
+    /// now that image, view and allocation travel together.
+    pub fn ao_image_view(&self, frame: usize) -> vk::ImageView {
+        self.ao[frame].view
+    }
+
     pub unsafe fn initialize_ao_images(
         &self,
         device: &ash::Device,
@@ -428,7 +360,7 @@ impl SsaoPipeline {
     ) -> Result<()> {
         let range = super::descriptors::color_subresource_single_mip();
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            for &img in &self.ao_images {
+            for &img in self.ao.iter().map(|ao| &ao.image) {
                 // UNDEFINED → TRANSFER_DST for the clear.
                 // #2413 / TD2-116 — shared constructor, same struct.
                 let barrier = super::descriptors::image_barrier_undef_to_transfer_dst(img, 1);
@@ -541,7 +473,7 @@ impl SsaoPipeline {
         // common case (compute writes every pixel) but UB on a partial
         // dispatch (early-out bounds check, lost device). Match the
         // steady-state pattern svgf.rs:746 / taa.rs:617 already use.
-        let ao_image = self.ao_images[frame];
+        let ao_image = self.ao[frame].image;
         let ao_barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_READ)
             .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
@@ -605,16 +537,9 @@ impl SsaoPipeline {
     /// device is not lost, and that none of the SSAO resources are still in
     /// use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        for &view in &self.ao_image_views {
-            device.destroy_image_view(view, None);
-        }
-        self.ao_image_views.clear();
-        for &img in &self.ao_images {
-            device.destroy_image(img, None);
-        }
-        self.ao_images.clear();
-        for a in self.ao_allocations.drain(..).flatten() {
-            allocator.lock().expect("allocator lock").free(a).ok();
+        for mut ao in self.ao.drain(..) {
+            // #3860 — view, image and slab in one call, in that order.
+            ao.destroy(device, allocator);
         }
         for buf in &mut self.param_buffers {
             buf.destroy(device, allocator);

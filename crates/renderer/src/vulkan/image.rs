@@ -442,7 +442,6 @@ mod tests {
             "gbuffer.rs",
             "groundcover_bench.rs",
             "placeholder.rs",
-            "ssao.rs",
             "volumetrics/init.rs",
         ];
 

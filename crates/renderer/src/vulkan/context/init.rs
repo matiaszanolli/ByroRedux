@@ -914,7 +914,7 @@ impl VulkanContext {
                     log::warn!("SSAO AO image init failed: {e}");
                 }
                 for f in 0..MAX_FRAMES_IN_FLIGHT {
-                    scene_buffers.write_ao_texture(&device, f, s.ao_image_views[f], s.ao_sampler);
+                    scene_buffers.write_ao_texture(&device, f, s.ao_image_view(f), s.ao_sampler);
                 }
                 Some(s)
             }
