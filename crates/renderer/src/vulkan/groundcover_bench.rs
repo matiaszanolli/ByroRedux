@@ -67,11 +67,11 @@
 
 use anyhow::{Context, Result};
 use ash::vk;
-use gpu_allocator::vulkan as vk_alloc;
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::gpu_timers::GpuPerFrameTimers;
+use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
@@ -299,129 +299,32 @@ impl VariantStats {
 }
 
 /// A device-local array image plus its view and allocation.
-struct ArrayImage {
-    image: vk::Image,
-    view: vk::ImageView,
-    allocation: Option<vk_alloc::Allocation>,
-}
+/// #3860 — an array image is an owned image plus its view, so it is a
+/// [`GpuImage`]. The struct this replaced held `image` / `view` /
+/// `allocation` under those same names.
+type ArrayImage = GpuImage;
 
-impl ArrayImage {
-    fn create(
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        format: vk::Format,
-        layers: u32,
-        name: &str,
-    ) -> Result<Self> {
-        let info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(format)
-            .extent(vk::Extent3D {
-                width: LAND_GRID_VERTS,
-                height: LAND_GRID_VERTS,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(layers)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-        // SAFETY: `info` is fully populated above; `device` is the engine's
-        // live logical device and outlives this image (destroyed in
-        // `GroundcoverBench::destroy`).
-        let image = unsafe {
-            device
-                .create_image(&info, None)
-                .with_context(|| format!("create {name} image"))?
-        };
-        let mut this = Self {
-            image,
-            view: vk::ImageView::null(),
-            allocation: None,
-        };
-        let allocation = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name,
-                // SAFETY: `image` was created immediately above and is live.
-                requirements: unsafe { device.get_image_memory_requirements(image) },
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .with_context(|| format!("allocate {name} memory"))?;
-        // On failure the allocation is freed before returning so it is not
-        // stranded outside the allocator's free list (same shape as
-        // `gbuffer.rs`).
-        //
-        // SAFETY: `image` is the freshly-created handle and `allocation` is
-        // gpu-allocator's answer for its own memory requirements.
-        let bound =
-            unsafe { device.bind_image_memory(image, allocation.memory(), allocation.offset()) };
-        if let Err(error) = bound {
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(allocation)
-                .ok();
-            // SAFETY: nothing references `image`; it was never submitted.
-            unsafe { device.destroy_image(image, None) };
-            this.image = vk::Image::null();
-            return Err(error).context(format!("bind {name} image memory"));
-        }
-        this.allocation = Some(allocation);
-
-        // SAFETY: `image` is bound to backing memory above; the view info
-        // names its own format and a full single-mip array range.
-        this.view = unsafe {
-            device
-                .create_image_view(
-                    &vk::ImageViewCreateInfo::default()
-                        .image(image)
-                        .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
-                        .format(format)
-                        .subresource_range(
-                            vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .base_mip_level(0)
-                                .level_count(1)
-                                .base_array_layer(0)
-                                .layer_count(layers),
-                        ),
-                    None,
-                )
-                .with_context(|| format!("create {name} image view"))?
-        };
-        Ok(this)
-    }
-
-    /// # Safety
-    ///
-    /// No in-flight command buffer or descriptor set may still reference this
-    /// image, its view, or its allocation.
-    unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        if self.view != vk::ImageView::null() {
-            // SAFETY: caller's contract — nothing in flight references it.
-            unsafe { device.destroy_image_view(self.view, None) };
-            self.view = vk::ImageView::null();
-        }
-        if self.image != vk::Image::null() {
-            // SAFETY: the view above is already gone, breaking any descriptor
-            // reference; caller guarantees no in-flight use.
-            unsafe { device.destroy_image(self.image, None) };
-            self.image = vk::Image::null();
-        }
-        if let Some(alloc) = self.allocation.take() {
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(alloc)
-                .ok();
-        }
-    }
+fn create_array_image(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+    format: vk::Format,
+    width: u32,
+    height: u32,
+    layers: u32,
+    name: &str,
+) -> Result<ArrayImage> {
+    GpuImage::create(
+        device,
+        allocator,
+        &GpuImageDesc::color_2d_array(
+            name,
+            width,
+            height,
+            layers,
+            format,
+            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+        ),
+    )
 }
 
 /// The §11.1 harness. Created only when `--bench-groundcover-sampling` is
@@ -459,9 +362,13 @@ pub struct GroundcoverBench {
     chunk_buffers: Vec<GpuBuffer>,
     result_buffer: Option<GpuBuffer>,
 
-    attr_image: ArrayImage,
-    splat0_image: ArrayImage,
-    splat1_image: ArrayImage,
+    // #3860 — `Option`, not a null-handle triple. These used to be
+    // constructed as `ArrayImage { image: null(), view: null(), allocation:
+    // None }` before `create_images` ran, which is `Option::None` written in
+    // Vulkan handles; `GpuImage` has no such state and should not gain one.
+    attr_image: Option<ArrayImage>,
+    splat0_image: Option<ArrayImage>,
+    splat1_image: Option<ArrayImage>,
     sampler: vk::Sampler,
     /// `false` until the first bake transitions them out of `UNDEFINED`.
     images_initialised: bool,
@@ -497,10 +404,11 @@ pub struct GroundcoverBench {
 
 /// The raster half's throwaway render target. Never read; see the module
 /// docs and `groundcover_bench.frag`.
+/// #3860 — the image/view/allocation triple is a [`GpuImage`]; the
+/// framebuffer built over it stays a separate field, since `GpuImage`
+/// deliberately owns no render-pass state.
 struct RasterTarget {
-    image: vk::Image,
-    view: vk::ImageView,
-    allocation: Option<vk_alloc::Allocation>,
+    gpu: GpuImage,
     framebuffer: vk::Framebuffer,
 }
 
@@ -532,21 +440,9 @@ impl GroundcoverBench {
             cell_buffers: Vec::new(),
             chunk_buffers: Vec::new(),
             result_buffer: None,
-            attr_image: ArrayImage {
-                image: vk::Image::null(),
-                view: vk::ImageView::null(),
-                allocation: None,
-            },
-            splat0_image: ArrayImage {
-                image: vk::Image::null(),
-                view: vk::ImageView::null(),
-                allocation: None,
-            },
-            splat1_image: ArrayImage {
-                image: vk::Image::null(),
-                view: vk::ImageView::null(),
-                allocation: None,
-            },
+            attr_image: None,
+            splat0_image: None,
+            splat1_image: None,
             sampler: vk::Sampler::null(),
             images_initialised: false,
             bound_vertex_buffer: vk::Buffer::null(),
@@ -617,27 +513,33 @@ impl GroundcoverBench {
 
     fn create_images(&mut self, device: &ash::Device, allocator: &SharedAllocator) -> Result<()> {
         let layers = MAX_BENCH_CELLS as u32;
-        self.attr_image = ArrayImage::create(
+        self.attr_image = Some(create_array_image(
             device,
             allocator,
             ATTR_FORMAT,
+            LAND_GRID_VERTS,
+            LAND_GRID_VERTS,
             layers,
             "groundcover_bench_attr",
-        )?;
-        self.splat0_image = ArrayImage::create(
+        )?);
+        self.splat0_image = Some(create_array_image(
             device,
             allocator,
             SPLAT_FORMAT,
+            LAND_GRID_VERTS,
+            LAND_GRID_VERTS,
             layers,
             "groundcover_bench_splat0",
-        )?;
-        self.splat1_image = ArrayImage::create(
+        )?);
+        self.splat1_image = Some(create_array_image(
             device,
             allocator,
             SPLAT_FORMAT,
+            LAND_GRID_VERTS,
+            LAND_GRID_VERTS,
             layers,
             "groundcover_bench_splat1",
-        )?;
+        )?);
         // LINEAR + CLAMP_TO_EDGE: linear filtering over texel centres is what
         // makes path B reproduce path A's bilinear blend exactly, and the
         // clamp never engages because both paths reject out-of-cell queries
@@ -1051,77 +953,23 @@ impl GroundcoverBench {
         device: &ash::Device,
         allocator: &SharedAllocator,
     ) -> Result<()> {
-        let info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(RASTER_COLOR_FORMAT)
-            .extent(vk::Extent3D {
-                width: RASTER_EXTENT,
-                height: RASTER_EXTENT,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-        // SAFETY: `info` is fully populated; the image is owned here and
-        // destroyed in `destroy`.
-        let image = unsafe {
-            device
-                .create_image(&info, None)
-                .context("create groundcover bench raster target")?
-        };
+        // #3860 — was ~85 lines of create → allocate → bind → view with its
+        // own three-arm cleanup.
         let mut target = RasterTarget {
-            image,
-            view: vk::ImageView::null(),
-            allocation: None,
+            gpu: GpuImage::create(
+                device,
+                allocator,
+                &GpuImageDesc::color_2d(
+                    "groundcover_bench_raster_target",
+                    RASTER_EXTENT,
+                    RASTER_EXTENT,
+                    RASTER_COLOR_FORMAT,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
+                ),
+            )?,
             framebuffer: vk::Framebuffer::null(),
         };
-        let allocation = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name: "groundcover_bench_raster_target",
-                // SAFETY: `image` was created immediately above.
-                requirements: unsafe { device.get_image_memory_requirements(image) },
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("allocate groundcover bench raster target memory")?;
-        // On failure the allocation is freed rather than stranded.
-        //
-        // SAFETY: matching image/allocation pair — `allocation` is
-        // gpu-allocator's answer for `image`'s own memory requirements.
-        let bound =
-            unsafe { device.bind_image_memory(image, allocation.memory(), allocation.offset()) };
-        if let Err(error) = bound {
-            allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .free(allocation)
-                .ok();
-            // SAFETY: nothing references `image`; it was never submitted.
-            unsafe { device.destroy_image(image, None) };
-            return Err(error).context("bind groundcover bench raster target memory");
-        }
-        target.allocation = Some(allocation);
-        // SAFETY: `image` is bound above; the view covers its single mip.
-        target.view = unsafe {
-            device
-                .create_image_view(
-                    &vk::ImageViewCreateInfo::default()
-                        .image(image)
-                        .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(RASTER_COLOR_FORMAT)
-                        .subresource_range(super::descriptors::color_subresource_single_mip()),
-                    None,
-                )
-                .context("create groundcover bench raster target view")?
-        };
-        let views = [target.view];
+        let views = [target.gpu.view];
         // SAFETY: `views` outlives the call; the render pass is live and its
         // single attachment matches this view's format.
         target.framebuffer = unsafe {
@@ -1231,17 +1079,47 @@ impl GroundcoverBench {
                 .image_view(view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)]
         };
-        let attr_info = sampled(self.attr_image.view);
-        let splat0_info = sampled(self.splat0_image.view);
-        let splat1_info = sampled(self.splat1_image.view);
+        let attr_info = sampled(
+            self.attr_image
+                .as_ref()
+                .expect("groundcover bench images read before create_images")
+                .view,
+        );
+        let splat0_info = sampled(
+            self.splat0_image
+                .as_ref()
+                .expect("groundcover bench images read before create_images")
+                .view,
+        );
+        let splat1_info = sampled(
+            self.splat1_image
+                .as_ref()
+                .expect("groundcover bench images read before create_images")
+                .view,
+        );
         let storage = |view: vk::ImageView| {
             [vk::DescriptorImageInfo::default()
                 .image_view(view)
                 .image_layout(vk::ImageLayout::GENERAL)]
         };
-        let attr_storage = storage(self.attr_image.view);
-        let splat0_storage = storage(self.splat0_image.view);
-        let splat1_storage = storage(self.splat1_image.view);
+        let attr_storage = storage(
+            self.attr_image
+                .as_ref()
+                .expect("groundcover bench images read before create_images")
+                .view,
+        );
+        let splat0_storage = storage(
+            self.splat0_image
+                .as_ref()
+                .expect("groundcover bench images read before create_images")
+                .view,
+        );
+        let splat1_storage = storage(
+            self.splat1_image
+                .as_ref()
+                .expect("groundcover bench images read before create_images")
+                .view,
+        );
 
         let set = self.sample_sets[frame];
         let bake_set = self.bake_sets[frame];
@@ -1446,21 +1324,30 @@ impl GroundcoverBench {
         };
         let to_general = [
             self.image_barrier(
-                self.attr_image.image,
+                self.attr_image
+                    .as_ref()
+                    .expect("groundcover bench images read before create_images")
+                    .image,
                 old,
                 vk::ImageLayout::GENERAL,
                 vk::AccessFlags::SHADER_READ,
                 vk::AccessFlags::SHADER_WRITE,
             ),
             self.image_barrier(
-                self.splat0_image.image,
+                self.splat0_image
+                    .as_ref()
+                    .expect("groundcover bench images read before create_images")
+                    .image,
                 old,
                 vk::ImageLayout::GENERAL,
                 vk::AccessFlags::SHADER_READ,
                 vk::AccessFlags::SHADER_WRITE,
             ),
             self.image_barrier(
-                self.splat1_image.image,
+                self.splat1_image
+                    .as_ref()
+                    .expect("groundcover bench images read before create_images")
+                    .image,
                 old,
                 vk::ImageLayout::GENERAL,
                 vk::AccessFlags::SHADER_READ,
@@ -1513,21 +1400,30 @@ impl GroundcoverBench {
 
         let to_read = [
             self.image_barrier(
-                self.attr_image.image,
+                self.attr_image
+                    .as_ref()
+                    .expect("groundcover bench images read before create_images")
+                    .image,
                 vk::ImageLayout::GENERAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::AccessFlags::SHADER_WRITE,
                 vk::AccessFlags::SHADER_READ,
             ),
             self.image_barrier(
-                self.splat0_image.image,
+                self.splat0_image
+                    .as_ref()
+                    .expect("groundcover bench images read before create_images")
+                    .image,
                 vk::ImageLayout::GENERAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::AccessFlags::SHADER_WRITE,
                 vk::AccessFlags::SHADER_READ,
             ),
             self.image_barrier(
-                self.splat1_image.image,
+                self.splat1_image
+                    .as_ref()
+                    .expect("groundcover bench images read before create_images")
+                    .image,
                 vk::ImageLayout::GENERAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::AccessFlags::SHADER_WRITE,
@@ -1752,22 +1648,8 @@ impl GroundcoverBench {
                 // SAFETY: caller's contract.
                 unsafe { device.destroy_framebuffer(target.framebuffer, None) };
             }
-            if target.view != vk::ImageView::null() {
-                // SAFETY: caller's contract.
-                unsafe { device.destroy_image_view(target.view, None) };
-            }
-            if target.image != vk::Image::null() {
-                // SAFETY: the view above is gone; caller's contract covers the
-                // rest.
-                unsafe { device.destroy_image(target.image, None) };
-            }
-            if let Some(alloc) = target.allocation.take() {
-                allocator
-                    .lock()
-                    .expect("allocator lock poisoned")
-                    .free(alloc)
-                    .ok();
-            }
+            // #3860 — view, image and slab in one call, in that order.
+            target.gpu.destroy(device, allocator);
         }
         if self.raster_render_pass != vk::RenderPass::null() {
             // SAFETY: the pipelines and framebuffer that referenced it are
@@ -1805,11 +1687,18 @@ impl GroundcoverBench {
             unsafe { device.destroy_sampler(self.sampler, None) };
             self.sampler = vk::Sampler::null();
         }
-        // SAFETY: caller's contract — no in-flight work references the images.
-        unsafe {
-            self.attr_image.destroy(device, allocator);
-            self.splat0_image.destroy(device, allocator);
-            self.splat1_image.destroy(device, allocator);
+        // Caller's contract — no in-flight work references the images.
+        // #3860 — no `unsafe` needed any more: `GpuImage::destroy` is a safe
+        // fn whose own contract is the same one this caller already upholds.
+        for image in [
+            self.attr_image.as_mut(),
+            self.splat0_image.as_mut(),
+            self.splat1_image.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            image.destroy(device, allocator);
         }
         for buffer in self
             .cell_buffers
