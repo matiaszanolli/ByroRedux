@@ -24,8 +24,8 @@
 //! (cloud colours come from the cloud TEXTURE paths in
 //! DNAM/CNAM/ANAM/BNAM, not NAM0). See issue #729 / EXT-RENDER-1.
 
-use super::common::read_zstring;
-use crate::esm::reader::{GameKind, SubRecord};
+use super::common::{read_zstring, remap_fid};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// Number of color groups in NAM0.
@@ -395,9 +395,14 @@ impl Default for WeatherRecord {
 ///   8 authored TOD slots. The shared table retains the first 10 groups
 ///   and synthesises HIGH_NOON/MIDNIGHT from DAY/NIGHT. FO4's 72-byte
 ///   FNAM retains all 18 xEdit-defined floats.
-pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRecord {
+pub fn parse_wthr(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> WeatherRecord {
     if matches!(game, GameKind::Skyrim) {
-        return parse_wthr_skyrim(form_id, subs);
+        return parse_wthr_skyrim(form_id, subs, remap);
     }
 
     let mut record = WeatherRecord {
@@ -828,7 +833,11 @@ fn parse_glare_table(dst: &mut [SkyColor; 4], data: &[u8]) {
 /// so a future renderer-side 6-axis ambient consumer has authored
 /// per-direction values to drive diffuse shading instead of falling
 /// back to a single procedural ambient. See [`SkyrimAmbientCube`].
-fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
+fn parse_wthr_skyrim(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<FormIdRemap>,
+) -> WeatherRecord {
     let mut record = WeatherRecord {
         form_id,
         ..WeatherRecord::default()
@@ -926,21 +935,20 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
             b"NAM3" if sub.data.len() >= 16 => {
                 parse_glare_table(&mut record.skyrim_moon_glare, &sub.data)
             }
+            // #4069 — MNAM is a SPGD (precipitation shader-particle
+            // geometry) cross-reference, so it takes the load-order remap.
             b"MNAM" if sub.data.len() >= 4 => {
-                record.skyrim_precipitation_effect = Some(u32::from_le_bytes([
-                    sub.data[0],
-                    sub.data[1],
-                    sub.data[2],
-                    sub.data[3],
-                ]));
+                record.skyrim_precipitation_effect = Some(remap_fid(
+                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
+                    remap,
+                ));
             }
+            // #4069 — NNAM is an RFCT (visual effect) cross-reference.
             b"NNAM" if sub.data.len() >= 4 => {
-                record.skyrim_visual_effect = Some(u32::from_le_bytes([
-                    sub.data[0],
-                    sub.data[1],
-                    sub.data[2],
-                    sub.data[3],
-                ]));
+                record.skyrim_visual_effect = Some(remap_fid(
+                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
+                    remap,
+                ));
             }
             sub_type if skyrim_cloud_layer_index(sub_type).is_some() => {
                 let layer = skyrim_cloud_layer_index(sub_type).expect("checked above");
@@ -1073,7 +1081,7 @@ mod tests {
             make_sub(b"BNAM", b"sky\\clouds_03_top.dds\0".to_vec()),
         ];
 
-        let w = parse_wthr(0x1234, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0x1234, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(w.form_id, 0x1234);
         assert_eq!(w.editor_id, "TestWeather");
 
@@ -1120,7 +1128,7 @@ mod tests {
             make_sub(b"00TX", b"sky\\stale.dds\0".to_vec()),
             make_sub(b"10TX", b"sky\\stale.dds\0".to_vec()),
         ];
-        let w = parse_wthr(0xFADE, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0xFADE, &subs, GameKind::Fallout3NV, &None);
         assert!(w.cloud_textures.iter().all(|c| c.is_none()));
     }
 
@@ -1154,7 +1162,7 @@ mod tests {
             make_sub(b"EDID", b"RainyOffsetCheck\0".to_vec()),
             make_sub(b"DATA", data_bytes),
         ];
-        let w = parse_wthr(0x600, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0x600, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(w.wind_speed, 50);
         assert_eq!(w.sun_glare, 200);
         assert_eq!(w.sun_damage, 30);
@@ -1180,7 +1188,7 @@ mod tests {
             make_sub(b"EDID", b"FNVFogCheck\0".to_vec()),
             make_sub(b"FNAM", fnam_data),
         ];
-        let w = parse_wthr(0xF09, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0xF09, &subs, GameKind::Fallout3NV, &None);
         assert!((w.fog_day_near + 500.0).abs() < 0.01);
         assert!((w.fog_day_far - 85_000.0).abs() < 0.01);
         assert!((w.fog_night_near + 1000.0).abs() < 0.01);
@@ -1200,7 +1208,7 @@ mod tests {
             make_sub(b"EDID", b"OBLFogCheck\0".to_vec()),
             make_sub(b"FNAM", fnam_data),
         ];
-        let w = parse_wthr(0x0B1, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0x0B1, &subs, GameKind::Fallout3NV, &None);
         assert!((w.fog_day_near + 500.0).abs() < 0.01);
         assert!((w.fog_day_far - 16_000.0).abs() < 0.01);
         assert!((w.fog_night_near + 600.0).abs() < 0.01);
@@ -1223,7 +1231,7 @@ mod tests {
             }
         }
 
-        let w = parse_wthr(0xF04, &[make_sub(b"NAM0", nam0)], GameKind::Fallout4);
+        let w = parse_wthr(0xF04, &[make_sub(b"NAM0", nam0)], GameKind::Fallout4, &None);
         assert_eq!(w.sky_colors[SKY_FOG][TOD_SUNRISE].r, 2);
         assert_eq!(w.sky_colors[SKY_FOG][TOD_SUNRISE].g, 1);
         assert_eq!(w.sky_colors[SKY_HORIZON][TOD_NIGHT].r, 9);
@@ -1249,7 +1257,7 @@ mod tests {
             fnam.extend_from_slice(&value.to_le_bytes());
         }
 
-        let w = parse_wthr(0xF04, &[make_sub(b"FNAM", fnam)], GameKind::Fallout4);
+        let w = parse_wthr(0xF04, &[make_sub(b"FNAM", fnam)], GameKind::Fallout4, &None);
         assert_eq!(w.fog_day_near, 600.0);
         assert_eq!(w.fog_day_far, 12_000.0);
         assert_eq!(w.fog_night_near, 700.0);
@@ -1282,7 +1290,7 @@ mod tests {
         fnam[8..12].copy_from_slice(&200.0_f32.to_le_bytes());
         fnam[12..16].copy_from_slice(&8_000.0_f32.to_le_bytes());
 
-        let w = parse_wthr(0x5F, &[make_sub(b"FNAM", fnam)], GameKind::Starfield);
+        let w = parse_wthr(0x5F, &[make_sub(b"FNAM", fnam)], GameKind::Starfield, &None);
         assert_eq!(w.fog_day_near, 100.0);
         assert_eq!(w.fog_day_far, 10_000.0);
         assert_eq!(w.fog_day_power, 1.0);
@@ -1319,7 +1327,7 @@ mod tests {
             make_sub(b"FNAM", fnam_data),
             make_sub(b"HNAM", hnam_data),
         ];
-        let w = parse_wthr(0xEED, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0xEED, &subs, GameKind::Fallout3NV, &None);
         assert!(
             (w.fog_day_far - 16_000.0).abs() < 0.01,
             "fog_day_far={}",
@@ -1368,7 +1376,7 @@ mod tests {
             make_sub(b"EDID", b"SEClearTrans\0".to_vec()),
             make_sub(b"HNAM", hnam),
         ];
-        let w = parse_wthr(0x0100_0001, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0x0100_0001, &subs, GameKind::Fallout3NV, &None);
         let hdr = w
             .oblivion_hdr
             .expect("56-byte HNAM must populate oblivion_hdr");
@@ -1408,7 +1416,7 @@ mod tests {
             make_sub(b"EDID", b"FNVDay\0".to_vec()),
             make_sub(b"FNAM", fnam_data),
         ];
-        let w = parse_wthr(0x0200_0001, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0x0200_0001, &subs, GameKind::Fallout3NV, &None);
         assert!(w.oblivion_hdr.is_none());
     }
 
@@ -1423,7 +1431,7 @@ mod tests {
             make_sub(b"EDID", b"DnamPathCheck\0".to_vec()),
             make_sub(b"DNAM", b"sky\\a.dds\0".to_vec()),
         ];
-        let w = parse_wthr(0x5ECD, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0x5ECD, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\a.dds"));
     }
 
@@ -1453,7 +1461,7 @@ mod tests {
             make_sub(b"NAM0", nam0_data),
         ];
 
-        let w = parse_wthr(0x2468, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0x2468, &subs, GameKind::Fallout3NV, &None);
         // On-disk slots populate as authored. Indices match #729 / xEdit
         // fopdoc — `SKY_SUN = 5`, `SKY_HORIZON = 8`.
         let sun_sunrise = w.sky_colors[SKY_SUN][TOD_SUNRISE];
@@ -1491,7 +1499,7 @@ mod tests {
             make_sub(b"EDID", b"Truncated\0".to_vec()),
             make_sub(b"NAM0", vec![0xFF; 80]),
         ];
-        let w = parse_wthr(0xBADD, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0xBADD, &subs, GameKind::Fallout3NV, &None);
         // All slots remain at SkyColor::default() (all zero).
         for group in 0..SKY_COLOR_GROUPS {
             for slot in 0..SKY_TIME_SLOTS {
@@ -1545,7 +1553,7 @@ mod tests {
             make_sub(b"EDID", b"SlotPin\0".to_vec()),
             make_sub(b"NAM0", nam0),
         ];
-        let w = parse_wthr(0x729, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0x729, &subs, GameKind::Fallout3NV, &None);
 
         let day = TOD_DAY;
         assert_eq!(w.sky_colors[SKY_UPPER][day].r, 0); // 0  Sky-Upper
@@ -1594,7 +1602,7 @@ mod tests {
             make_sub(b"FNAM", fnam_data),
             make_sub(b"DATA", data_data),
         ];
-        let w = parse_wthr(0xDEAD, &subs, GameKind::Skyrim);
+        let w = parse_wthr(0xDEAD, &subs, GameKind::Skyrim, &None);
 
         // EDID universal — kept.
         assert_eq!(w.editor_id, "SkyrimWeather");
@@ -1631,7 +1639,7 @@ mod tests {
             make_sub(b"NAM0", nam0_data),
             make_sub(b"FNAM", fnam_data),
         ];
-        let w = parse_wthr(0xBEEF, &subs, GameKind::Fallout3NV);
+        let w = parse_wthr(0xBEEF, &subs, GameKind::Fallout3NV, &None);
 
         assert_eq!(w.editor_id, "FnvWeather");
         let sky_upper_day = w.sky_colors[0][TOD_DAY];
@@ -1687,7 +1695,7 @@ mod tests {
         // Sanity check: an empty Skyrim record must produce default
         // sky_colors but a non-default `editor_id` if EDID is present.
         let subs = vec![make_sub(b"EDID", b"SkyrimClear\0".to_vec())];
-        let w = parse_wthr(0xDEAD, &subs, GameKind::Skyrim);
+        let w = parse_wthr(0xDEAD, &subs, GameKind::Skyrim, &None);
         assert_eq!(w.editor_id, "SkyrimClear");
         assert!(w.skyrim_ambient_cube.is_none());
         // Default fog distances ride through.
@@ -1711,7 +1719,7 @@ mod tests {
             make_sub(b"EDID", b"SkyrimCloudy\0".to_vec()),
             make_sub(b"NAM0", nam0),
         ];
-        let w = parse_wthr(0x1234, &subs, GameKind::Skyrim);
+        let w = parse_wthr(0x1234, &subs, GameKind::Skyrim, &None);
 
         // Group 0 (SKY_UPPER), all 4 TOD slots.
         for slot in 0..4 {
@@ -1746,7 +1754,7 @@ mod tests {
             make_sub(b"EDID", b"SkyrimStorm\0".to_vec()),
             make_sub(b"FNAM", fnam),
         ];
-        let w = parse_wthr(0xCAFE, &subs, GameKind::Skyrim);
+        let w = parse_wthr(0xCAFE, &subs, GameKind::Skyrim, &None);
         assert!((w.fog_day_near - 1_200.0).abs() < 0.001);
         assert!((w.fog_day_far - 80_000.0).abs() < 0.001);
         assert!((w.fog_night_near - 1_200.0).abs() < 0.001);
@@ -1767,7 +1775,7 @@ mod tests {
             make_sub(b"EDID", b"SkyrimRainy\0".to_vec()),
             make_sub(b"DATA", data),
         ];
-        let w = parse_wthr(0xFACE, &subs, GameKind::Skyrim);
+        let w = parse_wthr(0xFACE, &subs, GameKind::Skyrim, &None);
         assert_eq!(w.wind_speed, 25);
         assert_eq!(w.classification, WTHR_CLOUDY);
     }
@@ -1798,6 +1806,7 @@ mod tests {
                 make_sub(b"PNAM", pnam),
             ],
             GameKind::Fallout3NV,
+            &None,
         );
         assert_eq!(w.wind_speed, 7);
         assert_eq!(w.transition_delta, 9);
@@ -1839,6 +1848,7 @@ mod tests {
                 make_sub(b"NNAM", 0x8765_4321u32.to_le_bytes().to_vec()),
             ],
             GameKind::Skyrim,
+            &None,
         );
         assert_eq!(w.cloud_layer_velocities[0], [15, 5]);
         assert_eq!(w.cloud_layer_velocities[3], [18, 8]);
@@ -1892,7 +1902,7 @@ mod tests {
             make_sub(b"DALC", make_dalc(0x30)), // sunset
             make_sub(b"DALC", make_dalc(0x40)), // night
         ];
-        let w = parse_wthr(0xBABE, &subs, GameKind::Skyrim);
+        let w = parse_wthr(0xBABE, &subs, GameKind::Skyrim, &None);
         let cubes = w
             .skyrim_ambient_cube
             .expect("Skyrim DALC must populate the ambient cube");
@@ -1926,7 +1936,7 @@ mod tests {
             make_sub(b"DALC", make_dalc(0xAA)),
             make_sub(b"DALC", make_dalc(0xBB)),
         ];
-        let w = parse_wthr(0x9999, &subs, GameKind::Skyrim);
+        let w = parse_wthr(0x9999, &subs, GameKind::Skyrim, &None);
         let cubes = w.skyrim_ambient_cube.expect("partial DALC still populates");
         assert_eq!(cubes[0].pos_x.r, 0xAA);
         assert_eq!(cubes[1].pos_x.r, 0xBB);
@@ -1949,7 +1959,7 @@ mod tests {
         for marker in 0..8u8 {
             subs.push(make_sub(b"DALC", make_dalc(0x10 + marker)));
         }
-        let w = parse_wthr(0x5555, &subs, GameKind::Skyrim);
+        let w = parse_wthr(0x5555, &subs, GameKind::Skyrim, &None);
         let cubes = w.skyrim_ambient_cube.expect("DALC must populate");
         // Only first 4 take.
         assert_eq!(cubes[0].pos_x.r, 0x10);
@@ -1986,7 +1996,7 @@ mod tests {
             make_sub(b"DALC", dalc.clone()),
             make_sub(b"DALC", dalc),
         ];
-        let w = parse_wthr(0xC0DE, &subs, GameKind::Skyrim);
+        let w = parse_wthr(0xC0DE, &subs, GameKind::Skyrim, &None);
         assert_eq!(w.editor_id, "SkyrimFullRoundTrip");
         assert_eq!(w.sky_colors[SKY_UPPER][TOD_DAY].r, 40);
         assert_eq!(w.sky_colors[SKY_AMBIENT][TOD_DAY].g, 180);

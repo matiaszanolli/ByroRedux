@@ -1039,7 +1039,11 @@ fn pdcl_group_consciously_skipped_and_counted() {
 #[test]
 fn genuinely_unrouted_label_is_recorded_in_skip_telemetry() {
     let unrouted: [u8; 4] = *b"ZZZZ"; // not a real Bethesda FourCC; no dispatch arm anywhere
-    let record = build_record(b"ZZZZ", 0xBEEF_00FF, &[(b"EDID", b"NotARealRecord\0".to_vec())]);
+    let record = build_record(
+        b"ZZZZ",
+        0xBEEF_00FF,
+        &[(b"EDID", b"NotARealRecord\0".to_vec())],
+    );
     let group = wrap_group(b"ZZZZ", &record);
     let mut tes4 = build_record(b"TES4", 0, &[]);
     tes4.extend_from_slice(&group);
@@ -2199,147 +2203,476 @@ fn sech_and_aopf_groups_dispatch_into_typed_audio_maps() {
     );
 }
 
-// ── FormID remap sweep on the `records/` tier (#3400 / #3401) ─────────
+// ── The embedded-FormID remap guards (#4066 / #4069 / #4070 / #4071) ──
+//
+// Source guard for the #3314 rule, extended to the record tier.
+//
+// `read_record_header` remaps every record's own FormID, so `EsmIndex`'s
+// maps are keyed in global space. A parser that reads an *embedded*
+// FormID without applying the same remap therefore stores a key that
+// misses every lookup the moment the remap is non-identity — which it is
+// for the second and later plugin of any multi-master load order, and for
+// every ESL by construction. #3314 made this structural for `cell/` by
+// making the remap a required parameter of its `read_form_id`; the guards
+// below pin the same property for every parser in `records/`.
+//
+// Coarse by design, like `cell_loader::load`'s water-ordering guard: they
+// read the sources rather than the behaviour, because the alternative for
+// a latent field with no consumer is no check at all.
+//
+// #4069 replaced a hardcoded allowlist with this directory walk. The
+// allowlist shipped four "fixes" for this class (#3400, #3401, #3714,
+// #3715) and the class kept recurring, because a list of parsers someone
+// remembered to write down cannot see the parser nobody wrote down.
 
-/// Source guard for the #3314 rule, extended to the record tier.
-///
-/// `read_record_header` remaps every record's own FormID, so `EsmIndex`'s
-/// maps are keyed in global space. A parser that reads an *embedded*
-/// FormID without applying the same remap therefore stores a key that
-/// misses every lookup the moment the remap is non-identity — which it is
-/// for the second and later plugin of any multi-master load order, and for
-/// every ESL by construction. #3314 made this structural for `cell/` by
-/// making the remap a required parameter of its `read_form_id`; this pins
-/// the same property for the `records/` parsers the #3400 / #3401 sweep
-/// covered.
-///
-/// Coarse by design, like `cell_loader::load`'s water-ordering guard: it
-/// reads the sources rather than the behaviour, because the alternative
-/// for a latent field with no consumer is no check at all.
-/// Locate `pub fn {parser}(`'s signature in `source` and report whether it
-/// declares a `remap: &Option<FormIdRemap>` parameter.
-///
-/// Pure and panic-free (`Err` instead of `panic!`) specifically so its own
-/// correctness is unit-testable in isolation
-/// (`parser_signature_takes_remap_detects_a_missing_remap_param`,
-/// #3715) — the actual guard test below turns an `Err` or a `false` into
-/// a loud failure, but the detection logic itself needs a passing case
-/// AND a failing case exercised directly to prove it isn't a tautology.
-fn parser_signature_takes_remap(source: &str, parser: &str) -> Result<bool, String> {
-    let at = source
-        .find(&format!("pub fn {parser}("))
-        .ok_or_else(|| format!("no longer defines {parser}"))?;
-    // The signature ends at the first `)` that closes the parameter list;
-    // `&Option<FormIdRemap>` must appear inside it.
-    let close = source[at..]
-        .find(") ->")
-        .ok_or_else(|| format!("{parser} signature is unparseable"))?;
-    let signature = &source[at..at + close];
-    Ok(signature.contains("remap: &Option<FormIdRemap>"))
+/// Remove every `#[cfg(test)]` module from `src`, brace-matched, leaving
+/// production code that follows one intact.
+fn strip_test_modules(src: &str) -> String {
+    const MARK: &str = "#[cfg(test)]";
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(at) = rest.find(MARK) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at..];
+        // Whichever delimiter comes FIRST decides the form. Several files
+        // here use the block-less `#[cfg(test)] #[path = "..."] mod tests;`
+        // (gras.rs, mod.rs, actor/mod.rs). Looking for `{` first and only
+        // falling back to `;` brace-matches from some *later* unrelated
+        // block and swallows everything between — which silently hid a
+        // probe parser appended below such a declaration, and would hide
+        // real production code the same way.
+        let open = after.find('{');
+        let semi = after.find(';');
+        let open = match (open, semi) {
+            (Some(o), Some(sc)) if sc < o => {
+                rest = &after[sc + 1..];
+                continue;
+            }
+            (None, Some(sc)) => {
+                rest = &after[sc + 1..];
+                continue;
+            }
+            (Some(o), _) => o,
+            (None, None) => return out,
+        };
+        let bytes = after.as_bytes();
+        let (mut depth, mut i) = (0usize, open);
+        while i < bytes.len() {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        rest = if i < bytes.len() { &after[i + 1..] } else { "" };
+    }
+    out.push_str(rest);
+    out
 }
 
-#[test]
-fn record_parsers_with_embedded_form_ids_take_a_remap() {
-    // (file, parser) pairs where the parser reads at least one FormID out
-    // of a sub-record body.
-    let sources: &[(&str, &str, &str)] = &[
-        ("scol.rs", include_str!("scol.rs"), "parse_scol"),
-        ("pkin.rs", include_str!("pkin.rs"), "parse_pkin"),
-        ("movs.rs", include_str!("movs.rs"), "parse_movs"),
-        (
-            "list_record.rs",
-            include_str!("list_record.rs"),
-            "parse_flst",
-        ),
-        ("tree.rs", include_str!("tree.rs"), "parse_tree"),
-        ("misc/world.rs", include_str!("misc/world.rs"), "parse_acti"),
-        ("misc/world.rs", include_str!("misc/world.rs"), "parse_navm"),
-        ("misc/world.rs", include_str!("misc/world.rs"), "parse_regn"),
-        // #3714 — the FO4 armor-equip chain: RACE.WNAM -> ARMO.MODL
-        // (armature list) -> ARMA.RNAM (race match). All three read
-        // embedded FormIDs and all three used to leave them raw.
-        ("items.rs", include_str!("items.rs"), "parse_armo"),
-        (
-            "misc/equipment.rs",
-            include_str!("misc/equipment.rs"),
-            "parse_arma",
-        ),
-        ("actor/mod.rs", include_str!("actor/mod.rs"), "parse_race"),
-        // #3715 — the 11-site sweep the #3400/#3401 guard's hardcoded
-        // allowlist couldn't see because it simply never named these
-        // parsers. `parse_weap` / `parse_ammo` (items.rs — skill_form /
-        // projectile_form / casing_form) and `parse_perk` (misc/magic.rs —
-        // quest_form_id / spell_form_id) already took `remap` and are
-        // added here for completeness; `parse_cobj` / `parse_mgef` /
-        // `parse_eczn` did not and needed the parameter added.
-        ("items.rs", include_str!("items.rs"), "parse_weap"),
-        ("items.rs", include_str!("items.rs"), "parse_ammo"),
-        (
-            "misc/equipment.rs",
-            include_str!("misc/equipment.rs"),
-            "parse_cobj",
-        ),
-        (
-            "misc/magic.rs",
-            include_str!("misc/magic.rs"),
-            "parse_perk",
-        ),
-        (
-            "misc/magic.rs",
-            include_str!("misc/magic.rs"),
-            "parse_mgef",
-        ),
-        (
-            "misc/world.rs",
-            include_str!("misc/world.rs"),
-            "parse_eczn",
-        ),
-        // #4066 — CLMT.WLST holds the worldspace weather table's WTHR
-        // FormIDs. `parse_clmt` never took `remap` at all, and was never
-        // named here, so neither this guard nor #3400/#3401/#3714/#3715
-        // could see it. Every shipped DLC master authors these as
-        // self-references with a non-zero mod index.
-        ("climate.rs", include_str!("climate.rs"), "parse_clmt"),
-    ];
-    for (file, source, parser) in sources {
-        match parser_signature_takes_remap(source, parser) {
-            Ok(true) => {}
-            Ok(false) => panic!(
-                "{file}::{parser} reads embedded FormIDs and must take the \
-                 load-order remap (#3400 / #3401 / #3715)",
-            ),
-            Err(reason) => panic!("{file} {reason}"),
+/// Every `pub fn parse_*` in `records/`, discovered by walking the
+/// directory at test time. Returns `(file, parser, signature, body)`.
+///
+/// #4069 — the walk is the point. The guard this replaced fed itself a
+/// hardcoded list of `(file, parser)` pairs, so a parser nobody
+/// remembered to add was invisible to it; that is exactly how
+/// `parse_clmt` (#4066), `parse_wthr`, `parse_scpt` (#4069),
+/// `parse_spel`, `parse_ench` and `parse_mesg` (#4071) each shipped an
+/// unremapped cross-reference *after* #3400, #3401, #3714 and #3715 had
+/// all supposedly closed this class. A list cannot detect the drift it
+/// was written to prevent. `include_str!` is deliberately not used: it
+/// needs literal paths, which would reintroduce a hand-maintained file
+/// list one level down.
+fn all_record_parsers() -> Vec<(String, String, String, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("records/ is readable") {
+            let path = entry.expect("readable dir entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_some_and(|f| f != "tests.rs")
+            {
+                out.push(path);
+            }
         }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/esm/records");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+    assert!(
+        files.len() > 20,
+        "records/ walk found only {} files — the walk is broken, not the tree",
+        files.len()
+    );
+
+    let mut found = Vec::new();
+    for path in files {
+        let src = std::fs::read_to_string(&path).expect("source is readable");
+        // Fixtures in a `#[cfg(test)]` module are not production decoders.
+        // Excise each test module by brace-matching it rather than
+        // truncating the file at the first `#[cfg(test)]`: a truncating
+        // strip hides every production parser defined *below* a test
+        // module, which is a blind spot of exactly the kind this guard
+        // exists to remove. Caught by the probe in
+        // `guard_fires_on_an_unlisted_new_parser`.
+        let prod = strip_test_modules(&src);
+        let rel = path
+            .strip_prefix(&root)
+            .expect("under records/")
+            .to_string_lossy()
+            .into_owned();
+        let prod = prod.as_str();
+        for vis in [
+            "pub fn parse_",
+            "pub(crate) fn parse_",
+            "pub(super) fn parse_",
+        ] {
+            let mut from = 0;
+            while let Some(rel_at) = prod[from..].find(vis) {
+                let at = from + rel_at;
+                from = at + vis.len();
+                let name_start = at + vis.len() - "parse_".len();
+                let Some(paren) = prod[name_start..].find('(') else {
+                    continue;
+                };
+                let name = prod[name_start..name_start + paren].trim().to_string();
+                if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    continue;
+                }
+                // Signature spans to the `{` that opens the body.
+                let Some(brace_rel) = prod[at..].find(" {") else {
+                    continue;
+                };
+                let body_start = at + brace_rel + 1;
+                let signature = prod[at..body_start].to_string();
+                // Brace-match the body.
+                let bytes = prod.as_bytes();
+                let (mut depth, mut i, mut end) = (0usize, body_start, prod.len());
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                found.push((
+                    rel.clone(),
+                    name,
+                    signature,
+                    prod[body_start..end].to_string(),
+                ));
+            }
+        }
+    }
+    found
+}
+
+/// Does this signature declare the load-order remap? Accepts the
+/// fully-qualified spelling too.
+///
+/// #4069 — the predecessor matched the literal string
+/// `"remap: &Option<FormIdRemap>"`, so `parse_dial`, `parse_info` and
+/// `parse_pack` — which spell it `&Option<crate::esm::reader::FormIdRemap>`
+/// and are entirely correct — would have *failed* the guard had anyone
+/// added them to its list. A guard that rejects correct code is how a
+/// guard gets narrowed until it stops guarding.
+fn signature_declares_remap(signature: &str) -> bool {
+    let Some(at) = signature.find("remap:") else {
+        return false;
+    };
+    let rest = &signature[at..];
+    let Some(open) = rest.find("&Option<") else {
+        return false;
+    };
+    let Some(close) = rest[open..].find('>') else {
+        return false;
+    };
+    rest[open..open + close].trim_end().ends_with("FormIdRemap")
+}
+
+/// The u32-read idioms a FormID can arrive through in this crate.
+fn reads_u32(body: &str) -> bool {
+    body.contains("u32::from_le_bytes")
+        || body.contains("read_u32_sub")
+        || body.contains("read_sub::<")
+        || body
+            .match_indices(".u32")
+            .any(|(i, _)| body[i..].starts_with(".u32(") || body[i..].starts_with(".u32_"))
+}
+
+/// Parsers that decode **no** u32 at all from sub-record data. The guard
+/// verifies that claim mechanically, so adding any u32 read to one of
+/// these fails this test and forces a decision about whether the new
+/// field is a FormID. That is the half of the check the old allowlist
+/// could never do.
+const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
+    ("misc/equipment.rs", "parse_bptd"),
+    ("condition.rs", "parse_condition_list"),
+    ("misc/effects.rs", "parse_efsh"),
+    ("mod.rs", "parse_esm"),
+    ("mod.rs", "parse_esm_with_load_order"),
+    ("misc/effects.rs", "parse_expl"),
+    ("misc/character.rs", "parse_eyes"),
+    ("global.rs", "parse_glob"),
+    ("global.rs", "parse_gmst"),
+    ("misc/character.rs", "parse_hair"),
+    ("misc/character.rs", "parse_hdpt"),
+    ("misc/character.rs", "parse_idle"),
+    ("misc/world.rs", "parse_imgs"),
+    ("misc/effects.rs", "parse_imod"),
+    ("misc/effects.rs", "parse_ipct"),
+    ("misc/effects.rs", "parse_ipds"),
+    ("misc/world.rs", "parse_lgtm"),
+    ("misc/equipment.rs", "parse_minimal_esm_record"),
+    ("mswp.rs", "parse_mswp"),
+    ("pathgrid.rs", "parse_pgrd"),
+    ("script_instance.rs", "parse_quest_fragments"),
+    ("misc/effects.rs", "parse_repu"),
+    ("script_instance.rs", "parse_scene_fragments"),
+    ("misc/equipment.rs", "parse_slgm"),
+    ("soun.rs", "parse_soun"),
+];
+
+/// Parsers that *do* read u32s but still take no remap, each with the
+/// hand-audited reason why that is correct. This list is deliberately
+/// short and every entry costs a human decision — that is the point.
+const EXEMPT_JUSTIFIED: &[(&str, &str, &str)] = &[
+    (
+        "actor/mod.rs",
+        "parse_clas",
+        "CLAS DATA is attribute/specialization/skill *indices* and a flag \
+         word — ordinals into a fixed roster, not FormIDs. See CHARAL's \
+         AVIF handling for where the ids actually come from.",
+    ),
+    (
+        "misc/character.rs",
+        "parse_csty",
+        "CSTD's only u32 is `csty_flags`, a bitfield.",
+    ),
+    (
+        "condition.rs",
+        "parse_ctda",
+        "The post-pass idiom: `parse_ctda` is the raw decoder and is never \
+         a walker's entry point. `push_ctda` owns the remap and runs \
+         `remap_condition_form_ids` over the decoded Condition — which is \
+         what remaps `reference_form_id`, a `Use Global` comparand and \
+         `param_1`. A function-scoped read scan reports this as a false \
+         positive; see #3715's note and `parse_regn`/`parse_navm`.",
+    ),
+    (
+        "gras.rs",
+        "parse_gras",
+        "GRAS DATA's u32 is `water_distance_application`, an enum tag.",
+    ),
+    (
+        "misc/imagespace.rs",
+        "parse_imad",
+        "IMAD DNAM's u32 is an animatable-field flag word.",
+    ),
+    (
+        "misc/world.rs",
+        "parse_navi",
+        "NAVI NVER's u32 is a format version number.",
+    ),
+    (
+        "script_instance.rs",
+        "parse_with_consumed",
+        "The raw half of a two-variant decoder, and an associated fn on \
+         ScriptInstanceData rather than a dispatch-level record parser. \
+         VMAD Object-property FormIDs are remapped by `parse_with_remap`, \
+         which is what the production walkers call (`common.rs`'s \
+         CommonNamedFields and `misc/quest.rs`). The two in-file uses of \
+         this variant discard the parsed properties entirely and keep only \
+         the consumed-length boundary for fragment decoding.",
+    ),
+    (
+        "misc/effects.rs",
+        "parse_proj",
+        "PROJ DATA's u32 is a flag word; the record's FormID-bearing \
+         fields are not decoded yet, so `EXEMPT_NO_U32_READS`'s mechanical \
+         check would not cover it.",
+    ),
+];
+
+/// **The inversion (#4069).** Every record parser must take the
+/// load-order remap, or appear in one of the two exemption tables above
+/// with a reason. The default is "must remap"; an exemption costs a
+/// deliberate edit and a written justification.
+///
+/// What this catches that the old allowlist could not: a *new* parser,
+/// or one nobody thought to list. What it still cannot catch: a parser
+/// that takes `remap` and then forgets to apply it on one arm — that was
+/// `parse_perk`'s `EPFD` (#4069), and it is guarded separately by
+/// [`parsers_that_take_a_remap_actually_use_it`] below. Say what a guard
+/// does not cover, or the next audit rediscovers it as a surprise.
+#[test]
+fn every_record_parser_takes_a_remap_or_is_explicitly_exempt() {
+    let parsers = all_record_parsers();
+    assert!(
+        parsers.len() > 60,
+        "expected the whole records/ parser surface, found {}",
+        parsers.len()
+    );
+
+    let no_u32: std::collections::HashSet<_> = EXEMPT_NO_U32_READS.iter().copied().collect();
+    let justified: std::collections::HashSet<_> =
+        EXEMPT_JUSTIFIED.iter().map(|(f, p, _)| (*f, *p)).collect();
+
+    let mut missing = Vec::new();
+    let mut broke_no_u32 = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for (file, parser, signature, body) in &parsers {
+        let key = (file.as_str(), parser.as_str());
+        seen.insert((file.clone(), parser.clone()));
+        if signature_declares_remap(signature) {
+            continue;
+        }
+        if no_u32.contains(&key) {
+            if reads_u32(body) {
+                broke_no_u32.push(format!("{file}::{parser}"));
+            }
+            continue;
+        }
+        if justified.contains(&key) {
+            continue;
+        }
+        missing.push(format!("{file}::{parser}"));
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these record parsers neither take `remap: &Option<FormIdRemap>` nor \
+         carry an exemption:\n  {}\n\nA parser that reads a cross-record \
+         FormID MUST take the remap (see #4066 / #4069 / #4070 / #4071). If \
+         it genuinely reads none, add it to EXEMPT_NO_U32_READS; if it reads \
+         u32s that are not FormIDs, add it to EXEMPT_JUSTIFIED with the \
+         reason.",
+        missing.join("\n  ")
+    );
+    assert!(
+        broke_no_u32.is_empty(),
+        "these parsers are listed in EXEMPT_NO_U32_READS but now read a u32 \
+         from sub-record data:\n  {}\n\nDecide whether the new field is a \
+         cross-record FormID. If it is, thread `remap` and wrap the read in \
+         `remap_fid`. If it is not, move the entry to EXEMPT_JUSTIFIED with \
+         the reason.",
+        broke_no_u32.join("\n  ")
+    );
+
+    // A stale exemption is how the old allowlist rotted: entries outlived
+    // the code they described and nobody noticed.
+    let all_exemptions = EXEMPT_NO_U32_READS
+        .iter()
+        .map(|(f, p)| (*f, *p))
+        .chain(EXEMPT_JUSTIFIED.iter().map(|(f, p, _)| (*f, *p)));
+    for (file, parser) in all_exemptions {
+        assert!(
+            seen.contains(&(file.to_string(), parser.to_string())),
+            "stale exemption: {file}::{parser} no longer exists — remove it"
+        );
+    }
+    for (_, parser, reason) in EXEMPT_JUSTIFIED {
+        assert!(
+            reason.len() > 30,
+            "{parser}'s exemption reason is too thin to be a justification"
+        );
     }
 }
 
-/// #3715 — the guard above is only as trustworthy as
-/// [`parser_signature_takes_remap`]'s own detection logic. Exercise it
-/// directly against a synthetic "before the fix" signature (proving it
-/// would have caught the exact regression #3715 fixed) and a synthetic
-/// "after the fix" signature (proving it doesn't false-positive on a
-/// correct one), rather than only ever seeing it pass against real,
-/// already-fixed sources.
+/// The guards above are only as trustworthy as their three pure helpers,
+/// so exercise each directly with a passing AND a failing case. #3715's
+/// predecessor test made this point and it still holds: a detector that
+/// has only ever been run against already-correct sources proves nothing.
+/// Every case below was an actual defect during #4069's implementation,
+/// not a hypothetical.
 #[test]
-fn parser_signature_takes_remap_detects_a_missing_remap_param() {
-    let before_fix = "pub fn parse_cobj(form_id: u32, subs: &[SubRecord]) -> CobjRecord {";
-    assert_eq!(
-        parser_signature_takes_remap(before_fix, "parse_cobj"),
-        Ok(false),
-        "a signature with no remap parameter must be detected as missing one"
-    );
+fn guard_helpers_detect_what_they_claim_to() {
+    // --- signature_declares_remap ---
+    assert!(!signature_declares_remap(
+        "pub fn parse_clmt(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClimateRecord {"
+    ));
+    assert!(signature_declares_remap(
+        "pub fn parse_clmt(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> C {"
+    ));
+    // The fully-qualified spelling `parse_dial` / `parse_info` / `parse_pack`
+    // actually use. The predecessor matched a literal string and would have
+    // rejected all three as missing the parameter.
+    assert!(signature_declares_remap(
+        "pub fn parse_dial(f: u32, s: &[SubRecord], remap: &Option<crate::esm::reader::FormIdRemap>) -> D {"
+    ));
+    // A same-named parameter of a different type must not satisfy it.
+    assert!(!signature_declares_remap(
+        "pub fn parse_x(remap: &Option<SomethingElse>) -> X {"
+    ));
 
-    let after_fix = "pub fn parse_cobj(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> CobjRecord {";
-    assert_eq!(
-        parser_signature_takes_remap(after_fix, "parse_cobj"),
-        Ok(true),
-        "a signature with the remap parameter must be detected as present"
-    );
-
+    // --- strip_test_modules ---
+    // Block form: the module goes, the code after it stays.
+    let block = "pub fn parse_a() {}\n#[cfg(test)]\nmod tests { fn t() {} }\npub fn parse_b() {}\n";
+    let s = strip_test_modules(block);
+    assert!(s.contains("parse_a") && s.contains("parse_b"), "{s}");
+    assert!(!s.contains("fn t()"), "{s}");
+    // Block-LESS form (`gras.rs`, `mod.rs`, `actor/mod.rs`). Looking for
+    // `{` before `;` here brace-matches into the *next* function and eats
+    // it — the bug that let an unlisted probe parser pass this guard.
+    let declless =
+        "#[cfg(test)]\n#[path = \"g_tests.rs\"]\nmod tests;\npub fn parse_below() -> G { g() }\n";
+    let s = strip_test_modules(declless);
     assert!(
-        parser_signature_takes_remap(before_fix, "parse_nonexistent").is_err(),
-        "a parser name absent from the source must report an error, not a \
-         false negative that would silently pass the real guard"
+        s.contains("parse_below"),
+        "a parser defined below a block-less `mod tests;` must stay visible: {s}"
+    );
+
+    // --- reads_u32 ---
+    assert!(reads_u32("let v = u32::from_le_bytes(b);"));
+    assert!(reads_u32("let v = r.u32_or_default();"));
+    assert!(reads_u32("let v = r.u32();"));
+    assert!(reads_u32("read_sub::<MagicEffectHeader>(sub)"));
+    assert!(!reads_u32(
+        "let v = r.u16_or_default(); let w = r.f32_or_default();"
+    ));
+    // `.u32` as a prefix of an unrelated identifier must not count.
+    assert!(!reads_u32("let v = cfg.u32max;"));
+}
+
+/// The second blind spot (#4069): `parse_perk` held `remap` and used it
+/// for `PRKE`'s quest/spell ids, but built the `EPFD` function-type-4
+/// payload raw. A parser that declares the parameter and never calls
+/// `remap_fid` (or forwards it) is either dead weight or a bug.
+#[test]
+fn parsers_that_take_a_remap_actually_use_it() {
+    let mut unused = Vec::new();
+    for (file, parser, signature, body) in all_record_parsers() {
+        if !signature_declares_remap(&signature) {
+            continue;
+        }
+        let uses = body.contains("remap_fid(")
+            || body.contains("remap)")
+            || body.contains("remap,")
+            || body.contains("remap.")
+            || body.contains(".remap(");
+        if !uses {
+            unused.push(format!("{file}::{parser}"));
+        }
+    }
+    assert!(
+        unused.is_empty(),
+        "these parsers declare `remap` but never use it:\n  {}",
+        unused.join("\n  ")
     );
 }
 

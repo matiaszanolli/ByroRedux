@@ -18,14 +18,21 @@ pub(super) fn dispatch_misc_gameplay_a_group(
 ) -> Result<()> {
     match label {
         // Weather records — sky colors, fog, wind, clouds.
-        b"WTHR" => extract_records(reader, end, b"WTHR", &mut |fid, subs| {
-            // `game` threaded through (#539 / M33-07) — Skyrim WTHR
-            // has a different sub-record schema and the FNV-only
-            // arm needs gating so a 320-B Skyrim NAM0 doesn't get
-            // truncated to "first 240 B = FNV colours" silently
-            // once M32.5 routes Skyrim.esm through this dispatch.
-            index.weathers.insert(fid, parse_wthr(fid, subs, game));
-        })?,
+        b"WTHR" => {
+            // #4069 — the Skyrim path's MNAM/NNAM are SPGD/RFCT
+            // cross-references and need the load-order remap.
+            let wthr_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"WTHR", &mut |fid, subs| {
+                // `game` threaded through (#539 / M33-07) — Skyrim WTHR
+                // has a different sub-record schema and the FNV-only
+                // arm needs gating so a 320-B Skyrim NAM0 doesn't get
+                // truncated to "first 240 B = FNV colours" silently
+                // once M32.5 routes Skyrim.esm through this dispatch.
+                index
+                    .weathers
+                    .insert(fid, parse_wthr(fid, subs, game, &wthr_remap));
+            })?
+        }
         // Climate records — weather probability tables. The WLST
         // entry size dispatches off `game` (M33-08 / #540) so
         // multi-of-3-entry Oblivion CLMTs don't autodetect to the
@@ -47,9 +54,16 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         // fell through to the catch-all skip and every NPC / item
         // SCRI cross-reference dangled. Runtime execution is out
         // of scope for this fix — extraction only.
-        b"SCPT" => extract_records(reader, end, b"SCPT", &mut |fid, subs| {
-            index.scripts.insert(fid, parse_scpt(fid, subs));
-        })?,
+        b"SCPT" => {
+            // #4069 — SCRO carries object cross-references. (SCRV is a
+            // variable index, not a FormID, and is deliberately left raw.)
+            let scpt_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"SCPT", &mut |fid, subs| {
+                index
+                    .scripts
+                    .insert(fid, parse_scpt(fid, subs, &scpt_remap));
+            })?
+        }
         // Supplementary records previously catch-all-skipped (#458).
         // Stubs capture EDID + form refs + scalar fields; full
         // per-record decoding lands with the consuming subsystem.
@@ -164,9 +178,15 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         // every INFO. The dedicated walker below threads both
         // record types through. See #631 / #447.
         b"DIAL" => extract_dial_with_info(reader, end, &mut index.dialogues)?,
-        b"MESG" => extract_records(reader, end, b"MESG", &mut |fid, subs| {
-            index.messages.insert(fid, parse_mesg(fid, subs));
-        })?,
+        b"MESG" => {
+            // #4071 — QNAM ties the message to a QUST; cross-record.
+            let mesg_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"MESG", &mut |fid, subs| {
+                index
+                    .messages
+                    .insert(fid, parse_mesg(fid, subs, &mesg_remap));
+            })?
+        }
         b"PERK" => {
             // Entry CTDA params are plugin-local FormIDs; remap to global
             // (#1666) so `HasPerk` / `GetIsID` compare in the same space as

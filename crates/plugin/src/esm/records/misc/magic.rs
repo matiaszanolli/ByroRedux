@@ -273,11 +273,7 @@ enum PerkBlock {
     },
 }
 
-pub fn parse_perk(
-    form_id: u32,
-    subs: &[SubRecord],
-    remap: &Option<FormIdRemap>,
-) -> PerkRecord {
+pub fn parse_perk(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> PerkRecord {
     let mut out = PerkRecord {
         form_id,
         ..Default::default()
@@ -412,9 +408,14 @@ pub fn parse_perk(
                             min: f32::from_le_bytes([d[0], d[1], d[2], d[3]]),
                             max: f32::from_le_bytes([d[4], d[5], d[6], d[7]]),
                         },
-                        4 if d.len() >= 4 => {
-                            PerkFunctionData::FormId(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
-                        }
+                        // #4069 — function_type 4 is a genuine cross-record
+                        // FormID and needs the load-order remap. Type 5
+                        // below is an lstring *index*, not a FormID, and
+                        // must NOT be remapped.
+                        4 if d.len() >= 4 => PerkFunctionData::FormId(remap_fid(
+                            u32::from_le_bytes([d[0], d[1], d[2], d[3]]),
+                            remap,
+                        )),
                         5 if d.len() >= 4 => {
                             PerkFunctionData::LString(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
                         }
@@ -533,10 +534,13 @@ impl MagicEffectAccumulator {
     ///
     /// Short sub-records are skipped without disturbing the latch, matching
     /// the length guards the two hand-rolled copies carried.
-    fn feed(&mut self, sub: &SubRecord) {
+    fn feed(&mut self, sub: &SubRecord, remap: &Option<FormIdRemap>) {
         match &sub.sub_type {
             b"EFID" if sub.data.len() >= 4 => {
-                self.pending_efid = SubReader::new(&sub.data).u32_or_default();
+                // #4071 — EFID is an MGEF cross-reference. Remapped at the
+                // latch so every caller of this accumulator inherits it
+                // rather than each re-deriving the rule.
+                self.pending_efid = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             b"EFIT" if sub.data.len() >= 12 && self.pending_efid != 0 => {
                 let Ok(header) = read_sub::<EffectItemHeader>(sub) else {
@@ -573,7 +577,7 @@ pub struct SpelRecord {
     pub effects: Vec<MagicEffectItem>,
 }
 
-pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
+pub fn parse_spel(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> SpelRecord {
     let mut out = SpelRecord {
         form_id,
         ..Default::default()
@@ -594,7 +598,7 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
                     out.spell_flags = header.spell_flags;
                 }
             }
-            b"EFID" | b"EFIT" => effects.feed(sub),
+            b"EFID" | b"EFIT" => effects.feed(sub, remap),
             _ => {}
         }
     }
@@ -671,13 +675,17 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 if let Ok(header) = read_sub::<MagicEffectHeader>(sub) {
                     out.effect_flags = header.effect_flags;
                     out.base_cost = header.base_cost;
-                    out.associated_item = header.associated_item;
+                    // #4070 — DATA @8. An ITEM/WEAP cross-reference, the
+                    // same kind of embedded FormID as light_form_id @24
+                    // below; #3715 remapped only that one.
+                    out.associated_item = remap_fid(header.associated_item, remap);
                     out.magic_school = header.magic_school;
                     out.resistance_av = header.resistance_av;
                     // #3715 — embedded light-effect FormID.
                     out.light_form_id = remap_fid(header.light_form_id, remap);
                     out.projectile_speed = header.projectile_speed;
-                    out.effect_shader_id = header.effect_shader_id;
+                    // #4070 — DATA @32, an EFSH cross-reference.
+                    out.effect_shader_id = remap_fid(header.effect_shader_id, remap);
                 }
             }
             _ => {}
@@ -718,7 +726,7 @@ pub struct EnchRecord {
     pub effects: Vec<MagicEffectItem>,
 }
 
-pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
+pub fn parse_ench(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> EnchRecord {
     let mut out = EnchRecord {
         form_id,
         ..Default::default()
@@ -742,7 +750,7 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
                     out.enchant_flags = header.enchant_flags;
                 }
             }
-            b"EFID" | b"EFIT" => effects.feed(sub),
+            b"EFID" | b"EFIT" => effects.feed(sub, remap),
             _ => {}
         }
     }
@@ -956,7 +964,7 @@ mod tests {
         spit.extend_from_slice(&[0u8; 8]); // padding to flags offset
         spit.extend_from_slice(&0x0000_0004u32.to_le_bytes()); // flags
         let subs = vec![sub(b"EDID", b"Fireball\0"), sub(b"SPIT", &spit)];
-        let s = parse_spel(0xF6F6, &subs);
+        let s = parse_spel(0xF6F6, &subs, &None);
         assert_eq!(s.cost, 42);
         assert_eq!(s.spell_flags, 0x0000_0004);
     }
@@ -978,7 +986,7 @@ mod tests {
             sub(b"FULL", b"Pulse\0"),
             sub(b"ENIT", &enit),
         ];
-        let e = parse_ench(0x000E_5C77, &subs);
+        let e = parse_ench(0x000E_5C77, &subs, &None);
         assert_eq!(e.editor_id, "PulseEnchant");
         assert_eq!(e.full_name, "Pulse");
         assert_eq!(e.enchantment_type, 2);
@@ -1001,7 +1009,7 @@ mod tests {
         enit.extend_from_slice(&3u32.to_le_bytes()); // Skyrim cast_type
         assert_eq!(enit.len(), 20);
         let subs = vec![sub(b"EDID", b"FireDmg\0"), sub(b"ENIT", &enit)];
-        let e = parse_ench(0x0001_F25D, &subs);
+        let e = parse_ench(0x0001_F25D, &subs, &None);
         assert_eq!(e.charge_amount, 50);
         assert_eq!(e.enchant_cost, 200);
     }
@@ -1012,7 +1020,7 @@ mod tests {
         // leave scalars at their defaults so the surrounding records
         // still load.
         let subs = vec![sub(b"EDID", b"BrokenEnchant\0"), sub(b"ENIT", &[0u8; 8])];
-        let e = parse_ench(0xDEAD_BEEF, &subs);
+        let e = parse_ench(0xDEAD_BEEF, &subs, &None);
         assert_eq!(e.editor_id, "BrokenEnchant");
         assert_eq!(e.enchantment_type, 0);
         assert_eq!(e.charge_amount, 0);
@@ -1226,7 +1234,7 @@ mod tests {
             sub(b"EFID", &0xBBBBu32.to_le_bytes()),
             sub(b"EFIT", &efit2),
         ];
-        let s = parse_spel(0x6666, &subs);
+        let s = parse_spel(0x6666, &subs, &None);
         assert_eq!(s.effects.len(), 2);
         assert_eq!(s.effects[0].effect_form_id, 0xAAAA);
         assert_eq!(s.effects[0].magnitude, 5.0);
@@ -1254,7 +1262,7 @@ mod tests {
             sub(b"EFID", &0x1234u32.to_le_bytes()),
             sub(b"EFIT", &efit),
         ];
-        let e = parse_ench(0x7777, &subs);
+        let e = parse_ench(0x7777, &subs, &None);
         assert_eq!(e.effects.len(), 1);
         assert_eq!(e.effects[0].effect_form_id, 0x1234);
         assert_eq!(e.effects[0].magnitude, 1.5);
@@ -1278,7 +1286,7 @@ mod tests {
             sub(b"SPIT", &spit),
             sub(b"EFIT", &efit), // EFIT without prior EFID
         ];
-        let s = parse_spel(0x8888, &subs);
+        let s = parse_spel(0x8888, &subs, &None);
         assert!(s.effects.is_empty());
     }
 
@@ -1307,7 +1315,7 @@ mod tests {
             sub(b"EFIT", &efit),
             sub(b"EFIT", &efit), // no intervening EFID — must be dropped
         ];
-        let s = parse_spel(0x9999, &subs);
+        let s = parse_spel(0x9999, &subs, &None);
         assert_eq!(s.effects.len(), 1, "the consumed EFID must not re-bind");
         assert_eq!(s.effects[0].effect_form_id, 0xCAFE);
 
@@ -1321,7 +1329,7 @@ mod tests {
             sub(b"EFIT", &efit),
             sub(b"EFIT", &efit),
         ];
-        let e = parse_ench(0x9998, &subs);
+        let e = parse_ench(0x9998, &subs, &None);
         assert_eq!(e.effects.len(), 1);
         assert_eq!(e.effects[0].effect_form_id, 0xBEEF);
     }

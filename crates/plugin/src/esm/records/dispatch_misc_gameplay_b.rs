@@ -20,13 +20,15 @@ pub(super) fn dispatch_misc_gameplay_b_group(
     let remap = reader.get_form_id_remap();
     match label {
         b"SPEL" => extract_records(reader, end, b"SPEL", &mut |fid, subs| {
-            index.spells.insert(fid, parse_spel(fid, subs));
+            index.spells.insert(fid, parse_spel(fid, subs, &remap));
         })?,
         // ENCH enchantments (#629 / FNV-D2-01). Same scaffolding as
         // SPEL — ENIT carries type/charge/cost/flags; full effect
         // chain decoding lands with MGEF application.
         b"ENCH" => extract_records(reader, end, b"ENCH", &mut |fid, subs| {
-            index.enchantments.insert(fid, parse_ench(fid, subs));
+            index
+                .enchantments
+                .insert(fid, parse_ench(fid, subs, &remap));
         })?,
         // #3715 — DATA carries an embedded light-effect FormID.
         b"MGEF" => extract_records(reader, end, b"MGEF", &mut |fid, subs| {

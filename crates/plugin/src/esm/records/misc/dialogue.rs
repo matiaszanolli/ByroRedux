@@ -2,7 +2,7 @@
 
 use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ComparisonOp, ConditionList, ConditionValue, RunOn};
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// `DIAL` dialogue topic record. Parent of INFO dialogue lines (which
@@ -521,7 +521,7 @@ pub struct MesgRecord {
     pub owner_quest: u32,
 }
 
-pub fn parse_mesg(form_id: u32, subs: &[SubRecord]) -> MesgRecord {
+pub fn parse_mesg(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> MesgRecord {
     let mut out = MesgRecord {
         form_id,
         ..Default::default()
@@ -536,8 +536,10 @@ pub fn parse_mesg(form_id: u32, subs: &[SubRecord]) -> MesgRecord {
     for sub in subs {
         match &sub.sub_type {
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
+            // #4071 — QNAM is a QUST cross-reference and needs the
+            // load-order remap.
             b"QNAM" if sub.data.len() >= 4 => {
-                out.owner_quest = SubReader::new(&sub.data).u32_or_default();
+                out.owner_quest = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             _ => {}
         }
@@ -600,7 +602,7 @@ mod tests {
             sub(b"DESC", b"You cannot fast travel right now.\0"),
             sub(b"QNAM", &0x0002_1234u32.to_le_bytes()),
         ];
-        let m = parse_mesg(0xD4D4, &subs);
+        let m = parse_mesg(0xD4D4, &subs, &None);
         assert_eq!(m.description, "You cannot fast travel right now.");
         assert_eq!(m.owner_quest, 0x0002_1234);
     }

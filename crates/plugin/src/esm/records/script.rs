@@ -20,8 +20,8 @@
 //! UESP. Skyrim+ uses `VMAD` instead (Papyrus attached data) — different
 //! layout, tracked via `CommonItemFields.has_script`.
 
-use super::common::read_zstring;
-use crate::esm::reader::SubRecord;
+use super::common::{read_zstring, remap_fid};
+use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// Script type byte (from `SCHR.script_type`). Values come from the
@@ -95,9 +95,21 @@ pub struct ScriptRecord {
     pub source: Option<String>,
     /// Local-var metadata from `SLSD` + `SCVR` pairs, in source order.
     pub locals: Vec<ScriptLocalVar>,
-    /// Cross-record FormIDs the script references (`SCRV` numeric vars
-    /// + `SCRO` object refs). Each entry is one u32 FormID.
+    /// Cross-record object FormIDs the script references (`SCRO`), in
+    /// global space. Each entry is one u32 FormID.
+    ///
+    /// #4069 — `SCRV` used to be appended here too, on the strength of a
+    /// comment calling it a FormID. It is not: a census of `FalloutNV.esm`
+    /// found all 1 554 `SCRV` payloads are small ordinals (0x01, 0x02,
+    /// 0x0B, 0x18, 0x19 …) while all 35 392 `SCRO` payloads are real
+    /// object ids (0x0009_6BCE, 0x0012_9A3A …). `SCRV` is a
+    /// reference-**variable index**, so it must never be load-order
+    /// remapped — doing so would turn index 0x18 into a bogus FormID.
+    /// The two spaces are kept apart so a consumer cannot confuse them.
     pub ref_form_ids: Vec<u32>,
+    /// Reference-variable indices from `SCRV` — script-local ordinals,
+    /// **not** FormIDs and never remapped. See `ref_form_ids`.
+    pub ref_var_indices: Vec<u32>,
 }
 
 /// Parse a SCPT record from its sub-records.
@@ -107,7 +119,7 @@ pub struct ScriptRecord {
 /// policy. The declared counts on `SCHR` (`num_refs`, `var_count`) are
 /// preserved as-is so downstream consumers can diff against
 /// `ref_form_ids.len()` / `locals.len()` to detect a truncated file.
-pub fn parse_scpt(form_id: u32, subs: &[SubRecord]) -> ScriptRecord {
+pub fn parse_scpt(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ScriptRecord {
     let mut record = ScriptRecord {
         form_id,
         ..ScriptRecord::default()
@@ -180,18 +192,20 @@ pub fn parse_scpt(form_id: u32, subs: &[SubRecord]) -> ScriptRecord {
                     );
                 }
             }
-            // SCRV: numeric cross-record refs (local var referencing a
-            // script-owned variable). u32 FormID per entry.
+            // SCRV: reference-variable index — a script-local ordinal,
+            // NOT a FormID (#4069, verified by census; see the
+            // `ref_var_indices` docstring). Never remapped.
             b"SCRV" if sub.data.len() >= 4 => {
-                if let Ok(fid) = SubReader::new(&sub.data).u32() {
-                    record.ref_form_ids.push(fid);
+                if let Ok(idx) = SubReader::new(&sub.data).u32() {
+                    record.ref_var_indices.push(idx);
                 }
             }
-            // SCRO: object cross-record refs (bytecode literal). u32
-            // FormID per entry.
+            // SCRO: object cross-record refs (bytecode literal). A real
+            // u32 FormID per entry, so it takes the load-order remap
+            // (#4069).
             b"SCRO" if sub.data.len() >= 4 => {
                 if let Ok(fid) = SubReader::new(&sub.data).u32() {
-                    record.ref_form_ids.push(fid);
+                    record.ref_form_ids.push(remap_fid(fid, remap));
                 }
             }
             _ => {}
@@ -260,7 +274,7 @@ mod tests {
             sub(b"SCRO", 0x1000_0002u32.to_le_bytes().to_vec()),
         ];
 
-        let rec = parse_scpt(0xBEEF_1234, &subs);
+        let rec = parse_scpt(0xBEEF_1234, &subs, &None);
         assert_eq!(rec.form_id, 0xBEEF_1234);
         assert_eq!(rec.editor_id, "MegatonDoorScript");
         assert_eq!(rec.num_refs, 3);
@@ -277,10 +291,44 @@ mod tests {
         assert_eq!(rec.locals[0].name, "iDoorOpen");
         assert_eq!(rec.locals[0].var_type, 2);
         assert_eq!(rec.locals[1].name, "sDoorState");
-        assert_eq!(rec.ref_form_ids.len(), 3);
+        // #4069 — SCRO object references and SCRV variable indices are
+        // two different spaces and no longer share a vector. The fixture
+        // feeds two SCRO (0xCAFEBABE, 0x1000_0002) and one SCRV
+        // (0x1000_0001).
+        assert_eq!(rec.ref_form_ids.len(), 2);
         assert!(rec.ref_form_ids.contains(&0xCAFEBABE));
-        assert!(rec.ref_form_ids.contains(&0x1000_0001));
         assert!(rec.ref_form_ids.contains(&0x1000_0002));
+        assert_eq!(rec.ref_var_indices, vec![0x1000_0001]);
+    }
+
+    /// #4069 — `SCRO` is an object cross-reference and takes the
+    /// load-order remap; `SCRV` is a script-local reference-**variable
+    /// index** and must survive untouched. A census of `FalloutNV.esm`
+    /// settled which is which: all 1 554 `SCRV` payloads are small
+    /// ordinals (0x01, 0x02, 0x0B, 0x18, 0x19 …), all 35 392 `SCRO`
+    /// payloads are real object ids (0x0009_6BCE, 0x0012_9A3A …).
+    /// Remapping an index would fabricate a FormID out of a loop counter.
+    #[test]
+    fn parse_scpt_remaps_scro_but_never_scrv() {
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        let subs = vec![
+            // mod_index 1 == this plugin's own MASTERS position: a
+            // self-referencing object ref.
+            sub(b"SCRO", 0x0100_0ABCu32.to_le_bytes().to_vec()),
+            // A variable index, in the shape real FNV data ships.
+            sub(b"SCRV", 0x0000_0018u32.to_le_bytes().to_vec()),
+        ];
+        let rec = parse_scpt(0x0200_0001, &subs, &Some(remap));
+        assert_eq!(
+            rec.ref_form_ids,
+            vec![0x0200_0ABC],
+            "SCRO must land on the plugin's own global slot"
+        );
+        assert_eq!(
+            rec.ref_var_indices,
+            vec![0x0000_0018],
+            "SCRV is a variable index and must never be remapped"
+        );
     }
 
     /// Missing `SCDA` / `SCTX` / `SCVR` sub-records must not crash the
@@ -295,7 +343,7 @@ mod tests {
         schr.extend_from_slice(&0u16.to_le_bytes()); // script_type = Object
         schr.extend_from_slice(&0u16.to_le_bytes()); // flags (u16) = 0
         let subs = vec![sub(b"EDID", b"TinyScript\0".to_vec()), sub(b"SCHR", schr)];
-        let rec = parse_scpt(0x0CAFEu32, &subs);
+        let rec = parse_scpt(0x0CAFEu32, &subs, &None);
         assert_eq!(rec.editor_id, "TinyScript");
         assert_eq!(rec.script_type, ScriptType::Object);
         assert!(rec.compiled.is_empty());
