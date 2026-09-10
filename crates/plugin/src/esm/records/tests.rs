@@ -2294,6 +2294,12 @@ fn record_parsers_with_embedded_form_ids_take_a_remap() {
             include_str!("misc/world.rs"),
             "parse_eczn",
         ),
+        // #4066 — CLMT.WLST holds the worldspace weather table's WTHR
+        // FormIDs. `parse_clmt` never took `remap` at all, and was never
+        // named here, so neither this guard nor #3400/#3401/#3714/#3715
+        // could see it. Every shipped DLC master authors these as
+        // self-references with a non-zero mod index.
+        ("climate.rs", include_str!("climate.rs"), "parse_clmt"),
     ];
     for (file, source, parser) in sources {
         match parser_signature_takes_remap(source, parser) {

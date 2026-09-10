@@ -30,9 +30,18 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         // entry size dispatches off `game` (M33-08 / #540) so
         // multi-of-3-entry Oblivion CLMTs don't autodetect to the
         // 12-byte FO3+ schema and mis-thread their FormID slots.
-        b"CLMT" => extract_records(reader, end, b"CLMT", &mut |fid, subs| {
-            index.climates.insert(fid, parse_clmt(fid, subs, game));
-        })?,
+        b"CLMT" => {
+            // #4066 — WLST carries cross-record WTHR FormIDs that need the
+            // same load-order remap as every other cross-reference. Hoisted
+            // ahead of `extract_records` because the closure borrows
+            // `reader` mutably, exactly as the `WATR` arm below does.
+            let clmt_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"CLMT", &mut |fid, subs| {
+                index
+                    .climates
+                    .insert(fid, parse_clmt(fid, subs, game, &clmt_remap));
+            })?
+        }
         // FO3 / FNV / Oblivion pre-Papyrus SCPT scripts — bytecode
         // blob + source text + local-var table. Pre-#443 the group
         // fell through to the catch-all skip and every NPC / item

@@ -4,8 +4,8 @@
 //! Each worldspace references one climate via CNAM; the climate lists
 //! the possible weathers with relative chances.
 
-use super::common::read_zstring;
-use crate::esm::reader::{GameKind, SubRecord};
+use super::common::{read_zstring, remap_fid};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// A weather entry in the climate's weather list.
@@ -50,7 +50,12 @@ pub struct ClimateRecord {
 /// (and the trailing entry's data straddling the buffer boundary).
 /// Vanilla Oblivion ships none, but DLC + OBSE weather mods plausibly
 /// cross into 6-entry territory. See M33-08 / #540.
-pub fn parse_clmt(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClimateRecord {
+pub fn parse_clmt(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> ClimateRecord {
     let mut record = ClimateRecord {
         form_id,
         ..ClimateRecord::default()
@@ -82,7 +87,14 @@ pub fn parse_clmt(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClimateRe
                     if let (Ok(fid), Ok(chance_bits)) = (r.u32(), r.u32()) {
                         if fid != 0 {
                             record.weathers.push(ClimateWeather {
-                                weather_form_id: fid,
+                                // #4066 — WLST weather ids are cross-record
+                                // references and must land in the same global
+                                // space `EsmIndex.weathers` is keyed in. Every
+                                // shipped DLC master authors these as
+                                // self-references with a non-zero mod index,
+                                // so leaving them raw resolved 100 % of them
+                                // to no weather.
+                                weather_form_id: remap_fid(fid, remap),
                                 // Reinterpret the 4-byte little-endian slot as
                                 // signed — UESP WLST schema says i32. See #476.
                                 chance: chance_bits as i32,
@@ -123,6 +135,71 @@ mod tests {
         }
     }
 
+    /// #4066 — `WLST` weather ids are cross-record references into
+    /// `EsmIndex.weathers`, which is keyed in **global** space (every
+    /// record's own FormID is remapped in `read_record_header`). Leaving
+    /// them raw meant a DLC-authored climate resolved to no weather at
+    /// all: the census over every shipped DLC master that authors a
+    /// `CLMT` found 100 % of `WLST` references are self-references with a
+    /// non-zero mod index (FO3 Anchorage/BrokenSteel/PointLookout/ThePitt,
+    /// FNV DeadMoney/HonestHearts/OldWorldBlues/LonesomeRoad, Skyrim
+    /// Dawnguard/Dragonborn, FO4 DLCCoast/DLCNukaWorld).
+    #[test]
+    fn parse_clmt_wlst_remaps_to_global_form_id_space() {
+        // A one-master DLC sitting at global slot 2 — the shape every
+        // plugin in the census has (`Dawnguard.esm` has two masters and
+        // behaves identically, one slot further along).
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+
+        // mod_index 1 == this plugin's own position in its own MASTERS
+        // list, i.e. a self-reference: a WTHR the DLC itself adds.
+        let self_ref: u32 = 0x0100_0ABC;
+        // mod_index 0 == the master's slot: a base-game WTHR.
+        let master_ref: u32 = 0x0000_0DEF;
+
+        let mut wlst = Vec::new();
+        for fid in [self_ref, master_ref] {
+            wlst.extend_from_slice(&fid.to_le_bytes());
+            wlst.extend_from_slice(&50i32.to_le_bytes());
+            wlst.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        let c = parse_clmt(
+            0x0200_0001,
+            &[make_sub(b"WLST", wlst)],
+            GameKind::Fallout3NV,
+            &Some(remap),
+        );
+
+        assert_eq!(
+            c.weathers[0].weather_form_id, 0x0200_0ABC,
+            "a self-referencing WLST entry must land on the plugin's own \
+             global slot, not keep its plugin-local mod index"
+        );
+        assert_eq!(
+            c.weathers[1].weather_form_id, master_ref,
+            "a master-slot reference (mod_index 0) already sits at slot 0"
+        );
+    }
+
+    /// The no-load-order path (a lone plugin parsed with `remap: &None`)
+    /// must leave ids byte-identical — `remap_fid` is a no-op there, and
+    /// every other test in this module relies on it.
+    #[test]
+    fn parse_clmt_wlst_without_a_remap_is_identity() {
+        let mut wlst = Vec::new();
+        wlst.extend_from_slice(&0x0100_0ABCu32.to_le_bytes());
+        wlst.extend_from_slice(&50i32.to_le_bytes());
+        wlst.extend_from_slice(&0u32.to_le_bytes());
+        let c = parse_clmt(
+            0x0200_0001,
+            &[make_sub(b"WLST", wlst)],
+            GameKind::Fallout3NV,
+            &None,
+        );
+        assert_eq!(c.weathers[0].weather_form_id, 0x0100_0ABC);
+    }
+
     #[test]
     fn parse_clmt_basic() {
         // Build a WLST with 2 weather entries (12-byte format: fid + chance + global).
@@ -141,7 +218,7 @@ mod tests {
             make_sub(b"TNAM", vec![6, 8, 18, 20, 0, 0]),
         ];
 
-        let c = parse_clmt(0xABCD, &subs, GameKind::Fallout3NV);
+        let c = parse_clmt(0xABCD, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(c.form_id, 0xABCD);
         assert_eq!(c.editor_id, "TestClimate");
         assert_eq!(c.weathers.len(), 2);
@@ -169,7 +246,7 @@ mod tests {
         wlst_data.extend_from_slice(&0u32.to_le_bytes());
 
         let subs = vec![make_sub(b"WLST", wlst_data)];
-        let c = parse_clmt(0xBEEF, &subs, GameKind::Fallout3NV);
+        let c = parse_clmt(0xBEEF, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(c.weathers.len(), 2);
         assert_eq!(c.weathers[0].chance, -1);
         assert_eq!(c.weathers[1].chance, 75);
@@ -204,7 +281,7 @@ mod tests {
         );
 
         let subs = vec![make_sub(b"WLST", wlst_data)];
-        let c = parse_clmt(0xCAFE, &subs, GameKind::Oblivion);
+        let c = parse_clmt(0xCAFE, &subs, GameKind::Oblivion, &None);
         assert_eq!(
             c.weathers.len(),
             3,
@@ -240,7 +317,7 @@ mod tests {
         assert_eq!(wlst_data.len(), 24);
 
         let subs = vec![make_sub(b"WLST", wlst_data)];
-        let c = parse_clmt(0xCAFF, &subs, GameKind::Fallout3NV);
+        let c = parse_clmt(0xCAFF, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(c.weathers.len(), 2);
         assert_eq!(c.weathers[0].weather_form_id, 0xAAAA_AAAA);
         assert_eq!(c.weathers[1].weather_form_id, 0xBBBB_BBBB);
