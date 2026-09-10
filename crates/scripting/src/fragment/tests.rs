@@ -324,6 +324,98 @@ fn failed_provider_barrier_aborts_its_native_fragment_tail() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0);
 }
 
+/// #3946 — at the barrier cap, the deepest tail must be declined
+/// *whole*, not applied-then-abandoned.
+///
+/// Each `ProviderCall` suspends the remainder of the effect list as a
+/// tail, so a `[call, SetStage(n)]` pattern gives one barrier per level
+/// with a committing effect at the head of each tail. That shape is what
+/// makes the bug observable: the old cap was tested on entry to
+/// `apply_at_depth` and returned before the four non-provider flushes,
+/// but the tail that filled the arriving `deferred` had *already*
+/// committed its `stages`/`objectives` writes under the caller's guards.
+/// So crossing the cap advanced the quest one stage further while
+/// silently discarding the activation / scene-binding /
+/// reference-enable / cinematic effects queued beside it.
+///
+/// A tail whose first effect is the *next* provider call cannot
+/// distinguish the two versions — nothing commits at that level either
+/// way — which is exactly the trap this test was rewritten to escape.
+#[test]
+fn provider_barrier_cap_declines_the_deepest_tail_whole() {
+    use std::sync::{Arc, Mutex};
+
+    use crate::translate::effects::FragmentProviderCall;
+    use byroredux_sdk::script_function::ScriptValue;
+
+    let world = fixture();
+    let calls = Arc::new(Mutex::new(0usize));
+    let calls_for_callback = Arc::clone(&calls);
+    let callback = Arc::new(
+        move |_principal: Option<&byroredux_sdk::identity::PrincipalId>,
+              _route: &str,
+              _arguments: &[ScriptValue]| {
+            *calls_for_callback.lock().unwrap() += 1;
+            Ok(ScriptValue::Integer(0))
+        },
+    ) as Arc<crate::PapyrusProviderCallback>;
+    crate::set_papyrus_provider_runtime(
+        &world,
+        Arc::new(crate::PapyrusProviderCatalog::default()),
+        Some(callback),
+    );
+
+    // `[call, SetStage(1), call, SetStage(2), …]` — the tail entered at
+    // depth d commits SetStage(d + 1) before suspending on the next call.
+    // Built past the cap so the boundary, not the list length, is what
+    // stops it.
+    let levels = MAX_PROVIDER_FRAGMENT_BARRIERS + 8;
+    let mut effects: Vec<Effect> = Vec::with_capacity(levels * 2);
+    for level in 1..=levels {
+        effects.push(Effect::ProviderCall(FragmentProviderCall {
+            route: "ext.example.barrier".to_owned(),
+            arguments: Vec::new(),
+            principal: None,
+        }));
+        effects.push(Effect::SetStage {
+            quest: QuestRef::SelfRef,
+            stage: level as u16,
+        });
+    }
+
+    let mut stages = QuestStageState::default();
+    let mut objectives = QuestObjectiveState::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
+    apply_effects(
+        &effects,
+        Q,
+        None,
+        &world,
+        &mut stages,
+        &mut objectives,
+        &mut deferred,
+    );
+    deferred.apply(&world);
+
+    assert_eq!(
+        *calls.lock().unwrap(),
+        MAX_PROVIDER_FRAGMENT_BARRIERS,
+        "the cap bounds how many provider barriers are crossed"
+    );
+    // Recursion is allowed while `depth + 1 < MAX`, so the deepest tail
+    // actually entered is at depth MAX - 2 and commits stage MAX - 1.
+    // The pre-#3946 code entered one level further and committed stage
+    // MAX before discarding that level's deferred effects — so this exact
+    // number is what separates the two.
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(Q),
+        (MAX_PROVIDER_FRAGMENT_BARRIERS - 1) as u16,
+        "the tail at the cap must not be applied at all; committing its \
+         stage while dropping its queued deferred effects is the partial \
+         application #3946 removed"
+    );
+}
+
 #[test]
 fn quest_fragments_flush_provider_barriers_before_the_next_event() {
     use std::sync::Arc;
@@ -1982,10 +2074,10 @@ fn dispatch_enable_clears_a_previously_disabled_reference() {
 /// session and every quest depending on a scripted unlock was unfinishable.
 #[test]
 fn dispatch_set_locked_clears_and_restores_an_authored_lock() {
+    use byroredux_core::ecs::components::Locked;
     use byroredux_plugin::esm::records::script_instance::{
         PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
     };
-    use byroredux_core::ecs::components::Locked;
 
     const DOOR_FORM: u32 = 0x0009_0B11;
     let mut world = fixture();
@@ -2070,10 +2162,10 @@ fn dispatch_set_locked_clears_and_restores_an_authored_lock() {
 /// that merely re-tunes a lock silently lock or unlock a door.
 #[test]
 fn dispatch_set_lock_level_changes_difficulty_without_touching_lock_state() {
+    use byroredux_core::ecs::components::Locked;
     use byroredux_plugin::esm::records::script_instance::{
         PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
     };
-    use byroredux_core::ecs::components::Locked;
 
     const DOOR_FORM: u32 = 0x0009_0B12;
     const OPEN_FORM: u32 = 0x0009_0B13;

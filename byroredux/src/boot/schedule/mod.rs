@@ -142,6 +142,105 @@ mod fragment_activation_order_tests {
             "extension callbacks must run before transient marker cleanup"
         );
     }
+
+    /// #3952 — the scene→quest→continuation chain is load-bearing and was
+    /// unpinned: `activation_flush_is_scheduled_before_every_activate_event_consumer`
+    /// above covers only the flush/`quest_advance` half.
+    ///
+    /// Each link is a real data dependency, not a stylistic order:
+    /// `scene_playback` emits the scene beats that
+    /// `scene_fragment_dispatch` turns into fragments;
+    /// `quest_fragment_dispatch` consumes the `QuestStageAdvanced` those
+    /// produce; and `fragment_continuation` resumes tails that the two
+    /// dispatchers suspend at a provider barrier. Reorder any pair and
+    /// the downstream system reads an empty queue for a frame — silent,
+    /// and invisible to every other test. #3739's 750-line move and
+    /// #3855's file split are exactly the edit class that does this
+    /// without anyone noticing.
+    #[test]
+    fn scene_and_fragment_dispatch_chain_stays_in_dependency_order() {
+        let setup = BOOT_SRC
+            .split("mod fragment_activation_order_tests")
+            .next()
+            .expect("split always yields a first segment");
+        let pos = |needle: &str| {
+            setup
+                .find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` is no longer registered in boot/"))
+        };
+
+        let scene_playback = pos("byroredux_scripting::scene_playback_system");
+        let scene_fragment = pos("byroredux_scripting::scene_fragment_dispatch_system");
+        let quest_fragment = pos("Stage::Update, quest_fragment_dispatch)");
+        let continuation = pos("byroredux_scripting::fragment_continuation_system");
+
+        assert!(
+            scene_playback < scene_fragment,
+            "scene_fragment_dispatch consumes what scene_playback emits"
+        );
+        assert!(
+            scene_fragment < quest_fragment,
+            "quest_fragment_dispatch consumes the QuestStageAdvanced markers \
+             scene_fragment_dispatch can produce"
+        );
+        assert!(
+            quest_fragment < continuation,
+            "fragment_continuation resumes tails suspended by the dispatchers, \
+             so it must run after both of them in the same frame"
+        );
+    }
+
+    /// #3952 — `event_cleanup_system` drains the transient marker
+    /// components every other system keys on, so it must be the last
+    /// `Stage::Late` exclusive registered. The extension test above pins
+    /// it against a hand-listed set of consumers; this pins it against
+    /// *every* Late exclusive, including ones added later that nobody
+    /// thinks to add to that list.
+    #[test]
+    fn transient_cleanup_is_the_last_late_exclusive() {
+        let setup = BOOT_SRC
+            .split("mod fragment_activation_order_tests")
+            .next()
+            .expect("split always yields a first segment");
+
+        let cleanup = setup
+            .rfind("byroredux_scripting::event_cleanup_system")
+            .expect("event_cleanup_system is no longer registered in boot/");
+
+        // Every `add_exclusive*` call whose stage argument is `Stage::Late`
+        // has to sit before it. The stage often lands on the following
+        // line for the `_with_access` form, so look ahead past it.
+        let mut scan = 0usize;
+        let mut checked = 0usize;
+        while let Some(rel) = setup[scan..].find("add_exclusive") {
+            let at = scan + rel;
+            scan = at + "add_exclusive".len();
+            let window = &setup[at..setup.len().min(at + 200)];
+            let Some(stage_rel) = window.find("Stage::") else {
+                continue;
+            };
+            if !window[stage_rel..].starts_with("Stage::Late") {
+                continue;
+            }
+            checked += 1;
+            // No `continue` for `at >= cleanup`: that is precisely the
+            // failing case. The cleanup registration's own `add_exclusive`
+            // token sits *before* the system path on the same line, so it
+            // satisfies this comparison without needing an exemption — and
+            // an exemption here would have made the assert unfalsifiable.
+            assert!(
+                at < cleanup,
+                "a Stage::Late exclusive is registered after event_cleanup_system \
+                 (byte {at} vs {cleanup}); the markers it drains would be gone \
+                 before that system reads them"
+            );
+        }
+        assert!(
+            checked > 5,
+            "expected to inspect the Late exclusives, found {checked} — the scan \
+             is broken, not the schedule"
+        );
+    }
 }
 
 #[cfg(test)]

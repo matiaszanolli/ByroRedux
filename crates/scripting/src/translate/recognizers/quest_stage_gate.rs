@@ -42,6 +42,7 @@ use crate::translate::compose::{
     classify_guard_atom, int_arg, method_call, quest_via, split_and, GuardMatch, QuestRef,
 };
 use crate::translate::source::ScriptSource;
+use crate::translate::tables::CanonicalEvent;
 use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
 use byroredux_plugin::esm::records::script_instance::PropertyValue;
 
@@ -137,7 +138,9 @@ fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> 
     // Require the canonical event to exist so a corrupt/replaced PEX with the
     // same name does not gain behavior solely from its property table.
     let event = find_advance_event(script)?;
-    if !event.name.node.eq_ignore_case("OnTriggerEnter") {
+    // #3947 — same table as `find_advance_event`, so this shape check and
+    // the search above cannot drift apart on casing or aliases.
+    if CanonicalEvent::from_papyrus(&event.name.node.0) != CanonicalEvent::TriggerEnter {
         return None;
     }
     let instance = ctx
@@ -238,17 +241,29 @@ fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> 
 /// distinct advance logic per handler is rare and falls to whichever the
 /// extractor fully understands.
 fn find_advance_event(script: &Script) -> Option<&Event> {
-    const HANDLERS: [&str; 2] = ["OnActivate", "OnTriggerEnter"];
-    for handler in HANDLERS {
+    // #3947 — the handler names are interpreted by
+    // `CanonicalEvent::from_papyrus`, not compared as strings here, so the
+    // catalog in `translate/tables.rs` stays the single place a Papyrus
+    // event name acquires meaning for the recognizer chain. Behaviour is
+    // unchanged: `from_papyrus` lower-cases before matching, exactly as
+    // the `eq_ignore_case` compares it replaces did.
+    //
+    // Iteration order is the preference documented above — `OnActivate`
+    // wins over `OnTriggerEnter` when a script declares both — so this
+    // stays an outer loop over the wanted events, not a membership test
+    // inside the item walk.
+    const PREFERENCE: [CanonicalEvent; 2] =
+        [CanonicalEvent::Activate, CanonicalEvent::TriggerEnter];
+    for wanted in PREFERENCE {
         for item in &script.body {
             match &item.node {
-                ScriptItem::Event(e) if e.name.node.eq_ignore_case(handler) => {
+                ScriptItem::Event(e) if CanonicalEvent::from_papyrus(&e.name.node.0) == wanted => {
                     return Some(e);
                 }
                 ScriptItem::State(st) => {
                     for si in &st.body {
                         if let StateItem::Event(e) = &si.node {
-                            if e.name.node.eq_ignore_case(handler) {
+                            if CanonicalEvent::from_papyrus(&e.name.node.0) == wanted {
                                 return Some(e);
                             }
                         }

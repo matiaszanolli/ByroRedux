@@ -345,7 +345,10 @@ const NO_LINK: usize = usize::MAX;
 /// Maximum nesting depth copy-propagation may fold an expression tree to
 /// (#3783).
 ///
-/// Matches `byroredux_papyrus::parser::expr::MAX_EXPR_DEPTH`, deliberately:
+/// Derived from [`byroredux_papyrus::parser::expr::MAX_EXPR_DEPTH`] since
+/// #3945 rather than restating its literal — the docstring below already
+/// asserted the two were the same quantity, but nothing enforced it and
+/// the types differ (`u32` there, `usize` here).
 /// that is the same quantity — an expression's nesting depth — arriving
 /// through the *other* Papyrus frontend (`.psc` source instead of compiled
 /// `.pex`), so the two frontends share one stack-safety budget rather than
@@ -374,7 +377,7 @@ const NO_LINK: usize = usize::MAX;
 /// walks traverse, it counts toward this bound too — which is the right
 /// quantity for stack safety, and is separately bounded by
 /// `MAX_REBUILD_DEPTH`. Real Papyrus is nowhere near either.
-pub(super) const MAX_EXPR_DEPTH: usize = 256;
+pub(super) const MAX_EXPR_DEPTH: usize = byroredux_papyrus::parser::expr::MAX_EXPR_DEPTH as usize;
 
 pub(super) fn rebuild_expression(
     scope: &mut Vec<Node>,

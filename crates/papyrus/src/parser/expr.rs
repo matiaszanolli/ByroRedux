@@ -16,7 +16,12 @@ const PREC_POSTFIX: u8 = 8; // dot, index, call
 /// nested `.psc` (e.g. `((((...))))` to arbitrary depth) from
 /// overflowing the parser's stack. Vanilla Skyrim/FO4 scripts nest at
 /// most a few levels; 256 is generous (#1270 / SAFE-DIM3-NEW-02).
-pub(crate) const MAX_EXPR_DEPTH: u32 = 256;
+///
+/// `pub` since #3945 so the two downstream frontends that were
+/// hand-copying the literal — `byroredux_pex`'s copy-propagation fold and
+/// `byroredux_scripting`'s conditional lowering — can reference the
+/// quantity instead of restating it.
+pub const MAX_EXPR_DEPTH: u32 = 256;
 
 impl Parser {
     /// Parse an expression with minimum precedence.

@@ -392,7 +392,10 @@ pub fn lower_fragment_with_quest_properties_and_providers(
 /// re-deriving whether this function's own stack budget still holds, this
 /// would be the first place that finds out, silently, via a crash.
 /// Capped at `MAX_STMT_DEPTH`, the smaller of the two upstream bounds.
-const MAX_CONDITIONAL_DEPTH: u32 = 256;
+///
+/// #3945 — referenced from `byroredux_papyrus` rather than restated as a
+/// literal. "Capped at `MAX_STMT_DEPTH`" was a claim no compiler checked.
+const MAX_CONDITIONAL_DEPTH: u32 = byroredux_papyrus::parser::stmt::MAX_STMT_DEPTH;
 
 fn lower_statements(
     body: &[Spanned<Stmt>],

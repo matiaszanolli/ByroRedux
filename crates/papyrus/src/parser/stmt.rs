@@ -32,10 +32,20 @@ use super::Parser;
 
 /// Maximum `If`/`While` block-nesting depth the statement parser accepts
 /// before bailing with [`ParseError::statement_too_deep`]. Real Papyrus
-/// nests at most a handful of levels; 256 is generous, and matches
-/// `expr::MAX_EXPR_DEPTH` so both axes share one stack-safety budget
-/// (#1712 / SCR-D4-01).
-pub(crate) const MAX_STMT_DEPTH: u32 = 256;
+/// nests at most a handful of levels; 256 is generous, and is set equal
+/// to [`super::expr::MAX_EXPR_DEPTH`] (#1712 / SCR-D4-01).
+///
+/// #3945 — these two caps are **equal, not shared**. They bound different
+/// axes and compose additively: a single parse can spend 255 frames of
+/// statement nesting *and* 127 of paren nesting before either fires. The
+/// earlier "share one stack-safety budget" wording read as if 256 were a
+/// combined ceiling; it is not. The additive worst case still fits the
+/// main thread's stack at the workspace's `opt-level = 1`, which is why
+/// this is a wording fix and not a bound change — but a future loosening
+/// of either cap has to re-derive the *sum*, not one axis.
+///
+/// `pub` since #3945; see [`super::expr::MAX_EXPR_DEPTH`].
+pub const MAX_STMT_DEPTH: u32 = 256;
 
 impl Parser {
     /// Parse a single statement.
@@ -306,6 +316,23 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
+
+    /// #3945 — `MAX_STMT_DEPTH` and `MAX_EXPR_DEPTH` are two independent
+    /// literals that the docstrings claim are deliberately equal. Nothing
+    /// enforced that, and the downstream caps in `byroredux_pex` and
+    /// `byroredux_scripting` now *derive* from them — so loosening one
+    /// axis alone would silently change a bound its sibling's
+    /// documentation still describes. This is the only place the equality
+    /// is checkable; the derived copies cannot check it for us.
+    #[test]
+    fn the_two_parser_depth_caps_stay_equal() {
+        assert_eq!(
+            MAX_STMT_DEPTH,
+            crate::parser::expr::MAX_EXPR_DEPTH,
+            "the statement and expression depth caps are documented as equal \
+             and compose additively; changing one requires re-deriving the sum"
+        );
+    }
     use super::*;
     use crate::lexer::{lex, preprocess};
 

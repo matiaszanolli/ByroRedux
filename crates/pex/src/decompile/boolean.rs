@@ -53,7 +53,11 @@ use crate::model::Value;
 /// the same bound: real Papyrus nests `&&`/`||` a handful deep, so 1024 is
 /// far above any well-formed `.pex` while still stopping an adversarial one
 /// from overflowing the stack.
-const MAX_REBUILD_DEPTH: usize = 1024;
+///
+/// #3945 (sibling sweep) — derived from `control_flow`'s constant rather
+/// than restating its literal, so "mirroring" is now a fact the compiler
+/// keeps true instead of a claim in a docstring.
+const MAX_REBUILD_DEPTH: usize = super::control_flow::MAX_REBUILD_DEPTH;
 
 /// Collapse `&&`/`||` short-circuits across a function's CFG + per-block
 /// scopes, in place. No-op for a bodyless function.

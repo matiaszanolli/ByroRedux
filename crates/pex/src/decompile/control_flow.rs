@@ -36,7 +36,12 @@ use std::collections::BTreeMap;
 /// nested `If`/`Else`/`While` body recurses once; real Papyrus nests a
 /// handful deep, so 1024 is far above any well-formed `.pex` while still
 /// bounding an adversarial / malformed one before it can overflow the stack.
-const MAX_REBUILD_DEPTH: usize = 1024;
+///
+/// `pub(super)` since #3945's sibling sweep: `boolean.rs` runs on the same
+/// untrusted CFG one step earlier and documented itself as "mirroring" this
+/// bound while restating the literal, which is the same unenforced-alignment
+/// pattern that issue removed from the `256` caps.
+pub(super) const MAX_REBUILD_DEPTH: usize = 1024;
 
 use super::cfg::{Cfg, END};
 use super::lift::rebuild_expression;

@@ -604,12 +604,21 @@ impl DeferredFragmentEffects {
     }
 
     fn apply_at_depth(mut self, world: &World, depth: usize) -> Vec<QuestStageAdvanced> {
-        if depth >= MAX_PROVIDER_FRAGMENT_BARRIERS {
-            log::warn!(
-                "fragment provider continuation exceeded {MAX_PROVIDER_FRAGMENT_BARRIERS} barriers"
-            );
-            return Vec::new();
-        }
+        // #3946 — the barrier cap used to be tested here, and returned
+        // before the four non-provider flushes below. That was partial
+        // application: the `deferred` arriving at this depth was filled by
+        // a tail whose `stages`/`objectives` writes had *already been
+        // committed* under the caller's guards, so bailing here advanced
+        // the quest while silently discarding the scene-binding,
+        // activation, reference-enable and cinematic effects that were
+        // queued alongside it. The cap now gates the recursion at its
+        // source, below, the way `MAX_CASCADE` gates the cascade loop:
+        // by declining to start work it cannot finish. Depth can therefore
+        // never reach the cap here.
+        debug_assert!(
+            depth < MAX_PROVIDER_FRAGMENT_BARRIERS,
+            "recursion is gated before descending; depth {depth} should be unreachable"
+        );
         if self.scene_actor_bindings_dirty {
             crate::scene::mark_scene_actor_bindings_dirty(world);
         }
@@ -661,6 +670,16 @@ impl DeferredFragmentEffects {
             return Vec::new();
         };
 
+        // Loop-invariant in `depth`, so it is computed once and warns once
+        // rather than per remaining step.
+        let at_barrier_limit = depth + 1 >= MAX_PROVIDER_FRAGMENT_BARRIERS;
+        if at_barrier_limit {
+            log::warn!(
+                "fragment provider continuation reached {MAX_PROVIDER_FRAGMENT_BARRIERS} \
+                 barriers; declining deeper tails (their effects are not applied)"
+            );
+        }
+
         let mut advances = Vec::new();
         for step in std::mem::take(&mut self.provider_steps) {
             if let Err(error) = callback(
@@ -672,6 +691,14 @@ impl DeferredFragmentEffects {
                 continue;
             }
             if step.tail.is_empty() {
+                continue;
+            }
+            if at_barrier_limit {
+                // Skip the tail *whole*. Running `apply_effects` first and
+                // bailing afterwards is what produced the partial state
+                // this fix removes: the provider call above is the barrier
+                // itself and has already happened, but nothing downstream
+                // of it is committed.
                 continue;
             }
             let mut deferred = Self::new(world);
@@ -2672,7 +2699,9 @@ pub fn quest_fragment_dispatch_system(world: &World) {
     if chained.is_empty() {
         return;
     }
-    let player_entity = world.resource::<crate::papyrus_demo::PapyrusPlayerEntity>().0;
+    let player_entity = world
+        .resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+        .0;
     // #3277 — was a bare `insert()`, the one non-defensive writer of the six.
     // Harmless only while this system was the last same-frame producer in the
     // schedule; `quest_alias_readiness_stage_system` and
