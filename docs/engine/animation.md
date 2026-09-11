@@ -24,7 +24,7 @@ Source:
 | Interpolation modes       | Linear, Quadratic (Hermite tangents), TBC (Kochanek-Bartels), Constant (step), XYZ Euler — plus compressed B-splines (`NiBSplineComp*Interpolator`, #155) |
 | Cycle modes               | Clamp, Loop, Reverse (ping-pong) |
 | Blending                  | `AnimationStack` with weighted layers + blend-in/out timers; per-channel priority from `ControlledBlock.priority` |
-| State machine             | `AnimationController` — KFM-shaped sequence catalog + transition table → `AnimationStack::play` with blend duration (#338 / AR-09) |
+| State machine             | **None.** `AnimationController` (#338 / AR-09) was deleted unconsumed on 2026-09-11 (#3886); `byroredux_nif::kfm` still parses the catalog a state machine would need, and has no caller either |
 | Targeting                 | Pre-interned `FixedString` channel keys + text-key labels (no per-frame allocations — #340 / #231 / SI-04) |
 | GPU skinning              | M29 / M29.5 / M29.6 closed — GPU bone-palette compute (`skin_palette.comp`) → pre-skin (`skin_vertices.comp`) → per-skinned-entity BLAS refit. Raster reads pre-skinned verts (M29.3) still deferred. |
 
@@ -38,7 +38,6 @@ crates/core/src/animation/
 ├── registry.rs       AnimationClipRegistry — Resource holding clips by u32 handle, with a path→handle memo
 ├── player.rs         AnimationPlayer — ECS Component + free fn advance_time(player, clip, dt)
 ├── stack.rs          AnimationLayer, AnimationStack — weighted layer mixing + blend-in/out, sample_blended_transform
-├── controller.rs     AnimationController — KFM-driven state machine, apply_pending_transition()
 ├── root_motion.rs    RootMotionDelta(Vec3) component + split_root_motion() helper
 ├── interpolation.rs  find_key_pair, hermite, TBC tangents, sample_translation/rotation/scale/float/color/bool
 └── text_events.rs    visit_text_key_events() / collect_text_key_events() — text key crossing detection
@@ -233,28 +232,27 @@ The blend-interpolator NIF blocks (`NiBlendTransformInterpolator` /
 `NiBlendFloatInterpolator`) are parsed in
 [`crates/nif/src/blocks/interpolator.rs`](../../crates/nif/src/blocks/interpolator.rs).
 
-## State machine: AnimationController
+## State machine: none (AR-09 / #338 is open again)
 
-[`controller.rs`](../../crates/core/src/animation/controller.rs)
+Redux has **no** `NiControllerManager` / KFM equivalent. `AnimationStack`
+supplies the blend mechanism and `byroredux_nif::kfm` supplies the
+catalog, but nothing joins them: no spawn path builds a per-actor
+sequence catalog, and no system drives sequence transitions.
 
-`AnimationController` is the `NiControllerManager` / KFM equivalent for
-Redux — it closes the "missing glue" gap noted in the 2026-04-15 legacy
-audit (AR-09 / #338). It carries a sequence catalog
-(`sequence_id → clip_handle`), an explicit transition table
-(`(src_id, dst_id) → kind + duration`), sync-group membership, and the
-two top-level transition defaults (sync / non-sync). Gameplay code calls
-`request_sequence(id)`; `apply_pending_transition(controller, stack)`
-resolves the blend duration per the KFM rules (explicit entry →
-`DefaultSync`/`DefaultNonSync` indirection → sync-group fallback) and
-drives `AnimationStack::play` with the matching clip handle.
+An `AnimationController` component was added under #338 (`07dc6b16`,
+2026-04-23) to be that glue and was deleted on 2026-09-11 under #3886,
+having never acquired a consumer — no spawn path attached it, no system
+read it, and its only entry point `apply_pending_transition` had zero
+callers for ~5 months. `parse_kfm` is in the same state: parsed, tested,
+and called by nothing outside its own crate's tests.
 
-The controller is deliberately decoupled from the NIF/KFM parser crate:
-the caller assembles it from `byroredux_nif::kfm` data in their own crate
-(`TransitionKind::from_kfm_discriminant` maps the raw transition-type
-value), so `byroredux-core` never pulls in the parser. Several transition
-styles (`Morph`, `Chain`) currently collapse to a single `Blend`/`play`
-to the final target — text-key-driven morphing and multi-step chains are
-follow-up work.
+The deleted transition model — sync groups, the blend-duration
+precedence chain (explicit entry → `DefaultSync`/`DefaultNonSync`
+indirection → sync-group fallback), and the `KfmTransitionType`
+discriminant mapping — is recoverable verbatim from `git show 07dc6b16`
+when an actor bring-up actually needs sequence blending. Rebuilding it
+alongside a real consumer is the point; the previous attempt shipped the
+half that had no way to be wrong.
 
 ## Root motion
 
@@ -442,5 +440,5 @@ milestone.
 - [NIF Parser](nif-parser.md) — keyframe data parsing
 - [Coordinate System](coordinate-system.md) — Z-up→Y-up rotation conversion
 - [Scripting](scripting.md) — text key marker → event flow
-- [ECS](ecs.md) — `AnimationPlayer` / `AnimationStack` / `AnimationController`
+- [ECS](ecs.md) — `AnimationPlayer` / `AnimationStack`
   as components, `AnimationClipRegistry` as a resource

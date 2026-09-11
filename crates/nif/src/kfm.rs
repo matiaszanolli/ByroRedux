@@ -212,10 +212,12 @@ pub const SYNC_SEQUENCE_ID_NONE: u32 = u32::MAX;
 /// inconsistent casing.
 ///
 /// Per [#532](https://github.com/matiaszanolli/ByroRedux/issues/532)
-/// (FNV-ANIM-4) this closes the import-side half of the wiring gap;
-/// the actor-controller half (`AnimationController` population +
-/// `.kf` clip loading) is M30 milestone work that builds on this
-/// catalog without touching the parser.
+/// (FNV-ANIM-4) this closes the import-side half of the wiring gap.
+/// The actor-controller half — a state machine fed from this catalog
+/// plus `.kf` clip loading — does not exist: `parse_kfm` has no caller
+/// outside this crate's tests, and the `AnimationController` that was
+/// built for it was deleted unconsumed under #3886. This catalog is
+/// parsed and tested, not driven.
 #[derive(Debug, Clone)]
 pub struct KfmCatalog {
     /// The underlying parsed KFM document. Held verbatim so callers
@@ -227,10 +229,9 @@ pub struct KfmCatalog {
     /// event vs. the parser's O(n) linear scan.
     name_to_index: std::collections::HashMap<String, usize>,
     /// `sequence_id` → index into [`file.sequences`]. KFM stores
-    /// sequences in file-position order, NOT id order, so an
-    /// `AnimationController::add_sequence` walk that visits the
-    /// transition table by `dest_sequence_id` would otherwise need
-    /// its own linear scan per transition.
+    /// sequences in file-position order, NOT id order, so a catalog
+    /// walk that visits the transition table by `dest_sequence_id`
+    /// would otherwise need its own linear scan per transition.
     id_to_index: std::collections::HashMap<u32, usize>,
 }
 
@@ -292,10 +293,11 @@ impl KfmCatalog {
     }
 
     /// Iterator over `(name_stem, &KfmSequence)` pairs in
-    /// sequence-id-sorted order. The M30 actor-controller bring-up
-    /// uses this to walk the catalog once and populate
-    /// `AnimationController` + a per-actor name→clip_handle map
-    /// without paying the linear sequence-by-name scan per insert.
+    /// sequence-id-sorted order. Intended for an actor-controller
+    /// bring-up to walk the catalog once and build a per-actor
+    /// name→clip_handle map without paying the linear
+    /// sequence-by-name scan per insert. No such consumer exists yet
+    /// (#3886).
     pub fn iter_named(&self) -> impl Iterator<Item = (&str, &KfmSequence)> {
         // Pre-sorted by stable sequence_id so consumers get deterministic
         // iteration regardless of file authoring order.

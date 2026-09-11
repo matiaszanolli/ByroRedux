@@ -345,11 +345,12 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
 - **ScriptTimer** (`crates/scripting/src/timer.rs`): `timer_tick_system`
   decrements per-frame, fires `TimerExpired` on hit — verify no negative-time
   accumulation.
-- **Animation controller** (`crates/core/src/animation/controller.rs`):
-  `AnimationController` drives `AnimationStack::play` (not `AnimationPlayer` —
-  the controller never touches it, it's a KFM-sequence/transition layer over
-  the stack) via `apply_pending_transition`; verify controller vs
-  `AnimationStack` lifecycle — no dangling clip refs after unload.
+- **Animation state machine**: there isn't one. *AnimationController*
+  (formerly *animation/controller.rs*) was deleted unconsumed under #3886
+  on 2026-09-11 — nothing constructed it, no system read it. `AnimationStack`
+  (`crates/core/src/animation/stack.rs`) is the whole sequencing surface;
+  audit its lifecycle directly (no dangling clip refs after unload) and do
+  not look for a controller layer above it.
 - **AnimationClipRegistry** (`crates/core/src/animation/registry.rs`): #790
   dedupes by lowercased path so cell streaming doesn't grow it unboundedly —
   losing case-folding interning leaks one keyframe set per cell load (steady RAM

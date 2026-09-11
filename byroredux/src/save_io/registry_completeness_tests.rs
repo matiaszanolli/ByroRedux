@@ -189,7 +189,6 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CommandRegistry", "boot-time function-pointer command table; reconstructed by command registration and not serializable gameplay state"),
         ("RootMotionDelta", "per-frame animation output consumed and cleared by movement systems"),
         ("AnimationClipRegistry", "asset registry rebuilt from NIF/KF/KFM content; numeric handles are session-local"),
-        ("AnimationController", "KFM-derived controller catalog with session-local clip handles; playback requests are transient and the catalog is rebuilt with the actor"),
         ("SettingsRegistry", "user preferences persist independently in settings.toml and are installed before scene setup"),
         ("AfflictionStatus", "forward-latent: affliction_tick_system has no production scheduler registration; classify as gameplay state when activated"),
         ("CharacterRuleset", "immutable game-profile rules selected at boot from the source game"),

@@ -3,7 +3,6 @@
 //! Provides keyframe sampling with linear, Hermite (quadratic), and TBC
 //! (Kochanek-Bartels) interpolation for position, rotation, and scale channels.
 
-pub mod controller;
 pub mod interpolation;
 pub mod player;
 pub mod registry;
@@ -13,10 +12,16 @@ pub mod text_events;
 pub mod types;
 
 // Re-export everything at the module level to preserve the public API.
-pub use controller::{
-    apply_pending_transition, AnimationController, ControllerTransition,
-    ControllerTransitionDefaults, TransitionKind,
-};
+//
+// #3886 — `controller` (the KFM-driven `AnimationController` state machine,
+// added by #338) was removed here on 2026-09-11. It shipped ahead of a
+// consumer that never arrived: nothing constructed it outside its own tests,
+// no system read it, and `apply_pending_transition` had zero callers for
+// ~5 months. `byroredux_nif::kfm` still parses the catalog it would have
+// consumed, and is equally unconsumed — so the transition model (sync
+// groups, blend-time precedence, `KfmTransitionType` discriminants) is
+// re-derivable from `git show 07dc6b16` when an actor actually needs
+// sequence blending, alongside a real spawn-path consumer.
 pub use interpolation::{
     sample_bool_channel, sample_color_channel, sample_float_channel, sample_rotation, sample_scale,
     sample_texture_flip_index, sample_translation,
