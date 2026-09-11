@@ -235,6 +235,14 @@ DetectorSkill = (10 + 8·Perception) × DetectorState           # 0.8 / 1.2 / 1 
 Attenuation = ((MaxDist − distance) / MaxDist)²                # MaxDist 2500 in / 5000 out
 ```
 
+`DetectorState` (same source page, same `<math>` block as the Sound/Visual
+sub-expressions above): `0.8` if the detector is asleep or already fighting the
+target being checked (less alert about a threat it's already engaged with),
+`1.2` if the detector is alert, has lost a target, or is fighting someone
+*other* than the target being checked (on edge), else `1.0`. Implemented as
+`DetectorState::{SleepingOrFightingThisTarget, AlertLostOrFightingOther,
+Normal}` (`crates/core/src/stealth.rs`).
+
 `Detection < −20` = undetected, `−20..0` = suspicious, `> 0` = detected.
 `TargetSkill` is FNV's addition over FO3 — it's the first confirmed instance of a
 Bethesda formula reading **both actors' levels**, not just the subject's
@@ -328,12 +336,16 @@ module — deliberately a sibling of `character`, not inside it, per the boundar
 above): `DetectionInputs` + `detection_score()` is a direct, tested transcription of
 the formula (structural/monotonicity checks plus the #3482 exact-coefficient pins,
 since the source gives no worked numeric example for the *full* formula, unlike most
-CHARAL rows). **Math only, no ECS wiring** — no ROADMAP milestone exists yet to
-consume it (M42 "AI packages", the natural consumer for an alert-state tick system, is Tier 7 and blocked on `PACK`
-record parsing, #446; no line-of-sight/vision system, sneak/crouch flag, or AI
-alert-state component exist in the engine today). Mirrors how the CHARAL affliction
+CHARAL rows). **Math only, no ECS wiring.** As of #3878 (2026-09-06), the module's
+own deferral note is corrected: `PACK` parsing (#446) is CLOSED and an AI-package
+evaluator (`package_conditions_pass`, `ambient_ai_package_system`) already runs
+unconditionally as a `Stage::Update` exclusive, and M42 has delivered seven
+procedure runtimes. The genuinely missing pieces are narrower —
+line-of-sight/vision, alert state, and a sneak/crouch flag still don't exist —
+so the stub is *unscheduled*, not *blocked*. Mirrors how the CHARAL affliction
 mechanism (`crates/core/src/character/affliction.rs`) was built ahead of its
-threshold data: the reusable, correct piece lands now; ECS wiring waits for M42.
+threshold data: the reusable, correct piece lands now; ECS wiring waits for
+those three components.
 
 Melee Damage: `STR × 0.5` — an **additive** bonus to Melee Weapon damage (VATS doubles
 base before STR is added; Unarmed has its own stat above). Cross-game arc: FO1/2

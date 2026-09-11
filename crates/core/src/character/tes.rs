@@ -14,8 +14,9 @@
 //!   variant is a non-default alternative).
 //!
 //! Health's per-level accrual (≈10 % of Endurance each level) is **not** part
-//! of the base formula — it is the deferred TES leveling-efficiency mechanic
-//! (`docs/engine/charal.md` §5), a leveling concern, not a derived pool.
+//! of the base formula — it is a leveling concern, not a derived pool, and is
+//! implemented separately below as [`oblivion_health_gain_per_level`]
+//! (`docs/engine/charal.md` §5).
 //!
 //! Fatigue is a four-attribute sum, which the two-input [`DerivedStatFormula`]
 //! cannot hold in one row. It is expressed as **four affine rows** registered

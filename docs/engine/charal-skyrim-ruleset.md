@@ -694,10 +694,11 @@ affect each already-built stat:
 Given only Skyrim Carry Weight has a **positive, sourced** requirement for
 base-only reading, and nothing else is confirmed to need it, the safe move
 was additive: `DerivedStatFormula` gained chainable `.a_from_base()` /
-`.b_from_base()` methods (packed into the struct's one spare padding byte —
-`base_reads: u8`, two bits — so `size_of::<DerivedStatFormula>()` stays
-exactly 32 bytes, still enforced by `formula_is_thirty_two_bytes_and_copy`),
-with **zero behavior change** to any of the 9+ already-built formulas (they
+`.b_from_base()` methods (packed into the struct's `base_reads: u8` bitfield —
+`size_of::<DerivedStatFormula>()` is **36 bytes**, enforced by
+`formula_is_thirty_six_bytes_and_copy`, having grown from 32 B when
+`clamped_below`'s `floor: f32` landed under #2939), with **zero behavior
+change** to any of the 9+ already-built formulas (they
 never call the new methods, so `base_reads` defaults to 0 = `current()`,
 unchanged). **Built 2026-07-04**: `derived.rs` (the reading-mode plumbing +
 `a_from_base_ignores_temporary_mods` test) and `skyrim_ruleset()`
@@ -719,3 +720,23 @@ Health/Magicka/Stamina pool pick and a perk. Source: [UESP Skyrim:
 Leveling](https://en.uesp.net/wiki/Skyrim:Leveling). Mods may override the two
 authored curve GMSTs; the parser supplies those values when present and falls
 back to the vanilla defaults above.
+
+## Skill-XP cost curve — LOCKED (previously cited only in code comments, not captured here)
+
+Distinct from the character XP curve above: this is the *skill-internal* cost
+to raise one skill by one point, which then feeds the character XP curve via
+the `R` character XP per skill rank noted above. The formula is
+
+```
+cost(current_level) = SkillImproveMult · current_level^fSkillUseCurve + SkillImproveOffset
+```
+
+`fSkillUseCurve` is a single global GMST, default **1.95**.
+`SkillImproveMult` / `SkillImproveOffset` are AUTHORED per skill (e.g.
+Lockpicking: `0.25` / `300`). Worked example: raising Lockpicking from 15 to
+16 costs `0.25 × 15^1.95 + 300 ≈ 349.13`. Cumulative cost between two levels
+is the sum of the per-step costs, not a closed form. Source: [UESP Skyrim:
+Leveling](https://en.uesp.net/wiki/Skyrim:Leveling). Implemented as
+`skyrim_skill_xp_to_next` / `skyrim_skill_xp_between` /
+`SKYRIM_SKILL_USE_CURVE` (`crates/core/src/character/skyrim.rs`), pinned by
+`skill_xp_cost_matches_uesp_lockpicking`.

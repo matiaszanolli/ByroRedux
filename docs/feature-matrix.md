@@ -288,7 +288,7 @@ Leveling, pool regen, and affliction are uniformly `✗` across every game:
 `CharacterLevel.xp` is stamped `0` at spawn and nothing increments it;
 `pool_regen_tick_system` is registered in `Stage::Update` every frame but
 early-returns forever because its required `PoolRegenConfig` resource is
-inserted only inside unit tests, never in `boot.rs`; `affliction_tick_system`
+inserted only inside unit tests, never in `byroredux/src/boot/`; `affliction_tick_system`
 is not registered in the scheduler at all.
 
 ---

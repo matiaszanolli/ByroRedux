@@ -12,7 +12,7 @@
 //!
 //! A combat/attack-resolution consumer *does* now exist —
 //! `byroredux/src/combat.rs`'s `combat_input_system` + `combat_damage_system`
-//! (two `Stage::Update` exclusives, `byroredux/src/boot.rs`), a ray → hit →
+//! (two `Stage::Update` exclusives, `byroredux/src/boot/schedule/update.rs`), a ray → hit →
 //! damage → death melee slice that landed 2026-08-15/16. It does not route
 //! through this module: its damage model is `EquippedWeapon.damage` plus the
 //! CHARAL `MeleeDamage` bonus (#3092), or the flat `UNARMED_DAMAGE` baseline

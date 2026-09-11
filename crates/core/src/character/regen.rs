@@ -142,7 +142,7 @@ impl Resource for PoolRegenConfig {}
 /// * [`PoolRegenConfig`] — per-game resolved AVIF ids, inserted when a live
 ///   [`CharacterRuleset`] lands (absent until Oblivion's wiring arrives).
 /// * [`PoolRegenAccumulator`] — the cross-frame clock, inserted unconditionally
-///   at boot (`byroredux/src/boot.rs`, `build_world`).
+///   at boot (`byroredux/src/boot/world.rs`, `build_world`).
 ///
 /// Both are `try_resource` lookups and `World` does **not** default-insert, so
 /// a missing accumulator silently returns at the second line — indistinguishable

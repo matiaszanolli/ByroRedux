@@ -143,7 +143,7 @@ is parsed from its own data**, not engine-hardcoded:
 | Derived-skill constants (`fAVDSkillBase`, `…PrimaryBonusMult`, `…LuckBonusMult`) | **AUTHORED** — `GMST` game settings | values known; read as **hardcoded constants today**, should read from parsed `GMST` (§8.4) |
 | XP / level curve (`iXPBase`, `iXPLevelUpBase`, …) | **AUTHORED** — `GMST` | pending |
 | Perk gates (required SPECIAL / level / rank) | **AUTHORED** — `PERK` conditions | pending |
-| **Skill → governing attribute** map | **ENGINE-SUPPLIED** — not in any single record; per-game engine knowledge | canonical `SkillSet` rosters shipped (OBLIVION / SKYRIM / FALLOUT_FO3_FNV); FNV/FO3 population consumes it |
+| **Skill → governing attribute** map | **ENGINE-SUPPLIED** — not in any single record; per-game engine knowledge | canonical `SkillSet` rosters shipped (OBLIVION / SKYRIM / FALLOUT3 / FALLOUT_NV); FNV/FO3 population consumes it |
 | **Procedural leveling strategy** (OB attribute-multiplier from skill-ups; Skyrim skill-XP curve) | **ENGINE-SUPPLIED** — irreducibly procedural | shipped: `oblivion_attribute_bonus` (+1…+5), `skyrim_skill_xp_to_next` / `_between` (`fSkillUseCurve` 1.95); Morrowind out of scope |
 
 So CHARAL's "ruleset" = **(a) AUTHORED**, parsed from `GMST`/`AVIF`/`CLAS`/`RACE`/
@@ -167,7 +167,7 @@ as-is; it adds population and derivation around it, not a new numeric type.
 ### 4.2 `CharacterLevel` — **NEW**
 
 ```rust
-pub struct CharacterLevel { level: u16, xp: f32 /* progress toward next */ }
+pub struct CharacterLevel { level: u16, xp: u32 /* progress toward next */ }
 ```
 
 Universal. Fallout / Starfield: `xp` is experience points. TES: `xp` is the
@@ -304,10 +304,13 @@ the Elder Scrolls Wiki — Luck governs none); `SkillSet::NONE` covers FO4/FO76.
 `resolve()` pairs each skill's AUTHORED AVIF id with its governor's id, degrading an
 unresolved governor to `None` rather than dropping the skill. Shipped rosters:
 `SkillSet::OBLIVION` (21 governed), `SkillSet::SKYRIM` (18 ungoverned),
-`SkillSet::FALLOUT_FO3_FNV` (15 = FO3 ∪ FNV, SPECIAL-governed) and `SkillSet::NONE`
-(FO4/FO76). The Fallout set is the **single source** of the auto-calc governing map —
-the FNV/FO3 population path (`actor_value_derive.rs`) consumes it (mapping each governor
-to its class-attribute index via the shared `SPECIAL` order) instead of a local table.
+`SkillSet::FALLOUT3` (13, SPECIAL-governed, `AVBigGuns` present) and
+`SkillSet::FALLOUT_NV` (13, SPECIAL-governed, `AVBigGuns` absent — split from a
+former merged `FALLOUT_FO3_FNV` by #3169) and `SkillSet::NONE` (FO4/FO76). Each
+Fallout set is the **single source** of its own auto-calc governing map — the
+FNV/FO3 population path (`actor_value_derive.rs`) consumes it (mapping each
+governor to its class-attribute index via the shared `SPECIAL` order) instead
+of a local table.
 Morrowind's 27 skills are out of scope (not in the compat list).
 
 TES derived pools (shipped — `crates/core/src/character/tes.rs`):

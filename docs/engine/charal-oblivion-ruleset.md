@@ -1,7 +1,8 @@
 # CHARAL — Oblivion character ruleset (data capture)
 
 Living capture of **Oblivion** gameplay-system formulas that sit downstream
-of the already-complete core ruleset (`AttributeSet::OBLIVION`,
+of the already-complete core ruleset (`AttributeSet::TES_CLASSIC` — shared
+with Morrowind, hence the name rather than a per-game one —
 `SkillSet::OBLIVION`, `LevelingModel::OBLIVION`, `oblivion_attribute_bonus`,
 `oblivion_health_formula` — all shipped, see `crates/core/src/character/
 tes.rs` and `charal.md` §5, which describes the Oblivion ruleset **builder**
