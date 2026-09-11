@@ -277,8 +277,10 @@ pub struct CreatureStats {
     /// Base Health, straight to the `Health` `AVIF`.
     pub health: i16,
     /// The creature's attack damage. Authored here rather than on a weapon
-    /// (creatures fight unarmed); not an actor value in FO3/FNV, so it is
-    /// parsed and left for a future combat consumer.
+    /// (creatures fight unarmed); not an actor value in FO3/FNV. Reaches
+    /// the spawned entity as `CreatureAttack`
+    /// (`crates/core/src/ecs/components/creature_attack.rs`, #3762) — read
+    /// there, not from this field, once a combat consumer exists.
     pub damage: i16,
     /// S-P-E-C-I-A-L, in `AttributeSet::FALLOUT` order.
     pub attributes: [u8; 7],

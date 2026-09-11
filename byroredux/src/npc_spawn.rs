@@ -116,13 +116,17 @@ fn stamp_actor_values(
 /// record's authored `DATA.Damage` (#3762).
 ///
 /// `CreatureStats::damage` reached the parser and stopped there. #3390 gave
-/// creatures SPECIAL + Health, which made them melee participants under the
-/// shipped `combat_damage_system` — all of them swinging for
-/// `combat.rs`'s flat `UNARMED_DAMAGE`, because the one number that defines
-/// a creature's attack had no reader. Measured on the vanilla masters: 692
-/// FNV and 186 FO3 creatures author a non-zero damage AND carry no
-/// inventory `WEAP`, so they resolved through the no-weapon arm — a
-/// Deathclaw hitting for 8 instead of 125.
+/// creatures SPECIAL + Health, but the one number that defines a creature's
+/// attack had no reader — this stamp makes it available to a future combat
+/// consumer. **Corrected (#4105 / D5-03):** no such consumer exists yet.
+/// `attack_damage`'s only production call site is `combat_input_system`,
+/// whose aggressor is always the player entity, and the engine has exactly
+/// one `HitEvent` producer, always player-initiated — creatures don't
+/// attack at all today, so nothing (not `combat_damage_system`, not
+/// `UNARMED_DAMAGE`) currently reads a wrong number for the 692 FNV / 186
+/// FO3 creatures that author a non-zero `DATA.Damage`. The real gap this
+/// stamp closes is that a future NPC/creature aggressor path will find the
+/// value waiting for it instead of having to add this parse step first.
 ///
 /// No-op for `NPC_` (no `creature_stats`) and for a creature whose `DATA`
 /// leaves damage at zero or negative: absence means "no authored attack",

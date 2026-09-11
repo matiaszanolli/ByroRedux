@@ -270,9 +270,11 @@ category-spend thresholds being unpublished research (charal.md §9).
 aggregate skills (Combat / Magic / Stealth) because FO3/FNV publish no `AVIF`
 they map onto and inventing one would be a guess. `DATA.Damage` is likewise
 not an actor value — it reaches the spawned entity as the dedicated
-`CreatureAttack` component instead, which `combat::attack_damage` reads in
-place of its flat unarmed baseline (#3762; before that fix every creature in
-both games attacked for 8).
+`CreatureAttack` component instead (#3762), which `combat::attack_damage`
+would read in place of its flat unarmed baseline once a creature can be an
+aggressor. **Corrected (#4105):** no creature attacks today — the engine has
+exactly one `HitEvent` producer, always player-initiated — so the fix makes
+the value available rather than correcting a live symptom.
 
 Skyrim's NPC population derives Health, Magicka and Stamina, each
 independently from its own `RACE.DATA` starting value plus its own signed
