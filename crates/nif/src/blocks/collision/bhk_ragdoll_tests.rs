@@ -9,26 +9,10 @@ use crate::blocks::parse_block;
 use crate::blocks::NiUnknown;
 use crate::header::NifHeader;
 use crate::stream::NifStream;
-use crate::version::NifVersion;
 
-/// FO3/FNV-style header (NIF v20.2.0.7, BSVER 34). The string table
-/// is empty; `read_string()` returns `None` for any non-negative
-/// index that's out of range.
-fn fo3_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
+// FO3/FNV-style header (NIF v20.2.0.7, BSVER 34). The string table
+// is empty; `read_string()` returns `None` for any non-negative
+// index that's out of range.
 
 /// Build a synthetic `bhkPoseArray` block:
 ///   - 2 bones (string-table indices `-1`, `-1` so both resolve to `None`)
@@ -64,7 +48,7 @@ fn build_pose_array_bytes() -> Vec<u8> {
 
 #[test]
 fn bhk_pose_array_dispatches_through_dedicated_parser() {
-    let header = fo3_header();
+    let header = NifHeader::test_fo3_fnv();
     let bytes = build_pose_array_bytes();
     let mut stream = NifStream::new(&bytes, &header);
     let block = parse_block("bhkPoseArray", &mut stream, Some(bytes.len() as u32)).expect("parse");
@@ -105,7 +89,7 @@ fn build_ragdoll_template_bytes() -> Vec<u8> {
 
 #[test]
 fn bhk_ragdoll_template_dispatches_through_dedicated_parser() {
-    let header = fo3_header();
+    let header = NifHeader::test_fo3_fnv();
     let bytes = build_ragdoll_template_bytes();
     let mut stream = NifStream::new(&bytes, &header);
     let block =
@@ -153,7 +137,7 @@ fn build_ragdoll_template_data_bytes() -> Vec<u8> {
 
 #[test]
 fn bhk_ragdoll_template_data_stub_consumes_block_via_block_size() {
-    let header = fo3_header();
+    let header = NifHeader::test_fo3_fnv();
     let bytes = build_ragdoll_template_data_bytes();
     let mut stream = NifStream::new(&bytes, &header);
     let block = parse_block(

@@ -8,7 +8,6 @@ use super::{oblivion_bsshader_bytes, oblivion_header};
 use crate::blocks::*;
 use crate::header::NifHeader;
 use crate::stream::NifStream;
-use crate::version::NifVersion;
 use std::sync::Arc;
 
 #[test]
@@ -107,17 +106,9 @@ fn tile_shader_property_routes_to_dedicated_parser() {
 fn sky_shader_property_routes_to_dedicated_parser() {
     // FNV header (bsver = 34 — the audit corpus).
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("SkyProp")],
         max_string_length: 8,
-        num_groups: 0,
+        ..NifHeader::test_fo3_fnv()
     };
     let mut bytes = Vec::new();
     // NiObjectNET: name string index = 0

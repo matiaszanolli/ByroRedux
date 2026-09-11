@@ -3259,6 +3259,45 @@ fn scene_fragments_flush_provider_barriers_before_the_next_invocation() {
     );
 }
 
+/// Offset of (and name of) the next top-level `fn` item at or after `from`.
+///
+/// #3854 — before the split, every item in `fragment.rs` was module-private
+/// and these scans could look for a bare `"\nfn "`. Items now reached across
+/// a submodule boundary carry a `pub(crate)` visibility prefix, so matching
+/// the bare form would silently find the *wrong* item — or none — and these
+/// tests would stop pinning what they were written to pin. Accepting the
+/// prefix keeps them exact; the returned offset is of the leading newline, so
+/// callers can still slice the preceding doc block.
+fn next_top_level_fn(src: &str, from: usize) -> Option<(usize, &str)> {
+    let tail = &src[from..];
+    let mut at = 0usize;
+    while let Some(nl) = tail[at..].find('\n') {
+        let line_start = at + nl + 1;
+        let line = &tail[line_start..];
+        for prefix in ["fn ", "pub fn ", "pub(crate) fn ", "pub(super) fn "] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                let name = rest.split('(').next().unwrap_or("").trim();
+                return Some((from + at + nl, name));
+            }
+        }
+        at = line_start;
+    }
+    None
+}
+
+/// The declaration of `apply_effect` in [`crate::fragment::SOURCES`], as
+/// (offset of the leading newline, declaration line start).
+fn apply_effect_declaration(src: &str) -> usize {
+    let mut at = 0usize;
+    while let Some((nl, name)) = next_top_level_fn(src, at) {
+        if name == "apply_effect" {
+            return nl;
+        }
+        at = nl + 1;
+    }
+    panic!("apply_effect's definition not found in fragment::SOURCES");
+}
+
 /// #3493 — `1d9a5041` (the #3250 fix) inserted `copied_transform` between
 /// `apply_effect`'s nested-lock-safety doc block and `fn apply_effect`, so
 /// Rust attached the whole lock contract to the three-line helper and left
@@ -3266,17 +3305,16 @@ fn scene_fragments_flush_provider_barriers_before_the_next_invocation() {
 /// the doc comment of the function it describes, with nothing between them.
 #[test]
 fn nested_lock_contract_documents_apply_effect_itself() {
-    const FRAGMENT_RS: &str = include_str!("../fragment.rs");
+    const FRAGMENT_RS: &str = crate::fragment::SOURCES;
 
     let contract = FRAGMENT_RS
         .find("**Nested-lock safety depends on exclusive scheduling.**")
         .expect("apply_effect's nested-lock residual list");
-    let tail = &FRAGMENT_RS[contract..];
-    let next_item = tail
-        .find("\nfn ")
+    let (next_item, next_name) = next_top_level_fn(FRAGMENT_RS, contract)
         .expect("a `fn` item follows the nested-lock doc block");
+    let tail = FRAGMENT_RS;
     assert!(
-        tail[next_item..].starts_with("\nfn apply_effect("),
+        next_name == "apply_effect",
         "the nested-lock contract is attached to `{}`, not `apply_effect` — \
          a helper was inserted between the doc block and its item (#3493)",
         tail[next_item + 1..]
@@ -3300,14 +3338,12 @@ fn nested_lock_contract_documents_apply_effect_itself() {
 /// silently ageing the inventory the Dim-6 checklist delegates to.
 #[test]
 fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
-    const FRAGMENT_RS: &str = include_str!("../fragment.rs");
+    const FRAGMENT_RS: &str = crate::fragment::SOURCES;
 
     let contract_start = FRAGMENT_RS
         .find("**Nested-lock safety depends on exclusive scheduling.**")
         .expect("apply_effect's nested-lock residual list");
-    let body_start = FRAGMENT_RS
-        .find("\nfn apply_effect(")
-        .expect("apply_effect's definition");
+    let body_start = apply_effect_declaration(FRAGMENT_RS);
     let doc = &FRAGMENT_RS[contract_start..body_start];
     let body_end = FRAGMENT_RS[body_start..]
         .find("\n}\n")

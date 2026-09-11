@@ -573,9 +573,7 @@ impl BhkConstraint {
                         entity_a,
                         entity_b,
                         priority,
-                        data: BhkConstraintData::Prismatic(PrismaticCInfo::parse_oblivion(
-                            stream,
-                        )?),
+                        data: BhkConstraintData::Prismatic(PrismaticCInfo::parse_oblivion(stream)?),
                     });
                 }
                 _ => {}

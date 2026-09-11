@@ -118,6 +118,45 @@ use thiserror::Error;
 
 use crate::components::AmbientPackageRuntime;
 
+/// Build a [`DeliveryCommitContext`] from a host and a stats sink (#3863).
+///
+/// Fourteen dispatch sites used to spell out all eleven `&mut self.<field>`
+/// borrows by hand — about 154 lines of pure plumbing, and a twelfth pending-
+/// command queue (the file already has six, and the SDK surface is still
+/// growing) meant editing every one of them.
+///
+/// A macro rather than a constructor method because the borrows must stay
+/// *field-disjoint*: `fn commit_context(&mut self, ..)` would take one `&mut
+/// self` covering the whole host, which conflicts with the `&mut
+/// HostedComponent` every call site already holds out of `self.components`.
+/// Expanding in place keeps the eleven borrows separate, exactly as the
+/// hand-written literal did. (The alternative — hoisting the nine owned
+/// `pending_*`/diagnostics fields into a `DeliveryState` sub-struct so a
+/// constructor can borrow just that — is the shape this should eventually
+/// take, but it rewrites several hundred field paths across the workspace's
+/// largest file for the same benefit this gets in one place.)
+///
+/// Takes the host as an expression so it works for both spellings in use:
+/// `self` inside `ExtensionHost` methods, and a `host` binding in the free
+/// functions.
+macro_rules! delivery_commit_context {
+    ($host:expr, $stats:expr) => {
+        DeliveryCommitContext {
+            state: &mut $host.state,
+            principal_storage: &mut $host.principal_storage,
+            legacy_containers: &mut $host.legacy_containers,
+            pending_custom_events: &mut $host.pending_custom_events,
+            pending_setting_writes: &mut $host.pending_setting_writes,
+            pending_actor_value_writes: &mut $host.pending_actor_value_writes,
+            pending_package_evaluations: &mut $host.pending_package_evaluations,
+            pending_animation_commands: &mut $host.pending_animation_commands,
+            pending_reputation_writes: &mut $host.pending_reputation_writes,
+            diagnostics: &mut $host.diagnostics,
+            stats: &mut $stats,
+        }
+    };
+}
+
 const EXTENSION_STATE_RESOURCE: &str = "ByroExtensionState";
 const MAX_PERSISTED_EXTENSION_ROWS: usize = 262_144;
 const MAX_PENDING_SESSION_EVENTS: usize = 64;
@@ -675,23 +714,7 @@ impl ExtensionHost {
                 lines: vec![format!("component is {}", hosted.instance.status())],
             };
         }
-        let principal = hosted.instance.principal().id().clone();
-        let storage_snapshot = self
-            .principal_storage
-            .values(&principal)
-            .cloned()
-            .unwrap_or_default();
-        hosted
-            .instance
-            .set_principal_storage_snapshot(storage_snapshot);
-        let legacy_container_snapshot = self
-            .legacy_containers
-            .get(&principal)
-            .cloned()
-            .unwrap_or_default();
-        hosted
-            .instance
-            .set_legacy_container_snapshot(legacy_container_snapshot);
+        let principal = enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
         let result = hosted
             .instance
             .on_console_command(route.declaration_index, args);
@@ -723,19 +746,7 @@ impl ExtensionHost {
             Ok(commands),
             LifecyclePhase::ConsoleCommand,
             &principal,
-            DeliveryCommitContext {
-                state: &mut self.state,
-                principal_storage: &mut self.principal_storage,
-                legacy_containers: &mut self.legacy_containers,
-                pending_custom_events: &mut self.pending_custom_events,
-                pending_setting_writes: &mut self.pending_setting_writes,
-                pending_actor_value_writes: &mut self.pending_actor_value_writes,
-                pending_package_evaluations: &mut self.pending_package_evaluations,
-                pending_animation_commands: &mut self.pending_animation_commands,
-                pending_reputation_writes: &mut self.pending_reputation_writes,
-                diagnostics: &mut self.diagnostics,
-                stats: &mut stats,
-            },
+            delivery_commit_context!(self, stats),
         );
         if stats.faults == 0 {
             output
@@ -2127,23 +2138,7 @@ impl ExtensionHost {
                 reason: format!("component is {}", hosted.instance.status()),
             });
         }
-        let principal = hosted.instance.principal().id().clone();
-        let storage_snapshot = self
-            .principal_storage
-            .values(&principal)
-            .cloned()
-            .unwrap_or_default();
-        hosted
-            .instance
-            .set_principal_storage_snapshot(storage_snapshot);
-        let legacy_container_snapshot = self
-            .legacy_containers
-            .get(&principal)
-            .cloned()
-            .unwrap_or_default();
-        hosted
-            .instance
-            .set_legacy_container_snapshot(legacy_container_snapshot);
+        let principal = enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
         let result = hosted
             .instance
             .on_script_function(route.declaration_index, arguments);
@@ -2169,19 +2164,7 @@ impl ExtensionHost {
             Ok(commands),
             LifecyclePhase::ScriptFunction,
             &principal,
-            DeliveryCommitContext {
-                state: &mut self.state,
-                principal_storage: &mut self.principal_storage,
-                legacy_containers: &mut self.legacy_containers,
-                pending_custom_events: &mut self.pending_custom_events,
-                pending_setting_writes: &mut self.pending_setting_writes,
-                pending_actor_value_writes: &mut self.pending_actor_value_writes,
-                pending_package_evaluations: &mut self.pending_package_evaluations,
-                pending_animation_commands: &mut self.pending_animation_commands,
-                pending_reputation_writes: &mut self.pending_reputation_writes,
-                diagnostics: &mut self.diagnostics,
-                stats: &mut stats,
-            },
+            delivery_commit_context!(self, stats),
         );
         if stats.faults == 0 {
             Ok(value)
@@ -2365,23 +2348,8 @@ impl ExtensionHost {
                     continue;
                 }
                 stats.deliveries += 1;
-                let principal = hosted.instance.principal().id().clone();
-                let storage_snapshot = self
-                    .principal_storage
-                    .values(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_principal_storage_snapshot(storage_snapshot);
-                let legacy_container_snapshot = self
-                    .legacy_containers
-                    .get(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_legacy_container_snapshot(legacy_container_snapshot);
+                let principal =
+                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
                 hosted
                     .instance
                     .set_entity_projections(entity_projections.clone());
@@ -2402,19 +2370,7 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::Activate,
                     &principal,
-                    DeliveryCommitContext {
-                        state: &mut self.state,
-                        principal_storage: &mut self.principal_storage,
-                        legacy_containers: &mut self.legacy_containers,
-                        pending_custom_events: &mut self.pending_custom_events,
-                        pending_setting_writes: &mut self.pending_setting_writes,
-                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
-                        pending_package_evaluations: &mut self.pending_package_evaluations,
-                        pending_animation_commands: &mut self.pending_animation_commands,
-                        pending_reputation_writes: &mut self.pending_reputation_writes,
-                        diagnostics: &mut self.diagnostics,
-                        stats: &mut stats,
-                    },
+                    delivery_commit_context!(self, stats),
                 );
             }
         }
@@ -2463,23 +2419,8 @@ impl ExtensionHost {
                     continue;
                 }
                 stats.deliveries += 1;
-                let principal = hosted.instance.principal().id().clone();
-                let storage_snapshot = self
-                    .principal_storage
-                    .values(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_principal_storage_snapshot(storage_snapshot);
-                let legacy_container_snapshot = self
-                    .legacy_containers
-                    .get(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_legacy_container_snapshot(legacy_container_snapshot);
+                let principal =
+                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
                 hosted
                     .instance
                     .set_entity_projections(entity_projections.clone());
@@ -2497,19 +2438,7 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::CellLoad,
                     &principal,
-                    DeliveryCommitContext {
-                        state: &mut self.state,
-                        principal_storage: &mut self.principal_storage,
-                        legacy_containers: &mut self.legacy_containers,
-                        pending_custom_events: &mut self.pending_custom_events,
-                        pending_setting_writes: &mut self.pending_setting_writes,
-                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
-                        pending_package_evaluations: &mut self.pending_package_evaluations,
-                        pending_animation_commands: &mut self.pending_animation_commands,
-                        pending_reputation_writes: &mut self.pending_reputation_writes,
-                        diagnostics: &mut self.diagnostics,
-                        stats: &mut stats,
-                    },
+                    delivery_commit_context!(self, stats),
                 );
             }
         }
@@ -2558,23 +2487,8 @@ impl ExtensionHost {
                     continue;
                 }
                 stats.deliveries += 1;
-                let principal = hosted.instance.principal().id().clone();
-                let storage_snapshot = self
-                    .principal_storage
-                    .values(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_principal_storage_snapshot(storage_snapshot);
-                let legacy_container_snapshot = self
-                    .legacy_containers
-                    .get(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_legacy_container_snapshot(legacy_container_snapshot);
+                let principal =
+                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
                 hosted
                     .instance
                     .set_entity_projections(entity_projections.clone());
@@ -2596,19 +2510,7 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::Equipment,
                     &principal,
-                    DeliveryCommitContext {
-                        state: &mut self.state,
-                        principal_storage: &mut self.principal_storage,
-                        legacy_containers: &mut self.legacy_containers,
-                        pending_custom_events: &mut self.pending_custom_events,
-                        pending_setting_writes: &mut self.pending_setting_writes,
-                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
-                        pending_package_evaluations: &mut self.pending_package_evaluations,
-                        pending_animation_commands: &mut self.pending_animation_commands,
-                        pending_reputation_writes: &mut self.pending_reputation_writes,
-                        diagnostics: &mut self.diagnostics,
-                        stats: &mut stats,
-                    },
+                    delivery_commit_context!(self, stats),
                 );
             }
         }
@@ -2647,23 +2549,8 @@ impl ExtensionHost {
                     continue;
                 }
                 stats.deliveries += 1;
-                let principal = hosted.instance.principal().id().clone();
-                let storage_snapshot = self
-                    .principal_storage
-                    .values(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_principal_storage_snapshot(storage_snapshot);
-                let legacy_container_snapshot = self
-                    .legacy_containers
-                    .get(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_legacy_container_snapshot(legacy_container_snapshot);
+                let principal =
+                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
                 let result = hosted.instance.on_input_action(event);
                 self.diagnostics
                     .extend(hosted.instance.take_logs().into_iter().map(|entry| {
@@ -2678,19 +2565,7 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::Input,
                     &principal,
-                    DeliveryCommitContext {
-                        state: &mut self.state,
-                        principal_storage: &mut self.principal_storage,
-                        legacy_containers: &mut self.legacy_containers,
-                        pending_custom_events: &mut self.pending_custom_events,
-                        pending_setting_writes: &mut self.pending_setting_writes,
-                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
-                        pending_package_evaluations: &mut self.pending_package_evaluations,
-                        pending_animation_commands: &mut self.pending_animation_commands,
-                        pending_reputation_writes: &mut self.pending_reputation_writes,
-                        diagnostics: &mut self.diagnostics,
-                        stats: &mut stats,
-                    },
+                    delivery_commit_context!(self, stats),
                 );
             }
         }
@@ -2725,23 +2600,8 @@ impl ExtensionHost {
                     continue;
                 }
                 stats.deliveries += 1;
-                let principal = hosted.instance.principal().id().clone();
-                let storage_snapshot = self
-                    .principal_storage
-                    .values(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_principal_storage_snapshot(storage_snapshot);
-                let legacy_container_snapshot = self
-                    .legacy_containers
-                    .get(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_legacy_container_snapshot(legacy_container_snapshot);
+                let principal =
+                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
                 let result = hosted.instance.on_session_event(event);
                 self.diagnostics
                     .extend(hosted.instance.take_logs().into_iter().map(|entry| {
@@ -2756,19 +2616,7 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::Session,
                     &principal,
-                    DeliveryCommitContext {
-                        state: &mut self.state,
-                        principal_storage: &mut self.principal_storage,
-                        legacy_containers: &mut self.legacy_containers,
-                        pending_custom_events: &mut self.pending_custom_events,
-                        pending_setting_writes: &mut self.pending_setting_writes,
-                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
-                        pending_package_evaluations: &mut self.pending_package_evaluations,
-                        pending_animation_commands: &mut self.pending_animation_commands,
-                        pending_reputation_writes: &mut self.pending_reputation_writes,
-                        diagnostics: &mut self.diagnostics,
-                        stats: &mut stats,
-                    },
+                    delivery_commit_context!(self, stats),
                 );
             }
         }
@@ -2800,23 +2648,8 @@ impl ExtensionHost {
                     continue;
                 }
                 stats.deliveries += 1;
-                let principal = hosted.instance.principal().id().clone();
-                let storage_snapshot = self
-                    .principal_storage
-                    .values(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_principal_storage_snapshot(storage_snapshot);
-                let legacy_container_snapshot = self
-                    .legacy_containers
-                    .get(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_legacy_container_snapshot(legacy_container_snapshot);
+                let principal =
+                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
                 let result = hosted.instance.on_custom_event(event.clone());
                 self.diagnostics
                     .extend(hosted.instance.take_logs().into_iter().map(|entry| {
@@ -2831,19 +2664,7 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::CustomEvent,
                     &principal,
-                    DeliveryCommitContext {
-                        state: &mut self.state,
-                        principal_storage: &mut self.principal_storage,
-                        legacy_containers: &mut self.legacy_containers,
-                        pending_custom_events: &mut self.pending_custom_events,
-                        pending_setting_writes: &mut self.pending_setting_writes,
-                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
-                        pending_package_evaluations: &mut self.pending_package_evaluations,
-                        pending_animation_commands: &mut self.pending_animation_commands,
-                        pending_reputation_writes: &mut self.pending_reputation_writes,
-                        diagnostics: &mut self.diagnostics,
-                        stats: &mut stats,
-                    },
+                    delivery_commit_context!(self, stats),
                 );
             }
         }
@@ -2937,23 +2758,8 @@ impl ExtensionHost {
                     continue;
                 }
                 stats.deliveries += 1;
-                let principal = hosted.instance.principal().id().clone();
-                let storage_snapshot = self
-                    .principal_storage
-                    .values(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_principal_storage_snapshot(storage_snapshot);
-                let legacy_container_snapshot = self
-                    .legacy_containers
-                    .get(&principal)
-                    .cloned()
-                    .unwrap_or_default();
-                hosted
-                    .instance
-                    .set_legacy_container_snapshot(legacy_container_snapshot);
+                let principal =
+                    enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
                 hosted
                     .instance
                     .set_entity_projections(entity_projections.clone());
@@ -2981,19 +2787,7 @@ impl ExtensionHost {
                     result,
                     LifecyclePhase::Hit,
                     &principal,
-                    DeliveryCommitContext {
-                        state: &mut self.state,
-                        principal_storage: &mut self.principal_storage,
-                        legacy_containers: &mut self.legacy_containers,
-                        pending_custom_events: &mut self.pending_custom_events,
-                        pending_setting_writes: &mut self.pending_setting_writes,
-                        pending_actor_value_writes: &mut self.pending_actor_value_writes,
-                        pending_package_evaluations: &mut self.pending_package_evaluations,
-                        pending_animation_commands: &mut self.pending_animation_commands,
-                        pending_reputation_writes: &mut self.pending_reputation_writes,
-                        diagnostics: &mut self.diagnostics,
-                        stats: &mut stats,
-                    },
+                    delivery_commit_context!(self, stats),
                 );
             }
         }
@@ -3035,23 +2829,7 @@ impl ExtensionHost {
             };
             stats.events += 1;
             stats.deliveries += 1;
-            let principal = hosted.instance.principal().id().clone();
-            let storage_snapshot = self
-                .principal_storage
-                .values(&principal)
-                .cloned()
-                .unwrap_or_default();
-            hosted
-                .instance
-                .set_principal_storage_snapshot(storage_snapshot);
-            let legacy_container_snapshot = self
-                .legacy_containers
-                .get(&principal)
-                .cloned()
-                .unwrap_or_default();
-            hosted
-                .instance
-                .set_legacy_container_snapshot(legacy_container_snapshot);
+            let principal = enter_guest(hosted, &self.principal_storage, &self.legacy_containers);
             let result = hosted.instance.on_update(UpdateEvent { elapsed_seconds });
             self.diagnostics
                 .extend(hosted.instance.take_logs().into_iter().map(|entry| {
@@ -3066,19 +2844,7 @@ impl ExtensionHost {
                 result,
                 LifecyclePhase::Update,
                 &principal,
-                DeliveryCommitContext {
-                    state: &mut self.state,
-                    principal_storage: &mut self.principal_storage,
-                    legacy_containers: &mut self.legacy_containers,
-                    pending_custom_events: &mut self.pending_custom_events,
-                    pending_setting_writes: &mut self.pending_setting_writes,
-                    pending_actor_value_writes: &mut self.pending_actor_value_writes,
-                    pending_package_evaluations: &mut self.pending_package_evaluations,
-                    pending_animation_commands: &mut self.pending_animation_commands,
-                    pending_reputation_writes: &mut self.pending_reputation_writes,
-                    diagnostics: &mut self.diagnostics,
-                    stats: &mut stats,
-                },
+                delivery_commit_context!(self, stats),
             );
         }
         stats
@@ -3571,6 +3337,40 @@ struct DeliveryCommitContext<'a> {
     pending_reputation_writes: &'a mut Vec<ReputationCommand>,
     diagnostics: &'a mut Vec<ExtensionDiagnostic>,
     stats: &'a mut ExtensionDispatchStats,
+}
+
+/// Load a guest's persisted snapshots into its instance and return its
+/// principal — the prologue every sandboxed-guest entry point shares (#3863).
+///
+/// Ten dispatch paths repeated these five statements verbatim: clone the
+/// principal id, read the principal-storage values, push them into the
+/// instance, read the legacy-container registry, push that in too. The commit
+/// half was already factored (`DeliveryCommitContext` /
+/// [`apply_delivery_result`]); the entry half never was.
+///
+/// A free function taking the two stores by reference, not a `&mut self`
+/// method: every call site is already holding a `&mut HostedComponent` out of
+/// `self.components`, so a method would present a second whole-`self` borrow
+/// and conflict. Narrow parameters keep the borrows disjoint.
+fn enter_guest(
+    hosted: &mut HostedComponent,
+    principal_storage: &PrincipalStorageStore,
+    legacy_containers: &BTreeMap<PrincipalId, LegacyContainerRegistry>,
+) -> PrincipalId {
+    let principal = hosted.instance.principal().id().clone();
+    hosted.instance.set_principal_storage_snapshot(
+        principal_storage
+            .values(&principal)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    hosted.instance.set_legacy_container_snapshot(
+        legacy_containers
+            .get(&principal)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    principal
 }
 
 fn apply_delivery_result(
@@ -7118,19 +6918,7 @@ mod tests {
             Ok(vec![subscribe]),
             LifecyclePhase::Activate,
             &subscriber,
-            DeliveryCommitContext {
-                state: &mut host.state,
-                principal_storage: &mut host.principal_storage,
-                legacy_containers: &mut host.legacy_containers,
-                pending_custom_events: &mut host.pending_custom_events,
-                pending_setting_writes: &mut host.pending_setting_writes,
-                pending_actor_value_writes: &mut host.pending_actor_value_writes,
-                pending_package_evaluations: &mut host.pending_package_evaluations,
-                pending_animation_commands: &mut host.pending_animation_commands,
-                pending_reputation_writes: &mut host.pending_reputation_writes,
-                diagnostics: &mut host.diagnostics,
-                stats: &mut registration_stats,
-            },
+            delivery_commit_context!(host, registration_stats),
         );
         assert_eq!(registration_stats.commands_applied, 1);
         assert!(host
@@ -7175,19 +6963,7 @@ mod tests {
             Ok(vec![unsubscribe]),
             LifecyclePhase::Activate,
             &subscriber,
-            DeliveryCommitContext {
-                state: &mut host.state,
-                principal_storage: &mut host.principal_storage,
-                legacy_containers: &mut host.legacy_containers,
-                pending_custom_events: &mut host.pending_custom_events,
-                pending_setting_writes: &mut host.pending_setting_writes,
-                pending_actor_value_writes: &mut host.pending_actor_value_writes,
-                pending_package_evaluations: &mut host.pending_package_evaluations,
-                pending_animation_commands: &mut host.pending_animation_commands,
-                pending_reputation_writes: &mut host.pending_reputation_writes,
-                diagnostics: &mut host.diagnostics,
-                stats: &mut registration_stats,
-            },
+            delivery_commit_context!(host, registration_stats),
         );
         assert_eq!(registration_stats.commands_applied, 1);
         assert!(!host.components[0].custom_subscriptions.contains(&channel));
@@ -7236,19 +7012,7 @@ mod tests {
             Ok(commands),
             LifecyclePhase::Activate,
             &principal,
-            DeliveryCommitContext {
-                state: &mut host.state,
-                principal_storage: &mut host.principal_storage,
-                legacy_containers: &mut host.legacy_containers,
-                pending_custom_events: &mut host.pending_custom_events,
-                pending_setting_writes: &mut host.pending_setting_writes,
-                pending_actor_value_writes: &mut host.pending_actor_value_writes,
-                pending_package_evaluations: &mut host.pending_package_evaluations,
-                pending_animation_commands: &mut host.pending_animation_commands,
-                pending_reputation_writes: &mut host.pending_reputation_writes,
-                diagnostics: &mut host.diagnostics,
-                stats: &mut stats,
-            },
+            delivery_commit_context!(host, stats),
         );
 
         assert_eq!(stats.commands_applied, 0);
@@ -7297,19 +7061,7 @@ mod tests {
             Ok(commands),
             LifecyclePhase::Activate,
             &principal,
-            DeliveryCommitContext {
-                state: &mut host.state,
-                principal_storage: &mut host.principal_storage,
-                legacy_containers: &mut host.legacy_containers,
-                pending_custom_events: &mut host.pending_custom_events,
-                pending_setting_writes: &mut host.pending_setting_writes,
-                pending_actor_value_writes: &mut host.pending_actor_value_writes,
-                pending_package_evaluations: &mut host.pending_package_evaluations,
-                pending_animation_commands: &mut host.pending_animation_commands,
-                pending_reputation_writes: &mut host.pending_reputation_writes,
-                diagnostics: &mut host.diagnostics,
-                stats: &mut stats,
-            },
+            delivery_commit_context!(host, stats),
         );
 
         assert_eq!(host.pending_custom_events.len(), MAX_PENDING_CUSTOM_EVENTS);
@@ -10648,5 +10400,148 @@ control = { kind = "slider", min = 0.0, max = 2.0, step = 0.1, unit = "x" }
             .resource::<byroredux_scripting::PapyrusProviderRuntime>()
             .callback()
             .is_some());
+    }
+}
+
+/// Source-shape guards for the guest-entry/commit plumbing (#3863).
+#[cfg(test)]
+mod delivery_plumbing_shape_tests {
+    const EXTENSIONS_RS: &str = include_str!("extensions.rs");
+
+    /// Production text only: `#[cfg(test)] mod <name> { .. }` blocks removed
+    /// by brace matching.
+    ///
+    /// Truncating at the first `#[cfg(test)]` instead would silently drop the
+    /// production code that follows an inner test module — this file has one
+    /// at ~line 3900 with thousands of production lines after it — and the
+    /// scans below would then pass by not looking (the #4069 lesson). A
+    /// block-less `mod foo;` is skipped explicitly for the same reason: brace
+    /// matching from there would swallow the next item whole.
+    fn production_text(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src;
+        while let Some(at) = rest.find("#[cfg(test)]") {
+            out.push_str(&rest[..at]);
+            let after = &rest[at..];
+            const ATTR: &str = "#[cfg(test)]";
+            // The `mod` must follow the attribute IMMEDIATELY (whitespace and
+            // an optional visibility only). Searching the whole remainder
+            // would let an item-level `#[cfg(test)]` bind to some distant
+            // `mod` and strip every production line between them — which is
+            // how this helper first reported "no hand-written literals": by
+            // deleting the code it was supposed to scan.
+            let body = &after[ATTR.len()..];
+            let lead = body.len() - body.trim_start().len();
+            let trimmed = body.trim_start();
+            let vis = ["pub(crate) ", "pub(super) ", "pub "]
+                .into_iter()
+                .find(|v| trimmed.starts_with(v))
+                .map_or(0, str::len);
+            let Some(mod_at) = trimmed[vis..]
+                .starts_with("mod ")
+                .then_some(ATTR.len() + lead + vis)
+            else {
+                // Item-level attribute — step past it and keep the text.
+                out.push_str(&after[..ATTR.len()]);
+                rest = &after[ATTR.len()..];
+                continue;
+            };
+            let tail = &after[mod_at..];
+            let brace = tail.find('{');
+            let semi = tail.find(';');
+            match (brace, semi) {
+                // `mod foo;` — no body here to strip.
+                (Some(b), Some(sc)) if sc < b => {
+                    out.push_str(&after[..mod_at + sc + 1]);
+                    rest = &after[mod_at + sc + 1..];
+                }
+                (None, Some(sc)) => {
+                    out.push_str(&after[..mod_at + sc + 1]);
+                    rest = &after[mod_at + sc + 1..];
+                }
+                (Some(b), _) => {
+                    let mut depth = 0usize;
+                    let bytes = tail.as_bytes();
+                    let mut i = b;
+                    while i < bytes.len() {
+                        match bytes[i] {
+                            b'{' => depth += 1,
+                            b'}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    // `i` lands on the closing brace, or on `bytes.len()`
+                    // for an unbalanced tail; clamp either way.
+                    let resume = (mod_at + i + 1).min(after.len());
+                    rest = &after[resume..];
+                }
+                (None, None) => {
+                    rest = "";
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The eleven-field commit context must be built in exactly one place.
+    ///
+    /// Before #3863 it was spelled out at fourteen call sites — about 154
+    /// lines of borrow plumbing — so a twelfth pending-command queue meant
+    /// fourteen edits, and a site that missed one became a silent divergence
+    /// the moment that field gained a default. The macro is the single edit
+    /// point; this keeps it that way.
+    ///
+    /// Needles are composed at runtime so this test's own source cannot be
+    /// what the scan finds.
+    #[test]
+    fn the_commit_context_is_constructed_only_by_the_macro() {
+        let src = production_text(EXTENSIONS_RS);
+        let literal = format!("{}{}", "DeliveryCommitContext ", "{");
+        let occurrences = src.match_indices(&literal).count();
+        assert_eq!(
+            occurrences, 2,
+            "expected exactly two `{literal}` in production — the macro body              and `apply_delivery_result`'s destructuring — found {occurrences}.              A hand-written literal is back; use `delivery_commit_context!` so              a new pending-command queue stays a one-line change."
+        );
+    }
+
+    /// Guest-entry snapshot loading is centralised in `enter_guest`.
+    ///
+    /// The prologue (clone principal, load storage snapshot, load legacy
+    /// containers) was repeated verbatim at ten dispatch paths. A site that
+    /// loads one snapshot but not the other hands the guest a half-populated
+    /// view, invisible until a guest reads the missing half.
+    ///
+    /// The legacy-container setter legitimately has one extra production
+    /// caller: instantiation seeds a newly created instance from the
+    /// *staged* registry built during load, before any principal storage
+    /// exists to pair with. That asymmetry is real and is pinned here rather
+    /// than papered over — the audit's "perfectly symmetric 10/10" counted
+    /// only the dispatch prologue.
+    #[test]
+    fn guest_entry_snapshots_are_loaded_only_by_enter_guest() {
+        let src = production_text(EXTENSIONS_RS);
+        let storage = format!("{}{}", "set_principal_storage_", "snapshot(");
+        let legacy = format!("{}{}", "set_legacy_container_", "snapshot(");
+        assert_eq!(
+            src.match_indices(&storage).count(),
+            1,
+            "`{storage}` must be called only from `enter_guest`"
+        );
+        assert_eq!(
+            src.match_indices(&legacy).count(),
+            2,
+            "`{legacy}` must be called only from `enter_guest` and the              instantiation seed in `load`"
+        );
+        assert!(
+            src.contains("fn enter_guest("),
+            "enter_guest must exist — the dispatch prologue has no other home"
+        );
     }
 }

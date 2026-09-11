@@ -427,37 +427,13 @@ mod tests {
     use crate::stream::NifStream;
 
     fn make_oblivion_header() -> NifHeader {
-        NifHeader {
-            version: NifVersion::V20_0_0_5,
-            little_endian: true,
-            user_version: 0,
-            user_version_2: 0,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
+        NifHeader::detached(NifVersion::V20_0_0_5, 0, 0)
     }
 
     /// Build a Morrowind-era (10.0.1.0) NIF header so the parser
     /// hits the legacy embedded-pixel branch (`version <= 10.0.1.3`).
     fn make_pre_oblivion_header(version: NifVersion) -> NifHeader {
-        NifHeader {
-            version,
-            little_endian: true,
-            user_version: 0,
-            user_version_2: 0,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
+        NifHeader::detached(version, 0, 0)
     }
 
     /// Build the wire bytes for a `NiSourceTexture` block, optionally
@@ -780,19 +756,7 @@ mod tests {
     /// FO3+ counterpart — `Pad Num Pixels` present (since=20.2.0.6).
     #[test]
     fn parse_ni_persistent_src_texture_renderer_data_fo3_pad_num_pixels() {
-        let header = NifHeader {
-            version: NifVersion::V20_2_0_7,
-            little_endian: true,
-            user_version: 11,
-            user_version_2: 34,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        };
+        let header = NifHeader::test_fo3_fnv();
         let mut data = Vec::new();
 
         data.extend_from_slice(&1u32.to_le_bytes()); // pixel_format = RGBA
@@ -873,42 +837,12 @@ mod tests {
 
     // ── #1240: NiTextureEffect FO4+ NiDynamicEffect gate ─────────────
 
-    /// Build a Skyrim SE header (BSVER=100). Below FALLOUT4=130, so
-    /// the NiDynamicEffect base fields are present in the wire format.
-    fn make_skyrim_se_header() -> NifHeader {
-        NifHeader {
-            version: NifVersion::V20_2_0_7,
-            little_endian: true,
-            user_version: 12,
-            user_version_2: 100,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
-    }
+    // Build a Skyrim SE header (BSVER=100). Below FALLOUT4=130, so
+    // the NiDynamicEffect base fields are present in the wire format.
 
-    /// Build a FO4 header (BSVER=130). At/above FALLOUT4, the
-    /// NiDynamicEffect base fields are absent — this is the gate that
-    /// pre-#1240 was missing on NiTextureEffect.
-    fn make_fo4_header() -> NifHeader {
-        NifHeader {
-            version: NifVersion::V20_2_0_7,
-            little_endian: true,
-            user_version: 12,
-            user_version_2: 130,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
-    }
+    // Build a FO4 header (BSVER=130). At/above FALLOUT4, the
+    // NiDynamicEffect base fields are absent — this is the gate that
+    // pre-#1240 was missing on NiTextureEffect.
 
     /// Minimal NiAVObjectData wire bytes for a string-table NIF
     /// (Skyrim+/FO4 — both >= STRING_TABLE_THRESHOLD=V20_1_0_1). Empty
@@ -986,7 +920,7 @@ mod tests {
     /// matrix value lands intact.
     #[test]
     fn ni_texture_effect_skips_dynamic_effect_base_on_fo4() {
-        let header = make_fo4_header();
+        let header = NifHeader::test_fo4();
         let mut d = av_object_bytes_string_table();
         d.extend_from_slice(&texture_effect_tail());
         let mut stream = NifStream::new(&d, &header);
@@ -1016,7 +950,7 @@ mod tests {
     /// regress Skyrim+ NiTextureEffect content along with the FO4 fix.
     #[test]
     fn ni_texture_effect_reads_dynamic_effect_base_on_skyrim() {
-        let header = make_skyrim_se_header();
+        let header = NifHeader::test_skyrim_se();
         let mut d = av_object_bytes_string_table();
         // NiDynamicEffect base — present on Skyrim (BSVER < 130).
         d.push(1u8); // switch_state = true

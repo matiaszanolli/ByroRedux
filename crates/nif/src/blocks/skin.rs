@@ -533,25 +533,9 @@ mod tests {
     use crate::stream::NifStream;
     use crate::version::NifVersion;
 
-    fn make_fnv_header() -> NifHeader {
-        NifHeader {
-            version: NifVersion::V20_2_0_7,
-            little_endian: true,
-            user_version: 11,
-            user_version_2: 34,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
-    }
-
     #[test]
     fn parse_skin_partition_fnv_one_partition() {
-        let header = make_fnv_header();
+        let header = NifHeader::test_fo3_fnv();
         let mut data = Vec::new();
 
         // num_partitions = 1
@@ -618,7 +602,7 @@ mod tests {
     /// whole skinned mesh.
     #[test]
     fn parse_skin_partition_destrips_strip_authored_faces() {
-        let header = make_fnv_header();
+        let header = NifHeader::test_fo3_fnv();
         let mut data = Vec::new();
         data.extend_from_slice(&1u32.to_le_bytes()); // num_partitions
         let num_verts: u16 = 4;
@@ -678,7 +662,7 @@ mod tests {
     /// left at the allocation point while the honest floor (6 x 2 = 12) fits.
     #[test]
     fn parse_skin_partition_accepts_strips_ending_near_the_stream_end() {
-        let header = make_fnv_header();
+        let header = NifHeader::test_fo3_fnv();
         let mut data = Vec::new();
         data.extend_from_slice(&1u32.to_le_bytes()); // num_partitions
         let num_verts: u16 = 8;
@@ -730,19 +714,7 @@ mod tests {
     }
 
     fn make_sse_header(user_version_2: u32) -> NifHeader {
-        NifHeader {
-            version: NifVersion::V20_2_0_7,
-            little_endian: true,
-            user_version: 12,
-            user_version_2,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
+        NifHeader::detached(NifVersion::V20_2_0_7, 12, user_version_2)
     }
 
     /// Build a minimal SSE-shaped NiSkinPartition with a single empty
@@ -875,19 +847,7 @@ mod tests {
     #[test]
     fn ni_skin_instance_skin_partition_absent_pre_10_1_0_101() {
         // Header at v10.1.0.0 — below the since=10.1.0.101 boundary.
-        let header = NifHeader {
-            version: NifVersion::V10_1_0_0,
-            little_endian: true,
-            user_version: 0,
-            user_version_2: 0,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        };
+        let header = NifHeader::detached(NifVersion::V10_1_0_0, 0, 0);
         let mut data = Vec::new();
         // data_ref (i32 block ref) = 7
         data.extend_from_slice(&7i32.to_le_bytes());
@@ -918,19 +878,7 @@ mod tests {
     /// IS present.
     #[test]
     fn ni_skin_instance_skin_partition_present_at_10_1_0_101() {
-        let header = NifHeader {
-            version: NifVersion::V10_1_0_101,
-            little_endian: true,
-            user_version: 0,
-            user_version_2: 0,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        };
+        let header = NifHeader::detached(NifVersion::V10_1_0_101, 0, 0);
         let mut data = Vec::new();
         data.extend_from_slice(&7i32.to_le_bytes()); // data_ref
         data.extend_from_slice(&99i32.to_le_bytes()); // skin_partition_ref
@@ -949,19 +897,7 @@ mod tests {
     // ── #2168 — NiSkinData pre-Bethesda version gates ───────────────
 
     fn make_header(version: NifVersion) -> NifHeader {
-        NifHeader {
-            version,
-            little_endian: true,
-            user_version: 0,
-            user_version_2: 0,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
+        NifHeader::detached(version, 0, 0)
     }
 
     /// A zero-bone `NiSkinData` body: the 52-byte NiTransform struct,

@@ -36,19 +36,7 @@ use crate::version::NifVersion;
 /// (`bsver > 0`) so the `Priority` byte would have been read on the old
 /// `bsver`-only gate.
 fn pre_106_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V10_1_0_101,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 4,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(NifVersion::V10_1_0_101, 0, 4)
 }
 
 fn push_inline_string(out: &mut Vec<u8>, s: &str) {

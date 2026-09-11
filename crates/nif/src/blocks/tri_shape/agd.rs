@@ -11,14 +11,6 @@ use crate::stream::NifStream;
 use std::any::Any;
 use std::io;
 
-// Re-export `NifVersion` into this module's scope so the `#[path]`-mounted
-// `tri_shape_ni_additional_geometry_data_tests.rs` (which calls `use super::*;`)
-// resolves `NifVersion::V20_2_0_7` and friends without an explicit `use` line.
-// Pre-split it inherited the import from `tri_shape.rs`'s module head; the
-// split moved AGD into its own file which doesn't otherwise need the import.
-#[cfg(test)]
-use crate::version::NifVersion;
-
 // ── NiAdditionalGeometryData ──────────────────────────────────────────
 //
 // Per-vertex auxiliary channels (tangents / bitangents / blend weights /

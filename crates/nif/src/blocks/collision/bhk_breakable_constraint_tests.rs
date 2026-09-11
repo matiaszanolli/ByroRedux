@@ -8,35 +8,7 @@ use crate::header::NifHeader;
 use crate::version::NifVersion;
 
 fn oblivion_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_0_0_5,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
-
-fn fnv_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(NifVersion::V20_0_0_5, 11, 0)
 }
 
 /// Build the fixed prefix every BhkBreakableConstraint shares:
@@ -93,7 +65,7 @@ fn fnv_stiff_spring_now_reads_trailer_fields() {
     bytes.extend(vec![0xAA; 36]);
     bytes.extend(trailer(99.0, false));
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 99.0, "FNV trailer must round-trip (#633)");
@@ -109,7 +81,7 @@ fn fnv_ball_and_socket_reads_trailer_fields() {
     bytes.extend(vec![0xBB; 32]);
     bytes.extend(trailer(7.5, true));
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 7.5);
@@ -127,7 +99,7 @@ fn fnv_hinge_uses_128_byte_size_not_oblivion_80() {
     bytes.extend(vec![0xCC; 128]); // FNV: 8 × Vec4
     bytes.extend(trailer(123.0, false));
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 123.0);
@@ -155,7 +127,7 @@ fn fnv_limited_hinge_with_motor_none_consumes_full_block() {
     bytes.extend(trailer(50.0, true));
 
     assert_eq!(bytes.len(), 16 + 4 + 16 + 140 + 1 + 5);
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 50.0);
@@ -174,7 +146,7 @@ fn fnv_limited_hinge_with_position_motor_consumes_25_extra_bytes() {
     bytes.extend(vec![0xDD; 25]); // motor payload
     bytes.extend(trailer(75.0, false));
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 75.0);
@@ -189,7 +161,7 @@ fn fnv_ragdoll_with_motor_none_consumes_full_block() {
     bytes.push(0u8);
     bytes.extend(trailer(11.0, false));
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 11.0);
@@ -205,7 +177,7 @@ fn fnv_prismatic_with_spring_motor_consumes_17_extra_bytes() {
     bytes.extend(vec![0xAB; 17]);
     bytes.extend(trailer(33.0, true));
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 33.0);
@@ -220,7 +192,7 @@ fn fnv_unknown_motor_type_errors() {
     let mut bytes = shared_prefix(2);
     bytes.extend(vec![0xCC; 140]);
     bytes.push(99u8); // unknown motor type
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     assert!(BhkBreakableConstraint::parse(&mut stream).is_err());
 }
@@ -232,7 +204,7 @@ fn fnv_unknown_motor_type_errors() {
 #[test]
 fn fnv_malleable_falls_through_to_short_stub() {
     let bytes = shared_prefix(13); // wrapped_type = 13 (Malleable)
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.wrapped_type, 13);
@@ -267,10 +239,15 @@ fn oblivion_hinge_still_uses_80_byte_size() {
 #[test]
 fn fnv_wrapped_ragdoll_decodes_real_geometry() {
     let mut bytes = shared_prefix(7); // wrapped_type = 7 (Ragdoll)
-                                       // 8 × Vec4 FO3+ order + 6 × f32 = 152 B fixed prefix.
+                                      // 8 × Vec4 FO3+ order + 6 × f32 = 152 B fixed prefix.
     for i in 0..8u8 {
         bytes.extend_from_slice(&(i as f32).to_le_bytes());
-        bytes.extend_from_slice(&[0.0f32; 3].iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>());
+        bytes.extend_from_slice(
+            &[0.0f32; 3]
+                .iter()
+                .flat_map(|f| f.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
     }
     for v in [0.5f32, -0.25, 0.75, -1.5, 1.5, 100.0] {
         bytes.extend_from_slice(&v.to_le_bytes());
@@ -278,13 +255,16 @@ fn fnv_wrapped_ragdoll_decodes_real_geometry() {
     bytes.push(0u8); // motor type NONE
     bytes.extend(trailer(42.0, true));
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 42.0);
     assert!(block.remove_when_broken);
     let BhkConstraintData::Ragdoll(r) = block.data else {
-        panic!("wrapped Ragdoll must decode as Ragdoll, got {:?}", block.data);
+        panic!(
+            "wrapped Ragdoll must decode as Ragdoll, got {:?}",
+            block.data
+        );
     };
     assert_eq!(r.twist_a, [0.0, 0.0, 0.0, 0.0]);
     assert_eq!(r.pivot_a, [3.0, 0.0, 0.0, 0.0]);
@@ -298,10 +278,15 @@ fn fnv_wrapped_ragdoll_decodes_real_geometry() {
 #[test]
 fn fnv_wrapped_prismatic_decodes_real_geometry() {
     let mut bytes = shared_prefix(6); // wrapped_type = 6 (Prismatic)
-                                       // 8 × Vec4 FO3+ order + 3 × f32 = 140 B fixed prefix.
+                                      // 8 × Vec4 FO3+ order + 3 × f32 = 140 B fixed prefix.
     for i in 0..8u8 {
         bytes.extend_from_slice(&(i as f32).to_le_bytes());
-        bytes.extend_from_slice(&[0.0f32; 3].iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>());
+        bytes.extend_from_slice(
+            &[0.0f32; 3]
+                .iter()
+                .flat_map(|f| f.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
     }
     for v in [-5.0f32, 5.0, 0.2] {
         bytes.extend_from_slice(&v.to_le_bytes());
@@ -309,13 +294,16 @@ fn fnv_wrapped_prismatic_decodes_real_geometry() {
     bytes.push(0u8); // motor type NONE
     bytes.extend(trailer(17.5, false));
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 17.5);
     assert!(!block.remove_when_broken);
     let BhkConstraintData::Prismatic(p) = block.data else {
-        panic!("wrapped Prismatic must decode as Prismatic, got {:?}", block.data);
+        panic!(
+            "wrapped Prismatic must decode as Prismatic, got {:?}",
+            block.data
+        );
     };
     assert_eq!(p.sliding_a, [0.0, 0.0, 0.0, 0.0]);
     assert_eq!(p.pivot_a, [3.0, 0.0, 0.0, 0.0]);
@@ -330,10 +318,15 @@ fn fnv_wrapped_prismatic_decodes_real_geometry() {
 #[test]
 fn oblivion_wrapped_limited_hinge_decodes_real_geometry() {
     let mut bytes = shared_prefix(2); // wrapped_type = 2 (LimitedHinge)
-                                       // 7 × Vec4 Oblivion order + 3 × f32 = 124 B.
+                                      // 7 × Vec4 Oblivion order + 3 × f32 = 124 B.
     for i in 0..7u8 {
         bytes.extend_from_slice(&(i as f32).to_le_bytes());
-        bytes.extend_from_slice(&[0.0f32; 3].iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>());
+        bytes.extend_from_slice(
+            &[0.0f32; 3]
+                .iter()
+                .flat_map(|f| f.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
     }
     for v in [-0.5f32, 0.5, 5.0] {
         bytes.extend_from_slice(&v.to_le_bytes());
@@ -345,7 +338,10 @@ fn oblivion_wrapped_limited_hinge_decodes_real_geometry() {
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 9.0);
     let BhkConstraintData::LimitedHinge(h) = block.data else {
-        panic!("wrapped LimitedHinge must decode as LimitedHinge, got {:?}", block.data);
+        panic!(
+            "wrapped LimitedHinge must decode as LimitedHinge, got {:?}",
+            block.data
+        );
     };
     // Oblivion order: index 0 = pivot_a, index 1 = axis_a.
     assert_eq!(h.pivot_a, [0.0, 0.0, 0.0, 0.0]);
@@ -364,7 +360,7 @@ fn fnv_wrapped_ball_and_socket_stays_other() {
     bytes.extend(vec![0xEE; 32]); // 2 × Vec4, no version diff
     bytes.extend(trailer(5.0, false));
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 5.0);

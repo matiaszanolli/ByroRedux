@@ -10,17 +10,9 @@ use crate::version::NifVersion;
 
 fn make_header_fnv() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("TestName"), Arc::from("start")],
         max_string_length: 8,
-        num_groups: 0,
+        ..NifHeader::test_fo3_fnv()
     }
 }
 
@@ -429,19 +421,8 @@ fn parse_transform_data_xyz_rotation_reads_all_three_axes() {
 #[test]
 fn parse_transform_data_pre10_xyz_rotation_consumes_order_float() {
     // Build a header with version 10.0.1.0 (pre-10.1.0.0 boundary)
-    let header = NifHeader {
-        version: NifVersion::V10_0_1_0, // 10.0.1.0
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // 10.0.1.0
+    let header = NifHeader::detached(NifVersion::V10_0_1_0, 0, 0);
 
     let mut data = Vec::new();
     // Num Rotation Keys = 1
@@ -495,19 +476,7 @@ fn parse_transform_data_pre10_xyz_rotation_consumes_order_float() {
 #[test]
 fn parse_transform_data_post20_xyz_rotation_has_no_order_float() {
     // post-10.1 header (FNV)
-    let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::test_fo3_fnv();
 
     let mut data = Vec::new();
     // Num Rotation Keys = 1
@@ -626,19 +595,7 @@ fn ni_bool_timeline_interpolator_dispatches_via_parse_block() {
 /// v10.1.0.1.
 #[test]
 fn parse_transform_data_xyz_order_at_v10_1_0_0_exactly() {
-    let header = NifHeader {
-        version: NifVersion::V10_1_0_0,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::detached(NifVersion::V10_1_0_0, 0, 0);
     let mut data = Vec::new();
     data.extend_from_slice(&1u32.to_le_bytes()); // num_rotation_keys = 1
     data.extend_from_slice(&4u32.to_le_bytes()); // KeyType::XyzRotation
@@ -662,19 +619,7 @@ fn parse_transform_data_xyz_order_at_v10_1_0_0_exactly() {
 /// the Order field is finally absent.
 #[test]
 fn parse_transform_data_xyz_no_order_at_v10_1_0_1() {
-    let header = NifHeader {
-        version: NifVersion::V10_1_0_1,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::detached(NifVersion::V10_1_0_1, 0, 0);
     let mut data = Vec::new();
     data.extend_from_slice(&1u32.to_le_bytes()); // num_rotation_keys = 1
     data.extend_from_slice(&4u32.to_le_bytes()); // KeyType::XyzRotation
@@ -698,19 +643,8 @@ fn parse_transform_data_xyz_no_order_at_v10_1_0_1() {
 /// `Order` field IS still present and must be consumed.
 #[test]
 fn parse_transform_data_xyz_with_order_below_v10_1_0_0() {
-    let header = NifHeader {
-        version: NifVersion::V10_0_1_0, // v10.0.1.0 — below the until= boundary
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // v10.0.1.0 — below the until= boundary
+    let header = NifHeader::detached(NifVersion::V10_0_1_0, 0, 0);
     let mut data = Vec::new();
     data.extend_from_slice(&1u32.to_le_bytes()); // num_rotation_keys = 1
     data.extend_from_slice(&4u32.to_le_bytes()); // KeyType::XyzRotation
@@ -907,19 +841,7 @@ fn parse_ni_bspline_point3_interpolator_does_not_consume_comp_trailer() {
 /// `menus/lockpicking/pickold.nif` (v10.1.0.106, Array Size 2).
 #[test]
 fn parse_blend_transform_interpolator_legacy_10_1_0_106() {
-    let header = NifHeader {
-        version: NifVersion::V10_1_0_106,
-        little_endian: true,
-        user_version: 10,
-        user_version_2: 5,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::detached(NifVersion::V10_1_0_106, 10, 5);
     let mut data = Vec::new();
     // --- NiBlendInterpolator (<= 10.1.0.109 band) ---
     data.extend_from_slice(&2u16.to_le_bytes()); // Array Size
@@ -1019,19 +941,8 @@ fn parse_legacy_blend_single_payload_10_1_0_109() {
 /// pins the guard so the site can't silently revert to the raw idiom.
 #[test]
 fn parse_legacy_blend_interpolator_rejects_oversized_array_size() {
-    let header = NifHeader {
-        version: NifVersion::V10_1_0_106, // <= 10.1.0.109 → parse_legacy(int_priority)
-        little_endian: true,
-        user_version: 10,
-        user_version_2: 5,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // <= 10.1.0.109 → parse_legacy(int_priority)
+    let header = NifHeader::detached(NifVersion::V10_1_0_106, 10, 5);
     let mut data = Vec::new();
     // Array Size = 65535 (u16 max) with no item payload following — the
     // guard must reject it against the ~0 bytes remaining, not reserve for

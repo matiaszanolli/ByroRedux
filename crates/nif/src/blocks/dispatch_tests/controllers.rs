@@ -125,17 +125,9 @@ fn ni_bs_bone_lod_controller_skips_shape_groups_on_bethesda() {
     // FNV header — bsver=34, the BSVER on every creature skeleton
     // that R3 surfaced.
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("SkyProp")],
         max_string_length: 8,
-        num_groups: 0,
+        ..NifHeader::test_fo3_fnv()
     };
     let mut bytes = Vec::new();
     // NiTimeController base (26 B).
@@ -261,19 +253,7 @@ fn oblivion_kf_animation_blocks_route_correctly() {
 /// the version nif.xml declares — same convention as
 /// `legacy_particle.rs`'s `header_at`.
 fn header_at(version: NifVersion) -> NifHeader {
-    NifHeader {
-        version,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(version, 0, 0)
 }
 
 /// #2562 — at `v10.1.0.103` (the last version the `Data` ref is
@@ -627,19 +607,7 @@ fn oblivion_legacy_particle_system_controller_roundtrip() {
 /// Pre-fix the parser walked 6 phantom bytes into the next block.
 #[test]
 fn ni_geom_morpher_controller_v10_0_1_0_has_no_flags_or_interpolators() {
-    let header = NifHeader {
-        version: NifVersion::V10_0_1_0,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::detached(NifVersion::V10_0_1_0, 0, 0);
     let mut bytes = Vec::new();
     // v10.0.1.0 NiObject groupID (4 B) — present on every non-Havok
     // NiObject in [10.0.0.0, 10.1.0.114); NiGeomMorpherController isn't

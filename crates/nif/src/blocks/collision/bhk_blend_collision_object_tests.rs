@@ -16,39 +16,12 @@ use crate::version::NifVersion;
 /// matching the corpus where the 4 (-of-6) reported `bhkRigidBody`
 /// failures actually originated.
 fn pre_oblivion_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V10_2_0_0,
-        little_endian: true,
-        user_version: 10,
-        user_version_2: 6,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(NifVersion::V10_2_0_0, 10, 6)
 }
 
-/// Oblivion-mainline header — NIF v20.0.0.5 / `bsver=11`. Sibling
-/// fixture so the test pins both the new `bsver < 9` arm AND the
-/// existing `bsver >= 9` arm against the same parser body.
-fn oblivion_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_0_0_5,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 11,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
+// Oblivion-mainline header — NIF v20.0.0.5 / `bsver=11`. Sibling
+// fixture so the test pins both the new `bsver < 9` arm AND the
+// existing `bsver >= 9` arm against the same parser body.
 
 /// Write a synthetic `bhkBlendCollisionObject` payload. `with_pre_oblivion_pad`
 /// adds the two `Unknown Float` fields the `bsver < 9` schema
@@ -100,7 +73,7 @@ fn bsver_lt_9_consumes_unknown_float_pair() {
 /// block's bytes.
 #[test]
 fn bsver_gte_9_does_not_read_unknown_float_pair() {
-    let header = oblivion_header();
+    let header = NifHeader::test_oblivion();
     let bytes = bhk_blend_collision_object_bytes(false);
     assert_eq!(bytes.len(), 18, "bsver>=9 wire size is 18 B");
 

@@ -13,17 +13,9 @@ use std::sync::Arc;
 
 fn make_header(user_version: u32, user_version_2: u32) -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version,
-        user_version_2,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("ShaderProp")],
         max_string_length: 10,
-        num_groups: 0,
+        ..NifHeader::detached(NifVersion::V20_2_0_7, user_version, user_version_2)
     }
 }
 
@@ -78,17 +70,9 @@ fn build_bsshader_bytes_with_emissive(user_version_2: u32, emissive: Option<[f32
 
 fn make_skyrim_header() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 83,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("TestShader")],
         max_string_length: 10,
-        num_groups: 0,
+        ..NifHeader::test_skyrim_le()
     }
 }
 
@@ -142,17 +126,9 @@ fn build_bs_lighting_common(shader_type: u32) -> Vec<u8> {
 
 fn make_fo4_header() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 130,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("FO4Shader")],
         max_string_length: 9,
-        num_groups: 0,
+        ..NifHeader::test_fo4()
     }
 }
 
@@ -236,17 +212,9 @@ fn build_bs_lighting_fo4_env_map() -> Vec<u8> {
 /// per-BSVER gate controls; callers assemble the rest.
 fn make_fo4_header_with_bsver(bsver: u32) -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: bsver,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("BoundaryShader")],
         max_string_length: 14,
-        num_groups: 0,
+        ..NifHeader::detached(NifVersion::V20_2_0_7, 12, bsver)
     }
 }
 
@@ -254,17 +222,9 @@ fn make_fo4_header_with_bsver(bsver: u32) -> NifHeader {
 
 fn make_fo76_header(name: &str) -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 155,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from(name)],
         max_string_length: name.len() as u32,
-        num_groups: 0,
+        ..NifHeader::test_fo76()
     }
 }
 
@@ -390,17 +350,9 @@ fn build_bs_water_shader_property(water_shader_flags: u32) -> Vec<u8> {
 /// for the regression of #109 captured in #746 / #747.
 fn make_starfield_header(name: &str) -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 172,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from(name)],
         max_string_length: name.len() as u32,
-        num_groups: 0,
+        ..NifHeader::test_starfield()
     }
 }
 

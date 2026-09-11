@@ -109,27 +109,10 @@ mod tests {
     use super::*;
     use crate::header::NifHeader;
     use crate::stream::NifStream;
-    use crate::version::NifVersion;
-
-    fn make_fnv_header() -> NifHeader {
-        NifHeader {
-            version: NifVersion::V20_2_0_7,
-            little_endian: true,
-            user_version: 11,
-            user_version_2: 34,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
-    }
 
     #[test]
     fn parse_bs_multi_bound() {
-        let header = make_fnv_header();
+        let header = NifHeader::test_fo3_fnv();
         let data: Vec<u8> = 5i32.to_le_bytes().to_vec();
         let mut stream = NifStream::new(&data, &header);
         let mb = BsMultiBound::parse(&mut stream).unwrap();
@@ -138,7 +121,7 @@ mod tests {
 
     #[test]
     fn parse_bs_multi_bound_aabb() {
-        let header = make_fnv_header();
+        let header = NifHeader::test_fo3_fnv();
         let mut data = Vec::new();
         for v in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
             data.extend_from_slice(&v.to_le_bytes());
@@ -151,7 +134,7 @@ mod tests {
 
     #[test]
     fn parse_bs_multi_bound_obb() {
-        let header = make_fnv_header();
+        let header = NifHeader::test_fo3_fnv();
         let mut data = Vec::new();
         // center (3) + size (3) + rotation (9) = 15 floats
         for i in 0..15 {
@@ -167,7 +150,7 @@ mod tests {
 
     #[test]
     fn parse_bs_multi_bound_sphere() {
-        let header = make_fnv_header();
+        let header = NifHeader::test_fo3_fnv();
         let mut data = Vec::new();
         // center (3) + radius (1) = 4 floats = 16 bytes
         for v in [10.0f32, 20.0, 30.0, 5.0] {

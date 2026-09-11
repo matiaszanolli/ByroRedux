@@ -31,17 +31,9 @@ use std::sync::Arc;
 /// Build an Oblivion (bsver=0) header with a single string slot.
 pub(super) fn oblivion_header() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_0_0_5,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("SkyProp")],
         max_string_length: 8,
-        num_groups: 0,
+        ..NifHeader::detached(NifVersion::V20_0_0_5, 11, 0)
     }
 }
 
@@ -68,19 +60,7 @@ pub(super) fn oblivion_bsshader_bytes() -> Vec<u8> {
 
 /// FO4 header (bsver=130) used by the NP-physics dispatch tests.
 pub(super) fn fo4_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 130,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::test_fo4()
 }
 
 /// FNV header (bsver=34, v20.2.0.7) used by the B-spline dispatch
@@ -88,17 +68,5 @@ pub(super) fn fo4_header() -> NifHeader {
 /// the "B-splines aren't Skyrim+ only" feedback memory, so the float +
 /// point3 fixtures use the FNV-style header.
 pub(super) fn fnv_header_bspline() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::test_fo3_fnv()
 }

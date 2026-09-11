@@ -465,8 +465,28 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // serializing the type and asserting the JSON contains no occurrence of
     // "ImageSpaceModifier" passes. Field names and order are what JSON
     // encodes, and neither moved, so every existing save still loads.
+    // #3854 — the fingerprint moved WITHOUT a FORMAT_MAJOR bump, and this is
+    // the #3852 / #3861 file-scoping category again, not a data-shape change.
+    // `fragment.rs` (2,713 LOC) was split into `fragment/{state,effects,
+    // populate,systems}.rs`, so four saved types are now found in
+    // `fragment/state.rs`; items reached across the new module boundary also
+    // picked up a `pub(crate)` visibility prefix.
+    //
+    // Verified rather than assumed, per the #3852 note above. Dumping
+    // `normalized_serialized_shapes()` either side of the split gives 149
+    // shapes both times with exactly FOUR differing lines
+    // (`ReferenceEnableState`, `FragmentExecutionQueue`,
+    // `PendingFragmentExecution`, `FragmentResumeCondition`), and every one
+    // differs only in:
+    //   - the file path the type was found in, and
+    //   - a `pub(crate)` prefix on some fields.
+    // No field is added, removed, renamed, reordered or retyped, and no enum
+    // variant is inserted. Field visibility is a Rust-side concept that
+    // `serde_json` never encodes (`crates/save/src/snapshot.rs`); names and
+    // order are what it writes, and neither moved. Every existing save still
+    // loads, so the baseline is refreshed rather than the format bumped.
     const BASELINE_MAJOR: u16 = 22;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xd2c2_e262_5d71_2646;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb4bd_4a25_983a_ff44;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

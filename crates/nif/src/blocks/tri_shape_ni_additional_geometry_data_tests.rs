@@ -9,19 +9,7 @@ use crate::header::NifHeader;
 fn fnv_header() -> NifHeader {
     // FNV: 20.2.0.7 with bsver = 34. Matches the corpus where the
     // 4,039 pre-fix NiUnknown blocks came from. #547.
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::test_fo3_fnv()
 }
 
 /// Build a minimal `NiAdditionalGeometryData` body carrying one

@@ -15,19 +15,7 @@ use crate::stream::NifStream;
 use crate::version::NifVersion;
 
 fn header_at(version: NifVersion) -> NifHeader {
-    NifHeader {
-        version,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(version, 0, 0)
 }
 
 /// `NiAVObjectData` body for a version strictly below `V10_0_1_0` (the

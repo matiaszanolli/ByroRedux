@@ -7,22 +7,6 @@ use crate::blocks::parse_block;
 use crate::header::NifHeader;
 use crate::version::NifVersion;
 
-fn test_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 100, // Skyrim SE
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
-
 /// Build a minimal valid Skyrim SE BSTriShape body with zero vertices
 /// and zero triangles. Used by the BSDynamicTriShape / BSLODTriShape
 /// dispatch regression tests (issue #157).
@@ -76,7 +60,7 @@ fn minimal_bs_tri_shape_bytes() -> Vec<u8> {
 /// padding in this field.
 #[test]
 fn bs_tri_shape_with_mismatched_data_size_still_parses() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     // Patch the minimal-helper bytes: replace data_size = 0 with
     // a deliberately wrong non-zero value. With num_vertices = 0
     // and num_triangles = 0 the derived value is 0, so any
@@ -114,7 +98,7 @@ fn bs_tri_shape_with_mismatched_data_size_still_parses() {
 /// warnings on a Skyrim - Meshes0.bsa scan.
 #[test]
 fn bs_dynamic_tri_shape_with_zero_data_size_imports_dynamic_vertices() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut bytes = minimal_bs_tri_shape_bytes();
     // BSDynamicTriShape trailing for 2 dynamic vertices:
     //   dynamic_data_size = 2 * 16 = 32, then 2 × Vector4 (x, y, z, w).
@@ -161,7 +145,7 @@ fn bs_dynamic_tri_shape_with_zero_data_size_imports_dynamic_vertices() {
 /// making every Skyrim NPC face invisible.
 #[test]
 fn bs_dynamic_tri_shape_dispatches_and_consumes_trailing_bytes() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut bytes = minimal_bs_tri_shape_bytes();
     // BSDynamicTriShape trailing: dynamic_data_size=0 (#341 — the
     // bogus `_unknown` u32 was removed; nif.xml only specifies one
@@ -182,24 +166,9 @@ fn bs_dynamic_tri_shape_dispatches_and_consumes_trailing_bytes() {
     );
 }
 
-/// FO76 header — BSVER 155. `BS_F76` condition in nif.xml gates the
-/// 24-byte `Bound Min Max` AABB between the bounding sphere and the
-/// skin ref on BSTriShape. See #342.
-fn fo76_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 155, // Fallout 76 — BS_F76
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
+// FO76 header — BSVER 155. `BS_F76` condition in nif.xml gates the
+// 24-byte `Bound Min Max` AABB between the bounding sphere and the
+// skin ref on BSTriShape. See #342.
 
 /// Build a minimal valid FO76 BSTriShape body with a non-zero
 /// `Bound Min Max` payload. Reads `num_triangles` as u32 (BSVER
@@ -258,7 +227,7 @@ fn minimal_fo76_bs_tri_shape_bytes() -> Vec<u8> {
 /// parse-rate metrics but every block's *contents* were wrong.
 #[test]
 fn bs_tri_shape_fo76_consumes_bound_min_max() {
-    let header = fo76_header();
+    let header = NifHeader::test_fo76();
     let bytes = minimal_fo76_bs_tri_shape_bytes();
 
     let mut stream = crate::stream::NifStream::new(&bytes, &header);
@@ -302,7 +271,7 @@ fn bs_tri_shape_fo76_consumes_bound_min_max() {
 /// `>= 130` typo.
 #[test]
 fn bs_tri_shape_skyrim_sse_skips_no_bound_min_max() {
-    let header = test_header(); // BSVER 100 (SSE)
+    let header = NifHeader::test_skyrim_se(); // BSVER 100 (SSE)
     let bytes = minimal_bs_tri_shape_bytes();
     let mut stream = crate::stream::NifStream::new(&bytes, &header);
     parse_block("BSTriShape", &mut stream, Some(bytes.len() as u32))
@@ -322,7 +291,7 @@ fn bs_tri_shape_skyrim_sse_skips_no_bound_min_max() {
 /// a strict-equality `BSVER == 155` gate must NOT fire here.
 #[test]
 fn bs_tri_shape_starfield_skips_no_bound_min_max() {
-    let mut header = fo76_header();
+    let mut header = NifHeader::test_fo76();
     header.user_version_2 = 172;
     // Starfield body is identical to FO76 minus the Bound Min Max.
     // Build from the FO76 bytes and splice out the 24 bytes at the
@@ -341,23 +310,8 @@ fn bs_tri_shape_starfield_skips_no_bound_min_max() {
     );
 }
 
-/// FO3/FNV header — has_properties_list=true, no shader_alpha_refs.
-/// Used by the BSSegmentedTriShape regression test.
-fn fo3_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34, // Fallout 3 / NV
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
+// FO3/FNV header — has_properties_list=true, no shader_alpha_refs.
+// Used by the BSSegmentedTriShape regression test.
 
 /// Build a minimal valid FO3/FNV NiTriShape body: zero materials,
 /// null data refs, identity transform. Used as the base for the
@@ -401,7 +355,7 @@ fn minimal_fo3_ni_tri_shape_bytes() -> Vec<u8> {
 /// warnings on every FO3/FNV/SkyrimLE body-part mesh.
 #[test]
 fn bs_segmented_tri_shape_dispatches_and_consumes_segment_table() {
-    let header = fo3_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut bytes = minimal_fo3_ni_tri_shape_bytes();
     // num_segments = 2 + two 9-byte segment records.
     bytes.extend_from_slice(&2u32.to_le_bytes());
@@ -435,7 +389,7 @@ fn bs_segmented_tri_shape_dispatches_and_consumes_segment_table() {
 /// could possibly hold.
 #[test]
 fn bs_segmented_tri_shape_rejects_corrupt_num_segments() {
-    let header = fo3_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut bytes = minimal_fo3_ni_tri_shape_bytes();
     // Declare an absurd segment count with no backing data — should
     // fail fast via check_alloc's remaining-stream check rather than
@@ -456,7 +410,7 @@ fn bs_segmented_tri_shape_rejects_corrupt_num_segments() {
 /// block-loop realignment warning.
 #[test]
 fn bs_mesh_lod_tri_shape_dispatches_and_consumes_trailing_bytes() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut bytes = minimal_bs_tri_shape_bytes();
     // BSMeshLODTriShape trailing: 3 × u32 LOD sizes.
     bytes.extend_from_slice(&20u32.to_le_bytes());
@@ -493,12 +447,12 @@ fn bs_mesh_lod_tri_shape_dispatches_and_consumes_trailing_bytes() {
 /// per-segment bone-slot flags (SSE) / parent-array indices + cut
 /// offsets (FO4+) needed for dismemberment / locational damage.
 ///
-/// SSE-flavoured fixture (`bsver == crate::version::bsver::SKYRIM_SE` from `test_header()`): each
+/// SSE-flavoured fixture (`bsver == crate::version::bsver::SKYRIM_SE` from `NifHeader::test_skyrim_se()`): each
 /// segment is `byte flags + uint start_index + uint num_primitives`
 /// (9 bytes/segment, no parent_array_index, no sub-segments).
 #[test]
 fn bs_sub_index_tri_shape_sse_decodes_segment_table() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut bytes = minimal_bs_tri_shape_bytes();
     // SSE segmentation: u32 num_segments = 2, then 2 × (u8 flags + u32 start + u32 num_prims).
     bytes.extend_from_slice(&2u32.to_le_bytes()); // num_segments
@@ -554,7 +508,7 @@ fn bs_sub_index_tri_shape_fo4_decodes_segments_subsegments_and_ssf() {
     // FO4 header: user_version_2 (BSVER) = 130.
     let header = NifHeader {
         user_version_2: 130,
-        ..test_header()
+        ..NifHeader::test_skyrim_se()
     };
     // Build a minimal FO4 BSTriShape body. `parse()` reads
     // num_triangles as u32 on bsver>=130, num_vertices as u16,
@@ -679,7 +633,7 @@ fn bs_sub_index_tri_shape_fo4_decodes_segments_subsegments_and_ssf() {
 fn bs_sub_index_tri_shape_truncated_segmentation_preserves_body() {
     let header = NifHeader {
         user_version_2: 130,
-        ..test_header()
+        ..NifHeader::test_skyrim_se()
     };
     // Build the same FO4 BSTriShape body as the happy-path test...
     let mut bytes = Vec::new();
@@ -805,7 +759,7 @@ fn minimal_sse_ni_tri_shape_bytes() -> Vec<u8> {
 /// real Skyrim NIFs ship the NiTriShape format and drifted.
 #[test]
 fn bs_lod_tri_shape_skyrim_consumes_ni_tri_shape_body_plus_3u32_trailer() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut bytes = minimal_sse_ni_tri_shape_bytes();
     // 3 × u32 LOD sizes — matches nif.xml `BSLODTriShape` definition.
     bytes.extend_from_slice(&10u32.to_le_bytes());
@@ -841,7 +795,7 @@ fn bs_lod_tri_shape_skyrim_consumes_ni_tri_shape_body_plus_3u32_trailer() {
 /// a head from a static prop from a segmented body from a LOD shell.
 #[test]
 fn bs_tri_shape_variants_stamp_their_kind() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
 
     // 1. Plain BSTriShape → Plain.
     {
@@ -933,7 +887,7 @@ fn bs_tri_shape_variants_stamp_their_kind() {
 /// `renormalize_skin_weights_tests` in `tri_shape.rs`.
 #[test]
 fn read_vertex_skin_data_weights_and_indices() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut data = Vec::new();
     // Weights: 1.0, 0.0, 0.0, 0.0 as half-floats — unit sum, so
     // the helper's renormalize call passes through untouched.
@@ -958,7 +912,7 @@ fn read_vertex_skin_data_weights_and_indices() {
 
 #[test]
 fn read_vertex_skin_data_four_bones_normalized() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut data = Vec::new();
     // Four equal weights of 0.25 as half-floats (0x3400).
     for _ in 0..4 {
@@ -1006,7 +960,7 @@ fn fo4_precombined_lod_chunk_with_zero_data_size_parses_clean() {
     // FO4 header (BSVER 130).
     let header = NifHeader {
         user_version_2: 130,
-        ..test_header()
+        ..NifHeader::test_skyrim_se()
     };
 
     // Captured byte-exact from `Fallout4 - MeshesExtra.ba2` block 2 of
@@ -1110,7 +1064,7 @@ fn fo4_precombined_lod_chunk_with_zero_data_size_parses_clean() {
 fn fo4_bs_tri_shape_with_zero_data_size_and_nonzero_counts_parses_clean() {
     let header = NifHeader {
         user_version_2: 130,
-        ..test_header()
+        ..NifHeader::test_skyrim_se()
     };
 
     // BSTriShape body proper is 122 bytes (no LOD trailer on the plain
@@ -1167,7 +1121,7 @@ fn fo4_bs_tri_shape_with_zero_data_size_and_nonzero_counts_parses_clean() {
 /// successfully copies a non-empty dynamic-vertex array.
 #[test]
 fn bs_dynamic_tri_shape_sets_full_precision_flag_after_position_overwrite() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut bytes = minimal_bs_tri_shape_bytes();
     // dynamic_data_size = 1 vertex × 16 = 16 bytes, then one Vector4.
     bytes.extend_from_slice(&16u32.to_le_bytes());
@@ -1220,7 +1174,7 @@ fn bs_dynamic_tri_shape_sets_full_precision_flag_after_position_overwrite() {
 /// completes cleanly.
 #[test]
 fn bs_tri_shape_data_size_mismatch_uses_derived_stride() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut bytes = minimal_bs_tri_shape_bytes();
 
     // Patch vertex_desc (offset 100, 8 bytes): set
@@ -1292,7 +1246,7 @@ fn bs_tri_shape_data_size_mismatch_uses_derived_stride() {
 /// minimum) and the declared stride is used instead.
 #[test]
 fn bs_tri_shape_data_size_understated_derived_stride_falls_back_to_declared() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut bytes = minimal_bs_tri_shape_bytes();
 
     // vertex_size_quads = 5 (20 bytes/vertex declared — 4 bytes more
@@ -1373,7 +1327,7 @@ fn bs_tri_shape_data_size_understated_derived_stride_falls_back_to_declared() {
 /// reconstruction).
 #[test]
 fn bs_tri_shape_unused_w_slot_does_not_pollute_tangents() {
-    let header = test_header();
+    let header = NifHeader::test_skyrim_se();
     let mut bytes = minimal_bs_tri_shape_bytes();
 
     // Patch vertex_desc (offset 100, 8 bytes): vertex_size_quads = 4
@@ -1438,19 +1392,8 @@ fn bs_tri_shape_unused_w_slot_does_not_pollute_tangents() {
 /// revert to the variant helper drops the two refs and ends 8 B short.
 #[test]
 fn ni_tri_shape_reads_shader_alpha_refs_on_hybrid_unknown_bsver_over_34() {
-    let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 50, // Unknown variant, bsver > 34 → refs authored
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // Unknown variant, bsver > 34 → refs authored
+    let header = NifHeader::detached(NifVersion::V20_2_0_7, 11, 50);
     // (11, 50) detects as `Unknown` — the hybrid-header corner where a
     // game-variant feature helper answers `false` and would drop the refs,
     // which is exactly why the production gate reads raw bsver (#1838 / #1840).

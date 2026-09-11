@@ -54,19 +54,7 @@ fn oblivion_empty_ninode_bytes() -> Vec<u8> {
 /// length), causing 145 / 8032 Oblivion-era files to truncate at
 /// root with "failed to fill whole buffer".
 fn early_gamebryo_header(packed_version: u32) -> NifHeader {
-    NifHeader {
-        version: NifVersion(packed_version),
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(NifVersion(packed_version), 0, 0)
 }
 
 /// FO76 header — bsver=155, version=20.2.0.7, with named string slots
@@ -77,17 +65,9 @@ fn early_gamebryo_header(packed_version: u32) -> NifHeader {
 /// the string table, so an empty `strings` field is fine for them.
 fn fo76_header_with_name(name: &str) -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 155,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from(name)],
         max_string_length: name.len() as u32,
-        num_groups: 0,
+        ..NifHeader::test_fo76()
     }
 }
 
@@ -130,17 +110,8 @@ fn build_bs_multi_bound_node_body() -> Vec<u8> {
 /// name index of 0 resolves to an empty NiObjectNET name (full-body path).
 fn starfield_header() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 172,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("")],
-        max_string_length: 0,
-        num_groups: 0,
+        ..NifHeader::test_starfield()
     }
 }
 
@@ -249,18 +220,10 @@ fn bs_weak_reference_node_captures_starfield_trailing_tail() {
 fn bs_weak_reference_node_parses_populated_lists_with_undocumented_gap() {
     use crate::blocks::node::BsWeakReferenceNode;
 
+    // >= SF_FORM_ID — real retail Starfield content
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 175, // >= SF_FORM_ID — real retail Starfield content
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("")],
-        max_string_length: 0,
-        num_groups: 0,
+        ..NifHeader::detached(NifVersion::V20_2_0_7, 12, 175)
     };
 
     let mut b = build_empty_starfield_weakref_body();
@@ -334,17 +297,8 @@ fn build_populated_starfield_weakref_body(with_form_id: bool, with_gap: bool) ->
 
 fn starfield_header_at_bsver(bsver: u32) -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: bsver,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("")],
-        max_string_length: 0,
-        num_groups: 0,
+        ..NifHeader::detached(NifVersion::V20_2_0_7, 12, bsver)
     }
 }
 
@@ -609,17 +563,9 @@ fn ni_node_parses_unknown_variant_with_low_bsver() {
     // also gives us `bsver() == 0` so the pre-Skyrim binary layout
     // applies.
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 13,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("Root")],
         max_string_length: 4,
-        num_groups: 0,
+        ..NifHeader::detached(NifVersion::V20_2_0_7, 13, 0)
     };
     // Sanity: this combo really does classify as Unknown.
     assert_eq!(
@@ -988,19 +934,8 @@ fn bs_multi_bound_node_reads_culling_mode_on_hybrid_unknown_bsver_ge_83() {
     use crate::blocks::node::BsMultiBoundNode;
     use crate::version::NifVariant;
 
-    let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 90, // Unknown variant, bsver >= 83 → culling_mode authored
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // Unknown variant, bsver >= 83 → culling_mode authored
+    let header = NifHeader::detached(NifVersion::V20_2_0_7, 11, 90);
     // `Unknown` is the hybrid corner where a game-variant helper would answer
     // `false` and drop culling_mode; the production gate reads raw bsver (#1839 / #1840).
     let variant = NifVariant::detect(header.version, 11, 90);

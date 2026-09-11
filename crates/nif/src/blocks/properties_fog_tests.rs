@@ -8,17 +8,8 @@ use std::sync::Arc;
 
 fn make_fo3_header() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 21,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("")],
-        max_string_length: 0,
-        num_groups: 0,
+        ..NifHeader::detached(NifVersion::V20_2_0_7, 11, 21)
     }
 }
 

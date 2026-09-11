@@ -7,7 +7,6 @@ use super::{fnv_header_bspline, oblivion_header};
 use crate::blocks::*;
 use crate::header::NifHeader;
 use crate::stream::NifStream;
-use crate::version::NifVersion;
 use std::sync::Arc;
 
 /// Regression for #394 — `NiPathInterpolator` must consume its
@@ -54,17 +53,9 @@ fn ni_path_interpolator_consumes_full_24_bytes() {
 #[test]
 fn ni_look_at_interpolator_consumes_full_54_bytes() {
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("SkyProp")],
         max_string_length: 8,
-        num_groups: 0,
+        ..NifHeader::test_fo3_fnv()
     };
     let mut bytes = Vec::new();
     // Flags: LOOK_FLIP | LOOK_Y_AXIS = 0x0003.

@@ -22,17 +22,9 @@ fn inline_string(s: &str) -> Vec<u8> {
 /// `read_extra_data_name` lookup. SSE bsver=100, version=20.2.0.7.
 fn sse_header_with_name(name: &str) -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 100,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from(name)],
         max_string_length: name.len() as u32,
-        num_groups: 0,
+        ..NifHeader::test_skyrim_se()
     }
 }
 
@@ -109,21 +101,12 @@ fn skyrim_strings_extra_data_uses_sized_string_not_string_table_index() {
     use crate::blocks::extra_data::NiExtraData;
 
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 83, // Skyrim LE
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         // Empty string table — proves the strings array does NOT
         // resolve through it. If the parser still used `read_string`
         // here, the first 4 bytes of "alpha" would be misread as
         // an out-of-bounds string-table index and yield None.
         strings: vec![],
-        max_string_length: 0,
-        num_groups: 0,
+        ..NifHeader::test_skyrim_le()
     };
 
     let mut bytes = Vec::new();
@@ -498,19 +481,11 @@ fn bs_position_data_dispatches_and_decodes_half_float_array() {
 
     // FO4 header: v20.2.0.7, user_version=12, user_version_2=130 (FO4 BSVER).
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 130,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         // BSPositionData reads NiObjectNET's name via the string
         // table on v >= 20.1.0.1; supply slot 0 so the read succeeds.
         strings: vec![Arc::from("ClothBlend")],
         max_string_length: 16,
-        num_groups: 0,
+        ..NifHeader::test_fo4()
     };
 
     let mut data = Vec::new();
@@ -566,17 +541,9 @@ fn bs_position_data_dispatches_and_decodes_half_float_array() {
 #[test]
 fn bs_position_data_hostile_num_vertices_returns_err_not_panic() {
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 130,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("Hostile")],
         max_string_length: 8,
-        num_groups: 0,
+        ..NifHeader::test_fo4()
     };
 
     let mut data = Vec::new();
@@ -611,19 +578,11 @@ fn bs_eye_center_extra_data_dispatches_and_decodes_4_floats() {
 
     // FO4 header: v20.2.0.7, user_version=12, user_version_2=130 (FO4 BSVER).
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 130,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         // BSEyeCenterExtraData reads NiObjectNET's name via the string
         // table on v >= 20.1.0.1; supply slot 0 so the read succeeds.
         strings: vec![Arc::from("EyeCenter")],
         max_string_length: 16,
-        num_groups: 0,
+        ..NifHeader::test_fo4()
     };
 
     let mut data = Vec::new();
@@ -662,17 +621,9 @@ fn bs_eye_center_extra_data_dispatches_and_decodes_4_floats() {
 #[test]
 fn bs_eye_center_extra_data_hostile_num_floats_returns_err_not_panic() {
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 130,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("Hostile")],
         max_string_length: 8,
-        num_groups: 0,
+        ..NifHeader::test_fo4()
     };
 
     let mut data = Vec::new();
@@ -766,17 +717,9 @@ fn sse_bs_distant_object_large_ref_extra_data_round_trips_false() {
 /// keeps the fixture honest about which game this block belongs to.
 fn fo76_header_with_name(name: &str) -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 155,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from(name)],
         max_string_length: name.len() as u32,
-        num_groups: 0,
+        ..NifHeader::test_fo76()
     }
 }
 

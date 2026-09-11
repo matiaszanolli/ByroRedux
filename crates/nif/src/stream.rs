@@ -864,17 +864,9 @@ mod tests {
     /// Build a minimal NifHeader for testing stream reads.
     fn test_header(version: NifVersion) -> NifHeader {
         NifHeader {
-            version,
-            little_endian: true,
-            user_version: 0,
-            user_version_2: 0,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
             strings: vec![Arc::from("hello"), Arc::from("world")],
             max_string_length: 5,
-            num_groups: 0,
+            ..NifHeader::detached(version, 0, 0)
         }
     }
 

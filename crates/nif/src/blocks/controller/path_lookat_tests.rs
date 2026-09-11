@@ -111,19 +111,7 @@ use crate::header::NifHeader;
 fn make_header_pre_oblivion_v10_2() -> NifHeader {
     // Pre-Gamebryo content shipped in Oblivion's BSA — v=10.2.0.0
     // bsver=9 hits the `Phase` window in NiControllerSequence.
-    NifHeader {
-        version: NifVersion::V10_2_0_0,
-        little_endian: true,
-        user_version: 10,
-        user_version_2: 9,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(NifVersion::V10_2_0_0, 10, 9)
 }
 
 #[test]

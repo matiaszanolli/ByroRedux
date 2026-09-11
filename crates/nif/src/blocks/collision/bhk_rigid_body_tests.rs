@@ -3,24 +3,9 @@ use crate::blocks::parse_block;
 use crate::header::NifHeader;
 use crate::version::NifVersion;
 
-/// Skyrim SE header (NIF 20.2.0.7, user_version 12, bsver 100).
-/// Matches the corpus where all 12,866 bhkRigidBody blocks fell into
-/// NiUnknown pre-#546.
-fn skyrim_se_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 100,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
+// Skyrim SE header (NIF 20.2.0.7, user_version 12, bsver 100).
+// Matches the corpus where all 12,866 bhkRigidBody blocks fell into
+// NiUnknown pre-#546.
 
 /// Synthetic `bhkRigidBody` body with zero constraints. Layout mirrors
 /// nif.xml `bhkRigidBodyCInfo2010` (line 2844) exactly so any drift
@@ -113,7 +98,7 @@ fn minimal_skyrim_bhk_rigid_body_bytes() -> (Vec<u8>, f32) {
 /// NiUnknown.
 #[test]
 fn bhk_rigid_body_skyrim_se_consumes_full_cinfo2010_body() {
-    let header = skyrim_se_header();
+    let header = NifHeader::test_skyrim_se();
     let (bytes, mass) = minimal_skyrim_bhk_rigid_body_bytes();
     let mut stream = crate::stream::NifStream::new(&bytes, &header);
     let block = parse_block("bhkRigidBody", &mut stream, Some(bytes.len() as u32))
@@ -148,7 +133,7 @@ fn bhk_rigid_body_skyrim_se_consumes_full_cinfo2010_body() {
 /// blocks in NiUnknown alongside the 9,772 plain rigid bodies.
 #[test]
 fn bhk_rigid_body_t_skyrim_se_parses_identically() {
-    let header = skyrim_se_header();
+    let header = NifHeader::test_skyrim_se();
     let (bytes, mass) = minimal_skyrim_bhk_rigid_body_bytes();
     let mut stream = crate::stream::NifStream::new(&bytes, &header);
     let block = parse_block("bhkRigidBodyT", &mut stream, Some(bytes.len() as u32))
@@ -185,19 +170,7 @@ fn bhk_rigid_body_t_skyrim_se_parses_identically() {
 /// to pin the doctrine boundary at the value nif.xml actually
 /// specifies.
 fn skyrim_header_at_bsver(bsver: u32) -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: bsver,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(NifVersion::V20_2_0_7, 12, bsver)
 }
 
 /// Same fixture shape as [`minimal_skyrim_bhk_rigid_body_bytes`] but

@@ -14,20 +14,12 @@ use super::*;
 /// an sf1 CRC that isn't a member of the known `BSShaderCRC32` set.
 #[test]
 fn parse_bs_lighting_real_starfield_block_is_semantically_valid() {
+    // real file's bsver
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 173, // real file's bsver
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         // Real block's NiObjectNETData.name is string-table index 6,
         // resolving to "" (full-body path, not a material-reference stub).
         strings: vec![Arc::from(""); 7],
-        max_string_length: 0,
-        num_groups: 0,
+        ..NifHeader::detached(NifVersion::V20_2_0_7, 12, 173)
     };
     // Byte-for-byte block 6 payload (166 bytes), extracted with
     // `cargo run -p byroredux-bsa --example ba2_extract_one` +

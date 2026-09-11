@@ -343,19 +343,7 @@ mod niavobject_version_gate_tests {
     use crate::stream::NifStream;
 
     fn header_at(version: NifVersion) -> NifHeader {
-        NifHeader {
-            version,
-            little_endian: true,
-            user_version: 0,
-            user_version_2: 0,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
+        NifHeader::detached(version, 0, 0)
     }
 
     /// Common prologue: NiObjectNET (pre-Gamebryo variant — single
@@ -447,19 +435,7 @@ mod niavobject_version_gate_tests {
 
     /// v20.2.0.7 header with explicit user_version + BSVER (user_version_2).
     fn header_v20_2_bsver(bsver: u32) -> NifHeader {
-        NifHeader {
-            version: NifVersion::V20_2_0_7,
-            little_endian: true,
-            user_version: 11,
-            user_version_2: bsver,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
+        NifHeader::detached(NifVersion::V20_2_0_7, 11, bsver)
     }
 
     /// NiObjectNET prologue for v20.2.0.7 (>= 20.1.0.1 string-table layout):
@@ -544,19 +520,7 @@ mod ni_dynamic_effect_data_version_gate_tests {
     use crate::stream::NifStream;
 
     fn header_at(version: NifVersion) -> NifHeader {
-        NifHeader {
-            version,
-            little_endian: true,
-            user_version: 0,
-            user_version_2: 0,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        }
+        NifHeader::detached(version, 0, 0)
     }
 
     /// #3717 — nif.xml's SECOND `NiDynamicEffect` affected-nodes field

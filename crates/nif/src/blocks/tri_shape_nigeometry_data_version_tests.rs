@@ -6,19 +6,7 @@ use super::*;
 use crate::header::NifHeader;
 
 fn header_at(version: NifVersion) -> NifHeader {
-    NifHeader {
-        version,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(version, 0, 0)
 }
 
 /// Minimal NiGeometryData body with zero vertices/normals/UVs/colors.
@@ -134,19 +122,7 @@ fn nigeometry_data_at_10_1_0_113_skips_group_id() {
 #[test]
 fn bs_geometry_data_flags_decodes_has_uv_bit0_only() {
     // FO3/FNV header: NIF 20.2.0.7, user_version=11, bsver=34.
-    let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::test_fo3_fnv();
     // Build a minimal NiGeometryData body for 2 vertices, no normals,
     // no vcolor, 1 UV set, data_flags = 0x1003 (bits 0, 1, 12 set).
     let mut data = Vec::new();
@@ -200,19 +176,8 @@ fn bs_geometry_data_flags_decodes_has_uv_bit0_only() {
 /// path — the BS fix must not break vanilla Gamebryo content.
 #[test]
 fn ni_geometry_data_flags_decodes_count_on_non_bethesda() {
-    let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0, // bsver=0 → NiGeometryDataFlags path
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // bsver=0 → NiGeometryDataFlags path
+    let header = NifHeader::detached(NifVersion::V20_2_0_7, 0, 0);
     let mut data = Vec::new();
     data.extend_from_slice(&0i32.to_le_bytes()); // group_id
     data.extend_from_slice(&1u16.to_le_bytes()); // num_vertices = 1
@@ -348,19 +313,8 @@ fn nitristripsdata_at_10_0_1_2_no_has_points_bool() {
 /// would be left unconsumed and the stream would end 4 bytes short).
 #[test]
 fn nigeometry_data_reads_material_crc_on_hybrid_unknown_bsver_over_34() {
-    let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 50, // Unknown variant, but bsver > 34 → CRC authored
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // Unknown variant, but bsver > 34 → CRC authored
+    let header = NifHeader::detached(NifVersion::V20_2_0_7, 11, 50);
     // This exact tuple is the `Unknown` corner the fix targets — a game-
     // variant helper would answer `false` here and drop the CRC, disagreeing
     // with the spec-correct raw bsver the production gate reads (#1838 / #1840).

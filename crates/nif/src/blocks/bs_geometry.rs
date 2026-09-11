@@ -366,19 +366,7 @@ impl BSGeometryMeshData {
     pub fn parse_from_bytes(bytes: &[u8]) -> io::Result<Self> {
         use crate::header::NifHeader;
         use crate::version::NifVersion;
-        let header = NifHeader {
-            version: NifVersion::V20_2_0_7,
-            little_endian: true,
-            user_version: 12,
-            user_version_2: 172,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        };
+        let header = NifHeader::detached(NifVersion::V20_2_0_7, 12, 172);
         let mut stream = NifStream::new(bytes, &header);
         Self::parse(&mut stream)
     }

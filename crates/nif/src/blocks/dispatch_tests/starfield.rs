@@ -6,7 +6,6 @@
 use crate::blocks::*;
 use crate::header::NifHeader;
 use crate::stream::NifStream;
-use crate::version::NifVersion;
 use std::sync::Arc;
 
 /// Starfield header (bsver=172, uv=12). Per
@@ -14,17 +13,9 @@ use std::sync::Arc;
 /// shape — `read_string` resolves `0` to `strings[0]`.
 fn starfield_header() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 172,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("BSGeometry_Test")],
         max_string_length: 16,
-        num_groups: 0,
+        ..NifHeader::test_starfield()
     }
 }
 

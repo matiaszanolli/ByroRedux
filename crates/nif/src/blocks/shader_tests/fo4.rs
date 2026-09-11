@@ -420,17 +420,9 @@ fn parse_bs_lighting_fo4_finite_rimlight_skips_backlight() {
 fn parse_bs_lighting_fo4_bgsm_name_does_not_stopcond() {
     // Header at BSVER=130 with strings[0] = a `.bgsm` path.
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 130,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("materials\\actors\\ironarmor.bgsm")],
         max_string_length: 32,
-        num_groups: 0,
+        ..NifHeader::test_fo4()
     };
     let data = build_bs_lighting_fo4_env_map();
     let mut stream = NifStream::new(&data, &header);

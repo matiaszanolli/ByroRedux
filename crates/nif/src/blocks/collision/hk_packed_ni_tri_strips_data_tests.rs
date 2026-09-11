@@ -11,40 +11,10 @@ use crate::header::NifHeader;
 use crate::stream::NifStream;
 use crate::version::NifVersion;
 
-/// Oblivion-era header (NIF 20.0.0.5) — no `Compressed` byte and no FO3+
-/// `hkSubPartData` trailer; that table lives inline on the *shape* there.
-fn oblivion_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_0_0_5,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 11,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
+// Oblivion-era header (NIF 20.0.0.5) — no `Compressed` byte and no FO3+
+// `hkSubPartData` trailer; that table lives inline on the *shape* there.
 
-/// FO3+ header (NIF 20.2.0.7) — `Compressed` byte present.
-fn fo3_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
+// FO3+ header (NIF 20.2.0.7) — `Compressed` byte present.
 
 /// Write the per-triangle FO3+ shape: 3 × u16 indices + u16 welding.
 fn push_triangle(buf: &mut Vec<u8>, v0: u16, v1: u16, v2: u16, welding: u16) {
@@ -77,7 +47,7 @@ fn parses_uncompressed_f32_vertices() {
     }
     push_zero_sub_shapes(&mut d);
 
-    let header = fo3_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&d, &header);
     let parsed = HkPackedNiTriStripsData::parse(&mut stream).expect("parse should succeed");
 
@@ -111,7 +81,7 @@ fn parses_compressed_half_float_vertices() {
     }
     push_zero_sub_shapes(&mut d);
 
-    let header = fo3_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&d, &header);
     let parsed = HkPackedNiTriStripsData::parse(&mut stream).expect("parse should succeed");
 
@@ -143,7 +113,7 @@ fn pre_v20_2_0_7_skips_compressed_byte() {
         d.extend_from_slice(&v.to_le_bytes());
     }
 
-    let mut header = fo3_header();
+    let mut header = NifHeader::test_fo3_fnv();
     header.version = NifVersion::V20_0_0_5; // 20.0.0.5 (Oblivion)
     header.user_version = 11;
     header.user_version_2 = 11;
@@ -180,7 +150,7 @@ fn captures_multi_material_sub_part_table() {
         d.extend_from_slice(&material.to_le_bytes());
     }
 
-    let header = fo3_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&d, &header);
     let parsed = HkPackedNiTriStripsData::parse(&mut stream).expect("parse should succeed");
 
@@ -225,7 +195,7 @@ fn oversized_sub_shape_count_is_rejected_by_the_tightened_bound() {
     d.extend_from_slice(&1000u16.to_le_bytes());
     d.extend(std::iter::repeat_n(0u8, 1000));
 
-    let header = fo3_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&d, &header);
     let err = HkPackedNiTriStripsData::parse(&mut stream)
         .expect_err("a claimed byte cost of 12 000 against 1 000 remaining must fail");
@@ -262,7 +232,7 @@ fn pre_fo3_data_has_no_sub_part_table() {
         d.extend_from_slice(&v.to_le_bytes());
     }
 
-    let header = oblivion_header();
+    let header = NifHeader::test_oblivion();
     let mut stream = NifStream::new(&d, &header);
     let parsed = HkPackedNiTriStripsData::parse(&mut stream).expect("parse should succeed");
     assert!(parsed.sub_parts.is_empty());

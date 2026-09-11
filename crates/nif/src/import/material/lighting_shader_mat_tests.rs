@@ -15,7 +15,6 @@ use crate::blocks::NiObject;
 use crate::header::NifHeader;
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiTransform};
-use crate::version::NifVersion;
 use byroredux_core::string::StringPool;
 use std::sync::Arc;
 
@@ -73,17 +72,9 @@ fn lighting_shader_with_name(name: &str) -> BSLightingShaderProperty {
 /// approximation.
 fn parsed_starfield_material_reference(name: &str) -> BSLightingShaderProperty {
     let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: crate::version::bsver::STARFIELD,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from(name)],
         max_string_length: name.len() as u32,
-        num_groups: 0,
+        ..NifHeader::test_starfield()
     };
     let mut data = Vec::new();
     data.extend_from_slice(&0i32.to_le_bytes()); // name string-table index

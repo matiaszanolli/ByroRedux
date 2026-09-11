@@ -64,7 +64,66 @@ impl NifHeader {
             num_groups: 0,
         }
     }
+}
 
+/// Per-game header presets for block-parser fixtures (#3864).
+///
+/// Every block test needs the same thing: a version context with empty
+/// tables, carrying the `(version, user_version, bsver)` triple of the game
+/// whose byte layout is under test. Before these existed the crate held 173
+/// hand-written twelve-field `NifHeader` literals across 40 files and ~18
+/// rival local factories under six different names (`header_at`,
+/// `make_header`, `test_header`, `make_header_fnv`, …), several byte-identical
+/// across files — so a thirteenth field on `NifHeader` meant 173 edits, and
+/// reading a fixture meant first finding out which local factory it used.
+///
+/// These are named for the game rather than the numbers, so a fixture reads
+/// as its intent and the `// Skyrim LE`-style trailing comments that used to
+/// annotate the raw triples are no longer needed. The numbers themselves stay
+/// in [`bsver`], which is the one place that vocabulary belongs.
+///
+/// A test pinning a *boundary* (e.g. `bsver == 21` for
+/// `MATERIAL_EMISSIVE_MULT`) should keep calling [`NifHeader::detached`] with
+/// the literal value — the point of such a fixture is the number.
+#[cfg(test)]
+impl NifHeader {
+    /// Oblivion — v20.0.0.5, uv 11, bsver 11.
+    pub(crate) fn test_oblivion() -> Self {
+        Self::detached(NifVersion::V20_0_0_5, 11, bsver::OBLIVION)
+    }
+
+    /// Fallout 3 / New Vegas — v20.2.0.7, uv 11, bsver 34.
+    pub(crate) fn test_fo3_fnv() -> Self {
+        Self::detached(NifVersion::V20_2_0_7, 11, bsver::FO3_FNV)
+    }
+
+    /// Skyrim LE — v20.2.0.7, uv 12, bsver 83.
+    pub(crate) fn test_skyrim_le() -> Self {
+        Self::detached(NifVersion::V20_2_0_7, 12, bsver::SKYRIM_LE)
+    }
+
+    /// Skyrim SE — v20.2.0.7, uv 12, bsver 100.
+    pub(crate) fn test_skyrim_se() -> Self {
+        Self::detached(NifVersion::V20_2_0_7, 12, bsver::SKYRIM_SE)
+    }
+
+    /// Fallout 4 — v20.2.0.7, uv 12, bsver 130.
+    pub(crate) fn test_fo4() -> Self {
+        Self::detached(NifVersion::V20_2_0_7, 12, bsver::FALLOUT4)
+    }
+
+    /// Fallout 76 — v20.2.0.7, uv 12, bsver 155.
+    pub(crate) fn test_fo76() -> Self {
+        Self::detached(NifVersion::V20_2_0_7, 12, bsver::FO76)
+    }
+
+    /// Starfield — v20.2.0.7, uv 12, bsver 172.
+    pub(crate) fn test_starfield() -> Self {
+        Self::detached(NifVersion::V20_2_0_7, 12, bsver::STARFIELD)
+    }
+}
+
+impl NifHeader {
     /// Parse a NIF header from raw file bytes.
     /// Returns the header and the byte offset where block data begins.
     pub fn parse(data: &[u8]) -> io::Result<(Self, usize)> {

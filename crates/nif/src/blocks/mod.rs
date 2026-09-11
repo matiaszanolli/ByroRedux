@@ -238,19 +238,7 @@ pub fn parse_block_with_name_arc(
 /// undispatched case is unambiguous. Dispatch routes only on the type name,
 /// so the empty payload + minimal modern header never change the verdict.
 pub fn is_block_type_dispatched(type_name: &str) -> bool {
-    let header = crate::header::NifHeader {
-        version: crate::version::NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = crate::header::NifHeader::detached(crate::version::NifVersion::V20_2_0_7, 0, 0);
     let data: [u8; 0] = [];
     let mut stream = NifStream::new(&data, &header);
     match parse_block(type_name, &mut stream, Some(0)) {

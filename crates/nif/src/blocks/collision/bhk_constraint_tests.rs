@@ -19,36 +19,8 @@ use super::*;
 use crate::header::NifHeader;
 use crate::version::NifVersion;
 
-fn fnv_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
-
 fn oblivion_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_0_0_5,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(NifVersion::V20_0_0_5, 11, 0)
 }
 
 /// Shared `bhkConstraintCInfo` base — 16 bytes:
@@ -90,7 +62,7 @@ fn fnv_ragdoll_decodes_typed_cinfo() {
     }
     assert_eq!(bytes.len(), 16 + 152, "base + 8×Vec4 + 6×f32");
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse(&mut stream, "bhkRagdollConstraint").unwrap();
 
@@ -136,7 +108,7 @@ fn fnv_limited_hinge_decodes_typed_cinfo() {
     }
     assert_eq!(bytes.len(), 16 + 140, "base + 8×Vec4 + 3×f32");
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse(&mut stream, "bhkLimitedHingeConstraint").unwrap();
 
@@ -174,7 +146,7 @@ fn fnv_prismatic_decodes_typed_cinfo() {
     }
     assert_eq!(bytes.len(), 16 + 140, "base + 8×Vec4 + 3×f32");
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse(&mut stream, "bhkPrismaticConstraint").unwrap();
 
@@ -255,7 +227,7 @@ fn fnv_malleable_wrapping_ragdoll_surfaces_as_ragdoll() {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse(&mut stream, "bhkMalleableConstraint").unwrap();
 
@@ -283,7 +255,7 @@ fn fnv_malleable_wrapping_ragdoll_surfaces_as_ragdoll() {
 #[test]
 fn fnv_other_constraint_type_stays_stub() {
     let bytes = base();
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse(&mut stream, "bhkStiffSpringConstraint").unwrap();
     assert!(matches!(c.data, BhkConstraintData::Other));
@@ -309,7 +281,7 @@ fn fnv_bare_hinge_decodes_into_a_limitless_limited_hinge() {
     }
     assert_eq!(bytes.len(), 16 + 128);
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse(&mut stream, "bhkHingeConstraint").unwrap();
 
@@ -525,7 +497,7 @@ fn skyrim_ragdoll_uses_fo3_layout() {
     }
 
     // Skyrim SE header: NIF 20.2.0.7 (== FNV), bsver 100 (> 16 → FO3+ arm).
-    let mut header = fnv_header();
+    let mut header = NifHeader::test_fo3_fnv();
     header.user_version = 12;
     header.user_version_2 = 100;
     let mut stream = NifStream::new(&bytes, &header);
@@ -575,7 +547,7 @@ fn ball_socket_chain_consumes_block_and_reads_trailing_refs() {
 
     assert_eq!(bytes.len(), 260, "7-entity chain must be block_size 260");
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse_ball_socket_chain(&mut stream, "bhkBallSocketConstraintChain")
         .expect("chain parse");
@@ -612,7 +584,7 @@ fn fo3_malleable_wrapped_hinge_consumes_inner_body() {
     }
     assert_eq!(bytes.len(), 16 + 4 + 16 + 128);
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse(&mut stream, "bhkMalleableConstraint").unwrap();
 
@@ -641,7 +613,7 @@ fn fo3_malleable_wrapped_stiffspring_consumes_inner_body() {
     bytes.extend_from_slice(&0.5f32.to_le_bytes());
     assert_eq!(bytes.len(), 16 + 4 + 16 + 36);
 
-    let header = fnv_header();
+    let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse(&mut stream, "bhkMalleableConstraint").unwrap();
     assert!(matches!(c.data, BhkConstraintData::Other));

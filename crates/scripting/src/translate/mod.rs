@@ -339,12 +339,12 @@ mod tests {
             ),
             (
                 "populate_quest_fragments_from_pex_detailed_internal",
-                include_str!("../fragment.rs"),
+                crate::fragment::SOURCES,
                 "fn populate_quest_fragments_from_pex_detailed_internal",
             ),
             (
                 "populate_scene_fragments_from_pex_detailed_internal",
-                include_str!("../fragment.rs"),
+                crate::fragment::SOURCES,
                 "fn populate_scene_fragments_from_pex_detailed_internal",
             ),
         ];

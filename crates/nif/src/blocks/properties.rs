@@ -535,9 +535,7 @@ impl NiTexturingProperty {
     /// corpus — no file in that band carries a `NiTexturingProperty` —
     /// but a real spec-conformance gap on reachable (NifSkope-exported
     /// Oblivion mod) content.
-    fn read_tex_desc_body(
-        stream: &mut NifStream,
-    ) -> io::Result<(u16, u8, Option<TexTransform>)> {
+    fn read_tex_desc_body(stream: &mut NifStream) -> io::Result<(u16, u8, Option<TexTransform>)> {
         let (flags, clamp_mode) = if stream.version() >= NifVersion::V20_1_0_3 {
             let flags = stream.read_u16_le()?;
             // Raw `TexturingMapFlags`: clamp mode is the top nibble. See

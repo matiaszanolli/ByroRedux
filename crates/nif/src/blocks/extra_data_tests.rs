@@ -8,35 +8,7 @@ use crate::stream::NifStream;
 use crate::version::NifVersion;
 
 fn oblivion_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_0_0_5,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 11, // BSVER=11 for Oblivion
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}
-
-fn skyrim_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 83, // BSVER=83 for Skyrim
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(NifVersion::V20_0_0_5, 0, 11)
 }
 
 #[test]
@@ -87,7 +59,7 @@ fn bs_furniture_marker_oblivion() {
 fn bs_furniture_marker_skyrim() {
     // Skyrim wire layout: string-table name (-1 = None), u32 count,
     // then each position: vec3 offset + f32 heading + u16 anim + u16 entry.
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     data.extend_from_slice(&(-1i32).to_le_bytes()); // string table: None
     data.extend_from_slice(&1u32.to_le_bytes()); // 1 position
@@ -127,7 +99,7 @@ fn bs_furniture_marker_skyrim() {
 /// behavior-graph block was silently misread.
 #[test]
 fn behavior_graph_extra_data_reads_bool_as_one_byte_on_skyrim() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     // name: string-table index = -1 (None).
     data.extend_from_slice(&(-1i32).to_le_bytes());
@@ -154,7 +126,7 @@ fn behavior_graph_extra_data_reads_bool_as_one_byte_on_skyrim() {
 /// Sibling — the `false` case must also consume exactly 1 byte.
 #[test]
 fn behavior_graph_extra_data_reads_false_as_one_byte() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     data.extend_from_slice(&(-1i32).to_le_bytes());
     data.extend_from_slice(&(-1i32).to_le_bytes());
@@ -180,19 +152,7 @@ fn behavior_graph_extra_data_reads_false_as_one_byte() {
 /// mismatches post-fix.
 #[test]
 fn behavior_graph_extra_data_reads_nine_bytes_on_fo4() {
-    let header = NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 130, // BSVER=130 for FO4
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::test_fo4();
 
     let mut data = Vec::new();
     data.extend_from_slice(&(-1i32).to_le_bytes()); // name absent
@@ -221,7 +181,7 @@ fn behavior_graph_extra_data_reads_nine_bytes_on_fo4() {
 
 #[test]
 fn bs_anim_note_invalid_consumes_type_plus_time() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     data.extend_from_slice(&0u32.to_le_bytes()); // type = INVALID
     data.extend_from_slice(&1.25f32.to_le_bytes()); // time
@@ -235,7 +195,7 @@ fn bs_anim_note_invalid_consumes_type_plus_time() {
 
 #[test]
 fn bs_anim_note_grabik_reads_arm_only() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     data.extend_from_slice(&1u32.to_le_bytes()); // type = GRABIK
     data.extend_from_slice(&0.5f32.to_le_bytes()); // time
@@ -252,7 +212,7 @@ fn bs_anim_note_grabik_reads_arm_only() {
 
 #[test]
 fn bs_anim_note_lookik_reads_gain_and_state() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     data.extend_from_slice(&2u32.to_le_bytes()); // type = LOOKIK
     data.extend_from_slice(&2.0f32.to_le_bytes()); // time
@@ -274,7 +234,7 @@ fn bs_anim_note_unknown_type_is_preserved_and_stops_at_time() {
     // on older content. The parser preserves the raw value and
     // stops reading — the conditional tail is only present for the
     // known enum values, not for the unknown ones.
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     data.extend_from_slice(&42u32.to_le_bytes());
     data.extend_from_slice(&0.0f32.to_le_bytes());
@@ -286,7 +246,7 @@ fn bs_anim_note_unknown_type_is_preserved_and_stops_at_time() {
 
 #[test]
 fn bs_anim_notes_parses_array_of_refs() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     data.extend_from_slice(&3u16.to_le_bytes()); // count = 3
     data.extend_from_slice(&10i32.to_le_bytes());
@@ -307,7 +267,7 @@ fn bs_anim_notes_parses_array_of_refs() {
 
 #[test]
 fn bs_anim_notes_zero_count_reads_only_header() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let data = 0u16.to_le_bytes();
     let mut stream = NifStream::new(&data, &header);
     let notes = BsAnimNotes::parse(&mut stream).unwrap();
@@ -323,19 +283,8 @@ fn bs_anim_notes_zero_count_reads_only_header() {
 /// must NOT consume any bytes on those streams.
 #[test]
 fn read_extra_data_name_returns_none_pre_10_0_1_0() {
-    let header = NifHeader {
-        version: NifVersion::V10_0_0_6, // 10.0.0.6 — just below the gate
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // 10.0.0.6 — just below the gate
+    let header = NifHeader::detached(NifVersion::V10_0_0_6, 0, 0);
     // Body is 24 bytes of BsBound (center + dimensions); no name
     // prefix on this version per the gate.
     let mut data = Vec::new();
@@ -358,19 +307,8 @@ fn read_extra_data_name_returns_none_pre_10_0_1_0() {
 /// misaligning every subsequent block.
 #[test]
 fn ni_extra_data_gap_window_reads_only_subclass_body() {
-    let header = NifHeader {
-        version: NifVersion::V10_0_0_6, // 10.0.0.6 — in the gap
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // 10.0.0.6 — in the gap
+    let header = NifHeader::detached(NifVersion::V10_0_0_6, 0, 0);
     // NiStringExtraData body only — no name, no next_ref, no
     // bytes_remaining. Just a sized-string payload.
     let mut data = Vec::new();
@@ -390,7 +328,7 @@ fn bs_anim_notes_malicious_count_errors_without_panic() {
     // Regression test for #408: a corrupt/malicious count must not OOM
     // via Vec::with_capacity. allocate_vec bounds count against
     // remaining bytes and returns an io::Error instead of panicking.
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let data = u16::MAX.to_le_bytes(); // count = 65535, zero body bytes
     let mut stream = NifStream::new(&data, &header);
     let err = BsAnimNotes::parse(&mut stream).expect_err("expected bounds error");
@@ -403,7 +341,7 @@ fn bs_anim_notes_malicious_count_errors_without_panic() {
 
 #[test]
 fn parse_bs_w_array_three_items() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     // name: string index 0 (u32 in v20.2.0.7 string-table format)
     data.extend_from_slice(&0u32.to_le_bytes());
@@ -430,7 +368,7 @@ fn parse_bs_w_array_three_items() {
 /// future importer will surface FOV multipliers / wetness knobs.
 #[test]
 fn ni_float_extra_data_skyrim() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     // name: string index 0 (u32, string-table format at 20.2+).
     data.extend_from_slice(&0u32.to_le_bytes());
@@ -458,7 +396,7 @@ fn ni_float_extra_data_skyrim() {
 /// This test pins the post-fix `read_sized_string()` path.
 #[test]
 fn ni_strings_extra_data_skyrim_round_trips_inline_strings() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     // Name: string-table index = -1 (no name).
     data.extend_from_slice(&(-1i32).to_le_bytes());
@@ -501,7 +439,7 @@ fn ni_strings_extra_data_skyrim_round_trips_inline_strings() {
 /// same DLC content streams.
 #[test]
 fn ni_floats_extra_data_skyrim() {
-    let header = skyrim_header();
+    let header = NifHeader::test_skyrim_le();
     let mut data = Vec::new();
     data.extend_from_slice(&0u32.to_le_bytes()); // name: string idx 0
     data.extend_from_slice(&3u32.to_le_bytes()); // num floats

@@ -1006,19 +1006,7 @@ mod tests {
     #[test]
     fn ambiguous_v20_0_0_4_misroute_is_unobservable_via_havok_scale() {
         use crate::header::NifHeader;
-        let header = |version: NifVersion, uv: u32, uv2: u32| NifHeader {
-            version,
-            little_endian: true,
-            user_version: uv,
-            user_version_2: uv2,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        };
+        let header = |version: NifVersion, uv: u32, uv2: u32| NifHeader::detached(version, uv, uv2);
         // The collisionboxstatic.nif tuple detects as Oblivion; a canonical
         // FO3 header (V20_2_0_7, 11, 21 — see `detect_fallout3`) as Fallout3.
         let oblivion = header(NifVersion::V20_0_0_4, 11, 11);

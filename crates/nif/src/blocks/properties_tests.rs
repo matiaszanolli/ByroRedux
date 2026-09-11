@@ -10,17 +10,9 @@ use std::sync::Arc;
 
 fn make_header(user_version: u32, user_version_2: u32) -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version,
-        user_version_2,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("Material")],
         max_string_length: 8,
-        num_groups: 0,
+        ..NifHeader::detached(NifVersion::V20_2_0_7, user_version, user_version_2)
     }
 }
 
@@ -216,19 +208,7 @@ fn parse_string_palette() {
 fn tex_desc_clamp_mode_decodes_from_the_right_nibble_per_version() {
     // Build a one-slot NiTexturingProperty and read back its base TexDesc.
     let parse_base = |version: NifVersion, body: &[u8]| {
-        let header = NifHeader {
-            version,
-            little_endian: true,
-            user_version: 11,
-            user_version_2: 11,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        };
+        let header = NifHeader::detached(version, 11, 11);
         let mut data = Vec::new();
         // NiObjectNET base: inline empty name + 0 extras + null controller.
         data.extend_from_slice(&0u32.to_le_bytes());
@@ -316,19 +296,7 @@ fn tex_desc_clamp_mode_decodes_from_the_right_nibble_per_version() {
 #[test]
 fn ni_texturing_property_apply_mode_decodes_from_both_homes() {
     let build = |version: NifVersion, flags: u16, standalone_apply: u32| {
-        let header = NifHeader {
-            version,
-            little_endian: true,
-            user_version: 11,
-            user_version_2: 11,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        };
+        let header = NifHeader::detached(version, 11, 11);
         let mut data = Vec::new();
         data.extend_from_slice(&0u32.to_le_bytes()); // name
         data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
@@ -392,19 +360,7 @@ fn parse_ni_texturing_property_retains_oblivion_decal_slots() {
     // Oblivion — v20.0.0.5, user_version=11. Pre-20.2.0.5 layout:
     // slots 0..=5 are base/dark/detail/gloss/glow/bump; decals
     // start at slot 6. No normal/parallax slots in this version.
-    let header = NifHeader {
-        version: NifVersion::V20_0_0_5,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 11,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::test_oblivion();
     let mut data = Vec::new();
     // NiObjectNET base: inline name (empty) + 0 extras + null controller.
     data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline
@@ -521,19 +477,8 @@ fn parse_ni_texturing_property_with_zero_shader_maps() {
 /// field is v20.1.0.2.
 #[test]
 fn parse_ni_texturing_property_apply_mode_at_v20_1_0_1_exactly() {
-    let header = NifHeader {
-        version: NifVersion::STRING_TABLE_THRESHOLD, // v20.1.0.1 — the until= boundary
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // v20.1.0.1 — the until= boundary
+    let header = NifHeader::detached(NifVersion::STRING_TABLE_THRESHOLD, 0, 0);
     let mut data = Vec::new();
     // NiObjectNETData: name = -1 (None), extras count = 0, controller = -1.
     data.extend_from_slice(&(-1i32).to_le_bytes());
@@ -566,19 +511,7 @@ fn parse_ni_texturing_property_apply_mode_at_v20_1_0_1_exactly() {
 /// path is active (`since="20.1.0.2"`).
 #[test]
 fn parse_ni_texturing_property_no_apply_mode_at_v20_1_0_2() {
-    let header = NifHeader {
-        version: NifVersion::V20_1_0_2,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::detached(NifVersion::V20_1_0_2, 0, 0);
     let mut data = Vec::new();
     // NiObjectNETData: name = -1 (None), extras count = 0, controller = -1.
     data.extend_from_slice(&(-1i32).to_le_bytes());
@@ -607,19 +540,8 @@ fn parse_ni_texturing_property_no_apply_mode_at_v20_1_0_2() {
 /// present (as it is throughout `[3.3.0.13, 20.1.0.1]` inclusive).
 #[test]
 fn parse_ni_texturing_property_with_apply_mode_below_v20_1_0_1() {
-    let header = NifHeader {
-        version: NifVersion::V20_1_0_0, // v20.1.0.0 — below the boundary
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // v20.1.0.0 — below the boundary
+    let header = NifHeader::detached(NifVersion::V20_1_0_0, 0, 0);
     let mut data = Vec::new();
     // v20.1.0.0 is BELOW the v20.1.0.1 string-table boundary, so
     // `read_string` uses the length-prefixed inline path: u32 len + bytes.
@@ -657,19 +579,8 @@ fn parse_ni_texturing_property_with_apply_mode_below_v20_1_0_1() {
 /// `APPLY_MODULATE` (2) instead.
 #[test]
 fn parse_ni_texturing_property_apply_mode_absent_below_v3_3_0_13() {
-    let header = NifHeader {
-        version: NifVersion(0x0300_0000), // v3.0.0.0 — below the 3.3.0.13 floor
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    // v3.0.0.0 — below the 3.3.0.13 floor
+    let header = NifHeader::detached(NifVersion(0x0300_0000), 0, 0);
     let mut data = Vec::new();
     // Pre-string-table inline name (len-prefixed), single extra_data ref
     // (v < 10.0.1.0), controller_ref — same pre-Gamebryo shape as the
@@ -1218,19 +1129,7 @@ fn num_decals_above_fixed_maximum_is_parse_error() {
 /// Gamebryo, so `base_texture` is reachable in this band on real content.
 #[test]
 fn parse_ni_texturing_property_at_v4_0_0_2_reads_32_bit_has_base_texture() {
-    let header = NifHeader {
-        version: NifVersion::V4_0_0_2,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::detached(NifVersion::V4_0_0_2, 0, 0);
     let mut data = Vec::new();
     // NiObjectNETData, pre-string-table (v < 20.1.0.1) inline path:
     // name = u32 len-prefixed string (empty), single extra_data ref
@@ -1272,19 +1171,7 @@ fn parse_ni_texturing_property_at_v4_0_0_2_reads_32_bit_has_base_texture() {
 /// current (fixed) parser at v4.0.0.2 must fail with an EOF-class error.
 #[test]
 fn parse_ni_texturing_property_at_v4_0_0_2_rejects_8_bit_bool_layout() {
-    let header = NifHeader {
-        version: NifVersion::V4_0_0_2,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::detached(NifVersion::V4_0_0_2, 0, 0);
     let mut data = Vec::new();
     data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline
     data.extend_from_slice(&(-1i32).to_le_bytes()); // extra_data_ref
@@ -1314,19 +1201,7 @@ fn parse_ni_texturing_property_at_v4_0_0_2_rejects_8_bit_bool_layout() {
 /// (that field is `since="10.1.0.0"`, absent here).
 #[test]
 fn parse_ni_texturing_property_at_v4_0_0_2_reads_ps2_lk_and_unknown_short1() {
-    let header = NifHeader {
-        version: NifVersion::V4_0_0_2,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::detached(NifVersion::V4_0_0_2, 0, 0);
     let mut data = Vec::new();
     data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline
     data.extend_from_slice(&(-1i32).to_le_bytes()); // extra_data_ref = NULL
@@ -1342,12 +1217,12 @@ fn parse_ni_texturing_property_at_v4_0_0_2_reads_ps2_lk_and_unknown_short1() {
     data.extend_from_slice(&1i16.to_le_bytes()); // PS2 L
     data.extend_from_slice(&(-75i16).to_le_bytes()); // PS2 K (nif.xml default)
     data.extend_from_slice(&0xBEEFu16.to_le_bytes()); // Unknown Short 1
-    // No `Has Texture Transform` — `since="10.1.0.0"`, absent at v4.0.0.2.
+                                                      // No `Has Texture Transform` — `since="10.1.0.0"`, absent at v4.0.0.2.
     data.extend_from_slice(&0u32.to_le_bytes()); // dark has = false (32-bit)
     data.extend_from_slice(&0u32.to_le_bytes()); // detail has = false (32-bit)
     data.extend_from_slice(&0u32.to_le_bytes()); // gloss has = false (32-bit)
     data.extend_from_slice(&0u32.to_le_bytes()); // glow has = false (32-bit)
-    // No shader-textures trailer: `since="10.0.1.0"`, absent at v4.0.0.2.
+                                                 // No shader-textures trailer: `since="10.0.1.0"`, absent at v4.0.0.2.
 
     let expected_len = data.len();
     let mut stream = NifStream::new(&data, &header);
@@ -1360,7 +1235,10 @@ fn parse_ni_texturing_property_at_v4_0_0_2_reads_ps2_lk_and_unknown_short1() {
          consumed — a miss here misaligns every following block"
     );
     let base = prop.base_texture.expect("base slot is populated");
-    assert_eq!(base.clamp_mode, 3, "authored clamp mode must still decode correctly");
+    assert_eq!(
+        base.clamp_mode, 3,
+        "authored clamp mode must still decode correctly"
+    );
 }
 
 /// #2565 (OBL-D1-04) — nif.xml gates `Clamp Mode`/`Filter Mode`/`UV Set`
@@ -1377,26 +1255,17 @@ fn parse_ni_texturing_property_at_v4_0_0_2_reads_ps2_lk_and_unknown_short1() {
 #[test]
 fn tex_desc_body_reads_nothing_for_the_20_1_0_x_gap_band() {
     for version in [NifVersion::V20_1_0_0, NifVersion::V20_1_0_2] {
-        let header = NifHeader {
-            version,
-            little_endian: true,
-            user_version: 11,
-            user_version_2: 11,
-            num_blocks: 0,
-            block_types: Vec::new(),
-            block_type_indices: Vec::new(),
-            block_sizes: Vec::new(),
-            strings: Vec::new(),
-            max_string_length: 0,
-            num_groups: 0,
-        };
+        let header = NifHeader::detached(version, 11, 11);
         // Has Texture Transform (since=10.1.0.0, present here) = false —
         // the only byte this gap band's TexDesc body should consume.
         let data = vec![0u8];
         let mut stream = NifStream::new(&data, &header);
         let (flags, clamp_mode, transform) = NiTexturingProperty::read_tex_desc_body(&mut stream)
             .unwrap_or_else(|e| panic!("{version} must parse: {e}"));
-        assert_eq!(flags, 0, "{version}: neither Clamp/Filter/UV Set nor Flags exists here");
+        assert_eq!(
+            flags, 0,
+            "{version}: neither Clamp/Filter/UV Set nor Flags exists here"
+        );
         assert_eq!(clamp_mode, 0, "{version}: no clamp mode to decode");
         assert!(transform.is_none());
         assert_eq!(
@@ -1428,8 +1297,15 @@ fn apply_mode_doc_records_the_unconsumed_value_measurement() {
         .expect("apply_mode field declaration must still exist");
     let doc = &src[field_doc_start..field_decl];
 
-    assert!(doc.contains("#3625"), "the apply_mode doc must carry the #3625 marker");
-    for needle in ["APPLY_DECAL = 18", "APPLY_HILIGHT = 663", "APPLY_HILIGHT2 = 1,274"] {
+    assert!(
+        doc.contains("#3625"),
+        "the apply_mode doc must carry the #3625 marker"
+    );
+    for needle in [
+        "APPLY_DECAL = 18",
+        "APPLY_HILIGHT = 663",
+        "APPLY_HILIGHT2 = 1,274",
+    ] {
         assert!(
             doc.contains(needle),
             "apply_mode's doc must still record the measured histogram \

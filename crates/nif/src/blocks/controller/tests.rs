@@ -9,17 +9,9 @@ use crate::version::{bsver, NifVersion};
 
 pub(super) fn make_header_fnv() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("TestName")],
         max_string_length: 8,
-        num_groups: 0,
+        ..NifHeader::test_fo3_fnv()
     }
 }
 
@@ -581,19 +573,7 @@ fn controller_sequence_anim_note_layout_uses_named_boundaries() {
 /// String table is empty — Oblivion doesn't use it, and per-block
 /// strings go through the NiStringPalette format instead.
 pub(super) fn make_header_oblivion() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_0_0_5,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 11,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::test_oblivion()
 }
 
 /// Regression test for issue #107: Oblivion .kf files encode the

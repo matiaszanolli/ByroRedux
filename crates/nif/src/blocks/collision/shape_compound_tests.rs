@@ -8,19 +8,7 @@ use crate::version::{NifVariant, NifVersion};
 /// every game's fan-out this detects as the `Unknown` variant — the corner
 /// where a `variant()` feature helper disagrees with the file's raw BSVER.
 fn hybrid_header(bsver: u32) -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: bsver,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(NifVersion::V20_2_0_7, 11, bsver)
 }
 
 /// Regression: #1839 / NIF-D2-02 — `bhkMoppBvTreeShape.Build Type` must be

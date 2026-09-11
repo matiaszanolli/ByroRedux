@@ -11,17 +11,9 @@ use crate::version::NifVersion;
 /// table has one entry so a name index of 0 resolves; -1 = None.
 fn make_header_fo4() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 130,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("Sparks")],
         max_string_length: 8,
-        num_groups: 0,
+        ..NifHeader::test_fo4()
     }
 }
 
@@ -170,17 +162,9 @@ fn parse_particle_system_rejects_junk_num_modifiers() {
 /// regression tests for FNV-era particle modifiers / emitters.
 fn make_header_fnv() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 11,
-        user_version_2: 34,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("Mod")],
         max_string_length: 4,
-        num_groups: 0,
+        ..NifHeader::test_fo3_fnv()
     }
 }
 
@@ -402,19 +386,7 @@ fn parse_part_spawn_modifier_consumes_base_plus_three_fields() {
 #[test]
 fn read_emitter_base_reads_life_span_variation_below_10_4_0_1() {
     let version = NifVersion::V10_2_0_0;
-    let header = NifHeader {
-        version,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::detached(version, 0, 0);
     let mut d = Vec::new();
     // speed, speed_var, decl, decl_var, planar, planar_var (6 floats)
     for v in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
@@ -480,19 +452,7 @@ fn parse_grow_fade_modifier_reads_base_scale_on_bs_gte_fo3() {
 /// Oblivion-style header (V20_0_0_4, BSVER 11). The `strings` table
 /// is empty — NiPSysData carries no name-indexed fields on this path.
 fn make_header_oblivion() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_0_0_4,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 11,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    NifHeader::detached(NifVersion::V20_0_0_4, 0, 11)
 }
 
 /// Build the NiGeometryData base header bytes that
@@ -597,19 +557,7 @@ fn parse_particles_data_uses_40_byte_particle_info_on_pre_10_4_0_1() {
     // v <= 10.4.0.1; the layout shrinks to 28 B starting at v10.4.0.2.
     // This test exercises the 40-byte legacy layout.
     let version = NifVersion::V10_4_0_0;
-    let header = NifHeader {
-        version,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    };
+    let header = NifHeader::detached(version, 0, 0);
     let mut d = nigeo_base_bytes(1, version);
     // NiParticlesData tail at 10.4.0.1: has_radii since 10.1.0.0 ✓,
     // has_rotations since 10.0.1.0 ✓; has_rotation_angles/axes
@@ -745,17 +693,9 @@ fn parse_rotation_modifier_reads_random_rot_speed_sign_oblivion() {
 /// FO76 header (`#BS_F76#`): v20.2.0.7 stream with `user_version_2 == 155`.
 fn make_header_fo76() -> NifHeader {
     NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 155,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
         strings: vec![Arc::from("Mod")],
         max_string_length: 4,
-        num_groups: 0,
+        ..NifHeader::test_fo76()
     }
 }
 

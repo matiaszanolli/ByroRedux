@@ -561,19 +561,7 @@ fn fo4_bhk_ragdoll_system_keeps_byte_array_verbatim() {
 /// (v20.0.0.5) — the groupID gate and the rigid-body layout both key
 /// off the file version being `< 10.1.0.0`.
 fn oblivion_old_header() -> crate::header::NifHeader {
-    crate::header::NifHeader {
-        version: crate::version::NifVersion::V10_0_1_0,
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
+    crate::header::NifHeader::detached(crate::version::NifVersion::V10_0_1_0, 0, 0)
 }
 
 /// #1329 root-cause guard: at v10.0.1.0 a `bhk*` block must NOT have the
