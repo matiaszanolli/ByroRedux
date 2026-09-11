@@ -191,6 +191,14 @@ landing them harder.
 - `set_response_handler` closures run inside the VM callback. Verify they cannot
   re-enter the bridge in a way that deadlocks the `RefCell`/borrow (`state.borrow()`
   held across a call into ActionScript is the classic re-entrancy panic).
+  **Pinned (#UI-D2-2026-09-09-01)**: `record_call` clones the handler out of
+  `response_handlers` and lets that immutable borrow expire *before* invoking
+  it — the only thing making re-entry safe, since there are no production
+  handlers yet to exercise it. Regression guard:
+  `a_response_handler_may_re_enter_its_own_bridge` (re-enters through both a
+  shared and a mutable borrow, and asserts the re-entrant mutation actually
+  landed, not just that nothing panicked). A "tidier" refactor that holds one
+  borrow across the handler call reintroduces the panic.
 - Interior mutability: the bridge is `Rc`/`RefCell`-based because Ruffle is
   single-threaded. Verify nothing hands a bridge clone to another thread and that
   `UiManager` staying out of the ECS `Resource` set is still true.
@@ -221,6 +229,19 @@ fail a test — it produces a movie that loads and misbehaves.
   folded into both menu-load log lines in `scene.rs`. Verify both log sites
   still call it — before #3427 `NotPresent` had no engine consumer, so it
   logged identically to a clean `AdapterInjected` menu.
+- **The re-injection state probe scans for `DESTROYED_EVENT`, not
+  `DESTROY_CALLBACK` (#3435)**. `DESTROY_CALLBACK`
+  (`"__byroBGSCodeObjDestroy"`) is a strict prefix of `DESTROYED_EVENT`
+  (`"__byroBGSCodeObjDestroyed"`), so a raw byte scan on the shorter name
+  also matches a pool carrying only the longer one — it cannot, on its own
+  terms, tell `AdapterInjected` apart from `AdapterInjectedWithoutDestroyHook`.
+  It was correct only because `build_adapter_abc` emits all four destroy
+  strings together or none (an invariant two functions away with nothing
+  pinning it at the time). Regression guards:
+  `no_other_injected_name_is_a_prefix_of_another` (fails if a future constant
+  extends an existing one) and the emit-together invariant pinned at its own
+  site. Verify the probe still scans `DESTROYED_EVENT`, not the shorter
+  prefix constant.
 - Lifecycle ordering: constructor patch → object populated → `onCodeObjCreate`
   → … → destroy callback (only if declared) → `code_object_destruction_count`.
   **The destroy callback is registered only when the movie's class declares

@@ -56,14 +56,24 @@ read those at audit time. Snapshot of the shape, not the numbers:
 - **BA2 v3 compression** — header has a 12-byte extension (vs 8 for v2). GNRL +
   DX10 both dispatch through a unified decompress path selected by archive-level
   `compression_method` (`Ba2Compression` in `crates/bsa/src/ba2.rs`).
-- **Live full-engine blocker (#3540, OPEN, filed from `docs/audits/AUDIT_RUNTIME_2026-08-30.md`
-  RT-1, not yet fixed)** — a real `cargo run` on `citycydoniamainlevel` loads the
-  cell (95,095 fixed colliders, `grounded=true`) then stalls dead at `M28.5
-  frame 0`: single-core-pinned, RSS oscillating 12→20.6 GB over a 10-minute
-  window. This dimension suite's own methodology deliberately avoids a full
-  engine launch (bounded examples + `--ignored`-gated tests only) and is
-  unaffected, but do not assume `--bench-hold` against Cydonia currently
-  produces a bench line — it doesn't.
+- **Full-engine blocker (#3540, CLOSED, fixed in `0c45e779`, 2026-08-30, filed
+  from `docs/audits/AUDIT_RUNTIME_2026-08-30.md` RT-1)** — a real `cargo run`
+  on `citycydoniamainlevel` used to load the cell (95,095 fixed colliders,
+  `grounded=true`) then stall dead at `M28.5 frame 0`: single-core-pinned, RSS
+  oscillating 12→20.6 GB over a 10-minute window. Root cause was the shared
+  per-frame `restore_missing_static_blas_for_draws` pass (not
+  Starfield-specific — FO4 downtown / Skyrim exteriors hit the same code
+  path) never converging once Cydonia's ~95k static draws pushed past
+  `blas_budget_bytes`: each restored BLAS displaced another the same frame
+  still needed. Fixed by the `plan_static_blas_restore` predicate (a fit
+  projection that declines the pass, warned once, when the visible set
+  projects past budget, plus a 256/frame cap). This dimension suite's own
+  methodology deliberately avoids a full engine launch (bounded examples +
+  `--ignored`-gated tests only) and was unaffected either way. No Starfield
+  runtime baseline has been captured post-fix — the closing comment on #3540
+  itself flags that a real-device re-run is still needed — so don't assume
+  `--bench-hold` against Cydonia has been re-confirmed to emit a bench line,
+  only that the frame-0 hang's root cause is fixed.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -133,8 +143,12 @@ fitting each skin's bind-pose offsets against an externally-resolved skeleton
 (via the same `MeshResolver` precedent as Stage B's `.mesh` lookup), declining
 rather than guessing on an ambiguous or non-unique fit. Confirm a decline still
 falls back to the prior `Bone{i}` placeholder (never worse) and that a unique
-fit is still required before any name is accepted — measured recovery is ~21%
-of clothes skins / ~3,900 of ~19,500 bones, the remainder correctly declining.
+fit is still required before any name is accepted. The initial solve measured
+~21% of clothes skins / ~3,900 of ~19,500 bones; the `offset_memo` follow-up
+(`8f0423b1`) — reusing a C a *different* mesh solved uniquely against the same
+skeleton, since C is a property of the skeleton, not the mesh — lifted that to
+**425/908 clothes skins (46.8%) / 8,288 of 22,663 bones (36.6%)**, the current
+measured recovery; the remainder still correctly declines.
 **#3777** — `BSGeometryMeshData::parse` (`crates/nif/src/blocks/bs_geometry.rs`)
 must treat EOF at the post-LOD meshlet/cull-data trailer as "no trailer
 present" (Starfield facegen `.mesh` bodies end exactly at the LOD array and
@@ -335,9 +349,12 @@ Starfield row + `docs/engine/game-compatibility.md`) via
 `BYROREDUX_*_DATA=... cargo test -p byroredux-nif --test parse_real_nifs parse_rate_starfield_all_meshes -- --ignored`
 (walks all 13 mesh-bearing archives since the #3466 corpus widening;
 `parse_rate_starfield` covers Meshes01 only).
-The residual truncation tail in Meshes01/MeshesPatch is tracked at #2105/#3524
-(`BSWeakReferenceNode`'s residual, characterised at 19 files at the
-2026-08-30 measurement) — **not #746/#747**, both CLOSED and unrelated
+The residual truncation tail — in `Starfield - MeshesPatch.ba2` (6 files) and
+`ShatteredSpace - Main01.ba2` (13 files), **not Meshes01** (100.00% clean, 0
+truncated) — is tracked at #2105/#3524 (`BSWeakReferenceNode`'s residual,
+characterised at 19 files at the 2026-08-30 measurement, reconfirmed with no
+growth by the full 13-archive sweep in `AUDIT_STARFIELD_2026-09-05b.md`) —
+**not #746/#747**, both CLOSED and unrelated
 (they were the version-gating `bsver == 155` defects whose fix *reduced*
 the tail, not truncation trackers themselves; already flagged once as
 stale by #2365). Confirm the residual count has not grown. Verify

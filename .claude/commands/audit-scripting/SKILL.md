@@ -233,30 +233,32 @@ stale either.
   live rather than declining. Verify against the current three-map
   (`quest_locals`/`object_locals`/`decl_locals`) behavior, not any
   "method-call-derived locals still decline" framing.
-  **The re-measurement itself is DONE — a settled, asymmetric result, not an
-  open question — re-run `fragment_coverage` only if verifying it, don't
+  **The re-measurement itself is DONE — a settled result, not an open
+  question — re-run `fragment_coverage` only if verifying it, don't
   re-litigate it from first principles**: the 2026-08-27 pass re-ran the
   harness over real Skyrim SE + FO4 + Starfield `Misc` archives.
   `AddItem` is now genuinely non-zero (12 emissions Skyrim + 42 FO4/Starfield
-  = 54 total). `MoveTo` is **still exactly 0** across all three games — but
-  this pass established the zero is *structural*, not incidental: 3,253 of
+  = 54 total). At the time, `MoveTo` measured **structurally zero**: 3,253 of
   3,334 real `.pex` `MoveTo` calls (97.6%) carry the compiler-materialized
-  4-arg form `(0.0, 0.0, 0.0, matchRotation)`, which the "conservative-shape
-  decline" bullet below correctly rejects (it accepts *only* the literal
-  2-arg receiver+destination shape) — every real author's `MoveTo` call hits
-  that decline, 100% of the time, because the `.pex` frontend (the only
-  production input path) always materializes the omitted default arguments
-  that hand-authored `.psc` never writes out. This is tracked as **open**
-  issue #3487 ("three effect primitives guard on hand-authored `.psc` arity,
-  but the `.pex` frontend materializes every default argument — `MoveTo`
-  declines 100% of 3,334 real calls"), with a suggested fix already scoped
-  (accept the 4/5/6-arg form when the offset args are literal `0` and the
-  rotation flags are literals; the *actual* non-zero offset case, ~2.4% of
-  real calls, should still decline). Cite #3487 rather than re-deriving this
-  from scratch; `docs/engine/m47-3-quest-alias-design.md`'s own Phase 2
-  checklist item for this re-measurement can be treated as answered (with
-  this qualification) even though the checkbox itself may still render
-  unticked in that doc.
+  4/5/6-arg form (three float offsets + `abMatchRotation` [+ Starfield's
+  `abRotateOffset`]), because the `.pex` frontend (the only production input
+  path) always materializes the omitted default arguments that hand-authored
+  `.psc` never writes out, and `prim_move_to` at the time accepted only the
+  literal 2-arg receiver+destination shape. **This is now CLOSED, not open —
+  #3487 was fixed 2026-09-07 (`df8eb2f3`)**: `prim_move_to` (and
+  `prim_evaluate_package`, fixed in the same commit for FO4/Starfield's
+  extra `abResetAI` parameter) now accepts a trailing argument only when it
+  is a *literal equal to its declared Papyrus default* — exactly what the
+  compiler emits for an omitted parameter — via the new `MOVE_TO_MAX_ARGS`
+  bound and `as_num`/`bool_arg` default checks. That claims 3,253 of the
+  3,334 real `MoveTo` calls (97.6%) and 2,621 of 2,628 `EvaluatePackage`
+  ones; the residual ~2.4% (a real offset, a non-literal argument, or a
+  non-default rotation flag) still correctly declines, per the original
+  reasoning (never silently drop an offset and misplace the object) now
+  applied to the right input shape. Verify `lowers_the_default_materialized_move_to_shapes`
+  / `move_to_declines_non_default_and_over_long_tails`
+  (`crates/scripting/src/translate/effects.rs`) — re-flagging `MoveTo` as
+  structurally zero, or re-opening #3487, is the regression to watch for.
 - **QUST alias decode + fill-and-apply runtime (M47.3, Phases 0–3 shipped
   2026-08-07, `a844c26b`)** — `QustRecord.aliases: Vec<QuestAlias>`
   (`ALST`/`ALLS`/fill-types/`FNAM`/injected data/`ALFI` "Force Into Alias")
@@ -928,15 +930,23 @@ refresh; not otherwise covered by this dimension's checklist below).
   `dispatch_add_item_via_registered_vmad`, `dispatch_move_to_via_registered_vmad`,
   `dispatch_activate_then_set_open_updates_mq101_style_gate` (alias-bound
   `ObjectRef::Property` resolving live) (`crates/scripting/src/fragment/tests.rs`).
-- **`AddItem`/`MoveTo` conservative-shape declines**: `AddItem`'s optional
-  3rd arg (`abSilent`) is accepted only as a literal (`bool_arg`'s `None` on
-  a present-but-non-literal value must decline the whole primitive, mirroring
-  `SetObjectiveDisplayed`'s existing discipline) and a 4th+ arg declines
-  outright; `MoveTo` accepts *only* the 2-arg shape (receiver + destination)
-  — any offset/match-rotation argument declines rather than silently
-  dropping it and misplacing the object. Guards:
+- **`AddItem`/`MoveTo` default-materialized-shape declines**: `AddItem`'s
+  optional 3rd arg (`abSilent`) is accepted only as a literal (`bool_arg`'s
+  `None` on a present-but-non-literal value must decline the whole
+  primitive, mirroring `SetObjectiveDisplayed`'s existing discipline) and a
+  4th+ arg declines outright. `MoveTo` (widened 2026-09-07, #3487,
+  `df8eb2f3`) accepts up to `MOVE_TO_MAX_ARGS = 6` — the three trailing
+  float offsets only when each is the literal `0.0`, and
+  `abMatchRotation`/Starfield's `abRotateOffset` only at their Papyrus
+  defaults (`true`/`false`) — i.e. exactly the shape the `.pex` compiler
+  materializes for an author who wrote the bare 2-arg call; any real offset
+  or non-default rotation flag still declines rather than silently dropping
+  it and misplacing the object. Guards:
   `add_item_declines_with_non_literal_silent_arg`,
-  `move_to_declines_with_offset_args` (`crates/scripting/src/translate/effects.rs`).
+  `lowers_the_default_materialized_move_to_shapes`,
+  `move_to_declines_non_default_and_over_long_tails`
+  (`crates/scripting/src/translate/effects.rs`) — do not re-flag `MoveTo` as
+  a strict 2-arg-only primitive, that framing is stale.
 - **`quest_stage_gate` cross-check**: when the condition's quest and the
   `SetStage` target's quest disagree, the recognizer declines (don't advance the
   wrong quest). Verify `recognizes_da10_and_reproduces_hand_builder` (`.psc`-side,
@@ -1626,10 +1636,12 @@ asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it
      Find-Matching search, and the injected packages/spells/keywords overlay
      families staying parsed-not-applied). **Settled, not deferred**: the
      `AddItem`/`MoveTo` real-corpus yield re-measurement — done 2026-08-27,
-     `AddItem` non-zero (54 emissions), `MoveTo` structurally zero and
-     tracked as open issue #3487 (see the Future-phase-gaps bullet above);
-     `ReferenceEnableState`/`Disable` no longer lacks a runtime consumer
-     (see above).
+     `AddItem` non-zero (54 emissions), `MoveTo` measured structurally zero
+     at the time; issue #3487 that measurement opened is now CLOSED
+     (2026-09-07, `df8eb2f3` — see the Future-phase-gaps bullet above),
+     `MoveTo` now claims 3,253/3,334 (97.6%) and `EvaluatePackage`
+     2,621/2,628; `ReferenceEnableState`/`Disable` no longer lacks a runtime
+     consumer (see above).
      Findings count by severity. **Untrusted-input
      robustness verdict** (can a hostile/corrupt `.pex` or `.psc` panic, OOB, or
      OOM the cell loader — MUST be NO). **The 99.996% decompile-rate claim

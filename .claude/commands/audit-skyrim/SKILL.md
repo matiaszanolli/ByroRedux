@@ -42,9 +42,9 @@ benches refresh every `/session-close`.
 | Aspect       | State (cite ROADMAP, do not re-transcribe) |
 |--------------|---------------------------------------------|
 | NIF format   | v20.2.0.7 (BSVER 83 / 100) |
-| BSA format   | v105 ✓ (LZ4 block compression) — `crates/bsa/src/archive/` |
+| BSA format   | v105 ✓ (LZ4 **frame** compression, `lz4_flex::frame::FrameDecoder` — NOT the `lz4_flex::block` codec, which is BA2/Starfield's; #1558/SK-D5-01 pins the distinction with an unconditional negative test) — `crates/bsa/src/archive/` |
 | ESM parser   | Unified `esm/` walker ✓ — `Skyrim.esm` cells parse (`parse_real_skyrim_esm`, finds `SolitudeWinkingSkeever`) |
-| Parse rate   | 100% clean over **33 424 NIFs across 7 archives** (`Skyrim - Meshes0/1.bsa` plus the five Creation Club / Anniversary archives, measured 2026-08-29 under #3369). Was cited as the two base archives' 32 709 — the CC/AE set varies per account, so it rides `Game::optional_mesh_archives`: swept present-only by the rate-based gate, deliberately kept out of the count-keyed baseline corpus. Cite ROADMAP compat matrix for the live ratio |
+| Parse rate   | 100% clean over **33 468 NIFs across 7 archives** (`Skyrim - Meshes0/1.bsa` plus the five Creation Club / Anniversary archives; #3369 first widened the gate 2026-08-29 at 32 709→33 424, and #3919's `MIN_CLEAN_RATE` floor table in `crates/nif/tests/parse_real_nifs.rs` re-measured 2026-09-06 at 33 468, still 100% clean / 0 truncated). The CC/AE set varies per account, so it rides `Game::optional_mesh_archives`: swept present-only by the rate-based gate, deliberately kept out of the count-keyed baseline corpus. Cite ROADMAP compat matrix for the live ratio |
 | Rendering    | Cells + meshes ✓ — Whiterun BanneredMare is the renderer **control bench** (entity/FPS figures: ROADMAP Bench-of-record, currently R6a-stale-20 resolved) |
 | NPC equip    | 6 named NPCs equipped via M41 OTFT/LVLI (`byroredux/src/npc_spawn.rs`) |
 | Reference data | `/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/` |
@@ -164,7 +164,7 @@ benches refresh every `/session-close`.
 **Subagent**: `general-purpose`
 **Entry points**: `crates/bsa/src/archive/` (mod, open, extract, hash, tests)
 **Checklist**:
-- v105 header format; LZ4 block decompression via `lz4_flex::block` — verify against a known-good Skyrim mesh (e.g. sweetroll).
+- v105 header format; LZ4 **frame** decompression via `lz4_flex::frame::FrameDecoder` (`crates/bsa/src/archive/extract.rs`) — **not** `lz4_flex::block`, which is BA2/Starfield's codec; `synthetic_v105_block_codec_payload_is_rejected_by_frame_reader` (#1558/SK-D5-01) pins the v105 reader rejecting a block-encoded body. Verify against a known-good Skyrim mesh (e.g. sweetroll).
 - Hash table layout vs v104; folder record size; embedded-name flag; compressed-file flag priority (archive-level vs per-file — which wins on disagreement).
 - Full-archive extraction sweep: `Skyrim - Meshes0.bsa` + `Skyrim - Textures*.bsa` (through Textures8) all extract without error. **Zero-based sibling auto-load (`821a425b`)** — `asset_provider/archive.rs::open_with_numeric_siblings` now auto-loads `<stem>2.bsa`..`<stem>9.bsa` siblings, so distant-LOD diffuse in `Textures7.bsa` and `.btr` meshes in `Textures8.bsa` drag in from a zero-based base archive; a regression that re-narrows sibling discovery starves M35 distant terrain of its LOD textures.
 **Output**: `/tmp/audit/skyrim/dim_5.md`

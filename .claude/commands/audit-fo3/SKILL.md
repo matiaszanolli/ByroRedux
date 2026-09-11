@@ -42,10 +42,15 @@ for the severity scale (including the NIFAL canonical-translation rows).
   Disney-BSDF and BGSM paths must be provably unreachable.
 - **Earlier authoring conventions** than FNV: pre-FNV record subforms (NPC_,
   DIAL/INFO), FO3-era particle stacks. These are the FNV-shared paths most
-  likely to hit an untested edge on FO3 data. (`BSSegmentedTriShape` is NOT one
-  of these — see #3101: the 96-type block histogram over all 10,989 vanilla FO3
-  NIFs contains zero `BSSegmentedTriShape` entries; it's a Skyrim-LE/FO4-era
-  block, dispatch-reachable but never authored by FO3 content.)
+  likely to hit an untested edge on FO3 data. (`BSSegmentedTriShape` IS one of
+  these now — #3101's "zero entries" premise is stale: it measured only the
+  single `Fallout - Meshes.bsa` archive (10 989 NIFs), before #3041 widened the
+  gate to all 6 mesh-bearing archives. The current per-block baseline over the
+  full 17 172-NIF corpus (`crates/nif/tests/data/per_block_baselines/fallout_3.tsv`)
+  shows **1 374 `BSSegmentedTriShape` blocks, 0 unknown** — the GOTY DLC
+  archives evidently author it. Do not carry forward "never authored by FO3
+  content"; audit the segmented-shape decode on FO3 data like any other
+  reachable block.)
 - **Different worldspace.** Capital Wasteland is a distinct WRLD form ID with its
   own origin/CLMT curves — any FNV-hardcoded worldspace name or coord is a bug.
 - **B-splines are reachable** (`NiBSplineCompTransformInterpolator`) — do not
@@ -102,7 +107,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 - CELL XCLL / RCLR layout identity vs FNV (FO3 interior lighting uses the same `CellLightingRes` path — confirm, don't assume).
 - WATR (rivers/ponds) and NAVM differences. WTHR / CLMT pulled through the shared parser.
 - **FO3 authors NO REFR texture overlays — do not audit this path here (#3511)**: measured twice, agreeing. Through the engine's own parser all 566 642 indexed FO3 REFRs carry 0 `alt_texture_ref` / `land_texture_ref` / `texture_slot_swaps`; a raw byte scan of `Fallout3.esm` finds **0 `XATO`, 0 `XTNM`, 0 `XTXR`** (FNV's 219 `XATO` are the *Activation Prompt* string sub-record, a different field entirely — see the provenance caveat at the `b"XATO"` arm in `crates/plugin/src/esm/cell/walkers.rs`, #1887; FO4 is the `XTNM` title, 42). The `refr_texture_overlay_tests.rs` fixtures this bullet used to cite are **FO4-shaped**, so a "verified working" conclusion drawn from them says nothing about FO3. Same premise-rot class as #3101.
-- **FO3's 243 TXST records are reached through `LTEX.TNAM`**, not through REFRs: `LTEX.TNAM → TXST → TX00` builds `EsmCellIndex.landscape_texture_sets` (`crates/plugin/src/esm/records/mod.rs`). That is the FO3 TXST consumer worth auditing — terrain splat diffuse paths, not per-instance overlays.
+- **FO3 parses 243 total TXST records; only 51 are reached through `LTEX.TNAM`** (`landscape_texture_sets`, #3920, measured 2026-09-06) — not through REFRs: `LTEX.TNAM → TXST → TX00` builds `EsmCellIndex.landscape_texture_sets` (`crates/plugin/src/esm/records/mod.rs`), and all 51 carry a diffuse. That is the FO3 TXST consumer worth auditing — terrain splat diffuse paths, not per-instance overlays. Do not cite 243 as the join count; the other ~192 parsed TXST records sit in `EsmCellIndex.texture_sets` with no live consumer on this title.
 - **TXST/XATO/XTNM/XTXR dispatch** lives in `crates/plugin/src/esm/cell/walkers.rs`; an `unreachable_patterns` warning there is a smell.
 **Output**: `/tmp/audit/fo3/dim_3.md`
 

@@ -125,9 +125,11 @@ the crate; the crate audit is incomplete without it):
   preflight (`restore_world` runs it before `clear_entities`; the live path
   runs it before any cell/streaming teardown) — added 2026-08-24 (#3163) so a
   malformed column is rejected before either restore path can touch a world.
-- `FORMAT_MAJOR` is **21** as of 2026-09-05 — it was 10 at the previous skill
-  sync and has taken eleven bumps since, each adding a REQUIRED field (or, for
-  v11, changing a shape serde can't bridge) rather than a defaulted one: v11
+- `FORMAT_MAJOR` is **22** as of 2026-09-11 — it was 10 at the previous full
+  skill sync and has taken twelve bumps since, each adding a REQUIRED field
+  (or, for v11, changing a shape serde can't bridge, or, for v22, inserting
+  enum variants that shift a later variant's discriminant) rather than a
+  defaulted one: v11
   changed saved `PapyrusProviderContinuationQueue` calls from a flat vector of
   resolved values to typed literal/local argument expressions (no migrator,
   old shape doesn't deserialize); v12 adds the stable legacy-script principal
@@ -146,7 +148,10 @@ the crate; the crate audit is incomplete without it):
   snapping to full weight on completion; v21 (#2573, OBL-D5-03) adds
   `Material::specular_authored`, recording whether `specular_color` was
   actually authored by a bound material property as opposed to holding the
-  unauthored struct default. **v10, v19, and v21 are the ones worth reading
+  unauthored struct default. v22 (#3159, SCR-D5-2026-08-20-01) adds two
+  variants — `SetLocked`/`SetLockLevel` — to the `Effect` enum, reached via
+  the registered `FragmentExecutionQueue` resource's suspended-continuation
+  tail. **v10, v19, and v21 are the ones worth reading
   the doc comment for**: in each case the "safe" default (`false`) would in
   fact have been correct for every pre-bump snapshot, and the bump was taken
   anyway, because the rule and its
@@ -155,10 +160,17 @@ the crate; the crate audit is incomplete without it):
   exactly what #1714 (SAVE-D2-01) removed from the loop. An audit proposing to
   relax the rule for a "safe" default is re-opening that. Conversely, an enum
   variant ADDED to an already-saved type (`Effect::Enable`, #3489, mirroring
-  the existing `Effect::Disable`) does NOT need a bump — serde only needs to
-  recognize tags present in the data, so old saves stay readable; the
-  shape-fingerprint guard's own baseline comment records this "moved without a
-  bump, deliberately" posture per instance. Do not hardcode `FORMAT_MAJOR`'s
+  the existing `Effect::Disable`) does NOT always need a bump — serde only
+  needs to recognize tags present in the data, so old saves stay readable in
+  the common case; the shape-fingerprint guard's own baseline comment records
+  this "moved without a bump, deliberately" posture per instance. **v22 is the
+  counter-case**: unlike a plain tag addition, inserting `SetLocked`/
+  `SetLockLevel` shifts the index-based discriminant of every `Effect`
+  variant declared after them, so a pre-v22 queued tail would deserialize as
+  the *wrong* effect rather than merely miss a field — rejection there is
+  required, not a blanket-rule courtesy. Read both doc-comment entries before
+  asserting either direction of the "does this enum change need a bump" rule.
+  Do not hardcode `FORMAT_MAJOR`'s
   numeric value elsewhere in findings — re-read `crates/save/src/snapshot.rs`'s
   `FORMAT_MAJOR` doc comment, it will drift again.
 

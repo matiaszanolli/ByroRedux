@@ -43,7 +43,10 @@ For each issue, pull out:
 - **Related `#NNNN`** — phased fixes split across several issues (e.g. #1210 →
   #1255 → #1257) regress as a set; verify the whole chain, not just the head.
 
-> **Discovery window caveat.** The repo has 3600+ closed issues. The default
+> **Discovery window caveat.** The repo has 3900+ closed issues (3941 via
+> `gh api search/issues -f q='repo:matiaszanolli/ByroRedux is:issue is:closed'
+> --jq .total_count`, 2026-09-11; re-run that query rather than trusting this
+> number — it was 3600+ as recently as the 2026-09-05 sync). The default
 > `--limit 50` only covers the most-recently-closed bugs, so older high-value
 > fixes get **no coverage** unless you raise `--limit` or pass them via
 > `--issues`. The unconditional **Step 4** fragile-area checks are the safety
@@ -131,7 +134,10 @@ run regardless of Step 1's window. A FAIL here is still reported as a regression
   to opaque `NiPSysBlock` shows up as zero-sized emitters or clobbered colors.
 - **Collision shape coverage.** `BhkMultiSphereShape` + `BhkConvexListShape`
   must still translate to a `CollisionShape` in
-  `crates/nif/src/import/collision/mod.rs` (they were previously dropped to `None`).
+  `crates/nif/src/import/collision/shape.rs` (dispatched from the shape-tree
+  walk in `mod.rs`; the dedicated shape decoders live in the `shape.rs`
+  sibling since the `#1876` module split — they were previously dropped to
+  `None`).
 
 **Disney BSDF + GPU struct contracts** (recent shader wave):
 

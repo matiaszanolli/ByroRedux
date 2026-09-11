@@ -134,17 +134,25 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    whole-repo grep, which also matches markdown prose mentioning the literal
    string `#[ignore]` (#2262).
    The **production**>2000-LOC set (Dim 1's actual subject, re-measured
-   2026-09-09 with *prod_loc* over every `.rs` file in `crates/` + `byroredux/`)
-   is **5 files**, down from the 12 recorded on 2026-09-05. The
-   sandbox-runtime/ECS-event adapter that led this list — 5921 production
-   lines in one file — was split into `byroredux/src/extensions/` under
-   #3843 on 2026-09-11 (eight production modules, largest 1053 lines), so
-   do not re-propose it; the remaining set is:
-   `crates/renderer/src/vulkan/context/mod.rs` (2831, up from ~2650),
-   `crates/scripting/src/fragment.rs` (2682, up from ~2540),
-   `crates/sdk/src/compatibility/storage_util.rs` (2160, **newly crossed** —
-   it grew in `e142e3d4` when the FourCC→FormType mapping became a table),
-   and `crates/nif/src/blocks/shader.rs` (2019, **newly crossed**).
+   2026-09-11 with *prod_loc* over every `.rs` file in `crates/` + `byroredux/`)
+   is **2 files**, down from the 12 recorded on 2026-09-05. Three files left
+   the bucket since: the sandbox-runtime/ECS-event adapter that led this
+   list — 5921 production lines in one file — was split into
+   `byroredux/src/extensions/` under #3843 on 2026-09-11 (eight production
+   modules, largest 1053 lines); `crates/scripting/src/fragment.rs` (2682 on
+   2026-09-09) was split under #3854 (`f5127c1c`, 2026-09-10) into
+   `crates/scripting/src/fragment/` — `effects.rs` (1443), `populate.rs`
+   (634), `systems.rs` (336), `state.rs` (275), beside the pre-existing
+   `tests.rs` — leaving the front file at 144 lines; and
+   `crates/nif/src/blocks/shader.rs` dropped back under threshold on its own
+   (1990 total as of 2026-09-11, down from the 2019 that newly crossed on
+   2026-09-05 — incidental shrinkage from unrelated edits, not a split; #3845
+   nets −31 lines there). Do not re-propose any of the three. The remaining
+   set is: `crates/renderer/src/vulkan/context/mod.rs` (2831, up from ~2650)
+   and `crates/sdk/src/compatibility/storage_util.rs` (2160, **newly
+   crossed** on 2026-09-05 — it grew in `e142e3d4` when the FourCC→FormType
+   mapping became a table; still 2160 production as of 2026-09-11 though its
+   total line count grew further to 2218).
    *crates/renderer/src/texture_registry.rs* left the bucket on 2026-09-11:
    split into `crates/renderer/src/texture_registry/` under #3737 by
    lifecycle phase (lookup / upload / release), largest survivor
@@ -170,12 +178,13 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    seam as the `draw.rs` split below, and the same instruction: do not
    re-propose splitting `volumetrics.rs` on the strength of a pre-2026-09-08
    figure — re-measure first. The set is **11** files after this.
-   `compatibility.rs`, `papyrus_provider.rs` and `runtime.rs` were split in
-   2026-09 (#3851 / #3852 / #3853) and are no longer single files — see the
-   young-crate note below. `extensions.rs` is the one that remains, and it is
-   still the "young crates … not yet seen a debt sweep" case named at the top
-   of this skill (`crates/sdk`, `crates/scripting`, `crates/mod-runtime`) —
-   file real Dim 1 findings there, don't just note the
+   `compatibility.rs`, `papyrus_provider.rs`, `runtime.rs` and `extensions.rs`
+   were all split in 2026-09 (#3851 / #3852 / #3853 / #3843) and are no
+   longer single files — see the young-crate note below and the `extensions/`
+   split noted above. Every monolith this skill was tracking is now split;
+   `crates/sdk`, `crates/scripting`, `crates/mod-runtime` are still the
+   "young crates … not yet seen a debt sweep" case named at the top of this
+   skill — file real Dim 1 findings there as they emerge, don't just note the
    crate is young.
    **`context/draw.rs` dropped OUT of the bucket entirely (~3620 → ~1760
    production)** — #3282 (`7463204e`, 2026-09-02) split the re-grown
@@ -187,8 +196,8 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    `begin_frame_recording.rs`, `sync_and_acquire_frame.rs`, `depth_capture.rs`,
    `screenshot.rs`, `render_debug.rs`, `teardown.rs`, `resources.rs`,
    `helpers.rs`, `resize.rs`, `init.rs`. Do not re-propose splitting
-   `draw.rs` — it is done; `context/mod.rs` (still ~2650 production) is the
-   live candidate left in that directory.
+   `draw.rs` — it is done; `context/mod.rs` (2831 production as of
+   2026-09-11, up from ~2650) is the live candidate left in that directory.
    The *texture_registry.rs* disagreement with #3081's evidence table (which
    reported its production at 838 — majority-test) was resolved on
    2026-09-11: 2013 was the reproducible figure, 838 was not, and the file
@@ -267,9 +276,9 @@ previously-split module can grow back over threshold).
 - ~~`crates/nif/src/import/walk/mod.rs` → split the satellite walkers out per the module doc's own category list rather than by traversal-order.~~ **DONE (`9aae918b`, 2026-09-09)** — `emitter.rs` (736), `lights.rs` (318), `node_attrs.rs` (150) and `texture_effect.rs` (100) were lifted out; `mod.rs` retains hierarchical/flat traversal (`walk_node_hierarchical`/`walk_node_flat`) at 1107 production, under threshold. Do not re-propose.
 - `crates/core/src/ecs/resources/mod.rs` → partially split already (`SkinSlotPool` extracted to `skin_slot_pool.rs` under #1869; `mod.rs` was 1210 LOC after that split and is **1822 LOC as of 2026-08-29** — still under threshold, but it has re-bloated by half again, which is the condition the next line names). Split further per resource domain (rendering/world/audio/scripting).
 - Actor record split per NPC_ data-group (13 groups) — done (#2055): `crates/plugin/src/esm/records/actor/mod.rs` (+ `tests.rs`).
-- **New candidates from the young-crate sweep (first crossed 2026-09-05, no prior split proposal exists — read before proposing an axis, this is a first pass, not a re-derivation)**: `crates/scripting/src/fragment.rs` (~2540). The engine-side SDK/mod-runtime ECS-event adapter that sat here was split under #3843 (2026-09-11) along the axis its own module doc suggested — handle assignment, canonical delivery, command write-back — plus the legacy-extender shims, capture, persistence and the scheduler-registered systems: see `byroredux/src/extensions/`.
+- **Young-crate sweep candidates, all now resolved — none left to propose.** The engine-side SDK/mod-runtime ECS-event adapter that used to sit at `crates/scripting/src/fragment.rs` (first crossed 2026-09-05) was split under #3843 (2026-09-11) along the axis its own module doc suggested — handle assignment, canonical delivery, command write-back — plus the legacy-extender shims, capture, persistence and the scheduler-registered systems: see `byroredux/src/extensions/`. `crates/scripting/src/fragment.rs` itself (~2540 as of 2026-09-05) was a *different* file split separately under #3854 (`f5127c1c`, 2026-09-10) into `crates/scripting/src/fragment/` — see the Phase-1 note above; do not conflate the two similarly-named splits when re-reading old audit prose.
 
-  **Three of the original candidates were split in 2026-09; their axes are now settled fact, not guesses — do not re-derive them.** *crates/sdk/src/compatibility.rs* -> `compatibility/` (#3851): the axis this skill proposed — one module per `ExtenderFamily::{Skse,F4se,Xnvse,Obse,PapyrusUtil,JContainers,Shared}` — was **wrong**, and is recorded here because it is the exact failure this bullet's own caveat warns about. `ExtenderFamily` is a metadata tag on `SourceAlias`/`CompatibilityMatch`, present on 30 of 3759 production lines, 23 of them inside two classifier functions; splitting on it would have produced one ~160-line module and six near-empty ones while leaving the real mass untouched. The real axis was **service surface**, each service repeating a four-layer stack (routes -> declarations -> source aliases -> runtime adapters), and PapyrusUtil's StorageUtil alone was ~2050 of the 3759 lines. *crates/scripting/src/papyrus_provider.rs* -> `papyrus_provider/` (#3852), split on the IR its front end produces and its interpreter consumes. *crates/mod-runtime/src/runtime.rs* -> `runtime/` (#3853): here the guessed per-binding axis **did** hold — 19 `impl <wit>::Host for HostState` blocks relocated one per file. Each needs its own read-through before filing a specific axis — do not assume the above groupings are correct without checking the file's actual internal structure first.
+  **Three of these were split in 2026-09; their axes are now settled fact, not guesses — do not re-derive them.** *crates/sdk/src/compatibility.rs* -> `compatibility/` (#3851): the axis this skill proposed — one module per `ExtenderFamily::{Skse,F4se,Xnvse,Obse,PapyrusUtil,JContainers,Shared}` — was **wrong**, and is recorded here because it is the exact failure this bullet's own caveat warns about. `ExtenderFamily` is a metadata tag on `SourceAlias`/`CompatibilityMatch`, present on 30 of 3759 production lines, 23 of them inside two classifier functions; splitting on it would have produced one ~160-line module and six near-empty ones while leaving the real mass untouched. The real axis was **service surface**, each service repeating a four-layer stack (routes -> declarations -> source aliases -> runtime adapters), and PapyrusUtil's StorageUtil alone was ~2050 of the 3759 lines. *crates/scripting/src/papyrus_provider.rs* -> `papyrus_provider/` (#3852), split on the IR its front end produces and its interpreter consumes. *crates/mod-runtime/src/runtime.rs* -> `runtime/` (#3853): here the guessed per-binding axis **did** hold — 19 `impl <wit>::Host for HostState` blocks relocated one per file. Each needs its own read-through before filing a specific axis — do not assume the above groupings are correct without checking the file's actual internal structure first.
 
 **Also flag**: functions >200 LOC (propose extraction); match arms >50 cases
 (want a lookup table); nesting depth >5 (state-machine extraction); a `mod.rs` /

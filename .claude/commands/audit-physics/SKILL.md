@@ -321,12 +321,18 @@ preset); `byroredux/src/systems/character.rs` — `character_controller_system`,
   keeps a latched `WaterContact` and submerged damping forever. A ragdoll arm
   missing from either the scan or the clear is the regression.
 - Current drag must be **bounded**; an unbounded drag term at high flow is a
-  body launched out of the water. Verify the clamp and its constant. The
-  current-volume containment test reads the **collider AABB centre**, not the
-  rigid-body origin (#3490, aligned with the surface test's #2887 fix) — both
-  branches now share one `compute_aabb()` call. A regression here is either
-  branch reverting to `pos.y`/the raw body origin, which disagrees with a
-  bhk-imported compound part's own local isometry and with ragdoll bones.
+  body launched out of the water. Verify the clamp and its constant.
+  **All three axes now read the collider AABB centre, not the rigid-body
+  origin.** #3490 (aligned with the surface test's #2887 fix) moved the Y
+  read; #3973 (`06fa77e3`) closed the gap that left the union prefilter and
+  both containment predicates still reading `pos.x`/`pos.z` — a body centred
+  off its own origin (every bhk compound part, every ragdoll bone) could pass
+  X/Z containment on the wrong point while its Y read was already correct.
+  One `reference_point` (`collider.compute_aabb().center()`), computed once
+  per body, now feeds the union prefilter, the current-volume containment,
+  and the surface XZ containment alike. A regression here is any of the
+  three — prefilter, current-volume, or surface — reverting to the raw body
+  origin on any axis, not just Y.
 - `WaterContact` is the ECS-visible result (`submerged_fraction`, `material`) and
   is documented to emit one transition frame at zero. Verify the transition
   contract holds so downstream FX/audio consumers see the edge.

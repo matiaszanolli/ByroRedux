@@ -5,9 +5,11 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` — the third-largest crate in the workspace (~55k LOC
-over 75 files under `src/`; ~62k over 107 counting tests and examples — behind
-`crates/nif` at ~101k and `crates/renderer` at ~84k, re-measured 2026-09-05) and,
+Audit `crates/plugin/` — the third-largest crate in the workspace (~58k LOC
+over 77 files under `src/`; ~66k over 109 counting tests and examples — behind
+`crates/renderer` at ~95k and `crates/nif` at ~93k (the two swapped order since
+the 2026-09-05 measurement: `renderer` grew, `nif` shrank — e.g. `#3886` deleted
+`AnimationController`'s 454 dead LOC), re-measured 2026-09-11) and,
 until this skill landed, the **largest subsystem with no owner audit**. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each sample one
 game's slice of it; nothing has ever audited the parser as a parser: the GRUP
 walker, sub-record byte accounting, per-record schema dispatch, the FormID
@@ -145,9 +147,20 @@ Everything downstream then decodes garbage that *looks* structurally valid.
   unbounded walkers were converted: `cell/support.rs`'s `parse_modl_group`,
   `parse_ltex_group`, `parse_txst_group`, `parse_scol_group`, `parse_pkin_group`,
   `parse_movs_group`, `parse_mswp_group`, and `cell/walkers.rs::parse_refr_group`
-  all take `bounded_group_content_end` now. The only remaining
-  `reader.group_content_end` call sites in production code are the
-  non-recursive top-level walk in `records/mod.rs`; everything else is in test
+  all take `bounded_group_content_end` now. This claim itself had a live
+  exception until 2026-09-11: `cell/wrld.rs::parse_wrld_group` was reading its
+  child group's end with the raw `group_content_end` and recursing into it
+  unclamped — the parent-end half of the contract, not the depth half (the
+  call is non-recursive on itself, so no stack-overflow vector, but a WRLD
+  whose type-1 world-children group declared a `total_size` past the
+  enclosing top-level GRUP would desync every remaining top-level group in
+  the file, since `records/mod.rs`'s dispatcher never re-seeks after a walker
+  returns). No vanilla master triggers it. **Fixed by `6c3584ec` (Fix #4076,
+  2026-09-11)** — `parse_wrld_group` now does `.min(end)` on the raw
+  accessor's result (not routed through `bounded_group_content_end`, since it
+  doesn't recurse into itself and so has no depth counter to thread). The
+  only remaining unclamped `reader.group_content_end` call site in production
+  code is the non-recursive top-level walk in `records/mod.rs`; everything else is in test
   fixtures. Regression = a *new* recursive walker introduced against the raw
   `group_content_end`, or a `depth` argument dropped from an `_inner` recursion
   so the counter never advances — the second is silent, since the bound is
@@ -260,7 +273,7 @@ width shifts every later field in the same sub-record, and the result parses
   in particular that the standalone arm has **not** been "fixed" into a clamp —
   the comment explains why clamping is strictly worse (two forms colliding on
   one global id inside `EsmIndex`).
-- **The remap sweep for the `records/` tier is a maintained allowlist, not a structural guarantee — verify the guard's coverage, don't trust "finished."** #3314 made the remap structural for the `cell/` tier by making it a required parameter of `read_form_id` (a type-level guarantee: every caller must go through the reader). `records/` has no equivalent type-level forcing function — its free-function `remap_fid(raw, remap)` pattern lets a parser simply omit the `remap` parameter, so `record_parsers_with_embedded_form_ids_take_a_remap` (`records/tests.rs`) is a **hardcoded source-scan allowlist**: it only inspects the parser names it already knows about. #3400/#3401 (`05bdb969`, 2026-08-29) swept the first 8 parsers (`SCOL.ONAM`/`FLTR`, `PKIN.CNAM`/`VNAM`, …) after DLC-added static collections and package-ins were silently resolving to nothing on the second-and-later plugin of a load order. **#3715 (2026-09-03) found 9 more embedded FormID reads the same guard couldn't see** — `parse_ammo`/`parse_weap`/`parse_perk` had `remap` in scope for other fields but never applied it to `projectile_form`/`casing_form`/`skill_form`/`quest_form_id`/`spell_form_id`, and `parse_cobj`/`parse_mgef`/`parse_eczn` didn't take the parameter at all — because none of the six were in the original 8-parser list. The fix extended the allowlist (now ~14 parsers) rather than inverting the guard into a real static check. **Treat this as a recurring gap, not a closed one**: any decoder audited under Dimension 2/4 that reads an embedded FormID should be cross-checked against the *current* allowlist in `tests.rs`, and a parser found taking `remap` in scope but not applying it to a specific field is exactly the #3715 pattern — flag it even if the parser is already on the list.
+- **The remap sweep for the `records/` tier was a maintained allowlist through 2026-09-05; it is now a mechanically-verified denylist — verify the guard's coverage, don't trust "finished" either way.** #3314 made the remap structural for the `cell/` tier by making it a required parameter of `read_form_id` (a type-level guarantee: every caller must go through the reader). `records/` has no equivalent type-level forcing function, so an allowlist (`record_parsers_with_embedded_form_ids_take_a_remap`, hand-fed a list of `(file, parser)` pairs it already knew about) shipped four rounds of fixes — #3400/#3401 (2026-08-29, first 8 parsers), #3714, and #3715 (2026-09-03, 9 more: `parse_ammo`/`parse_weap`/`parse_perk`'s untouched fields, `parse_cobj`/`parse_mgef`/`parse_eczn` missing the parameter outright) — and the class kept recurring, because a list of parsers someone remembered to write down cannot see the parser nobody wrote down. **#4066 (`parse_clmt`'s `WLST`, 2026-09-10) was the fifth round**, and it triggered the actual fix: **`48acaea2` (Fix #4069/#4070/#4071, 2026-09-10) inverted the guard** — `all_record_parsers()` in `records/tests.rs` now walks the `records/` directory at test time (no `include_str!`, which would just reintroduce a hand-maintained file list one level down) and requires every discovered `pub fn parse_*` to either take a `remap` parameter or appear in one of two small, justified exemption tables (`EXEMPT_NO_U32_READS`, mechanically re-verified — currently 25 entries — and `EXEMPT_JUSTIFIED`, 8 entries each with a written non-FormID reason). That same pass swept parsers #6 through #12 of the class (`parse_wthr` Skyrim `MNAM`/`NNAM`, `parse_scpt` `SCRO`, `parse_perk`'s `EPFD` type-4 payload, `parse_mgef`'s `associated_item`/`effect_shader_id`, `parse_spel`/`parse_ench` via the shared `MagicEffectAccumulator`, `parse_mesg`'s `QNAM`). A companion guard, `parsers_that_take_a_remap_actually_use_it`, catches the narrower case of a parser that takes `remap` but forgets to apply it on one arm (exactly `parse_perk`'s bug). **Two further instances landed the day after the inversion, neither caught by either guard because they aren't a `parse_*` body-level miss**: `e962ec96` (Fix #4067) found `CommonNamedFields::from_subs_with_remap` itself read `SCRI` unremapped — a *shared decoder* bug, not a missing-parameter one, now fixed by remapping inside that function instead of trusting each of its four callers to do it independently; `f1b39168` (Fix #4079) found `extract_dial_with_info`'s Topic-Children GRUP **label** (not a sub-record field) carries a plugin-local DIAL FormID compared against an already-remapped value. **Treat the class as recurring, not closed**: it now has three known shapes — an unremapped `parse_*` field (the denylist's job), an unremapped field inside a *shared* decoder several parsers call into, and a GRUP **label** that encodes a FormID. Cross-check any new decoder against `records/tests.rs`'s current exemption tables, and check GRUP-label dispatch sites the same way you'd check a sub-record field.
 - Every `HashMap<u32, _>` in `EsmIndex` is keyed by the **remapped** id. Find any
   decoder that stores a raw plugin-local id into the index, or that compares a
   remapped key against a raw reference — that's a cross-plugin dangling ref.
@@ -389,6 +402,17 @@ routers, `crates/plugin/src/esm/records/index.rs` (`EsmIndex`)
 - `parse_land_record`: quadrant/layer counts and the splat-alpha rows are
   fixed-stride; a stride error here is invisible in code and obvious on screen.
   Cross-reference `/audit-<game>` terrain dimensions rather than duplicating.
+  **Regression pin (#4078, `f1b39168`, 2026-09-11)**: the `ATXT`/`VTXT` pairing
+  only ever pushed a `TerrainTextureLayer` from inside the `VTXT` arm, so an
+  `ATXT` with no following `VTXT` was silently overwritten by the next `ATXT`
+  header (or dropped if it was the record's last sub-record) — measured 14
+  times on `Oblivion.esm` (10 naming a real `LTEX`), 0 on FO3/FNV/Skyrim
+  SE/FO4. `pending_atxt` is now flushed with `alpha: None` before a new
+  header replaces it and at end-of-record, and an out-of-range-quadrant
+  `ATXT` can no longer leave a stale pending header for a later `VTXT` to
+  wrongly attach to. Verify the flush sites hold if this decoder is touched
+  again — `TerrainTextureLayer::alpha: Option<Vec<f32>>` must still be able
+  to express "header authored, no alpha rows" as `None`, not an empty `Vec`.
 - Navmesh (`NAVM`): the classic per-sub-record path (`NVTR`/`NVEX`) and the
   Creation-Engine packed `NVNM` body (#2738, `decode_nvnm`) must produce the
   same canonical `NavmRecord`. Verify the shared row decoders

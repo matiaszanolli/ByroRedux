@@ -250,8 +250,10 @@ patterns, §7 "why Fallout is worse than Skyrim").
   - **Pattern A** — hardcoded BSVER threshold *literals* that should be a named
     `version::bsver::*` constant (`per-game-translation-survey.md` §5 Pattern A, corrected
     2026-08-30). **Not** a bypassed `NifVariant` helper — those feature-flag predicates were
-    deliberately removed (#938/#1511/#1840/#1897) as an architectural foot-gun; `version.rs:699-718`
-    records the doctrine as fully enforced with zero predicates remaining. Do not flag a raw
+    deliberately removed (#938/#1511/#1840/#1897) as an architectural foot-gun; `version.rs:743-760`
+    (re-measured 2026-09-11; `f5127c1c` and other `version.rs` refactors have shifted this range
+    before and will again — verify by symbol, not line number, if it drifts) records the doctrine
+    as fully enforced with zero predicates remaining. Do not flag a raw
     `bsver()` comparison as "should call a NifVariant helper" — that helper does not exist and
     should not be reintroduced.
   - **Pattern B** — feature-flag-on-an-enum where the wire format already discriminates the

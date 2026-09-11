@@ -152,7 +152,7 @@ policy row the doctrine check depends on; `crates/core/src/character/mod.rs`
   resolves to are AUTHORED. Verify that split holds: a hardcoded FormID in the
   roster is a finding, and so is an engine-supplied *count* derived from parsed
   data.
-- **Effective actor level has exactly ONE implementation (regression guard, #3171, `9e44a0dd`).** `effective_actor_level` lives in `crates/plugin/src/esm/records/actor/mod.rs`, beside the `NpcRecord` whose overloaded `level` field it decodes; both call sides import it. It has been duplicated **twice** already — `inventory.rs` (deleted by #3081) and *effective_npc_level* in `actor_value_derive.rs` (deleted here) — and the second copy carried the exact `.max(1)` divergence #3081 had explicitly rejected six weeks earlier, surviving because #2955's regression test only ever called the original. Measured consequence on FalloutNV.esm: **30 `NPC_` records are non-multiplier with `level <= 0`**, and for those `derive_autocalc_actor_values` evaluated the Health curve at level 1 while `stamp_character_components` wrote `CharacterLevel { level: 0 }` on the same entity, and `resolve_inherited_stats` filtered `LVLN` tiers at a third level — a `Use Stats` shell could take its ActorValues from one source record and its `CharacterLevel`/`Background` from another. The rule is `.max(0)`, **not** `.max(1)`: a plain `level` of 0 is not a "record carries none" sentinel the way `calc_min` is, so forcing it to 1 invents data. A fourth copy, or a re-added `.max(1)`, is the regression — `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_multiplier` calls it through the plugin crate so a new copy has something to fail against.
+- **Effective actor level has exactly ONE implementation (regression guard, #3171, `9e44a0dd`).** `effective_actor_level` lives in `crates/plugin/src/esm/records/actor/mod.rs`, beside the `NpcRecord` whose overloaded `level` field it decodes; both call sides import it. It has been duplicated **three times** already — `inventory.rs` (deleted by #3081), *effective_npc_level* in `actor_value_derive.rs` (deleted per #3171), and `crates/plugin/examples/probe_combat_fixture.rs` (found + fixed 2026-09-11, #4095) — and each duplicate carried the exact `.max(1)` divergence #3081 first rejected, the first two surviving because #2955's regression test only ever called the original, the third surviving because it sat in an example, outside the crate's own test run. Measured consequence on FalloutNV.esm: **30 `NPC_` records are non-multiplier with `level <= 0`**, and for those `derive_autocalc_actor_values` evaluated the Health curve at level 1 while `stamp_character_components` wrote `CharacterLevel { level: 0 }` on the same entity, and `resolve_inherited_stats` filtered `LVLN` tiers at a third level — a `Use Stats` shell could take its ActorValues from one source record and its `CharacterLevel`/`Background` from another. The rule is `.max(0)`, **not** `.max(1)`: a plain `level` of 0 is not a "record carries none" sentinel the way `calc_min` is, so forcing it to 1 invents data. A fifth copy, or a re-added `.max(1)` anywhere (examples included), is the regression — `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_multiplier` calls it through the plugin crate so a new copy has something to fail against.
 - **Rosters are falsified against real masters, not against fixtures (#3172).** `ROSTER_CASES` + `assert_rosters_resolve` (`crates/plugin/tests/parse_real_esm.rs`) run the existence loop over every shipped master for every roster and every derived-row *output* key. Before this, only `SkillSet::FALLOUT_NV` had a real-data loop; the other four and all output keys leaned on hand-written `full()` fixtures that enumerate the same strings the builders pass — so they could not falsify a roster at all. A new roster or derived output added without a `ROSTER_CASES` entry is untested by construction.
 **Output**: `/tmp/audit/character/dim_1.md`
 
@@ -270,11 +270,17 @@ per-game coverage matrix's construction seam
   clamps its backlog (an unbounded catch-up after a long stall regenerates a full
   pool instantly), regen is applied per fixed tick not per frame, and a paused /
   zero dt cannot spin.
-- `PoolRegenConfig` holds per-game *resolved AVIF ids*. Verify it is only
-  inserted once a live `CharacterRuleset` exists (see the comment in
-  `byroredux/src/boot/world.rs`), and that the declared resource access in the
-  scheduler matches what the system actually touches — `/audit-concurrency` Dim 4
-  owns the general rule; verify this specific declaration here.
+- `PoolRegenConfig` holds per-game *resolved AVIF ids*, but as of the
+  2026-09-11 audit (#4107) it has **no production insertion site at all** —
+  only `#[cfg(test)]` call sites in `regen.rs`'s own test module construct it,
+  so `pool_regen_tick_system` early-returns every frame in production
+  (`docs/feature-matrix.md`'s regen-unwired note). The comment in
+  `byroredux/src/boot/world.rs` describing insertion "when a live
+  `CharacterRuleset` lands" documents an *intended* policy, not a live code
+  path — verify that gap still holds rather than assuming the comment is
+  current, and that the declared resource access in the scheduler matches
+  what the system actually touches — `/audit-concurrency` Dim 4 owns the
+  general rule; verify this specific declaration here.
 - Affliction is a **diff-and-reapply** driver: pool → threshold band → SPECIAL
   penalty, with per-actor active-band memory. Verify the reapply removes the
   previous band's penalty before applying the new one — a missing removal

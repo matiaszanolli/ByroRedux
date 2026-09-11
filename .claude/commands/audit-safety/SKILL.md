@@ -15,9 +15,13 @@ Vulkan spec violation = **HIGH** · `unsafe` without a safety comment = **MEDIUM
 
 ## Scale of the surface
 
-`unsafe` is concentrated, not scattered: **~865** occurrences live in
-`crates/renderer/src` (ash FFI + gpu-allocator; ~830 at the last count, so this
-mass grows) then a long tail — ~14 in `crates/nif` and ~11 in `crates/fsr3-sys`
+`unsafe` is concentrated, not scattered: **~827** occurrences live in
+`crates/renderer/src` (ash FFI + gpu-allocator; ~830 at the last count on
+2026-09-05 — flat, not growing, despite the 88-commit "migrate X to GpuImage"
+series across this window: it consolidated most passes' per-image
+create/bind/destroy `unsafe` into one audited `vulkan/image.rs`, which offset
+new call sites elsewhere. Don't assume this mass only grows — recount) then a
+long tail — ~14 in `crates/nif` and ~11 in `crates/fsr3-sys`
 (the vendored FSR 3.1 FFI, Dimension 1), ~6 in `crates/core`, **1** in
 `byroredux` (`cell_loader/unload.rs`), and one each in `crates/plugin`,
 `crates/cxx-bridge`, and `crates/pex` (the M47.2

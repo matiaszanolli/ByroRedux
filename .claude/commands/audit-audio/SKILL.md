@@ -497,16 +497,42 @@ outside the crate. `footstep_system` is the ONLY live `play_oneshot` caller;
   audible crossfade, the same track whenever two connected cells share a
   tagging region. Verify it stops outstanding playback (not leaves it
   running) on every failure layer — no `SoundArchiveProvider`, no
-  `--sounds-bsa` supplied, unresolved FormID, missing archive entry, decode
-  failure, and `music_form: None` — because whatever was audible belonged to
-  the *previous* directive. The `music_form`-authored-but-unresolved case
-  logs once via `std::sync::Once` (not per-region-transition) distinguishing
-  "no archive supplied" from "authored but this engine build can't resolve
-  its target type" — verify the log fires once per process, not once per
-  cell. `looping` threads through from `sound_loops` (SOUN's Loop bit) into
-  `play_music`'s 4th parameter. Per the Dim 4 cross-reference: this is
-  presently unreachable in production because `music_form` never resolves as
-  a SOUN on any supported game — audit the mechanism, not a live flow.
+  `--sounds-bsa` supplied, unresolved FormID, the FNAM names a folder rather
+  than a file (`sound_is_folder`, #3914 — see below), missing archive entry,
+  decode failure, and `music_form: None` — because whatever was audible
+  belonged to the *previous* directive. The `music_form`-authored-but-unresolved
+  case logs once via `std::sync::Once` (not per-region-transition)
+  distinguishing "no archive supplied" from "authored but this engine build
+  can't resolve its target type" — verify the log fires once per process, not
+  once per cell. `looping` threads through from `sound_loops` (SOUN's Loop
+  bit) into `play_music`'s 4th parameter. Per the Dim 4 cross-reference: this
+  is presently unreachable in production because `music_form` never resolves
+  as a SOUN on any supported game — audit the mechanism, not a live flow.
+- **`SounRecord::sound_path` is a file OR a folder (#3914).** An ESM census
+  of `FalloutNV.esm` found 50.8% of FNAM-bearing `SOUN` records name a
+  trailing-separator folder of variant `.wav`s (Fallout3.esm: 573/1,556), not
+  a single file — the prior file-path assumption made every such record a
+  guaranteed extract miss indistinguishable from missing content.
+  `sound_is_folder` (`byroredux/src/asset_provider/audio.rs`) exposes the
+  distinction and `dispatch_region_ambient_music` checks it before the
+  archive lookup, warning distinctly and failing closed rather than
+  attempting (and missing) a direct extract. Verify any future consumer of
+  `resolve_sound_path` gates on `sound_is_folder` the same way — variant
+  selection (per-emitter vs. per-play) is a deliberately unmade policy
+  decision, so there is no "extract any file under this folder" helper to
+  fall back on.
+- **`SoundArchiveProvider::extract` is last-wins, matching mesh/texture/material
+  load order (#3917).** It iterates `self.archives` via `.rev()`, not forward
+  — sound archives are plain content archives, so the later-listed (patch)
+  archive must win a key collision the same way `#3637` made mesh/texture/
+  material lookup work. Live on FNV today: `[profiles.fnv]` supplies
+  `["Fallout - Sound.bsa", "Update.bsa"]`, and the two overlap on at least one
+  key with genuinely different bytes — first-wins was silently serving the
+  unpatched copy. `ScriptProvider` is the deliberate exception and stays
+  first-wins (#1743, `--scripts-bsa` carries a mod principal that must
+  override, not lose to, base archives) — do not flag that asymmetry as a
+  bug, and do not flag a `SoundArchiveProvider` reverted to forward iteration
+  as anything but a regression of #3917.
 **Output**: `/tmp/audit/audio/dim_7.md`
 
 ## Phase 3: Merge

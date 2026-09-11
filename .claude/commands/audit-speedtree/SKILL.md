@@ -9,15 +9,36 @@ Audit the `byroredux-spt` crate — a young, deliberately small subsystem
 (Session 33 Phase 1, "S1"). It does two things: (1) walks the `.spt`
 parameter section as a tag-length-value stream for FNV / FO3 / Oblivion,
 and (2) emits a **placeholder billboard** `ImportedScene` so TREE cells
-render *something* instead of panicking or going treeless. The real
-geometry tail is **not** decoded — everything past `tail_offset` is left
-on the floor by design.
+render *something* instead of panicking or going treeless.
+
+**There is no geometry tail to decode (settled, `#3808`, 2026-09-07 —
+supersedes every earlier "geometry tail"/"binary geometry tail" framing,
+including this file's own prior wording).** `.spt` is a procedural tree
+*definition* — parameters, BezierSpline curves, texture names — not a
+geometry container: the largest file in a 159-file FNV/FO3/Oblivion corpus
+is 8,793 B, under the cost of 274 vertices of position+normal+UV for the
+*whole file*. What sits past `tail_offset` is **more of the same parameter
+dictionary** — tag families in the 14000–22000 bands, immediately above
+`parser::TAG_MAX = 13_999`, which caps the walker there for no format
+reason (byte-exact confirmed: a `14002` tag + length-prefixed string at
+`tail_offset + 1` reads out exactly, the walker's own `String` shape).
+`SptScene::tail_offset`'s doc is corrected in-code to say so; two
+regression pins forbid the old (and arithmetically wrong — off by exactly
+16) `0x4E25`/`0x4E21` candidate markers from being named again without the
+correction attached. Extending `TAG_MAX` and dictionarying those bands is
+now understood to be routine TLV work, not a new format to reverse-engineer
+— see the Dimension 1 note below for why it isn't done yet.
 
 Keep the audit proportionate. The highest-risk surface is the **walker's
-byte accounting** (one mis-sized payload desyncs the whole stream), then
-the **placeholder fallback correctness**, then **TREE record → billboard
-wiring**, then **per-game `.spt` differences**. The tag dictionary is
-large but each entry is a fixed-size decode — low risk individually.
+byte accounting** (one mis-sized payload desyncs the whole stream — and
+per `#3808`, this is not hypothetical: 46% of the corpus needs a 1–3 byte
+shift from `tail_offset` to resync against the known tag dictionary, i.e.
+the walker is already stopping mid-payload on nearly half of real content,
+it just happens not to matter yet because nothing past `tail_offset` is
+consumed), then the **placeholder fallback correctness**, then **TREE
+record → billboard wiring**, then **per-game `.spt` differences**. The tag
+dictionary is large but each entry is a fixed-size decode — low risk
+individually.
 
 **Architecture**: Single-pass — small enough to run all dimensions inline
 rather than spawning Tasks.
@@ -86,9 +107,16 @@ an entry point.)
 - `--tree` smoke path parses + imports.
 
 **Future phases (NOT shipped — do not flag as missing unless `--focus`
-explicitly includes them)**: real branch/leaf mesh recovery from the
-geometry tail, wind-bone animation from SNAM/CNAM, distance-LOD swap,
-baked-shadow lookup. SNAM/CNAM are *parsed but not consumed* (TD5-011
+explicitly includes them)**: wind-bone animation from SNAM/CNAM,
+distance-LOD swap, baked-shadow lookup. "Real branch/leaf mesh recovery
+from the geometry tail" — the Phase 2.2–2.4 item this line used to name —
+is now understood to have **no layout to recover** (`#3808`, see the intro
+above): `.spt` carries no baked geometry at all, so that direction is
+retired, not merely unshipped; the three remaining directions
+(generate branch/leaf geometry from the authored parameters, keep the
+billboard permanently, or source real tree meshes elsewhere) are an open
+design question recorded in `docs/engine/exal-trees.md` §3/§10, not a
+parser task. SNAM/CNAM are *parsed but not consumed* (TD5-011
 gate) — that's intentional, not a drop.
 
 ## Parameters (from $ARGUMENTS)
@@ -115,9 +143,17 @@ gate) — that's intentional, not a drop.
    SPT-NEW batch, SPT-NEW-01 (dead-code `detect_variant`, #1820) and
    SPT-NEW-06 (format-notes byte-align, #1821) are also **closed**, and so is
    SPT-NEW-07 (`MaybeStringElseBare` misparse risk on a bare tag-13005
-   immediately before the geometry tail, #1822 — fixed by `19813460`, Fix
-   #3531, which rejects a zero-length 13005 candidate rather than taking it
-   as a String; see the Dim 3 clamp bullet below). Verify open-item status
+   immediately before `tail_offset` — described at the time as "the geometry
+   tail," a framing `#3808` (below) has since retired, #1822 — fixed by
+   `19813460`, Fix #3531, which rejects a zero-length 13005 candidate rather
+   than taking it as a String; see the Dim 3 clamp bullet below). **Also
+   settled, not a fix but treat it the same way: `#3808`** (2026-09-07)
+   answered the open "confirm or refute the `0x4E25`/`0x4E21` geometry-tail
+   candidate markers" question — both were arithmetic slips (off by 16 from
+   their real values) that appear in 0 of 159 corpus files, and the tail
+   past `tail_offset` turned out to be more parameter-dictionary TLV, not
+   geometry (see the intro above). Do not re-open the "confirm the markers"
+   question; the answer is that they were never real. Verify open-item status
    against `gh issue view` before treating this list as current, not by
    trusting it — do not start Phase 1 orientation from a false open-item
    list. Treat closed findings as **regression guards**, not open items;
@@ -181,6 +217,20 @@ dictionary desyncs every subsequent read.
   kills the cell-loader fallback).
 - Endian: LE-only, unconditional (no version-gated readers — every `.spt`
   is `__IdvSpt_02_`). Flag any big-endian assumption or host-endian read.
+- **OPEN GAP, not yet fixed (surfaced by `#3808`, 2026-09-07): the walker
+  desyncs before `tail_offset` on 46% of the FNV/FO3/Oblivion corpus** —
+  measured by the byte shift (0–3) that maximises known-tag hits once past
+  `tail_offset`; 86/159 files need none, 36 need 1, 33 need 2, 4 need 3. A
+  walker that stops mid-payload on that much of the corpus is exactly this
+  dimension's core risk, currently invisible only because nothing consumes
+  the bytes past `tail_offset` today. Do not report this as closed — it
+  is a real, measured, currently-open byte-accounting defect with a known
+  repro method (`spt_tail` recon example, `--features recon`), just not
+  yet actionable-by-consequence. Fixing it is also the precondition for
+  the routine-but-undone work of raising `parser::TAG_MAX` (13,999) to
+  dictionary the 14000–22000 tag families `#3808` found recurring in
+  ~151/159 files — a walker that stops mid-payload cannot be safely
+  extended past the stop it doesn't know it made.
 
 ### Dimension 2: Placeholder Fallback Correctness
 **Entry points**: `crates/spt/src/import/mod.rs` (`import_spt_scene`,
@@ -331,10 +381,18 @@ dictionary desyncs every subsequent read.
   also bite the cell route. Flag if the two routes have drifted in the
   *parse* call (they must both call `parse_spt` + `import_spt_scene`).
 - Oblivion (SpeedTree 4.x) vs FO3/FNV (5.x): the parameter walker is
-  assumed unified across all three (same magic, same tag dictionary). The
-  geometry-tail layout is **not** confirmed unified — but the tail is
-  out-of-scope for Phase 1, so only flag a tail-decode assumption if
-  `--focus` includes the future phases.
+  assumed unified across all three (same magic, same tag dictionary) —
+  and per `#3808` this now covers the whole file, not just a parameter
+  *section*: there is no separate geometry-tail layout to confirm unified
+  or divergent, because there is no geometry tail (see the intro above).
+  What genuinely is unconfirmed-unified and still open is the 14000–22000
+  tag-family layout past `parser::TAG_MAX` — `#3808` found the same
+  families recurring across ~151/159 files of all three games but did not
+  extend the dictionary to cover them (that work is gated on fixing the
+  46%-of-corpus `tail_offset` desync first — see Dimension 1). Flag a
+  claim that this extended range is confirmed identical across Oblivion
+  vs FO3/FNV as unverified, and flag any *new* tail-decode assumption
+  that isn't `#3808`'s own finding.
 
 ### Dimension 5: Tag Dictionary
 Lower risk (fixed-size decodes), but a wrong size here is the Dimension-1

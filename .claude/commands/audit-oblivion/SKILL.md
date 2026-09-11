@@ -316,8 +316,8 @@ Oblivion-specific slice.
 - Animation blocks that parse but can't play because scene-graph name resolution
   is missing?
 - The pre-5.0.0.1 inline-name path itself logs at `debug` (one line per
-  file, `lib.rs:380-384`) and only escalates to `warn` on the rare
-  mid-file read failure (`lib.rs:404-407`, keyed per truncated block, not
+  file, `lib.rs:405-410`) and only escalates to `warn` on the rare
+  mid-file read failure (`lib.rs:429-433`, keyed per truncated block, not
   per file) — confirm this hasn't drifted to a per-block `warn` on the
   common case (spam risk on full-archive sweeps).
 - Any 100%-parse NIFs that would still render wrong (legacy particle emitters
@@ -326,7 +326,7 @@ Oblivion-specific slice.
   placement scheme + real LOD textures still resolve on Oblivion exteriors;
   entry points `cell_loader/object_lod.rs`, `cell_loader/placement_lod.rs`.
   **Oblivion is the only game where this route is real**: `placement_lod_supported`
-  gates on `GameKind::Oblivion` alone (`cell_loader/placement_lod.rs:313-315`),
+  gates on `GameKind::Oblivion` alone (`cell_loader/placement_lod.rs:329-330`),
   and FO3/FNV ship zero `_far.nif` / `distantlod\` entries (#2086, #3422).
   FO3/FNV use `ObjectLodScheme::FalloutLegacyBlocks` instead — don't ask them
   to reproduce this one.
