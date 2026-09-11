@@ -21,19 +21,51 @@
 //! ## Bit layouts (low bits only — high bits skipped where unused
 //! by the helpers below)
 //!
-//! | bit | Oblivion (BMDT u16) | FO3 / FNV (BMDT low u16) | Skyrim+ (BOD2 u32) | FO4 (BOD2 u32) |
-//! |-----|---------------------|--------------------------|--------------------|----------------|
-//! | 0   | Head                | Head                     | 30 - Head          | 30 - Hair Top  |
-//! | 1   | Hair                | Hair                     | 31 - Hair          | 31 - Hair Long |
-//! | 2   | **Upper Body**      | **Upper Body**           | **32 - Body**      | 32 - FaceGen Head |
-//! | 3   | Lower Body          | Left Hand                | 33 - Hands         | **33 - BODY**  |
-//! | 4   | Hand                | Right Hand               | 34 - Forearms      | 34 - L Hand    |
+//! | bit | Oblivion (BMDT u16) | FO3 / FNV (BMDT low u16) | Skyrim+ (BOD2 u32) | FO4 (BOD2 u32) | FO76 (BOD2 u32) | Starfield (BOD2 u32) |
+//! |-----|---------------------|--------------------------|--------------------|----------------|-----------------|----------------------|
+//! | 0   | Head                | Head                     | 30 - Head          | 30 - Hair Top  | *unsourced*     | *unsourced*          |
+//! | 1   | Hair                | Hair                     | 31 - Hair          | 31 - Hair Long | *unsourced*     | *unsourced*          |
+//! | 2   | **Upper Body**      | **Upper Body**           | **32 - Body**      | 32 - FaceGen Head | *unsourced*  | *unsourced*          |
+//! | 3   | Lower Body          | Left Hand                | 33 - Hands         | **33 - BODY**  | *assumed BODY*  | *assumed BODY*       |
+//! | 4   | Hand                | Right Hand               | 34 - Forearms      | 34 - L Hand    | *unsourced*     | *unsourced*          |
 //!
 //! "Main body" — the bit that, when occupied, means the equipped
 //! armor's mesh covers the actor's torso/legs/arms enough to make the
 //! base body NIF (`upperbody.nif` on FO3/FNV) redundant — is **bit 2**
 //! on Oblivion / FO3 / FNV / Skyrim+ but **bit 3** on FO4. The helper
 //! below routes per game so callers don't need to know.
+//!
+//! ## The FO76 and Starfield columns are provisional (#4074)
+//!
+//! Every other column above is cited to a specific xEdit `.pas` line and
+//! pinned by a test that repeats the citation. The last two are not: they
+//! carry FO4's answer forward on an inheritance assumption, which is the
+//! one inference in a file the project otherwise holds up as its
+//! citation-discipline example.
+//!
+//! Searched and not found, so the next reader does not repeat it:
+//! no xEdit checkout is available in this tree (`dev-4.1.6` is cited from
+//! a prior session's read, and `wbDefinitionsFO76.pas` /
+//! `wbDefinitionsSF1.pas` are not on disk); OpenMW's ESM4 reader
+//! (`components/esm4/loadarmo.cpp`) stores BOD2 as an opaque
+//! `mArmorFlags` and labels the sub-record "FO4, TES5" only, so it names
+//! no bits for either game; `nifxml`'s `BSDismemberBodyPartType` is the
+//! NIF dismemberment enum, a different namespace from the ESM biped
+//! bitfield (the `32 -` prefixes above are that enum's *values*, not bit
+//! positions); and `Gibbed.Starfield` covers FormTypes and condition
+//! functions, not ARMO body templates. No FO76 or Starfield master is
+//! mounted to census against either.
+//!
+//! `docs/engine/starfield-esm-roadmap.md` hedges the same way — "ARMA
+//! biped definitions *likely* FO4-baseline" — which is corroboration that
+//! this was never sourced, not a second source.
+//!
+//! **Both arms are therefore marked provisional rather than asserted.**
+//! They are also currently unreachable in practice: the sole caller is
+//! `npc_spawn.rs`, and no FO76 or Starfield NPC spawn path exercises it
+//! yet. Unblocking is cheap when either game's masters are mounted —
+//! census `ARMO` BOD2 values against the armours whose meshes visibly
+//! replace the torso, exactly as the FO4 column was settled.
 
 use crate::esm::reader::GameKind;
 use crate::esm::records::{EsmIndex, ItemKind, ItemRecord};
@@ -75,9 +107,17 @@ pub const fn main_body_bit(game: GameKind) -> Option<u8> {
         // enum value, NOT the bit position).
         GameKind::Oblivion | GameKind::Fallout3NV | GameKind::Skyrim => Some(2),
         // FO4 reorganised the layout — bit 2 became "FaceGen Head"
-        // and bit 3 became BODY. FO76 inherits FO4's layout per
-        // Bethesda's typical incremental reuse pattern.
-        GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => Some(3),
+        // and bit 3 became BODY. Cited: wbDefinitionsFO4.pas.
+        GameKind::Fallout4 => Some(3),
+        // PROVISIONAL (#4074) — FO4's answer carried forward on an
+        // inheritance assumption, NOT a citation. See the module docs for
+        // what was searched and why nothing could be cited. Kept at 3
+        // rather than `None` because `None` means "this game has no ARMO
+        // through this codepath" (TES3), which would be a different and
+        // equally unsourced claim; 3 is the likelier of two guesses and is
+        // marked as a guess. Pinned by `fo76_and_starfield_arms_are_marked
+        // _provisional` so it cannot quietly become an asserted fact.
+        GameKind::Fallout76 | GameKind::Starfield => Some(3),
     }
 }
 
@@ -668,6 +708,49 @@ mod tests {
         // Skyrim's body slot.
         assert!(armor_covers_main_body(GameKind::Fallout4, 0x0008));
         assert!(!armor_covers_main_body(GameKind::Fallout4, 0x0004));
+    }
+
+    /// #4074 — the FO76/Starfield arms are an inference, and the danger is
+    /// that they stop looking like one. Every sibling arm is cited to an
+    /// xEdit `.pas` line and its test repeats the citation; these two have
+    /// nothing to cite, so what is pinned instead is the *marking*.
+    ///
+    /// A future contributor who sources the real tables should delete this
+    /// test along with the PROVISIONAL comment. One who merely assumes the
+    /// value is right will find the test in their way, which is the point.
+    #[test]
+    fn fo76_and_starfield_arms_are_marked_provisional() {
+        // Needle assembled at run time so this test's own text is not what
+        // the scan matches on.
+        const EQUIP_RS: &str = include_str!("equip.rs");
+        let marker = format!("{}{}", "PROVISIONAL", " (#4074)");
+        assert!(
+            EQUIP_RS.contains(marker.as_str()),
+            "the FO76/Starfield `main_body_bit` arms must stay marked as an \
+             unsourced inference until someone cites wbDefinitionsFO76.pas / \
+             wbDefinitionsSF1.pas (or censuses real masters). Every other arm \
+             in this file carries a line citation; these two carry a guess, \
+             and an unmarked guess in a file the project cites as its \
+             citation-discipline example is worse than the guess.",
+        );
+    }
+
+    /// Pins today's behaviour for the two provisional arms so a change is
+    /// deliberate. Deliberately NOT phrased as "bit 3 is correct for FO76" —
+    /// that is exactly the claim there is no source for. It says: this is
+    /// what the code does, and it matches FO4, which is the assumption.
+    #[test]
+    fn fo76_and_starfield_currently_follow_fo4() {
+        for game in [GameKind::Fallout76, GameKind::Starfield] {
+            assert_eq!(
+                main_body_bit(game),
+                main_body_bit(GameKind::Fallout4),
+                "the provisional arms track FO4 by assumption (#4074); if this \
+                 diverges, the divergence needs its own citation",
+            );
+            assert!(armor_covers_main_body(game, 0x0008));
+            assert!(!armor_covers_main_body(game, 0x0004));
+        }
     }
 
     #[test]
