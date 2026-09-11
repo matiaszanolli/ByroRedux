@@ -683,6 +683,7 @@ fn parse_cell_group_inner(
 /// this separate signal to know a base master's copy of the same FormID
 /// should be removed rather than silently surviving untouched. See
 /// `CellData::deleted_refs` / `merge_placed_references`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn parse_refr_group(
     reader: &mut EsmReader,
     end: usize,

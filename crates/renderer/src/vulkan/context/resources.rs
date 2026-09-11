@@ -146,11 +146,11 @@ impl VulkanContext {
             .morph_delta_cache
             .values()
             .filter_map(Weak::upgrade)
-            .map(|delta| delta.byte_size() as u64);
+            .map(|delta| delta.byte_size());
         let weight_bytes = self
             .morph_slots
             .values()
-            .map(|slot| slot.weight_bytes() as u64);
+            .map(|slot| slot.weight_bytes());
         (
             self.morph_slots.len() as u32,
             morph_memory_bytes(delta_bytes, weight_bytes),

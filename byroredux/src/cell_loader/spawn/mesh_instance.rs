@@ -723,7 +723,7 @@ fn resolve_shared_geometry(
         return;
     };
     for &index in shared {
-        let representative = pc.geometry_dedup[index] as u32;
+        let representative = pc.geometry_dedup[index];
         match ctx.mesh_registry.acquire_cached(key, representative) {
             // `fresh_for_rt: false` — the representative already queued its
             // BLAS build this placement; a second request for the same mesh

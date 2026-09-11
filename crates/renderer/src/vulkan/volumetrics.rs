@@ -1597,6 +1597,9 @@ impl VolumetricsPipeline {
         // was this same clear. `clear_general_accumulator` supplies that half
         // structurally (#3844). Consumers: composite samples the integrated
         // volume (FRAGMENT) and integration writes it (COMPUTE).
+        // SAFETY: caller (this fn is itself `unsafe`, see its own doc above)
+        // guarantees the frame-in-flight slot is idle; `device`, `cmd`, and
+        // `image` are all live for this frame.
         unsafe {
             super::descriptors::clear_general_accumulator(
                 device,

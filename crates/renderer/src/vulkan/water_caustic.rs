@@ -41,11 +41,6 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::Result;
 use ash::vk;
 
-/// One per-FIF accumulator slot. Layout follows the same shape as
-/// `caustic::CausticSlot` so the two paths stay reviewer-friendly:
-/// `image` is the GPU resource, `storage_view` is the `r32ui`
-/// view bound to `water.frag` for `imageAtomicAdd`, `sampled_view`
-
 /// #3860 — an accumulator slot is an owned image plus its view, so it is a
 /// [`GpuImage`].
 ///

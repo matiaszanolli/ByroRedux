@@ -1884,11 +1884,6 @@ impl VulkanContext {
         // #3837 — last use of `batches`; hand it back before the three
         // `return Err` sites below (see the sibling note above).
         self.batches_scratch = batches;
-        // SAFETY: tail of the per-frame command buffer — depth-history
-        // snapshot, post/denoise/composite chain, egui overlay, screenshot
-        // copy, and `end_command_buffer`. Each call documents its own
-        // recording-order contract; this is the same single `unsafe` scope
-        // `draw_frame` opened before the geometry pass was extracted (#1748).
         // #3991 — the three tail `Err` sites each need `&mut self` for the
         // skin-state rollback, which cannot be taken inside their `unsafe`
         // blocks while the sync-object recovery holds a disjoint field borrow.
@@ -1898,6 +1893,11 @@ impl VulkanContext {
         let mut reset_fences_failed: Option<anyhow::Error> = None;
         let mut submit_failed: Option<anyhow::Error> = None;
 
+        // SAFETY: tail of the per-frame command buffer — depth-history
+        // snapshot, post/denoise/composite chain, egui overlay, screenshot
+        // copy, and `end_command_buffer`. Each call documents its own
+        // recording-order contract; this is the same single `unsafe` scope
+        // `draw_frame` opened before the geometry pass was extracted (#1748).
         unsafe {
             // Publish the bounded fragment-shader probe record to the host.
             // The matching CPU read occurs only after this slot's fence wait

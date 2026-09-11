@@ -1290,7 +1290,7 @@ fn reload_interior_session(
 /// yet; the fresh `WorldStreamingState` rebuilt below re-requests it from
 /// scratch around the saved grid, so nothing is lost, only re-fetched.
 /// Whether it's safe to run the saved-delta overlay (`build_form_id_remap`
-/// + `apply_deltas` in [`execute_pending_save_loads`]) after a `FullRadius`
+/// and `apply_deltas` in [`execute_pending_save_loads`]) after a `FullRadius`
 /// exterior bootstrap — #3499. `exterior_reload_bootstrap_mode()`'s whole
 /// point is guaranteeing every saved cell is resident first, via
 /// `bootstrap_waiting`'s `!pending.is_empty()` loop condition; but that

@@ -891,8 +891,8 @@ pub fn parse_time_controller(stream: &mut NifStream, type_name: &str) -> io::Res
     Ok(NiPSysBlock::marker(type_name.to_string()))
 }
 
-/// NiPSysModifierCtlr chain: NiSingleInterpController + modifier_name(string)
-/// + Data(ref, until=10.1.0.103). Used by NiPSysModifierActiveCtlr
+/// NiPSysModifierCtlr chain: NiSingleInterpController, modifier_name(string),
+/// and Data(ref, until=10.1.0.103). Used by NiPSysModifierActiveCtlr
 /// (Data: NiVisData) and all NiPSysModifierFloatCtlr aliases (Data:
 /// NiFloatData) — no additional fields of their own.
 pub fn parse_modifier_ctlr(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
@@ -928,16 +928,15 @@ pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysEmitterCtl
         BlockRef::NULL
     };
     let _modifier_name = stream.read_string()?;
-    // NiPSysEmitterCtlr.Visibility Interpolator (Ref) — nif.xml since=10.1.0.104
-    // (the pre-10.1.0.104 `Data` ref is the mutually-exclusive legacy slot,
-    // now read on the `else` arm below). Was wrongly gated >= V10_2_0_0,
-    // skipping the 4-byte ref on old-Gamebryo FX in the 10.1.0.104–10.2
-    // band. (#1544, #3174)
-    if stream.version() >= NifVersion::V10_1_0_104 {
-        let _vis_interpolator_ref = stream.read_block_ref()?;
-    } else {
-        let _data_ref = stream.read_block_ref()?;
-    }
+    // NiPSysEmitterCtlr.Visibility Interpolator (Ref) — nif.xml since=10.1.0.104;
+    // the pre-10.1.0.104 `Data` ref is the mutually-exclusive legacy slot at the
+    // same position. Was wrongly gated >= V10_2_0_0, skipping the 4-byte ref on
+    // old-Gamebryo FX in the 10.1.0.104–10.2 band. (#1544, #3174). The read
+    // itself doesn't depend on which slot it is — always exactly one BlockRef
+    // here, unconditionally, at every version this parser covers — so unlike
+    // the interpolator_ref read above (whose PRESENCE is version-gated), this
+    // one is not.
+    let _vis_interpolator_or_data_ref = stream.read_block_ref()?;
     Ok(NiPSysEmitterCtlr { interpolator_ref })
 }
 
@@ -953,12 +952,11 @@ pub fn parse_multi_target_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiP
     };
     let _modifier_name = stream.read_string()?;
     // Visibility Interpolator (Ref) — nif.xml since=10.1.0.104, not v10.2.
-    // Below that, the mutually-exclusive legacy `Data` ref. (#1544, #3174)
-    if stream.version() >= NifVersion::V10_1_0_104 {
-        let _vis_interpolator_ref = stream.read_block_ref()?;
-    } else {
-        let _data_ref = stream.read_block_ref()?;
-    }
+    // Below that, the mutually-exclusive legacy `Data` ref at the same
+    // position. (#1544, #3174) — same shape as `parse_emitter_ctlr` above:
+    // exactly one BlockRef here at every version, so the read is
+    // unconditional even though its slot identity is not.
+    let _vis_interpolator_or_data_ref = stream.read_block_ref()?;
     let _max_emitters = stream.read_u16_le()?;
     let _master_ref = stream.read_block_ref()?;
     Ok(NiPSysBlock::marker("BSPSysMultiTargetEmitterCtlr"))

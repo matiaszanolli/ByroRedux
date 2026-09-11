@@ -239,7 +239,7 @@ impl VulkanContext {
                         alloc,
                         cmd,
                         draw_commands,
-                        &instance_map,
+                        instance_map,
                         frame,
                     ) {
                         log::warn!("TLAS build failed: {e}");

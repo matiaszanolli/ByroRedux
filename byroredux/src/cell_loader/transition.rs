@@ -456,7 +456,12 @@ pub(crate) struct InteriorCellApply {
 }
 
 pub(crate) enum InteriorCellApplyProgress {
-    Pending(InteriorCellApply),
+    // Boxed per clippy::large_enum_variant: InteriorCellApply carries the
+    // whole in-flight job (ESM index, load order, resumable reference
+    // cursor) at >6 KB, dwarfing `Complete`'s two fields. Boxing keeps the
+    // enum itself small to move/store; only the (rare, one-per-transition)
+    // `Pending` construction pays the one extra allocation.
+    Pending(Box<InteriorCellApply>),
     Complete { dest_label: String, cam_pos: Vec3 },
 }
 
@@ -511,14 +516,14 @@ impl InteriorCellApply {
         } = self;
         match job.advance(world, ctx, &tex_provider, Some(&mut mat_provider), budget) {
             super::load::InteriorCellApplyProgress::Pending(job) => {
-                InteriorCellApplyProgress::Pending(Self {
+                InteriorCellApplyProgress::Pending(Box::new(Self {
                     job,
                     tex_provider,
                     mat_provider,
                     dest_pos_zup,
                     dest_rot_zup,
                     dest_label,
-                })
+                }))
             }
             super::load::InteriorCellApplyProgress::Complete(result) => {
                 let cam_pos = finish_interior_cell_load(

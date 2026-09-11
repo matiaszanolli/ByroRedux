@@ -215,7 +215,10 @@ fn ordered_index_pair(a: u16, b: u16) -> (u16, u16) {
 /// approach [`shared_edge`] already uses, so this doesn't add a new
 /// assumption to what's already trusted; it only adds a new use of it.
 fn border_edges(navm: &NavmRecord) -> Vec<(usize, u16, u16)> {
-    let mut owners: HashMap<(u16, u16), Vec<(usize, u16, u16)>> = HashMap::new();
+    // `(triangle_index, vertex_a, vertex_b)`, same shape as this fn's own
+    // return type — named here rather than inlined per clippy::type_complexity.
+    type TriangleEdgeOwners = HashMap<(u16, u16), Vec<(usize, u16, u16)>>;
+    let mut owners: TriangleEdgeOwners = HashMap::new();
     for (tri_idx, tri) in navm.triangles.iter().enumerate() {
         for (a, b) in triangle_edge_index_pairs(tri) {
             owners

@@ -195,7 +195,12 @@ pub fn parse_uvd_header(data: &[u8]) -> io::Result<UvdHeader> {
             "uvd: the two entry-count fields disagree",
         ));
     }
-    if (0..3).any(|i| !(bounds_min[i] < bounds_max[i])) {
+    // NaN-safe: written as `is_nan() || >=` rather than `!(min < max)` per
+    // clippy::neg_cmp_op_on_partial_ord (#4090) — equivalent (a NaN on
+    // either side must reject, same as the negated form), reads as the
+    // deliberate degenerate-bounds guard it is instead of a double-negative.
+    if (0..3).any(|i| bounds_min[i].is_nan() || bounds_max[i].is_nan() || bounds_min[i] >= bounds_max[i])
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "uvd: bounding box is degenerate or inverted",

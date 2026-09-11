@@ -45,6 +45,36 @@ pub(super) struct CompactionPlan {
     mesh_count: usize,
 }
 
+/// State for an in-flight, multi-frame global geometry SSBO rebuild
+/// (#3298). Both destination buffers are allocated empty, at their full
+/// target size, when the rebuild starts; `vertices_copied`/`indices_copied`
+/// track how much of `pending_vertices`/`pending_indices` has landed in
+/// them so far.
+///
+/// The OLD `global_vertex_buffer`/`global_index_buffer` keep serving every
+/// draw, completely unmodified, for the whole copy — only
+/// `MeshRegistry::advance_geometry_rebuild` swaps them out, and only once
+/// both targets are fully copied. That means two full geometry SSBO
+/// generations are resident in device-local memory at once for the
+/// rebuild's duration. This is an accepted trade-off (#3298) *below*
+/// [`super::GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES`]: it smooths a
+/// multi-hundred-ms atomic stall into several bounded per-frame chunks, at
+/// the cost of a temporarily higher VRAM high-water mark.
+///
+/// #3443 — at or above that threshold the caller
+/// (`MeshRegistry::rebuild_geometry_ssbo`) never starts one of these at
+/// all; the rebuild goes to the atomic idle-reclaim path up front. #3298
+/// shipped this state with no size condition, which routed around the very
+/// case #2374 filed the threshold for: on a 6 GB card an FO4 boundary
+/// crossing duplicates ~800-900 MiB, the largest non-texture allocation
+/// class, on top of a ~1.7 GB steady state. A duplicate allocation that
+/// *succeeds* there and dies later cannot be caught by the `Err` arm.
+/// The allocation-failure fallback still exists for the sub-threshold case.
+///
+/// (#4090 — this doc comment previously sat orphaned in `mesh.rs`, ahead of
+/// an unrelated function, with nothing between it and its actual subject
+/// after this struct moved into this submodule. Relocated to the struct it
+/// documents.)
 pub(super) struct GeometryRebuildInProgress {
     pub(super) new_vertex_buffer: GpuBuffer,
     pub(super) new_index_buffer: GpuBuffer,

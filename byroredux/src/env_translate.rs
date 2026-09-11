@@ -1172,9 +1172,9 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
     };
     let slot = tod_slot.min(3);
     let mut cloud_tints = [[1.0; 4]; 4];
-    for layer in 0..4 {
+    for (layer, tint) in cloud_tints.iter_mut().enumerate() {
         let color = wthr.cloud_layer_colors[layer][slot];
-        cloud_tints[layer] = [
+        *tint = [
             color.r as f32 / 255.0,
             color.g as f32 / 255.0,
             color.b as f32 / 255.0,

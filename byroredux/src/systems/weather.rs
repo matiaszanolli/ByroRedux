@@ -369,7 +369,9 @@ pub(crate) fn advance_weather_surface(
     dt: f32,
 ) {
     let dt = if dt.is_finite() {
-        dt.max(0.0).min(SURFACE_MAX_DT)
+        // `is_finite()` just excluded NaN, so `.clamp` and `.max().min()`
+        // agree here — clippy::manual_clamp's suggested rewrite is safe.
+        dt.clamp(0.0, SURFACE_MAX_DT)
     } else {
         0.0
     };
@@ -377,9 +379,25 @@ pub(crate) fn advance_weather_surface(
         return;
     }
 
+    // #4090 — kept as `.max(lo).min(hi)` rather than clippy::manual_clamp's
+    // suggested `.clamp(lo, hi)` for these four: unlike `dt` above, none is
+    // guarded by an `is_finite()` check first, and the two are NOT
+    // equivalent on a NaN input (`f32::clamp` documents "returns NaN if
+    // self is NaN"; the max-then-min chain returns `lo`, since `f32::max`
+    // treats NaN as the smaller operand). `state: &mut WeatherSurfaceState`
+    // persists across frames, so a NaN let through here would latch into
+    // `wetness`/`snow` for the entity's life — the same failure shape
+    // `invalid_or_large_dt_cannot_make_surface_state_non_finite` below
+    // guards `dt` against. Whether these four inputs can actually be NaN
+    // upstream is not established either way, so the NaN-masking behavior
+    // stays rather than silently changing it.
+    #[allow(clippy::manual_clamp)]
     let rain = precipitation[0].max(0.0).min(1.0);
+    #[allow(clippy::manual_clamp)]
     let snow = precipitation[1].max(0.0).min(1.0);
+    #[allow(clippy::manual_clamp)]
     let wind = wind_speed.max(0.0).min(1.0);
+    #[allow(clippy::manual_clamp)]
     let sun = (sun_intensity / crate::env_translate::SUN_INTENSITY_PEAK)
         .max(0.0)
         .min(1.0);
@@ -498,9 +516,9 @@ fn sample_weather_sky(
 
 fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSkyState {
     let mut cloud_tints = [[0.0; 4]; 4];
-    for layer in 0..4 {
-        for channel in 0..4 {
-            cloud_tints[layer][channel] = lerp1(
+    for (layer, tints) in cloud_tints.iter_mut().enumerate() {
+        for (channel, tint) in tints.iter_mut().enumerate() {
+            *tint = lerp1(
                 a.cloud_tints[layer][channel],
                 b.cloud_tints[layer][channel],
                 t,
@@ -902,7 +920,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // rain and snow must not accumulate on sealed interior geometry.
     if world
         .try_resource::<CellLightingRes>()
-        .map_or(true, |cell| !cell.is_interior)
+        .is_none_or(|cell| !cell.is_interior)
     {
         if let Some(mut surface) = world.try_resource_mut::<WeatherSurfaceState>() {
             advance_weather_surface(

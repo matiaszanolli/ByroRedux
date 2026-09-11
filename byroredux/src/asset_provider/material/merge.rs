@@ -143,7 +143,6 @@ fn fill(
 #[must_use = "a PresenceOnly merge resolved the sidecar but forwarded no authored \
               field — discarding the outcome erases the only signal distinguishing \
               it from a fully-populated merge (#2709)"]
-
 pub(crate) fn merge_external_material(
     material: &mut ImportedMaterial,
     provider: &mut MaterialProvider,
@@ -419,14 +418,14 @@ fn merge_bgsm_arm(
     // OR'd boolean, matching every other payload-carrying field above.
     let mut set_alpha_test = false;
 
-    let Some(resolved) = provider.resolve_bgsm(&path) else {
+    let Some(resolved) = provider.resolve_bgsm(path) else {
         // #3230 — a Starfield session reaches here having genuinely
         // tried and missed, which is the state the CDB flip describes.
         // Taking it BEFORE the diagnostic below is deliberate: that
         // warning's whole premise ("keeps its NIF-native keyword-
         // classified material") is false once the flip runs.
         if cdb_pbr_fallback {
-            return Some(apply_cdb_pbr_fallback(material, &path));
+            return Some(apply_cdb_pbr_fallback(material, path));
         }
         // #2601 — `resolve_bgsm` already logged WHY the resolve failed
         // (missing archive entry, parse error, template-cycle recovery
@@ -931,10 +930,10 @@ fn merge_bgem_arm(
     cdb_pbr_fallback: bool,
     touched: &mut bool,
 ) -> Option<MergeOutcome> {
-    let Some(bgem) = provider.resolve_bgem(&path) else {
+    let Some(bgem) = provider.resolve_bgem(path) else {
         // #3230 — sibling of the BGSM arm's fallback above.
         if cdb_pbr_fallback {
-            return Some(apply_cdb_pbr_fallback(material, &path));
+            return Some(apply_cdb_pbr_fallback(material, path));
         }
         // #2601 — sibling of the BGSM arm's diagnostic above. Same
         // consequence: this mesh keeps the NIF-native keyword-

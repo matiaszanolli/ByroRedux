@@ -47,7 +47,10 @@ use ash::vk;
 /// owning pass rather than a hand-copied figure, the discipline
 /// `SVGF_BYTES_PER_PIXEL` already sets. `memory-budget.md`'s roll-up row
 /// carries the same 22 B/px x 2 FIF derivation.
-pub const GBUFFER_BYTES_PER_PIXEL: u32 = (5 * 4 + 2 * 1) * super::sync::MAX_FRAMES_IN_FLIGHT as u32;
+// `5 * 4`: the five 4-byte attachments. `2`: the two 1-byte FSR masks
+// (written as a bare `2`, not `2 * 1`, per clippy::identity_op — the doc
+// comment above states the "two 1-byte" derivation this constant encodes).
+pub const GBUFFER_BYTES_PER_PIXEL: u32 = (5 * 4 + 2) * super::sync::MAX_FRAMES_IN_FLIGHT as u32;
 
 pub const NORMAL_FORMAT: vk::Format = vk::Format::R16G16_SNORM;
 pub const MOTION_FORMAT: vk::Format = vk::Format::R16G16_SFLOAT;

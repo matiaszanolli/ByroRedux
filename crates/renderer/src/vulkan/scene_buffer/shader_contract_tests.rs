@@ -3888,6 +3888,7 @@ fn bounded_path_preserves_the_accepted_segment_and_diffuse_budgets() {
 #[test]
 fn anisotropic_ggx_reduces_to_the_isotropic_ndf_at_zero_anisotropy() {
     const PI: f64 = std::f64::consts::PI;
+    const FRAC_PI_4: f64 = std::f64::consts::FRAC_PI_4;
 
     // Verbatim ports of `include/pbr.glsl`.
     fn distribution_ggx(n_dot_h: f64, roughness: f64) -> f64 {
@@ -3926,7 +3927,7 @@ fn anisotropic_ggx_reduces_to_the_isotropic_ndf_at_zero_anisotropy() {
         // on `HdotX² + HdotY² + NdotH² == 1`.
         for &n_dot_h in &[0.05, 0.2, 0.5, 0.8, 0.95, 1.0] {
             let tangential = (1.0f64 - n_dot_h * n_dot_h).max(0.0).sqrt();
-            for &phi in &[0.0, 0.3, 0.7854, 1.2, PI / 2.0] {
+            for &phi in &[0.0, 0.3, FRAC_PI_4, 1.2, PI / 2.0] {
                 let h_dot_x = tangential * phi.cos();
                 let h_dot_y = tangential * phi.sin();
 

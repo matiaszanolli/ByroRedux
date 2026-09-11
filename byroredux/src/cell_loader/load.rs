@@ -787,7 +787,7 @@ impl InteriorCellApplyJob {
         world: &mut World,
         ctx: &mut VulkanContext,
         tex_provider: &TextureProvider,
-        mut mat_provider: Option<&mut MaterialProvider>,
+        mat_provider: Option<&mut MaterialProvider>,
     ) -> anyhow::Result<Self> {
         let plugin_paths: Vec<&str> = masters
             .iter()
@@ -868,7 +868,7 @@ impl InteriorCellApplyJob {
             world,
             ctx,
             tex_provider,
-            mat_provider.as_deref_mut(),
+            mat_provider,
             esm_path,
             &plugin_paths,
         );

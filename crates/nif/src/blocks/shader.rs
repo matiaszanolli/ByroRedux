@@ -769,7 +769,7 @@ pub struct BSLightingShaderProperty {
     /// exactly 8 bytes: #2622 subsequently moved a leading float pair into
     /// the Starfield decode path proper, and `read_wetness_block` now stops
     /// 8 bytes earlier for it. Independently confirmed over `FaceMeshes.ba2`
-    /// + `Meshes01.ba2` (32,340 files): 1,879 inline blocks, `tail_len = 30`
+    /// and `Meshes01.ba2` (32,340 files): 1,879 inline blocks, `tail_len = 30`
     /// uniformly. Still **undocumented in nif.xml**
     /// (every tail field there gates on `#FO4#`/`#F76#`). Rather than
     /// fabricate field names/semantics, the bytes are captured opaquely up

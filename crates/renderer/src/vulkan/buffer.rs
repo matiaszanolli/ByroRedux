@@ -1623,12 +1623,14 @@ impl GpuBuffer {
             }
         };
 
-        // SAFETY: `buffer` and `allocation` were both created here from this
-        // device; the memory/offset come from the allocation that satisfied
-        // `buffer`'s memory requirements, and the buffer is not yet bound.
-        if let Err(e) =
+        let bind_result = {
+            // SAFETY: `buffer` and `allocation` were both created here from
+            // this device; the memory/offset come from the allocation that
+            // satisfied `buffer`'s memory requirements, and the buffer is
+            // not yet bound.
             unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }
-        {
+        };
+        if let Err(e) = bind_result {
             // SAFETY: same as above — created, unbound (bind just failed),
             // not yet destroyed.
             unsafe {

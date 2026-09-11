@@ -843,7 +843,7 @@ impl App {
                     let mut budget = cell_loader::FrameTimeBudget::until(deadline);
                     match apply.advance(&mut self.world, ctx, &mut budget) {
                         cell_loader::InteriorCellApplyProgress::Pending(next) => {
-                            self.interior_transition = Some(next);
+                            self.interior_transition = Some(*next);
                         }
                         cell_loader::InteriorCellApplyProgress::Complete {
                             dest_label,

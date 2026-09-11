@@ -55,23 +55,12 @@ pub(crate) struct CombatTraceEntry {
 /// `PlayerEntity`), so this was latent rather than a live bug — but the
 /// first NPC attacker would have made the two combatants share one
 /// cooldown clock. Split out to [`MeleeState`], a per-entity component.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct CombatState {
     pub(crate) attacks_started: u64,
     pub(crate) hits_landed: u64,
     pub(crate) kills: u64,
     pub(crate) last: Option<CombatTraceEntry>,
-}
-
-impl Default for CombatState {
-    fn default() -> Self {
-        Self {
-            attacks_started: 0,
-            hits_landed: 0,
-            kills: 0,
-            last: None,
-        }
-    }
 }
 
 impl Resource for CombatState {}

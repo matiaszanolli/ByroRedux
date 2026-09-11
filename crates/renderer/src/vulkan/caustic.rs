@@ -597,6 +597,7 @@ impl CausticPipeline {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_descriptor_sets(
         &self,
         device: &ash::Device,
@@ -941,9 +942,11 @@ impl CausticPipeline {
             // smear, then deposit full energy (decay_factor == 0).
             // The splat's atomic adds must see zeros; the slot's prior use
             // may itself have been `clear_for_skip`'s clear, which is why
-            // the source scope has to reach TRANSFER (#3646). The helper
-            // supplies that half — see `clear_general_accumulator` (#3844).
-            // Consumers are the splat compute and composite's fragment read.
+            // the source scope has to reach TRANSFER (#3646).
+            // SAFETY: `clear_general_accumulator` (#3844) supplies that
+            // barrier half; `device`/`cmd`/`slot_img` are all live and owned
+            // by this frame's recording. Consumers are the splat compute and
+            // composite's fragment read.
             unsafe {
                 super::descriptors::clear_general_accumulator(
                     device,
@@ -1031,6 +1034,9 @@ impl CausticPipeline {
         // `imageLoad`s what was cleared here. The helper carries the TRANSFER
         // half of both scopes, so the clear-to-clear edge — a long skip streak
         // revisiting this slot — is closed structurally (#3844).
+        // SAFETY: caller (this fn is itself `unsafe`, see its own doc above)
+        // guarantees the same command-buffer-position contract; `device`,
+        // `cmd`, and `slot_img` are all live for this frame.
         unsafe {
             super::descriptors::clear_general_accumulator(
                 device,

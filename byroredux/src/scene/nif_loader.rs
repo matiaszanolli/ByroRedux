@@ -481,10 +481,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
 
     // Phases 1 + 2 — the node hierarchy and its parent links (#3858).
     let (node_entities, node_by_name, rest_pose_by_name) =
-        spawn_nif_nodes(world, &imported, is_spt);
+        spawn_nif_nodes(world, imported, is_spt);
 
     // Phase 2.5 — particle emitters (#3858).
-    spawn_nif_particle_emitters(world, ctx, &imported, tex_provider, &node_entities);
+    spawn_nif_particle_emitters(world, ctx, imported, tex_provider, &node_entities);
     // Phase 3: Spawn mesh entities with parent links.
     let mut count = 0;
     let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
@@ -1351,6 +1351,7 @@ fn spawn_nif_mesh(
 /// Skeleton nodes are the only reliably-unique names in a typical NIF, so on
 /// a collision the first (root-most, depth-first) spawn wins.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)] // the doc comment above names each element; a type alias would just move the naming, not reduce it
 fn spawn_nif_nodes(
     world: &mut World,
     imported: &byroredux_nif::import::ImportedScene,
@@ -1651,7 +1652,7 @@ fn attach_nif_skin_binding(
                 // unresolve the bone. See `name_lookup` module doc.
                 let resolved = external_skeleton
                     .and_then(|m| crate::name_lookup::get_case_insensitive(m, &bone.name))
-                    .or_else(|| crate::name_lookup::get_case_insensitive(&node_by_name, &bone.name))
+                    .or_else(|| crate::name_lookup::get_case_insensitive(node_by_name, &bone.name))
                     .copied();
                 match resolved {
                     Some(e) => bones.push(Some(e)),
@@ -1683,7 +1684,7 @@ fn attach_nif_skin_binding(
                 // per-bone resolution above.
                 external_skeleton
                     .and_then(|m| crate::name_lookup::get_case_insensitive(m, n))
-                    .or_else(|| crate::name_lookup::get_case_insensitive(&node_by_name, n))
+                    .or_else(|| crate::name_lookup::get_case_insensitive(node_by_name, n))
                     .copied()
             });
             world.insert(

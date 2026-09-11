@@ -423,7 +423,11 @@ pub fn sample_blended_transform(
         // `clip.weight` pre-attenuates the layer per #469.
         let ew = layer.effective_weight() * clip.weight;
         // #3432 — NaN-safe: see the identical guard's own comment below.
-        if !(ew >= 0.001) {
+        // Written as `is_nan() || <` rather than `!(ew >= 0.001)` per
+        // clippy::neg_cmp_op_on_partial_ord (#4090) — equivalent for a
+        // non-NaN RHS constant, but doesn't read as an accidental
+        // double-negative.
+        if ew.is_nan() || ew < 0.001 {
             return None;
         }
         let channel = clip.channels.get(&channel_name)?;
@@ -453,9 +457,11 @@ pub fn sample_blended_transform(
         // #3432 — NaN-safe: `NaN < 0.001` is false, so a plain `<` guard is
         // NaN-*transparent* and lets a poisoned weight through into
         // `total_weight`, poisoning every blended transform on this
-        // channel. `!(ew >= 0.001)` catches NaN the same way `> 0.0` does
-        // for `duration` in `fold_reverse_time`.
-        if !(ew >= 0.001) {
+        // channel. `ew.is_nan() || ew < 0.001` catches NaN the same way
+        // `> 0.0` does for `duration` in `fold_reverse_time` (written this
+        // way, not `!(ew >= 0.001)`, per clippy::neg_cmp_op_on_partial_ord,
+        // #4090 — equivalent for a non-NaN RHS constant).
+        if ew.is_nan() || ew < 0.001 {
             continue;
         }
         let Some(channel) = clip.channels.get(&channel_name) else {
@@ -499,8 +505,9 @@ pub fn sample_blended_transform(
         // `clip.weight` pre-attenuates the layer per #469.
         let ew = layer.effective_weight() * clip.weight;
         // #3432 — NaN-safe twin of the identical guard in the weight pass
-        // above.
-        if !(ew >= 0.001) {
+        // above. `is_nan() || <` form, not `!(ew >= 0.001)`, per
+        // clippy::neg_cmp_op_on_partial_ord (#4090).
+        if ew.is_nan() || ew < 0.001 {
             continue;
         }
         let Some(channel) = clip.channels.get(&channel_name) else {

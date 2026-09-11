@@ -332,6 +332,15 @@ impl SsaoPipeline {
         Ok(partial)
     }
 
+    /// The AO output view for one frame in flight.
+    ///
+    /// #3860 — replaces the `pub ao_image_views` field, which existed only so
+    /// two call sites could index it. An accessor keeps the storage private
+    /// now that image, view and allocation travel together.
+    pub fn ao_image_view(&self, frame: usize) -> vk::ImageView {
+        self.ao[frame].view
+    }
+
     /// Transition all per-frame AO images from UNDEFINED to
     /// SHADER_READ_ONLY_OPTIMAL and clear them to white (1.0 = no occlusion).
     /// Must be called once after creation so the fragment shader sees a valid
@@ -343,15 +352,6 @@ impl SsaoPipeline {
     /// valid and live, `cmd` is in the recording state, the device is not
     /// lost, and the AO images are not concurrently accessed by another
     /// command buffer.
-    /// The AO output view for one frame in flight.
-    ///
-    /// #3860 — replaces the `pub ao_image_views` field, which existed only so
-    /// two call sites could index it. An accessor keeps the storage private
-    /// now that image, view and allocation travel together.
-    pub fn ao_image_view(&self, frame: usize) -> vk::ImageView {
-        self.ao[frame].view
-    }
-
     pub unsafe fn initialize_ao_images(
         &self,
         device: &ash::Device,

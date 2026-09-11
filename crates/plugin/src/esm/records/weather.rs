@@ -802,12 +802,12 @@ fn skyrim_cloud_layer_index(sub_type: &[u8; 4]) -> Option<usize> {
 }
 
 fn parse_glare_table(dst: &mut [SkyColor; 4], data: &[u8]) {
-    for slot in 0..4 {
+    for (slot, entry) in dst.iter_mut().enumerate() {
         let offset = slot * 4;
         if offset + 4 > data.len() {
             return;
         }
-        dst[slot] = SkyColor {
+        *entry = SkyColor {
             r: data[offset],
             g: data[offset + 1],
             b: data[offset + 2],

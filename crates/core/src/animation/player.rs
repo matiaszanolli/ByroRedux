@@ -104,10 +104,14 @@ pub(crate) fn fold_reverse_time(
     // #3432 — NaN-safe: `NaN <= 0.0` is false, so a plain `<= 0.0` guard is
     // NaN-*transparent* and lets a poisoned duration fall through into
     // `rem_euclid`, which latches `local_time` to NaN for the rest of the
-    // entity's life. `!(duration > 0.0)` catches NaN (and non-positive)
-    // the same way the sibling `CycleType::Loop` arm's `duration > 0.0`
-    // guard in `advance_time` already does.
-    if !(duration > 0.0) {
+    // entity's life. `duration.is_nan() || duration <= 0.0` catches NaN
+    // (and non-positive) the same way the sibling `CycleType::Loop` arm's
+    // `duration > 0.0` guard in `advance_time` already does — written this
+    // way rather than `!(duration > 0.0)` per clippy::neg_cmp_op_on_partial_ord
+    // (#4090): the two are equivalent for a non-NaN RHS constant, but the
+    // negated form reads as an accidental double-negative rather than the
+    // deliberate NaN guard it is.
+    if duration.is_nan() || duration <= 0.0 {
         return (0.0, false);
     }
     let period = 2.0 * duration;

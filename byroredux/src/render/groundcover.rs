@@ -31,7 +31,7 @@ use crate::components::{TerrainCellOrigin, TerrainCoverInputs};
 /// chunk whose *centre* is past the draw distance can still have a near corner
 /// inside it, and culling on the centre alone eats a visible wedge out of the
 /// far edge of the field.
-const CHUNK_BOUND_RADIUS: f32 = GROUNDCOVER_CHUNK_UNITS * 0.70711;
+const CHUNK_BOUND_RADIUS: f32 = GROUNDCOVER_CHUNK_UNITS * std::f32::consts::FRAC_1_SQRT_2;
 
 /// Collect this frame's ground-cover scatter input.
 ///

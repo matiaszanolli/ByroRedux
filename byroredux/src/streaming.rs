@@ -1372,6 +1372,7 @@ fn pre_parse_model_skip_reason(
 /// Returns a [`LoadCellPayload`] with an empty `parsed` map when the cell is
 /// absent, has no references, or every model was cached. The main-thread drain
 /// still consumes that empty payload so its pending entry is cleared.
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(
     name = "pre_parse_cell",
     skip_all,
