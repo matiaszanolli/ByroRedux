@@ -51,7 +51,7 @@ new replaced them.**
 
 | Issue | State at 2026-08-30 audit | State now (2026-09-04) |
 |---|---|---|
-| #3490 — current-volume Y test read body origin, not collider AABB centre | OPEN, verified true (PHYS-D6-2026-08-30-01 extended it) | **FIXED** — `0fd72cb6` (2026-09-03) |
+| #3490 — current-volume Y test read body origin, not collider AABB centre | OPEN, verified true (PHYS-D6-2026-08-30-01 extended it) | **FIXED (Y axis only)** — `0fd72cb6` (2026-09-03). **Corrected (#3963, 2026-09-06):** PHYS-D6-2026-08-30-01's XZ extension was never addressed — the containment predicate's X and Z comparisons still read the body origin (`pos.x`/`pos.z`), only Y was hoisted to the collider AABB centre. Tracked separately as #3973 rather than reopening this closed row. |
 | #3492 — ragdoll bones invisible to the buoyancy sink | OPEN, verified true | **FIXED** — `1e4d83a7` (2026-08-30) |
 | #3494 — duplicated `#[test]` attribute / misattached doc comment | OPEN, LOW | **FIXED** — `802cae7b` (2026-09-02) |
 

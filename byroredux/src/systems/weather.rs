@@ -602,13 +602,16 @@ fn advance_cloud_scroll(scroll: &mut [f32; 2], velocity: [f32; 2], dt: f32) {
 }
 
 /// #993 — Skyrim DALC ambient cube TOD interpolation. The DALC array has
-/// 4 TOD slots (sunrise / day / sunset / night) while `sky_colors` has 6
-/// (4 + high_noon + midnight); fold high_noon→day and midnight→night per
-/// the WTHR parser's on-disk padding rule
-/// (`crates/plugin/src/esm/records/weather.rs:312-314`) so the same
-/// `(slot_a, slot_b, t)` the colour interpolator picked applies cleanly.
-/// `None` when the snapshot carries no DALC bytes (FNV / FO3 / Oblivion,
-/// always).
+/// 4 TOD slots (sunrise / day / sunset / night —
+/// [`byroredux_plugin::esm::records::weather::SkyrimAmbientCube`]'s own
+/// doc) while `sky_colors` has 6 (4 + high_noon + midnight); fold
+/// high_noon→day and midnight→night so the same `(slot_a, slot_b, t)`
+/// the colour interpolator picked applies cleanly. **This fold is a
+/// consumer-side decision made here** (#4014) — the WTHR parser has no
+/// high_noon/midnight-to-day/night mapping rule of its own; DALC's four
+/// slots and `sky_colors`' six are just two different TOD granularities
+/// this function reconciles. `None` when the snapshot carries no DALC
+/// bytes (FNV / FO3 / Oblivion, always).
 ///
 /// Pulled out so #2816's cross-fade fix can sample the source and target
 /// snapshots identically — mirrors why [`sample_wthr_colors`] exists.

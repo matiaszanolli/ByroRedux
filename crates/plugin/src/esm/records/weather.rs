@@ -670,6 +670,18 @@ const SKYRIM_DATA_SIZE: usize = 19;
 /// already had one layout correction (see that function's doc comment),
 /// which is exactly the kind of change that used to require touching ten
 /// independent, ungreppable sites (#3883 / TD7-2026-09-05-05).
+///
+/// **Bytes `[1..3)` are deliberately unread** (#4015). Byte 0 is
+/// `wind_speed` (`data.first()`, below) and byte 3 is
+/// [`WTHR_TRANSITION_DELTA_OFFSET`]; no source in this repo identifies
+/// what bytes 1–2 hold, and per the no-guessing policy `WeatherRecord`
+/// carries no field for them rather than a guessed name. They are
+/// *not* `cloud_speed_lower`/`cloud_speed_upper` — that claim, made by
+/// `cloud_tile_scale_tests.rs`'s module doc, cited this arm as the
+/// decoder and was wrong; this arm has never decoded them, and
+/// `WeatherRecord` carries no such field (the old `cloud_speeds: [u8; 4]`
+/// was a *DNAM* mis-decode removed by #535). Per-layer cloud motion for
+/// FO3/FNV comes from `ONAM`; Skyrim's is unresolved as of #4015.
 const WTHR_TRANSITION_DELTA_OFFSET: usize = 3;
 const WTHR_SUN_GLARE_OFFSET: usize = 4;
 const WTHR_SUN_DAMAGE_OFFSET: usize = 5;

@@ -277,9 +277,22 @@ impl PhysicsWorld {
         removed
     }
 
-    /// `(awake dynamic, awake kinematic)` body counts from the last step's
+    /// `(awake dynamic bodies, live kinematic bodies)` from the last step's
     /// island state — diagnostic for the static-scene fast path.
-    pub fn awake_counts(&self) -> (usize, usize) {
+    ///
+    /// **The second element is not an awake count** (#3975). Rapier's
+    /// dynamic active set is genuinely drained every step and re-populated
+    /// only with bodies that failed the sleep test — the first element is
+    /// exactly "awake". The kinematic active set is never drained: a body
+    /// enters it once, when it becomes kinematic or its position/colliders
+    /// change, and leaves only on removal or a type change. So the second
+    /// element counts every *live* kinematic body, asleep or not — see the
+    /// static-scene fast path's own rationale a few hundred lines below,
+    /// which already knew this and deliberately does not gate on this set
+    /// for exactly that reason. Named `active_island_counts`, not
+    /// `awake_counts`, so the name stops implying a claim the second half
+    /// doesn't make.
+    pub fn active_island_counts(&self) -> (usize, usize) {
         (
             self.islands.active_dynamic_bodies().len(),
             self.islands.active_kinematic_bodies().len(),
@@ -1928,6 +1941,43 @@ mod tests {
         }
     }
 
+    /// Regression for #3975. `active_island_counts`'s doc and the
+    /// static-scene fast path's own rationale (the "deliberately do NOT
+    /// gate on `active_kinematic_bodies()`" note) must keep making the
+    /// same claim about what the kinematic count means — the accessor's
+    /// doc drifted from that rationale once already (it called the count
+    /// "awake" for a set Rapier never drains). Source-inspection guard,
+    /// since the two are hundreds of lines apart and nothing else keeps
+    /// them in sync.
+    #[test]
+    fn kinematic_count_doc_agrees_with_the_fast_paths_own_rationale() {
+        let src = include_str!("world.rs");
+        let accessor_start = src
+            .find("pub fn active_island_counts")
+            .expect("the accessor must still exist under this name");
+        // Walk back to the start of its doc comment block.
+        let doc_start = src[..accessor_start]
+            .rfind("/// `(awake dynamic bodies")
+            .expect("the accessor's doc block is still here");
+        let doc = &src[doc_start..accessor_start];
+
+        assert!(
+            doc.contains("not an awake count"),
+            "the accessor's own doc must state the kinematic half is not \
+             an awake count, not just the fast-path rationale below it"
+        );
+
+        let rationale_start = src
+            .find("// NOTE: we deliberately do NOT gate on `active_kinematic_bodies()`")
+            .expect("the fast-path rationale is still here");
+        let rationale = &src[rationale_start..rationale_start + 500];
+        assert!(
+            rationale.contains("never empty"),
+            "the fast-path rationale must still explain why the kinematic \
+             set can't be used as an awake signal"
+        );
+    }
+
     /// Regression for #2889. The three force wrappers hard-coded
     /// `wake_up = true` plus `self.wake()`, so the one consumer they were
     /// built for — `water::apply_buoyancy`, whose whole design is a wake
@@ -1948,7 +1998,7 @@ mod tests {
             w.step(PHYSICS_DT);
         }
         while w.step(PHYSICS_DT) > 0 {}
-        assert_eq!(w.awake_counts().0, 0, "fixture precondition: settled");
+        assert_eq!(w.active_island_counts().0, 0, "fixture precondition: settled");
         assert!(!w.pending_wake(), "fixture precondition: nothing pending");
 
         assert!(w.add_force(h, up, false), "no-wake force still applies");

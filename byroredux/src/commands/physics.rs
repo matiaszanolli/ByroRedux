@@ -6,7 +6,7 @@
 //!
 //! #2876 — `PhysicsWorld`'s whole query surface (`colliders_near_xz`,
 //! `static_colliders_aabb`, `cast_capsule_down*`, `body_count`,
-//! `awake_counts`) previously had zero console exposure, and the collider
+//! `active_island_counts`) previously had zero console exposure, and the collider
 //! census that consumes it was gated behind a single `if floor_probe_failed`
 //! inside `setup_scene`'s door-teleport branch. That is the wrong moment: a
 //! missing floor is noticed by falling through it somewhere in the cell, not
@@ -161,7 +161,12 @@ impl ConsoleCommand for PhysStatsCommand {
             return CommandOutput::error("phys.stats: no PhysicsWorld resource");
         };
         let bodies = pw.body_count();
-        let (awake_dynamic, awake_kinematic) = pw.awake_counts();
+        // #3975 — the kinematic half is not an awake count: Rapier's
+        // kinematic active set is never drained, so this is every *live*
+        // kinematic body (asleep or not), not the awake subset. Labelled
+        // accordingly below rather than under the same "awake:" header as
+        // the dynamic count, which genuinely is awake.
+        let (awake_dynamic, live_kinematic) = pw.active_island_counts();
         let statics = pw.static_colliders_aabb();
         let pending = pw.pending_wake();
         drop(pw);
@@ -169,7 +174,7 @@ impl ConsoleCommand for PhysStatsCommand {
         let mut lines = vec![
             format!("Physics stats: bodies={bodies}"),
             format!(
-                "  awake: dynamic={awake_dynamic} kinematic={awake_kinematic} \
+                "  awake dynamic={awake_dynamic} · kinematic bodies={live_kinematic} \
                  pending_wake={pending}"
             ),
         ];

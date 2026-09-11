@@ -339,13 +339,18 @@ pub struct Material {
     // a second copy here gave one fact two canonical representations that
     // round-tripped independently through save/restore with nothing
     // reconciling them, and no reader at all. Query `effect_shader_flags`.
-    /// `BSEffectShaderProperty.greyscale_texture` path (Skyrim+) — the
-    /// 1D-as-2D colour palette LUT indexed by the source texture's
-    /// luminance when `EFFECT_PALETTE_COLOR` / `EFFECT_PALETTE_ALPHA`
-    /// are set. Captured at NIF importer ingestion; resolved to a
-    /// bindless texture handle by `cell_loader::resolve_material_textures`
-    /// and forwarded to `GpuMaterial.greyscale_lut_index` at draw build
-    /// time. `None` for every non-BSEffect mesh. See #890 Stage 2c.
+    /// The 1D-as-2D colour palette LUT indexed by the source texture's
+    /// luminance. Originally `BSEffectShaderProperty.greyscale_texture`
+    /// (Skyrim+), where it's gated on `EFFECT_PALETTE_COLOR` /
+    /// `EFFECT_PALETTE_ALPHA`. **Corrected (#3929):** not effect-only —
+    /// since #2997 (routing) / #3897 (enabling it from
+    /// `BSLightingShaderProperty`), FO4/FO76/Starfield texture-set slot 3
+    /// routes here too (31,303 vanilla FO4 lit properties author it), so
+    /// `None` means "not authored", not "not a BSEffect mesh". Captured
+    /// at NIF importer ingestion; resolved to a bindless texture handle
+    /// by `cell_loader::resolve_material_textures` and forwarded to
+    /// `GpuMaterial.greyscale_lut_index` at draw build time. See #890
+    /// Stage 2c.
     pub greyscale_texture: Option<String>,
     /// `BSEffectShaderProperty` / BGEM palette-remap strength (BSVER >= 130,
     /// FO4+). Modulates the [`greyscale_texture`](Self::greyscale_texture)

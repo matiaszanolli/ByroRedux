@@ -671,7 +671,7 @@ fn apply_buoyancy_with_scratch(
     // first-frame dry→wet float-up would be skipped here.
     {
         let pw = world.resource::<PhysicsWorld>();
-        if pw.awake_counts().0 == 0 && !pw.pending_wake() && !had_newcomers && !waves_require_rescan
+        if pw.active_island_counts().0 == 0 && !pw.pending_wake() && !had_newcomers && !waves_require_rescan
         {
             // #3268 — `in_current_prev` is deliberately NOT touched here.
             // Nothing moved, so a body asleep inside a current volume is
@@ -2033,12 +2033,12 @@ mod tests {
         // Run long enough to settle.
         for _ in 0..2000 {
             physics_sync_system(&world, PHYSICS_DT);
-            let (ad, _ak) = world.resource::<PhysicsWorld>().awake_counts();
+            let (ad, _ak) = world.resource::<PhysicsWorld>().active_island_counts();
             if ad == 0 {
                 break;
             }
         }
-        let (ad, _ak) = world.resource::<PhysicsWorld>().awake_counts();
+        let (ad, _ak) = world.resource::<PhysicsWorld>().active_island_counts();
         // Now confirm the static-scene fast path: further steps return 0.
         let steps = {
             let mut pw = world.resource_mut::<PhysicsWorld>();

@@ -167,9 +167,11 @@ pub fn physics_sync_system(world: &World, dt: f32) {
     let ms4 = ms(s4);
 
     if profile {
-        let (awake_dyn, awake_kin) = world.resource::<PhysicsWorld>().awake_counts();
+        // #3975 — `kin` here is every live kinematic body, not an awake
+        // count; Rapier's kinematic active set is never drained.
+        let (awake_dyn, kin) = world.resource::<PhysicsWorld>().active_island_counts();
         log::info!(
-            "physics_sync phases: collect/register={:.2}ms (new={}) push_kin={:.2}ms buoyancy={:.2}ms step={:.2}ms({} substeps) pull_dyn={:.2}ms | awake dyn={} kin={}",
+            "physics_sync phases: collect/register={:.2}ms (new={}) push_kin={:.2}ms buoyancy={:.2}ms step={:.2}ms({} substeps) pull_dyn={:.2}ms | awake dyn={} kinematic bodies={}",
             ms1.unwrap_or(0.0),
             n_new,
             ms2.unwrap_or(0.0),
@@ -178,7 +180,7 @@ pub fn physics_sync_system(world: &World, dt: f32) {
             steps,
             ms4.unwrap_or(0.0),
             awake_dyn,
-            awake_kin,
+            kin,
         );
     }
 

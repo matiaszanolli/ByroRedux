@@ -1,10 +1,17 @@
 //! Regression tests for [`cloud_tile_scale_for_dds`] — issue #529.
 //!
 //! WTHR records ship cloud TEXTURE paths but no authored
-//! `cloud_scale` field (DATA bytes 1-2 are cloud_speed_lower /
-//! cloud_speed_upper, NOT scales — see `weather.rs` DATA arm).
-//! The audit (FNV-CELL-5) hedged on whether the format carried
-//! scale; verifying against `weather.rs` confirmed it does not.
+//! `cloud_scale` field (`weather.rs`'s `WeatherRecord` has no such field,
+//! and `parse_weather_data`'s named-offset ladder accounts for every
+//! `DATA` byte it reads with none left over for one). The audit
+//! (FNV-CELL-5) hedged on whether the format carried scale; verifying
+//! against `weather.rs` confirmed it does not. **Corrected (#4015)**:
+//! this doc previously named `DATA` bytes 1-2 as `cloud_speed_lower`/
+//! `cloud_speed_upper` and cited the `weather.rs` DATA arm as the
+//! decoder — that arm has never decoded those bytes (they are
+//! deliberately unread, see `WTHR_TRANSITION_DELTA_OFFSET`'s doc), so
+//! the citation resolved to nothing. Per-layer cloud motion for FO3/FNV
+//! comes from `ONAM`, not `DATA`.
 //!
 //! Per-WTHR authority over cloud density therefore comes from the
 //! authored DDS *width* — a 1024² sprite tiles half as often as a
