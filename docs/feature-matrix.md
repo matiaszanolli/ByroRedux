@@ -172,6 +172,7 @@ layouts); see the gaps table below.
 | CTDA condition evaluation with OR-precedence (M47.1) | ✓ 13 functions |
 | `script.activate` console command wired | ✓ |
 | Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→short-circuit→control-flow→lower); full transpiler deferred |
+| Script-extender compatibility layer (SKSE-family) | ◐ **vertical slice, unaudited** — six built-in provider families registered in the Papyrus provider catalog (Game, Input, UI, StorageUtil, JContainers, ModEvent), plus an ObScript runtime. ~23.9k LOC across [`crates/sdk/src/`](../crates/sdk/src/) (14 245), [`crates/scripting/src/papyrus_provider/`](../crates/scripting/src/papyrus_provider/) (6 377) and `compatibility.rs` + `obscript*.rs` (3 294), measured 2026-09-10. No dedicated audit pass has run over it — treat the status as "exists and is tested in-crate", not "verified against real mod content". Design: [`docs/engine/sdk-v0.1-development-plan.md`](engine/sdk-v0.1-development-plan.md). |
 
 ---
 
@@ -320,6 +321,7 @@ is not registered in the scheduler at all.
 | `.btr` terrain normal maps | distant-terrain normal detail on Skyrim SE/FO4. Distance-based multi-band selection is **no longer a gap** — the four-level ladder shipped in #2371 and runs on every quad-based scheme, FO3/FNV included (#3508) | M35 |
 | Remaining `PACK` procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) + per-frame package re-evaluation | NPCs perform item-use/combat/magic/dialogue behaviors; packages react to game-time changes | M42 (Tier 7) |
 | Full Papyrus transpiler (M47.2) | Arbitrary script execution on real content (`.pex` recognizer slice shipped Session 51) | M47.2 (Tier 3) |
+| Script-extender compatibility layer verified against real mods | Confidence that SKSE-family mod scripts (StorageUtil / JContainers / ModEvent consumers) actually run. The layer *exists* — ~23.9k LOC, six provider families, tested in-crate — but no audit pass has exercised it against shipped mod content, so its real-world coverage is unmeasured, not zero and not proven (#3953) | M47.2 follow-up |
 | Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |
 | UV scroll animated materials | Animated terminals / displays | audited, not prioritised |
 | Per-material footsteps (FOOT) | Correct surface audio | M44 follow-up |

@@ -303,7 +303,9 @@ pub fn scene_dialogue_system(world: &World, dt: f32) {
         .try_resource::<DialogueRegistry>()
         .map(|registry| registry.topics.clone())
         .unwrap_or_default();
-    let player_entity = world.try_resource::<PapyrusPlayerEntity>().map(|player| player.0);
+    let player_entity = world
+        .try_resource::<PapyrusPlayerEntity>()
+        .map(|player| player.0);
 
     let mut entities: HashSet<EntityId> = playbacks.keys().copied().collect();
     entities.extend(scene_events.keys().copied());

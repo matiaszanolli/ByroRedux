@@ -506,7 +506,9 @@ pub fn mg07_tick_system(world: &World, dt: f32) {
     // frame, ahead of all four consumers.
     let Some(mut queue) = world.try_resource_mut::<crate::fragment::PendingFragmentActivations>()
     else {
-        log::debug!("mg07 cross-reference activate dropped: PendingFragmentActivations unavailable");
+        log::debug!(
+            "mg07 cross-reference activate dropped: PendingFragmentActivations unavailable"
+        );
         return;
     };
     for (_self_entity, target_door) in to_fire_door_activate {

@@ -334,13 +334,74 @@ pub fn trigger_detection_system(world: &World) {
     }
 }
 
+/// The `GetStageDone(quest, stage)` wait a running scene phase's
+/// completion condition expresses, if it is one *and* the scene that
+/// authors it belongs to the quest it is waiting on.
+///
+/// #3954 — the same-quest requirement is the whole point. The gate
+/// applied it (`scene.quest_form_id == advance.owning_quest.0` plus
+/// `condition.param_1 == advance.owning_quest.0`); the router did not,
+/// collecting `(param_1, param_2)` from *every* running scene's phase. A
+/// scene owned by quest Q₀ waiting on `GetStageDone(Q, S)` therefore
+/// routed Q's actor toward a trigger that Q's own between-scenes rule
+/// then refused — the cart stalls with no diagnostic. Both sides now call
+/// this, so the filter cannot be present on one side and absent on the
+/// other.
+pub fn scene_phase_awaited_stage(
+    scene_quest: Option<u32>,
+    condition: &byroredux_plugin::esm::records::condition::Condition,
+) -> Option<(u32, u16)> {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, ConditionValue};
+
+    // Function 59 is `GetStageDone`; the wait is "== 1".
+    if condition.function_index != 59 || condition.comparator != ComparisonOp::Eq {
+        return None;
+    }
+    if !matches!(
+        condition.comparand,
+        ConditionValue::Literal(value) if (value - 1.0).abs() <= f32::EPSILON
+    ) {
+        return None;
+    }
+    // The scene must belong to the quest whose stage it waits on.
+    if scene_quest != Some(condition.param_1) {
+        return None;
+    }
+    Some((condition.param_1, condition.param_2 as u16))
+}
+
+/// Is `candidate` eligible to be the next BaseForm-gated advance for
+/// `quest` between scenes?
+///
+/// #3954 — extracted so the router's target selection and the gate's
+/// `next_ready` share one predicate. They had drifted in a second way:
+/// the router additionally required a resolvable trigger center inside
+/// this filter, so a centerless lowest-stage trigger dropped out of the
+/// router's `min` and it routed to the next-lowest — which the gate then
+/// refused, because *its* `min` still returned the centerless one. The
+/// center is a routing concern (you cannot walk toward a place with no
+/// position) and is now applied *after* the stage is chosen, never as
+/// part of choosing it.
+pub fn base_form_advance_is_eligible(
+    candidate: &crate::papyrus_demo::quest_advance::QuestAdvanceOnActivate,
+    quest: crate::quest_stages::QuestFormId,
+    current_stage: u16,
+    stages: &crate::quest_stages::QuestStageState,
+) -> bool {
+    candidate.owning_quest == quest
+        && matches!(
+            candidate.activator_gate,
+            crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(_)
+        )
+        && candidate.target_stage >= current_stage
+        && !stages.get_stage_done(candidate.owning_quest, candidate.target_stage)
+}
+
 /// Prevent already-occupied actor triggers from skipping ahead of the scene
 /// that authors their ordering. During a scene, only stages up to the current
 /// phase's explicit `GetStageDone` wait may fire. Between scenes, only the
 /// lowest ready stage at or above the quest's current stage may fire.
 fn actor_quest_trigger_is_in_sequence(world: &World, trigger: EntityId) -> bool {
-    use byroredux_plugin::esm::records::condition::{ComparisonOp, ConditionValue};
-
     let Some(advances) =
         world.query::<crate::papyrus_demo::quest_advance::QuestAdvanceOnActivate>()
     else {
@@ -383,13 +444,15 @@ fn actor_quest_trigger_is_in_sequence(world: &World, trigger: EntityId) -> bool 
             if player.is_running() {
                 has_running_scene = true;
                 if let Some(phase) = scene.phases.get(player.current_phase as usize) {
-                    awaited_stages.extend(phase.completion_conditions.iter().filter_map(|condition| {
-                    (condition.function_index == 59
-                        && condition.comparator == ComparisonOp::Eq
-                        && matches!(condition.comparand, ConditionValue::Literal(value) if (value - 1.0).abs() <= f32::EPSILON)
-                        && condition.param_1 == advance.owning_quest.0)
-                    .then_some(condition.param_2 as u16)
-                }));
+                    // #3954 — shared with the router; see
+                    // `scene_phase_awaited_stage`.
+                    awaited_stages.extend(phase.completion_conditions.iter().filter_map(
+                        |condition| {
+                            scene_phase_awaited_stage(scene.quest_form_id, condition)
+                                .filter(|(quest, _)| *quest == advance.owning_quest.0)
+                                .map(|(_, stage)| stage)
+                        },
+                    ));
                 }
             } else if player.state == crate::ScenePlaybackState::Finished {
                 has_finished_scene = true;
@@ -419,14 +482,9 @@ fn actor_quest_trigger_is_in_sequence(world: &World, trigger: EntityId) -> bool 
     let current_stage = stages.get_stage(advance.owning_quest);
     let next_ready = advances
         .iter()
+        // #3954 — shared with the router; see `base_form_advance_is_eligible`.
         .filter(|(_, candidate)| {
-            candidate.owning_quest == advance.owning_quest
-                && matches!(
-                    candidate.activator_gate,
-                    crate::papyrus_demo::quest_advance::ActivatorGate::BaseForm(_)
-                )
-                && candidate.target_stage >= current_stage
-                && !stages.get_stage_done(candidate.owning_quest, candidate.target_stage)
+            base_form_advance_is_eligible(candidate, advance.owning_quest, current_stage, &stages)
         })
         .filter(|(entity, candidate)| {
             crate::condition::evaluate(
@@ -455,6 +513,118 @@ fn player_world_position(world: &World, player: EntityId) -> Option<Vec3> {
 
 #[cfg(test)]
 mod tests {
+
+    /// #3954 — the router and the gate diverged on cross-quest waits.
+    /// The gate filtered scenes to the owning quest; the router collected
+    /// `(param_1, param_2)` from every running scene's phase. A scene of
+    /// quest Q₀ waiting on `GetStageDone(Q, S)` therefore routed Q's
+    /// actor toward a trigger that Q's own between-scenes rule refused —
+    /// a silent stall. Both now call this recogniser, so the filter is
+    /// structurally present on both sides.
+    #[test]
+    fn scene_phase_awaited_stage_rejects_a_cross_quest_wait() {
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+        const Q: u32 = 0x0001_0000;
+        const Q_OTHER: u32 = 0x0002_0000;
+
+        let wait_on_q = Condition {
+            function_index: 59,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(1.0),
+            param_1: Q,
+            param_2: 40,
+            ..Default::default()
+        };
+
+        // A scene owned by Q, waiting on Q's own stage: this is the case
+        // both sides always agreed on.
+        assert_eq!(
+            scene_phase_awaited_stage(Some(Q), &wait_on_q),
+            Some((Q, 40)),
+            "a quest's own scene waiting on its own stage is a real wait"
+        );
+
+        // The divergent input: a scene owned by some *other* quest that
+        // happens to wait on Q's stage. The router used to accept this.
+        assert_eq!(
+            scene_phase_awaited_stage(Some(Q_OTHER), &wait_on_q),
+            None,
+            "a cross-quest wait must be rejected — the gate never honoured \
+             it, so the router must not route on it"
+        );
+
+        // A scene with no owning quest cannot express an in-sequence wait.
+        assert_eq!(scene_phase_awaited_stage(None, &wait_on_q), None);
+
+        // Non-GetStageDone conditions are not waits at all.
+        let not_a_wait = Condition {
+            function_index: 14,
+            ..wait_on_q
+        };
+        assert_eq!(scene_phase_awaited_stage(Some(Q), &not_a_wait), None);
+
+        // `GetStageDone(...) == 0` is a *forbid*, not a wait.
+        let forbid = Condition {
+            comparand: ConditionValue::Literal(0.0),
+            ..wait_on_q
+        };
+        assert_eq!(scene_phase_awaited_stage(Some(Q), &forbid), None);
+    }
+
+    /// #3954 — the eligibility predicate the gate's `next_ready` and the
+    /// router's target selection now share. The router used to fold a
+    /// "has a resolvable center" test into this same filter, so a
+    /// centerless lowest-stage trigger dropped out of its `min` while
+    /// remaining in the gate's — the router routed to the next-lowest and
+    /// the gate refused it. The center is deliberately *not* part of this
+    /// predicate.
+    #[test]
+    fn base_form_eligibility_ignores_routing_concerns() {
+        use crate::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
+        use crate::quest_stages::{QuestFormId, QuestStageState};
+
+        const Q: QuestFormId = QuestFormId(0x0001_0000);
+        const OTHER: QuestFormId = QuestFormId(0x0002_0000);
+
+        let advance =
+            |quest: QuestFormId, stage: u16, gate: ActivatorGate| QuestAdvanceOnActivate {
+                owning_quest: quest,
+                conditions: Vec::new(),
+                target_stage: stage,
+                activator_gate: gate,
+                disable_after_advance: false,
+            };
+        let stages = QuestStageState::default();
+
+        assert!(
+            base_form_advance_is_eligible(
+                &advance(Q, 30, ActivatorGate::BaseForm(0xB9E1D)),
+                Q,
+                10,
+                &stages
+            ),
+            "a BaseForm advance of the right quest at or above the current \
+             stage is eligible — with no reference to a trigger center"
+        );
+        assert!(
+            !base_form_advance_is_eligible(
+                &advance(OTHER, 30, ActivatorGate::BaseForm(0xB9E1D)),
+                Q,
+                10,
+                &stages
+            ),
+            "another quest's advance is never eligible"
+        );
+        assert!(
+            !base_form_advance_is_eligible(
+                &advance(Q, 5, ActivatorGate::BaseForm(0xB9E1D)),
+                Q,
+                10,
+                &stages
+            ),
+            "a stage below the quest's current stage is behind, not next"
+        );
+    }
     use super::*;
     use crate::events::OnTriggerEnterEvent;
     use byroredux_core::ecs::components::{GlobalTransform, Transform};
@@ -551,7 +721,10 @@ mod tests {
         let (world, trigger, fired) = run_once(Vec3::ZERO, axis_box(Vec3::ZERO, Vec3::splat(1.0)));
         assert!(fired, "player inside an unoccupied volume must emit enter");
         let ev = world.get::<OnTriggerEnterEvent>(trigger).unwrap();
-        assert_eq!(ev.triggerers, vec![world.resource::<PapyrusPlayerEntity>().0]);
+        assert_eq!(
+            ev.triggerers,
+            vec![world.resource::<PapyrusPlayerEntity>().0]
+        );
     }
 
     #[test]

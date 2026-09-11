@@ -608,7 +608,11 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                     alias
                         .flags
                         .has(ALIAS_FLAG_CLOSEST)
-                        .then(|| world.try_resource::<PapyrusPlayerEntity>().map(|player| player.0))
+                        .then(|| {
+                            world
+                                .try_resource::<PapyrusPlayerEntity>()
+                                .map(|player| player.0)
+                        })
                         .flatten()
                 })
                 .and_then(|entity| {

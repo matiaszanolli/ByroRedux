@@ -58,13 +58,27 @@ impl OffsetMap {
 
     /// Convert a preprocessed byte offset to the original source offset.
     ///
-    /// #2668 (SCR-D4-NEW11-02) — `entries` is sorted ascending by
-    /// `pp_off` by construction (`push` appends in increasing
-    /// preprocessed-offset order), so the entry this needs — the last one
-    /// with `pp_off <= preprocessed` — is found by bisection instead of a
-    /// linear scan. `partition_point` returns the count of entries
-    /// satisfying the predicate, i.e. one past that entry's index; `0`
-    /// means no entry qualifies (nothing removed yet at this offset).
+    /// #2668 (SCR-D4-NEW11-02) — `entries` is sorted by `pp_off` by
+    /// construction (`push` appends in preprocessed-offset order), so the
+    /// entry this needs — the last one with `pp_off <= preprocessed` — is
+    /// found by bisection instead of a linear scan. `partition_point`
+    /// returns the count of entries satisfying the predicate, i.e. one
+    /// past that entry's index; `0` means no entry qualifies (nothing
+    /// removed yet at this offset).
+    ///
+    /// #3944 — the order is **non-decreasing, not strictly increasing**,
+    /// and the difference matters. Back-to-back continuations
+    /// (`"a\\\n\\\nb"`) remove bytes without advancing the
+    /// preprocessed offset between them, so `push` emits duplicate
+    /// `pp_off` values: that input yields `[(1, 2), (1, 4)]`.
+    ///
+    /// **Do not replace `partition_point` with `binary_search_by_key`.**
+    /// Under duplicate keys `binary_search` may return *any* matching
+    /// index, and the only correct choice here is the **last** one — it
+    /// carries the largest cumulative `removed`. `partition_point` picks
+    /// it by construction; `binary_search` would silently under-count the
+    /// removed bytes and shift every diagnostic span on a file containing
+    /// two adjacent continuations.
     pub fn to_original(&self, preprocessed: usize) -> usize {
         let idx = self
             .entries
@@ -180,6 +194,92 @@ mod tests {
         // 6 bytes removed by then.
         assert_eq!(map.to_original(6), 12, "'g', third boundary");
         assert_eq!(map.to_original(7), 13, "'h'");
+    }
+
+    /// #3944 — the duplicate-`pp_off` case, which is the *only* input
+    /// where `partition_point` and `binary_search_by_key` can disagree.
+    ///
+    /// Two back-to-back continuations remove bytes without advancing the
+    /// preprocessed offset between them, so both entries carry the same
+    /// key and only the last (largest cumulative `removed`) is correct.
+    /// #2668's own regression fixture used `pp_off ∈ {2, 4, 6}` — no
+    /// duplicates — so the behaviour was correct but unpinned, and the
+    /// docstring described the map as strictly increasing.
+    #[test]
+    fn to_original_picks_the_last_entry_under_duplicate_offsets() {
+        let (result, map) = preprocess("a\\\n\\\nb");
+        assert_eq!(result, "ab");
+        assert_eq!(
+            map.entries,
+            vec![(1, 2), (1, 4)],
+            "back-to-back continuations must produce duplicate pp_off keys — \
+             if this changes, the bisection's correctness argument changes too"
+        );
+        // 'a' is at original 0; the four continuation bytes occupy 1..5;
+        // 'b' is at original 5. Reaching 5 requires the *last* duplicate's
+        // removed=4, not the first's removed=2.
+        assert_eq!(map.to_original(0), 0, "'a'");
+        assert_eq!(
+            map.to_original(1),
+            5,
+            "'b' — a binary_search landing on the first duplicate would \
+             return 3 and mis-place every span after it"
+        );
+    }
+
+    /// #3944 — a continuation at offset 0 makes the first entry's
+    /// `pp_off` zero, so `partition_point`'s `<=` predicate must include
+    /// it at `to_original(0)`. A `<` predicate returns 0 here and drops
+    /// the removal entirely.
+    #[test]
+    fn to_original_handles_a_leading_continuation() {
+        let (result, map) = preprocess("\\\nabc");
+        assert_eq!(result, "abc");
+        assert_eq!(map.entries, vec![(0, 2)]);
+        assert_eq!(map.to_original(0), 2, "'a' sits past the removed bytes");
+        assert_eq!(map.to_original(1), 3, "'b'");
+    }
+
+    /// #3944 — CRLF continuations remove 3 bytes and lone-CR ones remove
+    /// 2, so a file mixing them produces an uneven `removed` ladder. The
+    /// bisection must track the cumulative total, not a per-entry
+    /// constant.
+    #[test]
+    fn to_original_handles_mixed_crlf_and_lone_cr_continuations() {
+        // "a" \<CRLF> "b" \<CR> "c"  →  removes 3 then 2.
+        let (result, map) = preprocess("a\\\r\nb\\\rc");
+        assert_eq!(result, "abc");
+        assert_eq!(
+            map.entries,
+            vec![(1, 3), (2, 5)],
+            "CRLF removes 3 bytes, lone CR removes 2; `removed` is cumulative"
+        );
+        assert_eq!(map.to_original(0), 0, "'a'");
+        assert_eq!(map.to_original(1), 4, "'b' — past the 3-byte CRLF removal");
+        assert_eq!(map.to_original(2), 7, "'c' — past both removals");
+    }
+
+    /// #3944 — the end-of-input identity: mapping the preprocessed
+    /// length back must land exactly on the source length, for every
+    /// shape above. An off-by-one in the `idx - 1` lookup or a missed
+    /// final entry shows up here and nowhere else.
+    #[test]
+    fn to_original_of_the_end_offset_is_the_source_length() {
+        for source in [
+            "ab\\\ncd\\\nef\\\ngh",
+            "a\\\n\\\nb",
+            "\\\nabc",
+            "a\\\r\nb\\\rc",
+            "no continuations at all",
+            "",
+        ] {
+            let (out, map) = preprocess(source);
+            assert_eq!(
+                map.to_original(out.len()),
+                source.len(),
+                "end offset must map to the source length for {source:?}"
+            );
+        }
     }
 
     #[test]

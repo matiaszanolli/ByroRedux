@@ -46,6 +46,14 @@ pub struct NiExtraData {
     /// the parent BSGeometry's skin instance should attach to. Each
     /// entry is a length-prefixed `NiString` (4-byte length). Per
     /// `nifly::SkinAttach::Sync` (ExtraData.cpp:436). See #708.
+    ///
+    /// **Wired as of #3930**, consumed by
+    /// `import::mesh::skin::skin_attach_bone_names` as the *primary* bone
+    /// identity for the 89.5% of Starfield skinned shapes whose
+    /// `BsSkinInstance::bone_refs` are all NULL. It was parsed but unread
+    /// for two releases, during which #3549 reconstructed ~21% of the same
+    /// names geometrically; see that helper for the measured split and why
+    /// the two channels are per-entry alternatives.
     pub skin_attach_bones: Option<Vec<String>>,
     /// Populated for `BoneTranslations` (Starfield) — `(bone_name,
     /// translation)` pairs supplying per-bone offset deltas for the

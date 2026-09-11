@@ -98,6 +98,175 @@ fn bs_geometry_with_skin(skin_idx: u32) -> BSGeometry {
     }
 }
 
+/// A `SkinAttach` extra-data block carrying `names`, as Starfield authors
+/// it: inline length-prefixed `NiString`s, never in the header table.
+fn skin_attach(names: &[&str]) -> crate::blocks::extra_data::NiExtraData {
+    crate::blocks::extra_data::NiExtraData {
+        type_name: "SkinAttach".to_string(),
+        name: None,
+        string_value: None,
+        integer_value: None,
+        float_value: None,
+        binary_data: None,
+        strings_array: None,
+        integers_array: None,
+        floats_array: None,
+        bone_lods: None,
+        skin_attach_bones: Some(names.iter().map(|n| (*n).to_string()).collect()),
+        bone_translations: None,
+    }
+}
+
+/// `bs_geometry_with_skin`, plus an `extra_data_refs` entry pointing at
+/// the shape's own `SkinAttach` block.
+fn bs_geometry_with_skin_and_extra(skin_idx: u32, extra_idx: u32) -> BSGeometry {
+    let mut shape = bs_geometry_with_skin(skin_idx);
+    shape.av.net.extra_data_refs = vec![BlockRef(extra_idx)];
+    shape
+}
+
+/// #3930 — the all-NULL `bone_refs` population (89.5% of Starfield's
+/// 21,222 skinned shapes) carries its bone names in a `SkinAttach` extra
+/// data block on the same `BSGeometry`. #3549's geometric solver recovered
+/// ~21% of them by fitting a bind offset; the authored names cover 100%,
+/// exactly, with no external skeleton and no tolerance.
+#[test]
+fn skin_attach_names_resolve_all_null_bone_refs() {
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(skin_attach(&["C_Hips", "C_Spine", "R_Foot"])), // 0
+            Box::new(BsSkinInstance {
+                // 1
+                skeleton_root_ref: BlockRef::NULL,
+                bone_data_ref: BlockRef(2),
+                // The Starfield shape: every ref NULL.
+                bone_refs: vec![BlockRef::NULL, BlockRef::NULL, BlockRef::NULL],
+                scales: Vec::new(),
+            }),
+            Box::new(BsSkinBoneData {
+                // 2
+                bones: vec![bone_trans(0), bone_trans(1), bone_trans(2)],
+            }),
+        ],
+        ..NifScene::default()
+    };
+    let shape = bs_geometry_with_skin_and_extra(1, 0);
+    let skin = extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data(), None)
+        .expect("skin must resolve");
+    let names: Vec<&str> = skin.bones.iter().map(|b| b.name.as_ref()).collect();
+    assert_eq!(
+        names,
+        ["C_Hips", "C_Spine", "R_Foot"],
+        "authored SkinAttach names must be used instead of Bone{{i}} placeholders"
+    );
+}
+
+/// A single `SkinAttach` can mix authored and blank entries, so the
+/// choice is per entry, not per list. `minibota_security.nif` is the
+/// measured example: `attach = ["", "COM", "", ""]` beside
+/// `resolved = ["C_Chassis", "C_Body", "C_Axle", "C_Base"]`.
+#[test]
+fn blank_skin_attach_entries_fall_through_to_the_node_ref() {
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(skin_attach(&["", "COM"])), // 0
+            Box::new(bone_node("C_Chassis")),    // 1
+            Box::new(bone_node("C_Body")),       // 2
+            Box::new(BsSkinInstance {
+                // 3
+                skeleton_root_ref: BlockRef::NULL,
+                bone_data_ref: BlockRef(4),
+                bone_refs: vec![BlockRef(1), BlockRef(2)],
+                scales: Vec::new(),
+            }),
+            Box::new(BsSkinBoneData {
+                // 4
+                bones: vec![bone_trans(0), bone_trans(1)],
+            }),
+        ],
+        ..NifScene::default()
+    };
+    let shape = bs_geometry_with_skin_and_extra(3, 0);
+    let skin = extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data(), None)
+        .expect("skin must resolve");
+    let names: Vec<&str> = skin.bones.iter().map(|b| b.name.as_ref()).collect();
+    assert_eq!(
+        names,
+        ["C_Chassis", "COM"],
+        "a blank SkinAttach entry must defer to its node ref, and a \
+         non-blank one must win over it"
+    );
+}
+
+/// A count mismatch declines the whole list rather than zipping it
+/// positionally — the same discipline `resolve_external_bone_names`
+/// already applies. The measured corpus has zero mismatches, so a
+/// mismatch means the block means something this reader does not
+/// understand.
+#[test]
+fn skin_attach_with_a_mismatched_count_is_declined_whole() {
+    let scene = NifScene {
+        blocks: vec![
+            // Three names against two bones.
+            Box::new(skin_attach(&["C_Hips", "C_Spine", "R_Foot"])), // 0
+            Box::new(BsSkinInstance {
+                // 1
+                skeleton_root_ref: BlockRef::NULL,
+                bone_data_ref: BlockRef(2),
+                bone_refs: vec![BlockRef::NULL, BlockRef::NULL],
+                scales: Vec::new(),
+            }),
+            Box::new(BsSkinBoneData {
+                // 2
+                bones: vec![bone_trans(0), bone_trans(1)],
+            }),
+        ],
+        ..NifScene::default()
+    };
+    let shape = bs_geometry_with_skin_and_extra(1, 0);
+    let skin = extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data(), None)
+        .expect("skin still resolves; only the name source declines");
+    let names: Vec<&str> = skin.bones.iter().map(|b| b.name.as_ref()).collect();
+    assert_eq!(
+        names,
+        ["Bone0", "Bone1"],
+        "a mismatched SkinAttach must be ignored entirely, falling back to \
+         the historical placeholder rather than being zipped positionally"
+    );
+}
+
+/// The control group (#3930's evidence table): where `bone_refs` resolve,
+/// the node names win and the blank `SkinAttach` beside them changes
+/// nothing. This is what keeps the fix from regressing the 2,232 shapes
+/// that were already correct.
+#[test]
+fn resolvable_bone_refs_are_unaffected_by_a_blank_skin_attach() {
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(skin_attach(&["", ""])), // 0
+            Box::new(bone_node("Spine")),     // 1
+            Box::new(bone_node("Head")),      // 2
+            Box::new(BsSkinInstance {
+                // 3
+                skeleton_root_ref: BlockRef::NULL,
+                bone_data_ref: BlockRef(4),
+                bone_refs: vec![BlockRef(1), BlockRef(2)],
+                scales: Vec::new(),
+            }),
+            Box::new(BsSkinBoneData {
+                // 4
+                bones: vec![bone_trans(0), bone_trans(1)],
+            }),
+        ],
+        ..NifScene::default()
+    };
+    let shape = bs_geometry_with_skin_and_extra(3, 0);
+    let skin = extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data(), None)
+        .expect("skin must resolve");
+    let names: Vec<&str> = skin.bones.iter().map(|b| b.name.as_ref()).collect();
+    assert_eq!(names, ["Spine", "Head"]);
+}
+
 /// Bug case (pre-#1203): a Starfield BSGeometry that wires up a
 /// `BsSkinInstance` + `BsSkinBoneData` pair must resolve to an
 /// `ImportedSkin` with the expected bone count and resolved names.

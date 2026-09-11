@@ -538,13 +538,21 @@ fn every_deferred_extra_data_field_is_still_unconsumed() {
         format!("{}{}", "bone_", "lods"),
     ];
     // The parser that produces them, the dispatch tests that pin the decode,
-    // one struct-literal `None` in a mesh fixture, and this file.
+    // two struct-literal `None`s in mesh fixtures, and this file.
     let allowed = [
         "crates/nif/src/blocks/extra_data.rs",
         "crates/nif/src/blocks/extra_data_tests.rs",
         "crates/nif/src/blocks/dispatch_tests/starfield.rs",
         "crates/nif/src/blocks/dispatch_tests/extra_data.rs",
         "crates/nif/src/import/mesh/tangent_convention_tests.rs",
+        // #3930 — `NiExtraData` has no `Default`, so its `SkinAttach`
+        // fixture must spell every field including these two as `None`.
+        // That is a mention, not a consumption: the fix reads
+        // `skin_attach_bones`, which is a different field and is no longer
+        // deferred. Same situation as the tangent fixture above — this
+        // entry is NOT the "progress, delete the guard" case the assertion
+        // message describes.
+        "crates/nif/src/import/mesh/bs_geometry_skin_tests.rs",
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

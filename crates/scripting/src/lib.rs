@@ -132,7 +132,10 @@ pub use translate::{
     translate_pex, translate_pex_detailed, translate_pex_detailed_with_providers, translate_script,
     CanonicalEvent, PexTranslation, RecognizeCtx, Recognized, ScriptSource,
 };
-pub use trigger::{trigger_detection_system, TriggerShape, TriggerVolume};
+pub use trigger::{
+    base_form_advance_is_eligible, scene_phase_awaited_stage, trigger_detection_system,
+    TriggerShape, TriggerVolume,
+};
 pub use vm_state::{
     two_state_activator_system, ScriptVariables, TwoStateActivator, TwoStateTransition,
     TwoStateTransitionBatch,

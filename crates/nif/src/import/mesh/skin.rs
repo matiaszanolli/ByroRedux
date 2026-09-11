@@ -382,6 +382,68 @@ fn convert_bs_geometry_skin_weights(
 ///
 /// Mirrors the FO4+ BSSkin path in `extract_skin_bs_tri_shape` — only
 /// the geometry container differs.
+/// The shape's own `SkinAttach` bone-name list, when it carries one that
+/// matches the skin's bone count.
+///
+/// #3930 — Starfield authors a skin's bone identities in two
+/// complementary channels: either `BsSkinInstance::bone_refs` point at
+/// real nodes, or they are all NULL and the names live in a `SkinAttach`
+/// extra-data block hanging off the same `BSGeometry`, stored as inline
+/// length-prefixed `NiString`s. That inline storage is why they never
+/// reach the header string table — and why #3549 concluded the identity
+/// "is not in the file at all", which is true of the table but false of
+/// the file.
+///
+/// A per-shape structural walk over `Meshes01` + `MeshesPatch` +
+/// `FaceMeshes` + `ShatteredSpace - Main01` measured the split: of 21,222
+/// skinned `BSGeometry` shapes, 18,990 (89.5%) have all-NULL `bone_refs`,
+/// and *every one* of those carries a `SkinAttach` on its own shape whose
+/// entry count equals the `BsSkinBoneData` bone count — 18,990 of 18,990,
+/// zero mismatches. In the 2,232-shape control group where `bone_refs` do
+/// resolve, the `SkinAttach` entries are blank instead. The channels are
+/// alternatives, and `minibota_security.nif` proves the choice is made
+/// **per entry**, not per list: `attach = ["", "COM", "", ""]` against
+/// `resolved = ["C_Chassis", "C_Body", "C_Axle", "C_Base"]`.
+///
+/// Count agreement is required and the whole list declined on a mismatch,
+/// mirroring the decline discipline the geometric solver already follows:
+/// a `SkinAttach` of the wrong length is evidence the block means
+/// something this reader does not understand, not licence to zip it
+/// against the bones positionally.
+fn skin_attach_bone_names(
+    scene: &NifScene,
+    extra_data_refs: &[BlockRef],
+    expected_len: usize,
+) -> Option<Vec<String>> {
+    for ref_idx in extra_data_refs {
+        let Some(idx) = ref_idx.index() else {
+            continue;
+        };
+        let Some(block) = scene.blocks.get(idx) else {
+            continue;
+        };
+        let Some(ed) = block
+            .as_any()
+            .downcast_ref::<crate::blocks::extra_data::NiExtraData>()
+        else {
+            continue;
+        };
+        let Some(names) = ed.skin_attach_bones.as_ref() else {
+            continue;
+        };
+        if names.len() != expected_len {
+            log::debug!(
+                "BSGeometry skin: SkinAttach name count ({}) != bone count ({}); declining",
+                names.len(),
+                expected_len,
+            );
+            continue;
+        }
+        return Some(names.clone());
+    }
+    None
+}
+
 pub fn extract_skin_bs_geometry(
     scene: &NifScene,
     shape: &BSGeometry,
@@ -411,6 +473,13 @@ pub fn extract_skin_bs_geometry(
     // per-file bind offset; `resolve_external_bone_names` declines unless a
     // unique offset matches every bone, and a decline leaves the historical
     // fallback in place.
+    // #3930 — the authored names, when the shape carries them. This is the
+    // primary source: it is exact, count-checked, and needs no external
+    // skeleton, no tolerance and no decline path. The geometric solver
+    // below stays exactly where it was, as the last resort before
+    // `Bone{i}` — this only moves it behind the data.
+    let attach_names =
+        skin_attach_bone_names(scene, &shape.av.net.extra_data_refs, bone_data.bones.len());
     let external_names = if inst.bone_refs.iter().all(|r| r.index().is_none()) {
         resolver.and_then(|r| {
             let binds: Vec<[f32; 3]> = bone_data
@@ -426,7 +495,15 @@ pub fn extract_skin_bs_geometry(
 
     let mut bones = Vec::with_capacity(inst.bone_refs.len());
     for (i, bone_ref) in inst.bone_refs.iter().enumerate() {
-        let name = resolve_node_name(scene, *bone_ref)
+        // Per-entry precedence (#3930): an authored `SkinAttach` name wins,
+        // but a blank entry falls through to the node ref, because a single
+        // list can mix the two channels.
+        let name = attach_names
+            .as_ref()
+            .map(|n| n[i].as_str())
+            .filter(|n| !n.is_empty())
+            .map(Arc::from)
+            .or_else(|| resolve_node_name(scene, *bone_ref))
             .or_else(|| external_names.as_ref().map(|n| n[i].clone()))
             .unwrap_or_else(|| Arc::from(format!("Bone{}", i)));
         let bt = &bone_data.bones[i];

@@ -438,7 +438,6 @@ fn scene_trigger_actor_approach_system_inner(
     dt: f32,
     scratch: &mut SceneTriggerApproachScratch,
 ) {
-    use byroredux_plugin::esm::records::condition::{ComparisonOp, ConditionValue};
     use byroredux_scripting::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
 
     // Destructured up front so the four buffers are disjoint borrows: the
@@ -474,14 +473,22 @@ fn scene_trigger_actor_approach_system_inner(
             .filter(|player| player.is_running())
             .filter_map(|player| {
                 let scene = registry.definition(player.scene_form_id)?;
-                scene.phases.get(player.current_phase as usize)
+                let phase = scene.phases.get(player.current_phase as usize)?;
+                Some((scene.quest_form_id, phase))
             })
-            .flat_map(|phase| &phase.completion_conditions)
-            .filter_map(|condition| {
-                (condition.function_index == 59
-                    && condition.comparator == ComparisonOp::Eq
-                    && matches!(condition.comparand, ConditionValue::Literal(value) if (value - 1.0).abs() <= f32::EPSILON))
-                .then_some((condition.param_1, condition.param_2 as u16))
+            .flat_map(|(scene_quest, phase)| {
+                phase
+                    .completion_conditions
+                    .iter()
+                    .map(move |condition| (scene_quest, condition))
+            })
+            // #3954 — the shared recogniser also enforces that the scene
+            // authoring the wait belongs to the quest it waits on. Without
+            // that filter this collected `GetStageDone(Q, S)` waits from a
+            // scene owned by some *other* quest and routed Q's actor at a
+            // trigger the gate would then refuse.
+            .filter_map(|(scene_quest, condition)| {
+                byroredux_scripting::scene_phase_awaited_stage(scene_quest, condition)
             }),
     );
     between_scenes.clear();
@@ -575,7 +582,18 @@ fn scene_trigger_actor_approach_system_inner(
                                 &byroredux_scripting::ConditionContext::for_subject(*trigger),
                             )
                         })
-                        .filter_map(|(trigger, advance)| {
+                        // #3954 — pick the stage FIRST, exactly as the gate's
+                        // `next_ready` does, and only then demand a center.
+                        // Folding the center lookup into the `min` dropped a
+                        // centerless lowest-stage trigger out of the running
+                        // and routed to the next-lowest, which the gate then
+                        // refused because its own `min` still returned the
+                        // centerless one — the cart stalls with no diagnostic.
+                        // A centerless winner now yields no target at all,
+                        // which is the honest outcome: there is nowhere to
+                        // walk to, and no other stage is allowed.
+                        .min_by_key(|(_, advance)| advance.target_stage)
+                        .and_then(|(trigger, advance)| {
                             let center = volumes.get(trigger).map(|volume| volume.center).or_else(
                                 || {
                                     approaches
@@ -585,11 +603,7 @@ fn scene_trigger_actor_approach_system_inner(
                                         .map(|entry| entry.center)
                                 },
                             )?;
-                            Some((advance.target_stage, trigger, center))
-                        })
-                        .min_by_key(|(stage, _, _)| *stage)
-                        .map(|(stage, trigger, center)| {
-                            (base_form_id, stage, trigger, center)
+                            Some((base_form_id, advance.target_stage, trigger, center))
                         });
                     if let Some(target) = target {
                         cap_targets.push(target);
@@ -937,7 +951,9 @@ mod tests {
             );
 
         let player = world.spawn();
-        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(
+            player,
+        ));
         world.insert(
             player,
             ActorCinematicState {
