@@ -307,6 +307,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_core::character::PoolRegenConfig>()
             .writes_resource::<byroredux_core::character::PoolRegenAccumulator>()
             .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .reads::<byroredux_core::character::CharacterLevel>()
             .writes::<byroredux_core::ecs::components::ActorValues>(),
     );
     scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_update_dispatch);

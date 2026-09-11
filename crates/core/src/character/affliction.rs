@@ -102,6 +102,18 @@ impl AfflictionTable {
             .max_by(|(_, a), (_, b)| a.min_pool.total_cmp(&b.min_pool))
             .map(|(index, _)| index)
     }
+
+    /// Look up a band by its `min_pool` — the order-stable identity
+    /// [`ActiveAffliction`] stores instead of a `bands` index (#4103 / D4-01).
+    /// A raw index would go stale (or panic outright) the moment two
+    /// evaluations of the same actor see the table in a different order, or
+    /// with a different length; `min_pool` is the value the docstring above
+    /// already promises is order-independent, so keying on it directly makes
+    /// the per-actor memory honour the same guarantee the classifier does.
+    #[inline]
+    fn band_by_key(&self, key: f32) -> Option<&AfflictionBand> {
+        self.bands.iter().find(|b| b.min_pool == key)
+    }
 }
 
 /// One affliction's currently-applied band on a specific actor — the memory
@@ -112,9 +124,12 @@ impl AfflictionTable {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ActiveAffliction {
     pub pool_avif: u32,
-    /// `None` = healthy (no band applied). `Some(i)` = index into that
-    /// affliction's [`AfflictionTable::bands`].
-    pub band: Option<usize>,
+    /// `None` = healthy (no band applied). `Some(min_pool)` = the applied
+    /// band's `min_pool`, its order-stable identity — **not** a `bands`
+    /// index (#4103 / D4-01: an index would silently desync from a table
+    /// re-authored in a different order, since `AfflictionTable`
+    /// deliberately treats band order as insignificant).
+    pub band: Option<f32>,
 }
 
 /// Per-actor affliction state. An actor tracks a handful of afflictions at
@@ -130,14 +145,14 @@ impl AfflictionStatus {
     /// or `None` if this actor has never been evaluated for it (also
     /// healthy).
     #[inline]
-    pub fn band_of(&self, pool_avif: u32) -> Option<usize> {
+    pub fn band_of(&self, pool_avif: u32) -> Option<f32> {
         self.entries
             .iter()
             .find(|e| e.pool_avif == pool_avif)
             .and_then(|e| e.band)
     }
 
-    fn set_band(&mut self, pool_avif: u32, band: Option<usize>) {
+    fn set_band(&mut self, pool_avif: u32, band: Option<f32>) {
         if let Some(e) = self.entries.iter_mut().find(|e| e.pool_avif == pool_avif) {
             e.band = band;
         } else {
@@ -163,19 +178,31 @@ pub fn reevaluate_affliction(
     avs: &mut ActorValues,
     table: &AfflictionTable,
 ) {
-    let new_band = table.band_for(table.pool_value(avs));
+    // `band_for`'s index is fresh — computed against `table` right here —
+    // so indexing it directly is sound; it is converted to `min_pool`
+    // immediately, before it has any chance to go stale, so nothing below
+    // this line ever indexes `bands` by a remembered position (#4103).
+    let new_band = table.band_for(table.pool_value(avs)).map(|i| table.bands[i].min_pool);
     let old_band = status.band_of(table.pool_avif);
     if new_band == old_band {
         return;
     }
-    if let Some(i) = old_band {
-        for p in &table.bands[i].penalties {
-            avs.mod_temporary(p.avif_form_id, -p.delta);
+    if let Some(key) = old_band {
+        // `band_by_key` degrades to a no-op reversal (rather than a panic)
+        // if the table shrank or was re-authored since `old_band` was
+        // recorded — a stale key finding nothing is the correct outcome for
+        // an order-stable identity that no longer resolves, not a bug.
+        if let Some(band) = table.band_by_key(key) {
+            for p in &band.penalties {
+                avs.mod_temporary(p.avif_form_id, -p.delta);
+            }
         }
     }
-    if let Some(i) = new_band {
-        for p in &table.bands[i].penalties {
-            avs.mod_temporary(p.avif_form_id, p.delta);
+    if let Some(key) = new_band {
+        if let Some(band) = table.band_by_key(key) {
+            for p in &band.penalties {
+                avs.mod_temporary(p.avif_form_id, p.delta);
+            }
         }
     }
     status.set_band(table.pool_avif, new_band);
@@ -285,6 +312,43 @@ mod tests {
         assert_eq!(table.band_for(650.0), Some(0));
     }
 
+    /// Regression for #4103 (D4-01) — the *stateful* half `band_for_ignores_
+    /// band_order` cannot reach: reversing the table between two stateless
+    /// calls proves the classifier is order-independent, but the per-actor
+    /// memory (`ActiveAffliction`) is a separate piece of state that used to
+    /// be a raw `bands` index, which desyncs across exactly this reorder.
+    /// Evaluate into band 0, reverse the table's authoring order (same
+    /// membership, different positions), then reverse the pool back out to
+    /// healthy — the band-0 penalty must net to zero, not double up or leak.
+    #[test]
+    fn reevaluate_survives_the_table_being_reordered_between_ticks() {
+        let mut table = stand_in_radiation_table();
+        let mut status = AfflictionStatus::default();
+        let mut avs = ActorValues::new();
+
+        avs.apply_damage(RADS, 250.0); // into band 0 (min_pool 200.0)
+        reevaluate_affliction(&mut status, &mut avs, &table);
+        assert_eq!(avs.current(STR), -1.0, "band 0 penalty applied");
+        assert_eq!(status.band_of(RADS), Some(200.0));
+
+        // Same bands, authored in the other order — `band_for` is proven
+        // order-independent above; this checks the memory that references
+        // its result survives the reorder too.
+        table.bands.reverse();
+
+        avs.restore(RADS, 250.0); // back to healthy
+        reevaluate_affliction(&mut status, &mut avs, &table);
+        assert_eq!(
+            avs.current(STR),
+            0.0,
+            "band 0's penalty must net to zero even though the table \
+             reordered between the two evaluations — an index-keyed memory \
+             would either panic on the reversed table or reverse the wrong \
+             band's penalties, leaving this at −1.0 or −2.0"
+        );
+        assert_eq!(status.band_of(RADS), None, "healthy again");
+    }
+
     #[test]
     fn reevaluate_applies_penalties_entering_a_band() {
         let table = stand_in_radiation_table();
@@ -295,7 +359,7 @@ mod tests {
         reevaluate_affliction(&mut status, &mut avs, &table);
 
         assert_eq!(avs.current(STR), -1.0, "band 0 penalty applied");
-        assert_eq!(status.band_of(RADS), Some(0));
+        assert_eq!(status.band_of(RADS), Some(200.0), "keyed by min_pool, not index");
     }
 
     #[test]
@@ -330,7 +394,7 @@ mod tests {
 
         assert_eq!(avs.current(STR), -1.0, "still exactly −1, not −2");
         assert_eq!(avs.current(AGI), -1.0, "band 1's extra penalty now applied");
-        assert_eq!(status.band_of(RADS), Some(1));
+        assert_eq!(status.band_of(RADS), Some(600.0), "keyed by min_pool, not index");
     }
 
     #[test]
@@ -384,7 +448,7 @@ mod tests {
         reevaluate_affliction(&mut status, &mut avs, &radiation);
         assert_eq!(avs.current(STR), 0.0);
         assert_eq!(avs.current(AGI), -2.0, "poison penalty untouched");
-        assert_eq!(status.band_of(POISON_POOL), Some(0));
+        assert_eq!(status.band_of(POISON_POOL), Some(50.0), "keyed by min_pool, not index");
     }
 
     #[test]
@@ -443,10 +507,15 @@ mod tests {
         assert_copy::<AvPenalty>();
         assert_copy::<ActiveAffliction>();
         assert_eq!(std::mem::size_of::<AvPenalty>(), 8);
-        // u32 pool_avif + Option<usize> band — usize has no spare niche, so
-        // this is 4 (+4 pad) + 16, not the tighter `u8`-index shape used
-        // elsewhere in CHARAL. Not hot-path (a `Vec` entry per actor per
-        // affliction, a handful at most), so clarity wins over packing here.
-        assert_eq!(std::mem::size_of::<ActiveAffliction>(), 24);
+        // u32 pool_avif + Option<f32> band — 12 bytes (4 + 4 tag + 4 f32,
+        // no padding needed at this alignment). `band` is keyed by the
+        // applied band's `min_pool` (#4103 / D4-01), not a `bands` index —
+        // a raw index would silently desync the moment a table is
+        // re-authored in a different order, since `AfflictionTable`
+        // deliberately treats band order as insignificant. Not hot-path (a
+        // `Vec` entry per actor per affliction, a handful at most), so this
+        // was never chasing the tighter `u8`-index shape used elsewhere in
+        // CHARAL.
+        assert_eq!(std::mem::size_of::<ActiveAffliction>(), 12);
     }
 }

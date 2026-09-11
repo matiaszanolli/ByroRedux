@@ -33,6 +33,7 @@
 //!   status-effect component exists (same "mechanism ahead of its data"
 //!   deferral already used for `affliction`'s real threshold tables).
 
+use super::components::CharacterLevel;
 use super::derived::DerivedScope;
 use super::ruleset::CharacterRuleset;
 use crate::ecs::components::ActorValues;
@@ -202,7 +203,17 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
     let Some(mut avs_q) = world.query_mut::<ActorValues>() else {
         return;
     };
-    for (_entity, avs) in avs_q.iter_mut() {
+    for (entity, avs) in avs_q.iter_mut() {
+        // #4104 (D4-02) — the scoped-max lookup below evaluates a
+        // `DerivedStatFormula` that may read `DerivedInput::LEVEL`; the
+        // entity's own level, not a hardcoded stand-in, is what that
+        // formula needs. A single-component `world.get` (not a paired
+        // query) so an `ActorValues`-only world — no entity has
+        // `CharacterLevel` at all, e.g. every regen test fixture but the
+        // one this fix added — degrades to the documented `1` fallback
+        // instead of no-oping the whole system for want of a storage that
+        // was never going to exist.
+        let level = world.get::<CharacterLevel>(entity).map_or(1, |cl| cl.level);
         if avs.get(config.fatigue_avif).is_some() {
             avs.restore(config.fatigue_avif, FATIGUE_REGEN_PER_SEC * elapsed);
         }
@@ -227,7 +238,7 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
                 ruleset
                     .derived_formula(config.magicka_avif)
                     .filter(|f| f.scope == DerivedScope::ActorGeneral)
-                    .and_then(|_| ruleset.derived_value(config.magicka_avif, avs, 1))
+                    .and_then(|_| ruleset.derived_value(config.magicka_avif, avs, level))
             });
             let max_magicka = scoped_max.unwrap_or(base_max);
             let rate = magicka_regen_per_sec(willpower, max_magicka, false);
@@ -291,6 +302,76 @@ mod tests {
              actor's own base (50) to set the rate, got {got} (base-driven \
              would be {expected_base_driven}); a 200 max would give a ~4x rate \
              (#2932)"
+        );
+    }
+
+    /// Regression for #4104 (D4-02). The scoped-max lookup evaluates an
+    /// actor-general `DerivedStatFormula` that can read `DerivedInput::LEVEL`
+    /// — before this fix, `derived_value` was always called with a hardcoded
+    /// `1`, discarding the entity's own `CharacterLevel`. Two entities with
+    /// the same base pool but different levels must regen toward different
+    /// max-Magicka values once the formula reads level.
+    #[test]
+    fn magicka_regen_uses_the_entitys_own_character_level() {
+        use crate::character::components::CharacterLevel;
+        use crate::character::derived::{DerivedInput, DerivedStatFormula};
+        use crate::character::ruleset::CharacterRuleset;
+        use crate::ecs::components::ActorValues;
+
+        const MAGICKA: u32 = 0x10;
+        const WILLPOWER: u32 = 0x11;
+
+        // Actor-general (no `.player_only()`), max = 10 * LEVEL — chosen so
+        // the two entities' formulas diverge sharply if level is honoured,
+        // and are identical (both level 1) if the old hardcoded value leaks.
+        let mut rs = CharacterRuleset::new(crate::character::leveling::LevelingModel::FNV);
+        rs.push_derived(
+            MAGICKA,
+            DerivedStatFormula::affine(DerivedInput::LEVEL, 10.0, 0.0),
+        );
+
+        let mut world = World::new();
+        world.insert_resource(rs);
+        world.insert_resource(PoolRegenConfig {
+            fatigue_avif: 0x01,
+            magicka_avif: MAGICKA,
+            willpower_avif: WILLPOWER,
+        });
+        world.insert_resource(PoolRegenAccumulator::default());
+
+        let low = world.spawn();
+        world.insert(low, CharacterLevel { level: 1, xp: 0 });
+        let mut avs_low = ActorValues::from_pairs([(MAGICKA, 5.0), (WILLPOWER, 0.0)]);
+        avs_low.apply_damage(MAGICKA, 4.0);
+        world.insert(low, avs_low);
+
+        let high = world.spawn();
+        world.insert(high, CharacterLevel { level: 20, xp: 0 });
+        let mut avs_high = ActorValues::from_pairs([(MAGICKA, 5.0), (WILLPOWER, 0.0)]);
+        avs_high.apply_damage(MAGICKA, 4.0);
+        world.insert(high, avs_high);
+
+        pool_regen_tick_system(&world, POOL_REGEN_DT * 2.0);
+
+        let got_low = world.get::<ActorValues>(low).unwrap().current(MAGICKA);
+        let got_high = world.get::<ActorValues>(high).unwrap().current(MAGICKA);
+        // rate = (0*0.02 + 0.75) * (max/100); max = 10*level.
+        let elapsed = POOL_REGEN_DT * 2.0;
+        let expected_low = 1.0 + 0.75 * (10.0 / 100.0) * elapsed;
+        let expected_high = 1.0 + 0.75 * (200.0 / 100.0) * elapsed;
+        assert!(
+            (got_low - expected_low).abs() < 1e-4,
+            "level-1 entity: expected {expected_low}, got {got_low}"
+        );
+        assert!(
+            (got_high - expected_high).abs() < 1e-4,
+            "level-20 entity: expected {expected_high}, got {got_high} — if \
+             this equals the level-1 result instead, the entity's own \
+             CharacterLevel is not reaching derived_value (#4104)"
+        );
+        assert!(
+            (got_high - got_low).abs() > 1e-4,
+            "level-1 and level-20 entities must regen toward different maxima"
         );
     }
 
