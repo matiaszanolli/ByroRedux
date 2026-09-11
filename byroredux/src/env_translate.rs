@@ -1034,16 +1034,38 @@ pub(crate) fn translate_exterior_cell_lighting(
         fog_color: wthr.sky_colors[SKY_FOG][TOD_DAY].to_rgb_f32(),
         fog_near: wthr.fog_day_near,
         fog_far: wthr.fog_day_far,
-        fog_medium: crate::fog::FogMedium::from_legacy_ramp(
-            wthr.fog_day_near,
-            wthr.fog_day_far,
-            Some(wthr.fog_day_max),
-        ),
+        // #3956 — day-TOD snapshot, so the day height profile, matching the
+        // `fog_day_*` distance ramp beside it.
+        fog_medium: {
+            let medium = crate::fog::FogMedium::from_legacy_ramp(
+                wthr.fog_day_near,
+                wthr.fog_day_far,
+                Some(wthr.fog_day_max),
+            );
+            match wthr.fog_height {
+                Some(height) => medium.with_authored_height_range(height.day_near_height_range),
+                None => medium,
+            }
+        },
         // WTHR-driven exterior lighting; the extended XCLL tail applies to
         // interior cells (and not-yet-wired exterior lighting overrides). #861.
         directional_fade: None,
+        // #3957 — `fog_clip` stays `None` for a different reason than its
+        // neighbours: WTHR has no clip-distance field at all. It is XCLL-only,
+        // so there is nothing to forward here, now or later.
         fog_clip: None,
-        fog_power: None,
+        // #3957 — WTHR *does* carry its own falloff power on Skyrim, FO4 and
+        // FO76 (`parse_wthr`'s `FNAM` arm decodes it), and this is the
+        // day-TOD snapshot, so the day value is the consistent pick alongside
+        // `fog_day_near`/`far`/`max` above.
+        //
+        // Captured even though `draw.rs` documents `fog_params[3]` as
+        // currently unconsumed (#1926 / #1927 removed the composite branch
+        // that read it): the EXAL boundary's job is to make authored data
+        // canonical, and a value that is already correct when the
+        // interior-scoped composite branch lands beats one that has to be
+        // rediscovered then.
+        fog_power: Some(wthr.fog_day_power),
         fog_far_color: None,
         fog_max: None,
         light_fade_begin: None,
@@ -1291,6 +1313,12 @@ pub(crate) fn translate_weather(
         }
     }
     let coverage = fog_coverage_from_weather(wthr.classification);
+    // #3956 — FO4/FO76 author a per-weather altitude profile in the same
+    // `FNAM` tail these distance ramps come from. Adopt the day profile for
+    // the day medium and the night profile for the night one, so the TOD blend
+    // `weather_system` already runs over this pair carries the height too.
+    // `None` (every other game, and the 8 FO4 weathers whose `FNAM` predates
+    // the extension) leaves the engine default in place.
     let mut fog_media = [
         crate::fog::FogMedium::from_legacy_ramp(
             wthr.fog_day_near,
@@ -1303,6 +1331,10 @@ pub(crate) fn translate_weather(
             Some(wthr.fog_night_max),
         ),
     ];
+    if let Some(height) = wthr.fog_height {
+        fog_media[0] = fog_media[0].with_authored_height_range(height.day_near_height_range);
+        fog_media[1] = fog_media[1].with_authored_height_range(height.night_near_height_range);
+    }
     for medium in &mut fog_media {
         medium.coverage = coverage;
     }
@@ -3269,6 +3301,138 @@ mod tests {
         assert!(sky.is_exterior);
         // DALC is populated per-frame by weather_system, not at translate.
         assert!(sky.current_dalc_cube.is_none());
+    }
+
+    /// #3956 — an authored FO4/FO76 height profile must reach the canonical
+    /// medium, per TOD slot, and the day snapshot must agree with the day
+    /// slot.
+    ///
+    /// Measured on vanilla masters before this was wired: 121/121 FO76
+    /// weathers and 96/104 FO4 weathers ship the 72-byte `FNAM`, with a median
+    /// `day_near_height_range` of 10000 units. At 70 units/m that is ~143 m
+    /// against the 30 m the engine used for all of them, so the shipped
+    /// profile was ~4.8x too thin wherever it was authored.
+    #[test]
+    fn authored_height_fog_reaches_the_canonical_medium_per_tod() {
+        use byroredux_plugin::esm::records::weather::WeatherHeightFog;
+        const UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
+
+        let mut w = WeatherRecord {
+            fog_day_near: 100.0,
+            fog_day_far: 200.0,
+            fog_night_near: 300.0,
+            fog_night_far: 400.0,
+            ..Default::default()
+        };
+        w.fog_height = Some(WeatherHeightFog {
+            // The vanilla FO4 median shape: ground-anchored mid, 10000-unit
+            // range by day, deliberately different by night so a day/night
+            // mix-up cannot pass.
+            day_near_height_mid: 64.0,
+            day_near_height_range: 10_000.0,
+            night_near_height_mid: 64.0,
+            night_near_height_range: 3_000.0,
+            ..Default::default()
+        });
+
+        let wd = translate_weather(&w, None);
+        assert!(
+            (wd.fog_media[0].scale_height_meters - 10_000.0 / UNITS_PER_METER).abs() < 1e-3,
+            "day medium must adopt the authored day range, got {}",
+            wd.fog_media[0].scale_height_meters
+        );
+        assert!(
+            (wd.fog_media[1].scale_height_meters - 3_000.0 / UNITS_PER_METER).abs() < 1e-3,
+            "night medium must adopt the authored NIGHT range, not the day one"
+        );
+
+        // The day-TOD snapshot the cell path uses must agree with slot 0.
+        let lighting = translate_exterior_cell_lighting(&w, [0.0, -1.0, 0.0]);
+        assert_eq!(
+            lighting.fog_medium.scale_height_meters, wd.fog_media[0].scale_height_meters,
+            "translate_exterior_cell_lighting is the day snapshot; its height \
+             profile must match fog_media[0] or the two paths disagree"
+        );
+    }
+
+    /// #3956 — the no-authored-data fallback. Every non-FO4/FO76 game, and the
+    /// 8 vanilla FO4 weathers whose `FNAM` predates the extension, must keep
+    /// the engine default, resolved here at the boundary rather than by a
+    /// branch at draw time.
+    #[test]
+    fn absent_height_fog_keeps_the_engine_default_scale_height() {
+        let w = WeatherRecord {
+            fog_day_near: 100.0,
+            fog_day_far: 200.0,
+            ..Default::default()
+        };
+        assert!(
+            w.fog_height.is_none(),
+            "fixture sanity: no authored profile"
+        );
+
+        let wd = translate_weather(&w, None);
+        for (slot, medium) in wd.fog_media.iter().enumerate() {
+            assert_eq!(
+                medium.scale_height_meters,
+                crate::fog::FogMedium::DEFAULT_SCALE_HEIGHT_METERS,
+                "TOD slot {slot} must fall back to the engine default"
+            );
+        }
+        assert_eq!(
+            translate_exterior_cell_lighting(&w, [0.0, -1.0, 0.0])
+                .fog_medium
+                .scale_height_meters,
+            crate::fog::FogMedium::DEFAULT_SCALE_HEIGHT_METERS,
+        );
+    }
+
+    /// #3956 — a degenerate authored range must not reach the shader.
+    /// `heightFogOpticalDepth` clamps `scaleHeight` to 1e-4, so forwarding a
+    /// zero would silently become a 0.1 mm atmosphere rather than a no-op.
+    #[test]
+    fn a_degenerate_authored_height_range_falls_back_rather_than_collapsing() {
+        use byroredux_plugin::esm::records::weather::WeatherHeightFog;
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let mut w = WeatherRecord {
+                fog_day_near: 100.0,
+                fog_day_far: 200.0,
+                ..Default::default()
+            };
+            w.fog_height = Some(WeatherHeightFog {
+                day_near_height_range: bad,
+                night_near_height_range: bad,
+                ..Default::default()
+            });
+            assert_eq!(
+                translate_weather(&w, None).fog_media[0].scale_height_meters,
+                crate::fog::FogMedium::DEFAULT_SCALE_HEIGHT_METERS,
+                "authored range {bad} must be declined, not forwarded"
+            );
+        }
+    }
+
+    /// #3957 — WTHR's own fog falloff power must reach the canonical field.
+    /// Captured ahead of a consumer (`fog_params[3]` is documented unconsumed
+    /// since #1926/#1927 removed the composite branch), so the value is
+    /// already right when the interior-scoped branch lands.
+    #[test]
+    fn authored_fog_power_reaches_cell_lighting() {
+        let w = WeatherRecord {
+            fog_day_power: 0.45,
+            fog_night_power: 0.25,
+            ..Default::default()
+        };
+        let lighting = translate_exterior_cell_lighting(&w, [0.0, -1.0, 0.0]);
+        assert_eq!(
+            lighting.fog_power,
+            Some(0.45),
+            "the day snapshot must forward the DAY power, matching fog_day_near/far beside it"
+        );
+        assert_eq!(
+            lighting.fog_clip, None,
+            "fog_clip stays None for a different reason: WTHR has no clip field at all (XCLL-only)"
+        );
     }
 
     #[test]

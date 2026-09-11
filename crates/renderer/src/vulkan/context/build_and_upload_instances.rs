@@ -64,6 +64,7 @@ impl VulkanContext {
         fog_far: f32,
         fog_extinction_per_meter: f32,
         fog_single_scatter_albedo: f32,
+        fog_scale_height_meters: f32,
         fog_clip: f32,
         fog_power: f32,
         fog_height_reference: f32,
@@ -718,13 +719,7 @@ impl VulkanContext {
         if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
             let allocator = self.allocator.as_ref().expect("allocator missing");
             self.scene_buffers
-                .upload_terrain_tiles(
-                    &self.device,
-                    allocator,
-                    cmd,
-                    frame,
-                    &tile_scratch,
-                )
+                .upload_terrain_tiles(&self.device, allocator, cmd, frame, &tile_scratch)
                 .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
         }
         self.terrain_tile_scratch = tile_scratch;
@@ -852,6 +847,7 @@ impl VulkanContext {
                 fog_far,
                 fog_extinction_per_meter,
                 fog_single_scatter_albedo,
+                fog_scale_height_meters,
                 fog_clip,
                 fog_power,
                 fog_height_reference,
@@ -1066,7 +1062,9 @@ mod batches_scratch_reserve_tests {
         let src = &full_src[..module_start];
 
         assert!(
-            src.contains("let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);"),
+            src.contains(
+                "let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);"
+            ),
             "batches must still be taken from batches_scratch via mem::take (#243) — \
              the needle this test scopes its check around has moved or been renamed"
         );
@@ -1105,9 +1103,7 @@ mod ui_instance_idx_overflow_tests {
         let src = &full_src[..module_start];
 
         assert!(
-            src.contains(
-                "(idx < super::super::scene_buffer::MAX_INSTANCES).then_some(idx as u32)"
-            ),
+            src.contains("(idx < super::super::scene_buffer::MAX_INSTANCES).then_some(idx as u32)"),
             "ui_instance_idx must clamp to None when the just-pushed UI instance's index \
              would land at or past MAX_INSTANCES — an unconditional `Some(idx as u32)` \
              regresses this to submitting an index upload_instances silently dropped"

@@ -697,6 +697,9 @@ impl App {
                 fog_extinction_per_meter: frame.fog_medium.extinction_per_meter,
                 fog_single_scatter_albedo: frame.fog_medium.single_scatter_albedo,
                 fog_coverage: frame.fog_medium.coverage,
+                // #3956 — already carries the engine default when the weather
+                // authored no height profile, so the renderer never branches.
+                fog_scale_height_meters: frame.fog_medium.scale_height_meters,
                 fog_clip: frame.fog_clip,
                 fog_power: frame.fog_power,
                 fog_height_reference: frame.fog_height_reference,

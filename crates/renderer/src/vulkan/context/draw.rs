@@ -738,6 +738,9 @@ pub(super) struct CompositeParamsInputs<'a> {
     pub(super) fog_far: f32,
     pub(super) fog_extinction_per_meter: f32,
     pub(super) fog_single_scatter_albedo: f32,
+    /// #3956 — exponential scale height in metres, already defaulted at the
+    /// EXAL boundary when the weather authored none.
+    pub(super) fog_scale_height_meters: f32,
     pub(super) fog_clip: f32,
     pub(super) fog_power: f32,
     pub(super) fog_height_reference: f32,
@@ -774,6 +777,7 @@ pub(super) fn build_composite_params(
         fog_far,
         fog_extinction_per_meter,
         fog_single_scatter_albedo,
+        fog_scale_height_meters,
         fog_clip,
         fog_power,
         fog_height_reference,
@@ -823,8 +827,9 @@ pub(super) fn build_composite_params(
         ],
         height_fog_params: [
             fog_extinction_per_meter.max(0.0) / super::super::volumetrics::WORLD_UNITS_PER_METER,
-            super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
-                * super::super::volumetrics::WORLD_UNITS_PER_METER,
+            // #3956 — authored FO4/FO76 altitude profile, or the engine
+            // default the EXAL boundary substituted when none was authored.
+            fog_scale_height_meters * super::super::volumetrics::WORLD_UNITS_PER_METER,
             fog_single_scatter_albedo.clamp(0.0, 1.0),
             if sky_params.is_exterior && fog_extinction_per_meter > 0.0 {
                 1.0
@@ -989,6 +994,7 @@ mod composite_params_tests {
             fog_far: 900.0,
             fog_extinction_per_meter: 0.05,
             fog_single_scatter_albedo: 0.6,
+            fog_scale_height_meters: 40.0,
             fog_clip: 111.0,
             fog_power: 222.0,
             fog_height_reference: 50.0,
@@ -1008,6 +1014,14 @@ mod composite_params_tests {
         // `fog_params` carries near/far/clip/power in that exact order —
         // the four fields most at risk of a positional transposition.
         assert_eq!(params.fog_params, [100.0, 900.0, 111.0, 222.0]);
+        // #3956 — the authored scale height must reach the composite lane,
+        // converted to world units. Before this, the lane was the engine
+        // constant for every weather in every game.
+        assert_eq!(
+            params.height_fog_params[1],
+            40.0 * super::super::super::volumetrics::WORLD_UNITS_PER_METER,
+            "height_fog_params[1] must carry the supplied scale height, not a constant"
+        );
         // fog_color.w is the extinction-enabled flag, not extinction itself.
         assert_eq!(params.fog_color, [0.7, 0.8, 0.9, 1.0]);
         assert_eq!(params.depth_params[0], 1.0, "is_exterior must map through");
@@ -1051,6 +1065,7 @@ mod composite_params_tests {
             fog_far: 0.0,
             fog_extinction_per_meter: 0.0,
             fog_single_scatter_albedo: 0.0,
+            fog_scale_height_meters: crate::vulkan::volumetrics::DEFAULT_SCALE_HEIGHT_METERS,
             fog_clip: 0.0,
             fog_power: 0.0,
             fog_height_reference: 0.0,
@@ -1517,6 +1532,14 @@ pub struct FrameInputs<'a> {
     pub fog_single_scatter_albedo: f32,
     /// Nubis-style procedural density coverage in `[0, 1]`.
     pub fog_coverage: f32,
+    /// Exponential scale height H in METRES for `sigma_t(y) = sigma0 *
+    /// exp(-(y - y0)/H)`, resolved at the EXAL boundary (#3956).
+    ///
+    /// Already carries the engine default when the weather authored no height
+    /// profile, so both sinks read it unconditionally — there is deliberately
+    /// no "was this authored" branch at draw time. FO4 and FO76 are the only
+    /// games that author it today (WTHR `FNAM`'s 72-byte tail).
+    pub fog_scale_height_meters: f32,
     /// XCLL FNV+ cubic-fog clip distance retained for diagnostics and
     /// explicit legacy compatibility.
     ///
@@ -1646,6 +1669,7 @@ impl VulkanContext {
             fog_extinction_per_meter,
             fog_single_scatter_albedo,
             fog_coverage,
+            fog_scale_height_meters,
             fog_clip,
             fog_power,
             fog_height_reference,
@@ -1811,6 +1835,7 @@ impl VulkanContext {
             fog_far,
             fog_extinction_per_meter,
             fog_single_scatter_albedo,
+            fog_scale_height_meters,
             fog_clip,
             fog_power,
             fog_height_reference,
@@ -1942,6 +1967,7 @@ impl VulkanContext {
                 fog_extinction_per_meter,
                 fog_single_scatter_albedo,
                 fog_coverage,
+                fog_scale_height_meters,
                 fog_height_reference,
                 wind_params,
                 wind_gust,

@@ -36,13 +36,41 @@ pub(crate) struct FogMedium {
     pub(crate) single_scatter_albedo: f32,
     /// Nubis-style procedural occupancy control.
     pub(crate) coverage: f32,
+    /// Exponential scale height H in metres, for `sigma_t(y) = sigma0 *
+    /// exp(-(y - y0)/H)` — the model `composite.frag`'s
+    /// `heightFogOpticalDepth` integrates and the froxel grid's
+    /// `medium_params[3]` uses.
+    ///
+    /// #3956 — FO4 and FO76 author this per weather (WTHR `FNAM`'s 72-byte
+    /// tail, decoded into `WeatherHeightFog` since the parser landed) and
+    /// every consumer dropped it, so both sinks ran on the engine's constant
+    /// for every weather in every worldspace. Census over vanilla masters:
+    /// 121/121 FO76 weathers and 96/104 FO4 weathers (89% of `Fallout4.esm`,
+    /// 100% of Far Harbor and Nuka-World) ship the authored tail, with a
+    /// median `height_range` of 10000 units = 143 m against the 30 m default
+    /// — so the shipped profile was roughly 4.8x too thin wherever it was
+    /// authored.
+    ///
+    /// Carries the engine default rather than an `Option` so the fallback is
+    /// resolved once at the EXAL boundary and the renderer never branches on
+    /// "was this authored" at draw time.
+    pub(crate) scale_height_meters: f32,
 }
 
 impl FogMedium {
+    /// Engine default scale height, in metres.
+    ///
+    /// Mirrors `byroredux_renderer`'s `DEFAULT_SCALE_HEIGHT_METERS`, which is
+    /// the value both sinks used unconditionally before #3956. Asserted equal
+    /// to it by `the_default_scale_height_matches_the_renderer_constant` so
+    /// the two cannot drift.
+    pub(crate) const DEFAULT_SCALE_HEIGHT_METERS: f32 = 30.0;
+
     pub(crate) const DISABLED: Self = Self {
         extinction_per_meter: 0.0,
         single_scatter_albedo: 0.95,
         coverage: 0.55,
+        scale_height_meters: Self::DEFAULT_SCALE_HEIGHT_METERS,
     };
 
     /// Convert an authored visibility ramp into a homogeneous physical medium.
@@ -68,6 +96,36 @@ impl FogMedium {
         }
     }
 
+    /// Adopt an authored FO4/FO76 height profile (#3956).
+    ///
+    /// `height_range` is the authored height extent in world units; the shader
+    /// wants an e-folding scale height in metres, so this is the unit
+    /// conversion and nothing more. The two quantities are taken as the same
+    /// physical parameter: no reference available to this project —
+    /// Gamebryo 2.3 predates the field, and nifxml/OpenMW do not cover WTHR —
+    /// documents whether Bethesda's `range` is an e-folding height, a
+    /// full-width-to-zero, or something else, and inventing a factor to
+    /// convert between those readings would be a guess dressed as physics.
+    /// The identity is the conservative choice, and it is isolated here so a
+    /// future reference changes exactly one expression.
+    ///
+    /// `height_mid` is deliberately NOT consumed: it is the altitude the
+    /// profile is anchored at (median 64 units ~ 0.9 m, i.e. ground level),
+    /// and the shader already anchors to the measured ground near the camera
+    /// via `camera_pos.w` (#2225 / REN-D16-01), which is strictly better than
+    /// a per-weather authored constant.
+    ///
+    /// Non-finite or non-positive input is ignored rather than propagated:
+    /// `heightFogOpticalDepth` clamps `scaleHeight` to 1e-4, so a zero would
+    /// silently become a 0.1 mm atmosphere.
+    pub(crate) fn with_authored_height_range(mut self, height_range_world: f32) -> Self {
+        if height_range_world.is_finite() && height_range_world > 0.0 {
+            self.scale_height_meters =
+                height_range_world / byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
+        }
+        self
+    }
+
     /// Blend canonical weather media directly. This intentionally does not
     /// reconstruct or interpolate legacy near/far ramps at runtime.
     pub(crate) fn lerp(self, other: Self, t: f32) -> Self {
@@ -76,6 +134,11 @@ impl FogMedium {
             extinction_per_meter: lerp(self.extinction_per_meter, other.extinction_per_meter, t),
             single_scatter_albedo: lerp(self.single_scatter_albedo, other.single_scatter_albedo, t),
             coverage: lerp(self.coverage, other.coverage, t),
+            // #3956 — day/night height profiles interpolate with everything
+            // else, so the TOD blend `weather_system` already runs over
+            // `fog_media[0]`/`[1]` carries the authored altitude too, with no
+            // second interpolator to keep in step.
+            scale_height_meters: lerp(self.scale_height_meters, other.scale_height_meters, t),
         }
     }
 }
@@ -1300,5 +1363,67 @@ mod tests {
             &mesh,
         )
         .is_none());
+    }
+}
+
+#[cfg(test)]
+mod scale_height_tests {
+    use super::FogMedium;
+
+    /// #3956 — the canonical default must equal the renderer constant it
+    /// stands in for.
+    ///
+    /// The EXAL boundary resolves the no-authored-data fallback so the
+    /// renderer never branches on "was this authored". That only works while
+    /// the two constants agree: if they drift, every unauthored weather
+    /// silently changes altitude profile with nothing to catch it, because
+    /// both sides would still compile and every other test would still pass.
+    #[test]
+    fn the_default_scale_height_matches_the_renderer_constant() {
+        assert_eq!(
+            FogMedium::DEFAULT_SCALE_HEIGHT_METERS,
+            byroredux_renderer::vulkan::volumetrics::DEFAULT_SCALE_HEIGHT_METERS,
+            "byroredux's canonical default and the renderer's constant are the same \
+             physical quantity; the boundary substitutes the former where the latter \
+             used to be read directly (#3956)"
+        );
+    }
+
+    /// The conversion is a unit change and nothing else — see
+    /// [`FogMedium::with_authored_height_range`] for why no shape factor is
+    /// applied.
+    #[test]
+    fn an_authored_range_converts_world_units_to_metres() {
+        const U: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
+        let m = FogMedium::DISABLED.with_authored_height_range(10_000.0);
+        assert!((m.scale_height_meters - 10_000.0 / U).abs() < 1e-3);
+        assert!(
+            m.scale_height_meters > FogMedium::DEFAULT_SCALE_HEIGHT_METERS,
+            "the vanilla FO4 median profile is thicker than the engine default it \
+             replaced — ~143 m against 30 m; if this ever inverts, the conversion \
+             or the constant moved"
+        );
+        // Everything else is untouched.
+        assert_eq!(
+            m.extinction_per_meter,
+            FogMedium::DISABLED.extinction_per_meter
+        );
+    }
+
+    /// The TOD blend must carry the height with it (#3956).
+    #[test]
+    fn lerp_interpolates_the_scale_height() {
+        let day = FogMedium::DISABLED.with_authored_height_range(10_000.0);
+        let night = FogMedium::DISABLED.with_authored_height_range(2_000.0);
+        let mid = day.lerp(night, 0.5);
+        let expected = (day.scale_height_meters + night.scale_height_meters) * 0.5;
+        assert!((mid.scale_height_meters - expected).abs() < 1e-4);
+        // Approximate at the endpoints: `lerp` is `a + (b - a) * t`, which is
+        // not bit-exact at t = 1.0 for any field. That is pre-existing shared
+        // behaviour, not something the height lane introduces.
+        assert!((day.lerp(night, 0.0).scale_height_meters - day.scale_height_meters).abs() < 1e-4);
+        assert!(
+            (day.lerp(night, 1.0).scale_height_meters - night.scale_height_meters).abs() < 1e-4
+        );
     }
 }

@@ -31,6 +31,9 @@ struct VolumetricsPassInputs<'a> {
     fog_far: f32,
     fog_extinction_per_meter: f32,
     fog_single_scatter_albedo: f32,
+    /// #3956 — authored FO4/FO76 altitude profile, or the engine default the
+    /// EXAL boundary substituted.
+    fog_scale_height_meters: f32,
     fog_coverage: f32,
     fog_height_reference: f32,
     wind_params: [f32; 4],
@@ -232,6 +235,7 @@ impl VulkanContext {
         fog_far: f32,
         fog_extinction_per_meter: f32,
         fog_single_scatter_albedo: f32,
+        fog_scale_height_meters: f32,
         fog_coverage: f32,
         fog_height_reference: f32,
         wind_params: [f32; 4],
@@ -260,6 +264,7 @@ impl VulkanContext {
                 fog_far,
                 fog_extinction_per_meter,
                 fog_single_scatter_albedo,
+                fog_scale_height_meters,
                 fog_coverage,
                 fog_height_reference,
                 wind_params,
@@ -501,6 +506,7 @@ impl VulkanContext {
             fog_far,
             fog_extinction_per_meter,
             fog_single_scatter_albedo,
+            fog_scale_height_meters,
             fog_coverage,
             fog_height_reference,
             wind_params,
@@ -701,7 +707,16 @@ impl VulkanContext {
                                     fog_single_scatter_albedo.clamp(0.0, 1.0),
                                     super::super::volumetrics::DEFAULT_BACKWARD_PHASE_G,
                                     super::super::volumetrics::DEFAULT_DUAL_LOBE_MIX,
-                                    super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
+                                    // #3956 — the same authored altitude the
+                                    // composite tail uses. The froxel grid and
+                                    // that tail are two models of ONE medium:
+                                    // `heightFogOpticalDepth`'s caller in
+                                    // `composite.frag` deliberately continues
+                                    // from the grid's own boundary radiance to
+                                    // make them agree at the seam, so they must
+                                    // not then disagree about how fog thins
+                                    // with height.
+                                    fog_scale_height_meters
                                         * super::super::volumetrics::WORLD_UNITS_PER_METER,
                                 ],
                                 fog_tint: super::super::volumetrics::pack_fog_tint(fog_color),
