@@ -44,13 +44,17 @@ use crate::App;
 /// **The order below is load-bearing.** Each source-shape module truncates
 /// this string at its *own* `mod` declaration, so that its own mentions of a
 /// system name cannot be what a scan finds. That convention only holds while
-/// every production registration appears *before* the first test module's
-/// text — so the four scheduler test modules, which all live in
-/// `schedule/mod.rs`, must come last, after the five stage files whose
-/// registrations they assert on. Ordering `schedule/mod.rs` ahead of them
-/// (the natural `mod`-declaration order) truncates the whole schedule away
-/// and every scan finds nothing: six tests failed exactly that way while
-/// this split was being made.
+/// every production registration appears *before the earliest such
+/// declaration* (the pin's own precise phrasing — **not** "before the first
+/// test module's text": `world.rs` and `cli.rs` each carry their own
+/// `#[cfg(test)]` blocks well before the tail, and those don't need to be
+/// truncation sentinels at all, only the ones a `SOURCES` text-scan actually
+/// relies on truncating before — #4088) — so the scheduler test modules
+/// that DO need to be sentinels, all living in `schedule/mod.rs`, must come
+/// last, after the five stage files whose registrations they assert on.
+/// Ordering `schedule/mod.rs` ahead of them (the natural `mod`-declaration
+/// order) truncates the whole schedule away and every scan finds nothing:
+/// six tests failed exactly that way while this split was being made.
 #[cfg(test)]
 pub(crate) const SOURCES: &str = concat!(
     // Process entry, then the world, then each stage in registration order —
@@ -515,6 +519,25 @@ mod sources_ordering_tests {
         "system_access_declaration_tests",
     ];
 
+    /// #4088 — every `#[cfg(test)] mod` in `schedule/mod.rs` (the file
+    /// deliberately last in `SOURCES`) must be accounted for as EITHER a
+    /// truncation sentinel above, OR named here with why it doesn't need to
+    /// be one — so a new 5th module forces a human decision instead of
+    /// silently landing in neither list. Nothing checked
+    /// `TRUNCATING_TEST_MODULES` for completeness before this: the list was
+    /// hand-maintained, and it was already one module short in practice
+    /// (see below) with nothing catching it.
+    const NON_SENTINEL_TEST_MODULES: &[(&str, &str)] = &[(
+        "scheduler_access_report_tests",
+        "calls build_scheduler() directly and asserts on its runtime \
+         access_report() — no include_str!/text-scan of its own, so \
+         nothing about its body could be mistaken for a production \
+         registration by another scan. #4088: this module already existed \
+         without being in TRUNCATING_TEST_MODULES or anywhere else — this \
+         entry documents that as deliberate rather than leaving it \
+         silently unaccounted for.",
+    )];
+
     /// One distinctive registration per production file, so each is
     /// independently proven present rather than the concatenation merely
     /// being non-empty.
@@ -567,6 +590,68 @@ mod sources_ordering_tests {
         }
     }
 
+    /// #4088 — `TRUNCATING_TEST_MODULES` was hand-maintained with no check
+    /// that it names every `#[cfg(test)] mod` in `schedule/mod.rs` (the file
+    /// deliberately last in `SOURCES`, sharing its own four test modules).
+    /// It was already incomplete in practice:
+    /// `scheduler_access_report_tests` exists in that file and was in
+    /// neither `TRUNCATING_TEST_MODULES` nor any exemption list — this test
+    /// would have failed had it existed sooner. A fifth module landing in
+    /// either state (sentinel needed but unlisted, or genuinely exempt but
+    /// undocumented) now fails loudly instead of silently truncating on a
+    /// no-op or asserting on the wrong text.
+    #[test]
+    fn every_schedule_mod_test_module_is_a_sentinel_or_a_documented_exemption() {
+        const SCHEDULE_MOD_SRC: &str = include_str!("schedule/mod.rs");
+        let mut found = Vec::new();
+        let mut rest = SCHEDULE_MOD_SRC;
+        while let Some(at) = rest.find("#[cfg(test)]") {
+            rest = &rest[at + "#[cfg(test)]".len()..];
+            let after_attr = rest.trim_start();
+            let Some(after_mod) = after_attr.strip_prefix("mod ") else {
+                continue;
+            };
+            let name_end = after_mod
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .expect("a mod name is followed by whitespace or `{`");
+            found.push(after_mod[..name_end].to_string());
+            rest = &after_mod[name_end..];
+        }
+        assert!(
+            !found.is_empty(),
+            "sanity: schedule/mod.rs must still carry #[cfg(test)] modules"
+        );
+        for name in &found {
+            let is_sentinel = TRUNCATING_TEST_MODULES.contains(&name.as_str());
+            let exemption = NON_SENTINEL_TEST_MODULES
+                .iter()
+                .find(|(module, _)| *module == name.as_str());
+            assert!(
+                is_sentinel || exemption.is_some(),
+                "schedule/mod.rs's `mod {name}` is in neither TRUNCATING_TEST_MODULES \
+                 nor NON_SENTINEL_TEST_MODULES — decide whether its own text could be \
+                 mistaken for a production registration by another SOURCES scan, then \
+                 add it to whichever list applies (#4088)"
+            );
+        }
+        // The reverse direction: a stale sentinel/exemption entry naming a
+        // module that no longer exists is equally worth catching.
+        for module in TRUNCATING_TEST_MODULES {
+            assert!(
+                found.contains(&module.to_string()),
+                "TRUNCATING_TEST_MODULES names `{module}`, which no longer exists as a \
+                 #[cfg(test)] mod in schedule/mod.rs — remove the stale entry"
+            );
+        }
+        for (module, _) in NON_SENTINEL_TEST_MODULES {
+            assert!(
+                found.contains(&module.to_string()),
+                "NON_SENTINEL_TEST_MODULES names `{module}`, which no longer exists as a \
+                 #[cfg(test)] mod in schedule/mod.rs — remove the stale entry"
+            );
+        }
+    }
+
     /// Every `.rs` file under `boot/` must be in the `concat!`.
     ///
     /// A new file carrying registrations that nobody adds to `SOURCES` is
@@ -582,14 +667,32 @@ mod sources_ordering_tests {
             .expect("the SOURCES concat! must exist");
         let list = &list[..list.find(");").expect("concat! must be closed")];
 
+        // #4087 — a hard-coded two-directory list reproduces exactly the
+        // hole this gate exists to close the moment a file lands under any
+        // THIRD directory (`boot/schedule/extra/foo.rs`, a future
+        // `boot/registries/`, …): the gate stays green while covering
+        // strictly less than it claims to. Walks the whole `boot/` tree
+        // instead, the same directory-stack pattern
+        // `crates/renderer/src/vulkan/image.rs`'s sibling completeness gate
+        // uses, so a new subdirectory is found rather than silently skipped.
         let mut found = Vec::new();
-        for dir in [root.clone(), root.join("schedule")] {
-            let prefix = if dir == root { "" } else { "schedule/" };
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
-                let name = entry.unwrap().file_name().to_string_lossy().into_owned();
-                if name.ends_with(".rs") {
-                    found.push(format!("{prefix}{name}"));
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
                 }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                found.push(rel);
             }
         }
         found.sort();
