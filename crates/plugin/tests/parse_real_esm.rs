@@ -976,6 +976,54 @@ fn fo4_ruleset_uses_only_authored_avif_outputs() {
     assert_eq!(index.actor_value_form_id("MeleeDamage"), None);
 }
 
+// #4094 (D1-02) — `NpcStatModel::Stored` is shared by FO4, FO76 and
+// Starfield (`derive_stored_actor_values` resolves the same two EditorIDs,
+// "Health" and "ActionPoints", for all three), but only FO4 had a test
+// falsifying that resolution against its own master. The other two ride on
+// no ROSTER_CASES entry either — neither carries a `RulesetBuilder` arm or a
+// `LevelingModel` const, so they don't fit that table's shape; these are
+// narrower siblings of `fo4_ruleset_uses_only_authored_avif_outputs` that
+// check the one thing `Stored` actually depends on.
+#[test]
+#[ignore = "needs FO76 game data on disk"]
+fn fo76_stored_avif_outputs_resolve_on_shipped_master() {
+    let Some(data) = data_dir(test_paths::FO76_ENV, test_paths::FO76_DEFAULT) else {
+        eprintln!("[FO76 AVIF] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("SeventySix.esm")).expect("read SeventySix.esm");
+    let index = parse_esm(&bytes).expect("parse SeventySix.esm");
+    assert_eq!(
+        index.character_rules,
+        byroredux_core::character::CharacterRulesProfile::FALLOUT76
+    );
+    // Measured 2026-09-11: identical numeric AVIF ids to FO4's Health/AP.
+    assert_eq!(index.actor_value_form_id("Health"), Some(0x0000_02D4));
+    assert_eq!(index.actor_value_form_id("ActionPoints"), Some(0x0000_02D5));
+}
+
+#[test]
+#[ignore = "needs Starfield game data on disk"]
+fn starfield_stored_avif_outputs_resolve_on_shipped_master() {
+    let Some(data) = data_dir(test_paths::STARFIELD_ENV, test_paths::STARFIELD_DEFAULT) else {
+        eprintln!("[Starfield AVIF] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Starfield.esm")).expect("read Starfield.esm");
+    let index = parse_esm(&bytes).expect("parse Starfield.esm");
+    assert_eq!(
+        index.character_rules,
+        byroredux_core::character::CharacterRulesProfile::STARFIELD
+    );
+    // Measured 2026-09-11: Health resolves (same id as FO4/FO76), but
+    // `Starfield.esm` authors no `ActionPoints` AVIF at all — every
+    // Starfield actor's `derive_stored_actor_values` silently skips that
+    // row today. Asserted `None` deliberately: this documents the real gap
+    // instead of hiding it, and flips loudly the moment content changes.
+    assert_eq!(index.actor_value_form_id("Health"), Some(0x0000_02D4));
+    assert_eq!(index.actor_value_form_id("ActionPoints"), None);
+}
+
 #[test]
 #[ignore = "needs FNV game data on disk"]
 fn parse_rate_fnv_esm() {

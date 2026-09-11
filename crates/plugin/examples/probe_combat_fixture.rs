@@ -9,6 +9,7 @@
 //!     <ESM> <CELL_EDID> [CELL_EDID ...]
 
 use byroredux_plugin::equip::{expand_leveled_form_id, resolve_inherited_inventory};
+use byroredux_plugin::esm::records::actor::effective_actor_level;
 use byroredux_plugin::esm::records::items::ItemKind;
 
 fn main() -> anyhow::Result<()> {
@@ -61,7 +62,9 @@ fn main() -> anyhow::Result<()> {
         );
 
         for (placed, npc) in direct_npcs {
-            let actor_level = npc.level.max(1);
+            // #3081/#3171: `effective_actor_level` is the one correct derivation
+            // (`.max(0)` on the plain branch, not `.max(1)`) — don't re-derive it here.
+            let actor_level = effective_actor_level(npc);
             let inventory = resolve_inherited_inventory(npc, actor_level, &index);
             let actor_values = byroredux_plugin::esm::records::derive_npc_actor_values(npc, &index);
             let health = index.health_actor_value_key().and_then(|health_form_id| {

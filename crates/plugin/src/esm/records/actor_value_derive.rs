@@ -1087,6 +1087,69 @@ mod tests {
         assert!(derive_npc_actor_values(&npc, &invalid_race).is_empty());
     }
 
+    /// #4106 (D5-04) — `derive_skyrim_actor_values` resolves Health, Magicka
+    /// and Stamina independently (2026-08-24): each is its own `zip(Option)`
+    /// resolve-or-skip, not gated behind the other two. Nothing previously
+    /// falsified that independence; `skyrim_health_skips_when_race_health_
+    /// is_missing_or_invalid` only ever populated Health. A regression to an
+    /// older all-or-nothing gate (return Health alone, and only when every
+    /// pool is present) would keep every other Skyrim test green.
+    #[test]
+    fn skyrim_pools_resolve_independently_when_one_is_missing() {
+        // (a) Race carries no `starting_magicka` — Health/Stamina must still
+        // resolve; only Magicka is absent from the output.
+        let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::SKYRIM;
+        index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
+        index.actor_values.insert(0x3E9, avif(0x3E9, "AVMagicka"));
+        index.actor_values.insert(0x3EA, avif(0x3EA, "AVStamina"));
+        index.races.insert(
+            0x13746,
+            RaceRecord {
+                form_id: 0x13746,
+                starting_health: Some(50.0),
+                starting_magicka: None,
+                starting_stamina: Some(100.0),
+                ..Default::default()
+            },
+        );
+        let npc = NpcRecord {
+            race_form_id: 0x13746,
+            ..Default::default()
+        };
+        assert_eq!(
+            derive_npc_actor_values(&npc, &index),
+            vec![(0x3E8, 50.0), (0x3EA, 100.0)],
+            "a race missing starting_magicka must not suppress Health/Stamina"
+        );
+
+        // (b) Race carries all three starts, but the load order is missing
+        // the Magicka AVIF — Health/Stamina must still resolve.
+        let mut no_magicka_avif = EsmIndex::default();
+        no_magicka_avif.character_rules = CharacterRulesProfile::SKYRIM;
+        no_magicka_avif
+            .actor_values
+            .insert(0x3E8, avif(0x3E8, "AVHealth"));
+        no_magicka_avif
+            .actor_values
+            .insert(0x3EA, avif(0x3EA, "AVStamina"));
+        no_magicka_avif.races.insert(
+            0x13746,
+            RaceRecord {
+                form_id: 0x13746,
+                starting_health: Some(50.0),
+                starting_magicka: Some(75.0),
+                starting_stamina: Some(100.0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            derive_npc_actor_values(&npc, &no_magicka_avif),
+            vec![(0x3E8, 50.0), (0x3EA, 100.0)],
+            "a load order missing the Magicka AVIF must not suppress Health/Stamina"
+        );
+    }
+
     #[test]
     fn actor_value_lookup_normalizes_av_prefix_and_rejects_null_form_ids() {
         let mut index = EsmIndex::default();
