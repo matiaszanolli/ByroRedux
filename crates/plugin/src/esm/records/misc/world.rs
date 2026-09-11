@@ -1739,6 +1739,38 @@ mod tests {
         assert_eq!(a.radio_form_id, 0);
     }
 
+    /// Regression for #4067. `CommonNamedFields::from_subs_with_remap`
+    /// now remaps `SCRI` itself instead of leaving each caller to do it —
+    /// `parse_acti`/`parse_term` never did, so a DLC-defined scripted
+    /// activator or terminal resolved its script in the DLC's own
+    /// plugin-local space instead of global load-order space, exactly
+    /// like the `EsmIndex::scripts` map it must be looked up against.
+    /// Single-master loads (an identity remap) never exercised this —
+    /// hence `parse_acti_extracts_scri_and_model` above passing `&None`
+    /// couldn't have caught it.
+    #[test]
+    fn parse_acti_remaps_scri_to_global_space() {
+        // Plugin slot 2, one master at slot 0. mod_index 1 == master_slots.len()
+        // is this plugin's OWN self-reference — the case that actually moves
+        // under the remap (0x00... master refs happen to land identity here,
+        // which container.rs's sibling test already covers; a self-ref proves
+        // the remap fired rather than merely happening to pass through).
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        let self_ref_local: u32 = (1u32 << 24) | 0x0000_1234;
+        let self_ref_global: u32 = (2u32 << 24) | 0x0000_1234;
+        let subs = vec![
+            sub(b"EDID", b"DlcTerminal01\0"),
+            sub(b"SCRI", &self_ref_local.to_le_bytes()),
+        ];
+        let a = parse_acti(0x0002_9E7A, &subs, &Some(remap));
+        assert_eq!(
+            a.script_form_id, self_ref_global,
+            "ActiRecord.script_form_id must land in global space, matching \
+             EsmIndex::scripts' keying — pre-#4067 this stayed at the raw \
+             plugin-local id ({self_ref_local:#010X})"
+        );
+    }
+
     /// TD2-109 / #2068 — `parse_acti` now sources its EDID/FULL/MODL/SCRI/
     /// VMAD bundle from `CommonNamedFields::from_subs`, which means each
     /// field is copied across by hand into `ActiRecord`. Every other field

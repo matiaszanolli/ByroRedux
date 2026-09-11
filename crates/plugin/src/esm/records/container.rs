@@ -92,10 +92,13 @@ pub fn parse_cont(
     remap: &Option<FormIdRemap>,
 ) -> ContainerRecord {
     // Pre-populate the universal named fields (EDID / FULL / MODL / SCRI /
-    // VMAD) in one pass via the shared helper (TD3-006 / #1045). `SCRI` is
-    // remapped below, overriding the helper's raw value — mirrors
-    // `parse_npc`'s pattern of re-deriving fields the shared helper can't
-    // remap on its own.
+    // VMAD) in one pass via the shared helper (TD3-006 / #1045). #4067 —
+    // `SCRI` is now remapped inside `from_subs_with_remap` itself, so
+    // `common.script_form_id` already carries the composed global id; this
+    // used to remap it a second time here, which was harmless only because
+    // `parse_container` happened to be the one caller that also remapped
+    // correctly (every other `from_subs_with_remap` caller passed the raw
+    // value straight through, unremapped — the bug #4067 fixed).
     let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut record = ContainerRecord {
         form_id,
@@ -106,7 +109,7 @@ pub fn parse_cont(
         flags: 0,
         open_sound: 0,
         close_sound: 0,
-        script_form_id: remap_fid(common.script_form_id, remap),
+        script_form_id: common.script_form_id,
         script_instance: common.script_instance,
         contents: Vec::new(),
     };

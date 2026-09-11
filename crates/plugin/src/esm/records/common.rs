@@ -309,8 +309,20 @@ impl CommonNamedFields {
                 b"MODL" => out.model_path = read_zstring(&sub.data),
                 b"ICON" => out.icon_path = read_zstring(&sub.data),
                 b"SCRI" if sub.data.len() >= 4 => {
-                    out.script_form_id =
+                    // #4067 — remap here, unconditionally, rather than
+                    // leaving it to each caller: `parse_container` remapped
+                    // its own copy, `parse_npc` and the statics builder
+                    // (#3941) remapped theirs, but `parse_acti`/`parse_term`
+                    // and the other `CommonItemFields` consumers passed the
+                    // raw plugin-local id straight through — a silent
+                    // collision or dangling id on any multi-plugin load,
+                    // invisible on the identity-remap single-master case
+                    // every default CLI invocation uses. Un-bypassable now:
+                    // every `from_subs_with_remap` caller gets the composed
+                    // global id for free.
+                    let raw =
                         crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default();
+                    out.script_form_id = remap_fid(raw, remap);
                 }
                 b"VMAD" => {
                     // Presence flag unchanged; the decoded attachments +
