@@ -414,15 +414,23 @@ type SkyrimShaderBase = (u32, u32, Vec<u32>, Vec<u32>, [f32; 2], [f32; 2]);
 fn parse_skyrim_shader_base(stream: &mut NifStream) -> io::Result<SkyrimShaderBase> {
     let bsver = stream.bsver();
 
-    let (shader_flags_1, shader_flags_2) = if bsver < crate::version::bsver::FO4_CRC_FLAGS {
-        (stream.read_u32_le()?, stream.read_u32_le()?)
-    } else {
-        (0, 0)
-    };
+    // #2603 / #409 — the gates are the named predicates, not raw BSVER
+    // comparisons, because the two encodings are NOT complementary:
+    // `FO4_SHADER_GAP` (131) carries neither the typed u32 pair nor the CRC
+    // arrays, so `< FO4_CRC_FLAGS` is wrong for the first gate — it reads 8
+    // bytes that aren't there and drifts the rest of the block. `version.rs`
+    // pins that band (`bsver_shader_flag_band_tests`); keeping the gate here
+    // expressed as the predicate is what makes the pin cover this site (#3845).
+    let (shader_flags_1, shader_flags_2) =
+        if crate::version::bsver::carries_typed_shader_flags(bsver) {
+            (stream.read_u32_le()?, stream.read_u32_le()?)
+        } else {
+            (0, 0)
+        };
 
     // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't OOM
     // before the inner u32 reads fail. See #764.
-    let (sf1_crcs, sf2_crcs) = if bsver >= crate::version::bsver::FO4_CRC_FLAGS {
+    let (sf1_crcs, sf2_crcs) = if crate::version::bsver::carries_crc_shader_flags(bsver) {
         // #981 — bulk-read CRC arrays via `read_u32_array`.
         let num_sf1 = stream.read_u32_le()? as usize;
         let num_sf2 = if bsver >= crate::version::bsver::FO76_SF2_CRCS {
@@ -1027,28 +1035,11 @@ impl BSLightingShaderProperty {
         };
         let net = NiObjectNETData::parse(stream)?;
 
-        let (shader_flags_1, shader_flags_2) =
-            if crate::version::bsver::carries_typed_shader_flags(bsver) {
-                (stream.read_u32_le()?, stream.read_u32_le()?)
-            } else {
-                (0, 0)
-            };
-        let (sf1_crcs, sf2_crcs) = if crate::version::bsver::carries_crc_shader_flags(bsver) {
-            let num_sf1 = stream.read_u32_le()? as usize;
-            let num_sf2 = if bsver >= crate::version::bsver::FO76_SF2_CRCS {
-                stream.read_u32_le()? as usize
-            } else {
-                0
-            };
-            let sf1 = stream.read_u32_array(num_sf1)?;
-            let sf2 = stream.read_u32_array(num_sf2)?;
-            (sf1, sf2)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        // Shared Skyrim+ head — see `parse_skyrim_shader_base`, which owns
+        // the gap-band gate for every block that carries this prefix (#3845).
+        let (shader_flags_1, shader_flags_2, sf1_crcs, sf2_crcs, uv_offset, uv_scale) =
+            parse_skyrim_shader_base(stream)?;
 
-        let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
-        let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
         let texture_set_ref = stream.read_block_ref()?;
         let emissive_color = [
             stream.read_f32_le()?,
@@ -1804,35 +1795,13 @@ impl BSEffectShaderProperty {
             }
         }
 
-        // Shader flags 1/2 — see sibling gate in
-        // `BSLightingShaderProperty::parse` for the full nif.xml
-        // citation. `bsver == crate::version::bsver::FO4_SHADER_GAP` is an intentional gap: neither the
-        // u32 pair nor the BSVER >= 132 CRC arrays are present. #409.
-        let (shader_flags_1, shader_flags_2) =
-            if crate::version::bsver::carries_typed_shader_flags(bsver) {
-                (stream.read_u32_le()?, stream.read_u32_le()?)
-            } else {
-                (0, 0)
-            };
-
-        // #981 — bulk-read CRC arrays via `read_u32_array`; same
-        // byte-budget guarantee as the BSEffectShaderData variant above.
-        let (sf1_crcs, sf2_crcs) = if crate::version::bsver::carries_crc_shader_flags(bsver) {
-            let num_sf1 = stream.read_u32_le()? as usize;
-            let num_sf2 = if bsver >= crate::version::bsver::FO76_SF2_CRCS {
-                stream.read_u32_le()? as usize
-            } else {
-                0
-            };
-            let sf1 = stream.read_u32_array(num_sf1)?;
-            let sf2 = stream.read_u32_array(num_sf2)?;
-            (sf1, sf2)
-        } else {
-            (Vec::new(), Vec::new())
-        };
-
-        let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
-        let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
+        // Shared Skyrim+ head — shader flags 1/2, the BSVER >= 132 CRC
+        // arrays, then UV offset/scale. `parse_skyrim_shader_base` owns the
+        // gap-band gate (`FO4_SHADER_GAP` = 131 carries neither encoding,
+        // #409) and the #981 bulk CRC read for every block with this prefix
+        // (#3845).
+        let (shader_flags_1, shader_flags_2, sf1_crcs, sf2_crcs, uv_offset, uv_scale) =
+            parse_skyrim_shader_base(stream)?;
 
         // Source texture as sized string (NOT a texture set reference).
         let source_texture = stream.read_sized_string()?;

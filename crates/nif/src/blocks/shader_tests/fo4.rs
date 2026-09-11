@@ -453,3 +453,59 @@ fn parse_bs_lighting_fo4_bgsm_name_does_not_stopcond() {
     // parser walked the full FO4 BSLightingShaderProperty layout.
     assert_eq!(stream.position(), data.len() as u64);
 }
+
+/// #3845 — the BSVER-131 gap band, through `parse_skyrim_shader_base`.
+///
+/// `bs_lighting_bsver_131_skips_flag_pair_and_crc_counts` above pins the
+/// same band for `BSLightingShaderProperty`, which reads the head inline.
+/// The *shared helper* had its own gate, and #2603's rewrite to the named
+/// predicates reached both inline copies and missed it — so it kept the
+/// literal `bsver < FO4_CRC_FLAGS`, which is true at 131 and consumes an
+/// 8-byte flag pair that is not there. Every field after it lands one
+/// `u32` pair early and the block drifts.
+///
+/// 131 ships no game content, so no corpus test could have caught this;
+/// it needs a synthetic stream. `BSSkyShaderProperty` is the smallest
+/// consumer of the helper (`NiObjectNET` + head + two tail fields), which
+/// makes the byte budget unambiguous: an over-read shows up as a short
+/// `source_texture` or a position mismatch, not a silent wrong value.
+#[test]
+fn bs_sky_bsver_131_skips_flag_pair_and_crc_counts_through_the_shared_head() {
+    let header = make_fo4_header_with_bsver(crate::version::bsver::FO4_SHADER_GAP);
+    let source_texture = "textures\\sky\\clouds.dds";
+
+    let mut data = Vec::new();
+    // NiObjectNET: name (string-table 0), 0 extra-data refs, controller -1.
+    data.extend_from_slice(&0i32.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    // NO flag pair and NO CRC counts at 131 — that is the whole point.
+    // Next field is the UV transform.
+    for v in [0.25f32, 0.5, 2.0, 4.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    data.extend_from_slice(&(source_texture.len() as u32).to_le_bytes());
+    data.extend_from_slice(source_texture.as_bytes());
+    data.extend_from_slice(&3u32.to_le_bytes()); // sky_object_type = Clouds
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSSkyShaderProperty::parse(&mut stream).unwrap();
+
+    assert_eq!(prop.shader_flags_1, 0, "bsver=131 carries no typed flags");
+    assert_eq!(prop.shader_flags_2, 0, "bsver=131 carries no typed flags");
+    assert!(prop.sf1_crcs.is_empty(), "CRC arrays start at 132");
+    assert!(prop.sf2_crcs.is_empty(), "CRC arrays start at 132");
+
+    // The UV transform is the first field after the gate, so it is where an
+    // 8-byte over-read lands first — it would read the texture length and
+    // the leading texture bytes as floats.
+    assert_eq!(prop.uv_offset, [0.25, 0.5]);
+    assert_eq!(prop.uv_scale, [2.0, 4.0]);
+    assert_eq!(prop.source_texture, source_texture);
+    assert_eq!(prop.sky_object_type, 3);
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "bsver=131 body must consume exactly what was authored",
+    );
+}
