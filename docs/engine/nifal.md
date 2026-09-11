@@ -137,7 +137,7 @@ half / BSGeometry UDEC3) all converge to a single `Vec<[f32;3]>` + `Vec<u32>` in
 renderer space. This is the cleanest category — it is the model the others should
 match. No `Option` leaks; the consumer (`MeshRegistry::upload`) is format-agnostic.
 
-### Skinning — **half-stale (2026-08-07): loose-NIF path only**
+### Skinning — **half-stale (re-verified 2026-09-10): loose-NIF path only, plus a Starfield bone-name sub-slice**
 
 `ImportedSkin` emits **global** bone indices (#613 — partition-local remap done at
 extraction) and carries the global skin transform (M41 Phase 1b.x). Palette skinning
@@ -168,6 +168,30 @@ onto a shared boundary (contrast #2439's `translate_light`, three producers
 converging on data already flowing through each site). Recorded here per
 #2440's own suggested resolution rather than attempted as a rushed structural
 change to the cell loader's spawn architecture.
+
+**Starfield external-skeleton sub-slice (#3549).** A second, independent
+skinning concern lives in `crates/nif/src/import/mesh/skeleton.rs`
+(`resolve_external_bone_names`) and is *not* part of the #2440 cell-loader gap
+above. Starfield authors `BSSkin::Instance` bone refs as NULL at scale, so the
+bone *names* the palette needs are simply absent from the mesh file: census
+over 68,459 vanilla NIFs found 5,896 `BSSkin::Instance` blocks carrying 107,717
+bone refs, of which **78,587 (73%) are NULL**, and 3,738 skins (63%) have every
+ref NULL. The slice recovers the names geometrically by matching authored bind
+positions against candidate external skeleton files.
+
+Its contract is **resolve correctly or decline**: `resolve_external_bone_names`
+returns `None` unless a candidate skeleton yields a *unique* full match, and a
+decline restores the prior `Bone{i}` behaviour exactly. Validated against 346
+in-file skins with known ground truth — a unique solve on 239 (69%), and of the
+9,057 names recovered, **8,708 exact, 349 position-coincident (colocated twist
+bones with identical binds), and ZERO wrong**. That asymmetry is the design: the
+failure mode is "no better than before", never "confidently mis-bound".
+
+Open follow-up: **#3930** proposes `SkinAttach` as a better *input* to the same
+solve — it carries the authored names for 100% of the skins #3549 recovers
+geometrically, which would make the match exact by construction rather than by
+bind-pose coincidence. Read the two together; the geometric solve is the
+fallback that #3930 would demote, not duplicate.
 
 **Residual note (#2441 / NIFAL-D2-03):** `SkinnedMesh.bones` /
 `skeleton_root` carry `Option`s past the translation boundary
