@@ -3330,7 +3330,11 @@ mod rigid_history_hasher_tests {
     /// the cluster can't quietly re-grow there.
     #[test]
     fn texture_alpha_and_avg_rgb_are_not_hashed_by_texture_handle() {
-        let src = include_str!("../../texture_registry.rs");
+        // #3737 split the registry into a directory. Two assertions below
+        // are negative, so reading only its `mod.rs` would keep passing
+        // while the forbidden shape reappeared in a sibling — read the
+        // whole thing.
+        let src = crate::texture_registry::SOURCES;
         for field in ["texture_has_alpha", "texture_avg_rgb"] {
             assert!(
                 !src.contains(&format!("{field}: HashMap<TextureHandle"))

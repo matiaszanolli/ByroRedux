@@ -534,7 +534,7 @@ no row here until #3998.
 
 ## Texture Registry
 
-[`crates/renderer/src/texture_registry.rs`](../../crates/renderer/src/texture_registry.rs)
+[`crates/renderer/src/texture_registry/`](../../crates/renderer/src/texture_registry/)
 
 | Item | Value |
 |---|---|

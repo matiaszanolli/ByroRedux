@@ -144,8 +144,11 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    `crates/scripting/src/fragment.rs` (2682, up from ~2540),
    `crates/sdk/src/compatibility/storage_util.rs` (2160, **newly crossed** —
    it grew in `e142e3d4` when the FourCC→FormType mapping became a table),
-   `crates/renderer/src/texture_registry.rs` (2063, up from ~2060) and
-   `crates/nif/src/blocks/shader.rs` (2019, **newly crossed**).
+   and `crates/nif/src/blocks/shader.rs` (2019, **newly crossed**).
+   *crates/renderer/src/texture_registry.rs* left the bucket on 2026-09-11:
+   split into `crates/renderer/src/texture_registry/` under #3737 by
+   lifecycle phase (lookup / upload / release), largest survivor
+   `crates/renderer/src/texture_registry/mod.rs` at 1259 total.
    **Four files left the bucket on 2026-09-09**, three of them by an actual
    file-level split: *byroredux/src/boot.rs* → `byroredux/src/boot/`
    (#3855, `8c5e02aa`; largest survivor `boot/mod.rs` at 606 total),
@@ -186,12 +189,13 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    `helpers.rs`, `resize.rs`, `init.rs`. Do not re-propose splitting
    `draw.rs` — it is done; `context/mod.rs` (still ~2650 production) is the
    live candidate left in that directory.
-   `texture_registry.rs` remains a standing real disagreement with #3081's own
-   filed evidence table (which reported its production at 838 —
-   majority-test): re-checking the file directly finds only 3 `#[cfg(test)]`
-   markers total, all within the last ~100 lines, two of which are
-   `#[path = "..."] mod tests;` declarations pointing at separate files — the
-   file's own content is genuinely ~2060 lines of production texture-registry
+   The *texture_registry.rs* disagreement with #3081's evidence table (which
+   reported its production at 838 — majority-test) was resolved on
+   2026-09-11: 2013 was the reproducible figure, 838 was not, and the file
+   was split under #3737. Its tests were never inline — they live in sibling
+   files reached by `#[path = "..."] mod`, which is why a marker count
+   mistook production for test bulk. The content was genuinely ~2060 lines of
+   production texture-registry
    logic (samplers, path normalisation, bindless acquire/release). File that
    as a real Dim 1 finding rather than silently adopting a figure this check
    disproves. `crates/renderer/src/vulkan/material.rs` (#2257, ~1440
