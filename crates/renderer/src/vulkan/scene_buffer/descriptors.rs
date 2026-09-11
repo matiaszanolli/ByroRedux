@@ -410,11 +410,15 @@ pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMateri
 }
 
 /// Sibling of [`hash_material_slice`] for the [`SceneBuffers::upload_instances`]
-/// dirty-gate (#1134 / PERF-D8-NEW-01). MedTek ships 7359 draws at 128 B
-/// per `GpuInstance` ≈ 920 KB/frame; static interiors produce
-/// byte-identical slices in steady state so the copy + flush skip
-/// saves ~54 MB/s sustained PCIe at 60 fps. (#2692 — the 112 B / 805 KB /
-/// 48 MB/s figures here predated #2219's `skinned_vertex_address`.)
+/// dirty-gate (#1134 / PERF-D8-NEW-01). MedTek ships 7359 draws at 160 B
+/// per `GpuInstance` (`size_of::<GpuInstance>()`, pinned by
+/// `gpu_instance_is_160_bytes_std430_compatible`) ≈ 1.12 MiB/frame;
+/// static interiors produce byte-identical slices in steady state so the
+/// copy + flush skip saves ~67 MB/s sustained PCIe at 60 fps. (#2692 — the
+/// 112 B / 805 KB / 48 MB/s figures here predated #2219's
+/// `skinned_vertex_address`; #4029 — the 128 B / 920 KB / 54 MB/s figures
+/// that replaced them predated #3231's growth to 160 B and were never
+/// recomputed.)
 ///
 /// `GpuInstance` is `#[repr(C)]` scalars **plus three `u64`s**
 /// (`skinned_vertex_address`, `morph_delta_address`, `morph_weight_address`),

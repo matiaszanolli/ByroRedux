@@ -139,22 +139,28 @@ it where that is not `draw_frame` itself.
                            source-pinned by `selected_ray_probe_is_bounded_
                            and_captures_the_detailed_shadow_query`
                            (`scene_buffer/shader_contract_tests.rs`).
-7  copy_depth_to_history ─  [TRANSFER] snapshot this frame's opaque depth into
-                           the sampleable depth-history image, for next
-                           frame's soft-particle fade. Two depth-image layout
+7  copy_depth_to_history ─  [TRANSFER] **conditional on `has_effect_soft_
+   (conditional, #3667)      material`** — most frames of most cells skip
+                           this entirely (#4032). When it runs: snapshot
+                           this frame's opaque depth into the sampleable
+                           depth-history image, for next frame's soft-
+                           particle fade. Two depth-image layout
                            transitions (READ_ONLY → TRANSFER_SRC → READ_ONLY
                            restored after the copy); history image mirrors
                            SHADER_READ_ONLY → TRANSFER_DST → SHADER_READ_ONLY.
 7b depth_capture_record_  ─  [TRANSFER] (#3308) recorded immediately after
-   copy                      step 7, which leaves the depth image back in
-                           DEPTH_STENCIL_READ_ONLY_OPTIMAL — exactly the
-                           layout this pass requires and restores. Two more
-                           depth-image layout transitions around a
-                           `cmd_copy_image_to_buffer` (READ_ONLY →
-                           TRANSFER_SRC → READ_ONLY), independent of step 7's
-                           own copy. Not a no-op: it moves the depth image
-                           twice more before every later depth consumer
-                           (SSAO, SVGF, composite, FSR).
+   copy                      step 7's slot, unconditionally. The depth
+                           image's DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                           precondition comes from the render pass's own
+                           depth-attachment `final_layout`, not from step 7
+                           (#4032, correcting the prior claim here) — step 7,
+                           when it runs, only *restores* that layout after
+                           its own transfer. Two more depth-image layout
+                           transitions around a `cmd_copy_image_to_buffer`
+                           (READ_ONLY → TRANSFER_SRC → READ_ONLY), independent
+                           of step 7's own copy. Not a no-op: it moves the
+                           depth image twice more before every later depth
+                           consumer (SSAO, SVGF, composite, FSR).
 8  [Barrier]               SHADER_READ_ONLY_OPTIMAL on all G-buffer attachments
 9  [Barrier]               caustic accum atomic-add → SHADER_READ
 10 svgf_temporal.comp   ─  temporal denoiser (indirect lighting)

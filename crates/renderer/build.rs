@@ -4,8 +4,11 @@
 //! Every GLSL shader that needs these constants should add:
 //!   `#include "include/shader_constants.glsl"`
 //!
-//! and be compiled with:
-//!   glslangValidator -V -I crates/renderer/shaders <shader.glsl> -o <shader.glsl>.spv
+//! and be compiled with (run from `crates/renderer/shaders/`; `-I<dir>` must
+//! have no space before the path, and glslang writes its own default output
+//! name unless `-o` is given — #4051, both defects reproduced against
+//! glslang 11:16.2.0):
+//!   glslangValidator -V -I. <shader.glsl> -o <shader.glsl>.spv
 
 use std::fmt::Write as FmtWrite;
 use std::path::Path;
@@ -33,7 +36,8 @@ fn main() {
     writeln!(out, "// Regenerate:   cargo build -p byroredux-renderer").unwrap();
     writeln!(
         out,
-        "// Then recompile shaders: glslangValidator -V -I crates/renderer/shaders <shader>"
+        "// Then recompile shaders (from crates/renderer/shaders/): \
+         glslangValidator -V -I. <shader> -o <shader>.spv"
     )
     .unwrap();
     writeln!(out, "//").unwrap();

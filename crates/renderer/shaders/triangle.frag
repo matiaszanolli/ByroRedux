@@ -1523,8 +1523,12 @@ void main() {
     //     writes `mesh.metalness_override` / `mesh.roughness_override` —
     //     Bethesda's PBR-Lite spec-glossiness authoring translated
     //     once, here.
-    //   * Legacy NIF (Oblivion / FO3 / FNV) — `classify_pbr` keyword
-    //     fallback fills the same fields from texture-path tokens.
+    //   * Legacy NIF (Oblivion / FO3 / FNV) — `classify_legacy_pbr`
+    //     (`crates/nif/src/import/material/mod.rs`) keyword fallback fills
+    //     the same fields from texture-path tokens at import time. The
+    //     render-time per-draw classifier this comment once named
+    //     (`classify_pbr`) was removed — no per-format branch survives to
+    //     this shader; see `feedback_format_translation.md` two lines below.
     // The shader doesn't (and shouldn't) know which path produced
     // its inputs. Per-format branches in the shader were a smell
     // we explicitly factored OUT — see `feedback_format_translation.md`.

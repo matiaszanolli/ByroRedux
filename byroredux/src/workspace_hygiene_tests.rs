@@ -198,7 +198,19 @@ fn collect_live_classify_pbr_claims(
             }
             continue;
         }
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+        // #4042 — `.rs`-only missed the one file where this claim is most
+        // damaging: `triangle.frag`, the shader whose own module doc block
+        // it sits four lines below. Extended to the GLSL shader
+        // extensions; the match logic below is plain text scanning, not
+        // Rust-syntax-aware, so it generalizes to GLSL comments unchanged.
+        // Deliberately NOT `.md`: `docs/audits/*.md` alone carries dozens
+        // of accurate, dated, historical `classify_pbr` mentions in free
+        // narrative prose the HISTORIC_MARKERS heuristic was never
+        // designed to parse (verified — adding it turns this into a
+        // several-dozen-report cleanup unrelated to this fix's actual
+        // finding, not a one-line correction).
+        let ext = path.extension().and_then(|e| e.to_str());
+        if !matches!(ext, Some("rs" | "vert" | "frag" | "comp" | "glsl")) {
             continue;
         }
         // This guard's own doc prose necessarily quotes the dead name to

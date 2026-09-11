@@ -731,11 +731,13 @@ impl super::buffers::SceneBuffers {
         }
 
         // #1134 / PERF-D8-NEW-01 — dirty-gate via content hash, mirror
-        // of #878's upload_materials gate. MedTek ships ~920 KB/frame
-        // (7359 × 128 B); static interiors produce byte-identical
-        // slices each frame, so skipping the copy + flush in steady
-        // state saves ~54 MB/s sustained PCIe at 60 fps. (#2692 — was
-        // stated as 112 B / 805 KB / 48 MB/s, pre-#2219.) Hash is
+        // of #878's upload_materials gate. MedTek ships ~1.12 MiB/frame
+        // (7359 × 160 B, size_of::<GpuInstance>()); static interiors
+        // produce byte-identical slices each frame, so skipping the
+        // copy + flush in steady state saves ~67 MB/s sustained PCIe at
+        // 60 fps. (#2692 — was stated as 112 B / 805 KB / 48 MB/s,
+        // pre-#2219; #4029 — the 128 B / 920 KB / 54 MB/s figures that
+        // replaced those predated #3231's growth to 160 B.) Hash is
         // computed over the clamped prefix actually written, so an
         // overflow that drops trailing instances still re-uploads when
         // the kept prefix changes.

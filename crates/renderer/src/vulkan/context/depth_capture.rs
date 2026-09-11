@@ -439,12 +439,20 @@ mod capture_ordering_tests {
     }
 
     /// Invariant (b): `depth_capture_record_copy(cmd)` must immediately
-    /// follow `copy_depth_to_history(cmd)` in `draw.rs`, with no
-    /// image-layout-affecting call between them. The GPU-timer wrapper
-    /// around `copy_depth_to_history` (`cmd_depth_history_copy_start`/
-    /// `_end`) and the explanatory comment between the two calls are the
-    /// only things allowed to sit there — neither touches the depth
-    /// image's layout, unlike a barrier, copy, or blit would.
+    /// follow `copy_depth_to_history(cmd)`'s call site in `draw.rs`
+    /// (inside its `if has_effect_soft_material` guard since #3667 —
+    /// #4032), with no image-layout-affecting call between them. The
+    /// GPU-timer wrapper around `copy_depth_to_history`
+    /// (`cmd_depth_history_copy_start`/`_end`) and the explanatory comment
+    /// between the two calls are the only things allowed to sit there —
+    /// neither touches the depth image's layout, unlike a barrier, copy,
+    /// or blit would. **Not** because `depth_capture_record_copy`'s
+    /// `DEPTH_STENCIL_READ_ONLY_OPTIMAL` precondition comes FROM the
+    /// history copy — it comes from the render pass's own depth-attachment
+    /// `final_layout` and holds whether or not the (conditional) history
+    /// copy ran at all. This ordering check exists so that *when* the
+    /// history copy does run, nothing between the two calls disturbs the
+    /// layout it just restored.
     #[test]
     fn record_copy_runs_immediately_after_the_depth_history_copy() {
         let src = include_str!("draw.rs");
@@ -458,10 +466,13 @@ mod capture_ordering_tests {
 
         assert!(
             history_copy_pos < record_copy_pos,
-            "depth_capture_record_copy must come AFTER copy_depth_to_history \
-             — it documents DEPTH_STENCIL_READ_ONLY_OPTIMAL as its \
-             precondition, and that layout is only guaranteed once the \
-             history copy's own barriers have run. (#3628)"
+            "depth_capture_record_copy must come AFTER copy_depth_to_history's \
+             call site — both document DEPTH_STENCIL_READ_ONLY_OPTIMAL as a \
+             precondition (#3628), sourced from the render pass's own \
+             depth-attachment final_layout, not from the history copy (#4032: \
+             the history copy is conditional on has_effect_soft_material and \
+             only RESTORES that layout when it runs); this ordering guarantees \
+             nothing between the two calls disturbs it either way."
         );
 
         let between = &src[history_copy_pos..record_copy_pos];

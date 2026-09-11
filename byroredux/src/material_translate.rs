@@ -733,12 +733,17 @@ pub(crate) fn attach_blend_and_facing_markers(
 /// Canonical `Material` for a drawn surface that has **no source material
 /// record** — only a bound diffuse texture path.
 ///
-/// Three exterior draw populations are in this shape: LAND terrain
-/// (`cell_loader/terrain.rs`), distant terrain LOD (`terrain_lod.rs`), and
-/// object-LOD imposters (`object_lod.rs`). None of them comes from a NIF
-/// shader property or a BGSM/BGEM, so [`translate_material`] — which takes an
-/// `ImportedMaterial` — has nothing to translate. What they *do* have is the
-/// real texture they sample, which is exactly the input
+/// **Corrected (#4043):** originally documented as three exterior draw
+/// populations; measured at five caller files / six call sites —
+/// `cell_loader/terrain.rs`, `cell_loader/object_lod.rs`,
+/// `cell_loader/terrain_lod.rs`, `cell_loader/terrain_lod_btr.rs` (#3336),
+/// and `cell_loader/water.rs` twice (#3733). See
+/// [`every_exterior_spawner_inserts_a_boundary_material`] for the guard
+/// that owns the current set — it is the source of truth for the count,
+/// not this doc. None of them comes from a NIF shader property or a
+/// BGSM/BGEM, so [`translate_material`] — which takes an
+/// `ImportedMaterial` — has nothing to translate. What they *do* have is
+/// the real texture they sample, which is exactly the input
 /// [`Material::resolve_pbr`]'s keyword classifier consumes.
 ///
 /// #2444 (MAT-D3-02) — before this, all three spawned without any `Material`
@@ -753,11 +758,14 @@ pub(crate) fn attach_blend_and_facing_markers(
 /// mismatch at every ground-meets-architecture seam, and gave object-LOD
 /// imposters a shading pop on top of their geometric one.
 ///
-/// This is deliberately *not* a fourth ad hoc materialization site: it owns
-/// no scalar literals of its own. Every canonical value it produces comes
-/// from `Material::default()` or from `resolve_pbr`'s classifier, the same
-/// one `translate_material` calls, so terrain now classifies by the same
-/// rules as the architecture standing on it.
+/// This is deliberately *not* an ad hoc materialization site with scalar
+/// literals of its own choosing: it owns exactly **one** deviation from
+/// `Material::default()` — `env_map_scale = 0.0`, documented at its
+/// assignment below, the deviation this whole fix is about getting right.
+/// Every other canonical value it produces comes from `Material::default()`
+/// or from `resolve_pbr`'s classifier, the same one `translate_material`
+/// calls, so terrain now classifies by the same rules as the architecture
+/// standing on it.
 pub(crate) fn translate_texture_only_material(texture_path: Option<String>) -> Material {
     let mut material = Material {
         texture_path,

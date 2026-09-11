@@ -40,9 +40,12 @@ const SKIN_PALETTE_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_palette.
 use crate::shader_constants::SKIN_WORKGROUP_SIZE as WORKGROUP_SIZE;
 
 /// Push constant payload — matches `skin_vertices.comp::PushConstants`.
-/// 12 bytes (3 × u32). std430 doesn't require 16-B block alignment when
-/// no vec4 follows, so we ship the tight layout. Well inside the 128 B
-/// `maxPushConstantsSize` floor every Vulkan implementation guarantees.
+/// 32 bytes (2 × u64 at offsets 0/8, 4 × u32 at 16/20/24/28; no interior
+/// or trailing padding — #3231's u64-first field ordering, see
+/// `morph_delta_address`'s doc below). std430 doesn't require 16-B block
+/// alignment when no vec4 follows, so we ship the tight layout. Well
+/// inside the 128 B `maxPushConstantsSize` floor every Vulkan
+/// implementation guarantees. Pinned by `push_constants_size_is_32_bytes`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SkinPushConstants {
