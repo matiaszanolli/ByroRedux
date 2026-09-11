@@ -522,7 +522,17 @@ pub(super) fn apply_ai_package_behavior(
     npc: &NpcRecord,
     index: &EsmIndex,
 ) {
-    if npc.ai_packages.is_empty() || world.get::<Dead>(placement_root).is_some() {
+    // #4093 (D5-02) — resolve `Use AI Packages` before reading the
+    // candidate list, the same pattern `stamp_character_components`
+    // already applies to `Use Stats`/`Use Traits`. `npc.form_id` stays the
+    // shell's own identity throughout (this actor's placement, not the
+    // template's) — only the package *list* comes from the resolved record.
+    let packages_npc = byroredux_plugin::equip::resolve_inherited_ai_packages(
+        npc,
+        crate::npc_spawn::effective_actor_level(npc),
+        index,
+    );
+    if packages_npc.ai_packages.is_empty() || world.get::<Dead>(placement_root).is_some() {
         return;
     }
 
@@ -534,7 +544,8 @@ pub(super) fn apply_ai_package_behavior(
         world,
         placement_root,
         game_hour,
-        npc.ai_packages
+        packages_npc
+            .ai_packages
             .iter()
             .filter_map(|form_id| index.packages.get(form_id)),
     );
@@ -550,7 +561,7 @@ pub(super) fn apply_ai_package_behavior(
     world.insert(
         placement_root,
         AmbientPackageRuntime {
-            package_candidates: npc.ai_packages.clone(),
+            package_candidates: packages_npc.ai_packages.clone(),
             active_package_form_id,
             actor_form_id: npc.form_id,
             // Force a first-tick confirmation after the cell loader installs
@@ -1169,6 +1180,51 @@ mod tests {
         ambient_ai_package_system(&world, 0.0);
 
         assert_eq!(*world.get::<WanderState>(actor).unwrap(), state);
+    }
+
+    /// Regression for #4093 (D5-02). A templated `NPC_` shell — `Use AI
+    /// Packages` set, no `PKID` list of its own — must run the template's
+    /// package, not stand idle. Before this fix, `apply_ai_package_behavior`
+    /// read `npc.ai_packages` directly and early-returned on the shell's
+    /// empty list.
+    #[test]
+    fn templated_npc_runs_the_use_ai_packages_templates_behavior() {
+        use byroredux_plugin::equip::TEMPLATE_FLAG_USE_AI_PACKAGES;
+
+        let mut world = World::new();
+        register_runtime(&mut world, 10.0);
+        let actor = world.spawn();
+
+        const TEMPLATE: u32 = 0x0040_0001;
+        const SHELL: u32 = 0x0040_0002;
+        let wander = pack(0x100, PROCEDURE_WANDER, None);
+
+        let template_npc = NpcRecord {
+            form_id: TEMPLATE,
+            ai_packages: vec![wander.form_id],
+            ..Default::default()
+        };
+        let shell_npc = NpcRecord {
+            form_id: SHELL,
+            template_flags: TEMPLATE_FLAG_USE_AI_PACKAGES,
+            template_form_id: TEMPLATE,
+            ai_packages: Vec::new(), // the shell authors no PKID list of its own
+            ..Default::default()
+        };
+
+        let mut index = EsmIndex::default();
+        index.npcs.insert(TEMPLATE, template_npc);
+        index.packages.insert(wander.form_id, wander.clone());
+
+        apply_ai_package_behavior(&mut world, actor, &shell_npc, &index);
+        install_package_records(&mut world, vec![wander]);
+        ambient_ai_package_system(&world, 0.0);
+
+        assert!(
+            world.has::<WanderBehavior>(actor),
+            "a templated shell with Use AI Packages set must run the \
+             template's package instead of standing idle"
+        );
     }
 
     #[test]

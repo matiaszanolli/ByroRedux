@@ -359,6 +359,16 @@ pub const LVLI_MAX_DEPTH: u32 = 8;
 /// stored for the dispatcher but have no consumer yet.
 pub const TEMPLATE_FLAG_USE_TRAITS: u16 = 0x0001;
 pub const TEMPLATE_FLAG_USE_STATS: u16 = 0x0002;
+/// "Use Factions" — consumed by [`resolve_inherited_factions`] (#4093 /
+/// D5-02). Previously parsed and stored for the dispatcher with no
+/// consumer; `stamp_faction_ranks` read the shell's own (possibly empty or
+/// stale) `factions` list unconditionally.
+pub const TEMPLATE_FLAG_USE_FACTIONS: u16 = 0x0004;
+/// "Use AI Packages" — consumed by [`resolve_inherited_ai_packages`] (#4093
+/// / D5-02). Previously parsed and stored for the dispatcher with no
+/// consumer; `apply_ai_package_behavior` read the shell's own (possibly
+/// empty or stale) `ai_packages` list unconditionally.
+pub const TEMPLATE_FLAG_USE_AI_PACKAGES: u16 = 0x0020;
 pub const TEMPLATE_FLAG_USE_INVENTORY: u16 = 0x0100;
 
 /// Maximum TPLT recursion depth for [`resolve_inherited_record`] and its
@@ -437,13 +447,48 @@ pub fn resolve_inherited_traits<'a>(
     resolve_inherited_record(npc, actor_level, index, TEMPLATE_FLAG_USE_TRAITS, 0)
 }
 
+/// Resolve the NPC record that should supply faction membership for this
+/// actor, honouring the same `TPLT` inheritance as [`resolve_inherited_stats`]
+/// / [`resolve_inherited_traits`] but gated on
+/// [`TEMPLATE_FLAG_USE_FACTIONS`] ("Use Factions") instead (#4093 / D5-02).
+/// `stamp_faction_ranks` previously read the shell's own `factions` list
+/// unconditionally, so a templated shell with `Use Factions` set and its
+/// own (typically empty) `FACT` list never inherited the template's
+/// membership — `GetFactionRank` and faction-gated content saw the wrong
+/// (usually empty) answer for that actor.
+pub fn resolve_inherited_factions<'a>(
+    npc: &'a crate::esm::records::actor::NpcRecord,
+    actor_level: i16,
+    index: &'a EsmIndex,
+) -> &'a crate::esm::records::actor::NpcRecord {
+    resolve_inherited_record(npc, actor_level, index, TEMPLATE_FLAG_USE_FACTIONS, 0)
+}
+
+/// Resolve the NPC record that should supply AI package membership for
+/// this actor, honouring the same `TPLT` inheritance as the other
+/// `resolve_inherited_*` functions but gated on
+/// [`TEMPLATE_FLAG_USE_AI_PACKAGES`] ("Use AI Packages") instead (#4093 /
+/// D5-02). `apply_ai_package_behavior` previously read the shell's own
+/// `ai_packages` list unconditionally, so a templated shell with `Use AI
+/// Packages` set and its own (typically empty) `PKID` list never inherited
+/// the template's behavior — the actor stood idle instead of running its
+/// intended Sandbox/Wander/Travel/… package.
+pub fn resolve_inherited_ai_packages<'a>(
+    npc: &'a crate::esm::records::actor::NpcRecord,
+    actor_level: i16,
+    index: &'a EsmIndex,
+) -> &'a crate::esm::records::actor::NpcRecord {
+    resolve_inherited_record(npc, actor_level, index, TEMPLATE_FLAG_USE_AI_PACKAGES, 0)
+}
+
 /// Shared `TPLT` walker behind [`resolve_inherited_inventory`],
-/// [`resolve_inherited_stats`] and [`resolve_inherited_traits`]: follow the
-/// template chain only while `npc.template_flags & flag` is set, the same
-/// depth cap and `LVLN` highest-eligible-tier pick regardless of which
-/// category is being resolved (`flag` only gates *whether* to keep
-/// following the chain, not how — a chain can legitimately have `Use
-/// Stats` set at one level and not the next).
+/// [`resolve_inherited_stats`], [`resolve_inherited_traits`],
+/// [`resolve_inherited_factions`] and [`resolve_inherited_ai_packages`]:
+/// follow the template chain only while `npc.template_flags & flag` is
+/// set, the same depth cap and `LVLN` highest-eligible-tier pick
+/// regardless of which category is being resolved (`flag` only gates
+/// *whether* to keep following the chain, not how — a chain can
+/// legitimately have `Use Stats` set at one level and not the next).
 fn resolve_inherited_record<'a>(
     npc: &'a crate::esm::records::actor::NpcRecord,
     actor_level: i16,

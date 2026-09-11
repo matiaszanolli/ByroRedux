@@ -73,13 +73,25 @@ use byroredux_plugin::equip::Gender;
 /// `NPC_` `SNAM` faction list, so the M47.1 `GetFactionRank` condition can
 /// read it (#1665). No-op when the NPC declares no factions. Faction ids are
 /// carried verbatim from the record (NPC source space) — see `FactionRanks`.
-fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, npc: &NpcRecord) {
-    if npc.factions.is_empty() {
+/// #4093 (D5-02) — resolves the `Use Factions` TPLT chain before reading
+/// membership, the same pattern `stamp_character_components` already uses
+/// for `Use Stats`/`Use Traits`: a templated shell with `Use Factions` set
+/// and its own (typically empty) `FACT` list previously never inherited
+/// the template's membership.
+fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, npc: &NpcRecord, index: &EsmIndex) {
+    let shell_level = effective_actor_level(npc);
+    let factions_npc = byroredux_plugin::equip::resolve_inherited_factions(npc, shell_level, index);
+    if factions_npc.factions.is_empty() {
         return;
     }
     world.insert(
         placement_root,
-        FactionRanks::from_pairs(npc.factions.iter().map(|f| (f.faction_form_id, f.rank))),
+        FactionRanks::from_pairs(
+            factions_npc
+                .factions
+                .iter()
+                .map(|f| (f.faction_form_id, f.rank)),
+        ),
     );
 }
 
@@ -132,8 +144,19 @@ fn stamp_actor_values(
 /// leaves damage at zero or negative: absence means "no authored attack",
 /// which keeps the existing `UNARMED_DAMAGE` baseline the answer rather
 /// than materialising an actor that attacks for nothing.
-fn stamp_creature_attack(world: &mut World, placement_root: EntityId, npc: &NpcRecord) {
-    let Some(stats) = npc.creature_stats else {
+///
+/// #4091 (D1-01) — reads the `Use Stats`-resolved record, the same way its
+/// three sibling stamps (`stamp_actor_values` via `derive_npc_actor_values`,
+/// `stamp_character_components`) and `derive_creature_actor_values` already
+/// do. `CREA.DATA` (SPECIAL/Health/damage) rides the same `Use Stats`
+/// (`0x0002`) bit as the rest of the creature's stat block; reading the raw
+/// shell here let one entity get its SPECIAL/Health from the template and
+/// its attack damage from the shell — the fifth instance of this exact
+/// defect class (#2956, #3381, #3382, #3480 were the first four).
+fn stamp_creature_attack(world: &mut World, placement_root: EntityId, npc: &NpcRecord, index: &EsmIndex) {
+    let shell_level = effective_actor_level(npc);
+    let stats_npc = byroredux_plugin::equip::resolve_inherited_stats(npc, shell_level, index);
+    let Some(stats) = stats_npc.creature_stats else {
         return;
     };
     if stats.damage <= 0 {
@@ -803,8 +826,16 @@ impl NpcEquipState<'_> {
 /// match, or a future game whose humanoid-skeleton convention isn't
 /// yet in `humanoid_skeleton_path`) still leaves the equip data
 /// inspectable on the placement root.
+///
+/// `race_form_id` is the caller's responsibility, not `npc.race_form_id`
+/// directly (#4092 / D5-01): it must be the `Use Traits`-resolved race —
+/// `resolve_inherited_traits(npc, ..).race_form_id` — the same source
+/// `stamp_character_components`'s `Background` already uses, so the race
+/// default skin and every `resolve_armor_meshes` race match agree with the
+/// rest of the actor's resolved traits instead of the raw shell's.
 fn build_npc_equip_state<'a>(
     npc: &NpcRecord,
+    race_form_id: u32,
     index: &'a EsmIndex,
     game: GameKind,
     gender: Gender,
@@ -837,7 +868,7 @@ fn build_npc_equip_state<'a>(
     // doesn't cover a biped region has zero mesh source there — the
     // prebaked path's FaceGeom NIF is head-only (Bethesda FaceGen
     // convention), not "head and body in one mesh."
-    if let Some(race) = index.races.get(&npc.race_form_id) {
+    if let Some(race) = index.races.get(&race_form_id) {
         if let Some(skin_fid) = race.default_skin {
             let stack = ItemStack::new(skin_fid, 1);
             let inv_idx = inventory.push(stack);
@@ -854,7 +885,7 @@ fn build_npc_equip_state<'a>(
                     for model_path in byroredux_plugin::equip::resolve_armor_meshes(
                         item,
                         gender,
-                        npc.race_form_id,
+                        race_form_id,
                         index,
                         game,
                     ) {
@@ -970,7 +1001,7 @@ fn build_npc_equip_state<'a>(
         for model_path in byroredux_plugin::equip::resolve_armor_meshes(
             item,
             gender,
-            npc.race_form_id,
+            race_form_id,
             index,
             game,
         ) {

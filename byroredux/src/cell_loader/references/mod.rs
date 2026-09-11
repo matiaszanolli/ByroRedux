@@ -630,10 +630,25 @@ pub(super) fn load_references_budgeted(
                 if job.active_npc.is_none() {
                     job.accum.bounds_min = job.accum.bounds_min.min(ref_pos);
                     job.accum.bounds_max = job.accum.bounds_max.max(ref_pos);
+                    // #4092 (D5-01) — resolve `Use Traits` before reading
+                    // race, the same source `stamp_character_components`'s
+                    // `Background` already uses. A shell whose own `RNAM`
+                    // disagrees with its template's was handing
+                    // `NpcSpawnJob::runtime` the wrong `RaceRecord`, and a
+                    // race miss returns `Vec::new()` from
+                    // `resolve_armor_meshes` — the same "invisible or
+                    // wrong-race body" failure #1ee804c2/#3714 fixed for
+                    // FormID remapping.
+                    let resolved_race_form_id = byroredux_plugin::equip::resolve_inherited_traits(
+                        npc,
+                        byroredux_plugin::esm::records::effective_actor_level(npc),
+                        record_index,
+                    )
+                    .race_form_id;
                     job.active_npc = if game.has_runtime_facegen_recipe() {
                         Some(NpcSpawnJob::runtime(
                             npc,
-                            races.get(&npc.race_form_id),
+                            races.get(&resolved_race_form_id),
                             game,
                             ref_pos,
                             ref_rot,

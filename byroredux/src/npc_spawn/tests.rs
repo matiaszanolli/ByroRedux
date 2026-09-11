@@ -168,6 +168,99 @@ fn fnv_spawned_creature_gets_actor_vitals_from_its_own_data() {
     assert_eq!(values.current(strength), 9.0);
 }
 
+/// Regression for #4091 (D1-01). A templated `CREA` shell — `Use Stats`
+/// set, no `DATA` of its own — must get its attack damage from the
+/// resolved template, not from the (empty) shell. Before this fix,
+/// `stamp_creature_attack` read `npc.creature_stats` directly and inserted
+/// nothing for a shell like this; `derive_creature_actor_values` (via
+/// `stamp_actor_values`) already resolved correctly, so the bug was that
+/// one entity's SPECIAL/Health and attack damage disagreed on which
+/// record they came from.
+#[test]
+fn templated_creature_gets_attack_damage_from_the_use_stats_template() {
+    use byroredux_core::ecs::components::CreatureAttack;
+    use byroredux_plugin::equip::TEMPLATE_FLAG_USE_STATS;
+    use byroredux_plugin::esm::records::CreatureStats;
+
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+
+    let template = NpcRecord {
+        form_id: 0x0020_0001,
+        is_creature: true,
+        creature_stats: Some(CreatureStats {
+            creature_type: 2,
+            combat_skill: 65,
+            magic_skill: 50,
+            stealth_skill: 50,
+            health: 150,
+            damage: 125,
+            attributes: [9, 6, 6, 6, 5, 3, 8],
+        }),
+        ..NpcRecord::default()
+    };
+    let shell = NpcRecord {
+        form_id: 0x0020_0002,
+        is_creature: true,
+        template_flags: TEMPLATE_FLAG_USE_STATS,
+        template_form_id: template.form_id,
+        creature_stats: None, // the shell authors no DATA of its own
+        ..NpcRecord::default()
+    };
+    let mut index = EsmIndex::default();
+    index.creatures.insert(template.form_id, template);
+
+    let target = world.spawn();
+    stamp_creature_attack(&mut world, target, &shell, &index);
+
+    assert_eq!(
+        world.get::<CreatureAttack>(target).map(|c| c.damage),
+        Some(125.0),
+        "a templated creature shell with no own DATA must inherit the \
+         template's attack damage, exactly as it already inherits SPECIAL/Health"
+    );
+}
+
+/// Regression for #4093 (D5-02). A templated `NPC_` shell — `Use Factions`
+/// set, no `FACT` list of its own — must inherit the template's faction
+/// membership, not stay factionless. Before this fix, `stamp_faction_ranks`
+/// read `npc.factions` directly and no-op'd on an empty shell list.
+#[test]
+fn templated_npc_gets_faction_ranks_from_the_use_factions_template() {
+    use byroredux_core::ecs::components::FactionRanks;
+    use byroredux_plugin::equip::TEMPLATE_FLAG_USE_FACTIONS;
+    use byroredux_plugin::esm::records::FactionMembership;
+
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+
+    let template = NpcRecord {
+        form_id: 0x0030_0001,
+        factions: vec![FactionMembership {
+            faction_form_id: 0x0012_3456,
+            rank: 3,
+        }],
+        ..NpcRecord::default()
+    };
+    let shell = NpcRecord {
+        form_id: 0x0030_0002,
+        template_flags: TEMPLATE_FLAG_USE_FACTIONS,
+        template_form_id: template.form_id,
+        factions: Vec::new(), // the shell authors no FACT list of its own
+        ..NpcRecord::default()
+    };
+    let mut index = EsmIndex::default();
+    index.npcs.insert(template.form_id, template);
+
+    let target = world.spawn();
+    stamp_faction_ranks(&mut world, target, &shell, &index);
+
+    let ranks = world
+        .get::<FactionRanks>(target)
+        .expect("a templated shell with Use Factions set must inherit the template's membership");
+    assert_eq!(ranks.rank(0x0012_3456), Some(3));
+}
+
 #[test]
 fn idle_desync_is_deterministic_per_form_id() {
     // Same FormId → identical seed every call (save/reload + cell
@@ -575,7 +668,7 @@ fn prebaked_equip_state_selects_one_highest_damage_weapon() {
     index.items.insert(BATTLEAXE, weapon_item(BATTLEAXE, 18));
     index.items.insert(GREATSWORD, weapon_item(GREATSWORD, 17));
 
-    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
     let equipped = state.equipped_weapon.expect("one weapon must be equipped");
     assert_eq!(equipped.base_form_id, BATTLEAXE);
     assert_eq!(equipped.damage, 18.0);
@@ -620,7 +713,7 @@ fn prebaked_equip_state_inherits_templated_inventory() {
     index.npcs.insert(BASE, base);
     index.items.insert(GEAR, misc_item(GEAR));
 
-    let state = build_npc_equip_state(&templated, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(&templated, templated.race_form_id, &index, GameKind::Skyrim, Gender::Male);
 
     assert_eq!(
         state.inventory.len(),
@@ -662,7 +755,7 @@ fn prebaked_equip_state_uses_own_inventory_without_template() {
     };
     index.items.insert(GEAR, misc_item(GEAR));
 
-    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
     assert_eq!(
         state
             .inventory
@@ -854,7 +947,7 @@ fn unified_equip_state_covers_fallout_runtime_body_and_preserves_count() {
         legacy_armor_item(ARMOR, UPPER_BODY, r"armor\vaultsuit.nif"),
     );
 
-    let state = build_npc_equip_state(&npc, &index, GameKind::Fallout3NV, Gender::Female);
+    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Fallout3NV, Gender::Female);
 
     assert!(state.main_body_covered(GameKind::Fallout3NV));
     assert_eq!(state.armor_to_spawn.len(), 1);
@@ -936,7 +1029,7 @@ fn prebaked_equip_state_falls_back_to_race_skin_for_uncovered_slots() {
         .armor_addons
         .insert(FEET_ARMA, arma(FEET_ARMA, r"armor\boots\boots.nif"));
 
-    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
 
     assert_eq!(
         state.armor_to_spawn.len(),
@@ -971,6 +1064,74 @@ fn prebaked_equip_state_falls_back_to_race_skin_for_uncovered_slots() {
             .hidden_biped_mask,
         0,
         "gear outside the skin's authored slots must not hide skin partitions"
+    );
+}
+
+/// Regression for #4092 (D5-01). `build_npc_equip_state` must use its
+/// `race_form_id` PARAMETER for the default-skin lookup and every
+/// `resolve_armor_meshes` race match — not `npc.race_form_id` — because
+/// the caller is now responsible for resolving `Use Traits` before calling
+/// in (`stamp_character_components`'s `Background` already does the same
+/// resolution independently). Construct an NPC whose own `race_form_id`
+/// points at a race with NO default skin, and pass a *different*,
+/// resolved `race_form_id` that does have one: the skin must come from
+/// the resolved race, proving the function honours the parameter over the
+/// shell's own field.
+#[test]
+fn prebaked_equip_state_uses_the_passed_race_form_id_not_the_shells_own() {
+    const SHELL_RACE: u32 = 0x0100_0030;
+    const RESOLVED_RACE: u32 = 0x0100_0031;
+    const SKIN: u32 = 0x0100_0032;
+    const SKIN_ARMA: u32 = 0x0100_0033;
+    const TORSO_HANDS: u32 = 0x0004 | 0x0010;
+
+    let shell_race = byroredux_plugin::esm::records::RaceRecord {
+        form_id: SHELL_RACE,
+        base_height: (1.0, 1.0),
+        base_weight: (1.0, 1.0),
+        default_skin: None, // the shell's own race has NO skin
+        ..Default::default()
+    };
+    let resolved_race = byroredux_plugin::esm::records::RaceRecord {
+        form_id: RESOLVED_RACE,
+        base_height: (1.0, 1.0),
+        base_weight: (1.0, 1.0),
+        default_skin: Some(SKIN),
+        ..Default::default()
+    };
+
+    let mut npc = test_npc(0x0100_0034, "WrongRaceOnShellNpc");
+    npc.race_form_id = SHELL_RACE; // deliberately the WRONG race
+
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
+    index.races.insert(SHELL_RACE, shell_race);
+    index.races.insert(RESOLVED_RACE, resolved_race);
+    index
+        .items
+        .insert(SKIN, skyrim_armor_item(SKIN, TORSO_HANDS, vec![SKIN_ARMA]));
+    index
+        .armor_addons
+        .insert(SKIN_ARMA, arma(SKIN_ARMA, r"actors\character\resolved_skin.nif"));
+
+    // Pass the RESOLVED race, not `npc.race_form_id` — exactly what
+    // every production call site now does via `resolve_inherited_traits`.
+    let state = build_npc_equip_state(&npc, RESOLVED_RACE, &index, GameKind::Skyrim, Gender::Male);
+
+    assert!(
+        state
+            .armor_to_spawn
+            .iter()
+            .any(|a| a.model_path == r"actors\character\resolved_skin.nif"),
+        "the resolved race's skin must spawn even though the shell's own \
+         race_form_id points at a different, skin-less race — got {:?}",
+        state
+            .armor_to_spawn
+            .iter()
+            .map(|a| a.model_path)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1036,7 +1197,7 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         .armor_addons
         .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
 
-    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
     assert_eq!(state.armor_to_spawn.len(), 2);
     let skin = state
         .armor_to_spawn
@@ -1103,7 +1264,7 @@ fn prebaked_equip_state_keeps_zero_mask_race_skin() {
         arma(SKIN_ARMA, r"actors\draugr\character assets\draugr.nif"),
     );
 
-    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
     assert_eq!(
         state.armor_to_spawn.len(),
         1,
@@ -1178,7 +1339,7 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
         .armor_addons
         .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
 
-    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
     assert!(
         !state
             .armor_to_spawn
@@ -1252,7 +1413,7 @@ fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
         .armor_addons
         .insert(HELM_ARMA, arma(HELM_ARMA, r"armor\iron\helmet.nif"));
 
-    build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male).facegen_hidden_mask
+    build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male).facegen_hidden_mask
 }
 
 /// The race skin's OWN bits must never reach the head's mask. `SkinNaked`
@@ -1368,7 +1529,7 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
         .armor_addons
         .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
 
-    let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
 
     assert_eq!(
         state.armor_to_spawn.len(),
@@ -1878,7 +2039,7 @@ fn bannered_mare_npcs_resolve_a_full_equip_state_on_real_skyrim_data() {
             .get(&form_id)
             .unwrap_or_else(|| panic!("{name} ({form_id:08X}) must be present in Skyrim.esm"));
 
-        let state = build_npc_equip_state(npc, &index, GameKind::Skyrim, gender);
+        let state = build_npc_equip_state(npc, npc.race_form_id, &index, GameKind::Skyrim, gender);
 
         assert!(
             !state.inventory.is_empty(),
@@ -1938,7 +2099,7 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
             .npcs
             .get(&form_id)
             .unwrap_or_else(|| panic!("{name} ({form_id:08X}) must be present in Skyrim.esm"));
-        let state = build_npc_equip_state(npc, &index, GameKind::Skyrim, Gender::Male);
+        let state = build_npc_equip_state(npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
         assert!(
             !state.armor_to_spawn.is_empty(),
             "{name} ({form_id:08X}) resolved no mesh at all — its race skin \
@@ -1964,7 +2125,7 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
             continue;
         };
         zero_mask_race_npcs += 1;
-        let state = build_npc_equip_state(npc, &index, GameKind::Skyrim, Gender::Male);
+        let state = build_npc_equip_state(npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
         if state
             .armor_to_spawn
             .iter()
@@ -2017,7 +2178,7 @@ fn helmeted_npcs_get_a_facegen_hide_mask_on_real_skyrim_data() {
     let mut open_helm = 0usize;
     for npc in index.npcs.values() {
         let mask =
-            build_npc_equip_state(npc, &index, GameKind::Skyrim, Gender::Male).facegen_hidden_mask;
+            build_npc_equip_state(npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male).facegen_hidden_mask;
         if mask & HEAD_FAMILY == 0 {
             continue;
         }

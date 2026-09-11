@@ -432,7 +432,12 @@ fn prepare_runtime_state(
     }
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
-    let equip = build_npc_equip_state(npc, index, game, gender);
+    // #4092 (D5-01) — resolve `Use Traits` before reading race, the same
+    // source `stamp_character_components`'s `Background` already uses.
+    let race_form_id =
+        byroredux_plugin::equip::resolve_inherited_traits(npc, effective_actor_level(npc), index)
+            .race_form_id;
+    let equip = build_npc_equip_state(npc, race_form_id, index, game, gender);
     // FO3/FNV RACE DATA bit 2 is the authored Child flag. Oblivion reuses
     // that bit for BeastRace, so the game gate is part of the translation.
     let is_child = matches!(game, GameKind::Fallout3NV)
@@ -614,7 +619,13 @@ fn prepare_creature_state(
     let idle_kf_path = (!dir.is_empty()).then(|| creature_idle_kf_path(&dir));
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
-    let equip = build_npc_equip_state(npc, index, game, gender);
+    // #4092 (D5-01) — same resolution as the humanoid path; a no-op for
+    // creatures in practice (`CREA` references no `RACE`) but keeps this
+    // call site correct without an is_creature special case.
+    let race_form_id =
+        byroredux_plugin::equip::resolve_inherited_traits(npc, effective_actor_level(npc), index)
+            .race_form_id;
+    let equip = build_npc_equip_state(npc, race_form_id, index, game, gender);
     let armor = equip
         .armor_to_spawn
         .into_iter()
@@ -1166,7 +1177,11 @@ fn prepare_prebaked_state(
 ) -> PrebakedNpcState {
     let placement_root = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
-    let equip = build_npc_equip_state(npc, index, game, gender);
+    // #4092 (D5-01) — same resolution as the runtime-FaceGen path.
+    let race_form_id =
+        byroredux_plugin::equip::resolve_inherited_traits(npc, effective_actor_level(npc), index)
+            .race_form_id;
+    let equip = build_npc_equip_state(npc, race_form_id, index, game, gender);
     let facegen_hidden_mask = equip.facegen_hidden_mask;
     let armor = equip
         .armor_to_spawn
@@ -1421,9 +1436,9 @@ fn spawn_placement_root(
         };
         world.insert(placement_root, Name(symbol));
     }
-    stamp_faction_ranks(world, placement_root, npc);
+    stamp_faction_ranks(world, placement_root, npc, index);
     stamp_actor_values(world, placement_root, npc, index);
-    stamp_creature_attack(world, placement_root, npc);
+    stamp_creature_attack(world, placement_root, npc, index);
     stamp_character_components(world, placement_root, npc, index);
     placement_root
 }
