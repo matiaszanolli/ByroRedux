@@ -547,9 +547,11 @@ Volumetrics uses its own private `set = 0` layout, split across two shaders
 that do NOT share one binding scheme — neither binds any Set-1 resource
 above.
 
-`volumetrics_inject.comp` (12 bindings, widened by #2228/#2231's fog-volume
-work — verify against the source before relying on this table for a new
-binding):
+`volumetrics_inject.comp` (24 bindings — widened twice past the original 12:
+#2228/#2231's fog-volume work, then the combustion-transport bindings below.
+Regenerated 2026-09-11 from the live `layout(...)` declarations after #3829
+found the table two generations stale; verify against the source before
+relying on this table for a new binding):
 
 | Binding | Type | Resource |
 |---|---|---|
@@ -565,6 +567,24 @@ binding):
 | 9 | `STORAGE_BUFFER` | Fog-volume cluster index list |
 | 10 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | Base density noise |
 | 11 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | Detail density noise |
+| 12 | `STORAGE_IMAGE` (`r32f`, write-only) | `emissionHistory` — transported emission field, current slot (#2809) |
+| 13 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | `previousEmissionHistory` — prior frame-in-flight slot, for semi-Lagrangian backtrace |
+| 14 | `STORAGE_IMAGE` (`rgba16f`, write-only) | `combustionState` — (fuel mass fraction, temperature K, extinction σ_t, visible-radiance calibration), current slot |
+| 15 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | `previousCombustionState` — prior frame-in-flight slot |
+| 16 | `STORAGE_IMAGE` (`rgba16f`, write-only) | `combustionDynamics` — (world-space velocity xyz, specific overpressure), current slot |
+| 17 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | `previousCombustionDynamics` — prior frame-in-flight slot |
+| 18 | `STORAGE_BUFFER` | `CombustionLightMomentBuffer` — coarse radiant moments (fixed-point luma/centroid/RGB/volume) of the transported field, the canonical bridge from participating-medium emission to surface lighting |
+| 19 | `STORAGE_BUFFER` (read-only) | `BoundaryInstanceBuffer` — `GpuBoundaryInstance[]`, TLAS-backing geometry the boundary-geometry read path needs (#3829) |
+| 20 | `STORAGE_BUFFER` (read-only) | `BoundaryVertexBuffer` — flat `float[]` vertex data for the above |
+| 21 | `STORAGE_BUFFER` (read-only) | `BoundaryIndexBuffer` — flat `uint[]` index data for the above |
+| 22 | `STORAGE_IMAGE` (`rgba16f`, write-only) | `combustionOptical` — (spectral scattering σ_s.rgb, reserved), current slot |
+| 23 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | `previousCombustionOptical` — prior frame-in-flight slot |
+
+Bindings are not laid out in strictly ascending declaration order in the
+source (12–18 declare in order, then 19–21, then 22–23 return to the
+combustion-optical group started at 14/16) — this table is ordered by
+binding number, not by source line, so cross-reference by number rather
+than by position when checking against the shader.
 
 `volumetrics_integrate.comp` (3 bindings — a separate, much smaller
 descriptor set on the same `set = 0` index; do not conflate with the table

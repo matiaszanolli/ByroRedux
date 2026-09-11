@@ -281,12 +281,6 @@ pub(super) fn decide_use_update(
     (layout_matches, true)
 }
 
-/// Compute the BLAS memory budget as `VRAM / 3` with a 256 MB floor.
-///
-/// The budget must bound BLAS memory so smaller-VRAM GPUs evict before
-/// hitting an out-of-memory condition, while leaving the bulk of the
-/// device-local heap available for textures, vertex/index buffers, and
-/// the framebuffer. See #387.
 /// Build the shared `draw_idx → ssbo_idx` mapping that
 /// [`AccelerationManager::build_tlas`] and the SSBO builder in
 /// `draw_frame` both honour. `keep(draw_idx)` returns true when the
@@ -487,8 +481,10 @@ pub fn shrink_map_scratch_if_oversized<K, V, S>(
 /// configured budget, so the batched-build Phase 1 should pause and
 /// evict previous-cell BLAS before creating more result buffers. The
 /// 90% threshold leaves headroom for the batch's final few allocations
-/// and the scratch buffer; the budget itself is VRAM/3 so a breach
-/// represents genuine residency pressure, not just a hot spike.
+/// and the scratch buffer; the budget itself is one third of the
+/// BLAS-capable DEVICE_LOCAL heap after reservations (#3043,
+/// [`blas_budget_for_heap`]) so a breach represents genuine residency
+/// pressure, not just a hot spike.
 ///
 /// Pulled out as a pure function so the unit test can pin the
 /// threshold math without needing a live Vulkan device.

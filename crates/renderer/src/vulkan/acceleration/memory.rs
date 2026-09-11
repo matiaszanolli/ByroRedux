@@ -152,13 +152,13 @@ impl AccelerationManager {
     ///
     /// Hysteresis matches the BLAS-scratch policy ([`scratch_should_shrink`])
     /// in shape: `2×` ratio + slack (calibrated for TLAS scale via
-    /// [`tlas_instance_should_shrink`]). The slot is destroyed
-    /// outright; the next [`Self::build_tlas`] call sees
-    /// `tlas[slot_index].is_none()` and recreates the slot at the
-    /// fresh-build padded size (which the existing `*2 .max(8192)`
-    /// padding still honours).
+    /// [`tlas_instance_should_shrink`]). Since #2929, this only RECORDS the
+    /// shrink intent (`tlas_shrink_pending[slot_index] = true`);
+    /// `ensure_tlas_state`'s allocate-then-swap path performs the actual
+    /// destroy one build later, after the replacement has already
+    /// succeeded — see the `#2929 / CON-D1-01` block below for why.
     ///
-    /// Returns `true` if the slot was destroyed.
+    /// Returns `true` if a shrink was recorded.
     ///
     /// # Safety
     ///
@@ -319,9 +319,13 @@ impl AccelerationManager {
             None => return false,
         };
 
-        // Slot was destroyed (e.g. by `shrink_tlas_to_fit` on the
-        // previous tick) — its scratch is now backing nothing live.
-        // Drop entirely; the next build allocates fresh.
+        // Slot is None — a fresh slot at startup, or one never (re)built
+        // after a failed `ensure_tlas_state`. Since #2929, `shrink_tlas_to_fit`
+        // no longer produces this case: it only records the shrink intent
+        // and the slot stays `Some` until `ensure_tlas_state`'s
+        // allocate-then-swap path retires it. Its scratch is now backing
+        // nothing live either way; drop entirely, the next build allocates
+        // fresh.
         if self.tlas[slot_index].is_none() {
             if let Some(mut old) = self.scratch_buffers[slot_index].take() {
                 old.destroy(device, allocator);
