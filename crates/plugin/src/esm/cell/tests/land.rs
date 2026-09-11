@@ -248,3 +248,86 @@ fn multiple_atxt_vtxt_pairs_append_as_distinct_layers() {
     assert_eq!(layers[0].ltex_form_id, 0x1111);
     assert_eq!(layers[1].ltex_form_id, 0x2222);
 }
+
+/// Regression for #4078. An ATXT immediately followed by ANOTHER ATXT
+/// (no VTXT in between — measured 14 times on Oblivion.esm) must not
+/// vanish: the first header is flushed with `alpha: None`, the documented
+/// "header authored, no alpha rows" shape, before the second header
+/// replaces `pending_atxt`.
+#[test]
+fn atxt_immediately_followed_by_another_atxt_flushes_the_first_with_no_alpha() {
+    let mut atxt1 = Vec::new();
+    atxt1.extend_from_slice(&0x1111u32.to_le_bytes());
+    atxt1.push(0); // SW
+    atxt1.push(0);
+    atxt1.extend_from_slice(&0u16.to_le_bytes()); // layer 0
+
+    let mut atxt2 = Vec::new();
+    atxt2.extend_from_slice(&0x2222u32.to_le_bytes());
+    atxt2.push(0); // same quadrant, SW
+    atxt2.push(0);
+    atxt2.extend_from_slice(&1u16.to_le_bytes()); // layer 1
+    let mut vtxt2 = Vec::new();
+    vtxt2.extend_from_slice(&0u16.to_le_bytes());
+    vtxt2.extend_from_slice(&0u16.to_le_bytes());
+    vtxt2.extend_from_slice(&0.5f32.to_le_bytes());
+
+    let land = parse_synthetic_land(&[(b"ATXT", atxt1), (b"ATXT", atxt2), (b"VTXT", vtxt2)]);
+    let layers = &land.quadrants[0].layers;
+    assert_eq!(
+        layers.len(),
+        2,
+        "the orphaned first ATXT must still produce a layer, not vanish"
+    );
+    assert_eq!(layers[0].ltex_form_id, 0x1111);
+    assert_eq!(layers[0].layer, 0);
+    assert!(
+        layers[0].alpha.is_none(),
+        "a flushed ATXT with no VTXT of its own must carry alpha: None, \
+         not a fabricated all-zero Vec"
+    );
+    assert_eq!(layers[1].ltex_form_id, 0x2222);
+    assert!(layers[1].alpha.is_some(), "the second ATXT still got its own VTXT");
+}
+
+/// Regression for #4078, the end-of-record half: the LAST sub-record in a
+/// LAND body is an ATXT with no VTXT at all (not even a following ATXT to
+/// trigger the mid-loop flush) — must still surface as a layer.
+#[test]
+fn atxt_as_the_final_sub_record_still_flushes() {
+    let mut atxt = Vec::new();
+    atxt.extend_from_slice(&0x3333u32.to_le_bytes());
+    atxt.push(3); // NE
+    atxt.push(0);
+    atxt.extend_from_slice(&0u16.to_le_bytes());
+
+    let land = parse_synthetic_land(&[(b"ATXT", atxt)]);
+    let layers = &land.quadrants[3].layers;
+    assert_eq!(layers.len(), 1, "a trailing ATXT with no VTXT must still surface");
+    assert_eq!(layers[0].ltex_form_id, 0x3333);
+    assert!(layers[0].alpha.is_none());
+}
+
+/// Secondary half of #4078: an ATXT with an out-of-range quadrant must not
+/// leave a stale `pending_atxt` for a LATER, unrelated VTXT to wrongly
+/// attach to.
+#[test]
+fn out_of_range_quadrant_atxt_does_not_leak_into_a_later_vtxt() {
+    let mut atxt_bad = Vec::new();
+    atxt_bad.extend_from_slice(&0x4444u32.to_le_bytes());
+    atxt_bad.push(9); // out of range (valid quadrants are 0..=3)
+    atxt_bad.push(0);
+    atxt_bad.extend_from_slice(&0u16.to_le_bytes());
+
+    let mut vtxt = Vec::new();
+    vtxt.extend_from_slice(&0u16.to_le_bytes());
+    vtxt.extend_from_slice(&0u16.to_le_bytes());
+    vtxt.extend_from_slice(&1.0f32.to_le_bytes());
+
+    let land = parse_synthetic_land(&[(b"ATXT", atxt_bad), (b"VTXT", vtxt)]);
+    assert!(
+        land.quadrants.iter().all(|q| q.layers.is_empty()),
+        "an out-of-range-quadrant ATXT must not leave a stale pending header \
+         for the following VTXT to attach to"
+    );
+}

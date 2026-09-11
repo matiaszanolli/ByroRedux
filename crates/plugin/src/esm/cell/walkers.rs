@@ -1219,6 +1219,22 @@ pub(crate) fn parse_land_record(
             b"ATXT" if sub.data.len() >= 8 => {
                 // Additional texture header: formid(4) + quadrant(1) + unused(1) + layer(u16).
                 // #3314 — same LTEX remap as BTXT above.
+                //
+                // #4078 — an ATXT not immediately followed by its VTXT (14
+                // measured on Oblivion.esm, 0 on FO3/FNV/Skyrim SE/FO4) must
+                // not vanish silently: flush whatever is still pending —
+                // with alpha: None, the documented "header authored, no
+                // alpha rows" shape TerrainTextureLayer already carries —
+                // before this new header replaces it. An out-of-range
+                // quadrant flushes and clears rather than leaving a stale
+                // pending header for the next VTXT to wrongly attach to.
+                if let Some((pending_quadrant, pending_ltex, pending_layer)) = pending_atxt.take() {
+                    quadrants[pending_quadrant].layers.push(TerrainTextureLayer {
+                        ltex_form_id: pending_ltex,
+                        layer: pending_layer,
+                        alpha: None,
+                    });
+                }
                 let mut r = SubReader::new(&sub.data);
                 let ltex_id = reader.remap_form_id(r.u32_or_default());
                 let quadrant = r.u8_or_default() as usize;
@@ -1251,6 +1267,17 @@ pub(crate) fn parse_land_record(
             }
             _ => {}
         }
+    }
+
+    // #4078 — the record's LAST ATXT, if it has no following VTXT at all
+    // (not even a subsequent ATXT to trigger the flush above), is still
+    // pending here.
+    if let Some((quadrant, ltex_id, layer)) = pending_atxt.take() {
+        quadrants[quadrant].layers.push(TerrainTextureLayer {
+            ltex_form_id: ltex_id,
+            layer,
+            alpha: None,
+        });
     }
 
     // Sort additional layers by layer index within each quadrant.

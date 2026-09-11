@@ -167,8 +167,15 @@ fn extract_dial_with_info_inner(
             };
 
             if sub_group.group_type == GROUP_TYPE_TOPIC_CHILDREN {
-                // Sub-group label is the parent DIAL's form_id u32.
-                let parent_form_id = u32::from_le_bytes(sub_group.label);
+                // Sub-group label is the parent DIAL's form_id u32, in
+                // plugin-local space — remap it before comparing against
+                // `last_dial_form_id`, which `read_record_header` has
+                // already remapped to global space (#4079). Comparing the
+                // two unremapped guaranteed a mismatch on every non-identity
+                // load order, turning the #631 drift diagnostic into pure
+                // noise and defeating its purpose.
+                let parent_form_id =
+                    super::common::remap_fid(u32::from_le_bytes(sub_group.label), &remap);
                 // Tolerate sub-group / last-DIAL label drift —
                 // shipped content has been observed with off-by-one
                 // dispositions across patches. We accept the most-
@@ -397,6 +404,75 @@ mod tests {
         bytes.extend_from_slice(&[0; 8]);
         bytes.extend_from_slice(&payload);
         bytes
+    }
+
+    /// Like [`tes5_group_typed`], but with an explicit `label` instead of
+    /// the literal `b"TEST"` — needed to build a Topic Children (group_type
+    /// 7) GRUP whose label is a DIAL form ID rather than a record-type tag.
+    fn tes5_group_labeled(payload: Vec<u8>, group_type: u32, label: u32) -> Vec<u8> {
+        let total_size = 24u32 + u32::try_from(payload.len()).expect("synthetic group fits u32");
+        let mut bytes = Vec::with_capacity(total_size as usize);
+        bytes.extend_from_slice(b"GRUP");
+        bytes.extend_from_slice(&total_size.to_le_bytes());
+        bytes.extend_from_slice(&label.to_le_bytes());
+        bytes.extend_from_slice(&group_type.to_le_bytes());
+        bytes.extend_from_slice(&[0; 8]);
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    /// Regression for #4079. The Topic Children (group_type 7) sub-group
+    /// label is the parent DIAL's form ID in PLUGIN-LOCAL space; it must be
+    /// remapped before use, the same way `read_record_header` already
+    /// remaps `last_dial_form_id`. Exercised via the `last_dial_form_id ==
+    /// None` path (`walk_info_records`' `dialogues.get_mut` silently drops
+    /// an INFO whose target key doesn't exist — no DIAL immediately
+    /// precedes this Topic Children group in the byte stream, only a
+    /// pre-existing entry in the map, simulating a DIAL parsed earlier by
+    /// another top-level pass): pre-fix, the raw local label never matches
+    /// the global-keyed map and the INFO is silently dropped; post-fix, the
+    /// remapped label matches and the INFO attaches.
+    #[test]
+    fn topic_children_label_is_remapped_before_dial_lookup() {
+        use crate::esm::reader::FormIdRemap;
+
+        // Plugin slot 2, one master at slot 0 — mirrors the shipped-title
+        // shape other remap regression tests in this crate use.
+        let remap = FormIdRemap::regular(2, vec![0]);
+        // Local id 0x001234 in the override plugin's own slot (mod_index 1)
+        // remaps to global 0x02001234.
+        let dial_local: u32 = (1u32 << 24) | 0x00_1234;
+        let dial_global: u32 = (2u32 << 24) | 0x00_1234;
+        let info_local: u32 = (1u32 << 24) | 0x00_5678;
+
+        let info_bytes = tes5_record(b"INFO", info_local);
+        let topic_children = tes5_group_labeled(info_bytes, 7, dial_local);
+
+        let mut reader = EsmReader::new(&topic_children);
+        reader.set_form_id_remap(remap);
+
+        let mut dialogues = HashMap::new();
+        dialogues.insert(
+            dial_global,
+            DialRecord {
+                form_id: dial_global,
+                ..Default::default()
+            },
+        );
+
+        extract_dial_with_info(&mut reader, topic_children.len(), &mut dialogues)
+            .expect("well-formed Topic Children group must parse");
+
+        let dial = dialogues
+            .get(&dial_global)
+            .expect("the pre-existing DIAL entry must still be present");
+        assert_eq!(
+            dial.infos.len(),
+            1,
+            "the INFO must attach to the DIAL once the group label is remapped \
+             to the same global space `dialogues` is keyed in — pre-#4079 this \
+             was silently dropped instead"
+        );
     }
 
     #[test]
