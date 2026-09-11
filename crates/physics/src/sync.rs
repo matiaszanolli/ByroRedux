@@ -204,10 +204,33 @@ pub fn physics_sync_system(world: &World, dt: f32) {
 /// `RapierHandles` and `PhysicsWorld`. Call it only while the scheduler is not
 /// running or from an exclusive system/command. Scheduled per-frame work must
 /// use [`physics_sync_system`] with its declared access set (#3267).
+///
+/// # Freshness
+///
+/// Phase 1 reads `GlobalTransform` as world truth — it is where the body's
+/// spawn isometry and the collider's baked scale both come from — and
+/// registration is one-shot, so a stale read is *permanent* for that entity.
+/// [`physics_sync_system`] gets freshness for free from stage order
+/// (`PostUpdate` precedes `Physics`); this entry point runs outside the
+/// scheduler and had no such guarantee. Callers were spawning
+/// collision-carrying NIF nodes and registering them in the same breath, with
+/// every `GlobalTransform` still at the producer's `IDENTITY` seed — colliders
+/// stranded at the world origin at scale 1.0 (#3960).
+///
+/// So it propagates itself rather than asking callers to remember: the same
+/// exclusive access that makes the Rapier writes legal makes this legal too.
+/// Propagation is a pure function of `Transform` + `Parent`, so running it here
+/// is idempotent with the scheduled pass.
 pub fn register_newcomers_and_refresh_queries(world: &World) -> usize {
     if world.try_resource::<PhysicsWorld>().is_none() {
         return 0;
     }
+
+    // Before any query handle is taken — propagation acquires Transform /
+    // GlobalTransform / Parent / Children itself, and nesting that inside
+    // `collect_newcomers`' acquisitions would present the lock-order
+    // detector with a fresh edge (#313).
+    byroredux_core::ecs::systems::make_transform_propagation_system()(world, 0.0);
 
     let newcomers = collect_newcomers(world);
     let registered = newcomers.len();
@@ -1394,6 +1417,84 @@ mod phase_sync_tests {
         let mut world = world_without_handles_storage();
         world.register::<RapierHandles>();
         world
+    }
+
+    /// Regression for #3960. `register_newcomers_and_refresh_queries` is a
+    /// second entry into Phase 1 that runs outside the scheduler, so it never
+    /// inherited `physics_sync_system`'s "PostUpdate ran first" guarantee.
+    /// The live callers (`scene.rs`'s cold-start spawn probe, the
+    /// cell-transition arrival grounding, `combat.approach`) all spawn
+    /// collision-carrying entities and register them in the same breath.
+    ///
+    /// Registration is one-shot — `collect_newcomers` skips anything already
+    /// holding `RapierHandles`, and the collider *shape* (where scale lives)
+    /// is never rebuilt for any motion type — so a stale `GlobalTransform`
+    /// read here is permanent, not a one-frame blip.
+    ///
+    /// The child below carries the producer's `GlobalTransform::IDENTITY`
+    /// seed at call time. Pre-fix the collider registered a 1×1×1 box at the
+    /// world origin; it must instead land at the composed pose, scale
+    /// included.
+    #[test]
+    fn bootstrap_registration_propagates_before_reading_global_transforms() {
+        use byroredux_core::ecs::components::Children;
+
+        let mut world = physics_world();
+        world.insert_resource(PhysicsWorld::new());
+
+        let root = world.spawn();
+        world.insert(
+            root,
+            Transform::new(Vec3::new(100.0, 0.0, 200.0), Quat::IDENTITY, 2.0),
+        );
+        world.insert(
+            root,
+            GlobalTransform::new(Vec3::new(100.0, 0.0, 200.0), Quat::IDENTITY, 2.0),
+        );
+
+        let child = world.spawn();
+        world.insert(child, Transform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        // Exactly what `nif_loader`/`spawn` hand the ECS before any
+        // propagation pass has run.
+        world.insert(child, GlobalTransform::IDENTITY);
+        world.insert(
+            child,
+            CollisionShape::Cuboid {
+                half_extents: Vec3::splat(1.0),
+            },
+        );
+        world.insert(child, RigidBodyData::STATIC);
+        world.insert(child, Parent(root));
+        world.insert(root, Children(vec![child]));
+
+        assert_eq!(register_newcomers_and_refresh_queries(&world), 1);
+
+        let physics = world.resource::<PhysicsWorld>();
+        // Search around the *composed* position. A collider left at the
+        // origin is 223 units away and simply will not be here.
+        let nearby = physics.colliders_near_xz(100.0, 0.0, 200.0, 8.0);
+        assert_eq!(
+            nearby.len(),
+            1,
+            "collider must register at the composed world pose, not the origin"
+        );
+        let aabb = &nearby[0];
+        // Position: composed translation, not `Vec3::ZERO`.
+        assert!(
+            (aabb.aabb_min[0] - 98.0).abs() < 1e-3 && (aabb.aabb_max[0] - 102.0).abs() < 1e-3,
+            "x extent must straddle the composed x=100: {aabb:?}"
+        );
+        assert!(
+            (aabb.aabb_min[2] - 198.0).abs() < 1e-3 && (aabb.aabb_max[2] - 202.0).abs() < 1e-3,
+            "z extent must straddle the composed z=200: {aabb:?}"
+        );
+        // Scale: the propagated 2.0, baked into the shape by
+        // `collision_shape_to_parts`. An identity-seeded read gives 1.0 and a
+        // half-width of 1.0 instead of 2.0.
+        assert!(
+            (aabb.aabb_max[1] - aabb.aabb_min[1] - 4.0).abs() < 1e-3,
+            "y extent must be 2 x (1.0 authored x 2.0 placement): {aabb:?}"
+        );
     }
 
     /// #2866 — Rapier's pose is world-space, the write target is the LOCAL

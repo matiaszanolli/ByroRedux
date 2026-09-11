@@ -136,10 +136,13 @@ pub fn iso_from_trs(translation: Vec3, rotation: Quat) -> Isometry3<f32> {
 /// scalar `f32`, so the non-uniform case this guidance usually warns about
 /// cannot arise here.
 ///
-/// This makes the bhk path agree with the other two collider producers,
-/// which already pre-bake scale: `synthesize_static_trimesh` multiplies
-/// every vertex by `world_scale`, and `spawn_packed_havok_proxy` passes
-/// `ref_scale` through (see `docs/engine/physics.md`).
+/// The contract is one-sided and applies to every producer without
+/// exception: **producers keep the shape in local units; this function
+/// applies `GlobalTransform::scale` exactly once.** Baking it on both
+/// sides yields scale² geometry (`docs/engine/physal.md` §"Scale", and
+/// #3959, which was exactly that). There is deliberately no per-producer
+/// census here — a list of producers maintained on the consumer is the
+/// thing that rots, and the previous one had both of its entries backwards.
 ///
 /// `cfg` carries the engine-wide TriMesh flags. The default
 /// (`ContactConfig::DEFAULT`) preserves the pre-unification behaviour
@@ -530,6 +533,30 @@ mod tests {
         let parts = parts(&CollisionShape::Cuboid {
             half_extents: Vec3::splat(1.0e30),
         });
+        let he = parts[0].1.as_cuboid().unwrap().half_extents;
+        assert_eq!(
+            (he.x, he.y, he.z),
+            (
+                MAX_SANE_SHAPE_EXTENT,
+                MAX_SANE_SHAPE_EXTENT,
+                MAX_SANE_SHAPE_EXTENT,
+            )
+        );
+    }
+
+    /// Regression for #2543 at its new home. Since #3959 no producer
+    /// pre-bakes the placement scale, so an unclamped REFR `XSCL` reaches
+    /// Rapier only through this multiply — the ceiling has to bound the
+    /// *product*, not just an already-huge authored extent.
+    #[test]
+    fn huge_placement_scale_clamps_to_sane_ceiling() {
+        let parts = collision_shape_to_parts(
+            &CollisionShape::Cuboid {
+                half_extents: Vec3::splat(1.0),
+            },
+            1.0e30,
+            &ContactConfig::DEFAULT,
+        );
         let he = parts[0].1.as_cuboid().unwrap().half_extents;
         assert_eq!(
             (he.x, he.y, he.z),

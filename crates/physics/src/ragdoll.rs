@@ -389,7 +389,12 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
                     // non-root pose. Seed its reduced coordinates from the
                     // animated body poses before the first physics step can
                     // replace them with the joint's zero/rest coordinates.
-                    seed_joint_from_body_poses(&mut link.joint, parent_seed, child_seed);
+                    seed_joint_from_body_poses(
+                        &mut link.joint,
+                        &spec.constraints[edge.constraint].joint,
+                        parent_seed,
+                        child_seed,
+                    );
                 } else {
                     log::warn!(
                         "ragdoll: inserted multibody joint {}→{} has no child link — \
@@ -624,30 +629,65 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
 /// poses captured at ragdoll activation.
 ///
 /// Rapier stores non-root multibody poses in the joint, not in the attached
-/// rigid body's Cartesian `position`. The joint transform is
-/// `frame1 * joint_rotation * inverse(frame2)`, so isolate the authored
-/// relative rotation in joint space and apply it to the zeroed coordinates.
-/// All ragdoll linear DOFs are locked; the authored pivots determine the
-/// compatible child translation once forward kinematics runs.
+/// rigid body's Cartesian `position`. The joint transform in joint space is
+/// `frame1⁻¹ ∘ (parent⁻¹ ∘ child) ∘ frame2`; whichever component of it the
+/// joint's free axis names is what the reduced coordinates must carry.
+///
+/// # Dispatch
+///
+/// This matches on [`RagdollJointSpec`] — **not** on `joint.ndofs()`, which
+/// is what it used to do and what #3962 was filed for. `ndofs()` is
+/// `6 - locked_axes.count_ones()`, so `LimitedHinge` (free `AngX`) and
+/// `Prismatic` (free `LinX`) are both `1` and indistinguishable by it. The
+/// prismatic edges #3792 added were consequently seeded by writing a rotation
+/// vector's X component — radians — into a slide distance in engine units,
+/// and `apply_displacement` walks the linear axes first so it landed on
+/// exactly the wrong coordinate.
+///
+/// Matching the enum means the compiler, not a reviewer, is what forces a
+/// fourth variant to be considered here — the property the `ndofs()` form
+/// lacked. `build_joint` and `scaled_pivots` already had it.
 fn seed_joint_from_body_poses(
     joint: &mut MultibodyJoint,
+    spec: &RagdollJointSpec,
     parent_pose: Isometry<Real>,
     child_pose: Isometry<Real>,
 ) {
     let parent_to_child = parent_pose.inverse() * child_pose;
-    let joint_rotation = joint.data.local_frame1.rotation.inverse()
-        * parent_to_child.rotation
-        * joint.data.local_frame2.rotation;
-    let angular_displacement = joint_rotation.scaled_axis();
+    // Rotation and translation of one isometry product — the rotation half is
+    // bit-for-bit the quantity the pre-#3962 code computed.
+    let joint_transform =
+        joint.data.local_frame1.inverse() * parent_to_child * joint.data.local_frame2;
+    let angular_displacement = joint_transform.rotation.scaled_axis();
 
-    match joint.ndofs() {
-        // Limited hinge: only local angular X is free.
-        1 => joint.apply_displacement(&[angular_displacement.x]),
-        // Ragdoll: local angular X/Y/Z are all free.
-        3 => joint.apply_displacement(angular_displacement.as_slice()),
-        ndofs => log::warn!(
-            "ragdoll: cannot seed unsupported {ndofs}-DOF multibody joint from animated pose"
-        ),
+    match spec {
+        // Local angular X/Y/Z are all free.
+        RagdollJointSpec::Ragdoll { .. } => {
+            joint.apply_displacement(angular_displacement.as_slice())
+        }
+        // Only local angular X is free.
+        RagdollJointSpec::LimitedHinge { .. } => {
+            joint.apply_displacement(&[angular_displacement.x])
+        }
+        // Only local *linear* X is free — `frame_rot` maps the authored
+        // sliding axis onto it. The correct seed is the along-rail
+        // component of the same joint transform.
+        RagdollJointSpec::Prismatic { .. } => {
+            let mut slide = joint_transform.translation.vector.x;
+            // `apply_displacement` does not clamp against the joint's own
+            // limits (`MultibodyJoint::integrate` has no clamp), and an
+            // authored bind pose can legitimately sit outside the authored
+            // travel range. Opening in violation makes the solver correct it
+            // positionally, and a multibody spreads that correction across
+            // the chain — measured: a 1000-unit overshoot on a ±1 rail drags
+            // the *root* ~500 units off its authored origin in one step.
+            // Clamp to the nearest valid rail position instead.
+            if let Some(limits) = joint.data.limits(JointAxis::LinX) {
+                slide = slide.clamp(limits.min, limits.max);
+            }
+
+            joint.apply_displacement(&[slide])
+        }
     }
 }
 
@@ -860,6 +900,124 @@ mod tests {
             end_dist < init_dist * 1.5 + 20.0,
             "chain separated (joints not holding): {init_dist} → {end_dist}"
         );
+    }
+
+    /// A 1-DOF sliding rail along X with pivots ±25, so the rail coordinate
+    /// is zero when the bodies sit 50 apart. `travel` bounds the authored
+    /// `min_distance`/`max_distance`.
+    fn prismatic_rail(a: usize, b: usize, travel: f32) -> RagdollConstraintSpec {
+        RagdollConstraintSpec {
+            body_a: a,
+            body_b: b,
+            joint: RagdollJointSpec::Prismatic {
+                axis_a: Vec3::X,
+                perp_a: Vec3::Y,
+                pivot_a: Vec3::new(25.0, 0.0, 0.0),
+                axis_b: Vec3::X,
+                perp_b: Vec3::Y,
+                pivot_b: Vec3::new(-25.0, 0.0, 0.0),
+                min_distance: -travel,
+                max_distance: travel,
+            },
+        }
+    }
+
+    /// Separation along the rail after one step, for a child seeded `slide`
+    /// units past the joint's zero position and twisted `twist` radians about
+    /// the rail axis. The twist is what makes this test falsifiable: it is
+    /// the quantity the pre-#3962 `ndofs()` dispatch wrote into the linear
+    /// coordinate. With `twist == 0` both the broken and the fixed code seed
+    /// from a zero angular X and the bug is invisible.
+    fn prismatic_separation_after_one_step(slide: f32, twist: f32, travel: f32) -> f32 {
+        let mut pw = PhysicsWorld::new();
+        pw.gravity = Vector::zeros();
+        let mut child = ball_body(2, 50.0 + slide, 1000.0);
+        child.rotation = Quat::from_rotation_x(twist);
+        let spec = RagdollSpec {
+            bodies: vec![ball_body(1, 0.0, 1000.0), child],
+            constraints: vec![prismatic_rail(0, 1, travel)],
+        };
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        pw.step(PHYSICS_DT);
+        let root = body_translation(&pw, rag.bodies[0].1).unwrap();
+        let child = body_translation(&pw, rag.bodies[1].1).unwrap();
+        (child - root).length()
+    }
+
+    /// #3962 — `seed_joint_from_body_poses` dispatched on `joint.ndofs()`,
+    /// and `LimitedHinge` (free `AngX`) and `Prismatic` (free `LinX`) are
+    /// both 1-DOF. Prismatic edges were therefore seeded by writing the twist
+    /// angle in radians into the slide coordinate in engine units —
+    /// `apply_displacement` walks the linear axes first, so it landed exactly
+    /// on the wrong one.
+    ///
+    /// #3792's own measurement puts 2 of the Protectron skeleton's 12 joints
+    /// on this path, and the crate had zero `Prismatic` test coverage: the
+    /// production arm in `build_joint` was the only construction site in the
+    /// whole crate.
+    #[test]
+    fn prismatic_seed_uses_the_slide_distance_not_the_twist_angle() {
+        // Seeded 10 units down the rail, twisted 0.6 rad about it. Pivots put
+        // the rail zero at 50 apart, so the correct answer is 60.
+        let preserved = prismatic_separation_after_one_step(10.0, 0.6, 100.0);
+        assert!(
+            (preserved - 60.0).abs() < 1e-2,
+            "the seeded 10-unit slide must survive the first step — got              {preserved}. The pre-fix code seeded 0.6 (the twist in radians)              and produced ~50.6."
+        );
+
+        // The control that makes the assertion above load-bearing: with no
+        // twist, the broken dispatch happens to seed 0.0 and the child
+        // collapses to the rail zero. Different quantity, same wrong axis.
+        let untwisted = prismatic_separation_after_one_step(10.0, 0.0, 100.0);
+        assert!(
+            (untwisted - 60.0).abs() < 1e-2,
+            "the slide must be seeded from the pose regardless of twist —              got {untwisted}"
+        );
+    }
+
+    /// `apply_displacement` writes the reduced coordinate with no regard for
+    /// the joint's own limits — `MultibodyJoint::integrate` has no clamp — so
+    /// a bind pose outside the authored travel range opens the articulation
+    /// already in violation. Rapier resolves that positionally, and a
+    /// multibody splits the correction across the whole chain: the *root* is
+    /// dragged toward the offending link. Seeding the nearest valid rail
+    /// position instead means there is nothing to resolve.
+    ///
+    /// Measured on the unclamped code with a 1000-unit seed on a ±1 rail: the
+    /// root leaves its authored origin for x ≈ 499.5 in a single step. An
+    /// actor's ragdoll teleporting ~500 units on activation is the visible
+    /// symptom.
+    ///
+    /// **This asserts the root pose, not the separation.** The separation
+    /// converges to 51.0 in one step either way — the two links are pulled
+    /// together correctly, just in the wrong place — so a separation
+    /// assertion here would pass against the unclamped code and prove
+    /// nothing. (Likewise the magnitude: a 10-unit overshoot is absorbed
+    /// whole in one step and displaces the root by a fraction of a unit.)
+    #[test]
+    fn prismatic_seed_clamps_to_the_authored_travel_range() {
+        let mut pw = PhysicsWorld::new();
+        pw.gravity = Vector::zeros();
+        let mut child = ball_body(2, 1050.0, 1000.0);
+        child.rotation = Quat::from_rotation_x(0.6);
+        let spec = RagdollSpec {
+            bodies: vec![ball_body(1, 0.0, 1000.0), child],
+            // Authored travel ±1, seeded 1000 past the rail zero.
+            constraints: vec![prismatic_rail(0, 1, 1.0)],
+        };
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        pw.step(PHYSICS_DT);
+
+        let root = body_translation(&pw, rag.bodies[0].1).unwrap();
+        assert!(
+            (root - Vec3::new(0.0, 1000.0, 0.0)).length() < 1e-2,
+            "an out-of-range seed must be clamped, not left for the solver to \
+             drag the whole articulation through — root moved to {root:?}"
+        );
+
+        // And the clamped rail position is the authored limit: 50 + 1.
+        let sep = (body_translation(&pw, rag.bodies[1].1).unwrap() - root).length();
+        assert!((sep - 51.0).abs() < 1e-2, "expected 51.0, got {sep}");
     }
 
     /// #2337 — Rapier's first forward-kinematics pass must start from the

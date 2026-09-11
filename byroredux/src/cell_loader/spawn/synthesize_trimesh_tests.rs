@@ -230,8 +230,13 @@ fn packed_proxy_aabb_unions_mesh_local_transforms() {
     assert_eq!(max, Vec3::new(11.0, 2.0, 3.0));
 }
 
+/// The proxy stays in placement-local units: `ref_scale` gates finiteness
+/// but never multiplies the half-extents. The shared converter owns scale
+/// application (#3959) — see
+/// `packed_proxy_placement_scale_is_applied_once_end_to_end` for the
+/// composed result.
 #[test]
-fn packed_proxy_bakes_outer_scale_into_cuboid_extent() {
+fn packed_proxy_keeps_half_extents_in_placement_local_units() {
     let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
         vec![[-1.0, -2.0, -3.0], [1.0, 2.0, 3.0]],
         Vec::new(),
@@ -247,21 +252,115 @@ fn packed_proxy_bakes_outer_scale_into_cuboid_extent() {
     assert_eq!(center, Vec3::new(4.0, 5.0, 6.0));
     match shape {
         CollisionShape::Cuboid { half_extents } => {
-            assert_eq!(half_extents, Vec3::new(2.0, 4.0, 6.0));
+            // Authored local half-extents, NOT `× ref_scale`. The old
+            // behaviour asserted `(2, 4, 6)` here and certified the very
+            // double-application #3959 was filed for.
+            assert_eq!(half_extents, Vec3::new(1.0, 2.0, 3.0));
         }
         other => panic!("expected Cuboid, got {other:?}"),
     }
 }
 
-/// Regression for #2543: an extreme-but-finite `ref_scale` (unclamped
-/// REFR `XSCL` read straight off disk) must not hand back a
-/// `Cuboid` whose half-extents dwarf the world — it must clamp to
-/// `RT_ABSOLUTE_PRECISION_CEILING` instead of multiplying straight
-/// through.
+/// Regression for #3959, the end-to-end form of
+/// `placement_scale_is_applied_once_by_the_shared_converter` (#3064's
+/// trimesh sibling). Spawn the ghost under a scaled placement root, run
+/// transform propagation, then `physics_sync_system`, and assert the
+/// collider Rapier actually holds is `ref_scale¹` — not `ref_scale²`.
+///
+/// The producer-isolation test above cannot see this: it stops before
+/// propagation composes `ref_scale` onto the ghost's `GlobalTransform`
+/// and before `collision_shape_to_parts` multiplies by it.
 #[test]
-fn packed_proxy_clamps_extreme_finite_scale() {
+fn packed_proxy_placement_scale_is_applied_once_end_to_end() {
+    use crate::cell_loader::nif_import_registry::CachedNifImport;
+    use byroredux_core::ecs::{GlobalTransform, Transform};
+
+    // A unit cube: authored half-extents (1,1,1), centered on the origin
+    // so the ghost's local center is zero and the composed world center
+    // lands on the placement root.
+    let mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+        vec![[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let cached = CachedNifImport {
+        meshes: vec![mesh],
+        geometry_dedup: Vec::new(),
+        collisions: Vec::new(),
+        collision_authoring: CollisionAuthoringSummary {
+            new_physics: 1,
+            ..Default::default()
+        },
+        lights: Vec::new(),
+        particle_emitters: Vec::new(),
+        embedded_clip: None,
+        placement_root_billboard: None,
+        speedtree_wind: None,
+        bsx_flags: 0,
+        root_flags: 0,
+        flame_attach_offset: None,
+        attach_points: None,
+        child_attach_connections: None,
+        furniture: None,
+    };
+
+    let mut world = World::new();
+    world.register::<RapierHandles>();
+    world.insert_resource(PhysicsWorld::new());
+
+    // The placement root exactly as `spawn_placement_root` builds it.
+    let root = world.spawn();
+    world.insert(root, Transform::new(Vec3::ZERO, Quat::IDENTITY, 2.0));
+    world.insert(root, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 2.0));
+
+    assert!(spawn_packed_havok_proxy(
+        &mut world,
+        &cached,
+        root,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        2.0,
+        None,
+        RenderLayer::Clutter,
+    ));
+
+    // PostUpdate propagation overwrites the ghost's seeded scale of 1.0
+    // with `parent_scale × local_scale` = 2.0 before Physics runs.
+    let mut propagate = byroredux_core::ecs::systems::make_transform_propagation_system();
+    propagate(&world, 0.0);
+    physics_sync_system(&world, 0.0);
+
+    let physics = world.resource::<PhysicsWorld>();
+    let nearby = physics.colliders_near_xz(0.5, 0.0, 0.0, 16.0);
+    assert_eq!(nearby.len(), 1, "the proxy must register one collider");
+    let aabb = &nearby[0];
+    // 1.0 authored × 2.0 placement = 2.0. The pre-fix code produced 4.0.
+    assert!(
+        (aabb.aabb_max[0] - 2.0).abs() < 1e-4,
+        "half-extent must be ref_scale^1, got {aabb:?}"
+    );
+    assert!(
+        (aabb.aabb_max[1] - 2.0).abs() < 1e-4,
+        "half-extent must be ref_scale^1, got {aabb:?}"
+    );
+}
+
+/// Regression for #2543: an extreme-but-finite authored extent must not
+/// hand back a `Cuboid` whose half-extents dwarf the world — it must
+/// clamp to `RT_ABSOLUTE_PRECISION_CEILING`.
+///
+/// Driven by corrupt *geometry* since #3959: `ref_scale` no longer enters
+/// this product at all. The scale half of #2543's guarantee now lives at
+/// `clamp_shape_extent` (`crates/physics/src/convert.rs`), which re-applies
+/// the same ceiling after multiplying by `GlobalTransform::scale` — pinned
+/// there by `huge_placement_scale_clamps_to_sane_ceiling`.
+#[test]
+fn packed_proxy_clamps_extreme_finite_extent() {
     let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
-        vec![[-1.0, -2.0, -3.0], [1.0, 2.0, 3.0]],
+        vec![[-1.0e30, -2.0e30, -3.0e30], [1.0e30, 2.0e30, 3.0e30]],
         Vec::new(),
         Vec::new(),
         Vec::new(),
@@ -271,11 +370,11 @@ fn packed_proxy_clamps_extreme_finite_scale() {
     mesh.translation = [4.0, 5.0, 6.0];
 
     // Large enough to blow well past `RT_ABSOLUTE_PRECISION_CEILING`
-    // (~1e6) but nowhere near `f32::MAX` (~3.4e38), so the product
-    // stays finite — this is the "corrupt-but-finite" case the debug
-    // assert alone can't catch in release builds.
-    let (_, shape) = synthesize_packed_havok_proxy(&[mesh], 1.0e30)
-        .expect("a finite (if extreme) scale must still produce a clamped proxy");
+    // (~1e6) but nowhere near `f32::MAX` (~3.4e38), so the extent stays
+    // finite — this is the "corrupt-but-finite" case the debug assert
+    // alone can't catch in release builds.
+    let (_, shape) = synthesize_packed_havok_proxy(&[mesh], 1.0)
+        .expect("a finite (if extreme) extent must still produce a clamped proxy");
     match shape {
         CollisionShape::Cuboid { half_extents } => {
             assert!(
@@ -293,13 +392,18 @@ fn packed_proxy_clamps_extreme_finite_scale() {
     }
 }
 
-/// Regression for #2543: a non-finite product (e.g. an `f32` overflow
-/// during the scale multiply) must reject the proxy outright rather
+/// Regression for #2543: a non-finite product (an `f32` overflow while
+/// differencing the union bounds) must reject the proxy outright rather
 /// than propagate `Infinity`/`NaN` half-extents into the ECS.
+///
+/// Both extremes are individually finite and survive the per-point
+/// `is_finite` filter; it is `max - min` = 6.0e38 that overflows. Since
+/// #3959 this is the only route to a non-finite product here — the
+/// former one (`ref_scale = f32::MAX`) no longer multiplies anything.
 #[test]
 fn packed_proxy_rejects_non_finite_half_extents() {
     let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
-        vec![[-1.0, -2.0, -3.0], [1.0, 2.0, 3.0]],
+        vec![[-3.0e38, -3.0e38, -3.0e38], [3.0e38, 3.0e38, 3.0e38]],
         Vec::new(),
         Vec::new(),
         Vec::new(),
@@ -307,13 +411,9 @@ fn packed_proxy_rejects_non_finite_half_extents() {
         Vec::new(),
     );
     mesh.translation = [4.0, 5.0, 6.0];
-    // Finite input scale, but `f32::MAX * f32::MAX` overflows to
-    // `Infinity` inside `synthesize_packed_havok_proxy`'s multiply —
-    // this must not slip through as a literal-infinite collider.
-    mesh.scale = f32::MAX;
 
     assert!(
-        synthesize_packed_havok_proxy(&[mesh], f32::MAX).is_none(),
+        synthesize_packed_havok_proxy(&[mesh], 1.0).is_none(),
         "an overflowing (non-finite) half-extents product must reject the proxy"
     );
 }

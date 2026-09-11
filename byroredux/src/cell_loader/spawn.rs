@@ -100,9 +100,14 @@ struct ProxyMeshGeometry<'a> {
 
 /// Union mesh geometry in placement-local space. Mesh-local TRS is applied,
 /// while the outer REFR transform is deliberately left for the proxy entity's
-/// parent relationship. Keeping the center unscaled lets transform propagation
-/// follow a moved/rotated placement; only the cuboid half-extents need the REFR
-/// scale baked because physics ignores `GlobalTransform::scale`.
+/// parent relationship: keeping the result in placement-local units lets
+/// transform propagation follow a moved/rotated/scaled placement.
+///
+/// The REFR scale is **not** baked in here. `collision_shape_to_parts` applies
+/// `GlobalTransform::scale` exactly once at the solver boundary (#2860), and
+/// the ghost's propagated global carries `ref_scale` — so pre-baking produced
+/// `ref_scale²` half-extents (#3959). This is the same contract
+/// `synthesize_static_trimesh` was moved onto in `b8c4e6af`.
 fn transformed_mesh_aabb<'a>(
     meshes: impl IntoIterator<Item = ProxyMeshGeometry<'a>>,
 ) -> Option<(Vec3, Vec3)> {
@@ -224,20 +229,24 @@ fn synthesize_packed_havok_proxy(
     // Thin render cards still need a non-zero physical thickness. Half a
     // Gamebryo unit is small relative to clutter and actor bounds, while
     // avoiding a degenerate parry cuboid.
-    let half_extents = ((max - min) * 0.5 * ref_scale.abs()).max(Vec3::splat(0.5));
-    // #2543 — `ref_scale` is an unclamped raw REFR `XSCL` off disk; the
-    // `ref_scale.is_finite()` check above runs on the *input*, not this
-    // product, so a large-but-finite scale (or an f32 overflow that still
-    // slipped past that check as literal `Infinity`) can reach here
-    // uncaught. Reject non-finite outright (mirrors the `finite_vec`
-    // pattern every other `CollisionShape` producer uses, e.g.
-    // `BhkBoxShape` at `crates/nif/src/import/collision/shape.rs`), then
-    // clamp to the same "corrupt content" ceiling the exterior-cell RT
-    // precision guard already treats as the hard upper bound for a sane
-    // spatial magnitude (`RT_ABSOLUTE_PRECISION_CEILING`, #1495) — a
-    // finite-but-extreme scale still shouldn't hand Rapier a collider
-    // that dwarfs the world and corrupts its broad-phase for every other
-    // body in the scene.
+    let half_extents = ((max - min) * 0.5).max(Vec3::splat(0.5));
+    // #2543 — corrupt geometry can drive `max - min` non-finite or
+    // absurdly large on its own (the union above only skips individual
+    // non-finite *points*, it never bounds the accumulated extent).
+    // Reject non-finite outright (mirrors the `finite_vec` pattern every
+    // other `CollisionShape` producer uses, e.g. `BhkBoxShape` at
+    // `crates/nif/src/import/collision/shape.rs`), then clamp to the same
+    // "corrupt content" ceiling the exterior-cell RT precision guard
+    // already treats as the hard upper bound for a sane spatial magnitude
+    // (`RT_ABSOLUTE_PRECISION_CEILING`, #1495) — a finite-but-extreme
+    // extent shouldn't hand Rapier a collider that dwarfs the world and
+    // corrupts its broad-phase for every other body in the scene.
+    //
+    // #3959 — the REFR scale is no longer part of this product, so the
+    // ceiling here bounds authored local units. `clamp_shape_extent`
+    // (`crates/physics/src/convert.rs`) re-applies the same 2^20 bound
+    // *after* multiplying by `GlobalTransform::scale`, so the value Rapier
+    // actually receives is still capped — that was #2543's real guarantee.
     if !half_extents.is_finite() {
         return None;
     }
@@ -1005,7 +1014,9 @@ pub(crate) fn spawn_nif_lights(
         // happen to share a name — this only skips names confirmed to
         // be exporter leftovers, not a general "first name wins" rule.
         if let Some(ref nif_name) = light.name {
-            if is_known_exporter_artifact_light_name(nif_name) && world.find_by_name(nif_name).is_some() {
+            if is_known_exporter_artifact_light_name(nif_name)
+                && world.find_by_name(nif_name).is_some()
+            {
                 continue;
             }
         }

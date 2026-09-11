@@ -1398,7 +1398,15 @@ fn spawn_nif_nodes(
 
         let entity = world.spawn();
         world.insert(entity, Transform::new(translation, quat, node.scale));
-        world.insert(entity, GlobalTransform::IDENTITY);
+        // #3960 — seed the composed rest pose, not identity. `rest_pose` is
+        // already the correct world transform for this node (the NIF root has
+        // no outer parent on this path), and the collision shape + body are
+        // attached to this same entity a few lines below. Any consumer that
+        // reads `GlobalTransform` before the first propagation pass — the
+        // physics registration bootstrap above all, which is one-shot and so
+        // bakes whatever it reads permanently — otherwise sees the origin at
+        // scale 1.0. Propagation overwrites this with the identical value.
+        world.insert(entity, rest_pose);
 
         if let Some(ref name) = node.name {
             let mut pool = world.resource_mut::<StringPool>();

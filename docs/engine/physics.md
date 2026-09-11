@@ -422,11 +422,15 @@ to ground against and the player falls through the floor.
 The spawn policy now has two deliberately different approximations:
 
 - **Architecture:** `synthesize_static_trimesh` builds one precise static
-  `CollisionShape::TriMesh` per eligible rigid render submesh. It bakes
-  `ref_scale × mesh.scale` into vertices because physics consumes position
-  and rotation, not `GlobalTransform::scale`. This path remains available for
-  collision-less architecture even when the NIF does not contain a packed
-  object, preserving the terrain/legacy fallback behavior.
+  `CollisionShape::TriMesh` per eligible rigid render submesh, in
+  placement-local units. It takes no scale parameter: the shared
+  `collision_shape_to_parts` converter applies `GlobalTransform::scale`
+  exactly once at the Rapier sink (#2860), so a producer that also baked it
+  would emit scale² geometry (`docs/engine/physal.md` §2 states the same
+  contract; #3064/#3065 fixed this producer, #3959 the proxy below). This
+  path remains available for collision-less architecture even when the NIF
+  does not contain a packed object, preserving the terrain/legacy fallback
+  behavior.
 - **Clutter and actors with confirmed packed authoring:** all eligible render
   geometry is unioned after mesh-local translation/rotation/scale, producing
   one conservative placement-local AABB. The resulting cuboid is
