@@ -402,10 +402,6 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
     }
 }
 
-/// Bridge offscreen cinematic locomotion for a scene phase whose authored
-/// completion explicitly waits on an actor-specific trigger stage. Creation
-/// can drive a mounted actor outside ordinary cell AI; choose the nearest
-/// loaded actor with the trigger's required base and approach the volume.
 /// Per-frame scratch for [`scene_trigger_actor_approach_system_inner`], owned
 /// by the closure [`make_scene_trigger_actor_approach_system`] returns.
 ///
@@ -433,6 +429,10 @@ pub(crate) fn make_scene_trigger_actor_approach_system() -> impl FnMut(&World, f
     }
 }
 
+/// Bridge offscreen cinematic locomotion for a scene phase whose authored
+/// completion explicitly waits on an actor-specific trigger stage. Creation
+/// can drive a mounted actor outside ordinary cell AI; choose the nearest
+/// loaded actor with the trigger's required base and approach the volume.
 fn scene_trigger_actor_approach_system_inner(
     world: &World,
     dt: f32,
