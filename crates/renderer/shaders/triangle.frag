@@ -232,12 +232,12 @@ void main() {
         geometricNormal = -geometricNormal;
     }
 
-    // R1 Phase 5 — deduplicated material payload. Single SSBO load per
-    // fragment; downstream reads use `mat.<field>` instead of
-    // `inst.<field>` for any per-material data. The legacy per-instance
-    // copies on `GpuInstance` are still populated by the CPU pipeline
-    // (Phase 6 drops them) and are byte-equal to `mat.*`, so the
-    // visible output is unchanged.
+    // R1 — deduplicated material payload. Single SSBO load per fragment;
+    // every per-material read below goes through `mat.<field>`. R1 closed
+    // 2026-05-01: Phase 6 dropped the legacy per-instance copies, so
+    // `GpuInstance` no longer carries a `roughness` / `metalness` /
+    // `emissive*` / `uv*` / alpha slot to fall back to — `materials[]` is
+    // the only source (#3868).
     GpuMaterial mat = materials[inst.materialId];
 
     // #494 — BGSM-authored UV transform. FO4 BGSM ships explicit
@@ -248,8 +248,8 @@ void main() {
     // dark / env-mask / terrain splat / parallax POM input), so the
     // transformation propagates without per-site edits. Identity
     // defaults (offset=(0,0), scale=(1,1), alpha=1.0) come from
-    // `GpuInstance::default()` so pre-BGSM content is byte-identical
-    // to the #492 baseline.
+    // `GpuMaterial::default()` (`vulkan/material.rs`) so pre-BGSM
+    // content is byte-identical to the #492 baseline.
     vec2 baseUV = fragUV * vec2(mat.uvScaleU, mat.uvScaleV)
                 + vec2(mat.uvOffsetU, mat.uvOffsetV);
 
@@ -419,13 +419,11 @@ void main() {
         discard;
     }
 
-    // R1 Phase 4 — first migrated field. `roughness` now reads from the
-    // deduplicated `MaterialBuffer` SSBO via `inst.materialId`. The
-    // per-instance `inst.roughness` slot is still populated by the CPU
-    // pipeline (Phase 6 drops it once every reader has migrated); the
-    // value at `materials[inst.materialId].roughness` is byte-equal to
-    // it for now, so the visible output is unchanged. Phases 5 and 6
-    // migrate the remaining per-material fields one slice at a time.
+    // R1 Phase 4 — the first field migrated to the deduplicated
+    // `MaterialBuffer` SSBO, reached via `inst.materialId`. Phases 5 and 6
+    // finished the migration on 2026-05-01 and deleted the per-instance
+    // copies, so no instance-side roughness slot survives to disagree with
+    // this one (#3868).
     float roughness = mat.roughness;
     float metalness = mat.metalness;
     float emissiveMult = mat.emissiveMult;

@@ -1849,3 +1849,70 @@ mod tests {
         );
     }
 }
+
+/// #3867 — the CTDA catalog size is published in two engine docs that
+/// `_audit-common.md` names as authority ("prefer these docs over
+/// re-deriving facts from source"), and both had fallen behind: the
+/// feature matrix said 13 (itself the #1818 correction of 7) and the
+/// AI-package fail-open paragraph said ~15, against a live catalog of 19.
+///
+/// An auditor sizing the M47.1 gap reads the doc, not this array, so the
+/// drift is load-bearing — and it has now recurred twice. `CATALOG` is a
+/// `const` array, so the documented figure can simply be asserted against
+/// its length rather than re-checked by hand on the next six additions.
+#[cfg(test)]
+mod catalog_count_doc_pin_tests {
+    use super::ConditionFunction;
+
+    const FEATURE_MATRIX: &str = include_str!("../../../docs/feature-matrix.md");
+    const NPC_SPAWN: &str = include_str!("../../../docs/engine/npc-spawn-ai-packages.md");
+
+    /// The first run of ASCII digits at or after `from` in `haystack`.
+    fn digits_after(haystack: &str, anchor: &str, file: &str) -> usize {
+        let rest = haystack
+            .split_once(anchor)
+            .unwrap_or_else(|| panic!("{file} must still carry the anchor {anchor:?} — the doc \
+                                       was reworded, so re-point this pin rather than deleting it"))
+            .1;
+        let start = rest
+            .find(|c: char| c.is_ascii_digit())
+            .unwrap_or_else(|| panic!("{file}: no number follows {anchor:?}"));
+        let rest = &rest[start..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse().expect("a run of ASCII digits parses")
+    }
+
+    #[test]
+    fn both_engine_docs_publish_the_live_catalog_size() {
+        let live = ConditionFunction::CATALOG.len();
+        assert!(
+            live >= 19,
+            "the catalog only ever grows; {live} entries means the extraction broke, \
+             not the docs",
+        );
+
+        assert_eq!(
+            digits_after(
+                FEATURE_MATRIX,
+                "CTDA condition evaluation with OR-precedence (M47.1) |",
+                "docs/feature-matrix.md",
+            ),
+            live,
+            "docs/feature-matrix.md's M47.1 row publishes a catalog size that no longer \
+             matches `ConditionFunction::CATALOG` (#3867, and #1818 before it)",
+        );
+
+        assert_eq!(
+            digits_after(
+                NPC_SPAWN,
+                "the M47.1 catalog covers ",
+                "docs/engine/npc-spawn-ai-packages.md",
+            ),
+            live,
+            "docs/engine/npc-spawn-ai-packages.md's fail-open paragraph publishes a catalog \
+             size that no longer matches `ConditionFunction::CATALOG` (#3867)",
+        );
+    }
+}

@@ -53,8 +53,9 @@ pub(super) const MIN_TLAS_INSTANCE_RESERVE: u32 = 8192;
 /// free+create cycle for no behavioural change.
 pub(super) const WORKING_SET_FLOOR: u32 = MIN_TLAS_INSTANCE_RESERVE;
 
-/// Minimum BLAS-budget floor. Computed budget is `device_local / 3`
-/// capped no lower than this — keeps the 90% eviction trigger
+/// Minimum BLAS-budget floor. Computed budget is
+/// `(device_local - screen_scaled_reservation) / 3` capped no lower
+/// than this (the reservation term is #3839) — keeps the 90% eviction trigger
 /// meaningful even on small-VRAM devices where `total / 3` would be
 /// a small absolute number. 256 MB matches the typical cell BLAS
 /// footprint. See `blas_budget_for_heap`.

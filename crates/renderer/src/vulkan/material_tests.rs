@@ -108,7 +108,7 @@ fn gpu_material_alignment_is_4_bytes() {
 mod supplemental_lane_guard {
     /// Every GLSL source that could sample a `GpuMaterial` lane. Excludes
     /// `include/bindings.glsl` itself — that is the declaration, not a read.
-    const GLSL_SOURCES: &[(&str, &str)] = &[
+    pub(super) const GLSL_SOURCES: &[(&str, &str)] = &[
         ("triangle.frag", include_str!("../../shaders/triangle.frag")),
         ("water.frag", include_str!("../../shaders/water.frag")),
         ("triangle.vert", include_str!("../../shaders/triangle.vert")),
@@ -1186,5 +1186,93 @@ mod supplemental_projection_pin {
                  purpose (#3911)",
             );
         }
+    }
+}
+
+/// #3868 — three `triangle.frag` comment blocks narrated R1 Phase 6 as
+/// still pending four months after it closed, telling a reader that a
+/// redundant per-instance copy of every per-material value existed and was
+/// "byte-equal for now". It never did after 2026-05-01 — and the same
+/// block pointed at `GpuInstance::default()` for the UV/alpha identity
+/// defaults, which live on `GpuMaterial`.
+///
+/// Prose is what rots, so pin the fact the prose now asserts instead: the
+/// per-material lanes are gone from `GpuInstance` on both sides of the
+/// shader contract, and no GLSL source reads one off an instance. A
+/// reintroduced instance-side copy — the actual hazard, since it would
+/// silently shadow `materials[]` — fails here.
+#[cfg(test)]
+mod r1_phase6_retirement_pin {
+    /// Per-material values R1 Phase 6 removed from `GpuInstance`, as the
+    /// `(GLSL field, Rust field)` pair each was named by. Not exhaustive
+    /// over `GpuMaterial` — these are the ones that were duplicated.
+    const RETIRED: &[(&str, &str)] = &[
+        ("roughness", "roughness"),
+        ("metalness", "metalness"),
+        ("emissiveMult", "emissive_mult"),
+        ("emissiveR", "emissive_r"),
+        ("alphaThreshold", "alpha_threshold"),
+        ("materialAlpha", "material_alpha"),
+        ("uvOffsetU", "uv_offset_u"),
+        ("uvScaleU", "uv_scale_u"),
+    ];
+
+    #[test]
+    fn no_glsl_source_reads_a_per_material_lane_off_an_instance() {
+        // Assembled at run time so this file's own text is never the match.
+        let prefix = format!("{}.", "inst");
+        for (name, source) in super::supplemental_lane_guard::GLSL_SOURCES {
+            for (glsl_field, _) in RETIRED {
+                let needle = format!("{prefix}{glsl_field}");
+                assert!(
+                    !source.contains(needle.as_str()),
+                    "{name} reads `{needle}` — R1 Phase 6 deleted the per-instance \
+                     copies on 2026-05-01, so this either resurrects a shadow of \
+                     `materials[inst.materialId]` or the struct grew a lane the \
+                     material table already owns (#3868)",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gpu_instance_declares_none_of_the_retired_lanes() {
+        const GPU_TYPES_RS: &str = include_str!("scene_buffer/gpu_types.rs");
+        const BINDINGS_GLSL: &str = include_str!("../../shaders/include/bindings.glsl");
+
+        let start = GPU_TYPES_RS
+            .find("pub struct GpuInstance {")
+            .expect("GpuInstance must still be declared in scene_buffer/gpu_types.rs");
+        let body = &GPU_TYPES_RS[start..];
+        let body = &body[..body.find("\n}").expect("the struct body must close")];
+
+        let glsl_start = BINDINGS_GLSL
+            .find("struct GpuInstance")
+            .expect("bindings.glsl must still declare GpuInstance");
+        let glsl_body = &BINDINGS_GLSL[glsl_start..];
+        let glsl_body = &glsl_body[..glsl_body.find("\n}").expect("the GLSL struct must close")];
+
+        for (glsl_field, rust_field) in RETIRED {
+            let decl = format!("{} {}:", "pub", rust_field);
+            assert!(
+                !body.contains(decl.as_str()),
+                "`GpuInstance` declares `{rust_field}` — R1 Phase 6 moved it to \
+                 `GpuMaterial` (#3868)",
+            );
+            assert!(
+                !glsl_body.contains(glsl_field),
+                "bindings.glsl's `GpuInstance` declares `{glsl_field}` — R1 Phase 6 \
+                 moved it to `GpuMaterial`, and the two sides must stay in lockstep \
+                 (#3868)",
+            );
+        }
+
+        // The scan itself must be load-bearing: a field that *is* still on
+        // the struct proves the extraction found a real body, not an empty one.
+        assert!(
+            body.contains("material_id") && glsl_body.contains("materialId"),
+            "the GpuInstance extraction found no `materialId` — the scan broke, \
+             not the struct",
+        );
     }
 }

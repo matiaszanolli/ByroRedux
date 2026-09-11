@@ -222,14 +222,23 @@ pub struct AccelerationManager {
     /// BLAS every frame. See #920 / REN-D12-NEW-03.
     pub(super) static_blas_bytes: vk::DeviceSize,
     /// Maximum BLAS memory budget in bytes. Eviction triggers when exceeded.
-    /// Derived at construction time from DEVICE_LOCAL heap size (VRAM / 3)
-    /// with a 256 MB floor. On a 12 GB GPU this yields 4 GB (eviction
-    /// virtually never fires); on a 6 GB GPU it yields 2 GB (eviction
-    /// fires before OOM). "Heap size" is the DEVICE_LOCAL heap selected by
-    /// the memory requirements of a BLAS result buffer, matching the real
-    /// `GpuOnly` allocation rather than a min/max heuristic — see
-    /// [`blas_budget_for_heap`](super::predicates::blas_budget_for_heap)
-    /// (#2928 / #3043).
+    /// `(probed DEVICE_LOCAL heap − screen-scaled pass reservation) / 3`,
+    /// floored at `MIN_BLAS_BUDGET_BYTES` (256 MB).
+    ///
+    /// **Not** fixed at construction. The reservation scales with the render
+    /// extent, so [`Self::recompute_blas_budget`] re-derives this from the
+    /// retained `blas_heap_bytes` at the end of initial setup and again on
+    /// every swapchain recreate; the value `new` installs is the unreserved
+    /// `heap / 3` and is never what a frame runs on (#3839). That also means
+    /// a worked example only holds for a stated resolution: on a 6 GB card at
+    /// 1080p the reservation is ~1.1 GB, so the budget is ~1.6 GB rather than
+    /// the 2 GB the pre-#3839 math handed out.
+    ///
+    /// "Heap size" is the DEVICE_LOCAL heap selected by the memory
+    /// requirements of a BLAS result buffer, matching the real `GpuOnly`
+    /// allocation rather than a min/max heuristic — see
+    /// [`blas_budget_for_heap`](predicates::blas_budget_for_heap)
+    /// (#2928 / #3043 / #3866).
     pub(super) blas_budget_bytes: vk::DeviceSize,
     /// The probed DEVICE_LOCAL heap `blas_budget_bytes` is derived from.
     /// Retained so [`Self::recompute_blas_budget`] can re-derive against a new

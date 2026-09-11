@@ -131,7 +131,7 @@ with the M47.1 evaluator (`byroredux_scripting::condition::evaluate`).
 The predicate lives at the caller because `scripting` depends on
 `plugin`, not the reverse — the plugin crate carries the conditions but
 can't reach the evaluator. **Fail-open on unimplemented functions:**
-the M47.1 catalog covers ~15 of Bethesda's ~300 condition functions, so
+the M47.1 catalog covers 19 of Bethesda's ~300 condition functions, so
 if any condition in a package's list references an out-of-catalog
 function, `package_conditions_pass` (`npc_spawn.rs`) treats the whole
 list as passing rather than let an unevaluable `Func == 1` silently

@@ -169,7 +169,7 @@ layouts); see the gaps table below.
 | ESM SCPT record parse (FO3, 1 257 records; FNV, 2 576 records) | ✓ |
 | Papyrus `.psc` → full AST (M30.2) | ✓ |
 | ECS-native event hooks (M47.0) — `OnCellLoad`, `OnActivate`, `OnHit` | ✓ |
-| CTDA condition evaluation with OR-precedence (M47.1) | ✓ 13 functions |
+| CTDA condition evaluation with OR-precedence (M47.1) | ✓ 19 functions |
 | `script.activate` console command wired | ✓ |
 | Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→short-circuit→control-flow→lower); full transpiler deferred |
 | Script-extender compatibility layer (SKSE-family) | ◐ **vertical slice, unaudited** — six built-in provider families registered in the Papyrus provider catalog (Game, Input, UI, StorageUtil, JContainers, ModEvent), plus an ObScript runtime. ~23.9k LOC across [`crates/sdk/src/`](../crates/sdk/src/) (14 245), [`crates/scripting/src/papyrus_provider/`](../crates/scripting/src/papyrus_provider/) (6 377) and `compatibility.rs` + `obscript*.rs` (3 294), measured 2026-09-10. No dedicated audit pass has run over it — treat the status as "exists and is tested in-crate", not "verified against real mod content". Design: [`docs/engine/sdk-v0.1-development-plan.md`](engine/sdk-v0.1-development-plan.md). |
