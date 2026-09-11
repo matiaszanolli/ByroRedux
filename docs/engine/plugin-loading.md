@@ -230,7 +230,9 @@ index. Pre-fix required two passes.
 **Passthrough-raw** (model path extracted, rest skipped): STAT, MSTT,
 FURN, DOOR, LIGH, FLOR, IDLM, BNDS, ADDN, TACT.
 
-**Not yet parsed**: SOUN, SNCT, SOPM, MUSC, MUST, ASPC, REVB, AECH (audio).
+**Audio**: SOUN, MUSC and ASPC are parsed (`records/dispatch_misc_stub.rs` —
+SOUN into a typed `SounRecord` with FNAM sound-path decode). **Not yet
+parsed**: SNCT, SOPM, MUST, REVB, AECH.
 
 ### EsmCellIndex
 
@@ -238,17 +240,29 @@ The structured output of cell parsing:
 
 ```rust
 pub struct EsmCellIndex {
-    pub cells:               HashMap<String, CellData>,                        // EditorID → interior cell
-    pub exterior_cells:      HashMap<String, HashMap<(i32, i32), CellData>>,   // worldspace → grid → cell
-    pub statics:             HashMap<u32, StaticObject>,                       // FormID → base form
-    pub landscape_textures:  HashMap<u32, String>,                             // LTEX → texture path
-    pub worldspaces:         HashMap<String, WorldspaceRecord>,
-    pub texture_sets:        HashMap<u32, TextureSet>,                         // TXST → 8-slot bundle
-    pub scols:               HashMap<u32, ScolRecord>,                         // FO4+ combined static
-    pub packins:             HashMap<u32, PkinRecord>,                         // FO4+ pack-in
-    pub movables:            HashMap<u32, MovableStaticRecord>,
-    pub material_swaps:      HashMap<u32, MaterialSwapRecord>,
+    pub cells:                       HashMap<String, CellData>,                        // EditorID → interior cell
+    pub exterior_cells:              HashMap<String, HashMap<(i32, i32), CellData>>,   // worldspace → grid → cell
+    pub worldspace_persistent_cells: HashMap<String, CellData>,                        // worldspace → its persistent CELL
+    pub statics:                     HashMap<u32, StaticObject>,                       // FormID → base form
+    pub landscape_textures:          HashMap<u32, String>,                             // LTEX → texture path
+    pub landscape_texture_sets:      HashMap<u32, TextureSet>,                         // LTEX → its TXST bundle
+    pub worldspaces:                 HashMap<String, WorldspaceRecord>,
+    pub worldspace_climates:         HashMap<String, u32>,                             // worldspace → CLMT FormID
+    pub texture_sets:                HashMap<u32, TextureSet>,                         // TXST → 8-slot bundle
+    pub scols:                       HashMap<u32, ScolRecord>,                         // FO4+ combined static
+    pub packins:                     HashMap<u32, PkinRecord>,                         // FO4+ pack-in
+    pub movables:                    HashMap<u32, MovableStaticRecord>,
+    pub material_swaps:              HashMap<u32, MaterialSwapRecord>,
 }
+```
+
+`worldspace_persistent_cells` is the one most easily missed and the least
+cosmetic: a worldspace's persistent CELL is where quest actors such as
+Skyrim's Hadvar and Ralof are placed. It is keyed by worldspace rather than
+by grid because it has no XCLC grid of its own, which is why it cannot live
+in `exterior_cells`.
+
+```rust
 ```
 
 Each `CellData` holds:
@@ -283,15 +297,28 @@ Register plugins by their slot before resolving:
 
 ```rust
 let mut lo = LegacyLoadOrder::new();
-lo.register(0x00, PluginId::from_filename("FalloutNV.esm"));
-lo.register(0x01, PluginId::from_filename("DeadMoney.esm"));
+// `register` takes the filename; it builds the `PluginId` itself.
+lo.register(0x00, "FalloutNV.esm");
+lo.register(0x01, "DeadMoney.esm");
 
 let pair = lo.resolve(LegacyFormId(0x01_000014));
 // → FormIdPair { plugin: PluginId("DeadMoney.esm"), local: LocalFormId(0x000014) }
 ```
 
-**Status:** The bridge type exists; the call site that passes it into
-`parse_esm_with_load_order` for multi-master stacks is in progress.
+**Status:** The bridge type exists and has **no production consumer** — it is
+not the mechanism multi-master stacks actually use, and no work is in flight
+to make it one.
+
+Load-order FormID resolution shipped under a different design: `FormIdRemap`
++ `GlobalSlot` (`crates/plugin/src/esm/reader.rs`, #1554), built per plugin
+from its own TES4 header and handed to `parse_esm_with_load_order`. That is
+what `cell_loader/load_order.rs` calls today.
+
+`LegacyLoadOrder` is forward-looking scaffolding for the stable
+content-addressed FormID resolver, and `crates/plugin/src/lib.rs` keeps the
+whole `legacy` module `pub(crate)` for exactly that reason (#1322) — so the
+example above is illustrative of the type's shape, not of a supported public
+API. Do not re-implement the `FormIdRemap` wiring here; it exists.
 
 ---
 

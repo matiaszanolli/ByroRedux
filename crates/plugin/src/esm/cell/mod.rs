@@ -1670,3 +1670,92 @@ pub fn parse_esm_cells_with_load_order(
 
 #[cfg(test)]
 mod tests;
+
+/// #4075 — `docs/engine/plugin-loading.md` is the document a contributor
+/// reads before touching this tier, and its `EsmCellIndex` block had fallen
+/// three fields behind the struct. The missing one that mattered was
+/// `worldspace_persistent_cells`: a reader working from the doc would
+/// conclude persistent exterior refs have no home, when it is where quest
+/// actors like Hadvar and Ralof are placed.
+///
+/// A field list transcribed by hand into prose drifts by default, so assert
+/// it instead. Only membership is pinned, not the formatting or the trailing
+/// comments — the doc is allowed to present the struct more readably than
+/// `rustfmt` does.
+#[cfg(test)]
+mod plugin_loading_doc_pin_tests {
+    const CELL_MOD_RS: &str = include_str!("mod.rs");
+    const PLUGIN_LOADING_MD: &str = include_str!("../../../../../docs/engine/plugin-loading.md");
+
+    /// Every `pub <name>:` declared in the `EsmCellIndex` struct body.
+    fn declared_fields() -> Vec<String> {
+        let start = CELL_MOD_RS
+            .find("pub struct EsmCellIndex {")
+            .expect("EsmCellIndex must still be declared here");
+        let body = &CELL_MOD_RS[start..];
+        let body = &body[..body.find("\n}").expect("the struct body must close")];
+        // Assembled at run time so this module's own text cannot be matched.
+        let decl = format!("{} ", "pub");
+        body.lines()
+            .filter_map(|line| {
+                let line = line.trim_start();
+                let rest = line.strip_prefix(decl.as_str())?;
+                let name = rest.split(':').next()?;
+                name.chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_')
+                    .then(|| name.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_documented_esm_cell_index_lists_every_field() {
+        let fields = declared_fields();
+        assert!(
+            fields.len() >= 13,
+            "the field scan found only {fields:?} — the extraction broke, not the doc",
+        );
+
+        let block_start = PLUGIN_LOADING_MD
+            .find("pub struct EsmCellIndex {")
+            .expect(
+                "plugin-loading.md must still carry the EsmCellIndex block — it is the \
+                 structured output of cell parsing and the doc's reason to exist for \
+                 this tier (#4075)",
+            );
+        let block = &PLUGIN_LOADING_MD[block_start..];
+        let block = &block[..block.find("\n}").expect("the documented block must close")];
+
+        for field in &fields {
+            assert!(
+                block.contains(field.as_str()),
+                "`EsmCellIndex::{field}` is missing from plugin-loading.md's struct \
+                 block. A contributor reads that block instead of this file, so a \
+                 field absent there is a field they will conclude does not exist \
+                 (#4075).",
+            );
+        }
+    }
+
+    /// The audio line said eight record types were unparsed when three of
+    /// them had typed dispatch arms — half-right, which sends an
+    /// audio-subsystem author to write parsers that already exist.
+    #[test]
+    fn the_audio_record_split_matches_the_dispatcher() {
+        const DISPATCH_RS: &str = include_str!("../records/dispatch_misc_stub.rs");
+        let quote = '"';
+        for parsed in ["SOUN", "MUSC", "ASPC"] {
+            assert!(
+                DISPATCH_RS.contains(&format!("b{quote}{parsed}{quote} =>")),
+                "{parsed} lost its dispatch arm — plugin-loading.md lists it as parsed",
+            );
+        }
+        for unparsed in ["SNCT", "SOPM", "MUST", "REVB", "AECH"] {
+            assert!(
+                !DISPATCH_RS.contains(&format!("b{quote}{unparsed}{quote} =>")),
+                "{unparsed} gained a dispatch arm — plugin-loading.md still lists it \
+                 under \"Not yet parsed\" (#4075)",
+            );
+        }
+    }
+}
