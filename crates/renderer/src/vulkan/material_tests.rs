@@ -1276,3 +1276,99 @@ mod r1_phase6_retirement_pin {
         );
     }
 }
+
+/// #3846 (and #1755 before it, and #1321 before that) — `bindings.glsl`'s
+/// header is the one place that states the Rust↔GLSL `GpuMaterial` lockstep
+/// contract, and its job is to tell a contributor which test to update when
+/// they add a field. It has now been wrong three times, each time one size
+/// bump behind: 260 → 300 (#1321/#1755), then 396 → 432 (#3846), and the
+/// named test was a dead grep on two of those occasions.
+///
+/// Hand-maintaining a number in a comment that exists to prevent drift is
+/// self-defeating, so assert it instead. Both the size and the *test name*
+/// the comment cites are checked, because the name is the half that actually
+/// misdirects: a reader who greps it and finds nothing has no way to know
+/// whether the pin moved or never existed.
+#[cfg(test)]
+mod bindings_glsl_contract_pin {
+    use super::GpuMaterial;
+
+    const BINDINGS_GLSL: &str = include_str!("../../shaders/include/bindings.glsl");
+    const MATERIAL_TESTS_RS: &str = include_str!("material_tests.rs");
+
+    /// The first run of ASCII digits after `anchor`.
+    fn digits_after(anchor: &str) -> usize {
+        let rest = BINDINGS_GLSL
+            .split_once(anchor)
+            .unwrap_or_else(|| {
+                panic!(
+                    "include/bindings.glsl must still carry the anchor {anchor:?} — it is \
+                     the Rust↔GLSL lockstep contract. Re-point this pin rather than \
+                     deleting it (#3846)."
+                )
+            })
+            .1;
+        let start = rest
+            .find(|c: char| c.is_ascii_digit())
+            .unwrap_or_else(|| panic!("no number follows {anchor:?}"));
+        let rest = &rest[start..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse().expect("a run of ASCII digits parses")
+    }
+
+    #[test]
+    fn bindings_glsl_states_the_real_struct_size() {
+        let live = std::mem::size_of::<GpuMaterial>();
+
+        assert_eq!(
+            digits_after("Mirrors the Rust `GpuMaterial` ("),
+            live,
+            "include/bindings.glsl's header states a GpuMaterial size that no longer \
+             matches the Rust struct (#3846)",
+        );
+        assert_eq!(
+            digits_after("the size of this struct ("),
+            live,
+            "include/bindings.glsl's Shader Struct Sync note states a GpuMaterial size \
+             that no longer matches the Rust struct (#3846)",
+        );
+    }
+
+    #[test]
+    fn the_pin_test_bindings_glsl_names_actually_exists() {
+        let rest = BINDINGS_GLSL
+            .split_once("is pinned by\n// `")
+            .expect(
+                "the Shader Struct Sync note must still name the pinning test — that name \
+                 is what a contributor greps for after adding a field (#3846)",
+            )
+            .1;
+        let named = &rest[..rest.find('`').expect("the test name must be backticked")];
+
+        // Assembled at run time: the definition, not a mention. Two of the
+        // three recurrences named a test that had never existed, so a scan
+        // that a mere mention could satisfy would pass on the broken case.
+        let decl = format!("{} {named}(", "fn");
+        assert!(
+            MATERIAL_TESTS_RS.contains(decl.as_str()),
+            "include/bindings.glsl points the struct-sync invariant at `{named}`, which is \
+             not defined in material_tests.rs. This is the exact failure #1755 and #3846 \
+             were filed for: a contributor adds a field, greps the named test, finds \
+             nothing, and has no pin to update.",
+        );
+
+        // ...and that test must be the one that actually checks the size.
+        let body = MATERIAL_TESTS_RS
+            .split_once(decl.as_str())
+            .expect("just asserted present")
+            .1;
+        let body = &body[..body.find("\n}").unwrap_or(body.len())];
+        assert!(
+            body.contains("size_of::<GpuMaterial>()"),
+            "`{named}` exists but does not assert `size_of::<GpuMaterial>()` — the comment \
+             would point at a test that cannot catch the drift it warns about (#3846)",
+        );
+    }
+}

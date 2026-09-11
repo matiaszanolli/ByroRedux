@@ -205,75 +205,43 @@ impl WaterCausticAccum {
         debug_assert!(frame < self.slots.len(), "frame index out of range");
         let slot = &self.slots[frame];
 
-        // ── Pre-clear barrier: FRAGMENT_SHADER (prior-frame writes /
-        // composite reads — both possible) → TRANSFER ──────────────
-        let pre_clear = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            // GENERAL → GENERAL on every frame, frame 0 included: this
-            // barrier never performs the discarding UNDEFINED → GENERAL
-            // transition, and could not — `old_layout` is a constant here.
-            // [`Self::initialize_layouts`] does that once per FIF slot on a
-            // fenced one-time submit before any frame, which is precisely why
-            // `oldLayout = GENERAL` is legal on the first use of a slot
-            // (VUID-vkCmdDraw-None-09600). Do not delete that call believing
-            // this barrier covers it (#4037). No data need be preserved
-            // either way — the clear that immediately follows writes every
-            // texel.
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(slot.image)
-            .subresource_range(color_subresource_single_mip());
-        // SAFETY: caller's unsafe-fn contract — `cmd` recording, slot
-        // index valid. Pipeline-barrier args are well-formed.
+        // ── Zero the slot ───────────────────────────────────────────
+        // #3844 — this used to hand-roll the barrier/clear/barrier sandwich
+        // with a `FRAGMENT_SHADER`-only source scope. That is the shape
+        // #3646/#3647 corrected on the caustic and volumetrics accumulators
+        // five weeks earlier; this copy was not in that commit's field of
+        // view, and the pin test written to stop the drift enumerated only
+        // those two files. Routing through the shared helper is what makes
+        // the omission unrepresentable: it puts `TRANSFER` / `TRANSFER_WRITE`
+        // into the source scope structurally, so the prior visit's clear on
+        // this slot chains into this one. That case is not exotic here — this
+        // runs unconditionally every frame the accumulator exists, so a frame
+        // where water.frag never ran leaves clear-then-clear as the normal
+        // sequence, not an edge case.
+        //
+        // Consumers are fragment-only: water.frag's `imageAtomicAdd` and
+        // composite.frag's `texelFetch`. No compute stage touches this
+        // accumulator — `caustic_splat.comp` writes the *other* one, owned by
+        // `CausticPipeline`.
+        //
+        // The helper never performs the discarding UNDEFINED → GENERAL
+        // transition, and could not. [`Self::initialize_layouts`] does that
+        // once per FIF slot on a fenced one-time submit before any frame,
+        // which is why `oldLayout = GENERAL` is legal on a slot's first use
+        // (VUID-vkCmdDraw-None-09600). Do not delete that call believing this
+        // covers it (#4037).
+        // SAFETY: caller's unsafe-fn contract — `cmd` is recording and
+        // `frame` is in range; `slot.image` is device-owned and in GENERAL.
         unsafe {
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[pre_clear],
-            );
-        }
-
-        // ── Clear to zero (R32_UINT all-zero starting accumulator) ──
-        let clear_value = vk::ClearColorValue {
-            uint32: [0, 0, 0, 0],
-        };
-        let clear_range = color_subresource_single_mip();
-        unsafe {
-            // SAFETY: caller's unsafe-fn contract — `cmd` is recording and `frame` is in range; `slot.image` is device-owned and now in GENERAL layout (transitioned by the pre-clear barrier above); `clear_range` covers its single mip.
-            device.cmd_clear_color_image(
+            super::descriptors::clear_general_accumulator(
+                device,
                 cmd,
                 slot.image,
-                vk::ImageLayout::GENERAL,
-                &clear_value,
-                &[clear_range],
-            );
-        }
-
-        // ── Post-clear barrier: TRANSFER → FRAGMENT_SHADER ─────────
-        // water.frag's `imageAtomicAdd` is FRAGMENT-stage SHADER_WRITE;
-        // it must see the zeroed image after the clear retires.
-        let post_clear = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(slot.image)
-            .subresource_range(clear_range);
-        unsafe {
-            // SAFETY: caller's unsafe-fn contract — `cmd` is recording; the well-formed `post_clear` barrier targets device-owned `slot.image`, sequencing the clear's TRANSFER_WRITE before water.frag's FRAGMENT_SHADER atomic access.
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::TRANSFER,
+                color_subresource_single_mip(),
+                vk::ClearColorValue {
+                    uint32: [0, 0, 0, 0],
+                },
                 vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[post_clear],
             );
         }
     }

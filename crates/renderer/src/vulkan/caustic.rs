@@ -939,59 +939,24 @@ impl CausticPipeline {
         } else {
             // Moving camera: clear the slot so an old-viewpoint pool can't
             // smear, then deposit full energy (decay_factor == 0).
-            // #3646 — TRANSFER_WRITE in the source scope for the same
-            // reason as `pre_decay` above: the slot's prior use may have
-            // been `clear_for_skip`'s clear rather than a compute/fragment
-            // access.
-            let pre_clear_barrier = vk::ImageMemoryBarrier::default()
-                .src_access_mask(
-                    vk::AccessFlags::SHADER_READ
-                        | vk::AccessFlags::SHADER_WRITE
-                        | vk::AccessFlags::TRANSFER_WRITE,
-                )
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(slot_img)
-                .subresource_range(clear_range);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER
-                    | vk::PipelineStageFlags::FRAGMENT_SHADER
-                    | vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[pre_clear_barrier],
-            );
-            let clear_value = vk::ClearColorValue {
-                uint32: [0, 0, 0, 0],
-            };
-            device.cmd_clear_color_image(
-                cmd,
-                slot_img,
-                vk::ImageLayout::GENERAL,
-                &clear_value,
-                &[clear_range],
-            );
-            // TRANSFER → COMPUTE so the splat's atomic adds see zeros.
-            let post_clear_barrier = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(slot_img)
-                .subresource_range(clear_range);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[post_clear_barrier],
-            );
+            // The splat's atomic adds must see zeros; the slot's prior use
+            // may itself have been `clear_for_skip`'s clear, which is why
+            // the source scope has to reach TRANSFER (#3646). The helper
+            // supplies that half — see `clear_general_accumulator` (#3844).
+            // Consumers are the splat compute and composite's fragment read.
+            unsafe {
+                super::descriptors::clear_general_accumulator(
+                    device,
+                    cmd,
+                    slot_img,
+                    clear_range,
+                    vk::ClearColorValue {
+                        uint32: [0, 0, 0, 0],
+                    },
+                    vk::PipelineStageFlags::COMPUTE_SHADER
+                        | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                );
+            }
         }
 
         // ── Splat dispatch ────────────────────────────────────────────
@@ -1060,67 +1025,24 @@ impl CausticPipeline {
         reset_parked_slot(&mut self.parked_frames, frame);
         let slot_img = self.slots[frame].image;
         let clear_range = caustic_subresource_range();
-        // Same over-specified wait stages `dispatch`'s moving-camera clear
-        // uses: the slot's prior use was either this pipeline's own
-        // compute-write + composite's fragment-read (steady state), or
-        // GENERAL-but-untouched from `initialize_layouts` (frame 0 / just
-        // after resize) — safe either way.
-        let pre_clear_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(
-                vk::AccessFlags::SHADER_READ
-                    | vk::AccessFlags::SHADER_WRITE
-                    | vk::AccessFlags::TRANSFER_WRITE,
-            )
-            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(slot_img)
-            .subresource_range(clear_range);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER
-                | vk::PipelineStageFlags::FRAGMENT_SHADER
-                | vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[pre_clear_barrier],
-        );
-        let clear_value = vk::ClearColorValue {
-            uint32: [0, 0, 0, 0],
-        };
-        device.cmd_clear_color_image(
-            cmd,
-            slot_img,
-            vk::ImageLayout::GENERAL,
-            &clear_value,
-            &[clear_range],
-        );
-        // TRANSFER → FRAGMENT for composite's sample this frame, and
-        // TRANSFER → COMPUTE for the slot's *next* visit (#3646). No
-        // compute dispatch follows this clear within the frame, but the
-        // next visit to this slot is `dispatch`, whose decay pass
-        // `imageLoad`s what was cleared here. Naming only FRAGMENT left
-        // that cross-frame edge uncovered from this side; `dispatch`'s
-        // own barriers now name TRANSFER in their source scope too, so
-        // the chain is closed from both ends.
-        let post_clear_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(slot_img)
-            .subresource_range(clear_range);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[post_clear_barrier],
-        );
+        // FRAGMENT for composite's sample this frame, COMPUTE for the slot's
+        // *next* visit (#3646): no compute dispatch follows this clear within
+        // the frame, but the next visit is `dispatch`, whose decay pass
+        // `imageLoad`s what was cleared here. The helper carries the TRANSFER
+        // half of both scopes, so the clear-to-clear edge — a long skip streak
+        // revisiting this slot — is closed structurally (#3844).
+        unsafe {
+            super::descriptors::clear_general_accumulator(
+                device,
+                cmd,
+                slot_img,
+                clear_range,
+                vk::ClearColorValue {
+                    uint32: [0, 0, 0, 0],
+                },
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+            );
+        }
     }
 
     /// Recreate accumulator images and rewrite descriptor sets on resize.
@@ -1710,27 +1632,30 @@ mod parked_visit_tests {
     }
 }
 
-/// #3646 / #3647 — a skip-path clear and the next visit to the same
+/// #3646 / #3647 / #3844 — a clear and the next visit to the same
 /// frame-in-flight slot must agree about `TRANSFER`.
 ///
-/// `clear_for_skip` writes the accumulator with `vkCmdClearColorImage`
-/// (`TRANSFER_WRITE`); the slot's *next* visit is `dispatch`, whose decay
-/// pass `imageLoad`s that same image. Those two are in different command
-/// buffer submissions, so the only thing that can carry the write to the
-/// read is the barrier masks — and the clear published to `FRAGMENT_SHADER`
-/// only while `dispatch`'s barriers named `COMPUTE | FRAGMENT` in their
-/// source scope, so `TRANSFER` appeared on neither side.
+/// A clear writes the accumulator with `vkCmdClearColorImage`
+/// (`TRANSFER_WRITE`); the slot's *next* visit reads or accumulates into that
+/// same image, `MAX_FRAMES_IN_FLIGHT` frames later and in a different command
+/// buffer submission. The only thing that can carry the write to that read is
+/// the barrier masks, so both ends have to name `TRANSFER`.
 ///
-/// Sync validation does not currently flag this (the both-slots fence wait
-/// at `MAX_FRAMES_IN_FLIGHT == 2` covers it — see `sync.rs`'s #870 block),
-/// which is exactly why a source-shape pin is warranted: the masks must
-/// stay right independently of a fence that #870 documents as fragile, and
-/// the #653 precedent (`taa.rs`, `svgf.rs`) already applies that rule
-/// elsewhere in this crate.
+/// Sync validation does not currently flag a gap here (the both-slots fence
+/// wait at `MAX_FRAMES_IN_FLIGHT == 2` covers it — see `sync.rs`'s #870
+/// block), which is exactly why a source-shape pin is warranted: the masks
+/// must stay right independently of a fence that #870 documents as fragile,
+/// per the #653 precedent already applied in `taa.rs` / `svgf.rs`.
+///
+/// #3844 moved the clear end into `descriptors::clear_general_accumulator`,
+/// so three of these assertions collapse into one over the helper. What
+/// cannot collapse is the *other* end: the dispatch-side barriers are still
+/// hand-written per pipeline, and each still has to name `TRANSFER_WRITE` in
+/// its source scope. Those arms stay.
 #[cfg(test)]
 mod skip_clear_mask_pin_tests {
-    /// Source between `needle` and the next `fn ` after it — one function
-    /// body, without needing a real parser.
+    /// Source between `needle` and the next same-level `fn` after it — one
+    /// function body, without needing a real parser.
     fn body_after<'a>(src: &'a str, needle: &str) -> &'a str {
         let start = src
             .find(needle)
@@ -1740,54 +1665,96 @@ mod skip_clear_mask_pin_tests {
         &rest[..end]
     }
 
+    /// The clear end, once, for every accumulator that routes through it.
     #[test]
-    fn caustic_skip_clear_and_next_visit_agree_on_transfer() {
-        const CAUSTIC_RS: &str = include_str!("caustic.rs");
+    fn the_shared_clear_puts_transfer_on_both_sides() {
+        const DESCRIPTORS_RS: &str = include_str!("descriptors.rs");
 
-        let clear = body_after(CAUSTIC_RS, "pub unsafe fn clear_for_skip");
+        let helper = DESCRIPTORS_RS
+            .split_once("pub unsafe fn clear_general_accumulator")
+            .expect(
+                "`clear_general_accumulator` must still exist — every accumulator clear \
+                 routes through it (#3844)",
+            )
+            .1;
+        let helper = helper
+            .split_once("\npub ")
+            .map(|(head, _)| head)
+            .unwrap_or(helper);
+
         assert!(
-            clear.contains(
-                "PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER"
-            ),
-            "clear_for_skip's post-clear barrier must publish to COMPUTE as \
-             well as FRAGMENT — the slot's next visit is `dispatch`'s decay \
-             compute read, not just this frame's composite sample (#3646)",
+            helper.contains("| vk::AccessFlags::TRANSFER_WRITE,"),
+            "the pre-clear barrier must name TRANSFER_WRITE in its source scope — a \
+             slot's prior visit may itself have been a clear (#3646/#3647)",
         );
-
-        let dispatch = body_after(CAUSTIC_RS, "pub unsafe fn dispatch");
-        let transfer_srcs = dispatch
-            .matches("| vk::AccessFlags::TRANSFER_WRITE,")
-            .count();
         assert!(
-            transfer_srcs >= 2,
-            "`dispatch`'s pre-decay and pre-clear barriers must both name \
-             TRANSFER_WRITE in their source scope, so a prior \
-             `clear_for_skip` on this slot chains into them — found \
-             {transfer_srcs} (#3646)",
+            helper.contains("consumer_stages | vk::PipelineStageFlags::TRANSFER"),
+            "the pre-clear barrier's source *stage* must include TRANSFER unconditionally. \
+             Making it structural rather than a caller's argument is the whole point of \
+             #3844 — `water_caustic` spent five weeks without it because the caller had \
+             to remember.",
+        );
+        assert!(
+            helper.contains(
+                ".dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)"
+            ),
+            "the post-clear barrier must publish for SHADER_WRITE as well as SHADER_READ — \
+             a slot's next visit may accumulate into it (`imageAtomicAdd`), which is a WAW \
+             against the zeros (#3844)",
         );
     }
 
+    /// No accumulator may hand-roll the sandwich again. This is the
+    /// assertion that scales: a fifth accumulator is covered the day it is
+    /// written, which is precisely what the previous three-file enumeration
+    /// could not do — `water_caustic.rs` existed the whole time and was
+    /// simply not listed (#3844).
     #[test]
-    fn volumetrics_neutral_clear_and_next_visit_agree_on_transfer() {
+    fn no_accumulator_clears_outside_the_shared_helper() {
+        const ACCUMULATORS: [(&str, &str); 3] = [
+            ("caustic.rs", include_str!("caustic.rs")),
+            ("volumetrics.rs", include_str!("volumetrics.rs")),
+            ("water_caustic.rs", include_str!("water_caustic.rs")),
+        ];
+        // Assembled at run time so this file's own contribution — the literal
+        // in this very assertion — is not what the scan matches on.
+        let call = format!("{}_clear_color_image(", "cmd");
+        for (name, src) in ACCUMULATORS {
+            assert!(
+                !src.contains(call.as_str()),
+                "{name} calls the clear directly. Per-frame-in-flight accumulators must go \
+                 through `descriptors::clear_general_accumulator`, which puts TRANSFER in \
+                 the source scope so a prior visit's clear on the same slot chains into \
+                 this one (#3844).",
+            );
+        }
+    }
+
+    /// The dispatch end of the caustic chain — still hand-written.
+    #[test]
+    fn caustic_dispatch_names_transfer_in_its_source_scope() {
+        const CAUSTIC_RS: &str = include_str!("caustic.rs");
+
+        let dispatch = body_after(CAUSTIC_RS, "pub unsafe fn dispatch");
+        assert!(
+            dispatch.contains("| vk::AccessFlags::TRANSFER_WRITE,"),
+            "`dispatch`'s pre-decay barrier must name TRANSFER_WRITE in its source \
+             scope, so a prior `clear_for_skip` on this slot chains into it (#3646)",
+        );
+    }
+
+    /// The dispatch end of the volumetrics chain — still hand-written.
+    #[test]
+    fn volumetrics_dispatch_names_transfer_in_its_source_scope() {
         const VOLUMETRICS_RS: &str = include_str!("volumetrics.rs");
 
         assert!(
             VOLUMETRICS_RS.contains(
                 ".src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::TRANSFER_WRITE)"
             ),
-            "`dispatch`'s `pre_int_write` must name TRANSFER_WRITE in its \
-             source scope — the slot's prior use is `record_neutral_frame`'s \
-             clear on every frame before the TLAS exists (#3647)",
-        );
-        let neutral = VOLUMETRICS_RS
-            .split_once("pub unsafe fn record_neutral_frame")
-            .expect("record_neutral_frame")
-            .1;
-        assert!(
-            neutral.contains("| vk::AccessFlags::TRANSFER_WRITE,"),
-            "`record_neutral_frame`'s own `to_clear` must name TRANSFER_WRITE \
-             in its source scope — at load every frame on this slot is a \
-             repeat neutral clear (#3647)",
+            "`dispatch`'s `pre_int_write` must name TRANSFER_WRITE in its source \
+             scope — the slot's prior use is `record_neutral_frame`'s clear on every \
+             frame before the TLAS exists (#3647)",
         );
     }
 }

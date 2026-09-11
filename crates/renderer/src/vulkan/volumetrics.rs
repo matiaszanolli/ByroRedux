@@ -1591,56 +1591,24 @@ impl VolumetricsPipeline {
     ) {
         let subresource = super::descriptors::color_subresource_single_mip();
         let image = self.integrated_volumes[frame].image;
-        // #3647 — TRANSFER_WRITE in the source scope covers a repeat
-        // neutral frame on the same slot (the common case at load: every
-        // frame is neutral until the TLAS exists).
-        let to_clear = vk::ImageMemoryBarrier::default()
-            .src_access_mask(
-                vk::AccessFlags::SHADER_READ
-                    | vk::AccessFlags::SHADER_WRITE
-                    | vk::AccessFlags::TRANSFER_WRITE,
-            )
-            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(image)
-            .subresource_range(subresource);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER
-                | vk::PipelineStageFlags::FRAGMENT_SHADER
-                | vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[to_clear],
-        );
-        device.cmd_clear_color_image(
-            cmd,
-            image,
-            vk::ImageLayout::GENERAL,
-            &vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
-            },
-            &[subresource],
-        );
-        let to_sample = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(image)
-            .subresource_range(subresource);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[to_sample],
-        );
+        // #3647 — the source scope must reach TRANSFER because a repeat
+        // neutral frame on the same slot is the common case at load: every
+        // frame is neutral until the TLAS exists, so the slot's prior visit
+        // was this same clear. `clear_general_accumulator` supplies that half
+        // structurally (#3844). Consumers: composite samples the integrated
+        // volume (FRAGMENT) and integration writes it (COMPUTE).
+        unsafe {
+            super::descriptors::clear_general_accumulator(
+                device,
+                cmd,
+                image,
+                subresource,
+                vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+            );
+        }
         self.history_valid = false;
         self.dispatched_this_frame = false;
         self.last_simulation_time_seconds = None;

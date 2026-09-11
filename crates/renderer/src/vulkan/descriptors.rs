@@ -263,6 +263,100 @@ pub fn image_barrier_general_write_to_read(image: vk::Image) -> vk::ImageMemoryB
 ///   src_access = SHADER_READ
 ///   dst_access = SHADER_READ | SHADER_WRITE
 #[inline]
+/// Zero a GENERAL-layout per-FIF accumulator: barrier in, clear, barrier out.
+///
+/// The whole sandwich, because the part that keeps getting dropped is not the
+/// clear but the *source scope* of the barrier before it. A per-frame-in-flight
+/// accumulator's previous use of a given slot is `MAX_FRAMES_IN_FLIGHT` frames
+/// ago, and that use may itself have been a clear — a skipped caustic frame, a
+/// neutral volumetrics frame, a water pass that ran with no water. So the
+/// source scope has to name `TRANSFER` / `TRANSFER_WRITE` or the clear-to-clear
+/// edge is unsynchronised (#3646 / #3647). The fence does not cover it: #653
+/// established that the masks must be right even where a fence happens to
+/// serialise, because the fence is not what the validator or a future
+/// frames-in-flight bump relies on.
+///
+/// That reasoning was worked out once and then hand-copied to three of the four
+/// accumulators; `water_caustic` was missed and stayed on a `FRAGMENT`-only
+/// source scope for five weeks (#3844). Here `TRANSFER` is added structurally,
+/// so a caller cannot forget it — `consumer_stages` names only what reads or
+/// writes the image as a shader resource, and the transfer half is not the
+/// caller's to get wrong.
+///
+/// `consumer_stages` is used on both sides: flushed before the clear, waited on
+/// after it. Passing the union of a slot's readers and writers is correct and
+/// costs only ordering; naming too few is the bug this exists to prevent.
+///
+/// # Safety
+/// `cmd` must be in the recording state, `image` device-owned and already in
+/// `GENERAL` (an accumulator's one-time `UNDEFINED` → `GENERAL` transition
+/// belongs to its own init path — this never performs it), and `range` must
+/// cover only subresources of `image`.
+pub unsafe fn clear_general_accumulator(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    image: vk::Image,
+    range: vk::ImageSubresourceRange,
+    clear_value: vk::ClearColorValue,
+    consumer_stages: vk::PipelineStageFlags,
+) {
+    let to_clear = vk::ImageMemoryBarrier::default()
+        // TRANSFER_WRITE: the prior visit to this slot may have been a clear.
+        .src_access_mask(
+            vk::AccessFlags::SHADER_READ
+                | vk::AccessFlags::SHADER_WRITE
+                | vk::AccessFlags::TRANSFER_WRITE,
+        )
+        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .image(image)
+        .subresource_range(range);
+    // SAFETY: caller's contract — `cmd` recording, `image` device-owned and in
+    // GENERAL, `range` within it. The barrier is well-formed and transitions
+    // GENERAL → GENERAL, so it never discards contents.
+    unsafe {
+        device.cmd_pipeline_barrier(
+            cmd,
+            consumer_stages | vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_clear],
+        );
+    }
+
+    // SAFETY: as above; the barrier just made `image` available for
+    // TRANSFER_WRITE in GENERAL, which is a legal layout for a clear.
+    unsafe {
+        device.cmd_clear_color_image(cmd, image, vk::ImageLayout::GENERAL, &clear_value, &[range]);
+    }
+
+    let to_consume = vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        // Both, not just READ: a slot's next visit may accumulate into it
+        // (`imageAtomicAdd`) rather than sample it, and that is a WAW against
+        // the zeros written here.
+        .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .image(image)
+        .subresource_range(range);
+    // SAFETY: as above.
+    unsafe {
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            consumer_stages,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_consume],
+        );
+    }
+}
+
 pub fn image_barrier_shader_read_to_general(image: vk::Image) -> vk::ImageMemoryBarrier<'static> {
     vk::ImageMemoryBarrier::default()
         .src_access_mask(vk::AccessFlags::SHADER_READ)
