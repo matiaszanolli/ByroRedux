@@ -797,93 +797,110 @@ fn apply_buoyancy_with_scratch(
                 *body.translation()
             };
 
-            // #3490 (PHYS-D6-2026-08-27b-01) — the collider AABB is fetched
-            // ONCE here, shared by both the current-volume Y test below and
-            // the surface Y test further down, so the two agree on which Y
-            // value represents "the body". Pre-fix, the current-volume
-            // branch tested `pos.y` (the rigid-body ORIGIN) while the
-            // surface branch tested the AABB centre (#2887) — the exact
-            // split #2887 already closed for the surface branch alone, 26
-            // lines apart in this same loop. They coincide only for a shape
-            // centred on its body, which is exactly what the bhk import
-            // path is not: `collision_shape_to_parts` attaches every
-            // compound part at its own local isometry, and ragdoll bones
-            // are offset by construction — the norm, not an edge case.
-            // Missing collider still `continue`s the whole iteration,
-            // matching the surface branch's pre-existing behaviour (their
-            // `current_flow`/`surface` locals were about to be discarded by
-            // the same `continue` either way, since it unwinds past both).
-            let aabb_y = if pos.x < ux0 || pos.x > ux1 || pos.z < uz0 || pos.z > uz1 {
-                None
-            } else {
-                let Some(collider) = pw.colliders.get(t.handles.collider) else {
-                    continue;
-                };
-                let aabb = collider.compute_aabb();
-                Some((aabb.mins.y, aabb.maxs.y))
+            // #3490 / #3973 (PHYS-D6-2026-08-27b-01, extended) — the
+            // collider AABB is fetched ONCE here and its centre used on
+            // ALL THREE axes for the union prefilter, the current-volume
+            // containment, and the surface containment alike, so every
+            // containment decision in this loop agrees on which point
+            // represents "the body". #3490 fixed this for Y alone (the
+            // current-volume and surface branches used to disagree on Y
+            // — origin vs AABB centre); #3973 closes the X/Z half left
+            // open by that fix, where the union prefilter and both
+            // containment predicates still read `pos.x`/`pos.z` (the
+            // rigid-body ORIGIN) while Y already read the AABB centre —
+            // one body, two reference points on two different axes. They
+            // coincide only for a shape centred on its body, which is
+            // exactly what the bhk import path is not:
+            // `collision_shape_to_parts` attaches every compound part at
+            // its own local isometry, and ragdoll bones are offset by
+            // construction — the norm, not an edge case. Missing
+            // collider `continue`s the whole iteration.
+            //
+            // This computes the AABB before any XZ reject, trading the
+            // old "cheap origin-only reject first" prefilter's saved
+            // `compute_aabb()` calls for correctness on the boundary
+            // case that trade-off was hiding: a body outside the union
+            // footprint by its ORIGIN could have a collider that still
+            // overlaps it. `targets` is every dynamic body in the world,
+            // not pre-filtered by proximity to water, so this does cost
+            // one `compute_aabb()` per dynamic body per tick regardless
+            // of distance from water — bounded by body count, not by
+            // volume count, and `compute_aabb()` is a local shape-extent
+            // computation, not a broad-phase query.
+            let Some(collider) = pw.colliders.get(t.handles.collider) else {
+                continue;
             };
+            let aabb = collider.compute_aabb();
+            let reference_point = aabb.center();
+            let (min_y, max_y) = (aabb.mins.y, aabb.maxs.y);
+            let center_y = 0.5 * (min_y + max_y);
 
-            let current_flow = aabb_y.and_then(|(min_y, max_y)| {
-                let center_y = 0.5 * (min_y + max_y);
-                current_volumes
-                    .iter()
-                    .find(|current| {
-                        let v = &current.volume;
-                        pos.x >= v.min[0]
-                            && pos.x <= v.max[0]
-                            && center_y >= v.min[1]
-                            && center_y <= v.max[1]
-                            && pos.z >= v.min[2]
-                            && pos.z <= v.max[2]
-                    })
-                    .map(|current| current.flow)
-            });
+            let in_union_footprint = reference_point.x >= ux0
+                && reference_point.x <= ux1
+                && reference_point.z >= uz0
+                && reference_point.z <= uz1;
 
-            // Find the containing surface: body centre inside the volume's XZ
-            // extent, and the body within the column (band-extended above the
-            // surface like the camera path so the waterline is sticky). Bodies
-            // outside the union footprint resolve to `None` without ever
-            // touching the collider set. `(s, min_y, max_y)` borrows only the
-            // local `surfaces` Vec — not `pw` — so the `get_mut` below is free.
-            let surface = aabb_y.and_then(|(min_y, max_y)| {
-                // #2887 — the collider AABB centre, NOT `pos.y` (the rigid
-                // body's ORIGIN). See the `aabb_y` doc above for why they
-                // disagree on the bhk import path. `submerged_fraction`
-                // already reads the AABB span, so sorting and `depth` were
-                // the odd ones out.
-                let center_y = 0.5 * (min_y + max_y);
-                surfaces
-                    .iter()
-                    .filter_map(|s| {
-                        let v = &s.volume;
-                        if !(pos.x >= v.min[0]
-                            && pos.x <= v.max[0]
-                            && pos.z >= v.min[2]
-                            && pos.z <= v.max[2]
-                            && max_y >= v.min[1])
-                        {
-                            return None;
-                        }
-                        let surface_y = time_secs
-                            .map(|time| {
-                                authored_wave_height_with_weather(
-                                    &s.material,
-                                    Vec3::new(pos.x, pos.y, pos.z),
-                                    time,
-                                    weather_scroll,
-                                    wind_wave_scale,
-                                )
-                            })
-                            .unwrap_or(0.0)
-                            + s.surface_y;
-                        (min_y <= surface_y + WATERLINE_HYSTERESIS).then_some((s, surface_y))
-                    })
-                    .min_by(|a, b| {
-                        nearest_surface_distance(a.1, center_y)
-                            .total_cmp(&nearest_surface_distance(b.1, center_y))
-                    })
-                    .map(|(s, surface_y)| (s, min_y, max_y, surface_y))
-            });
+            let current_flow = in_union_footprint
+                .then(|| {
+                    current_volumes
+                        .iter()
+                        .find(|current| {
+                            let v = &current.volume;
+                            reference_point.x >= v.min[0]
+                                && reference_point.x <= v.max[0]
+                                && center_y >= v.min[1]
+                                && center_y <= v.max[1]
+                                && reference_point.z >= v.min[2]
+                                && reference_point.z <= v.max[2]
+                        })
+                        .map(|current| current.flow)
+                })
+                .flatten();
+
+            // Find the containing surface: collider AABB centre inside the
+            // volume's XZ extent (matching the union prefilter and the
+            // current-volume test above — see the AABB-centre doc at the
+            // top of this block), and the body within the column
+            // (band-extended above the surface like the camera path so the
+            // waterline is sticky). Bodies outside the union footprint
+            // resolve to `None` without ever touching the collider set.
+            // `(s, min_y, max_y)` borrows only the local `surfaces` Vec —
+            // not `pw` — so the `get_mut` below is free.
+            let surface = in_union_footprint
+                .then(|| {
+                    surfaces
+                        .iter()
+                        .filter_map(|s| {
+                            let v = &s.volume;
+                            if !(reference_point.x >= v.min[0]
+                                && reference_point.x <= v.max[0]
+                                && reference_point.z >= v.min[2]
+                                && reference_point.z <= v.max[2]
+                                && max_y >= v.min[1])
+                            {
+                                return None;
+                            }
+                            let surface_y = time_secs
+                                .map(|time| {
+                                    authored_wave_height_with_weather(
+                                        &s.material,
+                                        Vec3::new(pos.x, pos.y, pos.z),
+                                        time,
+                                        weather_scroll,
+                                        wind_wave_scale,
+                                    )
+                                })
+                                .unwrap_or(0.0)
+                                + s.surface_y;
+                            (min_y <= surface_y + WATERLINE_HYSTERESIS).then_some((s, surface_y))
+                        })
+                        .min_by(|a, b| {
+                            nearest_surface_distance(a.1, center_y)
+                                .total_cmp(&nearest_surface_distance(b.1, center_y))
+                        })
+                        .map(|(s, surface_y)| (s, min_y, max_y, surface_y))
+                })
+                .flatten();
 
             // #3114 — ONE owner of the force clear per body per frame, before
             // any branch applies. Rapier's `add_force` accumulates into
@@ -1811,6 +1828,83 @@ mod tests {
             "the current volume must be detected via the collider AABB centre \
              (-70), which falls inside the authored band, and push the body \
              downstream along +Z; a body-origin read (-30) falls outside the \
+             band and would miss the current entirely, leaving z≈0 — got \
+             z={}",
+            position.z
+        );
+    }
+
+    /// Regression for #3973 (PHYS-D6-2026-09-06-01) — #3490 fixed the
+    /// current-volume containment test's Y axis to read the collider AABB
+    /// centre instead of the body origin, but left X and Z on the origin.
+    /// Reuses the sibling Y-axis test's exact fixture shape, with the
+    /// compound leaf's offset moved onto X instead of Y: the AABB centre
+    /// (X=40) and the body origin (X=0) now disagree on X, and a current
+    /// volume authored to contain only the offset centre's X band (not the
+    /// origin's) must fire — a pre-fix (origin-only) read would miss it
+    /// entirely.
+    #[test]
+    fn current_volume_flow_is_measured_from_the_collider_aabb_centre_on_x_not_the_body_origin() {
+        use crate::physics_sync_system;
+        use byroredux_core::ecs::components::collision::CollisionShape;
+        use byroredux_core::ecs::components::water::WaterCurrentVolume;
+        use byroredux_core::ecs::components::Transform;
+
+        const OFFSET_X: f32 = 40.0;
+        const RADIUS: f32 = 10.0;
+        let body_origin_y = -30.0_f32;
+        let (mut world, _water, body) = submerged_ball_world(body_origin_y);
+        world.insert(
+            body,
+            CollisionShape::Compound {
+                children: vec![(
+                    Vec3::new(OFFSET_X, 0.0, 0.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Ball { radius: RADIUS }),
+                )],
+            },
+        );
+
+        // AABB centre X = origin X (0) + OFFSET_X = 40.0; body origin X = 0.
+        // Band contains the centre but not the origin.
+        let aabb_centre_x = 0.0 + OFFSET_X;
+        assert!(
+            (30.0..=50.0).contains(&aabb_centre_x),
+            "fixture precondition: centre must fall inside the authored band"
+        );
+        assert!(
+            !(30.0..=50.0).contains(&0.0_f32),
+            "fixture precondition: origin must fall OUTSIDE the authored band, \
+             or this test can't distinguish the two reads"
+        );
+        let marker = world.spawn();
+        world.insert(
+            marker,
+            WaterCurrentVolume {
+                volume: WaterVolume {
+                    min: [30.0, -200.0, -500.0],
+                    max: [50.0, 0.0, 500.0],
+                },
+                // +Z — orthogonal to the base water plane's own +X flow
+                // (`submerged_ball_world`), so any Z displacement can only
+                // come from THIS current volume firing.
+                flow: WaterFlow::new([0.0, 0.0, 1.0], 8.0),
+            },
+        );
+
+        for _ in 0..600 {
+            physics_sync_system(&world, PHYSICS_DT);
+        }
+
+        let position = world
+            .get::<Transform>(body)
+            .expect("transform present")
+            .translation;
+        assert!(
+            position.z > 1.0,
+            "the current volume must be detected via the collider AABB centre's \
+             X (40), which falls inside the authored band, and push the body \
+             downstream along +Z; a body-origin read (X=0) falls outside the \
              band and would miss the current entirely, leaving z≈0 — got \
              z={}",
             position.z
