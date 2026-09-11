@@ -67,8 +67,22 @@ impl LegacyFormId {
     }
 
     /// Returns true if this is a null/invalid form (local_id == 0).
+    ///
+    /// #4081 — dispatched on slot kind. `local_id` masks the bottom 24
+    /// bits, but an ESL form's object id is the bottom 12 bits
+    /// ([`esl_local`](Self::esl_local)) and an ESH form's is the bottom
+    /// 16 ([`esh_local`](Self::esh_local)). A null ESL reference such as
+    /// `0xFE00_A000` has `local_id() == 0x00A000 != 0` under the old
+    /// unconditional 24-bit read, so `is_null` returned `false` and
+    /// `resolve` proceeded past its null gate.
     pub fn is_null(&self) -> bool {
-        self.local_id() == 0
+        if self.is_esl() {
+            self.esl_local() == 0
+        } else if self.is_esh() {
+            self.esh_local() == 0
+        } else {
+            self.local_id() == 0
+        }
     }
 
     /// Returns true if this is an ESL (Light Master) reference.
@@ -234,6 +248,33 @@ mod tests {
         assert!(!LegacyFormId(0x01_000001).is_null());
         // Slot 0xFF with local 0 is both save-generated and null.
         assert!(LegacyFormId(0xFF_000000).is_null());
+    }
+
+    /// Regression for #4081. A null ESL/ESH reference has a nonzero
+    /// `local_id()` (the bottom-24-bit read `is_null` used to use
+    /// unconditionally) because the sub-index bits above the narrower
+    /// ESL/ESH local-id field are nonzero — only the field `is_esl()`/
+    /// `is_esh()` actually addresses is zero.
+    #[test]
+    fn is_null_dispatches_on_slot_kind_for_esl_and_esh() {
+        // 0xFE00_A000: ESL sub-index 0x00A, esl_local 0x000 — a null ESL
+        // reference. local_id() (bottom 24 bits, 0x00A000) is nonzero, so
+        // the pre-#4081 unconditional read would have missed this.
+        let null_esl = LegacyFormId(0xFE00_A000);
+        assert!(null_esl.is_esl());
+        assert_ne!(null_esl.local_id(), 0, "fixture precondition: local_id must be nonzero");
+        assert_eq!(null_esl.esl_local(), 0);
+        assert!(null_esl.is_null());
+        assert!(!LegacyFormId(0xFE00_A001).is_null());
+
+        // 0xFD01_0000: ESH sub-index 0x01, esh_local 0x0000 — a null ESH
+        // reference, same shape.
+        let null_esh = LegacyFormId(0xFD01_0000);
+        assert!(null_esh.is_esh());
+        assert_ne!(null_esh.local_id(), 0, "fixture precondition: local_id must be nonzero");
+        assert_eq!(null_esh.esh_local(), 0);
+        assert!(null_esh.is_null());
+        assert!(!LegacyFormId(0xFD01_0001).is_null());
     }
 
     #[test]

@@ -174,8 +174,8 @@ pub enum ConflictResolution {
 
 1. For each candidate, compute its full transitive dependency set (BFS over the adjacency graph).
 2. Count how many other candidates it transitively depends on (overlap).
-3. The candidate with the highest overlap wins (`DepthResolved`).
-4. On a tie (no candidate depends on any other) → `TieBreak` by `min(PluginId)` — deterministic but arbitrary.
+3. If exactly one candidate reaches the highest overlap **and it's > 0**, it wins (`DepthResolved`) — an intentional override.
+4. Otherwise (no candidate depends on any other, OR more than one candidate is tied at the max — a diamond: two plugins that both depend on the same base but not on each other, #4082) → `TieBreak` by `min(PluginId)` among the tied candidates — deterministic and order-independent of plugin registration order, but arbitrary as far as intent goes, hence flagged for review.
 
 **Example:**
 

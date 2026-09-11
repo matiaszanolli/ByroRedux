@@ -21,15 +21,41 @@ for offline tooling while Phase 2 develops an indexed material lookup.
 
 ## ESM Index (CPU-side)
 
-`EsmIndex` (`crates/plugin/src/esm/records/index.rs`) is 93 session-lifetime
-`HashMap`s, one per record type, populated by `parse_esm_with_load_order` and
-accumulated across a load order via `merge_from` (vanilla FO4 is base + 7 DLC
-masters). Nothing evicts these maps; they are held for the whole session.
-This is the largest single CPU-side allocation in a normal run and, unlike
-every other subsystem on this page, was previously undocumented here.
+`EsmIndex` (`crates/plugin/src/esm/records/index.rs`) is one session-lifetime
+`HashMap` per record category (#4083 — the count drifts as record types land;
+re-derive with `awk '/pub struct EsmIndex/,/^}/' crates/plugin/src/esm/records/index.rs
+| grep -c 'pub [a-z_0-9]*: HashMap<'` rather than trusting a transcribed
+number, the same treatment CLAUDE.md prescribes for the debug-server
+component count), populated by `parse_esm_with_load_order` and accumulated
+across a load order via `merge_from` (vanilla FO4 is base + 7 DLC masters).
+Nothing evicts these maps; they are held for the whole session. This is the
+largest single CPU-side allocation in a normal run and, unlike every other
+subsystem on this page, was previously undocumented here.
 
 Measured with `crates/plugin/examples/esm_dim8_bench` under
-`/usr/bin/time -f %M`, release build (2026-08-30):
+`/usr/bin/time -f %M`, release build (2026-09-09, #4085 — superseding the
+2026-08-30 figures below, which had drifted 8–37% low over the ten days
+between measurements, the expected cost of ~14 decode fixes landing in that
+window; re-run whenever the crate's decoder count moves rather than trusting
+either table):
+
+| Master | File size | Parse time | Peak RSS | Index ≈ RSS − file |
+|---|---|---|---|---|
+| `Oblivion.esm`   | 265 MB  | 1.79 s | 1 466 MB | ~1.20 GB |
+| `Fallout3.esm`   | 275 MB  | 1.38 s | 1 060 MB | ~0.78 GB |
+| `FalloutNV.esm`  | 234 MB  | 1.27 s |   867 MB | ~0.63 GB |
+| `Skyrim.esm`     | 238 MB  | 1.40 s |   985 MB | ~0.75 GB |
+| `Fallout4.esm`   | 315 MB  | 1.96 s | 1 467 MB | ~1.15 GB |
+| `SeventySix.esm` | 880 MB  | 4.68 s | 3 566 MB | ~2.68 GB |
+| `Starfield.esm`  | 1 390 MB | 5.27 s | 3 434 MB | ~2.05 GB |
+
+Starfield measured for the first time this pass, under a hard `ulimit -v
+12000000` cap rather than left unrun: 3.35 GiB peak RSS on a 1.36 GiB file,
+close to (slightly better than) the 2026-08-30 extrapolation's "near 4 GB".
+The ~2.5× file→RSS multiplier is stable across the whole lineage.
+
+<details>
+<summary>2026-08-30 figures (superseded, kept for the drift comparison above)</summary>
 
 | Master | File size | Parse time | Peak RSS | Index ≈ RSS − file |
 |---|---|---|---|---|
@@ -41,11 +67,13 @@ Measured with `crates/plugin/examples/esm_dim8_bench` under
 | `SeventySix.esm` | 880 MB  | 3.41 s | 3 509 MB | ~2.63 GB |
 | `Starfield.esm`  | 1.39 GB | not run — no safe headroom on this host; extrapolating the FO76 ratio puts it near 4 GB | | |
 
+</details>
+
 Survivable on a 12 GB+ dev box; not necessarily on a 16 GB machine with a
 modded FO76/Starfield load order, especially once other subsystems' RAM
 residency (streaming caches, asset-provider archive index) is added on top.
 
-Most of the 93 maps are lean, but a meaningful fraction — `camera_shots`,
+Most of the maps are lean, but a meaningful fraction — `camera_shots`,
 `menu_icons`, `voice_types`, and the ~30 `MinimalEsmRecord` stub maps — are
 `EDID`-only stubs with no consumer, each retaining a `String` per record.
 Trimming or lazily-populating those is a separate, unscoped follow-up.

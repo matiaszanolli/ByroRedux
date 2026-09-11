@@ -71,7 +71,19 @@ impl DependencyResolver {
         // For each plugin, check if it transitively depends on any other
         // plugin in the conflict set. The one that depends on the most
         // others is the "deepest" — it wins.
-        let mut best: Option<(PluginId, usize)> = None;
+        //
+        // #4082 — collect EVERY candidate at the max overlap, not just the
+        // first one seen. Keeping only the first-seen winner broke ties at
+        // the max by `plugins` slice order — plugin registration order,
+        // precisely the load-order dependence this tier exists to remove.
+        // Two mods that both depend on the same base master and both edit
+        // one record are a diamond with overlap 1 each; the pre-fix code
+        // reported that as an intentional `DepthResolved` override decided
+        // by registration order, and the genuine ambiguity never reached
+        // `TieBreak` for review (that arm only fired when the max overlap
+        // across the whole set was 0).
+        let mut best_overlap = 0usize;
+        let mut best_candidates: Vec<PluginId> = Vec::new();
 
         for &candidate in plugins {
             let deps = self.transitive_deps(candidate);
@@ -80,24 +92,32 @@ impl DependencyResolver {
                 .filter(|&&p| p != candidate && deps.contains(&p))
                 .count();
 
-            if let Some((_, best_overlap)) = best {
-                if overlap > best_overlap {
-                    best = Some((candidate, overlap));
+            match overlap.cmp(&best_overlap) {
+                std::cmp::Ordering::Greater => {
+                    best_overlap = overlap;
+                    best_candidates.clear();
+                    best_candidates.push(candidate);
                 }
-            } else {
-                best = Some((candidate, overlap));
+                std::cmp::Ordering::Equal => best_candidates.push(candidate),
+                std::cmp::Ordering::Less => {}
             }
         }
 
-        let (winner, overlap) = best.unwrap();
-
-        if overlap > 0 {
-            // Winner depends on at least one other plugin in the set —
-            // this is an intentional override.
+        if best_overlap > 0 && best_candidates.len() == 1 {
+            // Exactly one plugin reaches the max overlap and it's a real
+            // dependency relationship — an intentional override, not a tie.
+            let winner = best_candidates[0];
             (winner, ConflictResolution::DepthResolved { winner })
         } else {
-            // No dependency relationship — deterministic tiebreak.
-            let winner = *plugins.iter().min().unwrap();
+            // Either no dependency relationship exists at all (max overlap
+            // 0), or more than one candidate is tied at the max — order-
+            // independent deterministic tiebreak by PluginId (UUID
+            // lexicographic order), flagged for user review either way.
+            let winner = *best_candidates
+                .iter()
+                .min()
+                .expect("best_candidates is non-empty: every plugin in a non-empty slice \
+                         contributes at least one (candidate, overlap) pair");
             (winner, ConflictResolution::TieBreak { winner })
         }
     }
@@ -283,6 +303,46 @@ mod tests {
         let expected = *plugins.iter().min().unwrap();
         assert_eq!(winner, expected);
         assert!(matches!(resolution, ConflictResolution::TieBreak { .. }));
+    }
+
+    /// Regression for #4082. B and C both depend on A (a diamond) and
+    /// neither depends on the other — within the conflict set {A, B, C},
+    /// B and C are TIED at overlap 1 (each depends on exactly one other
+    /// set member, A), while A has overlap 0. Pre-fix, `resolve_winner`
+    /// kept only the first-seen max, so whichever of B/C came first in
+    /// `plugins` (== `plugins` slice order == plugin registration order)
+    /// won as an "intentional" `DepthResolved` override — the load-order
+    /// dependence this whole tier exists to remove. The genuine ambiguity
+    /// must surface as `TieBreak`, and the winner must be order-independent
+    /// (`min(PluginId)`, not "whichever appeared first").
+    #[test]
+    fn diamond_dependency_ties_surface_as_tiebreak_not_depth_resolved() {
+        let manifests = vec![
+            manifest("A.esm", &[]),
+            manifest("B.esm", &["A.esm"]),
+            manifest("C.esm", &["A.esm"]),
+        ];
+        let resolver = DependencyResolver::new(&manifests);
+        let a = PluginId::from_filename("A.esm");
+        let b = PluginId::from_filename("B.esm");
+        let c = PluginId::from_filename("C.esm");
+        let expected_winner = b.min(c);
+
+        // Try both registration orders for the tied pair — the winner and
+        // resolution kind must not depend on which one is listed first.
+        for plugins in [vec![a, b, c], vec![a, c, b]] {
+            let (winner, resolution) = resolver.resolve_winner(&plugins);
+            assert_eq!(
+                winner, expected_winner,
+                "winner must be min(PluginId) among the tied candidates, \
+                 order-independent of {plugins:?}"
+            );
+            assert!(
+                matches!(resolution, ConflictResolution::TieBreak { .. }),
+                "a genuine tie at the max overlap must surface as TieBreak \
+                 for review, not DepthResolved (got {resolution:?} for {plugins:?})"
+            );
+        }
     }
 
     #[test]

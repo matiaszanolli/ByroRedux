@@ -29,3 +29,9 @@ GEMINI.md
 # A probe worth keeping should lose the `_tmp_` prefix and get a real,
 # documented name (see watr_wind_census.rs, esm_dim8_bench.rs, sf_smoke.rs).
 crates/*/examples/_tmp_*
+
+# #4080 — merge/patch artifacts. One (parse_real_esm.rs.orig, ef85f7be)
+# slipped in and rotted 86 lines behind its live sibling with no rule to
+# catch it.
+*.orig
+*.rej
