@@ -413,7 +413,7 @@ safety facet — NaN/inf scalars reaching the GPU, unbounded allocation.*
 `crates/mod-runtime/src/` is the engine-owned boundary between untrusted
 community code and host services. It still contains **no `unsafe`**, but it is
 **no longer contract-only**: `24df5304` (2026-08-31, "host sandboxed extensions
-natively") gave it a real, wired-in consumer — `byroredux/src/extensions.rs`
+natively") gave it a real, wired-in consumer — `byroredux/src/extensions/`
 (~10.6k LOC, itself `unsafe`-free), reached from `main.rs`
 (`load_requested_extensions`, `queue_session_event`) and `app_events.rs`
 (`shutdown_extension_host`, `extension_ui_menu_sync`). Audit this dimension as

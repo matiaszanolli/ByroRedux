@@ -189,6 +189,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CommandRegistry", "boot-time function-pointer command table; reconstructed by command registration and not serializable gameplay state"),
         ("RootMotionDelta", "per-frame animation output consumed and cleared by movement systems"),
         ("AnimationClipRegistry", "asset registry rebuilt from NIF/KF/KFM content; numeric handles are session-local"),
+        // ── byroredux/src/extensions/ (#3843 exposed these) ───────
+        ("ExtensionHostSlot", "the live Arc<Mutex<ExtensionHost>> owner: function pointers into loaded sandbox modules and session-local SDK handles, neither serializable nor meaningful across a process. Extension state that IS durable persists separately through capture_extension_state/restore_extension_state, which writes authored-identity rows rather than runtime handles"),
+        ("SessionEventQueue", "a single frame's pending session events, drained by extension_session_dispatch_system on the tick that enqueued them; a save taken at a frame boundary has nothing queued, and a queued event names transient entity handles anyway"),
         ("SettingsRegistry", "user preferences persist independently in settings.toml and are installed before scene setup"),
         ("AfflictionStatus", "forward-latent: affliction_tick_system has no production scheduler registration; classify as gameplay state when activated"),
         ("CharacterRuleset", "immutable game-profile rules selected at boot from the source game"),
