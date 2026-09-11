@@ -264,12 +264,21 @@ fn parse_wrld_indexes_persistent_cell_actor_references() {
     );
     let actor = build_placed_actor_record(hadvar_ref, hadvar_base);
     let actor_group = build_cell_children_group(cell_fid, 8, &actor);
-    let mut persistent_payload = cell;
-    persistent_payload.extend_from_slice(&actor_group);
-    // Real Skyrim layout: world children type 1 → outer type 6 carrying
-    // the persistent CELL → inner type 8 carrying persistent actors.
-    let persistent_group = build_cell_children_group(cell_fid, 6, &persistent_payload);
-    let children = build_world_children_group(wrld_fid, &persistent_group);
+    // #4077 — this fixture used to wrap the CELL in an outer type-6 group
+    // and called that "Real Skyrim layout". It is not one. A CELL-record
+    // parent-group-type census over every `.esm`/`.esl` in all seven game
+    // Data dirs found parents of exactly types 1, 3 and 5, never 6. The
+    // fixture was the reason the walker's matching `6 if
+    // current_cell.is_none()` arm looked justified: comment and test
+    // asserted the same false premise, so each corroborated the other and
+    // the pair read as verified.
+    //
+    // The real topology, and what this now builds: the worldspace
+    // persistent CELL is a *direct* child of the type-1 World Children
+    // group, and its children group follows it as a sibling.
+    let mut children_payload = cell;
+    children_payload.extend_from_slice(&actor_group);
+    let children = build_world_children_group(wrld_fid, &children_payload);
     let buf = build_wrld_group(&[wrld, children]);
 
     let (_worldspaces, _climates, exterior, persistent) = parse_synthetic_wrld(&buf);
@@ -755,4 +764,98 @@ fn worldspace_data_flag_layouts_differ_between_tes4_and_tes5() {
             "no FO3 worldspace sets the TES5-only high bits"
         );
     }
+}
+
+/// #4076 — a type-1 world-children group whose declared `total_size`
+/// overruns the enclosing top-level GRUP must not read past that parent.
+///
+/// #3721 added the `.min(parent_end)` clamp and threaded it through all 13
+/// `bounded_group_content_end` sites. `parse_wrld_group` was the one
+/// production caller still on the raw `group_content_end` for a group it
+/// then recurses into, so it kept the pre-#3721 behaviour.
+///
+/// **The assertion is on the cursor, and that is the point.** A content
+/// assertion does not catch this: the next top-level group is a type-0
+/// GRUP, so the runaway walker hits `_ => skip_group` and files nothing —
+/// it just silently *consumes* it. Nothing is mis-attributed and nothing
+/// errors; the damage is that `parse_wrld_group` returns with the cursor
+/// parked past its own group. `records/mod.rs`'s dispatcher does not
+/// re-seek after a walker returns — it reads the next header from wherever
+/// the arm left the cursor — so every remaining top-level group is lost.
+/// An earlier draft of this test asserted on cell attribution and passed
+/// with the clamp removed, which is how that was found.
+#[test]
+fn world_children_group_cannot_overrun_its_top_level_parent() {
+    let wrld_a = 0x0000_1000;
+    let cell_a = 0x0000_1001;
+
+    fn xclc(x: i32, y: i32) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&x.to_le_bytes());
+        v.extend_from_slice(&y.to_le_bytes());
+        v
+    }
+
+    let a = build_wrld_record(wrld_a, &[(b"EDID", b"WorldA\0".to_vec())]);
+    let own_cell = build_cell_record(
+        cell_a,
+        &[(b"EDID", b"AOwn\0".to_vec()), (b"XCLC", xclc(7, 9))],
+    );
+
+    // A's children group, with a deliberately inflated `total_size`.
+    let mut children = Vec::new();
+    children.extend_from_slice(b"GRUP");
+    children.extend_from_slice(&4096u32.to_le_bytes()); // lie: far past the parent
+    children.extend_from_slice(&wrld_a.to_le_bytes());
+    children.extend_from_slice(&1u32.to_le_bytes()); // world children
+    children.extend_from_slice(&[0u8; 8]);
+    children.extend_from_slice(&own_cell);
+
+    // The top-level GRUP that owns A — its own size is honest.
+    let top = build_wrld_group(&[a, children]);
+    let top_len = top.len();
+
+    // A second top-level group follows in the stream, standing in for the
+    // rest of the file the dispatcher still has to walk.
+    let next_top = build_wrld_group(&[build_cell_record(
+        0x0000_2001,
+        &[(b"EDID", b"NextGroupCell\0".to_vec()), (b"XCLC", xclc(1, 1))],
+    )]);
+
+    let mut buf = top;
+    buf.extend_from_slice(&next_top);
+
+    let mut reader = EsmReader::new(&buf);
+    let gh = reader.read_group_header().expect("top-level WRLD group header");
+    let end = reader.group_content_end(&gh);
+    assert_eq!(end, top_len, "the top-level group's own size is honest");
+
+    let mut exterior = HashMap::new();
+    let mut worldspaces = HashMap::new();
+    let mut climates = HashMap::new();
+    let mut persistent = HashMap::new();
+    super::super::wrld::parse_wrld_group(
+        &mut reader,
+        end,
+        &mut exterior,
+        &mut persistent,
+        &mut worldspaces,
+        &mut climates,
+    )
+    .expect("parse_wrld_group");
+
+    assert!(
+        reader.position() <= end,
+        "parse_wrld_group returned with the cursor at {}, past its own \
+         top-level group's end at {end}. The dispatcher reads the next \
+         top-level header from wherever the walker left off, so every \
+         remaining group in the file is lost (#4076).",
+        reader.position(),
+    );
+
+    // The clamp bounds the walk; it must not truncate A's own content.
+    let own = persistent
+        .get("worlda")
+        .expect("A's own CELL must still be indexed");
+    assert_eq!(own.form_id, cell_a);
 }

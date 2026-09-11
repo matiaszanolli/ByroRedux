@@ -960,6 +960,15 @@ impl<'a> EsmReader<'a> {
     /// `parse_wrld_group`) and for tests, which enter a group exactly once.
     /// #3237 established the guard; #3503 is what it cost to have eight
     /// walkers keep calling this one.
+    ///
+    /// **The whitelist covers nesting depth only.** It says a non-recursive
+    /// top-level loop enters a group exactly once, which is the *how-deep*
+    /// half of the contract. It says nothing about *how far* — a whitelisted
+    /// caller that recurses into the group it just measured still owes its
+    /// child the `.min(parent_end)` clamp [`Self::bounded_group_content_end`]
+    /// applies. `parse_wrld_group` read as exempt on the strength of this
+    /// wording while being exactly that case, and spent #3721 unclamped
+    /// because of it (#4076); it now clamps at the call site.
     pub fn group_content_end(&self, header: &GroupHeader) -> usize {
         self.pos + self.group_content_len(header)
     }

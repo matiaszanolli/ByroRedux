@@ -25,7 +25,18 @@ pub(crate) fn parse_wrld_group(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub_group = reader.read_group_header()?;
-            let sub_end = reader.group_content_end(&sub_group);
+            // `.min(end)` is #3721's *how-far* half, which that commit
+            // threaded through all 13 `bounded_group_content_end` sites and
+            // missed here — this is the one production caller still on the
+            // raw accessor for a group it then recurses into. Without it a
+            // WRLD whose type-1 world-children group declares a `total_size`
+            // larger than the enclosing top-level GRUP's remaining content
+            // makes `parse_wrld_children` consume records belonging to the
+            // *next* top-level group and file them as exterior cells of this
+            // worldspace. The top-level dispatcher does not re-seek after a
+            // walker returns, so that desynchronises the whole remaining walk,
+            // not just this worldspace. No vanilla master triggers it (#4076).
+            let sub_end = reader.group_content_end(&sub_group).min(end);
 
             match sub_group.group_type {
                 // World children (type 1): contains exterior cell blocks for the current WRLD.
@@ -274,21 +285,29 @@ fn parse_wrld_children_inner(
                         depth + 1,
                     )?;
                 }
-                // Skyrim wraps the worldspace persistent CELL in an outer
-                // type-6 group (labelled with that CELL's FormID), then
-                // places the CELL record and its type-8 actor children
-                // inside it. At this level there is no current CELL yet, so
-                // recurse and mark the enclosed CELL as world-persistent.
-                6 if current_cell.is_none() => {
-                    parse_wrld_children_inner(
-                        reader,
-                        sub_end,
-                        exterior_cells,
-                        persistent_cell,
-                        true,
-                        depth + 1,
-                    )?;
-                }
+                // #4077 — a `6 if current_cell.is_none()` arm used to sit
+                // here, on the premise that "Skyrim wraps the worldspace
+                // persistent CELL in an outer type-6 group". No shipped
+                // plugin does that. A CELL-record parent-group-type census
+                // over every `.esm`/`.esl` in all seven game Data dirs found
+                // parents of exactly types 1, 3 and 5 — never 6
+                // (`Skyrim.esm` {3: 590, 1: 36, 5: 16942};
+                // `Fallout4.esm` {3: 1195, 1: 5, 5: 38965}). The real
+                // topology is that the persistent CELL is a *direct* child of
+                // the type-1 World Children group and its type-6 children
+                // group follows as a sibling — which is the type-1 → type-6
+                // edge that does exist in the data and is handled by the arm
+                // below. The persistent cell is captured by
+                // `force_persistent = true` from `parse_wrld_group`, not by
+                // any type-6 special case.
+                //
+                // Deleting it also removed a mis-promotion vector: a crafted
+                // plugin opening a type-6 group before any CELL at the type-1
+                // level would have had whatever CELL it contained silently
+                // promoted to worldspace-persistent. Type 6 with no current
+                // CELL now falls through to the guarded arm below and is
+                // skipped.
+                //
                 // Cell children (6=temporary, 8=persistent, 9=visible distant).
                 6 | 8 | 9 => {
                     if let Some(cell_target) = current_cell {
