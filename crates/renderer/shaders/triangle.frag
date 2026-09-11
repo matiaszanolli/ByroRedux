@@ -1252,18 +1252,32 @@ void main() {
     // the same SLSF1 bit (MAT_FLAG_EFFECT_PALETTE_COLOR, set here only by
     // `pack_imported_material_flags` for BGSM meshes that authored a
     // greyscale_texture) AND a resolved LUT, so non-palette lit content is
-    // untouched. `grayscaleToPaletteScale` is the authored remap weight;
-    // 1.0 preserves the historical full lookup and 0.0 preserves the source.
+    // untouched.
+    //
+    // #3927 — `grayscaleToPaletteScale` is the palette ROW, not a blend
+    // weight. These LUTs are 2D atlases: U is the greyscale ramp, V selects
+    // which authored palette to read it through. Measured on vanilla FO4
+    // (`Fallout4 - Materials.ba2`, 287 LUT-bearing BGSMs):
+    //   bricks01grad01.dds            32x128, 107/128 distinct texel rows,  9 scales
+    //   hittechmetalpanel_01lgrad.dds 32x128, 128/128 distinct rows,       11 scales
+    //   stationwagon01lgrad.dds                                            25 scales
+    //   paintedwoodgrad01.dds         32x128,  12/128 distinct rows,       11 scales
+    //   pa_palette_d.dds             128x128,  49/128 distinct rows,        3 scales
+    // Within a row the colour ramps along U; down V at fixed U the palette
+    // changes outright. Sampling at a fixed v = 0.5 therefore collapsed every
+    // material sharing an atlas onto row 64 — all 9 brick variants the same
+    // colour, the other 127 authored rows unreachable. And 8 vanilla BGSMs
+    // author scale = 0.0 *with* a LUT, which is "remap with zero remap" under
+    // a weight reading and simply row 0 under this one.
+    //
+    // The remap is a replace, not a lerp — this branch's own #1353 note
+    // already said so; the mix() was what a weight reading required.
     if ((mat.materialFlags & MAT_FLAG_EFFECT_PALETTE_COLOR) != 0u
         && mat.greyscaleLutIndex != 0u) {
         float gsIndex = dot(texColor.rgb, vec3(0.2126, 0.7152, 0.0722));
-        vec3 paletteColor = texture(
+        texColor.rgb = texture(
             textures[nonuniformEXT(mat.greyscaleLutIndex)],
-            vec2(gsIndex, 0.5)).rgb;
-        texColor.rgb = mix(
-            texColor.rgb,
-            paletteColor,
-            clamp(mat.grayscaleToPaletteScale, 0.0, 1.0));
+            vec2(gsIndex, clamp(mat.grayscaleToPaletteScale, 0.0, 1.0))).rgb;
     }
     bool vertexColorEmissive =
         (mat.materialFlags & MAT_FLAG_VERTEX_COLOR_EMISSIVE) != 0u;

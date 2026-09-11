@@ -5314,3 +5314,60 @@ fn every_depth_linearisation_goes_through_the_convention_header() {
          depthLinearize (#3308): {offenders:?}"
     );
 }
+
+/// #3927 — the lit palette branch must sample the LUT's V axis with the
+/// authored scalar, not pin it to a constant.
+///
+/// `grayscaleToPaletteScale` is the palette ROW into a 2D atlas whose U axis
+/// is the greyscale ramp — not a lerp weight. Measured on vanilla FO4
+/// (`Fallout4 - Materials.ba2`, 287 LUT-bearing BGSMs): `bricks01grad01.dds`
+/// is 32x128 with 107 distinct texel rows and is referenced at 9 distinct
+/// scales; `hittechmetalpanel_01lgrad.dds` is 32x128 with all 128 rows
+/// distinct at 11 scales; `stationwagon01lgrad.dds` takes 25. Along U the
+/// colour ramps, down V the palette changes outright. A fixed `v = 0.5`
+/// collapsed every material sharing an atlas onto row 64.
+///
+/// This is a render-visible change that `cargo test` cannot see the output
+/// of, so this test pins the *contract* — that the scalar reaches the V
+/// coordinate and no `mix()` survives in the branch — while the visual half
+/// stays a screenshot/RenderDoc job on FO4 brick geometry.
+///
+/// The `MATERIAL_KIND_EFFECT_SHADER` branch above deliberately keeps its own
+/// `v = 0.5` (#890 Stage 2c, reasoned about Skyrim's semantically-1D 64x64 FX
+/// atlases) and is not covered here.
+#[test]
+fn lit_palette_branch_indexes_the_lut_row_by_the_authored_scale() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+
+    // The lit branch is the second `greyscaleLutIndex != 0u` guard; the first
+    // belongs to the effect-shader path, which keeps v = 0.5 on purpose.
+    let guard = "mat.greyscaleLutIndex != 0u";
+    let first = frag.find(guard).expect("effect palette branch");
+    let lit_start = frag[first + guard.len()..]
+        .find(guard)
+        .map(|i| first + guard.len() + i)
+        .expect("lit palette branch");
+    let lit_end = frag[lit_start..]
+        .find("\n    }")
+        .map(|i| lit_start + i)
+        .expect("end of the lit palette branch");
+    let branch = &frag[lit_start..lit_end];
+
+    assert!(
+        branch.contains("clamp(mat.grayscaleToPaletteScale, 0.0, 1.0))")
+            && branch.contains("vec2(gsIndex,"),
+        "the lit palette branch must sample at vec2(gsIndex, <authored scale>) \
+         — the scalar is the atlas ROW (#3927). Branch text:\n{branch}"
+    );
+    assert!(
+        !branch.contains("0.5)"),
+        "the lit palette branch must not pin V to a constant row; that made \
+         every material sharing an atlas render the same colour (#3927)"
+    );
+    assert!(
+        !branch.contains("mix("),
+        "the palette remap is a REPLACE, not a lerp — the mix() was what a \
+         blend-weight reading of grayscaleToPaletteScale required (#3927 \
+         corrects #2443's premise). Branch text:\n{branch}"
+    );
+}

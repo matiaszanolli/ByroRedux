@@ -111,15 +111,34 @@ impl SoundArchiveProvider {
     }
 
     /// Extract raw bytes for an archive-relative **file** path (as produced
-    /// by [`sound_archive_path`] from a file-form `FNAM`). First-listed
-    /// archive wins on a collision. A folder-form path (#3914) is never an
-    /// entry key — it always misses here, so callers gate on
-    /// [`sound_is_folder`] first rather than reading that miss as missing
-    /// content. Variant selection inside a folder is a policy decision no
-    /// consumer has made yet, so there is deliberately no
+    /// by [`sound_archive_path`] from a file-form `FNAM`).
+    ///
+    /// **Precedence: last-listed archive wins**, matching Bethesda load order
+    /// and the mesh / texture / material pools #3637 (`3562401b`) inverted.
+    /// Sound archives are plain content archives like those three, so they
+    /// follow the same rule; `ScriptProvider` is first-wins deliberately and
+    /// for a different reason (`--scripts-bsa` carries a mod principal and
+    /// override archives are listed first — #1743 / SCR-D7-03), which is why
+    /// that one says so in its own doc.
+    ///
+    /// #3917 — this provider was missed by #3637's sweep and stayed
+    /// first-wins. That was inert while the FNV profile listed one sound
+    /// archive, but `[profiles.fnv]` now lists
+    /// `["Fallout - Sound.bsa", "Update.bsa"]` with a comment stating the
+    /// patch goes last "under last-wins" — which this function was not
+    /// honouring. Measured on the shipped archives: the two overlap on
+    /// exactly one key, `sound\fx\wpn\minigun\wpn_minigun_spin_lpm.wav`,
+    /// and the copies differ (267 774 B in `Fallout - Sound.bsa` vs 210 534 B
+    /// in `Update.bsa`), so first-wins really was serving the unpatched
+    /// audio. `--game skyrim_se` supplies two sound archives as well.
+    ///
+    /// A folder-form path (#3914) is never an entry key — it always misses
+    /// here, so callers gate on [`sound_is_folder`] first rather than reading
+    /// that miss as missing content. Variant selection inside a folder is a
+    /// policy decision no consumer has made yet, so there is deliberately no
     /// `extract_any_in(folder)` sibling.
     pub(crate) fn extract(&self, archive_path: &str) -> Option<Vec<u8>> {
-        for archive in &self.archives {
+        for archive in self.archives.iter().rev() {
             if let Ok(data) = archive.extract(archive_path) {
                 return Some(data);
             }
@@ -277,7 +296,10 @@ pub(crate) fn dispatch_region_ambient_music(
     let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
         return;
     };
-    log::info!("REGN ambient: playing '{archive_path}'{}", if looping { " (looping)" } else { "" });
+    log::info!(
+        "REGN ambient: playing '{archive_path}'{}",
+        if looping { " (looping)" } else { "" }
+    );
     audio_world.play_music(
         streaming,
         REGN_AMBIENT_VOLUME,

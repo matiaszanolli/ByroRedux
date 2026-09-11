@@ -70,45 +70,39 @@ impl MergeOutcome {
 /// NIF values win the merge and retain `NifTextureSet`; this before/after
 /// comparison records that precedence instead of guessing from the final
 /// material path in `mat.dump`.
+///
+/// #3903 — this was the fifth hand-written role walk in the codebase and the
+/// only one left unguarded: it listed all 22 canonical roles by name, so a
+/// 23rd compiled clean and silently dropped out of provenance reporting. Its
+/// three siblings were given `map_ref`/`roles()`/`values()` cross-check tests
+/// by #3349, #3734 and #2697.
+///
+/// Rather than add a fourth such test, the hand-list is gone: both passes go
+/// through [`MaterialTextureSet::zip_map_ref`], which builds the result as a
+/// struct literal and therefore touches every field *by construction*. A new
+/// role is now a compile error in `zip_map_ref` itself — one place, enforced
+/// by the type system rather than by a test that has to be remembered. The
+/// `decals` array rides along through `zip_map_ref`'s `from_fn`, which is
+/// where the old loop's separate index walk lived.
 fn record_external_texture_sources(
     material: &mut ImportedMaterial,
     before: &MaterialTextureSet<Option<byroredux_core::string::FixedString>>,
     source: ImportedTextureSource,
 ) {
-    macro_rules! record {
-        ($field:ident) => {
-            if before.$field.is_none() && material.textures.$field.is_some() {
-                material.texture_sources.$field = source;
+    // A role counts as externally sourced only if the merge is what filled
+    // it: empty before, populated after. A slot the NIF already carried keeps
+    // its existing `NifTextureSet` provenance.
+    let newly_filled = before.zip_map_ref(&material.textures, |was, now| {
+        was.is_none() && now.is_some()
+    });
+    material.texture_sources =
+        newly_filled.zip_map_ref(&material.texture_sources, |filled, existing| {
+            if *filled {
+                source
+            } else {
+                *existing
             }
-        };
-    }
-    record!(base_color);
-    record!(normal);
-    record!(emissive);
-    record!(detail);
-    record!(smooth_spec);
-    record!(dark);
-    record!(height);
-    record!(environment);
-    record!(environment_mask);
-    record!(tint);
-    record!(inner_layer);
-    record!(specular);
-    record!(lighting_mask);
-    record!(back_lighting);
-    record!(lighting);
-    record!(flow);
-    record!(wrinkle);
-    record!(greyscale_lut);
-    record!(reflectance);
-    record!(emittance_gradient);
-    record!(glass_roughness_scratch);
-    record!(glass_dirt_overlay);
-    for index in 0..material.textures.decals.len() {
-        if before.decals[index].is_none() && material.textures.decals[index].is_some() {
-            material.texture_sources.decals[index] = source;
-        }
-    }
+        });
 }
 
 // #3857 — hoisted out of `merge_external_material` when the two arms
@@ -1235,5 +1229,92 @@ mod single_boundary_tests {
                 "{arm} must still take the material it merges into"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod texture_source_provenance_tests {
+    use super::record_external_texture_sources;
+    use byroredux_nif::import::{ImportedMaterial, ImportedTextureSource, MaterialTextureSet};
+
+    fn interned(text: &str) -> byroredux_core::string::FixedString {
+        byroredux_core::string::StringPool::new().intern(text)
+    }
+
+    /// #3903 — every role the merge fills must be labelled with the merge's
+    /// source, with no role left behind.
+    ///
+    /// The walk is exhaustive by construction now (it goes through
+    /// `zip_map_ref`, which builds a struct literal), so a missed role is a
+    /// compile error rather than a silent drop. This pins the *behaviour* that
+    /// construction is supposed to produce, and counts the roles it actually
+    /// observed against `values()` so the test cannot pass by inspecting
+    /// fewer slots than the set has.
+    #[test]
+    fn every_role_filled_by_the_merge_is_labelled_with_its_source() {
+        let empty = MaterialTextureSet::<Option<byroredux_core::string::FixedString>>::default();
+        let mut material = ImportedMaterial::default();
+        // Fill every role, the way a sidecar that populated everything would.
+        let path = interned("textures/probe.dds");
+        material.textures = empty.map_ref(|_| Some(path));
+
+        record_external_texture_sources(&mut material, &empty, ImportedTextureSource::Bgsm);
+
+        let mut seen = 0usize;
+        for (role, source) in material.texture_sources.roles() {
+            assert_eq!(
+                *source,
+                ImportedTextureSource::Bgsm,
+                "role `{role}` was filled by the merge but kept its default                  provenance — the walk skipped it"
+            );
+            seen += 1;
+        }
+        assert_eq!(
+            seen,
+            material.texture_sources.values().count(),
+            "the provenance walk must visit every slot the set carries"
+        );
+        assert!(
+            seen >= 26,
+            "expected at least 22 roles + 4 decals, saw {seen}"
+        );
+    }
+
+    /// A role the NIF already carried keeps `NifTextureSet`: inline values win
+    /// the merge, and provenance has to say so. Without this, the test above
+    /// would also pass for a walk that blindly stamped every slot.
+    #[test]
+    fn roles_the_nif_already_filled_keep_their_own_provenance() {
+        let path = interned("textures/from_nif.dds");
+        let mut before =
+            MaterialTextureSet::<Option<byroredux_core::string::FixedString>>::default();
+        before.base_color = Some(path);
+        before.decals[2] = Some(path);
+
+        let mut material = ImportedMaterial::default();
+        material.textures = before.map_ref(|slot| slot.or(Some(path)));
+
+        record_external_texture_sources(&mut material, &before, ImportedTextureSource::Bgem);
+
+        assert_eq!(
+            material.texture_sources.base_color,
+            ImportedTextureSource::NifTextureSet,
+            "a role the NIF filled must not be relabelled by the merge"
+        );
+        assert_eq!(
+            material.texture_sources.decals[2],
+            ImportedTextureSource::NifTextureSet,
+            "the decals array follows the same precedence as the named roles"
+        );
+        assert_eq!(
+            material.texture_sources.normal,
+            ImportedTextureSource::Bgem,
+            "a role only the sidecar filled must carry the sidecar's source"
+        );
+        assert_eq!(
+            material.texture_sources.decals[0],
+            ImportedTextureSource::Bgem,
+            "an unfilled decal slot the sidecar populated takes the sidecar's source"
+        );
     }
 }
