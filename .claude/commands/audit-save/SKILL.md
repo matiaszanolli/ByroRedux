@@ -415,12 +415,20 @@ accessors feed).
   in the SAME commit `FORMAT_MAJOR` last changed (a stale baseline masks the
   next real drift as a false failure, training reviewers to bump the
   baseline reflexively without checking whether `FORMAT_MAJOR` should also
-  move); (b) `save_type_sources()`'s discovery set (feature-gated files +
-  the explicit non-turbofish edges: `crates/core/src/form_id.rs`,
-  `crates/core/src/ecs/components/form_id.rs`, `crates/core/src/string/mod.rs`,
-  `crates/plugin/src/esm/records/script_instance.rs`) still covers every
+  move); (b) `save_type_sources()`'s discovery set still covers every
   save-participating type — a type reachable ONLY through a manual `impl
   Serialize` (no `#[derive]`) would be invisible to both guards.
+  Since #4141 that set is built from the SAME `discover_scan_roots`
+  enumeration as the registry-completeness guard above (29 workspace roots
+  today, not the 5 this file used to hardcode), filtered to files that
+  carry a save/inspect `cfg_attr` or declare a registered type name, plus
+  the explicit non-turbofish edges (`crates/core/src/form_id.rs`,
+  `crates/core/src/ecs/components/form_id.rs`, `crates/core/src/string/mod.rs`,
+  `crates/plugin/src/esm/records/script_instance.rs`). Do not report the
+  5-root list as current, and do not report the widening as a
+  fingerprint-affecting change: the registered-type name match is
+  whole-identifier (also #4141), so widening added no new hashed type and
+  `BASELINE_SHAPE_FINGERPRINT` was deliberately NOT regenerated.
 - **Fingerprint stability across builds.** `FnvHasher` is hand-rolled
   specifically because `DefaultHasher` is unspecified across std versions. Verify
   the FNV constants (`0xcbf2_9ce4_8422_2325` offset basis, `0x100_0000_01b3`

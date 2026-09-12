@@ -7,20 +7,6 @@
 
 use std::path::{Path, PathBuf};
 
-fn rust_sources_below(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            rust_sources_below(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
-
 fn registered_type_names(registry_source: &str) -> Vec<&str> {
     [".register_component::<", ".register_resource::<"]
         .into_iter()
@@ -36,26 +22,71 @@ fn registered_type_names(registry_source: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Does `source` declare a type *named exactly* `type_name`?
+///
+/// #4141 — the match must end on a word boundary. This was a plain
+/// `contains("struct Inventory")`, which also matches `struct
+/// InventorySnapshot` / `InventoryEntry` / `InventoryItemView`, and
+/// likewise `Material` → `MaterialKind`/`MaterialTable`/`MaterialValue`
+/// and `Transform` → `TransformChannel`/`TransformValue`.
+///
+/// Harmless while only five roots were scanned — the prefix collisions
+/// all live in crates the old list never reached. Widening discovery to
+/// the whole workspace turns it into a live hazard in the other
+/// direction: without this boundary check, all nine of those unrelated
+/// files enter the scan, and a `#[serde(default)]` added to any of them
+/// would fail the guard and demand a `FORMAT_MAJOR` bump for a type that
+/// never enters a save at all.
 fn defines_type(source: &str, type_name: &str) -> bool {
-    ["struct ", "enum ", "type "]
-        .into_iter()
-        .any(|kind| source.contains(&format!("{kind}{type_name}")))
+    ["struct ", "enum ", "type "].into_iter().any(|kind| {
+        let needle = format!("{kind}{type_name}");
+        source.match_indices(&needle).any(|(start, _)| {
+            let rest = &source[start + needle.len()..];
+            !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_')
+        })
+    })
 }
 
+/// Every `.rs` file under every discovered scan root, before the
+/// save-relevance filter in [`save_type_sources`].
+///
+/// Split out so the *discovery* half is observable on its own: the
+/// filtered output can't distinguish "this root was walked and held
+/// nothing relevant" from "this root was never walked at all", which is
+/// precisely the failure #4141 is about.
+fn save_scan_candidates() -> Vec<PathBuf> {
+    use super::registry_completeness_tests::{collect_rs_files, discover_scan_roots};
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    for root in discover_scan_roots(manifest) {
+        collect_rs_files(&root, &mut files);
+    }
+    files
+}
+
+/// #4141 — discovery roots come from the sibling guard's live workspace
+/// enumeration, not a hardcoded list.
+///
+/// This file used to name five roots (`byroredux/src` plus core / plugin /
+/// scripting / physics). That covered every registered type at the time,
+/// which is exactly why it was easy to leave alone — and it is the same
+/// shape `registry_completeness_tests.rs` stopped trusting for *itself*
+/// under #3497, having found that a static list "has no defense against a
+/// root never being added". Switching that file to
+/// [`discover_scan_roots`] immediately surfaced four real types the old
+/// list had missed, in `crates/renderer`, `crates/debug-ui` and
+/// `crates/save`.
+///
+/// The two guards share a scan target, so they now share the scan. A
+/// save-participating type landing in an unscanned crate can no longer
+/// slip past the shape and serde-default guards just because nobody
+/// remembered to widen a second list.
 fn save_type_sources() -> Vec<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let registry_source = include_str!("../save_io.rs");
     let registered = registered_type_names(registry_source);
-    let mut candidates = Vec::new();
-    for root in [
-        manifest.join("src"),
-        manifest.join("../crates/core/src"),
-        manifest.join("../crates/plugin/src"),
-        manifest.join("../crates/scripting/src"),
-        manifest.join("../crates/physics/src"),
-    ] {
-        rust_sources_below(&root, &mut candidates);
-    }
+    let mut candidates = save_scan_candidates();
 
     candidates.retain(|path| {
         let Ok(source) = std::fs::read_to_string(path) else {
@@ -541,6 +572,84 @@ fn source_discovery_follows_registry_and_nested_save_modules() {
         );
     }
     assert!(!sources.iter().any(|path| path.ends_with("settings_io.rs")));
+}
+
+/// Regression: #4141 — the shape/serde-default guards' discovery roots
+/// must be the live workspace enumeration, not a hardcoded list.
+///
+/// This file scanned exactly five roots (`byroredux/src` plus core /
+/// plugin / scripting / physics) while its sibling
+/// `registry_completeness_tests.rs` had already abandoned that approach
+/// under #3497 — the static list there "has no defense against a root
+/// never being added", and replacing it immediately surfaced four real
+/// types in crates the old list never reached.
+///
+/// Asserted against [`save_scan_candidates`] rather than the filtered
+/// output on purpose: a root that is walked but holds nothing
+/// save-relevant is indistinguishable, downstream of the filter, from a
+/// root that was never walked. That ambiguity is the whole defect.
+#[test]
+fn save_type_discovery_walks_every_workspace_crate() {
+    use super::registry_completeness_tests::discover_scan_roots;
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let candidates = save_scan_candidates();
+    let normalize = |p: &Path| p.to_string_lossy().replace('\\', "/");
+
+    for root in discover_scan_roots(manifest) {
+        let root_str = normalize(&root);
+        assert!(
+            candidates.iter().any(|c| normalize(c).starts_with(&root_str)),
+            "scan root {root_str} yielded no candidate file — save_type_sources              is not walking every discovered root"
+        );
+    }
+
+    // The four roots the old hardcoded list happened to name must still be
+    // covered, and `crates/sdk` — the crate #3497 caught unscanned, and the
+    // one this issue names as a plausible future home for a saved type —
+    // must now be reachable too.
+    for expected in [
+        "byroredux/src/",
+        "crates/core/src/",
+        "crates/plugin/src/",
+        "crates/scripting/src/",
+        "crates/physics/src/",
+        "crates/sdk/src/",
+    ] {
+        assert!(
+            candidates.iter().any(|c| normalize(c).contains(expected)),
+            "{expected} missing from the save-schema scan candidates"
+        );
+    }
+}
+
+/// Regression: #4141. `defines_type` matched on a bare `contains`, so
+/// `struct Inventory` also matched `struct InventorySnapshot` and
+/// `struct Material` matched `MaterialKind` / `MaterialTable` /
+/// `MaterialValue`.
+///
+/// Harmless while five roots were scanned. Once discovery covers the
+/// whole workspace it inverts into a false-positive source: seventeen
+/// unrelated files across `crates/{bgsm,debug-ui,nif,renderer,sdk,ui}`
+/// and `byroredux/src` match a registered name only by prefix, and a
+/// `#[serde(default)]` added to any of them would fail the guard and
+/// demand a `FORMAT_MAJOR` bump for a type that never enters a save.
+#[test]
+fn defines_type_requires_a_whole_identifier_match() {
+    assert!(defines_type("pub struct Inventory {", "Inventory"));
+    assert!(defines_type("struct Inventory;", "Inventory"));
+    assert!(defines_type("pub enum Material<T> {", "Material"));
+
+    assert!(!defines_type("pub struct InventorySnapshot {", "Inventory"));
+    assert!(!defines_type("pub struct MaterialKind;", "Material"));
+    assert!(!defines_type("struct TransformChannel {", "Transform"));
+    assert!(!defines_type("pub struct NameIndex {", "Name"));
+
+    // A prefix collision must not mask a real declaration in the same file.
+    assert!(defines_type(
+        "pub struct InventorySnapshot {}\npub struct Inventory {}",
+        "Inventory"
+    ));
 }
 
 #[test]
