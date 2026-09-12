@@ -207,7 +207,15 @@ fn parse_pixel_format_prelude(stream: &mut NifStream) -> io::Result<PixelFormatP
         let palette_ref = stream.read_block_ref()?;
         let num_mipmaps = stream.read_u32_le()?;
         let bytes_per_pixel = stream.read_u32_le()?;
-        let mut mipmaps: Vec<MipMapInfo> = stream.allocate_vec(num_mipmaps)?;
+        // #4157 — `_sized`, not the loose `allocate_vec`. `MipMapInfo` is
+        // three bare `u32`s with no heap indirection, no alignment
+        // padding and no decode-widening, so `size_of` (12) *is* the
+        // honest on-disk element size and the exact bound applies. The
+        // loose helper bounds `count` as if each element cost one byte,
+        // letting a crafted `num_mipmaps` request up to 12x the bytes
+        // that remain — and it routes through no `check_alloc`, so the
+        // 256 MB `MAX_SINGLE_ALLOC_BYTES` cap never applied here either.
+        let mut mipmaps: Vec<MipMapInfo> = stream.allocate_vec_sized(num_mipmaps)?;
         for _ in 0..num_mipmaps {
             let width = stream.read_u32_le()?;
             let height = stream.read_u32_le()?;
@@ -285,7 +293,9 @@ fn parse_pixel_format_prelude(stream: &mut NifStream) -> io::Result<PixelFormatP
     let num_mipmaps = stream.read_u32_le()?;
     let bytes_per_pixel = stream.read_u32_le()?;
 
-    let mut mipmaps: Vec<MipMapInfo> = stream.allocate_vec(num_mipmaps)?;
+    // #4157 — see the matching comment in this function's old-layout
+    // branch above; both mipmap loops share the bound and the reasoning.
+    let mut mipmaps: Vec<MipMapInfo> = stream.allocate_vec_sized(num_mipmaps)?;
     for _ in 0..num_mipmaps {
         let width = stream.read_u32_le()?;
         let height = stream.read_u32_le()?;
@@ -650,13 +660,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parse_ni_pixel_data_oblivion() {
-        let header = make_oblivion_header();
+    /// The `NiPixelFormat` prelude an Oblivion-era `NiPixelData` opens
+    /// with, up to but not including `palette_ref`. Shared by the happy
+    /// path and the #4157 bound test so the two can't drift apart.
+    fn oblivion_pixel_format_prelude() -> Vec<u8> {
         let mut data = Vec::new();
-
-        // NiPixelFormat: pixel_format
-        data.extend_from_slice(&1u32.to_le_bytes()); // RGBA
+        data.extend_from_slice(&1u32.to_le_bytes()); // pixel_format = RGBA
                                                      // New layout (v20.0.0.5 >= 10.4.0.2): bits_per_pixel(u8), renderer_hint(u32),
                                                      // extra_data(u32), flags(u8), tiling(u32)
         data.push(32u8); // bits_per_pixel
@@ -672,6 +681,78 @@ mod tests {
             data.push(8u8); // bits per channel
             data.push(0u8); // is_signed (bool as u8 via read_byte_bool)
         }
+        data
+    }
+
+    /// Regression: #4157 (PERF-D6-2026-09-11-01) — the mipmap-descriptor
+    /// loops pre-sized with the loose `allocate_vec`, a 1-byte-per-element
+    /// bound that routes through no `check_alloc` at all, for a 12-byte
+    /// `MipMapInfo`.
+    ///
+    /// Pinned on the **amplification window** rather than a dhat byte
+    /// total: `num_mipmaps` is chosen so that `count <= remaining` (the
+    /// old loose bound accepts it) but `count * 12 > remaining` (the
+    /// `size_of`-based bound rejects it). That window is exactly the
+    /// defect, so this fails against the pre-fix code and cannot
+    /// false-pass on a loosely-tuned byte ceiling the way the
+    /// `heap_allocation_bounds*` dhat gates — deliberately
+    /// order-of-magnitude by design — would.
+    #[test]
+    fn ni_pixel_data_mipmap_count_is_bounded_by_element_size_not_byte_count() {
+        let header = make_oblivion_header();
+        let mut data = oblivion_pixel_format_prelude();
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // palette_ref (NULL)
+
+        // Everything after this point is the allocation's `remaining`.
+        let prelude_len = data.len() + 4 /* num_mipmaps */ + 4 /* bytes_per_pixel */;
+
+        // 40 descriptor-sized bytes of trailer: enough that a count of 12
+        // clears the loose `count <= remaining` bound, while 12 * 12 = 144
+        // blows past it.
+        let trailer = 40usize;
+        let num_mipmaps = 12u32;
+        data.extend_from_slice(&num_mipmaps.to_le_bytes());
+        data.extend_from_slice(&4u32.to_le_bytes()); // bytes_per_pixel
+        data.extend_from_slice(&vec![0u8; trailer]);
+        assert_eq!(data.len(), prelude_len + trailer);
+
+        // The window this test exists to pin.
+        assert!(
+            (num_mipmaps as usize) <= trailer,
+            "fixture must be accepted by the OLD 1-byte-per-element bound"
+        );
+        assert!(
+            num_mipmaps as usize * std::mem::size_of::<MipMapInfo>() > trailer,
+            "fixture must be rejected by the size_of-based bound"
+        );
+
+        let mut stream = NifStream::new(&data, &header);
+        let err = NiPixelData::parse(&mut stream)
+            .expect_err("an inflated num_mipmaps must be refused before allocating");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("144") || msg.contains("bytes"),
+            "the rejection must name the byte count it refused, got: {msg}"
+        );
+    }
+
+    /// #4157 — `MipMapInfo` must stay `size_of`-honest, since that is the
+    /// precondition `allocate_vec_sized` needs. Three bare `u32`s: no
+    /// heap indirection, no alignment padding, no decode-widening, so 12
+    /// bytes in memory is exactly 12 bytes on disk. Adding a `String`,
+    /// `Vec`, or a field decoded from a narrower encoding would silently
+    /// turn the bound into a false-positive source that rejects valid
+    /// Oblivion NIFs.
+    #[test]
+    fn mipmap_info_is_size_of_honest() {
+        assert_eq!(std::mem::size_of::<MipMapInfo>(), 12);
+    }
+
+    #[test]
+    fn parse_ni_pixel_data_oblivion() {
+        let header = make_oblivion_header();
+        let mut data = oblivion_pixel_format_prelude();
+
         // NiPixelData fields
         data.extend_from_slice(&(-1i32).to_le_bytes()); // palette_ref (NULL)
         data.extend_from_slice(&1u32.to_le_bytes()); // num_mipmaps
