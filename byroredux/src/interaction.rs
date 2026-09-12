@@ -689,7 +689,6 @@ impl ActionState {
         self.pressed & action.bit() != 0
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn was_released(&self, action: InputAction) -> bool {
         self.released & action.bit() != 0
     }

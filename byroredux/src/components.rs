@@ -88,7 +88,6 @@ impl Component for DoorTeleport {
     type Storage = SparseSetStorage<Self>;
 }
 
-
 /// Marker component for "FX" decorative meshes (`effects/fx*`, `fxsoftglow`,
 /// `fxpartglow`, `fxparttiny`, `fxlightrays`) that the renderer drops on
 /// the floor. Lifted from a per-draw, per-frame substring scan over the
@@ -1324,17 +1323,15 @@ impl SkyParamsRes {
     /// Acquired in `scene/world_setup.rs` via `texture_registry.load_dds`
     /// (sun) and `acquire_by_path` (cloud layers); each call bumps the
     /// registry refcount once. Resource is worldspace-scoped (#1199) —
-    /// the per-cell drop loop was removed from `unload_cell`. The
-    /// matching release will live in a future worldspace-transition
-    /// hook (door-walking interior↔exterior). Update this list whenever
-    /// a new bindless slot is added to the struct.
+    /// the per-cell drop loop was removed from `unload_cell`. Update this
+    /// list whenever a new bindless slot is added to the struct.
     ///
-    /// #3455 (sibling sweep) — #1199 is CLOSED; it is cited here for the
-    /// *change that created this posture*, not as a pending consumer. The
-    /// release hook itself has no tracking issue yet, so this allow names no
-    /// live gate. File one before treating this as land-ahead-of-consumer
-    /// rather than plain dead code.
-    #[allow(dead_code)] // release hook not yet built; #1199 is the change that made this worldspace-scoped, not an open gate
+    /// The matching release is `apply_worldspace_weather`'s prologue in
+    /// `scene/world_setup.rs`, which snapshots these handles before
+    /// installing the next worldspace's `SkyParamsRes` and releases them
+    /// after — the #1339 / #1770 acquire-new-then-release-old handoff. That
+    /// is the worldspace-transition hook this doc used to describe as
+    /// unbuilt, and it is the only release point (#3887).
     pub(crate) fn texture_indices(&self) -> [u32; 5] {
         [
             self.cloud_texture_index,
