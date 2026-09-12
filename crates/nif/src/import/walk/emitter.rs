@@ -166,8 +166,23 @@ pub(crate) fn collect_force_fields(
     out
 }
 
-/// Scan the parsed NIF scene for the first authored particle colour ramp.
-/// Two sources, in priority order:
+/// Resolve `modifier_refs` (a `NiParticleSystem`'s own modifier list) to
+/// the first block downcasting to `T`, in list order. Shared helper for
+/// the per-instance extractors below — mirrors the shape of
+/// `scene.blocks.iter().find_map(downcast)` but scoped to one system's
+/// own modifiers instead of the whole scene.
+fn find_own_modifier<'a, T: 'static>(
+    scene: &'a NifScene,
+    modifier_refs: &[BlockRef],
+) -> Option<&'a T> {
+    modifier_refs.iter().find_map(|r| {
+        let idx = r.index()?;
+        scene.get_as::<T>(idx)
+    })
+}
+
+/// Scan `modifier_refs` — a `NiParticleSystem`'s own modifier list — for
+/// its authored particle colour ramp. Two sources, in priority order:
 ///   1. `NiPSysColorModifier` → `NiColorData` keyframe stream (Oblivion /
 ///      Skyrim-era + the modern reference-based modifier). Returns the
 ///      t=0 and t=last RGBA keys.
@@ -178,15 +193,17 @@ pub(crate) fn collect_force_fields(
 ///
 /// `None` when neither is present (→ fall back to the heuristic preset).
 ///
-/// First-pass scope per the issue body — this is a scene-level scan
-/// rather than per-emitter, which is exact for the dominant single-
-/// emitter-per-NIF case (every Bethesda hearth / torch / spell-cast /
-/// geyser NIF). Multi-emitter NIFs would need to walk each
-/// `NiParticleSystem.modifiers` list to attribute curves to specific
-/// emitters; deferred until a multi-emitter regression surfaces. See
-/// #707 / FX-2 + #1345 + #1402.
+/// #4261 (OB-D4-02) — scoped to `modifier_refs` rather than the whole
+/// scene: a `NiPSysColorModifier`/`BSPSysSimpleColorModifier` is one of
+/// this system's own `NiPSysModifier`-family entries, the same list
+/// [`collect_force_fields`] already walks correctly for force fields.
+/// The prior whole-scene scan gave every emitter in a multi-emitter NIF
+/// the FIRST system's colour ramp — measured on 140 of 208 Oblivion+DLC
+/// NIFs with more than one `NiPSysEmitter` (67.3%). See #707 / FX-2 +
+/// #1345 + the #1402 comment this fix finally closes out.
 pub(crate) fn extract_first_color_curve(
     scene: &NifScene,
+    modifier_refs: &[BlockRef],
 ) -> Option<crate::import::ParticleColorCurve> {
     use crate::blocks::interpolator::NiColorData;
     use crate::blocks::particle::{BSPSysSimpleColorModifier, NiPSysColorModifier};
@@ -200,11 +217,7 @@ pub(crate) fn extract_first_color_curve(
     }
 
     // 1. Legacy reference-based modifier → NiColorData keyframe stream.
-    if let Some(modifier) = scene
-        .blocks
-        .iter()
-        .find_map(|b| b.as_any().downcast_ref::<NiPSysColorModifier>())
-    {
+    if let Some(modifier) = find_own_modifier::<NiPSysColorModifier>(scene, modifier_refs) {
         if let Some(data_idx) = modifier.color_data_ref.index() {
             if let Some(data) = scene.get_as::<NiColorData>(data_idx) {
                 let keys = &data.keys.keys;
@@ -220,11 +233,7 @@ pub(crate) fn extract_first_color_curve(
     }
 
     // 2. #1345 — fall back to the inline BSPSysSimpleColorModifier ramp.
-    if let Some(scm) = scene
-        .blocks
-        .iter()
-        .find_map(|b| b.as_any().downcast_ref::<BSPSysSimpleColorModifier>())
-    {
+    if let Some(scm) = find_own_modifier::<BSPSysSimpleColorModifier>(scene, modifier_refs) {
         let start = scm.colors[0];
         let end = scm.colors[2];
         if is_valid_color(start) && is_valid_color(end) {
@@ -235,40 +244,42 @@ pub(crate) fn extract_first_color_curve(
     None
 }
 
-/// Scan the parsed NIF scene for the first `NiPSysEmitter` and return its
-/// decoded base spawn parameters. `None` when the scene has no emitter
-/// block (→ fall back to the heuristic preset). Same scene-level first-
-/// match scope as [`extract_first_color_curve`] — exact for the dominant
-/// single-emitter-per-NIF case; multi-emitter NIFs would need per-system
-/// attribution (deferred until a regression surfaces). See
-/// `docs/engine/nifal.md` — particles slice.
+/// Scan `modifier_refs` — a `NiParticleSystem`'s own modifier list — for
+/// its `NiPSysEmitter` and return its decoded base spawn parameters.
+/// `None` when this system has no emitter block among its own modifiers
+/// (→ fall back to the heuristic preset). See `docs/engine/nifal.md` —
+/// particles slice.
+///
+/// #4261 (OB-D4-02) — scoped to `modifier_refs` rather than the whole
+/// scene: `NiPSysEmitter` (Box/Sphere/Cylinder/Mesh variants all parse to
+/// this one struct) is itself a `NiPSysModifier` subtype, so it's one of
+/// this system's own list entries — the same list [`collect_force_fields`]
+/// already walks correctly. The prior whole-scene scan gave every emitter
+/// in a multi-emitter NIF the FIRST system's kinematics (speed,
+/// declination, life span, radius); measured on 140 of 208 Oblivion+DLC
+/// NIFs with more than one `NiPSysEmitter` (67.3%), e.g. `transformation.nif`
+/// (13 emitters), `obgatemini01.nif` (11).
 pub(crate) fn extract_emitter_params(
     scene: &NifScene,
+    modifier_refs: &[BlockRef],
 ) -> Option<crate::import::ImportedEmitterParams> {
     use crate::blocks::particle::NiPSysEmitter;
 
-    let emitter = scene
-        .blocks
-        .iter()
-        .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitter>())?;
+    let emitter = find_own_modifier::<NiPSysEmitter>(scene, modifier_refs)?;
     let p = &emitter.params;
-    // Pair the emitter base with the first grow/fade modifier's
-    // base_scale (size multiplier), if any. NIFAL-S5 (#1434) — reject a
-    // non-finite or non-positive raw scale here: it feeds `initial_radius ×
-    // base_scale` (systems/particle.rs), so 0.0/negative spawns zero-or-
-    // inverted-size particles and NaN/Inf poisons the product. Dropping just
-    // the modifier to `None` falls back to the ×1.0 default rather than
+    // Pair the emitter base with its OWN grow/fade modifier's base_scale
+    // (size multiplier), if any — same list, same reasoning as the
+    // emitter lookup above. NIFAL-S5 (#1434) — reject a non-finite or
+    // non-positive raw scale here: it feeds `initial_radius × base_scale`
+    // (systems/particle.rs), so 0.0/negative spawns zero-or-inverted-size
+    // particles and NaN/Inf poisons the product. Dropping just the
+    // modifier to `None` falls back to the ×1.0 default rather than
     // rejecting the whole (otherwise valid) emitter — sibling of the
     // NIFAL-S3 finite filter below.
-    let base_scale = scene
-        .blocks
-        .iter()
-        .find_map(|b| {
-            b.as_any()
-                .downcast_ref::<crate::blocks::particle::NiPSysGrowFadeModifier>()
-        })
-        .and_then(|m| m.base_scale)
-        .filter(|s| s.is_finite() && *s > 0.0);
+    let base_scale =
+        find_own_modifier::<crate::blocks::particle::NiPSysGrowFadeModifier>(scene, modifier_refs)
+            .and_then(|m| m.base_scale)
+            .filter(|s| s.is_finite() && *s > 0.0);
     // NIFAL-S3 (#1411) — reject corrupt emitter scalars before they reach
     // `apply_emitter_params`, which copies every one straight into the
     // particle preset. A single non-finite value (NaN/Inf from a malformed
@@ -326,35 +337,31 @@ pub(crate) fn extract_emitter_params(
     })
 }
 
-/// Scan for the emitter's authored birth rate (particles/sec) and return
-/// a single representative scalar. Modern path: the first
-/// `NiPSysEmitterCtlr`'s interpolator → `NiFloatData` first key value, or
-/// the `NiFloatInterpolator`'s constant value. Legacy fallback: the first
-/// `NiPSysEmitterCtlrData` birth-rate key. `None` when no controller is
-/// present (→ keep the preset's rate). Non-finite, negative, exactly `0.0`
-/// (a ramp-up emitter's t=0 key → keep the preset rate, #1771), and
-/// `FLT_MAX`-sentinel (`>= 3.0e38`) values are rejected: the sentinel on
-/// `NiFloatInterpolator.value` is nif.xml's "use the keyed data" marker, so
-/// even when the keyed `data_ref` is NULL it must not leak through the
-/// constant-value branch as a ~3.4e38 spawn rate (cap-spawning every frame,
-/// #1364). Scene-level first-match, same scope caveat as
-/// [`extract_first_color_curve`] — secondary emitters in a multi-emitter NIF
-/// share the first emitter's rate; deferred until a regression surfaces (#1402).
-/// See `docs/engine/nifal.md` — particles spawn-rate follow-up.
-/// Authored particle budget from the scene's `NiPSysData` block — nif.xml
-/// `NiParticlesData.Num Vertices`, *"the maximum number of particles"*, which
-/// on Bethesda `#BS202#` streams is the `BS Max Vertices` upper bound (#3344).
-/// `None` when the scene has no particle-data block or it authored `0`.
+/// Authored particle budget from a `NiParticleSystem`'s own `data_ref` —
+/// nif.xml `NiParticlesData.Num Vertices`, *"the maximum number of
+/// particles"*, which on Bethesda `#BS202#` streams is the `BS Max
+/// Vertices` upper bound (#3344). `None` when `data_ref` doesn't resolve
+/// to a budget-bearing block or it authored `0`.
 ///
-/// Scene-level first-match, the same scope caveat carried by
-/// [`extract_emitter_params`] and [`extract_emitter_rate`]: exact for the
-/// dominant single-emitter-per-NIF case, and secondary emitters in a
-/// multi-emitter NIF share the first block's budget. Following the particle
-/// system's own `data_ref` would be exact, but that ref is only serialized on
-/// the pre-SSE branch — `BS_GTE_SSE` streams replace it with a bounding
-/// sphere + skin ref — so a per-system link would work on FO3/FNV/Oblivion
-/// and silently fall back to this same scan everywhere else.
-pub(crate) fn extract_emitter_max_particles(scene: &NifScene) -> Option<u32> {
+/// #4261 (OB-D4-02) — `data_ref` is now populated for every version band
+/// (see the field's own doc comment on [`crate::blocks::particle::NiParticleSystem`]
+/// — pre-SSE `NiGeometry.Data` and SSE+'s own later `NiPSysData` ref both
+/// land in the one field), so this resolves exactly per-instance instead
+/// of the prior whole-scene first-match, which gave every emitter in a
+/// multi-emitter NIF the first system's particle budget. Falls back to
+/// the old whole-scene scan only if `data_ref` doesn't resolve — a
+/// defensive residual for any version/shape this pass didn't measure,
+/// not the common case.
+pub(crate) fn extract_emitter_max_particles(scene: &NifScene, data_ref: BlockRef) -> Option<u32> {
+    if let Some(idx) = data_ref.index() {
+        if let Some(budget) = scene
+            .get_as::<crate::blocks::particle::NiPSysBlock>(idx)
+            .and_then(|d| d.max_particles)
+            .filter(|m| *m > 0)
+        {
+            return Some(budget);
+        }
+    }
     // Find the first block that actually *carries* a budget, not the first
     // `NiPSysBlock`: 27 other `NiPSys*` types deserialise to that same marker
     // struct with `max_particles: None`, so `find_map(downcast).and_then(..)`
@@ -372,10 +379,42 @@ pub(crate) fn extract_emitter_max_particles(scene: &NifScene) -> Option<u32> {
         .filter(|m| *m > 0)
 }
 
-pub(crate) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
+/// #4261 (OB-D4-02) — the modern-tier controller lookup below now walks
+/// `controller_ref`'s own chain (`NiObjectNETData.controller_ref` →
+/// `next_controller_ref`, the same mechanism `crate::anim` already uses
+/// for embedded-animation import) for the `NiPSysEmitterCtlr` that
+/// actually belongs to THIS particle system, instead of the prior
+/// whole-scene first-match. Returns the controller's `interpolator_ref`
+/// (a plain `BlockRef`, not the controller itself, to sidestep threading
+/// a borrow out through the chain-walk callback's per-call lifetime).
+fn find_own_emitter_ctlr_interpolator(
+    scene: &NifScene,
+    controller_ref: BlockRef,
+) -> Option<BlockRef> {
+    use crate::blocks::particle::NiPSysEmitterCtlr;
+
+    let mut found: Option<BlockRef> = None;
+    crate::anim::walk_controller_chain(scene, controller_ref, |_idx, block, _base| {
+        if found.is_none() {
+            if let Some(ctlr) = block.as_any().downcast_ref::<NiPSysEmitterCtlr>() {
+                found = Some(ctlr.interpolator_ref);
+            }
+        }
+    });
+    found
+}
+
+/// Legacy `NiPSysEmitterCtlrData` tier (below) stays a whole-scene scan:
+/// deprecated pre-10.2 (nif.xml), attached via an even older
+/// `NiParticleSystemController` (until v10.0.1.0) this codebase doesn't
+/// currently link back to a specific `NiParticleSystem` at all — a
+/// residual, lower-priority scope this #4261 pass didn't extend to. The
+/// modern tier above (the dominant case on every measured multi-emitter
+/// NIF) is now exact.
+pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -> Option<f32> {
     use crate::anim::resolve_blend_interpolator_target;
     use crate::blocks::interpolator::{NiBlendFloatInterpolator, NiFloatData, NiFloatInterpolator};
-    use crate::blocks::particle::{NiPSysEmitterCtlr, NiPSysEmitterCtlrData};
+    use crate::blocks::particle::NiPSysEmitterCtlrData;
 
     fn sane(r: f32) -> Option<f32> {
         // Reject non-finite, negative, the FLT_MAX sentinel (`>= 3.0e38`, the
@@ -558,14 +597,10 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
         Allowed,
     }
 
-    fn resolve(scene: &NifScene, curves: CurveTier) -> Option<f32> {
+    fn resolve(scene: &NifScene, controller_ref: BlockRef, curves: CurveTier) -> Option<f32> {
         // Modern: controller → interpolator → (keyed data | constant).
-        if let Some(ctlr) = scene
-            .blocks
-            .iter()
-            .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlr>())
-        {
-            if let Some(interp_idx) = ctlr.interpolator_ref.index() {
+        if let Some(interp_ref) = find_own_emitter_ctlr_interpolator(scene, controller_ref) {
+            if let Some(interp_idx) = interp_ref.index() {
                 if let Some(r) = float_interpolator_rate(scene, interp_idx, curves) {
                     return Some(r);
                 }
@@ -628,7 +663,8 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
             .and_then(sane)
     }
 
-    resolve(scene, CurveTier::Rejected).or_else(|| resolve(scene, CurveTier::Allowed))
+    resolve(scene, controller_ref, CurveTier::Rejected)
+        .or_else(|| resolve(scene, controller_ref, CurveTier::Allowed))
 }
 
 /// Flat counterpart to the particle-emitter detection in
@@ -726,11 +762,11 @@ pub(crate) fn walk_node_particle_emitters_flat(
             dst_blend: pmat.dst_blend,
             effect_shader: pmat.effect_shader,
             greyscale_lut_map: pmat.greyscale_lut_map,
-            color_curve: extract_first_color_curve(scene),
+            color_curve: extract_first_color_curve(scene, &ps.modifier_refs),
             force_fields: collect_force_fields(scene, &ps.modifier_refs),
-            emitter_params: extract_emitter_params(scene),
-            emitter_rate: extract_emitter_rate(scene),
-            max_particles: extract_emitter_max_particles(scene),
+            emitter_params: extract_emitter_params(scene, &ps.modifier_refs),
+            emitter_rate: extract_emitter_rate(scene, ps.controller_ref),
+            max_particles: extract_emitter_max_particles(scene, ps.data_ref),
         });
     }
 }

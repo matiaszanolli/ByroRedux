@@ -207,8 +207,17 @@ pub struct NiPSysEmitter {
 /// importer can follow it to the rate source (NiFloatInterpolator's
 /// constant value or its NiFloatData keys) for the canonical
 /// `ParticleEmitter.rate`. NIFAL particles slice — spawn-rate follow-up.
+///
+/// #4261 (OB-D4-02) — also retains `base` (previously parsed and
+/// discarded like `NiParticleSystem`'s controller/data refs were), so
+/// `crate::anim::walk_controller_chain` can advance THROUGH this
+/// controller via `base.next_controller_ref` when it isn't the last link
+/// in a particle system's controller chain — matching the
+/// `NiSingleInterpController`/`BsNamedFloatInterpController` precedent in
+/// `time_controller_base_of` (#3327).
 #[derive(Debug)]
 pub struct NiPSysEmitterCtlr {
+    pub base: crate::blocks::controller::NiTimeControllerBase,
     pub interpolator_ref: BlockRef,
 }
 
@@ -919,7 +928,7 @@ pub fn parse_modifier_ctlr(stream: &mut NifStream, type_name: &str) -> io::Resul
 
 /// NiPSysEmitterCtlr: modifier_ctlr + visibility_interpolator_ref(ref)
 pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysEmitterCtlr> {
-    let _base = parse_interp_controller_base(stream)?;
+    let base = parse_interp_controller_base(stream)?;
     // NiSingleInterpController.Interpolator — since=10.1.0.104. Was read
     // unconditionally, desyncing every file below that version. (#3174)
     let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
@@ -937,7 +946,10 @@ pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysEmitterCtl
     // the interpolator_ref read above (whose PRESENCE is version-gated), this
     // one is not.
     let _vis_interpolator_or_data_ref = stream.read_block_ref()?;
-    Ok(NiPSysEmitterCtlr { interpolator_ref })
+    Ok(NiPSysEmitterCtlr {
+        base,
+        interpolator_ref,
+    })
 }
 
 /// BSPSysMultiTargetEmitterCtlr (FO3+): emitter_ctlr + max_emitters(u16) + master_ref(ptr)
@@ -1013,6 +1025,24 @@ pub struct NiParticleSystem {
     /// Skyrim+ dedicated alpha property (blend factors / alpha test).
     pub alpha_property_ref: BlockRef,
     pub modifier_refs: Vec<BlockRef>,
+    /// #4261 (OB-D4-02) — this system's own animation-controller chain
+    /// head, from the `NiAVObjectData` base's `NiObjectNETData.controller_ref`
+    /// (previously parsed and discarded with the rest of `av`, per the
+    /// `transform`/`properties` doc note above). Lets a caller find the
+    /// `NiPSysEmitterCtlr` that actually belongs to THIS particle system —
+    /// walking it via `anim::walk_controller_chain` — instead of the
+    /// scene-wide first-match `extract_emitter_rate` used before, which
+    /// gave every emitter in a multi-emitter NIF the first one's rate.
+    pub controller_ref: BlockRef,
+    /// #4261 (OB-D4-02) — this system's own particle-data block ref:
+    /// `NiParticlesData` pre-SSE (the `NiGeometry` base's `Data` field) or
+    /// `NiPSysData` on `BS_GTE_SSE` (a `NiParticleSystem`-specific field
+    /// serialized later, at a different wire position — both dispatch to
+    /// [`NiPSysBlock`], so one field covers every version).
+    /// `extract_emitter_max_particles` used to scan the whole scene for
+    /// the first `NiPSysBlock` with a budget, so every emitter shared the
+    /// first system's particle count; this makes it exact per-instance.
+    pub data_ref: BlockRef,
 }
 
 pub fn parse_particle_system(
@@ -1036,6 +1066,12 @@ pub fn parse_particle_system(
     // `bounding_sphere`. Other SSE+ titles do not.
     let is_bs_f76 = stream.bsver() == crate::version::bsver::FO76;
 
+    // #4261 (OB-D4-02) — this system's own particle-data ref, whichever of
+    // the two mutually-exclusive positions below actually applies. `NULL`
+    // for the `is_bs_gte_sse && type_name == "NiParticles"` combination,
+    // which reads neither (see the second site's own comment).
+    let mut data_ref = BlockRef::NULL;
+
     if is_bs_gte_sse {
         // Bounding sphere: 3 floats center + 1 float radius = 16 bytes.
         stream.skip(16)?;
@@ -1046,7 +1082,7 @@ pub fn parse_particle_system(
         let _skin_ref = stream.read_block_ref()?;
     } else {
         // Pre-SSE NiGeometry: data ref + skin instance ref + material data.
-        let _data_ref = stream.read_block_ref()?;
+        data_ref = stream.read_block_ref()?;
         let _skin_ref = stream.read_block_ref()?;
 
         // Material data: num_materials(u32) + (name_idx, extra_data)[N] +
@@ -1108,7 +1144,12 @@ pub fn parse_particle_system(
             let _near_end = stream.read_u16_le()?;
         }
         if is_bs_gte_sse {
-            let _data_ref = stream.read_block_ref()?;
+            // nif.xml: `Data` ref, template `NiPSysData`, `vercond="#BS_GTE_SSE#"`
+            // — the SSE+ counterpart of the pre-SSE `NiGeometry.Data` ref
+            // above (which nif.xml excludes for `NiParticleSystem` on this
+            // version band via `excludeT="NiParticleSystem"`), serialized
+            // here instead. Both dispatch to `NiPSysBlock`.
+            data_ref = stream.read_block_ref()?;
         }
 
         let _world_space = stream.read_byte_bool()?;
@@ -1126,11 +1167,13 @@ pub fn parse_particle_system(
 
     Ok(NiParticleSystem {
         original_type: type_name.to_string(),
+        controller_ref: av.net.controller_ref,
         transform: av.transform,
         properties: av.properties,
         shader_property_ref,
         alpha_property_ref,
         modifier_refs,
+        data_ref,
     })
 }
 

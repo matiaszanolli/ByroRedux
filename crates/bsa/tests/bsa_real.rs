@@ -137,6 +137,105 @@ fn oblivion_meshes_bsa_v103_extracts_nif_with_gamebryo_magic() {
     );
 }
 
+/// #4259 (OB-D2-01) — permanent brute-force extraction sweep for v103,
+/// mirroring `skyrimse_meshes_bsa_v105_brute_force_extract_zero_errors`
+/// below but across every vanilla + DLC archive rather than one, matching
+/// what the ad hoc audit sweep actually measured. A live ad hoc sweep
+/// during the 2026-09-11 audit found 147,629 files / 0 errors across all
+/// 17 vanilla + DLC Oblivion archives; that sweep was never committed, so
+/// a future regression in v103's zlib codec path, 16-byte folder-record
+/// handling, or the Xbox-archive-flag gate would slip past
+/// `cargo test -- --ignored` even on a fully-installed dev box.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_all_bsas_v103_brute_force_extract_zero_errors() {
+    let Some(data) = oblivion_data_dir() else {
+        eprintln!("Skipping: BYROREDUX_OBLIVION_DATA not set and default path missing");
+        return;
+    };
+
+    // Every vanilla + official DLC v103 archive Oblivion ships (17 total,
+    // matching the audit's own measured count).
+    const VANILLA_AND_DLC_ARCHIVES: &[&str] = &[
+        "Oblivion - Meshes.bsa",
+        "Oblivion - Misc.bsa",
+        "Oblivion - Sounds.bsa",
+        "Oblivion - Textures - Compressed.bsa",
+        "Oblivion - Voices1.bsa",
+        "Oblivion - Voices2.bsa",
+        "DLCBattlehornCastle.bsa",
+        "DLCFrostcrag.bsa",
+        "DLCHorseArmor.bsa",
+        "DLCOrrery.bsa",
+        "DLCShiveringIsles - Meshes.bsa",
+        "DLCShiveringIsles - Sounds.bsa",
+        "DLCShiveringIsles - Textures.bsa",
+        "DLCShiveringIsles - Voices.bsa",
+        "DLCThievesDen.bsa",
+        "DLCVileLair.bsa",
+        "Knights.bsa",
+    ];
+
+    let mut archives_opened = 0usize;
+    let mut total_files: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut errors: Vec<(String, String, String)> = Vec::new();
+
+    'archives: for &name in VANILLA_AND_DLC_ARCHIVES {
+        let archive_path = data.join(name);
+        if !archive_path.is_file() {
+            eprintln!("Skipping missing archive: {archive_path:?}");
+            continue;
+        }
+        let archive = BsaArchive::open(&archive_path).unwrap_or_else(|e| panic!("open {name}: {e}"));
+        assert_eq!(archive.version(), 103, "{name} must be v103");
+        archives_opened += 1;
+
+        for path in archive.list_files() {
+            match archive.extract(path) {
+                Ok(bytes) => {
+                    total_bytes += bytes.len() as u64;
+                    total_files += 1;
+                }
+                Err(e) => {
+                    errors.push((name.to_string(), path.to_string(), e.to_string()));
+                    if errors.len() >= 16 {
+                        break 'archives;
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        archives_opened > 0,
+        "no vanilla/DLC Oblivion v103 archives found under {data:?} — check the install"
+    );
+    eprintln!(
+        "Oblivion v103 brute-force extract: {archives_opened} archives, {total_files} files, \
+         {:.1} MB total, {} errors",
+        total_bytes as f64 / 1_048_576.0,
+        errors.len(),
+    );
+    if !errors.is_empty() {
+        for (archive, path, err) in &errors {
+            eprintln!("  ERR  [{archive}] {path}: {err}");
+        }
+        panic!(
+            "Oblivion v103 brute-force extract sweep produced {} errors (must be 0)",
+            errors.len()
+        );
+    }
+    if archives_opened == VANILLA_AND_DLC_ARCHIVES.len() {
+        assert!(
+            total_files > 100_000,
+            "expected on the order of 147k files across all 17 vanilla+DLC archives \
+             (audit's own measured figure); got {total_files} — investigate before \
+             trusting a lower count as a real pass"
+        );
+    }
+}
+
 /// FNV ships v104 BSAs (zlib compression, 16-byte folder records, u32
 /// offsets). Open the meshes archive, extract a NIF, assert it carries
 /// the Gamebryo magic header.

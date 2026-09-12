@@ -716,6 +716,8 @@ mod particle_local_transform_tests {
             shader_property_ref: BlockRef::NULL,
             alpha_property_ref: BlockRef::NULL,
             modifier_refs: Vec::new(),
+            controller_ref: BlockRef::NULL,
+            data_ref: BlockRef::NULL,
         })
     }
 
@@ -807,12 +809,33 @@ mod emitter_rate_tests {
     //! returned ~3.4e38 from the constant-value branch — a cap-spawn-every-
     //! frame rate.
     use super::super::extract_emitter_rate;
+    use crate::blocks::controller::NiTimeControllerBase;
     use crate::blocks::interpolator::NiFloatInterpolator;
     use crate::blocks::particle::NiPSysEmitterCtlr;
     use crate::scene::NifScene;
     use crate::types::BlockRef;
 
-    fn scene_with_constant_rate(value: f32) -> NifScene {
+    /// #4261 — `extract_emitter_rate` now takes the specific particle
+    /// system's `controller_ref` (chain head) instead of scanning the
+    /// whole scene, so every fixture below constructs a full
+    /// `NiPSysEmitterCtlr` (base + interpolator_ref) via this helper and
+    /// threads its own `BlockRef` back to the caller.
+    fn emitter_ctlr(interpolator_ref: BlockRef) -> NiPSysEmitterCtlr {
+        NiPSysEmitterCtlr {
+            base: NiTimeControllerBase {
+                next_controller_ref: BlockRef::NULL,
+                flags: 0,
+                frequency: 1.0,
+                phase: 0.0,
+                start_time: 0.0,
+                stop_time: 0.0,
+                target_ref: BlockRef::NULL,
+            },
+            interpolator_ref,
+        }
+    }
+
+    fn scene_with_constant_rate(value: f32) -> (NifScene, BlockRef) {
         let mut scene = NifScene::default();
         // [0] interpolator with a constant value and no keyed data.
         scene.blocks.push(Box::new(NiFloatInterpolator {
@@ -820,18 +843,16 @@ mod emitter_rate_tests {
             data_ref: BlockRef::NULL,
         }));
         // [1] controller pointing at it.
-        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
-            interpolator_ref: BlockRef(0u32),
-        }));
-        scene
+        scene.blocks.push(Box::new(emitter_ctlr(BlockRef(0u32))));
+        (scene, BlockRef(1u32))
     }
 
     #[test]
     fn flt_max_sentinel_is_rejected() {
         // FLT_MAX on the constant value + NULL data_ref → no usable rate.
-        let scene = scene_with_constant_rate(f32::MAX);
+        let (scene, ctlr_ref) = scene_with_constant_rate(f32::MAX);
         assert_eq!(
-            extract_emitter_rate(&scene),
+            extract_emitter_rate(&scene, ctlr_ref),
             None,
             "FLT_MAX sentinel must not leak through as a ~3.4e38 spawn rate (#1364)"
         );
@@ -841,17 +862,16 @@ mod emitter_rate_tests {
     fn sane_constant_rate_passes() {
         // A legitimate authored constant still resolves through the same
         // branch the FLT_MAX guard tightened.
-        let scene = scene_with_constant_rate(5.0);
-        assert_eq!(extract_emitter_rate(&scene), Some(5.0));
+        let (scene, ctlr_ref) = scene_with_constant_rate(5.0);
+        assert_eq!(extract_emitter_rate(&scene, ctlr_ref), Some(5.0));
     }
 
     #[test]
     fn negative_and_nonfinite_rates_rejected() {
-        assert_eq!(extract_emitter_rate(&scene_with_constant_rate(-1.0)), None);
-        assert_eq!(
-            extract_emitter_rate(&scene_with_constant_rate(f32::INFINITY)),
-            None
-        );
+        let (scene, ctlr_ref) = scene_with_constant_rate(-1.0);
+        assert_eq!(extract_emitter_rate(&scene, ctlr_ref), None);
+        let (scene, ctlr_ref) = scene_with_constant_rate(f32::INFINITY);
+        assert_eq!(extract_emitter_rate(&scene, ctlr_ref), None);
     }
 
     /// #1771 — an authored rate of exactly `0.0` is a ramp-up emitter's t=0
@@ -862,8 +882,9 @@ mod emitter_rate_tests {
     /// the constant-value scaffold exercises the exact same path.
     #[test]
     fn zero_rate_falls_back_to_preset() {
+        let (scene, ctlr_ref) = scene_with_constant_rate(0.0);
         assert_eq!(
-            extract_emitter_rate(&scene_with_constant_rate(0.0)),
+            extract_emitter_rate(&scene, ctlr_ref),
             None,
             "a 0.0 first-key/constant rate must fall back to the preset, not zero the emitter",
         );
@@ -916,12 +937,10 @@ mod emitter_rate_tests {
             },
             value: 0.0,
         })); // [2]
-        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
-            interpolator_ref: BlockRef(2u32),
-        })); // [3]
+        scene.blocks.push(Box::new(emitter_ctlr(BlockRef(2u32)))); // [3]
 
         assert_eq!(
-            extract_emitter_rate(&scene),
+            extract_emitter_rate(&scene, BlockRef(3u32)),
             Some(7.0),
             "must follow the highest-normalized_weight item's sub-interpolator"
         );
@@ -961,11 +980,9 @@ mod emitter_rate_tests {
             },
             value: 0.0,
         })); // [2]
-        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
-            interpolator_ref: BlockRef(2u32),
-        })); // [3]
+        scene.blocks.push(Box::new(emitter_ctlr(BlockRef(2u32)))); // [3]
 
-        assert_eq!(extract_emitter_rate(&scene), Some(12.0));
+        assert_eq!(extract_emitter_rate(&scene, BlockRef(3u32)), Some(12.0));
     }
 
     /// The manager-controlled case carries an empty `items` array (the
@@ -989,11 +1006,9 @@ mod emitter_rate_tests {
             },
             value: 4.5,
         })); // [0]
-        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
-            interpolator_ref: BlockRef(0u32),
-        })); // [1]
+        scene.blocks.push(Box::new(emitter_ctlr(BlockRef(0u32)))); // [1]
 
-        assert_eq!(extract_emitter_rate(&scene), Some(4.5));
+        assert_eq!(extract_emitter_rate(&scene, BlockRef(1u32)), Some(4.5));
     }
 
     /// #3329 — the residual #2548 left behind. A manager-controlled blend has
@@ -1062,9 +1077,7 @@ mod emitter_rate_tests {
             value: 0.0,
         }));
         // [1] the controller.
-        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
-            interpolator_ref: BlockRef(0u32),
-        }));
+        scene.blocks.push(Box::new(emitter_ctlr(BlockRef(0u32))));
         // [2] a transient sequence's rate, and [3] the steady-state loop's.
         scene.blocks.push(Box::new(NiFloatInterpolator {
             value: 300.0,
@@ -1081,7 +1094,7 @@ mod emitter_rate_tests {
         scene.blocks.push(Box::new(emitter_sequence("Idle", 3)));
 
         assert_eq!(
-            extract_emitter_rate(&scene),
+            extract_emitter_rate(&scene, BlockRef(1u32)),
             Some(25.0),
             "the steady-state `Idle` sequence must win over the transient one (#3329)"
         );
@@ -1108,9 +1121,7 @@ mod emitter_rate_tests {
             },
             value: 0.0,
         })); // [0]
-        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
-            interpolator_ref: BlockRef(0u32),
-        })); // [1]
+        scene.blocks.push(Box::new(emitter_ctlr(BlockRef(0u32)))); // [1]
         scene.blocks.push(Box::new(NiFloatInterpolator {
             value: 510.0,
             data_ref: BlockRef::NULL,
@@ -1147,7 +1158,7 @@ mod emitter_rate_tests {
         })); // [3]
 
         // `dlc04fxcrashthroughfloor`'s real shape and its real rate.
-        assert_eq!(extract_emitter_rate(&scene), Some(510.0));
+        assert_eq!(extract_emitter_rate(&scene, BlockRef(1u32)), Some(510.0));
     }
 
     /// A sequence carrying no emitter controller must not be mined for a
@@ -1171,9 +1182,7 @@ mod emitter_rate_tests {
             },
             value: 0.0,
         })); // [0]
-        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
-            interpolator_ref: BlockRef(0u32),
-        })); // [1]
+        scene.blocks.push(Box::new(emitter_ctlr(BlockRef(0u32)))); // [1]
         scene.blocks.push(Box::new(NiFloatInterpolator {
             value: 77.0,
             data_ref: BlockRef::NULL,
@@ -1211,7 +1220,7 @@ mod emitter_rate_tests {
         })); // [3]
 
         assert_eq!(
-            extract_emitter_rate(&scene),
+            extract_emitter_rate(&scene, BlockRef(1u32)),
             None,
             "an alpha channel is not a birth rate (#3329)"
         );
@@ -1241,8 +1250,9 @@ mod emitter_rate_tests {
     }
 
     /// Emitter controller → `NiFloatInterpolator` carrying the `-FLT_MAX`
-    /// sentinel and `keys` as its authored curve.
-    fn scene_with_rate_curve(keys: Vec<FloatKey>) -> NifScene {
+    /// sentinel and `keys` as its authored curve. Returns the scene plus
+    /// the `BlockRef` of the `NiPSysEmitterCtlr` at [2].
+    fn scene_with_rate_curve(keys: Vec<FloatKey>) -> (NifScene, BlockRef) {
         let mut scene = NifScene::default();
         scene.blocks.push(Box::new(NiFloatData {
             keys: KeyGroup {
@@ -1255,10 +1265,8 @@ mod emitter_rate_tests {
             value: -f32::MAX,
             data_ref: BlockRef(0u32),
         })); // [1]
-        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
-            interpolator_ref: BlockRef(1u32),
-        })); // [2]
-        scene
+        scene.blocks.push(Box::new(emitter_ctlr(BlockRef(1u32)))); // [2]
+        (scene, BlockRef(2u32))
     }
 
     fn approx(actual: Option<f32>, expected: f32, what: &str) {
@@ -1274,13 +1282,17 @@ mod emitter_rate_tests {
     /// for the remaining 11.8 s of a 16.7 s clip.
     #[test]
     fn ramp_to_plateau_curve_resolves_near_its_plateau() {
-        let scene = scene_with_rate_curve(vec![
+        let (scene, ctlr_ref) = scene_with_rate_curve(vec![
             key(0.0, 0.0),
             key(2.7666667, 0.0),
             key(4.8333335, 30.0),
             key(16.666666, 30.0),
         ]);
-        approx(extract_emitter_rate(&scene), 23.16, "fxbubblestall01 Idle");
+        approx(
+            extract_emitter_rate(&scene, ctlr_ref),
+            23.16,
+            "fxbubblestall01 Idle",
+        );
     }
 
     /// `meshes\\architecture\\urban\\tenpengate01.nif` — the shape the
@@ -1291,14 +1303,14 @@ mod emitter_rate_tests {
     /// time-weighted mean instead.
     #[test]
     fn burst_curve_resolves_to_its_mean_not_its_peak() {
-        let scene = scene_with_rate_curve(vec![
+        let (scene, ctlr_ref) = scene_with_rate_curve(vec![
             key(0.0, 0.0),
             key(1.7, 0.0),
             key(1.7333333, 600.0),
             key(1.8333333, 0.0),
             key(2.0, 0.0),
         ]);
-        let rate = extract_emitter_rate(&scene);
+        let rate = extract_emitter_rate(&scene, ctlr_ref);
         approx(rate, 20.0, "tenpengate01 Close");
         assert_ne!(rate, Some(600.0), "the peak is not a steady-state rate");
         assert_ne!(rate, None, "…and the curve must not be discarded (#3754)");
@@ -1338,12 +1350,10 @@ mod emitter_rate_tests {
             },
             value: 12.0,
         })); // [2]
-        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
-            interpolator_ref: BlockRef(2u32),
-        })); // [3]
+        scene.blocks.push(Box::new(emitter_ctlr(BlockRef(2u32)))); // [3]
 
         assert_eq!(
-            extract_emitter_rate(&scene),
+            extract_emitter_rate(&scene, BlockRef(3u32)),
             Some(12.0),
             "the blend's own constant resolves on the first pass; the curve \
              mean is a second-pass fallback, not a competitor (#3754)"
@@ -1354,8 +1364,9 @@ mod emitter_rate_tests {
     /// the existing fallbacks rather than averaging garbage in.
     #[test]
     fn sentinel_key_inside_a_curve_is_not_averaged() {
-        let scene = scene_with_rate_curve(vec![key(0.0, 0.0), key(1.0, f32::MAX), key(2.0, 0.0)]);
-        assert_eq!(extract_emitter_rate(&scene), None);
+        let (scene, ctlr_ref) =
+            scene_with_rate_curve(vec![key(0.0, 0.0), key(1.0, f32::MAX), key(2.0, 0.0)]);
+        assert_eq!(extract_emitter_rate(&scene, ctlr_ref), None);
     }
 
     /// A curve that spans no time has no average to take. (The two keys at
@@ -1363,8 +1374,8 @@ mod emitter_rate_tests {
     /// 2 µs apart — so this is the degenerate form of a shape that occurs.)
     #[test]
     fn zero_span_curve_is_rejected() {
-        let scene = scene_with_rate_curve(vec![key(1.0, 0.0), key(1.0, 30.0)]);
-        assert_eq!(extract_emitter_rate(&scene), None);
+        let (scene, ctlr_ref) = scene_with_rate_curve(vec![key(1.0, 0.0), key(1.0, 30.0)]);
+        assert_eq!(extract_emitter_rate(&scene, ctlr_ref), None);
     }
 
     /// An all-zero curve is a genuinely silent emitter, not a ramp — it must
@@ -1373,8 +1384,9 @@ mod emitter_rate_tests {
     /// tier).
     #[test]
     fn all_zero_curve_still_falls_back_to_the_preset() {
-        let scene = scene_with_rate_curve(vec![key(0.0, 0.0), key(1.0, 0.0), key(2.0, 0.0)]);
-        assert_eq!(extract_emitter_rate(&scene), None);
+        let (scene, ctlr_ref) =
+            scene_with_rate_curve(vec![key(0.0, 0.0), key(1.0, 0.0), key(2.0, 0.0)]);
+        assert_eq!(extract_emitter_rate(&scene, ctlr_ref), None);
     }
 
     /// Negative key values are clamped to zero rather than subtracting area:
@@ -1382,14 +1394,78 @@ mod emitter_rate_tests {
     /// emission would silently mute the emitter.
     #[test]
     fn negative_keys_clamp_rather_than_cancel_emission() {
-        let scene = scene_with_rate_curve(vec![
+        let (scene, ctlr_ref) = scene_with_rate_curve(vec![
             key(0.0, 0.0),
             key(1.0, -100.0),
             key(2.0, 60.0),
             key(3.0, 60.0),
         ]);
         // Clamped: segments are 0, 0, 30, 60 → area 90 over 3 s.
-        approx(extract_emitter_rate(&scene), 30.0, "clamped negative");
+        approx(extract_emitter_rate(&scene, ctlr_ref), 30.0, "clamped negative");
+    }
+}
+
+#[cfg(test)]
+mod emitter_max_particles_tests {
+    //! #4261 (OB-D4-02) — `extract_emitter_max_particles` now resolves a
+    //! `NiParticleSystem`'s own `data_ref` directly instead of scanning
+    //! the whole scene for the first budget-bearing block, so two systems
+    //! in one NIF get their own distinct particle budgets.
+    use super::super::extract_emitter_max_particles;
+    use crate::blocks::particle::NiPSysBlock;
+    use crate::scene::NifScene;
+    use crate::types::BlockRef;
+
+    fn budget_block(max_particles: Option<u32>) -> NiPSysBlock {
+        let mut b = NiPSysBlock::marker("NiPSysData");
+        b.max_particles = max_particles;
+        b
+    }
+
+    #[test]
+    fn resolves_the_specific_data_ref_directly() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(budget_block(Some(200)))); // [0]
+        assert_eq!(
+            extract_emitter_max_particles(&scene, BlockRef(0u32)),
+            Some(200)
+        );
+    }
+
+    #[test]
+    fn two_systems_get_their_own_distinct_budgets() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(budget_block(Some(50)))); // [0] system A's data
+        scene.blocks.push(Box::new(budget_block(Some(500)))); // [1] system B's data
+        assert_eq!(
+            extract_emitter_max_particles(&scene, BlockRef(0u32)),
+            Some(50)
+        );
+        assert_eq!(
+            extract_emitter_max_particles(&scene, BlockRef(1u32)),
+            Some(500),
+            "system B must not inherit system A's first-match budget (#4261)"
+        );
+    }
+
+    #[test]
+    fn zero_budget_is_rejected_same_as_the_whole_scene_fallback() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(budget_block(Some(0)))); // [0]
+        assert_eq!(extract_emitter_max_particles(&scene, BlockRef(0u32)), None);
+    }
+
+    #[test]
+    fn null_data_ref_falls_back_to_the_whole_scene_scan() {
+        // Defensive residual: a data_ref that doesn't resolve (NULL, or a
+        // version/shape this pass didn't measure) must still find a budget
+        // via the old whole-scene scan rather than losing it outright.
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(budget_block(Some(75)))); // [0]
+        assert_eq!(
+            extract_emitter_max_particles(&scene, BlockRef::NULL),
+            Some(75)
+        );
     }
 }
 
@@ -1402,25 +1478,32 @@ mod emitter_param_tests {
     use super::super::extract_emitter_params;
     use crate::blocks::particle::{EmitterBaseParams, NiPSysEmitter, NiPSysGrowFadeModifier};
     use crate::scene::NifScene;
+    use crate::types::BlockRef;
 
-    fn scene_with_emitter(params: EmitterBaseParams) -> NifScene {
+    /// #4261 — `extract_emitter_params` now scopes to a `NiParticleSystem`'s
+    /// own `modifier_refs` rather than the whole scene, so fixtures must
+    /// wire the emitter block in via that list, not just push it into
+    /// `scene.blocks`. Returns the refs alongside the scene.
+    fn scene_with_emitter(params: EmitterBaseParams) -> (NifScene, Vec<BlockRef>) {
         let mut scene = NifScene::default();
         scene.blocks.push(Box::new(NiPSysEmitter {
             params,
             original_type: "NiPSysBoxEmitter".to_string(),
         }));
-        scene
+        (scene, vec![BlockRef(0)])
     }
 
     fn scene_with_emitter_and_scale(
         params: EmitterBaseParams,
         base_scale: Option<f32>,
-    ) -> NifScene {
-        let mut scene = scene_with_emitter(params);
+    ) -> (NifScene, Vec<BlockRef>) {
+        let (mut scene, mut modifier_refs) = scene_with_emitter(params);
+        let idx = scene.blocks.len();
         scene
             .blocks
             .push(Box::new(NiPSysGrowFadeModifier { base_scale }));
-        scene
+        modifier_refs.push(BlockRef(idx as u32));
+        (scene, modifier_refs)
     }
 
     fn sane_params() -> EmitterBaseParams {
@@ -1434,8 +1517,9 @@ mod emitter_param_tests {
 
     #[test]
     fn sane_emitter_params_pass() {
-        let got = extract_emitter_params(&scene_with_emitter(sane_params()))
-            .expect("sane emitter params must translate");
+        let (scene, refs) = scene_with_emitter(sane_params());
+        let got =
+            extract_emitter_params(&scene, &refs).expect("sane emitter params must translate");
         assert_eq!(got.speed, 10.0);
         assert_eq!(got.life_span, 3.0);
         assert_eq!(got.initial_radius, 2.0);
@@ -1489,8 +1573,9 @@ mod emitter_param_tests {
             },
         ];
         for bad in cases {
+            let (scene, refs) = scene_with_emitter(bad);
             assert!(
-                extract_emitter_params(&scene_with_emitter(bad)).is_none(),
+                extract_emitter_params(&scene, &refs).is_none(),
                 "non-finite emitter scalar must block apply_emitter_params (#1411)"
             );
         }
@@ -1500,32 +1585,27 @@ mod emitter_param_tests {
     fn non_positive_life_and_negative_radius_rejected() {
         // life_span == 0 spawns already-dead particles; negative radius is
         // physically meaningless. Both fall back to the preset.
-        assert!(
-            extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
-                life_span: 0.0,
-                ..sane_params()
-            }))
-            .is_none()
-        );
-        assert!(
-            extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
-                life_span: -1.0,
-                ..sane_params()
-            }))
-            .is_none()
-        );
-        assert!(
-            extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
-                initial_radius: -1.0,
-                ..sane_params()
-            }))
-            .is_none()
-        );
+        let (scene, refs) = scene_with_emitter(EmitterBaseParams {
+            life_span: 0.0,
+            ..sane_params()
+        });
+        assert!(extract_emitter_params(&scene, &refs).is_none());
+        let (scene, refs) = scene_with_emitter(EmitterBaseParams {
+            life_span: -1.0,
+            ..sane_params()
+        });
+        assert!(extract_emitter_params(&scene, &refs).is_none());
+        let (scene, refs) = scene_with_emitter(EmitterBaseParams {
+            initial_radius: -1.0,
+            ..sane_params()
+        });
+        assert!(extract_emitter_params(&scene, &refs).is_none());
     }
 
     #[test]
     fn valid_base_scale_passes_through() {
-        let got = extract_emitter_params(&scene_with_emitter_and_scale(sane_params(), Some(0.15)))
+        let (scene, refs) = scene_with_emitter_and_scale(sane_params(), Some(0.15));
+        let got = extract_emitter_params(&scene, &refs)
             .expect("emitter with a valid positive base_scale must translate");
         assert_eq!(got.base_scale, Some(0.15));
     }
@@ -1537,9 +1617,9 @@ mod emitter_param_tests {
         // `None` (→ ×1.0 default in systems/particle.rs) without rejecting an
         // otherwise-valid emitter.
         for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let got =
-                extract_emitter_params(&scene_with_emitter_and_scale(sane_params(), Some(bad)))
-                    .unwrap_or_else(|| panic!("emitter must survive bad base_scale {bad}"));
+            let (scene, refs) = scene_with_emitter_and_scale(sane_params(), Some(bad));
+            let got = extract_emitter_params(&scene, &refs)
+                .unwrap_or_else(|| panic!("emitter must survive bad base_scale {bad}"));
             assert_eq!(
                 got.base_scale, None,
                 "bad base_scale {bad} must drop to None (×1.0 default), not poison particle size"
@@ -1588,6 +1668,56 @@ mod attenuation_radius_tests {
         assert!(
             (radius - 256.0).abs() < 1e-3,
             "linear attenuation must be solved analytically, got {radius}"
+        );
+    }
+}
+
+/// #4258 (OB-D1-02) — `BSFaceGenNiNode` has a dedicated block parser
+/// (`blocks/node.rs`) but `as_ni_node` had no arm for it, so any
+/// `BSFaceGenNiNode` subtree silently dropped out of the imported scene
+/// instead of walking like every other `NiNode`-family wrapper.
+#[cfg(test)]
+mod facegen_node_walker_tests {
+    use super::super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::node::{BsFaceGenNiNode, NiNode};
+    use crate::types::BlockRef;
+    use std::sync::Arc;
+
+    fn node_with_name(name: &str) -> NiNode {
+        NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from(name)),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: crate::types::NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: vec![BlockRef(0)],
+            effects: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn as_ni_node_unwraps_bs_face_gen_ni_node() {
+        let block = BsFaceGenNiNode {
+            base: node_with_name("HeadFaceGen"),
+            starfield_tail: Vec::new(),
+        };
+        let unwrapped = as_ni_node(&block).expect(
+            "as_ni_node must recognize BsFaceGenNiNode as a NiNode-family \
+             wrapper instead of silently dropping its subtree",
+        );
+        assert_eq!(unwrapped.av.net.name.as_deref(), Some("HeadFaceGen"));
+        assert_eq!(
+            unwrapped.children.len(),
+            1,
+            "the wrapped NiNode's children must survive the unwrap — this is \
+             what makes the subtree actually walk"
         );
     }
 }

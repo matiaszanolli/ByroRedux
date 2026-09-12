@@ -29,6 +29,20 @@ use super::{identity_transform, make_ni_node, scene_from_blocks, translated};
 /// (per-archive counts in `blocks/mod.rs`). These assertions pin a
 /// deliberate scope boundary backed by measurement, not an unfixed gap.
 fn synthetic_particle_block(type_name: &str) -> Box<dyn crate::blocks::NiObject> {
+    synthetic_particle_block_with_modifiers(type_name, Vec::new())
+}
+
+/// #4261 (OB-D4-02) — the extractors now scope color-curve / emitter-param
+/// / rate / max-particles lookups to a `NiParticleSystem`'s own
+/// `modifier_refs` rather than the whole scene, so a fixture that wants
+/// one of those to resolve must wire the modifier block in via this list
+/// — it no longer needs to be scene-graph reachable at all (a
+/// `NiPSysColorModifier` never really is, on real content; only
+/// `modifier_refs` and `data_ref`/`controller_ref` name it).
+fn synthetic_particle_block_with_modifiers(
+    type_name: &str,
+    modifier_refs: Vec<BlockRef>,
+) -> Box<dyn crate::blocks::NiObject> {
     match type_name {
         "NiParticleSystem" | "NiMeshParticleSystem" | "NiParticles" | "BSStripParticleSystem" => {
             Box::new(crate::blocks::particle::NiParticleSystem {
@@ -37,7 +51,9 @@ fn synthetic_particle_block(type_name: &str) -> Box<dyn crate::blocks::NiObject>
                 properties: Vec::new(),
                 shader_property_ref: BlockRef::NULL,
                 alpha_property_ref: BlockRef::NULL,
-                modifier_refs: Vec::new(),
+                modifier_refs,
+                controller_ref: BlockRef::NULL,
+                data_ref: BlockRef::NULL,
             })
         }
         _ => Box::new(crate::blocks::particle::NiPSysBlock::marker(type_name)),
@@ -126,10 +142,16 @@ fn import_captures_color_curve_from_psys_color_modifier_chain() {
 
     // Scene layout:
     //   [0] NiNode root with the emitter as child
-    //   [1] NiParticleSystem (the renderable emitter)
+    //   [1] NiParticleSystem (the renderable emitter), modifier_refs = [2]
     //   [2] NiPSysColorModifier referencing block [3]
     //   [3] NiColorData with start = orange, end = red
-    let root = make_ni_node(identity_transform(), vec![BlockRef(1), BlockRef(2)]);
+    //
+    // #4261 — the modifier is wired in via [1]'s own `modifier_refs`, not
+    // by being a scene-graph child of the root: `extract_first_color_curve`
+    // now scopes to that list (matching how a `NiPSysColorModifier` is
+    // actually reachable on real content — it's never a node), not
+    // whole-scene reachability.
+    let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
     let modifier = NiPSysColorModifier {
         base: NiPSysModifierBase {
             name: Some(Arc::from("ColorMod")),
@@ -171,7 +193,7 @@ fn import_captures_color_curve_from_psys_color_modifier_chain() {
     };
     let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
         Box::new(root),
-        synthetic_particle_block("NiParticleSystem"),
+        synthetic_particle_block_with_modifiers("NiParticleSystem", vec![BlockRef(2)]),
         Box::new(modifier),
         Box::new(color_data),
     ];
@@ -311,6 +333,8 @@ fn hierarchical_import_carries_effect_shader_greyscale_lut_to_the_particle_emitt
         shader_property_ref: BlockRef(2),
         alpha_property_ref: BlockRef::NULL,
         modifier_refs: Vec::new(),
+        controller_ref: BlockRef::NULL,
+        data_ref: BlockRef::NULL,
     };
     let shader = effect_shader_with_greyscale_texture("fx/palette_grad.dds");
     let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
@@ -355,6 +379,8 @@ fn flat_import_carries_effect_shader_greyscale_lut_to_the_particle_emitter() {
         shader_property_ref: BlockRef(2),
         alpha_property_ref: BlockRef::NULL,
         modifier_refs: Vec::new(),
+        controller_ref: BlockRef::NULL,
+        data_ref: BlockRef::NULL,
     };
     let shader = effect_shader_with_greyscale_texture("fx/palette_grad.dds");
     let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
@@ -366,5 +392,155 @@ fn flat_import_carries_effect_shader_greyscale_lut_to_the_particle_emitter() {
     assert_eq!(
         emitters[0].greyscale_lut_map.as_deref(),
         Some("fx/palette_grad.dds")
+    );
+}
+
+/// #4261 (OB-D4-02) — the core regression this fix closes: two
+/// `NiParticleSystem` instances in one NIF must each surface their OWN
+/// emitter kinematics and color curve, not both collapse onto the
+/// first system's — the exact defect measured on 140 of 208 Oblivion+DLC
+/// multi-emitter NIFs (67.3%), e.g. `transformation.nif` (13 emitters).
+/// Exercises both the hierarchical (`import_nif_scene`) and flat
+/// (`import_nif_particle_emitters`) paths, which carry independent call
+/// sites for the same extractors.
+#[test]
+fn each_particle_system_gets_its_own_emitter_kinematics_and_color_curve() {
+    use crate::blocks::interpolator::{Color4Key, KeyGroup, KeyType, NiColorData};
+    use crate::blocks::particle::{
+        EmitterBaseParams, NiPSysColorModifier, NiPSysEmitter, NiPSysModifierBase,
+    };
+
+    fn emitter(speed: f32) -> NiPSysEmitter {
+        NiPSysEmitter {
+            params: EmitterBaseParams {
+                speed,
+                initial_radius: 1.0,
+                life_span: 1.0,
+                ..Default::default()
+            },
+            original_type: "NiPSysBoxEmitter".to_string(),
+        }
+    }
+
+    fn color_modifier(name: &str, data_ref: BlockRef) -> NiPSysColorModifier {
+        NiPSysColorModifier {
+            base: NiPSysModifierBase {
+                name: Some(Arc::from(name)),
+                order: 0,
+                target_ref: BlockRef::NULL,
+                active: true,
+            },
+            color_data_ref: data_ref,
+        }
+    }
+
+    fn color_data(start: [f32; 4], end: [f32; 4]) -> NiColorData {
+        NiColorData {
+            keys: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: vec![
+                    Color4Key {
+                        time: 0.0,
+                        value: start,
+                        tangent_forward: [0.0; 4],
+                        tangent_backward: [0.0; 4],
+                        tbc: None,
+                    },
+                    Color4Key {
+                        time: 1.0,
+                        value: end,
+                        tangent_forward: [0.0; 4],
+                        tangent_backward: [0.0; 4],
+                        tbc: None,
+                    },
+                ],
+            },
+        }
+    }
+
+    // Scene layout — two independent emitter systems under one root:
+    //   [0] root NiNode, children [1, 4]
+    //   [1] NiParticleSystem A, modifier_refs = [2, 3]
+    //   [2] NiPSysEmitter A (speed = 10.0)
+    //   [3] NiPSysColorModifier A -> NiColorData A (orange -> red)
+    //   [4] NiParticleSystem B, modifier_refs = [5, 6]
+    //   [5] NiPSysEmitter B (speed = 99.0)
+    //   [6] NiPSysColorModifier B -> NiColorData B (blue -> green)
+    // Each system's own color data sits at its own index, referenced by
+    // its own modifier's color_data_ref — no shared index games.
+    let root = make_ni_node(identity_transform(), vec![BlockRef(1), BlockRef(4)]);
+    let orange_red = [1.0, 0.5, 0.0, 1.0];
+    let dark_red = [0.5, 0.0, 0.0, 0.0];
+    let blue = [0.0, 0.0, 1.0, 1.0];
+    let green = [0.0, 1.0, 0.0, 0.0];
+
+    let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+        Box::new(root),
+        synthetic_particle_block_with_modifiers("NiParticleSystem", vec![BlockRef(2), BlockRef(3)]),
+        Box::new(emitter(10.0)),
+        Box::new(color_modifier("ColorA", BlockRef(9))),
+        synthetic_particle_block_with_modifiers("NiParticleSystem", vec![BlockRef(5), BlockRef(6)]),
+        Box::new(emitter(99.0)),
+        Box::new(color_modifier("ColorB", BlockRef(10))),
+        // padding so the two NiColorData blocks land at fixed, distinct
+        // indices [9] and [10] regardless of earlier list growth.
+        Box::new(crate::blocks::particle::NiPSysBlock::marker("__pad0")),
+        Box::new(crate::blocks::particle::NiPSysBlock::marker("__pad1")),
+        Box::new(color_data(orange_red, dark_red)),
+        Box::new(color_data(blue, green)),
+    ];
+    let scene = scene_from_blocks(blocks);
+
+    // Hierarchical import.
+    let mut pool = StringPool::new();
+    let imported = import_nif_scene(&scene, &mut pool);
+    assert_eq!(imported.particle_emitters.len(), 2);
+    let a = &imported.particle_emitters[0];
+    let b = &imported.particle_emitters[1];
+    assert_eq!(
+        a.emitter_params.expect("system A must have params").speed,
+        10.0
+    );
+    assert_eq!(
+        b.emitter_params.expect("system B must have params").speed,
+        99.0,
+        "system B must NOT inherit system A's first-match speed (#4261)"
+    );
+    assert_eq!(
+        a.color_curve.expect("system A must have a color curve").start,
+        orange_red
+    );
+    assert_eq!(
+        b.color_curve.expect("system B must have a color curve").start,
+        blue,
+        "system B must NOT inherit system A's first-match color curve (#4261)"
+    );
+
+    // Flat import — same scene, same expectation.
+    let flat = import_nif_particle_emitters(&scene);
+    assert_eq!(flat.len(), 2);
+    assert_eq!(
+        flat[0].emitter_params.expect("flat A must have params").speed,
+        10.0
+    );
+    assert_eq!(
+        flat[1].emitter_params.expect("flat B must have params").speed,
+        99.0,
+        "flat import must also keep each system's own speed (#4261)"
+    );
+    assert_eq!(
+        flat[0]
+            .color_curve
+            .expect("flat A must have a color curve")
+            .start,
+        orange_red
+    );
+    assert_eq!(
+        flat[1]
+            .color_curve
+            .expect("flat B must have a color curve")
+            .start,
+        blue,
+        "flat import must also keep each system's own color curve (#4261)"
     );
 }

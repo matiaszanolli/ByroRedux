@@ -31,9 +31,9 @@ use node_attrs::{extract_billboard_mode, is_editor_marker};
 
 use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::node::{
-    BsDistantObjectInstancedNode, BsMultiBoundNode, BsOrderedNode, BsRangeNode, BsTreeNode,
-    BsValueNode, BsWeakReferenceNode, NiBillboardNode, NiLODNode, NiNode, NiSortAdjustNode,
-    NiSwitchNode,
+    BsDistantObjectInstancedNode, BsFaceGenNiNode, BsMultiBoundNode, BsOrderedNode, BsRangeNode,
+    BsTreeNode, BsValueNode, BsWeakReferenceNode, NiBillboardNode, NiLODNode, NiNode,
+    NiSortAdjustNode, NiSwitchNode,
 };
 use crate::blocks::tri_shape::{BsTriShape, NiLodTriShape, NiTriShape};
 use crate::blocks::NiObject;
@@ -138,6 +138,14 @@ pub(super) fn as_ni_node(block: &dyn NiObject) -> Option<&NiNode> {
         return Some(&n.base);
     }
     if let Some(n) = any.downcast_ref::<BsWeakReferenceNode>() {
+        return Some(&n.base);
+    }
+    // #4258 (OB-D1-02) — FaceGen head-mesh node (FO3+; nif.xml has no
+    // schema entry for it, see the parser's own doc comment). Without
+    // this arm a `BSFaceGenNiNode` subtree silently drops out of the
+    // imported scene instead of walking like every other NiNode-family
+    // wrapper here.
+    if let Some(n) = any.downcast_ref::<BsFaceGenNiNode>() {
         return Some(&n.base);
     }
     None
@@ -652,11 +660,11 @@ pub(super) fn walk_node_hierarchical(
                 local_translation: zup_point_to_yup(&ps.transform.translation),
                 local_rotation: zup_matrix_to_yup_quat(&ps.transform.rotation),
                 local_scale: ps.transform.scale,
-                color_curve: extract_first_color_curve(scene),
+                color_curve: extract_first_color_curve(scene, &ps.modifier_refs),
                 force_fields: collect_force_fields(scene, &ps.modifier_refs),
-                emitter_params: extract_emitter_params(scene),
-                emitter_rate: extract_emitter_rate(scene),
-                max_particles: extract_emitter_max_particles(scene),
+                emitter_params: extract_emitter_params(scene, &ps.modifier_refs),
+                emitter_rate: extract_emitter_rate(scene, ps.controller_ref),
+                max_particles: extract_emitter_max_particles(scene, ps.data_ref),
             });
     }
 }

@@ -19,6 +19,16 @@
 //! The exposed population on vanilla Oblivion is empty today (0 of 1,430
 //! `APPLY_HILIGHT2` properties carry a normal slot), so this is a
 //! correctness/robustness pin, not a visual-bug repro.
+//!
+//! #4260 (OB-D4-01) — withholding only `PARALLAX_ALPHA_HEIGHT_BIT` above
+//! turned out to be half the fix: `parallax_map_index` itself stayed bound
+//! to the normal map's own handle, so POM still ran and sampled the
+//! normal's red channel as a fabricated height field. Measured on the real
+//! Oblivion + Shivering Isles corpus at 100 of 1,274 `APPLY_HILIGHT2`
+//! properties (7.8%) with a BC1/DXT1 normal sibling — nonzero unlike the
+//! synthetic 0/1,430 figure above, which only covered normal-slot presence,
+//! not the alpha-format split. The slot must now be zeroed entirely in this
+//! case, not just left flag-less.
 
 use super::*;
 use byroredux_core::ecs::{
@@ -104,20 +114,22 @@ fn parallax_index(world: &World) -> u32 {
     cmd.parallax_map_index
 }
 
-/// The defect: an alpha-less normal must NOT be flagged as carrying height,
-/// however confident the importer's per-game rule was.
+/// #4260 (OB-D4-01) — an alpha-less normal must not just withhold the flag
+/// bit; `parallax_map_index` itself must be zeroed. Before this fix the
+/// slot stayed bound to the normal map's own handle (7, same as
+/// `textures.normal` in the fixture below) even with the bit correctly
+/// masked off, so POM still ran and sampled the normal's red channel as a
+/// fabricated height field — the exact defect class #3562's bit-only gate
+/// was meant to close but didn't finish closing.
 #[test]
-fn alpha_less_normal_does_not_set_the_alpha_height_bit() {
-    let index = parallax_index(&world_with_alpha_height_material(false));
+fn alpha_less_normal_zeroes_the_parallax_slot_entirely() {
+    let cmds = run_build(&world_with_alpha_height_material(false));
+    assert_eq!(cmds.len(), 1, "fixture spawns exactly one mesh");
     assert_eq!(
-        index & crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT,
-        0,
-        "a BC1/BC4/BC5 normal samples A = 1.0 by format, which makes the POM \
-         marcher return the full planar slide at every fragment (#3562)"
-    );
-    assert_eq!(
-        index, 7,
-        "masking the channel bit must leave the bindless index untouched"
+        cmds[0].parallax_map_index, 0,
+        "a BC1/BC4/BC5 normal has no real height data anywhere to sample — \
+         POM must not run at all, not merely skip the alpha-height flag bit \
+         while staying bound to the normal map's handle (#4260)"
     );
 }
 

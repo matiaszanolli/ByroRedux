@@ -199,6 +199,12 @@ fn time_controller_base_of(
         Some(&c.base)
     } else if let Some(c) = any.downcast_ref::<NiLightFloatController>() {
         Some(&c.base.base)
+    } else if let Some(c) = any.downcast_ref::<crate::blocks::particle::NiPSysEmitterCtlr>() {
+        // #4261 — without this arm, walk_controller_chain stops dead at a
+        // NiPSysEmitterCtlr that isn't the last link in a particle
+        // system's controller chain, same failure mode #3327 fixed for
+        // BsNamedFloatInterpController.
+        Some(&c.base)
     } else {
         None
     }

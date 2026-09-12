@@ -478,11 +478,29 @@ pub(super) fn collect_static_mesh_draws(
                 // is a render-side `MaterialTextureHandles` field and not a
                 // `Material` field.
                 let mut parallax_map_index = texture_indices.height;
-                if parallax_map_index != 0
-                    && normal_has_alpha
-                    && mat.is_some_and(|material| material.parallax_height_in_alpha)
-                {
-                    parallax_map_index |= crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT;
+                let parallax_height_in_alpha =
+                    mat.is_some_and(|material| material.parallax_height_in_alpha);
+                if parallax_map_index != 0 && parallax_height_in_alpha {
+                    if normal_has_alpha {
+                        parallax_map_index |=
+                            crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT;
+                    } else {
+                        // #4260 (OB-D4-01) — `parallax_height_in_alpha` means
+                        // the height slot was bound to the NORMAL map's own
+                        // handle, not a real height texture (`mesh_instance.rs`
+                        // / `nif_loader.rs`'s APPLY_HILIGHT2 binding, #3596:
+                        // "only ever set with parallax_map absent"). When
+                        // that normal map's own format has no alpha channel
+                        // (BC1/DXT1), there is no height data anywhere to
+                        // read — withholding only PARALLAX_ALPHA_HEIGHT_BIT
+                        // above (the #3562 fix) left `parallax_map_index`
+                        // still bound, so POM still ran and sampled the
+                        // normal map's red channel as a fabricated height
+                        // field. Zero the slot entirely instead: POM must
+                        // not run at all when there is no real height data
+                        // to sample, matching the flag-bit fix's own intent.
+                        parallax_map_index = 0;
+                    }
                 }
                 let env_map_index = texture_indices.environment;
                 let env_mask_index = texture_indices.environment_mask;
