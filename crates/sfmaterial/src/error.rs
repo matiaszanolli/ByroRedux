@@ -84,6 +84,31 @@ pub enum Error {
         field_name: String,
     },
 
+    #[error(
+        "duplicate CLAS name_offset {name_offset}: class #{duplicate_class_index} \
+         ({duplicate_class_name:?}) reuses the name_offset already claimed by class \
+         #{first_class_index} ({first_class_name:?}) — the Gibbed reference (typeMap.Add) \
+         hard-fails on this rather than silently discarding the earlier class"
+    )]
+    DuplicateClassNameOffset {
+        name_offset: i32,
+        first_class_index: usize,
+        first_class_name: String,
+        duplicate_class_index: usize,
+        duplicate_class_name: String,
+    },
+
+    #[error(
+        "chunk #{index} (unrecognized type {raw:#010x}) declares size {size} but only \
+         {remaining} bytes remain in stream"
+    )]
+    ChunkOverflowUnknownType {
+        index: usize,
+        raw: u32,
+        size: u32,
+        remaining: usize,
+    },
+
     #[error("object/list/map chunk had {leftover} trailing bytes after read")]
     ObjectTrailingBytes { leftover: usize },
 

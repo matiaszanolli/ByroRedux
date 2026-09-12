@@ -150,3 +150,61 @@ fn stage_b_no_external_slots_returns_none() {
     )
     .is_none());
 }
+
+// ── #4271 (SF-2026-09-11-D2-04): Stage A's own resolve-miss exit ─────────
+//
+// Stage A (`FLAG_INTERNAL_GEOM_DATA` set) had none of the above — its
+// `shape.meshes.iter().find_map(...)` fed straight into a bare `?`, the
+// exact pre-#2357 shape Stage B was fixed out of. Same behavior-only
+// pinning discipline as the Stage B tests above: assert the graceful
+// `None`, not the log text.
+
+/// Every declared LOD slot is `External` (so Stage A, entered because
+/// `has_internal_geom_data()` is true from the AV flag, finds nothing
+/// `Internal` to match on) — exercises the new Stage A `let ... else`.
+#[test]
+fn stage_a_all_slots_external_returns_none() {
+    // `FLAG_INTERNAL_GEOM_DATA` (0x200) — private to `blocks::bs_geometry`;
+    // `av_with_flags`'s existing sibling tests in this crate use the same
+    // literal (see `placeholder_normals_with_uvs_do_not_trigger_tangent_synthesis`
+    // in `bs_geometry_tangent_tests.rs`).
+    let shape = bs_geometry_with_meshes(
+        0x200,
+        vec![BSGeometryMesh {
+            lod_slot: 0,
+            tri_size: 0,
+            num_verts: 0,
+            flags: 0,
+            kind: BSGeometryMeshKind::External {
+                mesh_name: "whatever".to_string(),
+            },
+        }],
+    );
+    let scene = NifScene::default();
+    let mut pool = StringPool::new();
+    assert!(extract_bs_geometry(&scene, &shape, &shape.av.transform, &mut pool, None).is_none());
+}
+
+/// Every declared `Internal` slot is the `scale<=0` sentinel (empty
+/// vertices/triangles) — the slot exists and matches the `Internal` arm,
+/// but the `!mesh_data.vertices.is_empty() && !mesh_data.triangles.is_empty()`
+/// guard declines every one of them, so `find_map` still yields `None`.
+#[test]
+fn stage_a_all_internal_slots_are_sentinel_returns_none() {
+    use crate::blocks::bs_geometry::BSGeometryMeshData;
+    let shape = bs_geometry_with_meshes(
+        0x200,
+        vec![BSGeometryMesh {
+            lod_slot: 0,
+            tri_size: 0,
+            num_verts: 0,
+            flags: 0,
+            kind: BSGeometryMeshKind::Internal {
+                mesh_data: Box::new(BSGeometryMeshData::default()), // empty — sentinel
+            },
+        }],
+    );
+    let scene = NifScene::default();
+    let mut pool = StringPool::new();
+    assert!(extract_bs_geometry(&scene, &shape, &shape.av.transform, &mut pool, None).is_none());
+}

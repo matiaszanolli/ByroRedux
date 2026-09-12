@@ -96,7 +96,7 @@ pub fn extract_bs_geometry(
         // SF2-02 / #1829: a slot's body can itself be the `scale<=0`
         // sentinel (empty `vertices`/`triangles`) — skip those so a
         // sentinel-first slot order doesn't hide a later populated slot.
-        let (tri_size, num_verts, slot, data) =
+        let Some((tri_size, num_verts, slot, data)) =
             shape.meshes.iter().find_map(|m| match &m.kind {
                 BSGeometryMeshKind::Internal { mesh_data }
                     if !mesh_data.vertices.is_empty() && !mesh_data.triangles.is_empty() =>
@@ -104,7 +104,23 @@ pub fn extract_bs_geometry(
                     Some((m.tri_size, m.num_verts, m.lod_slot, mesh_data.as_ref()))
                 }
                 _ => None,
-            })?;
+            })
+        else {
+            // #4271 (SF-2026-09-11-D2-04) — mirror Stage B's #2357
+            // resolve-miss log. This used to `?` straight out of the
+            // `find_map` above with no signal at all when every declared
+            // LOD slot was either non-`Internal` or the `scale<=0`
+            // sentinel (empty vertices/triangles) — a silent "mesh will
+            // not spawn" exactly like the pre-#2357 external-mesh path.
+            log::warn!(
+                "BSGeometry '{}' declares internal geometry but all {} LOD slot(s) were \
+                 either non-Internal or empty (sentinel) — mesh will not spawn \
+                 (#2357-class symptom: check the block's declared meshes if unexpected)",
+                shape.av.net.name.as_deref().unwrap_or("<unnamed>"),
+                shape.meshes.len(),
+            );
+            return None;
+        };
         hint = (tri_size, num_verts);
         resolved_slot = slot;
         data

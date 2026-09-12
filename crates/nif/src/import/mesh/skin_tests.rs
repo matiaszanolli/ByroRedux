@@ -223,3 +223,34 @@ fn subepsilon_and_nan_weight_quads_rebind() {
     assert_eq!(weights[1], [1.0, 0.0, 0.0, 0.0]);
     assert_eq!(indices[2], [8, 8, 8, 8], "at-threshold vertex is weighted");
 }
+
+/// #4270 (SF-2026-09-11-D2-03) — `attach_names_cover_every_bone` gates
+/// whether `extract_skin_bs_geometry` needs to run the #3549 geometric
+/// solve at all. `None` (no `SkinAttach`, or a length mismatch), an empty
+/// list, and a list with any blank entry must all report "not covered" —
+/// only a fully-populated, non-empty list may skip the solve.
+#[test]
+fn attach_names_cover_every_bone_requires_every_entry_non_empty() {
+    assert!(
+        !attach_names_cover_every_bone(None),
+        "no SkinAttach at all must never skip the geometric solve"
+    );
+    assert!(
+        attach_names_cover_every_bone(Some(&[])),
+        "an empty bone list vacuously covers every (zero) bone — a zero-bone \
+         skin has nothing for the geometric solve to produce anyway"
+    );
+    assert!(
+        !attach_names_cover_every_bone(Some(&[
+            "C_Chassis".to_string(),
+            String::new(), // minibota_security.nif's exact mixed shape
+            "C_Axle".to_string(),
+        ])),
+        "any blank entry means that index still needs the fallback chain"
+    );
+    assert!(attach_names_cover_every_bone(Some(&[
+        "C_Chassis".to_string(),
+        "C_Body".to_string(),
+        "C_Axle".to_string(),
+    ])));
+}

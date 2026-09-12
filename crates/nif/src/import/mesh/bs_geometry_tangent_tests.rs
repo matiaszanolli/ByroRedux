@@ -150,6 +150,99 @@ fn empty_tangents_raw_routes_through_synthesize_when_geometry_populated() {
     }
 }
 
+/// #4271 (SF-2026-09-11-D2-04) — #1232's positive arm (authored normals +
+/// UVs, no authored UDEC3 tangents, so `extract_bs_geometry` routes through
+/// `synthesize_tangents_yup`) had no *end-to-end* test through Stage A —
+/// `empty_tangents_raw_routes_through_synthesize_when_geometry_populated`
+/// above only calls `synthesize_tangents_yup` directly, and
+/// `placeholder_normals_with_uvs_do_not_trigger_tangent_synthesis` below is
+/// Stage A but exercises the *negative* (un-authored-normals) arm. This is
+/// the missing positive-arm end-to-end call through `extract_bs_geometry`
+/// itself, with real (Internal) geometry and authored `normals_raw`.
+#[test]
+fn stage_a_synthesizes_tangents_end_to_end_when_normals_authored_and_tangents_absent() {
+    let transform = NiTransform {
+        rotation: NiMatrix3 {
+            rows: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        },
+        translation: NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        scale: 1.0,
+    };
+    // Authored normal (0, 1, 0), UDEC3-packed — same encoding convention as
+    // `udec3_tangent_roundtrip_x_plus_sign` above (mid raw = 0.0, max raw =
+    // 1.0). `w` is unused for normals (only [x,y,z] are read).
+    let authored_normal_raw = encode_udec3(511, 1023, 511, 0);
+    let shape = BSGeometry {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(Arc::from("AuthoredNormalNoTangentShape")),
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0x200,
+            transform,
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        bounding_sphere: ([0.0, 0.0, 0.0], 0.0),
+        bound_min_max: [0.0; 6],
+        skin_instance_ref: BlockRef::NULL,
+        shader_property_ref: BlockRef::NULL,
+        alpha_property_ref: BlockRef::NULL,
+        meshes: vec![BSGeometryMesh {
+            lod_slot: 0,
+            tri_size: 3 * std::mem::size_of::<u16>() as u32,
+            num_verts: 3,
+            flags: 0,
+            kind: BSGeometryMeshKind::Internal {
+                mesh_data: Box::new(BSGeometryMeshData {
+                    version: 2,
+                    triangles: vec![[0, 1, 2]],
+                    scale: 1.0,
+                    weights_per_vert: 0,
+                    // Same XZ-plane triangle + UV unit square as the direct
+                    // `synthesize_tangents_yup` test above, so the expected
+                    // synthesized tangent direction (+X) matches.
+                    vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                    uvs0: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                    uvs1: Vec::new(),
+                    colors: Vec::new(),
+                    normals_raw: vec![authored_normal_raw; 3],
+                    tangents_raw: Vec::new(),
+                    skin_weights: Vec::new(),
+                    lods: Vec::new(),
+                    meshlets: Vec::new(),
+                    cull_data: Vec::new(),
+                }),
+            },
+        }],
+    };
+
+    let scene = NifScene::default();
+    let mut pool = StringPool::new();
+    let mesh = extract_bs_geometry(&scene, &shape, &shape.av.transform, &mut pool, None)
+        .expect("populated internal BSGeometry with authored normals must import");
+
+    assert_eq!(
+        mesh.tangents.len(),
+        3,
+        "authored normals + UVs + absent tangents_raw must synthesize one \
+         tangent per vertex through Stage A, not fall through to Vec::new() \
+         (#1232)"
+    );
+    for t in &mesh.tangents {
+        assert!(
+            t[0] > 0.5,
+            "synthesized tangent.x must point along +U direction, got {:?}",
+            t
+        );
+    }
+}
+
 /// #2363 — missing authored normals must not be disguised by the extractor's
 /// renderer-safe `[0, 1, 0]` fallback. Before the fix, the populated fallback
 /// made the tangent synthesis guard vacuously true whenever UVs existed,

@@ -82,7 +82,7 @@ impl ComponentDatabaseFile {
         for class_index in 0..type_count as usize {
             let class = parse_class(&mut state, class_index)?;
             let idx = state.classes.len();
-            state.class_by_name_offset.insert(class.name_offset, idx);
+            insert_class_name_offset(&mut state.class_by_name_offset, &state.classes, &class, idx)?;
             state.classes.push(class);
         }
 
@@ -142,10 +142,14 @@ impl ComponentDatabaseFile {
     pub fn probe_header(bytes: &[u8]) -> Result<CdbHeaderInfo> {
         let mut p = Parser::new(bytes);
         p.parse_header()?;
-        let chunks = p.index_chunks()?;
-        Ok(CdbHeaderInfo {
-            chunk_count: chunks.len(),
-        })
+        // #4273 (SF-D3-2026-09-11-02) — tolerant walk, not `index_chunks`.
+        // The probe only needs the chunk count/presence, never chunk
+        // semantics, so it must not abort on a chunk-type FourCC outside
+        // the current 10-entry `ChunkType` vocabulary the way the real
+        // object-tree parse correctly does (that path DOES need every
+        // chunk typed to dispatch on it).
+        let chunk_count = p.count_chunks_tolerant()?;
+        Ok(CdbHeaderInfo { chunk_count })
     }
 }
 
@@ -250,6 +254,49 @@ impl<'a> Parser<'a> {
             });
         }
         Ok(chunks)
+    }
+
+    /// Tolerant counterpart to [`Self::index_chunks`] for
+    /// [`ComponentDatabaseFile::probe_header`] (#4273 / SF-D3-2026-09-11-02):
+    /// walks the chunk table counting entries and validating each declared
+    /// `size` against the remaining stream, exactly like `index_chunks`,
+    /// but does NOT require every chunk's FourCC to resolve via
+    /// [`ChunkType::from_raw`] — the probe never dispatches on chunk type,
+    /// only counts chunks, so a FourCC outside the current 10-entry
+    /// vocabulary (a future format revision, a mod-authored or corrupted
+    /// CDB) must not abort it. The buffer-overflow check still runs
+    /// unconditionally: an oversized chunk means the stream itself is
+    /// unsafe to walk further, which is orthogonal to whether its type is
+    /// recognized.
+    fn count_chunks_tolerant(&mut self) -> Result<usize> {
+        let chunk_count_incl_beth = self.read_u32()?;
+        if chunk_count_incl_beth < 1 {
+            return Err(Error::EmptyChunkList);
+        }
+        let chunk_count = (chunk_count_incl_beth - 1) as usize;
+        for index in 0..chunk_count {
+            let raw = self.read_u32()?;
+            let size = self.read_u32()?;
+            let remaining = self.bytes.len().saturating_sub(self.pos);
+            if (size as usize) > remaining {
+                return Err(match ChunkType::from_raw(raw, index) {
+                    Ok(kind) => Error::ChunkOverflow {
+                        index,
+                        chunk_type: kind,
+                        size,
+                        remaining,
+                    },
+                    Err(_) => Error::ChunkOverflowUnknownType {
+                        index,
+                        raw,
+                        size,
+                        remaining,
+                    },
+                });
+            }
+            self.pos += size as usize;
+        }
+        Ok(chunk_count)
     }
 
     fn read_u32(&mut self) -> Result<u32> {
@@ -515,6 +562,32 @@ fn read_value(
     }
 
     read_user_class(state, type_ref, cur, is_diff)
+}
+
+/// #4272 (SF-D3-2026-09-11-01) — insert a class into the `name_offset`
+/// index, rejecting a duplicate `name_offset` instead of the silent
+/// `HashMap::insert` overwrite (last-wins). Sibling of #2633's
+/// [`insert_field`] below, at the `CLAS` level instead of the field
+/// level: the Gibbed reference implementation's `typeMap.Add` throws on
+/// a duplicate key, silently discarding the earlier class's definition
+/// under whatever code later resolves that `name_offset`.
+fn insert_class_name_offset(
+    class_by_name_offset: &mut HashMap<i32, usize>,
+    classes: &[Class],
+    class: &Class,
+    idx: usize,
+) -> Result<()> {
+    if let Some(&prev_idx) = class_by_name_offset.get(&class.name_offset) {
+        return Err(Error::DuplicateClassNameOffset {
+            name_offset: class.name_offset,
+            first_class_index: prev_idx,
+            first_class_name: classes[prev_idx].name.clone(),
+            duplicate_class_index: idx,
+            duplicate_class_name: class.name.clone(),
+        });
+    }
+    class_by_name_offset.insert(class.name_offset, idx);
+    Ok(())
 }
 
 /// #2633 (SF-D3-05) — insert a field value, rejecting a duplicate field
@@ -803,6 +876,70 @@ mod tests {
         assert_eq!(fields.len(), 2, "the rejected insert must not add a new entry");
     }
 
+    /// #4272 (SF-D3-2026-09-11-01) — `insert_class_name_offset` must
+    /// reject a duplicate `name_offset` instead of the silent
+    /// `HashMap::insert` overwrite (last-wins). Sibling of
+    /// `insert_field_rejects_a_duplicate_field_name` above, at the `CLAS`
+    /// level instead of the field level.
+    #[test]
+    fn insert_class_name_offset_rejects_a_duplicate_name_offset() {
+        let mut class_by_name_offset: HashMap<i32, usize> = HashMap::new();
+        let mut classes: Vec<Class> = Vec::new();
+
+        let first = Class {
+            name_offset: 42,
+            name: "FirstClass".to_string(),
+            type_id: 1,
+            flags: ClassFlags(0),
+            fields: Vec::new(),
+        };
+        insert_class_name_offset(&mut class_by_name_offset, &classes, &first, 0)
+            .expect("first insert of a fresh name_offset must succeed");
+        classes.push(first);
+
+        let distinct = Class {
+            name_offset: 43,
+            name: "SecondClass".to_string(),
+            type_id: 2,
+            flags: ClassFlags(0),
+            fields: Vec::new(),
+        };
+        insert_class_name_offset(&mut class_by_name_offset, &classes, &distinct, 1)
+            .expect("a distinct name_offset must not collide with the first");
+        classes.push(distinct);
+
+        let duplicate = Class {
+            name_offset: 42, // reuses FirstClass's name_offset
+            name: "DuplicateClass".to_string(),
+            type_id: 3,
+            flags: ClassFlags(0),
+            fields: Vec::new(),
+        };
+        let err = insert_class_name_offset(&mut class_by_name_offset, &classes, &duplicate, 2)
+            .expect_err("re-declaring an already-claimed name_offset must fail");
+        match err {
+            Error::DuplicateClassNameOffset {
+                name_offset,
+                first_class_index,
+                first_class_name,
+                duplicate_class_index,
+                duplicate_class_name,
+            } => {
+                assert_eq!(name_offset, 42);
+                assert_eq!(first_class_index, 0);
+                assert_eq!(first_class_name, "FirstClass");
+                assert_eq!(duplicate_class_index, 2);
+                assert_eq!(duplicate_class_name, "DuplicateClass");
+            }
+            other => panic!("expected DuplicateClassNameOffset, got {other:?}"),
+        }
+
+        // The pre-existing mapping must survive untouched — no partial
+        // overwrite on the rejected insert.
+        assert_eq!(class_by_name_offset.get(&42), Some(&0));
+        assert_eq!(class_by_name_offset.len(), 2, "the rejected insert must not add a new entry");
+    }
+
     /// SF-D3-AUDIT-01 / #2100 — `probe_header` must validate the header +
     /// chunk index WITHOUT walking (or even semantically checking) the
     /// instance chunks. Proof: a file whose chunk *table* is well-formed
@@ -827,6 +964,75 @@ mod tests {
         // The full parser walks chunk semantics and rejects the misordered
         // OBJT-before-STRT — work the probe demonstrably skipped.
         assert!(ComponentDatabaseFile::parse(&buf).is_err());
+    }
+
+    /// #4273 (SF-D3-2026-09-11-02) — `probe_header` only needs chunk
+    /// count/presence, not chunk semantics, so an unrecognized chunk-type
+    /// FourCC (a future format revision, mod-authored or corrupted CDB)
+    /// must not abort it the way the strict `index_chunks` used by the
+    /// real object-tree parse correctly does. Sibling of
+    /// `chunk_type_recognized_set_is_pinned` below, which pins the STRICT
+    /// path's hard-fail on the same input — this pins the TOLERANT path's
+    /// pass-through.
+    #[test]
+    fn probe_header_tolerates_an_unrecognized_chunk_type() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&SIGNATURE_BETH.to_le_bytes());
+        buf.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+        buf.extend_from_slice(&FILE_VERSION.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes()); // chunkCount incl BETH → 2 chunks
+        buf.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // unrecognized FourCC
+        buf.extend_from_slice(&0u32.to_le_bytes()); // size 0
+        buf.extend_from_slice(b"STRT");
+        buf.extend_from_slice(&0u32.to_le_bytes()); // size 0
+
+        let info = ComponentDatabaseFile::probe_header(&buf)
+            .expect("probe_header must tolerate an unrecognized chunk FourCC");
+        assert_eq!(info.chunk_count, 2);
+
+        // The strict full parse still correctly rejects the unrecognized
+        // type — this fix is scoped to the probe only, per #1569's
+        // deliberate all-or-nothing baseline for the real parse.
+        match ComponentDatabaseFile::parse(&buf) {
+            Err(Error::UnknownChunkType { raw, index }) => {
+                assert_eq!(raw, 0xDEAD_BEEF);
+                assert_eq!(index, 0);
+            }
+            other => panic!(
+                "expected the strict parse to still reject the unknown FourCC, got {other:?}"
+            ),
+        }
+    }
+
+    /// #4273 — the tolerant probe path must still refuse to walk past the
+    /// buffer: an unrecognized FourCC does not exempt an oversized chunk
+    /// from the same overflow guard `index_chunks` applies, since that
+    /// check is about stream safety, not chunk semantics.
+    #[test]
+    fn probe_header_still_rejects_an_oversized_unrecognized_chunk() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&SIGNATURE_BETH.to_le_bytes());
+        buf.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+        buf.extend_from_slice(&FILE_VERSION.to_le_bytes());
+        buf.extend_from_slice(&2u32.to_le_bytes()); // chunkCount incl BETH → 1 chunk
+        buf.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // unrecognized FourCC
+        buf.extend_from_slice(&1000u32.to_le_bytes()); // size far exceeds remaining bytes
+        // No payload bytes follow.
+
+        match ComponentDatabaseFile::probe_header(&buf) {
+            Err(Error::ChunkOverflowUnknownType {
+                index,
+                raw,
+                size,
+                remaining,
+            }) => {
+                assert_eq!(index, 0);
+                assert_eq!(raw, 0xDEAD_BEEF);
+                assert_eq!(size, 1000);
+                assert_eq!(remaining, 0);
+            }
+            other => panic!("expected ChunkOverflowUnknownType, got {other:?}"),
+        }
     }
 
     /// SF-D3-AUDIT-03 / #2102 — the discovery cheap-reject. `peek_magic`

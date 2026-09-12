@@ -444,6 +444,16 @@ fn skin_attach_bone_names(
     None
 }
 
+/// #4270 (SF-2026-09-11-D2-03) — true when a resolved `SkinAttach` name
+/// list already has a non-empty entry for every bone, meaning the
+/// per-entry precedence loop in [`extract_skin_bs_geometry`] can never
+/// fall through to the geometric external-skeleton solve for any index.
+/// `None` (no `SkinAttach`, or a length mismatch — see
+/// [`skin_attach_bone_names`]) never counts as covering.
+pub fn attach_names_cover_every_bone(attach_names: Option<&[String]>) -> bool {
+    attach_names.is_some_and(|names| names.iter().all(|n| !n.is_empty()))
+}
+
 pub fn extract_skin_bs_geometry(
     scene: &NifScene,
     shape: &BSGeometry,
@@ -480,7 +490,17 @@ pub fn extract_skin_bs_geometry(
     // `Bone{i}` — this only moves it behind the data.
     let attach_names =
         skin_attach_bone_names(scene, &shape.av.net.extra_data_refs, bone_data.bones.len());
-    let external_names = if inst.bone_refs.iter().all(|r| r.index().is_none()) {
+    // #4270 (SF-2026-09-11-D2-03) — skip the geometric solve entirely when
+    // `attach_names` already covers every bone: per the per-entry
+    // precedence loop below, a fully-populated `attach_names` means no
+    // index will ever fall through to `external_names`, so solving for it
+    // is pure discarded work. Measured 18,990/18,990 (100%) of the
+    // all-NULL `bone_refs` cohort this branch exists for already satisfies
+    // that condition (#3930's doc comment above). Any entry left blank
+    // still triggers the solve, unchanged.
+    let external_names = if inst.bone_refs.iter().all(|r| r.index().is_none())
+        && !attach_names_cover_every_bone(attach_names.as_deref())
+    {
         resolver.and_then(|r| {
             let binds: Vec<[f32; 3]> = bone_data
                 .bones
