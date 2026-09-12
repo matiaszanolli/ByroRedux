@@ -100,16 +100,41 @@ pub(crate) fn classify_glass_into_material(
         == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
         && (bgem_glass || (keyword_match && from_bgsm));
 
+    // #4255 (SKY-D7-2026-09-11-01) — `material_kind` is an overloaded union:
+    // `0..=20` is the verbatim authored Skyrim `BSLightingShaderProperty.
+    // shader_type` (0 = Default, no specific dispatch); `>= 100` is
+    // engine-synthesized. The guard below already protects the synthesized
+    // range; a NON-DEFAULT authored lit shader type (1..=20 — EnvironmentMap,
+    // SkinTint, MultiLayerParallax, …) needs the identical protection, or a
+    // bare keyword match silently discards a real, specific dispatch with no
+    // way back. `from_bgsm` is the same provenance discriminator
+    // `effect_glass_carrier` already uses for the effect-shader carrier: an
+    // external `.bgsm` resolved for this material is an authoritative signal
+    // that can override an authored dispatch; a keyword alone on inline NIF
+    // data cannot. `material_kind == 0` (Default) is deliberately NOT
+    // protected — that is the intended keyword-glass path every ordinary
+    // Skyrim glass window/bottle takes, and always has.
+    let lit_carrier_authored_dispatch = (1..=20).contains(&material.material_kind) && !from_bgsm;
+
     // Engine-synthesized behavior already selected — preserve it unless this
     // is the source-format effect carrier used to author an explicit glass
     // surface. The transparency/dielectric/decal gates below still apply.
-    if material.material_kind >= 100
+    if (material.material_kind >= 100
         && material.material_kind != byroredux_renderer::MATERIAL_KIND_GLASS
-        && !effect_glass_carrier
+        && !effect_glass_carrier)
+        || lit_carrier_authored_dispatch
     {
         return;
     }
     if is_mirror_pane(mesh_name, texture_path, has_transparent_coverage) {
+        // #4255 — an authored non-default lit dispatch that survived the
+        // guard above (i.e. `from_bgsm` was true) must not be clobbered
+        // here either. In particular an authored EnvironmentMap (1)
+        // material IS already the mirror dispatch; forcing it to the
+        // generic `material_kind = 0` path is a downgrade, not a fix.
+        if (1..=20).contains(&material.material_kind) {
+            return;
+        }
         material.material_kind = 0;
         material.metalness = MIRROR_METALNESS;
         material.roughness = MIRROR_ROUGHNESS;
@@ -163,6 +188,9 @@ mod glass_classification_tests {
     use super::*;
 
     const GLASS: u32 = byroredux_renderer::MATERIAL_KIND_GLASS;
+    // Not re-exported at the renderer crate root (only the >= 100
+    // engine-synthesized kinds are) — see `shader_constants_data.rs`.
+    const MULTI_LAYER_PARALLAX: u32 = 11;
 
     fn mat() -> Material {
         Material::default()
@@ -563,5 +591,122 @@ mod glass_classification_tests {
             false,
         );
         assert_eq!(m.material_kind, 0);
+    }
+
+    /// Regression for #4255 (SKY-D7-2026-09-11-01) — a real vanilla Skyrim
+    /// population: `MultiLayerParallax` (11) ice surfaces (`icefrozen01`,
+    /// widened into keyword reachability by #3359) must keep their
+    /// inner-layer-parallax dispatch, not fall to flat glass refraction. No
+    /// external material is involved (inline NIF authoring), so `from_bgsm`
+    /// is false — exactly the case the guard must protect.
+    #[test]
+    fn multi_layer_parallax_ice_surface_survives_glass_keyword() {
+        let mut m = mat();
+        m.material_kind = MULTI_LAYER_PARALLAX;
+        classify_glass_into_material(
+            &mut m,
+            Some("IceWall01"),
+            Some("textures/dungeons/icefrozen01.dds"),
+            true,
+            false,
+            false,
+            false, // no external material — inline NIF authoring
+        );
+        assert_eq!(
+            m.material_kind, MULTI_LAYER_PARALLAX,
+            "an authored MultiLayerParallax ice surface must not be demoted to flat glass"
+        );
+    }
+
+    /// Regression for #4255 — a glowing soul gem (`gem` keyword, word-
+    /// boundary matched) authoring a non-default lit shader type must keep
+    /// its dispatch rather than losing it to glass. Uses SkinTint (5) as a
+    /// stand-in non-default type distinct from both 0 (Default) and 11
+    /// (already covered above) to widen the regression's coverage of the
+    /// `1..=20` range.
+    #[test]
+    fn gem_keyword_on_non_default_shader_type_is_not_reclassified() {
+        let mut m = mat();
+        m.material_kind = 5; // SkinTint
+        classify_glass_into_material(
+            &mut m,
+            Some("SoulGemGlow01"),
+            Some("textures/clutter/soulgems/soulgem01.dds"),
+            true,
+            false,
+            false,
+            false, // no external material
+        );
+        assert_eq!(
+            m.material_kind, 5,
+            "a gem-keyword match must not override an authored non-default shader type"
+        );
+    }
+
+    /// Regression for #4255 — `material_kind == 0` (Default, no specific
+    /// dispatch) is deliberately NOT protected: this is the intended
+    /// keyword-glass path every ordinary Skyrim glass window/bottle takes,
+    /// and this fix must not change that.
+    #[test]
+    fn default_shader_type_still_classifies_as_glass_via_keyword() {
+        let mut m = mat();
+        m.material_kind = 0;
+        m.roughness = 0.5;
+        classify_glass_into_material(
+            &mut m,
+            Some("Window01"),
+            Some("textures/architecture/windowglass01.dds"),
+            true,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(m.material_kind, GLASS);
+    }
+
+    /// A non-default authored shader type with an EXPLICIT external-material
+    /// signal (`from_bgsm = true`) is the one case the guard must still
+    /// allow through — mirrors `effect_glass_carrier`'s identical
+    /// provenance discrimination for the effect-shader carrier.
+    #[test]
+    fn from_bgsm_still_allows_override_of_a_non_default_shader_type() {
+        let mut m = mat();
+        m.material_kind = 5; // SkinTint
+        classify_glass_into_material(
+            &mut m,
+            Some("SomeMesh"),
+            Some("textures/glass_override.dds"),
+            true,
+            false,
+            false,
+            true, // from_bgsm — authoritative external-material signal
+        );
+        assert_eq!(
+            m.material_kind, GLASS,
+            "an external BGSM's authoritative signal must still be able to override"
+        );
+    }
+
+    /// Sibling fix (SIBLING checklist item): `is_mirror_pane`'s unconditional
+    /// zero of `material_kind` must not clobber an authored EnvironmentMap
+    /// (1) dispatch either — that IS already the mirror-reflection dispatch,
+    /// forcing it to the generic `material_kind = 0` path is a downgrade.
+    #[test]
+    fn mirror_pane_heuristic_does_not_clobber_authored_environment_map() {
+        let mut m = mat();
+        m.material_kind = 1; // EnvironmentMap
+        classify_glass_into_material(
+            &mut m,
+            Some("MirrorFrame01"),
+            Some("textures/architecture/mirrorglass01.dds"),
+            true,
+            false,
+            false,
+            false, // no external material
+        );
+        assert_eq!(
+            m.material_kind, 1,
+            "an authored EnvironmentMap dispatch must survive the mirror-pane heuristic"
+        );
     }
 }

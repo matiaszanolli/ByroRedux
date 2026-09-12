@@ -75,6 +75,15 @@ pub(crate) struct ObjectLodBlock {
     /// effects, so without it the refcount never reaches 0 (#1537, sibling
     /// of the terrain-LOD leak). `0` = fallback/untextured, never refcounted.
     pub(crate) texture_handle: u32,
+    /// Every DISTINCT non-atlas sub-mesh texture handle resolved for this
+    /// quad (#3412's per-sub-mesh resolution, #4253). One entry per
+    /// successful (non-fallback) `resolve_texture` call beyond the atlas —
+    /// each such call is exactly one refcount increment on the registry, so
+    /// this Vec is exactly what `unload_object_lod_block` must release to
+    /// balance it. Deliberately NOT deduped by handle value: two distinct
+    /// authored paths that happen to resolve to the same underlying handle
+    /// each still took their own increment and need their own release.
+    pub(crate) extra_texture_handles: Vec<u32>,
 }
 
 impl ObjectLodBlock {
@@ -86,8 +95,24 @@ impl ObjectLodBlock {
             entities: Vec::new(),
             mesh_handles: Vec::new(),
             texture_handle: 0,
+            extra_texture_handles: Vec::new(),
         }
     }
+}
+
+/// The complete set of texture handles one quad's release must cover:
+/// the shared atlas (if it was actually acquired — `0` is the
+/// fallback/untextured sentinel and was never refcounted) plus every
+/// distinct non-atlas sub-mesh handle #3412's per-sub-mesh resolution
+/// took (#4253). Shared by `unload_object_lod_block` and the
+/// `entities.is_empty()` early-abandon path so the two release sites
+/// can't independently drift out of sync with each other.
+fn object_lod_release_texture_set(atlas: u32, extra: &[u32]) -> Vec<u32> {
+    let mut textures = extra.to_vec();
+    if atlas != 0 {
+        textures.push(atlas);
+    }
+    textures
 }
 
 fn quad_intersects_full_detail(
@@ -352,6 +377,13 @@ fn spawn_object_lod_quad(
     // handle above rather than re-entering the registry.
     let mut resolved: rustc_hash::FxHashMap<String, u32> = rustc_hash::FxHashMap::default();
     resolved.insert(atlas_path.clone(), atlas);
+    // #4253 — every successful (non-fallback) resolve beyond the atlas seed
+    // above is its own refcount increment; recorded here (not reverse-
+    // derived from `resolved`'s final values) so a fallback-substituted
+    // entry — which took no extra increment, since the miss's own handle
+    // was discarded in favor of `atlas` — is never mistaken for a real one
+    // and over-released.
+    let mut extra_texture_handles: Vec<u32> = Vec::new();
 
     let mut entities = Vec::new();
     let mut mesh_handles = Vec::new();
@@ -415,6 +447,11 @@ fn spawn_object_lod_quad(
                         let h = if h == ctx.texture_registry.fallback() {
                             atlas
                         } else {
+                            // #4253 — a genuine, non-fallback resolve: this
+                            // call took a real refcount increment on `h`
+                            // (distinct from the atlas seed) that must be
+                            // released on unload.
+                            extra_texture_handles.push(h);
                             h
                         };
                         resolved.insert(p.clone(), h);
@@ -471,18 +508,20 @@ fn spawn_object_lod_quad(
     }
 
     if entities.is_empty() {
-        let textures = if atlas == 0 {
-            &[][..]
-        } else {
-            std::slice::from_ref(&atlas)
-        };
-        release_lod_gpu_resources(ctx, &mesh_handles, textures);
+        // #4253 — release every distinct non-atlas handle resolved above,
+        // not just the atlas: mesh uploads may have failed for every
+        // sub-mesh (the `continue` on upload error above) after textures
+        // were already resolved, and this path abandons the whole quad
+        // without keeping a block around to release them later.
+        let textures = object_lod_release_texture_set(atlas, &extra_texture_handles);
+        release_lod_gpu_resources(ctx, &mesh_handles, &textures);
         return None;
     }
     Some(ObjectLodBlock {
         entities,
         mesh_handles,
         texture_handle: atlas,
+        extra_texture_handles,
     })
 }
 
@@ -493,12 +532,13 @@ pub(crate) fn unload_object_lod_block(
     ctx: &mut VulkanContext,
     block: &ObjectLodBlock,
 ) {
-    let textures = if block.texture_handle == 0 {
-        &[][..]
-    } else {
-        std::slice::from_ref(&block.texture_handle)
-    };
-    release_lod_gpu_resources(ctx, &block.mesh_handles, textures);
+    // #4253 — release the atlas AND every distinct non-atlas sub-mesh
+    // texture handle #3412 resolved for this quad. Pre-fix only the atlas
+    // was released here, leaking one registry refcount + bindless
+    // descriptor slot per distinct non-atlas texture on every unload.
+    let textures =
+        object_lod_release_texture_set(block.texture_handle, &block.extra_texture_handles);
+    release_lod_gpu_resources(ctx, &block.mesh_handles, &textures);
     for &e in &block.entities {
         world.despawn(e);
     }
@@ -686,6 +726,67 @@ mod submesh_texture_tests {
         assert_eq!(object_lod_submesh_texture(None), None);
         assert_eq!(object_lod_submesh_texture(Some("")), None);
         assert_eq!(object_lod_submesh_texture(Some("   ")), None);
+    }
+}
+
+/// Regression for #4253 — `.bto` object-LOD sub-mesh textures were acquired
+/// (refcounted) but never released on unload, beyond the shared atlas.
+/// `unload_object_lod_block` and the `entities.is_empty()` early-abandon
+/// path both build their release list through the shared
+/// `object_lod_release_texture_set` helper; these tests exercise that
+/// helper directly (the surrounding function needs a live `VulkanContext`
+/// for mesh upload / real texture resolution and can't run headless — same
+/// constraint `unload_greyscale_lut_tests.rs` documents for its own #1341
+/// fix, solved the same way: test the GPU-free collection logic directly).
+#[cfg(test)]
+mod release_texture_set_tests {
+    use super::object_lod_release_texture_set;
+
+    /// The exact #4253 leak shape: two distinct non-atlas sub-mesh textures
+    /// resolved for one quad must BOTH appear in the release set alongside
+    /// the atlas. Pre-fix, `extra` didn't exist at all and only the atlas
+    /// was ever released.
+    #[test]
+    fn releases_atlas_and_every_extra_handle() {
+        let textures = object_lod_release_texture_set(7, &[11, 12]);
+        assert_eq!(textures.len(), 3);
+        assert!(textures.contains(&7), "atlas handle must be released");
+        assert!(textures.contains(&11));
+        assert!(textures.contains(&12));
+    }
+
+    /// Two distinct authored paths that happen to resolve to the SAME
+    /// underlying handle each still took their own registry refcount
+    /// increment (`resolve_texture` is called once per distinct PATH, not
+    /// deduped by result) — the release set must therefore NOT dedupe by
+    /// value either, or one of the two increments would never be balanced.
+    #[test]
+    fn does_not_dedupe_extra_handles_by_value() {
+        let textures = object_lod_release_texture_set(7, &[42, 42]);
+        assert_eq!(
+            textures.iter().filter(|&&h| h == 42).count(),
+            2,
+            "each distinct resolve_texture call's increment needs its own release"
+        );
+    }
+
+    /// Atlas handle `0` is the fallback/untextured sentinel — it was never
+    /// refcounted (mirrors every other LOD path's `0` convention) and must
+    /// not be released.
+    #[test]
+    fn zero_atlas_is_not_released() {
+        let textures = object_lod_release_texture_set(0, &[5]);
+        assert_eq!(textures, vec![5]);
+    }
+
+    /// No extra sub-mesh textures (the common case pre-#3412, and the
+    /// majority of quads today) must still release just the atlas, matching
+    /// pre-#4253 behaviour exactly — this fix must not change anything for
+    /// quads with no distinct non-atlas texture.
+    #[test]
+    fn no_extras_releases_only_the_atlas() {
+        let textures = object_lod_release_texture_set(7, &[]);
+        assert_eq!(textures, vec![7]);
     }
 }
 

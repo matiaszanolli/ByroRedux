@@ -945,6 +945,7 @@ mod tests {
                 entities: vec![3],
                 mesh_handles: vec![12, 13],
                 texture_handle: 0,
+                extra_texture_handles: Vec::new(),
             },
         );
         let mut placements: HashMap<(i32, i32), PlacementLodBlock> = HashMap::new();

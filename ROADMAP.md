@@ -516,11 +516,13 @@ by `material_id`; `GpuInstance` collapsed 400 → 112 B (72%
 reduction); future shading variants land in `GpuMaterial` only,
 no longer lockstep across 4 shaders + DrawCommand + GpuInstance.
 
-**Parser coverage.** NIF parses across seven games (184 886 files
-on the latest sweep — see compatibility matrix below). FO3 / FNV /
-Skyrim SE land at 100% clean, as do FO4 (both base mesh archives) and
-FO76; Oblivion is at 100% (regenerated 2026-08-19, #3082 — the 6 marker_*.nif
-sizeless-truncation cases no longer truncate) and Starfield at 99.99% aggregate.
+**Parser coverage.** NIF parses across seven games (603 207 files on
+the latest sweep — see compatibility matrix below). FO3 / FNV /
+Skyrim SE land at 100% clean, as does FO4 (both base mesh archives);
+Oblivion is at 100% (regenerated 2026-08-19, #3082 — the 6 marker_*.nif
+sizeless-truncation cases no longer truncate); Starfield is at 99.98%
+aggregate; and FO76 is at 98.18%, with a truncation tail concentrated
+in its two `GeneratedMeshes` archives (#3466 / Known Issues).
 Recoverable rate is 100% on all seven games. Per-archive breakdowns,
 sweep dates and the residual truncation tails live in the
 compatibility matrix below — the single home for those figures; do not
