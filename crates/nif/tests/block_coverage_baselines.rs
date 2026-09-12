@@ -53,6 +53,7 @@
 
 mod common;
 
+use byroredux_nif::corpus::is_nif_entry;
 use common::{open_all_mesh_archives, open_optional_mesh_archives, Game};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -123,7 +124,7 @@ fn oblivion_block_count_parity() {
         let files: Vec<String> = archive
             .list_files()
             .into_iter()
-            .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+            .filter(|p| is_nif_entry(p))
             .collect();
 
         let mut parsed = 0usize;

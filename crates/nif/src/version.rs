@@ -434,6 +434,14 @@ pub mod bsver {
     /// `NiAVObject.Flags` on the inline `#BSVER# #GT# 26` vercond (no
     /// named token); u16 at `bsver <= 26`.
     pub const FLAGS_U32_THRESHOLD: u32 = 26;
+    /// `NiMaterialProperty` drops its `Ambient Color`/`Diffuse Color` fields
+    /// (both pinned to white) once `bsver >= MATERIAL_COMPACT_COLORS` (nif.xml
+    /// `#BSVER# #LT# 26`, i.e. present strictly below 26). Independent of
+    /// [`FLAGS_U32_THRESHOLD`] despite sharing the same value of 26 today —
+    /// that constant gates the unrelated `NiAVObject.flags` u16→u32 widen.
+    /// Keep this a distinct constant even though the values coincide so a
+    /// future correction of one doesn't silently move the other. See #4153.
+    pub const MATERIAL_COMPACT_COLORS: u32 = 26;
     /// Upper bound of NiControllerSequence's FO3-era singular animation-
     /// notes reference. Content with `bsver > ANIM_NOTES_THRESHOLD` carries
     /// a counted list; content below [`FO3_ANIM_NOTES_LOWER`] has no field.

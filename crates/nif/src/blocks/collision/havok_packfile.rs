@@ -131,8 +131,13 @@ pub struct PackfileSection {
 
 impl PackfileSection {
     /// The section's absolute end offset within the blob.
-    pub fn absolute_end(&self) -> u32 {
-        self.absolute_data_start + self.end_offset
+    ///
+    /// Widens both fields to `usize` before adding (#4155) — unlike a raw
+    /// `u32 + u32`, this can't debug-overflow-panic on a malformed section
+    /// header whose fields sum past `u32::MAX`, matching the rest of this
+    /// file's offset-arithmetic pattern (see `parse_havok_packfile`).
+    pub fn absolute_end(&self) -> usize {
+        self.absolute_data_start as usize + self.end_offset as usize
     }
 
     /// The section's named-content byte range — `[absolute_data_start,
@@ -144,7 +149,7 @@ impl PackfileSection {
     /// `__types__` in every sampled blob.
     pub fn content_range(&self) -> Range<usize> {
         self.absolute_data_start as usize
-            ..(self.absolute_data_start + self.local_fixups_offset) as usize
+            ..self.absolute_data_start as usize + self.local_fixups_offset as usize
     }
 }
 
@@ -793,8 +798,35 @@ mod tests {
         assert_eq!(types.content_range().len(), 0);
 
         let data = pf.section("__data__").unwrap();
-        assert_eq!(data.absolute_end() as usize, blob.len());
+        assert_eq!(data.absolute_end(), blob.len());
         assert_eq!(&blob[data.content_range()], payload.as_slice());
+    }
+
+    /// #4155 — a section header whose `absolute_data_start` +
+    /// `end_offset` (or `+ local_fixups_offset`) sums past `u32::MAX`
+    /// must not debug-overflow-panic. Both fields are widened to `usize`
+    /// before adding.
+    #[test]
+    fn absolute_end_and_content_range_widen_before_adding_past_u32_max() {
+        let section = PackfileSection {
+            name: "__data__".to_string(),
+            absolute_data_start: u32::MAX - 10,
+            local_fixups_offset: 20,
+            global_fixups_offset: 20,
+            virtual_fixups_offset: 20,
+            exports_offset: 20,
+            imports_offset: 20,
+            end_offset: 20,
+            local_fixups: Vec::new(),
+            global_fixups: Vec::new(),
+            virtual_fixups: Vec::new(),
+        };
+        let expected_start = u32::MAX as usize - 10;
+        assert_eq!(section.absolute_end(), expected_start + 20);
+        assert_eq!(
+            section.content_range(),
+            expected_start..(expected_start + 20)
+        );
     }
 
     #[test]

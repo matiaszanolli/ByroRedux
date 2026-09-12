@@ -262,3 +262,142 @@ fn bhk_rigid_body_body_flags_width_differs_by_2_at_threshold() {
          bsvers consumed the same width and the boundary was wrong"
     );
 }
+
+/// Synthetic FO4+ `bhkRigidBody` body matching `bhkRigidBodyCInfo2014`
+/// (nif.xml lines 2887-2930) exactly. Regression fixture for #4156.
+///
+/// Total expected size: 28 (bhkWorldObject) + 4 (bhkEntity) + 20
+/// (CInfo2014 prefix) + 128 (transforms) + 44 (dynamics through
+/// MaxAngularVelocity) + 4 (motion/deactivator/solver/unused03) + 4
+/// (penetration depth) + 4 (time factor) + 4 (unused04) + 1
+/// (collision response) + 1 (unused05) + 2 (callback delay) + 1
+/// (quality) + 4 (trailer bytes) + 3 (unused06) + 4 (num_constraints)
+/// + 2 (body_flags, u16) = 258 bytes.
+fn minimal_fo4_bhk_rigid_body_bytes() -> (Vec<u8>, f32) {
+    let mut d = Vec::new();
+    // bhkWorldObject: Shape ref + Havok Filter + bhkWorldObjectCInfo(20)
+    d.extend_from_slice(&(-1i32).to_le_bytes()); // shape_ref
+    d.extend_from_slice(&0u32.to_le_bytes()); // havok filter
+    d.extend_from_slice(&[0u8; 20]); // bhkWorldObjectCInfo
+
+    // bhkEntityCInfo: collision_response(1) + unused(1) + callback_delay(2)
+    d.extend_from_slice(&[0u8; 4]);
+
+    // bhkRigidBodyCInfo2014 prefix (20 B): Unused01[4] + duplicated
+    // Havok Filter[4] + Unused02[12] — this is the block the pre-fix
+    // parser skipped only 4 bytes of, drifting every field after it.
+    d.extend_from_slice(&[0u8; 4]); // Unused 01
+    d.extend_from_slice(&0u32.to_le_bytes()); // duplicated Havok Filter
+    d.extend_from_slice(&[0u8; 12]); // Unused 02
+
+    // Translation (vec4) — sentinel values distinct from every other
+    // field so a pre-fix drift misreads them as garbage instead of
+    // coincidentally matching.
+    for v in [10.0f32, 20.0, 30.0, 0.0] {
+        d.extend_from_slice(&v.to_le_bytes());
+    }
+    // Rotation (quat)
+    for v in [0.0f32, 0.0, 0.0, 1.0] {
+        d.extend_from_slice(&v.to_le_bytes());
+    }
+    // Linear + Angular Velocity (vec4 each)
+    for _ in 0..2 {
+        for v in [0.0f32; 4] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    // Inertia Tensor (hkMatrix3 = 48 B)
+    for _ in 0..12 {
+        d.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    // Center of mass (vec4)
+    for v in [0.0f32; 4] {
+        d.extend_from_slice(&v.to_le_bytes());
+    }
+    // Mass, LinDamp, AngDamp
+    let mass = 77.0f32;
+    d.extend_from_slice(&mass.to_le_bytes());
+    d.extend_from_slice(&0.1f32.to_le_bytes());
+    d.extend_from_slice(&0.05f32.to_le_bytes());
+    // Gravity Factor — CInfo2014 has no paired Time Factor here.
+    d.extend_from_slice(&1.0f32.to_le_bytes());
+    // Friction, Rolling Friction Multiplier, Restitution
+    d.extend_from_slice(&0.5f32.to_le_bytes());
+    d.extend_from_slice(&0.0f32.to_le_bytes());
+    d.extend_from_slice(&0.4f32.to_le_bytes());
+    // Max Linear, Max Angular
+    d.extend_from_slice(&104.4f32.to_le_bytes());
+    d.extend_from_slice(&31.57f32.to_le_bytes());
+    // Motion + Deactivator + Solver + Unused03 (4 × u8)
+    d.push(1u8); // motion = MO_SYS_DYNAMIC
+    d.push(3u8); // deactivator — non-zero so we can assert the read
+    d.push(0u8); // solver_deactivation
+    d.push(0u8); // Unused 03
+                 // Penetration Depth, then Time Factor (its CInfo2014 position —
+                 // NOT paired with Gravity Factor the way Skyrim's is).
+    d.extend_from_slice(&0.15f32.to_le_bytes());
+    d.extend_from_slice(&1.0f32.to_le_bytes());
+    // Unused04[4]
+    d.extend_from_slice(&[0u8; 4]);
+    // Collision Response (second read) + Unused05 + Callback Delay (second read)
+    d.push(0u8);
+    d.push(0u8);
+    d.extend_from_slice(&0xffff_u16.to_le_bytes());
+    // Quality Type
+    d.push(2u8);
+    // AutoRemoveLevel + ResponseModifierFlags + NumShapeKeysInContactPoint + ForceCollidedOntoPPU
+    d.extend_from_slice(&[0u8; 4]);
+    // Unused06[3]
+    d.extend_from_slice(&[0u8; 3]);
+    // Num Constraints + Body Flags (u16 at FO4+)
+    d.extend_from_slice(&0u32.to_le_bytes());
+    d.extend_from_slice(&0u16.to_le_bytes());
+    (d, mass)
+}
+
+/// Regression for #4156 — FO4+ `bhkRigidBody` must decode the real
+/// `bhkRigidBodyCInfo2014` field order, not the Skyrim `CInfo2010`
+/// layout. Pre-fix, this era fell through to the shared Skyrim-shape
+/// body with only a 4-byte stand-in for the whole 20-byte CInfo2014
+/// prefix, so every field from `Translation` onward read 16 bytes
+/// early — `translation` alone would come back `[0.0, 0.0, 0.0, 0.0]`
+/// instead of the fixture's `[10.0, 20.0, 30.0, 0.0]`.
+#[test]
+fn bhk_rigid_body_fo4_consumes_full_cinfo2014_body() {
+    let header = NifHeader::test_fo4();
+    let (bytes, mass) = minimal_fo4_bhk_rigid_body_bytes();
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let block = parse_block("bhkRigidBody", &mut stream, Some(bytes.len() as u32))
+        .expect("FO4 bhkRigidBody must parse cleanly");
+    assert_eq!(
+        stream.position() as usize,
+        bytes.len(),
+        "must consume the whole CInfo2014 body without over- or under-reading"
+    );
+    let body = block
+        .as_any()
+        .downcast_ref::<BhkRigidBody>()
+        .expect("dispatch must yield BhkRigidBody, not NiUnknown");
+    assert!(!body.is_t, "plain bhkRigidBody must retain non-T semantics");
+    assert_eq!(body.translation[0], 10.0);
+    assert_eq!(body.translation[1], 20.0);
+    assert_eq!(body.translation[2], 30.0);
+    assert_eq!(body.mass, mass);
+    assert_eq!(body.friction, 0.5);
+    assert_eq!(body.restitution, 0.4);
+    assert_eq!(body.max_linear_velocity, 104.4);
+    assert_eq!(body.max_angular_velocity, 31.57);
+    assert_eq!(body.penetration_depth, 0.15);
+    assert_eq!(body.motion_type, 1);
+    assert_eq!(
+        body.deactivator_type, 3,
+        "deactivator_type sits in a different slot under CInfo2014 — a \
+         drifted read would land on different bytes"
+    );
+    assert_eq!(body.solver_deactivation, 0);
+    assert_eq!(
+        body.quality_type, 2,
+        "quality_type moves after the CInfo2014-only second callback \
+         delay read — a drifted read would land on different bytes"
+    );
+}

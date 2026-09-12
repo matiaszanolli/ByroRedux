@@ -98,6 +98,36 @@ fn parse_material_fo3_also_skips_ambient_diffuse() {
     assert!((mat.emissive_mult - 2.5).abs() < 1e-6);
 }
 
+/// Two-sided pin for `MATERIAL_COMPACT_COLORS` (#4153) — the compact-color
+/// cut at bsver 25/26 must hold regardless of `FLAGS_U32_THRESHOLD`'s own
+/// value, since the two constants gate unrelated fields that only happen
+/// to share 26 today.
+#[test]
+fn material_compact_colors_boundary_bsver_25_reads_authored_colors() {
+    let header = make_header(11, 25);
+    // bsver=25 is also > MATERIAL_EMISSIVE_MULT (21), so unlike the
+    // plain `build_material_oblivion` fixture (built for bsver=0) this
+    // stream carries the trailing Emissive Mult float too.
+    let mut data = build_material_oblivion();
+    data.extend_from_slice(&2.5f32.to_le_bytes());
+    let mut stream = NifStream::new(&data, &header);
+    let mat = NiMaterialProperty::parse(&mut stream).unwrap();
+    assert!((mat.ambient.r - 0.2).abs() < 1e-6);
+    assert!((mat.diffuse.r - 0.8).abs() < 1e-6);
+    assert!((mat.emissive_mult - 2.5).abs() < 1e-6);
+}
+
+#[test]
+fn material_compact_colors_boundary_bsver_26_pins_white() {
+    let header = make_header(11, 26);
+    let data = build_material_fnv();
+    let mut stream = NifStream::new(&data, &header);
+    let mat = NiMaterialProperty::parse(&mut stream).unwrap();
+    assert_uniform_color(&mat.ambient, 1.0);
+    assert_uniform_color(&mat.diffuse, 1.0);
+    assert!((mat.specular.r - 0.5).abs() < 1e-6);
+}
+
 fn build_flag_property_bytes() -> Vec<u8> {
     let mut data = Vec::new();
     // NiObjectNET: name (string table index 0)

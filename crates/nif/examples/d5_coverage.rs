@@ -9,6 +9,7 @@
 //!   - of the cascade-risk files, how many actually fail parse_nif AND
 //!     reference an uncovered type (the dangerous combination).
 use byroredux_bsa::{Ba2Archive, BsaArchive};
+use byroredux_nif::corpus::is_nif_entry;
 use byroredux_nif::header::NifHeader;
 use byroredux_nif::parse_nif;
 use byroredux_nif::version::NifVersion;
@@ -88,7 +89,7 @@ fn process_bsa(st: &mut Stats, path: &Path) {
     let nifs: Vec<String> = archive
         .list_files()
         .iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| is_nif_entry(p))
         .map(|s| s.to_string())
         .collect();
     eprintln!("BSA {} -> {} NIFs", path.display(), nifs.len());
@@ -113,7 +114,7 @@ fn process_ba2(st: &mut Stats, path: &Path) {
     let nifs: Vec<String> = archive
         .list_files()
         .iter()
-        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .filter(|p| is_nif_entry(p))
         .map(|s| s.to_string())
         .collect();
     eprintln!("BA2 {} -> {} NIFs", path.display(), nifs.len());

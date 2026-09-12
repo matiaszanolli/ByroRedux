@@ -41,7 +41,7 @@ impl NiMaterialProperty {
         // `NifVariant` classification puts them in a different
         // boundary bucket than their actual `user_version_2` still
         // parse correctly. See #323 / #938.
-        let bethesda_compact = stream.bsver() >= crate::version::bsver::FLAGS_U32_THRESHOLD;
+        let bethesda_compact = stream.bsver() >= crate::version::bsver::MATERIAL_COMPACT_COLORS;
 
         let ambient = if bethesda_compact {
             NiColor {
