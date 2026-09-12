@@ -293,8 +293,13 @@ fail a test — it produces a movie that loads and misbehaves.
   forever; mis-typed as `Request` produces a spurious `MissingResponse`. Spot-check
   the classification of the highest-traffic methods against the SkyUI /
   installed-ABC evidence cited in `docs/engine/ui.md`.
-- `find` case-normalization: the catalog is documented as case-preserving with
-  case-insensitive lookup. Verify exactly one normalization point.
+- `find` case-normalization: **stale as written** (flagged 2026-09-09, never
+  corrected here) — neither `ui.md` nor `catalog.rs` claims case-insensitive
+  lookup, and `find`'s `binary_search_by(|m| m.name.cmp(name))` is a plain
+  case-sensitive `Ord` comparison with no normalization point anywhere in
+  `normalize_call`. Verify sortedness under `str::cmp` instead (the actual
+  prerequisite for `binary_search_by` to work at all) — pinned by
+  `*_catalog_is_sorted_and_unique`.
 - Methods observed at runtime but absent from the catalog surface through
   `unknown_methods()`. Verify that path is live (not test-only) — the frame
   driver (`byroredux/src/app_frame.rs`, post-#2731) logs
