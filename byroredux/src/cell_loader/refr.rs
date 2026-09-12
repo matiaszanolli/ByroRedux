@@ -322,9 +322,36 @@ impl RefrTextureOverlay {
             let Some(bgem) = provider.resolve_bgem(&path) else {
                 return;
             };
+            // #4287 / SF-2026-09-11-D9-02 — `base_texture` is BGEM's
+            // diffuse role; dropped here entirely pre-fix, unlike
+            // `merge_external_material`'s BGEM arm which forwards it into
+            // `material.textures.base_color`. Mirrors that reference
+            // implementation exactly (same field, same fill-first-wins
+            // policy via `Self::fill`).
+            // #4287 / SF-2026-09-11-D9-02 — `base_texture` is BGEM's
+            // diffuse role; dropped here entirely pre-fix, unlike
+            // `merge_external_material`'s BGEM arm which forwards it into
+            // `material.textures.base_color`. Mirrors that reference
+            // implementation exactly (same field, same fill-first-wins
+            // policy via `Self::fill`).
+            Self::fill(&mut self.diffuse, Some(bgem.base_texture.as_str()), pool);
             Self::fill(&mut self.normal, Some(bgem.normal_texture.as_str()), pool);
             Self::fill(&mut self.glow, Some(bgem.glow_texture.as_str()), pool);
-            Self::fill(&mut self.env, Some(bgem.envmap_texture.as_str()), pool);
+            // #2643 (SF-D9-2026-08-07-04) SIBLING — gate the envmap
+            // texture AND mask fills on the authored `env_mapping_enabled()`
+            // bit, exactly like `merge_external_material`'s BGEM arm
+            // already does. Pre-fix this filled `env` unconditionally
+            // (binding a stale/unused envmap slot even when the material
+            // never enabled env mapping) and dropped `envmap_mask_texture`
+            // into no field at all.
+            if bgem.env_mapping_enabled() {
+                Self::fill(&mut self.env, Some(bgem.envmap_texture.as_str()), pool);
+                Self::fill(
+                    &mut self.env_mask,
+                    Some(bgem.envmap_mask_texture.as_str()),
+                    pool,
+                );
+            }
             // #2594 — BGEM sibling of the BGSM roles above.
             // `specular_texture` / `lighting_texture` are the two BGSM
             // v>2 slots BGEM also exposes (#1076 / FO4-D6-002); BGEM

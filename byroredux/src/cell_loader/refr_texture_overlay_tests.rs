@@ -565,7 +565,7 @@ fn build_overlay_xtxr_slot_1_adopts_model_space_normals_flag() {
 
 use crate::asset_provider::MaterialProvider;
 use byroredux_bgsm::template::ResolvedMaterial;
-use byroredux_bgsm::{BgemFile, BgsmFile};
+use byroredux_bgsm::{BaseMaterial, BgemFile, BgsmFile};
 use std::sync::Arc;
 
 fn mnam_only_txst(material_path: &str) -> TextureSet {
@@ -722,12 +722,28 @@ fn fill_from_bgsm_forwards_every_bgem_texture_role() {
     provider.insert_bgem_for_test(
         path,
         BgemFile {
+            // #4288 / SF-2026-09-11-D9-03 — pre-fix this fixture left
+            // `base_texture`/`envmap_mask_texture` at their default-empty
+            // values, so the test asserted nothing about the two roles
+            // #4287's production defect actually dropped: it covered 6 of
+            // 8 real BGEM texture roles and would not have failed even
+            // with that bug present. `base.environment_mapping = true`
+            // (version defaults to 0, so `env_mapping_enabled()` reads the
+            // shared-prefix field) is required for the production fix's
+            // new `env_mapping_enabled()` gate to let `envmap_texture`/
+            // `envmap_mask_texture` through at all.
+            base_texture: r"textures\b\diffuse.dds".into(),
             normal_texture: r"textures\b\nrm.dds".into(),
             glow_texture: r"textures\b\glow.dds".into(),
             envmap_texture: r"textures\b\env.dds".into(),
+            envmap_mask_texture: r"textures\b\env_mask.dds".into(),
             specular_texture: r"textures\b\spec.dds".into(),
             lighting_texture: r"textures\b\lighting.dds".into(),
             grayscale_texture: r"textures\b\gradient.dds".into(),
+            base: BaseMaterial {
+                environment_mapping: true,
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
@@ -737,9 +753,19 @@ fn fill_from_bgsm_forwards_every_bgem_texture_role() {
         .expect("MNAM-only TXST + resolvable BGEM must produce an overlay");
 
     // Pre-#2594 roles.
+    assert_eq!(
+        resolved(&pool, ov.diffuse),
+        Some(r"textures\b\diffuse.dds"),
+        "BGEM base_texture must reach the overlay's diffuse role (#4287)"
+    );
     assert_eq!(resolved(&pool, ov.normal), Some(r"textures\b\nrm.dds"));
     assert_eq!(resolved(&pool, ov.glow), Some(r"textures\b\glow.dds"));
     assert_eq!(resolved(&pool, ov.env), Some(r"textures\b\env.dds"));
+    assert_eq!(
+        resolved(&pool, ov.env_mask),
+        Some(r"textures\b\env_mask.dds"),
+        "BGEM envmap_mask_texture must reach the overlay's env_mask role (#4287)"
+    );
     // #2594-added roles.
     assert_eq!(
         resolved(&pool, ov.external_specular),

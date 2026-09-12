@@ -1466,6 +1466,79 @@ mod tests {
         assert_eq!(result, original.as_slice());
     }
 
+    /// #4267 / SF-DIM1-02 — byte-literal fixture for the documented mixed
+    /// raw+LZ4-chunk DX10 record population (measured 3.66% of the real
+    /// Starfield corpus), exercised only by the opt-in real-data sweep
+    /// until now. Chunk 0 is stored raw (`packed_size == 0`, per-chunk
+    /// header-declared compression override); chunk 1 is LZ4-block
+    /// compressed — the exact per-chunk branch `extract_dx10`'s loop
+    /// takes on `chunk.packed_size == 0` vs `!= 0`. Pins that both
+    /// branches concatenate correctly into one contiguous pixel-data
+    /// blob under the synthesized DDS header, in one record.
+    #[test]
+    fn extract_dx10_concatenates_a_raw_chunk_and_an_lz4_chunk_in_one_record() {
+        let raw_chunk_payload = b"RAWCHUNK-uncompressed-mip-bytes";
+        let lz4_chunk_original = b"LZ4CHUNK-compressed-mip-bytes-for-the-next-mip-range";
+        let lz4_chunk_compressed = lz4_flex::block::compress(lz4_chunk_original);
+
+        // Lay out a synthetic archive body: [raw chunk bytes][lz4-compressed
+        // chunk bytes], each `Dx10Chunk.offset` pointing at its own start —
+        // matching how real BA2 chunk offsets are absolute file positions.
+        let mut body = Vec::new();
+        let raw_offset = body.len() as u64;
+        body.extend_from_slice(raw_chunk_payload);
+        let lz4_offset = body.len() as u64;
+        body.extend_from_slice(&lz4_chunk_compressed);
+
+        let chunks = vec![
+            Dx10Chunk {
+                offset: raw_offset,
+                packed_size: 0, // stored raw
+                unpacked_size: raw_chunk_payload.len() as u32,
+                start_mip: 0,
+                end_mip: 0,
+            },
+            Dx10Chunk {
+                offset: lz4_offset,
+                packed_size: lz4_chunk_compressed.len() as u32,
+                unpacked_size: lz4_chunk_original.len() as u32,
+                start_mip: 1,
+                end_mip: 1,
+            },
+        ];
+
+        let mut reader = std::io::Cursor::new(body);
+        let dds = extract_dx10(
+            &mut reader,
+            Dx10TexInfo {
+                dxgi_format: 71, // BC1 — matches the fixed-148-byte-header test above
+                width: 256,
+                height: 256,
+                num_mips: 2,
+                is_cubemap: false,
+            },
+            &chunks,
+            Ba2Compression::Lz4Block,
+        )
+        .expect("mixed raw+LZ4-chunk record must decode cleanly");
+
+        let mut expected_pixel_data = Vec::new();
+        expected_pixel_data.extend_from_slice(raw_chunk_payload);
+        expected_pixel_data.extend_from_slice(lz4_chunk_original);
+        let header_len = dds.len() - expected_pixel_data.len();
+        assert_eq!(
+            &dds[..4],
+            b"DDS ",
+            "the synthesized DDS header must still lead the output"
+        );
+        assert_eq!(
+            &dds[header_len..],
+            expected_pixel_data.as_slice(),
+            "the raw chunk's bytes must pass through unchanged and the LZ4 \
+             chunk must decompress correctly, concatenated in chunk order"
+        );
+    }
+
     #[test]
     fn decompress_chunk_lz4_corrupt_data_fails() {
         // Garbage input should fail LZ4 decompression.

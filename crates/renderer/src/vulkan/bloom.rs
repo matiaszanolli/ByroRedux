@@ -84,12 +84,38 @@ const BLOOM_APPLY_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_apply.co
 /// than incidental).
 ///
 /// Expressed in 1/1024ths of a full-resolution pixel because the sum is
-/// fractional: down = (1/4)(1 + 1/4 + ... + 1/256) = 341/1024, up =
-/// (1/4)(1 + 1/4 + ... + 1/64) = 340/1024. An analytic approximation of the
-/// integer-rounded per-mip extents, which is the right shape for a reservation
-/// floor — it never over-bills, and the residual is under a kilobyte.
-pub const BLOOM_BYTES_PER_PIXEL_X1024: u32 =
-    (341 + 340) * 4 * super::sync::MAX_FRAMES_IN_FLIGHT as u32;
+/// fractional: down = (1/4)(1 + 1/4 + ... + 1/4^(N-1)) for N =
+/// [`BLOOM_MIP_COUNT`] down-levels, up = the same series one level shorter
+/// (`N-1` up-levels). An analytic approximation of the integer-rounded
+/// per-mip extents, which is the right shape for a reservation floor — it
+/// never over-bills, and the residual is under a kilobyte.
+///
+/// #4216 / TD7-001 — derived from [`BLOOM_MIP_COUNT`] via
+/// [`bloom_geometric_sum_x1024`] rather than baked in as a literal correct
+/// only for the current mip count (previously `341`/`340`, silently
+/// correct only for `BLOOM_MIP_COUNT == 5`), mirroring the sibling
+/// `CAUSTIC_BYTES_PER_PIXEL` precedent (#2679) of deriving VRAM-reservation
+/// constants from live values instead of baking in their current result.
+pub const BLOOM_BYTES_PER_PIXEL_X1024: u32 = (bloom_geometric_sum_x1024(BLOOM_MIP_COUNT as u32)
+    + bloom_geometric_sum_x1024(BLOOM_MIP_COUNT as u32 - 1))
+    * 4
+    * super::sync::MAX_FRAMES_IN_FLIGHT as u32;
+
+/// `sum_{i=1}^{levels} 1024/4^i`, closed-form as `(1024 - 1024/4^levels) / 3`
+/// — the 1/1024ths-scaled geometric series `BLOOM_BYTES_PER_PIXEL_X1024`
+/// sums for the down- and up-pyramids. Exact (no rounding residual) for
+/// every `levels` in `1..=5`, since `4^5 == 1024` divides evenly; beyond
+/// that the residual stays under a kilobyte per the reservation-floor
+/// rationale above, same as the pre-#4216 literal already accepted.
+const fn bloom_geometric_sum_x1024(levels: u32) -> u32 {
+    let mut denom: u64 = 1;
+    let mut i = 0;
+    while i < levels {
+        denom *= 4;
+        i += 1;
+    }
+    ((1024 - 1024 / denom) / 3) as u32
+}
 
 pub const BLOOM_MIP_COUNT: usize = 5;
 
@@ -1277,6 +1303,85 @@ mod construction_invariant_upload_tests {
                 "build_and_upload_instances.rs no longer contains `{sibling}` — \
                  the per-frame UBO section has moved again, so the bloom scan \
                  above is now pointed at the wrong file (#4035)"
+            );
+        }
+    }
+}
+
+/// Regression for #4216 / TD7-001 — `BLOOM_BYTES_PER_PIXEL_X1024` used to
+/// bake in `341`/`340` as bare literals, correct only for the
+/// `BLOOM_MIP_COUNT == 5` in effect when they were hand-computed. Pins the
+/// derivation against an independent recomputation of the geometric series
+/// at the current `BLOOM_MIP_COUNT`, mirroring the sibling
+/// `CAUSTIC_BYTES_PER_PIXEL` precedent (#2679) of testing VRAM-reservation
+/// constants against live values rather than accepting a baked-in result.
+#[cfg(test)]
+mod bloom_bytes_per_pixel_tests {
+    use super::*;
+
+    /// Independent (non-closed-form) recomputation: sum `1024 >> (2*i)` for
+    /// `i` in `1..=levels` — a different derivation path than
+    /// `bloom_geometric_sum_x1024`'s closed form, so this doesn't just
+    /// restate the production formula under test.
+    fn geometric_sum_via_repeated_division(levels: u32) -> u32 {
+        let mut sum: u32 = 0;
+        let mut term: u32 = 1024;
+        for _ in 0..levels {
+            term /= 4;
+            sum += term;
+        }
+        sum
+    }
+
+    #[test]
+    fn geometric_sum_matches_independent_recomputation_at_current_mip_count() {
+        let down = bloom_geometric_sum_x1024(BLOOM_MIP_COUNT as u32);
+        let up = bloom_geometric_sum_x1024(BLOOM_MIP_COUNT as u32 - 1);
+        assert_eq!(
+            down,
+            geometric_sum_via_repeated_division(BLOOM_MIP_COUNT as u32),
+            "down-pyramid geometric sum must match an independently computed series"
+        );
+        assert_eq!(
+            up,
+            geometric_sum_via_repeated_division(BLOOM_MIP_COUNT as u32 - 1),
+            "up-pyramid geometric sum must match an independently computed series"
+        );
+    }
+
+    /// Pins the exact pre-#4216 literal values (`341`/`340`) at the
+    /// `BLOOM_MIP_COUNT == 5` this repo currently ships, so a change to
+    /// either the derivation or `BLOOM_MIP_COUNT` is visible here rather
+    /// than only showing up as a VRAM-reservation drift downstream.
+    #[test]
+    fn geometric_sum_reproduces_pre_fix_literals_at_mip_count_5() {
+        assert_eq!(
+            BLOOM_MIP_COUNT, 5,
+            "test fixture assumes the current mip count"
+        );
+        assert_eq!(bloom_geometric_sum_x1024(5), 341);
+        assert_eq!(bloom_geometric_sum_x1024(4), 340);
+        assert_eq!(
+            BLOOM_BYTES_PER_PIXEL_X1024,
+            (341 + 340) * 4 * MAX_FRAMES_IN_FLIGHT as u32
+        );
+    }
+
+    /// A future `BLOOM_MIP_COUNT` bump (within the exact range this
+    /// closed form covers, `1..=5` — see its doc comment) changes the
+    /// geometric sum monotonically (more down-levels sums strictly more
+    /// terms of a positive series) — catches a derivation that
+    /// accidentally stops tracking `levels` (e.g. a copy-paste that
+    /// hardcodes the exponent). Beyond `levels == 5` the closed form's
+    /// integer division saturates the added term to 0 (by design — the
+    /// residual-under-a-kilobyte reservation-floor rationale), so this
+    /// intentionally does not extend the check past the exact range.
+    #[test]
+    fn geometric_sum_is_monotonically_increasing_in_levels() {
+        for levels in 1..5 {
+            assert!(
+                bloom_geometric_sum_x1024(levels + 1) > bloom_geometric_sum_x1024(levels),
+                "adding a mip level must strictly increase the reserved sum"
             );
         }
     }

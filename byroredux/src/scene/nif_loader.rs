@@ -1117,6 +1117,10 @@ fn spawn_nif_mesh(
         crate::material_translate::ResolvedPaths {
             textures: owned_textures.clone(),
             material_path: owned_material_path.clone(),
+            // #4229 — loose-NIF load has no REFR texture-slot overlay at
+            // all, so `owned_textures` is always the mesh's own path;
+            // `None` correctly disables the overlay-divergence check.
+            source_base_color: None,
         },
         0,
     );

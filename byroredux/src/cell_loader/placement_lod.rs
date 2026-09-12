@@ -549,6 +549,10 @@ fn spawn_placement_lod_cell(
                         .material_path
                         .and_then(|s| pool.resolve(s))
                         .map(str::to_owned),
+                    // #4229 — placement-LOD attaches no REFR texture-slot
+                    // overlay (same exemption as #3465's Phase-2 resolvers);
+                    // `owned_textures` is always the mesh's own path.
+                    source_base_color: None,
                 },
                 0,
             );

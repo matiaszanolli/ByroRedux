@@ -2076,6 +2076,7 @@ mod tests {
             crate::material_translate::ResolvedPaths {
                 textures: Default::default(),
                 material_path: None,
+                source_base_color: None,
             },
             0,
         );

@@ -156,6 +156,25 @@ fn material_optical_scalar(material_kind: u32, refraction_strength: f32) -> f32 
 pub(crate) struct ResolvedPaths {
     pub textures: MaterialTextureSet<Option<String>>,
     pub material_path: Option<String>,
+    /// #4229 / FNV-D2-02 — the mesh's own, un-overlaid base-color path
+    /// (`source.textures.base_color`, resolved to an owned string by the
+    /// caller, which already holds the pool lock needed for that). `None`
+    /// when the caller has no cheap way to resolve it (loose-NIF load has
+    /// no overlay at all, so it's always identical to `textures.base_color`
+    /// there and this field is redundant — see call sites).
+    ///
+    /// Lets [`translate_material`] detect when a REFR texture-slot overlay
+    /// (XATO/XTNM/XTXR) actually swapped the base-color texture, without
+    /// needing a `StringPool` reference itself: `source.metalness_override`/
+    /// `roughness_override` were pre-computed at NIF-import time from this
+    /// same un-overlaid path (`classify_legacy_pbr`), so an overlay swap
+    /// that changes the *effective* path leaves the PBR classification
+    /// stale — carrying the original texture's metalness/roughness onto a
+    /// materially different surface. When this differs from
+    /// `textures.base_color`, `translate_material` recomputes the
+    /// keyword-classified scalars from the overlay path instead of trusting
+    /// the stale precomputed ones.
+    pub source_base_color: Option<String>,
 }
 
 /// Build the canonical water payload for a mesh-bound water shader. Legacy
@@ -482,8 +501,40 @@ pub(crate) fn translate_material(
     let ResolvedPaths {
         textures,
         material_path,
+        source_base_color,
     } = paths;
     let texture_path = textures.base_color.clone();
+    // #4229 / FNV-D2-02 — an overlay-resolved base-color path that
+    // actually differs from the un-overlaid path the PBR classifier ran
+    // against at NIF-import time. Only meaningful for the keyword-classified
+    // legacy path (`!bgsm_pbr_scalars_authored`) — BGSM-authored scalars are
+    // an explicit external-file signal, not a keyword classification, and
+    // are never re-derived here. `metalness_override.is_some()` mirrors
+    // `classify_legacy_pbr`'s own `!no_pbr_signal` gate without needing to
+    // re-derive that private condition: it's `Some` exactly when the
+    // classifier's result was stored at import time.
+    let overlay_changed_base_color =
+        source_base_color.is_some() && source_base_color != texture_path;
+    let recomputed_pbr = if overlay_changed_base_color
+        && !source.bgsm_pbr_scalars_authored
+        && source.metalness_override.is_some()
+    {
+        Some(
+            byroredux_core::ecs::components::material::classify_pbr_keyword(
+                byroredux_core::ecs::components::material::PbrClassifierInputs {
+                    texture_path: texture_path.as_deref(),
+                    glossiness: source.glossiness,
+                    env_map_scale: source.env_map_scale,
+                    has_normal_map: textures.normal.is_some(),
+                    specular_color: source.specular_color,
+                    specular_authored: source.specular_authored,
+                    has_gloss_map: textures.smooth_spec.is_some(),
+                },
+            ),
+        )
+    } else {
+        None
+    };
     let mut material = Material {
         water_shader_flags: source.water_shader_flags,
         is_water_shader: source.is_water_shader,
@@ -585,8 +636,22 @@ pub(crate) fn translate_material(
         // (`merge_external_material`) or a NaN sentinel for legacy
         // inline-shader content; `resolve_pbr` below fills any sentinel
         // from the keyword classifier and clamps to the renderer ranges.
-        metalness: source.metalness_override.unwrap_or(f32::NAN),
-        roughness: source.roughness_override.unwrap_or(f32::NAN),
+        //
+        // #4229 / FNV-D2-02 — `recomputed_pbr` overrides the stale
+        // NIF-import-time classification when a REFR texture-slot overlay
+        // actually swapped the base-color texture (see above); `None` in
+        // every other case, so behavior is byte-identical to before this
+        // fix whenever no overlay divergence exists.
+        metalness: recomputed_pbr
+            .as_ref()
+            .map(|p| p.metalness)
+            .or(source.metalness_override)
+            .unwrap_or(f32::NAN),
+        roughness: recomputed_pbr
+            .as_ref()
+            .map(|p| p.roughness)
+            .or(source.roughness_override)
+            .unwrap_or(f32::NAN),
         // Generic dielectric for ordinary materials; fire-refraction uses
         // this discriminated scalar as its authored distortion strength.
         // Glass promotion below replaces the ordinary value with the shared
@@ -1767,6 +1832,7 @@ mod tests {
         let paths = ResolvedPaths {
             textures: MaterialTextureSet::default(),
             material_path: None,
+            source_base_color: None,
         };
         let material = translate_material(&source, None, paths, 0);
 
@@ -1795,6 +1861,7 @@ mod tests {
         let paths = ResolvedPaths {
             textures: MaterialTextureSet::default(),
             material_path: None,
+            source_base_color: None,
         };
         let material = translate_material(&source, None, paths, 0);
         assert_eq!(material.grayscale_to_palette_scale, 0.5);
@@ -1807,6 +1874,7 @@ mod tests {
             ResolvedPaths {
                 textures: MaterialTextureSet::default(),
                 material_path: None,
+                source_base_color: None,
             },
             0,
         );
@@ -2364,6 +2432,7 @@ mod canonical_completeness_harness {
                 ..MaterialTextureSet::default()
             },
             material_path: Some("Materials/Test/test.bgsm".to_string()),
+            source_base_color: None,
         }
     }
 
@@ -2733,6 +2802,7 @@ mod canonical_completeness_harness {
         let paths = ResolvedPaths {
             textures: MaterialTextureSet::default(),
             material_path: None,
+            source_base_color: None,
         };
         let material = translate_material(&source, None, paths, 0);
 
@@ -2751,6 +2821,7 @@ mod canonical_completeness_harness {
         let paths = ResolvedPaths {
             textures: MaterialTextureSet::default(),
             material_path: None,
+            source_base_color: None,
         };
         let material = translate_material(&source, None, paths, 0);
         assert!(material.shader_type_fields.is_none());
@@ -2772,6 +2843,7 @@ mod canonical_completeness_harness {
         let paths = ResolvedPaths {
             textures: MaterialTextureSet::default(),
             material_path: None,
+            source_base_color: None,
         };
         let material = translate_material(&source, None, paths, 0);
         assert_eq!(
@@ -2823,6 +2895,7 @@ mod canonical_completeness_harness {
                 ..MaterialTextureSet::default()
             },
             material_path: None,
+            source_base_color: None,
         };
         let material = translate_material(&source, Some("Wall01"), paths, 0);
         assert_eq!(
@@ -2859,6 +2932,109 @@ mod canonical_completeness_harness {
              classifier's 0.6 matte default, per normal_alpha_spec_roughness's \
              formula: (0.85 - (2.5 - 1.0) * 0.1).clamp(0.4, 0.85) = 0.70, got {}",
             resolved.roughness
+        );
+    }
+}
+
+/// Regression for #4229 / FNV-D2-02 — glass classification keys off the
+/// caller's overlay-resolved texture path, but PBR scalars used to arrive
+/// pre-computed at NIF-import time from the mesh's own un-overlaid path.
+/// An overlay swap could carry the original texture's PBR classification
+/// onto a materially different surface. `ResolvedPaths::source_base_color`
+/// lets `translate_material` detect the divergence and recompute.
+#[cfg(test)]
+mod overlay_pbr_divergence_tests {
+    use super::*;
+
+    fn metal_wall_source() -> ImportedMaterial {
+        ImportedMaterial {
+            material_kind: 0, // lit surface, not glass/effect
+            // As if `classify_legacy_pbr` already ran against the mesh's
+            // own un-overlaid "metal_wall01.dds" path at NIF-import time
+            // (metal keyword arm: roughness 0.55, metalness 0.9).
+            metalness_override: Some(0.9),
+            roughness_override: Some(0.55),
+            bgsm_pbr_scalars_authored: false, // legacy keyword-classified path
+            ..ImportedMaterial::default()
+        }
+    }
+
+    /// The overlay swaps the effective base-color texture to a
+    /// keyword-distinct surface (wood, not metal). Pre-fix,
+    /// `translate_material` would carry the stale metal classification
+    /// (0.9 metalness / 0.55 roughness) through unchanged; post-fix it
+    /// must recompute from the overlay's actual path (wood keyword arm:
+    /// roughness 0.7, metalness 0.0).
+    #[test]
+    fn overlay_swap_recomputes_pbr_from_the_effective_path() {
+        let source = metal_wall_source();
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet {
+                base_color: Some("textures/furniture/wood/plank01.dds".to_string()),
+                ..MaterialTextureSet::default()
+            },
+            material_path: None,
+            source_base_color: Some("textures/architecture/metal_wall01.dds".to_string()),
+        };
+        let material = translate_material(&source, Some("Plank01"), paths, 0);
+        assert_eq!(
+            material.metalness, 0.0,
+            "an overlay swap to a wood-keyword texture must recompute metalness \
+             from the new path, not carry over the stale metal classification"
+        );
+        assert_eq!(
+            material.roughness, 0.7,
+            "an overlay swap to a wood-keyword texture must recompute roughness \
+             from the new path, not carry over the stale metal classification"
+        );
+    }
+
+    /// No overlay divergence (`source_base_color == textures.base_color`,
+    /// the common case for every mesh with no REFR texture-slot override):
+    /// the pre-computed classification must pass through completely
+    /// unchanged — this fix must not alter behavior when there is nothing
+    /// to reconcile.
+    #[test]
+    fn no_overlay_divergence_keeps_the_precomputed_classification() {
+        let source = metal_wall_source();
+        let same_path = "textures/architecture/metal_wall01.dds".to_string();
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet {
+                base_color: Some(same_path.clone()),
+                ..MaterialTextureSet::default()
+            },
+            material_path: None,
+            source_base_color: Some(same_path),
+        };
+        let material = translate_material(&source, Some("MetalWall01"), paths, 0);
+        assert_eq!(material.metalness, 0.9);
+        assert_eq!(material.roughness, 0.55);
+    }
+
+    /// A BGSM-authored material (`bgsm_pbr_scalars_authored = true`) is an
+    /// explicit external-file signal, not a keyword classification — an
+    /// overlay-path divergence must NOT trigger a keyword re-classification
+    /// that would silently discard the authored BGSM scalars.
+    #[test]
+    fn bgsm_authored_scalars_are_never_reclassified_by_an_overlay_swap() {
+        let mut source = metal_wall_source();
+        source.bgsm_pbr_scalars_authored = true;
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet {
+                base_color: Some("textures/furniture/wood/plank01.dds".to_string()),
+                ..MaterialTextureSet::default()
+            },
+            material_path: None,
+            source_base_color: Some("textures/architecture/metal_wall01.dds".to_string()),
+        };
+        let material = translate_material(&source, Some("Plank01"), paths, 0);
+        assert_eq!(
+            material.metalness, 0.9,
+            "a BGSM-authored scalar must survive an overlay path swap unchanged"
+        );
+        assert_eq!(
+            material.roughness, 0.55,
+            "a BGSM-authored scalar must survive an overlay path swap unchanged"
         );
     }
 }

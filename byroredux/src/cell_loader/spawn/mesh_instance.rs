@@ -10,7 +10,9 @@
 use super::*;
 use byroredux_core::ecs::SpeedTreeWind;
 use byroredux_core::string::FixedString;
-use byroredux_nif::import::{slot_to_colocated_role, slot_to_role, TextureRole, TextureSlotContext};
+use byroredux_nif::import::{
+    slot_to_colocated_role, slot_to_role, TextureRole, TextureSlotContext,
+};
 
 /// Effective per-mesh texture-slot paths, resolved in one StringPool
 /// lock (#882). Promoted to module scope from `spawn_placed_instances`
@@ -20,6 +22,13 @@ pub(super) struct ResolvedMeshPaths {
     sources: byroredux_nif::import::MaterialTextureSet<MaterialTextureSource>,
     material_path: Option<String>,
     name_sym: Option<byroredux_core::string::FixedString>,
+    /// #4229 / FNV-D2-02 — the mesh's own un-overlaid base-color path,
+    /// captured before `textures.base_color` is overwritten by the REFR
+    /// overlay resolve below. Forwarded to `translate_material` so it can
+    /// detect when the overlay actually swapped the effective texture and
+    /// recompute the stale NIF-import-time PBR classification instead of
+    /// carrying it onto a materially different surface.
+    source_base_color: Option<String>,
 }
 fn resolve_to_owned(
     pool: &byroredux_core::string::StringPool,
@@ -161,6 +170,11 @@ pub(super) fn resolve_mesh_paths(
             // fill is, from the debug command's point of view, exactly
             // that: a REFR-scoped override winning over the mesh's own
             // authored material. See #973.
+            //
+            // #4229 — capture the mesh's own un-overlaid base-color path
+            // BEFORE the overlay resolve below overwrites it, so
+            // `translate_material` can detect an actual overlay swap.
+            let source_base_color = textures.base_color.clone();
             (textures.base_color, sources.base_color) = resolve_effective(
                 ov.and_then(|o| o.diffuse),
                 mesh.material.textures.base_color,
@@ -405,6 +419,7 @@ pub(super) fn resolve_mesh_paths(
                 sources,
                 material_path,
                 name_sym,
+                source_base_color,
             }
         })
         .collect()
@@ -840,6 +855,7 @@ pub(super) fn spawn_mesh_instance(
         crate::material_translate::ResolvedPaths {
             textures: eff_textures.clone(),
             material_path: eff_material_path.clone(),
+            source_base_color: paths.source_base_color.clone(),
         },
         extra_material_flags,
     );
