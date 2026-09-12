@@ -2606,7 +2606,7 @@ fn perturb_normal_guards_post_projection_tangent_length() {
 /// near-miss already on record is `skin_vertices.comp`, whose comment names
 /// `struct GpuInstance` while the file declares none (a bare `str::contains`,
 /// and `extract_struct_body`'s `find`, would both count it).
-fn shader_sources_declaring(decl: &str) -> Vec<String> {
+fn shader_sources_declaring(decl: &str, allow_layout_prefix: bool) -> Vec<String> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let mut found = Vec::new();
     let mut stack = vec![root.clone()];
@@ -2635,6 +2635,11 @@ fn shader_sources_declaring(decl: &str) -> Vec<String> {
                     None => raw,
                 };
                 let code = code.trim_start();
+                let code = if allow_layout_prefix {
+                    strip_leading_layout_qualifier(code)
+                } else {
+                    code
+                };
                 code.strip_prefix(decl)
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t', '{']))
             });
@@ -2652,12 +2657,51 @@ fn shader_sources_declaring(decl: &str) -> Vec<String> {
     found
 }
 
+/// #4028 — strip one leading `layout(set = N, binding = M)` (or any other
+/// `layout(...)` qualifier) and the whitespace after it, so
+/// `shader_sources_declaring`'s strict start-of-line prefix test can see a
+/// declaration like `layout(set = 0, binding = 0) uniform CameraUBO {`.
+/// GLSL layout qualifiers don't nest in this codebase, so the first `)`
+/// closes it. Returns the input unchanged if it doesn't start with `layout(`.
+fn strip_leading_layout_qualifier(code: &str) -> &str {
+    let Some(rest) = code.strip_prefix("layout(") else {
+        return code;
+    };
+    match rest.find(')') {
+        Some(i) => rest[i + 1..].trim_start(),
+        None => code,
+    }
+}
+
 /// Assert the hand-written `SOURCES` table for a GLSL-mirror lockstep test
 /// covers exactly the files that actually declare `decl` (#3564).
 fn assert_mirror_list_is_complete(decl: &str, sources: &[(&str, &str)], issue: &str) {
+    assert_mirror_list_is_complete_impl(decl, sources, issue, false);
+}
+
+/// #4028 — variant of [`assert_mirror_list_is_complete`] for GLSL structs
+/// declared as `uniform Name { ... }` behind a `layout(...)` qualifier
+/// (`CameraUBO`), which the strict start-of-line prefix match can't see.
+/// The default (`assert_mirror_list_is_complete`) stays strict so
+/// `skin_vertices.comp`'s *comment* mentioning `struct GpuInstance` keeps
+/// not matching — only callers that name a `uniform`-qualified struct opt in.
+fn assert_mirror_list_is_complete_after_layout(
+    decl: &str,
+    sources: &[(&str, &str)],
+    issue: &str,
+) {
+    assert_mirror_list_is_complete_impl(decl, sources, issue, true);
+}
+
+fn assert_mirror_list_is_complete_impl(
+    decl: &str,
+    sources: &[(&str, &str)],
+    issue: &str,
+    allow_layout_prefix: bool,
+) {
     let mut listed: Vec<String> = sources.iter().map(|(n, _)| (*n).to_string()).collect();
     listed.sort();
-    let discovered = shader_sources_declaring(decl);
+    let discovered = shader_sources_declaring(decl, allow_layout_prefix);
     assert_eq!(
         discovered, listed,
         "`{decl}` mirror set drifted: crates/renderer/shaders/ declares it in {discovered:?} \
@@ -3065,19 +3109,18 @@ fn gpu_boundary_instance_stride_matches_gpu_instance() {
 /// which no prior struct in this file needed (`GpuMaterial` is bare
 /// scalars only).
 ///
-/// Deliberately does NOT call [`assert_mirror_list_is_complete`] /
-/// [`shader_sources_declaring`]: those require `decl` to be the START of
-/// the trimmed source line (after stripping any `//` comment), which
-/// matches a plain `struct X {` declaration but not
-/// `layout(set = N, binding = M) uniform CameraUBO {` — the `layout(...)`
-/// qualifier always precedes it. Loosening that shared, already-tested
-/// helper (used by three other structs' lockstep tests) to a bare
-/// substring match would reopen the exact false-positive the doc comment
-/// on `shader_sources_declaring` names as the reason it isn't one already
-/// (`skin_vertices.comp`'s comment *mentioning* `struct GpuInstance` while
-/// declaring none). A sixth shader adding `CameraUBO` without joining this
-/// SOURCES list is a real but narrower gap than the field-lockstep defect
-/// this test exists to close, and isn't in the issue's own suggested fix.
+/// #4028 (REN-2026-09-06-D3-04) — also calls
+/// [`assert_mirror_list_is_complete_after_layout`], the `layout(...)`-aware
+/// variant of [`assert_mirror_list_is_complete`] / [`shader_sources_declaring`]:
+/// the strict start-of-line prefix match those use matches a plain
+/// `struct X {` declaration but not `layout(set = N, binding = M) uniform
+/// CameraUBO {` — the `layout(...)` qualifier always precedes it. The
+/// default helper stays strict (used by three other structs' lockstep
+/// tests) so `skin_vertices.comp`'s comment *mentioning* `struct
+/// GpuInstance` while declaring none still doesn't match; the `_after_layout`
+/// variant strips one leading `layout(...)` before the same prefix test, so
+/// a sixth shader adding `CameraUBO` without joining this SOURCES list is
+/// now a test failure instead of a silent gap.
 #[test]
 fn camera_ubo_glsl_copies_stay_in_lockstep() {
     const SOURCES: &[(&str, &str)] = &[
@@ -3099,6 +3142,12 @@ fn camera_ubo_glsl_copies_stay_in_lockstep() {
             include_str!("../../../shaders/caustic_splat.comp"),
         ),
     ];
+
+    // #4028 — mirror-discovery leg: fail if a shader declares `uniform
+    // CameraUBO {` (behind its `layout(...)` qualifier) without being in
+    // SOURCES above, the same guard `GpuLight`/`GpuInstance`/`GpuTerrainTile`
+    // already have.
+    assert_mirror_list_is_complete_after_layout("uniform CameraUBO {", SOURCES, "#3684");
 
     let mut reference: Option<(&str, Vec<String>)> = None;
     for (name, src) in SOURCES {

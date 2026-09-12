@@ -271,7 +271,13 @@ fn indirect_buffer_capacity_matches_max_draw_constant() {
 /// (~262K), with ~5× headroom past the worst observed scene.
 #[test]
 fn max_instances_stays_within_mesh_id_encoding_ceiling() {
-    const MESH_ID_ENCODING_CEILING: usize = 0x7FFF_FFFF;
+    // #4030 — `bf8ded3d` (#3881) gave the mesh-ID ABI's mask a single Rust
+    // source of truth (`MESH_ID_STABLE_MASK = !MESH_ID_NO_HISTORY_BIT` in
+    // `shader_constants_data.rs`) and repointed the GLSL literals at it; this
+    // local `0x7FFF_FFFF` was the one copy that survived. If the no-history
+    // bit ever moved, this ceiling would silently keep asserting against the
+    // stale value instead of tracking the real one.
+    const MESH_ID_ENCODING_CEILING: usize = crate::shader_constants::MESH_ID_STABLE_MASK as usize;
     const {
         assert!(MAX_INSTANCES <= MESH_ID_ENCODING_CEILING);
     }

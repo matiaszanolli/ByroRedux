@@ -762,8 +762,10 @@ impl ConsoleCommand for MatSetCommand {
         const USAGE: &str = "usage: mat.set <entity_id> <field> <value...>\n  \
             fields: metalness|roughness|alpha|glossiness|emissive_mult|specular_strength|\
             env_map_scale|ior|subsurface|sheen|sheen_tint|anisotropic|\
-            translucency_transmissive_scale|translucency_turbulence (1 value), \
-            color|diffuse_color|emissive_color|specular_color|translucency_subsurface_color (3 values), \
+            translucency_transmissive_scale|translucency_turbulence|\
+            glass_refraction_scale|glass_blur_scale|glass_blur_scale_factor (1 value), \
+            color|diffuse_color|emissive_color|specular_color|translucency_subsurface_color|\
+            glass_fresnel_color (3 values), \
             material_kind|material_flags (1 int)";
         let mut parts = args.split_whitespace();
         let Some(id_str) = parts.next() else {
@@ -877,6 +879,18 @@ impl ConsoleCommand for MatSetCommand {
             "translucency_turbulence" | "translucency_turb" => {
                 set_scalar(&mut m.translucency_turbulence, &vals)
             }
+            // #4023 (REN-2026-09-06-D21-01) — the last four shader-consumed
+            // `GpuMaterial` scalars with no `mat.set` arm: `to_gpu_material`
+            // assigns all four verbatim and the shader reads them, but
+            // `cornell.rs`'s `glass()` constructor leaves them at
+            // `Material::default()` with no console path to sweep them. Same
+            // no-clamp treatment as `ior` above — these are authored blend
+            // factors / a refractive scale with no single valid range the
+            // console can enforce; `floats`'s finite check is the guard.
+            "glass_refraction_scale" => set_scalar(&mut m.glass_refraction_scale, &vals),
+            "glass_blur_scale" => set_scalar(&mut m.glass_blur_scale, &vals),
+            "glass_blur_scale_factor" => set_scalar(&mut m.glass_blur_scale_factor, &vals),
+            "glass_fresnel_color" => set_vec3(&mut m.glass_fresnel_color, &vals),
             "color" | "diffuse_color" | "diffuse" => set_vec3(&mut m.diffuse_color, &vals),
             "emissive_color" => set_vec3(&mut m.emissive_color, &vals),
             "specular_color" => set_vec3(&mut m.specular_color, &vals),
@@ -1185,5 +1199,51 @@ mod mat_set_tests {
         let out = MatSetCommand.execute(&world, &format!("{e} ior NaN"));
         assert!(out.lines.join("\n").contains("not finite"));
         assert_eq!(world.query::<Material>().unwrap().get(e).unwrap().ior, 0.25);
+    }
+
+    /// Regression for #4023: the Cornell harness's `glass()` constructor sets
+    /// only `diffuse_color`/`material_kind`/`alpha`/roughness/metalness/`ior`,
+    /// leaving the four shader-consumed `glass_*` scalars at
+    /// `Material::default()` with no console arm to reach them. `to_gpu_material`
+    /// reads all four verbatim, so a glass-path bisect needs `mat.set` to be
+    /// able to sweep them.
+    #[test]
+    fn glass_scalars_and_fresnel_color_are_reachable_and_unclamped() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
+
+        for (field, input, expected) in [
+            ("glass_refraction_scale", "0.85", 0.85_f32),
+            ("glass_blur_scale", "2.5", 2.5_f32),
+            ("glass_blur_scale_factor", "0.0", 0.0_f32),
+        ] {
+            let out = MatSetCommand.execute(&world, &format!("{e} {field} {input}"));
+            assert!(
+                out.lines.join("\n").contains(&format!("{field} = {expected:.4}")),
+                "{field} {input} must round-trip unclamped"
+            );
+            let q = world.query::<Material>().unwrap();
+            let stored = match field {
+                "glass_refraction_scale" => q.get(e).unwrap().glass_refraction_scale,
+                "glass_blur_scale" => q.get(e).unwrap().glass_blur_scale,
+                _ => q.get(e).unwrap().glass_blur_scale_factor,
+            };
+            assert_eq!(stored, expected, "{field} {input} was clamped or dropped");
+        }
+
+        MatSetCommand.execute(&world, &format!("{e} glass_fresnel_color 0.2 0.4 0.6"));
+        assert_eq!(
+            world.query::<Material>().unwrap().get(e).unwrap().glass_fresnel_color,
+            [0.2, 0.4, 0.6]
+        );
+
+        // Same non-finite guard every other scalar arm gets, via `floats`.
+        let out = MatSetCommand.execute(&world, &format!("{e} glass_refraction_scale NaN"));
+        assert!(out.lines.join("\n").contains("not finite"));
+        assert_eq!(
+            world.query::<Material>().unwrap().get(e).unwrap().glass_refraction_scale,
+            0.85
+        );
     }
 }
