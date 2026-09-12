@@ -157,7 +157,18 @@ fn parse_cell_group_inner(
                 2 | 3 => {
                     parse_cell_group_inner(reader, sub_end, cells, game, depth + 1)?;
                 }
-                // Cell children groups (6=temporary, 8=persistent, 9=visible distant).
+                // Cell children groups. #4169 — the legend here used to
+                // read "6=temporary, 8=persistent, 9=visible distant",
+                // which is wrong on all three counts. 6 is the *container*
+                // (`Cell Children`) and holds no records of its own; the
+                // membership types nest inside it: 8 = Persistent,
+                // 9 = Temporary, 10 = Visible Distant. The census backs the
+                // 8/9 ordering directly — type 9 is where LAND, PGRD/NAVM
+                // and the bulk of the REFRs live (868 710 on Oblivion,
+                // 1 182 654 on FO4), type 8 the far smaller resident set.
+                //
+                // 8 and 9 stay in this arm only to tolerate a flattened
+                // non-vanilla plugin; no shipped master puts them here.
                 6 | 8 | 9 => {
                     if let Some(ref key) = current_cell {
                         let mut refs = Vec::new();
@@ -708,11 +719,26 @@ fn parse_refr_group_inner(
     navmeshes: &mut Vec<NavmRecord>,
     pathgrids: &mut Vec<crate::esm::records::PathGridRecord>,
     deleted: &mut Vec<u32>,
-    // #3728 — the group-type (6/8/9) of the CELL/WRLD children group this
-    // whole call tree was entered under. Fixed for the entire recursion:
-    // any further-nested group inside a 6/8/9 body is still scoped to that
-    // same temporary/persistent/visible-distant membership, so this is
-    // threaded unchanged (unlike `depth`, which increments).
+    // #3728 / #4169 — the placement-membership group-type this call tree
+    // is currently inside. Re-derived at every nested 8/9/10 group, NOT
+    // threaded unchanged.
+    //
+    // #3728 introduced this parameter and threaded it constant, on the
+    // premise that a nested group inherits its parent's membership. That
+    // premise holds only if 8/9/10 can appear as *siblings* of the type-6
+    // container, and they never do. A parent→child GRUP census over the
+    // five shipped masters (2026-09-12) finds type 8/9/10 exclusively as
+    // children of type 6, and zero placement records directly inside a
+    // type 6:
+    //
+    //     Oblivion  6→8 1 791   6→9 33 766   6→10 11 134
+    //     FNV       6→8   388   6→9 29 854   6→10      0
+    //     SkyrimSE  6→8   620   6→9 16 478   6→10      0
+    //     FO4       6→8   533   6→9 38 273   6→10      0
+    //
+    // So the constant thread stamped `6` on every placement in every
+    // shipped master, discarding exactly the distinction #3728 was filed
+    // to record. Re-deriving is what makes the field mean anything.
     group_type: u8,
     depth: u32,
 ) -> Result<()> {
@@ -725,6 +751,21 @@ fn parse_refr_group_inner(
             else {
                 continue;
             };
+            // #4169 — 8 / 9 / 10 re-scope the placements beneath them;
+            // any other nested type (a stray 7, a modder's flattened
+            // shape) carries the current scope down unchanged.
+            //
+            // Only the *nested* position accepts 10. At the CELL/WRLD
+            // level a type-10 group is not cell children at all — on
+            // Skyrim and FO4 it is Quest Children (`Fallout4.esm`: 1 001
+            // type-10 groups, every one a direct child of a top-level
+            // type-0 QUST group wrapping DIAL/DLBR/SCEN + type-7 Topic
+            // Children). Inside a type-6 body the code is unambiguous, so
+            // this is the one place it can be read safely.
+            let nested_group_type = match sub.group_type {
+                8 | 9 | 10 => sub.group_type as u8,
+                _ => group_type,
+            };
             parse_refr_group_inner(
                 reader,
                 sub_end,
@@ -733,7 +774,7 @@ fn parse_refr_group_inner(
                 navmeshes,
                 pathgrids,
                 deleted,
-                group_type,
+                nested_group_type,
                 depth + 1,
             )?;
             continue;

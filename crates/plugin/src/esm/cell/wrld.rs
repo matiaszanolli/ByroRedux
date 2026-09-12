@@ -308,7 +308,12 @@ fn parse_wrld_children_inner(
                 // CELL now falls through to the guarded arm below and is
                 // skipped.
                 //
-                // Cell children (6=temporary, 8=persistent, 9=visible distant).
+                // Cell children. #4169 — corrected legend: 6 is the
+                // `Cell Children` *container* (no records of its own),
+                // and the membership types nest inside it (8 = Persistent,
+                // 9 = Temporary, 10 = Visible Distant). `parse_refr_group`
+                // re-derives the per-placement value during that descent;
+                // the value handed in here is only the entry scope.
                 6 | 8 | 9 => {
                     if let Some(cell_target) = current_cell {
                         let mut refs = Vec::new();

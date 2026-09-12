@@ -141,17 +141,29 @@ fn parse_interior_without_edid_uses_form_id_identity_and_keeps_children() {
     assert_eq!(parsed.references[0].form_id, actor_form_id);
 }
 
-/// Regression: #3728 (ESM-2026-08-30-D5-01) — a REFR's persistent (8) vs
-/// temporary (6) group membership must survive onto its `PlacedRef`, not be
-/// discarded at parse time. Builds one interior CELL with two children
-/// groups — a type-6 (temporary) and a type-8 (persistent) — each holding
-/// one REFR, and asserts the two resulting `PlacedRef`s carry the group
-/// type they actually came from, not a shared/collapsed value.
+/// Regression: #3728 (ESM-2026-08-30-D5-01), rebuilt under #4169 —
+/// a REFR's Persistent (8) / Temporary (9) / Visible Distant (10) group
+/// membership must survive onto its `PlacedRef`, not be discarded at parse
+/// time.
+///
+/// The original fixture built the three groups as *direct children of the
+/// CELL*, which is a shape that occurs zero times in shipped content: a
+/// parent→child GRUP census of Oblivion, FNV, Skyrim SE and Fallout 4
+/// finds 8/9/10 exclusively nested inside a type-6 `Cell Children`
+/// container, and no placement record directly inside a type 6. Because
+/// the walker only ever mis-stamped placements it reached *through* a
+/// type-6 container, the flat fixture exercised the one path the bug
+/// could not reach — it stayed green for the whole life of the defect
+/// while every placement in every real master was stamped `6`.
+///
+/// This fixture uses the real nesting, so the assertions below fail
+/// against the pre-#4169 walker.
 #[test]
 fn persistent_and_temporary_refrs_carry_distinct_group_type() {
     let cell_form_id: u32 = 0x00AB_CDEF;
     let temp_refr_form: u32 = 0x0000_1111;
     let persistent_refr_form: u32 = 0x0000_2222;
+    let distant_refr_form: u32 = 0x0000_3333;
 
     let mut cell_subs = Vec::new();
     cell_subs.extend_from_slice(b"DATA");
@@ -195,8 +207,12 @@ fn persistent_and_temporary_refrs_carry_distinct_group_type() {
         group
     };
 
-    cell.extend_from_slice(&wrap_child_group(6, &build_refr(temp_refr_form)));
-    cell.extend_from_slice(&wrap_child_group(8, &build_refr(persistent_refr_form)));
+    // The real topology: CELL → GRUP 6 → { GRUP 8, GRUP 9, GRUP 10 }.
+    let mut children = Vec::new();
+    children.extend_from_slice(&wrap_child_group(8, &build_refr(persistent_refr_form)));
+    children.extend_from_slice(&wrap_child_group(9, &build_refr(temp_refr_form)));
+    children.extend_from_slice(&wrap_child_group(10, &build_refr(distant_refr_form)));
+    cell.extend_from_slice(&wrap_child_group(6, &children));
 
     let mut reader = super::super::super::reader::EsmReader::with_variant(
         &cell,
@@ -212,23 +228,44 @@ fn persistent_and_temporary_refrs_carry_distinct_group_type() {
     .unwrap();
 
     let parsed = cells.get("cell_00abcdef").expect("FormID fallback key");
-    assert_eq!(parsed.references.len(), 2);
+    assert_eq!(parsed.references.len(), 3);
 
-    let temp = parsed
-        .references
-        .iter()
-        .find(|r| r.form_id == temp_refr_form)
-        .expect("temporary REFR must be present");
-    assert_eq!(temp.group_type, 6, "temporary REFR must carry group_type 6");
+    let group_of = |form_id: u32| -> u8 {
+        parsed
+            .references
+            .iter()
+            .find(|r| r.form_id == form_id)
+            .unwrap_or_else(|| panic!("REFR 0x{form_id:08X} must be present"))
+            .group_type
+    };
 
-    let persistent = parsed
-        .references
-        .iter()
-        .find(|r| r.form_id == persistent_refr_form)
-        .expect("persistent REFR must be present");
     assert_eq!(
-        persistent.group_type, 8,
-        "persistent REFR must carry group_type 8, not the temporary group's value"
+        group_of(persistent_refr_form),
+        8,
+        "persistent REFR must carry group_type 8"
+    );
+    assert_eq!(
+        group_of(temp_refr_form),
+        9,
+        "temporary REFR must carry group_type 9"
+    );
+    assert_eq!(
+        group_of(distant_refr_form),
+        10,
+        "visible-distant REFR must carry group_type 10"
+    );
+
+    // The container type must never survive onto a placement. This is the
+    // assertion the pre-#4169 walker fails on all three: it stamped the
+    // outer container's 6 on everything it reached.
+    assert!(
+        parsed.references.iter().all(|r| r.group_type != 6),
+        "group_type 6 is the Cell Children container, not a membership value: {:?}",
+        parsed
+            .references
+            .iter()
+            .map(|r| (r.form_id, r.group_type))
+            .collect::<Vec<_>>()
     );
 }
 

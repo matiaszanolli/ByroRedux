@@ -318,8 +318,11 @@ pub struct CellData {
     /// cells. #1188.
     pub absorbed_refs: std::collections::HashSet<u32>,
     /// Per-cell navmesh records (`NAVM`) collected from the cell's
-    /// `Cell Persistent Children` (group_type 8) and temporary children
-    /// (6) GRUPs. NAVMs never appear at top level in vanilla Bethesda
+    /// `Cell Persistent Children` (group_type 8) and `Cell Temporary
+    /// Children` (group_type 9) GRUPs — both reached through the type-6
+    /// `Cell Children` container, never as its siblings (#4169). In the
+    /// shipped masters every authored NAVM is in fact a type-9 child
+    /// (Skyrim 15 966, FO4 7 894, FNV 4 771; zero under type 8). NAVMs never appear at top level in vanilla Bethesda
     /// masters (`parse_esm`'s top-level dispatch arm exists for non-
     /// vanilla flatten-out mods only) — every authored NAVM nests
     /// inside one of these child GRUPs. The records here populate
@@ -389,9 +392,19 @@ pub struct PlacedRef {
     pub form_id: u32,
     pub base_form_id: u32,
     /// The ESM group-type this placement's REFR/ACHR/ACRE record was found
-    /// directly under: `6` = temporary, `8` = persistent, `9` = visible
-    /// distant (the standard CELL/WRLD children group-type codes). `0xFF`
-    /// on legacy fixtures/tests that pre-date this field and don't care.
+    /// directly under: `8` = Cell Persistent Children, `9` = Cell
+    /// Temporary Children, `10` = Cell Visible Distant Children. `0xFF` on
+    /// legacy fixtures/tests that pre-date this field and don't care.
+    ///
+    /// `6` (`Cell Children`) is the *container* and is not a membership
+    /// value — it should never reach a parsed placement. #4169: it did,
+    /// for every placement in every shipped master, because the walker
+    /// captured the outer container's type once and threaded it through
+    /// its own recursion without re-reading the nested group headers. The
+    /// legend on this field said `6 = temporary` and agreed with the bug,
+    /// so both read as intentional. A parent→child GRUP census over the
+    /// five shipped masters finds 8/9/10 exclusively *inside* a type 6 and
+    /// never beside it, and zero records directly inside a type 6.
     ///
     /// Not consumed anywhere yet — the engine's only "persistent" concept
     /// today is the worldspace-level persistent CELL
