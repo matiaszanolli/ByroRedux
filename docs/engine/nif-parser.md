@@ -17,7 +17,7 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 
 | | |
 |---|---|
-| Dispatch table       | hand-written `match type_name` in [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) `parse_block_inner` — **the live arm count is the source of truth; count fresh, this figure drifts.** ~248 top-level arms covering ~315 distinct block-type-name literals (2026-07-18 — a naive `grep -c '=>'` over the same range returns a higher number since it also counts arms in two small nested `match` blocks used internally to re-derive `&'static str`s; don't recount that way). |
+| Dispatch table       | hand-written `match type_name` in [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) `parse_block_inner` — **the live arm count is the source of truth; count fresh, this figure drifts.** 255 top-level arms (incl. the `_` fallback) covering 314 distinct block-type-name literals (2026-09-12 recount, #4162 — a naive `grep -c '=>'` over the same range returns a higher number since it also counts arms in four small nested `match` blocks used internally to re-derive `&'static str`s; don't recount that way). |
 | Game variants supported | 8 (Morrowind → Starfield) via the [`NifVariant`](../../crates/nif/src/version.rs) enum |
 | Tests (unit)         | ~738 in-crate `#[test]`s with synthetic byte streams (per-parser regressions + the 67-test `dispatch_tests` suite + per-category `*_tests.rs` siblings) |
 | Integration sweeps   | 7 games, 100% recoverable each ([`tests/parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs) + per-block-baseline / heap-bound / translation-completeness siblings) |
@@ -302,10 +302,11 @@ regression.
 
 Block types fall into a handful of families. The dispatch table in
 [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) `parse_block_inner`
-carries ~248 top-level match arms covering ~315 distinct type-name literals
-(2026-07-18 — verify the live count from source; it grows. Count top-level
-arms only — two small nested `match` blocks re-deriving `&'static str`s
-inflate a naive `grep -c '=>'` count). Coverage summary:
+carries 255 top-level match arms (incl. the `_` fallback) covering 314
+distinct type-name literals (2026-09-12 recount, #4162 — verify the live
+count from source; it grows. Count top-level arms only — four small nested
+`match` blocks re-deriving `&'static str`s inflate a naive `grep -c '=>'`
+count). Coverage summary:
 
 ### Nodes and geometry
 `NiNode`, `BSFadeNode`, `BSLeafAnimNode`, `BSTreeNode`, `BSMultiBoundNode`,
@@ -654,8 +655,8 @@ addressing every known critical / high-severity gap:
 Every audit fix comes with a `dispatch_tests` regression test that
 asserts exact stream consumption on a minimal Oblivion-shaped payload.
 At the time of the N26 closeout the dispatch table held 154 arms; it has
-since grown to 254 arms / 310 distinct type names through the FO4 / FO76 /
-Starfield coverage work below.
+since grown to 255 arms / 314 distinct type names (2026-09-12 recount,
+#4162) through the FO4 / FO76 / Starfield coverage work below.
 
 ## Per-game NIF coverage (Oblivion → Starfield)
 
@@ -671,7 +672,7 @@ them, Oblivion and FO76, were wrong in *direction*, not just stale):
 | Fallout NV | 100% (20 746) | 100% | reference title |
 | Skyrim SE | 100% (33 468) | 100% | BSTriShape packed-vertex format |
 | Fallout 4 | 100% vanilla (254 648 incl. third-party) | 100% | FaceGen truncation tail resolved (#1457) |
-| Fallout 76 | **98.18% clean (165 164 / 168 220)** | 100% | `SeventySix - GeneratedMeshes01.ba2` 95.03% clean, `GeneratedMeshes02.ba2` **0.00% clean** — CRC32 shader flag arrays parse, but the `GeneratedMeshes` tail is a known-open, deliberately un-baselined gap pending #3461. Do not read this row as 100%. |
+| Fallout 76 | **100% clean** (was 98.18%, 165 164 / 168 220) | 100% | The `GeneratedMeshes` tail's gap — `BSDistantObjectExtraData` had no dispatch arm, 112,716 `NiUnknown` blocks across `SeventySix - GeneratedMeshes01/02.ba2` — was closed by #3461 (2026-09-02). This row otherwise predates the 2026-08-30 refresh date above it; see [Game Compatibility](game-compatibility.md) for the current live figure (58 469 files, 100% clean at last measurement). |
 | Starfield | 99.98% clean (120 836) | 100% | BSGeometry / SkinAttach / BoneTranslations dispatch (#708, #754 BSWeakReferenceNode); residual truncation tail tracked at #2105/#3524 |
 | **Cumulative swept** | **624 702** (was 184 886 pre-widening) | — | full mesh-archive sweeps, per-game counts in [Game Compatibility](game-compatibility.md) |
 

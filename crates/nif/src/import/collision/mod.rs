@@ -89,6 +89,16 @@ pub struct CollisionAuthoringSummary {
     pub classic: u32,
     pub new_physics: u32,
     pub phantom: u32,
+    /// Count of `BhkPlaneShape` blocks present anywhere in the scene (#4163).
+    ///
+    /// A different axis from the three fields above — those classify the
+    /// collision-*object* wrapper, this counts a *shape* type that parses
+    /// fully but `resolve_shape_inner` deliberately maps to `None` (no
+    /// half-space `CollisionShape` variant exists; see that function's
+    /// `BhkPlaneShape` arm). Before this field, "no plane shape in the
+    /// scene" and "one is present and its collision was intentionally
+    /// dropped" were both invisible zeros — nothing distinguished them.
+    pub plane_shapes: u32,
 }
 
 impl CollisionAuthoringSummary {
@@ -130,6 +140,12 @@ pub fn summarize_collision_authoring(scene: &NifScene) -> CollisionAuthoringSumm
     let mut summary = CollisionAuthoringSummary::default();
     for block in &scene.blocks {
         summary.record(classify_collision_block(block.as_ref()));
+        // #4163 — measured alongside the collision-object census above so
+        // "BhkPlaneShape present and dropped" is distinguishable from
+        // "none present" without a second scan of the scene.
+        if block.as_any().is::<BhkPlaneShape>() {
+            summary.plane_shapes += 1;
+        }
     }
     summary
 }
@@ -768,7 +784,7 @@ mod dispatch_tests {
     //! trimesh fallback.
     use super::*;
     use crate::blocks::collision::{
-        BhkCollisionObject, BhkNPCollisionObject, BhkPCollisionObject, BhkRigidBody,
+        BhkCollisionObject, BhkNPCollisionObject, BhkPCollisionObject, BhkPlaneShape, BhkRigidBody,
         BhkSphereShape, BhkSystemBinary,
     };
     use crate::blocks::NiObject;
@@ -899,7 +915,45 @@ mod dispatch_tests {
         assert_eq!(summary.classic, 1);
         assert_eq!(summary.new_physics, 2);
         assert_eq!(summary.phantom, 1);
+        assert_eq!(
+            summary.plane_shapes, 0,
+            "no BhkPlaneShape in this scene — the counter must read 0, not \
+             be indistinguishable from an untracked absence"
+        );
         assert!(summary.needs_packed_havok_fallback());
+    }
+
+    /// Regression for #4163 — `BhkPlaneShape` parses fully but
+    /// `resolve_shape` deliberately returns `None` for it (no half-space
+    /// `CollisionShape` variant). Pre-fix nothing distinguished "no plane
+    /// shape in the scene" from "one is present and its collision was
+    /// intentionally dropped" — both read as zero. Pins both halves: the
+    /// summary counts the block, and the design decision (`None`) still
+    /// holds.
+    #[test]
+    fn plane_shape_is_counted_but_resolve_shape_still_drops_it() {
+        let mut scene = empty_scene();
+        scene.blocks.push(Box::new(BhkPlaneShape {
+            material: 0,
+            plane_normal: [0.0, 0.0, 1.0],
+            plane_constant: 0.0,
+            aabb_half_extents: [10.0, 10.0, 1.0, 0.0],
+            aabb_center: [0.0, 0.0, 0.0, 0.0],
+        })); // [0]
+
+        let summary = summarize_collision_authoring(&scene);
+        assert_eq!(
+            summary.plane_shapes, 1,
+            "the BhkPlaneShape block must be counted"
+        );
+
+        let resolved = resolve_shape(&scene, BlockRef(0u32), &mut HashSet::new());
+        assert!(
+            resolved.is_none(),
+            "resolve_shape must still map BhkPlaneShape to None (no half-space \
+             CollisionShape variant) — this test exists so a future change to \
+             that arm is caught by an assertion, not silently drifting"
+        );
     }
 
     #[test]

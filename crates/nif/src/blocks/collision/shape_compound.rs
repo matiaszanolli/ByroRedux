@@ -172,7 +172,12 @@ impl BhkConvexListShape {
         for _ in 0..num_sub_shapes {
             sub_shapes.push(stream.read_block_ref()?);
         }
-        let material = stream.read_u32_le()?;
+        // #4164 — use the shared helper like every sibling shape parser
+        // in this file, instead of a raw `read_u32_le()`. Zero behavioral
+        // change today (this block type's version scope never reaches the
+        // helper's pre-10.0.1.2 Unknown-Int gate), but keeps this parser
+        // from silently diverging if that gate's range ever moves.
+        let material = read_havok_material(stream)?;
         let radius = stream.read_f32_le()?;
         let _unknown_int_1 = stream.read_u32_le()?;
         let _unknown_float_1 = stream.read_f32_le()?;
