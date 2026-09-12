@@ -193,6 +193,18 @@ pub fn read_mesh_path(data: &[u8]) -> Result<String, String> {
 pub fn read_lstring_or_zstring(data: &[u8]) -> String {
     if is_localized_plugin() && data.len() == std::mem::size_of::<u32>() {
         let id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        // #4072 (ESM-2026-09-09-D6-07) — id 0 is the authored "no string"
+        // convention (mirrors `remap_fid`'s `raw == 0` null convention
+        // below), never a real table entry: `skyrim_english`/`fallout4_en`
+        // both start at id `0x1`. Without this guard, `resolve_lstring(0)`
+        // always misses and synthesizes the placeholder `<lstring
+        // 0x00000000>` — indistinguishable from a genuine unresolved id,
+        // and it poisons every `.is_empty()` check downstream (a
+        // description field the plugin says is empty reads as non-empty
+        // placeholder text instead).
+        if id == 0 {
+            return String::new();
+        }
         // Resolve against the active StringTableSet first (#989).
         // Falls back to the placeholder when no table is installed or
         // the ID is absent from all three companion files.
@@ -575,6 +587,21 @@ mod tests {
         set_localized_plugin(true);
         let data = [0x45u8, 0x23, 0x01, 0x00]; // u32 LE = 0x00012345
         assert_eq!(read_lstring_or_zstring(&data), "<lstring 0x00012345>");
+        set_localized_plugin(false);
+    }
+
+    /// #4072 (ESM-2026-09-09-D6-07) — id 0 is the authored "no string"
+    /// convention (no companion table has an entry at 0; both
+    /// `skyrim_english` and `fallout4_en` start at `0x1`), not a genuine
+    /// unresolved reference. It must decode to an empty string, never the
+    /// `<lstring 0x00000000>` placeholder — that placeholder is
+    /// indistinguishable from a real miss and poisons `.is_empty()` checks
+    /// on every field that legitimately has no description/text authored.
+    #[test]
+    fn read_lstring_or_zstring_localized_zero_id_is_empty_not_placeholder() {
+        set_localized_plugin(true);
+        let data = [0x00u8, 0x00, 0x00, 0x00];
+        assert_eq!(read_lstring_or_zstring(&data), "");
         set_localized_plugin(false);
     }
 

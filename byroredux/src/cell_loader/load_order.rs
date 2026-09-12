@@ -397,6 +397,13 @@ pub(super) fn build_remap_for_plugin(
 /// `StringTableSet::load`. The guard MUST be held by the caller across the
 /// record walk so `resolve_lstring` sees the tables, then dropped before
 /// the next plugin.
+/// #4073 — true when a plugin resolved none of the three companion string
+/// tables. Extracted as a pure predicate so the "should we warn" decision
+/// is unit-testable without a live logger.
+fn all_string_tables_missing(tables: &esm::StringTableSet) -> bool {
+    tables.strings.is_none() && tables.dlstrings.is_none() && tables.ilstrings.is_none()
+}
+
 fn install_strings_guard<F>(
     localized: bool,
     plugin_path: &str,
@@ -409,10 +416,29 @@ where
     if !localized {
         return None;
     }
-    let plugin_path = Path::new(plugin_path);
-    let tables = esm::StringTableSet::load_with_archive(plugin_path, language, |relative_path| {
-        read_archive(plugin_path, relative_path)
-    });
+    let plugin_path_ref = Path::new(plugin_path);
+    let tables =
+        esm::StringTableSet::load_with_archive(plugin_path_ref, language, |relative_path| {
+            read_archive(plugin_path_ref, relative_path)
+        });
+    // #4073 (ESM-2026-09-09-D6-02) — a plugin that resolves ZERO string
+    // tables (loose miss, then archive miss, on all three extensions) is
+    // otherwise silent: `load_file`'s absent-file arm doesn't log (only a
+    // parse failure does), and the empty `StringTableSet` is installed
+    // unconditionally below. Every subsequent `read_lstring_or_zstring`
+    // call then quietly hands back a placeholder, indistinguishable from
+    // normal operation in the logs — precisely what makes a whole-game
+    // localization failure invisible (this is also why a #4072-class "id 0
+    // means no string" bug can hide for a whole audit cycle). One line per
+    // plugin, not per-form: the per-field miss path stays silent by design.
+    if all_string_tables_missing(&tables) {
+        log::warn!(
+            "{plugin_path}: localized plugin resolved NO string tables for language \
+             `{language}` (looked for .STRINGS/.DLSTRINGS/.ILSTRINGS as loose files under \
+             Strings/, then in archives) — every lstring field will read as a \
+             `<lstring 0x…>` placeholder"
+        );
+    }
     Some(esm::StringsTableGuard::new(tables))
 }
 
@@ -643,6 +669,33 @@ fn allocate_global_slot(
 mod tests {
     use super::*;
     use std::fs;
+
+    /// Regression for #4073 (ESM-2026-09-09-D6-02). `install_strings_guard`
+    /// used to have no way to tell "resolved zero tables" apart from normal
+    /// operation in the logs. Extracted as a pure predicate so this is
+    /// testable without a live logger (the codebase avoids installing a
+    /// global `log::Log` inside a shared unit-test binary — see
+    /// `crates/nif/tests/oblivion_stream_drift_corpus.rs`'s own comment on
+    /// why that's only safe in a single-test integration binary).
+    #[test]
+    fn all_string_tables_missing_is_true_only_when_all_three_are_none() {
+        assert!(
+            all_string_tables_missing(&esm::StringTableSet::default()),
+            "a fully-empty StringTableSet must be reported as all-missing"
+        );
+
+        let one_table = esm::StringsTable::parse(&[0u8; 8], false)
+            .expect("an empty (count=0) STRINGS payload must parse");
+        assert!(
+            !all_string_tables_missing(&esm::StringTableSet {
+                strings: Some(one_table),
+                dlstrings: None,
+                ilstrings: None,
+            }),
+            "even one resolved table must NOT count as all-missing — a mod \
+             that ships only .STRINGS is normal, not a localization failure"
+        );
+    }
 
     #[test]
     fn global_form_resolver_preserves_regular_plugin_identity() {

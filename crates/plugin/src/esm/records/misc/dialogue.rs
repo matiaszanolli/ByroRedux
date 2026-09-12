@@ -231,6 +231,26 @@ pub fn parse_info(
                 }
                 current_response = Some(segment);
             }
+            // #4068 (ESM-2026-09-09-D4-01) — FO4 and Starfield rename the
+            // per-segment opener from `TRDT` to `TRDA` (20-byte payload on
+            // FO4, 12-byte on Starfield — two different layouts, and
+            // deliberately NOT decoded here: no cited xEdit/UESP source for
+            // either, and guessing one is exactly what `feedback_no_guessing`
+            // forbids). Without this arm, a TRDA-only record never opens a
+            // fresh segment, so every `NAM1`/`NAM2` keeps assigning into the
+            // same lazily-created one for the whole record — the exact
+            // pre-#3616 collapse-to-one-segment bug, just still live on two
+            // newer titles. The segment-SPLITTING half of the fix needs no
+            // layout knowledge at all: finalize whatever's open, start a
+            // fresh empty one. `emotion_type`/`response_number` stay at
+            // `ResponseSegment::default()` for a TRDA-opened segment until a
+            // cited layout lands.
+            b"TRDA" => {
+                if let Some(finished) = current_response.take() {
+                    out.responses.push(finished);
+                }
+                current_response = Some(ResponseSegment::default());
+            }
             b"TCLT" if sub.data.len() >= 4 => {
                 if let Ok(t) = SubReader::new(&sub.data).u32() {
                     let remapped = remap.as_ref().map_or(t, |r| r.remap(t));
@@ -731,6 +751,41 @@ mod tests {
         assert_eq!(
             info.response_number, 0,
             "first segment's number, not the last"
+        );
+    }
+
+    /// #4068 (ESM-2026-09-09-D4-01) — FO4/Starfield's shape: `TRDA` opens
+    /// each segment instead of `TRDT`. Pre-fix, `TRDA` had no arm at all, so
+    /// every `NAM1` assigned into the same lazily-created segment for the
+    /// whole record — exactly the pre-#3616 collapse, on the two newest
+    /// titles this time. `TRDA`'s own payload is deliberately NOT decoded
+    /// (no cited layout for either game), so this only pins that segments
+    /// split correctly; emotion/response_number stay at their defaults.
+    #[test]
+    fn parse_info_trda_opens_a_new_segment_like_trdt() {
+        let subs = vec![
+            sub(b"TRDA", &[0u8; 20]), // FO4 shape — payload untouched
+            sub(b"NAM1", b"First line.\0"),
+            sub(b"NAM2", b"cheerfully\0"),
+            sub(b"TRDA", &[0u8; 12]), // Starfield shape — different width
+            sub(b"NAM1", b"Second line.\0"),
+        ];
+        let info = parse_info(0x1234, &subs, &None);
+        assert_eq!(
+            info.responses.len(),
+            2,
+            "each TRDA must start a fresh segment, not collapse into one"
+        );
+        assert_eq!(info.responses[0].text, "First line.");
+        assert_eq!(info.responses[0].designer_notes, "cheerfully");
+        assert_eq!(info.responses[1].text, "Second line.");
+        assert_eq!(
+            info.responses[1].designer_notes, "",
+            "no leakage across a TRDA boundary"
+        );
+        assert_eq!(
+            info.response_text, "First line.\nSecond line.",
+            "flat convenience field must carry every segment, not just the last"
         );
     }
 

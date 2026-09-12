@@ -1398,6 +1398,28 @@ mod tests {
             "generic metadata duplicates typed record maps and must not inflate record totals",
         )];
 
+        // #4084 (ESM-2026-09-09-D7-09) — collections merged by hand in
+        // `merge_from` (`EsmIndex::merge_from`, below) rather than through
+        // `categories()`'s generic per-record-type row. Both of these are
+        // NOT `HashMap`s, so before this fix the field scan below (which
+        // only matched `: HashMap<`) never saw them at all: they passed
+        // this guard by being invisible to it, not by being accounted for.
+        // Naming the `merge_from` line each one is actually handled at is
+        // what makes that a checked claim instead of a comment nobody
+        // re-verifies.
+        const MANUALLY_MERGED: &[(&str, &str)] = &[
+            (
+                "deleted_record_metadata",
+                "merge_from — union of tombstoned FormIDs, pruning any record they \
+                 name out of every already-merged category table (index.rs:1010-1029)",
+            ),
+            (
+                "skipped_unconsumed_groups",
+                "merge_from — plain concatenation of unconsumed GRUP type tags \
+                 across plugins (index.rs:1041-1042)",
+            ),
+        ];
+
         const INDEX_RS: &str = include_str!("index.rs");
         let struct_start = INDEX_RS
             .find("pub struct EsmIndex {")
@@ -1408,11 +1430,22 @@ mod tests {
                 .expect("EsmIndex declaration is unterminated");
         let declaration = &INDEX_RS[struct_start..struct_end];
 
+        // Any field whose type carries a generic parameter — `HashMap<…>`,
+        // `HashSet<…>`, `BTreeMap<…>`, `Vec<…>`, or a newtype wrapping one —
+        // not just `HashMap` specifically. #4084's own evidence is that
+        // `EsmIndex` already has two non-`HashMap` collections
+        // (`deleted_record_metadata: HashSet<u32>`,
+        // `skipped_unconsumed_groups: Vec<[u8; 4]>`) that a `HashMap`-only
+        // scan is structurally blind to; a plain scalar field (`game:
+        // GameKind`, `cells: EsmCellIndex`) has no `<` and is correctly not
+        // a "collection that could silently lose entries" in the first
+        // place.
         let fields: Vec<&str> = declaration
             .lines()
             .map(str::trim)
             .filter_map(|line| line.strip_prefix("pub "))
-            .filter_map(|rest| rest.split_once(": HashMap<"))
+            .filter_map(|rest| rest.split_once(": "))
+            .filter(|(_, ty)| ty.contains('<'))
             .map(|(field, _)| field)
             .collect();
         assert!(
@@ -1466,12 +1499,32 @@ mod tests {
                 );
                 continue;
             }
+            if let Some((_, reason)) = MANUALLY_MERGED.iter().find(|(name, _)| *name == field) {
+                assert!(
+                    !reason.is_empty(),
+                    "`{field}` is listed as manually merged with an empty reason"
+                );
+                assert!(
+                    !counted.contains(&field),
+                    "`{field}` is listed as manually merged but the categories() \
+                     table also counts it — one of the two is stale"
+                );
+                assert!(
+                    INDEX_RS.contains(&format!("self.{field}")),
+                    "`{field}` is listed as manually merged, but `merge_from` no \
+                     longer references `self.{field}` anywhere — the hand-written \
+                     merge this field depends on may have been removed (#4084)"
+                );
+                continue;
+            }
             assert!(
                 counted.contains(&field),
-                "`EsmIndex::{field}` is a map but has no `categories()` row and \
-                 no recorded exclusion — `total()` and the end-of-parse census \
-                 under-report by its size, and the next reader cannot tell that \
-                 from a deliberate choice (#2990, following #1773 / #2907)"
+                "`EsmIndex::{field}` is a map but has no `categories()` row, no \
+                 recorded exclusion, and no MANUALLY_MERGED entry — `total()` and \
+                 the end-of-parse census under-report by its size, and the next \
+                 reader cannot tell that from a deliberate choice (#2990, \
+                 following #1773 / #2907, widened by #4084 to non-HashMap \
+                 collections)"
             );
         }
     }
