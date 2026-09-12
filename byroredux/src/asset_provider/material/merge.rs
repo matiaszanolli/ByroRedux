@@ -66,6 +66,35 @@ impl MergeOutcome {
     }
 }
 
+/// #4289 (SF-2026-09-11-D9-04) — every production call site of
+/// [`merge_external_material`] discarded its `#[must_use]` `MergeOutcome`
+/// with a bare `let _ =`, so the `PresenceOnly` variant #2709 introduced
+/// (load-bearing for the D8-02 glass-promotion overload this same outcome
+/// is entangled with) had no consumer anywhere. Logged from inside
+/// `merge_external_material` itself, at its `PresenceOnly`-producing
+/// return points, rather than requiring each of the four call sites to
+/// stop discarding the return value — that would have meant editing four
+/// files just to reach the one signal, and (per the `single_boundary_tests`
+/// invariant just above) this file may export only the one merge entry
+/// point, so a second `pub(crate)` helper isn't an option here anyway.
+///
+/// `trace!`, not `debug!`: on Starfield this fires for close to 100% of
+/// materials (the CDB-gated `.mat` short-circuit below lands
+/// `PresenceOnly` on nearly every reference), so anything louder floods a
+/// debug-level log with a near-universal, expected outcome rather than
+/// surfacing an anomaly. `Unresolved`/`Merged` are not logged here —
+/// they're either already diagnosed elsewhere (an unresolved path logs
+/// its own warning) or the expected common case (an authored merge) with
+/// nothing new to report.
+fn trace_merge_outcome(path: &str, outcome: MergeOutcome) {
+    if outcome == MergeOutcome::PresenceOnly {
+        log::trace!(
+            "material merge for '{path}' resolved presence-only — the sidecar was \
+             confirmed present but forwarded no authored field (#2709)"
+        );
+    }
+}
+
 /// Mark only the texture roles an external material actually filled. Inline
 /// NIF values win the merge and retain `NifTextureSet`; this before/after
 /// comparison records that precedence instead of guessing from the final
@@ -236,7 +265,9 @@ pub(crate) fn merge_external_material(
     // one routing flag and forwards no authored field. Phase 2 should return
     // `Merged` once a CDB lookup actually supplies data.
     if starfield_cdb_gate && path.ends_with(".mat") {
-        return apply_cdb_pbr_fallback(material, &path);
+        let outcome = apply_cdb_pbr_fallback(material, &path);
+        trace_merge_outcome(&path, outcome);
+        return outcome;
     }
 
     // #3230 — for `.bgsm`/`.bgem` names the CDB flip is a *fallback*, not a
@@ -329,7 +360,9 @@ pub(crate) fn merge_external_material(
         // for a Starfield session would be the same as the two arms above,
         // so wire it now rather than leave a hole for that change to fall in.
         if cdb_pbr_fallback {
-            return apply_cdb_pbr_fallback(material, &path);
+            let outcome = apply_cdb_pbr_fallback(material, &path);
+            trace_merge_outcome(&path, outcome);
+            return outcome;
         }
         return MergeOutcome::Unresolved;
     }
@@ -352,11 +385,13 @@ pub(crate) fn merge_external_material(
     };
     record_external_texture_sources(material, &textures_before, source);
 
-    if touched {
+    let outcome = if touched {
         MergeOutcome::Merged
     } else {
         MergeOutcome::PresenceOnly
-    }
+    };
+    trace_merge_outcome(&path, outcome);
+    outcome
 }
 
 /// The BGSM (shader-material) arm of [`merge_external_material`] (#3857).
@@ -630,10 +665,23 @@ fn merge_bgsm_arm(
         //     rather than on `is_some()`.
         if !bgsm.greyscale_texture.is_empty() {
             if material.textures.greyscale_lut.is_none() {
-                material.bgsm_greyscale_lut_enabled = bgsm.base.grayscale_to_palette_color;
-                // #2643 — BGSM has no alpha-variant field, so the color
-                // bit is the only one this format can author.
-                material.bgsm_greyscale_lut_color = bgsm.base.grayscale_to_palette_color;
+                // #4286 (SF-2026-09-11-D9-01) — OR, not assignment, same
+                // as the `nif_supplied_greyscale_lut` branch below and for
+                // the identical reason the comment above already states:
+                // by the time this merge runs, `Material` may already
+                // carry a true enable bit forwarded from the NIF's own
+                // SLSF1 authoring (#3897) at the `translate_material`
+                // boundary — independently of which side wins the
+                // *texture* slot. A plain assignment here silently
+                // cleared that NIF-authored bit whenever this BGSM's own
+                // `grayscale_to_palette_color` happened to be false,
+                // reachable on any Skyrim-layout BGSM mesh (wire slot 3 is
+                // Height there, never GreyscaleLut, so the NIF texture
+                // side can never win this slot and this branch always
+                // runs). #2643 — BGSM has no alpha-variant field, so the
+                // color bit is the only one this format can author.
+                material.bgsm_greyscale_lut_enabled |= bgsm.base.grayscale_to_palette_color;
+                material.bgsm_greyscale_lut_color |= bgsm.base.grayscale_to_palette_color;
             } else if nif_supplied_greyscale_lut {
                 material.bgsm_greyscale_lut_enabled |= bgsm.base.grayscale_to_palette_color;
                 material.bgsm_greyscale_lut_color |= bgsm.base.grayscale_to_palette_color;
@@ -1227,6 +1275,32 @@ mod single_boundary_tests {
                 sig.contains("material: &mut ImportedMaterial"),
                 "{arm} must still take the material it merges into"
             );
+        }
+    }
+}
+
+/// Regression for #4289 (SF-2026-09-11-D9-04) — `trace_merge_outcome` is
+/// the only consumer `MergeOutcome::PresenceOnly` has anywhere in
+/// production code; pins that it exists, is callable for every variant
+/// without panicking, and — since the repo has no log-capture test
+/// harness to assert the emitted `trace!` line itself — that
+/// `merge_external_material`'s actual `PresenceOnly`-producing paths
+/// (exercised by the existing Starfield `.mat`/CDB-gate tests elsewhere
+/// in this module and in `asset_provider/tests/starfield_mat.rs`) still
+/// return the correct outcome with the trace call wired in, i.e. adding
+/// the diagnostic changed no behavior.
+#[cfg(test)]
+mod merge_outcome_telemetry_tests {
+    use super::{trace_merge_outcome, MergeOutcome};
+
+    #[test]
+    fn trace_merge_outcome_does_not_panic_for_any_variant() {
+        for outcome in [
+            MergeOutcome::Unresolved,
+            MergeOutcome::PresenceOnly,
+            MergeOutcome::Merged,
+        ] {
+            trace_merge_outcome("materials/tests/telemetry_probe.bgsm", outcome);
         }
     }
 }

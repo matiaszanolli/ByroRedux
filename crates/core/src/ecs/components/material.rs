@@ -1305,8 +1305,15 @@ impl Material {
     /// `if is_nan()` guard below is skipped and only the final clamp runs.
     ///
     /// For **BGSM/BGEM** content the authored scalars also arrive as `Some`.
-    /// The classifier arm is a sentinel-backstop for future non-pre-classified
-    /// sources only.
+    ///
+    /// #4284 (SF-2026-09-11-D8-03) — the classifier arm below is NOT
+    /// merely a future-proofing backstop: #2707 made it live today for
+    /// Starfield's material-reference-stub case (measured at 97.9% of
+    /// Starfield meshes in a sampled corpus), which leaves
+    /// `metalness`/`roughness` NaN with no pre-classified override to
+    /// seed from. Do not remove this arm as "dead code" — doing so would
+    /// ship raw NaN into `GpuMaterial` for the majority of Starfield
+    /// content.
     ///
     /// Either way, after this returns the renderer reads `metalness` /
     /// `roughness` directly — no render-time fallback. Every material

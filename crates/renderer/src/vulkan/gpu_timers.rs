@@ -2,7 +2,9 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, 32 TIMESTAMP queries each:
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` (34) TIMESTAMP queries
+//! each — 17 start/end brackets, bumped from 32/16 by #4052's
+//! ground-cover-bench bracket (#4210):
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -438,7 +440,7 @@ impl GpuPerFrameTimers {
     /// the per-frame command buffer.
     ///
     /// The first time a slot is read its `active_bits` are zero —
-    /// nothing has been written yet — so all sixteen ms fields stay
+    /// nothing has been written yet — so all seventeen ms fields stay
     /// at the default `0.0` until the second cycle. From then on
     /// the snapshot is whatever the previous cycle wrote, with
     /// inactive brackets reading `0.0`.
@@ -446,9 +448,9 @@ impl GpuPerFrameTimers {
         let pool = self.pools[frame];
         let bits = self.active_bits[frame];
         // #2041 / PERF-D9-02 — one batched read for the whole pool instead
-        // of up to sixteen individual per-bracket `get_query_pool_results`
+        // of up to seventeen individual per-bracket `get_query_pool_results`
         // calls (one driver round-trip each). Deliberately WITHOUT
-        // `WAIT`: WAIT-reading the full 32-query pool when only a subset
+        // `WAIT`: WAIT-reading the full 34-query pool when only a subset
         // was written blocks forever on the unwritten queries (Vulkan
         // spec — VK_QUERY_RESULT_WAIT_BIT blocks until ALL queried
         // results are available; reset-but-never-written queries never
@@ -1213,5 +1215,47 @@ mod tests {
         assert!(snap.depth_history_copy_active);
         assert_eq!(snap.depth_history_copy_ms, 1_250.0 * 0.2);
         assert!(!snap.svgf_active);
+    }
+
+    /// Regression for #4210 / PERF-D9-2026-09-11-03 — the module doc's
+    /// bracket table (the `| Slot | Bracket |` markdown table at the top
+    /// of this file) is unstructured prose with nothing else forcing it
+    /// to track `QUERIES_PER_FRAME`; #4052 bumped the constant to 34 but
+    /// four separate prose mentions elsewhere in the file kept saying
+    /// "32"/"sixteen" until this fix. Counts the table's own numbered
+    /// slot rows (`| N |`, `N` in `0..QUERIES_PER_FRAME`) so a future
+    /// bracket addition that updates the constant but not the table (or
+    /// vice versa) fails loudly here instead of silently drifting again.
+    #[test]
+    fn doc_table_slot_count_matches_queries_per_frame() {
+        let src = include_str!("gpu_timers.rs");
+        // Every data row of the module-doc `| Slot | Bracket |` table looks
+        // like `//! | <N>    | <description> |` with a bare integer first
+        // cell; the header/separator rows don't parse as one, so this
+        // naturally skips them.
+        let slot_numbers: Vec<u32> = src
+            .lines()
+            .filter_map(|line| {
+                let line = line.strip_prefix("//! |")?;
+                let first_cell = line.split('|').next()?.trim();
+                first_cell.parse::<u32>().ok()
+            })
+            .collect();
+        assert_eq!(
+            slot_numbers.len(),
+            QUERIES_PER_FRAME as usize,
+            "the module doc's bracket table must have exactly one row per \
+             QUERIES_PER_FRAME slot — found {} numbered rows, expected {}. \
+             A future bracket addition/removal must update the table and \
+             this constant together.",
+            slot_numbers.len(),
+            QUERIES_PER_FRAME
+        );
+        let expected: Vec<u32> = (0..QUERIES_PER_FRAME).collect();
+        assert_eq!(
+            slot_numbers, expected,
+            "the module doc's bracket table rows must be numbered 0..QUERIES_PER_FRAME \
+             with none skipped or duplicated"
+        );
     }
 }

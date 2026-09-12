@@ -2218,6 +2218,52 @@ fn bgsm_winning_the_slot_still_authors_the_enable_bit_off() {
     );
 }
 
+/// #4286 (SF-2026-09-11-D9-01) — the third case #3898 didn't cover: the
+/// BGSM wins the greyscale-LUT *texture* slot (`is_none()` branch, the
+/// only reachable branch on any Skyrim-layout mesh, where wire slot 3 is
+/// Height, never GreyscaleLut), but the NIF's own SLSF1 forwarding (#3897)
+/// already set the enable bit true on `Material` before this merge runs.
+/// A silent, unauthored-off BGSM must not clear that bit — the identical
+/// "neither source may silently disable the other's remap" invariant
+/// `bgsm_without_palette_bit_does_not_disable_a_nif_enabled_remap` already
+/// pins for the sibling `nif_supplied_greyscale_lut` branch.
+#[test]
+fn bgsm_winning_the_slot_does_not_clear_a_nif_enabled_remap() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/bgsm_wins_slot_but_nif_enabled.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                greyscale_texture: "textures\\bgsm_palette.dds".into(),
+                base: byroredux_bgsm::BaseMaterial {
+                    grayscale_to_palette_color: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    // No NIF-supplied LUT (Skyrim-layout: slot 3 is Height) — the BGSM
+    // wins the texture role outright, taking the `is_none()` branch.
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    // As forwarded by `into_imported_material` from SLSF1 (#3897) before
+    // this merge runs.
+    mesh.material.bgsm_greyscale_lut_enabled = true;
+    mesh.material.bgsm_greyscale_lut_color = true;
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    assert!(
+        mesh.material.bgsm_greyscale_lut_enabled,
+        "a BGSM winning the texture slot with its own bit off must not silently \
+         clear a NIF-authored SLSF1 enable bit already on Material (#4286)"
+    );
+    assert!(mesh.material.bgsm_greyscale_lut_color);
+}
+
 // ── #3899 (FO4-2026-09-05-D2-02) — peek_magic cache tiers ──────────
 //
 // `peek_magic` used to go straight to `extract_from_archives`, i.e. a full
