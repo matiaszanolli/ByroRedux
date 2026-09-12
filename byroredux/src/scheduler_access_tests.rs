@@ -170,6 +170,12 @@ fn water_and_animation_parallel_accesses_are_complete() {
         ".reads_resource::<TotalTime>()",
         ".reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()",
         ".reads::<byroredux_core::ecs::components::water::WaterCurrentVolume>()",
+        // #3964 (PHYS-D6-2026-09-06-03) — #3492 added a `Ragdoll` read to
+        // both `apply_buoyancy_with_scratch` and `clear_stale_water_contacts`
+        // (a ragdolled actor's limbs need buoyancy contacts too) without
+        // updating this declaration; the fourth time this exact class of gap
+        // shipped on this system (#1787, #2676, PHYS-D3-2026-08-20-05).
+        ".reads::<byroredux_physics::Ragdoll>()",
     ] {
         assert!(
             physics.contains(needle),

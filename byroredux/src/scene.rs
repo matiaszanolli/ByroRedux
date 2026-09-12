@@ -679,6 +679,9 @@ fn plan_character_spawn(
                 max_distance: FLOOR_PROBE_CLEARANCE_BU + FLOOR_PROBE_REACH_BELOW_DOOR_BU,
                 min_walkable_normal_y: min_walkable_normal_y(controller),
                 authoring,
+                // #3965 — no player capsule exists yet at this boot-time
+                // spawn-probe path, so there is nothing to self-hit.
+                excluded_body: None,
             },
         );
     }

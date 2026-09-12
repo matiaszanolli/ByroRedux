@@ -494,6 +494,16 @@ pub struct SpawnCensusProbe {
     /// Cell-wide authoring totals; `None` when the caller has no NIF cache to
     /// sum (a synthetic World, or the loose-NIF path).
     pub authoring: Option<SpawnCensusAuthoring>,
+    /// #3965 (PHYS-D7-2026-09-06-01) — the body the re-sweep must exclude,
+    /// exactly as [`crate::world::PhysicsWorld::cast_ray_down`]'s doc
+    /// requires: mandatory whenever the origin can lie inside a body, e.g.
+    /// the player's own kinematic capsule. The boot-time caller
+    /// (`dump_spawn_collider_census`, before any capsule is spawned) passes
+    /// `None`; a live caller whose origin is the player's own position (the
+    /// `phys.census` console command) MUST resolve and pass
+    /// `Some(player_body)`, or the re-sweep can self-hit and report a
+    /// phantom `time_of_impact = 0` surface at the player's own capsule.
+    pub excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
 }
 
 /// Verdict of the unfiltered re-sweep run on the census path (#2874).
@@ -542,13 +552,32 @@ impl SpawnProbeVerdict {
 pub struct SpawnCensusEntry {
     pub body_type: &'static str,
     pub is_sensor: bool,
-    /// AABB centre Y — the "is there anything at floor height here?" number.
-    pub center_y: f32,
-    pub min_y: f32,
-    pub max_y: f32,
+    /// #3967 (PHYS-D7-2026-09-06-03) — the FULL 3-D AABB, not just its Y
+    /// range. The pre-fix `center_y`/`min_y`/`max_y` triple discarded the X
+    /// and Z extents `colliders_near_xz` already computes, so a collider
+    /// four times too wide in X/Z and correct in Y (the confirmed XSCL²
+    /// scale-drift class, PHYS-D1-2026-09-06-01) was byte-identical in this
+    /// entry to a correctly-scaled one.
+    pub aabb_min: [f32; 3],
+    pub aabb_max: [f32; 3],
     pub entity: Option<String>,
     pub form: Option<u32>,
     pub layer: Option<&'static str>,
+    /// #3967 — the owning placement's `GlobalTransform::scale`, so an
+    /// oversized/undersized collider has an expected-value reference to
+    /// compare against. `None` when the collider has no resolved owning
+    /// entity (an orphan, or the body-to-entity lookup missed).
+    pub scale: Option<f32>,
+}
+
+impl SpawnCensusEntry {
+    /// AABB centre Y — the "is there anything at floor height here?" number.
+    /// Kept as a method (not a stored field) now that the full AABB is
+    /// carried, so there's one source of truth instead of two numbers that
+    /// could disagree.
+    pub fn center_y(&self) -> f32 {
+        0.5 * (self.aabb_min[1] + self.aabb_max[1])
+    }
 }
 
 /// Tally of a census by parent body type, in the order the #2202
@@ -633,6 +662,7 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
         max_distance,
         min_walkable_normal_y,
         authoring,
+        excluded_body,
     } = probe;
     // Same lock-order discipline as `dump_awake_fallers` (#2136 / #3266):
     // snapshot each resource, drop its guard, then open ECS storages. No
@@ -648,7 +678,7 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
             capsule_half_height,
             capsule_radius,
             max_distance,
-            None,
+            excluded_body,
         );
         (
             nearby,
@@ -665,6 +695,12 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
     let layer_q = world.query::<RenderLayer>();
     let form_q = world.query::<FormIdComponent>();
     let physics_source_q = world.query::<PhysicsSourceForm>();
+    // #3967 — the entity's own placement scale, the expected-value reference
+    // an oversized/undersized collider has none of otherwise. Opened in the
+    // same guarded block as the other per-entity lookups above (already open
+    // before this fix; `GlobalTransform` is queried in the same read-only
+    // fashion `layer_q`/`form_q` are).
+    let transform_q = world.query::<GlobalTransform>();
     let unresolved_entries = nearby
         .iter()
         .map(|n| {
@@ -681,14 +717,16 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
                 SpawnCensusEntry {
                     body_type: n.body_type,
                     is_sensor: n.is_sensor,
-                    center_y: 0.5 * (n.aabb_min[1] + n.aabb_max[1]),
-                    min_y: n.aabb_min[1],
-                    max_y: n.aabb_max[1],
+                    aabb_min: n.aabb_min,
+                    aabb_max: n.aabb_max,
                     entity: entity.map(|e| e.to_string()),
                     form: None,
                     layer: entity
                         .and_then(|e| layer_q.as_ref().and_then(|q| q.get(e).copied()))
                         .map(render_layer_label),
+                    scale: entity
+                        .and_then(|e| transform_q.as_ref().and_then(|q| q.get(e).copied()))
+                        .map(|t| t.scale),
                 },
                 source_form,
             )
@@ -697,6 +735,7 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
     drop(layer_q);
     drop(form_q);
     drop(physics_source_q);
+    drop(transform_q);
 
     let pool = world.try_resource::<FormIdPool>();
     let entries = unresolved_entries
@@ -778,7 +817,8 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
     ));
     for e in entries.iter().take(SPAWN_CENSUS_DETAIL_CAP) {
         out.push(format!(
-            "  {}{} entity={} form={} layer={} y=[{:.0}, {:.0}] centre={:.0}",
+            "  {}{} entity={} form={} layer={} y=[{:.0}, {:.0}] centre={:.0} \
+             extent=[{:.0}, {:.0}, {:.0}] scale={}",
             e.body_type,
             if e.is_sensor { " (sensor)" } else { "" },
             e.entity.as_deref().unwrap_or("?"),
@@ -786,9 +826,19 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
                 .map(|id| format!("{id:#08X}"))
                 .unwrap_or_else(|| "?".into()),
             e.layer.unwrap_or("?"),
-            e.min_y,
-            e.max_y,
-            e.center_y,
+            e.aabb_min[1],
+            e.aabb_max[1],
+            e.center_y(),
+            // #3967 — the two thirds of the AABB the old y-only render line
+            // discarded. An oversized-in-X/Z collider (the confirmed XSCL²
+            // scale-drift class, PHYS-D1-2026-09-06-01) was byte-identical
+            // to a correctly-scaled one without this.
+            e.aabb_max[0] - e.aabb_min[0],
+            e.aabb_max[1] - e.aabb_min[1],
+            e.aabb_max[2] - e.aabb_min[2],
+            e.scale
+                .map(|s| format!("{s:.2}"))
+                .unwrap_or_else(|| "?".into()),
         ));
     }
     if entries.len() > SPAWN_CENSUS_DETAIL_CAP {
@@ -1691,12 +1741,12 @@ mod spawn_census_tests {
         SpawnCensusEntry {
             body_type,
             is_sensor,
-            center_y: 0.0,
-            min_y: -1.0,
-            max_y: 1.0,
+            aabb_min: [-1.0, -1.0, -1.0],
+            aabb_max: [1.0, 1.0, 1.0],
             entity: None,
             form: None,
             layer: None,
+            scale: None,
         }
     }
 
@@ -1985,6 +2035,179 @@ mod actor_bone_group_tests {
                 surface_y: 12.0,
                 normal_y: -0.98,
             }
+        );
+    }
+
+    /// Regression for #3965 (PHYS-D7-2026-09-06-01). A kinematic capsule
+    /// (the player's own body, `MotionType::Keyframed` — untagged, so
+    /// `ground_probe_groups()`'s `ACTOR_BONE_GROUP` mask does not exclude it)
+    /// in the swept column must NOT be reported as a hit when its handle is
+    /// passed as `excluded_body`: with nothing else in the world, the
+    /// re-sweep must report `NoHit`. Before the fix,
+    /// `spawn_collider_census_report` hard-coded `None` regardless of what
+    /// the caller passed, so a census run near the player's own position
+    /// would always report a self-hit off the player's own capsule instead
+    /// of the real floor beneath it.
+    ///
+    /// Uses a plain, unambiguous non-zero-`time_of_impact` hit (probe starts
+    /// clear of the player capsule and sweeps down into it) rather than the
+    /// exact-origin-overlap case the production bug report describes —
+    /// that case is a documented floating-point knife-edge in parry's
+    /// shape-cast (`stop_at_penetration: false` discards a `t=0` hit whose
+    /// separating normal isn't unambiguously escaping), which does not
+    /// reproduce deterministically enough to assert on. The `excluded_body`
+    /// plumbing under test is identical either way.
+    #[test]
+    fn census_excluded_body_prevents_a_self_hit_on_the_players_own_capsule() {
+        let mut world = world();
+        let player = world.spawn();
+        let py = 100.0;
+        world.insert(
+            player,
+            Transform::new(Vec3::new(0.0, py, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(
+            player,
+            GlobalTransform::new(Vec3::new(0.0, py, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(
+            player,
+            CollisionShape::Capsule {
+                half_height: 46.0,
+                radius: 18.0,
+            },
+        );
+        world.insert(
+            player,
+            RigidBodyData {
+                motion_type: MotionType::Keyframed,
+                ..Default::default()
+            },
+        );
+
+        physics_sync_system(&world, 0.0);
+
+        let player_body = world
+            .query::<RapierHandles>()
+            .expect("storage")
+            .get(player)
+            .copied()
+            .expect("registered")
+            .body;
+
+        // Player capsule (half_height=46, radius=18) spans y=[py-64, py+64]
+        // = [36, 164]. Start the probe capsule (same dims) clear above it —
+        // span at t=0 is [probe_y-64, probe_y+64] = [186, 314], no overlap —
+        // and sweep far enough down to reach it: bottom of the probe capsule
+        // must travel from 186 down to 164 (the player capsule's top),
+        // a toi of 22 BU, well inside max_distance.
+        let probe_origin_y = py + 150.0;
+        let base_probe = SpawnCensusProbe {
+            x: 0.0,
+            y: probe_origin_y,
+            z: 0.0,
+            radius: 32.0,
+            capsule_half_height: 46.0,
+            capsule_radius: 18.0,
+            max_distance: 200.0,
+            min_walkable_normal_y: 0.6,
+            authoring: None,
+            excluded_body: None,
+        };
+
+        // Without the exclusion, the sweep hits the player's own capsule —
+        // NOT a NoHit.
+        let unexcluded = spawn_collider_census_report(&world, base_probe);
+        assert!(
+            !unexcluded.iter().any(|line| line.contains("hit NOTHING")),
+            "sanity check: with no exclusion the sweep must hit the \
+             player's own capsule, or this test's geometry doesn't reproduce \
+             the bug (got: {unexcluded:?})"
+        );
+
+        // With the player's own body excluded, nothing else is in the world,
+        // so the re-sweep must report NoHit.
+        let excluded = spawn_collider_census_report(
+            &world,
+            SpawnCensusProbe {
+                excluded_body: Some(player_body),
+                ..base_probe
+            },
+        );
+        assert!(
+            excluded.iter().any(|line| line.contains("hit NOTHING")),
+            "excluding the player's own body must leave NOTHING for the \
+             re-sweep to hit (#3965); got: {excluded:?}"
+        );
+    }
+
+    /// Regression for #3967 (PHYS-D7-2026-09-06-03). A collider scaled 2×
+    /// (the confirmed XSCL² scale-drift class, PHYS-D1-2026-09-06-01) must
+    /// be DISTINGUISHABLE from a correctly-scaled one in the census render
+    /// line: the pre-fix `y=[…] centre=…` triple was byte-identical for both,
+    /// since it discarded the X/Z extents and never reported the owning
+    /// placement's scale at all.
+    #[test]
+    fn census_reports_full_extent_and_scale_not_just_the_y_range() {
+        let mut world = world();
+        let scaled = world.spawn();
+        // Authored half-extent 5 (a limb-sized prop); GlobalTransform scale
+        // 2.0 — matching `ragdoll.rs`'s own `XSCL²` regression fixture,
+        // which proved this same 2× drift class reaches the collider but
+        // had no operator-facing surface that could see it (only a test).
+        world.insert(scaled, Transform::new(Vec3::ZERO, Quat::IDENTITY, 2.0));
+        world.insert(
+            scaled,
+            GlobalTransform::new(Vec3::new(0.0, 100.0, 0.0), Quat::IDENTITY, 2.0),
+        );
+        world.insert(
+            scaled,
+            CollisionShape::Cuboid {
+                half_extents: Vec3::splat(5.0),
+            },
+        );
+        world.insert(
+            scaled,
+            RigidBodyData {
+                motion_type: MotionType::Static,
+                ..Default::default()
+            },
+        );
+
+        physics_sync_system(&world, 0.0);
+
+        let lines = spawn_collider_census_report(
+            &world,
+            SpawnCensusProbe {
+                x: 0.0,
+                y: 100.0,
+                z: 0.0,
+                radius: 32.0,
+                capsule_half_height: 46.0,
+                capsule_radius: 18.0,
+                max_distance: 200.0,
+                min_walkable_normal_y: 0.6,
+                authoring: None,
+                excluded_body: None,
+            },
+        );
+
+        // A 2× scale on a half_extents=5 cuboid registers a 20 BU full
+        // extent per axis (`placement_scale_reaches_the_registered_collider`
+        // pins the same 2×10=20 half-extent one test up) — the census line
+        // must report that, not just the Y range.
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("extent=[20, 20, 20]")),
+            "the full 3-D extent must be reported, or an X/Z scale-drift \
+             collider stays indistinguishable from a correct one (#3967); \
+             got: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("scale=2.00")),
+            "the owning placement's scale must be reported as the expected- \
+             value reference (#3967); got: {lines:?}"
         );
     }
 }

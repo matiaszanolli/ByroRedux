@@ -20,19 +20,22 @@ use super::shared::*;
 use byroredux_physics::{CharacterController, PhysicsWorld};
 
 /// Resolve the reference point a bare `phys.census` censuses: the player
-/// body if one exists, else the active camera.
+/// body if one exists, else the active camera. Also returns the player
+/// entity when that's the branch taken, so the caller can resolve its
+/// `RapierHandles` body for `excluded_body` (#3965) — the camera branch has
+/// no exclusion to make (a camera carries no collider).
 ///
 /// The player is preferred deliberately — the operator runs this command
 /// *because* the thing that fell through the floor is the player, and in
 /// Character mode the camera sits `eye_height` above the body.
-fn reference_point(world: &World) -> Option<(&'static str, Vec3)> {
+fn reference_point(world: &World) -> Option<(&'static str, Vec3, Option<EntityId>)> {
     let transforms = world.query::<GlobalTransform>()?;
     if let Some(player) = world
         .try_resource::<crate::systems::PlayerEntity>()
         .and_then(|player| player.0)
     {
         if let Some(transform) = transforms.get(player) {
-            return Some(("player", transform.translation));
+            return Some(("player", transform.translation, Some(player)));
         }
     }
     let camera = world
@@ -40,7 +43,7 @@ fn reference_point(world: &World) -> Option<(&'static str, Vec3)> {
         .map(|active| active.0)?;
     transforms
         .get(camera)
-        .map(|transform| ("camera", transform.translation))
+        .map(|transform| ("camera", transform.translation, None))
 }
 
 /// Census the colliders in a vertical column — the "why is there no floor
@@ -98,9 +101,9 @@ impl ConsoleCommand for PhysCensusCommand {
         // sweep origin. Falling back to y=0 when there is none keeps an
         // explicit `phys.census <x> <z>` usable on a world with no rig.
         let reference_point = reference_point(world);
-        let (origin_label, reference) = match (reference_point, explicit_xz) {
+        let (origin_label, reference, player_entity) = match (reference_point, explicit_xz) {
             (Some(found), _) => found,
-            (None, Some(_)) => ("y=0 (no rig)", Vec3::ZERO),
+            (None, Some(_)) => ("y=0 (no rig)", Vec3::ZERO, None),
             (None, None) => {
                 return CommandOutput::error(
                     "phys.census: no player or active camera to census around — pass an \
@@ -112,6 +115,30 @@ impl ConsoleCommand for PhysCensusCommand {
             Some((x, z)) => (x, z, "argument"),
             None => (reference.x, reference.z, origin_label),
         };
+
+        // #3965 (PHYS-D7-2026-09-06-01) — resolve the player's own body
+        // BEFORE the sweep, the same way `probe_walkable_floor_near`
+        // (`scene.rs`) does: query `RapierHandles` and drop the guard first,
+        // rather than holding it across the `PhysicsWorld` lock the report
+        // takes internally. When the census is centred on the player (the
+        // common case — `origin_label == "player"`), the probe capsule
+        // overlaps the player's own capsule at the sweep origin; without
+        // excluding it, the re-sweep can self-hit and report a phantom
+        // floor at the player's own body instead of the real one beneath it.
+        let excluded_body = player_entity.and_then(|entity| {
+            world
+                .query::<byroredux_physics::RapierHandles>()
+                .and_then(|handles| handles.get(entity).map(|h| h.body))
+        });
+
+        // #3966 (PHYS-D7-2026-09-06-02) — the NIF import cache IS a live
+        // world resource (same read the boot-time `dump_spawn_collider_census`
+        // caller in `scene.rs` uses), not something only available at boot;
+        // a hard-coded `None` here disabled the classic/new_physics/phantom
+        // three-way split #2874 built specifically for this command.
+        let authoring = world
+            .try_resource::<crate::cell_loader::NifImportRegistry>()
+            .map(|registry| registry.collision_authoring_totals());
 
         // Same capsule and walkability threshold the spawn rungs sweep with,
         // so a live census is directly comparable with the boot-time one.
@@ -126,10 +153,8 @@ impl ConsoleCommand for PhysCensusCommand {
             max_distance: crate::scene::FLOOR_PROBE_CLEARANCE_BU
                 + crate::scene::FLOOR_PROBE_REACH_BELOW_DOOR_BU,
             min_walkable_normal_y: crate::scene::min_walkable_normal_y(controller),
-            // The live path has no NIF import cache to sum, so `0 colliders`
-            // here cannot be split into "nothing authored" vs "dropped in
-            // translation". The report says so rather than implying either.
-            authoring: None,
+            authoring,
+            excluded_body,
         };
 
         let mut lines = vec![format!(
@@ -201,5 +226,54 @@ impl ConsoleCommand for PhysStatsCommand {
             ),
         }
         CommandOutput::lines(lines)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for #3966 (PHYS-D7-2026-09-06-02). `phys.census` used to
+    /// hard-code `authoring: None` with a comment claiming "the live path
+    /// has no NIF import cache to sum" — false: `NifImportRegistry` is a
+    /// live world resource, exactly like the boot-time caller
+    /// (`scene.rs`'s `dump_spawn_collider_census` call) already reads. A
+    /// world holding that resource must NOT get the "authoring unavailable"
+    /// disclaimer.
+    #[test]
+    fn census_reads_the_live_nif_import_registry_instead_of_disclaiming_it() {
+        let mut world = World::new();
+        world.register::<GlobalTransform>();
+        world.insert_resource(PhysicsWorld::new());
+        world.insert_resource(crate::cell_loader::NifImportRegistry::new());
+
+        // Explicit XZ so the command doesn't need a player/camera to
+        // resolve a reference point — `authoring` is independent of that.
+        let out = PhysCensusCommand.execute(&world, "0 0");
+        let joined = out.lines.join("\n");
+        assert!(
+            !joined.contains("authoring unavailable"),
+            "a world holding NifImportRegistry must not disclaim the \
+             classic/new_physics/phantom split as unavailable (#3966); \
+             got: {joined}"
+        );
+    }
+
+    /// The disclaimer must still fire on a world with no cache at all (a
+    /// synthetic/test World, or the loose-NIF path) — #3966 fixes a false
+    /// premise, not the premise itself.
+    #[test]
+    fn census_still_disclaims_authoring_with_no_registry_present() {
+        let mut world = World::new();
+        world.register::<GlobalTransform>();
+        world.insert_resource(PhysicsWorld::new());
+
+        let out = PhysCensusCommand.execute(&world, "0 0");
+        let joined = out.lines.join("\n");
+        assert!(
+            joined.contains("authoring unavailable"),
+            "a world with no NifImportRegistry resource has genuinely no \
+             cache to sum, so the disclaimer must still appear; got: {joined}"
+        );
     }
 }

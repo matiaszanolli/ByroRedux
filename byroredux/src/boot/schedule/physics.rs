@@ -30,6 +30,16 @@ pub(super) fn register_physics_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_physics::RapierHandles>()
             .writes::<byroredux_physics::RapierHandles>()
             .writes::<Transform>()
+            // #3492 — the buoyancy phase's second target source: both
+            // `apply_buoyancy_with_scratch` and `clear_stale_water_contacts`
+            // (`crates/physics/src/water.rs`) take a `world.query::<Ragdoll>()`
+            // read guard so a ragdolled actor's limbs get buoyancy contacts
+            // too, not just its placement root. Declared here (fixed by
+            // PHYS-D6-2026-09-06-03, #3964) so the scheduler's conflict
+            // analyzer can see it — this is the fourth time a `Ragdoll`/water
+            // storage read landed in this system without a matching
+            // declaration update (#1787, #2676, PHYS-D3-2026-08-20-05).
+            .reads::<byroredux_physics::Ragdoll>()
             // WATAL Phase 2 — the buoyancy phase reads the water plane
             // components and writes per-body `WaterContact`.
             .reads::<byroredux_core::ecs::components::water::WaterPlane>()
