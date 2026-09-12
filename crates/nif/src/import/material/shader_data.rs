@@ -97,8 +97,15 @@ pub(crate) fn capture_effect_shader_data(shader: &BSEffectShaderProperty) -> BsE
 pub(crate) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeData) {
     // Env-map scale lives on its own field for backwards compatibility with
     // pre-#343 readers; the other variants copy through `ShaderTypeFields`.
+    //
+    // #4251 — latch `env_map_scale_consumed`, mirroring the #3514/#3517
+    // fix shape for `refraction_strength`/`texture_clamp_mode`: this is a
+    // dedicated-shader (more specific) value and must survive a later
+    // legacy `NiTexturingProperty`/`BSEffectShaderProperty` write, which
+    // already gates on this same latch (`legacy_properties.rs`).
     if let ShaderTypeData::EnvironmentMap { env_map_scale } = *data {
         info.env_map_scale = env_map_scale;
+        info.env_map_scale_consumed = true;
     }
     // Game-specific shader-type integers are already translated once in
     // `dedicated_shader::normalize_shader_type`. Keep this function limited to

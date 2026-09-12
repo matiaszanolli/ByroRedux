@@ -49,6 +49,36 @@ fn minimal_bs_tri_shape_bytes() -> Vec<u8> {
     d
 }
 
+/// Regression for #4249 — the particle-data trailing read must gate on
+/// `bsver == SKYRIM_SE` (100) exactly, matching nif.xml's `#BS_SSE#`
+/// vercond, not the broad `bsver < FALLOUT4` (130) range it used to read
+/// as. No vanilla title ships a `BSTriShape` in the 101..129 gap (Skyrim
+/// LE ships `NiTriShape`, not `BSTriShape`), so this needs a synthetic
+/// fixture: a bsver=110 body that OMITS the particle_data_size trailer,
+/// pinning that the corrected gate does not try to read it.
+#[test]
+fn bs_tri_shape_intermediate_bsver_omits_particle_data_trailer() {
+    let header = NifHeader::detached(NifVersion::V20_2_0_7, 12, 110);
+    let mut bytes = minimal_bs_tri_shape_bytes();
+    // Drop the trailing 4-byte particle_data_size the SSE-only (bsver==100)
+    // fixture always appends — bsver=110 must not read it at all.
+    let trailer_len = 4;
+    bytes.truncate(bytes.len() - trailer_len);
+
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let shape = parse_block("BSTriShape", &mut stream, Some(bytes.len() as u32))
+        .expect("bsver=110 BSTriShape must parse without an SSE-only particle-data trailer");
+    assert!(shape.as_any().downcast_ref::<BsTriShape>().is_some());
+    assert_eq!(
+        stream.position() as usize,
+        bytes.len(),
+        "bsver=110 must NOT attempt to read the SSE-only (bsver==100) \
+         particle-data trailer — under the pre-fix broad `bsver < FALLOUT4` \
+         gate this field would have been read here too, running past the \
+         end of this trailer-less fixture"
+    );
+}
+
 /// Regression: #359 — a BSTriShape whose stored `data_size`
 /// disagrees with the value derived from `vertex_size_quads ·
 /// num_vertices · 4 + num_triangles · 6` must still parse

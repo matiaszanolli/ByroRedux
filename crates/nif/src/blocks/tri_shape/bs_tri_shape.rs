@@ -656,7 +656,14 @@ impl BsTriShape {
         // every BSDynamicTriShape (data_size==0, real vertex data lives in the
         // trailing dynamic Vector4 array) the 4-byte size was never consumed,
         // misaligning `parse_dynamic` and dropping every Skyrim NPC face mesh.
-        if stream.bsver() < crate::version::bsver::FALLOUT4 {
+        //
+        // #4249 — `#BS_SSE#` is `bsver == 100` exactly, not the broad
+        // `< FALLOUT4` (130) range this used to read as. No vanilla content
+        // ships a BSTriShape in the 101..129 gap (Skyrim LE ships NiTriShape,
+        // not BSTriShape), so this was latent — but a future intermediate
+        // BSVER band, or a mis-detected header, would misread this field
+        // under the old broad gate.
+        if stream.bsver() == crate::version::bsver::SKYRIM_SE {
             let particle_data_size = stream.read_u32_le()?;
             if particle_data_size > 0 {
                 // particle vertices (num_vertices × 6 bytes) + particle normals + particle triangles

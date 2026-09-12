@@ -575,7 +575,13 @@ fn apply_bs_effect_shader(
             if info.normal_map.is_none() {
                 info.normal_map = intern_texture_path(pool, &shader.normal_texture);
             }
+            // #4251 — latch `env_map_scale_consumed`, mirroring the
+            // #3514/#3517 fix shape for `refraction_strength`/
+            // `texture_clamp_mode`: this dedicated value must survive a
+            // later legacy `NiTexturingProperty` write, which already
+            // gates on this same latch (`legacy_properties.rs`).
             info.env_map_scale = shader.env_map_scale;
+            info.env_map_scale_consumed = true;
             // FO4+ BSEffectShaderProperty (BSVER >= 130) carries env_map_texture /
             // env_mask_texture alongside the normal map. Forward them into the
             // standard MaterialInfo slots so the renderer's env-map branch fires

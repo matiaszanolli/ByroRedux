@@ -335,3 +335,31 @@ fn bslighting_default_clamp_mode_still_marks_consumed() {
     assert_eq!(info.texture_clamp_mode, 3);
     assert!(info.texture_clamp_mode_consumed);
 }
+
+/// Regression for #4251 — `apply_shader_type_data`'s `EnvironmentMap` arm
+/// (the BSLightingShaderProperty dedicated-shader writer) must latch
+/// `env_map_scale_consumed`, mirroring the #3514/#3517 fix shape for
+/// `refraction_strength`/`texture_clamp_mode` immediately above. Without
+/// the latch, a later legacy-property write (which already gates on this
+/// same flag in `legacy_properties.rs`) could clobber the dedicated value.
+#[test]
+fn bslighting_env_map_scale_is_captured_and_marks_consumed() {
+    let mut shader = lighting_shader_with_name("");
+    shader.shader_type = 1; // EnvironmentMap
+    shader.shader_type_data = ShaderTypeData::EnvironmentMap { env_map_scale: 2.5 };
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = tri_shape_with_shader_ref(0);
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(info.env_map_scale, 2.5);
+    assert!(
+        info.env_map_scale_consumed,
+        "the consumed gate must be set so a later legacy-property arm \
+         can't clobber the dedicated-shader env_map_scale value (#4251)"
+    );
+}

@@ -17,6 +17,39 @@ fn parse_bs_lighting_default_no_trailing() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
+/// Regression for #4252 — `parse_shader_type_data`'s wildcard arm covers
+/// fourteen shader-type values with no trailing wire data (0, plus the
+/// thirteen below); only value 0 (`parse_bs_lighting_default_no_trailing`
+/// above) had a wire-level byte-position assertion pinning that fallthrough.
+/// A future edit that accidentally added trailing-field consumption to any
+/// ONE of the other twelve would have been invisible to a targeted test —
+/// only broader integration coverage, if any, would catch it. This dispatch
+/// table has a real history of exactly this failure mode (#455, #474, #550,
+/// #713, #717): a shader-type arm silently drifting the stream.
+#[test]
+fn parse_bs_lighting_remaining_no_trailing_shader_types_consume_nothing_extra() {
+    for shader_type in [2u32, 3, 4, 8, 9, 10, 12, 13, 15, 17, 18, 19, 20] {
+        let header = make_skyrim_header();
+        let data = build_bs_lighting_common(shader_type);
+        let mut stream = NifStream::new(&data, &header);
+
+        let prop = BSLightingShaderProperty::parse(&mut stream)
+            .unwrap_or_else(|e| panic!("shader_type={shader_type} must parse: {e}"));
+        assert_eq!(prop.shader_type, shader_type);
+        assert!(
+            matches!(prop.shader_type_data, ShaderTypeData::None),
+            "shader_type={shader_type} must map to ShaderTypeData::None"
+        );
+        assert_eq!(
+            stream.position(),
+            data.len() as u64,
+            "shader_type={shader_type} must consume exactly the common body \
+             with no trailing fields — a byte left over (or short) means this \
+             arm started reading data that isn't there on the wire"
+        );
+    }
+}
+
 /// Regression for #2589 (SKY-D7-01) — `grayscale_to_palette_scale` /
 /// `fresnel_power` are FO4+ wire fields Skyrim never serializes, so
 /// `parse_skyrim` has no authored value to construct them from. It must
@@ -264,6 +297,16 @@ fn parse_bs_effect_shader_soft_falloff_and_greyscale() {
     assert!((prop.soft_falloff_depth - 5.0).abs() < 1e-6);
     assert_eq!(prop.greyscale_texture, "tex/grey.dds");
     assert!(prop.env_map_texture.is_empty()); // Not FO4+
+                                              // #4250 — the not-present-on-Skyrim placeholder must be the neutral
+                                              // `1.0` (matching BsEffectShaderData::default() and the canonical
+                                              // Material::env_map_scale's own declared default), not `0.0`. The old
+                                              // `0.0` silently overrode both of those structs' defaults for every
+                                              // Skyrim BSEffectShaderProperty once copied through unconditionally.
+    assert_eq!(
+        prop.env_map_scale, 1.0,
+        "Skyrim (not FO4+) BSEffectShaderProperty must default env_map_scale \
+         to the neutral 1.0, not 0.0"
+    );
     assert_eq!(stream.position(), data.len() as u64);
 }
 

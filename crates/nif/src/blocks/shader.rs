@@ -1913,6 +1913,18 @@ impl BSEffectShaderProperty {
         let greyscale_texture = stream.read_sized_string()?;
 
         // FO4+ additional textures (BSVER >= 130).
+        //
+        // #4250 — `env_map_scale`'s not-present-on-Skyrim placeholder was
+        // `0.0`, but the field's neutral "no scale authored" value is `1.0`
+        // everywhere downstream: `BsEffectShaderData::default()`
+        // (`import/material/mod.rs`) and the canonical
+        // `Material::env_map_scale` (`core/ecs/components/material.rs`)
+        // both declare `1.0`. `dedicated_shader.rs::apply_bs_effect_shader`
+        // copies this field straight through to both without
+        // reconciliation, so the old `0.0` silently overrode those
+        // structs' own declared defaults for every Skyrim
+        // BSEffectShaderProperty. `1.0` here matches the neutral
+        // multiplier those two structs already agree on.
         let (env_map_texture, normal_texture, env_mask_texture, env_map_scale) =
             if bsver >= crate::version::bsver::FALLOUT4 {
                 let env = stream.read_sized_string()?;
@@ -1921,7 +1933,7 @@ impl BSEffectShaderProperty {
                 let scale = stream.read_f32_le()?;
                 (env, norm, mask, scale)
             } else {
-                (String::new(), String::new(), String::new(), 0.0)
+                (String::new(), String::new(), String::new(), 1.0)
             };
 
         // FO76+ trailing fields. Same value-gate regression as

@@ -277,6 +277,51 @@ fn fo4_effect_shader_env_map_texture_forwards_to_material_info() {
     );
 }
 
+/// Regression for #4251 — `apply_bs_effect_shader` must latch
+/// `env_map_scale_consumed`, mirroring the #3514/#3517 fix shape for
+/// `refraction_strength`/`texture_clamp_mode` (the latter already latched
+/// a few lines later in this same function). Without the latch, a later
+/// legacy-property write (which already gates on this same flag in
+/// `legacy_properties.rs`) could clobber the dedicated value.
+#[test]
+fn fo4_effect_shader_env_map_scale_marks_consumed() {
+    let mut shader = fully_populated_fo4_shader();
+    shader.env_map_scale = 1.5;
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = NiTriShape {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: vec![],
+            collision_ref: BlockRef::NULL,
+        },
+        data_ref: BlockRef::NULL,
+        skin_instance_ref: BlockRef::NULL,
+        shader_property_ref: BlockRef(0),
+        alpha_property_ref: BlockRef::NULL,
+        num_materials: 0,
+        active_material_index: 0,
+    };
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(info.env_map_scale, 1.5);
+    assert!(
+        info.env_map_scale_consumed,
+        "the consumed gate must be set so a later legacy-property arm \
+         can't clobber the dedicated-shader env_map_scale value (#4251)"
+    );
+}
+
 /// #3186: the file's BSVER selects texture-slot semantics even when the mesh
 /// has only a BSEffectShaderProperty. Before the shared walker seeded this
 /// context, only BSLightingShaderProperty updated the layout and this FO4
