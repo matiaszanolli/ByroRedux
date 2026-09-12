@@ -298,19 +298,12 @@ impl FrameUpscaler {
         command_pool: vk::CommandPool,
     ) -> Result<()> {
         super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+            // #4221 — field-for-field identical to the shared helper; use
+            // it instead of a hand-rolled copy.
             let barriers: Vec<_> = self
                 .outputs
                 .iter()
-                .map(|output| {
-                    let image = output.image;
-                    vk::ImageMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::empty())
-                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .image(image)
-                        .subresource_range(color_subresource_single_mip())
-                })
+                .map(|output| super::descriptors::image_barrier_undef_to_shader_read(output.image))
                 .collect();
             unsafe {
                 // SAFETY: `cmd` is recording in the queue helper; these fresh
@@ -979,13 +972,10 @@ impl FrameUpscaler {
                         .level_count(1)
                         .layer_count(1),
                 ),
-            vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(self.outputs[frame].image)
-                .subresource_range(color_subresource_single_mip()),
+            // #4220 SIBLING — field-for-field identical to the shared
+            // `image_barrier_general_to_shader_read` helper; use it instead
+            // of a second hand-rolled copy.
+            super::descriptors::image_barrier_general_to_shader_read(self.outputs[frame].image),
         ];
         unsafe {
             // SAFETY: the SDK dispatch above finished recording all compute

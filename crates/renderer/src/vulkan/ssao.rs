@@ -508,14 +508,10 @@ impl SsaoPipeline {
         let groups_y = self.height.div_ceil(WORKGROUP_Y);
         device.cmd_dispatch(cmd, groups_x, groups_y, 1);
 
-        // Transition AO image to SHADER_READ_ONLY for fragment shader sampling.
-        let ao_barrier_read = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image(ao_image)
-            .subresource_range(super::descriptors::color_subresource_single_mip());
+        // Transition AO image to SHADER_READ_ONLY for fragment shader
+        // sampling. #4220 — field-for-field identical to the shared
+        // helper; use it instead of a second hand-rolled copy.
+        let ao_barrier_read = super::descriptors::image_barrier_general_to_shader_read(ao_image);
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,

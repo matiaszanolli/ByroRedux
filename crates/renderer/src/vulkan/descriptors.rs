@@ -233,6 +233,31 @@ pub fn image_barrier_undef_to_general(image: vk::Image) -> vk::ImageMemoryBarrie
         .subresource_range(color_subresource_single_mip())
 }
 
+/// UNDEFINED → SHADER_READ_ONLY_OPTIMAL one-shot discard-and-transition on
+/// a single-mip COLOR image — the mirror shape of
+/// [`image_barrier_undef_to_general`] for images whose steady state is
+/// sampled rather than read-write bound. #4221 — `gbuffer.rs` and
+/// `frame_upscaler.rs` each hand-rolled this identical barrier for their
+/// one-time "previous frame" layout initialization (first-frame validation
+/// error avoidance); this had nowhere to funnel through since only the
+/// UNDEFINED → GENERAL shape had a shared helper.
+///   src_access = empty (transition discards prior content; nothing to
+///                make visible)
+///   dst_access = SHADER_READ
+/// NONE is the correct source stage for the surrounding
+/// `cmd_pipeline_barrier` call on this transition (Vulkan 1.3 replacement
+/// for the deprecated TOP_OF_PIPE-as-source-stage convention, #949/#1100).
+#[inline]
+pub fn image_barrier_undef_to_shader_read(image: vk::Image) -> vk::ImageMemoryBarrier<'static> {
+    vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::empty())
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .image(image)
+        .subresource_range(color_subresource_single_mip())
+}
+
 /// GENERAL → GENERAL compute-write-to-shader-read handoff on a
 /// single-mip COLOR image — the shape shared by svgf/taa/caustic/
 /// volumetrics/water_caustic at their compute→composite barrier:

@@ -327,15 +327,9 @@ impl GBuffer {
             let mut barriers = Vec::with_capacity(attachments.len() * MAX_FRAMES_IN_FLIGHT);
             for att in &attachments {
                 for &img in att.slots.iter().map(|s| &s.image) {
-                    barriers.push(
-                        vk::ImageMemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::empty())
-                            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                            .image(img)
-                            .subresource_range(super::descriptors::color_subresource_single_mip()),
-                    );
+                    // #4221 — field-for-field identical to the shared
+                    // helper; use it instead of a hand-rolled copy.
+                    barriers.push(super::descriptors::image_barrier_undef_to_shader_read(img));
                 }
             }
             // NONE as srcStageMask: UNDEFINED → SHADER_READ_ONLY transitions
