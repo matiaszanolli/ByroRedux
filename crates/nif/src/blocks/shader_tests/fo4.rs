@@ -454,23 +454,27 @@ fn parse_bs_lighting_fo4_bgsm_name_does_not_stopcond() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
-/// #3845 — the BSVER-131 gap band, through `parse_skyrim_shader_base`.
+/// #4151 — supersedes #3845's premise for `BSSkyShaderProperty` /
+/// `BSWaterShaderProperty` specifically. #3845 made `parse_skyrim_shader_base`
+/// apply the SAME `bsver == 131` gap band to all four consumers for
+/// consistency; nif.xml shows that premise was wrong for these two types.
+/// `BSLightingShaderProperty`/`BSEffectShaderProperty` split their flags at
+/// `#NI_BS_LT_FO4#` (`< 130`) union `#BS_FO4#` (`== 130`) — a real gap at
+/// 131. `BSSkyShaderProperty`/`BSWaterShaderProperty` instead use the
+/// un-split `!#BS_GTE_132#` (`< 132`) — 131 genuinely carries the typed
+/// pair. `bs_lighting_bsver_131_skips_flag_pair_and_crc_counts` above is
+/// unaffected (BLSP really does have the gap); this test's old name and
+/// assertions described the disproven premise for Sky and are corrected
+/// here instead of left to rot next to the fix.
 ///
-/// `bs_lighting_bsver_131_skips_flag_pair_and_crc_counts` above pins the
-/// same band for `BSLightingShaderProperty`, which reads the head inline.
-/// The *shared helper* had its own gate, and #2603's rewrite to the named
-/// predicates reached both inline copies and missed it — so it kept the
-/// literal `bsver < FO4_CRC_FLAGS`, which is true at 131 and consumes an
-/// 8-byte flag pair that is not there. Every field after it lands one
-/// `u32` pair early and the block drifts.
-///
-/// 131 ships no game content, so no corpus test could have caught this;
-/// it needs a synthetic stream. `BSSkyShaderProperty` is the smallest
-/// consumer of the helper (`NiObjectNET` + head + two tail fields), which
-/// makes the byte budget unambiguous: an over-read shows up as a short
-/// `source_texture` or a position mismatch, not a silent wrong value.
+/// 131 ships no game content, so no corpus test could catch either
+/// direction; this needs a synthetic stream. `BSSkyShaderProperty` is the
+/// smallest consumer of the shared helper (`NiObjectNET` + head + two tail
+/// fields), which makes the byte budget unambiguous: a missing 8-byte
+/// flag-pair read shows up as a shifted `source_texture` or a position
+/// mismatch, not a silent wrong value.
 #[test]
-fn bs_sky_bsver_131_skips_flag_pair_and_crc_counts_through_the_shared_head() {
+fn bs_sky_bsver_131_reads_the_typed_flag_pair_not_the_gap_band() {
     let header = make_fo4_header_with_bsver(crate::version::bsver::FO4_SHADER_GAP);
     let source_texture = "textures\\sky\\clouds.dds";
 
@@ -479,8 +483,10 @@ fn bs_sky_bsver_131_skips_flag_pair_and_crc_counts_through_the_shared_head() {
     data.extend_from_slice(&0i32.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&(-1i32).to_le_bytes());
-    // NO flag pair and NO CRC counts at 131 — that is the whole point.
-    // Next field is the UV transform.
+    // The typed flag pair IS present at 131 for Sky — no CRC counts (those
+    // start at 132 either way).
+    data.extend_from_slice(&0x8000_0001u32.to_le_bytes()); // shader_flags_1
+    data.extend_from_slice(&0x0000_0021u32.to_le_bytes()); // shader_flags_2
     for v in [0.25f32, 0.5, 2.0, 4.0] {
         data.extend_from_slice(&v.to_le_bytes());
     }
@@ -491,18 +497,55 @@ fn bs_sky_bsver_131_skips_flag_pair_and_crc_counts_through_the_shared_head() {
     let mut stream = NifStream::new(&data, &header);
     let prop = BSSkyShaderProperty::parse(&mut stream).unwrap();
 
-    assert_eq!(prop.shader_flags_1, 0, "bsver=131 carries no typed flags");
-    assert_eq!(prop.shader_flags_2, 0, "bsver=131 carries no typed flags");
+    assert_eq!(
+        prop.shader_flags_1, 0x8000_0001,
+        "bsver=131 must read the typed flag pair for Sky/Water (#4151)"
+    );
+    assert_eq!(prop.shader_flags_2, 0x0000_0021);
     assert!(prop.sf1_crcs.is_empty(), "CRC arrays start at 132");
     assert!(prop.sf2_crcs.is_empty(), "CRC arrays start at 132");
 
-    // The UV transform is the first field after the gate, so it is where an
-    // 8-byte over-read lands first — it would read the texture length and
-    // the leading texture bytes as floats.
     assert_eq!(prop.uv_offset, [0.25, 0.5]);
     assert_eq!(prop.uv_scale, [2.0, 4.0]);
     assert_eq!(prop.source_texture, source_texture);
     assert_eq!(prop.sky_object_type, 3);
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "bsver=131 body must consume exactly what was authored",
+    );
+}
+
+/// Companion to the Sky test above — same #4151 correction, for
+/// `BSWaterShaderProperty`.
+#[test]
+fn bs_water_bsver_131_reads_the_typed_flag_pair_not_the_gap_band() {
+    let header = make_fo4_header_with_bsver(crate::version::bsver::FO4_SHADER_GAP);
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    data.extend_from_slice(&0x8000_0008u32.to_le_bytes()); // shader_flags_1
+    data.extend_from_slice(&0x0000_0021u32.to_le_bytes()); // shader_flags_2
+    for v in [0.1f32, 0.2, 1.0, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    data.extend_from_slice(&0xC4u32.to_le_bytes()); // water_shader_flags
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSWaterShaderProperty::parse(&mut stream).unwrap();
+
+    assert_eq!(
+        prop.shader_flags_1, 0x8000_0008,
+        "bsver=131 must read the typed flag pair for Sky/Water (#4151)"
+    );
+    assert_eq!(prop.shader_flags_2, 0x0000_0021);
+    assert!(prop.sf1_crcs.is_empty());
+    assert!(prop.sf2_crcs.is_empty());
+    assert_eq!(prop.uv_offset, [0.1, 0.2]);
+    assert_eq!(prop.uv_scale, [1.0, 1.0]);
+    assert_eq!(prop.water_shader_flags, 0xC4);
     assert_eq!(
         stream.position() as usize,
         data.len(),

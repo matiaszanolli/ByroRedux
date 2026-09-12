@@ -566,6 +566,53 @@ fn parse_ni_texturing_property_no_apply_mode_at_v20_1_0_2() {
     assert_eq!(prop.texture_count, 0);
 }
 
+/// Regression for #4152 — `Apply Mode`'s read-shape cutoff must be its
+/// own named constant, not a reuse of `STRING_TABLE_THRESHOLD` (whose own
+/// doc comment scopes its lockstep contract to `header.rs`/`stream.rs`
+/// only). Two-sided pin:
+///
+/// 1. `APPLY_MODE_STANDALONE_UNTIL` carries its own literal v20.1.0.1
+///    value (matching nif.xml's `Apply Mode until="20.1.0.1"`) — it
+///    coincides with `STRING_TABLE_THRESHOLD` numerically today, but is
+///    not defined in terms of it.
+/// 2. A source-text check that `properties.rs`'s `Apply Mode` decode no
+///    longer spells `STRING_TABLE_THRESHOLD` at all — a plain "do the
+///    values still match" assertion can't catch a regression that
+///    reintroduces the reuse (both constants having the same value makes
+///    that regression behaviorally invisible), so this checks the actual
+///    source text the way `import/collision/mod.rs`'s
+///    `dispatch_coverage_tests` module already does for a different
+///    structural invariant.
+#[test]
+fn apply_mode_gate_is_its_own_constant_not_the_string_table_threshold() {
+    assert_eq!(
+        NifVersion::APPLY_MODE_STANDALONE_UNTIL,
+        NifVersion(0x1401_0001),
+        "must carry its own literal v20.1.0.1 value"
+    );
+
+    let src = include_str!("properties.rs");
+    let apply_mode_decode = src
+        .split("let apply_mode = if stream.version() < NifVersion::V3_3_0_13")
+        .nth(1)
+        .expect(
+            "Apply Mode decode site must exist verbatim — this test needs updating \
+                 if that decode is restructured, not silently skipped",
+        );
+    let gate_line = apply_mode_decode
+        .lines()
+        .find(|l| l.contains("stream.version() <="))
+        .expect("Apply Mode decode must have an inclusive-upper-bound branch");
+    assert!(
+        gate_line.contains("APPLY_MODE_STANDALONE_UNTIL"),
+        "Apply Mode's cutoff must use its own named constant: {gate_line:?}"
+    );
+    assert!(
+        !gate_line.contains("STRING_TABLE_THRESHOLD"),
+        "Apply Mode must not reuse STRING_TABLE_THRESHOLD (#4152): {gate_line:?}"
+    );
+}
+
 /// Pre-boundary spot check: at v20.1.0.0 the `Apply Mode` field is
 /// present (as it is throughout `[3.3.0.13, 20.1.0.1]` inclusive).
 #[test]

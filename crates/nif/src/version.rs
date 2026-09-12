@@ -173,6 +173,20 @@ impl NifVersion {
     /// name. See `header.rs:~224` and `stream.rs:~411`.
     pub const STRING_TABLE_THRESHOLD: Self = Self(0x14010001);
 
+    /// v20.1.0.1 — inclusive upper bound of `NiTexturingProperty`'s
+    /// standalone `Apply Mode` field (nif.xml `since="3.3.0.13"
+    /// until="20.1.0.1"`). At v20.1.0.2+ Apply Mode instead lives packed
+    /// into `TexturingFlags` bits 1-3 (mask `0x000E`). See
+    /// `blocks/properties.rs`'s `Apply Mode` decode.
+    ///
+    /// Numerically identical to [`STRING_TABLE_THRESHOLD`] today (both
+    /// happen to land on v20.1.0.1) but a **distinct, independent**
+    /// concept — `STRING_TABLE_THRESHOLD`'s own doc scopes its lockstep
+    /// contract to `header.rs`/`stream.rs` only. `properties.rs` reusing
+    /// that constant would be an undeclared third consumer with no
+    /// recovery anchor if the two ever needed to diverge (#4152).
+    pub const APPLY_MODE_STANDALONE_UNTIL: Self = Self(0x14010001);
+
     pub fn major(self) -> u8 {
         (self.0 >> 24) as u8
     }

@@ -298,12 +298,32 @@ fn skip_bounding_volume(stream: &mut NifStream) -> io::Result<()> {
     // only correct for the latter half; `read_bool()` is version-aware.
     let has_bv = stream.read_bool()?;
     if has_bv {
-        read_and_skip_bounding_volume(stream)?;
+        read_and_skip_bounding_volume(stream, 0)?;
     }
     Ok(())
 }
 
-fn read_and_skip_bounding_volume(stream: &mut NifStream) -> io::Result<()> {
+/// Maximum `UNION` bounding-volume nesting depth (#4148). Each level costs
+/// only 8 on-disk bytes (`bv_type` + `count`), so with no cap an N-byte
+/// crafted/fuzzed file could drive native Rust call-stack recursion to
+/// depth N/8 — an uncatchable stack overflow (process abort), not a
+/// returned `Err`, since this is real recursion rather than a bounded loop
+/// or heap allocation the crate's `allocate_vec`/`MAX_SINGLE_ALLOC_BYTES`
+/// guards would catch. No legitimate bounding-volume tree nests anywhere
+/// close to this deep; mirrors the depth-cap pattern used for other
+/// recursive NIF/ESM tree walks (e.g. `MAX_COLLISION_SHAPE_DEPTH` in
+/// `import/collision/shape.rs`, the ESM GRUP walker's 64-level cap).
+const MAX_BOUNDING_VOLUME_DEPTH: u32 = 32;
+
+fn read_and_skip_bounding_volume(stream: &mut NifStream, depth: u32) -> io::Result<()> {
+    if depth > MAX_BOUNDING_VOLUME_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "bounding volume nesting exceeds depth limit {MAX_BOUNDING_VOLUME_DEPTH} (#4148)"
+            ),
+        ));
+    }
     let bv_type = stream.read_u32_le()?;
     match bv_type {
         0 => {
@@ -322,7 +342,7 @@ fn read_and_skip_bounding_volume(stream: &mut NifStream) -> io::Result<()> {
             // UNION: num_bv(u32) + BoundingVolume[num_bv]
             let count = stream.read_u32_le()?;
             for _ in 0..count {
-                read_and_skip_bounding_volume(stream)?;
+                read_and_skip_bounding_volume(stream, depth + 1)?;
             }
         }
         5 => {
@@ -330,7 +350,17 @@ fn read_and_skip_bounding_volume(stream: &mut NifStream) -> io::Result<()> {
             stream.skip(28)?;
         }
         _ => {
-            log::warn!("Unknown bounding volume type {}, skipping", bv_type);
+            // #4150 — every other arm consumes its body via `stream.skip`;
+            // this one didn't, silently leaving the stream mid-body with
+            // zero bytes consumed. On the no-`block_sizes` band that
+            // misaligns every subsequent field with nothing to catch it.
+            // Returning `Err` here instead engages the caller's existing
+            // recovery paths, matching the file-wide "unknown short-reads
+            // are errors, not silent skips" doctrine.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown bounding volume type {bv_type}"),
+            ));
         }
     }
     Ok(())
@@ -509,6 +539,82 @@ mod niavobject_version_gate_tests {
             stream.position() as usize,
             bytes.len(),
             "u32 flags must consume exactly 4 bytes"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bounding_volume_tests {
+    use super::*;
+    use crate::header::NifHeader;
+    use crate::stream::NifStream;
+
+    fn header() -> NifHeader {
+        NifHeader::detached(NifVersion::V4_2_1_0, 0, 0)
+    }
+
+    /// Regression for #4148 — an unbounded `UNION` chain must not overflow
+    /// the native call stack. 40 nested `UNION(count=1)` levels (320 bytes)
+    /// exceeds `MAX_BOUNDING_VOLUME_DEPTH` (32); the parser must return a
+    /// clean `Err` instead of recursing to depth 40 (or aborting the
+    /// process — this test existing and returning at all is itself part of
+    /// the regression signal, since a real stack overflow wouldn't unwind
+    /// to a `Result`).
+    #[test]
+    fn deeply_nested_union_returns_err_instead_of_overflowing_stack() {
+        let mut bytes = Vec::new();
+        for _ in 0..40 {
+            bytes.extend_from_slice(&4u32.to_le_bytes()); // bv_type = UNION
+            bytes.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+        }
+        let header = header();
+        let mut stream = NifStream::new(&bytes, &header);
+        let err = read_and_skip_bounding_volume(&mut stream, 0)
+            .expect_err("40 nested UNION levels must be rejected past the depth cap");
+        // Assert on the specific depth-cap message rather than just
+        // `is_err()` — the fixture also runs out of bytes at depth 40
+        // (no terminal leaf shape), so a plain EOF `Err` from a missing
+        // cap would pass a weaker assertion for the wrong reason.
+        assert!(
+            err.to_string().contains("depth limit"),
+            "must fail via the depth cap, not incidentally via EOF: {err}"
+        );
+    }
+
+    /// A `UNION` chain at or under the depth cap must still parse
+    /// correctly — the cap must not falsely reject legitimate (if unusual)
+    /// shallow nesting.
+    #[test]
+    fn union_nesting_within_depth_cap_still_parses() {
+        let mut bytes = Vec::new();
+        for _ in 0..5 {
+            bytes.extend_from_slice(&4u32.to_le_bytes()); // bv_type = UNION
+            bytes.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+        }
+        // Terminal leaf: SPHERE (16 bytes).
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 16]);
+        let header = header();
+        let mut stream = NifStream::new(&bytes, &header);
+        let result = read_and_skip_bounding_volume(&mut stream, 0);
+        assert!(result.is_ok(), "5 levels of nesting is well under the cap");
+        assert_eq!(stream.position() as usize, bytes.len());
+    }
+
+    /// Regression for #4150 — an unrecognized `bv_type` must return `Err`
+    /// (engaging the caller's existing recovery paths) instead of silently
+    /// continuing with zero bytes consumed. Pre-fix this logged a warning
+    /// and returned `Ok(())`, leaving the stream mid-body.
+    #[test]
+    fn unknown_bv_type_returns_err_instead_of_silently_continuing() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&99u32.to_le_bytes()); // unrecognized bv_type
+        let header = header();
+        let mut stream = NifStream::new(&bytes, &header);
+        let result = read_and_skip_bounding_volume(&mut stream, 0);
+        assert!(
+            result.is_err(),
+            "an unrecognized bv_type must return Err, not Ok with zero bytes consumed"
         );
     }
 }

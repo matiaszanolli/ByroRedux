@@ -156,6 +156,52 @@ fn parse_bs_lighting_starfield_minimal_omits_fo76_only_tail() {
     assert!(matches!(prop.shader_type_data, ShaderTypeData::None));
 }
 
+/// Regression for #4149 — `parse_shader_type_data_fo76`'s shader_type 4/5
+/// (Skin/Hair Tint) arms read 16/12 extra bytes with no `bsver` gate,
+/// contradicting this exact function's own comment three lines above the
+/// call site that Starfield's block "ends after the luminance quad." Pins
+/// the corrected gate: on Starfield (unlike FO76, where these arms are
+/// still exercised — see `shader_tests::fo76`), a Skin/Hair-Tint
+/// `shader_type` must not read past the luminance quad, and
+/// `shader_type_data` falls back to `None` rather than decoding bytes
+/// that were never authored on the wire.
+///
+/// No real Starfield character/hair NIF sample with `shader_type` 4 or 5
+/// was available to corpus-verify this session (see the fix's own doc
+/// comment) — this fixture pins the code's own pre-existing, corpus-backed
+/// "ends after the luminance quad" claim (#2622) rather than a fresh
+/// positive/negative corpus finding for these two shader types
+/// specifically.
+#[test]
+fn parse_bs_lighting_starfield_skin_and_hair_tint_do_not_overrun_the_block() {
+    for shader_type in [4u32, 5u32] {
+        let header = make_starfield_header("");
+        let mut data = build_starfield_bs_lighting_minimal();
+        // Overwrite the shader_type field (offset 12: name(4) + extra(4) +
+        // controller_ref(4) precede it) to 4 (Skin Tint) / 5 (Hair Tint).
+        data[12..16].copy_from_slice(&shader_type.to_le_bytes());
+
+        let mut stream = NifStream::new(&data, &header);
+        let prop = BSLightingShaderProperty::parse(&mut stream).unwrap_or_else(|e| {
+            panic!("Starfield BLSP with shader_type={shader_type} must parse: {e}")
+        });
+        assert_eq!(
+            stream.position(),
+            data.len() as u64,
+            "shader_type={shader_type} must not read past the luminance quad \
+             into the next block's data",
+        );
+        assert_eq!(prop.shader_type, shader_type);
+        assert!(
+            matches!(prop.shader_type_data, ShaderTypeData::None),
+            "shader_type={shader_type}: no Skin/Hair-Tint tail was authored on \
+             the wire for this fixture, so shader_type_data must stay None, \
+             got {:?}",
+            prop.shader_type_data,
+        );
+    }
+}
+
 /// #1606 — Starfield full-body `BSLightingShaderProperty` carries a
 /// trailing block (originally byte-audited as 38 B, constant across the
 /// 26 LODMeshes instances) that the FO76+ parser doesn't decode and

@@ -282,7 +282,7 @@ impl NiTexturingProperty {
         const APPLY_MODULATE: u32 = 2; // nif.xml `ApplyMode`'s stated default.
         let apply_mode = if stream.version() < NifVersion::V3_3_0_13 {
             APPLY_MODULATE
-        } else if stream.version() <= NifVersion::STRING_TABLE_THRESHOLD {
+        } else if stream.version() <= NifVersion::APPLY_MODE_STANDALONE_UNTIL {
             stream.read_u32_le()?
         } else {
             u32::from((flags >> 1) & 0x7)

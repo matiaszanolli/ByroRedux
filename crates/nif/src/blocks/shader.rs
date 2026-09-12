@@ -411,7 +411,26 @@ impl TallGrassShaderProperty {
 /// sf1_crcs, sf2_crcs, uv_offset, uv_scale)`.
 type SkyrimShaderBase = (u32, u32, Vec<u32>, Vec<u32>, [f32; 2], [f32; 2]);
 
-fn parse_skyrim_shader_base(stream: &mut NifStream) -> io::Result<SkyrimShaderBase> {
+/// `has_gap_band` selects which shader-flags gate applies at the
+/// unattested `bsver == 131` dev stream (#4151):
+///
+/// * `true` (`BSLightingShaderProperty` / `BSEffectShaderProperty`) — nif.xml
+///   splits their typed flags at `#NI_BS_LT_FO4#` (`< 130`) union `#BS_FO4#`
+///   (`== 130`), i.e. `bsver <= FALLOUT4`. 131 carries NEITHER encoding — the
+///   `carries_typed_shader_flags`/`carries_crc_shader_flags` gap band.
+/// * `false` (`BSSkyShaderProperty` / `BSWaterShaderProperty`) — nif.xml
+///   instead gates their flags on the un-split `!#BS_GTE_132#` (`< 132`), so
+///   131 genuinely carries the typed pair. Routing these two through the
+///   BLSP-derived gap band under-read 8 bytes at 131 that nif.xml says are
+///   on the wire.
+///
+/// The CRC-array gate (`bsver >= FO4_CRC_FLAGS` = 132) is identical either
+/// way — nif.xml's `#BS_GTE_132#` matches `carries_crc_shader_flags` exactly
+/// for all four block types — so only the typed-flags half needs to branch.
+fn parse_skyrim_shader_base(
+    stream: &mut NifStream,
+    has_gap_band: bool,
+) -> io::Result<SkyrimShaderBase> {
     let bsver = stream.bsver();
 
     // #2603 / #409 — the gates are the named predicates, not raw BSVER
@@ -421,12 +440,18 @@ fn parse_skyrim_shader_base(stream: &mut NifStream) -> io::Result<SkyrimShaderBa
     // bytes that aren't there and drifts the rest of the block. `version.rs`
     // pins that band (`bsver_shader_flag_band_tests`); keeping the gate here
     // expressed as the predicate is what makes the pin cover this site (#3845).
-    let (shader_flags_1, shader_flags_2) =
-        if crate::version::bsver::carries_typed_shader_flags(bsver) {
-            (stream.read_u32_le()?, stream.read_u32_le()?)
-        } else {
-            (0, 0)
-        };
+    // This only applies when `has_gap_band` is true (BLSP/BSEffect); Sky/Water
+    // use the un-split `< FO4_CRC_FLAGS` cut instead (#4151).
+    let carries_typed_shader_flags = if has_gap_band {
+        crate::version::bsver::carries_typed_shader_flags(bsver)
+    } else {
+        bsver < crate::version::bsver::FO4_CRC_FLAGS
+    };
+    let (shader_flags_1, shader_flags_2) = if carries_typed_shader_flags {
+        (stream.read_u32_le()?, stream.read_u32_le()?)
+    } else {
+        (0, 0)
+    };
 
     // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't OOM
     // before the inner u32 reads fail. See #764.
@@ -497,8 +522,10 @@ pub struct BSSkyShaderProperty {
 impl BSSkyShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
+        // #4151 — no gap band: nif.xml gates Sky's flags on the un-split
+        // `!#BS_GTE_132#`, unlike BLSP/BSEffect's split gates.
         let (shader_flags_1, shader_flags_2, sf1_crcs, sf2_crcs, uv_offset, uv_scale) =
-            parse_skyrim_shader_base(stream)?;
+            parse_skyrim_shader_base(stream, false)?;
         let source_texture = stream.read_sized_string()?;
         let sky_object_type = stream.read_u32_le()?;
         Ok(Self {
@@ -548,8 +575,10 @@ pub struct BSWaterShaderProperty {
 impl BSWaterShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
+        // #4151 — no gap band: nif.xml gates Water's flags on the un-split
+        // `!#BS_GTE_132#`, unlike BLSP/BSEffect's split gates.
         let (shader_flags_1, shader_flags_2, sf1_crcs, sf2_crcs, uv_offset, uv_scale) =
-            parse_skyrim_shader_base(stream)?;
+            parse_skyrim_shader_base(stream, false)?;
         let water_shader_flags = stream.read_u32_le()?;
         Ok(Self {
             net,
@@ -1035,10 +1064,11 @@ impl BSLightingShaderProperty {
         };
         let net = NiObjectNETData::parse(stream)?;
 
-        // Shared Skyrim+ head — see `parse_skyrim_shader_base`, which owns
-        // the gap-band gate for every block that carries this prefix (#3845).
+        // Shared Skyrim+ head — see `parse_skyrim_shader_base`. BLSP is one
+        // of the two block types with the real `bsver == 131` gap band
+        // (#4151), so `has_gap_band = true` (#3845).
         let (shader_flags_1, shader_flags_2, sf1_crcs, sf2_crcs, uv_offset, uv_scale) =
-            parse_skyrim_shader_base(stream)?;
+            parse_skyrim_shader_base(stream, true)?;
 
         let texture_set_ref = stream.read_block_ref()?;
         let emissive_color = [
@@ -1301,7 +1331,28 @@ impl BSLightingShaderProperty {
             }
         }
 
-        let shader_type_data = parse_shader_type_data_fo76(stream, shader_type)?;
+        // #4149 — `parse_shader_type_data_fo76`'s shader_type 4/5 (Skin/Hair
+        // Tint) arms read 16/12 extra bytes with no `bsver` gate, directly
+        // contradicting the comment three lines above this block's own
+        // FO76-tail gate: "Starfield (bsver >= 172) ends after the
+        // luminance quad below." That statement is unqualified — it was
+        // corpus-verified against 4,417 real Starfield blocks (#2622) as
+        // describing where EVERY Starfield BSLightingShaderProperty's wire
+        // data ends, not just shader_type == 0 ones. Gate this call the
+        // same way as the adjacent translucency/texture-array tail instead
+        // of running it unconditionally: on Starfield it now correctly
+        // reads nothing for shader_type 4/5 (falling back to `None`,
+        // losing only the authored skin/hair tint color) rather than
+        // over-reading into the next block and desyncing the rest of the
+        // file. No real Starfield character/hair NIF sample with
+        // shader_type ∈ {4,5} was available to corpus-verify in this
+        // session — this fix rests on the adjacent, already-verified
+        // "ends after the luminance quad" claim, not a fresh corpus scan.
+        let shader_type_data = if bsver < crate::version::bsver::STARFIELD {
+            parse_shader_type_data_fo76(stream, shader_type)?
+        } else {
+            ShaderTypeData::None
+        };
 
         Ok(Self {
             shader_type,
@@ -1799,9 +1850,10 @@ impl BSEffectShaderProperty {
         // arrays, then UV offset/scale. `parse_skyrim_shader_base` owns the
         // gap-band gate (`FO4_SHADER_GAP` = 131 carries neither encoding,
         // #409) and the #981 bulk CRC read for every block with this prefix
-        // (#3845).
+        // (#3845). BSEffectShaderProperty is the other block type with the
+        // real gap band, so `has_gap_band = true` (#4151).
         let (shader_flags_1, shader_flags_2, sf1_crcs, sf2_crcs, uv_offset, uv_scale) =
-            parse_skyrim_shader_base(stream)?;
+            parse_skyrim_shader_base(stream, true)?;
 
         // Source texture as sized string (NOT a texture set reference).
         let source_texture = stream.read_sized_string()?;
