@@ -868,6 +868,261 @@ fn fragment_execution_queue_survives_save_load_round_trip_and_resumes() {
     );
 }
 
+/// Regression: #4142 (SAVE-D2-2026-09-11-03) — the `FORMAT_MAJOR` bump
+/// that added `Effect::SetLocked` / `Effect::SetLockLevel` (#3159) had no
+/// round-trip coverage for either variant. The one existing
+/// `FragmentExecutionQueue` round trip queues `Wait` / `ProviderCall` /
+/// `SetHudCartMode`, so the exact shape change `FORMAT_MAJOR` exists to
+/// protect was never carried across a save boundary by any test.
+///
+/// Asserted behaviourally rather than by reading the queue back:
+/// `PendingFragmentExecution.pending` is `pub(crate)` to
+/// `byroredux-scripting`, and running the restored tail proves more than
+/// field equality would anyway — it shows the payload values (`level: 99`,
+/// `locked: false`) and the VMAD snapshot that resolves their targets all
+/// survived intact and still drive real component mutation.
+///
+/// Two doors on purpose: with one, `SetLocked(false)` removes the `Locked`
+/// component and erases the evidence that `SetLockLevel` ran at all.
+#[test]
+fn lock_effects_survive_save_load_round_trip_and_still_apply() {
+    use byroredux_core::ecs::components::{FormIdComponent, Locked};
+    use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    use byroredux_scripting::papyrus_demo::PapyrusPlayerEntity;
+    use byroredux_scripting::quest_stages::{
+        QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
+    };
+    use byroredux_scripting::translate::compose::ObjectRef;
+    use byroredux_scripting::translate::effects::Effect;
+    use byroredux_scripting::{
+        fragment_continuation_system, quest_fragment_dispatch_system, FragmentExecutionQueue,
+        QuestFormId, QuestStageFragments,
+    };
+
+    const Q: QuestFormId = QuestFormId(0x0001_5159);
+    const DOOR_LEVEL: u32 = 0x0000_D001;
+    const DOOR_LOCK: u32 = 0x0000_D002;
+
+    let pair = |local: u32| FormIdPair {
+        plugin: PluginId::from_filename("LockFixture.esm"),
+        local: LocalFormId(local),
+    };
+    let reg = build_save_registry();
+
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut src);
+    src.register::<Locked>();
+    let player = src.spawn();
+    src.insert_resource(PapyrusPlayerEntity(player));
+    src.insert_resource(QuestStageState::default());
+
+    // Interning order fixes the handle values, so `dst` can reproduce the
+    // same pool and resolve the restored `FormIdComponent`s.
+    let level_door = src.spawn();
+    let fid = src.resource_mut::<FormIdPool>().intern(pair(DOOR_LEVEL));
+    src.insert(level_door, FormIdComponent(fid));
+    let lock_door = src.spawn();
+    let fid = src.resource_mut::<FormIdPool>().intern(pair(DOOR_LOCK));
+    src.insert(lock_door, FormIdComponent(fid));
+
+    let stamp = |world: &mut World, e: byroredux_core::ecs::storage::EntityId| {
+        world.insert(
+            e,
+            Locked {
+                lock_level: 75,
+                key_form_id: Some(0x1234),
+            },
+        );
+    };
+    stamp(&mut src, level_door);
+    stamp(&mut src, lock_door);
+
+    let property = |name: &str, form_id: u32| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    let vmad = ScriptInstanceData {
+        scripts: vec![ScriptInstance {
+            name: "QF_LOCK".into(),
+            status: 0,
+            properties: vec![
+                property("LevelDoor", DOOR_LEVEL),
+                property("LockDoor", DOOR_LOCK),
+            ],
+        }],
+        ..Default::default()
+    };
+
+    {
+        let mut frags = src.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(Q, vmad);
+        frags.insert(
+            Q,
+            10,
+            vec![
+                // The `Wait` is what suspends the tail into the queue, so
+                // the two lock effects are still pending at save time.
+                Effect::Wait { seconds: 5.0 },
+                Effect::SetLockLevel {
+                    target: ObjectRef::Property("::LevelDoor_var".into()),
+                    level: 99,
+                },
+                Effect::SetLocked {
+                    target: ObjectRef::Property("::LockDoor_var".into()),
+                    locked: false,
+                },
+            ],
+        );
+    }
+    src.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    {
+        let mut q = src.query_mut::<QuestStageAdvancedBatch>().unwrap();
+        q.insert(
+            player,
+            QuestStageAdvancedBatch(vec![QuestStageAdvanced {
+                quest: Q,
+                previous_stage: 0,
+                new_stage: 10,
+            }]),
+        );
+    }
+    quest_fragment_dispatch_system(&src);
+    assert_eq!(
+        src.resource::<FragmentExecutionQueue>().len(),
+        1,
+        "Utility.Wait must suspend the lock effects into FragmentExecutionQueue"
+    );
+    assert_eq!(
+        src.get::<Locked>(level_door).unwrap().lock_level,
+        75,
+        "the suspended SetLockLevel must not have applied yet"
+    );
+    assert!(src.get::<Locked>(lock_door).is_some());
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    dst.resource_mut::<FormIdPool>().intern(pair(DOOR_LEVEL));
+    dst.resource_mut::<FormIdPool>().intern(pair(DOOR_LOCK));
+    byroredux_scripting::register(&mut dst);
+    dst.register::<Locked>();
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+
+    assert_eq!(
+        dst.resource::<FragmentExecutionQueue>().len(),
+        1,
+        "FragmentExecutionQueue must round-trip with the lock effects"
+    );
+
+    // `Locked` is not a saved component — the cell loader re-stamps it
+    // from XLOC on every load — so re-apply it the way the reload does,
+    // then let the restored tail run against it.
+    let find = |form_id: u32| {
+        byroredux_scripting::condition::resolve_entity_by_global_form_id(&dst, form_id)
+            .unwrap_or_else(|| panic!("door 0x{form_id:04X} must survive the round trip"))
+    };
+    let restored_level_door = find(DOOR_LEVEL);
+    let restored_lock_door = find(DOOR_LOCK);
+    stamp(&mut dst, restored_level_door);
+    stamp(&mut dst, restored_lock_door);
+
+    fragment_continuation_system(&dst, 5.0);
+
+    assert_eq!(
+        dst.get::<Locked>(restored_level_door).unwrap().lock_level,
+        99,
+        "the restored SetLockLevel must carry its authored difficulty (99), \
+         not a default or the pre-save 75"
+    );
+    assert!(
+        dst.get::<Locked>(restored_lock_door).is_none(),
+        "the restored SetLocked{{ locked: false }} must unlock its door — \
+         `Locked`'s absence IS the unlocked state"
+    );
+    assert!(
+        dst.resource::<FragmentExecutionQueue>().is_empty(),
+        "the resumed tail must leave the queue"
+    );
+}
+
+/// Regression: #4143 (SAVE-D2-2026-09-11-04) — `ReferenceEnableState` is
+/// registered and drives `cell_loader::spawn::placement_is_disabled`
+/// (#3789/#3278), but nothing carried a populated one across an actual
+/// serialize/deserialize cycle. The only existing coverage is
+/// `live_reload_tests.rs`'s source-order text scan, which checks *when*
+/// the resource is restored, never *what* survives.
+///
+/// The issue describes this as "a `FormId`-keyed map". It is not — the
+/// backing field is a private `HashSet<u32>` of raw local form IDs with
+/// no `FormId` handle anywhere, so there is no pool-resolution hazard to
+/// probe here; the shape risk is simply that a private-field set with no
+/// public iterator is easy to leave untested.
+#[test]
+fn reference_enable_state_survives_save_load_round_trip() {
+    use byroredux_scripting::ReferenceEnableState;
+
+    const DISABLED_A: u32 = 0x0001_0A0A;
+    const DISABLED_B: u32 = 0x0001_0B0B;
+    const LEFT_ENABLED: u32 = 0x0001_0C0C;
+    const NEVER_MENTIONED: u32 = 0x0001_0D0D;
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut src);
+
+    {
+        let mut state = src.resource_mut::<ReferenceEnableState>();
+        state.set_enabled(DISABLED_A, false);
+        state.set_enabled(DISABLED_B, false);
+        // Toggled off and back on: must round-trip as enabled, proving the
+        // saved value is the live set and not an append-only log.
+        state.set_enabled(LEFT_ENABLED, false);
+        state.set_enabled(LEFT_ENABLED, true);
+    }
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut dst);
+    // A fresh `register` seeds the default (everything enabled), so a
+    // restore that silently did nothing would look identical to a restore
+    // that worked — except for these two form IDs.
+    assert!(dst
+        .resource::<ReferenceEnableState>()
+        .is_enabled(DISABLED_A));
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+
+    let restored = dst.resource::<ReferenceEnableState>();
+    assert!(
+        !restored.is_enabled(DISABLED_A),
+        "a Papyrus Disable() must still be disabled after a save/load cycle"
+    );
+    assert!(!restored.is_enabled(DISABLED_B));
+    assert!(
+        restored.is_enabled(LEFT_ENABLED),
+        "a reference disabled and then re-enabled before the save must \
+         restore as enabled"
+    );
+    assert!(
+        restored.is_enabled(NEVER_MENTIONED),
+        "a form ID the ledger never saw must default to enabled"
+    );
+}
+
 #[test]
 fn provider_continuation_queue_survives_save_load_and_resumes() {
     use std::sync::{Arc, Mutex};
