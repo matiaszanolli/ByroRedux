@@ -1813,6 +1813,23 @@ pub struct VulkanContext {
     /// which subsumes it: the submit-time flag is only ever set on a frame
     /// that both reached the skin section and submitted successfully.
     pub bind_inverse_upload_failed: bool,
+    /// #4049 (REN-2026-09-06-D9-03) — one-shot latch for the
+    /// `upload_pending_bind_inverses` failure log, matching this subsystem's
+    /// own `SkinSlotPool::overflow_warned` convention: every sibling failure
+    /// path here (`failed_skin_slots` / #900, `failed_skin_blas` / #2802,
+    /// `overflow_warned`) logs once and counts silently afterward.
+    /// `#3569`'s requeue retries this upload every frame until it succeeds,
+    /// so without this latch a persistent failure (OOM on the upload heap,
+    /// device-lost in progress) would `warn!` once per frame per failing
+    /// batch for as long as the condition lasts, and bury the diagnostically
+    /// useful FIRST occurrence in the flood. Never reset — same
+    /// session-lifetime semantics as `overflow_warned`.
+    pub bind_inverse_upload_warned: bool,
+    /// See [`Self::bind_inverse_upload_warned`]. Incremented on every
+    /// `upload_pending_bind_inverses` failure (not just the first), so the
+    /// magnitude survives the log going silent; surfaced via
+    /// `SkinCoverageStats::bind_inverse_upload_failures` / `skin.coverage`.
+    pub bind_inverse_upload_failure_count: u32,
     /// D6-04 / #1811 — consecutive frames where no skinned entity's pose
     /// changed and no `bind_inverses` upload was pending. Reset to `0` on
     /// any dirty frame; once it exceeds `MAX_FRAMES_IN_FLIGHT`, every
@@ -2604,6 +2621,11 @@ impl VulkanContext {
             0
         };
         stats.slots_failed = self.failed_skin_slots.len() as u32;
+        // #4049 — cumulative count, not a per-frame gauge: the upload can
+        // fail on frame N and succeed on frame N+1 without the pool being
+        // reallocated, unlike `failed_skin_slots`'s "cleared on eviction"
+        // shape, so there is no natural point to zero this at.
+        stats.bind_inverse_upload_failures = self.bind_inverse_upload_failure_count;
         let (morph_slots, morph_bytes) = self.morph_memory_usage();
         stats.morph_slots = morph_slots;
         stats.morph_bytes = morph_bytes;

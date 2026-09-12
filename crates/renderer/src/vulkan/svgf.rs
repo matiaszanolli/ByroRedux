@@ -201,7 +201,7 @@ pub struct SvgfTemporalDecision {
 /// a Vulkan device. See #674 / DEN-4.
 ///
 /// #3995 — this also decides `progressive_accumulation`, because a live
-/// recovery window has to win over the camera-static drop.
+/// recovery window has to win over the scene-static drop.
 ///
 /// The shader's floor select is `floorC = params.w > 0.5 ? 0.0 : params.x`,
 /// so a `true` flag discards the α this function returns and falls back to
@@ -221,7 +221,19 @@ pub struct SvgfTemporalDecision {
 /// Progressive accumulation is only suppressed *while the window is open*;
 /// the frame the window closes, the parked-camera Monte-Carlo convergence
 /// resumes untouched.
-pub fn next_svgf_temporal_alpha(recovery_frames: u32, camera_static: bool) -> SvgfTemporalDecision {
+///
+/// #4046 (REN-2026-09-06-D8-02) — `scene_static` used to be named
+/// `camera_static` and the caller passed only the camera's view-proj
+/// comparison, so per-pixel geometric rejection (mesh-id + normal cone) was
+/// the only defense against a light that changed colour/intensity/position
+/// while the camera stayed parked and the surface stayed put — neither of
+/// which that rejection can see. The caller now ANDs in
+/// `caustic_scene_static` (already computed for the caustic accumulator,
+/// #2468, which folds every visible light's full state into its key), so a
+/// light-rig change drops progressive accumulation immediately instead of
+/// only when something else also happens to call
+/// `signal_temporal_discontinuity`.
+pub fn next_svgf_temporal_alpha(recovery_frames: u32, scene_static: bool) -> SvgfTemporalDecision {
     let recovering = recovery_frames > 0;
     SvgfTemporalDecision {
         alpha_color: if recovering {
@@ -234,7 +246,7 @@ pub fn next_svgf_temporal_alpha(recovery_frames: u32, camera_static: bool) -> Sv
         } else {
             SVGF_ALPHA_STEADY_STATE
         },
-        progressive_accumulation: camera_static && !recovering,
+        progressive_accumulation: scene_static && !recovering,
         next_recovery_frames: recovery_frames.saturating_sub(1),
     }
 }

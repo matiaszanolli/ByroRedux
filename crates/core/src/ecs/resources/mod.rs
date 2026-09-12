@@ -647,6 +647,13 @@ pub struct SkinCoverageStats {
     /// suppressed until LRU eviction frees a slot. Gauge — cleared on
     /// any eviction.
     pub slots_failed: u32,
+    /// #4049 — cumulative count of failed `upload_pending_bind_inverses`
+    /// calls (the host-visible map/flush for first-sight `bind_inverses`).
+    /// Unlike `slots_failed`, this is a running total with no reset point —
+    /// the #3569 requeue retries the same upload every frame until it
+    /// succeeds, so the log for it is one-shot (`bind_inverse_upload_warned`)
+    /// and this counter is the only place the magnitude survives.
+    pub bind_inverse_upload_failures: u32,
     /// Active per-entity morph slots. Their immutable delta buffers may be
     /// shared by mesh; the count here is still one entry per entity weight
     /// buffer.

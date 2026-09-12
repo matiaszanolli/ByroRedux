@@ -67,7 +67,12 @@ pub fn apply_emitter_params(
 /// one is unconditional, not gated on `Some`, since `pack_effect_shader_
 /// flags(None) == 0` already matches every preset's zero default. A
 /// `None`/empty input on every other field leaves the preset default in
-/// place.
+/// place. `greyscale_lut` (#3590 / #4044) is the resolved bindless handle for
+/// the palette LUT those `effect_shader_flags` palette bits index — `None`
+/// (no authored LUT, or the caller couldn't resolve one) keeps
+/// `preset.greyscale_lut_index` at bindless slot 0, the shader's "no LUT"
+/// sentinel; the caller still owns the `resolve_texture` call itself, since
+/// that needs `&mut VulkanContext` which this boundary doesn't take.
 ///
 /// **Why the budget is clamped rather than adopted.** nif.xml calls
 /// `BS Max Vertices` "the maximum number of particles", but FNV authors it
@@ -91,6 +96,7 @@ pub fn apply_emitter_overlays(
     dst_blend: Option<u8>,
     max_particles: Option<u32>,
     effect_shader: Option<&byroredux_nif::import::BsEffectShaderData>,
+    greyscale_lut: Option<u32>,
 ) {
     if let Some(curve) = color_curve {
         preset.start_color = curve.start;
@@ -147,6 +153,12 @@ pub fn apply_emitter_overlays(
     // payload (`pack_effect_shader_flags(None) == 0`) is a no-op overwrite,
     // not a behavioural change.
     preset.effect_shader_flags = crate::cell_loader::pack_effect_shader_flags(effect_shader);
+    // #3590 / #4044 — the LUT those palette bits select, folded into the
+    // same boundary as the flags that enable them. Previously hand-copied
+    // (byte-identical) at both spawn sites with a "Mirrored in the sibling
+    // site" comment — the same divergence-risk class #3589 closed one day
+    // earlier for `effect_shader_flags` above.
+    preset.greyscale_lut_index = greyscale_lut.unwrap_or(0);
 }
 
 /// Convert a list of imported NIF force fields (Z-up local space) to
@@ -539,6 +551,7 @@ mod tests {
             None,
             Some(30),
             None,
+            None,
         );
         assert_eq!(
             preset.max_particles, 30,
@@ -563,6 +576,7 @@ mod tests {
             None,
             None,
             Some(10_000),
+            None,
             None,
         );
         assert_eq!(
@@ -590,6 +604,7 @@ mod tests {
                 None,
                 None,
                 authored,
+                None,
                 None,
             );
             assert_eq!(
@@ -638,7 +653,8 @@ mod tests {
     /// that `initial_color` still does NOT win over the colour curve.
     /// #3589: also pins the BGEM effect-shader payload, which used to be
     /// packed by two hand-copied lines outside this boundary instead of
-    /// through it.
+    /// through it. #4044: same for the greyscale-palette LUT those payload
+    /// bits select — the sibling divergence #3589 left behind.
     #[test]
     fn apply_emitter_overlays_applies_color_rate_size_and_force_fields() {
         use byroredux_nif::import::{
@@ -685,6 +701,7 @@ mod tests {
             Some(6),
             Some(64),
             Some(&effect_shader),
+            Some(7),
         );
 
         // Colour curve overrides start/end (and beats the white default).
@@ -717,6 +734,9 @@ mod tests {
             0,
             "authored effect-shader payload must reach preset.effect_shader_flags"
         );
+        // #4044 — the resolved greyscale LUT handle must route through this
+        // same boundary, not a hand-copied assignment at each call site.
+        assert_eq!(preset.greyscale_lut_index, 7);
     }
 
     /// #1513: `None`/empty inputs leave the preset untouched — the overlay
@@ -736,6 +756,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(preset.start_color, preset_ref.start_color);
         assert_eq!(preset.speed, preset_ref.speed);
@@ -744,6 +765,9 @@ mod tests {
         // #3589 — an absent effect-shader payload must leave the preset's
         // zero default in place, not fabricate flags from nowhere.
         assert_eq!(preset.effect_shader_flags, preset_ref.effect_shader_flags);
+        // #4044 — an absent (unresolved) LUT must leave bindless slot 0 in
+        // place, the shader's "no LUT" sentinel.
+        assert_eq!(preset.greyscale_lut_index, preset_ref.greyscale_lut_index);
     }
 
     #[test]

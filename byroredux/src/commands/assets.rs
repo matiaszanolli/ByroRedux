@@ -619,6 +619,12 @@ impl ConsoleCommand for SkinCoverageCommand {
             cov.slots_failed,
         ));
         lines.push(format!(
+            "  bind_inverse_upload_failures = {}  (#4049 — cumulative, no reset; \
+             the #3569 requeue retries every frame until it succeeds, so the log \
+             for this is one-shot)",
+            cov.bind_inverse_upload_failures,
+        ));
+        lines.push(format!(
             "  morph_slots            = {}  (per-entity weight buffers)",
             cov.morph_slots,
         ));

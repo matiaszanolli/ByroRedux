@@ -1242,7 +1242,12 @@ mod mat_set_tests {
         let out = MatSetCommand.execute(&world, &format!("{e} glass_refraction_scale NaN"));
         assert!(out.lines.join("\n").contains("not finite"));
         assert_eq!(
-            world.query::<Material>().unwrap().get(e).unwrap().glass_refraction_scale,
+            world
+                .query::<Material>()
+                .unwrap()
+                .get(e)
+                .unwrap()
+                .glass_refraction_scale,
             0.85
         );
     }

@@ -886,15 +886,23 @@ impl VulkanContext {
         // produced by the render pass below.
         if !self.svgf_failed {
             if let Some(ref mut svgf) = self.svgf {
-                // #3995 — `camera_static` is passed in so the recovery window
-                // can veto the progressive-accumulation drop. It is NOT
-                // overridden globally: the same flag also gates
-                // `caustic_history_valid` above and `GpuCamera`'s w lane that
-                // `triangle.frag` reads for its knee, and neither of those has
-                // anything to do with an SVGF discontinuity.
+                // #3995 — `scene_static` is passed in so the recovery window
+                // can veto the progressive-accumulation drop.
+                // #4046 (REN-2026-09-06-D8-02) — ANDs in `caustic_scene_static`
+                // alongside `camera_static`: a light rig change (colour,
+                // intensity, radius, position) moves `caustic_scene_key` the
+                // same frame it happens, so SVGF drops the parked-camera
+                // progressive-accumulation floor instead of lagging behind it
+                // by up to the ~4s the 1/(histAge+1) time constant takes to
+                // converge. `caustic_history_valid` is exactly
+                // `camera_static && caustic_scene_static` — reused here rather
+                // than re-ANDing, since both consumers want the identical
+                // signal (this is NOT globally overriding `camera_static`
+                // itself: `GpuCamera`'s w lane that `triangle.frag` reads for
+                // its knee still gets the bare camera flag above).
                 let decision = crate::vulkan::svgf::next_svgf_temporal_alpha(
                     self.svgf_recovery_frames,
-                    camera_static,
+                    caustic_history_valid,
                 );
                 self.svgf_recovery_frames = decision.next_recovery_frames;
                 // SAFETY: `svgf`'s host-visible param buffer for `frame` is live and not in use by an in-flight frame (the fence wait at frame start guarantees the prior use of this slot completed); the host write is made visible to the compute pass by the bulk HOST->COMPUTE barrier below.
@@ -1319,6 +1327,46 @@ mod rigid_history_suppression_tests {
         assert!(
             draw.contains(".mark_dispatch_completed(fsr_reset_delivered);"),
             "a completed dispatch may only clear the reset THIS frame delivered —              clearing unconditionally swallows a reset raised later in the frame,              which is exactly where both record_post_passes callers signal from"
+        );
+    }
+}
+
+#[cfg(test)]
+mod svgf_scene_static_signal_tests {
+    /// #4046 (REN-2026-09-06-D8-02) — SVGF's progressive-accumulation flag
+    /// used to be fed the bare `camera_static` view-proj comparison, which is
+    /// purely geometric and cannot see a light that changed colour,
+    /// intensity, radius, or position while the camera stayed parked and the
+    /// surface stayed put — exactly the signal `caustic_scene_static`
+    /// (#2468) already computes one scope earlier, and previously spent only
+    /// on the caustic accumulator. `next_svgf_temporal_alpha` must now be
+    /// called with `caustic_history_valid` (== `camera_static &&
+    /// caustic_scene_static`), not the bare camera flag.
+    ///
+    /// A live test is impractical here — `build_and_upload_instances` needs a
+    /// real `VulkanContext`; this follows the crate's established convention
+    /// for that class of function (see the sibling modules above).
+    #[test]
+    fn svgf_temporal_alpha_is_fed_the_combined_camera_and_light_rig_signal() {
+        let src = include_str!("build_and_upload_instances.rs");
+
+        assert!(
+            src.contains("let caustic_history_valid = camera_static && caustic_scene_static;"),
+            "caustic_history_valid must still be exactly camera_static && \
+             caustic_scene_static — this test's premise depends on that identity \
+             to justify reusing it for SVGF instead of re-ANDing"
+        );
+
+        let call_site = src
+            .find("crate::vulkan::svgf::next_svgf_temporal_alpha(")
+            .expect("the SVGF temporal-alpha call site must still exist under this name");
+        let call = &src[call_site..call_site + 200];
+        assert!(
+            call.contains("caustic_history_valid"),
+            "next_svgf_temporal_alpha must be called with caustic_history_valid \
+             (camera AND light rig both unchanged), not the bare camera_static flag — \
+             regressing this drops GI convergence back to lagging a light-rig change \
+             by up to the ~4s 1/(histAge+1) time constant (#4046)"
         );
     }
 }

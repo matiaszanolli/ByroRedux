@@ -1564,6 +1564,8 @@ impl VulkanContext {
             skin_state_submitted: false,
             skin_pending_populated: Vec::new(),
             bind_inverse_upload_failed: false,
+            bind_inverse_upload_warned: false,
+            bind_inverse_upload_failure_count: 0,
             clean_skin_frames: 0,
             ssao,
             placeholder_ao,

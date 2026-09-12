@@ -96,7 +96,24 @@ impl VulkanContext {
             self.scene_buffers
                 .upload_pending_bind_inverses(&self.device, bind_inverse_pending_uploads)
                 .unwrap_or_else(|e| {
-                    log::warn!("Failed to upload pending bind_inverses: {e}");
+                    // #4049 — `Once`-gated, matching `SkinSlotPool::
+                    // overflow_warned` / `failed_skin_slots` / `failed_skin_blas`:
+                    // the #3569 requeue retries this same upload every frame
+                    // until it succeeds, so an un-gated `warn!` here floods the
+                    // log once per frame for as long as the failure persists,
+                    // and buries the diagnostically useful FIRST occurrence.
+                    // `bind_inverse_upload_failure_count` keeps the magnitude
+                    // (surfaced via `skin.coverage`) after the log goes silent.
+                    self.bind_inverse_upload_failure_count =
+                        self.bind_inverse_upload_failure_count.saturating_add(1);
+                    if !self.bind_inverse_upload_warned {
+                        self.bind_inverse_upload_warned = true;
+                        log::warn!(
+                            "Failed to upload pending bind_inverses: {e} (subsequent \
+                             consecutive failures are counted, not logged — see \
+                             skin.coverage's bind_inverse_upload_failures)"
+                        );
+                    }
                     // #3569 / D9-01 — `bind_inverse_pending_uploads` was
                     // already irrevocably drained from `SkinSlotPool` before
                     // this call. `record_skinned_blas_refit` (later this
@@ -511,6 +528,58 @@ mod bind_inverse_upload_failure_latch_tests {
             latch_pos - warn_pos < 1000,
             "the latch should be set immediately alongside the warning, \
              inside the same unwrap_or_else closure. (#3569)"
+        );
+    }
+}
+
+/// Regression for #4049 (REN-2026-09-06-D9-03). The #3569 requeue retries a
+/// failed `bind_inverses` upload every frame until it succeeds, so an
+/// un-gated `warn!` in that arm floods the log once per frame for as long as
+/// the failure persists — unlike every sibling failure path in this
+/// subsystem (`SkinSlotPool::overflow_warned`, `failed_skin_slots` /
+/// `failed_skin_blas`), all of which log once and count silently after.
+#[cfg(test)]
+mod bind_inverse_upload_failure_is_rate_limited_tests {
+    #[test]
+    fn upload_pending_bind_inverses_failure_arm_is_once_gated_and_counted() {
+        let src = include_str!("dispatch_skin_and_cluster.rs");
+        // Scoped to the production portion — an unscoped search would match
+        // this very module's own literals, same hazard the sibling latch
+        // test above documents.
+        let module_start = src
+            .find("mod bind_inverse_upload_failure_is_rate_limited_tests")
+            .expect("this test module must still exist under its own name");
+        let src = &src[..module_start];
+
+        assert!(
+            src.contains("if !self.bind_inverse_upload_warned {"),
+            "the failure arm must gate its warn!() behind a one-shot latch \
+             (bind_inverse_upload_warned), matching SkinSlotPool::overflow_warned \
+             and the failed_skin_slots/failed_skin_blas convention — an \
+             unconditional warn!() here floods the log for a persistent \
+             failure (#4049)"
+        );
+        assert!(
+            src.contains("bind_inverse_upload_failure_count.saturating_add(1)"),
+            "the failure arm must still increment a cumulative counter even \
+             after the log goes silent, or the magnitude of a persistent \
+             failure becomes unobservable (#4049)"
+        );
+        // The counter must be incremented UNCONDITIONALLY (every failure),
+        // not just inside the `if !warned` branch — a source-scan proxy for
+        // that is: the increment line must appear textually BEFORE the
+        // `if !self.bind_inverse_upload_warned {` gate that guards the warn.
+        let inc_pos = src
+            .find("self.bind_inverse_upload_failure_count.saturating_add(1);")
+            .expect("increment must still exist under this exact spelling");
+        let gate_pos = src
+            .find("if !self.bind_inverse_upload_warned {")
+            .expect("the one-shot gate must still exist under this exact spelling");
+        assert!(
+            inc_pos < gate_pos,
+            "the failure counter must increment before (i.e. outside) the \
+             one-shot warn gate, so every failure is counted, not just the \
+             first (#4049)"
         );
     }
 }

@@ -1104,12 +1104,24 @@ fn spawn_particle_emitters(
         let world_pos = GlobalTransform::compose_translation(ref_pos, ref_rot, ref_scale, nif_pos);
         let host = em.host_name.as_deref().unwrap_or("").to_ascii_lowercase();
         let mut preset = crate::fog::particle_preset(&host, em.texture_path.as_deref());
+        // #3590 — resolve the greyscale→palette LUT the `effect_shader_flags`
+        // palette bits (passed to `apply_emitter_overlays` below) index. Done
+        // here, not inside the boundary, because `resolve_texture` needs
+        // `&mut VulkanContext`, which the boundary fn doesn't take. Gated on
+        // `Some` so an emitter with no authored LUT keeps bindless slot 0
+        // (the shader's "no LUT" sentinel) rather than `resolve_texture`'s
+        // neutral-fallback handle for an absent path.
+        let greyscale_lut = em
+            .greyscale_lut_map
+            .as_deref()
+            .map(|path| resolve_texture(ctx, tex_provider, Some(path)));
         // NIFAL particles slice (#1513) — overlay every authored emitter
         // override (colour curve #707, NiPSysEmitter base params, birth
         // rate, force fields #984, texture/blend #2300, BGEM effect payload
-        // #2610/#3589) onto the heuristic preset through the single shared
-        // boundary. Parallel to the loose-NIF site in scene/nif_loader.rs —
-        // both call the same helper so the two load paths can't diverge.
+        // #2610/#3589, greyscale LUT #3590/#4044) onto the heuristic preset
+        // through the single shared boundary. Parallel to the loose-NIF site
+        // in scene/nif_loader.rs — both call the same helper so the two load
+        // paths can't diverge.
         crate::systems::apply_emitter_overlays(
             &mut preset,
             &em.color_curve,
@@ -1121,17 +1133,8 @@ fn spawn_particle_emitters(
             em.dst_blend,
             em.max_particles,
             em.effect_shader.as_ref(),
+            greyscale_lut,
         );
-        // #3590 — see the sibling site in `scene/nif_loader.rs`: resolve the
-        // greyscale→palette LUT the palette bits above index. Gated on
-        // `Some` so an emitter with no authored LUT keeps bindless slot 0
-        // (the shader's "no LUT" sentinel) rather than `resolve_texture`'s
-        // neutral-fallback handle for an absent path.
-        preset.greyscale_lut_index = em
-            .greyscale_lut_map
-            .as_deref()
-            .map(|path| resolve_texture(ctx, tex_provider, Some(path)))
-            .unwrap_or(0);
 
         // Alpha-over fog/smoke and additive flame/ember are both participating
         // media, not transparent geometry. Replace the billboard system at the

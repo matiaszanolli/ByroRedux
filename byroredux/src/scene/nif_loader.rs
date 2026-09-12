@@ -1516,12 +1516,26 @@ fn spawn_nif_particle_emitters(
             .map(|s| s.to_ascii_lowercase())
             .unwrap_or_default();
         let mut preset = crate::fog::particle_preset(&host_name, emitter.texture_path.as_deref());
+        // #3590 — resolve the greyscale→palette LUT the `effect_shader_flags`
+        // palette bits (passed to `apply_emitter_overlays` below) index, the
+        // same way the mesh path resolves `MaterialTextureHandles::greyscale_lut`.
+        // Done here, not inside the boundary, because `resolve_texture` needs
+        // `&mut VulkanContext`, which the boundary fn doesn't take. Gated on
+        // `Some`, not a bare `resolve_texture` call: an emitter that authored
+        // no LUT must keep reading bindless slot 0 (the shader's "no LUT"
+        // sentinel), not `resolve_texture`'s neutral-fallback handle for an
+        // absent path.
+        let greyscale_lut = emitter
+            .greyscale_lut_map
+            .as_deref()
+            .map(|path| resolve_texture(ctx, tex_provider, Some(path)));
         // NIFAL particles slice (#1513) — overlay every authored emitter
         // override (colour curve #707, NiPSysEmitter base params, birth
         // rate NiPSysEmitterCtlr, force fields #984, texture/blend #2300,
-        // BGEM effect payload #2610/#3589) onto the heuristic preset
-        // through the single shared boundary. The cell-loader spawn path
-        // calls the same helper, so the two load paths can't diverge.
+        // BGEM effect payload #2610/#3589, greyscale LUT #3590/#4044) onto
+        // the heuristic preset through the single shared boundary. The
+        // cell-loader spawn path calls the same helper, so the two load
+        // paths can't diverge.
         crate::systems::apply_emitter_overlays(
             &mut preset,
             &emitter.color_curve,
@@ -1533,19 +1547,8 @@ fn spawn_nif_particle_emitters(
             emitter.dst_blend,
             emitter.max_particles,
             emitter.effect_shader.as_ref(),
+            greyscale_lut,
         );
-        // #3590 — resolve the greyscale→palette LUT the `effect_shader_flags`
-        // palette bits above index, the same way the mesh path resolves
-        // `MaterialTextureHandles::greyscale_lut`. Gated on `Some`, not a
-        // bare `resolve_texture` call: an emitter that authored no LUT must
-        // keep reading bindless slot 0 (the shader's "no LUT" sentinel), not
-        // `resolve_texture`'s neutral-fallback handle for an absent path.
-        // Mirrored in `cell_loader::spawn::spawn_particle_emitters`.
-        preset.greyscale_lut_index = emitter
-            .greyscale_lut_map
-            .as_deref()
-            .map(|path| resolve_texture(ctx, tex_provider, Some(path)))
-            .unwrap_or(0);
 
         let fog_volume = crate::fog::medium_from_particle(&host_name, &preset);
         let texture_handle = if fog_volume.is_none() {
