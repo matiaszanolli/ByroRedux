@@ -392,6 +392,188 @@ mod tests {
         );
     }
 
+    /// NIFAL canonical-boundary completeness harness for the **HKX half**
+    /// of the Animation category (#4167).
+    ///
+    /// `convert_hkx_clip` and `anim_convert::convert_nif_clip` produce the
+    /// same canonical `AnimationClip` from two unrelated sources, so a
+    /// dropped field here is the same defect class with none of the same
+    /// coverage. The sibling harness lives in
+    /// `anim_convert::canonical_animation_completeness_harness`; this one
+    /// covers what is structurally different about the Havok path: the
+    /// per-sample Z-up→Y-up conversions, the `(w,x,y,z)`→glam quaternion
+    /// reorder, the three-axis scale average, the frame-index→time
+    /// derivation, and the annotation→text-key mapping.
+    ///
+    /// Distinctive, asymmetric values throughout: an identity transform or
+    /// a uniform scale would let a transposed axis or a dropped component
+    /// pass unnoticed.
+    #[test]
+    fn every_hkx_sample_field_survives_convert_hkx_clip() {
+        use byroredux_hkx::{HkxAnnotation, HkxBone, HkxTransform};
+
+        let skeleton = HkxSkeleton {
+            name: "TestSkeleton".to_string(),
+            bones: vec![HkxBone {
+                name: "NPC Spine [Spn0]".to_string(),
+                parent_index: -1,
+                reference_pose: HkxTransform::IDENTITY,
+            }],
+        };
+        // Asymmetric translation, a rotation that is not identity, and a
+        // non-uniform scale whose mean is an exact binary fraction.
+        let sample = HkxTransform {
+            translation: [1.0, 2.0, 3.0],
+            // HKX stores (x, y, z, w); the converter must read [3] as w.
+            rotation: [0.0, 0.6, 0.0, 0.8],
+            scale: [1.0, 2.0, 3.0],
+        };
+        let animation = HkxAnimation {
+            duration: 2.0,
+            num_frames: 2,
+            frame_duration: 0.5,
+            tracks: vec![vec![HkxTransform::IDENTITY, sample]],
+            track_to_bone: vec![0],
+            annotations: vec![HkxAnnotation {
+                track_name: "NPC Spine [Spn0]".to_string(),
+                time: 0.25,
+                text: "sound: footstep".to_string(),
+            }],
+        };
+
+        let mut pool = StringPool::new();
+        let clip = convert_hkx_clip(
+            "anims\\test.hkx",
+            "IdleTest",
+            &skeleton,
+            &animation,
+            &mut pool,
+        );
+
+        assert_eq!(
+            clip.name, "anims\\test.hkx",
+            "the source path IS the clip name"
+        );
+        assert_eq!(clip.duration, 2.0);
+        assert_eq!(clip.frequency, 1.0);
+        assert_eq!(clip.weight, 1.0);
+        // A non-cart idle has no behaviour completion events, so it loops.
+        assert_eq!(clip.cycle_type, CycleType::Loop);
+        assert_eq!(clip.accum_root_name, None);
+
+        let ch = clip
+            .channels
+            .get(&pool.intern("NPC Spine [Spn0]"))
+            .expect("the in-range track must convert, keyed by its bone name");
+        assert_eq!(ch.priority, 0);
+        assert_eq!(ch.translation_type, KeyType::Linear);
+        assert_eq!(ch.rotation_type, KeyType::Linear);
+        assert_eq!(ch.scale_type, KeyType::Linear);
+        assert_eq!(ch.translation_keys.len(), 2);
+
+        // Frame index × frame_duration, clamped to the clip duration.
+        assert_eq!(ch.translation_keys[0].time, 0.0);
+        assert_eq!(ch.translation_keys[1].time, 0.5);
+
+        // Z-up → Y-up on the sampled translation, not a raw copy.
+        let expected_pos = byroredux_core::math::coord::zup_to_yup_pos([1.0, 2.0, 3.0]);
+        assert_eq!(ch.translation_keys[1].value, Vec3::from_array(expected_pos));
+        assert_ne!(
+            ch.translation_keys[1].value,
+            Vec3::new(1.0, 2.0, 3.0),
+            "fixture sanity: the conversion must actually move the axes"
+        );
+        // HKX authors no tangents/TBC; the canonical key must say so rather
+        // than carrying uninitialised values.
+        assert_eq!(ch.translation_keys[1].forward, Vec3::ZERO);
+        assert_eq!(ch.translation_keys[1].backward, Vec3::ZERO);
+        assert_eq!(ch.translation_keys[1].tbc, None);
+
+        // (x,y,z,w) → (w,x,y,z) → Z-up→Y-up. A transposed component here is
+        // the classic silent quaternion bug.
+        let expected_rot = byroredux_core::math::coord::zup_to_yup_quat_wxyz([0.8, 0.0, 0.6, 0.0]);
+        assert_eq!(ch.rotation_keys[1].value, Quat::from_array(expected_rot));
+        assert_eq!(ch.rotation_keys[1].tbc, None);
+
+        // Three-axis scale collapsed to its mean: (1+2+3)/3 == 2.
+        assert_eq!(ch.scale_keys[1].value, 2.0);
+        assert_eq!(ch.scale_keys[1].forward, 0.0);
+        assert_eq!(ch.scale_keys[1].backward, 0.0);
+
+        // Annotations become text keys at their authored time.
+        assert_eq!(clip.text_keys.len(), 1);
+        assert_eq!(clip.text_keys[0].0, 0.25);
+        assert_eq!(pool.resolve(clip.text_keys[0].1), Some("sound: footstep"));
+
+        // The four channel collections this source never populates must
+        // stay empty rather than being filled with placeholder entries.
+        assert!(clip.float_channels.is_empty());
+        assert!(clip.color_channels.is_empty());
+        assert!(clip.bool_channels.is_empty());
+        assert!(clip.texture_flip_channels.is_empty());
+    }
+
+    /// #4167 — the cart-exit branch is the one place this boundary
+    /// synthesizes canonical data that has no counterpart in the source
+    /// (behaviour-graph completion events Havok keeps outside the clip), so
+    /// it gets its own pin: a silent loss here strands the cart-exit idle.
+    #[test]
+    fn cart_exit_idles_gain_completion_events_and_clamp() {
+        use byroredux_hkx::{HkxAnnotation, HkxBone, HkxTransform};
+
+        let skeleton = HkxSkeleton {
+            name: "TestSkeleton".to_string(),
+            bones: vec![HkxBone {
+                name: "NPC COM [COM ]".to_string(),
+                parent_index: -1,
+                reference_pose: HkxTransform::IDENTITY,
+            }],
+        };
+        let animation = HkxAnimation {
+            duration: 3.0,
+            num_frames: 1,
+            frame_duration: 1.0,
+            tracks: vec![vec![HkxTransform::IDENTITY]],
+            track_to_bone: vec![0],
+            annotations: Vec::<HkxAnnotation>::new(),
+        };
+
+        let mut pool = StringPool::new();
+        let clip = convert_hkx_clip(
+            "anims\\cart.hkx",
+            "IdleCartPrisonerExit",
+            &skeleton,
+            &animation,
+            &mut pool,
+        );
+
+        assert_eq!(
+            clip.cycle_type,
+            CycleType::Clamp,
+            "a clip with a completion event must not loop past it"
+        );
+        assert_eq!(
+            clip.accum_root_name,
+            Some(pool.intern("NPC COM [COM ]")),
+            "root motion accumulates on COM for cart idles"
+        );
+        let labels: Vec<_> = clip
+            .text_keys
+            .iter()
+            .filter_map(|(_, sym)| pool.resolve(*sym))
+            .collect();
+        for expected in ["exitcartend", "idlefurnitureexit"] {
+            assert!(
+                labels.contains(&expected),
+                "synthesized completion event {expected} missing from {labels:?}"
+            );
+        }
+        assert!(
+            clip.text_keys.iter().all(|(t, _)| *t == 3.0),
+            "synthesized events fire at the clip end"
+        );
+    }
+
     /// Opt-in: parses the whole of `Skyrim.esm` and decodes real HKX out of
     /// `Skyrim - Animations.bsa`, which costs ~1 GB resident — by far the
     /// heaviest single test in the workspace, and enough to dominate the

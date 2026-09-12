@@ -655,6 +655,171 @@ mod tests {
     /// packed by two hand-copied lines outside this boundary instead of
     /// through it. #4044: same for the greyscale-palette LUT those payload
     /// bits select — the sibling divergence #3589 left behind.
+    /// NIFAL canonical-boundary coverage guard for the **Particles**
+    /// category (#4167).
+    ///
+    /// Particles was listed in #2532's original scope, addressed by neither
+    /// its fix nor its closing comment, and left with no issue tracking it.
+    /// The failure mode here is closer to Lights/Collision's than to
+    /// Material's: not a mistyped per-field copy, but a *whole overlay
+    /// quietly stopping being unioned in* — which is why this pins every
+    /// parameter reaching the preset, and pairs that with a structural
+    /// guard below.
+    ///
+    /// Every value is deliberately distinct from `torch_flame()`'s preset
+    /// value, so an overlay that stops being applied fails as a wrong-value
+    /// assertion instead of passing against a coincidentally-equal default.
+    #[test]
+    fn every_overlay_parameter_reaches_the_preset() {
+        use byroredux_nif::import::{
+            BsEffectShaderData, ImportedEmitterParams, ImportedParticleForceField,
+            ParticleColorCurve,
+        };
+
+        let mut preset = ParticleEmitter::torch_flame();
+        let before = preset.clone();
+
+        let params = ImportedEmitterParams {
+            speed: 12.5,
+            speed_variation: 1.25,
+            declination: 0.35,
+            declination_variation: 0.15,
+            initial_color: [0.1, 0.2, 0.3, 0.4],
+            initial_radius: 4.0,
+            life_span: 7.5,
+            life_span_variation: 0.75,
+            base_scale: Some(2.0),
+            radius_variation: -3.0,
+        };
+        let curve = ParticleColorCurve {
+            start: [0.9, 0.8, 0.7, 0.6],
+            end: [0.5, 0.4, 0.3, 0.2],
+        };
+        let fields = [ImportedParticleForceField::Gravity {
+            direction: [0.0, 0.0, -1.0],
+            strength: 9.81,
+            decay: 0.0,
+        }];
+        let effect = BsEffectShaderData {
+            effect_soft: true,
+            ..Default::default()
+        };
+
+        apply_emitter_overlays(
+            &mut preset,
+            &Some(curve),
+            &Some(params),
+            Some(33.0),
+            &fields,
+            &Some("textures/fx/smoke.dds".to_string()),
+            Some(6),
+            Some(7),
+            Some(250),
+            Some(&effect),
+            Some(3),
+        );
+
+        // 1. color_curve
+        assert_eq!(preset.start_color, [0.9, 0.8, 0.7, 0.6]);
+        assert_eq!(preset.end_color, [0.5, 0.4, 0.3, 0.2]);
+        // 2. emitter_params (delegated to apply_emitter_params)
+        assert_eq!(preset.speed, 12.5);
+        assert_eq!(preset.speed_variation, 1.25);
+        assert_eq!(preset.declination, 0.35);
+        assert_eq!(preset.declination_variation, 0.15);
+        assert_eq!(preset.life, 7.5);
+        assert_eq!(preset.life_variation, 0.75);
+        // initial_radius * base_scale
+        assert_eq!(preset.start_size, 8.0);
+        assert_eq!(preset.end_size, 8.0);
+        // |radius_variation| * base_scale — magnitude, so the sign is dropped
+        assert_eq!(preset.start_size_variation, 6.0);
+        // 3. emitter_rate
+        assert_eq!(preset.rate, 33.0);
+        // 4. force_fields
+        assert_eq!(preset.force_fields.len(), 1);
+        // 5. texture_path
+        assert_eq!(
+            preset.texture_path.as_deref(),
+            Some("textures/fx/smoke.dds")
+        );
+        // 6/7. blend modes
+        assert_eq!(preset.src_blend, 6);
+        assert_eq!(preset.dst_blend, 7);
+        // 8. max_particles (under the ceiling, so copied verbatim)
+        assert_eq!(preset.max_particles, 250);
+        // 9. effect_shader → packed canonical flag word
+        assert_eq!(
+            preset.effect_shader_flags,
+            crate::cell_loader::pack_effect_shader_flags(Some(&effect))
+        );
+        assert_ne!(preset.effect_shader_flags, 0, "fixture sanity");
+        // 10. greyscale_lut
+        assert_eq!(preset.greyscale_lut_index, 3);
+
+        // Every assertion above must be a real change, or the test could
+        // pass against an overlay that never ran.
+        assert_ne!(preset.start_color, before.start_color);
+        assert_ne!(preset.speed, before.speed);
+        assert_ne!(preset.rate, before.rate);
+        assert_ne!(preset.max_particles, before.max_particles);
+        assert_ne!(preset.effect_shader_flags, before.effect_shader_flags);
+        assert_ne!(preset.greyscale_lut_index, before.greyscale_lut_index);
+    }
+
+    /// #4167, structural half. An unused *function parameter* draws no
+    /// `unused_variables` warning in Rust, so an overlay that is added to
+    /// this boundary's signature and never wired into the body is invisible
+    /// to the compiler and to the value test above — which can only assert
+    /// on parameters it already knows exist.
+    ///
+    /// This reads the boundary's own source and requires every declared
+    /// parameter to appear at least once in the body, so a newly-added
+    /// overlay that nobody wired up fails here rather than shipping inert.
+    #[test]
+    fn every_declared_overlay_parameter_is_read_by_the_body() {
+        const SOURCE: &str = include_str!("particle.rs");
+
+        let start = SOURCE
+            .find("pub fn apply_emitter_overlays(")
+            .expect("the overlay boundary must exist under its declared name");
+        let sig_end = SOURCE[start..]
+            .find(") {")
+            .expect("signature must terminate")
+            + start;
+        let body_end = SOURCE[sig_end..]
+            .find("\n}\n")
+            .expect("body must terminate at a column-0 brace")
+            + sig_end;
+
+        let signature = &SOURCE[start..sig_end];
+        let body = &SOURCE[sig_end..body_end];
+
+        let params: Vec<&str> = signature
+            .split('\n')
+            .skip(1)
+            .filter_map(|line| {
+                let line = line.trim();
+                let name = line.split(':').next()?.trim();
+                (!name.is_empty() && name != "preset").then_some(name)
+            })
+            .collect();
+
+        assert!(
+            params.len() >= 10,
+            "parser sanity: expected the full overlay parameter list, got {params:?}"
+        );
+        for name in &params {
+            assert!(
+                body.contains(name),
+                "overlay parameter `{name}` is declared but never read in \
+                 apply_emitter_overlays — it was added to the boundary and \
+                 not wired in, so every authored value for it is silently \
+                 dropped at both spawn sites (#4167)"
+            );
+        }
+    }
+
     #[test]
     fn apply_emitter_overlays_applies_color_rate_size_and_force_fields() {
         use byroredux_nif::import::{

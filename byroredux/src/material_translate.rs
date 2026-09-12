@@ -2313,9 +2313,22 @@ mod tests {
 ///   (`every_dispatched_bhk_shape_has_resolve_arm`, from #1360/#1361).
 /// - Lights: `import::walk`'s `light_dispatch_coverage_tests` (#2532).
 ///
-/// Animation (`convert_nif_clip` / `convert_hkx_clip`) remains unguarded and
-/// is the next extension. Extend this module alongside each new canonical
-/// boundary that is actually callable from `byroredux`.
+/// #4167 closed the last two: every declared NIFAL boundary now has a
+/// guard, each shaped to the failure mode that boundary actually has.
+/// - Animation: `anim_convert::canonical_animation_completeness_harness`
+///   (`convert_nif_clip`) and `asset_provider::animation`'s
+///   `every_hkx_sample_field_survives_convert_hkx_clip` (`convert_hkx_clip`).
+///   Both are kitchen-sink value harnesses like this one, because both
+///   produce the same canonical `AnimationClip` by per-field copy.
+/// - Particles: `systems::particle`'s
+///   `every_overlay_parameter_reaches_the_preset`, plus a structural
+///   `every_declared_overlay_parameter_is_read_by_the_body`. The second is
+///   there because `apply_emitter_overlays` takes its overlays as function
+///   *parameters*, and an unread parameter draws no `unused_variables`
+///   warning — so an overlay added to the signature and never wired in is
+///   invisible to both the compiler and a value harness.
+///
+/// Extend the matching module alongside each new canonical boundary.
 ///
 /// Every assertion reads `Material` (canonical), never `ImportedMaterial`
 /// fill rates — the #2214 complaint about the raw-tier harness.

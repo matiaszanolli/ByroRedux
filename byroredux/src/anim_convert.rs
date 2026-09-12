@@ -965,3 +965,250 @@ mod clip_duration_weight_tests {
         assert_eq!(clip.weight, 0.75, "finite weight must pass through");
     }
 }
+
+/// NIFAL canonical-boundary completeness harness for the **Animation**
+/// category (#4167).
+///
+/// Animation was the boundary #2532's closing comment named as "the next
+/// extension" after it guarded Collision and Lights, and it stayed
+/// unguarded. This is the Material harness's pattern
+/// (`material_translate.rs::canonical_completeness_harness`) applied here:
+/// one source clip with every field the boundary copies set to a
+/// distinctive, non-default value, so a silently dropped field is a
+/// wrong-value failure rather than a false pass against an already-zero
+/// default.
+///
+/// Every assertion reads `byroredux_core`'s canonical `AnimationClip`,
+/// never the `byroredux_nif` source tier — the #2214 complaint about
+/// raw-tier harnesses.
+///
+/// Scalars are deliberately chosen to survive `sanitized_clip_*`
+/// untouched (finite, positive duration/frequency), mirroring how the
+/// Material fixture picks values that keep the glass/PBR classifiers
+/// no-op: this harness tests the copy boundary, not the sanitizers, which
+/// have their own tests in `unsanitized_clip_scalar_tests` above.
+#[cfg(test)]
+mod canonical_animation_completeness_harness {
+    use super::*;
+    use byroredux_nif::anim as na;
+    use byroredux_nif::blocks::interpolator::KeyType as NifKeyType;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    const NODE: &str = "Bip01 Spine";
+
+    fn kitchen_sink_nif_clip() -> na::AnimationClip {
+        let mut channels = HashMap::new();
+        channels.insert(
+            Arc::from(NODE),
+            na::TransformChannel {
+                translation_keys: vec![na::TranslationKey {
+                    time: 0.25,
+                    value: [1.5, 2.5, 3.5],
+                    forward: [0.1, 0.2, 0.3],
+                    backward: [0.4, 0.5, 0.6],
+                    tbc: Some([0.7, 0.8, 0.9]),
+                }],
+                // Each of the three key types is distinct, so a converter
+                // that wires one channel's type into another's slot fails.
+                translation_type: NifKeyType::Linear,
+                rotation_keys: vec![na::RotationKey {
+                    time: 0.5,
+                    // Already glam order (x, y, z, w) at this tier.
+                    value: [0.0, 0.6, 0.0, 0.8],
+                    tbc: Some([1.1, 1.2, 1.3]),
+                }],
+                rotation_type: NifKeyType::Quadratic,
+                scale_keys: vec![na::ScaleKey {
+                    time: 0.75,
+                    value: 2.25,
+                    forward: 0.35,
+                    backward: 0.45,
+                    tbc: Some([1.4, 1.5, 1.6]),
+                }],
+                scale_type: NifKeyType::Tbc,
+                priority: 7,
+            },
+        );
+
+        na::AnimationClip {
+            name: "KitchenSinkClip".to_string(),
+            duration: 3.5,
+            // Non-default: `Clamp` is the zero-ish variant, so `Reverse`
+            // can't false-pass.
+            cycle_type: na::CycleType::Reverse,
+            frequency: 1.75,
+            phase: 0.625,
+            weight: 0.875,
+            accum_root_name: Some("NPC Root [Root]".to_string()),
+            channels,
+            float_channels: vec![(
+                Arc::from(NODE),
+                na::FloatChannel {
+                    target: na::FloatTarget::Alpha,
+                    keys: vec![na::AnimFloatKey {
+                        time: 0.125,
+                        value: 0.375,
+                    }],
+                },
+            )],
+            color_channels: vec![(
+                Arc::from(NODE),
+                na::ColorChannel {
+                    target: na::ColorTarget::Emissive,
+                    keys: vec![na::AnimColorKey {
+                        time: 0.25,
+                        value: [0.11, 0.22, 0.33],
+                    }],
+                },
+            )],
+            bool_channels: vec![(
+                Arc::from(NODE),
+                na::BoolChannel {
+                    keys: vec![na::AnimBoolKey {
+                        time: 0.375,
+                        // `true` because `false` is the bool default.
+                        value: true,
+                    }],
+                },
+            )],
+            texture_flip_channels: vec![(
+                Arc::from(NODE),
+                na::TextureFlipChannel {
+                    texture_slot: 4, // GLOW_MAP, not the 0 default
+                    source_paths: vec![Arc::from("textures/flip0.dds"), Arc::from("flip1.dds")],
+                    keys: vec![na::AnimFloatKey {
+                        time: 0.5,
+                        value: 1.0,
+                    }],
+                },
+            )],
+            text_keys: vec![(0.9, "sound: wpn_swing".to_string())],
+        }
+    }
+
+    #[test]
+    fn every_clip_scalar_survives_convert_nif_clip() {
+        let mut pool = StringPool::new();
+        let clip = convert_nif_clip(&kitchen_sink_nif_clip(), &mut pool);
+
+        assert_eq!(clip.name, "KitchenSinkClip");
+        assert_eq!(clip.duration, 3.5);
+        assert_eq!(clip.cycle_type, CycleType::Reverse);
+        assert_eq!(clip.frequency, 1.75);
+        // #3345 — `phase` reached the NIF tier and stopped at this literal
+        // once already. That is precisely the drop class this harness exists
+        // to make loud.
+        assert_eq!(clip.phase, 0.625);
+        assert_eq!(clip.weight, 0.875);
+        // Compared by interned symbol, not by resolved text: `StringPool`
+        // case-folds on intern, so the canonical clip legitimately holds
+        // `npc root [root]`. Asserting the symbol keeps this a test of the
+        // copy boundary rather than of the pool's folding policy.
+        assert_eq!(
+            clip.accum_root_name,
+            Some(pool.intern("NPC Root [Root]")),
+            "the root-motion accumulation node drives split_root_motion"
+        );
+    }
+
+    #[test]
+    fn every_transform_channel_field_survives_convert_nif_clip() {
+        let mut pool = StringPool::new();
+        let clip = convert_nif_clip(&kitchen_sink_nif_clip(), &mut pool);
+
+        let sym = pool.intern(NODE);
+        let ch = clip
+            .channels
+            .get(&sym)
+            .expect("the transform channel must survive keyed by its interned name");
+
+        assert_eq!(
+            ch.priority, 7,
+            "ControlledBlock priority gates layer blending"
+        );
+        assert_eq!(ch.translation_type, KeyType::Linear);
+        assert_eq!(ch.rotation_type, KeyType::Quadratic);
+        assert_eq!(ch.scale_type, KeyType::Tbc);
+
+        let t = ch.translation_keys.first().expect("translation key");
+        assert_eq!(t.time, 0.25);
+        assert_eq!(t.value, Vec3::new(1.5, 2.5, 3.5));
+        assert_eq!(t.forward, Vec3::new(0.1, 0.2, 0.3));
+        assert_eq!(t.backward, Vec3::new(0.4, 0.5, 0.6));
+        assert_eq!(t.tbc, Some([0.7, 0.8, 0.9]));
+
+        let r = ch.rotation_keys.first().expect("rotation key");
+        assert_eq!(r.time, 0.5);
+        // The NIF tier already stores glam order, so the component mapping
+        // must be an identity copy — a transposed w/x here is the classic
+        // silent quaternion bug.
+        assert_eq!(r.value, Quat::from_xyzw(0.0, 0.6, 0.0, 0.8));
+        assert_eq!(r.tbc, Some([1.1, 1.2, 1.3]));
+
+        let s = ch.scale_keys.first().expect("scale key");
+        assert_eq!(s.time, 0.75);
+        assert_eq!(s.value, 2.25);
+        assert_eq!(s.forward, 0.35);
+        assert_eq!(s.backward, 0.45);
+        assert_eq!(s.tbc, Some([1.4, 1.5, 1.6]));
+    }
+
+    #[test]
+    fn every_non_transform_channel_survives_convert_nif_clip() {
+        let mut pool = StringPool::new();
+        let clip = convert_nif_clip(&kitchen_sink_nif_clip(), &mut pool);
+        let sym = pool.intern(NODE);
+
+        let (name, float_ch) = clip.float_channels.first().expect("float channel");
+        assert_eq!(*name, sym);
+        assert_eq!(float_ch.target, FloatTarget::Alpha);
+        assert_eq!(float_ch.keys[0].time, 0.125);
+        assert_eq!(float_ch.keys[0].value, 0.375);
+
+        let (name, color_ch) = clip.color_channels.first().expect("color channel");
+        assert_eq!(*name, sym);
+        assert_eq!(color_ch.target, ColorTarget::Emissive);
+        assert_eq!(color_ch.keys[0].time, 0.25);
+        assert_eq!(color_ch.keys[0].value, Vec3::new(0.11, 0.22, 0.33));
+
+        let (name, bool_ch) = clip.bool_channels.first().expect("bool channel");
+        assert_eq!(*name, sym);
+        assert_eq!(bool_ch.keys[0].time, 0.375);
+        assert!(bool_ch.keys[0].value);
+
+        let (name, flip) = clip
+            .texture_flip_channels
+            .first()
+            .expect("texture flip channel");
+        assert_eq!(*name, sym);
+        assert_eq!(flip.texture_slot, 4);
+        assert_eq!(
+            flip.source_paths.iter().map(|p| &**p).collect::<Vec<_>>(),
+            ["textures/flip0.dds", "flip1.dds"],
+            "flipbook source order picks the frame; a reorder is silent"
+        );
+        assert_eq!(flip.keys[0].time, 0.5);
+        assert_eq!(flip.keys[0].value, 1.0);
+
+        let (time, label) = clip.text_keys.first().expect("text key");
+        assert_eq!(*time, 0.9);
+        assert_eq!(pool.resolve(*label), Some("sound: wpn_swing"));
+    }
+
+    /// A whole *collection* silently ceasing to be copied is the other
+    /// half of the drop class — a per-field assertion above would still
+    /// pass if `.first()` were reading a collection that had one stray
+    /// entry. Pin the counts so an emptied collection fails here.
+    #[test]
+    fn no_channel_collection_is_dropped_wholesale() {
+        let mut pool = StringPool::new();
+        let clip = convert_nif_clip(&kitchen_sink_nif_clip(), &mut pool);
+        assert_eq!(clip.channels.len(), 1, "transform channels");
+        assert_eq!(clip.float_channels.len(), 1, "float channels");
+        assert_eq!(clip.color_channels.len(), 1, "color channels");
+        assert_eq!(clip.bool_channels.len(), 1, "bool channels");
+        assert_eq!(clip.texture_flip_channels.len(), 1, "texture flip channels");
+        assert_eq!(clip.text_keys.len(), 1, "text keys");
+    }
+}
