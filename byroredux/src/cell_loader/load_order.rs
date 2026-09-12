@@ -553,9 +553,17 @@ where
             }
         }
     }
-    // #1553 — companion `.STRINGS` language. Vanilla ships `english`;
-    // a localized install (french / german / …) can override it. Read
-    // once outside the loop.
+    // #1553 — companion `.STRINGS` language. Read once outside the loop.
+    //
+    // #4168 — this default is a *token*, not a file-name segment. Only
+    // Skyrim spells the language out in full (`Skyrim_english.STRINGS`);
+    // Fallout 4, Fallout 76 and Starfield ship the short tag instead
+    // (`Fallout4_en.STRINGS` — the shipped `Fallout4 - Interface.ba2`
+    // contains no file whose name holds "english" at all). The token is
+    // expanded to every shipped spelling by
+    // `StringTableSet::language_candidates`, so `"english"` resolves on
+    // all four games and an explicit `BYRO_STRINGS_LANG` (`ptbr`,
+    // `zhhans`, `russian`, …) is still honoured verbatim.
     let strings_language =
         std::env::var("BYRO_STRINGS_LANG").unwrap_or_else(|_| "english".to_string());
 

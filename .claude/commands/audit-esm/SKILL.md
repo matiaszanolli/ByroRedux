@@ -438,6 +438,21 @@ routers, `crates/plugin/src/esm/records/index.rs` (`EsmIndex`)
 - Language selection defaults and the `resolve` miss path: an unresolved id
   should be diagnosable in one place, not become an empty `String` at 40 call
   sites.
+- **The language token is not the file-name segment** (#4168, fixed
+  2026-09-12). Skyrim spells it out (`dawnguard_english.strings`, in
+  `Skyrim - Interface.bsa`); FO4 / FO76 / Starfield use a short tag
+  (`Fallout4_en.STRINGS` — that archive contains no file whose name holds
+  "english"). `language_candidates` expands one token to both spellings;
+  the measured tag set is `cn de en es esmx fr it ja pl ptbr ru zhhans
+  zhhant`, of which only nine have a long form. This defect was
+  re-derived from scratch by two prior audits before it was ever filed —
+  check the helper exists before reporting it a third time.
+- **Decode is UTF-8-first with a cp1252 fallback, and that order is
+  load-bearing** (#4170). English tables carry genuine cp1252 bytes
+  (FO4 80 / 172 806 entries, Starfield 228 / 187 563); the localized
+  tables are genuine UTF-8 (`Fallout4_ru` alone has 1.8 M non-ASCII
+  bytes and zero replacement characters). A flat cp1252 decode is a
+  *regression*, not a fix — do not report the fallback as a bug.
 **Output**: `/tmp/audit/esm/dim_6.md`
 
 ### Dimension 7: `EsmIndex` → ECS Handoff & the Redux-Native Tier

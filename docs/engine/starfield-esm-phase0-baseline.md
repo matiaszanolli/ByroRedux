@@ -136,7 +136,7 @@ Of the Cydonia-relevant gaps, only LCTN and possibly RFGP need pre-Phase-5 work.
 ### Three answered decision points from the roadmap
 
 1. **Form-id remap policy** — the existing `FormIdRemap` infra worked on Constellation + Starfield + ShatteredSpace + OldMars without modification. Multi-master SF loads (Phase 2 deliverable) should "just work" once we feed the right master-list order. **Decision: defer SF-specific form-id remap until Phase 2 reveals a concrete edge case.**
-2. **Strings file encoding** — `localized=true` on all 5 vanilla ESMs. Existing `strings_table.rs` is the consumer; Phase 2 will smoke-test against real SF `Starfield - Localization/*.STRINGS` to verify UTF-8 vs Windows-1252.
+2. **Strings file encoding** — `localized=true` on all 5 vanilla ESMs. **Answered 2026-09-12 (#4170), no Phase 2 smoke test needed**: the question was a false dichotomy — the shipped tables are *both*. Decoding `Starfield - Localization.ba2`'s `strings/starfield_en.{strings,dlstrings,ilstrings}` directly, 228 of 187 563 entries carry Windows-1252 bytes that are invalid UTF-8, while the non-English tables (and FO4's `_fr`/`_ja`/`_ru`) are valid UTF-8 end to end. A flat cp1252 decode would therefore mojibake every localized table. `strings_table.rs` decodes UTF-8-first and falls back to cp1252 only for the byte runs UTF-8 rejects. **Decision: closed.**
 3. **GBFM frequency** — 3 141 records / 36 MB in Starfield.esm. **Stubbable for Cydonia.** Confirmed Phase 3 can ship without GBFM (just warn-once-and-skip).
 
 ## Per-ESM observations
