@@ -12,27 +12,26 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-09-09 (session close — tests **7602**, +162 vs
-Session 81's 7440; Rust `src/` LOC **~556 183**, +11 358; total `.rs` LOC
-**~598 070**, +12 157; source files **1037** (955 outside `tests/`), +3/+3;
-workspace members unchanged at **33**; open issue dirs **3968**, +27.
-Session 82 closed the 76-issue renderer sweep Session 81 filed, landed
-reversed-Z behind a single depth-mapping authority (#3308), closed WATAL W1
-(real-character water traversal), and — using the harness-provenance tooling
-that sweep itself corrected (#4024/#4025) — took **the first bench-of-record
-refresh in 190 commits**: 75 runs at HEAD `4c9a5b36`, zero rejections, every
-state-hash gate passing, on a documented near-idle GPU. **R6a-stale-21 is
-resolved.** The session's most notable finding came from the 30-run
-same-machine control at its own start commit, which converted two ambiguities
-into measurements no test can produce: the FO4 Dugout Inn frame time regressed
-~10% inside this range (99.1 → 90.0 FPS, control vs HEAD, same harness and
-hardware), and the engine now **SIGSEGVs at process teardown on 75/75 bench
-runs where the control crashes on 0/30** — preceded by the "GPU allocator has
-N outstanding references" log that #927's own test comment names as the
-regression check. Both are new in this range; see Known Issues. The refresh
-deliberately does **not** claim to answer R6a-stale-21's ground-cover
-question — every scene in the matrix is an interior, so that stratum never
-engages, and the gap is re-filed on its own.)
+**Last verified**: 2026-09-12 (session close — tests **7754**, +152 vs
+Session 82's 7602; Rust `src/` LOC **~563 207**, +7 024; total `.rs` LOC
+**~606 180**, +8 110; source files **1076** (993 outside `tests/`), +39/+38;
+workspace members unchanged at **33**; open issue dirs **4219**, +251.
+Session 83 worked the 2026-09-11/12 audit-report tail to near-zero — 178
+issues closed across CHARAL, ESM/plugin, NIF (Oblivion/Skyrim/Starfield/FO4),
+renderer and physics doc-rot, plus a handful of real defects (a BGSM
+greyscale-palette shader fix that had collapsed 9 brick-material variants
+onto one color, #3927; a collider AABB-centre containment fix extended from
+Y to X/Z, #3973; TPLT dual-chain resolution for creature ActorValues/race/
+factions/AI packages) — and, in parallel, landed the `GpuImage`
+consolidation: one shared image-lifecycle type absorbing what had been
+per-pass hand-rolled staging/view/layout code across bloom, composite,
+GBuffer, SSAO, SVGF, TAA, exposure and both caustic passes. The
+bench-of-record at `4c9a5b36` is now 88 commits stale — over the 30-commit
+gate — and **R6a-stale-22** is filed below; harness byte-stability is
+confirmed, so the eventual re-run remains a valid apples-to-apples
+comparison, but it has not happened, and #3902's new secondary-ray texture
+compositing (`ray_hit.glsl`) is the one real per-frame-cost addition this
+range made that the live bench does not cover.
 
 **Current state in one paragraph.** The FSR 3.1 integration plan is complete
 through phase 7: FSR 3.1.4 Quality is the engine default, all four presets
@@ -1256,6 +1255,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
   refresh does NOT close is the ground-cover question in the original entry**
   — see the R6a-groundcover-1 entry below. Original entry follows.
   **Filed 2026-09-07 at Session 81 close (HEAD `043dbbb9`, 119 commits past the `2da754e7` record, ~4× the 30-commit gate).** The stepped-camera bench-of-record cleared R6a-stale-20 on 2026-09-03 and is already out of gate. Session 81's 118-commit range is emphatically not hot-path-quiet: 127 file-touches under `crates/renderer/src` and 78 under `crates/renderer/shaders`, the largest single bucket in the session. Named additions with real new per-frame GPU cost: **EXAL ground cover Phases 1, 2, 6 and 7** (#4054, #4055, #4057, #4058) introduced nine new shaders — `groundcover_scatter.comp`, `groundcover_blade.vert`/`.frag`, `groundcover_interaction.comp`, `groundcover_debug.frag` and the `groundcover_bench*` trio — plus five `include/groundcover_*.glsl` headers, a per-frame scatter dispatch, a blade raster pass and an interaction displacement field. That is an entire new per-frame rendering stratum whose cost has never been measured against the bench-of-record. Also in range: the #3976 skinned-BLAS gate (`043dbbb9`, a *skip* — reduces work on the failure path only), and the audit-driven renderer fix sweep. **The §11.1 ground-cover bench (#4052) is not a substitute**: it measured one narrow question (terrain-attribute re-sample vs store, 0.0018 ns/vertex-sample) on its own harness, not the five-scene FSR matrix. **Harness byte-stability is NO LONGER confirmed** — unlike every prior fold in this family, `scripts/fsr-bench-matrix.sh` and `scripts/fsr_bench_report.py` have taken three commits since `34074b93` (`ff177576`, `0e91fc5e`, `1293dfc0`), and `0e91fc5e` changed `fsr_bench_report.py`'s `render_sum` arithmetic; the archived TSVs' own stamps disagree (`harness=4de5e78e`/23 cols vs `harness=1293dfc0`/24 cols). See #4024 (REN-2026-09-06-D23-02), which files exactly this, and run `scripts/check-bench-harness-provenance.sh` for the current verdict — it reports the *live* `2da754e7` record as still byte-stable, so the divergence bounds old-vs-new comparisons against `34074b93`, not a re-run against the record in force. A re-run is therefore no longer a guaranteed apples-to-apples comparison against the `2da754e7` record until that divergence is reconciled. Do not publish a new FPS/ms claim, and do not accept a ground-cover perf intuition, before the 75-run matrix is re-run on a machine with a GPU **and** the harness provenance question is settled.
+- [ ] **R6a-stale-22** — **Filed 2026-09-12 at Session 83 close (HEAD `d28722fb`, 88 commits past the `4c9a5b36` record — nearly 3× the 30-commit gate).** Session 83's 87-commit range is dominated by the 2026-09-11/12 audit-fix tail (178 issues, mostly CHARAL/ESM/NIF/renderer doc-rot) and the `GpuImage` consolidation refactor (14 commits, 48 files under `crates/renderer/src/vulkan/*` touched, collapsing per-pass image/view/layout code onto one shared type across bloom, composite, GBuffer, SSAO, SVGF, TAA, exposure and both caustic passes) — refactor-shaped per its own commit messages, not a per-frame cost change, but unmeasured either way. Actual shader-source touches are narrow: `triangle.frag`/`water.frag` (#3927, the BGSM greyscale-palette fix — a `mix()` blend replaced by a direct palette-row `texture()` read, same sample count, corrected indexing, not new cost) and `include/ray_hit.glsl` (#3902 — genuinely new per-ray-hit cost: `rayHitAlbedo` now composites up to six texture-sampling roles — four decal layers, tintMap, innerLayer, dark, detail — on secondary rays (RT reflections, GI, water refraction), where it previously applied only a constant diffuse tint; new texture-sampling work on every RT-reached surface with those roles set, unmeasured). **Harness byte-stability confirmed**: `scripts/check-bench-harness-provenance.sh` reports `4c9a5b36` unchanged — no commit against `fsr-bench-matrix.sh`/`fsr_bench_report.py` landed in this range, so a re-run remains a valid apples-to-apples comparison against the live record. Do not publish a new FPS/ms claim, and do not assume #3902's added RT-secondary-ray sampling is free, before the 75-run matrix is re-run.
 - [x] **REND-#1447** HIGH (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`e6df0f5b`) — SPIR-V recompiled after DoF CameraUBO extension.
 - [x] **REND-#1448** LOW (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`f8e5daad`) — screenshot extent captured at record time, survives same-frame resize.
 - [x] **BUILD-SFMATERIAL** (2026-06-03): **Closed 2026-06-03.** `ee727346` removed `pub use chunk::ChunkType` and broke `crate::StringTable` / `crate::ChunkType` in internal modules + integration test. Fixed: `ChunkType` re-exported from `lib.rs`; internal `reader.rs` and `error.rs` use module-local paths.
@@ -1501,17 +1501,17 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-09-09 (session close, HEAD `4c9a5b36`). Every
+Ground-truth as of 2026-09-12 (session close, HEAD `d28722fb`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~556 183                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~598 070                 |
-| Source files (`.rs`, excl. `target/`)   | 1037 total · 955 outside `tests/` dirs (+3 / +3 this session — the renderer audit-wave closeout is overwhelmingly edits to existing files, not new ones) |
+| Rust source lines (`src/` dirs)         | ~563 207                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~606 180                 |
+| Source files (`.rs`, excl. `target/`)   | 1076 total · 993 outside `tests/` dirs (+39 / +38 this session — the GpuImage consolidation and the large-file decompositions both add files rather than only editing them) |
 | Workspace members                       | 33 (count the `[workspace] members` block only — an unscoped `grep -c '^\s*"' Cargo.toml` returns 38, picking up quoted lines elsewhere in the file; 28 crates + `byroredux` binary + 4 tools: `byro-detect`, `byro-launcher`, `byro-dbg`, `texture-upscale`; `tools/nifskope` exists on disk but is not a workspace member) |
-| Tests                                   | **7602 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-09). Clean full-workspace run, including doc-tests. Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905). |
-| Open issue directories                  | 3968 (`.claude/issues/`)     |
+| Tests                                   | **7754 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-12). Clean full-workspace run, including doc-tests. Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905). |
+| Open issue directories                  | 4219 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **603 207** across seven games (2026-08-29, #3369 + #3466 took this from 184 886 by widening the gates to every mesh-bearing archive each game ships). Oblivion 8 032 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 424 · FO4 235 082 · FO76 168 208 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on Oblivion / FO3 / FNV / Skyrim SE / FO4; Starfield 99.98% aggregate; **FO76 98.18%** — the 2026-08-29 corpus widening (#3466) exposed a 3 056-NIF truncation tail in its two `GeneratedMeshes` archives that no gate had ever opened. Recoverable 100% on all seven. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

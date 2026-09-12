@@ -26,6 +26,19 @@ Commits hold that record.
 
 ---
 
+## Session 83 — "Everything Everywhere All at Once": a 178-issue audit-fix tail, and the GpuImage consolidation that unifies Vulkan's image lifecycle  (2026-09-09 → 2026-09-12, `f39b2f97..d28722fb`, 87 commits)
+
+Session 82 closed with the first trustworthy bench-of-record in 190 commits and its own 76-issue renderer sweep; behind it the 2026-09-11/12 audit-report wave (CHARAL, ESM/plugin, NIF across Oblivion/Skyrim/Starfield/FO4, renderer, physics, UI) still held a long doc-rot and real-defect tail. Session 83 worked that tail to near-zero while, in parallel, finishing a structural cleanup the audits kept surfacing as a symptom rather than naming directly: image lifecycle (staging, views, layouts, destroy) was hand-rolled per pass across a dozen renderer files, and it finally got one shared type.
+
+- **Audit-fix tail (178 issues closed)** — CHARAL doc-rot + test-coverage sweep from the 2026-09-11 report (#4094–#4109, 14 issues); real ESM/plugin defects (terrain texture-layer loss and DIAL remap, #4078/#4079; TPLT dual-chain resolution for creature ActorValues/race/factions/AI packages, #4091–#4093; embedded-FormID remap guard inversion, #4069–#4071; CLMT.WLST weather FormID remap, #4066; SCRI global-space remap, #4067); NIF audit findings across four batches (#4148–#4164, ~17 issues) plus Oblivion (#4257–#4265), Skyrim (#4249–#4252), and Starfield/CDB (#4270–#4276) sweeps; renderer doc-rot and hygiene (#4020–#4051 nine-issue sweep, #3830–#3847, #3929–#4015); a real BGSM greyscale-palette shader fix (#3927 — a `mix()` blend replaced by a direct palette-row read, which had collapsed 9 authored brick-material variants onto one color); and a collider AABB-centre containment fix extended from Y to X/Z (#3973).
+- **GpuImage consolidation** — a new `GpuImage` type (the image-side analogue of `GpuBuffer`) absorbs image + view + memory + layout tracking. Migrated onto it over 14 commits: TAA/SVGF history slots, bloom mip images, both caustic passes, exposure, SSAO, GBuffer attachments, composite HDR/scene images, placeholder 1×1s, groundcover-bench and frame-upscaler outputs, and `context/helpers.rs`'s depth resources — collapsing a duplicate view along the way in `water_caustic.rs`.
+- **Large-file decomposition** — `texture_registry.rs` split by lifecycle phase (#3737), `extensions.rs` split into eight modules (#3843), `boot.rs` split into `boot/`, `load_nif_bytes_with_skeleton` and `asset_provider/material.rs`'s merge decomposed in place, the three NIF satellite walkers pulled out of `walk/mod.rs`; plus dead-code removal (`AnimationController`, 454 LOC with no consumer, #3886) and a 106-arm FourCC→FormType match collapsed to a table.
+- **Housekeeping** — `_audit-validate.sh` clean (0 stale path refs); the esm-deep audit bundle published (25 issues) and 30 stale audit-doc path refs repointed at the 2026-09-09 split targets; audit-skill SKILL.md docs updated across multiple commands.
+
+Net: tests 7602 → 7754 (+152); Rust `src/` LOC ~556 183 → ~563 207 (+7 024); total `.rs` LOC ~598 070 → ~606 180 (+8 110); source files 1037 → 1076 (+39, 955→993 outside `tests/`); open issue dirs 3968 → 4219 (+251). Bench-of-record `4c9a5b36` is now 88 commits stale (**R6a-stale-22** filed) — harness byte-stability is confirmed, so a re-run remains valid, but it hasn't happened, and #3902's new secondary-ray texture compositing in `ray_hit.glsl` is the one real per-frame-cost addition this range made that the live bench doesn't cover.
+
+---
+
 ## Session 82 — "Blow-Up": the audit wave lands, and the first trustworthy bench in 190 commits  (2026-09-07 → 2026-09-09, `e6282349..4c9a5b36`, 70 commits)
 
 Session 81 filed 76 renderer issues in a single sweep and, almost
