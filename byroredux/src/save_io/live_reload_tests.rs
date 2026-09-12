@@ -387,7 +387,12 @@ fn quest_alias_inventory_grant_ledger_survives_live_reload_with_new_entity_id() 
 }
 
 /// #3789 — the saved `ReferenceEnableState` must be in the world BEFORE the
-/// cell reload spawns anything.
+/// cell reload spawns anything. #4135 — but that pre-reload restore must be
+/// the `PRE_RELOAD_RESOURCES` *subset*, not the wholesale `restore_resources`,
+/// or it clobbers `ItemInstancePool` before the reload's own teardown
+/// releases the live session's item instances into it (see
+/// `pre_reload_item_instance_pool_survives_teardown_release` below for the
+/// corruption this once caused).
 ///
 /// Since #3278 the ledger has a *spawn-time* consumer:
 /// `cell_loader::spawn::placement_is_disabled` consults it per placed REFR,
@@ -415,8 +420,15 @@ fn saved_resources_are_restored_before_the_cell_reload() {
     let body = &source[start..];
 
     let pre_restore = body
-        .find("byroredux_save::restore_resources(world, &registry, &snapshot)")
-        .expect("the drain must restore saved resources");
+        .find(
+            "byroredux_save::restore_resources_subset(world, &registry, &snapshot, \
+             PRE_RELOAD_RESOURCES)",
+        )
+        .expect(
+            "the drain must restore saved resources before reload via the PRE_RELOAD_RESOURCES \
+             subset, not the wholesale restore_resources (#4135 — a wholesale pre-reload \
+             restore clobbers ItemInstancePool before the reload's teardown releases into it)",
+        );
     let interior_reload = body
         .find("reload_interior_session(")
         .expect("the drain must reload the saved interior");
@@ -443,4 +455,105 @@ fn saved_resources_are_restored_before_the_cell_reload() {
              over resources the reload rebuilds",
         );
     assert!(after_reload > 0);
+}
+
+/// #4135 — a pre-reload restore must not install the saved `ItemInstancePool`
+/// early, because the reload's own teardown
+/// (`cell_loader::release_victim_item_instances`) releases the *live*
+/// session's item instances into whichever pool is currently installed.
+///
+/// Discriminates "which pool is installed" structurally rather than by
+/// content (`ItemInstance` carries no fields yet to tag with): the saved
+/// pool is built with TWO populated slots, the live pool with only ONE
+/// (matching real production shape — a fresh live session's pool has
+/// whatever the current cell allocated, almost never as much as a
+/// same-slot-range saved pool). If the pre-reload restore wrongly installs
+/// the saved pool, the world's `ItemInstancePool` right after the teardown
+/// release will have that second, saved-only slot present; if it correctly
+/// left the live pool alone, that slot never existed and resolves `None`.
+///
+/// (Also confirms — see the last assertion — that a later *full*
+/// `restore_resources` call, i.e. the real code's unconditional post-reload
+/// call, would silently paper over the corruption in the success path by
+/// re-deserializing a pristine copy from the snapshot; the corruption only
+/// becomes permanent if that second call is skipped, e.g. because the
+/// reload itself then fails after the destructive teardown already ran.
+/// The fix removes the hazard either way by never installing the saved
+/// pool before a *known-successful* reload.)
+#[test]
+fn pre_reload_restore_must_not_install_saved_item_instance_pool_early() {
+    use byroredux_core::ecs::components::{Inventory, ItemStack};
+    use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+
+    // --- "Saved" snapshot: two populated slots, as if the save held two
+    // named/modded/unique items. ---
+    let reg = build_save_registry();
+    let mut source = World::new();
+    source.insert_resource(StringPool::new());
+    source.insert_resource(FormIdPool::new());
+    let mut saved_pool = ItemInstancePool::new();
+    let saved_id_1 = saved_pool.allocate(ItemInstance::default()); // slot 1
+    let saved_id_2 = saved_pool.allocate(ItemInstance::default()); // slot 2
+    source.insert_resource(saved_pool);
+
+    let snapshot = save_world(&source, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    // --- "Live" world: a *different* pool instance with only ONE
+    // populated slot (the victim entity's), which happens to collide with
+    // the saved pool's slot 1 — the realistic case, since both pools are
+    // simple monotonically-growing arenas starting at slot 1. ---
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    let mut live_pool = ItemInstancePool::new();
+    let live_id = live_pool.allocate(ItemInstance::default()); // slot 1 only
+    assert_eq!(
+        live_id, saved_id_1,
+        "test setup: both pools must collide on slot 1 to exercise the hazard"
+    );
+    world.insert_resource(live_pool);
+
+    let victim = world.spawn();
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack {
+        base_form_id: 0x1234,
+        count: 1,
+        instance: Some(live_id),
+    });
+    world.insert(victim, inventory);
+
+    // --- Step 1: the pre-reload restore (#3789/#4135's call). ---
+    byroredux_save::restore_resources_subset(&mut world, &reg, &decoded, PRE_RELOAD_RESOURCES)
+        .unwrap();
+
+    // --- Step 2: cell teardown releases the victim's item instance into
+    // whichever pool is currently installed. ---
+    crate::cell_loader::release_victim_item_instances(&mut world, &[victim]);
+
+    // The discriminating check: slot 2 only ever existed in the SAVED
+    // pool. If the pre-reload restore had wrongly installed it (the #4135
+    // bug), it would still be here (untouched by releasing slot 1) — a
+    // false `Some` proving the wrong pool is live. The fix must leave the
+    // live pool (which never had a slot 2) installed instead.
+    assert!(
+        world.resource::<ItemInstancePool>().get(saved_id_2).is_none(),
+        "the world's ItemInstancePool must still be the LIVE pool after the \
+         pre-reload restore + teardown release — finding the saved pool's \
+         second slot here means the saved pool was installed too early \
+         (#4135)"
+    );
+    // And the live release itself must have actually happened.
+    assert!(
+        world.resource::<ItemInstancePool>().get(live_id).is_none(),
+        "teardown must have released the live pool's slot"
+    );
+
+    // --- Step 3: the real code's unconditional post-reload restore now
+    // safely installs the saved pool — both its slots intact, since
+    // nothing touched it before this point. ---
+    byroredux_save::restore_resources(&mut world, &reg, &decoded).unwrap();
+    assert!(world.resource::<ItemInstancePool>().get(saved_id_1).is_some());
+    assert!(world.resource::<ItemInstancePool>().get(saved_id_2).is_some());
 }

@@ -198,12 +198,47 @@ pub fn validate_snapshot_types(
 /// whose `ItemInstanceId`s index the pool resolve against the restored
 /// arena. Resource columns absent from the snapshot leave the live
 /// resource untouched.
+///
+/// Do NOT call this before a cell/session teardown that still needs the
+/// *live* value of one of these resources — see [`restore_resources_subset`]
+/// and #4135.
 pub fn restore_resources(
     world: &mut World,
     registry: &SaveRegistry,
     snapshot: &Snapshot,
 ) -> Result<(), SaveError> {
     for (name, _save, load) in registry.resource_entries() {
+        if let Some(value) = snapshot.resources.get(name) {
+            load(world, value.clone())?;
+        }
+    }
+    Ok(())
+}
+
+/// Restore only the named resource columns from the snapshot, leaving
+/// every other registered resource (and its live value) untouched.
+///
+/// Use this instead of [`restore_resources`] when a caller needs some
+/// saved resources in place *before* further teardown/reload work, but
+/// that same teardown still needs the **live** value of a different
+/// registered resource to do its job correctly (#4135: a wholesale
+/// pre-reload `restore_resources` swapped in the saved `ItemInstancePool`
+/// before the cell teardown released the *live* session's item
+/// instances into it, deleting real saved item data whenever a live and
+/// saved slot index happened to coincide — which they usually do, since
+/// both pools are simple monotonically-growing arenas starting at slot
+/// 1). Names not found in the registry, or absent from the snapshot, are
+/// silently skipped (same contract as [`restore_resources`]).
+pub fn restore_resources_subset(
+    world: &mut World,
+    registry: &SaveRegistry,
+    snapshot: &Snapshot,
+    names: &[&str],
+) -> Result<(), SaveError> {
+    for (name, _save, load) in registry.resource_entries() {
+        if !names.contains(&name) {
+            continue;
+        }
         if let Some(value) = snapshot.resources.get(name) {
             load(world, value.clone())?;
         }

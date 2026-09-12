@@ -140,6 +140,25 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "RumbleOnActivate",
 ];
 
+/// Registered resource names safe to restore from a snapshot **before**
+/// the cell/exterior reload that follows in [`execute_pending_save_loads`],
+/// as opposed to only after it (the normal, safe default).
+///
+/// A resource belongs here only if some spawn-time code path consults it
+/// while the reload is actively building the new cell/exterior — today
+/// that's `ReferenceEnableState` (`cell_loader::spawn::placement_is_disabled`,
+/// #3789/#3278). Everything else — most importantly `ItemInstancePool` —
+/// must wait for the post-reload wholesale [`byroredux_save::restore_resources`]
+/// call, because the reload's own teardown (`unload_cell` →
+/// `release_victim_item_instances`) still needs the **live** value of
+/// those resources to do its job. Restoring one of them here swaps in the
+/// saved value first, so the teardown mutates the save being loaded
+/// instead of the live session — see #4135, which is exactly this
+/// mistake for `ItemInstancePool`, and is the reason this is an explicit
+/// allowlist (mirroring [`MUTABLE_DELTA_COLUMNS`]'s pattern) rather than
+/// "everything except a denylist".
+const PRE_RELOAD_RESOURCES: &[&str] = &["ReferenceEnableState"];
+
 /// The player's standing position + look direction at save time, so a
 /// live `load` can put the player back where they were rather than at the
 /// reloaded cell's default door spawn.
@@ -1538,12 +1557,32 @@ pub fn execute_pending_save_loads(
     // the irreversible cell/streaming teardown rather than after it, so a
     // bad snapshot can no longer leave a torn-down world behind.
     //
-    // The post-reload call is kept (see below) rather than replaced: it
-    // re-asserts the saved values over anything the reload itself rebuilt
-    // (`CurrentCellContext`, `PlayerPose`), which is what it was there for.
-    // `restore_resources` is a straight per-resource overwrite from the
-    // snapshot, so running it twice is idempotent.
-    if let Err(e) = byroredux_save::restore_resources(world, &registry, &snapshot) {
+    // #4135 — this MUST be `restore_resources_subset(..., PRE_RELOAD_RESOURCES)`,
+    // never the wholesale `restore_resources`. The reload below tears down
+    // the current cell/exterior via `unload_cell`, which calls
+    // `release_victim_item_instances` against whichever `ItemInstancePool`
+    // is installed, to free the *live* session's item-instance slots. A
+    // wholesale restore here installs the *saved* pool first, so that
+    // release call frees slots in the save being loaded instead — and since
+    // both pools are simple monotonically-growing arenas starting at slot
+    // 1, a live id very often indexes a genuinely populated saved slot,
+    // silently deleting that item's saved state (a named/modded/unique
+    // item) moments before `apply_deltas` overlays the very `Inventory` row
+    // that references it. Only resources some spawn-time code path
+    // consults while the reload is building the new cell belong in
+    // `PRE_RELOAD_RESOURCES` — see its own doc comment before adding one.
+    //
+    // The post-reload call below is kept (and stays the wholesale
+    // `restore_resources`, including `ItemInstancePool`): by then
+    // `unload_cell` has already run and released against the live pool, so
+    // installing the saved one is safe, and it re-asserts every saved value
+    // — including the ones just installed above — over anything the reload
+    // itself rebuilt (`CurrentCellContext`, `PlayerPose`). `restore_resources`
+    // is a straight per-resource overwrite from the snapshot, so restoring
+    // `ReferenceEnableState` a second time here is idempotent.
+    if let Err(e) =
+        byroredux_save::restore_resources_subset(world, &registry, &snapshot, PRE_RELOAD_RESOURCES)
+    {
         let message = format!(
             "save load ABORTED — resource restore failed before cell reload; \
              keeping the current session: {e}"
