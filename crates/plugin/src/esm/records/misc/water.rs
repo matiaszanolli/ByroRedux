@@ -1499,13 +1499,7 @@ pub fn watr_to_params(record: &WatrRecord) -> WaterParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     #[test]
     fn parse_watr_picks_edid_full_tnam() {

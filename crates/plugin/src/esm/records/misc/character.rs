@@ -205,13 +205,7 @@ pub fn parse_idle(form_id: u32, subs: &[SubRecord]) -> IdleRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     #[test]
     fn parse_hdpt_picks_edid_model_flags() {

@@ -164,10 +164,7 @@ fn push_color(keys: &mut Vec<ImadColorKey>, data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(sub_type: [u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord { sub_type, data }
-    }
+    use crate::esm::records::test_support::sub;
 
     #[test]
     fn parses_duration_center_and_presentation_curves() {
@@ -188,11 +185,11 @@ mod tests {
         let record = parse_imad(
             0x0010_1DAC,
             &[
-                sub(*b"EDID", b"PlayerAlduinIMOD\0".to_vec()),
-                sub(*b"DNAM", dnam),
-                sub(*b"BNAM", scalar.clone()),
-                sub([0x11, b'I', b'A', b'D'], scalar),
-                sub(*b"TNAM", color),
+                sub(b"EDID", b"PlayerAlduinIMOD\0".to_vec()),
+                sub(b"DNAM", dnam),
+                sub(b"BNAM", scalar.clone()),
+                sub(&[0x11, b'I', b'A', b'D'], scalar),
+                sub(b"TNAM", color),
             ],
         );
 
@@ -211,9 +208,9 @@ mod tests {
         let record = parse_imad(
             7,
             &[
-                sub(*b"DNAM", vec![0; 8]),
-                sub(*b"BNAM", vec![0; 7]),
-                sub(*b"TNAM", vec![0; 19]),
+                sub(b"DNAM", vec![0; 8]),
+                sub(b"BNAM", vec![0; 7]),
+                sub(b"TNAM", vec![0; 19]),
             ],
         );
         assert_eq!(record.radial_blur_center, [0.5, 0.5]);

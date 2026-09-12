@@ -328,13 +328,7 @@ pub fn parse_scen(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(kind: &[u8; 4], data: impl Into<Vec<u8>>) -> SubRecord {
-        SubRecord {
-            sub_type: *kind,
-            data: data.into(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     fn ctda(function: u32) -> Vec<u8> {
         let mut data = vec![0; 32];

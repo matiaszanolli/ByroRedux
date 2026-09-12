@@ -121,24 +121,12 @@ pub fn parse_soun(form_id: u32, subs: &[SubRecord]) -> SounRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn mk_sub(code: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *code,
-            data,
-        }
-    }
-
-    fn edid(name: &str) -> SubRecord {
-        let mut z = name.as_bytes().to_vec();
-        z.push(0);
-        mk_sub(b"EDID", z)
-    }
+    use crate::esm::records::test_support::{edid, sub};
 
     fn zstring_sub(code: &[u8; 4], s: &str) -> SubRecord {
         let mut z = s.as_bytes().to_vec();
         z.push(0);
-        mk_sub(code, z)
+        sub(code, z)
     }
 
     #[test]
@@ -205,8 +193,8 @@ mod tests {
         let subs = vec![
             edid("AMBWind"),
             zstring_sub(b"FNAM", "amb\\wind_loop.wav"),
-            mk_sub(b"SNDX", vec![0u8; 16]),
-            mk_sub(b"CNAM", 0x0001_0000u32.to_le_bytes().to_vec()),
+            sub(b"SNDX", vec![0u8; 16]),
+            sub(b"CNAM", 0x0001_0000u32.to_le_bytes().to_vec()),
         ];
         let s = parse_soun(0x0005_0000, &subs);
         assert_eq!(s.sound_path, "amb\\wind_loop.wav");
@@ -223,7 +211,7 @@ mod tests {
         let subs = vec![
             edid("AMBWindLoop"),
             zstring_sub(b"FNAM", "amb\\wind_loop.wav"),
-            mk_sub(b"SNDD", sndd),
+            sub(b"SNDD", sndd),
         ];
         let s = parse_soun(0x0006_0000, &subs);
         assert!(s.looping, "bit 0x0010 in SNDD's Flags byte must decode as looping");
@@ -236,7 +224,7 @@ mod tests {
     fn parse_soun_decodes_loop_bit_from_fo3_wide_sndd() {
         let mut sndd = vec![0u8; 36];
         sndd[4] = 0x10;
-        let subs = vec![edid("FNVAmbLoop"), mk_sub(b"SNDD", sndd)];
+        let subs = vec![edid("FNVAmbLoop"), sub(b"SNDD", sndd)];
         let s = parse_soun(0x0007_0000, &subs);
         assert!(s.looping);
     }
@@ -247,7 +235,7 @@ mod tests {
     fn parse_soun_other_flag_bits_do_not_set_looping() {
         let mut sndd = vec![0u8; 8];
         sndd[4] = 0x02; // Play At Random, not Loop
-        let subs = vec![mk_sub(b"SNDD", sndd)];
+        let subs = vec![sub(b"SNDD", sndd)];
         let s = parse_soun(0x0008_0000, &subs);
         assert!(!s.looping);
     }
@@ -259,7 +247,7 @@ mod tests {
         let s = parse_soun(0x0009_0000, &[edid("NoAttenData")]);
         assert!(!s.looping);
 
-        let truncated = vec![mk_sub(b"SNDD", vec![0u8; 3])]; // shorter than offset 4
+        let truncated = vec![sub(b"SNDD", vec![0u8; 3])]; // shorter than offset 4
         let s2 = parse_soun(0x0009_0001, &truncated);
         assert!(!s2.looping);
     }

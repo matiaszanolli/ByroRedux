@@ -854,6 +854,7 @@ pub fn parse_pack(
 mod tests {
     use super::*;
     use crate::esm::records::condition::Condition;
+    use crate::esm::records::test_support::sub;
 
     /// #3042 — the seven production `active_package_is_*` wrappers were
     /// deleted as dead code (#2031 collapsed the spawn tail onto a single
@@ -881,13 +882,6 @@ mod tests {
     active_package_is!(active_package_is_escort, is_escort);
     active_package_is!(active_package_is_guard, is_guard);
     active_package_is!(active_package_is_patrol, is_patrol);
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
 
     #[test]
     fn parse_pack_picks_pkdt_flags_and_procedure() {

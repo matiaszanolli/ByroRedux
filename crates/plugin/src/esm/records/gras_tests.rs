@@ -5,19 +5,13 @@
 //! than surviving to the real-data gate.
 
 use super::*;
+use crate::esm::records::test_support::sub;
 use crate::esm::records::tree::ObjectBounds;
-
-fn mk_sub(code: &[u8; 4], data: Vec<u8>) -> SubRecord {
-    SubRecord {
-        sub_type: *code,
-        data,
-    }
-}
 
 fn zstring(code: &[u8; 4], s: &str) -> SubRecord {
     let mut z = s.as_bytes().to_vec();
     z.push(0);
-    mk_sub(code, z)
+    sub(code, z)
 }
 
 fn obnd(min: [i16; 3], max: [i16; 3]) -> SubRecord {
@@ -25,7 +19,7 @@ fn obnd(min: [i16; 3], max: [i16; 3]) -> SubRecord {
     for v in min.iter().chain(max.iter()) {
         d.extend_from_slice(&v.to_le_bytes());
     }
-    mk_sub(b"OBND", d)
+    sub(b"OBND", d)
 }
 
 /// Oblivion `BWCattail01` (0x000984C8) `DATA`, byte for byte.
@@ -52,7 +46,7 @@ fn cattail_data() -> SubRecord {
     d.push(77); // +29 padding (uninitialised)
     d.extend_from_slice(&156u16.to_le_bytes()); // +30 padding (uninitialised)
     assert_eq!(d.len(), GRAS_DATA_LEN);
-    mk_sub(b"DATA", d)
+    sub(b"DATA", d)
 }
 
 #[test]
@@ -62,7 +56,7 @@ fn parse_gras_decodes_every_data_field_in_order() {
         &[
             zstring(b"EDID", "BWCattail01"),
             zstring(b"MODL", r"Plants\BWCattail01.NIF"),
-            mk_sub(b"MODB", 127.964_78f32.to_le_bytes().to_vec()),
+            sub(b"MODB", 127.964_78f32.to_le_bytes().to_vec()),
             cattail_data(),
         ],
     );
@@ -123,7 +117,7 @@ fn nominal_height_prefers_the_obnd_z_extent() {
 fn nominal_height_falls_back_to_the_oblivion_bound_radius() {
     let rec = parse_gras(
         0x0009_84C8,
-        &[mk_sub(b"MODB", 127.964_78f32.to_le_bytes().to_vec())],
+        &[sub(b"MODB", 127.964_78f32.to_le_bytes().to_vec())],
     );
     assert!(rec.bounds.is_none());
     assert_eq!(rec.nominal_height(), Some(127.964_78));
@@ -147,7 +141,7 @@ fn nominal_height_falls_through_a_degenerate_obnd_to_the_radius() {
         1,
         &[
             obnd([-4, -4, 10], [4, 4, 10]),
-            mk_sub(b"MODB", 30.0f32.to_le_bytes().to_vec()),
+            sub(b"MODB", 30.0f32.to_le_bytes().to_vec()),
         ],
     );
     assert_eq!(rec.nominal_height(), Some(30.0));

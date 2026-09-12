@@ -239,28 +239,10 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn mk_sub(code: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *code,
-            data,
-        }
-    }
-
-    fn edid(name: &str) -> SubRecord {
-        let mut z = name.as_bytes().to_vec();
-        z.push(0);
-        mk_sub(b"EDID", z)
-    }
-
-    fn modl(path: &str) -> SubRecord {
-        let mut z = path.as_bytes().to_vec();
-        z.push(0);
-        mk_sub(b"MODL", z)
-    }
+    use crate::esm::records::test_support::{edid, modl, sub};
 
     fn onam(form_id: u32) -> SubRecord {
-        mk_sub(b"ONAM", form_id.to_le_bytes().to_vec())
+        sub(b"ONAM", form_id.to_le_bytes().to_vec())
     }
 
     fn data(placements: &[ScolPlacement]) -> SubRecord {
@@ -274,7 +256,7 @@ mod tests {
             }
             buf.extend_from_slice(&p.scale.to_le_bytes());
         }
-        mk_sub(b"DATA", buf)
+        sub(b"DATA", buf)
     }
 
     /// Regression: #405 — a vanilla-style SCOL with 2 ONAM/DATA pairs
@@ -353,7 +335,7 @@ mod tests {
         let mut fltr_data = Vec::new();
         fltr_data.extend_from_slice(&0x0000_1111u32.to_le_bytes());
         fltr_data.extend_from_slice(&0x0000_2222u32.to_le_bytes());
-        let subs = vec![edid("Filtered"), mk_sub(b"FLTR", fltr_data)];
+        let subs = vec![edid("Filtered"), sub(b"FLTR", fltr_data)];
         let rec = parse_scol(0xABCD_0000, &subs, &None);
         assert_eq!(rec.filter, vec![0x0000_1111, 0x0000_2222]);
     }
@@ -379,11 +361,7 @@ mod tests {
         data_bytes.extend_from_slice(&p.scale.to_le_bytes());
         data_bytes.extend_from_slice(&[0u8; 10]); // truncated partial
 
-        let subs = vec![
-            edid("Trunc"),
-            onam(0x0000_0001),
-            mk_sub(b"DATA", data_bytes),
-        ];
+        let subs = vec![edid("Trunc"), onam(0x0000_0001), sub(b"DATA", data_bytes)];
         let rec = parse_scol(0x1111_2222, &subs, &None);
         assert_eq!(rec.parts.len(), 1);
         assert_eq!(rec.parts[0].placements, vec![p]);
@@ -401,7 +379,7 @@ mod tests {
         let subs = vec![
             edid("CambridgeDecoStorefront01"),
             modl("SCOL\\Fallout4.esm\\CM00012345.NIF"),
-            mk_sub(b"FULL", full_bytes),
+            sub(b"FULL", full_bytes),
         ];
         let rec = parse_scol(0x0001_2345, &subs, &None);
         assert_eq!(rec.full_name, "Cambridge Deco Storefront 01");
@@ -420,7 +398,7 @@ mod tests {
         let lstring_index: u32 = 0x0001_2345;
         let subs = vec![
             edid("LocalisedScol"),
-            mk_sub(b"FULL", lstring_index.to_le_bytes().to_vec()),
+            sub(b"FULL", lstring_index.to_le_bytes().to_vec()),
         ];
         let rec = parse_scol(0xDEAD_BEEF, &subs, &None);
         set_localized_plugin(false);
@@ -454,7 +432,7 @@ mod tests {
             // not contents. Real VMAD bytes are a versioned blob with
             // a property table; the cell loader's full Papyrus dispatch
             // path consumes that separately.
-            mk_sub(b"VMAD", vec![0xAA, 0xBB, 0xCC, 0xDD]),
+            sub(b"VMAD", vec![0xAA, 0xBB, 0xCC, 0xDD]),
         ];
         let rec = parse_scol(0x9999_BEEF, &subs, &None);
         assert!(rec.has_script);
@@ -477,6 +455,7 @@ mod tests {
 mod remap_tests {
     use super::*;
     use crate::esm::reader::GlobalSlot;
+    use crate::esm::records::test_support::sub;
 
     /// The remap a DLC gets in `[Fallout4.esm, DLCRobot.esm, DLCCoast.esm]`:
     /// every FO4 DLC has exactly one master, so its own forms are authored
@@ -488,13 +467,6 @@ mod remap_tests {
             plugin_slot: GlobalSlot::Regular(0x02),
             master_slots: vec![GlobalSlot::Regular(0x00)],
         })
-    }
-
-    fn sub(typ: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data,
-        }
     }
 
     /// #3400 — `ONAM` child base forms are looked up in `index.scols` /

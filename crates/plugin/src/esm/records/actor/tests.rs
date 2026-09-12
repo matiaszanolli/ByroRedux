@@ -4,14 +4,7 @@
 //! `#[cfg(test)] mod tests;`. Body preserved verbatim.
 
 use super::*;
-use crate::esm::reader::SubRecord;
-
-fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-    SubRecord {
-        sub_type: *typ,
-        data: data.to_vec(),
-    }
-}
+use crate::esm::records::test_support::sub;
 
 #[test]
 fn npc_extracts_race_class_factions_inventory() {

@@ -1033,14 +1033,7 @@ pub fn parse_note(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::esm::reader::SubRecord;
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     fn build_data_weap(value: u32, weight: f32, damage: u16, clip: u8) -> Vec<u8> {
         let mut d = Vec::new();

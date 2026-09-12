@@ -167,13 +167,7 @@ fn slice_edges(points: &[PathGridPoint], data: &[u8]) -> Vec<Vec<Option<u16>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(code: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *code,
-            data,
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     fn point(x: f32, y: f32, z: f32, conns: u8) -> Vec<u8> {
         let mut v = Vec::with_capacity(16);

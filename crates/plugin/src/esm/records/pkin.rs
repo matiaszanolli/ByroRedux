@@ -149,22 +149,10 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn mk_sub(code: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *code,
-            data,
-        }
-    }
-
-    fn edid(name: &str) -> SubRecord {
-        let mut z = name.as_bytes().to_vec();
-        z.push(0);
-        mk_sub(b"EDID", z)
-    }
+    use crate::esm::records::test_support::{edid, sub};
 
     fn cnam(form_id: u32) -> SubRecord {
-        mk_sub(b"CNAM", form_id.to_le_bytes().to_vec())
+        sub(b"CNAM", form_id.to_le_bytes().to_vec())
     }
 
     /// Baseline: a vanilla-shape PKIN (EDID + single CNAM + VNAM +
@@ -175,8 +163,8 @@ mod tests {
         let subs = vec![
             edid("PackIn_WorkbenchLoot"),
             cnam(0x0010_1234), // content form: a CONT or LVLI
-            mk_sub(b"VNAM", 0x0002_5678u32.to_le_bytes().to_vec()),
-            mk_sub(b"FNAM", 0x0000_0002u32.to_le_bytes().to_vec()),
+            sub(b"VNAM", 0x0002_5678u32.to_le_bytes().to_vec()),
+            sub(b"FNAM", 0x0000_0002u32.to_le_bytes().to_vec()),
         ];
         let rec = parse_pkin(0x0055_0001, &subs, &None);
         assert_eq!(rec.form_id, 0x0055_0001);
@@ -211,10 +199,7 @@ mod tests {
     /// through to the default single-entry path.
     #[test]
     fn parse_pkin_without_cnam_yields_empty_contents() {
-        let subs = vec![
-            edid("PackIn_EmptyDecl"),
-            mk_sub(b"FULL", b"Shell\0".to_vec()),
-        ];
+        let subs = vec![edid("PackIn_EmptyDecl"), sub(b"FULL", b"Shell\0".to_vec())];
         let rec = parse_pkin(0x0055_0003, &subs, &None);
         assert_eq!(rec.editor_id, "PackIn_EmptyDecl");
         assert_eq!(rec.full_name, "Shell");
@@ -237,7 +222,7 @@ mod tests {
         let subs = vec![
             edid("PackIn_Filtered"),
             cnam(0x0010_1234),
-            mk_sub(b"FLTR", fltr_data),
+            sub(b"FLTR", fltr_data),
         ];
         let rec = parse_pkin(0x0055_0010, &subs, &None);
         assert_eq!(rec.contents, vec![0x0010_1234]);
@@ -257,7 +242,7 @@ mod tests {
     fn parse_pkin_fltr_only_yields_empty_contents() {
         let mut fltr_data = Vec::new();
         fltr_data.extend_from_slice(&0x0001_2345u32.to_le_bytes());
-        let subs = vec![edid("PackIn_FltrOnly"), mk_sub(b"FLTR", fltr_data)];
+        let subs = vec![edid("PackIn_FltrOnly"), sub(b"FLTR", fltr_data)];
         let rec = parse_pkin(0x0055_0011, &subs, &None);
         assert!(rec.contents.is_empty());
         assert_eq!(rec.filter, vec![0x0001_2345]);
@@ -274,7 +259,7 @@ mod tests {
         let mut fltr_data = Vec::new();
         fltr_data.extend_from_slice(&0xAABB_CCDDu32.to_le_bytes());
         fltr_data.extend_from_slice(&[0x11, 0x22, 0x33]); // truncated tail
-        let subs = vec![edid("PackIn_TruncFltr"), mk_sub(b"FLTR", fltr_data)];
+        let subs = vec![edid("PackIn_TruncFltr"), sub(b"FLTR", fltr_data)];
         let rec = parse_pkin(0x0055_0012, &subs, &None);
         assert_eq!(rec.filter, vec![0xAABB_CCDD]);
     }
@@ -286,7 +271,7 @@ mod tests {
     fn parse_pkin_truncated_cnam_silently_dropped() {
         let subs = vec![
             edid("PackIn_Trunc"),
-            mk_sub(b"CNAM", vec![0x11, 0x22]), // 2 bytes, too short
+            sub(b"CNAM", vec![0x11, 0x22]), // 2 bytes, too short
             cnam(0x0010_1234),
         ];
         let rec = parse_pkin(0x0055_0004, &subs, &None);

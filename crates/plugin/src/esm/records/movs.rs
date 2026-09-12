@@ -141,25 +141,7 @@ pub fn parse_movs(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn mk_sub(code: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *code,
-            data,
-        }
-    }
-
-    fn edid(name: &str) -> SubRecord {
-        let mut z = name.as_bytes().to_vec();
-        z.push(0);
-        mk_sub(b"EDID", z)
-    }
-
-    fn modl(path: &str) -> SubRecord {
-        let mut z = path.as_bytes().to_vec();
-        z.push(0);
-        mk_sub(b"MODL", z)
-    }
+    use crate::esm::records::test_support::{edid, modl, sub};
 
     /// Baseline: a vanilla-shape MOVS (EDID + MODL + LNAM + ZNAM)
     /// round-trips with every field populated. Models the
@@ -170,8 +152,8 @@ mod tests {
         let subs = vec![
             edid("MovableGenerator01"),
             modl(r"Furniture\Generator\GeneratorMov01.nif"),
-            mk_sub(b"LNAM", 0x0001_2345u32.to_le_bytes().to_vec()),
-            mk_sub(b"ZNAM", 0x0001_2346u32.to_le_bytes().to_vec()),
+            sub(b"LNAM", 0x0001_2345u32.to_le_bytes().to_vec()),
+            sub(b"ZNAM", 0x0001_2346u32.to_le_bytes().to_vec()),
         ];
         let rec = parse_movs(0x0010_BEEF, &subs, &None);
         assert_eq!(rec.form_id, 0x0010_BEEF);
@@ -208,7 +190,7 @@ mod tests {
         let subs = vec![
             edid("BreakableCrate"),
             modl(r"Clutter\BreakCrate01.nif"),
-            mk_sub(b"DEST", vec![0u8; 8]), // payload contents irrelevant to flag
+            sub(b"DEST", vec![0u8; 8]), // payload contents irrelevant to flag
         ];
         let rec = parse_movs(0x0044_0001, &subs, &None);
         assert!(rec.has_destruction);
@@ -223,7 +205,7 @@ mod tests {
         let subs = vec![
             edid("ScriptedMovable"),
             modl(r"Clutter\ScriptedMov01.nif"),
-            mk_sub(b"VMAD", vec![0u8; 16]),
+            sub(b"VMAD", vec![0u8; 16]),
         ];
         let rec = parse_movs(0x0044_0002, &subs, &None);
         assert!(rec.has_script);
@@ -237,13 +219,13 @@ mod tests {
     fn parse_movs_ignores_unknown_subs_without_disturbing_captured_fields() {
         let subs = vec![
             edid("NoisyMovable"),
-            mk_sub(b"OBND", vec![0u8; 12]),
+            sub(b"OBND", vec![0u8; 12]),
             modl(r"Clutter\Noisy01.nif"),
-            mk_sub(b"MODT", vec![0u8; 64]),
-            mk_sub(b"MODS", vec![0u8; 8]),
-            mk_sub(b"LNAM", 0xDEAD_BEEFu32.to_le_bytes().to_vec()),
-            mk_sub(b"KSIZ", 1u32.to_le_bytes().to_vec()),
-            mk_sub(b"KWDA", 0xCAFE_BABEu32.to_le_bytes().to_vec()),
+            sub(b"MODT", vec![0u8; 64]),
+            sub(b"MODS", vec![0u8; 8]),
+            sub(b"LNAM", 0xDEAD_BEEFu32.to_le_bytes().to_vec()),
+            sub(b"KSIZ", 1u32.to_le_bytes().to_vec()),
+            sub(b"KWDA", 0xCAFE_BABEu32.to_le_bytes().to_vec()),
         ];
         let rec = parse_movs(0x0044_0003, &subs, &None);
         assert_eq!(rec.editor_id, "NoisyMovable");
@@ -260,7 +242,7 @@ mod tests {
         let subs = vec![
             edid("TruncatedLNAM"),
             modl(r"Clutter\Truncated01.nif"),
-            mk_sub(b"LNAM", vec![0u8; 2]),
+            sub(b"LNAM", vec![0u8; 2]),
         ];
         let rec = parse_movs(0x0044_0004, &subs, &None);
         assert!(rec.loop_sound_form_id.is_none());

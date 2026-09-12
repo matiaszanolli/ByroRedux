@@ -915,14 +915,7 @@ fn parse_mswp_group_inner(
 #[cfg(test)]
 mod ligh_dat2_tests {
     use super::build_static_object_from_subs;
-    use crate::esm::reader::SubRecord;
-
-    fn sub(sig: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *sig,
-            data,
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     /// Build a 76-byte Starfield LIGH `DAT2` payload per the verified
     /// xEdit `wbDefinitionsSF1.pas` layout, with caller-supplied

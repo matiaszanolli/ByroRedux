@@ -1158,13 +1158,7 @@ fn parse_qust_contextual(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     #[test]
     fn parse_qust_picks_scri_and_data_flags() {

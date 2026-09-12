@@ -202,14 +202,7 @@ pub fn parse_leveled_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::esm::reader::SubRecord;
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     fn cnto_bytes(form_id: u32, count: i32) -> Vec<u8> {
         let mut d = Vec::new();

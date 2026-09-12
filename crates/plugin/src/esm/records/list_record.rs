@@ -80,22 +80,10 @@ pub fn parse_flst(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn mk_sub(code: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *code,
-            data,
-        }
-    }
-
-    fn edid(name: &str) -> SubRecord {
-        let mut z = name.as_bytes().to_vec();
-        z.push(0);
-        mk_sub(b"EDID", z)
-    }
+    use crate::esm::records::test_support::{edid, sub};
 
     fn lnam(form_id: u32) -> SubRecord {
-        mk_sub(b"LNAM", form_id.to_le_bytes().to_vec())
+        sub(b"LNAM", form_id.to_le_bytes().to_vec())
     }
 
     /// Baseline: a multi-entry FLST round-trips with EDID + every
@@ -155,9 +143,9 @@ mod tests {
     fn parse_flst_truncated_lnam_drops_silently() {
         let subs = vec![
             edid("Truncated"),
-            lnam(0x0001_2345),             // valid
-            mk_sub(b"LNAM", vec![0u8; 2]), // truncated → dropped
-            lnam(0x0001_2347),             // valid
+            lnam(0x0001_2345),          // valid
+            sub(b"LNAM", vec![0u8; 2]), // truncated → dropped
+            lnam(0x0001_2347),          // valid
         ];
         let rec = parse_flst(0x0001_2400, &subs, &None);
         assert_eq!(rec.entries, vec![0x0001_2345, 0x0001_2347]);
@@ -170,9 +158,9 @@ mod tests {
     fn parse_flst_ignores_unknown_subs() {
         let subs = vec![
             edid("Noisy"),
-            mk_sub(b"OBND", vec![0u8; 12]),
+            sub(b"OBND", vec![0u8; 12]),
             lnam(0x0001_2345),
-            mk_sub(b"NONE", vec![0u8; 4]),
+            sub(b"NONE", vec![0u8; 4]),
             lnam(0x0001_2346),
         ];
         let rec = parse_flst(0x0001_2500, &subs, &None);

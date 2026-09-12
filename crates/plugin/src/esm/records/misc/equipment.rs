@@ -363,13 +363,7 @@ pub fn parse_slgm(form_id: u32, subs: &[SubRecord]) -> SlgmRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     #[test]
     fn parse_arma_picks_edid_biped_flags_dt_dr() {

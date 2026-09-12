@@ -383,13 +383,7 @@ pub fn parse_ipds(form_id: u32, subs: &[SubRecord]) -> IpdsRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     #[test]
     fn parse_avif_skill_record_decodes_avsk_and_category() {

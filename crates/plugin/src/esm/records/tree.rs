@@ -234,13 +234,7 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     fn obnd_bytes(min: [i16; 3], max: [i16; 3]) -> Vec<u8> {
         let mut v = Vec::with_capacity(12);

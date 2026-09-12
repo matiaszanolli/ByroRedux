@@ -1543,13 +1543,7 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     #[test]
     fn parse_navi_extracts_version() {
@@ -1888,13 +1882,7 @@ mod tests {
 #[cfg(test)]
 mod regn_tests {
     use super::*;
-
-    fn sub(sig: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *sig,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     /// `RDAT` header as established from shipped data: type u32, flags u8,
     /// priority u8, then a half-word that is zero in all 788 corpus entries.
@@ -2234,13 +2222,7 @@ mod regn_tests {
 #[cfg(test)]
 mod navm_tests {
     use super::*;
-
-    fn sub(sig: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *sig,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     fn verts(n: usize) -> SubRecord {
         let mut d = Vec::new();

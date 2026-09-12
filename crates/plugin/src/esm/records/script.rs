@@ -218,13 +218,7 @@ pub fn parse_scpt(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(st: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *st,
-            data,
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     #[test]
     fn parse_scpt_extracts_schr_scda_sctx_and_vars() {

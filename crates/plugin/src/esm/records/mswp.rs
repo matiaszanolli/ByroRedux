@@ -150,14 +150,7 @@ mod tests {
     //! mirror the vanilla Fallout4.esm shapes uncovered by the
     //! corpus survey for #590.
     use super::*;
-    use crate::esm::reader::SubRecord;
-
-    fn sub(code: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *code,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     fn z(s: &str) -> Vec<u8> {
         let mut b = s.as_bytes().to_vec();

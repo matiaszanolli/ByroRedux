@@ -454,13 +454,7 @@ mod mesh_path_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: data.to_vec(),
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     /// M47.2 — `CommonNamedFields` decodes VMAD into `script_instance`
     /// (attached-script names + property bindings) alongside the

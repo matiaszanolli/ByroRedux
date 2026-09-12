@@ -89,22 +89,10 @@ pub fn parse_otft(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn mk_sub(code: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *code,
-            data,
-        }
-    }
-
-    fn edid(name: &str) -> SubRecord {
-        let mut z = name.as_bytes().to_vec();
-        z.push(0);
-        mk_sub(b"EDID", z)
-    }
+    use crate::esm::records::test_support::{edid, sub};
 
     fn inam(form_id: u32) -> SubRecord {
-        mk_sub(b"INAM", form_id.to_le_bytes().to_vec())
+        sub(b"INAM", form_id.to_le_bytes().to_vec())
     }
 
     /// One `INAM` sub-record holding N FormIDs — the shape the games
@@ -114,7 +102,7 @@ mod tests {
         for id in form_ids {
             data.extend_from_slice(&id.to_le_bytes());
         }
-        mk_sub(b"INAM", data)
+        sub(b"INAM", data)
     }
 
     /// #3356 — the real wire shape: a SINGLE `INAM` carrying an array.
@@ -200,7 +188,7 @@ mod tests {
     fn malformed_inam_short_payload_is_dropped() {
         let subs = vec![
             edid("BadOutfit"),
-            mk_sub(b"INAM", vec![0xAA, 0xBB]), // only 2 bytes, not 4
+            sub(b"INAM", vec![0xAA, 0xBB]), // only 2 bytes, not 4
             inam(0x0001_0000),
         ];
         let r = parse_otft(0x0001_0000, &subs, &None);

@@ -32,6 +32,11 @@ pub mod scol;
 pub mod script;
 pub mod script_instance;
 pub mod soun;
+/// Shared `SubRecord` fixture builders (#3865). `#[cfg(test)]` so it costs
+/// nothing in a release build; `pub(crate)` so every record module's test
+/// submodule can reach it.
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod tree;
 pub mod weather;
 

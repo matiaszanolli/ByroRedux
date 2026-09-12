@@ -126,14 +126,7 @@ pub fn parse_clmt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::esm::reader::SubRecord;
-
-    fn make_sub(sub_type: &[u8; 4], data: Vec<u8>) -> SubRecord {
-        SubRecord {
-            sub_type: *sub_type,
-            data,
-        }
-    }
+    use crate::esm::records::test_support::sub;
 
     /// #4066 — `WLST` weather ids are cross-record references into
     /// `EsmIndex.weathers`, which is keyed in **global** space (every
@@ -166,7 +159,7 @@ mod tests {
 
         let c = parse_clmt(
             0x0200_0001,
-            &[make_sub(b"WLST", wlst)],
+            &[sub(b"WLST", wlst)],
             GameKind::Fallout3NV,
             &Some(remap),
         );
@@ -193,7 +186,7 @@ mod tests {
         wlst.extend_from_slice(&0u32.to_le_bytes());
         let c = parse_clmt(
             0x0200_0001,
-            &[make_sub(b"WLST", wlst)],
+            &[sub(b"WLST", wlst)],
             GameKind::Fallout3NV,
             &None,
         );
@@ -212,10 +205,10 @@ mod tests {
         wlst_data.extend_from_slice(&0u32.to_le_bytes()); // global form ID (unused)
 
         let subs = vec![
-            make_sub(b"EDID", b"TestClimate\0".to_vec()),
-            make_sub(b"WLST", wlst_data),
-            make_sub(b"FNAM", b"sky\\sun_01.dds\0".to_vec()),
-            make_sub(b"TNAM", vec![6, 8, 18, 20, 0, 0]),
+            sub(b"EDID", b"TestClimate\0".to_vec()),
+            sub(b"WLST", wlst_data),
+            sub(b"FNAM", b"sky\\sun_01.dds\0".to_vec()),
+            sub(b"TNAM", vec![6, 8, 18, 20, 0, 0]),
         ];
 
         let c = parse_clmt(0xABCD, &subs, GameKind::Fallout3NV, &None);
@@ -245,7 +238,7 @@ mod tests {
         wlst_data.extend_from_slice(&75i32.to_le_bytes()); // 75% chance
         wlst_data.extend_from_slice(&0u32.to_le_bytes());
 
-        let subs = vec![make_sub(b"WLST", wlst_data)];
+        let subs = vec![sub(b"WLST", wlst_data)];
         let c = parse_clmt(0xBEEF, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(c.weathers.len(), 2);
         assert_eq!(c.weathers[0].chance, -1);
@@ -280,7 +273,7 @@ mod tests {
             "the autodetect-collision case requires len % 12 == 0"
         );
 
-        let subs = vec![make_sub(b"WLST", wlst_data)];
+        let subs = vec![sub(b"WLST", wlst_data)];
         let c = parse_clmt(0xCAFE, &subs, GameKind::Oblivion, &None);
         assert_eq!(
             c.weathers.len(),
@@ -316,7 +309,7 @@ mod tests {
         wlst_data.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(wlst_data.len(), 24);
 
-        let subs = vec![make_sub(b"WLST", wlst_data)];
+        let subs = vec![sub(b"WLST", wlst_data)];
         let c = parse_clmt(0xCAFF, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(c.weathers.len(), 2);
         assert_eq!(c.weathers[0].weather_form_id, 0xAAAA_AAAA);
