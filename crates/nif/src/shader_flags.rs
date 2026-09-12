@@ -513,13 +513,22 @@ mod tests {
     }
 
     /// #712 — pin the `BSShaderCRC32` constants against the literal
-    /// `value="..."` integers in nif.xml lines 6520-6553. The exact
-    /// algorithm Bethesda uses to derive these from flag-name strings
-    /// is opaque (probing with standard CRC-32/IEEE 802.3 over various
-    /// case-/prefix-/separator-permutations of the names produces no
-    /// match — it's not the documented IEEE polynomial). What matters
-    /// for correctness is that the values match the wire literals
-    /// Bethesda's tools emit, and nif.xml is the authority.
+    /// `value="..."` integers in nif.xml lines 6520-6553.
+    ///
+    /// #4280 — the derivation is fully reproducible, 32/32: reflected
+    /// CRC-32 (polynomial `0xEDB88320`, init `0`, no final XOR — the
+    /// same parameterization `byroredux_bsa::csg::bscrc32` uses) computed
+    /// over the `<option name="...">` string exactly as nif.xml spells
+    /// it, with no case folding (nif.xml's own spelling is already
+    /// uppercase, e.g. `VERTEXCOLORS` with no underscore — NOT the
+    /// underscored `Vertex_Colors` doc annotation used for this
+    /// module's Rust constant names). A prior attempt reused `bscrc32`
+    /// directly, which hard-codes a *lowercase* fold internally; varying
+    /// input case against that function collapses every case variant
+    /// onto the same lowercase hash, so the correct uppercase form was
+    /// never actually tested and the derivation looked opaque. What
+    /// matters for correctness is unchanged: the values match the wire
+    /// literals Bethesda's tools emit, and nif.xml is the authority.
     ///
     /// This test exists so a future edit copy-pasting a wrong digit
     /// fails immediately with a clear message instead of silently

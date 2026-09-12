@@ -27,13 +27,16 @@
 //!   - 156 records carry CNAM (always 4 bytes)
 //!   - 1,338 records carry FNAM
 //!
-//! **Downstream use:** `EsmCellIndex.material_swaps` is the lookup
-//! the cell loader will consult once `XMSP` REFR sub-records are
-//! parsed (FO4-DIM6-02 stage 2). The XMSP value is a FormID pointing
-//! at an MSWP record; the cell loader resolves it here, walks the
-//! `swaps` list, and produces per-REFR `TextureSlotSwap` overrides
-//! by routing source paths through the existing `TextureSet`
-//! infrastructure.
+//! **Downstream use (shipped, #971 / FO4-D4-NEW-08):**
+//! `EsmCellIndex.material_swaps` is the lookup the cell loader consults
+//! once a REFR's `XMSP` sub-record is parsed — see
+//! `byroredux/src/cell_loader/refr.rs`. The XMSP value is a FormID
+//! pointing at an MSWP record; the cell loader resolves it there, eagerly
+//! applies an already-set `material_path` (the XATO MNAM-only TXST case)
+//! against the FNAM path-prefix filter, and preserves the resolved
+//! `swaps` list (+ filter) on the overlay as `material_swaps`/
+//! `material_swaps_filter` for the spawn path's per-shape,
+//! later-entry-wins substitution.
 //!
 //! See audit FO4-DIM6-05 / #590.
 

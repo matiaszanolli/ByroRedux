@@ -17,15 +17,15 @@ run the engine, what do you see?
 | | Oblivion | FO3 | FNV | Skyrim SE | FO4 | FO76 | Starfield |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **Interior cells** | ✓ | ✓ | ✓ | ✓ | ✓ | parse only | ✓ |
-| **Exterior grid (7×7)** | bench pending | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| **Exterior grid (7×7)** | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | **LAND heightmap + splatting** | parse ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | **World streaming (M40)** | — | ✓ | ✓ | ✓ | ✓ | — | ✓ |
-| **Confirmed bench** | device check pending | device check pending | 3 146 ent · 74.0 FPS TAA | 5 765 ent · 89.9 FPS TAA | 39 537 ent · 27.1 FPS TAA | — | Cydonia walkable |
+| **Confirmed bench** | 6 043 ent · 2 355 draws (#2368) | device check pending | 3 146 ent · 74.0 FPS TAA | 5 765 ent · 89.9 FPS TAA | 39 537 ent · 27.1 FPS TAA | — | Cydonia walkable |
 
-**Oblivion exterior**: TES4 worldspace + LAND parse + load ✓ — the wiring
-is implemented and game-agnostic; only an on-device exterior render bench
-is pending. (BSA v103 extracts fine — that framing was a stale premise,
-closed by #699.)
+**Oblivion exterior**: TES4 worldspace + LAND parse + load ✓ — closed by
+#2368 (2026-08-12): Tamriel `(0,0)` radius 1 on-device, 6,043 entities /
+2,355 draws, image-health + environment-value gates both clean. (BSA v103
+extracts fine — that framing was a stale premise, closed by #699.)
 
 ---
 

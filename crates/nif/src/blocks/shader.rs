@@ -897,9 +897,20 @@ impl BSLightingShaderProperty {
     ///
     /// The three per-variant parsers are bit-for-bit equivalent to the
     /// corresponding slice of the pre-#1279 monolithic parse. The split
-    /// is a code-organisation refactor — each parser reads top-to-bottom
-    /// with no per-BSVER jumps into shared code paths, making the
-    /// per-game wire format easy to reason about in isolation.
+    /// is a code-organisation refactor.
+    ///
+    /// #4281 — correcting a stale claim here: `parse_skyrim` and
+    /// `parse_fo76_plus` read top-to-bottom with no jumps into shared
+    /// code, but `parse_fo4` does share the Skyrim+ shader-flag head
+    /// (`parse_skyrim_shader_base`, #3845) with `BSEffectShaderProperty`.
+    /// `parse_fo76_plus`'s own CRC-array-head read (`shader_type`/
+    /// `num_sf1`/`num_sf2`/`sf1_crcs`/`sf2_crcs`) is a THIRD, independent
+    /// inline copy of that shape that #3845's consolidation does not
+    /// cover — its `shader_type` field placement and unconditional
+    /// `num_sf2` differ enough from the shared helper's shape that
+    /// folding it in was out of scope there. Not a defect (the inline
+    /// copy is correct), but a future change to the shared helper's CRC
+    /// semantics must remember this copy exists too.
     ///
     /// **Verification contract**: any change to a per-variant parser must
     /// preserve the `parse_real_nifs --ignored` 100% recoverable rate on
@@ -1238,6 +1249,14 @@ impl BSLightingShaderProperty {
         // blocks): 0/2,538 valid under the pre-#2616 alignment (NaN
         // emissive, unresolvable texture_set_ref, zero U-scale, 57%
         // invalid CRC membership), 2,538/2,538 valid under this one.
+        // #4281 — this is a THIRD, independent inline copy of the
+        // CRC-array-head shape `parse_skyrim_shader_base` (#3845) reads
+        // for `parse_fo4`/`BSEffectShaderProperty`; not covered by that
+        // consolidation (see the doc comment on `parse_fo76_plus`'s
+        // caller above). Correct as written — `num_sf2` is unconditional
+        // here (always true at `bsver >= 155 > 152`) and `shader_type`
+        // sits before the counts, so it isn't a drop-in match for the
+        // shared helper's signature.
         let shader_type = stream.read_u32_le()?;
         let num_sf1 = stream.read_u32_le()? as usize;
         let num_sf2 = stream.read_u32_le()? as usize;
