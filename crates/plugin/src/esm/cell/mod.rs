@@ -865,7 +865,7 @@ pub struct StaticObject {
 
 /// Full Skyrim+ Texture Set — eight named slots from a single TXST
 /// record. Pre-#357 the parser kept only `diffuse` (TX00); REFR
-/// XTNM/XPRD overrides referencing a TXST silently degraded normal /
+/// XTNM/XATO/XTXR overrides referencing a TXST silently degraded normal /
 /// glow / parallax / env / specular back to the host mesh's textures.
 ///
 /// This is a canonical, named-role view of an ESM `TXST` record.  The
@@ -1179,7 +1179,7 @@ pub struct EsmCellIndex {
     /// (diffuse/normal/glow/parallax/env/env_mask/inner/specular).
     /// Pre-#357 only the diffuse slot was retained (via the
     /// `landscape_textures` LTEX→TXST.TX00 path), so any future REFR
-    /// XTNM/XPRD override that points to a TXST can now apply the
+    /// XTNM/XATO/XTXR override that points to a TXST can now apply the
     /// full set instead of silently dropping 7 of 8 channels. See
     /// audit S6-11.
     pub texture_sets: HashMap<u32, TextureSet>,

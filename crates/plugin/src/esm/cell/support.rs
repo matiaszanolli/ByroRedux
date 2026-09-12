@@ -471,7 +471,7 @@ fn parse_ltex_group_inner(
 /// [`TextureSet`] roles, plus the legacy
 /// `txst_textures: form_id → diffuse_path` map kept for the LTEX
 /// resolver downstream. Pre-#357 only TX00 was retained — REFR
-/// XTNM/XPRD overrides referencing a TXST silently dropped 7 of 8
+/// XTNM/XATO/XTXR overrides referencing a TXST silently dropped 7 of 8
 /// channels (visible on Skyrim re-skinned statics as "wrong material
 /// on a re-textured prop"). See audit S6-11.
 pub(crate) fn parse_txst_group(

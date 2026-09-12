@@ -560,6 +560,20 @@ fn apply_pp_lighting_property(
             info.refraction_strength = shader.refraction_strength;
             info.refraction_strength_consumed = true;
         }
+        // #4243 / FO3-2026-09-11-D2-02 — `refraction_fire_period` (the
+        // sibling scalar decoded alongside `refraction_strength` above,
+        // `blocks/shader.rs:55`) has NO `MaterialInfo`/`Material` sink and
+        // is deliberately left unwired: the renderer's fire-refraction warp
+        // (`material_kind = 103` below) is a static per-frame distortion
+        // with no scroll-phase input to drive, on either the FO3/FNV or
+        // Skyrim+ path. Wiring it would mean adding a new time-varying
+        // uniform to `triangle.frag`'s refraction pass — a Vulkan/shader
+        // change with no `cargo test` signal for whether the visual result
+        // is actually correct (see `feedback_speculative_vulkan_fixes`).
+        // Left as documented, time-invariant behavior; the field itself
+        // stays decoded (and pinned by `blocks/shader_tests`) for when a
+        // scroll-phase warp lands.
+        //
         // The fire-refraction promotion below is deliberately NOT gated:
         // it is a monotone latch (flags-set → promote, never demote), so
         // an inherited property can only ever confirm it.

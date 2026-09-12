@@ -54,10 +54,11 @@ use shape::resolve_shape;
 ///   opaque FO4+ packed Havok. So the NP and no-collision cases no longer
 ///   "fire identically" — that sentence described pre-#2355 behaviour.
 /// * [`examine_collision_kind`], the single-`BlockRef` probe, has **no**
-///   production caller. It is a diagnostic entry point for corpus scans
-///   (`examples/_tmp_fo3_d5_collision.rs`) and for the tests below, which
-///   is where the per-block evidence in the FO3 dimension-5 audit came
-///   from. Kept deliberately; do not re-document it as wired-up telemetry.
+///   production caller. It is a diagnostic entry point for corpus scans —
+///   *a throwaway probe under `examples/`, run and deleted, not a committed
+///   file* — and for the tests below, which is where the per-block evidence
+///   in the FO3 dimension-5 audit came from. Kept deliberately; do not
+///   re-document it as wired-up telemetry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollisionAuthoring {
     /// No `collision_ref` on the AVObject, or the ref doesn't resolve.
