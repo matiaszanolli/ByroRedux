@@ -595,30 +595,33 @@ The material slice was executed this session as the template. Mechanics:
      arrive separately through `extra_material_flags`.
   4. `Material::resolve_pbr` runs inside the lowering step and guarantees finite,
      clamped canonical PBR scalars before the result reaches ECS consumers.
-  5. `byroredux/src/material_translate.rs::resolve_normal_alpha_spec_roughness` and
-     `::resolve_msn_z_source` finish the two texture-dependent fields once
-     `MaterialTextureHandles` is attached — the second phase, below.
+  5. `byroredux/src/material_translate.rs::resolve_normal_alpha_spec_roughness`,
+     `::resolve_msn_z_source`, and `::resolve_unresolved_gloss_neutral_roughness`
+     finish the three texture-dependent fields once `MaterialTextureHandles` is
+     attached — the second phase, below.
 
 - **Two-phase boundary** (#2330). `translate_material` runs *before* texture
   handles exist, so any field whose value depends on which textures actually
-  resolved cannot be finished there. Two are:
+  resolved cannot be finished there. Three are (#4228 — this table previously
+  undercounted the third):
 
   | Phase | Site | Writes |
   |---|---|---|
   | 1 — base lowering | `translate_material` | the `Material` literal: scalars, colours, flags, glass classification, `resolve_pbr` clamping |
   | 2 — post-texture | `resolve_normal_alpha_spec_roughness` | `Material::roughness` for the normal-alpha-as-spec convention (#1480) |
   | 2 — post-texture | `resolve_msn_z_source` | `MAT_FLAG_MSN_HAS_AUTHORED_Z` for model-space normals (#2826) |
+  | 2 — post-texture | `resolve_unresolved_gloss_neutral_roughness` | `Material::roughness`, when a gloss/smoothness map resolved with no authored BGSM PBR scalars to interpret it (#3905) |
 
-  Both Phase-2 resolvers run at **every `translate_material` caller that
+  All three Phase-2 resolvers run at **every `translate_material` caller that
   attaches `MaterialTextureHandles`**, immediately after that attachment
   (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`). The third
   production caller, `cell_loader/placement_lod.rs`, is exempt because it
-  attaches no `MaterialTextureHandles` — both resolvers read their inputs out
-  of that component and early-return without it, so calling them there would
+  attaches no `MaterialTextureHandles` — all three resolvers read their inputs
+  out of that component and early-return without it, so calling them there would
   be a no-op rather than a correctness gap (#3465; the text used to say
   "both spawn sites", which stopped identifying the set once the third caller
-  landed). Both are idempotent and read only canonical components, so this is
-  a staging constraint rather than a mutable-state leak — and it is why the
+  landed). All three are idempotent and read only canonical components, so this
+  is a staging constraint rather than a mutable-state leak — and it is why the
   render path carries no material heuristic of its own (#1480's "resolve once
   at spawn" contract).
 

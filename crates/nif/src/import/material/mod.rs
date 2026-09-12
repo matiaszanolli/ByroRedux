@@ -590,6 +590,17 @@ pub(super) struct MaterialInfo {
     /// `env_map_scale` for this mesh. Same rationale and fix as
     /// [`Self::texture_clamp_mode_consumed`] (#2328 / FO3-D1-06).
     pub env_map_scale_consumed: bool,
+    /// #4237 / FO3-D1-2026-09-11-02 — whether an authored FO3/FNV
+    /// `Window_Environment_Mapping`/`Eye_Environment_Mapping` shader-flag
+    /// bit was seen on this mesh. Previously only fed `env_map_scale`'s
+    /// on/off gate (`legacy_env_map_scale`); a window authored with this
+    /// flag but a non-keyword-matching filename never reached
+    /// `classify_glass_into_material`, so it was misclassified as opaque
+    /// dielectric instead of glass. Same `_consumed` precedence gate as
+    /// `env_map_scale_consumed`.
+    pub window_env_mapping: bool,
+    /// See [`Self::window_env_mapping`].
+    pub window_env_mapping_consumed: bool,
     /// True once any shader property has written `refraction_strength`
     /// for this mesh. Same rationale and fix as
     /// [`Self::texture_clamp_mode_consumed`] — #3514 is #2328's
@@ -1187,6 +1198,8 @@ impl Default for MaterialInfo {
             alpha_property_consumed: false,
             texture_clamp_mode_consumed: false,
             env_map_scale_consumed: false,
+            window_env_mapping: false,
+            window_env_mapping_consumed: false,
             refraction_strength_consumed: false,
             two_sided: false,
             no_sorter: false,
@@ -1567,6 +1580,7 @@ impl MaterialInfo {
             uv_scale: self.uv_scale,
             mat_alpha: self.alpha,
             env_map_scale: self.env_map_scale,
+            window_env_mapping: self.window_env_mapping,
             z_test: self.z_test,
             z_write: self.z_write,
             z_function: self.z_function,

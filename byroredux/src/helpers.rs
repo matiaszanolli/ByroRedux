@@ -74,6 +74,7 @@ pub(crate) fn classify_glass_into_material(
     is_decal: bool,
     bgem_glass: bool,
     from_bgsm: bool,
+    window_env_mapping: bool,
 ) {
     let keyword_match = texture_path.is_some_and(is_glass_keyword_path)
         || mesh_name.is_some_and(is_glass_keyword_path);
@@ -153,7 +154,14 @@ pub(crate) fn classify_glass_into_material(
     if material.metalness >= 0.3 && !bgem_effect_fallback {
         return;
     }
-    if !keyword_match && !bgem_glass {
+    // #4237 / FO3-D1-2026-09-11-02 — an authored FO3/FNV
+    // `Window_Environment_Mapping`/`Eye_Environment_Mapping` shader-flag
+    // bit is an independent positive glass signal, same standing as
+    // `bgem_glass`: it comes from the shader property itself, not a
+    // filename rescan, so a window mesh whose path/name happens not to
+    // contain a glass keyword (e.g. an atlas-shared texture) is still
+    // correctly classified.
+    if !keyword_match && !bgem_glass && !window_env_mapping {
         return;
     }
     material.material_kind = byroredux_renderer::MATERIAL_KIND_GLASS;
@@ -209,6 +217,7 @@ mod glass_classification_tests {
             false,
             false,
             false,
+            false,
         );
         assert_eq!(m.material_kind, GLASS);
         assert!(m.roughness <= 0.11, "forced glass-smooth");
@@ -225,6 +234,7 @@ mod glass_classification_tests {
             Some("DrinkingGlass:0"),
             Some("textures/clutter/junk/kitchenutensils01.dds"),
             true,
+            false,
             false,
             false,
             false,
@@ -249,6 +259,7 @@ mod glass_classification_tests {
             false,
             false,
             false,
+            false,
         );
         assert_eq!(m.material_kind, 0);
         assert_eq!(m.metalness, MIRROR_METALNESS);
@@ -265,6 +276,7 @@ mod glass_classification_tests {
             Some("BrokenWindowPane:1"),
             Some("textures/clutter/junk/brokenglasssheet01.dds"),
             true,
+            false,
             false,
             false,
             false,
@@ -288,6 +300,7 @@ mod glass_classification_tests {
             false,
             false,
             false,
+            false,
         );
         assert_eq!(m.material_kind, 0, "opaque window stays non-glass");
         assert_eq!(m.roughness, 0.80, "roughness untouched");
@@ -308,6 +321,7 @@ mod glass_classification_tests {
             false,
             false,
             false,
+            false,
         );
         assert_eq!(m.material_kind, 0);
     }
@@ -323,6 +337,7 @@ mod glass_classification_tests {
             Some("fireplane"),
             Some("textures/effects/fire.dds"),
             true,
+            false,
             false,
             false,
             false,
@@ -355,6 +370,7 @@ mod glass_classification_tests {
             Some("InnerHaze01:8"),
             texture_path.as_deref(),
             true,
+            false,
             false,
             false,
             false,
@@ -391,6 +407,7 @@ mod glass_classification_tests {
             false,
             false, // BGEM resolved, but its glass flag is NOT set
             true,  // …and that resolution is the provenance signal
+            false,
         );
 
         assert_eq!(m.material_kind, GLASS);
@@ -422,6 +439,7 @@ mod glass_classification_tests {
             false,
             false,
             false, // no `.bgem` resolved for this mesh
+            false,
         );
 
         assert_eq!(
@@ -443,6 +461,7 @@ mod glass_classification_tests {
             true,
             false,
             false,
+            false,
         );
         assert_eq!(m.material_kind, 0);
         // Plain alpha-blend wood (no keyword) stays non-glass — guards the
@@ -453,6 +472,7 @@ mod glass_classification_tests {
             Some("WoodTable01"),
             Some("textures/furniture/woodtable01.dds"),
             true,
+            false,
             false,
             false,
             false,
@@ -478,6 +498,7 @@ mod glass_classification_tests {
             true,
             false,
             true, // bgem_glass
+            false,
             false,
         );
         assert_eq!(
@@ -512,6 +533,7 @@ mod glass_classification_tests {
             false,
             true,
             true,
+            false,
         );
 
         assert_eq!(m.material_kind, GLASS);
@@ -549,6 +571,7 @@ mod glass_classification_tests {
             false,
             true, // bgem_glass
             false,
+            false,
         );
         assert_eq!(m.material_kind, 0);
     }
@@ -566,6 +589,7 @@ mod glass_classification_tests {
             true,
             true, // is_decal
             true, // bgem_glass
+            false,
             false,
         );
         assert_eq!(m.material_kind, 0);
@@ -589,6 +613,7 @@ mod glass_classification_tests {
             false,
             true, // bgem_glass
             false,
+            false,
         );
         assert_eq!(m.material_kind, 0);
     }
@@ -611,6 +636,7 @@ mod glass_classification_tests {
             false,
             false,
             false, // no external material — inline NIF authoring
+            false,
         );
         assert_eq!(
             m.material_kind, MULTI_LAYER_PARALLAX,
@@ -636,6 +662,7 @@ mod glass_classification_tests {
             false,
             false,
             false, // no external material
+            false,
         );
         assert_eq!(
             m.material_kind, 5,
@@ -660,6 +687,7 @@ mod glass_classification_tests {
             false,
             false,
             false,
+            false,
         );
         assert_eq!(m.material_kind, GLASS);
     }
@@ -680,6 +708,7 @@ mod glass_classification_tests {
             false,
             false,
             true, // from_bgsm — authoritative external-material signal
+            false,
         );
         assert_eq!(
             m.material_kind, GLASS,
@@ -703,10 +732,82 @@ mod glass_classification_tests {
             false,
             false,
             false, // no external material
+            false,
         );
         assert_eq!(
             m.material_kind, 1,
             "an authored EnvironmentMap dispatch must survive the mirror-pane heuristic"
+        );
+    }
+
+    // #4237 / FO3-D1-2026-09-11-02 — an authored FO3/FNV
+    // Window_Environment_Mapping/Eye_Environment_Mapping shader-flag bit is
+    // an independent positive glass signal, same standing as `bgem_glass`.
+    #[test]
+    fn window_env_mapping_classifies_glass_on_a_non_keyword_filename() {
+        // Atlas-shared texture with no glass keyword ("glass", "crystal",
+        // "window", "bottle", "jar", "vial"), no keyword mesh name either —
+        // the exact case a bare keyword scan misses.
+        let mut m = mat();
+        m.roughness = 0.60;
+        classify_glass_into_material(
+            &mut m,
+            Some("StorefrontPane01:0"),
+            Some("textures/architecture/office/officeatlas01.dds"),
+            true,  // alpha-blended
+            false, // not a decal
+            false, // no BGEM glass flag (FO3/FNV predates BGEM)
+            false, // no external material
+            true,  // window_env_mapping
+        );
+        assert_eq!(
+            m.material_kind, GLASS,
+            "an authored window/eye env-mapping bit must classify glass even with no keyword match"
+        );
+    }
+
+    #[test]
+    fn window_env_mapping_false_does_not_promote_an_ordinary_opaque_surface() {
+        // Same atlas texture, no window/eye env-mapping authored: must NOT
+        // become glass on this signal alone (it still has no keyword match).
+        let mut m = mat();
+        classify_glass_into_material(
+            &mut m,
+            Some("OfficeDesk01:0"),
+            Some("textures/architecture/office/officeatlas01.dds"),
+            true,
+            false,
+            false,
+            false,
+            false, // window_env_mapping
+        );
+        assert_ne!(
+            m.material_kind, GLASS,
+            "no glass signal (keyword, BGEM, or window env-mapping) must not classify glass"
+        );
+    }
+
+    #[test]
+    fn window_env_mapping_does_not_override_the_conductor_gate() {
+        // A reflective conductor (e.g. polished metal window frame) with the
+        // env-mapping bit authored must still be rejected by the
+        // metalness >= 0.3 dielectric gate — this signal is not stronger
+        // than the physical material classification.
+        let mut m = mat();
+        m.metalness = 0.9;
+        classify_glass_into_material(
+            &mut m,
+            Some("MetalFrame01:0"),
+            Some("textures/architecture/office/officeatlas01.dds"),
+            true,
+            false,
+            false,
+            false,
+            true, // window_env_mapping
+        );
+        assert_ne!(
+            m.material_kind, GLASS,
+            "a conductor must not be reclassified as glass by window_env_mapping alone"
         );
     }
 }

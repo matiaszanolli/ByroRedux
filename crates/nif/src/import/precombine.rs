@@ -86,13 +86,23 @@ impl PrecombineGeometry {
     }
 }
 
+/// `BSVertexDesc`'s 12-bit Vertex Attributes field, at bit position 44.
+/// #4238 — single shared extraction so every reader in this module masks
+/// identically; `psg_vertex_stride` used to read this unmasked, leaking 4
+/// bits of the adjacent "Unused 2" field into `attrs`. No `VF_*` constant
+/// is >= `0x1000` today, so that was latent — this is a defensive
+/// correctness fix, not a behavior change for any current constant.
+fn vertex_attrs_field(vertex_desc: u64) -> u16 {
+    ((vertex_desc >> 44) & 0xFFF) as u16
+}
+
 /// On-disk PSG per-vertex stride for an object whose runtime descriptor
 /// is `vertex_desc`. The CSG stores positions as half4 (8 bytes) even
 /// when `VF_FULL_PRECISION` would make the runtime vertex carry float4
 /// (16 bytes), so the on-disk stride is 8 bytes shorter in that case.
 pub fn psg_vertex_stride(vertex_desc: u64) -> usize {
     let runtime = (vertex_desc & 0xF) as usize * 4;
-    let attrs = (vertex_desc >> 44) as u16;
+    let attrs = vertex_attrs_field(vertex_desc);
     if attrs & VF_FULL_PRECISION != 0 {
         runtime.saturating_sub(8)
     } else {
@@ -119,7 +129,7 @@ pub fn decode_shared_geom_object(
     tri_start: usize,
     tri_count: usize,
 ) -> io::Result<PrecombineGeometry> {
-    let attrs = ((vertex_desc >> 44) & 0xFFF) as u16;
+    let attrs = vertex_attrs_field(vertex_desc);
     let stride = psg_vertex_stride(vertex_desc);
     // #2578 — diagnostic-only; see `check_vertex_desc_offsets` doc comment.
     // Matches the `full_precision = false` / `is_skinned = false` forced
@@ -479,5 +489,37 @@ mod tests {
         assert_eq!(psg_vertex_stride(0x0043_b000_0765_0408), 24);
         // no fullprec (hypothetical): stride nibble 5 → 20, unchanged.
         assert_eq!(psg_vertex_stride(0x0001_b000_0065_0005), 20);
+    }
+
+    /// #4238 — `vertex_attrs_field` must mask the 12-bit Vertex Attributes
+    /// field at position 44, or a bit set above `0xFFF` (which belongs to
+    /// the adjacent "Unused 2" field, not any real `VF_*` constant) leaks
+    /// into the returned value. `psg_vertex_stride` used to compute this
+    /// unmasked, independently of `decode_shared_geom_object`'s (correct)
+    /// masked copy — no current `VF_*` constant is `>= 0x1000`, so that
+    /// divergence produced no observable difference in `psg_vertex_stride`'s
+    /// own output (`attrs & VF_FULL_PRECISION` is unaffected by a leaked
+    /// bit 12+), which is why this needs to pin the extraction directly
+    /// rather than only `psg_vertex_stride`'s result.
+    #[test]
+    fn vertex_attrs_field_masks_bits_above_the_12_bit_attribute_field() {
+        // Bit 44+12=56 is squarely in the adjacent "Unused 2" field.
+        let clean: u64 = 0x0041_b000_0065_0407;
+        let with_leaked_unused2_bit: u64 = clean | (1u64 << 56);
+        assert_ne!(
+            clean, with_leaked_unused2_bit,
+            "test fixture sanity: the leaked bit must actually differ"
+        );
+        assert_eq!(
+            vertex_attrs_field(with_leaked_unused2_bit),
+            vertex_attrs_field(clean),
+            "a bit outside the 12-bit attribute field must not change the extracted attrs"
+        );
+        // And both readers in this module must agree with each other,
+        // by construction now that they share one extraction.
+        assert_eq!(
+            vertex_attrs_field(with_leaked_unused2_bit),
+            ((with_leaked_unused2_bit >> 44) & 0xFFF) as u16
+        );
     }
 }

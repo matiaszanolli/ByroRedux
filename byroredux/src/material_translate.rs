@@ -39,8 +39,9 @@
 //! | 1 — base lowering | [`translate_material`] | the `Material` literal: scalars, colours, flags, glass classification, `resolve_pbr` clamping |
 //! | 2 — post-texture-resolution | [`resolve_normal_alpha_spec_roughness`] | `Material::roughness`, for the Skyrim/Gamebryo normal-alpha-as-spec convention (#1480) |
 //! | 2 — post-texture-resolution | [`resolve_msn_z_source`] | `MAT_FLAG_MSN_HAS_AUTHORED_Z`, for model-space normal maps (#2826) |
+//! | 2 — post-texture-resolution | [`resolve_unresolved_gloss_neutral_roughness`] | `Material::roughness`, when a gloss/smoothness map resolved with no authored BGSM PBR scalars to interpret it (#3905) |
 //!
-//! Both Phase-2 resolvers are called from **every [`translate_material`]
+//! All three Phase-2 resolvers are called from **every [`translate_material`]
 //! caller that attaches `MaterialTextureHandles`**, immediately after that
 //! attachment (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`).
 //!
@@ -663,6 +664,11 @@ pub(crate) fn translate_material(
         // `.bgem` exists beside the mesh; Skyrim's inline effect shaders
         // never set it, so their keyword-sharing haze layers stay effects.
         source.from_bgsm,
+        // #4237 / FO3-D1-2026-09-11-02 — authored FO3/FNV window/eye
+        // environment-mapping bit: a positive glass signal independent of
+        // the keyword/mesh-name match, for windows whose filename doesn't
+        // happen to contain a glass keyword.
+        source.window_env_mapping,
     );
     material
 }

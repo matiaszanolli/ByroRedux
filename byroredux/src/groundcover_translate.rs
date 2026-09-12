@@ -58,14 +58,17 @@ use std::collections::HashMap;
 /// design exists to remove — while a high default would carpet asphalt in any
 /// game whose naming we have not seen.
 ///
-/// # Why this is `dead_code` today
+/// # Consumer status (#4054 updated this from the original Phase-0 note)
 ///
-/// The affinity half of this module has exactly one consumer by design: the
-/// `affinity(splat)` term of the Phase 1 `groundcover_scatter.comp` dispatch,
-/// which does not exist yet. Phase 0's job is to land the boundary — the values
-/// are fully exercised by the test suite against the real `LTEX` corpus, so
-/// this is a *pending* consumer rather than unused code. The palette/wind half
-/// below is already live via `install_ground_cover`.
+/// `layer_affinity` (singular) now has a real, non-test production consumer:
+/// `cell_loader/terrain.rs`'s `CellSplatLayer` builder, which flows into
+/// `render/groundcover.rs`'s GPU upload. Only the GPU-side
+/// `groundcover_scatter.comp` `affinity(splat)` dispatch itself is still
+/// pending (Phase 1) — the CPU-side resolution this module does is
+/// already live. The sibling `layer_affinities` (plural, batch form) is
+/// still genuinely uncalled outside its own test and correctly keeps its
+/// `#[allow(dead_code)]`. The palette/wind half below is already live via
+/// `install_ground_cover`.
 ///
 /// #4054 — re-exported from `byroredux_core` rather than defined here: the
 /// scatter shader needs the same number for unpainted ground, and it reaches
@@ -79,7 +82,6 @@ pub use byroredux_core::ecs::components::groundcover::DEFAULT_COVER_AFFINITY as 
 /// corpus). The others catch hard surfaces whose names also contain a positive
 /// token — `LScrubAsphaltStripGRASS` is asphalt with a grass verge in the
 /// texture, not a lawn.
-#[allow(dead_code)] // see DEFAULT_AFFINITY — Phase 1 scatter is the consumer
 const SUPPRESSION_KEYWORDS: &[&str] = &["nograss", "nonegrass", "lava", "asphalt", "pavement"];
 
 /// Positive substrate keywords, **longest-first within equal specificity** so a
@@ -88,7 +90,6 @@ const SUPPRESSION_KEYWORDS: &[&str] = &["nograss", "nonegrass", "lava", "asphalt
 /// Ordering is load-bearing: `cobblestone` must precede `stone`, and
 /// `rockymoss` must precede both `rocky` and `moss`, or the coarser token wins
 /// and the finer distinction is lost.
-#[allow(dead_code)] // see DEFAULT_AFFINITY — Phase 1 scatter is the consumer
 const AFFINITY_KEYWORDS: &[(&str, f32)] = &[
     // ── strongly vegetated ──────────────────────────────
     // `grass` sits near the top on purpose: several corpus names combine it
@@ -169,7 +170,6 @@ const AFFINITY_KEYWORDS: &[(&str, f32)] = &[
 /// (`Dementia\DementiaMoss01.dds`) — Oblivion supplies the latter via `LTEX`'s
 /// `ICON`, every other game the former via `TNAM` → `TXST`. Matching is
 /// case-insensitive substring, so both shapes work without a separate path.
-#[allow(dead_code)] // see DEFAULT_AFFINITY — Phase 1 scatter is the consumer
 pub fn layer_affinity(name: &str) -> f32 {
     let lowered = name.to_ascii_lowercase();
     if SUPPRESSION_KEYWORDS.iter().any(|k| lowered.contains(k)) {

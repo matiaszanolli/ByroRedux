@@ -29,6 +29,20 @@ fn legacy_env_map_scale(shader_flags_1: u32, env_map_scale: f32) -> f32 {
     }
 }
 
+/// #4237 / FO3-D1-2026-09-11-02 — whether either window-specific
+/// environment-mapping bit is authored on this shader property. Narrower
+/// than [`legacy_env_map_scale`]'s gate (which also fires on the plain
+/// `Environment_Mapping` bit): window glass specifically authors
+/// `Window_Environment_Mapping` or `Eye_Environment_Mapping`, and that
+/// distinction is the positive glass signal `classify_glass_into_material`
+/// needs — a generic reflective-but-not-glass surface (polished metal,
+/// power armor) authors plain `Environment_Mapping` instead and must not
+/// be promoted to glass by this signal.
+fn legacy_window_env_mapping(shader_flags_1: u32) -> bool {
+    use crate::shader_flags::fo3nv_f1::{EYE_ENVIRONMENT_MAPPING, WINDOW_ENVIRONMENT_MAPPING};
+    shader_flags_1 & (WINDOW_ENVIRONMENT_MAPPING | EYE_ENVIRONMENT_MAPPING) != 0
+}
+
 /// Whether a FO3/FNV `BSShaderPPLightingProperty` actually authors POM,
 /// per nif.xml's FO3 `BSShaderFlags` bits 11 (`Parallax_Shader_Index_15`)
 /// and 28 (`Parallax_Occulsion`) — texture-slot-3 presence alone is not
@@ -536,6 +550,13 @@ fn apply_pp_lighting_property(
                 legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
             info.env_map_scale_consumed = true;
         }
+        // #4237 / FO3-D1-2026-09-11-02 — same `_consumed` precedence gate,
+        // carrying the window-specific env-mapping signal alongside the
+        // scale it already gates.
+        if !info.window_env_mapping_consumed {
+            info.window_env_mapping = legacy_window_env_mapping(shader.shader.shader_flags_1);
+            info.window_env_mapping_consumed = true;
+        }
         // FO3/FNV `BSShaderPPLightingProperty` has NO Double_Sided
         // bit on either flag pair — see the SF_DOUBLE_SIDED
         // explanatory block at the top of this file. Leave
@@ -672,6 +693,13 @@ fn apply_no_lighting_property(
                 legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
             info.env_map_scale_consumed = true;
         }
+        // #4237 / FO3-D1-2026-09-11-02 — same `_consumed` precedence gate,
+        // carrying the window-specific env-mapping signal alongside the
+        // scale it already gates.
+        if !info.window_env_mapping_consumed {
+            info.window_env_mapping = legacy_window_env_mapping(shader.shader.shader_flags_1);
+            info.window_env_mapping_consumed = true;
+        }
         // FO3/FNV `BSShaderNoLightingProperty` is the original
         // engine's fullbright / unlit shader — the texture (× vertex
         // color) IS the final pixel: terminal screens, computer text,
@@ -743,6 +771,13 @@ fn apply_misc_shader_properties(
                 legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
             info.env_map_scale_consumed = true;
         }
+        // #4237 / FO3-D1-2026-09-11-02 — same `_consumed` precedence gate,
+        // carrying the window-specific env-mapping signal alongside the
+        // scale it already gates.
+        if !info.window_env_mapping_consumed {
+            info.window_env_mapping = legacy_window_env_mapping(shader.shader.shader_flags_1);
+            info.window_env_mapping_consumed = true;
+        }
     }
     if let Some(shader) = scene.get_as::<SkyShaderProperty>(idx) {
         if info.texture_path.is_none() {
@@ -757,6 +792,13 @@ fn apply_misc_shader_properties(
                 legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
             info.env_map_scale_consumed = true;
         }
+        // #4237 / FO3-D1-2026-09-11-02 — same `_consumed` precedence gate,
+        // carrying the window-specific env-mapping signal alongside the
+        // scale it already gates.
+        if !info.window_env_mapping_consumed {
+            info.window_env_mapping = legacy_window_env_mapping(shader.shader.shader_flags_1);
+            info.window_env_mapping_consumed = true;
+        }
     }
     if let Some(shader) = scene.get_as::<TallGrassShaderProperty>(idx) {
         if info.texture_path.is_none() {
@@ -766,6 +808,13 @@ fn apply_misc_shader_properties(
             info.env_map_scale =
                 legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
             info.env_map_scale_consumed = true;
+        }
+        // #4237 / FO3-D1-2026-09-11-02 — same `_consumed` precedence gate,
+        // carrying the window-specific env-mapping signal alongside the
+        // scale it already gates.
+        if !info.window_env_mapping_consumed {
+            info.window_env_mapping = legacy_window_env_mapping(shader.shader.shader_flags_1);
+            info.window_env_mapping_consumed = true;
         }
     }
     // #1856 — `env_map_scale` is the only value payload here: per
@@ -782,6 +831,13 @@ fn apply_misc_shader_properties(
             info.env_map_scale =
                 legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
             info.env_map_scale_consumed = true;
+        }
+        // #4237 / FO3-D1-2026-09-11-02 — same `_consumed` precedence gate,
+        // carrying the window-specific env-mapping signal alongside the
+        // scale it already gates.
+        if !info.window_env_mapping_consumed {
+            info.window_env_mapping = legacy_window_env_mapping(shader.shader.shader_flags_1);
+            info.window_env_mapping_consumed = true;
         }
     }
 }
@@ -809,6 +865,13 @@ fn apply_base_only_shader_property(scene: &NifScene, idx: usize, info: &mut Mate
             info.env_map_scale =
                 legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
             info.env_map_scale_consumed = true;
+        }
+        // #4237 / FO3-D1-2026-09-11-02 — same `_consumed` precedence gate,
+        // carrying the window-specific env-mapping signal alongside the
+        // scale it already gates.
+        if !info.window_env_mapping_consumed {
+            info.window_env_mapping = legacy_window_env_mapping(shader.shader.shader_flags_1);
+            info.window_env_mapping_consumed = true;
         }
     }
 }

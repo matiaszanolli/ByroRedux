@@ -746,6 +746,14 @@ pub struct ImportedMaterial {
     pub uv_scale: [f32; 2],
     pub mat_alpha: f32,
     pub env_map_scale: f32,
+    /// #4237 / FO3-D1-2026-09-11-02 — FO3/FNV `Window_Environment_Mapping`/
+    /// `Eye_Environment_Mapping` shader-flag bit, forwarded as a positive
+    /// glass signal for `classify_glass_into_material` (a window authored
+    /// with this flag but a filename that doesn't match a glass keyword
+    /// would otherwise be misclassified as opaque dielectric). `false` on
+    /// every non-FO3/FNV source and on FO3/FNV meshes that authored
+    /// neither bit.
+    pub window_env_mapping: bool,
     pub z_test: bool,
     pub z_write: bool,
     pub z_function: u8,
@@ -842,6 +850,7 @@ impl Default for ImportedMaterial {
             uv_scale: [1.0, 1.0],
             mat_alpha: 1.0,
             env_map_scale: 0.0,
+            window_env_mapping: false,
             z_test: true,
             z_write: true,
             z_function: 3,
