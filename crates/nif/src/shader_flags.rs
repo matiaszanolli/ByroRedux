@@ -204,6 +204,13 @@ pub mod fo4_slsf1 {
     /// Bit 27 — shared with SLSF1 / FO3-FNV F1. Runtime-spawned decal.
     pub const DYNAMIC_DECAL: u32 = 0x0800_0000;
     pub const CHARACTER_LIGHTING: u32 = 0x1000_0000;
+    /// Bit 29 — `External_Emittance`. Same bit position on FO3/FNV
+    /// `BSShaderFlags` per nif.xml (`prefix="F3SF1"`, `versions="#FO3#"`).
+    /// #4239 / FO3-D1-2026-09-11-03 — decoded into
+    /// `BSShaderPPLightingProperty.shader_flags_1` on FO3/FNV like every
+    /// other bit, but has no dedicated consumer in `legacy_properties.rs`
+    /// yet. No action required immediately; documented for whoever next
+    /// works on emissive fidelity.
     pub const EXTERNAL_EMITTANCE: u32 = 0x2000_0000;
     pub const SOFT_EFFECT: u32 = 0x4000_0000;
     pub const ZBUFFER_TEST: u32 = 0x8000_0000;
@@ -246,9 +253,20 @@ pub mod fo4_slsf2 {
     pub const GRASS_BILLBOARD: u32 = 0x0000_2000;
     pub const NO_LOD_LAND_BLEND: u32 = 0x0000_4000;
     pub const DISMEMBERMENT: u32 = 0x0000_8000;
+    /// Bit 16 — `Wireframe`. Same bit position on FO3/FNV `BSShaderFlags2`
+    /// per nif.xml (`prefix="F3SF2"`, `versions="#FO3#"`). #4239 /
+    /// FO3-D1-2026-09-11-03 — decoded on FO3/FNV like every other bit but
+    /// has no dedicated consumer in `legacy_properties.rs`; an alternative
+    /// wireframe source (`NiWireframeProperty`) already exists, bounding
+    /// the impact. No action required immediately.
     pub const WIREFRAME: u32 = 0x0001_0000;
     pub const WEAPON_BLOOD: u32 = 0x0002_0000;
     pub const HIDE_ON_LOCAL_MAP: u32 = 0x0004_0000;
+    /// Bit 19 — `Premult_Alpha`. Same bit position on FO3/FNV
+    /// `BSShaderFlags2` per nif.xml (`prefix="F3SF2"`, `versions="#FO3#"`).
+    /// #4239 / FO3-D1-2026-09-11-03 — decoded on FO3/FNV like every other
+    /// bit but has no dedicated consumer in `legacy_properties.rs`. No
+    /// action required immediately.
     pub const PREMULT_ALPHA: u32 = 0x0008_0000;
     pub const VATS_TARGET: u32 = 0x0010_0000;
     /// Bit 21 — `Anisotropic_Lighting` on FO4, the same semantic Skyrim

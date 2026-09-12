@@ -938,6 +938,15 @@ pub struct ImportedMesh {
     /// intermediate kind immediately overwritten at dispatch) and the
     /// Skyrim/SSE triple was never threaded through at all. `None` on
     /// every non-LOD BSTriShape (the vast majority of meshes).
+    ///
+    /// #4236 — write-only today: three producers populate this field
+    /// (`bs_tri_shape.rs`, `walk/mod.rs` ×2) but nothing outside this
+    /// crate's own tests reads it yet. Not a correctness bug — drawing
+    /// every band at full detail (the current behavior) is the correct
+    /// max-detail render, just an unrealized distance-LOD optimization
+    /// (12,096 FO4 shapes pay full triangle cost at all distances). A
+    /// future M35 selector reading this field is the intended consumer;
+    /// this is not that selector.
     pub bs_lod_cutoffs: Option<[u32; 3]>,
     /// `BSSubIndexTriShape` segmentation payload — segments table +
     /// optional FO4+ shared SSF metadata. Drives dismemberment /

@@ -210,8 +210,13 @@ conversion the rest of the importer uses.
   [`extra_data.rs`](../../crates/nif/src/blocks/extra_data.rs)
   (`BsPackedCombinedGeomDataExtra`, both variants).
 - CSG reader + geometry decode + spawn wiring: in progress (M49).
-- Filename-hash BSCRC32: not yet reproduced (resolution keys off the cell's
-  **owning** plugin meanwhile — #1590).
+- Filename-hash BSCRC32: **implemented** (#2369) — resolves the `.csg` blob
+  per-object from `filename_hash`, exactly as the "Reading an object"
+  section above describes. Do not reintroduce owning-plugin-only
+  resolution here; that convention is #1590's separate `_oc.nif` filename
+  path (see the archive-path bullet below), which the cell's owning
+  plugin *does* correctly determine — it's only the CSG blob lookup where
+  the two diverge.
 - `_oc.nif` archive path convention (verified against `Fallout4 -
   MeshesExtra.ba2`, `DLCCoast - Main.ba2`, `DLCRobot - Main.ba2`):
   `meshes\precombined\<low24>_<hash>_oc.nif` for base-game-owned cells (the

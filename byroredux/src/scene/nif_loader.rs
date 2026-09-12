@@ -534,12 +534,20 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 },
             );
         }
-        // M41.x — when this NIF carries a Havok ragdoll articulation (only
-        // skeletons do; `extract_ragdoll` returns None for meshes), resolve
+        // M41.x — when this NIF carries a Havok ragdoll articulation, resolve
         // its bone names against the just-built `node_by_name` map and attach
         // a `RagdollTemplate` to the root. The `ragdoll <id>` console command
-        // builds the live Rapier multibody from it. Self-gating: facegen /
-        // armor / clutter loads have `ragdoll: None`, so nothing attaches.
+        // builds the live Rapier multibody from it. Self-gating:
+        // `extract_ragdoll` (`crates/nif/src/import/collision/ragdoll.rs`)
+        // requires ≥1 authored `BhkConstraint`/`BhkBreakableConstraint` block
+        // plus ≥2 bone-hosted rigid bodies and ≥1 decoded Ragdoll/LimitedHinge
+        // joint — a real structural gate, NOT "skeleton meshes only" (#4233 /
+        // FNV-D7-2026-09-11-01): a corpus sweep found 220 FNV NIFs returning
+        // `Some(ImportedRagdoll)`, 150 of them with no `skeleton` in their
+        // path — armor gore variants and clutter (chandeliers, swinging
+        // traps) that legitimately author a small constraint articulation.
+        // Ordinary architecture/props with zero or one rigid body and no
+        // constraint block still correctly get `ragdoll: None`.
         if let Some(ragdoll) = imported.ragdoll.as_ref() {
             if let Some(template) =
                 crate::ragdoll::template_from_imported(ragdoll, &node_by_name, &rest_pose_by_name)
