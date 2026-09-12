@@ -197,6 +197,19 @@ fn is_havok_constraint_stub(type_name: &str) -> bool {
     )
 }
 
+/// Whether this file's blocks carry their type name inline (as a sized
+/// string per block) rather than through the header's global block-type
+/// table. #4257 — keyed directly off the same version threshold
+/// `header.rs` uses to decide whether that table exists at all
+/// (`NifVersion::V5_0_0_1`), not off `block_types.is_empty()`. The two
+/// agree on every version-appropriate header today, but emptiness is an
+/// incidental signal: on hand-corrupted or fuzzed input a >= 5.0.0.1
+/// header could have a spuriously empty table and would then be
+/// misclassified as using inline names it doesn't have.
+fn uses_inline_block_type_names(version: version::NifVersion, num_blocks: u32) -> bool {
+    version < version::NifVersion::V5_0_0_1 && num_blocks > 0
+}
+
 /// Parse a NIF file from raw bytes.
 ///
 /// Performs all three phases: parse header → parse blocks → build scene.
@@ -401,7 +414,7 @@ fn dispatch_blocks(
     // Pre-Gamebryo NetImmerse files (NIF v < 5.0.0.1, e.g. Morrowind at
     // v4.0.0.2) inline each block's type name as a sized string instead of
     // using a global block-type table. We read them inline in the loop below.
-    let inline_type_names = header.block_types.is_empty() && header.num_blocks > 0;
+    let inline_type_names = uses_inline_block_type_names(header.version, header.num_blocks);
     if inline_type_names {
         log::debug!(
             "NIF v{} uses inline block type names (pre-Gamebryo, {} blocks)",

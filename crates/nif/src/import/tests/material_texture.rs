@@ -286,9 +286,17 @@ fn oblivion_apply_hilight2_routes_the_normal_map_into_the_parallax_slot() {
          only transports it as a bit on the texture index"
     );
     // The engine-wide defaults, not a value invented for Oblivion — the same
-    // pair every consumer's `unwrap_or` already used.
-    assert_eq!(material.parallax_height_scale, Some(0.04));
-    assert_eq!(material.parallax_max_passes, Some(4.0));
+    // canonical constants every consumer's `unwrap_or` already used (#4263:
+    // referenced directly, not a detached literal copy that could silently
+    // drift from them).
+    assert_eq!(
+        material.parallax_height_scale,
+        Some(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE)
+    );
+    assert_eq!(
+        material.parallax_max_passes,
+        Some(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES)
+    );
 
     // APPLY_MODULATE (2) — the no-op default on 32,810 of the 35,161 vanilla
     // Oblivion properties. Must NOT bind a height map.
@@ -405,9 +413,15 @@ fn apply_hilight2_flags_the_alpha_channel_without_a_normal_slot() {
          provider binds the derived `_n.dds`"
     );
     // The engine-wide defaults still install, so the downstream binding has
-    // usable marcher parameters.
-    assert_eq!(material.parallax_height_scale, Some(0.04));
-    assert_eq!(material.parallax_max_passes, Some(4.0));
+    // usable marcher parameters (#4263: canonical constants, not literals).
+    assert_eq!(
+        material.parallax_height_scale,
+        Some(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE)
+    );
+    assert_eq!(
+        material.parallax_max_passes,
+        Some(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES)
+    );
 
     let material = build(2);
     assert!(

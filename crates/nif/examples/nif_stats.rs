@@ -58,10 +58,19 @@
 //!   aggregate `parsed` count byte-identical, hiding a "parses
 //!   differently" regression rather than a "stops parsing" one. Per-type
 //!   resolution on the `parsed` side is deferred: `NifScene` does not
-//!   carry per-block header-advertised type names today. See the
-//!   identical, previously-correct writeup on
-//!   `tests/common::PerBlockHistogram` (#1883 / NIF-D3-001), which this
-//!   tool's histogram mirrors byte-for-byte.
+//!   carry per-block header-advertised type names today.
+//!
+//!   #4265 (OB-D6-01) — this histogram does NOT mirror
+//!   `tests/common::PerBlockHistogram` (#1883 / NIF-D3-001) byte-for-byte,
+//!   despite an earlier version of this doc claiming it did.
+//!   `PerBlockHistogram` keys on the header-advertised **wire name**
+//!   (the #3326 fix); this tool's `parsed` bucket keys on
+//!   `block.block_type_name()`, the parsed/dispatched Rust struct name —
+//!   exactly the alias-collapsing key described two paragraphs up. The
+//!   two histograms answer different questions (wire-name census vs.
+//!   dispatch-target census) and will legitimately disagree on any
+//!   collapsed alias family; do not diff their TSVs directly as if they
+//!   used the same key.
 //!
 //!   A type with `parsed=N>0, unknown=M>0` is the regression signal R3
 //!   cares about: dispatch can parse this type, but at least one

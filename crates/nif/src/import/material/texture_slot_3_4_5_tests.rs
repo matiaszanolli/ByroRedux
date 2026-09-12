@@ -1698,14 +1698,14 @@ fn ni_texturing_property_parallax_slot_defaults_scalars_when_no_pp_lighting() {
     assert_path(&pool, info.parallax_map, "textures\\stone_p.dds");
     assert_eq!(
         info.parallax_max_passes,
-        Some(4.0),
+        Some(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES),
         "NiTexturingProperty parallax slot must default parallax_max_passes to the engine value (4.0) \
          when no BSShaderPPLightingProperty is co-bound — pre-#725 stayed None and relied on \
          consumer-side `unwrap_or` fallbacks",
     );
     assert_eq!(
         info.parallax_height_scale,
-        Some(0.04),
+        Some(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE),
         "NiTexturingProperty parallax slot must default parallax_height_scale to the engine value \
          (0.04) when no BSShaderPPLightingProperty is co-bound",
     );

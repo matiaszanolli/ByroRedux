@@ -616,9 +616,12 @@ fn bgsm_merge_forwards_alpha_blend_mode() {
     assert!(has_alpha, "function=1 (Standard) must set has_alpha");
     assert_eq!(src, 6);
     assert_eq!(dst, 7);
-    assert_eq!(gamebryo_to_vk_blend_factor(src), vk::BlendFactor::SRC_ALPHA);
     assert_eq!(
-        gamebryo_to_vk_blend_factor(dst),
+        gamebryo_to_vk_blend_factor(src, vk::BlendFactor::SRC_ALPHA),
+        vk::BlendFactor::SRC_ALPHA
+    );
+    assert_eq!(
+        gamebryo_to_vk_blend_factor(dst, vk::BlendFactor::ONE_MINUS_SRC_ALPHA),
         vk::BlendFactor::ONE_MINUS_SRC_ALPHA
     );
 
@@ -640,9 +643,12 @@ fn bgsm_merge_forwards_alpha_blend_mode() {
     assert!(has_alpha);
     assert_eq!(src, 6);
     assert_eq!(dst, 0);
-    assert_eq!(gamebryo_to_vk_blend_factor(src), vk::BlendFactor::SRC_ALPHA);
     assert_eq!(
-        gamebryo_to_vk_blend_factor(dst),
+        gamebryo_to_vk_blend_factor(src, vk::BlendFactor::SRC_ALPHA),
+        vk::BlendFactor::SRC_ALPHA
+    );
+    assert_eq!(
+        gamebryo_to_vk_blend_factor(dst, vk::BlendFactor::ONE_MINUS_SRC_ALPHA),
         vk::BlendFactor::ONE,
         "Additive dst must resolve to ONE for accumulation"
     );
@@ -664,9 +670,12 @@ fn bgsm_merge_forwards_alpha_blend_mode() {
     assert!(has_alpha);
     assert_eq!(src, 4);
     assert_eq!(dst, 1);
-    assert_eq!(gamebryo_to_vk_blend_factor(src), vk::BlendFactor::DST_COLOR);
     assert_eq!(
-        gamebryo_to_vk_blend_factor(dst),
+        gamebryo_to_vk_blend_factor(src, vk::BlendFactor::SRC_ALPHA),
+        vk::BlendFactor::DST_COLOR
+    );
+    assert_eq!(
+        gamebryo_to_vk_blend_factor(dst, vk::BlendFactor::ONE_MINUS_SRC_ALPHA),
         vk::BlendFactor::ZERO,
         "Multiplicative dst must resolve to ZERO so it doesn't leak through"
     );

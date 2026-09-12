@@ -235,11 +235,18 @@ fn apply_texturing_property(
             // `parallax_height_scale = 0.04, parallax_max_passes =
             // 4.0` (`renderer/src/vulkan/material.rs:216-217`).
             if info.parallax_map.is_some() {
+                // #4263 SIBLING — reference the canonical constants
+                // directly rather than duplicating their literal values;
+                // see the matching APPLY_HILIGHT2 fix below.
                 if info.parallax_max_passes.is_none() {
-                    info.parallax_max_passes = Some(4.0);
+                    info.parallax_max_passes = Some(
+                        byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES,
+                    );
                 }
                 if info.parallax_height_scale.is_none() {
-                    info.parallax_height_scale = Some(0.04);
+                    info.parallax_height_scale = Some(
+                        byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE,
+                    );
                 }
             }
         }
@@ -299,12 +306,19 @@ fn apply_texturing_property(
             }
             // Same engine defaults the slot-7 branch above installs, and
             // the same pair every consumer's `unwrap_or` already used —
-            // no new constant is introduced for Oblivion.
+            // no new constant is introduced for Oblivion. #4263 — reference
+            // the canonical constants directly rather than duplicating
+            // their literal values here: a raw `4.0`/`0.04` is a silent
+            // per-game divergence waiting to happen the moment either
+            // canonical default is retuned downstream in
+            // `Material::resolve_pbr`.
             if info.parallax_max_passes.is_none() {
-                info.parallax_max_passes = Some(4.0);
+                info.parallax_max_passes =
+                    Some(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES);
             }
             if info.parallax_height_scale.is_none() {
-                info.parallax_height_scale = Some(0.04);
+                info.parallax_height_scale =
+                    Some(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE);
             }
         }
         for (slot, decal) in info

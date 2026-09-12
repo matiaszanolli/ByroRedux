@@ -208,10 +208,17 @@ pub fn default_depth_compare_op() -> vk::CompareOp {
 ///                        10 SRC_ALPHA_SATURATE
 /// ```
 ///
-/// Any out-of-range value falls back to `SRC_ALPHA` (the Gamebryo
-/// default). Defensive — NiAlphaProperty storage is a nibble, so the
-/// maximum parsed value is 15.
-pub fn gamebryo_to_vk_blend_factor(v: u8) -> vk::BlendFactor {
+/// Any out-of-range value falls back to `default` — see the two call
+/// sites' own defaults below. Defensive — NiAlphaProperty storage is a
+/// nibble, so the maximum parsed value is 15.
+///
+/// #4262 — the fallback is NOT the same for both call sites: it's the
+/// engine default for *that slot*, not a single shared constant.
+/// `SRC_ALPHA` is the Gamebryo default for the source factor; the
+/// destination factor's engine default is `INV_SRC_ALPHA`. A single
+/// hardcoded `SRC_ALPHA` fallback silently applied the source default to
+/// an out-of-range destination value too.
+pub fn gamebryo_to_vk_blend_factor(v: u8, default: vk::BlendFactor) -> vk::BlendFactor {
     match v {
         0 => vk::BlendFactor::ONE,
         1 => vk::BlendFactor::ZERO,
@@ -224,7 +231,7 @@ pub fn gamebryo_to_vk_blend_factor(v: u8) -> vk::BlendFactor {
         8 => vk::BlendFactor::DST_ALPHA,
         9 => vk::BlendFactor::ONE_MINUS_DST_ALPHA,
         10 => vk::BlendFactor::SRC_ALPHA_SATURATE,
-        _ => vk::BlendFactor::SRC_ALPHA,
+        _ => default,
     }
 }
 
@@ -792,8 +799,8 @@ pub fn create_blend_pipeline(
         .sample_shading_enable(false)
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-    let src_factor = gamebryo_to_vk_blend_factor(src);
-    let dst_factor = gamebryo_to_vk_blend_factor(dst);
+    let src_factor = gamebryo_to_vk_blend_factor(src, vk::BlendFactor::SRC_ALPHA);
+    let dst_factor = gamebryo_to_vk_blend_factor(dst, vk::BlendFactor::ONE_MINUS_SRC_ALPHA);
     let (src_alpha_factor, dst_alpha_factor) = coverage_alpha_factors(dst_factor);
     let hdr_blend = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -1144,20 +1151,38 @@ mod tests {
         ];
         for (gb, vk_expected) in cases {
             assert_eq!(
-                gamebryo_to_vk_blend_factor(gb),
+                gamebryo_to_vk_blend_factor(gb, vk::BlendFactor::SRC_ALPHA),
                 vk_expected,
                 "Gamebryo factor {gb} must map to {vk_expected:?}"
             );
+            // The `default` fallback parameter must never override an
+            // in-range value — it only ever applies to the out-of-range
+            // arm exercised below.
+            assert_eq!(
+                gamebryo_to_vk_blend_factor(gb, vk::BlendFactor::ONE_MINUS_SRC_ALPHA),
+                vk_expected,
+                "in-range factor {gb} must ignore the caller's default"
+            );
         }
 
-        // Out-of-range falls back to SRC_ALPHA (the Gamebryo default).
-        // NiAlphaProperty stores src/dst as nibbles so 11..=15 is the
-        // realistic out-of-range space.
+        // #4262 — out-of-range falls back to whatever `default` the caller
+        // passed, not a single hardcoded value: the source slot's Gamebryo
+        // default is SRC_ALPHA, the destination slot's is
+        // ONE_MINUS_SRC_ALPHA (INV_SRC_ALPHA), and a shared fallback
+        // silently applied the source default to an out-of-range
+        // destination value too. NiAlphaProperty stores src/dst as
+        // nibbles so 11..=15 is the realistic out-of-range space.
         for v in 11u8..=15 {
             assert_eq!(
-                gamebryo_to_vk_blend_factor(v),
+                gamebryo_to_vk_blend_factor(v, vk::BlendFactor::SRC_ALPHA),
                 vk::BlendFactor::SRC_ALPHA,
-                "out-of-range factor {v} must default to SRC_ALPHA"
+                "out-of-range factor {v} must default to the caller's SRC_ALPHA"
+            );
+            assert_eq!(
+                gamebryo_to_vk_blend_factor(v, vk::BlendFactor::ONE_MINUS_SRC_ALPHA),
+                vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                "out-of-range factor {v} must default to the caller's ONE_MINUS_SRC_ALPHA, \
+                 not the source slot's SRC_ALPHA"
             );
         }
     }
@@ -1190,7 +1215,7 @@ mod tests {
         // the colour equation, so no Gamebryo factor is left on the old
         // "last writer wins" pair.
         for gb in (0u8..=10).filter(|gb| *gb != 0) {
-            let dst = gamebryo_to_vk_blend_factor(gb);
+            let dst = gamebryo_to_vk_blend_factor(gb, vk::BlendFactor::ONE_MINUS_SRC_ALPHA);
             assert_eq!(
                 coverage_alpha_factors(dst),
                 (vk::BlendFactor::ONE, dst),

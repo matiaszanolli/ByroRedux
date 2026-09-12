@@ -1240,3 +1240,36 @@ fn failed_parse_with_oversized_block_size_falls_through_to_truncation() {
     assert_eq!(scene.dropped_block_count, 1);
     assert!(scene.blocks.is_empty());
 }
+
+// #4257 — `uses_inline_block_type_names` must key off the version
+// threshold directly, not off an incidental "table happens to be empty"
+// signal, so a corrupted/fuzzed >= 5.0.0.1 header with a spuriously empty
+// block-types table is not misclassified as a pre-Gamebryo inline-name
+// file.
+#[test]
+fn pre_gamebryo_version_with_blocks_uses_inline_names() {
+    assert!(uses_inline_block_type_names(
+        version::NifVersion(0x04000002), // Morrowind v4.0.0.2
+        3
+    ));
+}
+
+#[test]
+fn gamebryo_version_never_uses_inline_names_even_with_an_empty_table() {
+    // This is the exact case the pre-fix `block_types.is_empty()` check
+    // got wrong: a >= 5.0.0.1 header has a block-types table by format
+    // definition, so an empty one on real content is corruption, not a
+    // signal to fall back to inline names.
+    assert!(!uses_inline_block_type_names(
+        version::NifVersion::V5_0_0_1,
+        3
+    ));
+}
+
+#[test]
+fn zero_blocks_never_uses_inline_names_regardless_of_version() {
+    assert!(!uses_inline_block_type_names(
+        version::NifVersion(0x04000002),
+        0
+    ));
+}
