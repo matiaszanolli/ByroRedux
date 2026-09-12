@@ -401,6 +401,18 @@ pub mod bsver {
     /// Oblivion BSVER (v20.0.0.4 / v20.0.0.5 or v20.2.0.7 with uv=11).
     /// Pre-collision v2 content ships `bsver < RIGID_BODY_EXTRA_FLOATS`;
     /// standard Oblivion content ships at exactly 11.
+    ///
+    /// **Test-fixture-only by design, not dead code** (#4160): no parser
+    /// branches on "is this exactly Oblivion's bsver" the way it does on
+    /// the threshold constants around it — Oblivion content is instead
+    /// selected by falling below every later cut (`RIGID_BODY_EXTRA_FLOATS`,
+    /// `FO3_FNV`, etc.), the same "narrow the era from above" pattern
+    /// `NifVariant::detect` uses. This constant's job is naming the value
+    /// for [`NifHeader::test_oblivion`](crate::header::NifHeader::test_oblivion)
+    /// and other fixtures so a boundary test reads as "Oblivion" rather
+    /// than a bare `11`. A future dead-code sweep should leave it — see
+    /// the removals at #1511/#1840/#1897 for the actually-dead class this
+    /// is deliberately NOT part of.
     pub const OBLIVION: u32 = 11;
     /// Upper bound of the nif.xml `#NI_BS_LTE_16#` verset ("All NI + BS
     /// until BSVER 16"). Content with `bsver > NI_BS_LTE_16` carries the
@@ -469,6 +481,14 @@ pub mod bsver {
     /// BSLightingShaderProperty / BSEffectShaderProperty flag arrays
     /// and CRC fields are BOTH absent at this value — parsers must
     /// handle it as a no-op for both branches.
+    ///
+    /// **Test-fixture/assertion-only by design, not dead code** (#4160
+    /// SIBLING sweep) — `carries_typed_shader_flags`/`carries_crc_shader_
+    /// flags` gate on `FALLOUT4`/`FO4_CRC_FLAGS` directly, so 131 falling
+    /// in neither range is a derived consequence, not something checked
+    /// against by name. This constant's job is naming the gap band for
+    /// `bsver_shader_flag_band_tests` and the `shader_tests::fo4` fixture
+    /// that builds a header at exactly this value.
     pub const FO4_SHADER_GAP: u32 = 131;
     /// FO4 patch — shader flags switch to CRC hash arrays
     /// (`bsver >= FO4_CRC_FLAGS`). Corresponds to nif.xml's
@@ -493,9 +513,24 @@ pub mod bsver {
     /// The `num_sf2` count field is only present at this BSVER and
     /// above; below it the SF2 array is always empty.
     pub const FO76_SF2_CRCS: u32 = 152;
-    /// Fallout 76 (lower bound; FO76 spans 152..=167 in shipping
-    /// content).
+    /// Fallout 76 (lower bound; FO76 spans 155..=167 in shipping
+    /// content — see [`NifVariant::detect`]'s FO76 match arm, which
+    /// branches on this exact value). NOT 152 — that's
+    /// [`FO76_SF2_CRCS`], an unrelated shader-flag-array threshold that
+    /// happens to sit just below this one. #4161 fixed this doc's
+    /// lower bound after it drifted to the wrong constant's value.
     pub const FO76: u32 = 155;
+    /// Exclusive upper bound `NifVariant::detect` uses to separate
+    /// `Fallout76` from `Starfield` (`uv2 < FO76_STARFIELD_BOUNDARY` is
+    /// FO76). "Cosmetic distinction today" per `detect`'s own comment —
+    /// every shader/block conditional that matters gates on
+    /// `bsver >= 132`, which both bands satisfy identically — but named
+    /// here (#4161) rather than left as a bare `170` literal, matching
+    /// every other version-band edge in this module. FO76 retail is
+    /// only confirmed through 167; the gap up to this boundary
+    /// classifies unconfirmed 168/169 content as FO76 rather than
+    /// Starfield pending a confirmed FO76 dev-build corpus (#173).
+    pub const FO76_STARFIELD_BOUNDARY: u32 = 170;
     /// Starfield (lower bound). A corpus-wide bsver histogram over 87,994
     /// retail Starfield NIFs observes only `{172,173,174,175}` — 168-171
     /// is unattested in shipped content (#2639); 170 is the historical
@@ -699,7 +734,7 @@ impl NifVariant {
             // conditional we care about is gated on `bsver >= 132`,
             // which covers both identically. Re-tighten to `< 168` once
             // a confirmed Starfield dev-build corpus lands (#173).
-            (12, uv2) if uv2 < 170 => Self::Fallout76,
+            (12, uv2) if uv2 < bsver::FO76_STARFIELD_BOUNDARY => Self::Fallout76,
             (12, _) => Self::Starfield,
             _ => Self::Unknown,
         }

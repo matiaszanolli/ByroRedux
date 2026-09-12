@@ -458,12 +458,21 @@ fn dispatch_blocks(
         // Skip animation blocks when geometry-only parsing is requested.
         if options.skip_animation && is_animation_block(type_name) {
             if let Some(size) = block_size {
-                stream.skip(size as u64)?;
-                blocks.push(Box::new(blocks::NiUnknown {
-                    type_name: Arc::clone(&type_name_arc),
-                    data: Vec::new(), // Don't store data — just a placeholder
-                }));
-                continue;
+                if stream.skip(size as u64).is_ok() {
+                    blocks.push(Box::new(blocks::NiUnknown {
+                        type_name: Arc::clone(&type_name_arc),
+                        data: Vec::new(), // Don't store data — just a placeholder
+                    }));
+                    continue;
+                }
+                // #4158 — a declared `size` that overruns the remaining
+                // file no longer escapes as a whole-parse `Err` via `?`.
+                // Fall through to the normal dispatch below instead:
+                // `parse_block_with_name_arc`'s own block_size-driven
+                // recovery (NiUnknown substitution + `recovered_blocks`,
+                // a few lines down) handles this exact truncated-block
+                // case uniformly, whether or not `skip_animation` was
+                // requested.
             }
             // No block_size (Oblivion) — must parse, can't skip
         }
@@ -533,7 +542,27 @@ fn dispatch_blocks(
                             bump_counter(&mut drifted_by_type, type_name);
                             bump_hist(&mut drift_histogram, type_name, drift);
                         }
-                        stream.set_position(start_pos + size as u64);
+                        // #4159 — `set_position` doesn't bounds-check, unlike
+                        // `skip()`. Rewind to the (already-visited, in-bounds)
+                        // block start and use the bounds-checked `skip` to
+                        // reach the declared end instead of silently parking
+                        // the cursor past EOF on a corrupt `size`.
+                        stream.set_position(start_pos);
+                        if stream.skip(size as u64).is_err() {
+                            log::warn!(
+                                "Block {} '{}' (offset {}): declared size {} exceeds the \
+                                 file length — keeping this block (it parsed successfully) \
+                                 but stopping here; scene marked truncated",
+                                i,
+                                type_name,
+                                start_pos,
+                                size,
+                            );
+                            blocks.push(block);
+                            truncated = true;
+                            dropped_block_count = header.num_blocks as usize - i - 1;
+                            break;
+                        }
                     }
                 }
                 // #2625 — record the opaque tail BEFORE the block is moved into
@@ -626,17 +655,40 @@ fn dispatch_blocks(
                         consumed,
                         e
                     );
-                    stream.set_position(start_pos + size as u64);
-                    blocks.push(Box::new(blocks::NiUnknown {
-                        type_name: Arc::clone(&type_name_arc),
-                        data: Vec::new(),
-                    }));
-                    recovered_blocks += 1;
-                    bump_counter(&mut recovered_by_type, type_name);
-                    continue;
+                    // #4159 — bounds-checked realignment: rewind to the
+                    // (already-visited, in-bounds) block start and use the
+                    // bounds-checked `skip` instead of an unchecked
+                    // `set_position(start_pos + size)`, which could
+                    // silently park the cursor past EOF on a corrupt size.
+                    stream.set_position(start_pos);
+                    if stream.skip(size as u64).is_ok() {
+                        blocks.push(Box::new(blocks::NiUnknown {
+                            type_name: Arc::clone(&type_name_arc),
+                            data: Vec::new(),
+                        }));
+                        recovered_blocks += 1;
+                        bump_counter(&mut recovered_by_type, type_name);
+                        continue;
+                    }
+                    // Declared size ALSO overruns the file — this block
+                    // can't be recovered via block_size at all. Fall
+                    // through to the same runtime-size-cache /
+                    // oblivion_skip_sizes / truncation fallbacks used for
+                    // Oblivion's no-block-size case below.
+                    log::debug!(
+                        "Block {} '{}' (offset {}): declared size {} also exceeds the \
+                         file length — falling through to size-cache/truncation recovery",
+                        i,
+                        type_name,
+                        start_pos,
+                        size,
+                    );
                 }
                 // Without block_size (Oblivion), there's no header-driven
-                // recovery. Try three fallbacks in order:
+                // recovery — and a declared block_size that ALSO overruns
+                // the file (#4159, just above) falls through here too,
+                // since it's equally unable to seek to a trusted resync
+                // point. Try three fallbacks in order:
                 //
                 // 1. Runtime size cache: if we successfully parsed another
                 //    instance of this type earlier in the file, use its

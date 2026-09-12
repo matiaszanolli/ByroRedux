@@ -1025,3 +1025,218 @@ fn nif_scene_default_carries_empty_drift_histogram() {
     let scene = NifScene::default();
     assert!(scene.drift_histogram.is_empty());
 }
+
+/// Same layout as [`build_drifted_nif`], but the declared `block_size`
+/// overruns the actual file length by `overrun_by` bytes instead of
+/// merely disagreeing with what the parser consumed — no tail padding
+/// is appended, so `start_pos + declared` would land past the end of
+/// the buffer. Regression fixture for #4159.
+fn build_drifted_nif_overruns_eof(overrun_by: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+
+    buf.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
+    buf.extend_from_slice(&0x14020007u32.to_le_bytes());
+    buf.push(1); // little-endian
+    buf.extend_from_slice(&11u32.to_le_bytes()); // user_version (FNV-style)
+    buf.extend_from_slice(&1u32.to_le_bytes()); // num_blocks = 1
+    buf.extend_from_slice(&34u32.to_le_bytes()); // user_version_2
+
+    for _ in 0..3 {
+        buf.push(1);
+        buf.push(0);
+    }
+
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&6u32.to_le_bytes());
+    buf.extend_from_slice(b"NiNode");
+    buf.extend_from_slice(&0u16.to_le_bytes());
+
+    let mut block = Vec::new();
+    block.extend_from_slice(&0i32.to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&(-1i32).to_le_bytes());
+    block.extend_from_slice(&14u32.to_le_bytes());
+    block.extend_from_slice(&1.0f32.to_le_bytes());
+    block.extend_from_slice(&2.0f32.to_le_bytes());
+    block.extend_from_slice(&3.0f32.to_le_bytes());
+    for r in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        block.extend_from_slice(&r.to_le_bytes());
+    }
+    block.extend_from_slice(&1.0f32.to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&(-1i32).to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+
+    // Declared size overruns the file — no tail padding is appended
+    // below, unlike `build_drifted_nif`.
+    let declared = block.len() as u32 + overrun_by;
+    buf.extend_from_slice(&declared.to_le_bytes());
+
+    buf.extend_from_slice(&1u32.to_le_bytes());
+    buf.extend_from_slice(&9u32.to_le_bytes());
+    buf.extend_from_slice(&9u32.to_le_bytes());
+    buf.extend_from_slice(b"SceneRoot");
+
+    buf.extend_from_slice(&0u32.to_le_bytes()); // num_groups
+
+    buf.extend_from_slice(&block);
+    // No tail padding — the buffer ends here, `overrun_by` bytes short
+    // of what the declared block_size promises.
+
+    buf
+}
+
+/// Regression for #4159 — a `block_size` that overruns the file after a
+/// *successful* parse must not silently park the cursor past EOF via an
+/// unchecked `set_position`. Pre-fix this NIF would parse "cleanly"
+/// (`Ok`, `truncated: false`) with the cursor left in a bogus
+/// past-the-end position; post-fix the parser detects the overrun via
+/// the same bounds-checked `skip()` used elsewhere, keeps the
+/// already-parsed block, and marks the scene truncated.
+#[test]
+fn oversized_block_size_after_successful_parse_truncates_instead_of_overrunning() {
+    let data = build_drifted_nif_overruns_eof(50);
+    let scene = parse_nif(&data).expect("must not hard-fail — the block itself parsed fine");
+    assert!(
+        scene.truncated,
+        "an overrunning block_size must mark the scene truncated, not silently succeed"
+    );
+    assert_eq!(
+        scene.dropped_block_count, 0,
+        "single-block NIF — nothing after it to drop"
+    );
+    assert_eq!(
+        scene.len(),
+        1,
+        "the successfully-parsed NiNode must still be kept"
+    );
+}
+
+/// Regression for #4158 — `skip_animation`'s block-size skip must not
+/// escape as a whole-parse `Err` via `?` when the declared size
+/// overruns the file. Builds a single-block `NiTextKeyExtraData` (an
+/// animation-block type per `is_animation_block`) whose 8-byte body
+/// parses cleanly on its own, but whose declared `block_size` overruns
+/// EOF by 50 bytes — so the `skip_animation` fast path can't skip it.
+/// Pre-fix this NIF failed the whole parse; post-fix it falls through
+/// to the normal dispatch (which succeeds), and the #4159 fix above
+/// then catches the same size/EOF mismatch and marks the scene
+/// truncated instead of parking the cursor out of bounds.
+fn build_text_key_extra_data_nif_overruns_eof(overrun_by: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+
+    buf.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
+    buf.extend_from_slice(&0x14020007u32.to_le_bytes());
+    buf.push(1); // little-endian
+    buf.extend_from_slice(&11u32.to_le_bytes()); // user_version (FNV-style)
+    buf.extend_from_slice(&1u32.to_le_bytes()); // num_blocks = 1
+    buf.extend_from_slice(&34u32.to_le_bytes()); // user_version_2
+
+    for _ in 0..3 {
+        buf.push(1);
+        buf.push(0);
+    }
+
+    let type_name = b"NiTextKeyExtraData";
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&(type_name.len() as u32).to_le_bytes());
+    buf.extend_from_slice(type_name);
+    buf.extend_from_slice(&0u16.to_le_bytes());
+
+    // NiTextKeyExtraData body at v20.2.0.7: Name (string-table index,
+    // -1 = null) + Num Text Keys (0) = 8 bytes.
+    let mut block = Vec::new();
+    block.extend_from_slice(&(-1i32).to_le_bytes());
+    block.extend_from_slice(&0u32.to_le_bytes());
+
+    let declared = block.len() as u32 + overrun_by;
+    buf.extend_from_slice(&declared.to_le_bytes());
+
+    // No string table entries needed — Name is null.
+    buf.extend_from_slice(&0u32.to_le_bytes()); // num_strings
+    buf.extend_from_slice(&0u32.to_le_bytes()); // max_string_length
+    buf.extend_from_slice(&0u32.to_le_bytes()); // num_groups
+
+    buf.extend_from_slice(&block);
+    // No tail padding — overruns EOF by `overrun_by` bytes.
+
+    buf
+}
+
+#[test]
+fn skip_animation_oversized_block_size_falls_through_instead_of_failing_whole_parse() {
+    let data = build_text_key_extra_data_nif_overruns_eof(50);
+    let mut options = ParseOptions::default();
+    options.skip_animation = true;
+
+    let scene = parse_nif_with_options(&data, &options)
+        .expect("an oversized block_size under skip_animation must not fail the whole parse");
+    assert!(
+        scene.truncated,
+        "the underlying #4159 overrun must still be caught once dispatch falls through"
+    );
+    assert_eq!(
+        scene.len(),
+        1,
+        "the successfully-parsed block must still be kept"
+    );
+}
+
+/// Single-block NIF whose declared type dispatches to a real parser
+/// (`NiNode`) but whose body is empty — the parser fails immediately
+/// (`UnexpectedEof` reading the name index) — AND whose declared
+/// `block_size` also overruns EOF. Exercises the *other* #4159 call
+/// site: the `Err(e)` branch's block_size-driven recovery, which used
+/// to force `set_position(start_pos + size)` unconditionally even when
+/// that target is past EOF.
+fn build_nif_with_failing_block_and_oversized_size(overrun_by: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+
+    buf.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
+    buf.extend_from_slice(&0x14020007u32.to_le_bytes());
+    buf.push(1); // little-endian
+    buf.extend_from_slice(&11u32.to_le_bytes()); // user_version (FNV-style)
+    buf.extend_from_slice(&1u32.to_le_bytes()); // num_blocks = 1
+    buf.extend_from_slice(&34u32.to_le_bytes()); // user_version_2
+
+    for _ in 0..3 {
+        buf.push(1);
+        buf.push(0);
+    }
+
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&6u32.to_le_bytes());
+    buf.extend_from_slice(b"NiNode");
+    buf.extend_from_slice(&0u16.to_le_bytes());
+
+    // Declared size overruns EOF; the 1-byte body below is far short of
+    // even the 4 bytes NiNode::parse's first read (the name index)
+    // needs, so the parser fails immediately.
+    let declared = 1 + overrun_by;
+    buf.extend_from_slice(&declared.to_le_bytes());
+
+    buf.extend_from_slice(&0u32.to_le_bytes()); // num_strings
+    buf.extend_from_slice(&0u32.to_le_bytes()); // max_string_length
+    buf.extend_from_slice(&0u32.to_le_bytes()); // num_groups
+
+    // A single padding byte — enough to clear the top-level
+    // `allocate_vec(num_blocks)` "at least one byte per block" sanity
+    // floor, but far short of what NiNode::parse's first read needs.
+    buf.push(0u8);
+    buf
+}
+
+#[test]
+fn failed_parse_with_oversized_block_size_falls_through_to_truncation() {
+    let data = build_nif_with_failing_block_and_oversized_size(50);
+    let scene =
+        parse_nif(&data).expect("must not panic or hard-fail — falls through to truncation");
+    assert!(
+        scene.truncated,
+        "a failed parse whose block_size ALSO overruns EOF has no trusted resync point \
+         and must truncate, not silently park the cursor past EOF"
+    );
+    assert_eq!(scene.dropped_block_count, 1);
+    assert!(scene.blocks.is_empty());
+}
