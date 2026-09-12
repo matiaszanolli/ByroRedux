@@ -141,13 +141,13 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     let mut parts: Vec<ScolPart> = Vec::new();
     let mut current_base: Option<u32> = None;
     let mut filter: Vec<u32> = Vec::new();
-    // #1178 / FO4-D4-001 — flip when a `VMAD` (Papyrus script) sub-record
-    // is observed. Vanilla FO4 SCOLs ship none; mod content can attach.
-    let mut has_script = false;
 
     for sub in subs {
         match sub.sub_type.as_slice() {
-            b"VMAD" => has_script = true,
+            // #4222 / TD2-003 — `VMAD` presence already comes from
+            // `common.has_script` (the shared funnel above); a second,
+            // redundant `has_script = true` arm here shadowed that result
+            // with a local duplicate that computes the identical thing.
             b"ONAM" => {
                 if sub.data.len() >= 4 {
                     // #3400 — the child base form is looked up in
@@ -232,7 +232,7 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         parts,
         filter,
         full_name: common.full_name,
-        has_script,
+        has_script: common.has_script,
     }
 }
 

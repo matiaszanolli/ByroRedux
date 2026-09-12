@@ -220,10 +220,12 @@ pub struct PerkEntry {
 /// `PERK` perk / trait record. Holds the condition list + entry-point
 /// tree that drives the `perk_system.md` / `perk_entry_points.md`
 /// memos' ~120 catalog. Identity + DATA header + PRKE entries are
-/// decoded. Per-entry CTDA conditions (gate whether each entry fires)
-/// and the per-`function_type` EPFD semantic decode are follow-ups —
-/// M47.1's `ConditionList` already covers the consumer side of CTDA;
-/// the per-entry list just needs threading through the block walker.
+/// decoded. Per-entry CTDA conditions (gate whether each entry fires,
+/// via `push_ctda`) and the per-`function_type` EPFD semantic decode
+/// (#4225: `function_type` 1-5 — None/Float/Range/FormId/LString —
+/// are all typed and decoded; an unrecognized value falls back to
+/// `PerkFunctionData::None` rather than being dropped) are both
+/// implemented, not follow-ups.
 #[derive(Debug, Clone, Default)]
 pub struct PerkRecord {
     pub form_id: u32,

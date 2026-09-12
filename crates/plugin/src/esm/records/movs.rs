@@ -44,7 +44,7 @@
 //! placement overrides which DO live on the placement, not the base.
 
 use crate::esm::reader::{FormIdRemap, SubRecord};
-use crate::esm::records::common::{read_string_sub, remap_fid};
+use crate::esm::records::common::{remap_fid, CommonNamedFields};
 
 /// Parsed MOVS record.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -87,12 +87,16 @@ pub fn parse_movs(
     subs: &[SubRecord],
     remap: &Option<FormIdRemap>,
 ) -> MovableStaticRecord {
-    let editor_id = read_string_sub(subs, b"EDID").unwrap_or_default();
-    let model_path = read_string_sub(subs, b"MODL").unwrap_or_default();
+    // #4222 / TD2-003 — EDID/MODL/VMAD presence now go through the shared
+    // funnel (TD3-006 / #1045) instead of a hand-rolled copy of the same
+    // three arms, matching `container.rs` / `misc/world.rs` / `misc/scene.rs`.
+    // `CommonNamedFields` also decodes FULL/ICON/SCRI/full VMAD attachments
+    // MOVS doesn't carry any authored data for; those fields are simply
+    // left at their defaults and dropped here.
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut loop_sound_form_id: Option<u32> = None;
     let mut activate_sound_form_id: Option<u32> = None;
     let mut has_destruction = false;
-    let mut has_script = false;
 
     let read_u32 = |bytes: &[u8]| -> Option<u32> {
         if bytes.len() < 4 {
@@ -120,21 +124,18 @@ pub fn parse_movs(
             b"DEST" => {
                 has_destruction = true;
             }
-            b"VMAD" => {
-                has_script = true;
-            }
             _ => {}
         }
     }
 
     MovableStaticRecord {
         form_id,
-        editor_id,
-        model_path,
+        editor_id: common.editor_id,
+        model_path: common.model_path,
         loop_sound_form_id,
         activate_sound_form_id,
         has_destruction,
-        has_script,
+        has_script: common.has_script,
     }
 }
 
