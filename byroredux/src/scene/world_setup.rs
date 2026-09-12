@@ -1319,6 +1319,7 @@ mod tests {
             wind_speed,
             precipitation: 0.0,
             cloud_layer_velocities: [[0.0; 2]; 4],
+            cloud_layer_velocities_authored: [false; 4],
             cloud_layer_colors: [[[1.0; 3]; 4]; 4],
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),

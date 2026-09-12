@@ -594,21 +594,53 @@ fn lerp_cloud_velocities(a: [[f32; 2]; 4], b: [[f32; 2]; 4], t: f32) -> [[f32; 2
     result
 }
 
-/// Turn authored cloud velocity bytes into UV/sec. A zero vector means the
-/// record did not author Creation motion data, so preserve the established
-/// wind-driven fallback for legacy records.
-fn cloud_scroll_vectors(velocities: [[f32; 2]; 4], fallback_rate: f32) -> [[f32; 2]; 4] {
-    let fallback = [
-        [fallback_rate, fallback_rate * 0.3],
-        [-fallback_rate * 1.35, fallback_rate * 0.5],
-        [fallback_rate * 0.85, fallback_rate * 0.45],
-        [-fallback_rate * 1.15, fallback_rate * 0.6],
-    ];
-    let mut result = fallback;
+/// Turn authored cloud velocity bytes into UV/sec.
+///
+/// #3985 — two independent fixes to the prior value-based sentinel:
+///
+/// (a) **Presence, not value, selects the fallback.** `authored[layer]`
+///     comes from `WeatherRecord::cloud_layer_velocities_authored`, set by
+///     the ONAM/RNAM/QNAM parse arms whenever they actually wrote a value
+///     for that layer — including an authored `0`, which used to be
+///     indistinguishable from "no motion sub-record at all" (the same
+///     presence-vs-value sentinel class as the `[1,1,1]` specular default
+///     from #1873). A layer with no authored data at all still falls back
+///     to the wind-driven synthetic vector below.
+/// (b) **The fallback follows the authored wind direction.** The
+///     `ratios` table below is the SAME per-layer fan-out this function
+///     always used (magnitudes calibrated by `WIND_TO_SCROLL_RATE`), but
+///     it's now treated as a vector in a reference frame where the wind
+///     blows along `+X`, then rotated by `wind_direction` (`[cosθ, sinθ]`,
+///     supplied by the caller from the same WTHR `DATA` wind heading
+///     `composite.frag`'s `weather_procedural_cloud` already consumes —
+///     see `env_translate.rs`) instead of the wind's own heading being
+///     dropped entirely. `wind_direction = [1, 0]` (the legacy synthetic
+///     default when no direction is authored either) reproduces the exact
+///     pre-fix fallback vectors byte-for-byte — this is a rotation of the
+///     old table, not a new one.
+fn cloud_scroll_vectors(
+    velocities: [[f32; 2]; 4],
+    authored: [bool; 4],
+    fallback_rate: f32,
+    wind_direction: [f32; 2],
+) -> [[f32; 2]; 4] {
+    // Per-layer fallback fan-out in the reference frame where wind blows
+    // along +X — identical to the pre-fix hardcoded table.
+    let ratios = [[1.0, 0.3], [-1.35, 0.5], [0.85, 0.45], [-1.15, 0.6]];
+    let [wx, wy] = wind_direction;
+    let mut result = [[0.0; 2]; 4];
     for layer in 0..4 {
-        if velocities[layer][0].abs() > 1.0e-5 || velocities[layer][1].abs() > 1.0e-5 {
-            result[layer] = [velocities[layer][0] * 0.16, velocities[layer][1] * 0.16];
-        }
+        result[layer] = if authored[layer] {
+            [velocities[layer][0] * 0.16, velocities[layer][1] * 0.16]
+        } else {
+            let [rx, ry] = ratios[layer];
+            // Rotate the reference-frame ratio vector by the wind's own
+            // heading (2D rotation by the unit vector [wx, wy]).
+            [
+                (rx * wx - ry * wy) * fallback_rate,
+                (rx * wy + ry * wx) * fallback_rate,
+            ]
+        };
     }
     result
 }
@@ -767,6 +799,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         sample_wthr_colors(&wd.sky_colors, slot_a, slot_b, t);
     let weather_source = sample_weather_sky(&wd, slot_a, slot_b, t);
     let cloud_velocities_source = wd.cloud_layer_velocities;
+    let cloud_velocities_authored_source = wd.cloud_layer_velocities_authored;
     // #2816 — sampled here, while `wd` is still borrowed, so the
     // cross-fade block below can blend it against the target's own
     // sample instead of re-reading the (by-then-replaced) live
@@ -808,6 +841,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         dalc_cube,
         weather,
         cloud_layer_velocities,
+        cloud_layer_velocities_authored,
     ) = if transition_t > 0.0 {
         let tr = world
             .try_resource::<WeatherTransitionRes>()
@@ -886,6 +920,16 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
                 target.cloud_layer_velocities,
                 transition_t,
             ),
+            // #3985 — presence isn't a continuous quantity, so pick a side
+            // rather than blend, mirroring `lerp_weather_sky`'s existing
+            // `wind_direction_authored: if t < 0.5 { a... } else { b... }`
+            // precedent for the same "boolean flag across a cross-fade"
+            // shape.
+            if transition_t < 0.5 {
+                cloud_velocities_authored_source
+            } else {
+                target.cloud_layer_velocities_authored
+            },
         )
     } else {
         (
@@ -902,6 +946,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             dalc_source,
             weather_source,
             cloud_velocities_source,
+            cloud_velocities_authored_source,
         )
     };
 
@@ -1064,7 +1109,12 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // Wrap scroll at 1.0 so it never grows unboundedly; sampler
     // REPEAT makes the wrap invisible.
     if let Some(mut clouds) = world.try_resource_mut::<CloudSimState>() {
-        let scroll_vectors = cloud_scroll_vectors(cloud_layer_velocities, cloud_scroll_rate);
+        let scroll_vectors = cloud_scroll_vectors(
+            cloud_layer_velocities,
+            cloud_layer_velocities_authored,
+            cloud_scroll_rate,
+            wind_direction,
+        );
         advance_cloud_scroll(&mut clouds.cloud_scroll, scroll_vectors[0], dt);
         advance_cloud_scroll(&mut clouds.cloud_scroll_1, scroll_vectors[1], dt);
         advance_cloud_scroll(&mut clouds.cloud_scroll_2, scroll_vectors[2], dt);
@@ -1232,6 +1282,109 @@ mod cloud_scroll_rate_tests {
                 "scroll rate must be non-decreasing in wind_speed; speed={speed} broke monotonicity ({prev} → {current})"
             );
             prev = current;
+        }
+    }
+}
+
+#[cfg(test)]
+mod cloud_scroll_vectors_tests {
+    //! Regression tests for #3985 (REN-2026-09-06-D18-01) — two
+    //! independent fixes to `cloud_scroll_vectors`'s prior value-based
+    //! sentinel.
+    use super::*;
+
+    const EAST: [f32; 2] = [1.0, 0.0];
+
+    /// (a) An authored `0` for a layer must NOT fall back to the
+    /// wind-driven synthetic vector — the whole point of carrying
+    /// presence explicitly. Pre-fix, `[0.0, 0.0]` (whether authored or
+    /// merely defaulted) was indistinguishable from "absent" and always
+    /// substituted motion the artist didn't ask for.
+    #[test]
+    fn authored_zero_layer_stays_motionless() {
+        let velocities = [[0.0, 0.0]; 4];
+        let authored = [true, false, false, false];
+        let result = cloud_scroll_vectors(velocities, authored, 1.0, EAST);
+        assert_eq!(
+            result[0],
+            [0.0, 0.0],
+            "an authored-still layer must scroll at exactly zero, not the wind fallback"
+        );
+        // The other three layers are genuinely unauthored — they DO fall
+        // back, and must not be all-zero (sanity: the fallback fired).
+        for layer in 1..4 {
+            assert_ne!(
+                result[layer],
+                [0.0, 0.0],
+                "layer {layer} has no authored data — it must take the wind fallback, not stay at zero"
+            );
+        }
+    }
+
+    /// An authored non-zero value is scaled by the documented 0.16
+    /// UV/sec-per-authored-unit factor, independent of the fallback path
+    /// entirely.
+    #[test]
+    fn authored_nonzero_layer_uses_authored_value_scaled() {
+        let mut velocities = [[0.0, 0.0]; 4];
+        velocities[2] = [2.0, -3.0];
+        let authored = [false, false, true, false];
+        let result = cloud_scroll_vectors(velocities, authored, 1.0, EAST);
+        assert_eq!(result[2], [2.0 * 0.16, -3.0 * 0.16]);
+    }
+
+    /// (b) `wind_direction = [1, 0]` (east — the legacy synthetic default
+    /// when no direction is authored either) must reproduce the exact
+    /// pre-fix hardcoded fallback table byte-for-byte. This is the
+    /// backward-compatibility anchor: the rotation is a no-op at the
+    /// identity heading.
+    #[test]
+    fn east_wind_reproduces_the_legacy_fallback_table_exactly() {
+        let velocities = [[0.0, 0.0]; 4];
+        let authored = [false; 4];
+        let fallback_rate = 2.0;
+        let result = cloud_scroll_vectors(velocities, authored, fallback_rate, EAST);
+        let expected = [
+            [fallback_rate, fallback_rate * 0.3],
+            [-fallback_rate * 1.35, fallback_rate * 0.5],
+            [fallback_rate * 0.85, fallback_rate * 0.45],
+            [-fallback_rate * 1.15, fallback_rate * 0.6],
+        ];
+        for layer in 0..4 {
+            assert!(
+                (result[layer][0] - expected[layer][0]).abs() < 1e-6
+                    && (result[layer][1] - expected[layer][1]).abs() < 1e-6,
+                "layer {layer}: east wind must reproduce the pre-fix table exactly; \
+                 got {:?}, expected {:?}",
+                result[layer],
+                expected[layer]
+            );
+        }
+    }
+
+    /// A wind blowing due north (`[0, 1]`, a 90° rotation from the
+    /// legacy east default) must rotate every fallback layer's heading by
+    /// the same 90°, while preserving each layer's magnitude — proving
+    /// the fallback actually follows the authored wind rather than
+    /// ignoring it. `rotate90([x, y]) = [-y, x]`.
+    #[test]
+    fn north_wind_rotates_every_fallback_layer_by_90_degrees() {
+        let velocities = [[0.0, 0.0]; 4];
+        let authored = [false; 4];
+        let fallback_rate = 1.0;
+        let east_result = cloud_scroll_vectors(velocities, authored, fallback_rate, EAST);
+        let north_result = cloud_scroll_vectors(velocities, authored, fallback_rate, [0.0, 1.0]);
+        for layer in 0..4 {
+            let [ex, ey] = east_result[layer];
+            let rotated = [-ey, ex];
+            assert!(
+                (north_result[layer][0] - rotated[0]).abs() < 1e-5
+                    && (north_result[layer][1] - rotated[1]).abs() < 1e-5,
+                "layer {layer}: north wind must be the east-wind vector rotated 90°; \
+                 got {:?}, expected {:?}",
+                north_result[layer],
+                rotated
+            );
         }
     }
 }
@@ -1891,6 +2044,7 @@ mod interior_gate_tests {
             wind_speed: 0,
             precipitation: 0.0,
             cloud_layer_velocities: [[0.0; 2]; 4],
+            cloud_layer_velocities_authored: [false; 4],
             cloud_layer_colors: [[[1.0; 3]; 4]; 4],
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),
@@ -2138,6 +2292,7 @@ mod seeded_at_wrong_tod_resample_tests {
             wind_speed: 0,
             precipitation: 0.0,
             cloud_layer_velocities: [[0.0; 2]; 4],
+            cloud_layer_velocities_authored: [false; 4],
             cloud_layer_colors: [[[1.0; 3]; 4]; 4],
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),
@@ -2245,6 +2400,7 @@ mod dalc_cube_crossfade_tests {
             wind_speed: 0,
             precipitation: 0.0,
             cloud_layer_velocities: [[0.0; 2]; 4],
+            cloud_layer_velocities_authored: [false; 4],
             cloud_layer_colors: [[[1.0; 3]; 4]; 4],
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),

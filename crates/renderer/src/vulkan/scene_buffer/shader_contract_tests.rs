@@ -381,7 +381,7 @@ fn water_fragment_uses_shared_material_aware_ray_hits() {
         "materials[inst.materialId]",
         "instIdx, primIdx, bary, direction, mat",
         "instIdx, primIdx, bary, inst, mat, uv, baseSample",
-        "rayHitAlbedo(mat, baseSample.rgb)",
+        "rayHitAlbedo(mat, uv, baseSample.rgb, 0.0)",
         "rayHitEmission(mat, uv, baseSample.rgb, 0.0)",
     ] {
         assert!(
@@ -431,6 +431,116 @@ fn secondary_ray_coverage_includes_barycentric_vertex_alpha() {
     assert!(
         shadow.contains("uint(hitIdx), uint(hitPrim), hitBary,"),
         "shadow traversal must pass committed-hit barycentrics into coverage"
+    );
+}
+
+/// Regression for #3902 — `rayHitAlbedo` pre-fix applied only the constant
+/// diffuse tint, dropping the five other texture-driven albedo-modifying
+/// roles the raster path (`triangle.frag`) composes into `texColor`/
+/// `albedo`: `decals[0..3]`, `tint`, `inner_layer`, `dark`, `detail`. RT
+/// reflections/GI/water refraction therefore shaded a different surface
+/// colour than the primary pass shows for the same surface. Pins that
+/// `rayHitAlbedo` now samples all five, in the raster path's own order,
+/// AND that every one of its four call sites was updated to the new
+/// `(mat, uv, baseRgb, lod)` signature (the roles need `uv`/`lod` to
+/// sample from — the pre-fix `(mat, baseRgb)` signature couldn't have
+/// composed them at all).
+#[test]
+fn ray_hit_albedo_composes_every_raster_albedo_role() {
+    let hit = include_str!("../../../shaders/include/ray_hit.glsl");
+
+    assert!(
+        hit.contains("vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod) {"),
+        "rayHitAlbedo must take uv + an explicit lod to sample the \
+         additional albedo-modifying roles — the pre-fix (mat, baseRgb) \
+         signature had no way to."
+    );
+
+    let fn_start = hit
+        .find("vec3 rayHitAlbedo(GpuMaterial mat")
+        .expect("rayHitAlbedo definition must exist");
+    let fn_body = &hit[fn_start..];
+    let fn_end = fn_body
+        .find("\nvec3 rayHitEmission(")
+        .expect("rayHitAlbedo body must be followed by rayHitEmission");
+    let fn_body = &fn_body[..fn_end];
+
+    for (role, needle) in [
+        ("decals", "mat.decalMap0Index"),
+        ("decals", "mat.decalMap1Index"),
+        ("decals", "mat.decalMap2Index"),
+        ("decals", "mat.decalMap3Index"),
+        (
+            "diffuse tint",
+            "vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB)",
+        ),
+        ("tint map", "mat.tintMapIndex"),
+        ("inner layer", "mat.innerLayerMapIndex"),
+        (
+            "inner layer kind gate",
+            "MATERIAL_KIND_MULTI_LAYER_PARALLAX",
+        ),
+        ("dark map", "mat.darkMapIndex"),
+        ("detail map", "mat.detailMapIndex"),
+    ] {
+        assert!(
+            fn_body.contains(needle),
+            "rayHitAlbedo is missing the {role} role (expected `{needle}`) — \
+             a secondary ray would shade a different colour than the raster \
+             pass on any surface using it (#3902)"
+        );
+    }
+    // Every additional sample must use the caller-supplied explicit LOD,
+    // not a hardcoded 0.0 — a blurred base sample (rough reflections,
+    // refraction mip floor) must composite correspondingly blurred
+    // decal/tint/inner-layer/dark/detail texels.
+    assert_eq!(
+        fn_body.matches("textureLod(").count(),
+        5,
+        "rayHitAlbedo must have exactly 5 additional-role sample call sites \
+         (decals, tint, inner layer, dark, detail — one source-level \
+         textureLod(...) call each; the decal loop's single call site \
+         executes up to 4 times at runtime) via explicit-LOD textureLod, \
+         matching sampleRayHitBase/rayHitEmission's existing secondary-ray \
+         discipline. A different count means a role was dropped or a new \
+         one was added without updating this pin."
+    );
+
+    // Every call site must thread uv + lod through, not the stale 2-arg form.
+    for (file, src) in [
+        (
+            "raytrace.glsl",
+            include_str!("../../../shaders/include/raytrace.glsl"),
+        ),
+        ("water.frag", include_str!("../../../shaders/water.frag")),
+        (
+            "triangle.frag",
+            include_str!("../../../shaders/triangle.frag"),
+        ),
+    ] {
+        assert!(
+            !src.contains("rayHitAlbedo(mat, baseSample.rgb)")
+                && !src.contains("rayHitAlbedo(hitMat, hitBaseRgb)")
+                && !src.contains("rayHitAlbedo(tMat, tAlbedo)")
+                && !src.contains("rayHitAlbedo(hitMat, hitBase.rgb)"),
+            "{file} must not call the pre-#3902 2-argument rayHitAlbedo form"
+        );
+    }
+    assert_eq!(
+        include_str!("../../../shaders/include/raytrace.glsl")
+            .matches("rayHitAlbedo(")
+            .count()
+            + include_str!("../../../shaders/water.frag")
+                .matches("rayHitAlbedo(")
+                .count()
+            + include_str!("../../../shaders/triangle.frag")
+                .matches("rayHitAlbedo(")
+                .count(),
+        4,
+        "expected exactly 4 rayHitAlbedo call sites (raytrace.glsl GI/reflection, \
+         water.frag, triangle.frag refraction + GI bounce) — a new secondary-ray \
+         terminus that samples albedo without this helper reintroduces #3902's \
+         drift for that path"
     );
 }
 
@@ -4136,8 +4246,9 @@ fn gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep() {
 }
 
 /// Regression for #2916 (REN-D2-01) — every secondary-ray terminus must
-/// derive its surface colour through `rayHitAlbedo(mat, baseRgb)`
-/// (`texel × mat.diffuse*`), never through `GpuInstance.avgAlbedo*`.
+/// derive its surface colour through `rayHitAlbedo` (`texel × mat.diffuse*`,
+/// plus the decal/tint/inner-layer/dark/detail roles composed since #3902),
+/// never through `GpuInstance.avgAlbedo*`.
 ///
 /// `avg_albedo_*` stopped being the material tint at #1628 (`93add433`):
 /// `draw.rs` now uploads `draw_cmd.avg_albedo * handle_avg_rgb(texture)`,
@@ -4157,7 +4268,7 @@ fn refraction_terminus_tints_through_ray_hit_albedo_not_instance_avg_albedo() {
     let src = include_str!("../../../shaders/triangle.frag");
 
     assert!(
-        src.contains("vec3 tColor = rayHitAlbedo(tMat, tAlbedo);"),
+        src.contains("vec3 tColor = rayHitAlbedo(tMat, tUV, tAlbedo, refrMip);"),
         "the IOR refraction terminus must tint its texel sample with the hit \
          material's own diffuse colour via rayHitAlbedo, the same helper \
          traceReflection / the GI bounce / traceWaterRay / \

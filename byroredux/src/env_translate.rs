@@ -1355,6 +1355,7 @@ pub(crate) fn translate_weather(
         wind_speed: wthr.wind_speed,
         precipitation: precipitation_from_weather(wthr.classification),
         cloud_layer_velocities,
+        cloud_layer_velocities_authored: wthr.cloud_layer_velocities_authored,
         cloud_layer_colors,
         cloud_layer_alphas: wthr.cloud_layer_alphas,
         weather: weather_sky_state(wthr, 1),
@@ -1504,6 +1505,7 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
         wind_speed: 0,
         precipitation: 0.0,
         cloud_layer_velocities: [[0.0; 2]; 4],
+        cloud_layer_velocities_authored: [false; 4],
         cloud_layer_colors: [[[1.0; 3]; 4]; 4],
         cloud_layer_alphas: [[1.0; 4]; 4],
         weather: WeatherSkyState::default(),
@@ -3454,6 +3456,7 @@ mod tests {
         w.lightning_color = [10, 20, 30];
         w.wind_direction = 90;
         w.cloud_layer_velocities[0] = [32, 16];
+        w.cloud_layer_velocities_authored[0] = true;
         w.cloud_layer_colors[0][1] = SkyColor {
             r: 80,
             g: 90,
@@ -3480,6 +3483,12 @@ mod tests {
         assert_eq!(wd.fog_media[1], expected_night);
         assert_eq!(wd.wind_speed, 7);
         assert_eq!(wd.cloud_layer_velocities[0], [32.0 / 255.0, 16.0 / 255.0]);
+        // #3985 — presence flag must reach WeatherDataRes: layer 0 authored,
+        // every other layer left at the record's own unauthored default.
+        assert_eq!(
+            wd.cloud_layer_velocities_authored,
+            [true, false, false, false]
+        );
         assert_eq!(
             wd.cloud_layer_colors[0][1],
             [80.0 / 255.0, 90.0 / 255.0, 100.0 / 255.0]

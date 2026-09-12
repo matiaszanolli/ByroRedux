@@ -442,8 +442,93 @@ bool rayHitHasCoverage(
     return true;
 }
 
-vec3 rayHitAlbedo(GpuMaterial mat, vec3 baseRgb) {
-    return max(baseRgb * vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB), vec3(0.0));
+// #3902 — mirrors the raster path's `texColor`/`albedo` composition
+// (`triangle.frag`, the decal loop right after the base sample, then the
+// diffuse-tint/tintMap/innerLayer/dark/detail chain further down) so a
+// secondary ray shades the SAME surface colour the primary pass shows.
+// Pre-fix this function applied only the constant diffuse tint — every
+// texture-driven albedo-modifying role composed by the raster path was
+// invisible to RT reflections, GI and water refraction. The five roles,
+// in raster order:
+//   1. decals[0..3] (legacy `NiTexturingProperty` overlays, alpha-over)
+//   2. diffuse tint (already present pre-fix)
+//   3. tintMap     (Skyrim/FO4 tint family)
+//   4. innerLayer  (MultiLayerParallax second surface, gated on that kind)
+//   5. dark        (Oblivion/Gamebryo baked-shadow lightmap, multiplicative)
+//   6. detail      (2x-UV high-frequency modulation, centered on 1.0)
+//
+// The COVERAGE half of the decal composite (texColor.a via
+// `rayHitHasCoverage`) was already fixed by #3986 — this closes the
+// remaining colour half. All texture fetches use the caller-supplied
+// explicit `lod` (not a hardcoded 0) so a blurred base sample (rough
+// reflections, refraction mip floor) composites correspondingly blurred
+// decal/tint/inner-layer/dark/detail texels instead of artificially sharp
+// ones — the same explicit-LOD discipline `sampleRayHitBase`/
+// `rayHitEmission` already use for secondary rays (no fragment quad, no
+// implicit derivatives).
+//
+// Deliberately NOT ported: vertex-colour modulation (`fragColor`) and
+// terrain splat blending — neither is one of the five roles this issue
+// named, and both need per-vertex/per-tile data this function doesn't
+// receive. Not a per-game branch: every role gates on the same
+// game-agnostic `GpuMaterial` fields the raster path reads (NIFAL
+// boundary preserved).
+vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod) {
+    vec3 rgb = baseRgb;
+
+    uint decals[4] = uint[4](
+        mat.decalMap0Index,
+        mat.decalMap1Index,
+        mat.decalMap2Index,
+        mat.decalMap3Index
+    );
+    for (int decalIndex = 0; decalIndex < 4; ++decalIndex) {
+        uint handle = decals[decalIndex];
+        if (handle == 0u) {
+            continue;
+        }
+        vec4 decalSample = textureLod(textures[nonuniformEXT(handle)], uv, lod);
+        rgb = mix(rgb, decalSample.rgb, decalSample.a);
+    }
+
+    rgb *= vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB);
+
+    if (mat.tintMapIndex != 0u) {
+        vec4 tintSample = textureLod(
+            textures[nonuniformEXT(mat.tintMapIndex)], uv, lod);
+        rgb = mix(rgb, rgb * tintSample.rgb, tintSample.a);
+    }
+
+    if (mat.materialKind == MATERIAL_KIND_MULTI_LAYER_PARALLAX
+        && mat.innerLayerMapIndex != 0u) {
+        vec2 authoredInnerScale = abs(vec2(
+            mat.multiLayerInnerScaleU,
+            mat.multiLayerInnerScaleV
+        ));
+        vec2 innerScale = vec2(
+            authoredInnerScale.x > 0.0001 ? authoredInnerScale.x : 1.0,
+            authoredInnerScale.y > 0.0001 ? authoredInnerScale.y : 1.0
+        );
+        vec4 innerSample = textureLod(
+            textures[nonuniformEXT(mat.innerLayerMapIndex)], uv * innerScale, lod);
+        float innerWeight = clamp(mat.multiLayerInnerThickness, 0.0, 1.0)
+            * innerSample.a;
+        rgb = mix(rgb, innerSample.rgb, innerWeight);
+    }
+
+    if (mat.darkMapIndex != 0u) {
+        vec3 darkSample = textureLod(
+            textures[nonuniformEXT(mat.darkMapIndex)], uv, lod).rgb;
+        rgb *= darkSample;
+    }
+
+    if (mat.detailMapIndex != 0u) {
+        vec3 detailSample = textureLod(
+            textures[nonuniformEXT(mat.detailMapIndex)], uv * 2.0, lod).rgb;
+        rgb *= detailSample * 2.0;
+    }
+
+    return max(rgb, vec3(0.0));
 }
 
 vec3 rayHitEmission(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod) {

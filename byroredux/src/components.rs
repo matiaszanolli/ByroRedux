@@ -1389,6 +1389,12 @@ pub(crate) struct WeatherDataRes {
     pub(crate) precipitation: f32,
     /// Authored X/Y cloud motion controls for the four compatibility layers.
     pub(crate) cloud_layer_velocities: [[f32; 2]; 4],
+    /// Whether the source WTHR record actually authored a value for each
+    /// layer (#3985) — an authored `0` and "no ONAM/RNAM/QNAM at all" are
+    /// both `[0.0, 0.0]` in [`Self::cloud_layer_velocities`] with nothing
+    /// else to tell them apart. See
+    /// [`byroredux_plugin::esm::records::weather::WeatherRecord::cloud_layer_velocities_authored`].
+    pub(crate) cloud_layer_velocities_authored: [bool; 4],
     /// Authored PNAM cloud tint tables, four TOD samples per layer.
     pub(crate) cloud_layer_colors: [[[f32; 3]; 4]; 4],
     /// Authored JNAM cloud alpha tables, four TOD samples per layer.

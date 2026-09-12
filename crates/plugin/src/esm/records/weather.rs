@@ -275,6 +275,12 @@ pub struct WeatherRecord {
     /// Values remain bytes here because the games use the byte range as a
     /// normalized authoring control, not world units per second.
     pub cloud_layer_velocities: [[u8; 2]; 4],
+    /// Whether ONAM/RNAM/QNAM actually supplied a value for each layer
+    /// (#3985) — a deliberately authored `0` is a legal value
+    /// indistinguishable from the field's own `[0, 0]` default without
+    /// this. Mirrors [`Self::wind_direction_authored`]'s existing
+    /// presence-vs-value split for the same class of problem.
+    pub cloud_layer_velocities_authored: [bool; 4],
     /// Legacy/Skyrim cloud colour tint, four TOD samples per rendered layer.
     pub cloud_layer_colors: [[SkyColor; 4]; 4],
     /// Skyrim JNAM cloud alpha multipliers, four TOD samples per layer.
@@ -352,6 +358,7 @@ impl Default for WeatherRecord {
             sun_damage: 0,
             classification: 0,
             cloud_layer_velocities: [[0; 2]; 4],
+            cloud_layer_velocities_authored: [false; 4],
             cloud_layer_colors: [[SkyColor {
                 r: 255,
                 g: 255,
@@ -586,6 +593,7 @@ pub fn parse_wthr(
             b"ONAM" if sub.data.len() >= 4 => {
                 for layer in 0..4 {
                     record.cloud_layer_velocities[layer] = [sub.data[layer], 0];
+                    record.cloud_layer_velocities_authored[layer] = true;
                 }
             }
             b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(&mut record, &sub.data),
@@ -932,11 +940,13 @@ fn parse_wthr_skyrim(
             b"RNAM" => {
                 for (layer, value) in sub.data.iter().copied().take(4).enumerate() {
                     record.cloud_layer_velocities[layer][1] = value;
+                    record.cloud_layer_velocities_authored[layer] = true;
                 }
             }
             b"QNAM" => {
                 for (layer, value) in sub.data.iter().copied().take(4).enumerate() {
                     record.cloud_layer_velocities[layer][0] = value;
+                    record.cloud_layer_velocities_authored[layer] = true;
                 }
             }
             b"PNAM" if sub.data.len() >= 64 => parse_cloud_colors(&mut record, &sub.data),
@@ -1806,6 +1816,11 @@ mod tests {
         assert_eq!(w.classification, WTHR_RAINY);
         assert_eq!(w.lightning_color, [10, 20, 30]);
         assert_eq!(w.cloud_layer_velocities[2], [33, 0]);
+        // #3985 — ONAM marks every layer it touches as authored, even the
+        // ones whose byte happens to be a legal `0` (layer 0 here: `onam[0]
+        // = 11`, non-zero, but the presence flag must not depend on the
+        // value at all — see the dedicated zero-value test below).
+        assert_eq!(w.cloud_layer_velocities_authored, [true; 4]);
         assert_eq!(w.cloud_layer_colors[2][2].r, 1);
         assert_eq!(w.cloud_layer_colors[2][2].a, 200);
     }
@@ -1840,6 +1855,7 @@ mod tests {
         );
         assert_eq!(w.cloud_layer_velocities[0], [15, 5]);
         assert_eq!(w.cloud_layer_velocities[3], [18, 8]);
+        assert_eq!(w.cloud_layer_velocities_authored, [true; 4]);
         assert!((w.cloud_layer_alphas[2][0] - 0.25).abs() < 1e-6);
         assert_eq!(w.classification, WTHR_SNOW | WTHR_AURORA_FOLLOWS_SUN);
         assert_eq!(w.lightning_color, [90, 100, 110]);
@@ -1858,6 +1874,37 @@ mod tests {
         assert_eq!(w.cloud_textures[0].as_deref(), Some("sky\\cloud0.dds"));
         assert_eq!(w.skyrim_precipitation_effect, Some(0x1234_5678));
         assert_eq!(w.skyrim_visual_effect, Some(0x8765_4321));
+    }
+
+    /// Regression for #3985 — an authored `0` byte is a legal value and
+    /// must still mark the layer as authored (not fall through to the
+    /// default-and-therefore-"absent" reading). Distinct from the fields'
+    /// own numeric default: a record with NO ONAM/RNAM/QNAM sub-record at
+    /// all leaves `cloud_layer_velocities_authored` at its own `[false; 4]`
+    /// default, asserted here too.
+    #[test]
+    fn cloud_layer_velocities_authored_tracks_presence_not_value() {
+        // Layer 0 authored as a literal zero via ONAM.
+        let onam = vec![0u8, 0, 0, 0];
+        let w = parse_wthr(0xD1C, &[sub(b"ONAM", onam)], GameKind::Fallout3NV, &None);
+        assert_eq!(
+            w.cloud_layer_velocities,
+            [[0, 0]; 4],
+            "every layer's authored value is the byte 0"
+        );
+        assert_eq!(
+            w.cloud_layer_velocities_authored, [true; 4],
+            "ONAM present (even authoring all-zero) must mark every layer authored"
+        );
+
+        // No ONAM/RNAM/QNAM at all — the field must stay at its own
+        // false default, not be inferred from cloud_layer_velocities.
+        let w_absent = parse_wthr(0xD1D, &[], GameKind::Fallout3NV, &None);
+        assert_eq!(w_absent.cloud_layer_velocities, [[0, 0]; 4]);
+        assert_eq!(
+            w_absent.cloud_layer_velocities_authored, [false; 4],
+            "no cloud-motion sub-record at all must leave every layer unauthored"
+        );
     }
 
     #[test]
