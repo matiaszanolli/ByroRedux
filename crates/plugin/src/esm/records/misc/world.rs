@@ -1,7 +1,7 @@
 //! World-definition records — navigation, regions, encounter zones,
 //! lighting templates, image-space adapters, activators, terminals.
 
-use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
+use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use std::collections::HashMap;
@@ -1455,6 +1455,35 @@ pub fn parse_acti(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     out
 }
 
+/// One entry in a `TERM` terminal's menu.
+///
+/// #4171 — the shipped layout is a repeating sub-record group, not the
+/// flat `Vec<String>` this used to be flattened into. Measured over the
+/// masters (2026-09-12), the group is `ITXT [RNAM] ANAM [ITID] [UNAM]`
+/// and the ordering is exact: every one of FNV's 895 `RNAM` and FO4's 545
+/// is immediately preceded by an `ITXT` and immediately followed by an
+/// `ANAM`. On Fallout 4 the record's `ISIZ` equals the `ITXT` count for
+/// all 778 terminals, which is what pins the grouping rather than leaving
+/// it inferred.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TerminalMenuItem {
+    /// `ITXT` — the menu line as displayed. Inline zstring on FO3/FNV
+    /// (`"Dismiss all companions."`), a 4-byte lstring id on FO4.
+    pub text: String,
+    /// `RNAM` — the text shown after the entry is selected
+    /// (`"Accessing confirmation menu..."`). Always present on FNV,
+    /// optional on FO4 (545 of 2 227 entries); empty when absent.
+    pub result_text: String,
+    /// `ITID` — the menu-item id the FO4 terminal-menu script switches
+    /// on. FO4-only; 0 on FO3/FNV, which author no ITID.
+    pub item_id: u16,
+    /// `ANAM` — one byte, present once per menu item on both FO3/FNV and
+    /// FO4. The individual bit meanings are **unsourced**: no citable
+    /// layout was found for them, and the observed values are not
+    /// self-explanatory. Captured verbatim rather than guessed at.
+    pub flags: u8,
+}
+
 /// `TERM` terminal record — FO3/FNV computer consoles. Carries a
 /// menu tree (MNAM entries), password (ANAM), body text (DNAM), and
 /// the NIF model of the physical terminal. MNAM text is collected
@@ -1482,17 +1511,16 @@ pub struct TermRecord {
     /// scripts on successful hack). Live since M47.0 via
     /// `EsmIndex::base_record_script` + `cell_loader::references::attach`.
     pub script_form_id: u32,
-    /// ANAM — password string (may be empty for unlocked terminals).
-    pub password: String,
-    /// DNAM — footer / body text displayed on the terminal screen.
-    pub footer_text: String,
-    /// BSIZ — body-size scalar (u8, 0 = small, 1 = large). Defaults 0.
-    pub body_size: u8,
-    /// MNAM — menu-item text, one per entry. Order preserved. Each
-    /// MNAM is flanked by its own sub-record group (NNAM target,
-    /// CTDA conditions) which is deferred; the stub just captures
-    /// the labels so the menu tree isn't lost.
-    pub menu_items: Vec<String>,
+    /// The terminal's displayed body text — `DESC` on FO3/FNV, `BTXT` on
+    /// FO4. Routed through the lstring reader, so FO4's 4-byte table id
+    /// resolves instead of being read as a 3-character cstring (#4171).
+    pub body_text: String,
+    /// BSIZ — body-text size. FO4-only and a **u32**, not the u8 this
+    /// field used to be: all 778 `Fallout4.esm` terminals ship a 4-byte
+    /// payload. FO3/FNV author no BSIZ at all, so this stays 0 there.
+    pub body_size: u32,
+    /// The terminal's menu, in authored order. See [`TerminalMenuItem`].
+    pub menu_items: Vec<TerminalMenuItem>,
     /// Decoded `VMAD` script attachments (Skyrim+ inline Papyrus). `None`
     /// on FO3/FNV terminals (those use the `SCRI` → SCPT/Obscript path
     /// via `script_form_id`). #2663 (SCR-D7-NEW11-02) — FO4 ships 207
@@ -1516,22 +1544,60 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         script_instance: common.script_instance,
         ..Default::default()
     };
+    // #4171 — this loop used to read `password` from ANAM, `footer_text`
+    // from DNAM and `menu_items` from MNAM. None of the three is authored
+    // text on any shipped game; the census that settled it (2026-09-12,
+    // `FalloutNV.esm` 344 records / `Fallout4.esm` 778):
+    //
+    //   ANAM  1 byte, once per menu item (FNV 895, FO4 2 227) — a flag
+    //         byte, never a password. `read_zstring` on it produced a
+    //         1-character string from whatever the flags happened to be.
+    //   DNAM  FNV-only, 4 bytes, 342 of 344 (a packed field, top values
+    //         `00 02 04 00` / `00 02 00 00`). FO4 authors none, so
+    //         `footer_text` was empty there and garbage on FNV.
+    //   MNAM  FO4-only, 4 bytes, value `01 00 00 40` on all 778 — a
+    //         float, not text. FNV ships none at all, so `menu_items`
+    //         was always empty on FNV and always 778 one-character
+    //         entries on FO4.
+    //
+    // The real text is ITXT / RNAM / BTXT / DESC, none of which had a
+    // match arm anywhere in the crate. DNAM and MNAM are deliberately
+    // left unread: their payloads are measured but their field layouts
+    // are unsourced, and inventing a decode is what produced this bug the
+    // first time.
     for sub in subs {
         match &sub.sub_type {
-            b"ANAM" => out.password = read_zstring(&sub.data),
-            b"DNAM" => out.footer_text = read_zstring(&sub.data),
-            b"BSIZ" if !sub.data.is_empty() => {
-                out.body_size = sub.data[0];
+            // Body text: DESC on FO3/FNV, BTXT on FO4. No shipped record
+            // carries both, so a single sink is correct.
+            b"DESC" | b"BTXT" => out.body_text = read_lstring_or_zstring(&sub.data),
+            b"BSIZ" => {
+                out.body_size = match sub.data.len() {
+                    4 => u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
+                    1..=3 => sub.data[0] as u32,
+                    _ => 0,
+                };
             }
-            b"MNAM" => {
-                // FO3/FNV sometimes ships MNAM as the menu-item text
-                // directly and sometimes as a 4-byte form ref (when
-                // the label lives elsewhere). Treat as text whenever
-                // the bytes are printable; otherwise skip. Keeps the
-                // stub robust against the mixed wild encoding.
-                let text = read_zstring(&sub.data);
-                if !text.is_empty() {
-                    out.menu_items.push(text);
+            // ITXT opens a new menu item; RNAM / ANAM / ITID attach to the
+            // one it opened. Bare RNAM/ANAM before any ITXT cannot occur
+            // in shipped content and is dropped rather than synthesizing a
+            // textless item.
+            b"ITXT" => out.menu_items.push(TerminalMenuItem {
+                text: read_lstring_or_zstring(&sub.data),
+                ..Default::default()
+            }),
+            b"RNAM" => {
+                if let Some(item) = out.menu_items.last_mut() {
+                    item.result_text = read_lstring_or_zstring(&sub.data);
+                }
+            }
+            b"ANAM" if sub.data.len() == 1 => {
+                if let Some(item) = out.menu_items.last_mut() {
+                    item.flags = sub.data[0];
+                }
+            }
+            b"ITID" if sub.data.len() >= 2 => {
+                if let Some(item) = out.menu_items.last_mut() {
+                    item.item_id = u16::from_le_bytes([sub.data[0], sub.data[1]]);
                 }
             }
             _ => {}
@@ -1804,43 +1870,174 @@ mod tests {
         assert_eq!(a.script_form_id, 0);
     }
 
+    /// Regression: #4171. Fixture transcribed from `FalloutNV.esm`'s
+    /// `P04CompanionFireTerminal` / `…Sub` pair — the same sub-record
+    /// sequence and the same payload sizes the shipped record carries.
+    ///
+    /// The test this replaces asserted `password == "tranquility"` from a
+    /// hand-written `ANAM` z-string. No FNV terminal ships an ANAM longer
+    /// than one byte (895 of them, all size 1), so the fixture described a
+    /// record that cannot exist and vouched for the parser that read it —
+    /// the same mutual-corroboration failure as #4077.
     #[test]
-    fn parse_term_extracts_password_footer_menu() {
+    fn fnv_terminal_reads_desc_body_and_itxt_rnam_menu_pairs() {
         let subs = vec![
-            sub(b"EDID", b"Vault21OverseerTerminal\0"),
-            sub(b"FULL", b"Overseer's Terminal\0"),
+            sub(b"EDID", b"P04CompanionFireTerminal\0"),
+            sub(b"FULL", b"Companion Dismissal Terminal\0"),
             sub(b"MODL", b"clutter\\junk\\terminal01.nif\0"),
-            sub(b"ANAM", b"tranquility\0"),
-            sub(b"DNAM", b"Welcome, Overseer. Vault 21 online.\0"),
-            sub(b"BSIZ", &[1u8]),
-            sub(b"MNAM", b"Open Vault Door\0"),
-            sub(b"MNAM", b"View Resident Log\0"),
-            sub(b"MNAM", b"Disable Security\0"),
+            sub(b"DESC", b"Welcome, Courier.\0"),
+            // 4-byte packed field, not footer text — top corpus value.
+            sub(b"DNAM", &[0x00, 0x02, 0x00, 0x00]),
+            sub(b"ITXT", b"Dismiss all companions.\0"),
+            sub(b"RNAM", b"Accessing confirmation menu...\0"),
+            sub(b"ANAM", &[0x02]),
+            sub(b"ITXT", b"No.\0"),
+            // 246 of FNV's 895 RNAM are exactly this: four zero bytes.
+            sub(b"RNAM", &[0, 0, 0, 0]),
+            sub(b"ANAM", &[0x00]),
+            sub(b"ITXT", b"Yes.\0"),
+            sub(b"RNAM", b"Notification sent...\0"),
+            sub(b"ANAM", &[0x00]),
             sub(b"SCRI", &0x0004_2CD2u32.to_le_bytes()),
         ];
         let t = parse_term(0x0004_2424, &subs, &None);
-        assert_eq!(t.editor_id, "Vault21OverseerTerminal");
-        assert_eq!(t.password, "tranquility");
-        assert!(t.footer_text.starts_with("Welcome, Overseer"));
-        assert_eq!(t.body_size, 1);
-        assert_eq!(t.menu_items.len(), 3);
-        assert_eq!(t.menu_items[0], "Open Vault Door");
-        assert_eq!(t.menu_items[2], "Disable Security");
+        assert_eq!(t.editor_id, "P04CompanionFireTerminal");
+        assert_eq!(t.body_text, "Welcome, Courier.");
         assert_eq!(t.script_form_id, 0x0004_2CD2);
+
+        assert_eq!(t.menu_items.len(), 3);
+        assert_eq!(t.menu_items[0].text, "Dismiss all companions.");
+        assert_eq!(
+            t.menu_items[0].result_text,
+            "Accessing confirmation menu..."
+        );
+        assert_eq!(t.menu_items[0].flags, 0x02);
+        // An all-zero RNAM is an authored empty result, not a dropped one.
+        assert_eq!(t.menu_items[1].text, "No.");
+        assert_eq!(t.menu_items[1].result_text, "");
+        assert_eq!(t.menu_items[2].text, "Yes.");
+        assert_eq!(t.menu_items[2].result_text, "Notification sent...");
+        // FNV authors no ITID.
+        assert!(t.menu_items.iter().all(|i| i.item_id == 0));
+        // FNV authors no BSIZ.
+        assert_eq!(t.body_size, 0);
     }
+
+    /// Regression: #4171. Fixture transcribed from `Fallout4.esm`'s
+    /// `VRWorkshopShared_VRTerminalMusicSubMenu`, with the localized
+    /// reader actually installed — the defect the issue calls out is that
+    /// `parse_term` never routed ITXT/BTXT/RNAM through the lstring path,
+    /// so fixing the `.STRINGS` language token alone would still have left
+    /// every FO4 terminal blank.
     #[test]
-    fn parse_term_unlocked_terminal_has_empty_password() {
-        // Tutorial / ambient terminals often ship without ANAM; stub
-        // must tolerate that without panicking.
+    fn fo4_terminal_resolves_btxt_and_itxt_through_the_lstring_reader() {
+        use crate::esm::records::common::{LocalizedPluginGuard, StringsTableGuard};
+        use crate::esm::strings_table::{StringTableSet, StringsTable};
+
+        // [count][data_size][(id, offset) × count][blob]
+        let entries: [(u32, &str); 4] = [
+            (0x0001, "Jukebox"),
+            (0x0002, "Select a track."),
+            (0x0003, "Atom Bomb Baby"),
+            (0x0004, "Civilization"),
+        ];
+        let mut blob = Vec::new();
+        let mut offsets = Vec::new();
+        for (_, text) in entries {
+            offsets.push(blob.len() as u32);
+            blob.extend_from_slice(text.as_bytes());
+            blob.push(0);
+        }
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        raw.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+        for (i, (id, _)) in entries.iter().enumerate() {
+            raw.extend_from_slice(&id.to_le_bytes());
+            raw.extend_from_slice(&offsets[i].to_le_bytes());
+        }
+        raw.extend_from_slice(&blob);
+
+        let set = StringTableSet {
+            strings: Some(StringsTable::parse(&raw, false).unwrap()),
+            dlstrings: None,
+            ilstrings: None,
+        };
+        let _localized = LocalizedPluginGuard::new(true);
+        let _strings = StringsTableGuard::new(set);
+
+        let subs = vec![
+            sub(b"EDID", b"VRWorkshopShared_VRTerminalMusicSubMenu\0"),
+            sub(b"FULL", &0x0001u32.to_le_bytes()),
+            // 0x40000001 — a float, identical on all 778 FO4 terminals.
+            sub(b"MNAM", &[0x01, 0x00, 0x00, 0x40]),
+            sub(b"BSIZ", &1u32.to_le_bytes()),
+            sub(b"BTXT", &0x0002u32.to_le_bytes()),
+            sub(b"ISIZ", &2u32.to_le_bytes()),
+            sub(b"ITXT", &0x0003u32.to_le_bytes()),
+            sub(b"ANAM", &[0x08]),
+            sub(b"ITID", &1u16.to_le_bytes()),
+            sub(b"ITXT", &0x0004u32.to_le_bytes()),
+            sub(b"ANAM", &[0x08]),
+            sub(b"ITID", &2u16.to_le_bytes()),
+        ];
+        let t = parse_term(0x0002_5001, &subs, &None);
+        assert_eq!(t.full_name, "Jukebox");
+        assert_eq!(
+            t.body_text, "Select a track.",
+            "BTXT must resolve through the lstring reader, not read as a cstring"
+        );
+        assert_eq!(t.body_size, 1, "BSIZ is a u32 on FO4");
+
+        // ISIZ (2) is the authored item count and must match what the
+        // repeating group produced — it does for all 778 shipped records.
+        assert_eq!(t.menu_items.len(), 2);
+        assert_eq!(t.menu_items[0].text, "Atom Bomb Baby");
+        assert_eq!(t.menu_items[0].item_id, 1);
+        assert_eq!(t.menu_items[0].flags, 0x08);
+        assert_eq!(t.menu_items[1].text, "Civilization");
+        assert_eq!(t.menu_items[1].item_id, 2);
+        // FO4 authors RNAM on only 545 of 2 227 entries; absent is empty.
+        assert!(t.menu_items.iter().all(|i| i.result_text.is_empty()));
+    }
+
+    /// Regression: #4171. The three sub-records the old parser mined for
+    /// text are numeric or flag payloads, and none of them may produce a
+    /// menu entry. `MNAM` is the visible half of this: on FO4 its
+    /// `01 00 00 40` decoded as a one-character z-string and pushed a
+    /// spurious item onto every one of the 778 terminals.
+    #[test]
+    fn anam_dnam_and_mnam_never_contribute_terminal_text() {
+        let subs = vec![
+            sub(b"EDID", b"GoodspringsSchoolTerminal\0"),
+            sub(b"MNAM", &[0x01, 0x00, 0x00, 0x40]),
+            sub(b"DNAM", &[0x00, 0x02, 0x04, 0x00]),
+            sub(b"ANAM", &[0x08]),
+        ];
+        let t = parse_term(0x0008_1111, &subs, &None);
+        assert!(
+            t.menu_items.is_empty(),
+            "MNAM/ANAM must not synthesize menu items: {:?}",
+            t.menu_items
+        );
+        assert!(t.body_text.is_empty(), "DNAM is not body text");
+        assert_eq!(t.body_size, 0);
+    }
+
+    /// Regression: #4171. A terminal with no menu at all must stay empty
+    /// rather than panic — the old `parse_term_unlocked_terminal_has_empty_password`
+    /// covered this shape, and the coverage is worth keeping even though
+    /// the field it asserted on is gone.
+    #[test]
+    fn terminal_without_a_menu_parses_to_an_empty_menu() {
         let subs = vec![
             sub(b"EDID", b"GoodspringsSchoolTerminal\0"),
             sub(b"FULL", b"School Terminal\0"),
-            sub(b"DNAM", b"Primer by Mr. Goodsprings.\0"),
+            sub(b"DESC", b"Primer by Mr. Goodsprings.\0"),
         ];
         let t = parse_term(0x0008_1111, &subs, &None);
-        assert!(t.password.is_empty());
-        assert_eq!(t.body_size, 0);
+        assert_eq!(t.body_text, "Primer by Mr. Goodsprings.");
         assert!(t.menu_items.is_empty());
+        assert_eq!(t.body_size, 0);
     }
 
     /// Regression for #2663 (SCR-D7-NEW11-02) — `parse_term` used to
