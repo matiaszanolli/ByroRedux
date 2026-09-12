@@ -741,18 +741,29 @@ fn validate_form_ids(world: &World) -> Vec<ValidationError> {
 /// anything needing another crate's components to the binary — the same
 /// reason `FormId` resolution lives here instead of in `crates/save`.
 ///
-/// #2535 / SAVE-D4-02 — `HorseTetherState.horse: EntityId` and
-/// `ActorCinematicState.vehicle: Option<EntityId>`
-/// (`byroredux_scripting::cinematic`) are both direct entity references,
-/// invisible to every one of `validate_world`'s four reference-class
-/// checks (`validate_hierarchy` only walks `Parent`/`Children`,
-/// `validate_equipment` only `EquipmentSlots`↔`Inventory`,
-/// `validate_animation` only `AnimationPlayer`,
-/// `validate_inventory_instances` only `Inventory.items[].instance`). A
-/// save with either field pointing at an id `>= next_entity` (e.g. a
-/// tethered horse that despawned mid-session while the tether component
-/// survived) previously passed `validate_world` cleanly with no
-/// diagnostic anywhere in the pipeline.
+/// #2535 / SAVE-D4-02 — covers the two entity references that live in
+/// `byroredux_scripting::cinematic` and so cannot be reached from
+/// `crates/save`: `HorseTetherState.horse: EntityId` and
+/// `ActorCinematicState.vehicle: Option<EntityId>`. A save with either
+/// pointing at an id `>= next_entity` (e.g. a tethered horse that
+/// despawned mid-session while the tether component survived) previously
+/// passed `validate_world` cleanly with no diagnostic anywhere in the
+/// pipeline.
+///
+/// #4144 — this used to enumerate `validate_world`'s own checks here
+/// ("every one of its four reference-class checks", with a gloss on each)
+/// as the argument for why these two fields were missed. That
+/// enumeration was written when there genuinely were four (`90ae915c`)
+/// and was never updated: `validate_world` runs seven checks today, and
+/// the claim that `validate_animation` covers "only `AnimationPlayer`"
+/// went stale seven lines from the fix that changed it (#3791 added
+/// `AnimationStack` and `Seated.animation_restore.clip_handle`).
+///
+/// The enumeration is deliberately not repaired, only removed. Restating
+/// a sibling crate's internals is what keeps rotting; the reason these
+/// fields need a binary-side check is *crate reachability*, which is
+/// stable, and the live list is one jump away in
+/// [`byroredux_save::validate_world`].
 fn validate_cinematic_entity_refs(world: &World) -> Vec<ValidationError> {
     use byroredux_scripting::cinematic::{ActorCinematicState, HorseTetherState};
 
