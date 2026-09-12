@@ -141,3 +141,100 @@ fn bspline_dequant_and_deboor_can_overflow_and_the_guard_catches_it() {
         "the sampled-value guard must recognize this as unsafe to push as a key"
     );
 }
+
+/// Regression: #4166 (NIFAL-D7-2026-09-11-01) — the rotation sub-channel
+/// was the one #3765 left unguarded, and the two failure modes it admits
+/// are *not* the ones the report predicted. This drives the production
+/// guard directly rather than reproducing its arithmetic in the test.
+#[test]
+fn bspline_rotation_sample_rejects_infinite_control_points() {
+    // The genuine NaN path: an infinite component survives to `inf * 0.0`.
+    for poisoned in [
+        [f32::INFINITY, 0.0, 0.0, 0.0],
+        [0.0, f32::NEG_INFINITY, 0.0, 0.0],
+        [0.0, 0.0, f32::INFINITY, 0.0],
+        [0.0, 0.0, 0.0, f32::INFINITY],
+    ] {
+        assert!(
+            normalized_rotation_sample(poisoned).is_none(),
+            "an infinite control point must skip the sample, not push NaN: {poisoned:?}"
+        );
+    }
+    // FLT_MAX sentinel components are rejected on the same sweep.
+    assert!(normalized_rotation_sample([f32::MAX, 0.0, 0.0, 0.0]).is_none());
+}
+
+/// Regression: #4166. The case the issue named as its headline hazard,
+/// with the correction that matters: control points that are individually
+/// sane but square past `f32::MAX` do **not** produce NaN — every
+/// component is finite, so `finite * 0.0 == 0.0` and the result is the
+/// *zero quaternion*.
+///
+/// That is exactly why the fix is `len_sq.is_finite()` and not the
+/// post-normalize `is_key_value_sane` check the issue prescribed:
+/// `[0, 0, 0, 0]` passes `is_key_value_sane` on all four components, so a
+/// post-normalize guard is blind to it. Asserted here so nobody
+/// "simplifies" the guard back to the sibling one-liner.
+#[test]
+fn bspline_rotation_sample_substitutes_identity_when_squaring_overflows() {
+    // sqrt(f32::MAX) ≈ 1.844e19 — just past it, so v*v is inf.
+    let huge = 2.0e19f32;
+    assert!(
+        is_key_value_sane(huge),
+        "fixture sanity: each component must individually pass the sibling guard"
+    );
+    assert!(
+        !(huge * huge).is_finite(),
+        "fixture sanity: squaring must overflow to inf"
+    );
+
+    let q = normalized_rotation_sample([huge, 0.0, 0.0, 0.0])
+        .expect("individually-sane components must not skip the sample");
+    assert_eq!(
+        q,
+        [1.0, 0.0, 0.0, 0.0],
+        "an overflowing len_sq must fall to identity, never the zero quaternion"
+    );
+
+    // The refutation of the prescribed fix, pinned: the zero quaternion
+    // the unguarded code produced would have passed a post-normalize check.
+    assert!(
+        [0.0f32, 0.0, 0.0, 0.0]
+            .iter()
+            .all(|v| is_key_value_sane(*v)),
+        "a post-normalize is_key_value_sane guard cannot see the zero quaternion"
+    );
+}
+
+/// Regression: #4166. A NaN control point was already safe before this
+/// fix — `len_sq` is NaN, `NaN > f32::EPSILON` is false, and the
+/// degenerate arm substitutes identity. Pinned so the guard's docs and
+/// the code keep agreeing about which inputs were actually broken.
+#[test]
+fn bspline_rotation_sample_was_already_safe_against_nan_control_points() {
+    for raw in [[f32::NAN; 4], [f32::NAN, 1.0, 0.0, 0.0]] {
+        // Rejected up front now, but the point is that the *result* was
+        // never NaN even before the guard existed.
+        assert!(normalized_rotation_sample(raw).is_none());
+        let len_sq: f32 = raw.iter().map(|v| v * v).sum();
+        assert!(len_sq.is_nan() && !(len_sq > f32::EPSILON));
+    }
+}
+
+/// Regression: #4166. The guard must not disturb ordinary content — a
+/// non-unit but well-scaled quaternion still normalizes as before.
+#[test]
+fn bspline_rotation_sample_still_normalizes_ordinary_quaternions() {
+    let q = normalized_rotation_sample([0.0, 3.0, 4.0, 0.0]).expect("ordinary sample must survive");
+    let len = (q.iter().map(|v| v * v).sum::<f32>()).sqrt();
+    assert!((len - 1.0).abs() < 1e-5, "must be unit length, got {len}");
+    assert!(
+        (q[1] - 0.6).abs() < 1e-5 && (q[2] - 0.8).abs() < 1e-5,
+        "{q:?}"
+    );
+    // Near-zero stays identity, the pre-existing degenerate behaviour.
+    assert_eq!(
+        normalized_rotation_sample([0.0, 0.0, 0.0, 0.0]),
+        Some([1.0, 0.0, 0.0, 0.0])
+    );
+}

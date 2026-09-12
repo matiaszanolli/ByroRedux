@@ -256,6 +256,67 @@ pub fn extract_float_channel_bspline(
     Some(FloatChannel { target, keys })
 }
 
+/// Normalize one sampled B-spline rotation control point, or reject it.
+///
+/// Returns `None` when the sample must be skipped entirely — mirroring the
+/// "skip just that sample" behaviour the translation, scale and float
+/// sub-channels already had — so the bone falls back to its bind pose
+/// rather than receiving a poisoned key.
+///
+/// #4166. #3765 added an `is_key_value_sane` gate at three of the four
+/// B-spline sub-channel push sites and described itself as covering all
+/// four; rotation was left out. There are two distinct failure modes here
+/// and they need two distinct guards, which is why this is not simply the
+/// one-line `is_key_value_sane` sweep its siblings use:
+///
+/// 1. **A non-finite control point** (`±inf`). `len_sq` is `inf`, `inv` is
+///    `1.0 / inf == 0.0`, and the offending component becomes
+///    `inf * 0.0 == NaN`. Caught by the pre-normalize sweep, exactly like
+///    the siblings.
+///
+/// 2. **Individually-sane control points that overflow when squared.** Any
+///    `|v| > ~1.84e19` squares past `f32::MAX`, so `len_sq` is `inf` while
+///    every component remains finite and under the FLT_MAX sentinel. Each
+///    component then becomes `finite * 0.0 == 0.0`: the result is the
+///    **zero quaternion, not NaN**. That is why a post-normalize
+///    `is_key_value_sane` check is *not* the fix — `[0, 0, 0, 0]` is finite
+///    and passes it on all four components while still being a degenerate
+///    rotation that poisons the bone downstream. It is caught instead by
+///    requiring `len_sq` itself to be finite.
+///
+/// Worth recording because it inverts the intuition: a NaN control point
+/// was already safe before this fix. `len_sq` becomes NaN,
+/// `NaN > f32::EPSILON` is false, and the degenerate arm substitutes
+/// identity. It is the *infinite* and the *merely huge* inputs that needed
+/// guarding, not the NaN ones.
+///
+/// Blast radius if this returns a poisoned value: `GlobalTransform` →
+/// skinned vertex positions → BLAS refit / TLAS build with a non-finite
+/// AABB, which is undefined behaviour under Vulkan's acceleration-structure
+/// build contract rather than a visual glitch.
+pub(crate) fn normalized_rotation_sample(raw: [f32; 4]) -> Option<[f32; 4]> {
+    if !raw.iter().all(|v| is_key_value_sane(*v)) {
+        return None;
+    }
+    let [mut w, mut x, mut y, mut z] = raw;
+    let len_sq = w * w + x * x + y * y + z * z;
+    if len_sq.is_finite() && len_sq > f32::EPSILON {
+        let inv = 1.0 / len_sq.sqrt();
+        w *= inv;
+        x *= inv;
+        y *= inv;
+        z *= inv;
+    } else {
+        // Degenerate (near-zero, or overflowed to `inf` on squaring):
+        // substitute identity rather than emitting a zero quaternion.
+        w = 1.0;
+        x = 0.0;
+        y = 0.0;
+        z = 0.0;
+    }
+    Some([w, x, y, z])
+}
+
 /// Extract a TransformChannel by sampling a NiBSplineCompTransformInterpolator.
 pub fn extract_transform_channel_bspline(
     scene: &NifScene,
@@ -364,31 +425,17 @@ pub fn extract_transform_channel_bspline(
             }
         }
 
-        // Rotation — normalize after sampling since the B-spline doesn't
-        // enforce unit length on quaternions. Same FLT_MAX gate as
-        // translation: an FLT_MAX-valued quaternion would normalise to
-        // NaN and rotate the bone to garbage.
+        // Rotation. See [`normalized_rotation_sample`] for the guard and
+        // why it is shaped the way it is (#4166).
         if let Some(ref cps) = rot_q {
             let p = deboor_cubic(cps, n_cp, BSPLINE_ROT_STRIDE, u);
-            let [mut w, mut x, mut y, mut z] = [p[0], p[1], p[2], p[3]];
-            let len_sq = w * w + x * x + y * y + z * z;
-            if len_sq > f32::EPSILON {
-                let inv = 1.0 / len_sq.sqrt();
-                w *= inv;
-                x *= inv;
-                y *= inv;
-                z *= inv;
-            } else {
-                w = 1.0;
-                x = 0.0;
-                y = 0.0;
-                z = 0.0;
+            if let Some(q) = normalized_rotation_sample([p[0], p[1], p[2], p[3]]) {
+                rotation_keys.push(RotationKey {
+                    time: t,
+                    value: zup_to_yup_quat(q),
+                    tbc: None,
+                });
             }
-            rotation_keys.push(RotationKey {
-                time: t,
-                value: zup_to_yup_quat([w, x, y, z]),
-                tbc: None,
-            });
         } else {
             let q = interp.transform.rotation;
             if !(is_flt_max(q[0]) || is_flt_max(q[1]) || is_flt_max(q[2]) || is_flt_max(q[3])) {
