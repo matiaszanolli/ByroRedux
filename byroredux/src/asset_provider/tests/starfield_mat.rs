@@ -31,8 +31,15 @@ fn register_probed(provider: &mut MaterialProvider, bytes: &[u8]) {
 /// real Starfield data.
 ///
 /// `chunkCount` field is "chunks INCLUDING the BETH header" per
-/// `crates/sfmaterial/src/reader.rs::index_chunks` line 143-147 —
-/// BETH + STRT + TYPE = 3, so the post-header chunk loop reads 2.
+/// `crates/sfmaterial/src/reader.rs::index_chunks` (its
+/// `chunk_count_incl_beth` read + `- 1` derivation) — BETH + STRT + TYPE
+/// = 3, so the post-header chunk loop reads 2.
+///
+/// #4276 (SF-D3-2026-09-11-05) — this used to cite a hardcoded line range
+/// (143-147) that had drifted to land inside `probe_header`'s body
+/// instead, after unrelated edits moved `index_chunks` further down the
+/// file. Named by function only now, not by line number, so a future
+/// edit can't silently point this at the wrong function again.
 fn minimal_cdb_bytes() -> Vec<u8> {
     let mut buf = Vec::with_capacity(40);
     // 16-byte header: magic + headerSize + fileVersion + chunkCount=3.

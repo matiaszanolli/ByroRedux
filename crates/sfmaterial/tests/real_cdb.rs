@@ -6,6 +6,13 @@
 //! BYROREDUX_STARFIELD_DATA="/path/to/Starfield/Data" \
 //!     cargo test -p byroredux-sfmaterial --test real_cdb -- --ignored --nocapture
 //! ```
+//!
+//! **Memory requirement** (#4274 / SF-D3-2026-09-11-03): `parse` below calls
+//! `ComponentDatabaseFile::parse`, which runs with `ParseLimits::unlimited()`
+//! — no instance-count ceiling. The vanilla base-game `materialsbeta.cdb`
+//! materialises its ~1.44M-instance object tree at a measured ~9.19 GB peak
+//! RSS. Have at least ~10 GB free before running this test; running the
+//! full corpus-wide sweep (13 CDBs, two of them this size) needs ~18 GB.
 
 use byroredux_bsa::Ba2Archive;
 use byroredux_sfmaterial::ComponentDatabaseFile;
@@ -63,6 +70,16 @@ fn parse_vanilla_materialsbeta_cdb() {
         .extract("materials\\materialsbeta.cdb")
         .expect("extract cdb");
     eprintln!("[sfmaterial] extracted {} bytes", bytes.len());
+    // #4274 — this call has no ParseLimits ceiling and is measured to peak
+    // around 9.19 GB RSS on the vanilla base-game CDB. Warn on stderr right
+    // before the expensive parse, not just in the module doc comment, so a
+    // contributor who invoked the run command from memory (rather than
+    // reading the source) still gets the heads-up before it actually spikes.
+    eprintln!(
+        "[sfmaterial] parsing with ParseLimits::unlimited() — this CDB's full \
+         instance tree is measured to peak around 9.19 GB RSS; ensure enough \
+         free memory before continuing"
+    );
 
     let cdb = ComponentDatabaseFile::parse(&bytes).expect("parse cdb");
     eprintln!(

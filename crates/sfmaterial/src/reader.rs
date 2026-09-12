@@ -417,6 +417,30 @@ fn parse_class(state: &mut State, class_index: usize) -> Result<Class> {
         return Err(Error::ClassTrailingBytes { leftover });
     }
 
+    // #4275 (SF-D3-2026-09-11-04) — `read_user_class` decodes fields
+    // strictly by this declaration order and never consults `Field::offset`
+    // / `Field::size`. Non-fatal: `XMCOLOR`'s existing divergence (#3398)
+    // is a known, tracked, already-shipping case — this only makes a
+    // SECOND one visible instead of silently reproducing the same bug
+    // class undetected. `eprintln!`, not `log::warn!`: this crate is
+    // deliberately dependency-minimal (only `thiserror`; see Cargo.toml),
+    // matching the diagnostic-output convention its own top-of-crate doc
+    // example already uses.
+    if !fields_are_offset_ordered(&fields) {
+        eprintln!(
+            "[sfmaterial] WARN: CDB class {name:?} declares fields out of \
+             wire-offset order — read_user_class decodes strictly by \
+             declaration order and never consults Field::offset/Field::size, \
+             so a field whose declared position disagrees with its offset \
+             decodes into the wrong struct slot (known tracked case: \
+             XMCOLOR, #3398). Fields (name, offset, size): {:?}",
+            fields
+                .iter()
+                .map(|f| (f.name.as_str(), f.offset, f.size))
+                .collect::<Vec<_>>(),
+        );
+    }
+
     Ok(Class {
         name_offset,
         name,
@@ -424,6 +448,20 @@ fn parse_class(state: &mut State, class_index: usize) -> Result<Class> {
         flags: ClassFlags(flags_raw),
         fields,
     })
+}
+
+/// #4275 (SF-D3-2026-09-11-04) — true when `fields`, taken in their CDB
+/// declaration order, have strictly increasing `offset` values (i.e.
+/// declaration order agrees with wire-offset order). `read_user_class`
+/// decodes strictly by declaration order and never consults
+/// `Field::offset`/`Field::size`, so `false` means at least one field
+/// will decode into the wrong struct slot. The one known, tracked
+/// exception across the full vanilla corpus is `XMCOLOR` (`r,g,b,a`
+/// declared at offsets `2,1,0,3` — a straight R<->B transposition; see
+/// #3398, which owns the actual fix). Zero or one field is vacuously
+/// ordered.
+fn fields_are_offset_ordered(fields: &[Field]) -> bool {
+    fields.windows(2).all(|w| w[0].offset < w[1].offset)
 }
 
 fn consume_object(state: &mut State) -> Result<Value> {
@@ -938,6 +976,43 @@ mod tests {
         // overwrite on the rejected insert.
         assert_eq!(class_by_name_offset.get(&42), Some(&0));
         assert_eq!(class_by_name_offset.len(), 2, "the rejected insert must not add a new entry");
+    }
+
+    fn field(name: &str, offset: u16, size: u16) -> Field {
+        Field {
+            name: name.to_string(),
+            type_ref: TypeReference::new(-1),
+            offset,
+            size,
+        }
+    }
+
+    /// #4275 (SF-D3-2026-09-11-04) — the common-case shape (96 of 97
+    /// vanilla classes): fields declared in strictly increasing offset
+    /// order must report ordered.
+    #[test]
+    fn fields_are_offset_ordered_true_for_common_shape() {
+        let fields = vec![field("r", 0, 1), field("g", 1, 1), field("b", 2, 1), field("a", 3, 1)];
+        assert!(fields_are_offset_ordered(&fields));
+    }
+
+    /// #4275 — `XMCOLOR`'s actual measured wire shape (#3398): `r,g,b,a`
+    /// declared, but offsets `2,1,0,3` (a straight R<->B transposition).
+    /// This is the exact divergence class the guard exists to catch — it
+    /// must report NOT ordered here, and would for any future second
+    /// occurrence too.
+    #[test]
+    fn fields_are_offset_ordered_false_for_xmcolor_shape() {
+        let fields = vec![field("r", 2, 1), field("g", 1, 1), field("b", 0, 1), field("a", 3, 1)];
+        assert!(!fields_are_offset_ordered(&fields));
+    }
+
+    /// #4275 — zero or one field is vacuously ordered (no adjacent pair
+    /// to violate the invariant).
+    #[test]
+    fn fields_are_offset_ordered_trivial_cases() {
+        assert!(fields_are_offset_ordered(&[]));
+        assert!(fields_are_offset_ordered(&[field("only", 5, 1)]));
     }
 
     /// SF-D3-AUDIT-01 / #2100 — `probe_header` must validate the header +
