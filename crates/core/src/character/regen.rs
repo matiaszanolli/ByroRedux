@@ -118,9 +118,20 @@ impl PoolRegenAccumulator {
     }
 }
 
-/// Per-game resolved AVIF ids the regen tick needs — a `Resource`, built once
-/// per load by a per-game constructor (e.g.
-/// [`super::tes::oblivion_pool_regen_config`]).
+/// Per-game resolved AVIF ids the regen tick needs — a `Resource`.
+///
+/// **Nothing inserts it in production on any game** (#3848). Both
+/// `insert_resource(PoolRegenConfig { .. })` sites in this file are inside
+/// `mod tests`, so [`pool_regen_tick_system`] — registered as a
+/// `Stage::Update` exclusive — takes its `let … else` early return on every
+/// frame of every supported title. The system is live in the schedule and
+/// inert in effect.
+///
+/// Oblivion once had a `tes::oblivion_pool_regen_config` constructor for
+/// this; it was deleted under #3848 because it had zero call sites
+/// anywhere, tests included, and cannot acquire one until Oblivion gets a
+/// pre-`AVIF` actor-value resolver (#3768). `git show` recovers it if a
+/// wiring pass wants the Fatigue/Magicka/Willpower EditorID set back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PoolRegenConfig {
     pub fatigue_avif: u32,

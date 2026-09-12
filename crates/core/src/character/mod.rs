@@ -118,8 +118,7 @@ pub use skyrim::{
 };
 pub use tes::{
     oblivion_attribute_bonus, oblivion_fatigue_formulas, oblivion_health_formula,
-    oblivion_health_gain_per_level, oblivion_magicka_formula, oblivion_pool_regen_config,
-    oblivion_ruleset,
+    oblivion_health_gain_per_level, oblivion_magicka_formula, oblivion_ruleset,
 };
 
 #[cfg(test)]
