@@ -551,8 +551,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // never looks at the extra key. Same reasoning class as #3489's
     // variant insertion — and see the #3159 entry above, where the
     // *wrong* mechanism was cited for a structurally similar call (#4140).
-    const BASELINE_MAJOR: u16 = 22;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb11e_10f4_f044_99df;
+    // v22 -> v23: `CinematicPresentationState` gained six new fields for
+    // MQ101's chargen-gate effects (`SetInChargen`/`ShowRaceMenu`/
+    // `RequestSave`) — see `byroredux_save::FORMAT_MAJOR`'s doc for the
+    // full field list and why SAVE-D2-01 (#1714) rules out `serde(default)`
+    // here.
+    const BASELINE_MAJOR: u16 = 23;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x40ac_96d7_a8cb_fd58;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

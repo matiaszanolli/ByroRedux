@@ -185,7 +185,17 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// is compatible, while changing an **existing** variant's field shape is
 /// not — that distinction is what the "discriminant shift" framing
 /// obscured.
-pub const FORMAT_MAJOR: u16 = 22;
+///
+/// v22 -> v23: `CinematicPresentationState` gained six new fields (MQ101
+/// chargen-gate state driven by the new `Effect::SetInChargen`/
+/// `ShowRaceMenu`/`RequestSave` primitives: `in_chargen`/
+/// `chargen_wait_for_race_sex`/`chargen_stay_in_first_person`/
+/// `race_menu_shown_count`/`save_requested_count`/`last_save_was_auto`).
+/// SAVE-D2-01 (#1714) forbids `#[serde(default)]` as the compatibility
+/// mechanism here — it would mask a real intra-type change — so a pre-v23
+/// save (missing those keys entirely) is rejected by the version check
+/// rather than silently misdecoded or defaulted.
+pub const FORMAT_MAJOR: u16 = 23;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

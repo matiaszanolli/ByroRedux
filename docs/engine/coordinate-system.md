@@ -180,18 +180,27 @@ through a runtime A/B dispatcher in
 [`byroredux/src/cell_loader/euler.rs`](../../byroredux/src/cell_loader/euler.rs)
 (`euler_zup_to_quat_yup_refr`) so an operator can re-triage candidate
 conventions without rewiring the engine. `--rotation-mode N` (default `1`,
-clamped to `0..=3`, wired in `byroredux/src/main.rs`):
+wired in `byroredux/src/boot/mod.rs`); any value outside `0..=3` is passed
+through unclamped to `euler_zup_to_quat_yup_mode`'s own `_ =>` arm, which
+falls back to the safe shipping formula (mode 1) rather than silently
+producing garbage placement (`#4126`):
 
 | Mode | Convention | Z-up product | Status |
 |------|------------|--------------|--------|
 | 0 | CW  | `Rx · Ry · Rz` | pre-2026-05-26 ship; kept for A/B only |
-| **1** | **CW**  | **`Rz · Ry · Rx`** | **current ship — matches OpenMW** |
+| **1** | **CW**  | **`Rz · Ry · Rx`** | **current ship — matches OpenMW; also the out-of-range fallback** |
 | 2 | CCW | `Rz · Ry · Rx` | diagnostic |
 | 3 | CCW | `Rx · Ry · Rz` | diagnostic |
 
-Non-REFR callers (XCLL directional lighting in `scene.rs`, `#380`) call the
-canonical `euler_zup_to_quat_yup` directly, bypassing the dispatcher, so the
-core helper remains the single source of truth.
+Non-REFR callers (XCLL directional lighting) do **not** go through this
+dispatcher, or even through the canonical `euler_zup_to_quat_yup` helper: XCLL's
+two on-disk fields are a spherical azimuth/elevation pair, not a REFR Euler
+triple, so routing them through the shared quaternion helper discarded the
+azimuth component (`#3313`–`#3316`, `b78749aff`). They instead go through a
+dedicated spherical-to-vector helper,
+[`byroredux/src/cell_loader/load.rs`](../../byroredux/src/cell_loader/load.rs)
+(`xcll_direction_yup(azimuth, elevation)`), which builds the Y-up direction
+directly: `(cos(elev)·cos(az), -sin(elev), -cos(elev)·sin(az))`.
 
 ## Transform Pipeline
 

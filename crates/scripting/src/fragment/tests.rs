@@ -802,6 +802,58 @@ fn cinematic_presentation_effects_wait_for_quest_guards_to_drop() {
         .is_player_animation_event_registered(CinematicAnimationEvent::IdleFurnitureExit));
 }
 
+/// MQ101's execution-block chargen gate (stages 65/75/80): `SetInChargen`,
+/// `ShowRaceMenu`, and `RequestSave`/`RequestAutoSave` all apply through the
+/// same deferred `CinematicPresentationState` path as the effects above,
+/// rather than declining the fragments they're authored in.
+#[test]
+fn chargen_effects_apply_through_deferred_cinematic_presentation() {
+    let world = fixture();
+    let effects = [
+        Effect::SetInChargen {
+            enabled: false,
+            wait_for_race_sex: true,
+            stay_in_first_person: true,
+        },
+        Effect::ShowRaceMenu,
+        Effect::RequestSave { auto: false },
+        Effect::RequestSave { auto: true },
+    ];
+    let mut deferred = DeferredFragmentEffects::new(&world);
+
+    let advances = {
+        let (mut stages, mut objectives) =
+            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+        apply_effects(
+            &effects,
+            Q,
+            None,
+            &world,
+            &mut stages,
+            &mut objectives,
+            &mut deferred,
+        )
+    };
+    assert!(advances.is_empty());
+
+    // Not applied until the guard scope drops, same as the sibling test above.
+    {
+        let presentation = world.resource::<crate::CinematicPresentationState>();
+        assert!(!presentation.in_chargen);
+        assert_eq!(presentation.race_menu_shown_count, 0);
+        assert_eq!(presentation.save_requested_count, 0);
+    }
+
+    deferred.apply(&world);
+    let presentation = world.resource::<crate::CinematicPresentationState>();
+    assert!(!presentation.in_chargen);
+    assert!(presentation.chargen_wait_for_race_sex);
+    assert!(presentation.chargen_stay_in_first_person);
+    assert_eq!(presentation.race_menu_shown_count, 1);
+    assert_eq!(presentation.save_requested_count, 2);
+    assert!(presentation.last_save_was_auto);
+}
+
 /// Regression for #2539: lifecycle metadata must come from a snapshot captured
 /// before the paired quest-state guards, and alias invalidation must remain
 /// queued until those guards drop.

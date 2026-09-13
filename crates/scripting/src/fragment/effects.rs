@@ -204,6 +204,15 @@ enum DeferredCinematicPresentationEffect {
         quest: QuestFormId,
         image_space_modifiers: Vec<crate::ImageSpaceModifierApplication>,
     },
+    SetInChargen {
+        enabled: bool,
+        wait_for_race_sex: bool,
+        stay_in_first_person: bool,
+    },
+    ShowRaceMenu,
+    RequestSave {
+        auto: bool,
+    },
 }
 
 /// Resource snapshots and side effects that bracket a fragment's canonical
@@ -385,6 +394,19 @@ impl DeferredFragmentEffects {
                                 quest,
                                 image_space_modifiers,
                             );
+                        }
+                        DeferredCinematicPresentationEffect::SetInChargen {
+                            enabled,
+                            wait_for_race_sex,
+                            stay_in_first_person,
+                        } => {
+                            state.set_in_chargen(enabled, wait_for_race_sex, stay_in_first_person);
+                        }
+                        DeferredCinematicPresentationEffect::ShowRaceMenu => {
+                            state.show_race_menu();
+                        }
+                        DeferredCinematicPresentationEffect::RequestSave { auto } => {
+                            state.request_save(auto);
                         }
                     }
                 }
@@ -1123,6 +1145,32 @@ pub(crate) fn apply_effect(
             );
             None
         }
+        Effect::SetInChargen {
+            enabled,
+            wait_for_race_sex,
+            stay_in_first_person,
+        } => {
+            deferred
+                .cinematic_presentation
+                .push(DeferredCinematicPresentationEffect::SetInChargen {
+                    enabled: *enabled,
+                    wait_for_race_sex: *wait_for_race_sex,
+                    stay_in_first_person: *stay_in_first_person,
+                });
+            None
+        }
+        Effect::ShowRaceMenu => {
+            deferred
+                .cinematic_presentation
+                .push(DeferredCinematicPresentationEffect::ShowRaceMenu);
+            None
+        }
+        Effect::RequestSave { auto } => {
+            deferred
+                .cinematic_presentation
+                .push(DeferredCinematicPresentationEffect::RequestSave { auto: *auto });
+            None
+        }
         Effect::ExitCart { actor, seat } => {
             let actor =
                 resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
@@ -1354,6 +1402,9 @@ fn apply_quest_scoped_effect(
         | Effect::SetPlayerControls { .. }
         | Effect::SetPlayerAiDriven { .. }
         | Effect::SetHudCartMode { .. }
+        | Effect::SetInChargen { .. }
+        | Effect::ShowRaceMenu
+        | Effect::RequestSave { .. }
         | Effect::PlayIdle { .. }
         | Effect::SetVehicle { .. }
         | Effect::TetherToHorse { .. }

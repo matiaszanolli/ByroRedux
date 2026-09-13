@@ -235,6 +235,22 @@ pub enum Effect {
     SetPlayerAiDriven { ai_driven: bool },
     /// `Game.SetHudCartMode(cart_mode)` presentation state.
     SetHudCartMode { cart_mode: bool },
+    /// `Game.SetInChargen(abEnabled, abWaitForRaceSex, abStayInFirstPerson)`.
+    SetInChargen {
+        enabled: bool,
+        wait_for_race_sex: bool,
+        stay_in_first_person: bool,
+    },
+    /// `Game.ShowRaceMenu()`. No interactive race-menu UI exists yet (a full
+    /// slider-based character creator is its own milestone); the runtime
+    /// treats the call as an instant auto-accept of the player's current
+    /// appearance so the fragment it's authored in — MQ101's execution-block
+    /// scene — no longer declines wholesale over an unmodeled statement.
+    ShowRaceMenu,
+    /// `Game.RequestSave()` / `Game.RequestAutoSave()`. Deliberately does
+    /// not write a save file — see `CinematicPresentationState::
+    /// request_save`'s doc for why a mid-fragment write is out of scope.
+    RequestSave { auto: bool },
     /// `<actor>.PlayIdle(<idle>)`. The runtime preserves the IDLE FormID as
     /// an animation-backend request even when the current game uses HKX.
     PlayIdle { actor: ActorRef, idle: ObjectRef },
@@ -649,6 +665,10 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_enable_player_controls,
     prim_set_player_ai_driven,
     prim_set_hud_cart_mode,
+    prim_set_in_chargen,
+    prim_show_race_menu,
+    prim_request_save,
+    prim_request_auto_save,
     prim_play_idle,
     prim_set_vehicle,
     prim_tether_to_horse,
@@ -1218,6 +1238,33 @@ fn prim_set_hud_cart_mode(e: &Expr, _scope: &Scope) -> Option<Effect> {
     Some(Effect::SetHudCartMode {
         cart_mode: bool_arg(args, 0)?.unwrap_or(true),
     })
+}
+
+fn prim_set_in_chargen(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = game_call(e, "SetInChargen")?;
+    if args.len() != 3 {
+        return None;
+    }
+    Some(Effect::SetInChargen {
+        enabled: bool_arg(args, 0)?.unwrap_or(false),
+        wait_for_race_sex: bool_arg(args, 1)?.unwrap_or(false),
+        stay_in_first_person: bool_arg(args, 2)?.unwrap_or(false),
+    })
+}
+
+fn prim_show_race_menu(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = game_call(e, "ShowRaceMenu")?;
+    args.is_empty().then_some(Effect::ShowRaceMenu)
+}
+
+fn prim_request_save(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = game_call(e, "RequestSave")?;
+    args.is_empty().then_some(Effect::RequestSave { auto: false })
+}
+
+fn prim_request_auto_save(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = game_call(e, "RequestAutoSave")?;
+    args.is_empty().then_some(Effect::RequestSave { auto: true })
 }
 
 fn prim_play_idle(e: &Expr, scope: &Scope) -> Option<Effect> {
@@ -2583,6 +2630,96 @@ mod tests {
                 Effect::SetPlayerAiDriven { ai_driven: false },
                 Effect::SetHudCartMode { cart_mode: false },
             ])
+        );
+    }
+
+    #[test]
+    fn lowers_mq101_chargen_exit_and_save_request() {
+        // Real vanilla shape: `QF_MQ101_0003372B::Fragment_318` (stage 65).
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_318()\n\
+             Game.SetInChargen(false, true, true)\n\
+             Game.RequestSave()\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::SetInChargen {
+                    enabled: false,
+                    wait_for_race_sex: true,
+                    stay_in_first_person: true,
+                },
+                Effect::RequestSave { auto: false },
+            ])
+        );
+    }
+
+    #[test]
+    fn lowers_mq101_show_race_menu() {
+        // Real vanilla shape: `QF_MQ101_0003372B::Fragment_13` (stage 75).
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_13()\n\
+             Game.ShowRaceMenu()\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), Some(vec![Effect::ShowRaceMenu]));
+    }
+
+    #[test]
+    fn lowers_mq101_chargen_exit_autosave_variant() {
+        // Real vanilla shape: `QF_MQ101_0003372B::Fragment_260` (stage 255) —
+        // the `false, false, false` cleanup/fallback variant of the same call.
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_260()\n\
+             Game.SetInChargen(false, false, false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::SetInChargen {
+                enabled: false,
+                wait_for_race_sex: false,
+                stay_in_first_person: false,
+            }])
+        );
+    }
+
+    #[test]
+    fn set_in_chargen_declines_on_wrong_arg_count() {
+        let two_args = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_28()\n\
+             Game.SetInChargen(true, false)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&two_args), None);
+    }
+
+    #[test]
+    fn show_race_menu_declines_with_args() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_29()\n\
+             Game.ShowRaceMenu(true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn lowers_request_auto_save() {
+        // Real vanilla shape: `QF_MQ101_0003372B::Fragment_11` (stage 80),
+        // minus the trailing `AddRaceSpells()` call — that one is a
+        // MQ101QuestScript-authored helper (not a `Game` global) and still
+        // declines the whole fragment (no RACE `SPLO` spell-list decoder
+        // exists yet).
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_30()\n\
+             Game.RequestAutoSave()\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::RequestSave { auto: true }])
         );
     }
 

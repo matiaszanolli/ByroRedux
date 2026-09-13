@@ -183,6 +183,28 @@ pub struct CinematicPresentationState {
     active_image_space_modifiers: Vec<ActiveImageSpaceModifier>,
     player_imod_event: Option<PlayerAnimationEventRegistration>,
     player_furniture_exit_event: Option<PlayerAnimationEventRegistration>,
+    /// `Game.SetInChargen`'s current authored flags (MQ101 stages 0/10/255/
+    /// 260/318 all toggle this around the execution-block race menu). No
+    /// system currently reads `in_chargen` to gate anything (no dedicated
+    /// chargen camera/input mode exists yet) — it is tracked so a future
+    /// consumer has ground truth and so tests can observe the effect
+    /// actually applied instead of declining the whole fragment.
+    pub in_chargen: bool,
+    pub chargen_wait_for_race_sex: bool,
+    pub chargen_stay_in_first_person: bool,
+    /// Bumped each `Game.ShowRaceMenu()`. There is no interactive race-menu
+    /// UI yet (a full slider-based character creator is its own milestone),
+    /// so the call is treated as an instant auto-accept of the player's
+    /// current appearance — this is the observable stand-in for "the menu
+    /// opened and closed" until that UI exists.
+    pub race_menu_shown_count: u32,
+    /// Bumped by `Game.RequestSave`/`RequestAutoSave`. Deliberately does not
+    /// trigger a real save: MQ101 requests one mid-scene (stage 65/80),
+    /// and the save subsystem's cell-transition-safety invariants (#4138)
+    /// are not designed for a mid-fragment write yet. `last_save_was_auto`
+    /// records which of the two Papyrus calls fired most recently.
+    pub save_requested_count: u32,
+    pub last_save_was_auto: bool,
 }
 
 impl Default for CinematicPresentationState {
@@ -197,6 +219,12 @@ impl Default for CinematicPresentationState {
             active_image_space_modifiers: Vec::new(),
             player_imod_event: None,
             player_furniture_exit_event: None,
+            in_chargen: false,
+            chargen_wait_for_race_sex: false,
+            chargen_stay_in_first_person: false,
+            race_menu_shown_count: 0,
+            save_requested_count: 0,
+            last_save_was_auto: false,
         }
     }
 }
@@ -246,6 +274,31 @@ impl CinematicPresentationState {
             CinematicAnimationEvent::IdleFurnitureExit => self.player_furniture_exit_event.take(),
             CinematicAnimationEvent::ExitCartEnd => None,
         }
+    }
+
+    /// `Game.SetInChargen(abEnabled, abWaitForRaceSex, abStayInFirstPerson)`.
+    pub fn set_in_chargen(
+        &mut self,
+        enabled: bool,
+        wait_for_race_sex: bool,
+        stay_in_first_person: bool,
+    ) {
+        self.in_chargen = enabled;
+        self.chargen_wait_for_race_sex = wait_for_race_sex;
+        self.chargen_stay_in_first_person = stay_in_first_person;
+    }
+
+    /// `Game.ShowRaceMenu()` — see the field doc on `race_menu_shown_count`
+    /// for why this auto-accepts instead of opening real UI.
+    pub fn show_race_menu(&mut self) {
+        self.race_menu_shown_count = self.race_menu_shown_count.wrapping_add(1);
+    }
+
+    /// `Game.RequestSave()` / `Game.RequestAutoSave()` — see the field doc
+    /// on `save_requested_count` for why this does not write a save file.
+    pub fn request_save(&mut self, auto: bool) {
+        self.save_requested_count = self.save_requested_count.wrapping_add(1);
+        self.last_save_was_auto = auto;
     }
 }
 

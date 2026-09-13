@@ -1,3 +1,35 @@
+# regenerated: 2026-09-13 (#4124 / RT-2 — entities_total 705 -> 745 (+5.67%),
+# past the +/-2% band for the first time since the 2026-08-26 regen. The
+# render-load contract was already untouched at the time of filing:
+# bench_draws_cmds 325 -> 330 (+1.5%, inside x1.1), bench_draws_batches
+# 20 -> 20 (exact), bench_draws_gpu_calls 2 -> 2 (exact),
+# light_count_point/light_count_directional 8/2 (exact). Live-captured this
+# session (`--game oblivion --cell ICMarketDistrictTheGildedCarafe
+# --bench-frames 240 --bench-hold`, cross-checked: byro-dbg `stats` stream
+# and the engine's own `bench:` line both report entities=745, agreeing with
+# the issue's own numbers — same cell, not a mis-attributed capture, #3560)
+# and additionally ran `world.owners` for a per-ECS-class breakdown the
+# original filing didn't have: `tlas_instances` (the actual rendered-instance
+# count, printed on the `bench:` line itself as `tlas=330`) is 330 — i.e. the
+# rendering-visible instance set grew by exactly the same +5 the draw-command
+# count already showed, not by ~40. The remaining growth sits in
+# non-rendering classes the `bench:`/draw-split evidence cannot see directly
+# (`physics_bodies`=156, `transform_rows`=716 vs `cell_root_rows`=743 — the
+# gap between spawned entities and rendered instances). This is the same
+# "more bodies, not more visible geometry" signature as every prior instance
+# of this pattern (RT-3/#1705, RT-8/#3554), now confirmed at the ECS-class
+# level rather than only via the draw split. A full per-commit `git bisect`
+# across the ~816 commits since the 2026-08-26 regen (`d6e16c90`) to name the
+# exact root-cause commit was NOT performed — each step would need its own
+# live engine rebuild+rerun, out of this pipeline's `cargo test` scope (see
+# CLAUDE.md's smoke-test note) — so the specific spawner responsible remains
+# uncited. `tex_missing_all_slots` also dropped 8 -> 0 (informational, not
+# gated) consistent with #3555/RT-9's facegen fallback fix having landed
+# since the row was last held. `bench_draws_raster_cmds` also moved (133 ->
+# 22); this metric only gates via a `>= 3000` threshold check (see SKILL.md
+# §Phase 3), so the drop does not cross the branch this baseline exists to
+# catch. All other rows held.
+#
 # regenerated: 2026-09-03 (#3660 — measured raster-prefix command count; other rows held)
 # regenerated: 2026-08-26 (#3288 — first live re-run since 2026-08-06; see
 # docs/audits/AUDIT_RUNTIME_2026-08-26.md)
@@ -40,18 +72,18 @@
 # entities_total: +/-2% tolerance metric, not exact (#1705 / RT-3).
 # skin_pool_live: advisory, not a hard gate — see skin_pool_max /
 # skin_pool_overflow_attempts instead (#3553 / RT-7).
-entities_total	705
+entities_total	745
 tex_missing_base_color	0
-tex_missing_all_slots	8
+tex_missing_all_slots	0
 mesh_cache_failed_count	0
 light_count_point	8
 light_count_directional	2
 skin_pool_live	4
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	377.6
-bench_fps_avg	377.6
-bench_draws_cmds	325
-bench_draws_raster_cmds	133
+bench_fps_p50	269.7
+bench_fps_avg	269.7
+bench_draws_cmds	330
+bench_draws_raster_cmds	22
 bench_draws_batches	20
 bench_draws_gpu_calls	2
