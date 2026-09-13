@@ -1,10 +1,11 @@
 # SKYAL — Sky Abstraction Layer
 
 **Status: PARTIAL (2026-09-13).** The overdrive fix, the shared sky
-include and the cubemap bake pass have landed. The bake is **not yet
-dispatched** — nothing constructs `SkyCubePipeline` — and the volumetric
-cloud layer is specified here and not implemented. See §3 for exactly
-which steps are done.
+include, and the sky cubemap — baked every frame and consumed by the
+ray-traced miss and bounded-path-escape paths — have landed. Still
+specified-but-unbuilt: prefiltered mips for rough reflections, the
+irradiance projection for diffuse ambient, and the volumetric cloud
+layer. See §3 for exactly which steps are done.
 
 Sibling of [NIFAL](nifal.md), [EXAL](exal.md), [PHYSAL](physal.md),
 [WATAL](watal.md), [CHARAL](charal.md). SKYAL sits **downstream of EXAL**:
@@ -130,12 +131,25 @@ and no set conflict.
   constructor — extend it, do not add a second image path.
 * `sky_cube.comp`: dispatch `(N/8, N/8, 6)`, one invocation per texel,
   `imageStore(skyFaces, ivec3(x, y, face), vec4(sky_radiance(dome, dir), 1))`.
-* Registered into the existing `cubemaps[]` bindless array; index handed
-  to shaders through the scene UBO. Note `TextureRegistry`'s
-  descriptor-write protocol (#92 / #2715): a write is only safe on the
-  current slot when a completed fence has proven it idle, otherwise it
-  must be queued for every slot. An externally-owned view needs a public
-  entry point that respects this.
+* Bound at **scene set 1 / binding 20**, not into the `cubemaps[]`
+  bindless array. The bindless route was rejected: `TextureRegistry`
+  entries own their `Texture`, so an externally-owned per-frame view would
+  need a new ownership kind threaded through the destroy path *and* would
+  have to respect the fence-gated descriptor-write protocol (#92 / #2715).
+  Binding 20 follows the `aoTexture` / `depthHistoryTex` precedent — a
+  renderer-owned per-frame image written into the scene set once at init —
+  which is simpler and has no ownership ambiguity.
+* `GpuCamera::exterior_sky_tint`'s previously-reserved `w` lane carries a
+  **ready flag**. The bake is optional (VRAM pressure) and binding 20 is
+  PARTIALLY_BOUND, so consumers must gate on the flag rather than on the
+  binding existing.
+* The bake needs **two** descriptor sets: its own, plus the bindless array
+  at set 1, because `include/sky.glsl` samples the WTHR cloud layers and
+  the CLMT sun sprite by index. The bindless layout's `stageFlags` also
+  had to gain `COMPUTE`. Both are accepted by the shader compiler and
+  rejected at pipeline creation
+  (VUID-VkComputePipelineCreateInfo-layout-07988) — validation-layer-only
+  failures, invisible to `cargo test`. Both were hit for real.
 
 **Face mapping** — derived from the Vulkan spec §16.5.4 cube-map face
 selection table by inverting it (`|ma| = 1`, `u = 2s-1 = sc`,
@@ -196,10 +210,10 @@ deck above the volumetric layer is an open design question.
 | Bloom bright-pass (the overdrive fix) | **DONE** `62a09fd9` |
 | Shared `include/sky.glsl` + `SkyDome` guard | **DONE** `b7abdaa5` |
 | `GpuImageDesc` cube support | **DONE** |
-| Cubemap resource + `sky_cube.comp` bake | **BUILT, NOT WIRED** — `SkyCubePipeline` exists and is tested, but nothing constructs or dispatches it yet |
-| Construct + dispatch in `VulkanContext` / `draw_frame` | TODO |
-| Bindless registration + scene-UBO index | TODO |
-| RT miss + bounded-path escape consume it | TODO |
+| Cubemap resource + `sky_cube.comp` bake | **DONE** |
+| Construct + dispatch in `VulkanContext` / `draw_frame` | **DONE** — baked every frame before the geometry pass |
+| Bind into scene set 1 / binding 20 + ready flag | **DONE** — a dedicated binding rather than the bindless array; see below |
+| RT miss + bounded-path escape consume it | **DONE** |
 | Prefiltered mips for rough reflections | TODO |
 | Irradiance projection for ambient | TODO |
 | Volumetric cloud march into the cube | TODO |

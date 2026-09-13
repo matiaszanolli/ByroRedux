@@ -88,6 +88,39 @@ pub struct SkyCubeParams {
 // struct's declared size with no implicit padding (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for SkyCubeParams {}
 
+impl SkyCubeParams {
+    /// Copy the sky fields out of the composite pass's own parameters.
+    ///
+    /// Deriving the bake's inputs from `CompositeParams` rather than
+    /// rebuilding them from `SkyParams` is the point: the background and
+    /// the bake then cannot disagree about what sky they are drawing, by
+    /// construction rather than by two builders being kept in step. This
+    /// is the host-side twin of `composite.frag`'s `build_sky_dome()`.
+    pub fn from_composite(p: &crate::vulkan::composite::CompositeParams) -> Self {
+        Self {
+            sky_zenith: p.sky_zenith,
+            sky_horizon: p.sky_horizon,
+            sky_lower: p.sky_lower,
+            sun_dir: p.sun_dir,
+            sun_color: p.sun_color,
+            cloud_params: p.cloud_params,
+            cloud_params_1: p.cloud_params_1,
+            cloud_params_2: p.cloud_params_2,
+            cloud_params_3: p.cloud_params_3,
+            cloud_tint_0: p.cloud_tint_0,
+            cloud_tint_1: p.cloud_tint_1,
+            cloud_tint_2: p.cloud_tint_2,
+            cloud_tint_3: p.cloud_tint_3,
+            weather_params: p.weather_params,
+            weather_wind: p.weather_wind,
+            weather_lightning: p.weather_lightning,
+            weather_sky: p.weather_sky,
+            weather_aurora: p.weather_aurora,
+            depth_params: p.depth_params,
+        }
+    }
+}
+
 /// VRAM the sky cubemap holds, per frame in flight, in bytes.
 ///
 /// `6 * size^2 * 8` (four half-floats). Exposed so the memory budget can
@@ -126,9 +159,16 @@ impl SkyCubePipeline {
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
+        bindless_layout: vk::DescriptorSetLayout,
         max_frames: usize,
     ) -> Result<Self> {
-        let result = Self::new_inner(device, allocator, pipeline_cache, max_frames);
+        let result = Self::new_inner(
+            device,
+            allocator,
+            pipeline_cache,
+            bindless_layout,
+            max_frames,
+        );
         if let Err(ref e) = result {
             log::debug!("sky cubemap pipeline creation failed at: {e}");
         }
@@ -139,6 +179,7 @@ impl SkyCubePipeline {
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
+        bindless_layout: vk::DescriptorSetLayout,
         max_frames: usize,
     ) -> Result<Self> {
         // Partially-valid Self so `destroy()` is the single cleanup path;
@@ -270,13 +311,22 @@ impl SkyCubePipeline {
                 .context("sky cubemap descriptor set layout")
         });
 
-        // SAFETY: the layout handle was just created; the borrow lives only
+        // TWO sets, not one. `include/sky.glsl` declares the bindless
+        // texture array at set 1 because the sky samples the WTHR cloud
+        // layers and the CLMT sun sprite by index, so this pipeline
+        // statically uses set 1 even though none of its *own* bindings live
+        // there. Declaring only set 0 is accepted by the shader compiler and
+        // rejected at pipeline creation
+        // (VUID-VkComputePipelineCreateInfo-layout-07988) — caught by the
+        // validation layers, invisible to `cargo test`.
+        let set_layouts = [partial.descriptor_set_layout, bindless_layout];
+        // SAFETY: set 0's layout was just created above; `bindless_layout`
+        // is caller-owned and outlives this pipeline. The borrow lives only
         // for this call.
         partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default()
-                        .set_layouts(std::slice::from_ref(&partial.descriptor_set_layout)),
+                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts),
                     None,
                 )
                 .context("sky cubemap pipeline layout")
@@ -348,6 +398,77 @@ impl SkyCubePipeline {
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(params))
     }
 
+    /// Record the bake with its own layout transitions.
+    ///
+    /// The cube is written as a storage image and read as a sampled cube,
+    /// so it needs a transition on both sides. Keeping them here rather
+    /// than at the call site is deliberate: the `GENERAL` ->
+    /// `SHADER_READ_ONLY_OPTIMAL` half is the one a caller would forget,
+    /// and the symptom — sampling an image in the wrong layout — is
+    /// undefined behaviour that a validation-layer-free release build will
+    /// happily render something plausible for.
+    ///
+    /// The pre-barrier uses `UNDEFINED` as the old layout, which discards
+    /// the previous contents. That is correct and intentional: every texel
+    /// is overwritten by the dispatch, and it means the first frame needs
+    /// no separate initialisation path the way SSAO's AO image does.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `cmd` are valid and live, `cmd` is
+    /// recording, the device is not lost, and this frame slot's cube is not
+    /// concurrently accessed by another in-flight command buffer.
+    pub unsafe fn record_bake(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        bindless_set: vk::DescriptorSet,
+    ) {
+        let range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(CUBE_FACES);
+
+        let to_general = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(self.cubes[frame].image)
+            .subresource_range(range);
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_general],
+        );
+
+        self.dispatch(device, cmd, frame, bindless_set);
+
+        let to_read = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image(self.cubes[frame].image)
+            .subresource_range(range);
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_read],
+        );
+    }
+
     /// Record the bake.
     ///
     /// One invocation per texel, `CUBE_FACES` deep. The caller owns the
@@ -360,14 +481,20 @@ impl SkyCubePipeline {
     /// Caller must ensure `device` and `cmd` are valid and live, `cmd` is
     /// recording, the device is not lost, and this frame slot's cube image
     /// is not concurrently accessed by another in-flight command buffer.
-    pub unsafe fn dispatch(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+    unsafe fn dispatch(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        bindless_set: vk::DescriptorSet,
+    ) {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
             self.pipeline_layout,
             0,
-            &[self.descriptor_sets[frame]],
+            &[self.descriptor_sets[frame], bindless_set],
             &[],
         );
         device.cmd_dispatch(
@@ -575,6 +702,69 @@ mod tests {
         assert!(
             SKY_CUBE_COMP.contains("(vec2(coord.xy) + 0.5) / vec2(size.xy) * 2.0 - 1.0"),
             "sky_cube.comp must map the texel CENTRE into [-1, 1]",
+        );
+    }
+
+    /// Both sky-cube consumers must gate on the ready flag.
+    ///
+    /// The bake is optional and set 1 / binding 20 is PARTIALLY_BOUND, so
+    /// an ungated read samples a descriptor that was never written when the
+    /// pipeline failed to initialise. Nothing else catches this: it needs a
+    /// VRAM-pressure failure at init to reach, and the result is undefined
+    /// data rather than a crash.
+    #[test]
+    fn every_sky_cube_consumer_gates_on_the_ready_flag() {
+        for (name, src) in [
+            (
+                "raytrace.glsl",
+                include_str!("../../shaders/include/raytrace.glsl"),
+            ),
+            (
+                "lighting.glsl",
+                include_str!("../../shaders/include/lighting.glsl"),
+            ),
+        ] {
+            assert!(
+                src.contains("texture(skyCube,"),
+                "{name} is expected to consume the baked sky cubemap",
+            );
+            assert!(
+                src.contains("exteriorSkyTint.w > 0.5"),
+                "{name} samples skyCube without gating on the ready flag — when the \
+                 bake fails to initialise, binding 20 is never written and this reads \
+                 an unwritten descriptor",
+            );
+        }
+    }
+
+    /// The bake statically uses set 1 (the bindless array, via
+    /// `include/sky.glsl`) even though none of its own bindings live there.
+    ///
+    /// Declaring only set 0 compiles fine and is rejected at pipeline
+    /// creation with VUID-VkComputePipelineCreateInfo-layout-07988 — a
+    /// validation-layer-only failure. Both halves were hit for real while
+    /// wiring this: the missing set, and then the bindless layout's stage
+    /// flags not including COMPUTE.
+    #[test]
+    fn the_bake_declares_both_the_sets_it_uses() {
+        let src = include_str!("sky_cube.rs");
+        assert!(
+            src.contains("let set_layouts = [partial.descriptor_set_layout, bindless_layout];"),
+            "the bake's pipeline layout must declare set 0 AND the bindless set 1",
+        );
+        let sky = include_str!("../../shaders/include/sky.glsl");
+        assert!(
+            sky.contains("layout(set = 1, binding = 0) uniform sampler2D textures[];"),
+            "sky.glsl is what puts the bindless array in set 1 — if it moved, the \
+             pipeline layout above is now wrong",
+        );
+
+        let registry = include_str!("../texture_registry/mod.rs");
+        assert!(
+            registry.contains("ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE"),
+            "the bindless descriptor layout must expose the texture array to COMPUTE — \
+             the bake samples WTHR cloud layers through it, and a FRAGMENT-only \
+             stageFlags fails pipeline creation",
         );
     }
 

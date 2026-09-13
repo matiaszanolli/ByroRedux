@@ -840,39 +840,68 @@ impl VulkanContext {
         // the render pass + SVGF / TAA / SSAO / Bloom, but the barrier
         // doesn't care when the consumer runs as long as it's been
         // emitted before the consumer.
+        // Built unconditionally, not inside the `self.composite` arm below:
+        // the SKYAL sky-cubemap bake consumes the same value, and its ready
+        // flag (`GpuCamera::exterior_sky_tint.w`) is derived from the
+        // pipeline's presence. Leaving the bake gated on `composite` would
+        // make that flag lie whenever composite is absent, and the shader
+        // would sample a cube still in `UNDEFINED` layout.
+        let composite_params = build_composite_params(CompositeParamsInputs {
+            fog_color,
+            fog_near,
+            fog_far,
+            fog_extinction_per_meter,
+            fog_single_scatter_albedo,
+            fog_scale_height_meters,
+            fog_clip,
+            fog_power,
+            fog_height_reference,
+            sky_params,
+            render_debug_flags: self.render_debug_flags,
+            render_debug_mode: self.render_debug_mode.shader_value(),
+            frame_counter: self.frame_counter,
+            volume_far_distance: self
+                .volumetrics
+                .as_ref()
+                .map_or(super::super::volumetrics::DEFAULT_VOLUME_FAR, |volume| {
+                    volume.far_distance_world()
+                }),
+            froxel_slice_count: self
+                .volumetrics
+                .as_ref()
+                .map_or(1.0, |volume| volume.extent().depth as f32),
+            camera_pos,
+            render_origin,
+            inv_vp_arr,
+            underwater,
+            water_caustic_active: self.water_caustic_accum.is_some(),
+        });
         if let Some(ref mut composite) = self.composite {
-            let composite_params = build_composite_params(CompositeParamsInputs {
-                fog_color,
-                fog_near,
-                fog_far,
-                fog_extinction_per_meter,
-                fog_single_scatter_albedo,
-                fog_scale_height_meters,
-                fog_clip,
-                fog_power,
-                fog_height_reference,
-                sky_params,
-                render_debug_flags: self.render_debug_flags,
-                render_debug_mode: self.render_debug_mode.shader_value(),
-                frame_counter: self.frame_counter,
-                volume_far_distance: self
-                    .volumetrics
-                    .as_ref()
-                    .map_or(super::super::volumetrics::DEFAULT_VOLUME_FAR, |volume| {
-                        volume.far_distance_world()
-                    }),
-                froxel_slice_count: self
-                    .volumetrics
-                    .as_ref()
-                    .map_or(1.0, |volume| volume.extent().depth as f32),
-                camera_pos,
-                render_origin,
-                inv_vp_arr,
-                underwater,
-                water_caustic_active: self.water_caustic_accum.is_some(),
-            });
             if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                 log::warn!("composite upload_params failed: {e}");
+            }
+        }
+
+        {
+            // SKYAL — bake the sky cubemap from the SAME parameters the
+            // composite background will use, so the two cannot disagree
+            // about what sky they are drawing. Recorded here, before the
+            // geometry pass, because `raytrace.glsl` samples it from the
+            // fragment shader inside that pass; `record_bake` owns both
+            // layout transitions.
+            // Read before the `&mut self.sky_cube` borrow below.
+            let bindless_set = self.texture_registry.descriptor_set(frame);
+            if let Some(ref mut sky_cube) = self.sky_cube {
+                let sky_cube_params =
+                    super::super::sky_cube::SkyCubeParams::from_composite(&composite_params);
+                if let Err(e) = sky_cube.upload_params(&self.device, frame, &sky_cube_params) {
+                    log::warn!("sky cubemap upload_params failed: {e}");
+                }
+                // SAFETY: `cmd` is this frame's primary command buffer, in
+                // the recording state; `frame` indexes this frame's own cube,
+                // whose previous use was fenced by the frame-in-flight wait
+                // that preceded this recording.
+                unsafe { sky_cube.record_bake(&self.device, cmd, frame, bindless_set) };
             }
         }
 

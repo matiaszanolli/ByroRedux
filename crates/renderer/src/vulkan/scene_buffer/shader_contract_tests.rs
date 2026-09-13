@@ -3920,9 +3920,31 @@ fn bounded_path_converts_dalc_irradiance_to_environment_radiance() {
 fn bounded_path_converts_scene_flags_ambient_to_environment_radiance_in_every_arm() {
     let lighting = include_str!("../../../shaders/include/lighting.glsl");
 
+    // SKYAL renamed the sky-side operand: it is now `skyRadiance`, which is
+    // the baked sky cubemap when present and `skyTint.xyz` when not. Both
+    // are already-rendered radiance, so the invariant this pins is unchanged
+    // — only `sceneFlags.yzw` (authored irradiance) needs the 1/PI.
     assert!(
-        lighting.contains("mix(sceneFlags.yzw * (1.0 / PI), skyTint.xyz, skyWeight)"),
-        "exterior sky-mix arm must convert sceneFlags.yzw to radiance before mixing with skyTint"
+        lighting.contains("mix(sceneFlags.yzw * (1.0 / PI), skyRadiance, skyWeight)"),
+        "exterior sky-mix arm must convert sceneFlags.yzw to radiance before mixing \
+         with the sky term"
+    );
+    // ...and both things `skyRadiance` can be must stay on the radiance side
+    // of that conversion. A `/ PI` appearing here would double-convert the
+    // sky, which is the mirror image of the #2472 bug this test exists for.
+    let sky_radiance_assignment = lighting
+        .split_once("vec3 skyRadiance =")
+        .expect("the exterior arm still names its sky term `skyRadiance`")
+        .1
+        .split_once(';')
+        .expect("that assignment is still terminated")
+        .0;
+    assert!(
+        sky_radiance_assignment.contains("texture(skyCube, rayDir).rgb")
+            && sky_radiance_assignment.contains("skyTint.xyz")
+            && !sky_radiance_assignment.contains("PI"),
+        "skyRadiance must be the cubemap sample or skyTint, both already radiance — \
+         got `{sky_radiance_assignment}`"
     );
     assert!(
         lighting.contains("return sceneFlags.yzw * (1.0 / PI) * 0.5;"),

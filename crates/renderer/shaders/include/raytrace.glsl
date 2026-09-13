@@ -50,8 +50,29 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     // cell ambient (interior). Hoisted so a self-intersection hit (below)
     // can reuse it.
     bool _isExt = jitter.w > 0.5;
-    vec3 missCol = _isExt ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
-                          : sceneFlags.yzw;
+    // SKYAL — a ray that escapes the BVH in an exterior cell is escaping
+    // into the actual sky, so sample the baked sky cubemap along the ray
+    // instead of collapsing the whole sky to one colour.
+    //
+    // The pre-SKYAL value was `skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5`:
+    // a single flat blend of the zenith colour with cell ambient, the
+    // same for every direction. Every sky reflection and every sky-lit
+    // indirect bounce in the engine was therefore direction-independent —
+    // a mirror pointed at the sun and one pointed away from it returned
+    // identical radiance, and clouds never appeared in a reflection at
+    // all.
+    //
+    // `exteriorSkyTint.w` gates it: the bake is an optional pass and this
+    // binding is PARTIALLY_BOUND, so when it is absent fall back to the
+    // historical blend rather than sampling an unwritten descriptor.
+    vec3 missCol;
+    if (_isExt) {
+        missCol = exteriorSkyTint.w > 0.5
+            ? texture(skyCube, direction).rgb
+            : (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5);
+    } else {
+        missCol = sceneFlags.yzw;
+    }
     // Every caller supplies a scale-aware origin from offsetRayOriginForDirection.
     // Continue alpha/self skips with the same representable-float offset and a
     // zero tMin; no world-space epsilon is valid across all seven games.

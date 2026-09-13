@@ -121,7 +121,11 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     // Consumed only by triangle.frag's window-portal escape; declared
     // here to keep the five CameraUBO mirrors byte-identical
     // (feedback_shader_struct_sync.md).
-    vec4 exteriorSkyTint; // xyz = live exterior zenith colour, w reserved (0)
+    vec4 exteriorSkyTint; // xyz = live exterior zenith colour, w = sky-cubemap
+                          // ready flag (1.0 once `sky_cube.comp` has baked into
+                          // set 1 / binding 20 this frame; 0.0 if the bake is
+                          // absent, e.g. it failed to initialise under VRAM
+                          // pressure — consumers must fall back, see raytrace.glsl)
 };
 
 // Bone palette SSBO (set 1, binding 3) — skinning matrices for the

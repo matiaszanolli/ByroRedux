@@ -313,7 +313,11 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     // stale exterior sky), which is right for every consumer except the
     // window-portal escape below, where the ray genuinely left the cell.
     // Read ONLY there; widening it anywhere else re-opens #2226.
-    vec4 exteriorSkyTint; // xyz = live exterior zenith colour, w reserved (0)
+    vec4 exteriorSkyTint; // xyz = live exterior zenith colour, w = sky-cubemap
+                          // ready flag (1.0 once `sky_cube.comp` has baked into
+                          // set 1 / binding 20 this frame; 0.0 if the bake is
+                          // absent, e.g. it failed to initialise under VRAM
+                          // pressure — consumers must fall back, see raytrace.glsl)
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -341,6 +345,17 @@ layout(set = 1, binding = 7) uniform sampler2D aoTexture;
 // at surfaces instead of showing hard box silhouettes. Copied from the depth
 // buffer after the main pass (see `VulkanContext::copy_depth_to_history`).
 layout(set = 1, binding = 15) uniform sampler2D depthHistoryTex;
+
+// SKYAL — the baked sky cubemap (`sky_cube.comp`), one per frame in
+// flight. Holds the same analytic sky `composite.frag` paints the
+// background with, evaluated per cube texel, so shading rays that escape
+// the world can resolve a real sky instead of a single flat colour.
+//
+// Guarded by `exteriorSkyTint.w`: the bake is allowed to fail to
+// initialise (VRAM pressure), and this binding is PARTIALLY_BOUND, so
+// every read must be gated on the flag rather than on the binding
+// existing.
+layout(set = 1, binding = 20) uniform samplerCube skyCube;
 
 // Global geometry SSBOs for RT reflection UV lookups.
 //

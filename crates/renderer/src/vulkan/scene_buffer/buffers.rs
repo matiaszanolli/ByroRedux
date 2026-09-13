@@ -432,6 +432,20 @@ pub(crate) fn build_scene_descriptor_bindings(
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT),
     );
+    // Binding 20: SKYAL baked sky cubemap (fragment — `raytrace.glsl`
+    // resolves a shading ray that escapes the BVH against it instead of
+    // against one flat colour). Owned by `SkyCubePipeline`, written in via
+    // `write_sky_cube` — the SSAO / depth-history precedent. The bake is an
+    // optional pass, so PARTIALLY_BOUND (binding >= 5) applies and the
+    // shader gates every read on `exteriorSkyTint.w` rather than on the
+    // binding being present.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(20)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
     bindings
 }
 

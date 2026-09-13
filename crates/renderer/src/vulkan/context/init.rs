@@ -934,6 +934,38 @@ impl VulkanContext {
             }
         };
 
+        // 14a-bis. SKYAL sky-cubemap bake. Optional, like SSAO: on failure
+        // the engine renders without it and `raytrace.glsl` falls back to
+        // the pre-SKYAL flat sky blend, gated on the ready flag in
+        // `GpuCamera::exterior_sky_tint`'s w lane.
+        //
+        // Unlike SSAO there is no placeholder arm: binding 20 is
+        // PARTIALLY_BOUND and the shader reads it ONLY when that flag is
+        // set, so leaving it unwritten on the failure path is safe — which
+        // is the whole reason the flag exists rather than relying on the
+        // binding being present.
+        let sky_cube = match super::super::sky_cube::SkyCubePipeline::new(
+            &device,
+            &gpu_allocator,
+            pipeline_cache,
+            texture_registry.descriptor_set_layout,
+            MAX_FRAMES_IN_FLIGHT,
+        ) {
+            Ok(s) => {
+                for f in 0..MAX_FRAMES_IN_FLIGHT {
+                    scene_buffers.write_sky_cube(&device, f, s.cube_view(f), s.sampler);
+                }
+                Some(s)
+            }
+            Err(e) => {
+                log::warn!(
+                    "sky cubemap pipeline creation failed: {e} — \
+                     sky reflections fall back to the flat blend"
+                );
+                None
+            }
+        };
+
         // 14b. Exposure producer (1x1 R32_SFLOAT). Cleared to the fixed HDR
         // exposure so presentation and the FSR dispatch share one value.
         let exposure =
@@ -1568,6 +1600,7 @@ impl VulkanContext {
             bind_inverse_upload_failure_count: 0,
             clean_skin_frames: 0,
             ssao,
+            sky_cube,
             placeholder_ao,
             placeholder_caustic_sink,
             exposure,

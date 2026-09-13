@@ -441,7 +441,15 @@ impl VulkanContext {
                 sky_params.exterior_zenith_color[0],
                 sky_params.exterior_zenith_color[1],
                 sky_params.exterior_zenith_color[2],
-                0.0,
+                // SKYAL — sky-cubemap ready flag. The bake is an optional
+                // pass and set 1 / binding 20 is PARTIALLY_BOUND, so
+                // `raytrace.glsl` must know whether the descriptor was ever
+                // written. Derived from the pipeline's presence rather than
+                // from a per-frame signal: `record_bake` runs unconditionally
+                // before the geometry pass whenever the pipeline exists, and
+                // its own pre-barrier discards from UNDEFINED, so there is no
+                // first-frame window where it is present but unbaked.
+                if self.sky_cube.is_some() { 1.0 } else { 0.0 },
             ],
             // #1210 — sun direction + intensity, plumbed for water.frag's
             // caustic synthesis (shadow ray to sun → refract on miss).

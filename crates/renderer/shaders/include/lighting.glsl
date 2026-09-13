@@ -444,8 +444,25 @@ bool giLightSample(
 vec3 pathEnvironmentRadiance(vec3 direction) {
     vec3 rayDir = normalize(direction);
     if (jitter.w > 0.5) {
+        // SKYAL — an exterior path that escapes the TLAS escapes into the
+        // actual sky, so sample the baked cubemap along the ray. The
+        // horizon-ambient blend below it is kept as the fallback for when
+        // the bake is absent (see `exteriorSkyTint.w`).
+        //
+        // The blend it replaces was a one-dimensional approximation of
+        // exactly this: `smoothstep` on `rayDir.y` alone, lerping cell
+        // ambient into a single zenith colour. It has no azimuthal
+        // variation at all, so sky-lit indirect was identical toward the
+        // sun and away from it, and no cloud ever cast its colour into a
+        // bounce. The cubemap carries the same radiance the background is
+        // painted with, already in radiance units (like `skyTint`, and
+        // unlike the irradiance arms below it — see the #2472 note above,
+        // whose unit argument applies unchanged).
         float skyWeight = smoothstep(-0.2, 0.8, rayDir.y);
-        return mix(sceneFlags.yzw * (1.0 / PI), skyTint.xyz, skyWeight);
+        vec3 skyRadiance = exteriorSkyTint.w > 0.5
+            ? texture(skyCube, rayDir).rgb
+            : skyTint.xyz;
+        return mix(sceneFlags.yzw * (1.0 / PI), skyRadiance, skyWeight);
     }
     if (dalcFlags.x > 0.5) {
         // DALC stores directional irradiance; an escaping path needs

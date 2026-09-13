@@ -278,7 +278,19 @@ pub(crate) fn build_bindless_descriptor_bindings(
             .binding(binding)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(max_textures)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            // FRAGMENT | COMPUTE. The fragment stage is the historical
+            // consumer (`triangle.frag`, `water.frag`, `composite.frag`);
+            // COMPUTE was added for the SKYAL sky-cubemap bake
+            // (`sky_cube.comp`), which samples the WTHR cloud layers and
+            // the CLMT sun sprite through `include/sky.glsl` exactly as
+            // the background pass does.
+            //
+            // Stage flags only widen where a descriptor is *visible*; they
+            // bind nothing extra and cost nothing. Omitting the stage is
+            // accepted by the shader compiler and rejected at pipeline
+            // creation (VUID-VkComputePipelineCreateInfo-layout-07988) —
+            // validation-layer-only, invisible to `cargo test`.
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE)
     })
 }
 

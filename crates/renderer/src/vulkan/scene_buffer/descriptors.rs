@@ -35,6 +35,35 @@ impl super::buffers::SceneBuffers {
         }
     }
 
+    /// Write the SKYAL baked sky cubemap (binding 20) into the scene
+    /// descriptor set for a given frame.
+    ///
+    /// `SkyCubePipeline` owns one cube per frame in flight (the #267
+    /// cross-frame-hazard reason SSAO's target is per-frame), so this is
+    /// called once per frame slot at init with that slot's own `CUBE`
+    /// view — not re-written per frame.
+    pub fn write_sky_cube(
+        &self,
+        device: &ash::Device,
+        frame_index: usize,
+        cube_view: vk::ImageView,
+        sampler: vk::Sampler,
+    ) {
+        let image_info = [vk::DescriptorImageInfo::default()
+            .sampler(sampler)
+            .image_view(cube_view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let write =
+            write_combined_image_sampler(self.descriptor_sets[frame_index], 20, &image_info);
+        unsafe {
+            // SAFETY: `device` is live; `descriptor_sets[frame_index]` is
+            // device-allocated and live; `write` borrows `image_info`, whose
+            // handles are caller-owned and live for the whole call. No
+            // descriptor copies.
+            device.update_descriptor_sets(&[write], &[]);
+        }
+    }
+
     /// Write the soft-particle depth-history texture (binding 15) into the
     /// scene descriptor set for a given frame. The image holds the prior
     /// frame's opaque depth; the effect-shader branch samples it to feather

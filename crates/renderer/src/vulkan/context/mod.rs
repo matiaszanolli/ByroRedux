@@ -1840,6 +1840,11 @@ pub struct VulkanContext {
     /// upload section for the read side.
     pub clean_skin_frames: u32,
     pub ssao: Option<SsaoPipeline>,
+    /// SKYAL sky-cubemap bake. `None` when it failed to initialise (VRAM
+    /// pressure); `GpuCamera::exterior_sky_tint`'s w lane carries that
+    /// state to the shaders, which fall back rather than sampling an
+    /// unwritten descriptor.
+    pub sky_cube: Option<super::sky_cube::SkyCubePipeline>,
     /// 1×1 white "AO = 1.0" stand-in for scene binding 7, and a 1×1
     /// storage sink for `WaterPipeline` set 2 (#2141 / #2142).
     ///

@@ -145,6 +145,9 @@ impl VulkanContext {
         // stays here: its descriptor pool must outlive the
         // allocator-dependent per-slot teardown earlier in this
         // guard.
+        if let Some(ref mut sky_cube) = self.sky_cube {
+            sky_cube.destroy(&self.device, alloc);
+        }
         if let Some(ref mut ssao) = self.ssao {
             ssao.destroy(&self.device, alloc);
         }
