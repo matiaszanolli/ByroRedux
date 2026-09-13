@@ -883,6 +883,41 @@ mod tests {
         }
     }
 
+    /// The self-shadow march is spaced geometrically from one mean free path
+    /// to the shell top. Evenly spaced 583 m light steps aliased the same way
+    /// the fixed view step did, leaving grain on cloud edges and undersides.
+    #[test]
+    fn the_light_march_is_geometric_from_one_mean_free_path() {
+        let clouds = include_str!("../../shaders/include/clouds.glsl");
+        for (term, why) in [
+            (
+                "float light_first = mean_free_path;",
+                "first light sample one mean free path out",
+            ),
+            (
+                "cloud_shell_distance(sun_dir, max(position.y, 0.0), CLOUD_LAYER_TOP)",
+                "last light sample at the shell top along the sun direction",
+            ),
+            (
+                "light_distance *= light_ratio;",
+                "geometric spacing (Hillaire 2016 §5.5.2)",
+            ),
+            (
+                "* (light_distance - light_previous);",
+                "each sample weighted by its own segment",
+            ),
+        ] {
+            assert!(
+                clouds.contains(term),
+                "the light march has lost its {why} (`{term}`)"
+            );
+        }
+        assert!(
+            !clouds.contains("float light_step ="),
+            "the evenly spaced light march must not return — it aliased",
+        );
+    }
+
     /// The adaptive march's load-bearing pieces. A fixed step aliased at the
     /// sourced extinction (optical depth ~9 per step, visible as terraces
     /// or, jittered, as grain); each of these is what prevents that, and

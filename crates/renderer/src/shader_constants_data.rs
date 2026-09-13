@@ -865,9 +865,10 @@ pub const CLOUD_CHEAP_SAMPLES_HORIZON: u32 = 128;
 /// march exits (T < 0.01, depth ~4.6) after ~5 of them. That totals ~392;
 /// 512 bounds it with margin. It is a loop bound, not an appearance knob.
 pub const CLOUD_MAX_MARCH_ITERATIONS: u32 = 512;
-/// Light-march step budget toward the sun. Short on purpose — the
-/// contribution saturates quickly under Beer-Lambert, so more steps buy
-/// almost nothing for a multiplicative cost against every view step.
+/// Self-shadow samples toward the sun per full view sample: six, per
+/// Schneider & Vos 2015 slide 89 ("6 light samples per march"). They are
+/// spaced geometrically from one mean free path out to the shell's top
+/// (see `clouds.glsl`), not evenly, because even spacing aliased.
 pub const CLOUD_LIGHT_STEPS: u32 = 6;
 /// Two-lobe cloud phase function (`clouds.glsl` `cloud_phase`). Values from
 /// Hillaire 2016, "Physically Based Sky, Atmosphere and Cloud Rendering in

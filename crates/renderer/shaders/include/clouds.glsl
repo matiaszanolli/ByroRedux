@@ -320,18 +320,43 @@ vec4 cloud_march(
             continue;
         }
 
-        // Short march toward the sun for self-shadowing.
+        // Self-shadowing march toward the sun. Six fixed 583 m steps aliased
+        // exactly the way the view march did: whether a near-surface point
+        // was lit flipped on whether one coarse sample, the first 290 m out,
+        // happened to land in cloud. Samples are now spaced geometrically
+        // (Hillaire 2016 §5.5.2: a base distance multiplied by a constant
+        // factor per sample), with six of them (Schneider & Vos 2015,
+        // slide 89). Neither source states the distances, so both ends are
+        // derived:
+        //  * first sample one mean free path out, so the layer that decides
+        //    lit-versus-shadowed resolves at optical-depth scale;
+        //  * last sample where the sun ray leaves the top of the shell, which
+        //    is also Schneider's far sample "to capture shadows cast by
+        //    distant clouds" and stays finite for a low sun.
+        // Schneider's cone offsets are omitted: their radius is unstated, and
+        // random offsets would add noise rather than remove it.
+        float light_first = mean_free_path;
+        float light_far = max(
+            cloud_shell_distance(sun_dir, max(position.y, 0.0), CLOUD_LAYER_TOP),
+            light_first
+        );
+        float light_ratio = pow(light_far / light_first, 1.0 / float(CLOUD_LIGHT_STEPS - 1));
         float light_optical_depth = 0.0;
-        float light_step = (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM) / float(CLOUD_LIGHT_STEPS);
+        float light_previous = 0.0;
+        float light_distance = light_first;
         for (int j = 0; j < CLOUD_LIGHT_STEPS; ++j) {
-            vec3 light_pos = position + sun_dir * (float(j) + 0.5) * light_step;
+            vec3 light_pos = position + sun_dir * light_distance;
             float lh = clamp(
                 (light_pos.y - CLOUD_LAYER_BOTTOM) / (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM),
                 0.0,
                 1.0
             );
+            // Each sample stands for the segment back to the previous one.
             light_optical_depth +=
-                cloud_density(light_pos, lh, coverage, wind, base_noise, detail_noise) * light_step;
+                cloud_density(light_pos, lh, coverage, wind, base_noise, detail_noise)
+                * (light_distance - light_previous);
+            light_previous = light_distance;
+            light_distance *= light_ratio;
         }
 
         // `light_optical_depth` is still the density integral toward the sun;
