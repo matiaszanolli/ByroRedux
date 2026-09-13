@@ -9,8 +9,8 @@
 //   * cost — one evaluation per texel instead of per ray;
 //   * prefiltering — the mip chain is what gives glossy reflections a
 //     roughness-selected sky, which an analytic sky cannot provide;
-//   * it is the only thing that makes a volumetric cloud march affordable
-//     at all. Per-ray or per-pixel it is not.
+//   * ray-traced rays sample it instead of marching the cloud layer
+//     themselves — per ray that march would be paid on every bounce.
 //
 // There is also a hard plumbing reason: `triangle.frag` binds the
 // bindless arrays at set 0 and `composite.frag` at set 1, so
@@ -27,7 +27,6 @@
 
 #include "include/shader_constants.glsl"
 #include "include/sky.glsl"
-#include "include/clouds.glsl"
 
 layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y, local_size_z = 1) in;
 
@@ -42,8 +41,8 @@ layout(set = 0, binding = 1) uniform SkyCubeParams {
     SkyDome dome;
 } params;
 
-// Cloud density volumes — the two `volumetrics/noise.rs` already generates
-// (Perlin-Worley base, Worley-dominated detail). Shared, not duplicated.
+// Cloud density volumes, owned by `CloudNoiseVolumes` (`cloud_noise.rs`) and
+// shared with the composite background, which marches the same field.
 layout(set = 0, binding = 2) uniform sampler3D cloudBaseNoise;
 layout(set = 0, binding = 3) uniform sampler3D cloudDetailNoise;
 
@@ -82,13 +81,10 @@ void main() {
     vec2 uv = (vec2(coord.xy) + 0.5) / vec2(size.xy) * 2.0 - 1.0;
     vec3 dir = normalize(sky_cube_face_direction(uint(coord.z), uv));
 
-    vec3 sky = sky_radiance(params.dome, dir);
-
-    // Volumetric cloud layer over the analytic sky. Marched here, once per
-    // cube texel, because it is unaffordable per-ray or per-pixel — which
-    // is the reason this bake exists at all.
-    vec4 clouds = cloud_march(params.dome, dir, sky, cloudBaseNoise, cloudDetailNoise);
-    sky = sky * (1.0 - clouds.a) + clouds.rgb;
+    // The volumetric cloud body lives inside `sky_radiance`, so the bake and
+    // the composite background draw the same clouds by construction. Jitter
+    // is pinned to 0.5: see `cloud_march` for why the cube must not vary it.
+    vec3 sky = sky_radiance(params.dome, dir, cloudBaseNoise, cloudDetailNoise, 0.5);
 
     // Alpha is unused by every consumer; written as 1.0 rather than left
     // undefined so a stray sample of it cannot read garbage.

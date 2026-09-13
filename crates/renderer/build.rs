@@ -773,6 +773,30 @@ fn main() {
     writeln!(out, "#define CLOUD_PLANET_RADIUS {CLOUD_PLANET_RADIUS:?}").unwrap();
     writeln!(out, "#define CLOUD_VIEW_STEPS {CLOUD_VIEW_STEPS}").unwrap();
     writeln!(out, "#define CLOUD_LIGHT_STEPS {CLOUD_LIGHT_STEPS}").unwrap();
+    writeln!(out, "#define CLOUD_PHASE_G0 {CLOUD_PHASE_G0:?}").unwrap();
+    writeln!(out, "#define CLOUD_PHASE_G1 {CLOUD_PHASE_G1:?}").unwrap();
+    writeln!(out, "#define CLOUD_PHASE_BLEND {CLOUD_PHASE_BLEND:?}").unwrap();
+    writeln!(out, "#define CLOUD_MS_OCTAVES {CLOUD_MS_OCTAVES}").unwrap();
+    writeln!(
+        out,
+        "#define CLOUD_MS_SCATTERING_FALLOFF {CLOUD_MS_SCATTERING_FALLOFF:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define CLOUD_MS_EXTINCTION_FALLOFF {CLOUD_MS_EXTINCTION_FALLOFF:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define CLOUD_MS_ECCENTRICITY_FALLOFF {CLOUD_MS_ECCENTRICITY_FALLOFF:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define CLOUD_EXTINCTION_PER_METER {CLOUD_EXTINCTION_PER_METER:?}"
+    )
+    .unwrap();
     writeln!(out, "#define VOLUME_FAR {VOLUME_FAR:?}").unwrap();
     writeln!(out).unwrap();
 

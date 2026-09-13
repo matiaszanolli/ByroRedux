@@ -187,6 +187,10 @@ impl VulkanContext {
         if let Some(ref mut composite) = self.composite {
             composite.destroy(&self.device, alloc);
         }
+        // SKYAL cloud density volumes — after BOTH pipelines that bind their
+        // views: `sky_cube` (destroyed above) and `composite` (just here).
+        // Allocator-backed, so before the `Arc::try_unwrap` below too.
+        self.cloud_noise.destroy(&self.device, alloc);
         if let Some(ref mut caustic) = self.caustic {
             caustic.destroy(&self.device, alloc);
         }

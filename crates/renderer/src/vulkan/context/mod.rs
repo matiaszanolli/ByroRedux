@@ -873,6 +873,14 @@ pub struct SkyParams {
     pub sun_size: f32,
     /// Sun brightness multiplier.
     pub sun_intensity: f32,
+    /// SKYAL — the directional light surfaces actually receive, in the
+    /// engine's surface-lighting units: `compute_directional_upload`'s output
+    /// (the WTHR sunlight colour scaled by the normalised TOD ramp). The cloud
+    /// march is lit by this rather than by `sun_color * sun_intensity` (the
+    /// sun *disc* colour and its raw 0-4 scale), so clouds and terrain share
+    /// one sun, and a dense cloud can be calibrated against the engine's own
+    /// white diffuse surface. Zero when there is no exterior sun.
+    pub sun_illuminance: [f32; 3],
     /// Angular half-radius of the sun as a tangent-plane disk, in
     /// radians. Drives PCSS-lite directional-shadow disk jitter in
     /// `triangle.frag`. Default 0.020 (~1.15°) gives ~10 cm penumbra
@@ -994,6 +1002,8 @@ impl Default for SkyParams {
             sun_color: [1.0, 0.95, 0.8],
             sun_size: 0.9994, // cos(~2°) — visible disc, larger than real sun
             sun_intensity: 5.0,
+            // No exterior sun: the cloud march receives ambient only.
+            sun_illuminance: [0.0; 3],
             // Tangent-plane half-radius (rad) for PCSS-lite shadow
             // disk jitter. Matches the pre-#1023 hardcoded shader
             // constant so behaviour is unchanged unless a caller
@@ -1845,6 +1855,12 @@ pub struct VulkanContext {
     /// state to the shaders, which fall back rather than sampling an
     /// unwritten descriptor.
     pub sky_cube: Option<super::sky_cube::SkyCubePipeline>,
+    /// SKYAL cloud density volumes, shared by the sky-cube bake and the
+    /// composite background. Not `Option`: composite is mandatory and its
+    /// descriptor set is not PARTIALLY_BOUND, and the volumes are 288 KiB,
+    /// so there is no degraded mode worth having. Resolution-independent,
+    /// so a resize never rebuilds it.
+    pub cloud_noise: super::cloud_noise::CloudNoiseVolumes,
     /// 1×1 white "AO = 1.0" stand-in for scene binding 7, and a 1×1
     /// storage sink for `WaterPipeline` set 2 (#2141 / #2142).
     ///

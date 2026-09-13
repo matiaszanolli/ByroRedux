@@ -180,11 +180,14 @@ mod tests {
                 "clouds.glsl reads `{bad}`, which is not how the host packs wind",
             );
         }
-        assert!(
-            SKY_GLSL.contains("vec2 wind = dome.weather_wind.xz;")
-                && SKY_GLSL.contains("float wind_speed = dome.weather_wind.y;"),
-            "the authored-plane path's wind read is the reference the march must agree with",
-        );
+        // The 2D procedural body that was the second wind reader is gone. If
+        // a new reader appears in sky.glsl it must read the same lanes.
+        for bad in ["weather_wind.xy", "weather_wind.z "] {
+            assert!(
+                !SKY_GLSL.contains(bad),
+                "sky.glsl reads `{bad}`, which is not how the host packs wind",
+            );
+        }
     }
 
     /// `sky.glsl` owns the set-1 bindless array (it is the only thing in

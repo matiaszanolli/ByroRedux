@@ -839,8 +839,16 @@ mod tests {
     /// one all-of compound test in place of four `||`-chained clauses —
     /// removing two short-circuit branches and bringing the count to 32.
     /// The authored weather sky/cloud, moon, aurora, precipitation, and
-    /// lightning branches added after that baseline bring the current module
-    /// to 40. Pins the
+    /// lightning branches added after that baseline bring the module to 40.
+    /// SKYAL then replaced the branch-free 2D procedural cloud body inside
+    /// `sky_radiance` with the volumetric cloud march (`include/clouds.glsl`):
+    /// its coverage/horizon and shell-miss early-outs, the view and light
+    /// loops, the transmittance break, the empty-sample skip and the alpha-cap
+    /// ternary bring the module to 49 (confirmed via `spirv-dis`, matching
+    /// this test's own count). Hillaire's multiple-scattering octaves then
+    /// added the per-sample octave loop and the one-time `sum(a^n)` loop for
+    /// the diffuse-surface calibration, bringing the current module to 51
+    /// (again confirmed via `spirv-dis`). Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -849,8 +857,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 40,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 40 — \
+            count, 51,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 51 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

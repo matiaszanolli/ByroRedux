@@ -1,9 +1,11 @@
 // SKYAL — volumetric cloud layer.
 //
-// Raymarched through a spherical shell above the viewer, replacing the
-// UV-projected cloud planes' inability to have depth, self-shadowing or
-// parallax. Marched into the sky cubemap rather than per-pixel or per-ray:
-// that is the whole reason the cubemap exists (docs/engine/skyal.md §2.2).
+// Raymarched through a spherical shell above the viewer. It is the cloud
+// body `sky_radiance` paints, replacing a 2D FBM approximation that could
+// fake neither depth, self-shadowing nor parallax. It runs in both sky
+// consumers: once per cube texel in the bake, and once per clear-depth pixel
+// in the composite background. Ray-traced rays never march it; they sample
+// the baked cube (docs/engine/skyal.md §2.2).
 //
 // Method follows Schneider & Vos, "The Real-Time Volumetric Cloudscapes of
 // Horizon: Zero Dawn", SIGGRAPH 2015 Advances in Real-Time Rendering:
@@ -13,9 +15,29 @@
 //     coverage signal;
 //   * high-frequency Worley erosion applied at the cloud's edges only;
 //   * a height-gradient that shapes density vertically;
-//   * Beer-Lambert transmittance with the powder (inverse-Beer) term for
-//     the dark-edge / silver-lining behaviour Beer alone cannot produce;
-//   * Henyey-Greenstein phase for forward scattering toward the sun.
+//   * Beer-Lambert transmittance.
+//
+// Lighting follows Hillaire 2016, "Physically Based Sky, Atmosphere and Cloud
+// Rendering in Frostbite" (SIGGRAPH 2016 PBS course notes §5.5-5.8):
+//   * energy-conserving analytic slab integration (§5.6.3);
+//   * a two-lobe Henyey-Greenstein phase (§5.7);
+//   * ambient from the sky over both hemispheres (§5.5.1);
+//   * multiple scattering as summed single-scattering octaves (§5.8), after
+//     Wrenninge et al. 2013;
+//   * albedo ~= 1 ("cloud albedo is very close to 1", §5.8).
+// Schneider's powder term is not used: its view-dependent gradient is left
+// unspecified in the source, and mixing it into this model is part of how an
+// earlier version rendered clouds darker than the sky.
+//
+// Units. The sun term is the directional light surfaces receive
+// (`SkyDome::sun_illuminance`), in the engine's surface-lighting units, where
+// a white diffuse surface facing the sun has radiance E (the diffuse BRDF's
+// 1/PI is compensated in `lighting.glsl`). Hillaire notes that a very dense
+// cloud "should converge to what an opaque diffuse surface would look like".
+// A dense albedo-1 sample's source is K * E * p * sum(a^n); any normalised
+// phase averages to 1/(4 PI) over the sphere, so matching the white surface
+// on average fixes K = 4 PI / sum(a^n). The phase keeps its angular shape, so
+// the forward silver lining exceeds E and the sun-away side falls below it.
 //
 // The noise volumes are NOT generated here. They are the two the froxel
 // volumetrics pipeline already builds (`volumetrics/noise.rs`), which are
@@ -40,6 +62,49 @@ float cloud_henyey_greenstein(float cos_angle, float g) {
     float g2 = g * g;
     float denom = 1.0 + g2 - 2.0 * g * cos_angle;
     return (1.0 - g2) / (4.0 * 3.14159265 * pow(max(denom, 1.0e-4), 1.5));
+}
+
+// Two-lobe cloud phase function, Hillaire 2016 ("Physically Based Sky,
+// Atmosphere and Cloud Rendering in Frostbite", SIGGRAPH 2016 PBS course,
+// slides 34-38): a forward and a backward Henyey-Greenstein lobe mixed by a
+// blend weight. Each lobe is normalised, so the convex mix is too — which is
+// the energy-conservation property the notes ask of the combination.
+//
+// `eccentricity_scale` multiplies both lobes' g. It is 1 for single
+// scattering; the multiple-scattering octaves pass a shrinking scale so
+// later bounces scatter more uniformly (Wrenninge's approximation, which
+// Hillaire uses for clouds).
+float cloud_phase(float cos_angle, float eccentricity_scale) {
+    return mix(
+        cloud_henyey_greenstein(cos_angle, CLOUD_PHASE_G0 * eccentricity_scale),
+        cloud_henyey_greenstein(cos_angle, CLOUD_PHASE_G1 * eccentricity_scale),
+        CLOUD_PHASE_BLEND
+    );
+}
+
+// Mean radiance of the analytic sky dome over the whole sphere, without the
+// sun disk — the cloud ambient term. Hillaire 2016 (notes, slide 60) computes
+// cloud ambient as the sky luminance integrated over uniform sphere
+// directions with the sun disk excluded, scattered with a uniform 1/4PI
+// phase, so the in-scattered ambient radiance is exactly that mean.
+//
+// Frostbite estimates the integral from a 64x64 buffer. This engine's sky
+// gradient is closed-form, so the integral is taken exactly instead. Under
+// uniform sphere measure `dir.y` is uniform on [-1, 1] (Archimedes), so each
+// hemisphere contributes half:
+//   upper: sky = mix(horizon, zenith, sqrt(y)),  y in [0, 1]
+//          mean = horizon + (zenith - horizon) * integral(sqrt(y)) = + 2/3
+//   lower: sky = mix(horizon, lower, min(3u, 1)), u = -y in [0, 1]
+//          mean = horizon + (lower - horizon) * integral(min(3u, 1)) = + 5/6
+// Must track `sky_radiance`'s gradient: if that shape changes, these two
+// fractions change with it.
+vec3 cloud_ambient_radiance(SkyDome dome) {
+    vec3 zenith = dome.sky_zenith.xyz;
+    vec3 horizon = dome.sky_horizon.xyz;
+    vec3 lower = dome.sky_lower.xyz;
+    vec3 upper_mean = horizon + (zenith - horizon) * (2.0 / 3.0);
+    vec3 lower_mean = horizon + (lower - horizon) * (5.0 / 6.0);
+    return 0.5 * (upper_mean + lower_mean);
 }
 
 // Remap `value` from [`from_min`, `from_max`] onto [`to_min`, `to_max`].
@@ -110,18 +175,31 @@ float cloud_shell_distance(vec3 dir, float height, float shell) {
 // March the cloud layer along `dir` and return premultiplied
 // (scattered radiance, coverage alpha).
 //
-// `coverage` is the canonical procedural-cloud coverage EXAL already
-// derives per weather (`SkyDome::weather_aurora.z`) — the same signal the
-// authored cloud-plane path uses. Nothing here invents a WTHR mapping.
+// `coverage` is `SkyDome::weather_aurora.z`, which EXAL derives from the WTHR
+// classification flags in `env_translate::fog_coverage_from_weather`. This
+// file adds no mapping of its own — but that one is uncited (a fixed
+// 0.86 / 0.80 / 0.70 / 0.40 / 0.55 per flag), see docs/engine/skyal.md.
+//
+// `jitter` in [0, 1) offsets every view sample within its step. The bake
+// passes 0.5 (step-centred, deterministic): the cube is re-baked each frame
+// and reflections have no temporal filter of their own, so a varying offset
+// would flicker there. The composite background passes a per-pixel,
+// per-frame blue-noise rank, which TAA / FSR integrate, so 48 steps do not
+// band.
 vec4 cloud_march(
     SkyDome dome,
     vec3 dir,
-    vec3 sky_behind,
     sampler3D base_noise,
-    sampler3D detail_noise
+    sampler3D detail_noise,
+    float jitter
 ) {
     float coverage = clamp(dome.weather_aurora.z, 0.0, 1.0);
-    if (coverage <= 0.001 || dir.y <= 0.0) {
+    // The horizon fade the 2D body this march replaced used, carried over
+    // verbatim rather than re-tuned. Near the horizon the shell is ~100 km
+    // away and one pixel spans kilometres of it, so the march aliases into
+    // noise; the fade is what kept that off-screen before, and still does.
+    float horizon_fade = smoothstep(0.015, 0.16, dir.y);
+    if (coverage <= 0.001 || horizon_fade <= 0.0) {
         return vec4(0.0);
     }
 
@@ -134,20 +212,25 @@ vec4 cloud_march(
     }
 
     vec3 sun_dir = dome.sun_dir.xyz;
-    float sun_intensity = dome.sun_dir.w;
-    vec3 sun_color = dome.sun_color.xyz;
+    vec3 sun_illuminance = dome.sun_illuminance.xyz;
     float cos_angle = dot(dir, sun_dir);
-    // Dual-lobe: a strong forward lobe for the silver lining plus a weak
-    // backward one so clouds away from the sun are not black.
-    float phase = max(
-        cloud_henyey_greenstein(cos_angle, 0.8),
-        cloud_henyey_greenstein(cos_angle, -0.15) * 0.7
-    );
+
+    // Diffuse-surface calibration K = 4 PI / sum_{n<N} a^n — see the header.
+    float octave_scattering_sum = 0.0;
+    {
+        float scale = 1.0;
+        for (int n = 0; n < int(CLOUD_MS_OCTAVES); ++n) {
+            octave_scattering_sum += scale;
+            scale *= CLOUD_MS_SCATTERING_FALLOFF;
+        }
+    }
+    float diffuse_calibration = 12.566370614359172 / octave_scattering_sum;
+    // Constant along the ray, so evaluated once rather than per step.
+    vec3 ambient = cloud_ambient_radiance(dome);
 
     float time = dome.weather_params.w;
     // The host packs `[dir.x, speed, dir.z, 0]` (`build_composite_params`),
-    // so direction is `.xz` and speed is `.y` — the same read
-    // `weather_procedural_cloud` makes. An earlier `.xy * .z` here folded
+    // so direction is `.xz` and speed is `.y`. An earlier `.xy * .z` here folded
     // the speed into the direction and used `dir.z` as the speed, so the
     // layer drifted off-axis and stood still under a pure X wind.
     vec2 wind = dome.weather_wind.xz * dome.weather_wind.y * time * 0.00002;
@@ -160,7 +243,7 @@ vec4 cloud_march(
         if (transmittance < 0.01) {
             break;
         }
-        float t = start + (float(i) + 0.5) * step_size;
+        float t = start + (float(i) + jitter) * step_size;
         vec3 position = dir * t;
         float height_fraction = clamp(
             (position.y - CLOUD_LAYER_BOTTOM) / (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM),
@@ -187,19 +270,31 @@ vec4 cloud_march(
                 cloud_density(light_pos, lh, coverage, wind, base_noise, detail_noise) * light_step;
         }
 
-        // Beer-Lambert, plus the powder term. Beer alone makes a cloud's
-        // lit edge as dark as its core; powder (1 - exp(-2*d)) restores
-        // the darkening-toward-the-edge that real clouds show when lit
-        // from behind the viewer.
-        float beer = exp(-light_optical_depth * 0.0012);
-        float powder = 1.0 - exp(-density * step_size * 0.0024);
-        vec3 sun_radiance = sun_color * sun_intensity * beer * powder * phase;
+        // `light_optical_depth` is still the density integral toward the sun;
+        // scale it to extinction once, here.
+        light_optical_depth *= CLOUD_EXTINCTION_PER_METER;
 
-        // Ambient from the sky the cloud sits in front of, so an overcast
-        // deck does not go black where the sun cannot reach it.
-        vec3 ambient = sky_behind * mix(0.35, 0.85, height_fraction);
+        // Multiple scattering: N single-scattering octaves, octave n using
+        // scattering * a^n, extinction * b^n and phase eccentricity * c^n
+        // (Hillaire 2016 Eq. 19-20). Later octaves reach further into the
+        // shadowed interior and scatter more uniformly, which is what lets
+        // light "punch through the medium in order to reveal inner details
+        // on the shadowed sides" (§5.8).
+        float octave_sum = 0.0;
+        float scattering_scale = 1.0;
+        float extinction_scale = 1.0;
+        float eccentricity_scale = 1.0;
+        for (int n = 0; n < int(CLOUD_MS_OCTAVES); ++n) {
+            octave_sum += scattering_scale
+                * exp(-light_optical_depth * extinction_scale)
+                * cloud_phase(cos_angle, eccentricity_scale);
+            scattering_scale *= CLOUD_MS_SCATTERING_FALLOFF;
+            extinction_scale *= CLOUD_MS_EXTINCTION_FALLOFF;
+            eccentricity_scale *= CLOUD_MS_ECCENTRICITY_FALLOFF;
+        }
+        vec3 sun_radiance = sun_illuminance * diffuse_calibration * octave_sum;
 
-        float sample_extinction = density * step_size * 0.0016;
+        float sample_extinction = density * CLOUD_EXTINCTION_PER_METER * step_size;
         float sample_transmittance = exp(-sample_extinction);
         // Energy-conserving integration of the slab (Hillaire 2015): the
         // analytic integral of in-scatter over the slab, not `S * dt`,
@@ -209,7 +304,25 @@ vec4 cloud_march(
         transmittance *= sample_transmittance;
     }
 
-    return vec4(scattered, 1.0 - transmittance);
+    // WTHR stays the artistic colour authority, exactly as it was for the 2D
+    // body this replaced: bias the lit colour toward the mean authored layer
+    // tint (floored so a subdued tint cannot collapse the cloud into the
+    // sky), and scale opacity by the authored layer alpha. Same factors, so
+    // per-weather cloud colour does not regress with the swap.
+    vec4 tint = (dome.cloud_tint_0 + dome.cloud_tint_1
+        + dome.cloud_tint_2 + dome.cloud_tint_3) * 0.25;
+    float authored_alpha = clamp(tint.a, 0.0, 1.0);
+    vec3 tinted = scattered * mix(vec3(1.0), max(tint.rgb, vec3(0.08)), 0.45);
+
+    // Premultiplied throughout, so the colour must be scaled by exactly
+    // what the alpha is scaled by — including the 0.96 cap the 2D body used
+    // to keep a trace of sky visible through the densest deck.
+    float raw_alpha = (1.0 - transmittance) * horizon_fade * mix(0.78, 1.0, authored_alpha);
+    float alpha = min(raw_alpha, 0.96);
+    float colour_scale = raw_alpha > 1.0e-5
+        ? alpha / (1.0 - transmittance)
+        : 0.0;
+    return vec4(tinted * colour_scale, alpha);
 }
 
 #endif // CLOUDS_GLSL

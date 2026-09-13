@@ -79,6 +79,9 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // (causticTex), so summing both would double-count the glass
     // contribution instead of contributing zero. yzw reserved. #2508.
     vec4 caustic_flags;
+    // SKYAL — xyz = the directional light surfaces receive
+    // (`SkyParams::sun_illuminance`), w unused. Lights the volumetric clouds.
+    vec4 sun_illuminance;
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer
 layout(set = 0, binding = 5) uniform usampler2DArray causticTex; // RGB in three R32_UINT layers (#321)
@@ -103,6 +106,11 @@ layout(set = 0, binding = 7) uniform sampler2D bloomTex;
 // the same composited direct-light caustic term — they share the
 // CAUSTIC_FIXED_SCALE fixed-point convention.
 layout(set = 0, binding = 8) uniform usampler2D waterCausticTex;
+// SKYAL — cloud density volumes for the volumetric cloud body `sky_radiance`
+// marches per clear-depth pixel. Owned by `CloudNoiseVolumes` and shared with
+// the sky-cube bake, so the background and reflections march one field.
+layout(set = 0, binding = 9) uniform sampler3D cloudBaseNoise;
+layout(set = 0, binding = 10) uniform sampler3D cloudDetailNoise;
 
 // CAUSTIC_FIXED_SCALE from shader_constants.glsl — generated from
 // src/shader_constants_data.rs. Build-time drift catch: edit
@@ -270,12 +278,18 @@ float heightFogOpticalDepth(
     return max((sigmaAtEnd - sigmaAtOrigin) / -slope, 0.0);
 }
 
-float preResolveDither() {
+// Per-pixel, per-frame blue-noise rank in (0, 1). Shared by the pre-resolve
+// dither and the cloud march's step offset, so both decorrelate across
+// pixels and frames the same way TAA / FSR expect to integrate.
+float blueNoiseRank() {
     uint frame = uint(params.depth_params.w);
     ivec2 pixel = ivec2(gl_FragCoord.xy) + ivec2(frame * 5u, frame * 3u);
     int index = (pixel.y & 7) * 8 + (pixel.x & 7);
-    float rank = (float(BLUE_NOISE_RANKS[index]) + 0.5) / 64.0;
-    return (rank - 0.5) * params.volume_params.w;
+    return (float(BLUE_NOISE_RANKS[index]) + 0.5) / 64.0;
+}
+
+float preResolveDither() {
+    return (blueNoiseRank() - 0.5) * params.volume_params.w;
 }
 
 // Reconstruct world-space view direction from screen UV and inverse VP.
@@ -389,6 +403,7 @@ SkyDome build_sky_dome() {
     dome.weather_sky = params.weather_sky;
     dome.weather_aurora = params.weather_aurora;
     dome.depth_params = params.depth_params;
+    dome.sun_illuminance = params.sun_illuminance;
     return dome;
 }
 
@@ -496,7 +511,7 @@ void main() {
         float coverage = clamp(direct4.a, 0.0, 1.0);
         vec3 skyIndirect = texture(indirectTex, fragUV).rgb;
         vec3 skyAlbedo = texture(albedoTex, fragUV).rgb;
-        combined = sky_radiance(build_sky_dome(), dir) * (1.0 - coverage)
+        combined = sky_radiance(build_sky_dome(), dir, cloudBaseNoise, cloudDetailNoise, blueNoiseRank()) * (1.0 - coverage)
             + direct
             + skyIndirect * skyAlbedo;
     } else {

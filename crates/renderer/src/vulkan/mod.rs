@@ -3,6 +3,7 @@ pub mod allocator;
 pub mod bloom;
 pub mod buffer;
 pub mod caustic;
+pub mod cloud_noise;
 pub mod composite;
 pub mod compute;
 pub mod context;

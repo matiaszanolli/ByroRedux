@@ -931,7 +931,7 @@ pub(super) fn build_composite_params(
                 0.0
             },
             // Broad procedural-cloud occupancy. Reuses the first reserved
-            // lane so CompositeParams keeps its established 480-byte ABI.
+            // lane rather than growing CompositeParams for a scalar.
             sky_params.weather.cloud_coverage,
             0.0,
         ],
@@ -965,6 +965,13 @@ pub(super) fn build_composite_params(
         inv_view_proj: inv_vp_arr,
         underwater,
         caustic_flags: [if water_caustic_active { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+        // SKYAL — the directional light surfaces receive; lights the clouds.
+        sun_illuminance: [
+            sky_params.sun_illuminance[0],
+            sky_params.sun_illuminance[1],
+            sky_params.sun_illuminance[2],
+            0.0,
+        ],
     }
 }
 

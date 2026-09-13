@@ -18,14 +18,12 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::cloud_noise::CloudNoiseViews;
 use super::descriptors::{
     write_combined_image_sampler, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
-use super::volumetrics::noise::{
-    cached_base_density_noise, cached_detail_density_noise, BASE_NOISE_SIZE, DETAIL_NOISE_SIZE,
-};
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
@@ -87,6 +85,7 @@ pub struct SkyCubeParams {
     pub weather_sky: [f32; 4],
     pub weather_aurora: [f32; 4],
     pub depth_params: [f32; 4],
+    pub sun_illuminance: [f32; 4],
 }
 
 // SAFETY: every field is `[f32; 4]` — homogeneous scalar arrays tile the
@@ -122,6 +121,7 @@ impl SkyCubeParams {
             weather_sky: p.weather_sky,
             weather_aurora: p.weather_aurora,
             depth_params: p.depth_params,
+            sun_illuminance: p.sun_illuminance,
         }
     }
 }
@@ -151,18 +151,6 @@ pub struct SkyCubePipeline {
     /// `CUBE` views over `cubes[i]`, for consumers to sample. A second
     /// view over the same image rather than a second image.
     cube_views: Vec<vk::ImageView>,
-    /// Cloud density volumes for the raymarch — the SAME two
-    /// `volumetrics/noise.rs` generates (Perlin-Worley base, Worley
-    /// detail), which is the pair Schneider & Vos specify. Owned here
-    /// rather than borrowed from `VolumetricsPipeline` because that
-    /// pipeline is optional AND rebuilt on every resize, so its views
-    /// would dangle in this descriptor set.
-    cloud_base_noise: Option<GpuImage>,
-    cloud_detail_noise: Option<GpuImage>,
-    /// Sampler for the noise volumes. `REPEAT`, because both volumes are
-    /// generated tileable and the march relies on that to advect a
-    /// world-space field through them without a seam.
-    noise_sampler: vk::Sampler,
     /// Sampler for the cube views. `CLAMP_TO_EDGE` on all three axes:
     /// cube sampling is direction-based, but the addressing mode still
     /// governs the edge taps a `LINEAR` filter makes across a face
@@ -177,6 +165,7 @@ impl SkyCubePipeline {
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
         bindless_layout: vk::DescriptorSetLayout,
+        noise: CloudNoiseViews,
         max_frames: usize,
     ) -> Result<Self> {
         let result = Self::new_inner(
@@ -184,6 +173,7 @@ impl SkyCubePipeline {
             allocator,
             pipeline_cache,
             bindless_layout,
+            noise,
             max_frames,
         );
         if let Err(ref e) = result {
@@ -197,6 +187,7 @@ impl SkyCubePipeline {
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
         bindless_layout: vk::DescriptorSetLayout,
+        noise: CloudNoiseViews,
         max_frames: usize,
     ) -> Result<Self> {
         // Partially-valid Self so `destroy()` is the single cleanup path;
@@ -210,9 +201,6 @@ impl SkyCubePipeline {
             param_buffers: Vec::new(),
             cubes: Vec::new(),
             cube_views: Vec::new(),
-            cloud_base_noise: None,
-            cloud_detail_noise: None,
-            noise_sampler: vk::Sampler::null(),
             sampler: vk::Sampler::null(),
         };
 
@@ -248,6 +236,10 @@ impl SkyCubePipeline {
             // even if this call fails.
             partial.cubes.push(cube);
             let image = partial.cubes[partial.cubes.len() - 1].image;
+            // SAFETY: `image` is the live cube-compatible image this device
+            // just created, with `CUBE_FACES` array layers and one mip level —
+            // exactly the range the create info names; the view is owned by
+            // `partial` from the push below onward.
             let view = try_or_cleanup!(unsafe {
                 device
                     .create_image_view(
@@ -284,44 +276,6 @@ impl SkyCubePipeline {
                     None,
                 )
                 .context("sky cubemap sampler")
-        });
-
-        for (slot, size) in [(0usize, BASE_NOISE_SIZE), (1usize, DETAIL_NOISE_SIZE)] {
-            let image = try_or_cleanup!(GpuImage::create(
-                device,
-                allocator,
-                &GpuImageDesc::color_3d(
-                    "sky cloud noise",
-                    vk::Extent3D {
-                        width: size,
-                        height: size,
-                        depth: size,
-                    },
-                    vk::Format::R8_UNORM,
-                    vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                ),
-            ));
-            if slot == 0 {
-                partial.cloud_base_noise = Some(image);
-            } else {
-                partial.cloud_detail_noise = Some(image);
-            }
-        }
-
-        // SAFETY: fully-populated create info; the handle is owned by
-        // `partial` from the assignment onward.
-        partial.noise_sampler = try_or_cleanup!(unsafe {
-            device
-                .create_sampler(
-                    &vk::SamplerCreateInfo::default()
-                        .mag_filter(vk::Filter::LINEAR)
-                        .min_filter(vk::Filter::LINEAR)
-                        .address_mode_u(vk::SamplerAddressMode::REPEAT)
-                        .address_mode_v(vk::SamplerAddressMode::REPEAT)
-                        .address_mode_w(vk::SamplerAddressMode::REPEAT),
-                    None,
-                )
-                .context("sky cloud noise sampler")
         });
 
         let param_size = std::mem::size_of::<SkyCubeParams>() as vk::DeviceSize;
@@ -438,19 +392,16 @@ impl SkyCubePipeline {
                 offset: 0,
                 range: param_size,
             }];
+            // The shared cloud density volumes (`CloudNoiseVolumes`). Not
+            // owned here: composite binds the same views, and the volumes
+            // must outlive both pipelines.
             let base_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.noise_sampler)
-                .image_view(partial.cloud_base_noise.as_ref().expect("base noise").view)
+                .sampler(noise.sampler)
+                .image_view(noise.base)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let detail_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.noise_sampler)
-                .image_view(
-                    partial
-                        .cloud_detail_noise
-                        .as_ref()
-                        .expect("detail noise")
-                        .view,
-                )
+                .sampler(noise.sampler)
+                .image_view(noise.detail)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let set = partial.descriptor_sets[i];
             let writes = [
@@ -465,146 +416,6 @@ impl SkyCubePipeline {
         }
 
         Ok(partial)
-    }
-
-    /// Upload the two cloud density volumes and move them into their
-    /// sampled layout.
-    ///
-    /// Separate from `new` for the reason `SsaoPipeline::initialize_ao_images`
-    /// is: it needs a queue and a command pool to run a one-time submit,
-    /// which construction does not otherwise require. Must be called before
-    /// the first `record_bake`, or the march samples images still in
-    /// `UNDEFINED`.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `device`, `queue` and `pool` are valid and live,
-    /// the device is not lost, and no command buffer is in flight against
-    /// these freshly-created images (they cannot be — nothing has published
-    /// this pipeline yet).
-    pub unsafe fn initialize_noise(
-        &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        pool: vk::CommandPool,
-    ) -> Result<()> {
-        // Memoized in `volumetrics::noise` — regenerating ~10^7 hashes here
-        // would duplicate work the froxel pipeline has already paid for.
-        let payloads = [
-            (cached_base_density_noise(), BASE_NOISE_SIZE, true),
-            (cached_detail_density_noise(), DETAIL_NOISE_SIZE, false),
-        ];
-        let mut staging: Vec<GpuBuffer> = Vec::with_capacity(2);
-        for (bytes, _, _) in payloads {
-            let mut buffer = match GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                bytes.len() as vk::DeviceSize,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-            ) {
-                Ok(buffer) => buffer,
-                Err(error) => {
-                    for mut done in staging {
-                        done.destroy(device, allocator);
-                    }
-                    return Err(error);
-                }
-            };
-            if let Err(error) = buffer.write_mapped(device, bytes) {
-                buffer.destroy(device, allocator);
-                for mut done in staging {
-                    done.destroy(device, allocator);
-                }
-                return Err(error);
-            }
-            staging.push(buffer);
-        }
-
-        let range = super::descriptors::color_subresource_single_mip();
-        let result = super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            let images = [
-                self.cloud_base_noise.as_ref().expect("base noise").image,
-                self.cloud_detail_noise
-                    .as_ref()
-                    .expect("detail noise")
-                    .image,
-            ];
-            let to_dst = images
-                .map(|image| super::descriptors::image_barrier_undef_to_transfer_dst(image, 1));
-            // SAFETY: `cmd` is recording; both images are freshly allocated
-            // and exclusively owned by this pipeline.
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::NONE,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &to_dst,
-                );
-            }
-
-            let subresource = vk::ImageSubresourceLayers::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .mip_level(0)
-                .base_array_layer(0)
-                .layer_count(1);
-            for (index, (_, size, _)) in payloads.iter().enumerate() {
-                let copy = vk::BufferImageCopy::default()
-                    .image_subresource(subresource)
-                    .image_extent(vk::Extent3D {
-                        width: *size,
-                        height: *size,
-                        depth: *size,
-                    });
-                // SAFETY: the staging buffer is live and fully populated;
-                // the destination is in TRANSFER_DST_OPTIMAL with a matching
-                // R8 extent and TRANSFER_DST usage.
-                unsafe {
-                    device.cmd_copy_buffer_to_image(
-                        cmd,
-                        staging[index].buffer,
-                        images[index],
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        &[copy],
-                    );
-                }
-            }
-
-            let ready = images.map(|image| {
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(image)
-                    .subresource_range(range)
-            });
-            // SAFETY: `cmd` is recording and both images were written by the
-            // copies above; this publishes those writes and moves each image
-            // into the layout its descriptor declares.
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &ready,
-                );
-            }
-            Ok(())
-        });
-
-        // The one-time submit waits on the queue before returning, so no
-        // staging buffer can still be referenced here.
-        for mut buffer in staging {
-            buffer.destroy(device, allocator);
-        }
-        result
     }
 
     /// The `CUBE` view consumers sample for frame slot `frame`.
@@ -743,13 +554,6 @@ impl SkyCubePipeline {
         for mut cube in self.cubes.drain(..) {
             cube.destroy(device, allocator);
         }
-        for mut noise in [self.cloud_base_noise.take(), self.cloud_detail_noise.take()]
-            .into_iter()
-            .flatten()
-        {
-            noise.destroy(device, allocator);
-        }
-        device.destroy_sampler(self.noise_sampler, None);
         for buf in &mut self.param_buffers {
             buf.destroy(device, allocator);
         }
@@ -1015,22 +819,35 @@ mod tests {
             "the cloud march must read the same coverage lane the authored cloud-plane \
              path does — a second mapping here would be an invented WTHR derivation",
         );
+        // The 2D body that used to read this lane is gone, so the march is the
+        // only cloud coverage reader. A second derivation appearing in
+        // sky.glsl would be two cloud bodies disagreeing about the weather.
         let sky = include_str!("../../shaders/include/sky.glsl");
         assert!(
-            sky.contains("clamp(dome.weather_aurora.z, 0.0, 1.0)"),
-            "that lane is supposed to be the one `weather_procedural_cloud` already \
-             uses; if it moved, the two cloud representations have diverged",
+            !sky.contains("weather_aurora.z"),
+            "sky.glsl reads cloud coverage itself again — only include/clouds.glsl may",
         );
     }
 
-    /// The pieces of Schneider & Vos the march is built from. Each one is
-    /// load-bearing and silently degrades rather than failing if dropped:
-    /// without the remap, coverage thins clouds everywhere instead of
-    /// eroding them; without powder, lit edges are as dark as cores;
-    /// without the height gradient, the shell cuts clouds off flat.
+    /// The terms the march is built from — shape from Schneider & Vos 2015,
+    /// lighting from Hillaire 2016. Each one is load-bearing and degrades
+    /// silently rather than failing if dropped: without the remap, coverage
+    /// thins clouds everywhere instead of eroding them; without the octaves
+    /// and their calibration, clouds render darker than the sky behind them
+    /// (measured); without the height gradient, the shell cuts clouds flat.
+    ///
+    /// Schneider's powder term is deliberately absent: its required
+    /// view-dependent gradient is unspecified in the source (slide 66), and
+    /// Hillaire's energy-conserving model the rest of the lighting follows
+    /// does not use it.
     #[test]
     fn the_cloud_march_keeps_its_reference_terms() {
         let clouds = include_str!("../../shaders/include/clouds.glsl");
+        assert!(
+            !clouds.contains("float powder"),
+            "the powder term must not return until its view-dependent gradient is \
+             sourced — see this test's doc",
+        );
         for (term, why) in [
             ("cloud_henyey_greenstein", "forward-scattering phase"),
             (
@@ -1039,10 +856,21 @@ mod tests {
             ),
             ("cloud_height_gradient", "vertical density profile"),
             (
-                "1.0 - exp(-density * step_size",
-                "powder / inverse-Beer term",
+                "exp(-light_optical_depth * extinction_scale)",
+                "Beer-Lambert self-shadowing per octave",
             ),
-            ("exp(-light_optical_depth", "Beer-Lambert self-shadowing"),
+            (
+                "cloud_phase(cos_angle, eccentricity_scale)",
+                "per-octave phase eccentricity (Wrenninge c^n)",
+            ),
+            (
+                "scattering_scale *= CLOUD_MS_SCATTERING_FALLOFF",
+                "per-octave scattering falloff (Hillaire Eq. 20, a^n)",
+            ),
+            (
+                "12.566370614359172 / octave_scattering_sum",
+                "diffuse-surface calibration K = 4pi / sum(a^n)",
+            ),
             (
                 "1.0 - sample_transmittance",
                 "energy-conserving slab integration",
@@ -1055,28 +883,33 @@ mod tests {
         }
     }
 
-    /// The march samples the volumes `volumetrics/noise.rs` generates, and
-    /// they must be uploaded before the first bake — otherwise it reads
-    /// images still in `UNDEFINED`.
+    /// The bake binds the shared cloud volumes; it must not own a copy.
+    /// Composite marches the same field for the visible sky, so a private
+    /// set here would let reflections and the sky seen directly disagree —
+    /// and would be a third upload of texels two resources already hold.
     #[test]
-    fn the_cloud_noise_is_shared_and_uploaded_before_the_first_bake() {
+    fn the_bake_binds_the_shared_cloud_volumes_rather_than_owning_them() {
         let src = include_str!("sky_cube.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production half");
         assert!(
-            src.contains("cached_base_density_noise()")
-                && src.contains("cached_detail_density_noise()"),
-            "the cloud volumes must be the ones volumetrics/noise.rs already generates, \
-             not a second near-identical set",
+            !production.contains("cached_base_density_noise")
+                && !production.contains("initialize_noise"),
+            "SkyCubePipeline must not create or upload its own cloud noise — bind \
+             CloudNoiseVolumes' views instead",
         );
-        let init = include_str!("context/init.rs");
-        let ctor = init
-            .split_once("SkyCubePipeline::new(")
-            .expect("the sky cube is still constructed at init")
-            .1;
-        let ctor = &ctor[..ctor.len().min(2000)];
+        for binding in [
+            "write_combined_image_sampler(set, 2, &base_info)",
+            "write_combined_image_sampler(set, 3, &detail_info)",
+        ] {
+            assert!(
+                production.contains(binding),
+                "the bake must still write `{binding}`"
+            );
+        }
         assert!(
-            ctor.contains("initialize_noise("),
-            "init must upload the cloud noise before publishing the pipeline — the \
-             march otherwise samples images still in UNDEFINED layout",
+            production.contains(".image_view(noise.base)")
+                && production.contains(".image_view(noise.detail)"),
+            "bindings 2/3 must come from the shared CloudNoiseViews",
         );
     }
 

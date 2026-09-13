@@ -49,98 +49,20 @@ struct SkyDome {
     // x = is_exterior — the only lane the dome reads, but carried as the
     // full `vec4` its source field is so each builder stays a plain copy.
     vec4 depth_params;
+    // xyz = the directional light surfaces receive, w unused. The cloud body
+    // is lit by this so clouds and terrain share one sun.
+    vec4 sun_illuminance;
 };
+
+// The volumetric cloud body. Included here, after `SkyDome`, because every
+// function in it takes one; its own guard makes a consumer's second
+// `#include` a no-op.
+#include "include/clouds.glsl"
 
 float weather_hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
     p += dot(p, p + 45.32);
     return fract(p.x * p.y);
-}
-
-// Smooth value noise for the broad cloud body. Authored WTHR cloud DDS
-// layers are composited later as game-specific detail; this field prevents
-// gaps between those finite sprites from exposing an implausibly empty sky.
-float weather_cloud_noise(vec2 p) {
-    vec2 cell = floor(p);
-    vec2 local = fract(p);
-    vec2 smooth_local = local * local * (3.0 - 2.0 * local);
-    float a = weather_hash21(cell);
-    float b = weather_hash21(cell + vec2(1.0, 0.0));
-    float c = weather_hash21(cell + vec2(0.0, 1.0));
-    float d = weather_hash21(cell + vec2(1.0, 1.0));
-    return mix(mix(a, b, smooth_local.x), mix(c, d, smooth_local.x), smooth_local.y);
-}
-
-float weather_cloud_fbm(vec2 p) {
-    // Explicit octaves let glslang fully unroll this hot sky-only path.
-    float value = weather_cloud_noise(p) * 0.5333333;
-    p = p * 2.03 + vec2(17.13, 9.71);
-    value += weather_cloud_noise(p) * 0.2666667;
-    p = p * 2.01 + vec2(8.37, 19.19);
-    value += weather_cloud_noise(p) * 0.1333333;
-    p = p * 2.04 + vec2(13.91, 3.17);
-    value += weather_cloud_noise(p) * 0.0666667;
-    return value;
-}
-
-// Continuous procedural cloud body. The return value is premultiplication-
-// ready RGB + opacity. WTHR classification supplies broad coverage, its wind
-// advects the field, and its PNAM/JNAM tables tint the result. Using the same
-// infinite overhead plane as the authored layers keeps both representations
-// locked together during camera motion and weather transitions.
-vec4 weather_procedural_cloud(SkyDome dome, vec3 sky, vec3 dir, float elevation, vec3 sun_direction) {
-    float coverage = clamp(dome.weather_aurora.z, 0.0, 1.0);
-    float horizon_fade = smoothstep(0.015, 0.16, elevation);
-    vec2 wind = dome.weather_wind.xz;
-    float wind_speed = dome.weather_wind.y;
-    float time = dome.weather_params.w;
-    vec2 plane = dir.xz / max(elevation, 0.065);
-    vec2 drift = wind * time * (0.0012 + wind_speed * 0.0065);
-
-    // Frequencies are chosen in view-plane units rather than texture UVs:
-    // the lowest octave must still cross several cells in a near-zenith
-    // view, where `dir.xz / dir.y` spans only a small interval.
-    vec2 broad_coord = plane * 4.75 + drift;
-    float warp = weather_cloud_fbm(plane * 2.10 + drift * 0.37 + vec2(7.1, 19.3));
-    broad_coord += vec2(warp - 0.5, 0.5 - warp) * 0.72;
-    float broad = weather_cloud_fbm(broad_coord);
-    float detail = weather_cloud_fbm(plane * 16.0 - drift * 0.61 + vec2(31.7, 11.3));
-    float field = broad * 0.80 + detail * 0.20;
-    float threshold = mix(0.62, 0.34, coverage);
-    float density = smoothstep(threshold, threshold + 0.10, field);
-
-    vec4 tint = (dome.cloud_tint_0 + dome.cloud_tint_1
-        + dome.cloud_tint_2 + dome.cloud_tint_3) * 0.25;
-    float day = smoothstep(-0.08, 0.22, sun_direction.y);
-    float sun_facing = max(dot(dir, sun_direction), 0.0);
-    float edge = smoothstep(0.08, 0.72, 1.0 - density)
-        * pow(sun_facing, 10.0) * day;
-    // One offset density tap approximates optical depth toward the sun. It
-    // gives the body a darker underside and bright windward crown without a
-    // full ray march, which is important because this runs for every clear-
-    // depth pixel in the composition pass.
-    float light_field = weather_cloud_fbm(
-        broad_coord + sun_direction.xz * mix(0.18, 0.52, day)
-    );
-    float self_shadow = clamp((field - light_field) * 2.4 + 0.42, 0.0, 1.0);
-    vec3 daylight_cloud = mix(
-        vec3(0.43, 0.48, 0.56),
-        vec3(0.98, 0.96, 0.91),
-        1.0 - self_shadow
-    );
-    vec3 cloud_lit = mix(sky * 0.34, daylight_cloud, day);
-    // WTHR remains the artistic colour authority, but treating its RGB as a
-    // pure multiplier can collapse a bright cloud into the sky on records
-    // with subdued tints (notably FNV's clear weather). Preserve enough
-    // neutral daylight contrast for the body to read, then bias it toward
-    // the authored tint.
-    cloud_lit *= mix(vec3(1.0), max(tint.rgb, vec3(0.08)), 0.45);
-    cloud_lit += dome.sun_color.rgb * edge * dome.sun_dir.w * 0.055;
-
-    float authored_alpha = clamp(tint.a, 0.0, 1.0);
-    float opacity = density * horizon_fade
-        * mix(0.58, 0.95, coverage) * mix(0.78, 1.0, authored_alpha);
-    return vec4(cloud_lit, clamp(opacity, 0.0, 0.96));
 }
 
 float weather_star_field(vec3 dir) {
@@ -202,7 +124,18 @@ vec3 weather_sky_details(SkyDome dome, vec3 sky, vec3 dir, float elevation, floa
 }
 
 // Compute sky color from view direction.
-vec3 sky_radiance(SkyDome dome, vec3 dir) {
+//
+// `cloud_base_noise` / `cloud_detail_noise` are the shared density volumes
+// (`CloudNoiseVolumes`); they are parameters rather than bindings because
+// the two consumers bind them in different descriptor sets. `cloud_jitter`
+// is the cloud march's step offset — see `cloud_march`.
+vec3 sky_radiance(
+    SkyDome dome,
+    vec3 dir,
+    sampler3D cloud_base_noise,
+    sampler3D cloud_detail_noise,
+    float cloud_jitter
+) {
     vec3 zenith = dome.sky_zenith.xyz;
     vec3 horizon = dome.sky_horizon.xyz;
     float sun_size = dome.sky_zenith.w;
@@ -244,9 +177,16 @@ vec3 sky_radiance(SkyDome dome, vec3 dir) {
     // silhouettes and colour variation without being solely responsible for
     // sky occupancy. Accumulate opacity so celestial objects remain behind
     // both representations instead of painting over cloud cover.
-    vec4 procedural_cloud = weather_procedural_cloud(dome, sky, dir, elevation, sun_direction);
-    sky = mix(sky, procedural_cloud.rgb, procedural_cloud.a);
-    float cloud_occlusion = procedural_cloud.a;
+    //
+    // SKYAL — the body is the volumetric march (`include/clouds.glsl`). It
+    // replaced a 2D FBM field that faked self-shadowing with one offset
+    // density tap. Same slot, same coverage lane, same tint authority; the
+    // march returns premultiplied radiance, hence `sky * (1 - a) + rgb` in
+    // place of the old `mix`.
+    vec4 volumetric_cloud =
+        cloud_march(dome, dir, cloud_base_noise, cloud_detail_noise, cloud_jitter);
+    sky = sky * (1.0 - volumetric_cloud.a) + volumetric_cloud.rgb;
+    float cloud_occlusion = volumetric_cloud.a;
 
     // Cloud layer 0 (from WTHR cloud_textures[0]).
     //

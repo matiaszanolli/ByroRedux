@@ -25,6 +25,7 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::cloud_noise::CloudNoiseViews;
 use super::descriptors::{
     write_combined_image_sampler, write_uniform_buffer, DescriptorPoolBuilder,
 };
@@ -152,6 +153,10 @@ pub struct CompositeParams {
     /// contribution instead of contributing zero; `composite.frag` gates
     /// the sum on this flag. `yzw` reserved. #2508.
     pub caustic_flags: [f32; 4],
+    /// SKYAL — xyz = the directional light surfaces receive
+    /// (`SkyParams::sun_illuminance`), w unused. Lights the volumetric cloud
+    /// body. Appended last, so every pre-existing offset is unchanged.
+    pub sun_illuminance: [f32; 4],
 }
 
 // SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
@@ -251,6 +256,7 @@ impl CompositePipeline {
         bloom_views: &[vk::ImageView],
         reactive_views: &[vk::ImageView],
         transparency_views: &[vk::ImageView],
+        cloud_noise: CloudNoiseViews,
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
     ) -> Result<Self> {
@@ -268,6 +274,7 @@ impl CompositePipeline {
             bloom_views,
             reactive_views,
             transparency_views,
+            cloud_noise,
             bindless_layout,
             extents,
         );
@@ -292,6 +299,7 @@ impl CompositePipeline {
         bloom_views: &[vk::ImageView],
         reactive_views: &[vk::ImageView],
         transparency_views: &[vk::ImageView],
+        cloud_noise: CloudNoiseViews,
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
     ) -> Result<Self> {
@@ -603,9 +611,10 @@ impl CompositePipeline {
         }
 
         // ── 6. Descriptor set layout + pipeline layout ───────────────
-        // 9 bindings — HDR, indirect, albedo, params UBO, depth,
+        // 11 bindings — HDR, indirect, albedo, params UBO, depth,
         // caustic, volumetric (M55 Phase 4), bloom (#2796), water-side
-        // caustic accumulator (#1257) — see per-binding comments below.
+        // caustic accumulator (#1257), SKYAL cloud density base + detail
+        // (9, 10) — see per-binding comments below.
         let ds_bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -665,6 +674,21 @@ impl CompositePipeline {
             // contribute to the same direct-light caustic term.
             vk::DescriptorSetLayoutBinding::default()
                 .binding(8)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // 9, 10: SKYAL cloud density volumes (sampler3D), for the
+            // volumetric cloud body `sky_radiance` marches per clear-depth
+            // pixel. Owned by `CloudNoiseVolumes`, not by this pipeline:
+            // they are resolution-independent and shared with the sky-cube
+            // bake, and this pipeline is rebuilt on every resize.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(9)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(10)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -795,6 +819,14 @@ impl CompositePipeline {
                 .sampler(partial.hdr_sampler)
                 .image_view(bloom_views[i])
                 .image_layout(vk::ImageLayout::GENERAL)];
+            let cloud_base_info = [vk::DescriptorImageInfo::default()
+                .sampler(cloud_noise.sampler)
+                .image_view(cloud_noise.base)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let cloud_detail_info = [vk::DescriptorImageInfo::default()
+                .sampler(cloud_noise.sampler)
+                .image_view(cloud_noise.detail)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let set = partial.descriptor_sets[i];
             let writes = [
                 write_combined_image_sampler(set, 0, &hdr_info),
@@ -806,6 +838,8 @@ impl CompositePipeline {
                 write_combined_image_sampler(set, 6, &volumetric_info),
                 write_combined_image_sampler(set, 7, &bloom_info),
                 write_combined_image_sampler(set, 8, &water_caustic_info), // #1257
+                write_combined_image_sampler(set, 9, &cloud_base_info),
+                write_combined_image_sampler(set, 10, &cloud_detail_info),
             ];
             // SAFETY: descriptor sets owned by `partial`; writes reference
             // HDR / depth / indirect / albedo / caustic / volumetric /
@@ -1037,6 +1071,7 @@ impl CompositePipeline {
         bloom_views: &[vk::ImageView],
         reactive_views: &[vk::ImageView],
         transparency_views: &[vk::ImageView],
+        cloud_noise: CloudNoiseViews,
         extents: FrameExtentSet,
     ) -> Result<()> {
         // Destroy old framebuffers
@@ -1147,12 +1182,20 @@ impl CompositePipeline {
                     .sampler(self.hdr_sampler)
                     .image_view(bloom_views[i])
                     .image_layout(vk::ImageLayout::GENERAL)];
-                // Typed [_; 9] array (was [_; 8] pre-#1257) — compile
-                // catches divergence from the 9-binding layout. Init
+                // Typed [_; 11] array (was [_; 8] pre-#1257, [_; 9] pre-SKYAL
+                // clouds) — compile catches divergence from the 11-binding layout. Init
                 // path at the post-`new()` writer above mirrors this
                 // exact shape.
+                let cloud_base_info = [vk::DescriptorImageInfo::default()
+                    .sampler(cloud_noise.sampler)
+                    .image_view(cloud_noise.base)
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let cloud_detail_info = [vk::DescriptorImageInfo::default()
+                    .sampler(cloud_noise.sampler)
+                    .image_view(cloud_noise.detail)
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
                 let set = self.descriptor_sets[i];
-                let writes: [vk::WriteDescriptorSet; 9] = [
+                let writes: [vk::WriteDescriptorSet; 11] = [
                     write_combined_image_sampler(set, 0, &hdr_info),
                     write_combined_image_sampler(set, 1, &indirect_info),
                     write_combined_image_sampler(set, 2, &albedo_info),
@@ -1162,6 +1205,8 @@ impl CompositePipeline {
                     write_combined_image_sampler(set, 6, &volumetric_info),
                     write_combined_image_sampler(set, 7, &bloom_info),
                     write_combined_image_sampler(set, 8, &water_caustic_info),
+                    write_combined_image_sampler(set, 9, &cloud_base_info),
+                    write_combined_image_sampler(set, 10, &cloud_detail_info),
                 ];
                 // SAFETY: descriptor sets owned by `self`; writes
                 // reference freshly-recreated HDR views (owned by `self`)
@@ -1527,10 +1572,13 @@ mod composite_params_layout_tests {
         // total by 16 and adds a matching `vec4 caustic_flags;`
         // declaration in the `composite.frag` UBO block.
         assert_eq!(offset_of!(CompositeParams, caustic_flags), 464);
+        // SKYAL appended `sun_illuminance` after `caustic_flags`, so every
+        // earlier offset above is unchanged and only the total grows.
+        assert_eq!(offset_of!(CompositeParams, sun_illuminance), 480);
         assert_eq!(
             size_of::<CompositeParams>(),
-            464 + 16,
-            "CompositeParams must be 480 bytes (26 × vec4 + mat4)"
+            480 + 16,
+            "CompositeParams must be 496 bytes (27 × vec4 + mat4)"
         );
     }
 
@@ -1593,11 +1641,13 @@ mod composite_params_layout_tests {
         // `contains` below vacuously unfalsifiable.
         let shader = include_str!("../../shaders/include/sky.glsl");
 
+        // SKYAL — the continuous body is now the volumetric march; the
+        // composition invariants below are unchanged by the swap.
         for needle in [
-            "float weather_cloud_fbm(vec2 p)",
-            "vec4 weather_procedural_cloud(",
-            "float coverage = clamp(dome.weather_aurora.z, 0.0, 1.0);",
-            "vec4 procedural_cloud = weather_procedural_cloud(",
+            "#include \"include/clouds.glsl\"",
+            "vec4 volumetric_cloud =",
+            "sky = sky * (1.0 - volumetric_cloud.a) + volumetric_cloud.rgb;",
+            "float cloud_occlusion = volumetric_cloud.a;",
             "cloud_occlusion = 1.0 - (1.0 - cloud_occlusion)",
             "float sun_visibility = 1.0 - clamp(cloud_occlusion",
             "float stars = weather_star_field(dir) * night * sky_visibility;",
@@ -1608,9 +1658,14 @@ mod composite_params_layout_tests {
             );
         }
 
+        assert!(
+            !shader.contains("weather_procedural_cloud") && !shader.contains("weather_cloud_fbm"),
+            "the 2D cloud body must be gone, not drawn alongside the volumetric one — \
+             both together double the cloud body"
+        );
         let procedural = shader
-            .find("vec4 procedural_cloud = weather_procedural_cloud(")
-            .expect("procedural cloud call");
+            .find("vec4 volumetric_cloud =")
+            .expect("volumetric cloud body call");
         let authored = shader
             .find("// Cloud layer 0 (from WTHR cloud_textures[0]).")
             .expect("authored cloud layer");
@@ -1749,7 +1804,9 @@ mod composite_params_layout_tests {
              arm does; sky + direct alone is the #2920 discontinuity"
         );
         assert!(
-            sky_arm.contains("sky_radiance(build_sky_dome(), dir) * (1.0 - coverage)")
+            sky_arm.contains(
+                "sky_radiance(build_sky_dome(), dir, cloudBaseNoise, cloudDetailNoise, blueNoiseRank()) * (1.0 - coverage)"
+            )
                 && sky_arm.contains("+ direct"),
             "#2466's coverage-weighted sky and direct terms must survive \
              alongside the #2920 indirect term"

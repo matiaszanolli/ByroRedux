@@ -966,6 +966,7 @@ impl VulkanContext {
                 &bloom_views,
                 &views.reactive_views,
                 &views.transparency_views,
+                self.cloud_noise.views(),
                 self.frame_extents,
             )?;
         }

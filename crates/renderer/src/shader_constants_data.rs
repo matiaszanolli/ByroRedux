@@ -859,6 +859,49 @@ pub const CLOUD_VIEW_STEPS: u32 = 48;
 /// contribution saturates quickly under Beer-Lambert, so more steps buy
 /// almost nothing for a multiplicative cost against every view step.
 pub const CLOUD_LIGHT_STEPS: u32 = 6;
+/// Two-lobe cloud phase function (`clouds.glsl` `cloud_phase`). Values from
+/// Hillaire 2016, "Physically Based Sky, Atmosphere and Cloud Rendering in
+/// Frostbite" (SIGGRAPH 2016 PBS course), slides 36/38: "2-lobe HG phase
+/// with g0=0.8, g1=-0,5 and lerp=0.5". The forward lobe gives the silver
+/// lining; the backward lobe keeps clouds lit when the sun is behind the
+/// viewer. They replace an unsourced `max(HG(0.8), 0.7 * HG(-0.15))`.
+pub const CLOUD_PHASE_G0: f32 = 0.8;
+pub const CLOUD_PHASE_G1: f32 = -0.5;
+pub const CLOUD_PHASE_BLEND: f32 = 0.5;
+/// Multiple-scattering octaves (`clouds.glsl`). Method: Wrenninge et al.,
+/// "Oz: The Great and Volumetric", SIGGRAPH 2013, as applied to clouds by
+/// Hillaire 2016 course notes §5.8, Eq. 19-20 — N single-scattering octaves
+/// summed, octave n using scattering × a^n, extinction × b^n and phase
+/// eccentricity × c^n. Energy-conserving only while a <= b (§5.8).
+///
+/// N = 2: Hillaire's Figure 40 shows N=1 (single), N=2 (multi) and N=3 as
+/// "exaggerated multi scattering".
+pub const CLOUD_MS_OCTAVES: u32 = 2;
+/// a, b, c. Neither Wrenninge nor Hillaire publishes values. 0.5 for all
+/// three is Skybolt's open-source implementation ("Rendering Planetwide
+/// Volumetric Clouds in Skybolt", Prograda 2021), which cites the same method
+/// and describes 0.5 as a falloff that "looks fine" — i.e. a secondary,
+/// tuned reference, adopted with the project owner's explicit sign-off
+/// (2026-09-13) rather than a primary citation. Satisfies a <= b.
+pub const CLOUD_MS_SCATTERING_FALLOFF: f32 = 0.5;
+pub const CLOUD_MS_EXTINCTION_FALLOFF: f32 = 0.5;
+pub const CLOUD_MS_ECCENTRICITY_FALLOFF: f32 = 0.5;
+/// Cloud extinction coefficient at density 1, per metre (`clouds.glsl`).
+///
+/// Hillaire 2016 course notes §5.2, citing Hess, Koepke & Schult 1998
+/// ("Optical Properties of Aerosols and Clouds: The Software Package OPAC"):
+/// measured water clouds have single-scattering albedo 1 and extinction in
+/// [0.04, 0.06] m^-1 for stratus and [0.05, 0.12] m^-1 for cumulus at 550 nm,
+/// so sigma_s = sigma_t. The layer is the cumulus band (1.5-5 km), so the
+/// cumulus range applies.
+///
+/// The march's density field runs [0, 1] after the coverage remap, height
+/// gradient and erosion, so density 1 is mapped to the top of the measured
+/// cumulus range. Density is then the fraction of the densest measured
+/// cumulus, and eroded edges and thin cloud fall naturally through the rest
+/// of the range and below it. It replaces an unsourced 0.0016 — about 75x
+/// too optically thin.
+pub const CLOUD_EXTINCTION_PER_METER: f32 = 0.12;
 
 pub const BLOOM_THRESHOLD: f32 = 1.0;
 /// Half-width of the soft knee around [`BLOOM_THRESHOLD`] — the quadratic

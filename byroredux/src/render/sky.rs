@@ -85,9 +85,19 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
     // the symptom by gating the sky term on `depth == 1.0`). Decide
     // interiority once, up front, from the same resource `interior_cube`
     // itself already consulted.
-    let is_interior = world
-        .try_resource::<CellLightingRes>()
-        .is_some_and(|cell| cell.is_interior);
+    // SKYAL — snapshot the cell's directional inputs in the same short borrow
+    // that decides interiority, so `CellLightingRes` is never held while
+    // `SkyParamsRes` is acquired below. That Cell->Sky nesting is the pair
+    // #1410's lock-order detector flags; `render::lights::collect_lights`
+    // avoids it the same way.
+    let cell_directional = world.try_resource::<CellLightingRes>().map(|cell| {
+        (
+            cell.is_interior,
+            cell.directional_color,
+            cell.directional_fade,
+        )
+    });
+    let is_interior = cell_directional.is_some_and(|(interior, _, _)| interior);
     if is_interior {
         return SkyParams {
             dalc_cube: interior_cube,
@@ -163,6 +173,11 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
         sun_color: sky_res.sun_color,
         sun_size: sky_res.sun_size,
         sun_intensity: sky_res.sun_intensity,
+        // The same call `collect_lights` makes for the surfaces' directional
+        // light, so the volumetric clouds are lit by the sun the terrain is.
+        sun_illuminance: cell_directional.map_or([0.0; 3], |(interior, color, fade)| {
+            super::compute_directional_upload(&color, interior, sky_res.sun_intensity, fade)
+        }),
         // Tangent-plane disk approximation valid only for α < ~0.05 rad
         // (derivation documented at the directional-shadow-jitter block in
         // triangle.frag's legacy-WRS arm, next to `sunAngularRadius`; the
