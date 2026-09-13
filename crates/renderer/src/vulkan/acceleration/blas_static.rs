@@ -692,6 +692,40 @@ impl AccelerationManager {
 
         // Phase 4: Record builds + compaction size queries into one command buffer.
         let build_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
+            // #4177 / CONC-D1-01 — self-emit one scratch-serialise barrier
+            // before the FIRST build, exactly as `refit_skinned_blas` (#983)
+            // and `build_skinned_blas_batched_on_cmd` (#1300) already do.
+            //
+            // `blas_scratch_buffer` is one shared allocation with three
+            // writers: this batched static build, skinned first-sight
+            // builds, and skinned refits. This site was the only one of the
+            // three whose `i == 0` build was unguarded — the in-loop
+            // `i > 0` barrier below serialises this batch against itself but
+            // says nothing about a *prior* submission's writes.
+            //
+            // That prior submission is reachable on ordinary frames, not
+            // just at load: `build_blas_batched` runs from `step_streaming`
+            // and `restore_missing_static_blas_for_draws`, both before
+            // `draw_frame`'s top-of-frame `wait_for_fences`, so a previous
+            // frame's skinned BUILD/refit against this same scratch address
+            // may still be executing. The hazard is a write-after-write on
+            // the shared scratch, and it exists only in steady state (when
+            // `scratch_needs_growth` is false and the allocation is reused).
+            //
+            // Deliberately shipped without validation-layer confirmation,
+            // which is not an oversight: `ScratchUser::CrossSubmissionBuild\
+            // WithFenceWait`'s own documentation records that validation
+            // layers reason per-submission and do NOT flag this class, so
+            // the callee-side self-emit is the only safety net. The
+            // host fence-wait `submit_one_time` performs establishes a
+            // host-side dependency only. See #983 / #1140 /
+            // `requires_scratch_serialize_barrier_before`.
+            //
+            // The `i > 0` barrier below still handles serialisation within
+            // this batch, so each build is preceded by exactly one barrier.
+            if !prepared.is_empty() {
+                self.record_scratch_serialize_barrier(device, cmd);
+            }
             for (i, p) in prepared.iter().enumerate() {
                 if i > 0 {
                     self.record_scratch_serialize_barrier(device, cmd);

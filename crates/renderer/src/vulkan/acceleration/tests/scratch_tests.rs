@@ -399,12 +399,24 @@ fn scratch_barrier_required_between_refits() {
 /// *host*-side dependency only; the next submission's commands still need
 /// a device-side AS_WRITE → AS_WRITE barrier when they reuse the shared
 /// scratch. Validation layers reason per-submission and do NOT flag this
-/// case, so the only safety net is the callee-side self-emit. Two sites
-/// rely on this: `refit_skinned_blas` (#983) and the FIRST (`i == 0`)
-/// build in `build_skinned_blas_batched_on_cmd` (#1300 — previously the
-/// build path only self-emitted between its own builds via `i > 0`,
-/// leaving the cross-submission i==0 case unguarded). If a future
-/// refactor drops either self-emit ("optimization noticed via
+/// case, so the only safety net is the callee-side self-emit. **Three**
+/// sites rely on this — one per writer of the shared
+/// `blas_scratch_buffer`:
+///
+/// 1. `refit_skinned_blas` (#983).
+/// 2. The FIRST (`i == 0`) build in `build_skinned_blas_batched_on_cmd`
+///    (#1300 — previously that path only self-emitted between its own
+///    builds via `i > 0`, leaving the cross-submission `i == 0` case
+///    unguarded).
+/// 3. The FIRST (`i == 0`) build in `build_blas_batched`
+///    (`blas_static.rs`) — #4177 / CONC-D1-01. Identical omission to
+///    #1300's, on the static path, and the last of the three writers to
+///    be brought under the rule. Reachable on ordinary frames, not only
+///    at load: `build_blas_batched` runs from `step_streaming` and
+///    `restore_missing_static_blas_for_draws`, both *before*
+///    `draw_frame`'s top-of-frame `wait_for_fences`.
+///
+/// If a future refactor drops any self-emit ("optimization noticed via
 /// emit-count", assuming same-submission semantics), this case silently
 /// regresses on cell-load-then-render frames.
 ///
@@ -605,4 +617,85 @@ mod tlas_scratch_shrink_tests {
              `shrink_tlas_scratch_to_fit` would become unreachable (#2774)"
         );
     }
+}
+
+/// Regression: #4177 / CONC-D1-01 — the static batched build must
+/// self-emit a scratch-serialise barrier before its FIRST build, not only
+/// between its own builds via `i > 0`.
+///
+/// A source-shape pin because the defect is invisible to every runtime
+/// signal available here: there is no Vulkan device in unit tests, and
+/// `ScratchUser::CrossSubmissionBuildWithFenceWait`'s own documentation
+/// records that validation layers reason per-submission and do NOT flag
+/// this class either. The barrier's presence and its position relative to
+/// the build loop is the whole invariant, so that is what is pinned —
+/// mirroring how `requires_scratch_serialize_barrier_before` pins the
+/// rule itself rather than an observable effect.
+#[test]
+fn static_batched_build_emits_a_scratch_barrier_before_its_first_build() {
+    const SRC: &str = include_str!("../blas_static.rs");
+
+    let submit = SRC
+        .find("let build_result = submit_one_time(")
+        .expect("build_blas_batched's one-time submission must exist");
+    let body = &SRC[submit..];
+    let loop_at = body
+        .find("for (i, p) in prepared.iter().enumerate()")
+        .expect("the build loop must exist");
+    let guard_at = body.find("if !prepared.is_empty() {").expect(
+        "build_blas_batched must self-emit a scratch-serialise barrier before its \
+             first build (#4177) — the `i > 0` in-loop barrier only serialises this \
+             batch against itself, not against a prior submission's writes",
+    );
+    let barrier_at = body
+        .find("self.record_scratch_serialize_barrier(device, cmd);")
+        .expect("the barrier call must exist");
+
+    assert!(
+        guard_at < loop_at && barrier_at < loop_at,
+        "the pre-loop scratch barrier must precede the build loop, not sit inside it \
+         (guard {guard_at}, barrier {barrier_at}, loop {loop_at})"
+    );
+}
+
+/// Regression: #4177. All three writers of the shared
+/// `blas_scratch_buffer` must self-emit before their first build. Pinned
+/// as a set, because the defect both #1300 and #4177 fixed was a *missing
+/// member* of this set, not a wrong barrier at a site anyone was looking
+/// at. The TLAS build is deliberately absent: `tlas.rs` owns a separate
+/// scratch allocation, so it cannot alias this one.
+#[test]
+fn every_shared_scratch_writer_self_emits_before_its_first_build() {
+    const STATIC_SRC: &str = include_str!("../blas_static.rs");
+    const SKINNED_SRC: &str = include_str!("../blas_skinned.rs");
+
+    // `build_blas_batched` (#4177) and `build_skinned_blas_batched_on_cmd`
+    // (#1300) both guard the pre-loop emit on a non-empty batch;
+    // `refit_skinned_blas` (#983) emits unconditionally at entry.
+    assert_eq!(
+        STATIC_SRC.matches("if !prepared.is_empty() {").count(),
+        1,
+        "build_blas_batched must have exactly one pre-loop barrier guard"
+    );
+    assert_eq!(
+        SKINNED_SRC.matches("if !prepared.is_empty() {").count(),
+        1,
+        "build_skinned_blas_batched_on_cmd must have exactly one pre-loop barrier guard"
+    );
+    // Two in the batched builder (pre-loop + in-loop) and one at
+    // `refit_skinned_blas`'s entry.
+    assert_eq!(
+        SKINNED_SRC
+            .matches("self.record_scratch_serialize_barrier(device, cmd);")
+            .count(),
+        3,
+        "blas_skinned.rs must keep both batched-build emits and the refit entry emit"
+    );
+    assert_eq!(
+        STATIC_SRC
+            .matches("self.record_scratch_serialize_barrier(device, cmd);")
+            .count(),
+        2,
+        "blas_static.rs must keep both the pre-loop and the in-loop emit"
+    );
 }
