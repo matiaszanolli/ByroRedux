@@ -469,6 +469,27 @@ pub(crate) fn placement_is_disabled(
         .is_some_and(|state| !state.is_enabled(local))
 }
 
+/// The scripted lock override for this placement, if a fragment has
+/// changed it this session (#4136).
+///
+/// `None` — no script has touched this reference, so the plugin's
+/// authored `XLOC` stands. Keyed by *local* form id, matching
+/// `byroredux_scripting`'s own writers, exactly as
+/// [`placement_is_disabled`] is for its sibling ledger.
+///
+/// Takes the `FormIdPair` the caller already has rather than a `FormId`
+/// handle, so this needs no `FormIdPool` lookup — the pair carries the
+/// local id directly.
+pub(crate) fn scripted_lock_override(
+    world: &World,
+    placement_form_id_pair: Option<FormIdPair>,
+) -> Option<byroredux_scripting::LockOverride> {
+    let pair = placement_form_id_pair?;
+    world
+        .try_resource::<byroredux_scripting::ReferenceLockState>()
+        .and_then(|state| state.override_for(pair.local.0))
+}
+
 pub(crate) fn light_radius_or_default(radius: f32) -> f32 {
     if radius > 0.0 {
         radius
@@ -921,14 +942,44 @@ fn spawn_placement_root(
     // types, so this is the shared spawn site for both) so the
     // interaction system's activation gate has something to consult.
     // See `Locked`'s doc for what's deferred.
-    if let Some(l) = lock {
-        world.insert(
-            placement_root,
-            Locked {
-                lock_level: l.lock_level,
-                key_form_id: l.key_form_id,
-            },
-        );
+    //
+    // #4136 — a scripted lock change wins over the authored XLOC. Before
+    // this, the stamp was unconditional, so a player who picked a lock and
+    // then triggered any cell reload — a `load <slot>`, or simply leaving
+    // and re-entering in the same session — found the door re-locked, with
+    // nothing anywhere recording what happened.
+    //
+    // The override has to come from a FormID-keyed resource rather than
+    // from the entity: cell unload despawns the placement root outright,
+    // so there is no prior component for a "already locked?" check to
+    // consult, and registering `Locked` for save would have fixed only the
+    // save/load half. Exactly the shape `placement_is_disabled` uses for
+    // `Enable`/`Disable` above (#3278/#3789).
+    match scripted_lock_override(world, placement_form_id_pair) {
+        Some(byroredux_scripting::LockOverride::Unlocked) => {}
+        Some(byroredux_scripting::LockOverride::Locked {
+            lock_level,
+            key_form_id,
+        }) => {
+            world.insert(
+                placement_root,
+                Locked {
+                    lock_level,
+                    key_form_id,
+                },
+            );
+        }
+        None => {
+            if let Some(l) = lock {
+                world.insert(
+                    placement_root,
+                    Locked {
+                        lock_level: l.lock_level,
+                        key_form_id: l.key_form_id,
+                    },
+                );
+            }
+        }
     }
     // #1214 / D1-NEW-03 — attach BSXFlags on the placement root when
     // the NIF authored them. Editor-marker bit (0x20) is filtered at

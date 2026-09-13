@@ -147,7 +147,11 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
 /// A resource belongs here only if some spawn-time code path consults it
 /// while the reload is actively building the new cell/exterior — today
 /// that's `ReferenceEnableState` (`cell_loader::spawn::placement_is_disabled`,
-/// #3789/#3278). Everything else — most importantly `ItemInstancePool` —
+/// #3789/#3278) and `ReferenceLockState`
+/// (`cell_loader::spawn::scripted_lock_override`, #4136) — both are
+/// FormID-keyed ledgers the spawn path reads while the reload is
+/// actively building the new cell, so a post-reload restore would
+/// arrive after the placements they govern were already stamped. Everything else — most importantly `ItemInstancePool` —
 /// must wait for the post-reload wholesale [`byroredux_save::restore_resources`]
 /// call, because the reload's own teardown (`unload_cell` →
 /// `release_victim_item_instances`) still needs the **live** value of
@@ -157,7 +161,7 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
 /// mistake for `ItemInstancePool`, and is the reason this is an explicit
 /// allowlist (mirroring [`MUTABLE_DELTA_COLUMNS`]'s pattern) rather than
 /// "everything except a denylist".
-const PRE_RELOAD_RESOURCES: &[&str] = &["ReferenceEnableState"];
+const PRE_RELOAD_RESOURCES: &[&str] = &["ReferenceEnableState", "ReferenceLockState"];
 
 /// The player's standing position + look direction at save time, so a
 /// live `load` can put the player back where they were rather than at the
@@ -353,7 +357,7 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_scripting::{
         ActorCinematicState, ActorControlState, CinematicPresentationState, FragmentExecutionQueue,
         Globals, HorseTetherState, PapyrusProviderContinuationQueue, PlayerControlState,
-        QuestAliasInjectionState, ReferenceEnableState, ScriptTimer, ScriptVariables,
+        QuestAliasInjectionState, ReferenceEnableState, ReferenceLockState, ScriptTimer, ScriptVariables,
         TwoStateActivator,
     };
 
@@ -514,10 +518,34 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<FragmentExecutionQueue>("FragmentExecutionQueue")
         // Provider-bearing OnLoad/OnActivate/OnTriggerEnter/OnUpdate handlers
         // retain typed locals plus their lowered route/tail while suspended at
-        // Utility.Wait. All nested identities are stable manifest strings;
-        // no EntityId or process-local handles cross the save boundary.
+        // Utility.Wait.
+        //
+        // #4139 — this comment used to end "All nested identities are stable
+        // manifest strings; no EntityId or process-local handles cross the
+        // save boundary." That is false, and it is why this column was
+        // registered without a rebind step: `locals` is a
+        // `BTreeMap<String, ScriptValue>`, and `ScriptValue::Entity` carries
+        // an `EntityRef` — a handle the SDK's own doc calls "never a raw ECS
+        // slot ... scoped to a world_generation so a stale one is
+        // rejectable", i.e. process-local by definition. The route/tail and
+        // principal halves of the claim are correct; the locals half was not.
+        //
+        // Continuations carrying such a local are dropped on load rather
+        // than resumed — see `drop_entity_bound_continuations` and the call
+        // site in `execute_pending_save_loads`.
         .register_resource::<PapyrusProviderContinuationQueue>("PapyrusProviderContinuationQueue")
         .register_resource::<ReferenceEnableState>("ReferenceEnableState")
+        // #4136 — the lock ledger's sibling. `Effect::SetLocked` /
+        // `SetLockLevel` (#3159) made `Locked` runtime-mutable with nothing
+        // persisting the change: absent from this registry, and re-stamped
+        // from the plugin's authored XLOC on every cell load. Keyed by
+        // local FormID and consulted by `cell_loader::spawn`, so it
+        // survives both a save/load and an in-session cell revisit — the
+        // latter being why this is a resource and not a saved `Locked`
+        // column, since cell unload despawns the entity that would carry
+        // one. Plain `u8` / `Option<u32>` payloads, no session-local
+        // handles.
+        .register_resource::<ReferenceLockState>("ReferenceLockState")
         // #2380 / SAVE-D1-15 — MQ101 cinematic presentation state
         // (sitting rotation, animation-event registrations, active IMAD
         // applications). No `EntityId`/`FixedString` anywhere.
@@ -833,6 +861,36 @@ impl ConsoleCommand for SaveCommand {
         let Some(state) = world.try_resource::<SaveState>() else {
             return CommandOutput::error("save directory not installed");
         };
+        // #4138 — refuse mid-transition. An interior transition clears
+        // `CurrentCellContext` at teardown and reinstalls it only when the
+        // budgeted apply job reaches `Complete`, so a save taken in that
+        // window snapshots a world with neither cell nor exterior context.
+        // None of the referential-integrity gates below look at context
+        // presence, so such a save committed happily, consumed a ring slot
+        // (evicting whatever it displaced) and reported success — while
+        // being unloadable from the moment it was written.
+        //
+        // This is the third leg of a pattern the codebase already applies
+        // twice on the load side: `LoadCommand::execute` refuses a snapshot
+        // carrying neither context, and `step_save_loads` refuses to start
+        // a load while `interior_transition.is_some()`. Only the save side
+        // was missing.
+        //
+        // Worded distinctly from the loose-NIF rejection on purpose: the
+        // ambiguity between "this save has no location" and "this session
+        // has no location" is precisely what made the original failure so
+        // hard to attribute.
+        if world
+            .try_resource::<crate::cell_loader::CellTransitionInFlight>()
+            .is_some_and(|flag| flag.0)
+        {
+            return CommandOutput::error(
+                "save REFUSED: a cell transition is still loading — the world has no \
+                 cell or exterior context until it finishes, so this save would be \
+                 written successfully and then be permanently unloadable. Try again \
+                 once the destination has finished loading.",
+            );
+        }
 
         // Explicit slot, or the ring's next slot — a quicksave only
         // actually *advances* the ring once validation passes and the
@@ -1643,6 +1701,28 @@ pub fn execute_pending_save_loads(
         log::error!("{message}");
         notify_player(world, message);
         return;
+    }
+    // #4139 — purge continuations whose locals hold session-local
+    // `EntityRef` handles. This column was registered on the claim that
+    // "all nested identities are stable manifest strings"; `locals` can in
+    // fact hold `ScriptValue::Entity(EntityRef)`, which the SDK itself
+    // documents as scoped to a `world_generation`. The rebind that would
+    // make such a handle safe lives behind
+    // `ExtensionHost::restore_saved_state`, which is skipped entirely when
+    // the saved `ExtensionStateSnapshot` is empty — so the generation
+    // counter can stay untouched and a stale handle resolve to a
+    // *different live entity* rather than fail. See
+    // `drop_entity_bound_continuations` for the full mechanism.
+    if let Some(mut queue) =
+        world.try_resource_mut::<byroredux_scripting::PapyrusProviderContinuationQueue>()
+    {
+        let dropped = queue.drop_entity_bound_continuations();
+        if dropped > 0 {
+            log::warn!(
+                "save load: dropped {dropped} papyrus provider continuation(s) bound to \
+                 session-local entity handles (#4139)"
+            );
+        }
     }
     let remap = byroredux_save::build_form_id_remap(world, &registry, &snapshot);
     match byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS) {

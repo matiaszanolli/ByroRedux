@@ -2068,6 +2068,146 @@ fn dispatch_enable_clears_a_previously_disabled_reference() {
     );
 }
 
+/// #4136 — a scripted lock change must also reach the persistent
+/// `ReferenceLockState` ledger, not just the live component.
+///
+/// The component alone loses the change twice: across a save/load (it is
+/// not a registered column) and across an ordinary in-session cell
+/// revisit (cell unload despawns the entity, and the loader re-stamps the
+/// plugin's authored XLOC onto a fresh placement root). The ledger is
+/// FormID-keyed so it outlives both.
+#[test]
+fn dispatch_set_locked_records_the_change_in_the_persistent_ledger() {
+    use crate::{LockOverride, ReferenceLockState};
+    use byroredux_core::ecs::components::Locked;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const DOOR_FORM: u32 = 0x0009_0C22;
+    let mut world = fixture();
+    let door = spawn_with_form_id(&mut world, DOOR_FORM);
+    world.register::<Locked>();
+    world.insert(
+        door,
+        Locked {
+            lock_level: 75,
+            key_form_id: Some(0x1234),
+        },
+    );
+
+    let vmad = ScriptInstanceData {
+        scripts: vec![ScriptInstance {
+            name: "QF_LOCK".into(),
+            status: 0,
+            properties: vec![ScriptProperty {
+                name: "MyDoor".into(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: DOOR_FORM,
+                    alias: -1,
+                },
+            }],
+        }],
+        ..Default::default()
+    };
+    let door_ref = || crate::translate::compose::ObjectRef::Property("::MyDoor_var".into());
+
+    assert_eq!(
+        world
+            .resource::<ReferenceLockState>()
+            .override_for(DOOR_FORM),
+        None,
+        "nothing scripted yet — the authored XLOC must still be the only source"
+    );
+
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(Q, vmad.clone());
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::SetLocked {
+                target: door_ref(),
+                locked: false,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    assert!(
+        world.get::<Locked>(door).is_none(),
+        "the live unlock still happens"
+    );
+    assert_eq!(
+        world
+            .resource::<ReferenceLockState>()
+            .override_for(DOOR_FORM),
+        Some(LockOverride::Unlocked),
+        "the unlock must be recorded so a cell reload does not re-stamp the \
+         authored lock over it (#4136)"
+    );
+
+    // Re-locking records the resulting state, read back from the component
+    // rather than re-derived — the re-lock branch keeps whatever the entity
+    // already carried, so only the component knows the final level.
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert(
+            Q,
+            20,
+            vec![Effect::SetLocked {
+                target: door_ref(),
+                locked: true,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    emit_advance(&world, Q, 20);
+    quest_fragment_dispatch_system(&world);
+
+    assert_eq!(
+        world
+            .resource::<ReferenceLockState>()
+            .override_for(DOOR_FORM),
+        Some(LockOverride::Locked {
+            lock_level: 0,
+            key_form_id: None
+        }),
+        "a script-created lock has no authored XLOC to recover a difficulty \
+         from, and the ledger must match what the component actually holds"
+    );
+
+    // And SetLockLevel moves the ledger's difficulty with the component's.
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert(
+            Q,
+            30,
+            vec![Effect::SetLockLevel {
+                target: door_ref(),
+                level: 90,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 30);
+    emit_advance(&world, Q, 30);
+    quest_fragment_dispatch_system(&world);
+
+    assert_eq!(world.get::<Locked>(door).unwrap().lock_level, 90);
+    assert_eq!(
+        world
+            .resource::<ReferenceLockState>()
+            .override_for(DOOR_FORM),
+        Some(LockOverride::Locked {
+            lock_level: 90,
+            key_form_id: None
+        })
+    );
+}
+
 /// #3159 — the removal half. `Locked` had one insert (the cell loader's
 /// XLOC stamp) and one read (the interaction gate) and nothing anywhere
 /// that cleared it, so an authored lock was a one-way door for the whole

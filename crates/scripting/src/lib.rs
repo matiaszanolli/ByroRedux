@@ -74,7 +74,7 @@ pub use fragment::{
     populate_scene_fragments_from_pex_detailed_with_providers, quest_fragment_dispatch_system,
     scene_fragment_dispatch_system, DeferredFragmentEffects, FragmentExecutionQueue,
     FragmentPexTranslation, OwnedFragmentProviders, PendingFragmentActivations,
-    QuestStageFragments, ReferenceEnableState, SceneFragments,
+    LockOverride, QuestStageFragments, ReferenceEnableState, ReferenceLockState, SceneFragments,
 };
 pub use globals::Globals;
 pub use obscript::{

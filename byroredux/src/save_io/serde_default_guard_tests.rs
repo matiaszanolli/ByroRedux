@@ -473,9 +473,22 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // tail is a `Vec<Effect>`. Verified rather than assumed, per the #3852
     // note above — dumping `normalized_serialized_shapes()` either side of
     // the change gives 149 shapes both times with exactly one differing
-    // line, the `Effect` enum itself. So this is a real saved-shape change
-    // (a variant insertion, which shifts later discriminants), not a
-    // file-scoping artefact, and the bump is required rather than blanket.
+    // line, the `Effect` enum itself. So the fingerprint move is real, not
+    // a file-scoping artefact.
+    // #4140 — but the bump was **blanket, not required**, and this entry
+    // used to say the opposite ("a variant insertion, which shifts later
+    // discriminants"). That reasoning is wrong for this format and
+    // directly contradicts #3489 above, which reached the correct
+    // conclusion on the *same enum* three bumps earlier: saves are
+    // `serde_json`, `Effect` is externally tagged (`{"SetLocked": {…}}`,
+    // keyed by variant name), and `serde_json` ignores the `variant_index`
+    // serde_derive hands it. Old saves simply contain no tag named
+    // `SetLocked`, exactly as #3489 says of `Enable`. Two entries in this
+    // same precedent bank giving contradictory mechanisms for structurally
+    // identical changes is precisely the failure this list exists to
+    // prevent, which is why the wrong one is corrected rather than left.
+    // The bump itself stands: it fails closed, and reverting a shipped
+    // FORMAT_MAJOR is worse than the unnecessary invalidation it caused.
     // #3861 — the fingerprint moved WITHOUT a FORMAT_MAJOR bump, and this is
     // the #3852 case again (a naming/file-scoping artefact, not a data-shape
     // change) rather than a fifth category. `ImageSpaceModifierFrame` in
@@ -516,8 +529,30 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `serde_json` never encodes (`crates/save/src/snapshot.rs`); names and
     // order are what it writes, and neither moved. Every existing save still
     // loads, so the baseline is refreshed rather than the format bumped.
+    // #4136 — the fingerprint moved WITHOUT a FORMAT_MAJOR bump, and this
+    // is a FIFTH case beyond #3332/#3762/#3489/#3852 above: a brand-new
+    // registered *column*, not a change to an existing saved type.
+    // `ReferenceLockState` (plus its `LockOverride` payload enum) is added
+    // to `build_save_registry` so a scripted lock/unlock survives both a
+    // save/load and an in-session cell revisit.
+    //
+    // No prior save contains a `ReferenceLockState` key, and
+    // `restore_resources` (`crates/save/src/driver.rs`) iterates the
+    // *registry's* entries and loads one only when
+    // `snapshot.resources.get(name)` is `Some` — a column absent from an
+    // older snapshot is skipped, leaving the resource at its `Default`.
+    // That default is the empty ledger, which means "no script has touched
+    // any lock", which is exactly right for a save taken before the
+    // feature existed: the plugin's authored XLOC stands, the pre-#4136
+    // behaviour. Verified against the driver rather than assumed.
+    //
+    // The reverse direction is equally safe: an older build reading a
+    // newer save iterates its own registry, which has no such entry, and
+    // never looks at the extra key. Same reasoning class as #3489's
+    // variant insertion — and see the #3159 entry above, where the
+    // *wrong* mechanism was cited for a structurally similar call (#4140).
     const BASELINE_MAJOR: u16 = 22;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb4bd_4a25_983a_ff44;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb11e_10f4_f044_99df;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

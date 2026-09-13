@@ -140,6 +140,8 @@ pub fn register(world: &mut World) {
     world.insert_resource(FragmentExecutionQueue::default());
     world.insert_resource(PendingFragmentActivations::default());
     world.insert_resource(ReferenceEnableState::default());
+    // #4136 — sibling ledger for scripted lock/unlock, same lifetime.
+    world.insert_resource(crate::ReferenceLockState::default());
     world.insert_resource(QuestObjectiveState::default());
 }
 

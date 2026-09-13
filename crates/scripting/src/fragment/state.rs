@@ -19,6 +19,105 @@ pub struct ReferenceEnableState {
 
 impl Resource for ReferenceEnableState {}
 
+/// One reference's scripted lock state, as recorded by
+/// [`ReferenceLockState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum LockOverride {
+    /// A script locked it. Mirrors `byroredux_core`'s `Locked` payload,
+    /// carried by value rather than as that component so the component
+    /// stays free of a serde derive it does not otherwise need — `Locked`
+    /// remains correctly rederived-every-load, just from a source this
+    /// ledger can override.
+    Locked {
+        lock_level: u8,
+        key_form_id: Option<u32>,
+    },
+    /// A script unlocked it. Distinct from "absent": absent means no
+    /// script has touched this reference, so the plugin's authored `XLOC`
+    /// stands.
+    Unlocked,
+}
+
+/// Persistent scripted lock/unlock state for placed references, keyed by
+/// **local** form ID — the same keying [`ReferenceEnableState`] uses, and
+/// for the same reason.
+///
+/// #4136. `Effect::SetLocked` / `Effect::SetLockLevel` (#3159) made
+/// `Locked` runtime-mutable, but the mutation lived only on the component.
+/// That loses the change twice over:
+///
+/// - across a save/load, because `Locked` is not a registered column; and
+/// - across an ordinary in-session cell revisit, because leaving the cell
+///   despawns the entity outright and the loader re-stamps the plugin's
+///   authored `XLOC` onto a brand-new placement root.
+///
+/// The second is why this is a resource rather than a saved component. A
+/// component cannot survive its own entity's despawn, so registering
+/// `Locked` for save would have fixed the save/load half and left a player
+/// who picks a lock and walks back through the door facing it locked
+/// again. A form-ID-keyed ledger outlives the entity, which is exactly the
+/// shape `ReferenceEnableState` already uses for `Enable`/`Disable`
+/// (#3278/#3789) — `cell_loader::spawn` consults it at the stamp the same
+/// way `placement_is_disabled` consults its sibling.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct ReferenceLockState {
+    overrides: HashMap<u32, LockOverride>,
+}
+
+impl Resource for ReferenceLockState {}
+
+impl ReferenceLockState {
+    /// Record that a script locked `form_id`.
+    pub fn set_locked(&mut self, form_id: u32, lock_level: u8, key_form_id: Option<u32>) {
+        self.overrides.insert(
+            form_id,
+            LockOverride::Locked {
+                lock_level,
+                key_form_id,
+            },
+        );
+    }
+
+    /// Record that a script unlocked `form_id`.
+    pub fn set_unlocked(&mut self, form_id: u32) {
+        self.overrides.insert(form_id, LockOverride::Unlocked);
+    }
+
+    /// Update only the difficulty of an already-recorded lock, mirroring
+    /// `Effect::SetLockLevel`'s "never locks or unlocks" contract.
+    ///
+    /// A no-op when the reference is scripted-*unlocked*: there is no lock
+    /// record to carry a difficulty on, which is the same reasoning the
+    /// live component path uses. When no override exists yet the plugin's
+    /// authored lock is still in force, so the level is recorded against
+    /// it with no key — matching what the component ends up holding.
+    pub fn set_lock_level(&mut self, form_id: u32, lock_level: u8) {
+        match self.overrides.get_mut(&form_id) {
+            Some(LockOverride::Locked { lock_level: l, .. }) => *l = lock_level,
+            Some(LockOverride::Unlocked) => {}
+            None => self.set_locked(form_id, lock_level, None),
+        }
+    }
+
+    /// The scripted override for `form_id`, if any. `None` means no
+    /// script has touched this reference and the authored `XLOC` stands.
+    pub fn override_for(&self, form_id: u32) -> Option<LockOverride> {
+        self.overrides.get(&form_id).copied()
+    }
+
+    /// Number of references carrying a scripted override. Diagnostic.
+    pub fn len(&self) -> usize {
+        self.overrides.len()
+    }
+
+    /// Returns `true` when no script has changed any lock.
+    pub fn is_empty(&self) -> bool {
+        self.overrides.is_empty()
+    }
+}
+
 impl ReferenceEnableState {
     pub fn is_enabled(&self, form_id: u32) -> bool {
         !self.disabled.contains(&form_id)
@@ -271,5 +370,94 @@ impl PendingFragmentActivations {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod reference_lock_state_tests {
+    use super::{LockOverride, ReferenceLockState};
+
+    const DOOR: u32 = 0x0001_ABCD;
+
+    /// #4136 — absent means "no script has touched it", which is what lets
+    /// the spawn path fall back to the plugin's authored XLOC. It must be
+    /// distinguishable from a recorded unlock.
+    #[test]
+    fn absent_is_distinct_from_scripted_unlocked() {
+        let mut state = ReferenceLockState::default();
+        assert_eq!(state.override_for(DOOR), None, "untouched");
+        state.set_unlocked(DOOR);
+        assert_eq!(
+            state.override_for(DOOR),
+            Some(LockOverride::Unlocked),
+            "a scripted unlock must be recorded, not merely left absent — \
+             absent would let the cell loader re-stamp the authored lock"
+        );
+    }
+
+    #[test]
+    fn a_scripted_lock_records_its_level_and_key() {
+        let mut state = ReferenceLockState::default();
+        state.set_locked(DOOR, 75, Some(0x1234));
+        assert_eq!(
+            state.override_for(DOOR),
+            Some(LockOverride::Locked {
+                lock_level: 75,
+                key_form_id: Some(0x1234)
+            })
+        );
+    }
+
+    /// #4136 — `SetLockLevel` sets difficulty and must never lock or
+    /// unlock, mirroring `Effect::SetLockLevel`'s own contract. Applying it
+    /// to a scripted-unlocked reference is a no-op, not an implicit lock.
+    #[test]
+    fn set_lock_level_never_locks_an_unlocked_reference() {
+        let mut state = ReferenceLockState::default();
+        state.set_unlocked(DOOR);
+        state.set_lock_level(DOOR, 100);
+        assert_eq!(
+            state.override_for(DOOR),
+            Some(LockOverride::Unlocked),
+            "raising the difficulty of an unlocked door must not re-lock it"
+        );
+    }
+
+    #[test]
+    fn set_lock_level_updates_an_existing_lock_in_place() {
+        let mut state = ReferenceLockState::default();
+        state.set_locked(DOOR, 25, Some(0x1234));
+        state.set_lock_level(DOOR, 100);
+        assert_eq!(
+            state.override_for(DOOR),
+            Some(LockOverride::Locked {
+                lock_level: 100,
+                key_form_id: Some(0x1234)
+            }),
+            "the key must survive a difficulty change"
+        );
+    }
+
+    /// An untouched reference is still under its authored lock, so
+    /// recording a level against it keeps it locked at that level — which
+    /// is what the live component ends up holding on the same path.
+    #[test]
+    fn set_lock_level_on_an_untouched_reference_records_the_authored_lock() {
+        let mut state = ReferenceLockState::default();
+        state.set_lock_level(DOOR, 50);
+        assert_eq!(
+            state.override_for(DOOR),
+            Some(LockOverride::Locked {
+                lock_level: 50,
+                key_form_id: None
+            })
+        );
+    }
+
+    #[test]
+    fn the_ledger_starts_empty_so_untouched_worlds_keep_authored_locks() {
+        let state = ReferenceLockState::default();
+        assert!(state.is_empty());
+        assert_eq!(state.len(), 0);
     }
 }

@@ -1054,6 +1054,68 @@ fn lock_effects_survive_save_load_round_trip_and_still_apply() {
     );
 }
 
+/// Regression: #4136 (SAVE-D1-2026-09-11-02) — a scripted lock/unlock must
+/// survive a save/load.
+///
+/// The other half of #4136 (surviving an in-session cell revisit) is
+/// covered by `cell_loader::scripted_lock_gate_tests`; this pins the
+/// persistence half, which is what registering the ledger buys.
+#[test]
+fn reference_lock_state_survives_save_load_round_trip() {
+    use byroredux_scripting::{LockOverride, ReferenceLockState};
+
+    const UNLOCKED_DOOR: u32 = 0x0001_0A0A;
+    const RELOCKED_DOOR: u32 = 0x0001_0B0B;
+    const UNTOUCHED: u32 = 0x0001_0C0C;
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut src);
+
+    {
+        let mut state = src.resource_mut::<ReferenceLockState>();
+        state.set_unlocked(UNLOCKED_DOOR);
+        state.set_locked(RELOCKED_DOOR, 90, Some(0xDEAD));
+    }
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut dst);
+    // A fresh register seeds the empty ledger, so a restore that silently
+    // did nothing would be indistinguishable from one that worked — except
+    // for these entries.
+    assert!(dst.resource::<ReferenceLockState>().is_empty());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+
+    let restored = dst.resource::<ReferenceLockState>();
+    assert_eq!(
+        restored.override_for(UNLOCKED_DOOR),
+        Some(LockOverride::Unlocked),
+        "a picked lock must still be open after a save/load — re-stamping the \
+         authored XLOC can strand a player behind a door a quest opened"
+    );
+    assert_eq!(
+        restored.override_for(RELOCKED_DOOR),
+        Some(LockOverride::Locked {
+            lock_level: 90,
+            key_form_id: Some(0xDEAD)
+        }),
+        "a scripted lock must carry its level and key across the boundary"
+    );
+    assert_eq!(
+        restored.override_for(UNTOUCHED),
+        None,
+        "a reference no script touched must stay absent, so the cell loader \
+         still applies its authored XLOC"
+    );
+}
+
 /// Regression: #4143 (SAVE-D2-2026-09-11-04) — `ReferenceEnableState` is
 /// registered and drives `cell_loader::spawn::placement_is_disabled`
 /// (#3789/#3278), but nothing carried a populated one across an actual

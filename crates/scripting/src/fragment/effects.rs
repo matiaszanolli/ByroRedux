@@ -117,6 +117,28 @@ fn resolve_object(
     entity
 }
 
+/// The FormID [`crate::ReferenceLockState`] keys a scripted lock change by
+/// (#4136).
+///
+/// Direct VMAD FormID property first, alias-bound receiver second —
+/// the same two-step the `Enable`/`Disable` arm uses, and for the same
+/// reason: the cheap world-free path stays unchanged for the case that
+/// already worked, and the alias arm is strictly additive. Returns `None`
+/// when neither resolves, in which case the live component change still
+/// stands and only its persistence is lost.
+fn lock_ledger_key(
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    context: QuestFormId,
+    target: &ObjectRef,
+    deferred: &DeferredFragmentEffects,
+) -> Option<u32> {
+    resolve_property_form_id(vmad, target.property_name()).or_else(|| {
+        let entity = resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+        entity_global_form_id(world, entity)
+    })
+}
+
 fn resolve_actor(
     vmad: Option<&ScriptInstanceData>,
     world: &World,
@@ -204,6 +226,20 @@ enum DeferredCinematicPresentationEffect {
 /// the effects perform, not alias lookups, and stay nested. See
 /// `apply_effect`'s doc for the current complete list and the exclusive-
 /// scheduling invariant that makes it safe today.
+/// One queued edit to [`crate::ReferenceLockState`]. Mirrors the three
+/// shapes the live `Locked` component can take after a scripted effect,
+/// so the ledger and the component cannot drift (#4136).
+#[derive(Debug, Clone, Copy)]
+enum DeferredLockChange {
+    Locked {
+        lock_level: u8,
+        key_form_id: Option<u32>,
+    },
+    Unlocked,
+    /// `SetLockLevel` — difficulty only, never locks or unlocks.
+    Level(u8),
+}
+
 #[derive(Debug)]
 pub struct DeferredFragmentEffects {
     quest_definitions: Option<crate::QuestDefinitionRegistry>,
@@ -224,6 +260,11 @@ pub struct DeferredFragmentEffects {
     /// the *next* frame (#2654) — see that resource's docs.
     activations: Vec<(EntityId, EntityId)>,
     reference_enable_changes: Vec<(u32, bool)>,
+    /// #4136 — scripted lock changes, FormID-keyed for the same reason
+    /// `reference_enable_changes` above is: the state has to outlive the
+    /// reference's cell, and a component cannot survive its own entity's
+    /// despawn on cell unload.
+    reference_lock_changes: Vec<(u32, DeferredLockChange)>,
     provider_steps: Vec<DeferredProviderFragmentStep>,
 }
 
@@ -259,6 +300,7 @@ impl DeferredFragmentEffects {
             scene_actor_bindings_dirty: false,
             activations: Vec::new(),
             reference_enable_changes: Vec::new(),
+            reference_lock_changes: Vec::new(),
             provider_steps: Vec::new(),
         }
     }
@@ -301,6 +343,29 @@ impl DeferredFragmentEffects {
                 for (form_id, enabled) in self.reference_enable_changes.drain(..) {
                     state.set_enabled(form_id, enabled);
                 }
+            }
+        }
+        if !self.reference_lock_changes.is_empty() {
+            match world.try_resource_mut::<crate::ReferenceLockState>() {
+                Some(mut state) => {
+                    for (form_id, change) in self.reference_lock_changes.drain(..) {
+                        match change {
+                            DeferredLockChange::Locked {
+                                lock_level,
+                                key_form_id,
+                            } => state.set_locked(form_id, lock_level, key_form_id),
+                            DeferredLockChange::Unlocked => state.set_unlocked(form_id),
+                            DeferredLockChange::Level(level) => {
+                                state.set_lock_level(form_id, level)
+                            }
+                        }
+                    }
+                }
+                None => log::debug!(
+                    "fragment lock change dropped from the persistent ledger: \
+                     ReferenceLockState is unavailable — the live component still \
+                     changed, but the change will not survive a cell reload (#4136)"
+                ),
             }
         }
         if !self.cinematic_presentation.is_empty() {
@@ -848,6 +913,23 @@ pub(crate) fn apply_effect(
             } else {
                 locks.remove(target_entity);
             }
+            // #4136 — mirror the resulting component state into the
+            // persistent ledger. Read back rather than re-deriving from
+            // `*locked`: the re-lock branch above deliberately keeps
+            // whatever the entity already carried, so the component is the
+            // only place that knows the final level/key. Recording the
+            // *outcome* is what keeps the two from drifting.
+            let recorded = match locks.get(target_entity) {
+                Some(l) => DeferredLockChange::Locked {
+                    lock_level: l.lock_level,
+                    key_form_id: l.key_form_id,
+                },
+                None => DeferredLockChange::Unlocked,
+            };
+            drop(locks);
+            if let Some(form_id) = lock_ledger_key(vmad, world, context, target, deferred) {
+                deferred.reference_lock_changes.push((form_id, recorded));
+            }
             None
         }
         Effect::SetLockLevel { target, level } => {
@@ -856,15 +938,28 @@ pub(crate) fn apply_effect(
             // level, so this is a no-op there rather than an implicit lock.
             let target_entity =
                 resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+            let mut applied = false;
             if let Some(mut locks) = world.query_mut::<Locked>() {
                 if let Some(state) = locks.get_mut(target_entity) {
                     state.lock_level = *level;
+                    applied = true;
                 } else {
                     log::debug!(
                         "fragment SetLockLevel skipped: '{}' is not locked, so there is \
                          no lock record to set a difficulty on",
                         target.property_name()
                     );
+                }
+            }
+            // #4136 — only record when the live component actually took the
+            // change. Queuing it unconditionally would let the ledger
+            // re-lock a door on the next cell load that `SetLockLevel`
+            // explicitly declined to lock here.
+            if applied {
+                if let Some(form_id) = lock_ledger_key(vmad, world, context, target, deferred) {
+                    deferred
+                        .reference_lock_changes
+                        .push((form_id, DeferredLockChange::Level(*level)));
                 }
             }
             None

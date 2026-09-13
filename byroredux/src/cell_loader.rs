@@ -86,7 +86,7 @@ mod work_budget;
 pub use index::LoadedCellIndex;
 pub use transition::{
     log_transition_header, position_zup_to_yup, queue_door_transition, reposition_camera,
-    rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CurrentCellContext,
+    rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CellTransitionInFlight, CurrentCellContext,
     CurrentCellRoot, CurrentExteriorContext, InteriorCellRequest, LoadedPluginSet,
     PendingCellTransitionSlot, TransitionDestination,
 };
@@ -584,6 +584,8 @@ mod precombined_clip_handle_tests;
 mod rapier_release_tests;
 #[cfg(test)]
 mod reference_enable_gate_tests;
+#[cfg(test)]
+mod scripted_lock_gate_tests;
 #[cfg(test)]
 mod refr_texture_overlay_tests;
 #[cfg(test)]
