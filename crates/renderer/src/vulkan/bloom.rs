@@ -144,10 +144,47 @@ pub const DEFAULT_BLOOM_INTENSITY: f32 = crate::shader_constants::BLOOM_INTENSIT
 pub(crate) struct DownsampleParams {
     /// xy = 1 / src_resolution, zw = 1 / dst_resolution
     inv_resolutions: [f32; 4],
+    /// x = bright-pass enable, yzw unused (padding to the `vec4` the
+    /// shader's UBO block declares).
+    ///
+    /// 1.0 on the single level seeded from the composite scene image,
+    /// 0.0 on every deeper level. The soft knee is a non-linear curve, so
+    /// applying it once per level would compose it with itself and leave
+    /// only the sun disc; see `bloom_downsample.comp`.
+    bright_pass: [f32; 4],
 }
 
-// SAFETY: one `[f32; 4]` field — no implicit padding possible (#3761).
+// SAFETY: two `[f32; 4]` fields — no implicit padding possible (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for DownsampleParams {}
+
+/// Bright-pass enable for down-chain level `i`.
+///
+/// Level 0 is the only one whose source is `composite.frag`'s assembled
+/// scene; levels 1.. read the previous *already thresholded* mip.
+pub(crate) fn bright_pass_enable(level: usize) -> f32 {
+    if level == 0 {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// Host-side mirror of `bloom_downsample.comp`'s `bloom_bright_pass`.
+///
+/// Exists so the knee's behaviour on the values that actually matter —
+/// the measured sky body, the sun disc, LDR emissives — is pinned by a
+/// test instead of only by a screenshot. Keep in lockstep with the GLSL;
+/// `bright_pass_mirrors_the_shader_expression` pins the two together by
+/// reading the shader source.
+#[cfg(test)]
+pub(crate) fn bright_pass_scale(brightest: f32) -> f32 {
+    let soft = (brightest - crate::shader_constants::BLOOM_THRESHOLD
+        + crate::shader_constants::BLOOM_KNEE)
+        .clamp(0.0, 2.0 * crate::shader_constants::BLOOM_KNEE);
+    let soft = soft * soft / (4.0 * crate::shader_constants::BLOOM_KNEE + 1.0e-6);
+    let contribution = soft.max(brightest - crate::shader_constants::BLOOM_THRESHOLD);
+    contribution / brightest.max(1.0e-6)
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -610,6 +647,7 @@ impl BloomPipeline {
                     1.0 / dst_extent.width as f32,
                     1.0 / dst_extent.height as f32,
                 ],
+                bright_pass: [bright_pass_enable(i), 0.0, 0.0, 0.0],
             };
             f.down_param_buffers[i].write_mapped(device, std::slice::from_ref(&p))?;
         }
@@ -1384,5 +1422,173 @@ mod bloom_bytes_per_pixel_tests {
                 "adding a mip level must strictly increase the reserved sum"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod bright_pass_tests {
+    use super::*;
+    use crate::shader_constants::{BLOOM_INTENSITY, BLOOM_KNEE, BLOOM_THRESHOLD};
+
+    /// Effective broadband gain the pyramid applies to a spatially-uniform
+    /// region: the up-chain's structural DC gain (one unit-gain addition
+    /// per level, so `BLOOM_MIP_COUNT`) times `BLOOM_INTENSITY`. See the
+    /// derivation in `bloom_upsample.comp` / `shader_constants_data.rs`.
+    fn uniform_region_gain(value: f32) -> f32 {
+        1.0 + BLOOM_MIP_COUNT as f32 * BLOOM_INTENSITY * bright_pass_scale(value)
+    }
+
+    /// The defect this knee exists to remove, stated as the measurement
+    /// that found it.
+    ///
+    /// Skyrim SE / Tamriel 5,-24 / weather `SkyrimCloudy`: the pre-bloom
+    /// scene measured `(0.335, 0.477, 0.539)` at the top of frame and the
+    /// post-bloom scene `(0.572, 0.822, 0.914)` — a flat 1.71x on all three
+    /// channels. Without a bright-pass the pyramid's "local average" over a
+    /// region that large IS the region, so the gain applies in full.
+    #[test]
+    fn a_uniform_sky_no_longer_receives_the_broadband_gain() {
+        // Thresholdless behaviour, i.e. what shipped before this fix.
+        let unthresholded = 1.0 + BLOOM_MIP_COUNT as f32 * BLOOM_INTENSITY;
+        assert!(
+            (unthresholded - 1.75).abs() < 1.0e-6,
+            "the pre-fix uniform gain should be the documented 1.75x, got {unthresholded}",
+        );
+
+        // The measured sky body spans 0.33..=0.71 pre-bloom.
+        for sky in [0.335_f32, 0.477, 0.539, 0.601, 0.706] {
+            let gain = uniform_region_gain(sky);
+            assert!(
+                gain < 1.05,
+                "sky at {sky} still takes a {gain}x broadband lift — the knee is not                  separating the diffuse sky from highlights",
+            );
+        }
+    }
+
+    /// The other half: the knee must not simply turn bloom off. The sun
+    /// disc reaches `sun_color * sun_intensity * sun_glare` plus the sky
+    /// behind it — ~1.8 for `SkyrimCloudy` — and has to keep blooming.
+    #[test]
+    fn the_sun_disc_still_blooms() {
+        let disc = bright_pass_scale(1.8);
+        assert!(
+            disc > 0.4,
+            "sun disc keeps only {disc} of its bloom — the threshold is too high",
+        );
+        // Strictly monotonic in brightness: a brighter highlight must never
+        // bloom less than a dimmer one.
+        let mut previous = 0.0_f32;
+        for step in 0..=40 {
+            let value = step as f32 * 0.1;
+            let scale = bright_pass_scale(value.max(1.0e-6));
+            let contribution = scale * value;
+            assert!(
+                contribution >= previous - 1.0e-6,
+                "bright-pass contribution is not monotonic at {value}",
+            );
+            previous = contribution;
+        }
+    }
+
+    /// Nothing below the knee's lower edge may contribute at all, and the
+    /// curve must be continuous across both edges — a discontinuity would
+    /// draw a visible contour across the sky exactly where it crosses.
+    #[test]
+    fn the_knee_is_continuous_and_zero_below_its_lower_edge() {
+        let lower = BLOOM_THRESHOLD - BLOOM_KNEE;
+        assert_eq!(bright_pass_scale(lower) * lower, 0.0);
+        assert_eq!(bright_pass_scale(lower * 0.5) * (lower * 0.5), 0.0);
+
+        for edge in [lower, BLOOM_THRESHOLD + BLOOM_KNEE] {
+            let below = bright_pass_scale(edge - 1.0e-4) * (edge - 1.0e-4);
+            let above = bright_pass_scale(edge + 1.0e-4) * (edge + 1.0e-4);
+            assert!(
+                (above - below).abs() < 1.0e-3,
+                "bright-pass jumps by {} across the knee edge at {edge}",
+                above - below,
+            );
+        }
+    }
+
+    /// The curve is applied on the max channel and folded back as a scale,
+    /// so a thresholded colour keeps its hue. Per-channel thresholding
+    /// would shift a warm highlight toward its brightest channel.
+    #[test]
+    fn thresholding_preserves_hue() {
+        let colour = [0.9_f32, 0.6, 0.3];
+        let brightest = colour[0];
+        let scale = bright_pass_scale(brightest);
+        assert!(
+            scale > 0.0,
+            "this sample must clear the knee for the test to mean anything"
+        );
+        let out = colour.map(|c| c * scale);
+        for channel in 0..3 {
+            let before = colour[channel] / colour[0];
+            let after = out[channel] / out[0];
+            assert!(
+                (before - after).abs() < 1.0e-6,
+                "channel {channel} ratio moved {before} -> {after}",
+            );
+        }
+    }
+
+    /// The knee must run exactly once, on the level seeded from the scene
+    /// image. It is a non-linear curve: composing it with itself at every
+    /// level would leave only the sun disc.
+    #[test]
+    fn only_the_scene_seeded_level_thresholds() {
+        assert_eq!(bright_pass_enable(0), 1.0);
+        for level in 1..BLOOM_MIP_COUNT {
+            assert_eq!(
+                bright_pass_enable(level),
+                0.0,
+                "level {level} reads an already-thresholded mip and must not re-apply the knee",
+            );
+        }
+    }
+
+    /// `upload_params` must actually route `bright_pass_enable` into the
+    /// per-level UBO rather than hardcoding a lane. Without this the
+    /// predicate above can stay green while every level thresholds (or
+    /// none does) — the shader only ever sees what this write puts there.
+    #[test]
+    fn upload_params_feeds_the_enable_from_the_level_index() {
+        let src = include_str!("bloom.rs");
+        let body = src
+            .split_once("pub fn upload_params")
+            .expect("upload_params still exists")
+            .1;
+        let body = body
+            .split_once("for i in 0..(BLOOM_MIP_COUNT - 1)")
+            .expect("the down-chain loop precedes the up-chain loop")
+            .0;
+        assert!(
+            body.contains("bright_pass: [bright_pass_enable(i), 0.0, 0.0, 0.0]"),
+            "the down-chain param write must derive the bright-pass enable from the              level index — a literal here silently thresholds every level or none",
+        );
+    }
+
+    /// The Rust mirror above only means something if it is the same
+    /// expression the GPU runs. Pin the shader's own text.
+    #[test]
+    fn bright_pass_mirrors_the_shader_expression() {
+        let src = include_str!("../../shaders/bloom_downsample.comp");
+        for fragment in [
+            "float brightest = max(c.r, max(c.g, c.b));",
+            "clamp(brightest - BLOOM_THRESHOLD + BLOOM_KNEE, 0.0, 2.0 * BLOOM_KNEE)",
+            "soft = soft * soft / (4.0 * BLOOM_KNEE + 1.0e-6);",
+            "max(soft, brightest - BLOOM_THRESHOLD)",
+            "return c * (contribution / max(brightest, 1.0e-6));",
+        ] {
+            assert!(
+                src.contains(fragment),
+                "bloom_downsample.comp no longer contains `{fragment}` — the host-side                  mirror `bright_pass_scale` is now pinning a curve the GPU does not run",
+            );
+        }
+        assert!(
+            src.contains("if (params.bright_pass.x > 0.5)"),
+            "the shader must gate the knee on the per-level enable lane",
+        );
     }
 }

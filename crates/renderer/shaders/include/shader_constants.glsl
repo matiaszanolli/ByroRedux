@@ -223,6 +223,8 @@
 
 // Bloom + volumetrics tunables (floats — always decimal).
 #define BLOOM_INTENSITY 0.15
+#define BLOOM_THRESHOLD 1.0
+#define BLOOM_KNEE 0.5
 #define VOLUME_FAR 8960.0
 
 // Per-instance flag bits (`GpuInstance.flags`, lower 16 bits).

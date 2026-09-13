@@ -766,6 +766,8 @@ fn main() {
     )
     .unwrap();
     writeln!(out, "#define BLOOM_INTENSITY {BLOOM_INTENSITY:?}").unwrap();
+    writeln!(out, "#define BLOOM_THRESHOLD {BLOOM_THRESHOLD:?}").unwrap();
+    writeln!(out, "#define BLOOM_KNEE {BLOOM_KNEE:?}").unwrap();
     writeln!(out, "#define VOLUME_FAR {VOLUME_FAR:?}").unwrap();
     writeln!(out).unwrap();
 

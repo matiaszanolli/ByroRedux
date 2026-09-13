@@ -771,6 +771,8 @@ mod tests {
             ("WORKGROUP_Z", format!("#define WORKGROUP_Z {WORKGROUP_Z}")),
             ("THREADS_PER_CLUSTER", format!("#define THREADS_PER_CLUSTER {THREADS_PER_CLUSTER}")),
             ("BLOOM_INTENSITY", format!("#define BLOOM_INTENSITY {BLOOM_INTENSITY:?}")),
+            ("BLOOM_THRESHOLD", format!("#define BLOOM_THRESHOLD {BLOOM_THRESHOLD:?}")),
+            ("BLOOM_KNEE", format!("#define BLOOM_KNEE {BLOOM_KNEE:?}")),
             ("VOLUME_FAR", format!("#define VOLUME_FAR {VOLUME_FAR:?}")),
             ("NORMAL_ALPHA_SPEC_BIT", format!("#define NORMAL_ALPHA_SPEC_BIT {NORMAL_ALPHA_SPEC_BIT}u")),
             ("PARALLAX_ALPHA_HEIGHT_BIT", format!("#define PARALLAX_ALPHA_HEIGHT_BIT {PARALLAX_ALPHA_HEIGHT_BIT}u")),

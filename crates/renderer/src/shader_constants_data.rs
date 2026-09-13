@@ -790,6 +790,58 @@ pub const THREADS_PER_CLUSTER: u32 = 32;
 // globally instead.
 pub const BLOOM_INTENSITY: f32 = 0.15;
 
+// M58 / sky-overdrive fix — bloom bright-pass knee.
+//
+// Measured defect (Skyrim SE, Tamriel 5,-24, weather `SkyrimCloudy`,
+// deterministic `--camera-pos 5000,10500,-49000` capture): the sky
+// rendered at a uniform linear 0.57-0.91 with its authored
+// zenith->horizon gradient compressed to ~4% and the authored blue hue
+// (WTHR zenith `[0.161, 0.380, 0.459]`, R/B = 0.35) washed to near-white
+// (R/B = 0.81). Sampling the pre-bloom scene through the
+// `composite_term` debug view and the post-bloom frame at the same
+// camera isolated it: pre-bloom zenith `(0.335, 0.477, 0.539)`,
+// post-bloom `(0.572, 0.822, 0.914)` — a flat **1.71x** multiply on all
+// three channels, against the 1.75x that `BLOOM_INTENSITY`'s own
+// derivation above predicts for a spatially-uniform source.
+//
+// That is bloom behaving exactly as documented, on content it was never
+// meant to touch. With no bright-pass anywhere in the chain, the pyramid's
+// "local blurred average" over a large uniform region converges to the
+// region's own value, so `scene += bloom * BLOOM_INTENSITY` degenerates
+// from a highlight glow into a **pure gain** — and the sky is the largest
+// uniform bright region any exterior frame has. ACES then compresses the
+// result into its shoulder, which is what destroys both the gradient and
+// the hue: the defect is not that the sky is bright, it is that the sky is
+// multiplied into the part of the curve that cannot represent it.
+//
+// The knee is a Karis/Jimenez soft threshold applied ONCE, when the
+// pyramid is seeded from the scene (mip 0 of the down-chain); deeper
+// levels must not re-apply it or the curve compounds per level.
+// `DownsampleParams::bright_pass` carries the per-level enable.
+//
+// Values are chosen against the measured scene, not by feel:
+//   * diffuse sky body measures 0.33-0.71 pre-bloom, so it must sit
+//     below the knee's upper edge;
+//   * the sun disc reaches `sun_color * sun_intensity * sun_glare` plus
+//     the sky behind it (~1.8 for this weather), so it must sit above it.
+// `THRESHOLD +/- KNEE` = [0.5, 1.5] separates them: the sky retains ~3%
+// of its bloom (gain 1.71x -> ~1.02x) while the disc retains ~44%.
+//
+// Bethesda's LDR-authored emissives (0-1 monitor-space, the range
+// `BLOOM_INTENSITY` was hand-tuned for) land in the knee's lower half and
+// keep ~12% rather than the full broadband lift. That is a deliberate,
+// visible reduction: they are 0-1 content being read as scene radiance,
+// and the real fix is the global HDR emissive boost that
+// `feedback_color_space.md` and `BLOOM_INTENSITY`'s note above both
+// already name. Compensating for it here by dropping the threshold would
+// only reinstate the sky gain this constant exists to remove.
+pub const BLOOM_THRESHOLD: f32 = 1.0;
+/// Half-width of the soft knee around [`BLOOM_THRESHOLD`] — the quadratic
+/// ramp spans `THRESHOLD - KNEE ..= THRESHOLD + KNEE`. Zero would make the
+/// bright-pass a hard cutoff and put a visible contour wherever the sky
+/// crosses it.
+pub const BLOOM_KNEE: f32 = 0.5;
+
 // M55 — default volumetric far plane in Bethesda world units. Runtime
 // shaders now receive this through their UBO because the reach is configurable;
 // the generated define remains as the canonical default for diagnostics and
