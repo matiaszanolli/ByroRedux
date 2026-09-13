@@ -438,21 +438,29 @@ mod capture_ordering_tests {
         );
     }
 
-    /// Invariant (b): `depth_capture_record_copy(cmd)` must immediately
-    /// follow `copy_depth_to_history(cmd)`'s call site in `draw.rs`
-    /// (inside its `if has_effect_soft_material` guard since #3667 —
-    /// #4032), with no image-layout-affecting call between them. The
-    /// GPU-timer wrapper around `copy_depth_to_history`
-    /// (`cmd_depth_history_copy_start`/`_end`) and the explanatory comment
-    /// between the two calls are the only things allowed to sit there —
-    /// neither touches the depth image's layout, unlike a barrier, copy,
-    /// or blit would. **Not** because `depth_capture_record_copy`'s
-    /// `DEPTH_STENCIL_READ_ONLY_OPTIMAL` precondition comes FROM the
-    /// history copy — it comes from the render pass's own depth-attachment
-    /// `final_layout` and holds whether or not the (conditional) history
-    /// copy ran at all. This ordering check exists so that *when* the
-    /// history copy does run, nothing between the two calls disturbs the
-    /// layout it just restored.
+    /// Invariant (b): nothing between the end of the geometry render pass
+    /// and `depth_capture_record_copy(cmd)` in `draw.rs` may disturb the
+    /// depth image's layout, and the (conditional) history copy must still
+    /// precede the capture.
+    ///
+    /// `depth_capture_record_copy`'s `DEPTH_STENCIL_READ_ONLY_OPTIMAL`
+    /// precondition does **not** come from the history copy — it comes
+    /// from the render pass's own depth-attachment `final_layout`
+    /// (`helpers.rs::create_render_pass`) and holds whether or not the
+    /// history copy ran. The copy is wrapped in
+    /// `if has_effect_soft_material` (#3667 / #4032), so on the common
+    /// path it does not run at all; when it does, it restores the same
+    /// layout it borrowed.
+    ///
+    /// #4021 — that is why the scanned window starts at the geometry pass
+    /// rather than at the history copy. Anchoring on the conditional call
+    /// left everything before the `if` block unscanned, which is a region
+    /// that is actively edited: a `memory_barrier(...)` call sits there
+    /// today, harmlessly, fifteen lines above where the old scan began.
+    /// The hazard list is likewise widened past the four raw `cmd_*`
+    /// spellings it started with, to cover the `image_barrier_*` builders
+    /// that are this codebase's dominant idiom — see the list below for
+    /// what is deliberately excluded and why.
     #[test]
     fn record_copy_runs_immediately_after_the_depth_history_copy() {
         let src = include_str!("draw.rs");
@@ -475,20 +483,62 @@ mod capture_ordering_tests {
              nothing between the two calls disturbs it either way."
         );
 
-        let between = &src[history_copy_pos..record_copy_pos];
+        // #4021 — scan from the RENDER PASS, not from the history copy.
+        //
+        // The window used to start at `copy_depth_to_history`, which sits
+        // inside `if has_effect_soft_material` and therefore does not run
+        // on the common path. Since the layout guarantor is the render
+        // pass's own `final_layout`, the region a layout-affecting call
+        // could be introduced into starts where the render pass ends —
+        // anything added before the `if` block was outside the old scan
+        // entirely, and that region is actively edited (a `memory_barrier`
+        // call sits there today).
+        //
+        // Anchored on `record_geometry_pass`, not on `cmd_end_render_pass`:
+        // the latter does not appear in `draw.rs` at all. The geometry pass
+        // was extracted to `geometry_pass.rs` (#1748), which is where
+        // `cmd_end_render_pass` lives, so the call site is the last point
+        // in `draw.rs` before the depth image is left in its final layout.
+        let geometry_pass_pos = src
+            .find("self.record_geometry_pass(")
+            .expect("draw_frame must still call record_geometry_pass (#1748)");
+        assert!(
+            geometry_pass_pos < history_copy_pos,
+            "the geometry pass must precede the frame-tail depth work"
+        );
+        let between = &src[geometry_pass_pos..record_copy_pos];
+
+        // #4021 — the old list greped for four raw `cmd_*` spellings and
+        // was blind to this codebase's dominant idiom: `descriptors.rs`
+        // exports eight `image_barrier_*` builders, any of which can carry
+        // a layout transition into a `cmd_pipeline_barrier` call.
+        //
+        // `memory_barrier(` is deliberately NOT on this list, despite being
+        // the helper that already appears in the widened window. It builds
+        // a `vk::MemoryBarrier` and passes empty image- and buffer-barrier
+        // slices, so it cannot change an image layout — listing it would be
+        // a guaranteed false positive on correct code, which is how a guard
+        // stops being trusted.
         for hazard in [
             "cmd_pipeline_barrier",
+            "cmd_pipeline_barrier2",
+            "image_barrier_",
+            "cmd_clear_depth_stencil_image",
             "cmd_copy_image(",
             "cmd_copy_image_to_buffer(",
+            "cmd_copy_buffer_to_image(",
             "cmd_blit_image(",
+            "cmd_resolve_image(",
         ] {
             assert!(
                 !between.contains(hazard),
-                "found `{hazard}` between copy_depth_to_history and \
-                 depth_capture_record_copy — a layout transition or copy \
-                 there could invalidate the DEPTH_STENCIL_READ_ONLY_OPTIMAL \
-                 precondition depth_capture_record_copy documents and \
-                 relies on. (#3628)"
+                "found `{hazard}` between the geometry pass and \
+                 depth_capture_record_copy — a layout transition or image \
+                 copy there could invalidate the \
+                 DEPTH_STENCIL_READ_ONLY_OPTIMAL precondition that \
+                 depth_capture_record_copy documents and relies on, which \
+                 the render pass's own depth-attachment final_layout \
+                 establishes (#3628 / #4021)"
             );
         }
     }
