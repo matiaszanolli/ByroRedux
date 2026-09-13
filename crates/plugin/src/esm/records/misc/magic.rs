@@ -1131,6 +1131,36 @@ mod tests {
         }
     }
 
+    /// #4131 — the prior EPFD FormId test only ever exercised `&None`
+    /// (identity) remap, so a future regression that un-wrapped this arm's
+    /// `remap_fid` call would compile clean and pass every existing test.
+    /// Pin the non-identity case the way #4069's sibling fixes do elsewhere.
+    #[test]
+    fn parse_perk_epfd_form_id_is_remapped() {
+        // mod_index 1 == this plugin's own slot (self-reference).
+        let epfd = 0x0100_0ABCu32.to_le_bytes();
+        let subs = vec![
+            sub(b"PRKE", &[2u8, 0, 1]),
+            sub(b"DATA", &[44u8, 4, 0, 0]), // entry_point=44, function=4 (FormId)
+            sub(b"EPFD", &epfd),
+            sub(b"PRKF", &[]),
+        ];
+        let remap = FormIdRemap::regular(2, vec![0]);
+        let p = parse_perk(0x0200_0001, &subs, &Some(remap));
+        assert_eq!(p.entries.len(), 1);
+        match &p.entries[0].body {
+            PerkEntryBody::EntryPoint { function_data, .. } => {
+                assert_eq!(
+                    *function_data,
+                    PerkFunctionData::FormId(0x0200_0ABC),
+                    "a self-referencing EPFD FormId must land on the plugin's \
+                     own global slot, not keep its plugin-local mod index"
+                );
+            }
+            _ => panic!("expected EntryPoint"),
+        }
+    }
+
     #[test]
     fn parse_perk_epfd_lstring() {
         let epfd = 0x0042u32.to_le_bytes();
@@ -1204,6 +1234,40 @@ mod tests {
         assert_eq!(m.light_form_id, 0x0200_6666);
     }
 
+    /// #4131 — `associated_item` and `effect_shader_id` (#4070) were only
+    /// ever exercised under `&None` (identity) remap in
+    /// `parse_mgef_full_data_fnv_layout`, so a future regression reverting
+    /// either call to a raw read would compile clean and pass every
+    /// existing test. Pin both the way `parse_mgef_light_form_id_is_remapped`
+    /// pins the sibling `light_form_id` field.
+    #[test]
+    fn parse_mgef_associated_item_and_effect_shader_id_are_remapped() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // effect_flags
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // base_cost
+        data.extend_from_slice(&0x0100_1111u32.to_le_bytes()); // associated_item, self-ref
+        data.extend_from_slice(&0i32.to_le_bytes()); // magic_school
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // resistance_av
+        data.extend_from_slice(&0u16.to_le_bytes()); // counter_count
+        data.extend_from_slice(&0u16.to_le_bytes()); // pad
+        data.extend_from_slice(&0u32.to_le_bytes()); // light_form_id
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // projectile_speed
+        data.extend_from_slice(&0x0000_2222u32.to_le_bytes()); // effect_shader_id, master-ref
+        assert_eq!(data.len(), 36);
+        let subs = vec![sub(b"DATA", &data)];
+        let m = parse_mgef(0x6001, &subs, &remap);
+        assert_eq!(
+            m.associated_item, 0x0200_1111,
+            "a self-referencing associated_item must land on the plugin's \
+             own global slot, not keep its plugin-local mod index"
+        );
+        assert_eq!(
+            m.effect_shader_id, 0x0000_2222,
+            "a master-slot effect_shader_id (mod_index 0) already sits at slot 0"
+        );
+    }
+
     #[test]
     fn parse_spel_with_two_effects() {
         let mut spit = Vec::new();
@@ -1236,6 +1300,32 @@ mod tests {
         assert_eq!(s.effects[0].magnitude, 5.0);
         assert_eq!(s.effects[1].effect_form_id, 0xBBBB);
         assert_eq!(s.effects[1].duration, 0);
+    }
+
+    /// #4131 — `MagicEffectAccumulator::feed`'s EFID remap (#4071) was only
+    /// ever exercised under `&None` (identity) remap, so a future regression
+    /// reverting the latch's `remap_fid` call would compile clean and pass
+    /// every existing test. Pin the non-identity case here, shared by every
+    /// `parse_spel`/`parse_ench` caller of the accumulator.
+    #[test]
+    fn parse_spel_efid_is_remapped() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let mut efit = Vec::new();
+        efit.extend_from_slice(&1.0f32.to_le_bytes()); // mag
+        efit.extend_from_slice(&0u32.to_le_bytes()); // area
+        efit.extend_from_slice(&0u32.to_le_bytes()); // dur
+
+        let subs = vec![
+            sub(b"EFID", &0x0100_7777u32.to_le_bytes()), // self-ref
+            sub(b"EFIT", &efit),
+        ];
+        let s = parse_spel(0x6667, &subs, &remap);
+        assert_eq!(s.effects.len(), 1);
+        assert_eq!(
+            s.effects[0].effect_form_id, 0x0200_7777,
+            "a self-referencing EFID must land on the plugin's own global \
+             slot, not keep its plugin-local mod index"
+        );
     }
 
     #[test]

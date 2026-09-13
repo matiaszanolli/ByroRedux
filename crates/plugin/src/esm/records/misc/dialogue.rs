@@ -621,6 +621,24 @@ mod tests {
         assert_eq!(m.owner_quest, 0x0002_1234);
     }
 
+    /// #4131 — `parse_mesg`'s QNAM (#4071) was only ever exercised under
+    /// `&None` (identity) remap, so a future regression reverting the
+    /// `remap_fid` call would compile clean and pass every existing test.
+    #[test]
+    fn parse_mesg_qnam_is_remapped() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let subs = vec![
+            sub(b"EDID", b"FastTravelMessage\0"),
+            sub(b"QNAM", &0x0100_9999u32.to_le_bytes()), // self-ref
+        ];
+        let m = parse_mesg(0x0200_0001, &subs, &remap);
+        assert_eq!(
+            m.owner_quest, 0x0200_9999,
+            "a self-referencing QNAM must land on the plugin's own global \
+             slot, not keep its plugin-local mod index"
+        );
+    }
+
     #[test]
     fn parse_info_picks_anam_actor() {
         let anam = 0xDEAD_BEEFu32.to_le_bytes();

@@ -793,6 +793,7 @@ mod tests {
 
     /// `TargetSkill = SneakSkill + 5·(TargetLevel − DetectorLevel)
     /// + max(50 − 10·TargetLevel, 0) − Armor`, and `0` when not sneaking.
+    ///
     /// The `max(…, 0)` low-level bonus and the both-actors level term are
     /// FNV's addition over FO3.
     #[test]

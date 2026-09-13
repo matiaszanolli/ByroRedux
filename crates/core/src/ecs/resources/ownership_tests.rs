@@ -33,8 +33,10 @@ fn precombine_mesh_rows_above_baseline_is_a_leak() {
     // unload is exactly the "double geometry that never goes away" failure
     // mode the class exists to catch, distinct from a generic
     // `cell_root_rows` surplus that could be any owner type.
-    let mut base = OwnershipSnapshot::default();
-    base.precombine_mesh_rows = 12;
+    let base = OwnershipSnapshot {
+        precombine_mesh_rows: 12,
+        ..Default::default()
+    };
     let mut leaked = base;
     leaked.precombine_mesh_rows = 18;
 
@@ -73,12 +75,16 @@ fn classes_and_write_values_agree_on_order() {
 
 #[test]
 fn max_with_is_elementwise() {
-    let mut a = OwnershipSnapshot::default();
-    a.transform_rows = 10;
-    a.physics_bodies = 3;
-    let mut b = OwnershipSnapshot::default();
-    b.transform_rows = 4;
-    b.physics_bodies = 9;
+    let a = OwnershipSnapshot {
+        transform_rows: 10,
+        physics_bodies: 3,
+        ..Default::default()
+    };
+    let b = OwnershipSnapshot {
+        transform_rows: 4,
+        physics_bodies: 9,
+        ..Default::default()
+    };
 
     let m = a.max_with(&b);
     assert_eq!(m.transform_rows, 10);
@@ -100,10 +106,12 @@ fn no_baseline_means_no_verdict() {
 
 #[test]
 fn clean_return_to_baseline_passes() {
-    let mut base = OwnershipSnapshot::default();
-    base.transform_rows = 100;
-    base.physics_bodies = 5;
-    base.cell_root_index_entries = 1;
+    let base = OwnershipSnapshot {
+        transform_rows: 100,
+        physics_bodies: 5,
+        cell_root_index_entries: 1,
+        ..Default::default()
+    };
 
     let mut t = OwnershipTracker::new();
     t.set_baseline(base);
@@ -116,8 +124,10 @@ fn clean_return_to_baseline_passes() {
 
 #[test]
 fn exact_class_above_baseline_is_a_leak() {
-    let mut base = OwnershipSnapshot::default();
-    base.physics_bodies = 5;
+    let base = OwnershipSnapshot {
+        physics_bodies: 5,
+        ..Default::default()
+    };
     let mut leaked = base;
     leaked.physics_bodies = 9;
 
@@ -136,8 +146,10 @@ fn exact_class_above_baseline_is_a_leak() {
 fn exact_class_below_baseline_is_not_a_finding() {
     // Ending *under* baseline is not a leak. It happens legitimately when the
     // baseline is taken with a cell resident and the soak ends fully unloaded.
-    let mut base = OwnershipSnapshot::default();
-    base.transform_rows = 100;
+    let base = OwnershipSnapshot {
+        transform_rows: 100,
+        ..Default::default()
+    };
     let mut fewer = base;
     fewer.transform_rows = 40;
 
@@ -152,11 +164,13 @@ fn bounded_class_above_baseline_is_not_a_leak() {
     // The mesh/texture registries never reuse handles (#372) and the sound
     // cache retains across cells by design. Holding them to an exact return
     // would fail every single run, so the gate must not.
-    let mut base = OwnershipSnapshot::default();
-    base.meshes_registry = 100;
-    base.textures_registry = 50;
-    base.sound_cache_entries = 4;
-    base.entities_spawned = 1_000;
+    let base = OwnershipSnapshot {
+        meshes_registry: 100,
+        textures_registry: 50,
+        sound_cache_entries: 4,
+        entities_spawned: 1_000,
+        ..Default::default()
+    };
 
     let mut settled = base;
     settled.meshes_registry = 180;
@@ -181,8 +195,10 @@ fn bounded_class_above_baseline_is_not_a_leak() {
 fn only_the_final_cycle_decides_reclamation() {
     // A mid-run sample can sit high because unload hysteresis has not yet
     // evicted the trailing cells. Only the settled end state is evidence.
-    let mut base = OwnershipSnapshot::default();
-    base.transform_rows = 100;
+    let base = OwnershipSnapshot {
+        transform_rows: 100,
+        ..Default::default()
+    };
     let mut spike = base;
     spike.transform_rows = 900;
 
@@ -287,14 +303,18 @@ fn flat_series_is_not_growth() {
 
 #[test]
 fn high_water_folds_baseline_and_every_cycle() {
-    let mut base = OwnershipSnapshot::default();
-    base.blas_entries = 7;
+    let base = OwnershipSnapshot {
+        blas_entries: 7,
+        ..Default::default()
+    };
     let mut t = OwnershipTracker::new();
     t.set_baseline(base);
 
-    let mut mid = OwnershipSnapshot::default();
-    mid.blas_entries = 3;
-    mid.terrain_tiles = 25;
+    let mid = OwnershipSnapshot {
+        blas_entries: 3,
+        terrain_tiles: 25,
+        ..Default::default()
+    };
     t.record_cycle(mid);
 
     // Baseline contributes its own peak even though no cycle matched it.
@@ -304,8 +324,10 @@ fn high_water_folds_baseline_and_every_cycle() {
 
 #[test]
 fn report_names_every_class_and_flags_the_leak() {
-    let mut base = OwnershipSnapshot::default();
-    base.terrain_tiles = 2;
+    let base = OwnershipSnapshot {
+        terrain_tiles: 2,
+        ..Default::default()
+    };
     let mut leaked = base;
     leaked.terrain_tiles = 20;
 
@@ -332,10 +354,12 @@ fn report_names_every_class_and_flags_the_leak() {
 fn multiple_leaks_are_all_reported() {
     // The gate must not stop at the first finding — a soak run is expensive
     // and should surface every leaked owner in one pass.
-    let mut base = OwnershipSnapshot::default();
-    base.physics_bodies = 1;
-    base.script_timer_rows = 1;
-    base.particle_emitters = 1;
+    let base = OwnershipSnapshot {
+        physics_bodies: 1,
+        script_timer_rows: 1,
+        particle_emitters: 1,
+        ..Default::default()
+    };
 
     let mut leaked = base;
     leaked.physics_bodies = 2;
@@ -382,9 +406,11 @@ fn live_slot_counts_are_not_exempt() {
     // The residency counterparts of the monotonic registries must still be
     // held to an exact return — they are the classes that actually answer
     // "did the GPU resources come back?".
-    let mut base = OwnershipSnapshot::default();
-    base.meshes_live_slots = 100;
-    base.texture_live_slots = 40;
+    let base = OwnershipSnapshot {
+        meshes_live_slots: 100,
+        texture_live_slots: 40,
+        ..Default::default()
+    };
     let mut leaked = base;
     leaked.meshes_live_slots = 130;
     leaked.texture_live_slots = 55;
@@ -442,9 +468,11 @@ fn oscillating_reachability_is_accepted() {
     // The literal FNV WastelandNV series that drove the reclassification.
     // Non-monotonic movement inside a fixed band, with residency flat, is the
     // engine behaving correctly — the gate must stay silent on it.
-    let mut base = OwnershipSnapshot::default();
-    base.meshes_in_use = 620;
-    base.meshes_live_slots = 718;
+    let base = OwnershipSnapshot {
+        meshes_in_use: 620,
+        meshes_live_slots: 718,
+        ..Default::default()
+    };
     let mut t = OwnershipTracker::new();
     t.set_baseline(base);
     for v in [620_u64, 715, 591, 620, 715] {

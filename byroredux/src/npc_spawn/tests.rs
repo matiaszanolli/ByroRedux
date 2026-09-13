@@ -2266,3 +2266,109 @@ fn bannered_mare_outfits_keep_every_inam_entry_on_real_skyrim_data() {
          are being truncated again (#3356)"
     );
 }
+
+/// #4133 — the prior `AUDIT_CHARACTER_2026-09-11.md` follow-up asked for
+/// every independent `resolve_inherited_{stats,traits,factions,ai_packages}`
+/// call site on the spawn path to be hoisted into a single resolve-once at
+/// `spawn_placement_root`. That hoist was deliberately NOT done: each
+/// dimension resolves to a genuinely different record depending on its own,
+/// independently-set `TEMPLATE_FLAG_USE_*` bit, so a single hoisted
+/// "resolved NPC" would silently be wrong for any actor where the flags
+/// disagree — doing the hoist correctly means threading four separate
+/// resolved records through call sites that already span a crate boundary
+/// (`byroredux` binary → `byroredux-plugin`), a far larger and riskier
+/// change than this ticket's actual impact (zero live bug; a latent,
+/// prospective one) justifies.
+///
+/// What this test pins instead: the CURRENT, reviewed count of independent
+/// call sites, source-scanned per file. The type system gives a future
+/// contributor no signal to route a new population-boundary read through
+/// `resolve_inherited_*` (that's the actual defect class, recurred seven
+/// times per #4133's own count) — this is the source-scan substitute,
+/// following the project's convention for pinning invariants that can't be
+/// unit-tested directly. A new site (an eleventh) — or a legitimate
+/// reduction via the hoist above — must update this enumerated list
+/// deliberately rather than drift past it unnoticed.
+#[test]
+fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
+    const NPC_SPAWN_RS: &str = include_str!("../npc_spawn.rs");
+    const RESUMABLE_RS: &str = include_str!("resumable.rs");
+    const AI_PACKAGE_RS: &str = include_str!("ai_package.rs");
+    const REFERENCES_MOD_RS: &str = include_str!("../cell_loader/references/mod.rs");
+    const ACTOR_VALUE_DERIVE_RS: &str =
+        include_str!("../../../crates/plugin/src/esm/records/actor_value_derive.rs");
+
+    let call_names = [
+        "resolve_inherited_stats(",
+        "resolve_inherited_traits(",
+        "resolve_inherited_factions(",
+        "resolve_inherited_ai_packages(",
+    ];
+
+    // Strips `//`/`///` comment lines so a doc-comment mentioning one of
+    // these functions in prose (npc_spawn.rs's `build_npc_equip_state` doc
+    // does exactly this) can't be mistaken for a real call site.
+    fn count_calls(source: &str, names: &[&str]) -> usize {
+        let code_only: String = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        names.iter().map(|n| code_only.matches(n).count()).sum()
+    }
+
+    // actor_value_derive.rs's test module (its own `resolve_inherited_traits`
+    // fixture, unrelated to the production call sites below) must not
+    // inflate the count — split it off the way the other four files don't
+    // need to, since they have no test-module call of these functions.
+    let actor_value_derive_production = ACTOR_VALUE_DERIVE_RS
+        .split_once("#[cfg(test)]\nmod tests {")
+        .map(|(production, _)| production)
+        .expect("actor_value_derive.rs must still carry a #[cfg(test)] mod tests block");
+
+    let counts = [
+        ("npc_spawn.rs", count_calls(NPC_SPAWN_RS, &call_names)),
+        (
+            "npc_spawn/resumable.rs",
+            count_calls(RESUMABLE_RS, &call_names),
+        ),
+        (
+            "npc_spawn/ai_package.rs",
+            count_calls(AI_PACKAGE_RS, &call_names),
+        ),
+        (
+            "cell_loader/references/mod.rs",
+            count_calls(REFERENCES_MOD_RS, &call_names),
+        ),
+        (
+            "esm/records/actor_value_derive.rs",
+            count_calls(actor_value_derive_production, &call_names),
+        ),
+    ];
+
+    // npc_spawn.rs: stamp_faction_ranks (factions) + stamp_creature_attack
+    //   (stats) + stamp_character_components (stats + traits) = 4.
+    // resumable.rs: prepare_runtime_state, prepare_creature_state,
+    //   prepare_prebaked_state each resolve traits for race = 3.
+    // ai_package.rs: apply_ai_package_behavior resolves ai_packages = 1.
+    // cell_loader/references/mod.rs: load_references_budgeted resolves
+    //   traits for race = 1.
+    // actor_value_derive.rs: derive_npc_actor_values resolves stats + traits
+    //   independently again, inside the plugin crate = 2.
+    // Total = 11, one more than #4133's own count of nine (it didn't count
+    // the plugin-crate site).
+    let expected: [(&str, usize); 5] = [
+        ("npc_spawn.rs", 4),
+        ("npc_spawn/resumable.rs", 3),
+        ("npc_spawn/ai_package.rs", 1),
+        ("cell_loader/references/mod.rs", 1),
+        ("esm/records/actor_value_derive.rs", 2),
+    ];
+
+    assert_eq!(
+        counts, expected,
+        "resolve_inherited_* call-site count drifted from the #4133-pinned \
+         baseline — a new independent site (or a deliberate reduction via \
+         the hoist #4133 proposes) must update this test's enumerated list: {counts:?}"
+    );
+}

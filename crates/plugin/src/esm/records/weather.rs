@@ -1876,6 +1876,43 @@ mod tests {
         assert_eq!(w.skyrim_visual_effect, Some(0x8765_4321));
     }
 
+    /// #4131 — MNAM/NNAM were only ever exercised under `&None` (identity)
+    /// remap, so a future regression that un-wraps either `remap_fid` call
+    /// would compile clean and pass every existing test. Pin both fields
+    /// through a non-identity plugin-slot remap the way
+    /// `parse_clmt_wlst_remaps_to_global_form_id_space` pins WLST.
+    #[test]
+    fn parse_wthr_skyrim_mnam_nnam_remap_to_global_form_id_space() {
+        let remap = FormIdRemap::regular(2, vec![0]);
+
+        // mod_index 1 == this plugin's own slot (self-reference).
+        let precip_self_ref: u32 = 0x0100_0ABC;
+        // mod_index 0 == the master's slot; already at its global home.
+        let visual_master_ref: u32 = 0x0000_0DEF;
+
+        let w = parse_wthr(
+            0xD1D,
+            &[
+                sub(b"MNAM", precip_self_ref.to_le_bytes().to_vec()),
+                sub(b"NNAM", visual_master_ref.to_le_bytes().to_vec()),
+            ],
+            GameKind::Skyrim,
+            &Some(remap),
+        );
+
+        assert_eq!(
+            w.skyrim_precipitation_effect,
+            Some(0x0200_0ABC),
+            "a self-referencing MNAM must land on the plugin's own global \
+             slot, not keep its plugin-local mod index"
+        );
+        assert_eq!(
+            w.skyrim_visual_effect,
+            Some(visual_master_ref),
+            "a master-slot NNAM reference (mod_index 0) already sits at slot 0"
+        );
+    }
+
     /// Regression for #3985 — an authored `0` byte is a legal value and
     /// must still mark the layer as authored (not fall through to the
     /// default-and-therefore-"absent" reading). Distinct from the fields'
