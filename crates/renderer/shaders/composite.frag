@@ -57,7 +57,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 cloud_params_2; // cloud layer 2 (WTHR ANAM) — same packing (M33.1)
     vec4 cloud_params_3; // cloud layer 3 (WTHR BNAM) — same packing (M33.1)
     vec4 weather_params; // rain, snow, thunder frequency, session seconds
-    vec4 weather_wind; // wind direction x/z, normalized speed, reserved
+    vec4 weather_wind; // x = wind dir x, y = normalized speed, z = wind dir z, w reserved
     vec4 weather_lightning; // lightning RGB, moon glare
     vec4 weather_sky; // stars RGB, sun glare
     vec4 weather_aurora; // aurora intensity, follows-sun flag, procedural cloud coverage, reserved

@@ -42,7 +42,7 @@ struct SkyDome {
     vec4 cloud_tint_2;
     vec4 cloud_tint_3;
     vec4 weather_params;    // rain, snow, thunder frequency, session seconds
-    vec4 weather_wind;      // wind dir x/z, normalized speed, reserved
+    vec4 weather_wind;      // x = wind dir x, y = normalized speed, z = wind dir z, w reserved
     vec4 weather_lightning; // lightning RGB, moon glare
     vec4 weather_sky;       // stars RGB, sun glare
     vec4 weather_aurora;    // intensity, follows-sun, procedural coverage, reserved

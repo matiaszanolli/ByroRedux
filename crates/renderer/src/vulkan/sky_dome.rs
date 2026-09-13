@@ -134,6 +134,59 @@ mod tests {
         }
     }
 
+    /// Every shader reading `weather_wind` must match the host packing,
+    /// `[dir.x, speed, dir.z, 0]`. The field's own comments once said
+    /// "dir x/z, normalized speed", which reads as `.xy` / `.z`; the cloud
+    /// march took it that way and advected with speed folded into the
+    /// direction. The authored-plane path read it correctly, so the two
+    /// cloud representations drifted in different directions.
+    #[test]
+    fn wind_consumers_match_the_host_packing() {
+        let draw = include_str!("context/draw.rs");
+        let packing = draw
+            .split_once("weather_wind: [")
+            .expect("build_composite_params still packs weather_wind")
+            .1
+            // The closing bracket on its own line — a bare `"],"` would stop
+            // inside `wind_direction[0],`.
+            .split_once("\n        ],")
+            .expect("that packing is still terminated")
+            .0;
+        let lanes: Vec<&str> = packing
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(
+            lanes,
+            [
+                "sky_params.weather.wind_direction[0],",
+                "sky_params.weather.wind_speed,",
+                "sky_params.weather.wind_direction[1],",
+                "0.0,",
+            ],
+            "the host weather_wind packing changed — every shader swizzle below is \
+             now suspect",
+        );
+
+        let clouds = include_str!("../../shaders/include/clouds.glsl");
+        assert!(
+            clouds.contains("dome.weather_wind.xz * dome.weather_wind.y"),
+            "clouds.glsl must advect along .xz at speed .y",
+        );
+        for bad in ["weather_wind.xy", "weather_wind.z "] {
+            assert!(
+                !clouds.contains(bad),
+                "clouds.glsl reads `{bad}`, which is not how the host packs wind",
+            );
+        }
+        assert!(
+            SKY_GLSL.contains("vec2 wind = dome.weather_wind.xz;")
+                && SKY_GLSL.contains("float wind_speed = dome.weather_wind.y;"),
+            "the authored-plane path's wind read is the reference the march must agree with",
+        );
+    }
+
     /// `sky.glsl` owns the set-1 bindless array (it is the only thing in
     /// either consumer that samples it). Two declarations of one binding in
     /// the same stage is a compile error, so a consumer that re-declares it

@@ -145,7 +145,12 @@ vec4 cloud_march(
     );
 
     float time = dome.weather_params.w;
-    vec2 wind = dome.weather_wind.xy * dome.weather_wind.z * time * 0.00002;
+    // The host packs `[dir.x, speed, dir.z, 0]` (`build_composite_params`),
+    // so direction is `.xz` and speed is `.y` — the same read
+    // `weather_procedural_cloud` makes. An earlier `.xy * .z` here folded
+    // the speed into the direction and used `dir.z` as the speed, so the
+    // layer drifted off-axis and stood still under a pure X wind.
+    vec2 wind = dome.weather_wind.xz * dome.weather_wind.y * time * 0.00002;
 
     float step_size = (end - start) / float(CLOUD_VIEW_STEPS);
     float transmittance = 1.0;
