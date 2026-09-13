@@ -1229,13 +1229,41 @@ impl GroundCoverPipeline {
             );
             // §4: one workgroup per chunk, mirroring `cluster_cull.comp`.
             device.cmd_dispatch(cmd, self.frame_chunk_count, 1, 1);
+            // #4181 / CONC-D2-01 — `TRANSFER` / `TRANSFER_READ` in the dst
+            // scope is for the `cmd_copy_buffer` immediately below, not for
+            // the draw.
+            //
+            // The scatter writes `counters.buffer` via atomics; this is the
+            // single barrier publishing those writes, and it used to name
+            // only the draw's consumers (`DRAW_INDIRECT | VERTEX_SHADER` /
+            // `INDIRECT_COMMAND_READ | SHADER_READ`). The readback copy
+            // reads the same buffer with no dependency on the compute write
+            // at all — the two sibling edges in this file
+            // (`TRANSFER→COMPUTE` above the dispatch, `COMPUTE→COMPUTE |
+            // VERTEX` in `record_interaction`) are both correct by contrast.
+            //
+            // Rendering was never affected: the draw path reads through the
+            // correctly-published half of this same barrier. What was
+            // undefined is the readback `harvest` decodes into
+            // `GroundCoverStats` — blade counts, density histogram, extrema
+            // — which EXAL ground-cover tuning reads directly (#4054), so
+            // the failure mode is silently wrong telemetry driving tuning
+            // decisions rather than a visible artefact.
+            //
+            // Widening the existing edge rather than adding a second one:
+            // same class of purely-additive change as #2403's skinned-vertex
+            // publish mask.
             buffer_barrier(
                 device,
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::AccessFlags::SHADER_WRITE,
-                vk::PipelineStageFlags::DRAW_INDIRECT | vk::PipelineStageFlags::VERTEX_SHADER,
-                vk::AccessFlags::INDIRECT_COMMAND_READ | vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::DRAW_INDIRECT
+                    | vk::PipelineStageFlags::VERTEX_SHADER
+                    | vk::PipelineStageFlags::TRANSFER,
+                vk::AccessFlags::INDIRECT_COMMAND_READ
+                    | vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::TRANSFER_READ,
             );
             // Snapshot the counters for the §11.3 histogram. Copied rather
             // than read in place so the scatter never touches host-visible
@@ -1534,6 +1562,58 @@ fn blade_push_bytes(push: &BladePush) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: #4181 / CONC-D2-01 — the scatter's publish barrier must
+    /// cover the counter readback copy, not just the draw.
+    ///
+    /// `groundcover_scatter.comp` writes `counter_buffer` via atomics; the
+    /// single barrier after the dispatch used to name only the draw's
+    /// consumers (`DRAW_INDIRECT | VERTEX_SHADER` /
+    /// `INDIRECT_COMMAND_READ | SHADER_READ`), and the `cmd_copy_buffer`
+    /// immediately below it read the same buffer with no dependency on the
+    /// compute write at all.
+    ///
+    /// Rendering was never affected — the draw reads through the
+    /// correctly-published half of this same barrier. What was undefined is
+    /// the readback `harvest` decodes into `GroundCoverStats`, which EXAL
+    /// ground-cover tuning reads directly (#4054): silently wrong telemetry
+    /// driving tuning decisions, which no rendering assertion would catch.
+    #[test]
+    fn scatter_publish_barrier_covers_the_counter_readback_copy() {
+        let src = include_str!("groundcover.rs");
+        // Scoped to the production portion so this test's own literals
+        // cannot satisfy it.
+        let module_start = src
+            .find("mod tests {")
+            .expect("this test module must still exist");
+        let src = &src[..module_start];
+
+        let dispatch_at = src
+            .find("device.cmd_dispatch(cmd, self.frame_chunk_count, 1, 1);")
+            .expect("the scatter dispatch must still exist under this spelling");
+        let copy_at = src[dispatch_at..]
+            .find("device.cmd_copy_buffer(")
+            .expect("the counter readback copy must still follow the scatter dispatch")
+            + dispatch_at;
+        let between = &src[dispatch_at..copy_at];
+
+        assert!(
+            between.contains("vk::PipelineStageFlags::TRANSFER"),
+            "the barrier between the scatter dispatch and the counter readback must \
+             name TRANSFER in its dst stage mask (#4181)"
+        );
+        assert!(
+            between.contains("vk::AccessFlags::TRANSFER_READ"),
+            "the barrier between the scatter dispatch and the counter readback must \
+             name TRANSFER_READ in its dst access mask (#4181)"
+        );
+        // The draw's half must survive too — this is a widening, not a swap.
+        assert!(
+            between.contains("vk::PipelineStageFlags::DRAW_INDIRECT")
+                && between.contains("vk::AccessFlags::INDIRECT_COMMAND_READ"),
+            "widening the dst scope must not drop the draw's own edge"
+        );
+    }
 
     /// The GPU records are the shader contract. std430 rounds a `vec4` to a
     /// 16-byte boundary, so a record whose Rust side lost its explicit padding
