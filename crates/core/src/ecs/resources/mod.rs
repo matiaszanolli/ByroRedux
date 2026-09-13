@@ -737,6 +737,10 @@ pub struct SkinCoverageStats {
     /// history image. This is inactive when no loaded material source carries
     /// `MAT_FLAG_EFFECT_SOFT`.
     pub gpu_depth_history_copy_ms: f32,
+    /// SKYAL sky-cubemap bake (analytic sky + volumetric cloud march for
+    /// every texel of all six faces). Inactive when the bake failed to
+    /// initialise and the ray-traced sky fell back to the flat blend.
+    pub gpu_sky_cube_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2513 / REN-D20-NEW-03) ───
     //
@@ -763,6 +767,7 @@ pub struct SkinCoverageStats {
     pub gpu_upscale_active: bool,
     pub gpu_presentation_active: bool,
     pub gpu_depth_history_copy_active: bool,
+    pub gpu_sky_cube_active: bool,
 }
 
 /// CPU-side per-frame wall-clock breakdown — populated by the

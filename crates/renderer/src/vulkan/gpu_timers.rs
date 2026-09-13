@@ -2,9 +2,10 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, `QUERIES_PER_FRAME` (34) TIMESTAMP queries
-//! each — 17 start/end brackets, bumped from 32/16 by #4052's
-//! ground-cover-bench bracket (#4210):
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` (36) TIMESTAMP queries
+//! each — 18 start/end brackets, bumped from 32/16 by #4052's
+//! ground-cover-bench bracket (#4210) and again from 34/17 by the SKYAL
+//! sky-cubemap bake:
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -42,6 +43,8 @@
 //! | 31   | depth → history copy — end                           |
 //! | 32   | ground-cover §11.1 sampling bench — start            |
 //! | 33   | ground-cover §11.1 sampling bench — end              |
+//! | 34   | SKYAL sky-cubemap bake (sky + cloud march) — start   |
+//! | 35   | SKYAL sky-cubemap bake (sky + cloud march) — end     |
 //!
 //! The original four brackets (skin dispatch / skin palette / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
@@ -92,8 +95,8 @@ use ash::vk;
 
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 
-/// One TIMESTAMP query per bracket endpoint × seventeen brackets.
-const QUERIES_PER_FRAME: u32 = 34;
+/// One TIMESTAMP query per bracket endpoint × eighteen brackets.
+const QUERIES_PER_FRAME: u32 = 36;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -133,6 +136,12 @@ const Q_DEPTH_HISTORY_COPY_END: u32 = 31;
 /// frame (see `groundcover_bench.rs`).
 const Q_GROUNDCOVER_BENCH_START: u32 = 32;
 const Q_GROUNDCOVER_BENCH_END: u32 = 33;
+/// SKYAL sky-cubemap bake: the analytic sky plus the volumetric cloud march
+/// for every texel of every face. Measured so the choice of how the visible
+/// sky adopts the cloud layer (sample the cube / march per pixel /
+/// time-slice the bake) is made from a number rather than a guess.
+const Q_SKY_CUBE_START: u32 = 34;
+const Q_SKY_CUBE_END: u32 = 35;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -221,6 +230,10 @@ pub struct GpuTimerSnapshot {
     /// four different measurements depending on the round-robin's cursor;
     /// `GroundcoverBench` owns the attribution, not this snapshot.
     pub groundcover_bench_ms: f32,
+    /// SKYAL sky-cubemap bake — `sky_cube.comp`, one invocation per texel
+    /// of all six faces, each evaluating the analytic sky and marching the
+    /// volumetric cloud layer. Inactive when the bake failed to initialise.
+    pub sky_cube_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2278 / PERF-D9-01) ───────
     //
@@ -248,6 +261,7 @@ pub struct GpuTimerSnapshot {
     pub presentation_active: bool,
     pub depth_history_copy_active: bool,
     pub groundcover_bench_active: bool,
+    pub sky_cube_active: bool,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
@@ -259,7 +273,7 @@ pub struct GpuPerFrameTimers {
     /// Per-frame "was this bracket's pair written?" — set by the
     /// END writer, cleared on reset. Slot index matches the frame
     /// slot the pool reads from. Each u32 packs `BIT_*` flags
-    /// (one per bracket — currently 17). The bit-gated read in
+    /// (one per bracket — currently 18). The bit-gated read in
     /// `read_and_reset` is required because WAIT-reading an
     /// unwritten query blocks forever.
     ///
@@ -290,6 +304,7 @@ const BIT_PRESENTATION: u32 = 0x2000;
 const BIT_DEPTH_HISTORY_COPY: u32 = 0x8000;
 /// #4052. The first bracket past the old `u16`'s width.
 const BIT_GROUNDCOVER_BENCH: u32 = 0x0001_0000;
+const BIT_SKY_CUBE: u32 = 0x0002_0000;
 
 /// Build a [`GpuTimerSnapshot`] from a raw batched TIMESTAMP read.
 /// Pulled out of [`GpuPerFrameTimers::read_and_reset`] as a pure
@@ -378,6 +393,10 @@ fn snapshot_from_bits(
     if snap.groundcover_bench_active {
         snap.groundcover_bench_ms = bracket_ms(Q_GROUNDCOVER_BENCH_START);
     }
+    snap.sky_cube_active = bits & BIT_SKY_CUBE != 0;
+    if snap.sky_cube_active {
+        snap.sky_cube_ms = bracket_ms(Q_SKY_CUBE_START);
+    }
     snap
 }
 
@@ -440,7 +459,7 @@ impl GpuPerFrameTimers {
     /// the per-frame command buffer.
     ///
     /// The first time a slot is read its `active_bits` are zero —
-    /// nothing has been written yet — so all seventeen ms fields stay
+    /// nothing has been written yet — so all eighteen ms fields stay
     /// at the default `0.0` until the second cycle. From then on
     /// the snapshot is whatever the previous cycle wrote, with
     /// inactive brackets reading `0.0`.
@@ -448,9 +467,9 @@ impl GpuPerFrameTimers {
         let pool = self.pools[frame];
         let bits = self.active_bits[frame];
         // #2041 / PERF-D9-02 — one batched read for the whole pool instead
-        // of up to seventeen individual per-bracket `get_query_pool_results`
+        // of up to eighteen individual per-bracket `get_query_pool_results`
         // calls (one driver round-trip each). Deliberately WITHOUT
-        // `WAIT`: WAIT-reading the full 34-query pool when only a subset
+        // `WAIT`: WAIT-reading the full 36-query pool when only a subset
         // was written blocks forever on the unwritten queries (Vulkan
         // spec — VK_QUERY_RESULT_WAIT_BIT blocks until ALL queried
         // results are available; reset-but-never-written queries never
@@ -1106,6 +1125,40 @@ impl GpuPerFrameTimers {
         self.active_bits[frame] |= BIT_DEPTH_HISTORY_COPY;
     }
 
+    pub fn cmd_sky_cube_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_SKY_CUBE_START,
+            );
+        }
+    }
+
+    /// Write the sky-cubemap bake END timestamp. `BOTTOM_OF_PIPE` rather
+    /// than `COMPUTE_SHADER`, so the bracket includes the bake's own
+    /// `GENERAL` -> `SHADER_READ_ONLY_OPTIMAL` barrier that follows the
+    /// dispatch inside `record_bake`.
+    pub fn cmd_sky_cube_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                Q_SKY_CUBE_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_SKY_CUBE;
+    }
+
     /// Destroy every query pool. Caller must wait for queue idle
     /// before calling (matches the rest of VulkanContext's Drop
     /// ordering — query pools share the destroy-before-device
@@ -1215,6 +1268,19 @@ mod tests {
         assert!(snap.depth_history_copy_active);
         assert_eq!(snap.depth_history_copy_ms, 1_250.0 * 0.2);
         assert!(!snap.svgf_active);
+    }
+
+    /// The sky-cube bracket sits on the first bit past the `u16` range, so a
+    /// regression narrowing `active_bits` again would silently drop it.
+    #[test]
+    fn sky_cube_bracket_reports_measured_duration() {
+        let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_SKY_CUBE_START as usize] = 4_000;
+        ticks[Q_SKY_CUBE_END as usize] = 6_500;
+        let snap = snapshot_from_bits(BIT_SKY_CUBE, &ticks, 0.2);
+        assert!(snap.sky_cube_active);
+        assert_eq!(snap.sky_cube_ms, 2_500.0 * 0.2);
+        assert!(!snap.groundcover_bench_active);
     }
 
     /// Regression for #4210 / PERF-D9-2026-09-11-03 — the module doc's

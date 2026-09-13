@@ -897,11 +897,17 @@ impl VulkanContext {
                 if let Err(e) = sky_cube.upload_params(&self.device, frame, &sky_cube_params) {
                     log::warn!("sky cubemap upload_params failed: {e}");
                 }
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_sky_cube_start(&self.device, cmd, frame);
+                }
                 // SAFETY: `cmd` is this frame's primary command buffer, in
                 // the recording state; `frame` indexes this frame's own cube,
                 // whose previous use was fenced by the frame-in-flight wait
                 // that preceded this recording.
                 unsafe { sky_cube.record_bake(&self.device, cmd, frame, bindless_set) };
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_sky_cube_end(&self.device, cmd, frame);
+                }
             }
         }
 
