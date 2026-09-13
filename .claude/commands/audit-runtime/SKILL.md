@@ -121,8 +121,19 @@ before spending a run on it, though.
 It writes the same two files this skill's Phase 3 parses
 (`<out>/<game>-<cell>.engine.log` and `.telem.txt`), and does everything the
 old inline recipe did: `xvfb-run -a --server-args="-screen 0 1280x720x24"`,
-`--bench-frames N --bench-hold`, a 90 s `byro-dbg` ping poll, 3 s of settle,
-then `stats` / `tex.missing` / `mesh.cache failed` / `light.dump` / `quit`.
+`--bench-frames N --bench-hold`, a 90 s `byro-dbg` ping poll, then
+`stats` / `tex.missing` / `mesh.cache failed` / `light.dump` / `quit`, and it
+appends the run's `bench_frame_max_ms` to the telemetry file.
+
+**Readiness is gated on the engine, not on `pong` (#4123).** The debug server
+answers `ping` as soon as it binds — 1–6 s into a launch — but cell load runs on
+the render thread (#3559), so a cold FNV/FO3 engine then stalls 10–12 s on its
+first frame and every query fired into that stall times out. The old fixed
+3 s settle turned that into a zero-telemetry FATAL on both games. The harness
+now waits for the engine log's `bench:` line (printed only once
+`--bench-frames` frames have rendered, and failing at once if the engine
+dies), then retries `stats` until it answers. Both gates share
+`READY_DEADLINE_S` (default 180 s).
 
 **Why it is a script and not a recipe (#3560).** The teardown this section
 used to prescribe — `kill -INT $PID` on the backgrounded `xvfb-run` job —

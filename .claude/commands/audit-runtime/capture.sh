@@ -70,6 +70,48 @@ entities_from_bench() {
         grep --only-matching -E '[0-9]+' || true
 }
 
+# `frame_max_ms=N` out of the engine log's `bench:` summary line — the
+# first-frame cell-load hitch (#3559) lands here.
+bench_frame_max_from_log() {
+    grep -E '^bench:' | grep --only-matching --max-count=1 -E 'frame_max_ms=[0-9.]+' |
+        grep --only-matching -E '[0-9.]+' || true
+}
+
+# Seconds to wait for each readiness gate. The measured cold first-frame
+# hitch is 10–12 s (FO3/FNV, #3559) and the pre-hitch cell load adds more,
+# so this is sized for the slow tail rather than the median.
+READY_DEADLINE_S="${READY_DEADLINE_S:-180}"
+
+# Block until the engine log carries a `bench:` line. Returns 1 on deadline or
+# as soon as the engine process `$3` is gone — a crash must not wait out the
+# whole budget.
+wait_for_bench_line() {
+    local log_file="$1" deadline="$2" pid="$3" start="${SECONDS}"
+    while ((SECONDS - start < deadline)); do
+        grep --quiet -E '^bench:' "${log_file}" 2>/dev/null && return 0
+        kill -0 "${pid}" 2>/dev/null || {
+            # One last look: the line may have landed just before exit.
+            grep --quiet -E '^bench:' "${log_file}" 2>/dev/null && return 0
+            return 1
+        }
+        sleep 1
+    done
+    return 1
+}
+
+# Retry `stats` through `byro-dbg` until it returns an `Entities:` row. A
+# `timeout waiting for engine response` is the render thread still being
+# blocked, which is "not ready yet", not a failure.
+wait_for_stats() {
+    local deadline="$1" start="${SECONDS}" out
+    while ((SECONDS - start < deadline)); do
+        out="$(printf "stats\nquit\n" | timeout 10 "${DBG_BIN}" 2>&1 || true)"
+        [[ -n "$(entities_from_stats <<<"${out}")" ]] && return 0
+        sleep 1
+    done
+    return 1
+}
+
 # Do the two transports agree about how many entities this run had? Prints a
 # verdict line; exit 0 agree, 1 diverge, 2 a number is missing.
 cross_check_entities() {
@@ -167,6 +209,53 @@ if [[ "${1:-}" == "--self-test" ]]; then
     if cross_check_entities "" 2934 >/dev/null; then
         die "self-test: a missing number must not read as agreement"
     fi
+
+    expect "frame_max parse" \
+        "$(bench_frame_max_from_log <<<$'noise\nbench: mode=frames frame_p95_ms=16.24 frame_max_ms=11736.42 frame_max_over_p95=722.5')" \
+        11736.42
+    expect "frame_max parse (absent)" "$(bench_frame_max_from_log <<<'bench-hold: holding')" ""
+
+    # #4123 readiness gates. The field failure: `pong` at 1 s, then every
+    # query timed out against a render thread still blocked on cell load.
+    gate_dir="$(mktemp -d)"
+    printf 'loading\nbench: mode=frames entities=12\n' >"${gate_dir}/ready.log"
+    printf 'loading\n' >"${gate_dir}/loading.log"
+    wait_for_bench_line "${gate_dir}/ready.log" 5 "$$" ||
+        die "self-test: a present bench: line must satisfy the gate"
+    if wait_for_bench_line "${gate_dir}/loading.log" 2 "$$"; then
+        die "self-test: a log without a bench: line must not read as ready"
+    fi
+    true &
+    dead_pid=$!
+    wait "${dead_pid}"
+    gate_start="${SECONDS}"
+    if wait_for_bench_line "${gate_dir}/loading.log" 60 "${dead_pid}"; then
+        die "self-test: a dead engine must not read as ready"
+    fi
+    ((SECONDS - gate_start < 5)) ||
+        die "self-test: a dead engine must fail the gate at once, not wait out the deadline"
+
+    # A stub `byro-dbg` that times out twice before answering, as the engine
+    # did through its first-frame stall.
+    cat >"${gate_dir}/dbg" <<EOF
+#!/usr/bin/env bash
+n=\$(cat "${gate_dir}/calls" 2>/dev/null || echo 0)
+echo \$((n + 1)) >"${gate_dir}/calls"
+if [[ "\${n}" -lt 2 ]]; then
+    echo "Error: timeout waiting for engine response"
+    exit 1
+fi
+echo "byro> FPS: 60 | Entities: 718 | Draws: 12"
+EOF
+    chmod +x "${gate_dir}/dbg"
+    DBG_BIN="${gate_dir}/dbg" wait_for_stats 15 ||
+        die "self-test: stats must be retried through response timeouts"
+    expect "stats retry count" "$(cat "${gate_dir}/calls")" 3
+    printf '#!/usr/bin/env bash\necho "Error: timeout waiting for engine response"\n' >"${gate_dir}/dbg"
+    if DBG_BIN="${gate_dir}/dbg" wait_for_stats 2; then
+        die "self-test: a never-answering engine must fail the stats gate"
+    fi
+    rm -rf "${gate_dir}"
 
     # PID resolution and the survivor sweep, against a scratch process rather
     # than a real engine. This is the half that actually failed in the field:
@@ -298,9 +387,30 @@ done
 [[ -n "${up_at}" ]] || die "debug server never came up — see ${engine_log}"
 log "dbg up at ${up_at}s"
 
-sleep 3
+# #4123 — `pong` only proves the listener is bound, which happens long before
+# the cell finishes loading: cell load runs on the render thread (#3559), so a
+# cold FNV/FO3 launch answered `ping` at 1–6 s and then stalled 10–12 s on its
+# first frame, and a fixed settle fired every query into that stall. Gate on
+# the engine's own `bench:` line instead — it is printed only after
+# `--bench-frames` frames have actually rendered — then retry `stats` until it
+# answers, so a late hitch reads as "not ready yet" rather than a FATAL abort.
+if ! wait_for_bench_line "${engine_log}" "${READY_DEADLINE_S}" "${engine_pid}"; then
+    die "no bench: line within ${READY_DEADLINE_S}s of launch (engine alive: \
+$(kill -0 "${engine_pid}" 2>/dev/null && echo yes || echo no)) — see ${engine_log}"
+fi
+log "bench line present"
+if ! wait_for_stats "${READY_DEADLINE_S}"; then
+    die "stats never answered within ${READY_DEADLINE_S}s of the bench line — see ${engine_log}"
+fi
+log "stats answering"
+
 printf "stats\ntex.missing\nmesh.cache failed\nlight.dump\nquit\n" |
     "${DBG_BIN}" >"${telem}" 2>&1
+# Record the hitch alongside the telemetry, so a future re-widening of the
+# first-frame stall is visible in the capture without re-deriving it by hand.
+frame_max="$(bench_frame_max_from_log <"${engine_log}")"
+log "bench frame_max_ms=${frame_max:-unreported}"
+printf 'capture: bench_frame_max_ms=%s\n' "${frame_max:-unreported}" >>"${telem}"
 
 # --- 4. cross-check the attribution ------------------------------------------
 
