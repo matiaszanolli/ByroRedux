@@ -119,6 +119,62 @@ impl PapyrusProviderContinuationQueue {
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
+
+    /// Drop every continuation holding an entity-typed local, returning
+    /// how many were dropped. Called once after a save is restored.
+    ///
+    /// #4139. `locals` can hold `ScriptValue::Entity(EntityRef)`, and
+    /// `EntityRef` is a process-local handle by the SDK's own definition —
+    /// scoped to a `world_generation` so a stale one is *rejectable*. The
+    /// registration comment for this column used to claim the opposite
+    /// ("no EntityId or process-local handles cross the save boundary"),
+    /// which is how it was registered without a rebind step.
+    ///
+    /// The rebind that would make a restored handle safe lives in
+    /// `EntityHandleRegistry::begin_world_generation()`, reached through
+    /// `ExtensionHost::restore_saved_state` — but `preflight_extension_state`
+    /// / `restore_extension_state` short-circuit to `Ok` before calling into
+    /// the host whenever the saved `ExtensionStateSnapshot` has
+    /// `rows.is_empty() && principal_storage.is_empty()`, a condition with
+    /// nothing to do with whether *this* queue is populated. A session using
+    /// the provider path with no persisted SDK rows therefore reloads with
+    /// the generation counter untouched, and a stale handle resolves through
+    /// the old `by_handle` map to whatever entity id it named before — which
+    /// in a freshly reloaded world of comparable spawn order is very likely
+    /// a **different, live** entity. The continuation would then run against
+    /// the wrong object, silently.
+    ///
+    /// Dropping is the conservative direction: it converts a possible
+    /// wrong-entity execution into a visible, logged feature drop. Honouring
+    /// the handle would need the locals persisted by stable `FormRef` and
+    /// rebound unconditionally — a change to this column's on-disk shape,
+    /// and its own `FORMAT_MAJOR` call.
+    pub fn drop_entity_bound_continuations(&mut self) -> usize {
+        let before = self.pending.len();
+        self.pending.retain(|c| {
+            let bound: Vec<&str> = c
+                .locals
+                .iter()
+                .filter(|(_, v)| matches!(v, ScriptValue::Entity(_)))
+                .map(|(name, _)| name.as_str())
+                .collect();
+            if bound.is_empty() {
+                return true;
+            }
+            log::warn!(
+                "papyrus provider continuation dropped after load: locals {bound:?} hold \
+                 session-local EntityRef handles that this column does not rebind, and a \
+                 stale handle can resolve to a different live entity rather than fail \
+                 (#4139). The suspended handler will not resume.{}",
+                c.principal
+                    .as_ref()
+                    .map(|p| format!(" Script owner: {p}."))
+                    .unwrap_or_default()
+            );
+            false
+        });
+        before - self.pending.len()
+    }
 }
 
 /// Transient per-script-instance SKSE-compatible ModEvent registrations and
@@ -400,5 +456,85 @@ impl PapyrusProviderHandler {
             locals.insert(parameter.name.clone(), value);
         }
         (payload.arguments.len() == self.parameters.len()).then_some(locals)
+    }
+}
+
+#[cfg(test)]
+mod entity_bound_continuation_tests {
+    use super::*;
+    use byroredux_sdk::identity::EntityRef;
+
+    fn continuation(locals: BTreeMap<String, ScriptValue>) -> PendingPapyrusProviderContinuation {
+        PendingPapyrusProviderContinuation {
+            remaining_seconds: 5.0,
+            statements: Vec::new(),
+            locals,
+            principal: None,
+        }
+    }
+
+    /// Regression: #4139 — a continuation whose locals hold a session-local
+    /// `EntityRef` must not survive a load. The handle is scoped to a
+    /// `world_generation` this column never rebinds, and the rebind that
+    /// would make it safe is skipped entirely when the saved
+    /// `ExtensionStateSnapshot` is empty — so a stale handle can resolve to
+    /// a *different live entity* instead of failing.
+    #[test]
+    fn a_continuation_with_an_entity_local_is_dropped() {
+        let mut locals = BTreeMap::new();
+        locals.insert(
+            "self".to_owned(),
+            ScriptValue::Entity(EntityRef::new(1, 1).unwrap()),
+        );
+        let mut queue = PapyrusProviderContinuationQueue {
+            pending: vec![continuation(locals)],
+        };
+        assert_eq!(queue.drop_entity_bound_continuations(), 1);
+        assert!(
+            queue.is_empty(),
+            "a stale receiver handle cannot be honoured without a rebind, so the \
+             continuation must be dropped rather than resumed against whatever \
+             entity the handle now names"
+        );
+    }
+
+    /// The drop must be surgical: the string/form-valued continuations the
+    /// existing round-trip test covers are unaffected, or this fix would
+    /// silently delete working saved state to close a narrower hole.
+    #[test]
+    fn continuations_without_entity_locals_survive_untouched() {
+        let mut strings = BTreeMap::new();
+        strings.insert(
+            "pluginName".to_owned(),
+            ScriptValue::String("Update.esm".to_owned()),
+        );
+        strings.insert("count".to_owned(), ScriptValue::Integer(3));
+        let mut queue = PapyrusProviderContinuationQueue {
+            pending: vec![continuation(strings), continuation(BTreeMap::new())],
+        };
+        assert_eq!(queue.drop_entity_bound_continuations(), 0);
+        assert_eq!(queue.len(), 2);
+    }
+
+    /// Mixed queue: only the poisoned entries go.
+    #[test]
+    fn only_the_entity_bound_entries_are_dropped_from_a_mixed_queue() {
+        let mut entity_local = BTreeMap::new();
+        entity_local.insert(
+            "self".to_owned(),
+            ScriptValue::Entity(EntityRef::new(7, 2).unwrap()),
+        );
+        let mut string_local = BTreeMap::new();
+        string_local.insert("who".to_owned(), ScriptValue::String("x".to_owned()));
+
+        let mut queue = PapyrusProviderContinuationQueue {
+            pending: vec![
+                continuation(string_local.clone()),
+                continuation(entity_local),
+                continuation(string_local),
+            ],
+        };
+        assert_eq!(queue.drop_entity_bound_continuations(), 1);
+        assert_eq!(queue.len(), 2, "the two safe continuations must remain");
     }
 }
