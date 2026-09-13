@@ -142,7 +142,13 @@ pub struct StagingPool {
     /// largest entries first.
     budget_bytes: vk::DeviceSize,
     device: ash::Device,
-    allocator: SharedAllocator,
+    /// `Option` so [`destroy`](Self::destroy) can drop the `Arc` clone
+    /// before `VulkanContext::Drop` reaches its `Arc::try_unwrap` — the
+    /// same #927 contract `GpuBuffer` and `Texture` follow. A bare field
+    /// stayed alive until the owning struct dropped, which for a pool held
+    /// by value (`SceneBuffers::terrain_tile_staging_pool`, #4187) is after
+    /// that unwrap, so every shutdown took the leak-guard branch.
+    allocator: Option<SharedAllocator>,
 }
 
 struct StagingEntry {
@@ -172,7 +178,7 @@ impl StagingPool {
             free_list: Vec::new(),
             budget_bytes,
             device,
-            allocator,
+            allocator: Some(allocator),
         }
     }
 
@@ -225,8 +231,13 @@ impl StagingPool {
         // destroyed; the device outlives the call.
         let reqs = unsafe { self.device.get_buffer_memory_requirements(buffer) };
 
-        let allocation = self
-            .allocator
+        let Some(allocator) = self.allocator.as_ref() else {
+            // SAFETY: `buffer` was created by this device above and has no
+            // memory bound; destroying it here is its only release path.
+            unsafe { self.device.destroy_buffer(buffer, None) };
+            anyhow::bail!("StagingPool::acquire called after destroy()");
+        };
+        let allocation = allocator
             .lock()
             .expect("allocator lock poisoned")
             .allocate(&vulkan::AllocationCreateDesc {
@@ -294,6 +305,16 @@ impl StagingPool {
     pub fn trim_to(&mut self, target: vk::DeviceSize) {
         let capacities: Vec<vk::DeviceSize> = self.free_list.iter().map(|e| e.capacity).collect();
         let evict = select_evictions(&capacities, target);
+        if evict == 0 {
+            return;
+        }
+        // Entries only enter the free list through `release`, which requires
+        // a live pool, and `destroy` empties the list before dropping the
+        // allocator — so a non-empty eviction always has one.
+        let Some(allocator) = self.allocator.as_ref() else {
+            debug_assert!(false, "StagingPool holds entries after destroy()");
+            return;
+        };
         for _ in 0..evict {
             // `free_list` is sorted ascending by capacity, so the last
             // entry is always the largest — the one the policy wants
@@ -309,7 +330,7 @@ impl StagingPool {
                 // command's fence has signalled).
                 self.device.destroy_buffer(entry.buffer, None);
             }
-            self.allocator
+            allocator
                 .lock()
                 .expect("allocator lock poisoned")
                 .free(entry.allocation)
@@ -325,9 +346,15 @@ impl StagingPool {
         self.trim_to(self.budget_bytes);
     }
 
-    /// Destroy all pooled staging buffers. Call before device destruction.
+    /// Destroy all pooled staging buffers and release the pool's allocator
+    /// reference. Call before device destruction.
+    ///
+    /// #4187 — the `take()` is load-bearing: `trim_to(0)` alone frees the
+    /// buffers but leaves the `Arc` clone alive in any pool its owner holds
+    /// by value, so `VulkanContext::Drop`'s `Arc::try_unwrap` fails.
     pub fn destroy(&mut self) {
         self.trim_to(0);
+        self.allocator.take();
     }
 }
 
@@ -1892,6 +1919,35 @@ mod staging_guard_coverage_tests {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// #4187 — `StagingPool` must hold its allocator as an `Option` and
+    /// `destroy()` must `take()` it. The pool can't be built without a live
+    /// device, so this pins the shape: a bare field made the "outstanding
+    /// references" shutdown log permanent for every pool held by value
+    /// (`SceneBuffers::terrain_tile_staging_pool`), masking any real leak.
+    #[test]
+    fn staging_pool_destroy_releases_its_allocator_arc() {
+        const SRC: &str = include_str!("buffer.rs");
+        let struct_start = SRC
+            .find("pub struct StagingPool {")
+            .expect("StagingPool struct not found");
+        let struct_body = &SRC[struct_start..];
+        let struct_body = &struct_body[..struct_body.find("\n}").unwrap()];
+        assert!(
+            struct_body.contains("allocator: Option<SharedAllocator>,"),
+            "StagingPool::allocator must be Option<SharedAllocator> so destroy() can drop the Arc (#4187)"
+        );
+
+        let destroy_start = SRC
+            .find("    pub fn destroy(&mut self) {\n        self.trim_to(0);")
+            .expect("StagingPool::destroy not found");
+        let destroy_body = &SRC[destroy_start..];
+        let destroy_body = &destroy_body[..destroy_body.find("\n    }").unwrap()];
+        assert!(
+            destroy_body.contains("self.allocator.take();"),
+            "StagingPool::destroy must take() the allocator after trimming (#4187)"
+        );
+    }
 
     /// #927 — pins the `Option<SharedAllocator>` mechanism that
     /// `GpuBuffer::destroy()` and `Texture::destroy()` rely on. When
