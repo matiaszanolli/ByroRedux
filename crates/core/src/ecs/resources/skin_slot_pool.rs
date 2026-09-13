@@ -312,6 +312,28 @@ impl SkinSlotPool {
             // pre-image map; an evicted entity's pending rollback (if
             // any) is moot once its slot is reclaimed.
             self.rollback_pose_hash.remove(&entity);
+            // #4050 / REN-2026-09-06-D9-04 — and the queued upload, which
+            // is the one map this block used to miss. The slot is going
+            // back on the free list, so any pending `bind_inverses` write
+            // aimed at it is by definition stale.
+            //
+            // Unreachable before #3569: `drain_pending`'s cap (1366)
+            // exceeds the pool's capacity (1364), so an entry never
+            // survived the frame it was queued in. The requeue path is the
+            // first thing that can hold one across frames, and once it
+            // does, a persistent upload failure lasting >= `min_idle`
+            // frames while the entity leaves the draw list lets `allocate`
+            // hand the same slot to a different entity with the old
+            // `(slot, entity)` pair still queued.
+            //
+            // Both then land in one drain, and
+            // `record_pending_bind_inverse_copies` builds two
+            // `vk::BufferCopy` regions with the SAME `dst_offset` in a
+            // single `cmd_copy_buffer`. Vulkan does not specify the order
+            // regions within a copy are applied, so which entity's
+            // matrices survive is genuinely unspecified — not the
+            // list-order last-write-wins the loop reads like.
+            self.pending_uploads.retain(|(_, queued)| *queued != entity);
         }
 
         // #1379 — Contract the issued range: if the highest slots are now
@@ -701,6 +723,176 @@ mod skin_slot_pool_tests {
             pool.drain_pending(usize::MAX).len(),
             1,
             "requeueing an empty list must not touch the existing queue"
+        );
+    }
+
+    /// #4050 — eviction hygiene must stay *complete*, not five-sixths
+    /// complete.
+    ///
+    /// Every per-entity collection on this struct has to be purged in
+    /// `sweep`'s doomed block, and this has now been got wrong three
+    /// times: `last_pose_hash`/`pose_dirty` (#1195), `rollback_pose_hash`
+    /// (#1796), and `pending_uploads` (#4050). The failure mode each time
+    /// was a *newly added* map that nobody thought to clean, which no
+    /// behavioural test covering the existing maps can catch.
+    ///
+    /// So this scans the struct's own field list and requires each
+    /// `EntityId`-keyed one to be named inside `sweep`. Adding a seventh
+    /// fails here until it is either purged or explicitly justified.
+    #[test]
+    fn sweep_purges_every_entity_keyed_collection() {
+        const SRC: &str = include_str!("skin_slot_pool.rs");
+
+        // Field list: from the struct header to its closing brace.
+        let struct_at = SRC
+            .find("pub struct SkinSlotPool {")
+            .expect("the pool struct must still exist under this name");
+        let fields_end = SRC[struct_at..]
+            .find("\n}\n")
+            .expect("the struct must terminate at a column-0 brace")
+            + struct_at;
+        let fields = &SRC[struct_at..fields_end];
+
+        // `sweep`'s per-doomed-entity block.
+        let sweep_at = SRC
+            .find("pub fn sweep(")
+            .expect("sweep must still exist under this name");
+        let loop_at = SRC[sweep_at..]
+            .find("for entity in doomed {")
+            .expect("sweep must still iterate the doomed set")
+            + sweep_at;
+        let loop_end = SRC[loop_at..]
+            .find("\n        }\n")
+            .expect("the doomed loop must terminate")
+            + loop_at;
+        let doomed_block = &SRC[loop_at..loop_end];
+
+        let mut entity_keyed = Vec::new();
+        for line in fields.lines() {
+            let line = line.trim();
+            if line.starts_with("//") || !line.contains("EntityId") {
+                continue;
+            }
+            let Some((name, _)) = line.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            if name.is_empty() || name.contains(' ') {
+                continue;
+            }
+            entity_keyed.push(name.to_string());
+        }
+
+        assert!(
+            entity_keyed.len() >= 6,
+            "parser sanity: expected every EntityId-keyed field, found {entity_keyed:?}"
+        );
+        for field in &entity_keyed {
+            assert!(
+                doomed_block.contains(field.as_str()),
+                "`{field}` is keyed by EntityId but is not purged in sweep's doomed \
+                 block — a reclaimed slot would leave this collection holding state \
+                 for an entity that no longer owns it (#1195, #1796, #4050 were each \
+                 this same omission on a different field)"
+            );
+        }
+    }
+
+    /// Regression: #4050 / REN-2026-09-06-D9-04 — `sweep` must drop a
+    /// doomed entity's queued upload along with the five maps it already
+    /// cleans, or a requeued entry can outlive its slot's ownership.
+    ///
+    /// The reachable sequence: an upload fails and is requeued, the entity
+    /// then leaves the draw list for >= `min_idle` frames, `sweep` returns
+    /// its slot to the free list, and a different entity `allocate`s that
+    /// same slot. Without this, both `(slot, entity)` pairs sit in
+    /// `pending_uploads` naming one `dst_offset`.
+    #[test]
+    fn sweep_drops_a_doomed_entity_pending_upload() {
+        let mut pool = SkinSlotPool::new(5);
+        let slot = pool.allocate(42, 100).unwrap();
+
+        // The upload was attempted and failed, so it came back (#3569).
+        let drained = pool.drain_pending(usize::MAX);
+        assert_eq!(drained, vec![(slot, 42)]);
+        pool.requeue_pending(drained);
+
+        // The entity then goes idle long enough to be swept.
+        let freed = pool.sweep(105, 5);
+        assert_eq!(
+            freed,
+            vec![slot],
+            "the idle entity's slot must be reclaimed"
+        );
+
+        assert!(
+            pool.drain_pending(usize::MAX).is_empty(),
+            "a swept entity's queued upload must not survive its eviction — \
+             the slot is on the free list, so the write is aimed at a slot \
+             this entity no longer owns"
+        );
+    }
+
+    /// Regression: #4050. The consequence the retain prevents, stated as
+    /// the property that actually matters: after a slot is recycled, no
+    /// drain may contain two entries sharing a `dst_offset`.
+    ///
+    /// `record_pending_bind_inverse_copies` turns each entry into a
+    /// `vk::BufferCopy` and issues them in one `cmd_copy_buffer`; Vulkan
+    /// leaves the order regions are applied unspecified, so two entries on
+    /// one slot is a coin flip over whose bind-inverse matrices survive,
+    /// not last-write-wins.
+    #[test]
+    fn a_recycled_slot_never_has_two_queued_uploads() {
+        let mut pool = SkinSlotPool::new(5);
+        let slot = pool.allocate(42, 100).unwrap();
+        let drained = pool.drain_pending(usize::MAX);
+        pool.requeue_pending(drained);
+        pool.sweep(105, 5);
+
+        // The freed slot is handed to a different entity.
+        let recycled = pool.allocate(99, 106).unwrap();
+        assert_eq!(
+            recycled, slot,
+            "the test needs the slot to actually recycle"
+        );
+
+        let queued = pool.drain_pending(usize::MAX);
+        assert_eq!(
+            queued,
+            vec![(slot, 99)],
+            "only the live tenant may have a queued upload for this slot"
+        );
+        let mut offsets: Vec<u32> = queued.iter().map(|(s, _)| *s).collect();
+        offsets.sort_unstable();
+        let before = offsets.len();
+        offsets.dedup();
+        assert_eq!(
+            offsets.len(),
+            before,
+            "two queued uploads sharing one slot produce two vk::BufferCopy \
+             regions with the same dst_offset in a single cmd_copy_buffer, \
+             whose application order Vulkan does not specify"
+        );
+    }
+
+    /// Regression: #4050. The retain must be scoped to the doomed entity —
+    /// a live tenant's queued upload is not collateral.
+    #[test]
+    fn sweep_leaves_a_live_entity_pending_upload_alone() {
+        let mut pool = SkinSlotPool::new(5);
+        let _idle = pool.allocate(42, 100).unwrap();
+        let live = pool.allocate(7, 100).unwrap();
+        // Only 42 goes idle; 7 keeps being seen.
+        pool.mark_seen(7, 105);
+
+        let freed = pool.sweep(105, 5);
+        assert_eq!(freed.len(), 1, "only the idle entity may be swept");
+
+        assert_eq!(
+            pool.drain_pending(usize::MAX),
+            vec![(live, 7)],
+            "the live entity's queued upload must survive its neighbour's eviction"
         );
     }
 
