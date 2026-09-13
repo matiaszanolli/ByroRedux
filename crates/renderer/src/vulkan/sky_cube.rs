@@ -883,6 +883,50 @@ mod tests {
         }
     }
 
+    /// The adaptive march's load-bearing pieces. A fixed step aliased at the
+    /// sourced extinction (optical depth ~9 per step, visible as terraces
+    /// or, jittered, as grain); each of these is what prevents that, and
+    /// each fails silently if dropped.
+    #[test]
+    fn the_cloud_march_steps_adaptively() {
+        let clouds = include_str!("../../shaders/include/clouds.glsl");
+        for (term, why) in [
+            (
+                "cloud_base_shape(position, height_fraction, coverage, wind, base_noise)",
+                "cheap base-shape-only samples until the iso-surface (Schneider slides 74-77)",
+            ),
+            (
+                "t = max(t - cheap_step, marched_until);",
+                "step back on entry, never behind already-integrated distance",
+            ),
+            (
+                "min(mean_free_path / density, cheap_step)",
+                "full step = one mean free path at the local density (optical depth <= 1)",
+            ),
+            (
+                "float(CLOUD_CHEAP_SAMPLES_HORIZON),",
+                "cheap budget interpolated toward 128 at the horizon (slide 80)",
+            ),
+            (
+                "i < int(CLOUD_MAX_MARCH_ITERATIONS)",
+                "the derived iteration bound",
+            ),
+            (
+                "marched_until = t;",
+                "progress tracking that prevents re-entry loops",
+            ),
+        ] {
+            assert!(
+                clouds.contains(term),
+                "the cloud march has lost its {why} (`{term}`)"
+            );
+        }
+        assert!(
+            !clouds.contains("CLOUD_VIEW_STEPS"),
+            "the fixed-step march must not return — it aliased at the sourced extinction",
+        );
+    }
+
     /// The bake binds the shared cloud volumes; it must not own a copy.
     /// Composite marches the same field for the visible sky, so a private
     /// set here would let reflections and the sky seen directly disagree —

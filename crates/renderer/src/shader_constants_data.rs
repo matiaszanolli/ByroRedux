@@ -850,11 +850,21 @@ pub const CLOUD_LAYER_TOP: f32 = 5000.0;
 /// could never do (they need a `smoothstep` horizon fade to hide their
 /// projection singularity).
 pub const CLOUD_PLANET_RADIUS: f32 = 6_371_000.0;
-/// View-march step budget. Dominates the bake's cost: 6 x 128^2 texels x
-/// this. 48 is enough to resolve the shell without banding at cube-face
-/// resolution; the background pass, if it ever adopts this march, would
-/// want fewer plus a blue-noise offset.
-pub const CLOUD_VIEW_STEPS: u32 = 48;
+/// Cheap-sample budgets for the adaptive cloud march (`clouds.glsl`).
+/// Schneider & Vos 2015, slide 80: "we start with an initial potential 64
+/// samples and end with a potential 128 at the horizon", because the ray
+/// through the shell lengthens toward the horizon. The cheap step is the
+/// ray length divided by this budget, interpolated on `dir.y`.
+pub const CLOUD_CHEAP_SAMPLES_ZENITH: u32 = 64;
+pub const CLOUD_CHEAP_SAMPLES_HORIZON: u32 = 128;
+/// Hard bound on march iterations per ray. Derived so it never truncates
+/// the adaptive march: cheap steps and cheap-capped full steps together
+/// cover the ray once (<= 129); each cheap->full transition re-covers at
+/// most one cheap step (<= 129 more); step-backs number <= 129; and
+/// mean-free-path-limited full steps each add optical depth 1, so the
+/// march exits (T < 0.01, depth ~4.6) after ~5 of them. That totals ~392;
+/// 512 bounds it with margin. It is a loop bound, not an appearance knob.
+pub const CLOUD_MAX_MARCH_ITERATIONS: u32 = 512;
 /// Light-march step budget toward the sun. Short on purpose — the
 /// contribution saturates quickly under Beer-Lambert, so more steps buy
 /// almost nothing for a multiplicative cost against every view step.

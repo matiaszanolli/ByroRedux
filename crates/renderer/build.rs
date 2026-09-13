@@ -771,7 +771,21 @@ fn main() {
     writeln!(out, "#define CLOUD_LAYER_BOTTOM {CLOUD_LAYER_BOTTOM:?}").unwrap();
     writeln!(out, "#define CLOUD_LAYER_TOP {CLOUD_LAYER_TOP:?}").unwrap();
     writeln!(out, "#define CLOUD_PLANET_RADIUS {CLOUD_PLANET_RADIUS:?}").unwrap();
-    writeln!(out, "#define CLOUD_VIEW_STEPS {CLOUD_VIEW_STEPS}").unwrap();
+    writeln!(
+        out,
+        "#define CLOUD_CHEAP_SAMPLES_ZENITH {CLOUD_CHEAP_SAMPLES_ZENITH}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define CLOUD_CHEAP_SAMPLES_HORIZON {CLOUD_CHEAP_SAMPLES_HORIZON}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define CLOUD_MAX_MARCH_ITERATIONS {CLOUD_MAX_MARCH_ITERATIONS}"
+    )
+    .unwrap();
     writeln!(out, "#define CLOUD_LIGHT_STEPS {CLOUD_LIGHT_STEPS}").unwrap();
     writeln!(out, "#define CLOUD_PHASE_G0 {CLOUD_PHASE_G0:?}").unwrap();
     writeln!(out, "#define CLOUD_PHASE_G1 {CLOUD_PHASE_G1:?}").unwrap();

@@ -127,7 +127,29 @@ float cloud_height_gradient(float height_fraction) {
     return clamp(bottom, 0.0, 1.0) * clamp(top, 0.0, 1.0);
 }
 
-// Density at a point in the shell.
+// Base cloud shape only: low-frequency noise, coverage and height gradient,
+// no erosion. This is Schneider & Vos's "cheap sample" (slides 74-77): one
+// texture fetch, used to find the cloud iso-surface before paying for the
+// full sample.
+float cloud_base_shape(
+    vec3 position,
+    float height_fraction,
+    float coverage,
+    vec2 wind_offset,
+    sampler3D base_noise
+) {
+    // The volume is tileable, so a plain scaled world position is a valid
+    // lookup; wind advects the whole field horizontally.
+    vec3 base_uvw = vec3(position.xz * 0.00008 + wind_offset, position.y * 0.00008);
+    float base = texture(base_noise, base_uvw).r;
+
+    // Coverage is SUBTRACTED, not multiplied (see `cloud_remap`).
+    float shaped = cloud_remap(base, 1.0 - coverage, 1.0, 0.0, 1.0);
+    return shaped * cloud_height_gradient(height_fraction);
+}
+
+// Full density at a point in the shell: the base shape eroded by the
+// high-frequency volume.
 float cloud_density(
     vec3 position,
     float height_fraction,
@@ -136,14 +158,7 @@ float cloud_density(
     sampler3D base_noise,
     sampler3D detail_noise
 ) {
-    // Base shape. The volume is tileable, so a plain scaled world position
-    // is a valid lookup; wind advects the whole field horizontally.
-    vec3 base_uvw = vec3(position.xz * 0.00008 + wind_offset, position.y * 0.00008);
-    float base = texture(base_noise, base_uvw).r;
-
-    // Coverage is SUBTRACTED, not multiplied (see `cloud_remap`).
-    float shaped = cloud_remap(base, 1.0 - coverage, 1.0, 0.0, 1.0);
-    shaped *= cloud_height_gradient(height_fraction);
+    float shaped = cloud_base_shape(position, height_fraction, coverage, wind_offset, base_noise);
     if (shaped <= 0.0) {
         return 0.0;
     }
@@ -235,24 +250,73 @@ vec4 cloud_march(
     // layer drifted off-axis and stood still under a pure X wind.
     vec2 wind = dome.weather_wind.xz * dome.weather_wind.y * time * 0.00002;
 
-    float step_size = (end - start) / float(CLOUD_VIEW_STEPS);
+    // Adaptive march (Schneider & Vos 2015, slides 74-80). A fixed step was
+    // aliasing: at the sourced extinction a ~73 m step has optical depth
+    // ~9, so each step boundary showed as a terrace (or, jittered, as grain
+    // — pinning the jitter proved it was the steps, not the upscaler).
+    //
+    //  * Cheap mode: base shape only, at the cheap step (64 potential samples
+    //    at the zenith, 128 at the horizon), until a cloud iso-surface.
+    //  * On entry: "we always take a step backward before switching to high
+    //    detail samples" — but never behind a point full samples already
+    //    integrated, so a base-shape cloud eroded to nothing cannot trap the
+    //    march re-entering the same stretch.
+    //  * Full mode: the step is one mean free path at the sample's own
+    //    density, `1 / (sigma * density)`, capped at the cheap step. Each
+    //    in-cloud step then carries optical depth <= 1, so no step boundary
+    //    can be visible, and thin wisps are crossed quickly.
+    //  * A zero-density full sample advances a whole cheap step and returns
+    //    to cheap mode: the source's "several consecutive samples that
+    //    return zero density", expressed as distance instead of a count.
+    //  * Stop once alpha saturates (slide 78).
+    float ray_length = end - start;
+    float cheap_samples = mix(
+        float(CLOUD_CHEAP_SAMPLES_HORIZON),
+        float(CLOUD_CHEAP_SAMPLES_ZENITH),
+        clamp(dir.y, 0.0, 1.0)
+    );
+    float cheap_step = ray_length / cheap_samples;
+    float mean_free_path = 1.0 / CLOUD_EXTINCTION_PER_METER;
+
+    float t = start + jitter * cheap_step;
+    float marched_until = start;
+    bool full_mode = false;
     float transmittance = 1.0;
     vec3 scattered = vec3(0.0);
 
-    for (int i = 0; i < CLOUD_VIEW_STEPS; ++i) {
-        if (transmittance < 0.01) {
+    for (int i = 0; i < int(CLOUD_MAX_MARCH_ITERATIONS); ++i) {
+        if (transmittance < 0.01 || t >= end) {
             break;
         }
-        float t = start + (float(i) + jitter) * step_size;
         vec3 position = dir * t;
         float height_fraction = clamp(
             (position.y - CLOUD_LAYER_BOTTOM) / (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM),
             0.0,
             1.0
         );
+
+        if (!full_mode) {
+            float base_shape =
+                cloud_base_shape(position, height_fraction, coverage, wind, base_noise);
+            if (base_shape > 0.0) {
+                full_mode = true;
+                t = max(t - cheap_step, marched_until);
+            } else {
+                t += cheap_step;
+            }
+            continue;
+        }
+
         float density =
             cloud_density(position, height_fraction, coverage, wind, base_noise, detail_noise);
+        float step_size = density > 0.0
+            ? min(mean_free_path / density, cheap_step)
+            : cheap_step;
+        step_size = min(step_size, end - t);
         if (density <= 0.0) {
+            full_mode = false;
+            t += step_size;
+            marched_until = t;
             continue;
         }
 
@@ -302,6 +366,8 @@ vec4 cloud_march(
         vec3 slab = (sun_radiance + ambient) * (1.0 - sample_transmittance);
         scattered += transmittance * slab;
         transmittance *= sample_transmittance;
+        t += step_size;
+        marched_until = t;
     }
 
     // WTHR stays the artistic colour authority, exactly as it was for the 2D

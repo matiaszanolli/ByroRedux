@@ -847,8 +847,11 @@ mod tests {
     /// ternary bring the module to 49 (confirmed via `spirv-dis`, matching
     /// this test's own count). Hillaire's multiple-scattering octaves then
     /// added the per-sample octave loop and the one-time `sum(a^n)` loop for
-    /// the diffuse-surface calibration, bringing the current module to 51
-    /// (again confirmed via `spirv-dis`). Pins the
+    /// the diffuse-surface calibration, bringing the module to 51 (again
+    /// confirmed via `spirv-dis`). The adaptive cloud march (Schneider & Vos
+    /// cheap/full sampling) then added its cheap-mode, iso-surface, step-size
+    /// and zero-density branches, bringing the current module to 54
+    /// (confirmed via `spirv-dis`). Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -857,8 +860,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 51,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 51 — \
+            count, 54,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 54 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \
