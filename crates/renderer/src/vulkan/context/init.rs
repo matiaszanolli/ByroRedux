@@ -951,11 +951,36 @@ impl VulkanContext {
             texture_registry.descriptor_set_layout,
             MAX_FRAMES_IN_FLIGHT,
         ) {
-            Ok(s) => {
-                for f in 0..MAX_FRAMES_IN_FLIGHT {
-                    scene_buffers.write_sky_cube(&device, f, s.cube_view(f), s.sampler);
+            Ok(mut s) => {
+                // The cloud march samples these; without the upload they are
+                // still in UNDEFINED and the march reads garbage.
+                //
+                // SAFETY: `device` + `graphics_queue` are live and
+                // `transfer_pool` is a command pool from this device; `s`'s
+                // noise images were just created above by the same device and
+                // nothing has published the pipeline, so no command buffer can
+                // be in flight against them.
+                match unsafe {
+                    s.initialize_noise(&device, &gpu_allocator, &graphics_queue, transfer_pool)
+                } {
+                    Ok(()) => {
+                        for f in 0..MAX_FRAMES_IN_FLIGHT {
+                            scene_buffers.write_sky_cube(&device, f, s.cube_view(f), s.sampler);
+                        }
+                        Some(s)
+                    }
+                    Err(e) => {
+                        // Drop the whole pass rather than bake against
+                        // uninitialised noise. The ready flag then stays 0
+                        // and consumers fall back.
+                        log::warn!("sky cloud noise upload failed: {e} — sky cubemap disabled");
+                        // SAFETY: nothing has been submitted against these
+                        // resources; `initialize_noise`'s one-time submit has
+                        // already waited on the queue.
+                        unsafe { s.destroy(&device, &gpu_allocator) };
+                        None
+                    }
                 }
-                Some(s)
             }
             Err(e) => {
                 log::warn!(

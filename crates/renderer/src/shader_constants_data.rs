@@ -835,6 +835,31 @@ pub const BLOOM_INTENSITY: f32 = 0.15;
 // `feedback_color_space.md` and `BLOOM_INTENSITY`'s note above both
 // already name. Compensating for it here by dropping the threshold would
 // only reinstate the sky gain this constant exists to remove.
+// SKYAL volumetric cloud layer (`include/clouds.glsl`). Method and every
+// value below follow Schneider & Vos, "The Real-Time Volumetric
+// Cloudscapes of Horizon: Zero Dawn", SIGGRAPH 2015 Advances in Real-Time
+// Rendering — not tuned by eye, per the no-guessing policy.
+//
+// Shell altitudes in metres. The reference layer is 1.5 km base / 5 km
+// top, which is the ordinary cumulus band.
+pub const CLOUD_LAYER_BOTTOM: f32 = 1500.0;
+pub const CLOUD_LAYER_TOP: f32 = 5000.0;
+/// Planet radius in metres — the real one. The cloud layer is a spherical
+/// shell rather than a plane so it curves away at the horizon instead of
+/// terminating at an edge, which is what the UV-projected cloud planes
+/// could never do (they need a `smoothstep` horizon fade to hide their
+/// projection singularity).
+pub const CLOUD_PLANET_RADIUS: f32 = 6_371_000.0;
+/// View-march step budget. Dominates the bake's cost: 6 x 128^2 texels x
+/// this. 48 is enough to resolve the shell without banding at cube-face
+/// resolution; the background pass, if it ever adopts this march, would
+/// want fewer plus a blue-noise offset.
+pub const CLOUD_VIEW_STEPS: u32 = 48;
+/// Light-march step budget toward the sun. Short on purpose — the
+/// contribution saturates quickly under Beer-Lambert, so more steps buy
+/// almost nothing for a multiplicative cost against every view step.
+pub const CLOUD_LIGHT_STEPS: u32 = 6;
+
 pub const BLOOM_THRESHOLD: f32 = 1.0;
 /// Half-width of the soft knee around [`BLOOM_THRESHOLD`] — the quadratic
 /// ramp spans `THRESHOLD - KNEE ..= THRESHOLD + KNEE`. Zero would make the

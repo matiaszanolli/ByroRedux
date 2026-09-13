@@ -48,7 +48,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 
 mod init;
-mod noise;
+pub(crate) mod noise;
 use noise::{
     cached_base_density_noise, cached_detail_density_noise, BASE_NOISE_SIZE, DETAIL_NOISE_SIZE,
 };

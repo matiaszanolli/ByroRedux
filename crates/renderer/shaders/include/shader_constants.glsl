@@ -225,6 +225,11 @@
 #define BLOOM_INTENSITY 0.15
 #define BLOOM_THRESHOLD 1.0
 #define BLOOM_KNEE 0.5
+#define CLOUD_LAYER_BOTTOM 1500.0
+#define CLOUD_LAYER_TOP 5000.0
+#define CLOUD_PLANET_RADIUS 6371000.0
+#define CLOUD_VIEW_STEPS 48
+#define CLOUD_LIGHT_STEPS 6
 #define VOLUME_FAR 8960.0
 
 // Per-instance flag bits (`GpuInstance.flags`, lower 16 bits).

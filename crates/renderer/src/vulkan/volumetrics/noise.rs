@@ -1,9 +1,19 @@
 //! Deterministic, tileable density volumes generated once at renderer boot.
+//!
+//! Shared by two consumers. The froxel volumetrics pipeline uses them as a
+//! fog density field; the SKYAL sky-cubemap bake uses the same two volumes
+//! as the base-shape and erosion noises of its cloud march. They are the
+//! right shape for both: the base volume is FBM Perlin blended with an
+//! inverted-Worley billow, and the detail volume is Worley-dominated —
+//! which is the Perlin-Worley / Worley-erosion pair Schneider & Vos
+//! describe (SIGGRAPH 2015, "The Real-Time Volumetric Cloudscapes of
+//! Horizon: Zero Dawn"). Generating a second, near-identical set for
+//! clouds would have been duplication, not independence.
 
 use std::sync::OnceLock;
 
-pub(super) const BASE_NOISE_SIZE: u32 = 64;
-pub(super) const DETAIL_NOISE_SIZE: u32 = 32;
+pub(crate) const BASE_NOISE_SIZE: u32 = 64;
+pub(crate) const DETAIL_NOISE_SIZE: u32 = 32;
 
 fn avalanche_hash(mut value: u32) -> u32 {
     value ^= value >> 16;
@@ -172,13 +182,13 @@ static DETAIL_NOISE_CACHE: OnceLock<Vec<u8>> = OnceLock::new();
 /// regenerating it via ~10^7 hash evaluations bought nothing on a resize
 /// and was a real CPU stall every time. Computed once per process and
 /// reused for every subsequent resize's fresh-image upload.
-pub(super) fn cached_base_density_noise() -> &'static [u8] {
+pub(crate) fn cached_base_density_noise() -> &'static [u8] {
     BASE_NOISE_CACHE.get_or_init(|| generate_density_noise(BASE_NOISE_SIZE, false))
 }
 
 /// Detail-volume counterpart of [`cached_base_density_noise`]; see its doc
 /// comment for the resize-regeneration bug this closes.
-pub(super) fn cached_detail_density_noise() -> &'static [u8] {
+pub(crate) fn cached_detail_density_noise() -> &'static [u8] {
     DETAIL_NOISE_CACHE.get_or_init(|| generate_density_noise(DETAIL_NOISE_SIZE, true))
 }
 

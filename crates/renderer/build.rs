@@ -768,6 +768,11 @@ fn main() {
     writeln!(out, "#define BLOOM_INTENSITY {BLOOM_INTENSITY:?}").unwrap();
     writeln!(out, "#define BLOOM_THRESHOLD {BLOOM_THRESHOLD:?}").unwrap();
     writeln!(out, "#define BLOOM_KNEE {BLOOM_KNEE:?}").unwrap();
+    writeln!(out, "#define CLOUD_LAYER_BOTTOM {CLOUD_LAYER_BOTTOM:?}").unwrap();
+    writeln!(out, "#define CLOUD_LAYER_TOP {CLOUD_LAYER_TOP:?}").unwrap();
+    writeln!(out, "#define CLOUD_PLANET_RADIUS {CLOUD_PLANET_RADIUS:?}").unwrap();
+    writeln!(out, "#define CLOUD_VIEW_STEPS {CLOUD_VIEW_STEPS}").unwrap();
+    writeln!(out, "#define CLOUD_LIGHT_STEPS {CLOUD_LIGHT_STEPS}").unwrap();
     writeln!(out, "#define VOLUME_FAR {VOLUME_FAR:?}").unwrap();
     writeln!(out).unwrap();
 

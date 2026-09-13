@@ -183,23 +183,40 @@ layer and keeps the disc analytic on top.
 Replaces the UV-projected cloud planes. Marched into the cubemap
 (§2.2), never per-pixel.
 
-Open research questions — **resolve against a citable reference before
-implementing, per the no-guessing policy**:
+Implemented in `include/clouds.glsl`, marched by `sky_cube.comp`. Method
+and constants follow Schneider & Vos, "The Real-Time Volumetric
+Cloudscapes of Horizon: Zero Dawn", SIGGRAPH 2015 — a spherical-shell
+layer (so clouds bend to the horizon rather than ending at a plane's
+edge), Perlin–Worley base remapped by coverage, Worley edge erosion, a
+height gradient, Beer–Lambert self-shadowing with the powder term, and a
+dual-lobe Henyey–Greenstein phase. Constants live in
+`shader_constants_data.rs` like every other shader constant.
 
-* Density field. Perlin–Worley, Schneider & Vos, "The Real-Time
-  Volumetric Cloudscapes of Horizon: Zero Dawn", SIGGRAPH 2015. Needs a
-  3D noise texture generated at init (or baked to disk).
-* Phase function. Henyey–Greenstein, or the dual-lobe HG that talk uses.
-* Scattering. Beer–Powder from the same source.
-* Coverage/type driven from WTHR — the canonical mapping from
-  `WTHR` classification flags (`WTHR_CLOUDY`/`RAINY`/`SNOW`) and the
-  per-layer cloud alphas to coverage/density is **undetermined** and must
-  be measured against real data, the way the WATR `DATA` offsets were.
+The density volumes are **not** new: they are the two
+`volumetrics/noise.rs` already generates for froxel fog, which are
+exactly the pair this method wants (FBM Perlin blended with an
+inverted-Worley billow; Worley-dominated detail). `SkyCubePipeline` owns
+its own images rather than borrowing the froxel pipeline's views, because
+that pipeline is optional *and* rebuilt on every resize.
 
-The four authored WTHR cloud-texture layers do not disappear: they remain
-the per-game authored signal EXAL hands over. Whether they drive the
-volumetric coverage field or continue to render as a distinct high-cirrus
-deck above the volumetric layer is an open design question.
+**Coverage comes from `SkyDome::weather_aurora.z`** — the canonical
+procedural-cloud coverage EXAL already derives per weather, and the same
+lane the authored cloud-plane path reads. No new WTHR mapping was
+invented, and a test pins that.
+
+Still open, and still requiring data rather than invention:
+
+* **Cloud type** (stratus / cumulus / cumulonimbus). The reference drives
+  the height gradient from a type signal; the mapping from WTHR
+  classification flags (`WTHR_CLOUDY`/`RAINY`/`SNOW`) onto it is
+  undetermined and must be measured the way the WATR `DATA` offsets were.
+  Until then a single cumulus-band profile is used for every weather.
+* **The background pass still draws the authored WTHR cloud planes.** The
+  march is in a shared include and takes its noise volumes as function
+  parameters precisely so `composite.frag` can adopt it without
+  duplication — but that needs the noise bound into composite's own
+  descriptor set, and the two representations then have to be reconciled
+  rather than both drawn.
 
 ---
 
@@ -214,10 +231,11 @@ deck above the volumetric layer is an open design question.
 | Construct + dispatch in `VulkanContext` / `draw_frame` | **DONE** — baked every frame before the geometry pass |
 | Bind into scene set 1 / binding 20 + ready flag | **DONE** — a dedicated binding rather than the bindless array; see below |
 | RT miss + bounded-path escape consume it | **DONE** |
+| Volumetric cloud march into the cube | **DONE** |
 | Prefiltered mips for rough reflections | TODO |
 | Irradiance projection for ambient | TODO |
-| Volumetric cloud march into the cube | TODO |
-| WTHR → coverage/density mapping (needs data) | TODO |
+| Background pass adopts the cloud march | TODO — it still draws the authored WTHR cloud planes |
+| Cloud *type* (stratus/cumulus/cumulonimbus) from WTHR | TODO — needs data |
 
 ---
 
