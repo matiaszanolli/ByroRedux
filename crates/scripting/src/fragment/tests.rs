@@ -854,6 +854,111 @@ fn chargen_effects_apply_through_deferred_cinematic_presentation() {
     assert!(presentation.last_save_was_auto);
 }
 
+/// MQ101's dragon-attack/keep-escape combat gate (stages 270+):
+/// `Faction.SetEnemy` resolves both `Faction` VMAD properties and marks
+/// them hostile in `FactionRelations`; `Actor.StartCombat` resolves both
+/// the acting alias and the player, then arms `AiCombatState` on the
+/// actor. Both go through `DeferredFragmentEffects` — `SetEnemy` because
+/// `FactionRelations` is a resource (the #2269 nested-acquisition
+/// caution), `StartCombat` applies immediately like `EvaluatePackage`
+/// because `AiCombatState` is per-entity component storage.
+#[test]
+fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const STORMCLOAK_FACTION: u32 = 0x0009_9999;
+    const PLAYER_FACTION: u32 = 0x0000_0013;
+    const ATTACKER_ALIAS: i16 = 5;
+
+    let mut world = fixture();
+    let attacker = world.spawn();
+    world
+        .resource_mut::<crate::SceneActorBindings>()
+        .bind(Q, i32::from(ATTACKER_ALIAS), attacker);
+    let vmad = ScriptInstanceData {
+        scripts: vec![ScriptInstance {
+            name: "MQ101QuestScript".into(),
+            status: 0,
+            properties: vec![
+                ScriptProperty {
+                    name: "MQ101StormcloakFaction".into(),
+                    status: 1,
+                    value: PropertyValue::Object {
+                        form_id: STORMCLOAK_FACTION,
+                        alias: -1,
+                    },
+                },
+                ScriptProperty {
+                    name: "PlayerFaction".into(),
+                    status: 1,
+                    value: PropertyValue::Object {
+                        form_id: PLAYER_FACTION,
+                        alias: -1,
+                    },
+                },
+                ScriptProperty {
+                    name: "Alias_TrophyRoomPrisoner01".into(),
+                    status: 1,
+                    value: PropertyValue::Object {
+                        form_id: 0,
+                        alias: ATTACKER_ALIAS,
+                    },
+                },
+            ],
+        }],
+        ..Default::default()
+    };
+
+    let effects = [
+        Effect::SetEnemy {
+            faction: ObjectRef::Property("MQ101StormcloakFaction".into()),
+            other_faction: ObjectRef::Property("PlayerFaction".into()),
+            modify_player: false,
+            modify_enemy: false,
+        },
+        Effect::StartCombat {
+            actor: crate::translate::effects::ActorRef::Object(ObjectRef::Property(
+                "Alias_TrophyRoomPrisoner01".into(),
+            )),
+            target: crate::translate::effects::ActorRef::Player,
+        },
+    ];
+    let mut deferred = DeferredFragmentEffects::new(&world);
+    let advances = {
+        let (mut stages, mut objectives) =
+            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+        apply_effects(
+            &effects,
+            Q,
+            Some(&vmad),
+            &world,
+            &mut stages,
+            &mut objectives,
+            &mut deferred,
+        )
+    };
+    assert!(advances.is_empty());
+
+    // StartCombat applies immediately, before the guard scope drops.
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let combat_state = world
+        .get::<crate::AiCombatState>(attacker)
+        .expect("StartCombat must arm AiCombatState on the resolved actor");
+    assert_eq!(combat_state.target, player);
+    assert_eq!(combat_state.attack_cooldown_remaining, 0.0);
+
+    // SetEnemy is deferred: not visible until the guard scope drops.
+    assert!(!world
+        .resource::<crate::FactionRelations>()
+        .is_enemy(STORMCLOAK_FACTION, PLAYER_FACTION));
+    deferred.apply(&world);
+    assert!(world
+        .resource::<crate::FactionRelations>()
+        .is_enemy(STORMCLOAK_FACTION, PLAYER_FACTION));
+}
+
 /// Regression for #2539: lifecycle metadata must come from a snapshot captured
 /// before the paired quest-state guards, and alias invalidation must remain
 /// queued until those guards drop.

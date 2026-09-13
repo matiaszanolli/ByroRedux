@@ -274,6 +274,11 @@ pub struct DeferredFragmentEffects {
     /// reference's cell, and a component cannot survive its own entity's
     /// despawn on cell unload.
     reference_lock_changes: Vec<(u32, DeferredLockChange)>,
+    /// `Effect::SetEnemy` pairs, applied to `FactionRelations` after the
+    /// quest-state guards drop — that resource follows the same nested-
+    /// acquisition caution as `CinematicPresentationState` above (#2269),
+    /// not the "direct component storage, stays nested" exception.
+    faction_relations: Vec<(u32, u32)>,
     provider_steps: Vec<DeferredProviderFragmentStep>,
 }
 
@@ -310,6 +315,7 @@ impl DeferredFragmentEffects {
             activations: Vec::new(),
             reference_enable_changes: Vec::new(),
             reference_lock_changes: Vec::new(),
+            faction_relations: Vec::new(),
             provider_steps: Vec::new(),
         }
     }
@@ -409,6 +415,13 @@ impl DeferredFragmentEffects {
                             state.request_save(auto);
                         }
                     }
+                }
+            }
+        }
+        if !self.faction_relations.is_empty() {
+            if let Some(mut relations) = world.try_resource_mut::<crate::FactionRelations>() {
+                for (faction, other_faction) in self.faction_relations.drain(..) {
+                    relations.set_enemy(faction, other_faction);
                 }
             }
         }
@@ -580,7 +593,9 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     `ActorControlState`, `EvaluatePackageRequest`, `HorseTetherState`,
 ///     `MotionTypeChangeRequest` (×2), `SceneStartRequest`,
 ///     `SceneStopRequest`, `Locked` (write ×2, the `SetLocked` /
-///     `SetLockLevel` pair — #3159)
+///     `SetLockLevel` pair — #3159), `AiCombatState` (write,
+///     `Effect::StartCombat` — MQ101's dragon-attack/keep-escape combat
+///     gate)
 ///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
 ///   - **via [`entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
@@ -1171,6 +1186,31 @@ pub(crate) fn apply_effect(
                 .push(DeferredCinematicPresentationEffect::RequestSave { auto: *auto });
             None
         }
+        Effect::SetEnemy {
+            faction,
+            other_faction,
+            ..
+        } => {
+            let faction = resolve_property_form_id(vmad, faction.property_name())?;
+            let other_faction = resolve_property_form_id(vmad, other_faction.property_name())?;
+            deferred.faction_relations.push((faction, other_faction));
+            None
+        }
+        Effect::StartCombat { actor, target } => {
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let target =
+                resolve_actor(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+            if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
+                states.insert(
+                    actor,
+                    crate::AiCombatState {
+                        target,
+                        attack_cooldown_remaining: 0.0,
+                    },
+                );
+            }
+            None
+        }
         Effect::ExitCart { actor, seat } => {
             let actor =
                 resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
@@ -1405,6 +1445,8 @@ fn apply_quest_scoped_effect(
         | Effect::SetInChargen { .. }
         | Effect::ShowRaceMenu
         | Effect::RequestSave { .. }
+        | Effect::SetEnemy { .. }
+        | Effect::StartCombat { .. }
         | Effect::PlayIdle { .. }
         | Effect::SetVehicle { .. }
         | Effect::TetherToHorse { .. }

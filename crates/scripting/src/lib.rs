@@ -11,6 +11,7 @@
 
 pub mod cinematic;
 pub mod cleanup;
+pub mod combat;
 pub mod compatibility;
 pub mod condition;
 pub mod dialogue;
@@ -40,6 +41,7 @@ pub use cinematic::{
     ImageSpaceModifierApplication, MotionTypeChangeRequest,
 };
 pub use cleanup::event_cleanup_system;
+pub use combat::{AiCombatState, FactionRelations};
 pub use compatibility::{
     analyze_obscript_bytecode_compatibility, analyze_pex_compatibility,
     analyze_source_compatibility, classify_method_call, classify_static_call,
@@ -175,6 +177,7 @@ pub fn register(world: &mut World) {
     // emits `OnTriggerEnterEvent` on player entry, which the quest-advance
     // dispatch consumes (the `default*Trigger` family).
     trigger::register(world);
+    combat::register(world);
     obscript_runtime::register(world);
     papyrus_provider::register(world);
     recurring_update::register(world);

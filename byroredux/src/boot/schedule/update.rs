@@ -147,6 +147,31 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::Dead>()
             .writes::<byroredux_scripting::HitEvent>(),
     );
+    // MQ101's dragon-attack/keep-escape combat gate (stages 270+, ROADMAP.md
+    // "MQ101 end-to-end playability"): `Effect::StartCombat` arms
+    // `AiCombatState`; this system chases and strikes exactly like the
+    // player's own `combat_input_system` above, so it shares the same
+    // producer-before-consumer HitEvent contract — scheduled after the
+    // player's own attack input and before `combat_damage_system` resolves
+    // the frame's HitEvents.
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::systems::npc_combat_ai_system,
+        Access::new()
+            .reads_resource::<byroredux_physics::PhysicsWorld>()
+            .reads_resource::<byroredux_core::character::MeleeDamageConfig>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .reads::<Transform>()
+            .writes::<Transform>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .reads::<byroredux_core::ecs::components::EquippedWeapon>()
+            .reads::<byroredux_core::ecs::components::CreatureAttack>()
+            .reads::<byroredux_core::ecs::components::ActorValues>()
+            .reads::<byroredux_core::character::CharacterLevel>()
+            .reads::<byroredux_scripting::AiCombatState>()
+            .writes::<byroredux_scripting::AiCombatState>()
+            .writes::<byroredux_scripting::HitEvent>(),
+    );
     scheduler.add_exclusive_with_access(
         Stage::Update,
         crate::combat::combat_damage_system,

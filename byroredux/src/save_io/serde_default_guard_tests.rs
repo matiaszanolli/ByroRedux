@@ -556,8 +556,19 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `RequestSave`) — see `byroredux_save::FORMAT_MAJOR`'s doc for the
     // full field list and why SAVE-D2-01 (#1714) rules out `serde(default)`
     // here.
+    //
+    // Fingerprint refreshed again, WITHOUT a further major bump, for
+    // `Effect::SetEnemy`/`Effect::StartCombat` (MQ101's dragon-attack/
+    // keep-escape combat gate). Same #4140-corrected rationale as v22's
+    // own `Effect::Enable` insertion, cited in `FORMAT_MAJOR`'s doc above:
+    // `Effect` is `serde_json` externally-tagged (keyed by variant name,
+    // never ordinal), so inserting a variant at any position is
+    // backward-compatible for decoding a pre-this-commit tail. Verified
+    // the same way as those entries: `normalized_serialized_shapes()`
+    // differs by exactly the two new variant lines, nothing existing
+    // reordered/retyped/renamed.
     const BASELINE_MAJOR: u16 = 23;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x40ac_96d7_a8cb_fd58;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb164_22d3_0e5c_71ac;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

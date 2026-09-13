@@ -154,6 +154,8 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::SetInChargen { .. } => "SetInChargen",
         Effect::ShowRaceMenu => "ShowRaceMenu",
         Effect::RequestSave { .. } => "RequestSave",
+        Effect::SetEnemy { .. } => "SetEnemy",
+        Effect::StartCombat { .. } => "StartCombat",
         Effect::PlayIdle { .. } => "PlayIdle",
         Effect::SetVehicle { .. } => "SetVehicle",
         Effect::TetherToHorse { .. } => "TetherToHorse",

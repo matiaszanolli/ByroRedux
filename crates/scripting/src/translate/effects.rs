@@ -251,6 +251,18 @@ pub enum Effect {
     /// not write a save file — see `CinematicPresentationState::
     /// request_save`'s doc for why a mid-fragment write is out of scope.
     RequestSave { auto: bool },
+    /// `<faction>.SetEnemy(<other_faction>, abModifyPlayer, abModifyEnemy)`.
+    /// See [`crate::FactionRelations`] for what this does and does not
+    /// drive at runtime.
+    SetEnemy {
+        faction: ObjectRef,
+        other_faction: ObjectRef,
+        modify_player: bool,
+        modify_enemy: bool,
+    },
+    /// `<actor>.StartCombat(<target>)`. See [`crate::AiCombatState`] for
+    /// the runtime chase-and-strike behavior this arms.
+    StartCombat { actor: ActorRef, target: ActorRef },
     /// `<actor>.PlayIdle(<idle>)`. The runtime preserves the IDLE FormID as
     /// an animation-backend request even when the current game uses HKX.
     PlayIdle { actor: ActorRef, idle: ObjectRef },
@@ -669,6 +681,8 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_show_race_menu,
     prim_request_save,
     prim_request_auto_save,
+    prim_set_enemy,
+    prim_start_combat,
     prim_play_idle,
     prim_set_vehicle,
     prim_tether_to_horse,
@@ -1265,6 +1279,30 @@ fn prim_request_save(e: &Expr, _scope: &Scope) -> Option<Effect> {
 fn prim_request_auto_save(e: &Expr, _scope: &Scope) -> Option<Effect> {
     let args = game_call(e, "RequestAutoSave")?;
     args.is_empty().then_some(Effect::RequestSave { auto: true })
+}
+
+fn prim_set_enemy(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetEnemy")?;
+    if args.len() != 3 {
+        return None;
+    }
+    Some(Effect::SetEnemy {
+        faction: receiver_object(object, scope)?,
+        other_faction: receiver_object(&args[0].value.node, scope)?,
+        modify_player: bool_arg(args, 1)?.unwrap_or(true),
+        modify_enemy: bool_arg(args, 2)?.unwrap_or(true),
+    })
+}
+
+fn prim_start_combat(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "StartCombat")?;
+    if args.len() != 1 {
+        return None;
+    }
+    Some(Effect::StartCombat {
+        actor: receiver_actor(object, scope)?,
+        target: receiver_actor(&args[0].value.node, scope)?,
+    })
 }
 
 fn prim_play_idle(e: &Expr, scope: &Scope) -> Option<Effect> {
@@ -2721,6 +2759,91 @@ mod tests {
             lower_fragment(&body),
             Some(vec![Effect::RequestSave { auto: true }])
         );
+    }
+
+    #[test]
+    fn lowers_mq101_set_enemy() {
+        // Real vanilla shape: `QF_MQ101_0003372B::Fragment_112`. The
+        // decompiler emits the `Faction Property` auto-read as its backing
+        // variable (`::MQ101StormcloakFaction_var`), a shape the `.psc`
+        // `Ident` regex cannot express (#2657 precedent above), so this is
+        // built by hand rather than parsed from source text.
+        let expr = Expr::Call {
+            callee: Box::new(sp(Expr::MemberAccess {
+                object: Box::new(sp(Expr::Ident(Identifier(
+                    "::MQ101StormcloakFaction_var".into(),
+                )))),
+                member: sp(Identifier("SetEnemy".into())),
+            })),
+            args: vec![
+                CallArg {
+                    name: None,
+                    value: sp(Expr::Ident(Identifier("::PlayerFaction_var".into()))),
+                },
+                CallArg {
+                    name: None,
+                    value: sp(Expr::BoolLit(false)),
+                },
+                CallArg {
+                    name: None,
+                    value: sp(Expr::BoolLit(false)),
+                },
+            ],
+        };
+        assert_eq!(
+            classify_effect(&expr, &Scope::default()),
+            Some(Effect::SetEnemy {
+                faction: ObjectRef::Property("::MQ101StormcloakFaction_var".into()),
+                other_faction: ObjectRef::Property("::PlayerFaction_var".into()),
+                modify_player: false,
+                modify_enemy: false,
+            })
+        );
+    }
+
+    #[test]
+    fn lowers_mq101_start_combat() {
+        // Real vanilla shape: `QF_MQ101_0003372B::Fragment_112`.
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_112()\n\
+             Alias_TrophyRoomPrisoner01.GetActorRef().StartCombat(Game.GetPlayer())\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::StartCombat {
+                actor: ActorRef::Object(ObjectRef::Property(
+                    "Alias_TrophyRoomPrisoner01".into()
+                )),
+                target: ActorRef::Player,
+            }])
+        );
+    }
+
+    #[test]
+    fn set_enemy_declines_on_wrong_arg_count() {
+        let expr = Expr::Call {
+            callee: Box::new(sp(Expr::MemberAccess {
+                object: Box::new(sp(Expr::Ident(Identifier("::SomeFaction_var".into())))),
+                member: sp(Identifier("SetEnemy".into())),
+            })),
+            args: vec![CallArg {
+                name: None,
+                value: sp(Expr::Ident(Identifier("::OtherFaction_var".into()))),
+            }],
+        };
+        assert_eq!(classify_effect(&expr, &Scope::default()), None);
+    }
+
+    #[test]
+    fn start_combat_declines_on_wrong_arg_count() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_32()\n\
+             Game.GetPlayer().StartCombat()\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
     }
 
     #[test]

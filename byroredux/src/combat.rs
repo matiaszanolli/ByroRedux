@@ -360,7 +360,7 @@ fn resolve_actor_root(world: &World, collider_entity: EntityId) -> Option<Entity
         .filter(|actor| world.get::<ActorVitals>(*actor).is_some())
 }
 
-fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
+pub(crate) fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
     // #3762 — a creature's authored `CREA.DATA.Damage`, stamped at spawn as
     // `CreatureAttack`. Checked before the weapon arm only in the sense of
     // the fallback it replaces: a creature carrying an equipped weapon
@@ -458,7 +458,7 @@ fn melee_damage_charal_bonus(world: &World, aggressor: EntityId) -> f32 {
 /// the source game's weapon layout isn't decoded yet (see
 /// `ItemKind::Weapon::reach`), so it falls back to the flat baseline —
 /// same rule the unarmed case already uses.
-fn attack_reach_bu(world: &World, aggressor: EntityId) -> f32 {
+pub(crate) fn attack_reach_bu(world: &World, aggressor: EntityId) -> f32 {
     world
         .get::<EquippedWeapon>(aggressor)
         .filter(|weapon| weapon.reach > 0.0)
@@ -468,7 +468,7 @@ fn attack_reach_bu(world: &World, aggressor: EntityId) -> f32 {
 /// Weapon-scaled swing cooldown. `EquippedWeapon::speed` is a cadence
 /// multiplier (>1.0 = faster attacks) on [`MELEE_COOLDOWN_SECONDS`]; `0.0`
 /// (unset/undecoded) falls back to the flat baseline.
-fn attack_cooldown_seconds(world: &World, aggressor: EntityId) -> f32 {
+pub(crate) fn attack_cooldown_seconds(world: &World, aggressor: EntityId) -> f32 {
     world
         .get::<EquippedWeapon>(aggressor)
         .filter(|weapon| weapon.speed > 0.0)
