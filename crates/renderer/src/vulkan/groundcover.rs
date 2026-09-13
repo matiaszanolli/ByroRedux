@@ -21,11 +21,14 @@
 //! ## Why the blade buffer is sized the way it is
 //!
 //! [`GROUNDCOVER_MAX_CHUNKS`] × [`GROUNDCOVER_MAX_BLADES_PER_CHUNK`] × 16 B =
-//! 16 MB device-local, against the 4 GB total budget. The visible set at the
-//! shipped 512-unit chunk and 2000-unit draw distance is ~50 chunks, so this
-//! is roughly 20× headroom — deliberately, because §11.2 lists chunk size as
-//! an open question wanting a sweep, and halving it quadruples the chunk
-//! count. Sizing to today's number would make the sweep a code change.
+//! 16 MB device-local, against the 4 GB total budget: 256 chunks × 4,096
+//! blades since the candidate budget rose on 2026-09-13 (design §12.13), the
+//! same bytes as the earlier 1,024 × 1,024. The visible set at the shipped
+//! 512-unit chunk and 2000-unit draw distance is ~50 chunks, so this is ~5×
+//! headroom. **That is no longer enough for §11.2's chunk-size sweep**:
+//! halving the chunk to 256 units quadruples the chunk count past the cap, so
+//! the sweep now needs `GROUNDCOVER_MAX_CHUNKS` raised with it, and the blade
+//! buffer grows unless the per-chunk cap falls by the same factor.
 //!
 //! ## Ownership
 //!

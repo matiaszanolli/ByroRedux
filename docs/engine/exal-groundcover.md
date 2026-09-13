@@ -1401,6 +1401,42 @@ Phases:
    density-field points, weighted by climate, honouring its water rule.
 4. **Phase D — the handoff** between blades and authored models.
 
+### 12.13 Density from the candidate budget (2026-09-13)
+
+**Measured cause.** After §12.12 Phase A, Skyrim `2,-4` accepted 5,923 of
+49,152 candidates (12%) over 48 chunks, about 2,570 m²: ~2.3 points/m², ~9
+blades/m² at four blades per point, ~24,000 blades in view. The candidate cap
+was not the limiter: at full density the near field allowed ~76 blades/m². The
+density field's acceptance was, and the factors doing the thinning — layer
+affinity (0.5 for tundra), the clump floor and contrast — are uncited
+estimates that §11.3 has not calibrated.
+
+**The change.** Rather than tune uncited factors, the candidate budget rises
+4×: `GROUNDCOVER_CANDIDATES_PER_THREAD` 16 → 64 (4,096 per chunk, one per 8
+units), with `GROUNDCOVER_MAX_BLADES_PER_CHUNK` matching it so a fully accepted
+chunk never overflows, and `GROUNDCOVER_MAX_CHUNKS` 1,024 → 256 so the blade
+buffer stays 16 MB (~67 chunks can be within reach; 48 were dispatched here).
+The field's relative distribution is untouched — worn ground stays thinner
+than meadow — while absolute density moves toward the sourced references:
+Outerra's full detail (≈44 blades/m²) and Ghost of Tsushima's ~83,000 blades
+in view (GDC 2021, 1:45). At 12% acceptance the expectation is ~37 blades/m²
+and ~95,000 blades in view.
+
+**Measured.** Skyrim `2,-4`, same camera, two runs:
+
+| | Before | After |
+|---|---|---|
+| Accepted points (48 chunks) | 5,923 | 23,399 (3.95×) |
+| Blades in view (×4 per point) | ~24,000 | ~93,600 |
+| Density over ~2,570 m² | ~9 blades/m² | ~36 blades/m² |
+| Overflow | 0 | 0 |
+| `gpu_main_render` | 7.46 ms | 7.64–7.88 ms |
+
+The distant ground now reads as a continuous sward. **Up close it still reads
+as sprouts:** the built-in species' blades are 6–14 units tall, so near the
+camera each covers little of the screen. That is blade size — §12.12 Phase B's
+sourced dimensions — not blade count.
+
 ---
 
 ## 13. References

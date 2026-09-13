@@ -258,8 +258,21 @@ pub const GROUNDCOVER_DRAW_DISTANCE: f32 = 2000.0;
 /// `cluster_cull.comp` (§4).
 pub const GROUNDCOVER_SCATTER_WORKGROUP: u32 = 64;
 /// Candidate points each scatter thread draws. Total candidates per chunk is
-/// `GROUNDCOVER_SCATTER_WORKGROUP × this`.
-pub const GROUNDCOVER_CANDIDATES_PER_THREAD: u32 = 16;
+/// `GROUNDCOVER_SCATTER_WORKGROUP × this` — 4,096 over a 512-unit chunk, one
+/// candidate per 8 units (≈11 cm).
+///
+/// Raised from 16 (1,024 per chunk) on 2026-09-13 because the sward was
+/// measured at ~9 blades/m² on Skyrim tundra (`2,-4`): 5,923 accepted points
+/// over ~2,570 m², ×4 blades per point. The limiter was not the cap but the
+/// density field accepting 12% of candidates, and the factors doing the
+/// thinning (layer affinity, clump floor and contrast) are uncited estimates
+/// that §11.3 has yet to calibrate. Scaling the candidate budget instead leaves
+/// the field's relative distribution — worn ground thinner than meadow —
+/// untouched while lifting absolute density toward the sourced references:
+/// Outerra's full detail (≈44 blades/m², "4 blades generated from a single
+/// point" over ~30 cm canopy data) and Ghost of Tsushima's ~83,000 blades
+/// drawn in view (GDC 2021, 1:45). See design §12.13.
+pub const GROUNDCOVER_CANDIDATES_PER_THREAD: u32 = 64;
 /// Fixed capacity of a chunk's blade slice.
 ///
 /// §4: **this can overflow, and the overflow policy is part of the design.** A
@@ -269,12 +282,18 @@ pub const GROUNDCOVER_CANDIDATES_PER_THREAD: u32 = 16;
 /// low-discrepancy sequence — a blue-noise tile consumed in order is not
 /// progressive, so truncating it leaves whatever the first N entries happen to
 /// be, which clumps directionally in exactly the densest chunks.
-pub const GROUNDCOVER_MAX_BLADES_PER_CHUNK: u32 = 1024;
+///
+/// Equal to the candidate count per chunk, so a chunk whose every candidate is
+/// accepted never overflows; overflow can then only come from the cap being
+/// lowered, never from the field.
+pub const GROUNDCOVER_MAX_BLADES_PER_CHUNK: u32 = 4096;
 /// Ceiling on chunks dispatched in one frame. At 512 units a chunk and a
-/// 2000-unit draw distance the visible set is ~64 chunks; this leaves an order
-/// of magnitude of headroom for a tuned-up radius without sizing the blade
-/// buffer for a radius nobody runs.
-pub const GROUNDCOVER_MAX_CHUNKS: u32 = 1024;
+/// 2000-unit draw distance the chunks within reach number ~67 (the disc of
+/// radius draw distance + chunk half-diagonal), and Skyrim tundra dispatches 48
+/// after the behind-camera cull. 256 keeps ~4× headroom while holding the blade
+/// buffer at `256 × 4096 × 16 B` = 16 MB, the same size it had at 1,024 chunks
+/// × 1,024 blades before the candidate budget rose.
+pub const GROUNDCOVER_MAX_CHUNKS: u32 = 256;
 /// Density-histogram buckets (§11.3). The scatter tallies `d_ground` per
 /// candidate so the field can be calibrated against real cells rather than
 /// against a mirrored Rust function that would not be the thing shipping.
@@ -298,10 +317,12 @@ pub const GROUNDCOVER_VERTS_PER_SEGMENT: u32 = 6;
 /// there are 4 blades generated from a single point in the canopy texture",
 /// over canopy data of "roughly 30cm" resolution
 /// (<https://outerra.blogspot.com/2012/05/procedural-grass-rendering.html>).
-/// The scatter's candidate grid is the same scale — 512 units / √1024 = 16
-/// units ≈ 23 cm — so this is that source's full-detail density at matching
-/// point spacing, multiplying the sward without adding scatter work. The blades
-/// share the point's root and species and differ by their own seed streams.
+/// The blades share the point's root and species and differ by their own seed
+/// streams, multiplying the sward without adding scatter work. When this landed
+/// the candidate grid matched Outerra's scale (512 / √1024 = 16 units ≈ 23 cm);
+/// since the candidate budget rose (see `GROUNDCOVER_CANDIDATES_PER_THREAD`) the
+/// grid is finer, and the justification is the resulting density, not the
+/// spacing.
 pub const GROUNDCOVER_BLADES_PER_POINT: u32 = 4;
 /// Entries in the scatter's species selection table.
 ///
