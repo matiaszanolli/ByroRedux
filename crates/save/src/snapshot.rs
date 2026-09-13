@@ -158,12 +158,33 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// `Effect` enum — `SetLocked` and `SetLockLevel` — which reaches a
 /// snapshot through the registered `FragmentExecutionQueue` resource
 /// (suspended `Utility.Wait` / `WaitForActors3DLoaded` fragment
-/// continuations hold a `Vec<Effect>` tail). Unlike every field addition
-/// above, this is an *enum* change: serde's index-based representation
-/// means the new variants shift the discriminant of every later one, so a
-/// pre-v22 snapshot's queued tail would deserialize as the wrong effect
-/// rather than merely miss a field. Rejection is not a blanket-rule
-/// courtesy here, it is required.
+/// continuations hold a `Vec<Effect>` tail). The bump was taken under the
+/// blanket rule, like every field addition above.
+///
+/// #4140 — this doc previously justified v22 as *required* rather than
+/// blanket, on the grounds that "serde's index-based representation means
+/// the new variants shift the discriminant of every later one". That is
+/// wrong for the format this subsystem actually writes, and it matters
+/// because this doc is the citable precedent for future bump calls.
+///
+/// The payload is `serde_json` (see [`Snapshot`]'s encode path), and
+/// `Effect` carries a plain `#[derive(Serialize, Deserialize)]` with no
+/// `tag`/`repr` attribute — so it uses serde's default *externally
+/// tagged* representation: `{"SetLocked": {…}}`, keyed by the variant
+/// **name**, never by ordinal. `serde_json`'s serializer ignores the
+/// `variant_index` that `serde_derive` passes it; only non-self-describing
+/// binary formats consult it, and saves do not use one. Inserting a
+/// variant at any position is therefore backward-compatible for decoding
+/// a pre-v22 tail, exactly as #3489 concluded for `Effect::Enable` on
+/// this same enum three bumps earlier — correctly, and without a bump.
+///
+/// The bump fails closed (a clean `UnsupportedVersion` rejection, never
+/// silent misdecode), so it is not worth reverting now that it has
+/// shipped; the cost was invalidating pre-#3159 saves unnecessarily. The
+/// rule to carry forward: for externally-tagged JSON, *adding* a variant
+/// is compatible, while changing an **existing** variant's field shape is
+/// not — that distinction is what the "discriminant shift" framing
+/// obscured.
 pub const FORMAT_MAJOR: u16 = 22;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
