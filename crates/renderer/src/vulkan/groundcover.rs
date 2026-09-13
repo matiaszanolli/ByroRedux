@@ -44,11 +44,11 @@ use super::allocator::SharedAllocator;
 use super::buffer::{GpuBuffer, NoUninit};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
-    GROUNDCOVER_BLADE_SEGMENTS_NEAR, GROUNDCOVER_CHUNKS_PER_CELL_SIDE,
-    GROUNDCOVER_HISTOGRAM_BUCKETS, GROUNDCOVER_INTERACTION_MAX_DISTURBERS,
-    GROUNDCOVER_INTERACTION_TEXELS, GROUNDCOVER_INTERACTION_UNITS,
-    GROUNDCOVER_INTERACTION_WORKGROUP, GROUNDCOVER_MAX_BLADES_PER_CHUNK, GROUNDCOVER_MAX_CHUNKS,
-    GROUNDCOVER_VERTS_PER_SEGMENT,
+    GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_BLADE_SEGMENTS_NEAR,
+    GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_HISTOGRAM_BUCKETS,
+    GROUNDCOVER_INTERACTION_MAX_DISTURBERS, GROUNDCOVER_INTERACTION_TEXELS,
+    GROUNDCOVER_INTERACTION_UNITS, GROUNDCOVER_INTERACTION_WORKGROUP,
+    GROUNDCOVER_MAX_BLADES_PER_CHUNK, GROUNDCOVER_MAX_CHUNKS, GROUNDCOVER_VERTS_PER_SEGMENT,
 };
 
 const SCATTER_SPV: &[u8] = include_bytes!("../../shaders/groundcover_scatter.comp.spv");
@@ -1301,7 +1301,10 @@ impl GroundCoverPipeline {
                 verts_per_blade: if self.frame_debug_points {
                     1
                 } else {
-                    GROUNDCOVER_BLADE_SEGMENTS_NEAR * GROUNDCOVER_VERTS_PER_SEGMENT
+                    // A point grows GROUNDCOVER_BLADES_PER_POINT blades,
+                    // and the vertex shader divides `gl_VertexIndex` by
+                    // exactly this product to find the point.
+                    VERTS_PER_BLADE_NEAR * GROUNDCOVER_BLADES_PER_POINT
                 },
                 species_count: self.frame_push.gust_and_counts[3] as u32,
             };

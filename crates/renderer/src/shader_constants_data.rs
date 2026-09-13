@@ -292,6 +292,17 @@ pub const GROUNDCOVER_BLADE_SEGMENTS_NEAR: u32 = 3;
 /// width, so the last segment degenerates into a triangle without needing a
 /// special case in the vertex shader.
 pub const GROUNDCOVER_VERTS_PER_SEGMENT: u32 = 6;
+/// Blades the vertex shader grows from each accepted scatter point.
+///
+/// Outerra, "Procedural grass rendering" (2012): "At the most detailed level
+/// there are 4 blades generated from a single point in the canopy texture",
+/// over canopy data of "roughly 30cm" resolution
+/// (<https://outerra.blogspot.com/2012/05/procedural-grass-rendering.html>).
+/// The scatter's candidate grid is the same scale — 512 units / √1024 = 16
+/// units ≈ 23 cm — so this is that source's full-detail density at matching
+/// point spacing, multiplying the sward without adding scatter work. The blades
+/// share the point's root and species and differ by their own seed streams.
+pub const GROUNDCOVER_BLADES_PER_POINT: u32 = 4;
 
 /// Wavelength of the wind flow-noise field, world units.
 ///

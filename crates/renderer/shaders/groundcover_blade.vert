@@ -174,16 +174,30 @@ void main() {
     uint vertsPerBlade = GC_DEBUG_POINTS == 1u
         ? 1u
         : GC_SEGMENTS * GROUNDCOVER_VERTS_PER_SEGMENT;
-    uint bladeIndex = uint(gl_VertexIndex) / vertsPerBlade;
-    uint vertInBlade = uint(gl_VertexIndex) % vertsPerBlade;
+    // Each accepted scatter point grows GROUNDCOVER_BLADES_PER_POINT blades
+    // from its root (Outerra 2012 — see the constant). The debug view stays
+    // one point per scatter point, since it judges the distribution.
+    uint bladesPerPoint = GC_DEBUG_POINTS == 1u ? 1u : GROUNDCOVER_BLADES_PER_POINT;
+    uint vertsPerPoint = vertsPerBlade * bladesPerPoint;
+    uint pointIndex = uint(gl_VertexIndex) / vertsPerPoint;
+    uint vertInPoint = uint(gl_VertexIndex) % vertsPerPoint;
+    uint subBlade = vertInPoint / vertsPerBlade;
+    uint vertInBlade = vertInPoint % vertsPerBlade;
 
-    GroundCoverBlade blade = gcBlades[bladeIndex];
-    uint chunkIndex = bladeIndex / GC_BLADES_PER_CHUNK;
+    GroundCoverBlade blade = gcBlades[pointIndex];
+    uint chunkIndex = pointIndex / GC_BLADES_PER_CHUNK;
     GroundCoverChunk chunk = gcChunks[chunkIndex];
     GroundCoverCell cell = gcCells[chunk.cellIndex];
 
     vec3 base = byroGcBladePosition(blade, chunk);
+    // One 24-bit seed per blade in the tuft. Blade 0 keeps the scatter's own
+    // seed; the others draw a fresh one from stream 7 onward, which no
+    // per-blade attribute below consumes, so height, yaw, twist, lean and
+    // colour jitter all decorrelate between blades sharing a root.
     uint seed = byroGcBladeSeed(blade);
+    if (subBlade > 0u) {
+        seed = uint(gcSeedStream(seed, 6u + subBlade) * 16777216.0);
+    }
     uint species = byroGcBladeSpecies(blade);
     vSpecies = min(species, max(GC_SPECIES_COUNT, 1u) - 1u);
     vDGround = blade.dGround;

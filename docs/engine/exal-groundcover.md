@@ -1254,6 +1254,28 @@ blade-height problem, not a cover failure. The validation layers reported only
 the VUID types this scene already had. The `groundcover:` bench row now ends in
 `covered=`.
 
+### 12.9 A scatter point grows a tuft, not a blade (2026-09-13)
+
+**The defect.** One blade per accepted point read as scattered needles. The
+candidate cap is 1,024 per 512-unit chunk (≈19 per m² at full density), and on
+Skyrim tundra the field accepts far fewer, so the sward was a few blades per m²
+where every reference is an order of magnitude or more above that.
+
+**The change.** Each accepted point now grows `GROUNDCOVER_BLADES_PER_POINT = 4`
+blades, the full-detail count from Outerra ("4 blades generated from a single
+point in the canopy texture", over canopy data of "roughly 30cm"). The
+scatter's candidate grid is the same scale (512 / √1024 = 16 units ≈ 23 cm), so
+this is that source's density at matching point spacing, and it costs no
+scatter work. Outerra does not state how the four are arranged; the blades here
+take the source literally and share the point's root and species, each drawing
+its own seed for height, yaw, twist, lean and colour jitter.
+
+**Measured** on Skyrim `2,-4`, same camera, two runs each: 5,363 accepted
+points; `gpu_main_render` 7.05–7.91 ms at one blade per point and 7.68–8.14 ms
+at four. The blades read as tufts rather than needles. The field is still sparse
+on this ground, because most candidates carry a low `d_ground`; that is §11.3's
+calibration question, not this one.
+
 ---
 
 ## 13. References
