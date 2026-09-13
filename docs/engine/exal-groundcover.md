@@ -1313,6 +1313,65 @@ their width is below what the comparison can show. It ships on the strength of
 the source and its zero cost. The view also shows why shading alone cannot fix
 the needle look while blades up to ~280 units tall are ~1 unit wide.
 
+### 12.11 Species are drawn by climate weight (2026-09-13)
+
+**The defect.** §7 specifies selection "by weight × local conditions", and the
+translate boundary resolves a `climate_weight` for every species. Nothing ever
+read it: the scatter picked `(hash >> 24) % speciesCount`, so every species in
+the load order was equally likely everywhere. On Skyrim that put the
+underwater kelp (`WaterKelpGrass01`, a 279-unit model) on dry tundra as often
+as tundra grass, and a kelp-height blade is most of what read as a needle.
+
+**The change.** The host builds a 256-entry selection table from each
+species' weight in the palette's climate, and the scatter indexes it with the
+same 8 hash bits it already reserved for species
+(`GROUNDCOVER_SPECIES_TABLE_SIZE`, scatter binding 7). A species holding `k`
+entries is drawn with probability `k / 256`. The table is filled by
+largest-remainder rounding after reserving one entry per species of positive
+weight, so quantisation cannot drop a species the palette says belongs here.
+With no positive weight it falls back to uniform, which is the old behaviour.
+
+**Measured.** Skyrim `2,-4`, same camera: the tallest blades are gone from the
+frame, the accepted count is unchanged (5,363, as expected: selection changes
+which species grows, not whether a point is accepted), and `gpu_main_render` was
+6.97 ms. **This is a partial fix.** Tamriel resolves to `Temperate`, and a
+species whose editor ID reads as another climate keeps the translate boundary's
+non-zero tail weight, so underwater species are rarer but not absent. Records
+that are not grass at all are Phase A's content classifier, below.
+
+### 12.12 Hybrid blades and authored cards (planned 2026-09-13)
+
+A three-track research pass (published blade techniques, grass botany, and a
+census of Skyrim SE's 27 vanilla `GRAS` models) found that the blade look was
+built on a wrong premise:
+
+- **Every vanilla Skyrim `GRAS` model is 3–16 alpha-tested cards; none models a
+  blade.** `OBND` z is the tallest card in the clump. The painted blades are
+  ~0.23–0.60 units wide, the tallest ~33–57 units, the median ~12–22.
+- **Only ~14 of the 27 records are grass.** Three are opaque rock meshes, two are
+  leaf decals lying flat, and the rest are fern, coral and kelp (the 279-unit
+  maximum).
+- **Real leaves and every renderer set width independently of height.** Flat
+  meadow leaves run ~15:1–50:1 length to width (Edgar & Connor 2000; Flora of
+  China), flowering culms "often well overtopping leaves", so a tuft's height is
+  not a blade's length. Jahrmann & Wimmer's demo sets width and height from
+  separate ranges (~1:9–1:25); Outerra and AMD widen blades as density falls.
+
+The chosen direction is a **hybrid**: procedural blades near the camera, the
+records' own authored card meshes further out, with a handoff between them. It
+lands in phases:
+
+1. **Phase A — translation correctness.** Classify each record from its model's
+   content (opaque vs alpha-tested, card orientation, placement relative to
+   water) into blade-capable grass or mesh-only ground cover; keep mesh-only
+   records out of the blade palette and out of the cover test's reach. Climate
+   selection (§12.11) is the first piece.
+2. **Phase B — sourced near blades.** Blade height from the measured painted
+   range per model, width from the botany ratio and density compensation.
+3. **Phase C — the card tier.** Draw each record's authored model as cards
+   beyond the blade range, placed by the same density field.
+4. **Phase D — the handoff** between B and C.
+
 ---
 
 ## 13. References
@@ -1376,7 +1435,39 @@ could not be verified against the source itself, the entry says so.
   appears only as an example on slide 52. Nothing in this design is derived
   from RDR2.
 
+- "Rendering Countless Blades of Waving Grass", *GPU Gems* (2004), chapter 7.
+  Used for §12.12's card model: "The required texture has to cluster several
+  blades of grass" (§7.3.1), drawn on "three intersecting quads" (§7.3.2). No
+  dimensions are given. *Author not recorded by the research pass.*
+- Jahrmann & Wimmer demo, blade dimension ranges:
+  `ResponsiveGrassDemo/src/DemoScene.cpp` lines 700–703
+  (`bladeMinHeight = 1.3f; bladeMaxHeight = 2.5f; bladeMinWidth = 0.1f;
+  bladeMaxWidth = 0.14f;`) and 722–725 (0.6–0.8 / 0.06–0.08); units not
+  stated. Tuft height ranges in `src/Grass.cpp` lines 555–605. The width:height
+  ratios in §12.12 are our arithmetic on these, not quoted figures.
+- **Skyrim SE `GRAS` model census** (2026-09-13): our own measurement, not a
+  publication. The 27 records were read from `Skyrim.esm` with `EsmReader` /
+  `parse_gras`. Their models came from `Skyrim - Meshes0/1.bsa` through
+  `BsaArchive` and were parsed with `byroredux_nif`. Cards were split into
+  connected components, and painted blade widths were measured from each
+  DXT5 alpha mask at the NIF's own alpha-test threshold. The program lived in
+  a session scratchpad, not in the repository; rerun it before relying on its
+  figures for another game.
+
 ### Botany and canopy physics
+
+- Edgar & Connor (2000), *Flora of New Zealand* Vol. V, Gramineae, web
+  factsheets at `https://www.nzflora.info/factsheet/taxon/<Genus-species>.html`. Leaf-blade
+  and tuft dimensions for *Lolium perenne*, *Dactylis glomerata*, *Poa
+  pratensis*, *Agrostis capillaris*, *Anthoxanthum odoratum*, *Festuca rubra*,
+  *Deschampsia cespitosa* ("culms often well overtopping leaves"), *Deschampsia
+  flexuosa*, *Nardus stricta* and *Phragmites australis*.
+- *Flora of China*, eFloras (`http://www.efloras.org/`, flora_id=2). Vol. 22:
+  *Festuca ovina* p. 228, *Calamagrostis epigeios* p. 359, *Bouteloua gracilis*
+  p. 494, *Achnatherum splendens* p. 206; Vol. 23: *Typha latifolia* p. 161.
+- *Flora of the Canadian Arctic Archipelago*,
+  <https://nature.ca/aaflora/data/www/poarla.htm>: *Arctagrostis latifolia*
+  subsp. *latifolia*, blades 6–80 mm × 2–4 mm, plants 10–95 cm.
 
 - Matthew, Hernández-Garay and Hodgson, *Proceedings of the New Zealand
   Grassland Association* 57 (1995):

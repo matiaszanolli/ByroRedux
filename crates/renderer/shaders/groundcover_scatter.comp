@@ -84,6 +84,14 @@ layout(std430, set = 0, binding = 5) buffer GcCounterBuffer {
     uint gcCounters[];
 };
 
+/// Species selection table: `GROUNDCOVER_SPECIES_TABLE_SIZE` palette indices,
+/// filled host-side in proportion to each species' climate weight (§7). The
+/// hash's top 8 bits index it, so a species holding `k` entries is drawn with
+/// probability `k / 256`.
+layout(std430, set = 0, binding = 7) readonly buffer GcSpeciesTableBuffer {
+    uint gcSpeciesTable[];
+};
+
 /// This frame's TLAS, published by the build that precedes this dispatch.
 /// Traced by the placed-geometry cover test below.
 layout(set = 0, binding = 6) uniform accelerationStructureEXT gcTopLevelAS;
@@ -291,7 +299,13 @@ void main() {
         vec2 local = (worldXZ - vec2(chunk.baseXZ.x, chunk.baseXZ.y)) * vec2(1.0, -1.0);
         uvec2 fixedLocal = uvec2(clamp(local * (65536.0 / GROUNDCOVER_CHUNK_UNITS),
                                        vec2(0.0), vec2(65535.0)));
-        uint species = pc.speciesCount > 0u ? (hash >> 24) % pc.speciesCount : 0u;
+        // §7: selection by climate weight. The host filled the table in
+        // proportion to each species' weight in this worldspace's climate;
+        // the `min` guards a table built for a longer palette than this
+        // frame's species buffer carries.
+        uint species = pc.speciesCount > 0u
+            ? min(gcSpeciesTable[hash >> 24], pc.speciesCount - 1u)
+            : 0u;
 
         GroundCoverBlade blade;
         blade.packedXZ = fixedLocal.x | (fixedLocal.y << 16);

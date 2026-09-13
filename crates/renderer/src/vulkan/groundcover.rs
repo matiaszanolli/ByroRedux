@@ -48,7 +48,8 @@ use crate::shader_constants::{
     GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_HISTOGRAM_BUCKETS,
     GROUNDCOVER_INTERACTION_MAX_DISTURBERS, GROUNDCOVER_INTERACTION_TEXELS,
     GROUNDCOVER_INTERACTION_UNITS, GROUNDCOVER_INTERACTION_WORKGROUP,
-    GROUNDCOVER_MAX_BLADES_PER_CHUNK, GROUNDCOVER_MAX_CHUNKS, GROUNDCOVER_VERTS_PER_SEGMENT,
+    GROUNDCOVER_MAX_BLADES_PER_CHUNK, GROUNDCOVER_MAX_CHUNKS, GROUNDCOVER_SPECIES_TABLE_SIZE,
+    GROUNDCOVER_VERTS_PER_SEGMENT,
 };
 
 const SCATTER_SPV: &[u8] = include_bytes!("../../shaders/groundcover_scatter.comp.spv");
@@ -202,6 +203,10 @@ pub struct GroundCoverFrame<'a> {
     pub cells: &'a [GpuGroundCoverCell],
     pub chunks: &'a [GpuGroundCoverChunk],
     pub species: &'a [GpuGroundCoverSpecies],
+    /// The scatter's species selection table: up to
+    /// `GROUNDCOVER_SPECIES_TABLE_SIZE` indices into `species`, in proportion
+    /// to climate weight (§7). Shorter input is padded with species 0.
+    pub species_table: &'a [u32],
     pub view_proj: [f32; 16],
     pub camera_pos: [f32; 3],
     /// Cell-grid-snapped render origin the projection expects to have been
@@ -349,6 +354,8 @@ pub struct GroundCoverPipeline {
     chunk_buffers: Vec<GpuBuffer>,
     cell_buffers: Vec<GpuBuffer>,
     species_buffers: Vec<GpuBuffer>,
+    /// Per frame-in-flight species selection table (§7), read by the scatter.
+    species_table_buffers: Vec<GpuBuffer>,
     blade_buffer: Option<GpuBuffer>,
     indirect_buffer: Option<GpuBuffer>,
     counter_buffer: Option<GpuBuffer>,
@@ -414,6 +421,7 @@ impl GroundCoverPipeline {
             chunk_buffers: Vec::new(),
             cell_buffers: Vec::new(),
             species_buffers: Vec::new(),
+            species_table_buffers: Vec::new(),
             blade_buffer: None,
             indirect_buffer: None,
             counter_buffer: None,
@@ -482,6 +490,13 @@ impl GroundCoverPipeline {
                 species_bytes,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
+            self.species_table_buffers
+                .push(GpuBuffer::create_host_visible(
+                    device,
+                    allocator,
+                    (GROUNDCOVER_SPECIES_TABLE_SIZE as vk::DeviceSize) * 4,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )?);
             self.counter_readback.push(GpuBuffer::create_host_readback(
                 device,
                 allocator,
@@ -559,6 +574,8 @@ impl GroundCoverPipeline {
                     .stage_flags(compute)
             })
             .collect();
+        // §7's species selection table.
+        scatter_bindings.push(storage_binding(7, compute));
         // The TLAS, for the placed-geometry cover test (ground cover must not
         // grow through roads, flagstones or rock bases).
         scatter_bindings.push(
@@ -686,12 +703,12 @@ fn storage_binding(
 impl GroundCoverPipeline {
     fn create_descriptors(&mut self, device: &ash::Device) -> Result<()> {
         let frames = MAX_FRAMES_IN_FLIGHT as u32;
-        // 6 scatter + 7 draw + 3 interaction storage bindings per
+        // 7 scatter + 7 draw + 3 interaction storage bindings per
         // frame-in-flight, plus the scatter's TLAS.
         let sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(16 * frames),
+                .descriptor_count(17 * frames),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .descriptor_count(frames),
@@ -1003,10 +1020,17 @@ impl GroundCoverPipeline {
         let field_state =
             self.advance_field_state(input.camera_pos, input.delta_seconds, disturbers.len());
 
+        // §7's selection table, padded to its fixed size with species 0 so
+        // every entry the scatter's 8 hash bits can reach is initialised.
+        let mut species_table = [0u32; GROUNDCOVER_SPECIES_TABLE_SIZE as usize];
+        let table_len = input.species_table.len().min(species_table.len());
+        species_table[..table_len].copy_from_slice(&input.species_table[..table_len]);
+
         let uploads = self.chunk_buffers[frame]
             .write_mapped(device, chunks)
             .and_then(|()| self.cell_buffers[frame].write_mapped(device, cells))
             .and_then(|()| self.species_buffers[frame].write_mapped(device, species))
+            .and_then(|()| self.species_table_buffers[frame].write_mapped(device, &species_table))
             .and_then(|()| self.field_state_buffers[frame].write_mapped(device, &[field_state]))
             .and_then(|()| {
                 if disturbers.is_empty() {
@@ -1158,6 +1182,7 @@ impl GroundCoverPipeline {
         let indirect_info = info(indirect.buffer);
         let counter_info = info(counters.buffer);
         let species_info = info(self.species_buffers[frame].buffer);
+        let species_table_info = info(self.species_table_buffers[frame].buffer);
         let field = self.field_buffer.as_ref().expect("created in new()");
         let field_info = info(field.buffer);
         let field_state_info = info(self.field_state_buffers[frame].buffer);
@@ -1183,6 +1208,7 @@ impl GroundCoverPipeline {
             write(scatter, 3, &blade_info),
             write(scatter, 4, &indirect_info),
             write(scatter, 5, &counter_info),
+            write(scatter, 7, &species_table_info),
             write(draw, 0, &chunk_info),
             write(draw, 1, &cell_info),
             write(draw, 2, &vertex_info),
@@ -1537,6 +1563,7 @@ impl GroundCoverPipeline {
             .iter_mut()
             .chain(self.cell_buffers.iter_mut())
             .chain(self.species_buffers.iter_mut())
+            .chain(self.species_table_buffers.iter_mut())
             .chain(self.counter_readback.iter_mut())
             .chain(self.field_state_buffers.iter_mut())
             .chain(self.disturber_buffers.iter_mut())
@@ -1550,6 +1577,7 @@ impl GroundCoverPipeline {
         self.chunk_buffers.clear();
         self.cell_buffers.clear();
         self.species_buffers.clear();
+        self.species_table_buffers.clear();
         self.counter_readback.clear();
         self.field_state_buffers.clear();
         self.disturber_buffers.clear();

@@ -303,6 +303,17 @@ pub const GROUNDCOVER_VERTS_PER_SEGMENT: u32 = 6;
 /// point spacing, multiplying the sward without adding scatter work. The blades
 /// share the point's root and species and differ by their own seed streams.
 pub const GROUNDCOVER_BLADES_PER_POINT: u32 = 4;
+/// Entries in the scatter's species selection table.
+///
+/// The scatter's per-candidate hash spends its low 24 bits on the accept test
+/// and the blade seed, and its top 8 bits on the species. A table this size
+/// maps those 8 bits straight to a species index, so selection by
+/// `GroundCoverSpecies::climate_weight` (§7) costs one lookup and draws each
+/// species with probability `buckets / 256`. The host fills it by
+/// largest-remainder rounding with one bucket reserved for every species of
+/// non-zero weight, so quantisation cannot silently drop a species the
+/// palette says belongs here.
+pub const GROUNDCOVER_SPECIES_TABLE_SIZE: u32 = 256;
 
 /// Wavelength of the wind flow-noise field, world units.
 ///

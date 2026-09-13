@@ -340,6 +340,10 @@ fn main() {
         ),
         ("GROUNDCOVER_BLADES_PER_POINT", GROUNDCOVER_BLADES_PER_POINT),
         (
+            "GROUNDCOVER_SPECIES_TABLE_SIZE",
+            GROUNDCOVER_SPECIES_TABLE_SIZE,
+        ),
+        (
             "GROUNDCOVER_CANDIDATES_PER_THREAD",
             GROUNDCOVER_CANDIDATES_PER_THREAD,
         ),

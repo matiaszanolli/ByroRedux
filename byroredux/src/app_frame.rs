@@ -299,6 +299,12 @@ impl App {
                     dimmer,
                     &mut self.groundcover_species,
                 );
+                // §7 — built from the same palette, in the same order and
+                // truncation, so every entry names a species just collected.
+                crate::render::groundcover::collect_groundcover_species_table(
+                    &self.world,
+                    &mut self.groundcover_species_table,
+                );
                 // #4058 — §12.4's disturbers. Collected here rather than in
                 // `build_render_data` for the same reason the chunks are: this
                 // is where the frame's camera position is settled, and the
@@ -335,6 +341,7 @@ impl App {
                     cells: &self.groundcover_cells,
                     chunks: &self.groundcover_chunks,
                     species: &self.groundcover_species,
+                    species_table: &self.groundcover_species_table,
                     view_proj: frame.view_proj,
                     camera_pos: frame.camera_pos,
                     render_origin: frame.render_origin,
@@ -364,6 +371,7 @@ impl App {
                     cells: &self.groundcover_cells,
                     chunks: &self.groundcover_chunks,
                     species: &self.groundcover_species,
+                    species_table: &self.groundcover_species_table,
                     view_proj: frame.view_proj,
                     camera_pos: frame.camera_pos,
                     render_origin: frame.render_origin,

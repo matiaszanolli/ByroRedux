@@ -351,9 +351,159 @@ pub(crate) fn collect_groundcover_species(
     }
 }
 
+/// Build the scatter's species selection table from the palette's climate
+/// weights (§7).
+///
+/// `GroundCoverSpecies::climate_weight` was resolved at the translate boundary
+/// and then never read: the scatter picked `hash % species_count`, so every
+/// species in the load order was equally likely everywhere — Skyrim's
+/// underwater kelp on dry tundra as often as the tundra grass. The weight in
+/// the palette's own climate is the selection probability §7 specifies.
+///
+/// Indexed in the same order and truncated at the same
+/// [`MAX_GROUNDCOVER_SPECIES`] as [`collect_groundcover_species`], so a table
+/// entry always names a species the GPU buffer holds.
+pub(crate) fn collect_groundcover_species_table(world: &World, out: &mut Vec<u32>) {
+    out.clear();
+    let weights: Vec<f32> = match world.try_resource::<GroundCoverPalette>() {
+        Some(palette) if !palette.species.is_empty() => palette
+            .species
+            .iter()
+            .take(MAX_GROUNDCOVER_SPECIES)
+            .map(|s| s.climate_weight.weight_for(palette.climate))
+            .collect(),
+        // Matches `collect_groundcover_species`' single built-in fallback.
+        _ => vec![1.0],
+    };
+    out.extend_from_slice(&species_selection_table(&weights));
+}
+
+/// Quantise relative weights into the scatter's fixed-size selection table.
+///
+/// Largest-remainder apportionment, after reserving one entry for every
+/// species with a positive weight: quantisation to 1/256 must not silently
+/// drop a species the palette says grows here, and a pure proportional round
+/// would do exactly that to any share under 1/512. Non-positive or
+/// non-finite weights get no entries. If no weight is positive the table is
+/// uniform, which is what the scatter did before weights were read — the
+/// neutral outcome for a palette that says nothing.
+fn species_selection_table(
+    weights: &[f32],
+) -> [u32; byroredux_renderer::shader_constants::GROUNDCOVER_SPECIES_TABLE_SIZE as usize] {
+    const SIZE: usize =
+        byroredux_renderer::shader_constants::GROUNDCOVER_SPECIES_TABLE_SIZE as usize;
+    let mut table = [0u32; SIZE];
+    let count = weights.len().min(SIZE);
+    if count == 0 {
+        return table;
+    }
+    let clean: Vec<f64> = weights[..count]
+        .iter()
+        .map(|&w| {
+            if w.is_finite() && w > 0.0 {
+                f64::from(w)
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let total: f64 = clean.iter().sum();
+    if total <= 0.0 {
+        for (i, slot) in table.iter_mut().enumerate() {
+            *slot = (i % count) as u32;
+        }
+        return table;
+    }
+    let positive = clean.iter().filter(|&&w| w > 0.0).count();
+    let spare = (SIZE - positive) as f64;
+    let quotas: Vec<f64> = clean.iter().map(|w| w / total * spare).collect();
+    let mut counts: Vec<usize> = clean
+        .iter()
+        .zip(&quotas)
+        .map(|(&w, &q)| if w > 0.0 { 1 + q.floor() as usize } else { 0 })
+        .collect();
+    let mut remaining = SIZE - counts.iter().sum::<usize>();
+    let mut order: Vec<usize> = (0..count).filter(|&i| clean[i] > 0.0).collect();
+    // Largest fractional part first; index breaks ties so the table is
+    // identical across runs.
+    order.sort_by(|&a, &b| {
+        (quotas[b] - quotas[b].floor())
+            .total_cmp(&(quotas[a] - quotas[a].floor()))
+            .then(a.cmp(&b))
+    });
+    for &i in order.iter().cycle() {
+        if remaining == 0 {
+            break;
+        }
+        counts[i] += 1;
+        remaining -= 1;
+    }
+    let mut cursor = 0;
+    for (species, &n) in counts.iter().enumerate() {
+        for slot in &mut table[cursor..cursor + n] {
+            *slot = species as u32;
+        }
+        cursor += n;
+    }
+    table
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shares(table: &[u32], species: usize) -> Vec<usize> {
+        let mut out = vec![0; species];
+        for &s in table {
+            out[s as usize] += 1;
+        }
+        out
+    }
+
+    /// §7: selection probability is the climate weight. A table that fills
+    /// every entry and splits them in proportion is that probability at the
+    /// scatter's 8-bit resolution.
+    #[test]
+    fn species_table_is_proportional_to_weight() {
+        let table = species_selection_table(&[2.0, 0.4, 0.1]);
+        let s = shares(&table, 3);
+        assert_eq!(s.iter().sum::<usize>(), 256);
+        // 2.0 / 2.5 of the 253 unreserved entries plus its reserved one.
+        assert!((s[0] as f64 - (1.0 + 253.0 * 0.8)).abs() <= 1.0, "{s:?}");
+        assert!((s[1] as f64 - (1.0 + 253.0 * 0.16)).abs() <= 1.0, "{s:?}");
+        assert!((s[2] as f64 - (1.0 + 253.0 * 0.04)).abs() <= 1.0, "{s:?}");
+    }
+
+    /// Quantisation must not erase a species the palette says belongs here,
+    /// however small its share.
+    #[test]
+    fn species_table_keeps_every_positive_weight() {
+        let mut weights = vec![1000.0];
+        weights.extend(std::iter::repeat(0.001).take(20));
+        let s = shares(&species_selection_table(&weights), weights.len());
+        assert!(s.iter().all(|&n| n >= 1), "{s:?}");
+        assert_eq!(s.iter().sum::<usize>(), 256);
+    }
+
+    /// Zero, negative and non-finite weights mean "never here", and a palette
+    /// with no positive weight at all falls back to uniform selection.
+    #[test]
+    fn species_table_ignores_unusable_weights_and_falls_back_to_uniform() {
+        let s = shares(&species_selection_table(&[0.0, 3.0, f32::NAN, -1.0]), 4);
+        assert_eq!(s, vec![0, 256, 0, 0]);
+        let s = shares(&species_selection_table(&[0.0, 0.0]), 2);
+        assert_eq!(s, vec![128, 128]);
+    }
+
+    /// The table is sized to the scatter's 8 hash bits; anything else leaves
+    /// entries unreachable or indexes past the end.
+    #[test]
+    fn species_table_matches_the_scatter_hash_bits() {
+        assert_eq!(
+            byroredux_renderer::shader_constants::GROUNDCOVER_SPECIES_TABLE_SIZE,
+            1 << 8
+        );
+    }
 
     /// §4 requires placement stable frame to frame and across sessions. The
     /// seed is what guarantees it, so it must be a pure function of the

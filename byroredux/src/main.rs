@@ -505,6 +505,9 @@ struct App {
     groundcover_cells: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverCell>,
     groundcover_chunks: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverChunk>,
     groundcover_species: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverSpecies>,
+    /// The scatter's species selection table (§7), rebuilt alongside
+    /// `groundcover_species` each frame from the palette's climate weights.
+    groundcover_species_table: Vec<u32>,
     /// §12.4's per-frame disturber list (#4058). Caller-owned scratch, so the
     /// allocation persists across frames like the chunk and cell vectors.
     groundcover_disturbers: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverDisturber>,
@@ -844,6 +847,7 @@ impl App {
             groundcover_cells: Vec::new(),
             groundcover_chunks: Vec::new(),
             groundcover_species: Vec::new(),
+            groundcover_species_table: Vec::new(),
             groundcover_disturbers: Vec::new(),
             groundcover_debug_points: false,
             groundcover_off: false,
