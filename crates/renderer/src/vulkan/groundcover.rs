@@ -166,7 +166,11 @@ unsafe impl NoUninit for GpuGroundCoverFieldState {}
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct ScatterPush {
+    /// xyz = camera position, w = placed-geometry cover reach (world units).
     camera_pos: [f32; 4],
+    /// xyz = render origin (`offsetRayOrigin` steps in camera-relative
+    /// space), w = 1.0 when the placed-geometry cover test is enabled.
+    render_origin: [f32; 4],
     chunk_count: u32,
     blades_per_chunk: u32,
     verts_per_blade: u32,
@@ -235,6 +239,11 @@ pub struct GroundCoverStats {
     /// Non-zero is not a bug — §4 designs for it — but a large fraction means
     /// the cap is below what the density field is asking for.
     pub blades_overflowed: u32,
+    /// Accepted candidates dropped because placed geometry — a road, a
+    /// flagstone path, a rock base — covers their root. Zero on open ground;
+    /// a large share of `blades` on open ground would mean the test is
+    /// hitting the terrain it is meant to stand above.
+    pub blades_covered: u32,
     /// §11.3's `d_ground` histogram over every candidate the field was
     /// evaluated at, accepted or not.
     pub histogram: [u32; GROUNDCOVER_HISTOGRAM_BUCKETS as usize],
@@ -267,7 +276,7 @@ impl GroundCoverStats {
             .join(",");
         format!(
             "groundcover: chunks={} blades={} overflow={} d_ground={:.4}..{:.4} \
-             view_dist={:.0}..{:.0} factor_max={} d_ground_hist={}",
+             view_dist={:.0}..{:.0} factor_max={} d_ground_hist={} covered={}",
             self.chunks_dispatched,
             self.blades_accepted,
             self.blades_overflowed,
@@ -281,7 +290,8 @@ impl GroundCoverStats {
                 .map(|(name, value)| format!("{name}:{value:.3}"))
                 .collect::<Vec<_>>()
                 .join(","),
-            hist
+            hist,
+            self.blades_covered
         )
     }
 }
@@ -299,7 +309,10 @@ const COUNTER_EXTREMA_BASE: usize = COUNTER_OVERFLOW + 1;
 const COUNTER_FACTOR_BASE: usize = COUNTER_EXTREMA_BASE + 4;
 pub const GROUNDCOVER_FACTOR_NAMES: [&str; 5] =
     ["affinity", "slope", "moisture", "shelter", "clump"];
-const COUNTER_SLOTS: usize = COUNTER_FACTOR_BASE + GROUNDCOVER_FACTOR_NAMES.len();
+/// Accepted candidates the placed-geometry cover test rejected — the
+/// scatter's `SLOT_COVERED`.
+const COUNTER_COVERED: usize = COUNTER_FACTOR_BASE + GROUNDCOVER_FACTOR_NAMES.len();
+const COUNTER_SLOTS: usize = COUNTER_COVERED + 1;
 /// `atomicMin` seed. The clear fills the buffer with zero, which is the wrong
 /// identity for a minimum — so the host seeds the two `min` slots after the
 /// fill and before the dispatch.
@@ -367,6 +380,11 @@ pub struct GroundCoverPipeline {
     /// Chunks uploaded for the frame currently being recorded.
     frame_chunk_count: u32,
     frame_debug_points: bool,
+    /// The placed-geometry cover test's reach this frame: the palette's
+    /// tallest blade. A surface lower than that over a root is one a blade
+    /// rooted there would pierce, which is the whole criterion — so the
+    /// reach is not a tuned distance but a property of what is growing.
+    frame_cover_reach: f32,
     frame_push: BladePush,
 }
 
@@ -413,6 +431,7 @@ impl GroundCoverPipeline {
             stats: GroundCoverStats::default(),
             frame_chunk_count: 0,
             frame_debug_points: false,
+            frame_cover_reach: 0.0,
             frame_push: BladePush::default(),
         };
         macro_rules! try_or_cleanup {
@@ -531,7 +550,7 @@ impl GroundCoverPipeline {
         // (§11.1 path A), blades, the indirect draws it writes, and the
         // counters it appends through.
         let compute = vk::ShaderStageFlags::COMPUTE;
-        let scatter_bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..6)
+        let mut scatter_bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..6)
             .map(|binding| {
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(binding)
@@ -540,6 +559,15 @@ impl GroundCoverPipeline {
                     .stage_flags(compute)
             })
             .collect();
+        // The TLAS, for the placed-geometry cover test (ground cover must not
+        // grow through roads, flagstones or rock bases).
+        scatter_bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(6)
+                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .descriptor_count(1)
+                .stage_flags(compute),
+        );
         // SAFETY: `scatter_bindings` outlives the call; `device` is live and
         // the layout is owned here until `destroy`.
         self.scatter_set_layout = unsafe {
@@ -658,10 +686,16 @@ fn storage_binding(
 impl GroundCoverPipeline {
     fn create_descriptors(&mut self, device: &ash::Device) -> Result<()> {
         let frames = MAX_FRAMES_IN_FLIGHT as u32;
-        // 6 scatter + 7 draw + 3 interaction bindings per frame-in-flight.
-        let sizes = [vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(16 * frames)];
+        // 6 scatter + 7 draw + 3 interaction storage bindings per
+        // frame-in-flight, plus the scatter's TLAS.
+        let sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(16 * frames),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .descriptor_count(frames),
+        ];
         // SAFETY: `sizes` outlives the call; the pool is owned here.
         self.descriptor_pool = unsafe {
             device
@@ -870,7 +904,9 @@ impl GroundCoverPipeline {
             );
             // `B10G11R11_UFLOAT` carries no alpha channel.
             blend_attachments[5] = blend_attachments[5].color_write_mask(
-                vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B,
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B,
             );
             blend_attachments[6] =
                 blend_attachments[6].color_write_mask(vk::ColorComponentFlags::R);
@@ -991,6 +1027,13 @@ impl GroundCoverPipeline {
 
         self.frame_chunk_count = chunks.len() as u32;
         self.frame_debug_points = input.debug_points;
+        // `size_range[1]` is each species' height ceiling. Non-finite entries
+        // cannot reach here (`GroundCoverSpecies::is_well_formed` rejects
+        // them at palette resolve), and the palette is non-empty.
+        self.frame_cover_reach = species
+            .iter()
+            .map(|s| s.size_range[1])
+            .fold(0.0_f32, f32::max);
         let segments = if input.debug_points {
             1
         } else {
@@ -1079,6 +1122,7 @@ impl GroundCoverPipeline {
             .map(|c| c.min(&GROUNDCOVER_MAX_BLADES_PER_CHUNK))
             .sum();
         stats.blades_overflowed = counters[COUNTER_OVERFLOW];
+        stats.blades_covered = counters[COUNTER_COVERED];
         stats
             .histogram
             .copy_from_slice(&counters[COUNTER_HIST_BASE..COUNTER_OVERFLOW]);
@@ -1158,10 +1202,37 @@ impl GroundCoverPipeline {
 
     /// Record the scatter dispatch. Must be OUTSIDE a render pass and before
     /// the main geometry pass that draws the result.
-    pub fn record_scatter(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+    pub fn record_scatter(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        tlas: Option<vk::AccelerationStructureKHR>,
+    ) {
         if self.frame_chunk_count == 0 {
             return;
         }
+        // The scatter statically uses binding 6, so it cannot run against an
+        // unwritten one. Ground cover is created only on ray-query devices,
+        // where init builds an (empty) TLAS for every slot, so `None` means
+        // the acceleration manager itself is gone — skip the frame rather
+        // than draw last frame's indirect list over this frame's scene.
+        let Some(tlas) = tlas else {
+            self.frame_chunk_count = 0;
+            return;
+        };
+        let accel_structs = [tlas];
+        let mut accel_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
+            .acceleration_structures(&accel_structs);
+        let write = crate::vulkan::descriptors::write_acceleration_structure(
+            self.scatter_sets[frame],
+            6,
+            &mut accel_write,
+        );
+        // SAFETY: `accel_write` borrows `accel_structs`, both live for the
+        // call; only slot `frame`'s set is touched and its fence has been
+        // waited, and the set is not yet bound in `cmd`.
+        unsafe { device.update_descriptor_sets(&[write], &[]) };
         self.record_interaction(device, cmd, frame);
         let counters = self.counter_buffer.as_ref().expect("created in new()");
         // SAFETY: `cmd` is recording; every handle below is live and owned by
@@ -1213,7 +1284,13 @@ impl GroundCoverPipeline {
                     self.frame_push.camera_pixels[0],
                     self.frame_push.camera_pixels[1],
                     self.frame_push.camera_pixels[2],
-                    0.0,
+                    self.frame_cover_reach,
+                ],
+                render_origin: [
+                    self.frame_push.origin_time[0],
+                    self.frame_push.origin_time[1],
+                    self.frame_push.origin_time[2],
+                    1.0,
                 ],
                 chunk_count: self.frame_chunk_count,
                 blades_per_chunk: GROUNDCOVER_MAX_BLADES_PER_CHUNK,
@@ -1670,8 +1747,14 @@ mod tests {
         );
         assert_eq!(COUNTER_EXTREMA_BASE, COUNTER_OVERFLOW + 1);
         assert_eq!(COUNTER_FACTOR_BASE, COUNTER_EXTREMA_BASE + 4);
-        assert_eq!(COUNTER_SLOTS, COUNTER_FACTOR_BASE + 5);
+        assert_eq!(COUNTER_COVERED, COUNTER_FACTOR_BASE + 5);
+        assert_eq!(COUNTER_SLOTS, COUNTER_COVERED + 1);
         let src = include_str!("../../shaders/groundcover_scatter.comp");
+        assert!(
+            src.contains("const uint SLOT_COVERED = SLOT_FACTOR_BASE + 5u;"),
+            "the scatter's covered tally must sit immediately after the five factor \
+             maxima, which is where COUNTER_COVERED reads it from"
+        );
         assert!(
             src.contains("const uint EXTREMA_BASE = OVERFLOW_SLOT + 1u;"),
             "the scatter's extrema block must sit immediately after the overflow \

@@ -471,7 +471,15 @@ impl VulkanContext {
         // the scatter writes the blade buffer and the indirect draw list the
         // geometry pass then consumes.
         if let Some(ref mut gc) = self.groundcover {
-            gc.record_scatter(&self.device, cmd, frame);
+            // The TLAS this frame's build just published (above). The scatter
+            // traces it to keep ground cover off placed geometry — roads,
+            // flagstones, rock bases — so it must read this slot's structure,
+            // not a handle resolved before the build could resize it.
+            let tlas = self
+                .accel_manager
+                .as_ref()
+                .and_then(|accel| accel.tlas_handle(frame));
+            gc.record_scatter(&self.device, cmd, frame, tlas);
         }
 
         self.record_groundcover_bench(cmd, frame);

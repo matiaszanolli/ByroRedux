@@ -1,4 +1,5 @@
-#version 450
+#version 460
+#extension GL_EXT_ray_query : require
 #extension GL_GOOGLE_include_directive : require
 
 // EXAL ground cover Phase 1 — the scatter pass (§4, #4054).
@@ -83,9 +84,17 @@ layout(std430, set = 0, binding = 5) buffer GcCounterBuffer {
     uint gcCounters[];
 };
 
+/// This frame's TLAS, published by the build that precedes this dispatch.
+/// Traced by the placed-geometry cover test below.
+layout(set = 0, binding = 6) uniform accelerationStructureEXT gcTopLevelAS;
+
 layout(push_constant) uniform GcScatterPush {
-    /// Y-up camera position — `distance_fade` is the only view-dependent term.
+    /// xyz = Y-up camera position — `distance_fade` is the only view-dependent
+    /// term. w = the cover test's reach: the palette's tallest blade.
     vec4 cameraPos;
+    /// xyz = the render origin `offsetRayOrigin` steps relative to. w = 1.0
+    /// when the cover test runs, 0.0 when there is no TLAS to trace.
+    vec4 renderOriginEnable;
     uint chunkCount;
     /// Blades per chunk, i.e. the slice stride. Equals
     /// GROUNDCOVER_MAX_BLADES_PER_CHUNK; passed rather than hard-coded so a
@@ -101,6 +110,10 @@ layout(push_constant) uniform GcScatterPush {
 
 #include "include/terrain_sample.glsl"
 #include "include/groundcover_density.glsl"
+// `offsetRayOrigin` steps in camera-relative space against a global named
+// `renderOrigin`; the scatter carries it in its push block.
+#define renderOrigin pc.renderOriginEnable
+#include "include/ray_origin.glsl"
 
 const uint HIST_BASE = GROUNDCOVER_MAX_CHUNKS;
 const uint OVERFLOW_SLOT = GROUNDCOVER_MAX_CHUNKS + GROUNDCOVER_HISTOGRAM_BUCKETS;
@@ -119,6 +132,9 @@ const uint SLOT_MAX_VIEWDIST = EXTREMA_BASE + 3u; // world units, atomicMax
 /// and takes the whole thing with it — and a histogram of the product cannot
 /// say which of the five did it. These can, in one frame.
 const uint SLOT_FACTOR_BASE = EXTREMA_BASE + 4u;
+/// Accepted candidates dropped because placed geometry covers their root —
+/// the count that says the cover test is doing work, and how much.
+const uint SLOT_COVERED = SLOT_FACTOR_BASE + 5u;
 
 /// The R2 lattice (Roberts 2018) — a progressive low-discrepancy sequence,
 /// scrambled per chunk by Cranley–Patterson rotation.
@@ -221,6 +237,43 @@ void main() {
         float accept = float(hash & 0xFFFFFFu) * (1.0 / 16777216.0);
         if (accept >= dDraw) {
             continue;
+        }
+
+        // Placed geometry lying on the ground — a road, a flagstone path, the
+        // base of a rock — covers the soil, and nothing grows through it. The
+        // density field cannot see it: it reads the terrain and its paint,
+        // and a road mesh sits on top of ground painted as grass. So trace
+        // the scene itself, straight down through the space a blade rooted
+        // here would occupy.
+        //
+        // The span runs from the palette's tallest blade down to one
+        // representable step above the *rendered* terrain triangle
+        // (`meshHeight`, not the bilinear `height`, which a non-planar quad
+        // puts above or below its own triangles). Anything hit inside it is
+        // over the root: a surface a blade would pierce. The terrain itself
+        // lies below the span by construction, so no terrain-identity test
+        // and no tuned tolerance are needed. Architecture and static props
+        // only: an actor walking through grass does not uproot it, and
+        // cutout foliage and effect cards are not ground.
+        if (pc.renderOriginEnable.w > 0.5) {
+            vec3 root = vec3(worldXZ.x, s.meshHeight, worldXZ.y);
+            vec3 floorPoint = offsetRayOrigin(root, vec3(0.0, 1.0, 0.0));
+            vec3 top = root + vec3(0.0, pc.cameraPos.w, 0.0);
+            float span = top.y - floorPoint.y;
+            if (span > 0.0) {
+                rayQueryEXT coverQuery;
+                rayQueryInitializeEXT(
+                    coverQuery, gcTopLevelAS,
+                    gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                    VISIBILITY_LAYER_ARCHITECTURE | VISIBILITY_LAYER_STATIC_PROP,
+                    top, 0.0, vec3(0.0, -1.0, 0.0), span);
+                while (rayQueryProceedEXT(coverQuery)) {}
+                if (rayQueryGetIntersectionTypeEXT(coverQuery, true)
+                    != gl_RayQueryCommittedIntersectionNoneEXT) {
+                    atomicAdd(gcCounters[SLOT_COVERED], 1u);
+                    continue;
+                }
+            }
         }
 
         // Saturating append. `atomicAdd` returns the pre-increment value, so a

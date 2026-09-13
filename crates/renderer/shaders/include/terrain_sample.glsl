@@ -40,8 +40,17 @@
 // the same arithmetic (`terrain_sample_grid_mapping_matches_terrain_rs`).
 
 struct TerrainSample {
-    /// World-space Y (up).
+    /// World-space Y (up), bilinear over the quad's four corners.
     float height;
+    /// World-space Y of the rendered surface itself: the height on the
+    /// triangle `cell_loader/terrain.rs` actually emits at this point. Each
+    /// quad is split along its top-right → bottom-left diagonal
+    /// (`tl, tr, bl` then `tr, br, bl`), and on a non-planar quad the bilinear
+    /// `height` differs from that triangle by up to `|h00 + h11 - h01 - h10| / 4`.
+    /// A test against the geometry the TLAS holds — ground cover's
+    /// placed-geometry rejection — has to use this one, or it reads the
+    /// terrain's own triangles as something lying on top of the terrain.
+    float meshHeight;
     /// World-space normal, Y-up, renormalised after interpolation.
     vec3 normal;
     /// Splat weights for LAND layers 0-3 and 4-7.
@@ -101,6 +110,11 @@ TerrainSample byroSampleTerrain(uint vertexOffset, vec2 cellOriginXZ, vec2 world
     float h10 = vertexData[b10 + 1u];
     float h11 = vertexData[b11 + 1u];
     s.height = mix(mix(h00, h01, tc), mix(h10, h11, tc), tr);
+    // The emitted triangles: `tl, tr, bl` covers `tc + tr <= 1`, `tr, br, bl`
+    // the rest. h01 is the top-right corner (row 0, col 1), h10 bottom-left.
+    s.meshHeight = (tc + tr <= 1.0)
+        ? h00 + tc * (h01 - h00) + tr * (h10 - h00)
+        : h11 + (1.0 - tc) * (h10 - h11) + (1.0 - tr) * (h01 - h11);
 
     // Normal lanes 7..9 — also safe direct reads.
     vec3 n00 = vec3(vertexData[b00 + VERTEX_NORMAL_OFFSET_FLOATS],
@@ -204,6 +218,10 @@ TerrainSample byroSampleTerrainBaked(
 
     vec4 attr = texture(attrTex, vec3(uv, l));
     s.height = attr.x;
+    // The bake stores vertex heights only and a LINEAR fetch is bilinear, so
+    // this path cannot recover the triangle. It feeds the §11.1 bench, which
+    // never traces geometry.
+    s.meshHeight = attr.x;
     vec3 n = attr.yzw;
     float nlen = length(n);
     s.normal = nlen > 1.0e-6 ? n / nlen : vec3(0.0, 1.0, 0.0);

@@ -325,6 +325,7 @@ mod tests {
         ("groundcover_scatter.comp", "SLOT_MIN_VIEWDIST"),
         ("groundcover_scatter.comp", "SLOT_MAX_VIEWDIST"),
         ("groundcover_scatter.comp", "SLOT_FACTOR_BASE"),
+        ("groundcover_scatter.comp", "SLOT_COVERED"),
         // A specialization constant, not a value: it exists so one vertex
         // shader compiles into the blade pipeline and the Phase 1 debug
         // point view. Its Rust counterpart is the

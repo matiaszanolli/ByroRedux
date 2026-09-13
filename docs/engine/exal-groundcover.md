@@ -1190,3 +1190,157 @@ alongside the one §6 already gives.
 
 **Type change.** `GroundCoverSpecies` gains a sheen amount. A dry summer grass
 and a wet reed do not silver equally.
+
+### 12.7 Ambient comes from the ground's GI, not a flat term (2026-09-13)
+
+**The defect.** The blade pass wrote only the HDR direct attachment. The
+G-buffer's albedo and raw-indirect attachments kept the terrain's values from
+underneath, and composite reassembles `direct + indirect × albedo` per pixel.
+So every blade pixel received the *terrain's* indirect times the *terrain's*
+albedo, on top of the blade's own flat `sceneFlags` ambient: the sky counted
+twice, paired with the wrong reflectance. On Skyrim tundra (`2,-4`) the blades
+rendered as glowing yellow-green needles over darker ground.
+
+**The fix (`4d54c73a`).** Blades write their own albedo, multiplied by §12.1's
+sky occlusion, and leave raw indirect holding the ground's demodulated GI.
+Composite's reassembly then lights the blade with the irradiance the ground
+beneath it receives. At ankle height that is very nearly the blade's own, and
+it is the same substitution §12.6 already argues for reflections. The flat
+diffuse ambient is gone; the sheen ambient stays in the direct term.
+`gpu_main_render` was unchanged (7.55–7.81 ms before and after; one 13.3 ms
+sample was run-to-run noise, confirmed by a repeat run).
+
+### 12.8 Placed geometry covers the soil (2026-09-13)
+
+**The defect.** Grass grew through roads. On Skyrim `2,-4` a dump of every
+painted landscape layer (grass, tundra, rock, snow, dirt, riverbed, pine forest)
+contains no road or cobble layer at all. The cobblestone road is a **placed
+mesh** lying on ground painted as grass, and §3's density field reads only the
+terrain and its paint, so it cannot see it. No keyword table or affinity value
+can fix that.
+
+**The test.** After a candidate passes the accept test, the scatter traces the
+TLAS straight down through the space a blade rooted there would occupy:
+
+- **From** the root plus the palette's tallest blade. A surface lower than that
+  over the root is one a blade would pierce, so the reach is a property of what
+  is growing, not a tuned distance.
+- **To** one representable step above the *rendered* terrain triangle, using
+  the engine's existing scale-aware offset (Wächter & Binder 2019). The terrain
+  sampler now also returns `meshHeight`, the height on the triangle
+  `cell_loader/terrain.rs` actually emits. The bilinear `height` is off that
+  triangle by up to `|h00 + h11 − h01 − h10| / 4` on a non-planar quad, which
+  would read the terrain's own surface as something lying on top of it.
+- **Against** `VISIBILITY_LAYER_ARCHITECTURE | VISIBILITY_LAYER_STATIC_PROP`
+  only: an actor walking through grass does not uproot it, and cutout foliage
+  and effect cards are not ground.
+
+Any hit inside that span rejects the candidate. The terrain lies below the
+span by construction, so the test needs no terrain-identity check and no
+tolerance. Two alternatives were rejected:
+
+- *Reading `INSTANCE_FLAG_TERRAIN_SPLAT` off the hit instance.* It is a
+  rasterizer-only bit, skipped for off-frustum draws, and ray-query consumers
+  are forbidden from reading it.
+- *A terrain bit in `VisibilityMask`.* That mask is core light-record data, and
+  `for_legacy_projection(false)` maps legacy lights to `ARCHITECTURE` alone, so
+  moving terrain to its own bit would silently stop those lights being shadowed
+  by terrain.
+
+**Measured.** Same scene and camera: `covered=1106` of 6,469 accepted blades
+(17%) rejected, the road interior clear of roots. The remaining blades that
+cross the road are rooted on grass at its edge and lean over it, which is the
+blade-height problem, not a cover failure. The validation layers reported only
+the VUID types this scene already had. The `groundcover:` bench row now ends in
+`covered=`.
+
+---
+
+## 13. References
+
+Every external source this document or its shaders draw on. Where a detail
+could not be verified against the source itself, the entry says so.
+
+### Ground cover in games and real-time rendering
+
+- Eric Wohllaib, "Procedural Grass in *Ghost of Tsushima*", GDC 2021. Talk
+  video: <https://www.youtube.com/watch?v=Ibe1JBF5i5Y>. Slides:
+  <https://archive.thedatadungeon.com/ghost_of_tsushima_2020/documents/gdc_2021/gdc_2021_procedural_grass_in_got.pdf>.
+  Timestamps are from the talk's auto-transcript. Used for:
+  - ~83,000 blades drawn of just over 1 million considered, ~2.5 ms (1:45)
+  - Voronoi clumps driving height, shared facing and colour (6:20–7:03)
+  - 15/7 vertex LODs (8:25; slides pp. 20, 23)
+  - folding one short blade into two (9:32)
+  - rounded normals (13:45; slide p. 29)
+  - view-space thickening of edge-on blades (14:05; slides pp. 30–31)
+  - distance-calmed specular (14:45; slides pp. 32–33)
+  - per-clump colour (15:40)
+  - base-to-tip AO and translucency gradients (16:18–17:44)
+  - terrain texture at distance (20:02)
+
+  The talk does **not** state blades per m², tile size or blade dimensions.
+- Klemens Jahrmann and Michael Wimmer, "Responsive Real-Time Grass Rendering
+  for General 3D Scenes", I3D 2017. Draft:
+  <https://www.cg.tuwien.ac.at/research/publications/2017/JAHRMANN-2017-RRTG/JAHRMANN-2017-RRTG-draft.pdf>.
+  Used for: blade counts (397,881 total, 43,128 drawn; p. 7, §7.1, Table 1),
+  the orientation cull (Eq. 17), minimum-width quads (§6.3) and index-based
+  thinning (Eq. 20). Blade size and scene area are not stated.
+- Outerra, "Procedural grass rendering" (2012):
+  <https://outerra.blogspot.com/2012/05/procedural-grass-rendering.html>. The
+  GoT talk names it as its main inspiration. Used for: 7 vertices / 5
+  triangles per blade, 4 blades from one point on a ~30 cm grid (≈44 blades/m²,
+  our arithmetic), halving count while doubling width per LOD.
+- Gilbert Sanders, *Horizon Zero Dawn* vegetation talk, GDC 2018:
+  <https://media.gdcvault.com/gdc2018/presentations/gilbert_sanders_between_tech_and.pdf>.
+  *The full title was not recorded; the URL shows only its opening words
+  ("Between Tech and…").*
+  Used for: grass mesh LOD triangle counts (slide 23), distance push-down and
+  animation scaling (slide 30), double-sided normal handling (slide 47).
+- AMD GPUOpen, "Procedural grass rendering" (mesh shaders):
+  <https://gpuopen.com/learn/mesh_shaders/mesh_shaders-procedural_grass_rendering/>.
+  32 blades per patch, 8 vertices / 6 triangles. Read only through a
+  summarising fetch, so **its details are unverified**.
+- *Red Dead Redemption 2*: named by the project as the visual bar. **No
+  primary source describing its grass was found.** Fabian Bauer, "Creating
+  the Atmospheric World of *Red Dead Redemption 2*" (SIGGRAPH 2019 Advances in
+  Real-Time Rendering) covers sky, clouds, fog and volumetrics; vegetation
+  appears only as an example on slide 52. Nothing in this design is derived
+  from RDR2.
+
+### Botany and canopy physics
+
+- Matthew, Hernández-Garay and Hodgson, *Proceedings of the New Zealand
+  Grassland Association* 57 (1995):
+  <https://www.nzgajournal.org.nz/index.php/ProNZGA/article/view/2190/1818>.
+  Ryegrass pasture tiller density 5,000 (laxly grazed dairy pasture) to 20,000
+  (hard-grazed sheep pasture) per m² (p. 1). *The paper's title was not
+  recorded; see the linked page.*
+- NC State Extension, "Perennial Ryegrass":
+  <https://content.ces.ncsu.edu/perennial-ryegrass>. Leaf width 2–5 mm. An
+  extension page, not a paper.
+- M. Monsi and T. Saeki (1953): the Beer–Lambert canopy extinction coefficient
+  `K = 0.5` for a spherical leaf-angle distribution (§11.9,
+  `GROUNDCOVER_CANOPY_EXTINCTION_K`). G. S. Campbell and J. M. Norman, *An
+  Introduction to Environmental Biophysics*: the textbook restatement. *As cited
+  since #4057; full bibliographic details not re-verified in this pass.*
+- W. M. Elsasser: the two-stream diffusivity factor 5/3 used for §12.1's
+  hemispherical occlusion (`GROUNDCOVER_SKY_DIFFUSIVITY`). *As cited since
+  #4057; not re-verified in this pass.*
+
+### Shading and sampling
+
+- Alejandro Conty Estevez and Christopher Kulla, "Production Friendly
+  Microfacet Sheen BRDF" (Sony Pictures Imageworks, 2017): the Charlie sheen
+  distribution in §12.6 (`byroGcCharlieD`), which `KHR_materials_sheen`
+  adopted. *As cited since #4057; not re-verified in this pass.*
+- Colin Barré-Brisebois and Marc Bouchard, "Approximating Translucency for a
+  Fast, Cheap and Convincing Subsurface Scattering Look", GDC 2011: §12.2's
+  transmission lobe (`byroGcTransmissionLobe`). *As cited since #4057; not
+  re-verified in this pass.*
+- Martin Roberts, "The Unreasonable Effectiveness of Quasirandom Sequences"
+  (2018): the R2 lattice the scatter draws candidates from (`gcCandidate`).
+  *As cited since #4054; not re-verified in this pass.*
+- Carsten Wächter and Nikolaus Binder, "A Fast and Robust Method for Avoiding
+  Self-Intersection", *Ray Tracing Gems*, ch. 6 (2019): the scale-aware ray
+  origin offset (`include/ray_origin.glsl`) that bounds §12.8's trace. *As
+  cited in that include; not re-verified in this pass.*
