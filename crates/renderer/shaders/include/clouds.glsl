@@ -333,8 +333,15 @@ vec4 cloud_march(
         //  * last sample where the sun ray leaves the top of the shell, which
         //    is also Schneider's far sample "to capture shadows cast by
         //    distant clouds" and stays finite for a low sun.
-        // Schneider's cone offsets are omitted: their radius is unstated, and
-        // random offsets would add noise rather than remove it.
+        // Schneider's cone offsets are omitted: their radius is unstated.
+        //
+        // The samples still slide within their geometric cells by the march
+        // jitter: `ratio^(jitter - 0.5)` shifts the whole sequence by up to
+        // half a cell either way. Hillaire §5.5.2 relies on temporal
+        // jittering for "smooth/soft shadow estimation"; fixed distances
+        // swept the noise field into horizontal striations. The bake passes
+        // jitter 0.5, so its offset is exactly zero and reflections cannot
+        // flicker.
         float light_first = mean_free_path;
         float light_far = max(
             cloud_shell_distance(sun_dir, max(position.y, 0.0), CLOUD_LAYER_TOP),
@@ -343,7 +350,7 @@ vec4 cloud_march(
         float light_ratio = pow(light_far / light_first, 1.0 / float(CLOUD_LIGHT_STEPS - 1));
         float light_optical_depth = 0.0;
         float light_previous = 0.0;
-        float light_distance = light_first;
+        float light_distance = light_first * pow(light_ratio, jitter - 0.5);
         for (int j = 0; j < CLOUD_LIGHT_STEPS; ++j) {
             vec3 light_pos = position + sun_dir * light_distance;
             float lh = clamp(

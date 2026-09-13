@@ -247,9 +247,12 @@ view at 4K is roughly 10 ms.
 
 Still open:
 
-* **Faint horizontal striation in undersides** — likely the fixed
-  light-sample distances sweeping through the noise field. Hillaire
-  §5.5.2 jitters shadow samples temporally; not yet done.
+* ~~Faint horizontal striation in undersides~~ — **resolved.** Fixed
+  light-sample distances were sweeping through the noise field. Each
+  sample now slides within its geometric cell by `ratio^(jitter − 0.5)`,
+  relying on temporal jittering as Hillaire §5.5.2 does; the bake passes
+  jitter 0.5, so its offset is zero. Row striation on the reference crop
+  dropped from 0.182 to 0.136; edge high-frequency energy from 0.72 to 0.64.
 * **Cloud type** (stratus / cumulus / cumulonimbus). The mapping from WTHR
   classification flags is undetermined and must be measured. A single
   cumulus-band profile is used for every weather.
@@ -278,7 +281,7 @@ Still open:
 | Sourced, calibrated cloud lighting (Hillaire 2016) | **DONE** `564d0d2f` |
 | Adaptive view march (Schneider & Vos 2015) | **DONE** `9ac8a929` |
 | Geometric self-shadow march | **DONE** `5d5d6ddd` |
-| Temporal jitter of shadow samples (striation) | TODO |
+| Temporal jitter of shadow samples (striation) | **DONE** |
 | Prefiltered mips for rough reflections | TODO |
 | Irradiance projection for ambient | TODO |
 | Cloud *type* (stratus/cumulus/cumulonimbus) from WTHR | TODO — needs data |

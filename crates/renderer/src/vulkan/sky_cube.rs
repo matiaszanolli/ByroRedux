@@ -903,6 +903,10 @@ mod tests {
                 "geometric spacing (Hillaire 2016 §5.5.2)",
             ),
             (
+                "light_first * pow(light_ratio, jitter - 0.5)",
+                "light samples jittered within their cells (zero offset in the bake)",
+            ),
+            (
                 "* (light_distance - light_previous);",
                 "each sample weighted by its own segment",
             ),
