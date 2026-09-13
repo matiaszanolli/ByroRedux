@@ -566,3 +566,94 @@ fn validation_aborted_quicksave_is_classified_for_player_feedback() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Regression: #4138 (SAVE-D5-2026-09-11-01) — a quicksave taken while an
+/// interior-cell transition is still streaming must be refused, not
+/// written.
+///
+/// An interior transition clears `CurrentCellContext` at teardown and
+/// reinstalls it only when the budgeted apply job reaches `Complete`. A
+/// save landing in that window snapshots a world with neither cell nor
+/// exterior context: the write succeeds, consumes a ring slot, reports
+/// success, and is then permanently unloadable — `LoadCommand::execute`
+/// refuses it with the same message it uses for a legitimate loose-NIF
+/// save, so the cause is unattributable after the fact.
+#[test]
+fn a_save_taken_mid_cell_transition_is_refused_not_written() {
+    use crate::cell_loader::{CellTransitionInFlight, CurrentCellContext};
+
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(build_save_registry());
+    let dir = std::env::temp_dir().join(format!("byro_4138_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    world.insert_resource(SaveState::new(dir.clone(), 4));
+    world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(crate::extensions::SessionEventQueue::default());
+    // Mid-transition: the teardown has already cleared the cell context,
+    // which is exactly what makes the resulting snapshot unloadable.
+    world.insert_resource(CellTransitionInFlight(true));
+
+    let out = SaveCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.contains("REFUSED")),
+        "a mid-transition save must be refused: {:?}",
+        out.lines
+    );
+    assert!(
+        out.lines
+            .iter()
+            .any(|l| l.contains("permanently unloadable")),
+        "the refusal must say why, and must not read like the loose-NIF case: {:?}",
+        out.lines
+    );
+    assert!(
+        !out.lines.iter().any(|l| l.contains("saved slot")),
+        "nothing may be written: {:?}",
+        out.lines
+    );
+    assert!(
+        !dir.join("slot0.sav").exists(),
+        "the refusal must happen before any disk write"
+    );
+
+    // And once the transition completes, the same save goes through.
+    world.insert_resource(CellTransitionInFlight(false));
+    world.insert_resource(CurrentCellContext {
+        cell_editor_id: "GSDocMitchellHouse".to_string(),
+        esm_path: "FalloutNV.esm".to_string(),
+        masters: vec![],
+    });
+    let out = SaveCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.contains("saved slot 0")),
+        "the gate must be transient, not a permanent block: {:?}",
+        out.lines
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #4138 — a session that genuinely has no cell context (loose-NIF `--mesh`
+/// mode) must still be saveable. The gate keys on the transition flag, not
+/// on context absence, precisely so these two stay distinguishable.
+#[test]
+fn a_loose_nif_save_is_still_allowed_when_no_transition_is_in_flight() {
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(build_save_registry());
+    let dir = std::env::temp_dir().join(format!("byro_4138b_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    world.insert_resource(SaveState::new(dir.clone(), 4));
+    world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(crate::extensions::SessionEventQueue::default());
+
+    let out = SaveCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.contains("saved slot 0")),
+        "loose-NIF mode has no cell context by design and must stay saveable: {:?}",
+        out.lines
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

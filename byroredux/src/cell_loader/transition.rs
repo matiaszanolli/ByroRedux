@@ -80,6 +80,38 @@ pub struct CurrentCellContext {
 
 impl Resource for CurrentCellContext {}
 
+/// `true` while an interior-cell transition is mid-flight — the window in
+/// which the live `World` has **neither** `CurrentCellContext` nor
+/// `CurrentExteriorContext` installed.
+///
+/// #4138. An interior transition is a resumable, budgeted, multi-frame
+/// App-owned job: `step_cell_transition` tears the old cell down (clearing
+/// both `CurrentCellRoot` and `CurrentCellContext`) and then advances
+/// `InteriorCellApplyJob` against a 16 ms/frame budget, inserting the new
+/// context only inside `finish()`, on the terminal `Complete` arm. For any
+/// cell whose reference load does not fit in one slice — the entire reason
+/// the resumable design exists — the world spends the `Pending` frames
+/// looking exactly like genuine loose-NIF mode.
+///
+/// A quicksave landing in that window used to succeed: none of
+/// `SaveCommand::execute`'s referential-integrity gates inspect context
+/// presence, so the write committed, consumed a ring slot, and reported
+/// success — producing a snapshot carrying neither context, which
+/// `LoadCommand::execute` then correctly refuses forever. The save was
+/// unloadable from the moment it was written, and the only symptom
+/// appeared later, at load, worded identically to the legitimate
+/// loose-NIF case.
+///
+/// Deliberately a plain `bool` resource synced once per frame from
+/// `App::interior_transition`, rather than insert/remove calls threaded
+/// through the six sites that assign that field. The sync happens at the
+/// head of `step_player_save_actions`, immediately before the queued-save
+/// drain it guards, so it cannot go stale between the two — and there is
+/// exactly one place to keep correct instead of six.
+pub struct CellTransitionInFlight(pub bool);
+
+impl Resource for CellTransitionInFlight {}
+
 /// Tracks the placement-root entity of the currently-loaded interior
 /// cell. `Some(root)` after [`super::load::load_cell_with_masters`]
 /// returns; cleared by [`execute_pending`] before loading the next

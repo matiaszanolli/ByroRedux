@@ -751,6 +751,15 @@ impl App {
     /// Drain player save/load input after `Scheduler::run` has joined all
     /// parallel systems, then route the definitive result to the HUD/console.
     pub(crate) fn step_player_save_actions(&mut self) {
+        // #4138 — publish the transition state the save gate needs, here
+        // rather than at the six sites that assign `interior_transition`.
+        // This runs immediately before the drain it guards, in the same
+        // call, so it cannot go stale in between; `step_cell_transition`
+        // (which advances the job) runs later in the same tick.
+        self.world
+            .insert_resource(cell_loader::CellTransitionInFlight(
+                self.interior_transition.is_some(),
+            ));
         for (action, output) in crate::save_io::execute_pending_player_save_actions(&self.world) {
             crate::surface_save_load_output(self.debug_ui.as_mut(), action.context(), output);
         }
@@ -1096,6 +1105,55 @@ mod tests {
         assert_eq!(
             exterior_transition_radius(&[]),
             crate::scene::DEFAULT_EXTERIOR_RADIUS
+        );
+    }
+
+    /// #4138 — the save gate is only as good as the flag it reads, and the
+    /// flag is published from exactly one place.
+    ///
+    /// `SaveCommand::execute` refuses a save while
+    /// `CellTransitionInFlight(true)`, but that resource is derived state:
+    /// if the sync at the head of `step_player_save_actions` stops
+    /// reflecting `App::interior_transition`, the gate silently passes
+    /// every mid-transition save again and the command-level test still
+    /// goes green, because it sets the flag by hand. Verified by injection:
+    /// replacing the sync with a constant `false` leaves that test passing
+    /// and fails this one.
+    ///
+    /// The ordering assertion matters as much as the presence one — the
+    /// sync must precede the drain it guards, in the same call, or it
+    /// describes the previous frame.
+    #[test]
+    fn the_save_drain_publishes_the_transition_flag_before_draining() {
+        let src = include_str!("app_step.rs");
+        let fn_start = src
+            .find("pub(crate) fn step_player_save_actions(")
+            .expect("step_player_save_actions must still exist");
+        let body = &src[fn_start..];
+        let body_end = body.find("\n    }\n").expect("body boundary not found");
+        let body = &body[..body_end];
+
+        let sync_at = body
+            .find("CellTransitionInFlight(self.interior_transition.is_some())")
+            .or_else(|| {
+                // Tolerate rustfmt splitting the call across lines.
+                let flag = body.find("CellTransitionInFlight(")?;
+                body[flag..]
+                    .find("self.interior_transition.is_some()")
+                    .map(|o| o + flag)
+            })
+            .expect(
+                "step_player_save_actions must publish CellTransitionInFlight from \
+                 App::interior_transition (#4138) — a constant, or a flag synced \
+                 somewhere else in the tick, reopens the mid-transition save window",
+            );
+        let drain_at = body
+            .find("execute_pending_player_save_actions(")
+            .expect("the queued-save drain must still exist");
+        assert!(
+            sync_at < drain_at,
+            "the flag must be published BEFORE the drain it guards, in the same \
+             call (sync {sync_at}, drain {drain_at})"
         );
     }
 
