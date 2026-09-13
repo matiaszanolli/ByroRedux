@@ -104,7 +104,7 @@ noise floor.
 zero-initialises a local struct nor warns about a field a builder forgot,
 so a missed field is undefined data, not a diagnostic.
 
-### 2.2 Sky cubemap — NOT YET IMPLEMENTED
+### 2.2 Sky cubemap — LANDED
 
 **Why a cubemap rather than calling `sky_radiance` from the RT path.**
 Three independent reasons, in increasing order of weight:
@@ -178,45 +178,87 @@ sun disc, and the background pixel can afford the full evaluation. Once
 volumetric clouds exist, the background samples the cubemap for the cloud
 layer and keeps the disc analytic on top.
 
-### 2.3 Volumetric clouds — NOT YET IMPLEMENTED
+### 2.3 Volumetric clouds — LANDED, VISIBLE (`564d0d2f`, `9ac8a929`, `5d5d6ddd`)
 
-Replaces the UV-projected cloud planes. Marched into the cubemap
-(§2.2), never per-pixel.
+`include/clouds.glsl` is the cloud body `sky_radiance` paints, so the
+composite background (per clear-depth pixel) and the sky-cube bake (per
+texel) draw the same clouds. It replaced the 2D procedural FBM body in the
+same slot, on the same coverage lane. Ray-traced rays never march it; they
+sample the baked cube.
 
-Implemented in `include/clouds.glsl`, marched by `sky_cube.comp`. Method
-and constants follow Schneider & Vos, "The Real-Time Volumetric
-Cloudscapes of Horizon: Zero Dawn", SIGGRAPH 2015 — a spherical-shell
-layer (so clouds bend to the horizon rather than ending at a plane's
-edge), Perlin–Worley base remapped by coverage, Worley edge erosion, a
-height gradient, Beer–Lambert self-shadowing with the powder term, and a
-dual-lobe Henyey–Greenstein phase. Constants live in
-`shader_constants_data.rs` like every other shader constant.
+**Shape** follows Schneider & Vos, "The Real-Time Volumetric Cloudscapes of
+Horizon: Zero Dawn", SIGGRAPH 2015: a spherical-shell layer (1.5-5 km),
+Perlin-Worley base remapped by coverage (subtracted, not multiplied),
+Worley edge erosion, and a height gradient. The density volumes are the
+two `volumetrics/noise.rs` already generates, uploaded once into a
+context-owned `CloudNoiseVolumes` that both consumers bind. Composite is
+mandatory, rebuilt on resize, and not PARTIALLY_BOUND, so the volumes can
+belong to neither pipeline.
 
-The density volumes are **not** new: they are the two
-`volumetrics/noise.rs` already generates for froxel fog, which are
-exactly the pair this method wants (FBM Perlin blended with an
-inverted-Worley billow; Worley-dominated detail). `SkyCubePipeline` owns
-its own images rather than borrowing the froxel pipeline's views, because
-that pipeline is optional *and* rebuilt on every resize.
+**Lighting** follows Hillaire 2016, "Physically Based Sky, Atmosphere and
+Cloud Rendering in Frostbite" (SIGGRAPH 2016 PBS course notes):
 
-**Coverage comes from `SkyDome::weather_aurora.z`** — the canonical
-procedural-cloud coverage EXAL already derives per weather, and the same
-lane the authored cloud-plane path reads. No new WTHR mapping was
-invented, and a test pins that.
+| Term | Value | Source |
+|---|---|---|
+| Phase | two-lobe HG, g0 0.8, g1 -0.5, blend 0.5 | Hillaire slides 36/38 |
+| Ambient | sky mean over both hemispheres, exact for this sky gradient (2/3, 5/6) | Hillaire §5.5.1 |
+| Integration | energy-conserving analytic slab | Hillaire §5.6.3 |
+| Multiple scattering | N = 2 octaves: scattering × aⁿ, extinction × bⁿ, eccentricity × cⁿ | Hillaire §5.8 Eq. 19-20 (after Wrenninge et al. 2013); N from Fig. 40 |
+| a, b, c | 0.5 each | **No primary citation.** Skybolt's open-source value, adopted with the project owner's sign-off (2026-09-13). Satisfies a ≤ b. |
+| Extinction | 0.12 m⁻¹ at density 1, albedo 1 | Top of the cumulus range, Hess, Koepke & Schult 1998, as cited in Hillaire §5.2 |
+| Powder | not used | Schneider's term needs a view-dependent gradient the source leaves unspecified |
 
-Still open, and still requiring data rather than invention:
+**Calibration.** The sun term is `SkyParams::sun_illuminance`, the same
+`compute_directional_upload` value surfaces are lit by — not the sun-disc
+colour times its raw 0-4 scale. This engine's diffuse compensates the
+BRDF's 1/π, so a white surface facing the sun has radiance E. Hillaire
+states a dense cloud "should converge to what an opaque diffuse surface
+would look like". Any normalised phase averages 1/(4π) over the sphere,
+so matching the white surface on average fixes K = 4π / Σaⁿ. The phase
+keeps its angular shape: the silver lining exceeds E, the sun-away side
+falls below it.
 
-* **Cloud type** (stratus / cumulus / cumulonimbus). The reference drives
-  the height gradient from a type signal; the mapping from WTHR
-  classification flags (`WTHR_CLOUDY`/`RAINY`/`SNOW`) onto it is
-  undetermined and must be measured the way the WATR `DATA` offsets were.
-  Until then a single cumulus-band profile is used for every weather.
-* **The background pass still draws the authored WTHR cloud planes.** The
-  march is in a shared include and takes its noise volumes as function
-  parameters precisely so `composite.frag` can adopt it without
-  duplication — but that needs the noise bound into composite's own
-  descriptor set, and the two representations then have to be reconciled
-  rather than both drawn.
+Before calibration the clouds rendered darker than the sky in every
+measured case (luminance 0.21-0.31 against 0.525): single scattering with
+a normalised phase was lit by a sun far too weak relative to the
+LDR-authored WTHR sky.
+
+**Sampling.** Both marches were aliasing at the sourced extinction:
+
+* View march: Schneider's adaptive scheme (slides 74-80). Cheap base-shape
+  samples run at `ray_length / mix(128, 64, dir.y)` until the iso-surface.
+  The march then steps back once, never behind integrated distance, and
+  switches to full samples of one mean free path at the local density. A
+  zero full sample returns to cheap mode. The iteration bound of 512 is
+  derived and never truncates. The fixed 48-step march it replaced had
+  optical depth ~9 per step. Pinning the jitter to 0.5 turned the grain
+  into terraces, which proved the steps — not the upscaler — were the
+  cause.
+* Self-shadow march: six samples (Schneider slide 89), spaced
+  geometrically (Hillaire §5.5.2) from one mean free path out to the
+  shell top along the sun. The six even 583 m steps it replaced produced
+  the flat cyan-grey undersides that had been blamed on the two-octave
+  limit.
+
+**Cost** at 1280×720 render: `gpu_composite` ~1.2 ms on a cloud-filled
+view and 0.7-1.2 ms over terrain (large run-to-run variance);
+`gpu_sky_cube` ~0.1 ms. The march scales with pixel count, so the worst
+view at 4K is roughly 10 ms.
+
+Still open:
+
+* **Faint horizontal striation in undersides** — likely the fixed
+  light-sample distances sweeping through the noise field. Hillaire
+  §5.5.2 jitters shadow samples temporally; not yet done.
+* **Cloud type** (stratus / cumulus / cumulonimbus). The mapping from WTHR
+  classification flags is undetermined and must be measured. A single
+  cumulus-band profile is used for every weather.
+* **Coverage mapping provenance.** Coverage is `SkyDome::weather_aurora.z`,
+  derived in `env_translate::fog_coverage_from_weather` as a fixed
+  0.86 / 0.80 / 0.70 / 0.40 / 0.55 per classification flag. That mapping
+  is pre-existing and uncited.
+* **Noise shape frequencies** (`0.00008` / `0.0009` per metre) predate the
+  sourced pass and are not yet justified.
 
 ---
 
@@ -232,9 +274,13 @@ Still open, and still requiring data rather than invention:
 | Bind into scene set 1 / binding 20 + ready flag | **DONE** — a dedicated binding rather than the bindless array; see below |
 | RT miss + bounded-path escape consume it | **DONE** |
 | Volumetric cloud march into the cube | **DONE** |
+| Background pass adopts the cloud march | **DONE** `564d0d2f` |
+| Sourced, calibrated cloud lighting (Hillaire 2016) | **DONE** `564d0d2f` |
+| Adaptive view march (Schneider & Vos 2015) | **DONE** `9ac8a929` |
+| Geometric self-shadow march | **DONE** `5d5d6ddd` |
+| Temporal jitter of shadow samples (striation) | TODO |
 | Prefiltered mips for rough reflections | TODO |
 | Irradiance projection for ambient | TODO |
-| Background pass adopts the cloud march | TODO — it still draws the authored WTHR cloud planes |
 | Cloud *type* (stratus/cumulus/cumulonimbus) from WTHR | TODO — needs data |
 
 ---
