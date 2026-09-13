@@ -16,10 +16,14 @@
 //! candidate point on the GPU (§3), with per-game data demoted to a **palette
 //! hint only** (§7).
 //!
-//! So: a `GRAS` record contributes a *species* here — colour, size, stiffness.
-//! Its density and placement fields are ignored on purpose. Anyone reading this
-//! later and reaching for `GRAS.density` to "finish the port" should read §1
-//! first; that omission is the feature.
+//! So: a [`GroundCoverSpecies`] is the engine's own blade species, selected by
+//! climate. A `GRAS` record does not contribute one (design §12.12, decided
+//! 2026-09-13): a census of the vanilla records' models across four games found
+//! every one is a card clump or an opaque mesh rather than a blade, and that
+//! grass cannot be told from ferns or shrubs by model content. `GRAS` records
+//! belong to the authored-model tier instead, which draws each record's own
+//! model. Their density and placement fields stay ignored either way; anyone
+//! reaching for `GRAS.density` to "finish the port" should read §1 first.
 //!
 //! # What Phase 0 covers
 //!

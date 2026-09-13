@@ -555,6 +555,13 @@ Each phase is independently useful and independently reviewable.
 - **Phase 5 — per-game palette.** `GRAS` → species, `grass_dimmer`, and the
   per-worldspace palette resolution.
 
+  **Superseded 2026-09-13 (§12.12):** `GRAS` records no longer become blade
+  species. The census behind that decision found every vanilla model is a card
+  clump or an opaque mesh, about half the records are not grass, and grass
+  cannot be told from ferns or shrubs by model content. The decode stays; the
+  records move to the authored-model tier. The paragraphs below describe what
+  was built in #3807.
+
   **Palette resolution done (2026-09-06, #3807)** — `GRAS` decodes in full
   ([`records/gras.rs`](../../crates/plugin/src/esm/records/gras.rs), replacing
   the `MinimalEsmRecord` stub), translates to species at the EXAL boundary
@@ -1358,19 +1365,41 @@ built on a wrong premise:
   separate ranges (~1:9–1:25); Outerra and AMD widen blades as density falls.
 
 The chosen direction is a **hybrid**: procedural blades near the camera, the
-records' own authored card meshes further out, with a handoff between them. It
-lands in phases:
+records' own authored models as well, with a handoff between them.
 
-1. **Phase A — translation correctness.** Classify each record from its model's
-   content (opaque vs alpha-tested, card orientation, placement relative to
-   water) into blade-capable grass or mesh-only ground cover; keep mesh-only
-   records out of the blade palette and out of the cover test's reach. Climate
-   selection (§12.11) is the first piece.
-2. **Phase B — sourced near blades.** Blade height from the measured painted
-   range per model, width from the botany ratio and density compensation.
-3. **Phase C — the card tier.** Draw each record's authored model as cards
-   beyond the blade range, placed by the same density field.
-4. **Phase D — the handoff** between B and C.
+**Which records grow blades — decided 2026-09-13: none.** A four-game census
+(184 `GRAS` records across Skyrim SE, FNV, FO3 and Oblivion) tested whether a
+record's model content can say whether it is grass:
+
+| Separates grass from | Feature | Result |
+|---|---|---|
+| Rock meshes | model is opaque (no alpha test or blend) | exact (Skyrim only has them) |
+| Submerged plants | authored `water_distance_application == 2` ("Below – At Least", xEdit numbering; see `gras.rs`) | exact, and authored |
+| Flat leaf decals | median card tilt > 55° from vertical | 31° margin on Skyrim alone, **1° pooled** |
+| Ferns, shrubs, heather, gorse, sage | any measured mesh or alpha statistic (painted width, alpha coverage, tilt, proportions) | no usable cut; best ≈30% error |
+
+A broad-leaf plant differs from grass only in its painted shape, so no rule on
+the model can decide it without misjudging a large share of the corpus. So
+blades stop coming from `GRAS` records at all:
+
+- **Procedural blades are the engine's own sward**, sized from the cited
+  botany and technique sources, with species set by climate. They need no
+  per-record classification.
+- **Every `GRAS` record draws its authored model** — grass cards, rocks,
+  ferns, decals alike — placed by the density field and climate weights, with
+  its authored water rule deciding dry ground from submerged.
+
+Phases:
+
+1. **Phase A — decouple.** The blade palette stops translating `GRAS` records
+   into blade species. That also removes the kelp's 279-unit height from the
+   cover test's reach. Climate-weighted selection (§12.11) is already in place.
+2. **Phase B — sourced blades.** Replace the built-in species' uncited
+   dimensions (6–14 units tall, 0.7–1.4 wide) with sourced ones and density
+   compensation.
+3. **Phase C — the authored-model tier.** Instance each record's model at
+   density-field points, weighted by climate, honouring its water rule.
+4. **Phase D — the handoff** between blades and authored models.
 
 ---
 

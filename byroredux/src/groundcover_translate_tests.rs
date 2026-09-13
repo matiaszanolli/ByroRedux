@@ -5,7 +5,7 @@
 //! suite exercises the strings the table will actually meet.
 
 use super::*;
-use byroredux_plugin::esm::records::tree::ObjectBounds;
+use byroredux_core::ecs::components::groundcover::GroundCoverSpecies;
 
 /// Pins *ordering*, never the exact scalars. Design §11.3 calibrates the
 /// numbers against real cells with density-histogram telemetry; a suite that
@@ -191,23 +191,13 @@ fn wetland_and_alpine_outrank_arid_when_a_name_matches_both() {
 
 #[test]
 fn palette_resolution_matches_the_climate() {
-    let arid = resolve_palette_for_chain(&["WastelandNV".to_string()], Vec::new());
+    let arid = resolve_palette_for_chain(&["WastelandNV".to_string()]);
     assert_eq!(arid.climate, Climate::Arid);
     assert_eq!(arid.species[0], GroundCoverSpecies::DEFAULT_ARID);
 
-    let temperate = resolve_palette_for_chain(&["Tamriel".to_string()], Vec::new());
+    let temperate = resolve_palette_for_chain(&["Tamriel".to_string()]);
     assert_eq!(temperate.climate, Climate::Temperate);
     assert_eq!(temperate.species[0], GroundCoverSpecies::DEFAULT_TEMPERATE);
-}
-
-#[test]
-fn authored_species_take_precedence_over_the_default() {
-    let authored = GroundCoverSpecies {
-        height_range: (20.0, 30.0),
-        ..GroundCoverSpecies::DEFAULT_TEMPERATE
-    };
-    let palette = resolve_palette_for_chain(&["Tamriel".to_string()], vec![authored]);
-    assert_eq!(palette.species, vec![authored]);
 }
 
 #[test]
@@ -340,293 +330,50 @@ fn an_empty_or_signalless_chain_falls_back_to_temperate() {
     );
 }
 
-// ── Phase 5: `GRAS` → species (#3807) ───────────────────────────────
-//
-// Editor IDs, FormIDs and field values below are verbatim from the four
-// installed corpora (168 vanilla `GRAS` records, census 2026-09-06), so
-// the suite exercises the records the boundary will actually meet.
+// ── `GRAS` records and the blade palette (§12.12) ───────────────────
 
-/// Oblivion `BWCattail01` (0x000984C8): `MODB` 127.96, height_range 0.2,
-/// no `OBND` — the Oblivion shape.
-fn cattail() -> GrasRecord {
-    GrasRecord {
-        form_id: 0x0009_84C8,
-        editor_id: "BWCattail01".to_string(),
-        model_path: r"Plants\BWCattail01.NIF".to_string(),
-        bound_radius: 127.964_78,
-        height_range: 0.2,
-        density: 50,
-        max_slope: 45,
-        wave_period: 10.0,
-        has_data: true,
-        ..Default::default()
+/// §12.12: blades are the engine's own sward. Every climate resolves to its
+/// built-in species, and nothing a plugin's `GRAS` records say can reach the
+/// blade palette — their models are card clumps, rocks, ferns and kelp, not
+/// blades. The resolver no longer takes the records at all, so this pins the
+/// resolved palette per climate.
+#[test]
+fn blade_palette_is_engine_species_for_every_climate() {
+    for (chain, expected) in [
+        ("WastelandNV", GroundCoverSpecies::DEFAULT_ARID),
+        ("Tamriel", GroundCoverSpecies::DEFAULT_TEMPERATE),
+        ("Hjaalmarch", GroundCoverSpecies::DEFAULT_TEMPERATE),
+        ("WinterholdWorld", GroundCoverSpecies::DEFAULT_TEMPERATE),
+    ] {
+        let palette = resolve_palette_for_chain(&[chain.to_string()]);
+        assert_eq!(palette.species, vec![expected], "{chain}");
     }
 }
 
-/// FO3/FNV `GrassWasteland06` (0x00061EB1): `OBND` z extent 70,
-/// height_range 0.375 — the FO3+ shape.
-fn wasteland06() -> GrasRecord {
-    GrasRecord {
-        form_id: 0x0006_1EB1,
-        editor_id: "GrassWasteland06".to_string(),
-        model_path: r"Landscape\Grass\GrassWasteland06.NIF".to_string(),
-        bounds: Some(ObjectBounds {
-            min: [-34, -31, 0],
-            max: [32, 36, 70],
-        }),
-        height_range: 0.375,
-        density: 30,
-        max_slope: 40,
-        wave_period: 15.0,
-        has_data: true,
-        ..Default::default()
-    }
-}
-
+/// Kept for the authored-model tier (§12.12 Phase C), which weights each
+/// record by climate. Editor IDs are verbatim from the installed corpora.
 #[test]
-fn gras_dimensions_become_the_species_height_range() {
-    let species = species_from_gras(&wasteland06(), Climate::Arid).expect("dimensioned record");
-    // The 70-unit clump height is the ceiling, not the centre: no blade is
-    // taller than the cluster it was measured from. The authored 0.375 sets
-    // how far below it the range reaches.
-    assert!((species.height_range.0 - 43.75).abs() < 1e-3);
-    assert!((species.height_range.1 - 70.0).abs() < 1e-3);
-    assert!(species.is_well_formed());
-}
-
-/// Oblivion carries no `OBND` at all, so the `MODB` bounding radius is the
-/// only size signal its records have. The boundary must read it without
-/// the caller knowing which game it came from.
-#[test]
-fn oblivion_bound_radius_feeds_the_same_height_range_path() {
-    let species = species_from_gras(&cattail(), Climate::Temperate).expect("dimensioned record");
-    assert!((species.height_range.0 - 127.964_78 * 0.8).abs() < 1e-2);
-    assert!((species.height_range.1 - 127.964_78).abs() < 1e-2);
-}
-
-/// The whole point of design §1: placement authority does not cross the
-/// boundary. Changing every placement field must not change the species.
-#[test]
-fn gras_placement_fields_do_not_reach_the_species() {
-    let base = species_from_gras(&wasteland06(), Climate::Arid).expect("dimensioned record");
-    let repainted = GrasRecord {
-        density: 100,
-        min_slope: 10,
-        max_slope: 90,
-        distance_from_water: 390,
-        water_distance_application: 3,
-        position_range: 90.0,
-        colour_range: 0.5,
-        wave_period: 600.0,
-        flags: 0x07,
-        ..wasteland06()
-    };
+fn gras_editor_ids_classify_into_climates() {
     assert_eq!(
-        species_from_gras(&repainted, Climate::Arid),
-        Some(base),
-        "a placement/appearance field leaked into the canonical species"
+        classify_species_name("GrassWasteland06"),
+        Some(Climate::Arid)
     );
-}
-
-/// A record whose bounds were never computed contributes nothing over the
-/// built-in default — 15 of FNV's 24 records and 6 of Skyrim's 27.
-#[test]
-fn gras_without_usable_dimensions_yields_no_species() {
-    let unset = GrasRecord {
-        bounds: Some(ObjectBounds {
-            min: [0; 3],
-            max: [0; 3],
-        }),
-        bound_radius: 0.0,
-        ..wasteland06()
-    };
-    assert_eq!(species_from_gras(&unset, Climate::Arid), None);
-}
-
-/// Trees and shrubs have their own authority (§10), and a `MODB` can be
-/// authored to anything. The tallest real record is 279 units.
-#[test]
-fn gras_taller_than_ground_cover_is_rejected() {
-    let tree_sized = GrasRecord {
-        bound_radius: 4096.0,
-        bounds: None,
-        ..cattail()
-    };
-    assert_eq!(species_from_gras(&tree_sized, Climate::Temperate), None);
-
-    let tallest_real = GrasRecord {
-        bound_radius: 279.0,
-        bounds: None,
-        ..cattail()
-    };
-    assert!(species_from_gras(&tallest_real, Climate::Temperate).is_some());
-}
-
-/// A non-finite `height_range` survives `clamp` as NaN, which would put a
-/// NaN height in the blade shader — a blade that silently vanishes from
-/// the raster with no diagnostic.
-#[test]
-fn gras_with_a_non_finite_height_range_is_rejected() {
-    for poison in [f32::NAN, f32::INFINITY] {
-        let bad = GrasRecord {
-            height_range: poison,
-            ..wasteland06()
-        };
-        assert_eq!(
-            species_from_gras(&bad, Climate::Arid),
-            None,
-            "non-finite height_range {poison} reached the palette"
-        );
-    }
+    assert_eq!(classify_species_name("BWCattail01"), Some(Climate::Wetland));
+    // Standing water outranks frost, mirroring the worldspace matcher.
+    assert_eq!(
+        classify_species_name("FrozenMarshGrass01"),
+        Some(Climate::Wetland)
+    );
+    // No geographic token makes no claim at all.
+    assert_eq!(classify_species_name("GCLongGrass01"), None);
 }
 
 #[test]
-fn species_climate_weighting_follows_the_editor_id() {
-    let arid = species_from_gras(&wasteland06(), Climate::Arid).expect("dimensioned");
-    let w = arid.climate_weight;
+fn climate_weights_favour_the_matched_climate_without_zeroing_others() {
+    let w = climate_weights_for(Climate::Arid);
+    assert!(w.arid > w.temperate && w.temperate > w.alpine, "{w:?}");
     assert!(
-        w.arid > w.temperate && w.temperate > w.alpine,
-        "'GrassWasteland06' should favour arid: {w:?}"
-    );
-    assert!(w.alpine > 0.0, "a zero weight is the boolean boundary §1 removes");
-
-    // `BWCattail01` — a wetland plant in a temperate worldspace.
-    let wet = species_from_gras(&cattail(), Climate::Temperate).expect("dimensioned");
-    assert!(wet.climate_weight.wetland > wet.climate_weight.arid);
-}
-
-/// Mirrors `classify_worldspace_name`'s precedence: standing water is the
-/// strongest signal, so Skyrim's `FrozenMarshGrass01` is wetland, not
-/// alpine, even though it names frost first.
-#[test]
-fn wetland_species_keywords_outrank_alpine_ones() {
-    let frozen_marsh = GrasRecord {
-        editor_id: "FrozenMarshGrass01".to_string(),
-        ..wasteland06()
-    };
-    let w = species_from_gras(&frozen_marsh, Climate::Temperate)
-        .expect("dimensioned")
-        .climate_weight;
-    assert!(
-        w.wetland > w.alpine,
-        "FrozenMarshGrass01 should read as wetland: {w:?}"
-    );
-}
-
-/// A species with no geographic token makes no claim at all rather than
-/// being pushed toward the worldspace's own climate.
-#[test]
-fn species_with_no_climate_signal_stays_uniform() {
-    let plain = GrasRecord {
-        editor_id: "GCLongGrass01".to_string(),
-        ..cattail()
-    };
-    let species = species_from_gras(&plain, Climate::Alpine).expect("dimensioned");
-    assert_eq!(species.climate_weight, ClimateWeights::UNIFORM);
-}
-
-/// The scatter pass indexes species by position, so a `HashMap` iteration
-/// order would make a blade change species between sessions.
-#[test]
-fn authored_species_order_is_stable_across_runs() {
-    let grasses: HashMap<u32, GrasRecord> = [
-        (0x0009_84C8, cattail()),
-        (0x0006_1EB1, wasteland06()),
-        (
-            0x0001_CC70,
-            GrasRecord {
-                form_id: 0x0001_CC70,
-                editor_id: "SnowGrass01".to_string(),
-                bounds: Some(ObjectBounds {
-                    min: [-29, -23, -2],
-                    max: [29, 27, 61],
-                }),
-                height_range: 0.33,
-                has_data: true,
-                ..Default::default()
-            },
-        ),
-    ]
-    .into_iter()
-    .collect();
-
-    let first = authored_species(&grasses, Climate::Temperate);
-    assert_eq!(first.len(), 3);
-    for _ in 0..8 {
-        assert_eq!(authored_species(&grasses, Climate::Temperate), first);
-    }
-    // Sorted by FormID: SnowGrass01 (0x1CC70) < GrassWasteland06 (0x61EB1)
-    // < BWCattail01 (0x984C8). Heights 63, 70, 127.96.
-    assert!(first[0].height_range.1 < first[1].height_range.1);
-    assert!(first[1].height_range.1 < first[2].height_range.1);
-}
-
-/// The full boundary: a worldspace with real `GRAS` records must resolve
-/// to those species, not to the built-in fallback.
-#[test]
-fn palette_from_grasses_uses_authored_species_and_still_falls_back() {
-    let grasses: HashMap<u32, GrasRecord> =
-        [(0x0006_1EB1, wasteland06())].into_iter().collect();
-    let palette = resolve_palette_from_grasses(&["WastelandNV".to_string()], &grasses);
-    assert_eq!(palette.climate, Climate::Arid);
-    assert_eq!(palette.species.len(), 1);
-    assert_ne!(palette.species[0], GroundCoverSpecies::DEFAULT_ARID);
-    assert!(palette.total_weight() > 0.0);
-
-    // A worldspace whose plugin has no GRAS at all keeps the built-in.
-    let empty = resolve_palette_from_grasses(&["WastelandNV".to_string()], &HashMap::new());
-    assert_eq!(empty.species, vec![GroundCoverSpecies::DEFAULT_ARID]);
-}
-
-/// The clump-height reading, pinned as its own invariant: a species' blades
-/// never exceed the height of the `GRAS` model they were derived from.
-///
-/// Centring the range on the clump height instead would make the typical
-/// blade as tall as a whole vanilla grass cluster, which is the look design
-/// §1 exists to avoid — and it would arrive silently, as a plausible-looking
-/// number.
-#[test]
-fn no_species_blade_exceeds_the_clump_it_came_from() {
-    for record in [cattail(), wasteland06()] {
-        let clump = record.nominal_height().expect("dimensioned");
-        for climate in [
-            Climate::Temperate,
-            Climate::Arid,
-            Climate::Alpine,
-            Climate::Wetland,
-        ] {
-            let species = species_from_gras(&record, climate).expect("dimensioned");
-            assert!(
-                species.height_range.1 <= clump + 1e-3,
-                "{} at {climate:?}: blade ceiling {} exceeds its {clump}-unit clump",
-                record.editor_id,
-                species.height_range.1
-            );
-            assert!(species.height_range.0 > 0.0 && species.is_well_formed());
-        }
-    }
-}
-
-/// The authored variation still has to *do* something: a record with a wide
-/// authored spread must produce a wider range than a narrow one, or the
-/// height signal has collapsed to "clump height" for every species.
-#[test]
-fn authored_height_variation_still_widens_the_range() {
-    let narrow = GrasRecord {
-        height_range: 0.1,
-        ..wasteland06()
-    };
-    let wide = GrasRecord {
-        height_range: 0.6,
-        ..wasteland06()
-    };
-    let (n, w) = (
-        species_from_gras(&narrow, Climate::Arid).expect("dimensioned"),
-        species_from_gras(&wide, Climate::Arid).expect("dimensioned"),
-    );
-    assert_eq!(n.height_range.1, w.height_range.1, "same clump, same ceiling");
-    assert!(
-        w.height_range.0 < n.height_range.0,
-        "a wider authored variation must reach further below the ceiling"
+        w.alpine > 0.0 && w.wetland > 0.0,
+        "a zero weight is the boolean boundary §1 removes: {w:?}"
     );
 }

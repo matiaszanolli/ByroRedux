@@ -587,20 +587,19 @@ fn sanitize_wind(wind: WindField) -> WindField {
 /// `WeatherDataRes` was actually installed — WTHR-derived or procedural
 /// fallback — rather than duplicating the translation per branch.
 ///
-/// Both resources are *derived*: the palette from the worldspace identity plus
-/// (in Phase 5) its `GRAS` records, the wind from the live weather. Neither is
+/// Both resources are *derived*: the palette from the worldspace identity, the
+/// wind from the live weather. Neither is
 /// saved; both are re-resolved on load, which is why they sit in the save
 /// guard's `NOT_SAVED_BY_DESIGN` list rather than the registry.
 ///
-/// The authored species come from the load order's `GRAS` records (Phase 5,
-/// #3807) — their *dimensions* and their editor IDs' climate signal only;
-/// `GRAS` placement authority is discarded by design (§1). Content with no
-/// vegetation data, and records with no usable bounds, fall through to
-/// `GroundCoverPalette::resolve`'s built-in species, so the scatter pass
-/// never sees an empty palette.
+/// The blade species are the engine's own, selected by climate (design
+/// §12.12). `GRAS` records do not become blade species: their models are card
+/// clumps, rocks, ferns and kelp rather than blades, and they belong to the
+/// authored-model tier, which is not built yet. `GroundCoverPalette::resolve`
+/// guarantees a non-empty palette, so the scatter pass never sees one.
 fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldContext) {
     use crate::groundcover_translate::{
-        resolve_palette_from_grasses, resolve_wind, resolve_wind_with_direction,
+        resolve_palette_for_chain, resolve_wind, resolve_wind_with_direction,
     };
 
     let (wind_speed, wind_direction, grass_dimmer) = world
@@ -622,7 +621,7 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
         &wctx.record_index.cells.worldspaces,
         &wctx.worldspace_key,
     );
-    let palette = resolve_palette_from_grasses(&chain, &wctx.record_index.grasses);
+    let palette = resolve_palette_for_chain(&chain);
     let wind = sanitize_wind(match wind_direction {
         Some(direction) => {
             resolve_wind_with_direction(&wctx.worldspace_key, wind_speed, Some(direction))
@@ -631,8 +630,8 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
     });
     log::info!(
         target: "engine::groundcover",
-        "Ground cover for '{}' (chain {:?}): climate {:?}, {} species \
-         from {} GRAS records, wind {:.1} u/s along [{:.2}, {:.2}]",
+        "Ground cover for '{}' (chain {:?}): climate {:?}, {} engine blade species \
+         ({} GRAS records await the authored-model tier), wind {:.1} u/s along [{:.2}, {:.2}]",
         wctx.worldspace_key,
         chain,
         palette.climate,

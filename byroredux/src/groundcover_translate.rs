@@ -46,10 +46,8 @@
 //! move the numbers without rewriting the suite.
 
 use byroredux_core::ecs::components::groundcover::{
-    Climate, ClimateWeights, GroundCoverPalette, GroundCoverSpecies, WindField,
+    Climate, ClimateWeights, GroundCoverPalette, WindField,
 };
-use byroredux_plugin::esm::records::GrasRecord;
-use std::collections::HashMap;
 
 /// Affinity for a layer whose name matches no keyword.
 ///
@@ -246,55 +244,24 @@ fn classify_worldspace_name(editor_id: &str) -> Option<Climate> {
     None
 }
 
-/// Build the ground-cover palette for a worldspace, over its full `WNAM`
-/// ancestry.
+/// Build the blade palette for a worldspace, over its full `WNAM` ancestry.
 ///
-/// `authored` carries species translated from `GRAS` records (design §7
-/// precedence 1) — [`resolve_palette_from_grasses`] is the wiring that
-/// produces it from a plugin's records. An empty `authored` is not a stub:
-/// content with no vegetation data is meant to fall through to the built-in
-/// species, which is why the fallback lives in
-/// [`GroundCoverPalette::resolve`] rather than behind a `TODO` here.
-pub fn resolve_palette_for_chain(
-    chain: &[String],
-    authored: Vec<GroundCoverSpecies>,
-) -> GroundCoverPalette {
-    GroundCoverPalette::resolve(authored, climate_for_worldspace_chain(chain))
+/// **Blade species are the engine's own** (design §12.12, decided
+/// 2026-09-13). They used to be translated from `GRAS` records, reading each
+/// record's bounds as a blade-height ceiling. A four-game census of the
+/// records' models (184 records: Skyrim SE, FNV, FO3, Oblivion) found that
+/// premise false. Every vanilla model is a clump of alpha-tested cards or an
+/// opaque mesh, never a blade. About half the records are not grass at all
+/// (rocks, leaf decals, ferns, kelp — Skyrim's 279-unit maximum is underwater
+/// kelp). And no rule on a model's content separates grass from ferns, shrubs
+/// and heather without misjudging about 30% of the corpus.
+///
+/// So `GRAS` records no longer reach the blade palette; they belong to the
+/// authored-model tier (§12.12 Phase C), which draws each record's own model.
+/// The climate still selects the built-in species.
+pub fn resolve_palette_for_chain(chain: &[String]) -> GroundCoverPalette {
+    GroundCoverPalette::resolve(Vec::new(), climate_for_worldspace_chain(chain))
 }
-
-/// Build a worldspace's palette from a plugin's `GRAS` records — the live
-/// Phase 5 entry point (#3807).
-///
-/// Exists so the ordering constraint lives in exactly one place: the
-/// climate has to be resolved *before* the species, because a species'
-/// base sizing and colour come from the climate default it is layered
-/// over. A caller doing this itself would have to know that.
-pub fn resolve_palette_from_grasses(
-    chain: &[String],
-    grasses: &HashMap<u32, GrasRecord>,
-) -> GroundCoverPalette {
-    let climate = climate_for_worldspace_chain(chain);
-    resolve_palette_for_chain(chain, authored_species(grasses, climate))
-}
-
-/// Ceiling on a `GRAS`-derived plant height, in Gamebryo units.
-///
-/// Ground cover stops at low scrub by design (§10) — trees and shrubs have
-/// their own authority — and a `MODB` radius or `OBND` box can be authored
-/// to anything. The tallest real vanilla record is Skyrim's 279 units
-/// (corpus max over all 138 dimensioned records; median 63), so this
-/// rejects nothing authentic while keeping a corrupt or mod-authored
-/// record from putting a 40-metre blade in the palette.
-const MAX_SPECIES_HEIGHT: f32 = 512.0;
-
-/// Upper clamp on `GRAS.height_range`, which is a ± *fraction* of the
-/// model's own height.
-///
-/// Vanilla data tops out at 0.85. A fraction at or above 1.0 would drive
-/// the low end of the range to zero or negative — a blade with no height
-/// silently vanishes from the raster with no diagnostic, which is exactly
-/// the failure `GroundCoverSpecies::is_well_formed` exists to catch.
-const MAX_HEIGHT_VARIATION: f32 = 0.9;
 
 /// Climate keywords for a `GRAS` editor ID, in the same shape — and the
 /// same precedence — as [`classify_worldspace_name`].
@@ -309,6 +276,7 @@ const MAX_HEIGHT_VARIATION: f32 = 0.9;
 /// worldspace matcher does it: standing water is the strongest vegetation
 /// signal, and Skyrim's `FrozenMarshGrass01` must not read as merely
 /// alpine when it names a marsh.
+#[allow(dead_code)] // §12.12 Phase C — the authored-model tier weights records by climate
 fn classify_species_name(editor_id: &str) -> Option<Climate> {
     let lowered = editor_id.to_ascii_lowercase();
     const WETLAND: &[&str] = &[
@@ -339,11 +307,12 @@ fn classify_species_name(editor_id: &str) -> Option<Climate> {
 /// Selection weights for a species whose editor ID resolved to `climate`.
 ///
 /// Generalises the profile already authored on
-/// [`GroundCoverSpecies::DEFAULT_ARID`] (0.4 / 2.0 / 0.1 / 0.1) rather
+/// [`GroundCoverSpecies::DEFAULT_ARID`](byroredux_core::ecs::components::groundcover::GroundCoverSpecies::DEFAULT_ARID) (0.4 / 2.0 / 0.1 / 0.1) rather
 /// than inventing a second shape: strong presence in the matched climate,
 /// a reduced showing in temperate as the generic middle ground, and a
 /// small but non-zero tail elsewhere. Non-zero matters — a hard zero is
 /// the boolean boundary the whole design exists to remove, one level up.
+#[allow(dead_code)] // §12.12 Phase C, as above
 fn climate_weights_for(climate: Climate) -> ClimateWeights {
     const STRONG: f32 = 2.0;
     const MIDDLE: f32 = 0.4;
@@ -363,121 +332,6 @@ fn climate_weights_for(climate: Climate) -> ClimateWeights {
         alpine: pick(Climate::Alpine),
         wetland: pick(Climate::Wetland),
     }
-}
-
-/// Translate one `GRAS` record into a canonical species (design §7
-/// precedence 1), or `None` when it carries nothing the built-in default
-/// does not already provide.
-///
-/// # What crosses the boundary, and what does not
-///
-/// Only the record's **dimensions** and its editor ID's climate signal —
-/// and the dimensions are a *clump's*, read as a ceiling on blade height
-/// rather than as a blade measurement; see the height derivation in the
-/// body.
-/// `density`, `min_slope`/`max_slope`, `distance_from_water` and
-/// `position_range` are placement authority, and placement is entirely
-/// engine-authored here (§1) — the density field derives its own slope
-/// gate from the terrain normal and its own moisture term from the WATAL
-/// water plane, which is the point of the design rather than an omission.
-///
-/// `colour_gradient`, `width_range`, `bend_stiffness` and `cover_affinity`
-/// stay at the climate default:
-///
-/// - **Colour** comes from the model's *texture* (§7), which needs the
-///   archive-backed asset provider, not the record. Deferred, and left as
-///   the base gradient rather than approximated from a field that does not
-///   encode it — `colour_range` is a per-instance jitter *amount*, not a
-///   colour.
-/// - **Width** has no `GRAS` field at all. The `OBND` x/y extent is the
-///   clump's footprint, not a blade width, and reading it as one would
-///   make an 80-unit-wide clump into 80-unit-wide blades.
-/// - **Stiffness** is not derivable from `wave_period`: its scale is not
-///   comparable across games (Oblivion 0.0001–30, Skyrim 50–600) and it
-///   does not correlate with plant height in any corpus (Spearman +0.11
-///   on Oblivion's n=99, −0.05 on Skyrim's n=21). Mapping it anyway would
-///   be inventing a heuristic the data contradicts.
-/// - **Affinity** would have to come from `density`, which §1 rejects.
-///
-/// Returns `None` for a record with no usable dimensions — 9 of Oblivion's
-/// 108 (`MODB` 0.0), 15 of FNV's 24 and 6 of Skyrim's 27 (all-zero
-/// `OBND`). Such a record would contribute a byte-for-byte copy of the
-/// default species, adding palette weight without adding information.
-pub fn species_from_gras(record: &GrasRecord, climate: Climate) -> Option<GroundCoverSpecies> {
-    let height = record.nominal_height()?;
-    if !(height.is_finite() && height > 0.0 && height <= MAX_SPECIES_HEIGHT) {
-        return None;
-    }
-    // `GRAS.height_range` is a ± fraction applied to the *whole model* per
-    // placed instance, and the model is a clump. It sets the width of the
-    // canonical range — a record at 0.375 spreads wider than one at 0.2,
-    // which is what gives a patch natural height variance instead of a
-    // uniform lawn — but not its centre; see the height derivation below.
-    //
-    // Finiteness is checked *before* the clamp, not left to it: `clamp`
-    // maps `+inf` to the ceiling, so a corrupt record would come out as
-    // "maximum variation" — a guess at intent dressed up as a valid value.
-    // (`NaN` does survive `clamp` and is caught by `is_well_formed` below,
-    // but relying on two different mechanisms for the same class of bad
-    // input is how one of them ends up unreachable and untested.)
-    if !record.height_range.is_finite() {
-        return None;
-    }
-    let variation = record.height_range.clamp(0.0, MAX_HEIGHT_VARIATION);
-    let base = match climate {
-        Climate::Arid => GroundCoverSpecies::DEFAULT_ARID,
-        _ => GroundCoverSpecies::DEFAULT_TEMPERATE,
-    };
-    // The clump height is the range's **ceiling**, not its centre.
-    //
-    // A vanilla `GRAS` model is a cluster of blades, not one blade:
-    // `GrassWasteland06`'s bounds are 66 × 67 × 70 units, a roughly cubic
-    // volume that no single blade occupies. So the record's height is
-    // approximately its *tallest* blade, and centring a per-blade range on
-    // it would make the typical blade as tall as the whole clump it came
-    // from — Bethesda-sized grass arriving through the back door of a
-    // design whose entire premise (§1) is not to reproduce that look.
-    //
-    // Taking it as the ceiling states only what the record actually
-    // supports: nothing grows taller than the clump it was measured from.
-    // The intra-clump distribution — how short the shortest blade in a
-    // cluster is — is not in the record, so the authored variation stands
-    // in for it rather than being invented alongside it.
-    let species = GroundCoverSpecies {
-        height_range: (height * (1.0 - variation), height),
-        climate_weight: classify_species_name(&record.editor_id)
-            .map_or(ClimateWeights::UNIFORM, climate_weights_for),
-        ..base
-    };
-    // A record can still be malformed in ways the checks above miss (a
-    // non-finite `height_range` survives `clamp` as NaN). The palette drops
-    // malformed species anyway; rejecting here keeps the *count* honest so
-    // the load-time diagnostic reports what actually reached the palette.
-    species.is_well_formed().then_some(species)
-}
-
-/// Translate a plugin's whole `GRAS` set into the authored half of a
-/// worldspace palette.
-///
-/// Every `GRAS` in the load order is a candidate, deliberately: species
-/// selection is by climate weight × local conditions (§7), never by which
-/// `LTEX` a record was keyed to. Keying off `LTEX` is the Creation Engine
-/// model whose hard texture boundaries are the artifact this design exists
-/// to remove, so the association is dropped rather than translated.
-///
-/// Ordered by FormID so a palette is byte-identical across runs — the
-/// scatter pass indexes species by position, and a `HashMap` iteration
-/// order would make a blade change species between sessions.
-pub fn authored_species(
-    grasses: &HashMap<u32, GrasRecord>,
-    climate: Climate,
-) -> Vec<GroundCoverSpecies> {
-    let mut by_form: Vec<_> = grasses.iter().collect();
-    by_form.sort_unstable_by_key(|(form_id, _)| **form_id);
-    by_form
-        .into_iter()
-        .filter_map(|(_, record)| species_from_gras(record, climate))
-        .collect()
 }
 
 /// Canonical wind for the current weather when no authored direction is
