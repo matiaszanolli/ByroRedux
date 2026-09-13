@@ -1585,12 +1585,18 @@ mod composite_params_layout_tests {
 
     #[test]
     fn procedural_cloud_body_composes_with_authored_layers_and_occludes_celestials() {
-        let shader = include_str!("../../shaders/composite.frag");
+        // The sky moved out of `composite.frag` into the shared
+        // `include/sky.glsl` so the background pass and the cubemap bake
+        // run one implementation. The composition this test pins is the
+        // sky's own, so it follows the code rather than staying pointed at
+        // a file that no longer contains it — which would have left every
+        // `contains` below vacuously unfalsifiable.
+        let shader = include_str!("../../shaders/include/sky.glsl");
 
         for needle in [
             "float weather_cloud_fbm(vec2 p)",
             "vec4 weather_procedural_cloud(",
-            "float coverage = clamp(params.weather_aurora.z, 0.0, 1.0);",
+            "float coverage = clamp(dome.weather_aurora.z, 0.0, 1.0);",
             "vec4 procedural_cloud = weather_procedural_cloud(",
             "cloud_occlusion = 1.0 - (1.0 - cloud_occlusion)",
             "float sun_visibility = 1.0 - clamp(cloud_occlusion",
@@ -1743,7 +1749,8 @@ mod composite_params_layout_tests {
              arm does; sky + direct alone is the #2920 discontinuity"
         );
         assert!(
-            sky_arm.contains("compute_sky(dir) * (1.0 - coverage)") && sky_arm.contains("+ direct"),
+            sky_arm.contains("sky_radiance(build_sky_dome(), dir) * (1.0 - coverage)")
+                && sky_arm.contains("+ direct"),
             "#2466's coverage-weighted sky and direct terms must survive \
              alongside the #2920 indirect term"
         );

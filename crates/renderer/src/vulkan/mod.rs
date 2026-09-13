@@ -31,6 +31,7 @@ pub mod scene_buffer;
 pub mod skin_compute;
 pub mod ssao;
 pub mod surface;
+pub mod sky_dome;
 pub mod svgf;
 pub mod swapchain;
 pub mod sync;

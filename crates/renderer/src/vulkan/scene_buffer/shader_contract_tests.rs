@@ -1704,6 +1704,16 @@ fn every_shader_struct_is_classified() {
         ("LocalMedium", ShaderLocal),
         ("DisneyDiffuseSplit", ShaderLocal),
         ("CombustionDifferential", ShaderLocal),
+        // The shared sky dome's parameter bundle (`include/sky.glsl`). No
+        // Rust mirror by construction: nothing uploads a `SkyDome`. Each
+        // consumer builds one in-shader by copying out of a uniform block
+        // it already owns — `composite.frag` from `CompositeParams` — so
+        // the CPU/GPU contract is that block's, already guarded, and the
+        // struct is purely a function-argument bundle. `sky_dome.rs`
+        // guards the part that *can* silently break: that every consumer's
+        // builder assigns every field, since GLSL leaves a missed one
+        // uninitialised. Reclassify if a pass ever uploads one directly.
+        ("SkyDome", ShaderLocal),
     ];
 
     // ---- the walk
