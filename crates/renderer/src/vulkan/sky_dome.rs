@@ -26,7 +26,7 @@
 /// Parsed from the shader rather than restated, so the list cannot drift
 /// from the declaration it is supposed to describe.
 #[cfg(test)]
-fn sky_dome_fields(sky_glsl: &str) -> Vec<String> {
+pub(crate) fn sky_dome_fields(sky_glsl: &str) -> Vec<String> {
     let body = sky_glsl
         .split_once("struct SkyDome {")
         .expect("include/sky.glsl still declares `struct SkyDome`")

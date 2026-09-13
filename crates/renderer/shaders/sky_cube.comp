@@ -1,0 +1,82 @@
+// SKYAL — sky cubemap bake.
+//
+// Evaluates the shared analytic sky (`include/sky.glsl`, the same code
+// `composite.frag` paints the background with) once per cube texel, so
+// the rest of the frame can sample the sky as a plain `samplerCube`
+// instead of re-deriving it.
+//
+// Three reasons this is a bake and not a call (see docs/engine/skyal.md):
+//   * cost — one evaluation per texel instead of per ray;
+//   * prefiltering — the mip chain is what gives glossy reflections a
+//     roughness-selected sky, which an analytic sky cannot provide;
+//   * it is the only thing that makes a volumetric cloud march affordable
+//     at all. Per-ray or per-pixel it is not.
+//
+// There is also a hard plumbing reason: `triangle.frag` binds the
+// bindless arrays at set 0 and `composite.frag` at set 1, so
+// `include/sky.glsl` (which declares the array at set 1) cannot simply be
+// included into the ray-tracing path. A cubemap is one sample, no sky
+// code, no set conflict.
+//
+// Writes through a `TYPE_2D_ARRAY` storage view — a storage image cannot
+// be a cube view. The sampled `CUBE` view is a second view over the same
+// `CUBE_COMPATIBLE` image; see `sky_cube.rs`.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+#include "include/shader_constants.glsl"
+#include "include/sky.glsl"
+
+layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y, local_size_z = 1) in;
+
+// Destination: the six cube faces as array layers.
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2DArray skyFaces;
+
+// This pass's own copy of the sky parameters. Uploaded by the host from
+// the same source `CompositeParams`' sky fields come from, so the
+// background and the bake cannot disagree about what sky they are
+// drawing.
+layout(set = 0, binding = 1) uniform SkyCubeParams {
+    SkyDome dome;
+} params;
+
+// Direction of the texel at face-local `uv` in [-1, 1].
+//
+// Derived by inverting the Vulkan spec's cube-map face-selection table
+// (§16.5.4): for each major axis the spec gives `sc`, `tc` and `ma`, with
+// `s = (sc/|ma| + 1)/2` and `t = (tc/|ma| + 1)/2`. Setting `|ma| = 1` and
+// substituting `u = 2s - 1 = sc`, `v = 2t - 1 = tc` yields the rows
+// below. NOT guessed — a wrong row here mirrors or rotates one face and
+// shows up as a seam, which is exactly the kind of thing that gets
+// "fixed" by flipping signs until it looks right.
+vec3 sky_cube_face_direction(uint face, vec2 uv) {
+    float u = uv.x;
+    float v = uv.y;
+    switch (face) {
+        case 0u: return vec3( 1.0,   -v,   -u); // +X
+        case 1u: return vec3(-1.0,   -v,    u); // -X
+        case 2u: return vec3(   u,  1.0,    v); // +Y
+        case 3u: return vec3(   u, -1.0,   -v); // -Y
+        case 4u: return vec3(   u,   -v,  1.0); // +Z
+        default: return vec3(  -u,   -v, -1.0); // -Z
+    }
+}
+
+void main() {
+    ivec3 coord = ivec3(gl_GlobalInvocationID);
+    ivec3 size = imageSize(skyFaces);
+    if (coord.x >= size.x || coord.y >= size.y || coord.z >= size.z) {
+        return;
+    }
+
+    // Texel CENTRE, so the six faces agree along their shared edges. Using
+    // the texel corner biases every face by half a texel and leaves a
+    // visible seam under linear filtering.
+    vec2 uv = (vec2(coord.xy) + 0.5) / vec2(size.xy) * 2.0 - 1.0;
+    vec3 dir = normalize(sky_cube_face_direction(uint(coord.z), uv));
+
+    // Alpha is unused by every consumer; written as 1.0 rather than left
+    // undefined so a stray sample of it cannot read garbage.
+    imageStore(skyFaces, coord, vec4(sky_radiance(params.dome, dir), 1.0));
+}

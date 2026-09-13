@@ -55,6 +55,12 @@ pub struct GpuImageDesc<'a> {
     pub view_type: vk::ImageViewType,
     pub aspect: vk::ImageAspectFlags,
     pub array_layers: u32,
+    /// Extra `vk::ImageCreateFlags`. Empty for every ordinary image; the
+    /// one current user is [`Self::color_cube`], which needs
+    /// `CUBE_COMPATIBLE` so a `samplerCube` view can be created over the
+    /// same six layers the bake writes through a `TYPE_2D_ARRAY` storage
+    /// view.
+    pub flags: vk::ImageCreateFlags,
 }
 
 impl<'a> GpuImageDesc<'a> {
@@ -79,6 +85,7 @@ impl<'a> GpuImageDesc<'a> {
             view_type: vk::ImageViewType::TYPE_2D,
             aspect: vk::ImageAspectFlags::COLOR,
             array_layers: 1,
+            flags: vk::ImageCreateFlags::empty(),
         }
     }
 
@@ -96,6 +103,25 @@ impl<'a> GpuImageDesc<'a> {
             view_type: vk::ImageViewType::TYPE_2D_ARRAY,
             array_layers: layers,
             ..Self::color_2d(name, width, height, format, usage)
+        }
+    }
+
+    /// A six-layer cube-compatible colour image (`sky_cube.rs`).
+    ///
+    /// The default `view_type` is `TYPE_2D_ARRAY`, not `CUBE`, on purpose:
+    /// the view [`GpuImage`] builds is the one a compute bake writes
+    /// through, and a storage image cannot be a cube view. The sampled
+    /// `CUBE` view is a second view over the same image, created by the
+    /// caller. `CUBE_COMPATIBLE` is what makes that second view legal.
+    pub fn color_cube(
+        name: &'a str,
+        face_size: u32,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+    ) -> Self {
+        Self {
+            flags: vk::ImageCreateFlags::CUBE_COMPATIBLE,
+            ..Self::color_2d_array(name, face_size, face_size, 6, format, usage)
         }
     }
 
@@ -160,6 +186,7 @@ impl GpuImage {
     ) -> Result<Self> {
         let name = desc.name;
         let create_info = vk::ImageCreateInfo::default()
+            .flags(desc.flags)
             .image_type(desc.image_type)
             .format(desc.format)
             .extent(desc.extent)

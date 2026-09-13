@@ -1,8 +1,10 @@
 # SKYAL — Sky Abstraction Layer
 
-**Status: PARTIAL (2026-09-13).** The overdrive fix and the shared sky
-include have landed; the cubemap bake and the volumetric cloud layer are
-specified here and not yet implemented.
+**Status: PARTIAL (2026-09-13).** The overdrive fix, the shared sky
+include and the cubemap bake pass have landed. The bake is **not yet
+dispatched** — nothing constructs `SkyCubePipeline` — and the volumetric
+cloud layer is specified here and not implemented. See §3 for exactly
+which steps are done.
 
 Sibling of [NIFAL](nifal.md), [EXAL](exal.md), [PHYSAL](physal.md),
 [WATAL](watal.md), [CHARAL](charal.md). SKYAL sits **downstream of EXAL**:
@@ -193,8 +195,9 @@ deck above the volumetric layer is an open design question.
 |---|---|
 | Bloom bright-pass (the overdrive fix) | **DONE** `62a09fd9` |
 | Shared `include/sky.glsl` + `SkyDome` guard | **DONE** `b7abdaa5` |
-| `GpuImageDesc` cube support | TODO |
-| Cubemap resource + `sky_cube.comp` bake | TODO |
+| `GpuImageDesc` cube support | **DONE** |
+| Cubemap resource + `sky_cube.comp` bake | **BUILT, NOT WIRED** — `SkyCubePipeline` exists and is tested, but nothing constructs or dispatches it yet |
+| Construct + dispatch in `VulkanContext` / `draw_frame` | TODO |
 | Bindless registration + scene-UBO index | TODO |
 | RT miss + bounded-path escape consume it | TODO |
 | Prefiltered mips for rough reflections | TODO |
