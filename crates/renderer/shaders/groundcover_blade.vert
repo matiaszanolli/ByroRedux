@@ -341,8 +341,30 @@ void main() {
     vec3 widthAxis = normalize(cross(tangent, facing) * cos(twist) + facing * sin(twist));
 
     vWorldPos = pos + widthAxis * (halfWidth * sideSign);
-    // Shading normal faces out of the ribbon's flat side.
-    vWorldNormal = normalize(cross(widthAxis, tangent));
+    // Shading normal faces out of the ribbon's flat side, tilted outward
+    // toward this vertex's own edge so the flat ribbon shades as a folded leaf.
+    //
+    // The fold is Jahrmann & Wimmer 2017's "3D displacement" (§6.3, Eq. 23):
+    // the blade's middle axis moves along the normal by
+    // `w · (0.5 − |u − 0.5|) · (1 − v)`, giving "approximately a right angle"
+    // cross-section that flattens toward the tip. Their demo shader
+    // (klejah/ResponsiveGrassDemo, GrassDrawShader.tes lines 54, 113–123)
+    // confirms `w` is the FULL blade width, so each half rises
+    // `0.5·w·(1 − v)` over a half-span of `0.5·w`: a face slope of exactly
+    // `(1 − v)`, i.e. a tilt of `atan(1 − v)` — 45° at the base, none at the
+    // tip. (The draft's Eq. 21 writes the edges as `c ± w·t1`, which would
+    // halve that slope; the demo and the paper's own "right angle, unfolded
+    // width ×√2" both say otherwise.)
+    //
+    // Adding `widthAxis · sideSign · tan θ` to the unit normal and
+    // renormalising rotates it by θ. The ribbon has one vertex per edge, so
+    // interpolation across it rounds the fold — Ghost of Tsushima's "tilt the
+    // normals of the grass blades outward … a more natural rounded look"
+    // (GDC 2021, 13:45), with its angle now from a source that states one.
+    // The fragment shader's two-sided flip negates the whole vector, which
+    // turns the tilt inward on the concave back face, as it should.
+    vec3 flatNormal = normalize(cross(widthAxis, tangent));
+    vWorldNormal = normalize(flatNormal + widthAxis * (sideSign * (1.0 - t)));
     vBladeT = t;
     vBladeHeight = height;
     // §12.2's thickness proxy is the blade's *tapered* width, not the species

@@ -1276,6 +1276,43 @@ at four. The blades read as tufts rather than needles. The field is still sparse
 on this ground, because most candidates carry a low `d_ground`; that is §11.3's
 calibration question, not this one.
 
+### 12.10 The flat ribbon shades as a folded leaf (2026-09-13)
+
+**The technique.** Ghost of Tsushima tilts "the normals of the grass blades
+outward a bit" for "a more natural rounded look … a lot cheaper than adding more
+verts" (GDC 2021, 13:45–13:54), but gives no amount. The amount here comes from
+Jahrmann & Wimmer 2017, §6.3's "3D displacement": the blade's middle axis is
+translated along the normal, "resulting in a 'v'-shape in its cross-section",
+by Eq. 23, `d = w n (0.5 − |u − 0.5| (1 − v))`, which the prose says gives
+"approximately a right angle" with the unfolded width increased by √2.
+
+**The width convention, and a discrepancy in the draft.** The draft's Eq. 21
+writes the blade edges as `c ± w·t1`, a span of `2w`, which would halve the
+slope Eq. 23 produces (≈26.6° at the base, not a right angle). The authors'
+demo resolves it: in `GrassDrawShader.tes` the edges are
+`i1 = centre − off/2`, `i2 = centre + off/2` with `off = tcBladeDir * tcV2.w`
+(lines 113–123), so `w` is the **full** width, and the displacement is exactly
+Eq. 23 (line 54, commented "ca rechter winkel", roughly a right angle). Each half
+therefore rises `0.5·w·(1 − v)` over a half-span of `0.5·w`: a face slope of
+`(1 − v)`, a tilt of `atan(1 − v)`, 45° at the base and none at the tip.
+
+**The implementation.** The blade vertex shader adds
+`widthAxis · sideSign · (1 − t)` to the unit flat normal and renormalises,
+rotating it by `atan(1 − t)` toward that vertex's own edge. The ribbon has one
+vertex per edge, so interpolation across it rounds the fold. The demo shades
+with the flat normal because its V is real geometry; here the geometry stays
+flat, and the fold exists only in the shading. The fragment shader's two-sided
+flip negates the whole vector, which turns the tilt inward on the concave back
+face.
+
+**Measured.** Skyrim `2,-4`, same camera: `gpu_main_render` 7.68–8.40 ms against
+7.68–8.14 ms before, within noise. **No visible difference could be
+established at that view:** the blades are 1–4 pixels wide there, and wind
+animation places them differently between captures, so a normal rotation across
+their width is below what the comparison can show. It ships on the strength of
+the source and its zero cost. The view also shows why shading alone cannot fix
+the needle look while blades up to ~280 units tall are ~1 unit wide.
+
 ---
 
 ## 13. References
@@ -1305,8 +1342,18 @@ could not be verified against the source itself, the entry says so.
   for General 3D Scenes", I3D 2017. Draft:
   <https://www.cg.tuwien.ac.at/research/publications/2017/JAHRMANN-2017-RRTG/JAHRMANN-2017-RRTG-draft.pdf>.
   Used for: blade counts (397,881 total, 43,128 drawn; p. 7, §7.1, Table 1),
-  the orientation cull (Eq. 17), minimum-width quads (§6.3) and index-based
-  thinning (Eq. 20). Blade size and scene area are not stated.
+  the orientation cull (Eq. 17), minimum-width quads (§6.3), index-based
+  thinning (Eq. 20), and §12.10's folded-normal tilt from the "3D displacement"
+  (§6.3, Eq. 23, p. 6). Blade size and scene area are not stated. The draft's
+  Eq. 21 writes the edges as `c ± w·t1`, contradicting its own "right angle"
+  prose; the demo below resolves it.
+- Klemens Jahrmann, *ResponsiveGrassDemo*, the paper's open-source demo:
+  <https://github.com/klejah/ResponsiveGrassDemo>.
+  `ResponsiveGrassDemo/shader/Grass/GrassDrawShader.tes`, lines 54 (Eq. 23's
+  displacement, commented "ca rechter winkel") and 113–123 (edges at
+  `centre ± off/2`, `off = tcBladeDir * tcV2.w`, so `w` is the full blade
+  width). Its `GrassDrawShader.fs` shades with the flat normal, since the demo's
+  fold is real geometry.
 - Outerra, "Procedural grass rendering" (2012):
   <https://outerra.blogspot.com/2012/05/procedural-grass-rendering.html>. The
   GoT talk names it as its main inspiration. Used for: 7 vertices / 5
