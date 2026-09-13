@@ -44,6 +44,7 @@ layout(location = 6) flat in float vBladeHeight;
 layout(location = 7) in float vBladeWidth;
 
 layout(location = 0) out vec4 outColor;
+layout(location = 5) out vec4 outAlbedo;
 layout(location = 6) out float outFsrReactive;
 layout(location = 7) out float outFsrTransparency;
 
@@ -162,13 +163,21 @@ void main() {
     // dark at the base as the middle of a meadow — when the whole point is
     // that the middle is dark *because* it is the middle.
     float skyVisibility = byroGcSkyOcclusion(vDGround, canopyAbove);
-    vec3 ambient = sceneFlags.yzw * skyVisibility;
     // §12.6's ambient half: the blade's environment is the sky, and a
     // Fresnel-weighted sky tint at grazing angles is the whole of it.
-    ambient += sceneFlags.yzw * (byroGcSheenAmbient(N, V, sheen) * skyVisibility);
+    vec3 sheenAmbient = sceneFlags.yzw * (byroGcSheenAmbient(N, V, sheen) * skyVisibility);
 
-    vec3 colour = albedo * (lit + ambient) + transmissionColour * transmitted;
+    // Diffuse ambient is NOT added here. This pass leaves the raw-indirect
+    // attachment holding the ground's demodulated GI underneath the blade, and
+    // composite reassembles `direct + indirect * albedo` per pixel. Writing the
+    // blade's own albedo makes that the blade's ambient — lit by the same GI
+    // the ground receives, which at ankle height is very nearly its own. A
+    // flat `sceneFlags` ambient on top of it counted the sky twice and paired
+    // the blade with the *terrain's* albedo, which is what made it glow.
+    // §12.1's occlusion rides the albedo, since composite multiplies it in.
+    vec3 colour = albedo * (lit + sheenAmbient) + transmissionColour * transmitted;
     outColor = vec4(colour, 1.0);
+    outAlbedo = vec4(albedo * skyVisibility, 1.0);
 
     // See the header. Procedural, wind-animated geometry has no motion vector
     // this pass could write, so the reconstruction is told to trust the

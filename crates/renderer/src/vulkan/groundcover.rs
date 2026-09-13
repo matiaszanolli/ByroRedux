@@ -851,18 +851,26 @@ impl GroundCoverPipeline {
                 .depth_test_enable(true)
                 .depth_write_enable(true)
                 .depth_compare_op(crate::vulkan::pipeline::default_depth_compare_op());
-            // Eight attachments to match the main pass. Only 0 (HDR colour)
-            // and 6/7 (the FSR masks) are written; the G-buffer's normal /
-            // motion / mesh-ID attachments stay masked off, exactly as water
-            // leaves them and for the same reason — see the fragment shader's
-            // header on why procedural wind-animated geometry has no motion
-            // vector this pass could honestly write.
+            // Eight attachments to match the main pass. 0 (HDR colour), 5
+            // (albedo) and 6/7 (the FSR masks) are written; the G-buffer's
+            // normal / motion / mesh-ID / raw-indirect attachments stay masked
+            // off. Normal, motion and mesh ID for the reason water leaves them
+            // — see the fragment shader's header on why procedural
+            // wind-animated geometry has no motion vector this pass could
+            // honestly write. Raw indirect is left holding the ground's GI on
+            // purpose, and albedo is written so composite's
+            // `indirect * albedo` lights the blade with it rather than
+            // re-adding the terrain's own reflectance on top of the blade.
             let mut blend_attachments = [vk::PipelineColorBlendAttachmentState::default(); 8];
             blend_attachments[0] = blend_attachments[0].color_write_mask(
                 vk::ColorComponentFlags::R
                     | vk::ColorComponentFlags::G
                     | vk::ColorComponentFlags::B
                     | vk::ColorComponentFlags::A,
+            );
+            // `B10G11R11_UFLOAT` carries no alpha channel.
+            blend_attachments[5] = blend_attachments[5].color_write_mask(
+                vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B,
             );
             blend_attachments[6] =
                 blend_attachments[6].color_write_mask(vk::ColorComponentFlags::R);
