@@ -238,6 +238,51 @@ impl VulkanContext {
 
         self.record_skinned_blas_refit(cmd, frame, draw_commands, pose_dirty);
 
+        // #4179 / CONC-D1-02 — publish BLAS writes to the TLAS build's
+        // reads unconditionally, at frame scope.
+        //
+        // `build_tlas` reads every referenced BLAS, static ones included.
+        // The only AS barrier that used to precede it lives inside
+        // `record_skinned_blas_refit`, nested behind `!dispatches
+        // .is_empty()` (plus a live `skin_compute`, `accel_manager` and
+        // bone buffer). A frame with no skinned dispatches — an actor-free
+        // interior, a headless bench, or any early return — reached
+        // `build_tlas` with no AS dependency at all, while the static BLAS
+        // it traverses were written by a *different* submission:
+        // `step_streaming`'s `build_blas_batched`, or
+        // `restore_missing_static_blas_for_draws` earlier in this frame.
+        //
+        // Same cross-submission rule this crate already applies to the
+        // shared AS scratch (#983 / #1140 / #1300, and #4177 for the static
+        // build path): the host fence-wait `submit_one_time` performs is a
+        // host-side dependency only, so a device-side edge is still
+        // required. The consequence if the strict reading holds is a TLAS
+        // traversing BLAS whose builds are not yet visible — missing or
+        // corrupt RT shadows/reflections/GI on freshly-streamed meshes,
+        // self-healing on the next frame that happens to have a skinned
+        // actor, and never in a cell that has none.
+        //
+        // Purely additive: the refit site keeps its own emit rather than
+        // having it moved here. That leaves two back-to-back identical
+        // barriers on skinned frames, which is a no-op for the driver, and
+        // it avoids disturbing the `cmd_blas_refit_end` GPU-timer bracket
+        // that barrier sits inside (#1194).
+        if self.accel_manager.is_some() {
+            // SAFETY: `cmd` is recording. A memory barrier records no
+            // resource access of its own; it only declares the dependency
+            // the `build_tlas` below relies on.
+            unsafe {
+                memory_barrier(
+                    &self.device,
+                    cmd,
+                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                    vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                    vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                );
+            }
+        }
+
         // ── TLAS build (relocated from top of frame) ─────────────────
         // Picks up just-refit per-skinned-entity BLAS via the
         // `bone_offset != 0` override in `build_tlas`. Static draws
@@ -580,6 +625,66 @@ mod bind_inverse_upload_failure_is_rate_limited_tests {
             "the failure counter must increment before (i.e. outside) the \
              one-shot warn gate, so every failure is counted, not just the \
              first (#4049)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pre_tlas_acceleration_barrier_tests {
+    /// Regression: #4179 / CONC-D1-02 — the AS_WRITE → AS_READ barrier
+    /// publishing BLAS writes to `build_tlas`'s reads must be emitted at
+    /// frame scope, not nested inside the skinned path's control flow.
+    ///
+    /// Before this, the only such barrier lived in
+    /// `skinned_blas_refit.rs`, behind `!dispatches.is_empty()` plus a
+    /// live `skin_compute`/`accel_manager`/bone buffer. Any frame without
+    /// skinned dispatches — actor-free interior, headless bench, early
+    /// return — reached `build_tlas` with no AS dependency while the
+    /// static BLAS it traverses had been written by a *different*
+    /// submission.
+    ///
+    /// A source-shape pin for the same reason as #4177's: no Vulkan
+    /// device in unit tests, and a cross-submission dependency is not
+    /// something a later frame's output can be asserted against.
+    #[test]
+    fn build_tlas_is_preceded_by_an_unconditional_as_write_to_as_read_barrier() {
+        let src = include_str!("dispatch_skin_and_cluster.rs");
+        // Scoped to the production portion — an unscoped search would match
+        // this very module's own literals, same hazard the sibling latch
+        // tests above document.
+        let module_start = src
+            .find("mod pre_tlas_acceleration_barrier_tests")
+            .expect("this test module must still exist under its own name");
+        let src = &src[..module_start];
+
+        let barrier_at = src.find("ACCELERATION_STRUCTURE_WRITE_KHR").expect(
+            "an AS_WRITE → AS_READ barrier must precede build_tlas at frame scope \
+                 (#4179); leaving it only in the skinned refit path means a frame with \
+                 no skinned actors builds the TLAS with no dependency on the static \
+                 BLAS writes it traverses",
+        );
+        let build_at = src
+            .find("accel.build_tlas(")
+            .expect("the TLAS build call must still exist under this spelling");
+        assert!(
+            barrier_at < build_at,
+            "the AS barrier must be recorded before build_tlas, not after \
+             (barrier {barrier_at}, build {build_at})"
+        );
+
+        // It must NOT be nested behind the skinned-dispatch condition —
+        // that nesting is the entire defect. The only gate allowed is the
+        // `accel_manager` presence check, which is also what `build_tlas`
+        // itself requires.
+        let gate_at = src.find("if self.accel_manager.is_some() {").expect(
+            "the barrier must be gated only on accel_manager presence (#4179) — \
+                 any dispatch-list or skin-compute condition reintroduces the \
+                 actor-free-frame hole",
+        );
+        assert!(
+            gate_at < barrier_at && gate_at > src.find("self.record_skinned_blas_refit(").unwrap(),
+            "the frame-scope barrier belongs after the refit call and before the \
+             TLAS build, outside the skinned path"
         );
     }
 }

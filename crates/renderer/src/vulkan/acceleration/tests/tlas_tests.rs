@@ -593,8 +593,22 @@ fn as_build_to_ray_query_barrier_runs_on_both_build_tlas_arms() {
     // `draw.rs` into `dispatch_skin_and_cluster.rs`.
     let src = include_str!("../../context/dispatch_skin_and_cluster.rs");
 
-    let barrier = src
+    let build_call = src
+        .find("accel.build_tlas(")
+        .expect("the TLAS build call must still exist");
+    // #4179 — anchor the search AFTER the build call. This file now holds
+    // two `ACCELERATION_STRUCTURE_BUILD_KHR` barriers with different jobs,
+    // and an unanchored `find` picks the wrong one:
+    //   - BEFORE the build: AS_WRITE → AS_READ, publishing prior-submission
+    //     BLAS writes to the build's own reads (#4179 / CONC-D1-02).
+    //   - AFTER the build: AS_WRITE → FRAGMENT|COMPUTE, publishing the
+    //     build's writes to the ray-query consumers — the one this test is
+    //     about (#2931).
+    // They are not interchangeable, so neither may be deleted in favour of
+    // the other.
+    let barrier = src[build_call..]
         .find("vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR")
+        .map(|i| i + build_call)
         .expect("draw_frame must still emit the AS_BUILD -> ray-query barrier");
     let failure_arm = src
         .find("log::warn!(\"TLAS build failed: {e}\");")
@@ -602,6 +616,9 @@ fn as_build_to_ray_query_barrier_runs_on_both_build_tlas_arms() {
     let rt_flag_clear = src
         .find("Failed to clear rt_flag after TLAS build failure")
         .expect("the failure arm must still clear rt_flag");
+    let success_gate = src
+        .find("if !tlas_build_failed {")
+        .expect("the post-build descriptor write must still be gated on success");
 
     // The barrier must sit AFTER the whole if/else, not nested in the
     // success arm — i.e. past the failure arm's last statement.
@@ -611,6 +628,15 @@ fn as_build_to_ray_query_barrier_runs_on_both_build_tlas_arms() {
          build_tlas result; nesting it in the success arm leaves that \
          frame's skinned-BLAS refits unpublished to the volumetrics \
          compute ray query on a failed build (#2931)"
+    );
+    // ...and it must sit BEFORE the success gate, which is the other way
+    // the same nesting mistake can be spelled. The original assertion
+    // checked only the lower bound, so moving the barrier inside
+    // `if !tlas_build_failed` would have passed.
+    assert!(
+        barrier < success_gate,
+        "the AS_WRITE -> AS_READ barrier must precede the success-only \
+         block, not be nested inside it (#2931)"
     );
 
     assert!(
