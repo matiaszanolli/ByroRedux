@@ -575,13 +575,24 @@ fn apply_bs_effect_shader(
             if info.normal_map.is_none() {
                 info.normal_map = intern_texture_path(pool, &shader.normal_texture);
             }
-            // #4251 — latch `env_map_scale_consumed`, mirroring the
-            // #3514/#3517 fix shape for `refraction_strength`/
+            // #4393 — `Env Map Scale` is a FO4+ (BSVER >= 130) wire field.
+            // Below that the parser fills a `1.0` multiplier placeholder
+            // (#4250), which is not authored data: copying it made the PBR
+            // classifier's `env_map_scale > 0.3` arm read "authored
+            // environment mapping" on every keyword-less Skyrim effect
+            // shader (36 meshes per install in a 198-file LE/SE probe got
+            // roughness 0.8 instead of 0.85). Only an authored value may
+            // reach `MaterialInfo`; unauthored stays at the engine's `0.0`.
+            //
+            // #4251 — latch `env_map_scale_consumed` on that authored write,
+            // mirroring the #3514/#3517 fix shape for `refraction_strength`/
             // `texture_clamp_mode`: this dedicated value must survive a
             // later legacy `NiTexturingProperty` write, which already
             // gates on this same latch (`legacy_properties.rs`).
-            info.env_map_scale = shader.env_map_scale;
-            info.env_map_scale_consumed = true;
+            if scene.bsver >= crate::version::bsver::FALLOUT4 {
+                info.env_map_scale = shader.env_map_scale;
+                info.env_map_scale_consumed = true;
+            }
             // FO4+ BSEffectShaderProperty (BSVER >= 130) carries env_map_texture /
             // env_mask_texture alongside the normal map. Forward them into the
             // standard MaterialInfo slots so the renderer's env-map branch fires

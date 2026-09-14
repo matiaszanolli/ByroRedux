@@ -244,7 +244,14 @@ fn effect_shader_with_payload() -> BSEffectShaderProperty {
 
 #[test]
 fn extract_bs_tri_shape_pulls_effect_shader_emissive_uv_alpha_normal() {
-    let mut scene = NifScene::default();
+    // The payload is FO4+-only (`env_map_scale`, normal texture): declare
+    // the BSVER that authors it. A header-less scene is bsver 0, where
+    // `env_map_scale` is not on the wire and must not reach the material
+    // (#4393).
+    let mut scene = NifScene {
+        bsver: crate::version::bsver::FALLOUT4,
+        ..NifScene::default()
+    };
     scene.blocks.push(Box::new(effect_shader_with_payload()));
     let (mesh, pool) = import_with_pool(&scene, &renderable_shape(0));
     assert_eq!(mesh.material.emissive_color, [0.7, 0.8, 0.9]);

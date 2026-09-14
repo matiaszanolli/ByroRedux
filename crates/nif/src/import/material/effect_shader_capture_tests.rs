@@ -287,9 +287,49 @@ fn fo4_effect_shader_env_map_texture_forwards_to_material_info() {
 fn fo4_effect_shader_env_map_scale_marks_consumed() {
     let mut shader = fully_populated_fo4_shader();
     shader.env_map_scale = 1.5;
+    let info = effect_shader_material_info(shader, crate::version::bsver::FALLOUT4);
+
+    assert_eq!(info.env_map_scale, 1.5);
+    assert!(
+        info.env_map_scale_consumed,
+        "the consumed gate must be set so a later legacy-property arm \
+         can't clobber the dedicated-shader env_map_scale value (#4251)"
+    );
+}
+
+/// Regression for #4393 — below BSVER 130 `Env Map Scale` is not on the
+/// wire, so the parser's `1.0` multiplier placeholder (#4250) must not reach
+/// `MaterialInfo`. Copying it pushed every keyword-less Skyrim effect shader
+/// into the PBR classifier's "authored environment mapping" arm.
+#[test]
+fn skyrim_effect_shader_placeholder_env_map_scale_does_not_reach_material_info() {
+    for bsver in [
+        crate::version::bsver::SKYRIM_LE,
+        crate::version::bsver::SKYRIM_SE,
+    ] {
+        let mut shader = fully_populated_fo4_shader();
+        shader.env_map_scale = 1.0; // the #4250 not-on-the-wire placeholder
+        let info = effect_shader_material_info(shader, bsver);
+
+        assert_eq!(
+            info.env_map_scale, 0.0,
+            "bsver {bsver}: an unauthored env_map_scale must stay at the \
+             engine's 0.0 'no environment mapping' value (#4393)"
+        );
+        assert!(
+            !info.env_map_scale_consumed,
+            "bsver {bsver}: nothing authored, so nothing to latch (#4393)"
+        );
+    }
+}
+
+/// Run `extract_material_info` over a single-shape scene whose only
+/// property is `shader`, at the given file BSVER.
+fn effect_shader_material_info(shader: BSEffectShaderProperty, bsver: u32) -> MaterialInfo {
     let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
     let scene = NifScene {
         blocks,
+        bsver,
         ..NifScene::default()
     };
     let shape = NiTriShape {
@@ -312,14 +352,7 @@ fn fo4_effect_shader_env_map_scale_marks_consumed() {
         active_material_index: 0,
     };
     let mut pool = StringPool::new();
-    let info = extract_material_info(&scene, &shape, &[], &mut pool);
-
-    assert_eq!(info.env_map_scale, 1.5);
-    assert!(
-        info.env_map_scale_consumed,
-        "the consumed gate must be set so a later legacy-property arm \
-         can't clobber the dedicated-shader env_map_scale value (#4251)"
-    );
+    extract_material_info(&scene, &shape, &[], &mut pool)
 }
 
 /// #3186: the file's BSVER selects texture-slot semantics even when the mesh

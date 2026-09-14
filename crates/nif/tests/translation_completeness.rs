@@ -230,6 +230,28 @@ fn assert_pbr_override_fill(s: &MaterialStats, label: &str, floor: f64) {
     );
 }
 
+/// Upper bound for the PBR-override fill. A floor alone cannot see an
+/// upward drift, and on this tier an upward drift is the regression #2707
+/// warned about: a parser placeholder counted as a classifier signal
+/// fabricates overrides that read as better coverage. #4393 is the
+/// measured case — #4250's Skyrim `BSEffectShaderProperty` `env_map_scale`
+/// placeholder moved SkyrimSE 93.8% → 99.0% and SkyrimLE 92.4% → 99.2%
+/// while every floor stayed green.
+fn assert_pbr_override_ceiling(s: &MaterialStats, label: &str, ceiling: f64) {
+    let metalness = MaterialStats::pct(s.with_metalness_override, s.imported_meshes);
+    let roughness = MaterialStats::pct(s.with_roughness_override, s.imported_meshes);
+    assert!(
+        metalness <= ceiling,
+        "[{label}] metalness_override fill > {ceiling:.1}% (got {metalness:.1}%) — \
+         an unauthored value may be counting as a classifier signal (#4393)"
+    );
+    assert!(
+        roughness <= ceiling,
+        "[{label}] roughness_override fill > {ceiling:.1}% (got {roughness:.1}%) — \
+         an unauthored value may be counting as a classifier signal (#4393)"
+    );
+}
+
 /// The stratification bucket for one NIF path: the top-level *content*
 /// directory under the shared `meshes\` archive root (e.g. `actors`,
 /// `architecture`, `clutter`), or the path's own first component when it
@@ -527,8 +549,10 @@ fn cross_game_translation_completeness() {
                 // BSLightingShaderProperty, which SE later rebuilt as
                 // `BSTriShape`. Measured 2026-09-13 (stratified, 529 meshes):
                 // texture_path 92.4%, material_kind 42.3%, tangents 94.0%,
-                // normal_map 67.7%, metO/rghO 99.2% — floors keep the usual
-                // ~10-15pp margin.
+                // normal_map 67.7% — floors keep the usual ~10-15pp margin.
+                // metO/rghO re-measured 2026-09-14 at 92.4% after #4393; the
+                // 99.2% recorded here the day before was inflated by the
+                // `env_map_scale` placeholder, hence the ceiling below.
                 assert!(
                     MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 82.0,
                     "[{label}] texture_path fill < 82% (got {:.1}%)",
@@ -550,6 +574,7 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
                 assert_pbr_override_fill(s, label, 80.0);
+                assert_pbr_override_ceiling(s, label, 97.0);
             }),
         ),
         (
@@ -586,6 +611,9 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
                 assert_pbr_override_fill(s, label, 80.0);
+                // metO/rghO 93.8% (2026-08-23, 2026-09-11, and again after
+                // #4393 on 2026-09-14). The #4250 placeholder drove it to 99.0%.
+                assert_pbr_override_ceiling(s, label, 97.0);
             }),
         ),
         (
