@@ -89,31 +89,17 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    # production code). A #[cfg(test)] attribute on a `;`-terminated item
    # (an external `mod tests;` declaration, a `#[path]` attribute line, or a
    # test-only `use`) has no block to track — only that one line is excluded.
-   prod_loc() {
-       case "$1" in
-           */tests/*|*tests.rs) echo 0; return ;;
-       esac
-       awk '
-           pending && /;/ && !/\{/ { pending = 0; next }
-           /^#\[cfg\(test\)\]/ { pending = 1; next }
-           pending && /\{/ {
-               in_test = 1; depth = 0
-               n = gsub(/\{/, "{"); depth += n
-               n = gsub(/\}/, "}"); depth -= n
-               pending = 0
-               if (depth == 0) in_test = 0
-               next
-           }
-           in_test {
-               n = gsub(/\{/, "{"); depth += n
-               n = gsub(/\}/, "}"); depth -= n
-               if (depth <= 0) in_test = 0
-               next
-           }
-           { prod++ }
-           END { print prod + 0 }
-       ' "$1"
-   }
+   #
+   # The helper lives in a checked-in script, not inline here (#4336): the
+   # inline awk counted braces inside string literals, which misread every
+   # test module full of `"{call}"` format strings or `split("\n}\n")` source
+   # scans — it reported translate/effects.rs at 2093 (true: 1681) and hid 67
+   # production lines of context/draw.rs. The script strips comments, strings,
+   # raw strings and char literals before counting, and ships fixtures for
+   # each shape. Run the self-test first; a failure means no figure below it
+   # can be trusted.
+   source .claude/commands/audit-tech-debt/prod_loc.sh
+   prod_loc_self_test
    ```
 6. Snapshot totals so the next audit can diff:
    ```bash
