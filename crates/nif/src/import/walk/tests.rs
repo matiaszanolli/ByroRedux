@@ -1525,6 +1525,22 @@ mod emitter_param_tests {
         assert_eq!(got.initial_radius, 2.0);
     }
 
+    /// #4240 — the planar angle pair was finite-swept (#1445) and then
+    /// dropped before `ImportedEmitterParams` was built, so the spawn cone
+    /// could never see an authored azimuth.
+    #[test]
+    fn planar_angle_is_forwarded() {
+        let (scene, refs) = scene_with_emitter(EmitterBaseParams {
+            planar_angle: 1.571,
+            planar_angle_variation: 0.188,
+            ..sane_params()
+        });
+        let got =
+            extract_emitter_params(&scene, &refs).expect("sane emitter params must translate");
+        assert_eq!(got.planar_angle, 1.571);
+        assert_eq!(got.planar_angle_variation, 0.188);
+    }
+
     #[test]
     fn non_finite_scalars_rejected() {
         // Every scalar `apply_emitter_params` consumes — a NaN/Inf in any

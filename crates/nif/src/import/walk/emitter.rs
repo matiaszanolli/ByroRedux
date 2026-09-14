@@ -292,11 +292,9 @@ pub(crate) fn extract_emitter_params(
         && p.speed_variation.is_finite()
         && p.declination.is_finite()
         && p.declination_variation.is_finite()
-        // #1445 — planar_angle / planar_angle_variation were lifted into
-        // EmitterBaseParams but omitted from this sweep. Harmless today
-        // (apply_emitter_params doesn't read them yet) but a latent NaN trap
-        // the moment planar angle is wired into the spawn cone; include them
-        // now so the guard can't be silently outrun by a future consumer.
+        // #1445 — planar_angle / planar_angle_variation feed the spawn
+        // cone's azimuth (#4240), so a NaN here would poison every
+        // particle's velocity.
         && p.planar_angle.is_finite()
         && p.planar_angle_variation.is_finite()
         && p.initial_radius.is_finite()
@@ -328,6 +326,8 @@ pub(crate) fn extract_emitter_params(
         speed_variation: p.speed_variation,
         declination: p.declination,
         declination_variation: p.declination_variation,
+        planar_angle: p.planar_angle,
+        planar_angle_variation: p.planar_angle_variation,
         initial_color: p.initial_color,
         initial_radius: p.initial_radius,
         life_span: p.life_span,

@@ -1814,7 +1814,19 @@ pub struct ImportedEmitterParams {
     pub speed: f32,
     pub speed_variation: f32,
     pub declination: f32,
+    /// Raw Gamebryo half-spread: new particles draw declination uniformly
+    /// over `[declination - var, declination + var]` (`NiPSEmitter.h`,
+    /// Gamebryo 3.2). The canonical `ParticleEmitter` uses the full-width
+    /// `± var/2` convention its speed/life jitter already uses, so the
+    /// overlay boundary doubles this value (#4240).
     pub declination_variation: f32,
+    /// `NiPSysEmitter.planar_angle` — azimuth of the declination plane,
+    /// radians about the emitter's local Z axis from +X (Gamebryo Z-up).
+    pub planar_angle: f32,
+    /// `NiPSysEmitter.planar_angle_variation` — raw Gamebryo half-spread,
+    /// same `± var` convention as [`Self::declination_variation`]. `>= π`
+    /// covers the full circle (#4240).
+    pub planar_angle_variation: f32,
     pub initial_color: [f32; 4],
     pub initial_radius: f32,
     pub life_span: f32,

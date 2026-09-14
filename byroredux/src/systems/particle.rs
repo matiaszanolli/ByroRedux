@@ -33,7 +33,15 @@ pub fn apply_emitter_params(
     preset.speed = p.speed;
     preset.speed_variation = p.speed_variation;
     preset.declination = p.declination;
-    preset.declination_variation = p.declination_variation;
+    // #4240 — Gamebryo spreads both cone angles over `[x - var, x + var]`
+    // (`NiPSEmitter.h`, Gamebryo 3.2: `fDec += m_fDeclinationVar *
+    // NiSymmetricRandom()`), while the canonical emitter uses the
+    // full-width `± var/2` convention its speed/life jitter shares — speed
+    // is the one Gamebryo also draws that way (`ComputeSpeed`). Doubling
+    // here keeps every heuristic preset's tuned value meaning what it did.
+    preset.declination_variation = p.declination_variation * 2.0;
+    preset.planar_angle = p.planar_angle;
+    preset.planar_angle_variation = p.planar_angle_variation * 2.0;
     preset.life = p.life_span;
     preset.life_variation = p.life_span_variation;
     let size = p.initial_radius * p.base_scale.unwrap_or(1.0);
@@ -486,7 +494,17 @@ pub(crate) fn particle_system(world: &World, dt: f32) {
 
                 // Build a velocity vector inside the declination cone around
                 // local +Y (the engine's up axis), then jitter speed.
-                let phi = rng() * std::f32::consts::TAU;
+                //
+                // #4240 — azimuth from the authored planar angle. Gamebryo's
+                // legacy `NiPSEmitter::ComputeDirection` (Gamebryo 3.2
+                // `NiPSEmitter.inl`) builds the Z-up direction
+                // `(sin dec · cos plan, sin dec · sin plan, cos dec)`; the
+                // Z-up → Y-up swap `(x, z, -y)` turns that into
+                // `(sin dec · cos plan, cos dec, -sin dec · sin plan)`, which
+                // is the `dir` below with `phi = -plan`. Presets carry a
+                // `TAU` variation, the same uniform full circle as before.
+                let plan = em.planar_angle + (rng() - 0.5) * em.planar_angle_variation;
+                let phi = -plan;
                 let dec = em.declination + (rng() - 0.5) * em.declination_variation;
                 let sin_dec = dec.sin();
                 let cos_dec = dec.cos();
@@ -624,6 +642,8 @@ mod tests {
             speed_variation: 45.6,
             declination: 0.0,
             declination_variation: 0.17,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::PI,
             initial_color: [1.0, 1.0, 1.0, 1.0], // white default — must NOT win
             initial_radius: 50.0,                // FNV oasis-smoke radius
             life_span: 1.33,
@@ -636,7 +656,9 @@ mod tests {
         assert_eq!(preset.speed, 24.0);
         assert_eq!(preset.speed_variation, 45.6);
         assert_eq!(preset.declination, 0.0);
-        assert_eq!(preset.declination_variation, 0.17);
+        // #4240 — Gamebryo's `± var` half-spread becomes the canonical
+        // full-width `± var/2`.
+        assert_eq!(preset.declination_variation, 0.34);
         assert_eq!(preset.life, 1.33);
         assert_eq!(preset.life_variation, 0.67);
         // Size = initial_radius * base_scale, constant (no bell shape).
@@ -684,6 +706,8 @@ mod tests {
             speed_variation: 1.25,
             declination: 0.35,
             declination_variation: 0.15,
+            planar_angle: 1.25,
+            planar_angle_variation: 0.4,
             initial_color: [0.1, 0.2, 0.3, 0.4],
             initial_radius: 4.0,
             life_span: 7.5,
@@ -726,7 +750,9 @@ mod tests {
         assert_eq!(preset.speed, 12.5);
         assert_eq!(preset.speed_variation, 1.25);
         assert_eq!(preset.declination, 0.35);
-        assert_eq!(preset.declination_variation, 0.15);
+        assert_eq!(preset.declination_variation, 0.3);
+        assert_eq!(preset.planar_angle, 1.25);
+        assert_eq!(preset.planar_angle_variation, 0.8);
         assert_eq!(preset.life, 7.5);
         assert_eq!(preset.life_variation, 0.75);
         // initial_radius * base_scale
@@ -837,6 +863,8 @@ mod tests {
             speed_variation: 45.6,
             declination: 0.0,
             declination_variation: 0.17,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::PI,
             initial_color: [1.0, 1.0, 1.0, 1.0], // white default — must NOT win
             initial_radius: 50.0,
             life_span: 1.33,
@@ -946,6 +974,8 @@ mod tests {
             speed_variation: 10.0,
             declination: 0.0,
             declination_variation: 0.28,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::PI,
             initial_color: [1.0, 1.0, 1.0, 1.0],
             initial_radius: 10.5, // Oblivion torch
             life_span: 1.5,
@@ -970,6 +1000,8 @@ mod tests {
             speed_variation: 10.0,
             declination: 0.0,
             declination_variation: 0.0,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::PI,
             initial_color: [1.0, 1.0, 1.0, 1.0],
             initial_radius: 50.0,
             life_span: 1.5,
@@ -1308,5 +1340,33 @@ mod tests {
         assert!(em.particles.velocities[0][0].abs() < 1e-5);
         assert!((em.particles.velocities[0][1] - 10.0).abs() < 1e-5);
         assert!(em.particles.velocities[0][2].abs() < 1e-5);
+    }
+
+    /// #4240 — an authored planar angle with no variation must aim every
+    /// particle along it. Gamebryo's legacy direction at declination π/2,
+    /// planar angle π/2 is Z-up `+Y`; Z-up → Y-up `(x, z, -y)` makes that
+    /// engine `-Z`. Pre-fix the azimuth was a uniform `rng() * TAU` draw
+    /// whatever the file authored, so the spawn fanned into a ring.
+    #[test]
+    fn authored_planar_angle_aims_the_spawn_azimuth() {
+        let mut em = ParticleEmitter::default();
+        em.rate = 8.0;
+        em.life = 100.0;
+        em.speed = 10.0;
+        em.speed_variation = 0.0;
+        em.declination = std::f32::consts::FRAC_PI_2;
+        em.declination_variation = 0.0;
+        em.planar_angle = std::f32::consts::FRAC_PI_2;
+        em.planar_angle_variation = 0.0;
+        let (world, e) = world_with_emitter(em, Vec3::ZERO);
+        particle_system(&world, 1.0);
+        let q = world.query::<ParticleEmitter>().unwrap();
+        let em = q.get(e).unwrap();
+        assert!(!em.particles.is_empty());
+        for v in &em.particles.velocities {
+            assert!(v[0].abs() < 1e-4, "x = {}", v[0]);
+            assert!(v[1].abs() < 1e-4, "y = {}", v[1]);
+            assert!((v[2] + 10.0).abs() < 1e-4, "z = {}", v[2]);
+        }
     }
 }

@@ -247,8 +247,20 @@ pub struct ParticleEmitter {
     pub speed_variation: f32,
     /// Local +Y opening angle in radians. 0 = straight up; π/2 = full hemisphere.
     pub declination: f32,
-    /// Declination jitter in radians.
+    /// Declination jitter in radians (uniform
+    /// `[declination - var/2, declination + var/2)`, same full-width
+    /// convention as `speed_variation`). Gamebryo authors a half-spread, so
+    /// the NIF overlay boundary doubles the raw value (#4240).
     pub declination_variation: f32,
+    /// Azimuth of the declination plane in radians — Gamebryo's planar
+    /// angle, about the emitter's up axis from +X. Only observable when the
+    /// declination leaves 0.
+    pub planar_angle: f32,
+    /// Azimuth jitter in radians (uniform
+    /// `[planar_angle - var/2, planar_angle + var/2)`); `TAU` = the full
+    /// circle every heuristic preset uses. Authored from
+    /// `NiPSysEmitter.planar_angle_variation × 2` (#4240).
+    pub planar_angle_variation: f32,
     /// Per-frame world acceleration applied to every live particle (e.g.
     /// `[0, -9.8, 0]` for true gravity, `[0, +1.5, 0]` for a buoyant
     /// flame that floats upward).
@@ -337,6 +349,8 @@ impl Default for ParticleEmitter {
             speed_variation: 0.0,
             declination: 0.0,
             declination_variation: 0.0,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::TAU,
             gravity: [0.0, 0.0, 0.0],
             start_color: [1.0, 1.0, 1.0, 1.0],
             end_color: [1.0, 1.0, 1.0, 0.0],
@@ -373,6 +387,8 @@ impl ParticleEmitter {
             speed_variation: 1.5,
             declination: 0.65,
             declination_variation: 0.35,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::TAU,
             gravity: [0.0, -9.0, 0.0],
             start_color: [0.55, 0.82, 1.0, 0.48],
             end_color: [0.2, 0.55, 0.95, 0.0],
@@ -408,6 +424,8 @@ impl ParticleEmitter {
             speed_variation: 1.0,
             declination: 0.25,
             declination_variation: 0.15,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::TAU,
             gravity: [0.0, 12.0, 0.0], // upward buoyancy (engine Y-up)
             start_color: [1.0, 0.65, 0.18, 1.0],
             end_color: [0.9, 0.15, 0.0, 0.0],
@@ -440,6 +458,8 @@ impl ParticleEmitter {
             speed_variation: 5.0,
             declination: std::f32::consts::FRAC_PI_2,
             declination_variation: std::f32::consts::FRAC_PI_2,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::TAU,
             gravity: [0.0, 4.0, 0.0],
             start_color: [1.0, 0.82, 0.35, 1.0],
             end_color: [0.18, 0.16, 0.15, 0.0],
@@ -478,6 +498,8 @@ impl ParticleEmitter {
             speed_variation: 1.2,
             declination: 0.1,
             declination_variation: 0.1,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::TAU,
             gravity: [0.0, 6.0, 0.0],
             start_color: [0.65, 0.55, 0.45, 0.7],
             end_color: [0.25, 0.25, 0.27, 0.0],
@@ -518,6 +540,8 @@ impl ParticleEmitter {
             speed_variation: 1.5,
             declination: 0.15,
             declination_variation: 0.1,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::TAU,
             gravity: [0.0, 8.0, 0.0], // strong upward buoyancy (engine Y-up)
             start_color: [1.0, 0.55, 0.18, 1.0],
             end_color: [0.6, 0.05, 0.0, 0.0],
@@ -548,6 +572,8 @@ impl ParticleEmitter {
             speed_variation: 2.0,
             declination: std::f32::consts::FRAC_PI_2,
             declination_variation: std::f32::consts::FRAC_PI_4,
+            planar_angle: 0.0,
+            planar_angle_variation: std::f32::consts::TAU,
             gravity: [0.0, 0.0, 0.0],
             start_color: [0.4, 0.7, 1.0, 1.0],
             end_color: [0.1, 0.3, 0.9, 0.0],
