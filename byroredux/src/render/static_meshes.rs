@@ -142,6 +142,32 @@ pub(super) fn tlas_exclusion(
     None
 }
 
+/// #3901 — write every active non-base flipbook frame into the draw's
+/// texture indices. Base color is handled by the caller: it replaces
+/// `TextureHandle`, which is not part of this set.
+fn apply_texture_flip_roles(
+    flip: &AnimatedTextureFlip,
+    textures: &mut byroredux_nif::import::MaterialTextureSet<u32>,
+) {
+    use byroredux_core::ecs::FlipTextureRole;
+    for (role, handle) in flip.active_handles() {
+        let slot = match role {
+            FlipTextureRole::BaseColor => continue,
+            FlipTextureRole::Dark => &mut textures.dark,
+            FlipTextureRole::Detail => &mut textures.detail,
+            FlipTextureRole::SmoothSpec => &mut textures.smooth_spec,
+            FlipTextureRole::Emissive => &mut textures.emissive,
+            FlipTextureRole::Normal => &mut textures.normal,
+            FlipTextureRole::Height => &mut textures.height,
+            FlipTextureRole::Decal(i) => match textures.decals.get_mut(i as usize) {
+                Some(decal) => decal,
+                None => continue,
+            },
+        };
+        *slot = handle;
+    }
+}
+
 /// Per-frame tally of [`tlas_exclusion`]'s verdicts.
 ///
 /// The failure mode this whole area has is "something quietly enters or leaves
@@ -271,13 +297,11 @@ pub(super) fn collect_static_mesh_draws(
     let anim_emissive_q = world.query::<AnimatedEmissiveColor>();
     let anim_shader_color_q = world.query::<AnimatedShaderColor>();
     let anim_shader_float_q = world.query::<AnimatedShaderFloat>();
-    // #2221 — `NiFlipController` flipbook. Only the base-color slot
-    // (`TexType::BASE_MAP == 0`, the overwhelmingly common vanilla case —
-    // TV static, computer terminal screens) is wired here; a flip
-    // targeting a different slot needs the same shader-type-aware
-    // `slot_to_role` dispatch `cell_loader/spawn/mesh_instance.rs` uses
-    // for XTXR overrides, which this loop doesn't have a mesh-material
-    // handle to run (deliberately deferred rather than guessed).
+    // #2221 / #3901 — `NiFlipController` flipbook. Each entry names its
+    // canonical material role (resolved from the NIF's `TexType` at
+    // `anim_convert`), so a base-color flip replaces `TextureHandle` and
+    // any other role replaces that role's entry in the draw's texture
+    // indices (`apply_texture_flip_roles`).
     let anim_texture_flip_q = world.query::<AnimatedTextureFlip>();
     // #renderlayer — per-entity content-class for the depth-bias
     // ladder (Architecture / Clutter / Actor / Decal). Attached at
@@ -397,10 +421,11 @@ pub(super) fn collect_static_mesh_draws(
                 // spawn-time-resolved `TextureHandle`, same "controller
                 // fully owns the role" semantic as every other animated
                 // sink in this loop.
-                let tex_handle = anim_texture_flip_q
-                    .as_ref()
-                    .and_then(|q| q.get(entity))
-                    .and_then(|f| f.handle_for_slot(0))
+                let texture_flip = anim_texture_flip_q.as_ref().and_then(|q| q.get(entity));
+                let tex_handle = texture_flip
+                    .and_then(|f| {
+                        f.handle_for_role(byroredux_core::ecs::FlipTextureRole::BaseColor)
+                    })
                     .or_else(|| tex_q.as_ref().and_then(|q| q.get(entity)).map(|t| t.0))
                     .unwrap_or(0);
                 let alpha_comp = alpha_q.as_ref().and_then(|q| q.get(entity));
@@ -433,9 +458,15 @@ pub(super) fn collect_static_mesh_draws(
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
                 let material_texture_handles =
                     texture_maps_q.as_ref().and_then(|q| q.get(entity)).copied();
-                let texture_indices = material_texture_handles
+                let mut texture_indices = material_texture_handles
                     .map(|handles| handles.textures)
                     .unwrap_or_default();
+                // #3901 — a flipbook on any non-base role replaces that
+                // role's spawn-time handle, the way the base-color flip
+                // replaces `TextureHandle` above.
+                if let Some(flip) = texture_flip {
+                    apply_texture_flip_roles(flip, &mut texture_indices);
+                }
                 let normal_map_index = texture_indices.normal;
                 let normal_has_alpha = material_texture_handles
                     .map(|handles| handles.normal_has_alpha)
@@ -1697,7 +1728,7 @@ mod tests {
         world.insert(
             entity,
             AnimatedTextureFlip(vec![TextureFlipEntry {
-                texture_slot: 0,
+                role: byroredux_core::ecs::FlipTextureRole::BaseColor,
                 handles: vec![10, 20, 30],
                 current_index: 1,
             }]),
@@ -1721,6 +1752,47 @@ mod tests {
             draw_commands[0].texture_handle, 20,
             "the flipbook's current_index=1 handle (20) must win over the \
              spawn-time TextureHandle (1)"
+        );
+    }
+
+    /// #3901 — a flipbook on a non-base role (the Oblivion
+    /// `creatures\endgame\battle.nif` glow flip) replaces that role's
+    /// index and leaves the base `TextureHandle` alone. Pre-fix only a
+    /// raw slot 0 was ever read, so this flip was silently dropped.
+    #[test]
+    fn emissive_texture_flip_overrides_the_glow_index() {
+        use byroredux_core::ecs::{FlipTextureRole, TextureFlipEntry};
+
+        let mut world = World::new();
+        let entity = spawn_mesh_entity(&mut world);
+        world.insert(entity, TextureHandle(1));
+        world.insert(
+            entity,
+            AnimatedTextureFlip(vec![TextureFlipEntry {
+                role: FlipTextureRole::Emissive,
+                handles: vec![40, 44],
+                current_index: 1,
+            }]),
+        );
+
+        let frustum = FrustumPlanes::from_view_proj(Mat4::IDENTITY);
+        let mut draw_commands = Vec::new();
+        let mut material_table = MaterialTable::new();
+        collect_static_mesh_draws(
+            &world,
+            &frustum,
+            Mat4::IDENTITY,
+            Vec3::ZERO,
+            &FxHashMap::default(),
+            &mut draw_commands,
+            &mut material_table,
+        );
+
+        assert_eq!(draw_commands.len(), 1);
+        assert_eq!(draw_commands[0].glow_map_index, 44);
+        assert_eq!(
+            draw_commands[0].texture_handle, 1,
+            "an emissive flip must not touch the base-color handle"
         );
     }
 

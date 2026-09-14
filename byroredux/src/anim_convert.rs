@@ -6,7 +6,7 @@ use byroredux_core::animation::{
     TransformChannel, TranslationKey,
 };
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{Children, Name, World};
+use byroredux_core::ecs::{Children, FlipTextureRole, Name, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_renderer::VulkanContext;
@@ -239,7 +239,7 @@ pub(crate) fn attach_animation_sinks(
                 .collect();
             let current_index = sample_texture_flip_index(channel, 0.0);
             texture_flip.entry(e).or_default().push(TextureFlipEntry {
-                texture_slot: channel.texture_slot,
+                role: channel.role,
                 handles,
                 current_index,
             });
@@ -342,6 +342,60 @@ fn sanitized_clip_weight(weight: f32) -> f32 {
         weight
     } else {
         1.0
+    }
+}
+
+/// #3901 — nif.xml `TexType` (`nif.xml` lines 383-397) → the canonical
+/// material role a `NiFlipController` drives.
+///
+/// This is the pairing the static `NiTexturingProperty` slots already use
+/// in `crates/nif/src/import/material/legacy_properties.rs` (bump and
+/// normal both feed the normal role). It is NOT `slot_to_role`: that table
+/// numbers `BSShaderTextureSet` slots, where 1 is the normal map and 4 the
+/// environment map, not the dark map and the glow map. `None` for a value
+/// outside the closed 12-value enum.
+fn flip_role_from_tex_type(tex_type: u32) -> Option<FlipTextureRole> {
+    Some(match tex_type {
+        0 => FlipTextureRole::BaseColor,
+        1 => FlipTextureRole::Dark,
+        2 => FlipTextureRole::Detail,
+        3 => FlipTextureRole::SmoothSpec,
+        4 => FlipTextureRole::Emissive,
+        5 | 6 => FlipTextureRole::Normal,
+        7 => FlipTextureRole::Height,
+        8..=11 => FlipTextureRole::Decal((tex_type - 8) as u8),
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod flip_role_tests {
+    use super::{flip_role_from_tex_type, FlipTextureRole};
+
+    /// #3901 — every `TexType` value maps to its `NiTexturingProperty`
+    /// role. The three the audit flagged are the ones `slot_to_role`'s
+    /// numbering would have bound wrong: DARK_MAP (1), GLOSS_MAP (3) and
+    /// GLOW_MAP (4, the Oblivion `creatures\endgame\battle.nif` flipbook).
+    #[test]
+    fn tex_type_maps_to_its_texturing_property_role() {
+        let expected = [
+            FlipTextureRole::BaseColor,
+            FlipTextureRole::Dark,
+            FlipTextureRole::Detail,
+            FlipTextureRole::SmoothSpec,
+            FlipTextureRole::Emissive,
+            FlipTextureRole::Normal,
+            FlipTextureRole::Normal,
+            FlipTextureRole::Height,
+            FlipTextureRole::Decal(0),
+            FlipTextureRole::Decal(1),
+            FlipTextureRole::Decal(2),
+            FlipTextureRole::Decal(3),
+        ];
+        for (tex_type, role) in expected.into_iter().enumerate() {
+            assert_eq!(flip_role_from_tex_type(tex_type as u32), Some(role));
+        }
+        assert_eq!(flip_role_from_tex_type(12), None);
     }
 }
 
@@ -488,11 +542,21 @@ pub(crate) fn convert_nif_clip(
     let texture_flip_channels = nif
         .texture_flip_channels
         .iter()
-        .map(|(name, ch)| {
-            (
+        .filter_map(|(name, ch)| {
+            // #3901 — the raw `TexType` stops here; only its canonical role
+            // reaches the ECS.
+            let Some(role) = flip_role_from_tex_type(ch.texture_slot) else {
+                log::warn!(
+                    "NiFlipController on '{name}' targets TexType {}, which has no \
+                     material role; flipbook dropped (#3901)",
+                    ch.texture_slot
+                );
+                return None;
+            };
+            Some((
                 pool.intern(name),
                 TextureFlipChannel {
-                    texture_slot: ch.texture_slot,
+                    role,
                     source_paths: ch.source_paths.clone(),
                     keys: ch
                         .keys
@@ -503,7 +567,7 @@ pub(crate) fn convert_nif_clip(
                         })
                         .collect(),
                 },
-            )
+            ))
         })
         .collect();
 
@@ -758,15 +822,15 @@ mod sink_attachment_tests {
         let mut world = World::new();
         let entity = world.spawn();
         let first_clip_entry = AnimatedTextureFlip(vec![TextureFlipEntry {
-            texture_slot: 0,
+            role: FlipTextureRole::BaseColor,
             handles: vec![1, 2],
             current_index: 0,
         }]);
         insert_missing_sinks(&mut world, vec![(entity, first_clip_entry)]);
 
-        // A second clip targeting a *different* slot on the same entity.
+        // A second clip targeting a *different* role on the same entity.
         let second_clip_entry = AnimatedTextureFlip(vec![TextureFlipEntry {
-            texture_slot: 1,
+            role: FlipTextureRole::Dark,
             handles: vec![3, 4],
             current_index: 0,
         }]);
@@ -782,8 +846,9 @@ mod sink_attachment_tests {
              already has an AnimatedTextureFlip from the first clip"
         );
         assert_eq!(
-            entries[0].texture_slot, 0,
-            "only the first clip's slot survives"
+            entries[0].role,
+            FlipTextureRole::BaseColor,
+            "only the first clip's role survives"
         );
     }
 
@@ -1182,7 +1247,11 @@ mod canonical_animation_completeness_harness {
             .first()
             .expect("texture flip channel");
         assert_eq!(*name, sym);
-        assert_eq!(flip.texture_slot, 4);
+        assert_eq!(
+            flip.role,
+            FlipTextureRole::Emissive,
+            "TexType 4 (GLOW_MAP) must resolve to the emissive role (#3901)"
+        );
         assert_eq!(
             flip.source_paths.iter().map(|p| &**p).collect::<Vec<_>>(),
             ["textures/flip0.dds", "flip1.dds"],

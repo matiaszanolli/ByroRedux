@@ -431,11 +431,7 @@ pub(crate) fn apply_texture_flip_channels(
         let Some(flip) = q.get_mut(target_entity) else {
             continue;
         };
-        let Some(entry) = flip
-            .0
-            .iter_mut()
-            .find(|e| e.texture_slot == channel.texture_slot)
-        else {
+        let Some(entry) = flip.0.iter_mut().find(|e| e.role == channel.role) else {
             continue;
         };
         // The handles Vec length is fixed at attach time (one per
@@ -1427,7 +1423,7 @@ mod float_channel_dispatch_tests {
 mod texture_flip_dispatch_tests {
     use super::*;
     use byroredux_core::animation::{AnimFloatKey, TextureFlipChannel};
-    use byroredux_core::ecs::{AnimatedTextureFlip, TextureFlipEntry};
+    use byroredux_core::ecs::{AnimatedTextureFlip, FlipTextureRole, TextureFlipEntry};
     use std::sync::Arc;
 
     fn resolve_to(entity: EntityId) -> impl Fn(&FixedString) -> Option<EntityId> {
@@ -1436,7 +1432,7 @@ mod texture_flip_dispatch_tests {
 
     fn flip_channel(source_count: usize, value: f32) -> TextureFlipChannel {
         TextureFlipChannel {
-            texture_slot: 0,
+            role: FlipTextureRole::BaseColor,
             source_paths: (0..source_count)
                 .map(|i| Arc::from(format!("frame{i}.dds")))
                 .collect(),
@@ -1454,7 +1450,7 @@ mod texture_flip_dispatch_tests {
         world.insert(
             entity,
             AnimatedTextureFlip(vec![TextureFlipEntry {
-                texture_slot: 0,
+                role: FlipTextureRole::BaseColor,
                 handles: vec![10, 20, 30],
                 current_index: 0,
             }]),
@@ -1466,20 +1462,20 @@ mod texture_flip_dispatch_tests {
 
         let q = world.query::<AnimatedTextureFlip>().unwrap();
         let flip = q.get(entity).unwrap();
-        assert_eq!(flip.handle_for_slot(0), Some(30));
+        assert_eq!(flip.handle_for_role(FlipTextureRole::BaseColor), Some(30));
     }
 
-    /// A channel targeting a `texture_slot` the entity's
-    /// `AnimatedTextureFlip` has no entry for must not create one or
-    /// panic — mirrors `apply_float_channels`'s missing-sink posture.
+    /// A channel targeting a role the entity's `AnimatedTextureFlip` has
+    /// no entry for must not create one or panic — mirrors
+    /// `apply_float_channels`'s missing-sink posture.
     #[test]
-    fn unmatched_texture_slot_is_a_silent_noop() {
+    fn unmatched_texture_role_is_a_silent_noop() {
         let mut world = World::new();
         let entity = world.spawn();
         world.insert(
             entity,
             AnimatedTextureFlip(vec![TextureFlipEntry {
-                texture_slot: 0,
+                role: FlipTextureRole::BaseColor,
                 handles: vec![10, 20],
                 current_index: 0,
             }]),
@@ -1487,16 +1483,16 @@ mod texture_flip_dispatch_tests {
         let mut pool = StringPool::new();
         let name = pool.intern("target");
         let mut channel = flip_channel(2, 1.0);
-        channel.texture_slot = 4; // GLOW_MAP — no matching entry
+        channel.role = FlipTextureRole::Emissive; // no matching entry
         let channels = vec![(name, channel)];
         apply_texture_flip_channels(&world, &channels, 0.0, &resolve_to(entity));
 
         let q = world.query::<AnimatedTextureFlip>().unwrap();
         let flip = q.get(entity).unwrap();
         assert_eq!(
-            flip.handle_for_slot(0),
+            flip.handle_for_role(FlipTextureRole::BaseColor),
             Some(10),
-            "slot 0's entry must stay untouched by a slot-4 channel"
+            "the base-color entry must stay untouched by an emissive channel"
         );
     }
 

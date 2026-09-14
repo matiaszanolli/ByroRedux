@@ -567,8 +567,16 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // the same way as those entries: `normalized_serialized_shapes()`
     // differs by exactly the two new variant lines, nothing existing
     // reordered/retyped/renamed.
+    //
+    // #3901 — the fingerprint moved WITHOUT a FORMAT_MAJOR bump, the same
+    // way #3251 did for this file: `TextureFlipEntry.texture_slot: u32`
+    // became `role: FlipTextureRole`, and the new enum sits beside it in
+    // `crates/core/src/ecs/components/animated.rs`. `AnimatedTextureFlip`
+    // is on `registry_completeness_tests.rs`'s `NOT_SAVED_BY_DESIGN`
+    // allowlist (re-resolved by `attach_animation_sinks` on load), so no
+    // snapshot has ever contained either shape.
     const BASELINE_MAJOR: u16 = 23;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb164_22d3_0e5c_71ac;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x8cfd_915f_3cb4_e01c;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

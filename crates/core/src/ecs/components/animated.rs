@@ -177,7 +177,32 @@ impl Component for AnimatedShaderFloat {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// One texture-slot's flipbook state — `NiFlipController` semantics
+/// Canonical material texture role a flipbook drives (#3901).
+///
+/// Named after the `MaterialTextureSet` roles a legacy
+/// `NiTexturingProperty` slot fills, so no source-format slot number
+/// survives past the import hop: `anim_convert` resolves the NIF's raw
+/// `TexType` into this before any ECS component sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub enum FlipTextureRole {
+    BaseColor,
+    /// Multiplicative dark / light map.
+    Dark,
+    Detail,
+    /// Legacy gloss map.
+    SmoothSpec,
+    /// Glow map.
+    Emissive,
+    /// Normal or bump map.
+    Normal,
+    /// Parallax height map.
+    Height,
+    /// Decal layer `0..=3`.
+    Decal(u8),
+}
+
+/// One material role's flipbook state — `NiFlipController` semantics
 /// (`crates/core/src/animation/types.rs::TextureFlipChannel`). `handles`
 /// are bindless texture indices resolved ONCE, at clip-attach time (the
 /// only point in the production pipeline with a `TextureProvider` +
@@ -186,8 +211,8 @@ impl Component for AnimatedShaderFloat {
 /// updating `current_index`, never touching the texture registry.
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct TextureFlipEntry {
-    /// Raw `TexType` slot from the source NIF (0=BASE_MAP, …).
-    pub texture_slot: u32,
+    /// The material texture role this flipbook replaces.
+    pub role: FlipTextureRole,
     pub handles: Vec<u32>,
     pub current_index: usize,
 }
@@ -202,24 +227,31 @@ pub struct TextureFlipEntry {
 pub struct AnimatedTextureFlip(pub Vec<TextureFlipEntry>);
 
 impl AnimatedTextureFlip {
-    /// The currently-active bindless handle for `slot`, or `None` if this
-    /// entity has no flipbook on that slot, or if the entry's
-    /// `current_index` is out of range for its `handles`.
+    /// Every flipbook's currently-active `(role, bindless handle)`, skipping
+    /// entries whose `current_index` is out of range for their `handles`.
     ///
     /// #3251 — the out-of-range case used to `unwrap_or(0)`, silently
     /// aliasing to bindless slot 0 (some *other* entity's texture) instead
-    /// of falling back to the caller's static `TextureHandle` the way an
-    /// absent slot already does. Not reachable today (the attach path
-    /// keeps `handles.len()` and the valid `current_index` range in
-    /// lockstep for the channel a `TextureFlipEntry` was built from), but
-    /// a future clip-swap path rebinding a differently-sized channel onto
-    /// an already-attached entry (matched only by `texture_slot`) would
-    /// have hit this silently.
-    pub fn handle_for_slot(&self, slot: u32) -> Option<u32> {
+    /// of falling back to the caller's static handle the way an absent
+    /// role already does. Not reachable today (the attach path keeps
+    /// `handles.len()` and the valid `current_index` range in lockstep for
+    /// the channel a `TextureFlipEntry` was built from), but a future
+    /// clip-swap path rebinding a differently-sized channel onto an
+    /// already-attached entry (matched only by `role`) would have hit this
+    /// silently.
+    pub fn active_handles(&self) -> impl Iterator<Item = (FlipTextureRole, u32)> + '_ {
         self.0
             .iter()
-            .find(|e| e.texture_slot == slot)
-            .and_then(|e| e.handles.get(e.current_index).copied())
+            .filter_map(|e| e.handles.get(e.current_index).map(|&h| (e.role, h)))
+    }
+
+    /// The currently-active bindless handle for `role`, or `None` if this
+    /// entity has no flipbook on that role (or its index is out of range —
+    /// see [`Self::active_handles`]).
+    pub fn handle_for_role(&self, role: FlipTextureRole) -> Option<u32> {
+        self.active_handles()
+            .find(|&(r, _)| r == role)
+            .map(|(_, h)| h)
     }
 }
 
@@ -230,21 +262,21 @@ mod tests {
     #[test]
     fn in_range_index_returns_the_active_handle() {
         let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
-            texture_slot: 0,
+            role: FlipTextureRole::BaseColor,
             handles: vec![10, 11, 12],
             current_index: 1,
         }]);
-        assert_eq!(flip.handle_for_slot(0), Some(11));
+        assert_eq!(flip.handle_for_role(FlipTextureRole::BaseColor), Some(11));
     }
 
     #[test]
-    fn absent_slot_returns_none() {
+    fn absent_role_returns_none() {
         let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
-            texture_slot: 0,
+            role: FlipTextureRole::BaseColor,
             handles: vec![10],
             current_index: 0,
         }]);
-        assert_eq!(flip.handle_for_slot(7), None);
+        assert_eq!(flip.handle_for_role(FlipTextureRole::Height), None);
     }
 
     /// #3251 — an out-of-range `current_index` must read as "no handle",
@@ -253,12 +285,12 @@ mod tests {
     #[test]
     fn out_of_range_current_index_returns_none_not_slot_zero() {
         let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
-            texture_slot: 0,
+            role: FlipTextureRole::BaseColor,
             handles: vec![10, 11],
             current_index: 5,
         }]);
         assert_eq!(
-            flip.handle_for_slot(0),
+            flip.handle_for_role(FlipTextureRole::BaseColor),
             None,
             "an out-of-range current_index must not alias to Some(0)"
         );
@@ -269,11 +301,11 @@ mod tests {
     #[test]
     fn empty_handles_returns_none() {
         let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
-            texture_slot: 0,
+            role: FlipTextureRole::BaseColor,
             handles: Vec::new(),
             current_index: 0,
         }]);
-        assert_eq!(flip.handle_for_slot(0), None);
+        assert_eq!(flip.handle_for_role(FlipTextureRole::BaseColor), None);
     }
 }
 

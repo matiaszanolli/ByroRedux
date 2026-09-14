@@ -476,7 +476,7 @@ mod texture_flip_index_tests {
 
     fn flip_channel(source_count: usize, keys: Vec<AnimFloatKey>) -> TextureFlipChannel {
         TextureFlipChannel {
-            texture_slot: 0,
+            role: crate::ecs::FlipTextureRole::BaseColor,
             source_paths: (0..source_count)
                 .map(|i| Arc::from(format!("frame{i}.dds")))
                 .collect(),

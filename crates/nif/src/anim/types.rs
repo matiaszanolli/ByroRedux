@@ -146,8 +146,9 @@ pub struct BoolChannel {
 /// runtime never has to walk back into the NIF scene. The float keys
 /// drive a cycle position; the consumer picks
 /// `source_paths[floor(value) % source_paths.len()]`. `texture_slot`
-/// is the raw `TexType` enum value (0=BASE_MAP, 4=GLOW_MAP, …) — the
-/// runtime decides which material slot it routes to.
+/// is the raw `TexType` enum value (0=BASE_MAP, 4=GLOW_MAP, …);
+/// `byroredux::anim_convert` resolves it to a canonical
+/// `FlipTextureRole` before the channel reaches the ECS (#3901).
 #[derive(Debug, Clone)]
 pub struct TextureFlipChannel {
     pub texture_slot: u32,
