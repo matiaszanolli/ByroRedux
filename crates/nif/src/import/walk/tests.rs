@@ -417,9 +417,10 @@ mod switch_node_walker_tests {
     //! silently dropping any lights/emitters inside them).
     use super::super::*;
     use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
-    use crate::blocks::light::{NiLightBase, NiPointLight};
+    use crate::blocks::light::{NiDirectionalLight, NiLightBase, NiPointLight, NiSpotLight};
     use crate::blocks::node::{NiLODNode, NiNode, NiSwitchNode};
-    use crate::types::{BlockRef, NiColor, NiTransform};
+    use crate::import::{ImportedLight, LightKind};
+    use crate::types::{BlockRef, NiColor, NiMatrix3, NiTransform};
     use std::sync::Arc;
 
     fn blank_av(name: Option<&str>) -> NiAVObjectData {
@@ -522,6 +523,83 @@ mod switch_node_walker_tests {
         walk_node_lights(&scene, 0, &NiTransform::default(), &mut lights);
 
         assert_eq!(lights.len(), 1, "NiLODNode must expose its LOD-0 light");
+    }
+
+    /// Light base whose world rotation is 90° about Gamebryo +Z, so the
+    /// first column (the Gamebryo model direction (1,0,0) in world space)
+    /// is Z-up (0,1,0) while the third column is Z-up (0,0,1) — the two
+    /// axes the old and fixed derivations read are distinguishable.
+    fn rotated_light_base() -> NiLightBase {
+        let mut av = blank_av(Some("RotatedLight"));
+        av.transform.rotation = NiMatrix3 {
+            rows: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        NiLightBase {
+            av,
+            switch_state: true,
+            affected_nodes: Vec::new(),
+            dimmer: 1.0,
+            ambient_color: NiColor {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+            },
+            diffuse_color: NiColor {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+            },
+            specular_color: NiColor {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+            },
+        }
+    }
+
+    fn imported_single_light(block: Box<dyn NiObject>) -> ImportedLight {
+        let mut scene = NifScene::default();
+        scene.blocks.push(block);
+        scene.root_index = Some(0);
+        let mut lights = Vec::new();
+        walk_node_lights(&scene, 0, &NiTransform::default(), &mut lights);
+        assert_eq!(lights.len(), 1);
+        lights.remove(0)
+    }
+
+    /// Regression for #4395 — a `NiSpotLight` emits along the FIRST column
+    /// of its world rotation (Gamebryo model direction (1,0,0),
+    /// `NiSpotLight.h`), and a spot's canonical direction points outward.
+    /// Z-up (0,1,0) → Y-up (0,0,-1). The pre-fix "-Z" derivation gave
+    /// Y-up (0,-1,0).
+    #[test]
+    fn spot_light_direction_is_the_first_rotation_column() {
+        let light = imported_single_light(Box::new(NiSpotLight {
+            point: NiPointLight {
+                base: rotated_light_base(),
+                constant_attenuation: 0.0,
+                linear_attenuation: 0.0,
+                quadratic_attenuation: 1.0,
+            },
+            outer_spot_angle: 0.5,
+            inner_spot_angle: 0.25,
+            exponent: 1.0,
+        }));
+        assert_eq!(light.kind, LightKind::Spot);
+        assert_eq!(light.direction, [0.0, 0.0, -1.0]);
+    }
+
+    /// Regression for #4395 — `NiDirectionalLight` shares the (1,0,0) model
+    /// direction (`NiDirectionalLight.h`), but the canonical directional
+    /// `Emitter.direction` points TOWARD the light, so it is the negated
+    /// first column: Z-up (0,-1,0) → Y-up (0,0,1).
+    #[test]
+    fn directional_light_direction_points_toward_the_light() {
+        let light = imported_single_light(Box::new(NiDirectionalLight {
+            base: rotated_light_base(),
+        }));
+        assert_eq!(light.kind, LightKind::Directional);
+        assert_eq!(light.direction, [0.0, 0.0, 1.0]);
     }
 }
 

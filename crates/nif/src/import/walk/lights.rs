@@ -128,13 +128,27 @@ pub(crate) fn imported_light_from_base(
 ) -> ImportedLight {
     let translation = zup_point_to_yup(&world.translation);
 
-    // Gamebryo lights point down the local -Z axis in their own space.
-    // Transform that via the world rotation, then convert to Y-up.
+    // #4395 — Gamebryo's model direction for both `NiSpotLight` and
+    // `NiDirectionalLight` is (1,0,0), and "the world direction is the
+    // first column of the world rotation matrix"
+    // (`gamebryo-v32/Include/NiSpotLight.h`, `NiDirectionalLight.h`) — the
+    // same convention `translate_light` already uses for ESM spot lights.
+    // This used to take the negated THIRD column ("-Z"), an uncited axis.
+    // `rows` is row-major, so column 0 is `rows[i][0]`.
     let rot = &world.rotation;
-    // Extract local -Z column (light points along -Z in Gamebryo), then
-    // convert Z-up to Y-up via the same [x, z, -y] swap that zup_point_to_yup uses.
-    let [dx, dy, dz] = [-rot.rows[0][2], -rot.rows[1][2], -rot.rows[2][2]];
-    let direction = byroredux_core::math::coord::zup_to_yup_pos([dx, dy, dz]);
+    let emission = [rot.rows[0][0], rot.rows[1][0], rot.rows[2][0]];
+    // The Gamebryo vector is the direction light travels. The canonical
+    // `Emitter.direction` means "outward from the source" for spots but
+    // "toward the light" for directional emitters
+    // (`crates/core/src/lighting.rs`; the shader uses it as `L` directly),
+    // so the directional kind is negated once, here at the boundary.
+    let emission = if kind == LightKind::Directional {
+        emission.map(|c| -c)
+    } else {
+        emission
+    };
+    // Z-up → Y-up via the same [x, z, -y] swap `zup_point_to_yup` uses.
+    let direction = byroredux_core::math::coord::zup_to_yup_pos(emission);
 
     // Dimmer scales the diffuse contribution — the only channel the
     // engine currently consumes. Ambient/specular are stored for later.
