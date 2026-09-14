@@ -302,7 +302,7 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
     cleanup with an ID-reset premise.
   - All seven systems are opt-in and NOT in the default scheduler — gated by
     `BYRO_SANDBOX_SIT`/`BYRO_WANDER`/`BYRO_TRAVEL`/`BYRO_FOLLOW`/`BYRO_ESCORT`/
-    `BYRO_GUARD`/`BYRO_PATROL` respectively (`boot.rs`). A regression that
+    `BYRO_GUARD`/`BYRO_PATROL` respectively (`byroredux/src/boot/schedule/post_update.rs`). A regression that
     registers one unconditionally (or drops its env-var check) changes default
     engine behavior silently.
 - **Scripting transient markers** (`crates/scripting/src/events.rs`):

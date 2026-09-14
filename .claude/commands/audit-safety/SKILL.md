@@ -441,8 +441,9 @@ for any gap found here.
   reputation/inventory/factions/perks/packages/console/scripts/settings.
   Verify every host function reachable from a guest still checks
   `grants.contains(...)` **before** acting (confirmed present in
-  `extensions.rs` for `SCRIPT_FUNCTIONS_REGISTER_CAPABILITY`,
-  `CONSOLE_REGISTER_CAPABILITY`, and `EVENTS_SUBSCRIBE_CAPABILITY`, but
+  `byroredux/src/extensions/install.rs` for `SCRIPT_FUNCTIONS_REGISTER_CAPABILITY` and
+  `CONSOLE_REGISTER_CAPABILITY`, and `byroredux/src/extensions/dispatch.rs` for
+  `EVENTS_SUBSCRIBE_CAPABILITY`, but
   spot-check the rest of the 28 rather than assuming the pattern holds
   uniformly), and that a missing grant is an error rather than a no-op — a
   silently-ignored denial is indistinguishable from success to the guest and
@@ -450,7 +451,7 @@ for any gap found here.
 - **Per-instance isolation.** Each `ModInstance` gets its own principal and
   store. Verify no shared mutable state (a `static`, a shared `Arc`, a global
   logger buffer) lets one instance observe or affect another — this now
-  matters for real with `extensions.rs` potentially hosting more than one
+  matters for real with `byroredux/src/extensions/` potentially hosting more than one
   loaded mod side by side.
 - **Resource limits.** `SandboxConfig` (`crates/mod-runtime/src/limits.rs`) plus
   `fuel_remaining` are the DoS defenses. Verify `validate()` rejects degenerate

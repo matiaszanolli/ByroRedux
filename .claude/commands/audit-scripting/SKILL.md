@@ -1514,7 +1514,7 @@ asset-resolution catalog, and five playback systems. Dims 1–7 cover none of it
   physics half there.
 - **`scene_trigger_actor_approach_system_inner` (new, 2026-08-24; body of the
   closure `make_scene_trigger_actor_approach_system` returns, which is what
-  `boot.rs` registers — renamed by #3838 when it gained persistent scratch)**: routes an
+  `byroredux/src/boot/schedule/update.rs` registers — renamed by #3838 when it gained persistent scratch)**: routes an
   offscreen actor-gated trigger's approach target for cataloged (not
   necessarily cell-resident) triggers registered via
   `QuestTriggerApproachRegistry` (Dim 7). Computes, per quest with a live
