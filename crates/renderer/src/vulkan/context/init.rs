@@ -972,7 +972,13 @@ impl VulkanContext {
         ) {
             Ok(s) => {
                 for f in 0..MAX_FRAMES_IN_FLIGHT {
-                    scene_buffers.write_sky_cube(&device, f, s.cube_view(f), s.sampler);
+                    scene_buffers.write_sky_cube(
+                        &device,
+                        f,
+                        s.cube_view(f),
+                        s.sampler,
+                        s.irradiance_buffer(f),
+                    );
                 }
                 Some(s)
             }

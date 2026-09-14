@@ -170,7 +170,8 @@ void main() {
     float skyVisibility = byroGcSkyOcclusion(vDGround, canopyAbove);
     // §12.6's ambient half: the blade's environment is the sky, and a
     // Fresnel-weighted sky tint at grazing angles is the whole of it.
-    vec3 sheenAmbient = sceneFlags.yzw * (byroGcSheenAmbient(N, V, sheen) * skyVisibility);
+    vec3 sheenAmbient = exteriorSkyDiffuseOr(N, sceneFlags.yzw)
+        * (byroGcSheenAmbient(N, V, sheen) * skyVisibility);
 
     // Diffuse ambient is NOT added here. This pass leaves the raw-indirect
     // attachment holding the ground's demodulated GI underneath the blade, and

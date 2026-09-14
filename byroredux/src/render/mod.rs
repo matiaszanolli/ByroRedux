@@ -589,11 +589,17 @@ const SUN_INTENSITY_PEAK: f32 = crate::env_translate::SUN_INTENSITY_PEAK;
 /// authored/fallback strength calibration, but its ambient irradiance is the
 /// separate flat/cube term on `CellLightingRes`/`GpuDalcCube`; reclassifying
 /// the directional colour as ambient would bypass N.L and visibility.
+/// `cloud_coverage` is the canonical EXAL weather value also consumed by the
+/// procedural cloud shell. It represents a world-scale deck, not a local
+/// cloud-shadow map: this attenuation makes an overcast weather state stop
+/// producing clear-noon direct light while preserving the later path for
+/// spatially varying cloud shadows.
 fn compute_directional_upload(
     directional_color: &[f32; 3],
     is_interior: bool,
     sun_intensity: f32,
     directional_fade: Option<f32>,
+    cloud_coverage: f32,
 ) -> [f32; 3] {
     let source_scale = if is_interior {
         const LEGACY_INTERIOR_DIRECTIONAL_SOURCE_SCALE: f32 = 0.6;
@@ -602,7 +608,13 @@ fn compute_directional_upload(
             .unwrap_or(LEGACY_INTERIOR_DIRECTIONAL_SOURCE_SCALE)
             .max(0.0)
     } else {
-        (sun_intensity / SUN_INTENSITY_PEAK).clamp(0.0, 1.0)
+        let daylight = (sun_intensity / SUN_INTENSITY_PEAK).clamp(0.0, 1.0);
+        // Beer-Lambert through a representative cloud column. The optical
+        // depth is intentionally modest: `cloud_coverage` encodes weather
+        // occupancy, not a measured liquid-water path, so a fully overcast
+        // day retains a small transmitted key rather than becoming night.
+        let cloud_transmittance = (-2.5 * cloud_coverage.clamp(0.0, 1.0)).exp();
+        daylight * cloud_transmittance
     };
     [
         directional_color[0] * source_scale,
@@ -870,7 +882,7 @@ pub(crate) fn draw_sort_key(
             0,
             0,
             pack_depth_state(cmd) as u32,
-            cmd.mesh_handle, // group identical meshes
+            cmd.mesh_handle,                     // group identical meshes
             opaque_depth_bucket(cmd.sort_depth), // coarse front-to-back within group
             cmd.entity_id,
         )

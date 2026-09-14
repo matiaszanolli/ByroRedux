@@ -460,6 +460,9 @@ vec3 pathEnvironmentRadiance(vec3 direction) {
         // whose unit argument applies unchanged).
         float skyWeight = smoothstep(-0.2, 0.8, rayDir.y);
         vec3 skyRadiance = exteriorSkyRadianceOr(rayDir, skyTint.xyz);
+        // A live cube includes the horizon and lower hemisphere itself.
+        // Keep the authored blend only as the unavailable-bake fallback.
+        if (exteriorSkyTint.w > 0.5) return skyRadiance;
         return mix(sceneFlags.yzw * (1.0 / PI), skyRadiance, skyWeight);
     }
     if (dalcFlags.x > 0.5) {
@@ -601,4 +604,3 @@ vec3 reflectionHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
     }
     return vec3(0.0);
 }
-

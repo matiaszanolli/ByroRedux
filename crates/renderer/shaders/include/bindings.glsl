@@ -357,13 +357,35 @@ layout(set = 1, binding = 15) uniform sampler2D depthHistoryTex;
 // existing.
 layout(set = 1, binding = 20) uniform samplerCube skyCube;
 
+#include "include/sky_sh.glsl"
+layout(std430, set = 1, binding = 21) readonly buffer SkyDiffuseBuffer {
+    vec4 skyDiffuseCoefficients[9];
+};
+
+// Incident sky convolved with cosine / PI. Material diffuse weight and albedo
+// are applied by the caller. Interiors retain their local authored ambient.
+vec3 exteriorSkyDiffuseOr(vec3 normal, vec3 fallback) {
+    if (jitter.w <= 0.5 || exteriorSkyTint.w <= 0.5) return fallback;
+    vec3 value = vec3(0.0);
+    for (uint i = 0u; i < 9u; ++i) value += skyDiffuseCoefficients[i].rgb * sky_sh_basis(i, normal);
+    return max(value, vec3(0.0)); // band-limited SH can ring below zero
+}
+
 // The exterior sky radiance along `direction`: the baked cube when the bake
 // is live, `fallback` otherwise. Every exterior sky-escape site reads the
 // cube through here, so the ready-flag gate above lives in one place (#4292).
-// Every includer of this file is a fragment shader, which the implicit-LOD
-// sample requires; the cube has a single mip, so the LOD is always 0.
+// Explicit LOD is essential in divergent ray paths, where derivatives are
+// undefined. The mip chain encodes GGX roughness, not a screen footprint.
+vec3 exteriorSkyRadianceOr(vec3 direction, vec3 fallback, float roughness) {
+    if (exteriorSkyTint.w > 0.5) {
+        float lod = clamp(roughness, 0.0, 1.0) * float(textureQueryLevels(skyCube) - 1);
+        return textureLod(skyCube, direction, lod).rgb;
+    }
+    return fallback;
+}
+
 vec3 exteriorSkyRadianceOr(vec3 direction, vec3 fallback) {
-    return exteriorSkyTint.w > 0.5 ? texture(skyCube, direction).rgb : fallback;
+    return exteriorSkyRadianceOr(direction, fallback, 0.0);
 }
 
 // Global geometry SSBOs for RT reflection UV lookups.

@@ -66,7 +66,7 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     // binding is PARTIALLY_BOUND, so when it is absent fall back to the
     // historical blend rather than sampling an unwritten descriptor.
     vec3 missCol = _isExt
-        ? exteriorSkyRadianceOr(direction, skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
+        ? exteriorSkyRadianceOr(direction, skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5, mipBias / 8.0)
         : sceneFlags.yzw;
     // Every caller supplies a scale-aware origin from offsetRayOriginForDirection.
     // Continue alpha/self skips with the same representable-float offset and a

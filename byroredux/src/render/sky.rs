@@ -176,7 +176,13 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
         // The same call `collect_lights` makes for the surfaces' directional
         // light, so the volumetric clouds are lit by the sun the terrain is.
         sun_illuminance: cell_directional.map_or([0.0; 3], |(interior, color, fade)| {
-            super::compute_directional_upload(&color, interior, sky_res.sun_intensity, fade)
+            super::compute_directional_upload(
+                &color,
+                interior,
+                sky_res.sun_intensity,
+                fade,
+                weather.cloud_coverage,
+            )
         }),
         // Tangent-plane disk approximation valid only for α < ~0.05 rad
         // (derivation documented at the directional-shadow-jitter block in

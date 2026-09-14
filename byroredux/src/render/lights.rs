@@ -158,16 +158,17 @@ pub(super) fn collect_lights(
     // them here (Cell→Sky) is a cross-thread ABBA deadlock risk under the
     // parallel scheduler. See invariant #4, #313, and #1410 (the global
     // BYRO_LOCK_ORDER_CHECK detector flags this exact pair).
-    let sun_intensity = world
+    let (sun_intensity, cloud_coverage) = world
         .try_resource::<SkyParamsRes>()
-        .map(|sky| sky.sun_intensity)
-        .unwrap_or(SUN_INTENSITY_PEAK);
+        .map(|sky| (sky.sun_intensity, sky.weather.cloud_coverage))
+        .unwrap_or((SUN_INTENSITY_PEAK, 0.0));
     if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
         let dir_color = compute_directional_upload(
             &cell_lit.directional_color,
             cell_lit.is_interior,
             sun_intensity,
             cell_lit.directional_fade,
+            cloud_coverage,
         );
         if dir_color.iter().any(|channel| *channel > 0.0) {
             gpu_lights.push(byroredux_renderer::GpuLight {
@@ -392,7 +393,13 @@ mod directional_source_contract_tests {
             cloud_tile_scale_3: 0.0,
             cloud_texture_index_3: 0,
             current_dalc_cube: None,
-            weather: crate::components::WeatherSkyState::default(),
+            weather: crate::components::WeatherSkyState {
+                // This fixture asserts the clear-sky daytime contract. The
+                // production default is partly cloudy (0.35), which is not
+                // the state this test is naming.
+                cloud_coverage: 0.0,
+                ..crate::components::WeatherSkyState::default()
+            },
         }
     }
 

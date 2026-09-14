@@ -51,6 +51,8 @@
 #ifndef CLOUDS_GLSL
 #define CLOUDS_GLSL
 
+#include "include/medium_transport.glsl"
+
 // CLOUD_LAYER_BOTTOM / _TOP / _PLANET_RADIUS / _VIEW_STEPS / _LIGHT_STEPS
 // come from the `#include`d `shader_constants.glsl`, generated from
 // `src/shader_constants_data.rs` — which is where their values and the
@@ -59,9 +61,7 @@
 // Henyey-Greenstein phase function. `g > 0` is forward-scattering, which is
 // what puts the bright rim on a cloud between the viewer and the sun.
 float cloud_henyey_greenstein(float cos_angle, float g) {
-    float g2 = g * g;
-    float denom = 1.0 + g2 - 2.0 * g * cos_angle;
-    return (1.0 - g2) / (4.0 * 3.14159265 * pow(max(denom, 1.0e-4), 1.5));
+    return medium_henyey_greenstein(cos_angle, g);
 }
 
 // Two-lobe cloud phase function, Hillaire 2016 ("Physically Based Sky,
@@ -121,10 +121,27 @@ float cloud_remap(float value, float from_min, float from_max, float to_min, flo
 // Vertical density profile. Dense in the middle of the layer, tapering to
 // nothing at both boundaries so clouds have flat-ish bases and rounded
 // tops rather than being cut off by the shell.
-float cloud_height_gradient(float height_fraction) {
-    float bottom = cloud_remap(height_fraction, 0.0, 0.15, 0.0, 1.0);
-    float top = cloud_remap(height_fraction, 0.55, 1.0, 1.0, 0.0);
+float cloud_height_gradient(float height_fraction, float storm) {
+    // Fair weather keeps the existing broken-cumulus profile. Rain, snow,
+    // and thunder make a deeper deck: a lower base and a higher, slower
+    // falloff turn the same density field into a broad storm mass rather
+    // than merely making fair-weather puffs more opaque.
+    float bottom_end = mix(0.15, 0.06, storm);
+    float top_start = mix(0.55, 0.78, storm);
+    float bottom = cloud_remap(height_fraction, 0.0, bottom_end, 0.0, 1.0);
+    float top = cloud_remap(height_fraction, top_start, 1.0, 1.0, 0.0);
     return clamp(bottom, 0.0, 1.0) * clamp(top, 0.0, 1.0);
+}
+
+// Weather-driven morphology. The values here are continuous material
+// controls, not a second WTHR classification: authored tints/layers retain
+// that role. Storm systems use lower-frequency, less-eroded density to form
+// coherent decks; clear weather keeps the original broken-cloud shape.
+vec3 cloud_morphology(SkyDome dome) {
+    float precipitation = max(dome.weather_params.x, dome.weather_params.y);
+    float storm = clamp(max(precipitation, dome.weather_params.z), 0.0, 1.0);
+    // x = horizontal scale, y = erosion threshold scale, z = storm amount.
+    return vec3(mix(1.0, 0.58, storm), mix(1.0, 0.62, storm), storm);
 }
 
 // Base cloud shape only: low-frequency noise, coverage and height gradient,
@@ -136,16 +153,20 @@ float cloud_base_shape(
     float height_fraction,
     float coverage,
     vec2 wind_offset,
+    vec3 morphology,
     sampler3D base_noise
 ) {
     // The volume is tileable, so a plain scaled world position is a valid
     // lookup; wind advects the whole field horizontally.
-    vec3 base_uvw = vec3(position.xz * 0.00008 + wind_offset, position.y * 0.00008);
+    vec3 base_uvw = vec3(
+        position.xz * 0.00008 * morphology.x + wind_offset,
+        position.y * 0.00008
+    );
     float base = texture(base_noise, base_uvw).r;
 
     // Coverage is SUBTRACTED, not multiplied (see `cloud_remap`).
     float shaped = cloud_remap(base, 1.0 - coverage, 1.0, 0.0, 1.0);
-    return shaped * cloud_height_gradient(height_fraction);
+    return shaped * cloud_height_gradient(height_fraction, morphology.z);
 }
 
 // Full density at a point in the shell: the base shape eroded by the
@@ -155,10 +176,13 @@ float cloud_density(
     float height_fraction,
     float coverage,
     vec2 wind_offset,
+    vec3 morphology,
     sampler3D base_noise,
     sampler3D detail_noise
 ) {
-    float shaped = cloud_base_shape(position, height_fraction, coverage, wind_offset, base_noise);
+    float shaped = cloud_base_shape(
+        position, height_fraction, coverage, wind_offset, morphology, base_noise
+    );
     if (shaped <= 0.0) {
         return 0.0;
     }
@@ -166,10 +190,17 @@ float cloud_density(
     // Erode the edges with the high-frequency volume. The erosion strength
     // falls off as the base density rises, so it carves wispy boundaries
     // without punching holes through cloud cores.
-    vec3 detail_uvw = vec3(position.xz * 0.0009 + wind_offset * 3.0, position.y * 0.0009);
+    vec3 detail_uvw = vec3(
+        position.xz * 0.0009 * morphology.x + wind_offset * 3.0,
+        position.y * 0.0009
+    );
     float detail = texture(detail_noise, detail_uvw).r;
     float erosion = mix(detail, 1.0 - detail, clamp(height_fraction * 5.0, 0.0, 1.0));
-    return clamp(cloud_remap(shaped, erosion * 0.45, 1.0, 0.0, 1.0), 0.0, 1.0);
+    return clamp(
+        cloud_remap(shaped, erosion * 0.45 * morphology.y, 1.0, 0.0, 1.0),
+        0.0,
+        1.0
+    );
 }
 
 // Distance along `dir` from a viewer `height` metres above the planet
@@ -249,6 +280,7 @@ vec4 cloud_march(
     // the speed into the direction and used `dir.z` as the speed, so the
     // layer drifted off-axis and stood still under a pure X wind.
     vec2 wind = dome.weather_wind.xz * dome.weather_wind.y * time * 0.00002;
+    vec3 morphology = cloud_morphology(dome);
 
     // Adaptive march (Schneider & Vos 2015, slides 74-80). A fixed step was
     // aliasing: at the sourced extinction a ~73 m step has optical depth
@@ -297,7 +329,7 @@ vec4 cloud_march(
 
         if (!full_mode) {
             float base_shape =
-                cloud_base_shape(position, height_fraction, coverage, wind, base_noise);
+                cloud_base_shape(position, height_fraction, coverage, wind, morphology, base_noise);
             if (base_shape > 0.0) {
                 full_mode = true;
                 t = max(t - cheap_step, marched_until);
@@ -308,7 +340,9 @@ vec4 cloud_march(
         }
 
         float density =
-            cloud_density(position, height_fraction, coverage, wind, base_noise, detail_noise);
+            cloud_density(
+                position, height_fraction, coverage, wind, morphology, base_noise, detail_noise
+            );
         float step_size = density > 0.0
             ? min(mean_free_path / density, cheap_step)
             : cheap_step;
@@ -360,7 +394,9 @@ vec4 cloud_march(
             );
             // Each sample stands for the segment back to the previous one.
             light_optical_depth +=
-                cloud_density(light_pos, lh, coverage, wind, base_noise, detail_noise)
+                cloud_density(
+                    light_pos, lh, coverage, wind, morphology, base_noise, detail_noise
+                )
                 * (light_distance - light_previous);
             light_previous = light_distance;
             light_distance *= light_ratio;
@@ -390,14 +426,14 @@ vec4 cloud_march(
         }
         vec3 sun_radiance = sun_illuminance * diffuse_calibration * octave_sum;
 
-        float sample_extinction = density * CLOUD_EXTINCTION_PER_METER * step_size;
-        float sample_transmittance = exp(-sample_extinction);
+        float sigma_t = density * CLOUD_EXTINCTION_PER_METER;
+        vec2 transport = medium_slab(sigma_t, step_size);
         // Energy-conserving integration of the slab (Hillaire 2015): the
         // analytic integral of in-scatter over the slab, not `S * dt`,
         // which over-brightens at large step sizes.
-        vec3 slab = (sun_radiance + ambient) * (1.0 - sample_transmittance);
+        vec3 slab = (sun_radiance + ambient) * sigma_t * transport.y;
         scattered += transmittance * slab;
-        transmittance *= sample_transmittance;
+        transmittance *= transport.x;
         t += step_size;
         marched_until = t;
     }

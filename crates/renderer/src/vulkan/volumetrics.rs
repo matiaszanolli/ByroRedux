@@ -2382,7 +2382,7 @@ mod unit_tests {
         fn source_integral(extinction: f32, width: f32) -> f32 {
             let optical_depth = extinction * width;
             if optical_depth < 1.0e-3 {
-                width * (1.0 - 0.5 * optical_depth)
+                width * (1.0 - 0.5 * optical_depth + optical_depth * optical_depth / 6.0)
             } else {
                 (1.0 - (-optical_depth).exp()) / extinction
             }
@@ -2401,12 +2401,20 @@ mod unit_tests {
         // The series branch preserves the vacuum/thin-medium limit.
         let thin = source_integral(1.0e-7, 2.0);
         assert!((thin - 2.0).abs() < 1.0e-6);
+        assert_eq!(source_integral(0.0, 2.0), 2.0, "emitting vacuum limit");
+        for tau in [1e-8_f32, 1e-5, 0.000999, 0.001, 0.01, 1.0, 100.0] {
+            let reference = -(-(tau as f64)).exp_m1() / tau as f64;
+            let actual = source_integral(tau, 1.0) as f64;
+            assert!(
+                (actual - reference).abs() < 2e-5,
+                "tau={tau}: {actual} != {reference}"
+            );
+        }
 
         let shader = include_str!("../../shaders/volumetrics_integrate.comp");
         for contract in [
-            "float slabTransmittance = exp(-opticalDepth);",
-            "float sourceIntegral = opticalDepth < 1.0e-3",
-            ": (1.0 - slabTransmittance) / sigmaT;",
+            "vec2 transport = medium_slab(extinction, dt);",
+            "float sourceIntegral = transport.y;",
             "inscatter_total += inscatter * trans_cumulative * sourceIntegral;",
         ] {
             assert!(
@@ -2418,6 +2426,17 @@ mod unit_tests {
             !shader.contains("inscatter * trans_cumulative * dt"),
             "rectangle-rule source integration would over-brighten dense smoke"
         );
+        let shared = include_str!("../../shaders/include/medium_transport.glsl");
+        assert!(shared.contains("(1.0 - transmittance) / sigma"));
+        let clouds = include_str!("../../shaders/include/clouds.glsl");
+        assert!(clouds.contains("medium_slab(sigma_t, step_size)"));
+        for source in [
+            clouds,
+            include_str!("../../shaders/volumetrics_inject.comp"),
+        ] {
+            assert!(source.contains("return medium_henyey_greenstein("));
+            assert!(source.contains("#include \"include/medium_transport.glsl\""));
+        }
     }
 
     #[test]

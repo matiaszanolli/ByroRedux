@@ -123,6 +123,38 @@ vec3 weather_sky_details(SkyDome dome, vec3 sky, vec3 dir, float elevation, floa
     return sky;
 }
 
+// Palette-preserving atmosphere approximation. The WTHR horizon/zenith
+// colours remain the climate authority; these terms only supply the angular
+// structure a vertical lerp cannot represent: broad Rayleigh sky light and
+// forward Mie haze toward the sun. A full atmosphere LUT will eventually
+// replace this, but it must not discard the authored Fallout/Skyrim palettes
+// merely to get an Earth-default blue sky.
+vec3 sky_atmospheric_inscatter(SkyDome dome, vec3 dir, float elevation) {
+    float up = clamp(elevation, 0.0, 1.0);
+    float daylight = clamp(dome.sun_dir.w * 0.25, 0.0, 1.0);
+    float atmosphere_enabled = step(1.0e-5, up) * step(1.0e-5, daylight);
+
+    float cos_theta = clamp(dot(dir, dome.sun_dir.xyz), -1.0, 1.0);
+    // Rayleigh's normalized angular shape is proportional to 1 + cos²θ.
+    float rayleigh_phase = 0.75 * (1.0 + cos_theta * cos_theta);
+    // A normalized Henyey-Greenstein lobe (g = 0.76) captures the broad
+    // aerosol-forward haze without competing with the separately rendered
+    // sharp solar disc. Multiplying by 4π makes its sphere-average one.
+    float g = 0.76;
+    float denominator = max(1.0 + g * g - 2.0 * g * cos_theta, 1.0e-4);
+    float mie_phase = (1.0 - g * g) / pow(denominator, 1.5);
+    float horizon_mass = pow(1.0 - up, 1.35);
+    vec3 rayleigh_tint = mix(dome.sky_horizon.xyz, dome.sky_zenith.xyz, 0.72);
+    vec3 mie_tint = mix(dome.sky_horizon.xyz, dome.sun_color.xyz, 0.55);
+    // Clouds composite their own physical transmittance over this result;
+    // weather coverage stays exclusively in include/clouds.glsl so there is
+    // one source of truth for cloud occupancy.
+    return atmosphere_enabled * daylight * (
+        rayleigh_tint * (0.018 * rayleigh_phase * (0.35 + 0.65 * up))
+        + mie_tint * (0.012 * mie_phase * horizon_mass)
+    );
+}
+
 // Compute sky color from view direction.
 //
 // `cloud_base_noise` / `cloud_detail_noise` are the shared density volumes
@@ -159,6 +191,8 @@ vec3 sky_radiance(
     float t = clamp(elevation, 0.0, 1.0);
     t = sqrt(t); // widen horizon band
     vec3 sky = mix(horizon, zenith, t);
+
+    sky += sky_atmospheric_inscatter(dome, dir, elevation);
 
     // Below-horizon darkening: ground approximation (not a ground
     // plane, just a colour fade toward the WTHR-authored ground

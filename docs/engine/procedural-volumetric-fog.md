@@ -42,6 +42,13 @@ of them one physical and temporal contract.
 
 ## Runtime contract
 
+Cloud and local-medium optics share `include/medium_transport.glsl`:
+Henyey–Greenstein scattering and the cancellation-safe homogeneous slab
+integral are used by the sky march and fog/combustion passes. This is the
+first shared implementation seam with [SKYAL](skyal.md); cloud self-shadowing
+and multiple scattering still need to be adapted to local smoke. Combustion
+continues to own its temperature, soot, emission, and velocity evolution.
+
 - The grid derives from the render extent after the FSR preset query, never
   from output resolution.
 - Defaults are one froxel per 8×8 render pixels, 64 Z slices, and a 128 m

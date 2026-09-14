@@ -446,6 +446,15 @@ pub(crate) fn build_scene_descriptor_bindings(
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT),
     );
+    // Binding 21: E/PI spherical-harmonic sky projection. Same optional
+    // ownership and readiness contract as the cube at binding 20.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(21)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
     bindings
 }
 

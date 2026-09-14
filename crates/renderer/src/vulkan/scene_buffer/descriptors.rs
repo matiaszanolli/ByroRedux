@@ -48,6 +48,7 @@ impl super::buffers::SceneBuffers {
         frame_index: usize,
         cube_view: vk::ImageView,
         sampler: vk::Sampler,
+        irradiance_buffer: vk::Buffer,
     ) {
         let image_info = [vk::DescriptorImageInfo::default()
             .sampler(sampler)
@@ -55,12 +56,16 @@ impl super::buffers::SceneBuffers {
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
         let write =
             write_combined_image_sampler(self.descriptor_sets[frame_index], 20, &image_info);
+        let sh_info = [vk::DescriptorBufferInfo::default()
+            .buffer(irradiance_buffer)
+            .range(crate::vulkan::sky_cube::SKY_IRRADIANCE_BYTES)];
+        let sh_write = write_storage_buffer(self.descriptor_sets[frame_index], 21, &sh_info);
         unsafe {
             // SAFETY: `device` is live; `descriptor_sets[frame_index]` is
             // device-allocated and live; `write` borrows `image_info`, whose
             // handles are caller-owned and live for the whole call. No
             // descriptor copies.
-            device.update_descriptor_sets(&[write], &[]);
+            device.update_descriptor_sets(&[write, sh_write], &[]);
         }
     }
 

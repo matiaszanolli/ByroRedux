@@ -37,7 +37,7 @@ use super::allocator::SharedAllocator;
 
 /// What to build. Everything the fourteen migrated sites vary; everything
 /// they had in common is applied by [`GpuImage::create`] and is not
-/// expressible here — 1 mip level, `SampleCountFlags::TYPE_1`,
+/// expressible here — `SampleCountFlags::TYPE_1`,
 /// `ImageTiling::OPTIMAL`, `SharingMode::EXCLUSIVE`, and an initial layout of
 /// `UNDEFINED`. Those were identical at every site, so they are the
 /// helper's contract rather than parameters; a site that needs to differ
@@ -55,6 +55,9 @@ pub struct GpuImageDesc<'a> {
     pub view_type: vk::ImageViewType,
     pub aspect: vk::ImageAspectFlags,
     pub array_layers: u32,
+    /// Allocated mip levels. The default view still covers only mip zero,
+    /// so it remains usable as a storage image; callers own additional views.
+    pub mip_levels: u32,
     /// Extra `vk::ImageCreateFlags`. Empty for every ordinary image; the
     /// one current user is [`Self::color_cube`], which needs
     /// `CUBE_COMPATIBLE` so a `samplerCube` view can be created over the
@@ -85,6 +88,7 @@ impl<'a> GpuImageDesc<'a> {
             view_type: vk::ImageViewType::TYPE_2D,
             aspect: vk::ImageAspectFlags::COLOR,
             array_layers: 1,
+            mip_levels: 1,
             flags: vk::ImageCreateFlags::empty(),
         }
     }
@@ -190,7 +194,7 @@ impl GpuImage {
             .image_type(desc.image_type)
             .format(desc.format)
             .extent(desc.extent)
-            .mip_levels(1)
+            .mip_levels(desc.mip_levels)
             .array_layers(desc.array_layers)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)

@@ -1,0 +1,38 @@
+// GGX environment convolution, Karis, Real Shading in Unreal Engine 4 (2013),
+// section "Pre-Filtered Environment Map". N = V = R, alpha = roughness^2.
+// Each mip reads ONLY the unfiltered base level; no recursive blur or races.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "include/sky_cube_direction.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform samplerCube sourceSky;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray filteredSky;
+layout(push_constant) uniform FilterParams { float roughness; } params;
+
+void main() {
+    ivec3 p = ivec3(gl_GlobalInvocationID);
+    ivec3 size = imageSize(filteredSky);
+    if (any(greaterThanEqual(p, size))) return;
+    vec2 uv = (vec2(p.xy) + 0.5) / vec2(size.xy) * 2.0 - 1.0;
+    vec3 n = normalize(sky_cube_face_direction(uint(p.z), uv));
+    vec3 up = abs(n.z) < 0.999 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+    vec3 tangent = normalize(cross(up, n));
+    vec3 bitangent = cross(n, tangent);
+    float alpha = params.roughness * params.roughness;
+    vec3 sum = vec3(0);
+    float weight = 0.0;
+    // Deterministic Hammersley quadrature: the baked light must not flicker.
+    const uint count = 256u;
+    for (uint i = 0u; i < count; ++i) {
+        vec2 xi = vec2(float(i) / float(count), float(bitfieldReverse(i)) * 2.3283064365386963e-10);
+        float phi = 6.28318530718 * xi.x;
+        float cosTheta = sqrt((1.0 - xi.y) / (1.0 + (alpha * alpha - 1.0) * xi.y));
+        float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+        vec3 h = tangent * (sinTheta * cos(phi)) + bitangent * (sinTheta * sin(phi)) + n * cosTheta;
+        vec3 l = 2.0 * dot(n, h) * h - n;
+        float noL = max(dot(n, l), 0.0);
+        sum += textureLod(sourceSky, l, 0.0).rgb * noL;
+        weight += noL;
+    }
+    imageStore(filteredSky, p, vec4(sum / max(weight, 1e-6), 1.0));
+}

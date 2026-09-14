@@ -1,11 +1,12 @@
 # SKYAL — Sky Abstraction Layer
 
-**Status: PARTIAL (2026-09-13).** The overdrive fix, the shared sky
-include, and the sky cubemap — baked every frame and consumed by the
-ray-traced miss and bounded-path-escape paths — have landed. Still
-specified-but-unbuilt: prefiltered mips for rough reflections, the
-irradiance projection for diffuse ambient, and the volumetric cloud
-layer. See §3 for exactly which steps are done.
+**Status: PARTIAL (2026-09-14).** Shared sky evaluation, volumetric clouds,
+the sky cubemap, and GGX-prefiltered reflection mips are implemented.
+Clouds and local fog/combustion now share the phase-function and slab
+integration implementation. Diffuse sky irradiance now comes from the baked
+sky; weather-driven cloud morphology and a palette-preserving atmospheric
+approximation are implemented, while a full atmospheric LUT and explicit
+authored cloud taxonomy remain unfinished. See §3.
 
 Sibling of [NIFAL](nifal.md), [EXAL](exal.md), [PHYSAL](physal.md),
 [WATAL](watal.md), [CHARAL](charal.md). SKYAL sits **downstream of EXAL**:
@@ -282,9 +283,180 @@ Still open:
 | Adaptive view march (Schneider & Vos 2015) | **DONE** `9ac8a929` |
 | Geometric self-shadow march | **DONE** `5d5d6ddd` |
 | Temporal jitter of shadow samples (striation) | **DONE** |
-| Prefiltered mips for rough reflections | TODO |
-| Irradiance projection for ambient | TODO |
-| Cloud *type* (stratus/cumulus/cumulonimbus) from WTHR | TODO — needs data |
+| Prefiltered mips for rough reflections | Implemented — GPU energy/lobe test and in-engine capture |
+| Irradiance projection for ambient | **DONE** — nine-coefficient GPU SH projection at scene set 1 / binding 21 |
+| Weather-driven cloud morphology | **DONE** — precipitation/thunder form broader, denser storm decks; explicit WTHR cloud taxonomy remains TODO |
+| Palette-preserving Rayleigh/Mie sky structure | **DONE** — analytical bridge pending a full atmosphere LUT |
+
+### Reflection filtering (2026-09-14)
+
+The 128² cube now allocates eight mip levels. `sky_prefilter.comp` computes
+levels 1–7 with 256 deterministic GGX importance samples per texel, following
+[Karis 2013, Pre-Filtered Environment Map](https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf).
+Every dispatch reads a **base-level-only** cube view and writes a disjoint
+single-mip storage view. The base bake is made visible to compute; filtered
+writes are made visible to fragment sampling. Resources remain per frame slot.
+Storage rises from 786,432 to 1,048,560 bytes per slot.
+
+Reflection misses translate the existing `roughness * 8` hit-texture bias back
+to roughness and explicitly select the corresponding sky mip. Exterior
+distance/RT-disabled reflection fallbacks use the same filtered sky. Diffuse
+path escapes and clear glass retain mip zero. Explicit LOD avoids undefined
+derivatives in divergent ray paths. This does not yet replace the surface
+shader's historical roughness cutoff or its heuristic specular energy factor.
+
+Verification: the isolated GPU test runs the actual shader against a constant
+HDR cube and a bright +X face. It checks every mip/face/texel for constant
+radiance preservation, bounds the directional result, and verifies the lobe
+spreads to adjacent directions. It passed on the RTX 4070 Ti, including a run
+with Khronos synchronization validation enabled and no reported API hazards.
+Run it with:
+
+```bash
+cargo test -p byroredux-renderer \
+  vulkan::sky_cube::filter::tests::gpu_filter_preserves_constant_radiance_and_broadens_a_lobe \
+  --lib -- --ignored --exact --nocapture
+```
+
+The Skyrim sky capture exercised bake + filtering at about 0.16 ms total on
+the RTX 4070 Ti. This is an observation, not a controlled performance delta.
+The full-scene validation capture also reports water push-constant, texture
+copy-size, and buffer-fill hazards outside this pass; it is not a clean
+renderer-wide validation result.
+
+### Diffuse exterior illumination (2026-09-14)
+
+`sky_irradiance.comp` projects the freshly baked base cube into nine real,
+order-two spherical-harmonic coefficients. It integrates exact cube-texel
+solid angles and pre-applies the clamped-cosine bands, so the stored result is
+Lambertian outgoing radiance (`E / pi`), not raw irradiance. The 144-byte
+per-frame buffer is bound at scene set 1 / binding 21 together with the cube.
+
+`exteriorSkyDiffuseOr` reconstructs the result at the shading normal. On an
+exterior surface it replaces the old hand-authored ambient fallback; while the
+path tracer is active it cross-fades only the untraced share, avoiding a second
+copy of sky energy. This makes cloud cover and authored sky colour affect
+terrain and geometry even when the indirect-ray budget fades out. The fallback
+remains deliberately unoccluded, so enclosed exterior-adjacent geometry still
+needs the existing traced/AO terms rather than treating SH as local bounce
+lighting.
+
+Verification uses the actual projection shader in the isolated Vulkan test.
+A constant HDR cube must reconstruct exactly at three normals; a bright +X
+cube face is checked against an independently integrated cosine reference over
+124 normals. The latter permits the expected order-two ringing at its hard
+edge, while still catching coefficient order, cube orientation, normalization,
+and buffer visibility bugs. The test passed on the RTX 4070 Ti with Khronos
+synchronization validation enabled.
+
+### Joining weather clouds and explosion smoke
+
+`include/medium_transport.glsl` now owns Henyey–Greenstein scattering and
+homogeneous Beer–Lambert slab integration for both sky clouds and local
+fog/combustion. The integral has a cancellation-safe vacuum limit, preserving
+thin wisps and zero-extinction emission without over-brightening dense smoke.
+Density generation, transport, albedo, and emission remain producer inputs:
+cloud droplets must not inherit soot absorption or combustion temperature.
+
+The local-volume path already transports fuel, temperature, soot, and velocity
+with cooling, wind, buoyancy, and turbulence; see
+[procedural volumetric fog](procedural-volumetric-fog.md). Cloud self-shadowing
+and multiple scattering are not yet shared with that path. Next steps must
+join the optical treatment while retaining the sky shell and local explosion
+domains and their very different spatial scales.
+
+### Weather-driven direct-sun attenuation (2026-09-14)
+
+The exterior directional upload now consumes the same `WeatherSkyState`
+`cloud_coverage` value as the cloud shell. It applies a conservative
+Beer–Lambert world-scale transmission (`exp(-2.5 * coverage)`) after the
+time-of-day sun ramp: clear weather is unchanged and a full deck retains about
+8% of the direct key. This prevents the old contradiction where the rendered
+sky was overcast but terrain remained clear-noon lit. Interior XCLL keys do
+not use weather coverage.
+
+This is intentionally a climate-scale approximation, not a cloud-shadow map:
+it cannot cast moving, position-dependent cloud shadows. The next lighting
+step must sample the same procedural density along each surface-to-sun column
+without duplicating cloud generation in the material shader.
+
+### Weather-driven cloud morphology (2026-09-14)
+
+The cloud shell now derives continuous morphology from the weather fields
+already present in `SkyDome`: rain/snow precipitation and thunder frequency.
+Fair weather retains the original broken-cumulus profile. Storm weather lowers
+the cloud base, raises and broadens the top, reduces horizontal frequency, and
+reduces erosion, yielding coherent deep decks instead of simply increasing
+opacity. This affects the shared `cloud_march`, therefore the direct
+background and baked reflection/GI sky cannot diverge.
+
+This is deliberately not a guessed mapping from a cloud texture filename to
+stratus/cumulonimbus. WTHR’s authored layers and per-TOD tints remain the
+colour/detail authority; an explicit, evidence-backed taxonomy can refine the
+morphology controls later.
+
+### FO3/FNV weather evidence (2026-09-14)
+
+Direct WTHR record inspection confirms that a filename is not a cloud-type
+field. FNV `NVWastelandClear` uses `NVCloudlight.dds`; `NVWastelandHazy` uses
+`NV_WastelandUpperSky2.dds`; `NVBlackMountainWeather` and
+`NVSearchlightWeather` select different regional upper/overcast layers. FO3
+similarly distinguishes `WastelandClear` (mostly `Alpha.dds` placeholders),
+`WastelandEast` (`WastelandCloudCloudyUpper01.dds`), and `UrbanOvercast`
+(`UrbanCloudOvercastUpper01.dds`). These assets occupy DNAM/CNAM/ANAM/BNAM
+slots alongside non-cloud assets such as star fields and full-sky layers.
+
+Therefore the procedural generator must retain the parsed layer slot and its
+authored tint/opacity as data, then classify *role* (upper cloud, lower cloud,
+horizon/full-sky, celestial) from the record/asset content. It must not infer
+density or morphology directly from a path containing `cloud`; doing so would
+turn starfield/horizon assets into false cloud cover and erase the distinct
+wasteland climates the records actually author.
+
+### Palette-preserving atmospheric structure (2026-09-14)
+
+`sky_atmospheric_inscatter` augments the authored vertical WTHR gradient with
+a low-amplitude Rayleigh angular phase and forward Mie haze toward the sun.
+It derives its tints from the authored horizon, zenith, and sun colours rather
+than imposing a generic Earth-blue palette, so desert, ash, snow, and modded
+weather palettes remain recognizable. The cloud shell then composites its own
+transmittance over the clear-air result; only `include/clouds.glsl` consumes
+the canonical weather coverage lane.
+
+This is a controlled bridge, not a replacement for a transmittance /
+multiple-scattering LUT. It adds the previously missing sun-relative sky
+variation while retaining the low cost and shared background/cubemap function.
+The phase structure follows the atmosphere/cloud approach discussed in
+[Hillaire’s SIGGRAPH 2016 Frostbite course](https://blog.selfshadow.com/publications/s2016-shading-course/).
+
+The final deterministic Skyrim capture differed from the pre-extraction
+capture by normalized mean absolute error `3.83e-8` (ImageMagick), confirming
+that sharing the optical code preserved the current sky appearance. This is
+a refactoring check, not evidence that the remaining sky realism work is done.
+
+### FO3/FNV climate evidence (2026-09-14)
+
+Read directly from the installed `Fallout3.esm` and `FalloutNV.esm` with
+`dump_wthr_subs`. The following are authored inputs, not inferred cloud types:
+
+| Weather | Classification | Authored layer assets (excluding alpha.dds) |
+|---|---|---|
+| FNV `NVWastelandClear` | Pleasant | `NVCloudlight.dds` |
+| FNV `NVWastelandHazy` | Pleasant | `NV_WastelandUpperSky2.dds` |
+| FNV `NVBlackMountainWeather` | Pleasant | `wastelandcloudcloudyupper01.dds` |
+| FNV `NVSearchlightWeather` | Pleasant | `urbancloudovercastupper01.dds` |
+| FNV `NVWastelandClearNight` | Pleasant | `NVWastelandStarfieldSky.dds` |
+| FO3 `WastelandClear` | Pleasant | `WastelandCloudHorizon01.dds` |
+| FO3 `WastelandEast` | Pleasant | cloudy upper + horizon 01 + cloudy lower |
+| FO3 `UrbanOvercast` | Cloudy | overcast upper + horizon 02 + overcast lower |
+
+Classification alone therefore cannot recover wasteland cloud coverage or
+shape. Weather-layer slots can contain a starfield or a complete sky texture,
+so treating every layer's alpha as cloud density would also be incorrect.
+The climate adaptation must distinguish those asset roles, retain authored
+layer motion/tint and time-of-day lighting, and translate the cloud inputs
+into canonical generator parameters at EXAL. No cloud-type mapping is claimed
+implemented by this evidence collection.
 
 ---
 

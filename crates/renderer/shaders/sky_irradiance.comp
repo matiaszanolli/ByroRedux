@@ -1,0 +1,43 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "include/sky_cube_direction.glsl"
+#include "include/sky_sh.glsl"
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0) uniform samplerCube sourceSky;
+layout(std430, set = 0, binding = 1) writeonly buffer SkyIrradiance {
+    vec4 coefficients[9];
+};
+shared vec3 partialSum[64];
+
+float areaIntegral(vec2 p) {
+    return atan(p.x * p.y, sqrt(1.0 + dot(p, p)));
+}
+
+void main() {
+    uint coefficient = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+    // 32^2 cells per face with exact cell solid angles. Unlike equal texel
+    // weights this does not over-represent cube corners (Jacobian r^-3).
+    const uint edge = 32u;
+    vec3 sum = vec3(0.0);
+    for (uint sampleIndex = lane; sampleIndex < 6u * edge * edge; sampleIndex += 64u) {
+        uint face = sampleIndex / (edge * edge);
+        uvec2 pixel = uvec2(sampleIndex % edge, (sampleIndex / edge) % edge);
+        vec2 lo = vec2(pixel) * (2.0 / float(edge)) - 1.0;
+        vec2 hi = lo + 2.0 / float(edge);
+        float omega = areaIntegral(hi) - areaIntegral(vec2(lo.x, hi.y))
+                    - areaIntegral(vec2(hi.x, lo.y)) + areaIntegral(lo);
+        vec3 direction = normalize(sky_cube_face_direction(face, (lo + hi) * 0.5));
+        sum += textureLod(sourceSky, direction, 0.0).rgb
+             * sky_sh_basis(coefficient, direction) * omega;
+    }
+    partialSum[lane] = sum;
+    barrier();
+    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) partialSum[lane] += partialSum[lane + stride];
+        barrier();
+    }
+    if (lane == 0u) {
+        coefficients[coefficient] = vec4(partialSum[0] * sky_sh_lambert_band(coefficient), 0.0);
+    }
+}

@@ -55,18 +55,7 @@ layout(set = 0, binding = 3) uniform sampler3D cloudDetailNoise;
 // below. NOT guessed — a wrong row here mirrors or rotates one face and
 // shows up as a seam, which is exactly the kind of thing that gets
 // "fixed" by flipping signs until it looks right.
-vec3 sky_cube_face_direction(uint face, vec2 uv) {
-    float u = uv.x;
-    float v = uv.y;
-    switch (face) {
-        case 0u: return vec3( 1.0,   -v,   -u); // +X
-        case 1u: return vec3(-1.0,   -v,    u); // -X
-        case 2u: return vec3(   u,  1.0,    v); // +Y
-        case 3u: return vec3(   u, -1.0,   -v); // -Y
-        case 4u: return vec3(   u,   -v,  1.0); // +Z
-        default: return vec3(  -u,   -v, -1.0); // -Z
-    }
-}
+#include "include/sky_cube_direction.glsl"
 
 void main() {
     ivec3 coord = ivec3(gl_GlobalInvocationID);

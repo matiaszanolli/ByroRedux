@@ -28,6 +28,10 @@ use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
 
+mod filter;
+mod irradiance;
+pub use irradiance::SH_BYTES as SKY_IRRADIANCE_BYTES;
+
 const SKY_CUBE_COMP_SPV: &[u8] = include_bytes!("../../shaders/sky_cube.comp.spv");
 
 /// Edge length of one cube face, in texels.
@@ -40,6 +44,7 @@ const SKY_CUBE_COMP_SPV: &[u8] = include_bytes!("../../shaders/sky_cube.comp.spv
 ///
 /// Cost scales as the square: 6 x 128^2 = 98'304 invocations.
 pub const SKY_CUBE_FACE_SIZE: u32 = 128;
+pub const SKY_CUBE_MIP_LEVELS: u32 = SKY_CUBE_FACE_SIZE.ilog2() + 1;
 
 /// `R16G16B16A16_SFLOAT`. The sky is HDR — the sun disc reaches
 /// `sun_color * sun_intensity * sun_glare`, well past 1.0 — so an 8-bit
@@ -128,14 +133,22 @@ impl SkyCubeParams {
 
 /// VRAM the sky cubemap holds, per frame in flight, in bytes.
 ///
-/// `6 * size^2 * 8` (four half-floats). Exposed so the memory budget can
+/// Sum of all mip texels × six faces × eight bytes. Exposed so the memory budget can
 /// account for it the way `SSAO_BYTES_PER_PIXEL` does — this one is not
 /// render-extent-scaled, so it is a flat number rather than per-pixel.
 pub const fn sky_cube_bytes_per_frame() -> u64 {
-    CUBE_FACES as u64 * (SKY_CUBE_FACE_SIZE as u64) * (SKY_CUBE_FACE_SIZE as u64) * 8
+    let mut size = SKY_CUBE_FACE_SIZE as u64;
+    let mut texels = 0;
+    while size > 0 {
+        texels += size * size;
+        size /= 2;
+    }
+    CUBE_FACES as u64 * texels * 8
 }
 
 pub struct SkyCubePipeline {
+    filter: Option<filter::SkyFilter>,
+    irradiance: Option<irradiance::SkyIrradiance>,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
@@ -193,6 +206,8 @@ impl SkyCubePipeline {
         // Partially-valid Self so `destroy()` is the single cleanup path;
         // `vkDestroy*` on a null handle is a spec-guaranteed no-op.
         let mut partial = Self {
+            filter: None,
+            irradiance: None,
             pipeline: vk::Pipeline::null(),
             pipeline_layout: vk::PipelineLayout::null(),
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
@@ -224,12 +239,15 @@ impl SkyCubePipeline {
             let cube = try_or_cleanup!(GpuImage::create(
                 device,
                 allocator,
-                &GpuImageDesc::color_cube(
-                    "sky cubemap",
-                    SKY_CUBE_FACE_SIZE,
-                    SKY_CUBE_FORMAT,
-                    vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
-                ),
+                &GpuImageDesc {
+                    mip_levels: SKY_CUBE_MIP_LEVELS,
+                    ..GpuImageDesc::color_cube(
+                        "sky cubemap",
+                        SKY_CUBE_FACE_SIZE,
+                        SKY_CUBE_FORMAT,
+                        vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+                    )
+                },
             ));
             // The sampled `CUBE` view over the same six layers. Created
             // after the image is pushed so the cleanup path owns the image
@@ -237,7 +255,7 @@ impl SkyCubePipeline {
             partial.cubes.push(cube);
             let image = partial.cubes[partial.cubes.len() - 1].image;
             // SAFETY: `image` is the live cube-compatible image this device
-            // just created, with `CUBE_FACES` array layers and one mip level —
+            // just created, with `CUBE_FACES` array layers and the full mip chain —
             // exactly the range the create info names; the view is owned by
             // `partial` from the push below onward.
             let view = try_or_cleanup!(unsafe {
@@ -251,7 +269,7 @@ impl SkyCubePipeline {
                                 vk::ImageSubresourceRange::default()
                                     .aspect_mask(vk::ImageAspectFlags::COLOR)
                                     .base_mip_level(0)
-                                    .level_count(1)
+                                    .level_count(SKY_CUBE_MIP_LEVELS)
                                     .base_array_layer(0)
                                     .layer_count(CUBE_FACES),
                             ),
@@ -270,6 +288,8 @@ impl SkyCubePipeline {
                     &vk::SamplerCreateInfo::default()
                         .mag_filter(vk::Filter::LINEAR)
                         .min_filter(vk::Filter::LINEAR)
+                        .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+                        .max_lod((SKY_CUBE_MIP_LEVELS - 1) as f32)
                         .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                         .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                         .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
@@ -415,12 +435,34 @@ impl SkyCubePipeline {
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
+        partial.filter = Some(try_or_cleanup!(filter::SkyFilter::new(
+            device,
+            pipeline_cache,
+            &partial.cubes,
+            partial.sampler,
+        )));
+        partial.irradiance = Some(try_or_cleanup!(irradiance::SkyIrradiance::new(
+            device,
+            allocator,
+            pipeline_cache,
+            &partial.cubes,
+            partial.sampler,
+        )));
         Ok(partial)
     }
 
     /// The `CUBE` view consumers sample for frame slot `frame`.
     pub fn cube_view(&self, frame: usize) -> vk::ImageView {
         self.cube_views[frame]
+    }
+
+    /// Per-frame E/PI SH projection, produced together with the ready cube.
+    pub fn irradiance_buffer(&self, frame: usize) -> vk::Buffer {
+        self.irradiance
+            .as_ref()
+            .expect("fully constructed sky")
+            .buffers[frame]
+            .buffer
     }
 
     /// Upload this frame's sky parameters.
@@ -468,6 +510,8 @@ impl SkyCubePipeline {
             .layer_count(CUBE_FACES);
 
         let to_general = vk::ImageMemoryBarrier::default()
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .src_access_mask(vk::AccessFlags::empty())
             .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
             .old_layout(vk::ImageLayout::UNDEFINED)
@@ -487,6 +531,8 @@ impl SkyCubePipeline {
         self.dispatch(device, cmd, frame, bindless_set);
 
         let to_read = vk::ImageMemoryBarrier::default()
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .src_access_mask(vk::AccessFlags::SHADER_WRITE)
             .dst_access_mask(vk::AccessFlags::SHADER_READ)
             .old_layout(vk::ImageLayout::GENERAL)
@@ -496,12 +542,18 @@ impl SkyCubePipeline {
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::DependencyFlags::empty(),
             &[],
             &[],
             &[to_read],
         );
+        if let Some(filter) = &self.filter {
+            filter.record(device, cmd, self.cubes[frame].image, frame);
+        }
+        if let Some(irradiance) = &self.irradiance {
+            irradiance.record(device, cmd, frame);
+        }
     }
 
     /// Record the bake.
@@ -546,6 +598,12 @@ impl SkyCubePipeline {
     /// device is not lost, and that none of these resources are still in
     /// use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        if let Some(mut irradiance) = self.irradiance.take() {
+            irradiance.destroy(device, allocator);
+        }
+        if let Some(mut filter) = self.filter.take() {
+            filter.destroy(device);
+        }
         // The extra CUBE views are ours, not `GpuImage`'s — destroy them
         // before the images they view.
         for view in self.cube_views.drain(..) {
@@ -665,7 +723,7 @@ mod tests {
             "default: return vec3(  -u,   -v, -1.0); // -Z",
         ] {
             assert!(
-                SKY_CUBE_COMP.contains(row),
+                include_str!("../../shaders/include/sky_cube_direction.glsl").contains(row),
                 "sky_cube.comp's face table no longer contains `{row}` — the host \
                  mirror in this module is now validating a table the GPU does not run",
             );
@@ -712,7 +770,7 @@ mod tests {
 
         let src = include_str!("sky_cube.rs");
         let body = src
-            .split_once("pub unsafe fn dispatch(")
+            .split_once("unsafe fn dispatch(")
             .expect("dispatch still exists")
             .1;
         assert!(
@@ -758,7 +816,9 @@ mod tests {
     fn every_sky_cube_consumer_gates_on_the_ready_flag() {
         let bindings = include_str!("../../shaders/include/bindings.glsl");
         let helper = bindings
-            .split_once("vec3 exteriorSkyRadianceOr(vec3 direction, vec3 fallback) {")
+            .split_once(
+                "vec3 exteriorSkyRadianceOr(vec3 direction, vec3 fallback, float roughness) {",
+            )
             .expect("bindings.glsl must define the one gated sky-cube sampler")
             .1
             .split_once("\n}")
@@ -783,7 +843,7 @@ mod tests {
                 }
                 let text = std::fs::read_to_string(&path).expect("readable shader source");
                 let samples = text.matches("(skyCube").count();
-                let allowed = usize::from(path.ends_with("include/bindings.glsl"));
+                let allowed = 2 * usize::from(path.ends_with("include/bindings.glsl"));
                 assert_eq!(
                     samples,
                     allowed,
@@ -877,6 +937,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cloud_morphology_keeps_weather_drivers() {
+        let clouds = include_str!("../../shaders/include/clouds.glsl");
+        for term in [
+            "float precipitation = max(dome.weather_params.x, dome.weather_params.y);",
+            "max(precipitation, dome.weather_params.z)",
+            "vec3 morphology = cloud_morphology(dome);",
+        ] {
+            assert!(
+                clouds.contains(term),
+                "weather-driven cloud morphology lost `{term}`"
+            );
+        }
+    }
+
     /// The terms the march is built from — shape from Schneider & Vos 2015,
     /// lighting from Hillaire 2016. Each one is load-bearing and degrades
     /// silently rather than failing if dropped: without the remap, coverage
@@ -920,7 +995,7 @@ mod tests {
                 "diffuse-surface calibration K = 4pi / sum(a^n)",
             ),
             (
-                "1.0 - sample_transmittance",
+                "medium_slab(sigma_t, step_size)",
                 "energy-conserving slab integration",
             ),
         ] {
@@ -979,7 +1054,7 @@ mod tests {
         let clouds = include_str!("../../shaders/include/clouds.glsl");
         for (term, why) in [
             (
-                "cloud_base_shape(position, height_fraction, coverage, wind, base_noise)",
+                "cloud_base_shape(position, height_fraction, coverage, wind, morphology, base_noise)",
                 "cheap base-shape-only samples until the iso-surface (Schneider slides 74-77)",
             ),
             (
@@ -1047,7 +1122,8 @@ mod tests {
     /// VRAM accounting stays derived from the face size, not restated.
     #[test]
     fn the_vram_figure_follows_the_face_size() {
-        assert_eq!(sky_cube_bytes_per_frame(), 6 * 128 * 128 * 8);
+        // Complete power-of-two pyramid: (4 * base texels - 1) / 3.
+        assert_eq!(sky_cube_bytes_per_frame(), 6 * (4 * 128 * 128 - 1) / 3 * 8);
         assert_eq!(SKY_CUBE_FACE_SIZE, 128, "update the figure above with it");
     }
 }

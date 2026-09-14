@@ -2841,6 +2841,9 @@ void main() {
             ambientFallback = dalcFlags.x > 0.5
                 ? sampleDalcCube(R) * (1.0 / PI)
                 : sceneFlags.yzw * (1.0 / PI);
+            if (jitter.w > 0.5) {
+                ambientFallback = exteriorSkyRadianceOr(R, ambientFallback, roughness);
+            }
         }
         vec3 envColor;
         if (rtLodTelemetryEnabled && reflectionGlassRayEnabled) {
@@ -3822,6 +3825,7 @@ void main() {
     // material's GGX/diffuse mixture and evaluate the same BSDF for local
     // lights, so conductors no longer turn into Lambertian color emitters.
     vec3 indirect = vec3(0.0);
+    float tracedDiffuseWeight = 0.0;
     // Gate GI on the surface's actual EMISSION (luminance), not the bare
     // `emissiveMult`: `Material::default()` ships `emissive_mult = 1.0`
     // with a zero emissive colour, so a plain `emissiveMult < 0.01` test
@@ -4080,6 +4084,7 @@ void main() {
             // near the cutoff.
             float giLodFade = 1.0 - smoothstep(RT_LOD_GI - 0.75, RT_LOD_GI, rtLOD);
             indirect *= giLodFade;
+            tracedDiffuseWeight = giFade * giLodFade;
     }
 
     // Sample ambient occlusion from the SSAO texture. With per-FIF AO
@@ -4154,7 +4159,13 @@ void main() {
     // render-path behaviour. See Markarth probe 2026-05-13.
     const float AMBIENT_AO_FLOOR = 0.3;
     vec3 indirectLight;
-    if (dalcFlags.x > 0.5) {
+    if (jitter.w > 0.5 && exteriorSkyTint.w > 0.5) {
+        // Both estimators include the same sky. Crossfade the unoccluded SH
+        // fallback with the bounded path; adding them would count skylight
+        // twice. The path handles actual geometry visibility and bounces.
+        vec3 skyDiffuse = exteriorSkyDiffuseOr(N, vec3(0.0)) * primaryDiffuseWeight;
+        indirectLight = (skyDiffuse * (1.0 - tracedDiffuseWeight) + indirect) * combinedAO;
+    } else if (dalcFlags.x > 0.5) {
         // Sky-fill / cavity-fill cube. The cube carries the
         // hemispheric ambient response so we modulate by the
         // raw combinedAO without a floor — wall surfaces hitting

@@ -3972,14 +3972,14 @@ fn bounded_path_converts_scene_flags_ambient_to_environment_radiance_in_every_ar
     // pinned there: the raw sample, unconverted.
     let bindings = include_str!("../../../shaders/include/bindings.glsl");
     let helper_body = bindings
-        .split_once("vec3 exteriorSkyRadianceOr(vec3 direction, vec3 fallback) {")
+        .split_once("vec3 exteriorSkyRadianceOr(vec3 direction, vec3 fallback, float roughness) {")
         .expect("bindings.glsl still defines exteriorSkyRadianceOr")
         .1
         .split_once("\n}")
         .expect("exteriorSkyRadianceOr is still terminated")
         .0;
     assert!(
-        helper_body.contains("texture(skyCube, direction).rgb") && !helper_body.contains("PI"),
+        helper_body.contains("textureLod(skyCube, direction, lod).rgb") && !helper_body.contains("PI"),
         "exteriorSkyRadianceOr must return the cubemap sample as radiance — got `{helper_body}`"
     );
     assert!(
