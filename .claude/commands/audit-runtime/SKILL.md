@@ -239,6 +239,19 @@ Quirks of these scalars (don't fabricate around them):
   raster sorting and batching. Use `bench_draws_raster_cmds` to evaluate the
   `DRAW_SORT_PARALLEL_THRESHOLD` branch; `bench_draws_cmds` alone cannot prove
   which sort path ran. The pre-#1258 single draw count is gone.
+- **Draw-split invariant — check it before diffing (#4195).** One capture must
+  satisfy `bench_draws_batches <= bench_draws_raster_cmds <= bench_draws_cmds`
+  and `bench_draws_gpu_calls <= 2 × bench_draws_batches`. A `DrawBatch` is
+  only formed from a command in the raster prefix, and several commands can
+  merge into one batch. `gpu_calls` is **not** bounded by `batches`: the
+  two-sided blend split (`needs_two_sided_blend_split`) records up to two
+  direct draws for a single batch (`geometry_pass.rs`,
+  `u32::from(back) + u32::from(front)`). Indirect grouping only lowers it. A
+  row set breaking this cannot come from one run, most likely a partial
+  `--regen` that held some `bench_draws_*` rows from an older capture. Report
+  it as a stale-baseline finding and re-capture all four rows together; don't
+  diff against them. The FO4 TSV carried exactly this (`batches 296 >
+  raster_cmds 256`) until #4195.
 - `light.dump` (`byroredux/src/commands/scene.rs` `LightDumpCommand`) dumps
   `CellLightingRes` / `SkyParamsRes` / `GameTimeRes` **and**, since `5f970bae`
   (2026-08-15), a `LightSource emitters: N` tally followed by a per-emitter dump

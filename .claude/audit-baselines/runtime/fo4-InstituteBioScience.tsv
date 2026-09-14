@@ -1,3 +1,15 @@
+# regenerated: 2026-09-14 (#4195 — all four bench_draws_* rows from ONE capture; other rows held)
+# The 09-03 #3660 partial regen measured bench_draws_raster_cmds=256 but held
+# bench_draws_batches=296 from the 08-22 #3006 capture, leaving batches >
+# raster_cmds, a pair no single run can produce (a DrawBatch forms only from a
+# raster-prefix command). Re-captured together at fd9d000b+ via
+# `.claude/commands/audit-runtime/capture.sh --game fo4 --cell InstituteBioScience`:
+# `draws=3964/248b/16c bench_draws_raster_cmds=359`. That satisfies the Phase 3
+# draw-split invariant (248 <= 359 <= 3964, 16 <= 2 x 248). Against the old rows,
+# cmds +0.4% (inside x1.1), batches fell and gpu_calls matched exactly.
+# The same run read entities=18969 (bench line and `stats` agree): -2.2% against
+# the held 19399, just outside the +/-2% band. It is NOT regenerated here, since
+# this pass was scoped to the draw split; bench_draws_cmds did not move with it.
 # regenerated: 2026-09-03 (#3660 — measured raster-prefix command count; other rows held)
 # regenerated: 2026-08-22 (#3006 — RT-2026-08-16-07 root-caused and re-baselined)
 # RT-1/#2215: bench_draws_gpu_calls 40 -> 42, bench_draws_batches 272 -> 753.
@@ -80,7 +92,7 @@ skin_pool_max	1364
 skin_pool_overflow_attempts	0
 bench_fps_p50	44.3
 bench_fps_avg	44.3
-bench_draws_cmds	3949
-bench_draws_raster_cmds	256
-bench_draws_batches	296
+bench_draws_cmds	3964
+bench_draws_raster_cmds	359
+bench_draws_batches	248
 bench_draws_gpu_calls	16
