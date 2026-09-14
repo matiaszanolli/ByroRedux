@@ -156,7 +156,8 @@ pub enum GameKind {
     /// about, so they collapse to one game kind.
     #[default]
     Fallout3NV,
-    /// Skyrim LE + SE (HEDR 1.7). New ARMO/WEAP/AMMO sub-record schemas.
+    /// Skyrim LE + SE (HEDR 0.94 / record version 40 on the 2011 master,
+    /// 1.71 / 44 on SE). New ARMO/WEAP/AMMO sub-record schemas.
     Skyrim,
     /// Fallout 4 (HEDR 0.95). SCOL/PKIN/TXST and yet another item schema.
     Fallout4,
@@ -182,6 +183,8 @@ impl GameKind {
                 //   FO4        = 1.0     (bytes 00 00 80 3f)
                 //   Starfield  = 0.96    (bytes 8f c2 75 3f)
                 //   FNV        = 1.34    (bytes 1f 85 ab 3f)
+                //   Skyrim LE  = 0.94    (bytes d7 a3 70 3f, record version 40;
+                //                         the 2011 release, read 2026-09-13)
                 //   Skyrim SE  = 1.71    (bytes 48 e1 da 3f)
                 //   FO76       = 266.0   (bytes 00 00 85 43)
                 // Exact float equality is unsafe — match on small bands
@@ -223,6 +226,14 @@ impl GameKind {
                     Self::Fallout4
                 } else if (0.955..=0.97).contains(&hedr_version) {
                     Self::Starfield
+                } else if (0.93..=0.95).contains(&hedr_version)
+                    && (40..100).contains(&record_version)
+                {
+                    // The original 2011 Skyrim stamps the very same HEDR
+                    // 0.94 as FO3 GOTY; only the TES4 record version tells
+                    // them apart (Skyrim LE master 40, SE 44, FO3/FNV 2,
+                    // FO4 131). Upper bound stays clear of FO4's band.
+                    Self::Skyrim
                 } else if (0.93..=0.95).contains(&hedr_version) {
                     // FO3 GOTY (0.94). Pre-GOTY FO3 shipped 0.85 which
                     // falls through to the Fallout3NV tail branch — same
@@ -1387,6 +1398,14 @@ mod tests {
             GameKind::from_header(EsmVariant::Tes5Plus, 1.71, 44),
             GameKind::Skyrim,
             "Skyrim SE (HEDR=1.71) must classify as Skyrim",
+        );
+        // Skyrim LE (2011) — same HEDR bytes d7 a3 70 3f as FO3 GOTY, TES4
+        // record version 40. Before the record-version arm this landed in
+        // the FO3 band and got FO3 item layouts and character rules.
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 0.94, 40),
+            GameKind::Skyrim,
+            "Skyrim LE (HEDR=0.94, rec_ver=40) must not fall into the FO3 band",
         );
         // Starfield — bytes 8f c2 75 3f → f32 ≈ 0.96.
         assert_eq!(

@@ -84,6 +84,29 @@ pub struct GameProfileEntry {
     pub new_game_grid: Option<String>,
     pub new_game_radius: Option<u32>,
     pub sample_cells: Vec<String>,
+    /// Alternate releases of the same game whose archives are named
+    /// differently — the 2011 Skyrim ships one `Skyrim - Meshes.bsa` where
+    /// Special Edition ships `Meshes0` + `Meshes1`. A release is one game,
+    /// not a second profile, so it shares this entry's key, plugin and
+    /// placements and only swaps the archive lists it names.
+    ///
+    /// Which one a launch uses is decided by the files in the data
+    /// directory, never by a flag: see [`Self::for_data_dir`].
+    pub releases: Vec<GameRelease>,
+}
+
+/// Archive lists of one alternate release of a [`GameProfileEntry`]. Each
+/// `Some` list replaces the entry's own; `None` inherits it, so a release
+/// only spells out the archives whose names actually differ.
+#[derive(Debug, Clone, Default)]
+pub struct GameRelease {
+    /// Display name, replacing [`GameProfileEntry::name`] when selected.
+    pub name: String,
+    pub default_bsas: Option<Vec<String>>,
+    pub default_textures_bsas: Option<Vec<String>>,
+    pub default_scripts_bsas: Option<Vec<String>>,
+    pub default_sounds_bsas: Option<Vec<String>>,
+    pub default_materials_bsas: Option<Vec<String>>,
 }
 
 impl GameProfileEntry {
@@ -92,6 +115,62 @@ impl GameProfileEntry {
     /// out load actions against unconfigured profiles.
     pub fn is_usable(&self) -> bool {
         !self.root.is_empty() && Path::new(&self.root).exists()
+    }
+
+    /// The entry as it applies to the install at `data_dir`: the release
+    /// whose mesh and texture archives are all present there.
+    ///
+    /// The entry's own lists win when they are complete, then each of
+    /// [`Self::releases`] in order. When none is complete — a broken or
+    /// foreign install — the entry's own lists are returned unchanged, so
+    /// the validator and loader report the primary release's missing files
+    /// rather than an arbitrary alternate's. Meshes and textures are the
+    /// discriminator because they are the categories whose absence fails a
+    /// launch; sounds and scripts only degrade one.
+    ///
+    /// The returned entry carries no `releases` of its own: the choice has
+    /// been made.
+    pub fn for_data_dir(&self, data_dir: &Path) -> GameProfileEntry {
+        let complete = |entry: &GameProfileEntry| {
+            let lists = [&entry.default_bsas, &entry.default_textures_bsas];
+            lists.iter().any(|list| !list.is_empty())
+                && lists
+                    .iter()
+                    .flat_map(|list| list.iter())
+                    .all(|archive| data_dir.join(archive).is_file())
+        };
+        let mut base = self.clone();
+        base.releases.clear();
+        if complete(&base) {
+            return base;
+        }
+        self.releases
+            .iter()
+            .map(|release| base.with_release(release))
+            .find(|candidate| complete(candidate))
+            .unwrap_or(base)
+    }
+
+    fn with_release(&self, release: &GameRelease) -> GameProfileEntry {
+        let pick = |own: &Vec<String>, alt: &Option<Vec<String>>| {
+            alt.clone().unwrap_or_else(|| own.clone())
+        };
+        GameProfileEntry {
+            name: release.name.clone(),
+            default_bsas: pick(&self.default_bsas, &release.default_bsas),
+            default_textures_bsas: pick(
+                &self.default_textures_bsas,
+                &release.default_textures_bsas,
+            ),
+            default_scripts_bsas: pick(&self.default_scripts_bsas, &release.default_scripts_bsas),
+            default_sounds_bsas: pick(&self.default_sounds_bsas, &release.default_sounds_bsas),
+            default_materials_bsas: pick(
+                &self.default_materials_bsas,
+                &release.default_materials_bsas,
+            ),
+            releases: Vec::new(),
+            ..self.clone()
+        }
     }
 }
 

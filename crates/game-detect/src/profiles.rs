@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use byroredux_core::ecs::{GameProfileEntry, GameProfileRegistry};
+use byroredux_core::ecs::{GameProfileEntry, GameProfileRegistry, GameRelease};
 use serde::Deserialize;
 
 /// Path inside the engine source tree where the default profile
@@ -101,6 +101,35 @@ struct ProfileEntryDe {
     new_game_radius: Option<u32>,
     #[serde(default)]
     sample_cells: Vec<String>,
+    /// `[[profiles.<key>.releases]]` — alternate releases chosen by the
+    /// files present. See `GameProfileEntry::releases`.
+    #[serde(default)]
+    releases: Vec<ReleaseDe>,
+}
+
+/// Serde landing type for one `[[profiles.<key>.releases]]` block. An absent
+/// list inherits the profile's own, which is not the same as an empty one.
+#[derive(Debug, Deserialize)]
+struct ReleaseDe {
+    name: String,
+    default_bsas: Option<Vec<String>>,
+    default_textures_bsas: Option<Vec<String>>,
+    default_scripts_bsas: Option<Vec<String>>,
+    default_sounds_bsas: Option<Vec<String>>,
+    default_materials_bsas: Option<Vec<String>>,
+}
+
+impl From<ReleaseDe> for GameRelease {
+    fn from(de: ReleaseDe) -> Self {
+        Self {
+            name: de.name,
+            default_bsas: de.default_bsas,
+            default_textures_bsas: de.default_textures_bsas,
+            default_scripts_bsas: de.default_scripts_bsas,
+            default_sounds_bsas: de.default_sounds_bsas,
+            default_materials_bsas: de.default_materials_bsas,
+        }
+    }
 }
 
 impl From<ProfileEntryDe> for GameProfileEntry {
@@ -120,6 +149,7 @@ impl From<ProfileEntryDe> for GameProfileEntry {
             new_game_grid: de.new_game_grid,
             new_game_radius: de.new_game_radius,
             sample_cells: de.sample_cells,
+            releases: de.releases.into_iter().map(GameRelease::from).collect(),
         }
     }
 }
@@ -415,9 +445,48 @@ sample_cells = ["GSDocMitchellHouse"]
             new_game_grid: p.new_game_grid.clone(),
             new_game_radius: p.new_game_radius,
             sample_cells: p.sample_cells.clone(),
+            releases: Vec::new(),
         }
         .into();
         assert!(!entry.is_usable());
+    }
+
+    /// An omitted list in a release inherits the profile's; a written one —
+    /// even empty — replaces it.
+    #[test]
+    fn a_release_replaces_only_the_lists_it_names() {
+        let toml = r#"
+[profiles.skyrim_se]
+name = "Skyrim Special Edition"
+esm = "Skyrim.esm"
+default_bsas = ["Skyrim - Meshes0.bsa"]
+default_scripts_bsas = ["Skyrim - Misc.bsa"]
+default_sounds_bsas = ["Skyrim - Voices_en0.bsa"]
+
+[[profiles.skyrim_se.releases]]
+name = "Skyrim (2011)"
+default_bsas = ["Skyrim - Meshes.bsa"]
+default_sounds_bsas = []
+        "#;
+        let mut parsed: ProfilesFile = toml::from_str(toml).expect("parse");
+        let entry = GameProfileEntry::from(parsed.profiles.remove("skyrim_se").unwrap());
+        assert_eq!(entry.releases.len(), 1);
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Skyrim - Meshes.bsa"), b"x").unwrap();
+        let chosen = entry.for_data_dir(dir.path());
+        assert_eq!(chosen.name, "Skyrim (2011)");
+        assert_eq!(chosen.default_bsas, ["Skyrim - Meshes.bsa"]);
+        assert_eq!(
+            chosen.default_scripts_bsas,
+            ["Skyrim - Misc.bsa"],
+            "inherited"
+        );
+        assert!(
+            chosen.default_sounds_bsas.is_empty(),
+            "written empty replaces"
+        );
+        assert_eq!(chosen.esm, "Skyrim.esm");
     }
 
     #[test]

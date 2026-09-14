@@ -337,6 +337,9 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         // Fall through anyway — let downstream loaders report
         // specific missing files for clearer diagnostics.
     }
+    // Alternate releases (e.g. 2011 Skyrim vs Special Edition) share the
+    // profile key; the archives on disk decide which list set applies.
+    let entry = entry.for_data_dir(&data_dir);
 
     // Append profile-derived args. User's earlier --esm wins on
     // first-occurrence-wins; additive --bsa flags compose.

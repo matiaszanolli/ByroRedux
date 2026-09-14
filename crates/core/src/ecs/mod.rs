@@ -38,7 +38,7 @@ pub use components::{
     LIGHT_FLAG_SPOT, MAX_BONES_PER_MESH, MAX_PARTICLES_CEILING,
 };
 pub use debug_load::{PendingDebugLoad, PendingDebugLoadSlot, PendingUpscalerSwitch};
-pub use game_profiles::{GameProfileEntry, GameProfileRegistry};
+pub use game_profiles::{GameProfileEntry, GameProfileRegistry, GameRelease};
 pub use hierarchy::HierarchyTraversalGuard;
 pub use metrics::MetricsSnapshot;
 pub use packed::PackedStorage;

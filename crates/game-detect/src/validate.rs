@@ -119,6 +119,10 @@ fn archive_opens(path: &Path) -> Result<(), String> {
 /// the launcher validates a *candidate* it just detected — before deciding
 /// whether to write it back as an override.
 pub fn validate(entry: &GameProfileEntry, data_dir: &Path) -> ValidationReport {
+    // Validate the release actually installed here, the same one `--game`
+    // expansion will launch — otherwise a complete 2011 Skyrim would be
+    // failed for lacking Special Edition's archive names.
+    let entry = &entry.for_data_dir(data_dir);
     let mut checks = Vec::new();
 
     if !data_dir.is_dir() {
@@ -370,6 +374,74 @@ mod tests {
         assert_eq!(labels, ["Meshes", "Textures"]);
         // Materials being empty is normal everywhere before FO4.
         assert!(report.checks.iter().all(|check| check.label != "Materials"));
+    }
+
+    /// A profile with an alternate release whose archive names differ, the
+    /// shape of 2011 Skyrim (`Meshes.bsa`) beside Special Edition
+    /// (`Meshes0.bsa`).
+    fn entry_with_release() -> GameProfileEntry {
+        GameProfileEntry {
+            releases: vec![byroredux_core::ecs::GameRelease {
+                name: "Test Game (Original)".into(),
+                default_bsas: Some(vec!["Old - Meshes.bsa".into()]),
+                default_textures_bsas: Some(vec!["Old - Textures.bsa".into()]),
+                ..Default::default()
+            }],
+            ..entry()
+        }
+    }
+
+    /// The files choose the release: an install carrying only the alternate
+    /// release's archives is complete, not a failed primary release.
+    #[test]
+    fn an_alternate_release_is_validated_against_its_own_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_bsa(&dir.path().join("Old - Meshes.bsa"));
+        write_empty_bsa(&dir.path().join("Old - Textures.bsa"));
+
+        let report = validate(&entry_with_release(), dir.path());
+        assert_eq!(report.verdict(), Severity::Ok, "{:#?}", report.checks);
+        assert_eq!(report.profile, "Test Game (Original)");
+    }
+
+    /// Both releases' archives present (a hybrid folder): the primary wins, so
+    /// adding a release never changes what an existing install launches.
+    #[test]
+    fn the_primary_release_wins_when_its_archives_are_all_present() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "Test - Meshes.bsa",
+            "Test - Textures0.bsa",
+            "Old - Meshes.bsa",
+            "Old - Textures.bsa",
+        ] {
+            write_empty_bsa(&dir.path().join(name));
+        }
+        let chosen = entry_with_release().for_data_dir(dir.path());
+        assert_eq!(chosen.name, "Test Game");
+        assert_eq!(chosen.default_bsas, ["Test - Meshes.bsa"]);
+        assert!(chosen.releases.is_empty());
+    }
+
+    /// No release complete: report the primary release's missing archives, not
+    /// a mix, and not whichever alternate happened to be listed last.
+    #[test]
+    fn an_incomplete_install_is_reported_against_the_primary_release() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Test.esm"), b"TES4").unwrap();
+        write_empty_bsa(&dir.path().join("Old - Meshes.bsa"));
+
+        let report = validate(&entry_with_release(), dir.path());
+        assert!(!report.is_launchable());
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.detail == "Test - Meshes.bsa is missing"),
+            "{:#?}",
+            report.checks
+        );
     }
 
     #[test]

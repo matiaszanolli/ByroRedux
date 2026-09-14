@@ -150,6 +150,12 @@ fn eval_list_game_profiles(world: &World) -> DebugResponse {
     };
     let profiles: Vec<GameProfile> = reg
         .iter()
+        // A configured root pins the install, so report the release that is
+        // actually there rather than the primary release's archive names.
+        .map(|(key, e)| match e.root.is_empty() {
+            true => (key, e.clone()),
+            false => (key, e.for_data_dir(std::path::Path::new(&e.root))),
+        })
         .map(|(key, e)| GameProfile {
             key: key.to_string(),
             name: e.name.clone(),

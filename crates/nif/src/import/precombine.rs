@@ -46,10 +46,9 @@ pub struct PrecombineGeometry {
     /// descriptor carries both `VF_NORMALS` and `VF_TANGENTS`.
     pub tangents: Vec<[f32; 4]>,
     pub colors: Vec<[f32; 4]>,
-    /// Flattened triangle indices (3 per triangle) for the **single**
-    /// LOD the caller selected (the finest — highest triangle count). The
-    /// other LODs are alternative triangulations of the same surface and
-    /// are intentionally not included (rendering them together z-fights).
+    /// Flattened triangle indices (3 per triangle) for **every** populated
+    /// LOD band, in LOD order. The bands are disjoint sub-meshes whose union
+    /// is the whole model — see [`decode_shared_geom_object`] (#4234).
     pub indices: Vec<u32>,
 }
 
@@ -110,24 +109,53 @@ pub fn psg_vertex_stride(vertex_desc: u64) -> usize {
     }
 }
 
+/// The populated LOD bands of a shared-geometry object as
+/// `(first_triangle, triangle_count)`, in LOD order. `lod_offsets` are
+/// index-unit offsets into the `[LOD0][LOD1][LOD2]` triangle block. Empty
+/// bands are skipped rather than trusted: vanilla data leaves an empty
+/// band's offset at 0 as often as at the running total.
+pub fn precombine_lod_bands(lod_counts: [u32; 3], lod_offsets: [u32; 3]) -> Vec<(usize, usize)> {
+    (0..3)
+        .filter(|&i| lod_counts[i] > 0)
+        .map(|i| ((lod_offsets[i] / 3) as usize, lod_counts[i] as usize))
+        .collect()
+}
+
+/// One past the last triangle any populated LOD band reaches — how much of
+/// the triangle block [`decode_shared_geom_object`] reads. `0` means the
+/// object has no triangles.
+pub fn precombine_triangle_end(lod_counts: [u32; 3], lod_offsets: [u32; 3]) -> usize {
+    precombine_lod_bands(lod_counts, lod_offsets)
+        .into_iter()
+        .map(|(start, count)| start + count)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Decode one shared-geometry object from its PSG slice: `num_verts`
-/// packed vertices (stride [`psg_vertex_stride`]), then **one LOD's**
-/// triangles — `tri_count` `u16`-triples starting `tri_start` triangles
-/// into the concatenated `[LOD0][LOD1][LOD2]` triangle block.
-/// `vertex_desc` is the descriptor from the `BSPackedSharedGeomData`
-/// header. Returns Y-up geometry.
+/// packed vertices (stride [`psg_vertex_stride`]), then the triangles of
+/// **every** populated LOD band in the `[LOD0][LOD1][LOD2]` block that
+/// follows them. `vertex_desc` is the descriptor from the
+/// `BSPackedSharedGeomData` header. Returns Y-up geometry.
 ///
-/// The three LODs are alternative triangulations of the *same* surface
-/// (nif.xml: "switch a geometry at a specified distance"), so rendering
-/// more than one z-fights — the caller picks a single LOD (finest =
-/// highest triangle count) and passes its slice. `psg` must hold at
-/// least `num_verts * stride + (tri_start + tri_count) * 6` bytes.
+/// #4234 — the three bands are disjoint sub-meshes whose union is the whole
+/// model, not alternative triangulations of one surface. On retail FO4 data
+/// the band counts sum to the shape's triangle total for 12,096/12,096
+/// `BSMeshLODTriShape` blocks, and no two bands share a vertex in any of the
+/// 5,292 multi-band shapes; NifSkope draws them additively
+/// (`tools/nifskope/src/gl/bsshape.cpp`'s LOD `switch` fall-through).
+/// Keeping only the largest band dropped 12.45% of
+/// `Fallout4 - MeshesExtra.ba2`'s baked triangles. Distance LOD, if it is
+/// ever added, drops tail bands — it never picks one.
+///
+/// `psg` must hold at least `num_verts * stride +
+/// precombine_triangle_end(lod_counts, lod_offsets) * 6` bytes.
 pub fn decode_shared_geom_object(
     psg: &[u8],
     vertex_desc: u64,
     num_verts: usize,
-    tri_start: usize,
-    tri_count: usize,
+    lod_counts: [u32; 3],
+    lod_offsets: [u32; 3],
 ) -> io::Result<PrecombineGeometry> {
     let attrs = vertex_attrs_field(vertex_desc);
     let stride = psg_vertex_stride(vertex_desc);
@@ -157,17 +185,19 @@ pub fn decode_shared_geom_object(
         /* is_skinned = */ false,
     )?;
 
-    // Triangles follow the packed vertex block. Skip to the chosen LOD's
-    // first triangle (`tri_start` × 6 bytes) and read only its `tri_count`.
-    if tri_start > 0 {
-        stream.skip(tri_start as u64 * 6)?;
-    }
-    let tris = stream.read_u16_triple_array(tri_count)?;
+    // Triangles follow the packed vertex block. Read through the end of the
+    // last populated band once, then keep each band at its own offset, so
+    // the union never depends on the bands being back-to-back.
+    let bands = precombine_lod_bands(lod_counts, lod_offsets);
+    let tris = stream.read_u16_triple_array(precombine_triangle_end(lod_counts, lod_offsets))?;
+    let tri_count: usize = bands.iter().map(|&(_, count)| count).sum();
     let mut indices = Vec::with_capacity(tri_count * 3);
-    for [a, b, c] in tris {
-        indices.push(a as u32);
-        indices.push(b as u32);
-        indices.push(c as u32);
+    for (start, count) in bands {
+        for &[a, b, c] in &tris[start..start + count] {
+            indices.push(a as u32);
+            indices.push(b as u32);
+            indices.push(c as u32);
+        }
     }
 
     // #1533 — reject decode-time index/vertex inconsistency. The PSG slice
@@ -184,7 +214,7 @@ pub fn decode_shared_geom_object(
             io::ErrorKind::InvalidData,
             format!(
                 "precombine PSG triangle index {bad} >= num_verts {num_verts} \
-                 (tri_start {tri_start}, tri_count {tri_count}) — corrupt or \
+                 (LOD counts {lod_counts:?}, offsets {lod_offsets:?}) — corrupt or \
                  mispointed CSG slice",
             ),
         ));
@@ -435,7 +465,7 @@ mod tests {
         psg.extend_from_slice(&1u16.to_le_bytes());
         psg.extend_from_slice(&0u16.to_le_bytes());
 
-        let g = decode_shared_geom_object(&psg, vertex_desc, 2, 0, 1).unwrap();
+        let g = decode_shared_geom_object(&psg, vertex_desc, 2, [1, 0, 0], [0, 0, 0]).unwrap();
         assert_eq!(g.positions.len(), 2);
         assert_eq!(g.indices, vec![0, 1, 0]);
         assert_eq!(g.uvs[0], [0.5, 0.25]);
@@ -474,13 +504,67 @@ mod tests {
         psg.extend_from_slice(&9u16.to_le_bytes());
         psg.extend_from_slice(&0u16.to_le_bytes());
 
-        let err = decode_shared_geom_object(&psg, vertex_desc, 2, 0, 1)
+        let err = decode_shared_geom_object(&psg, vertex_desc, 2, [1, 0, 0], [0, 0, 0])
             .expect_err("OOB index must be rejected");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(
             err.to_string().contains("index 9"),
             "message names the offending index: {err}",
         );
+    }
+
+    /// #4234 — every populated LOD band is decoded, not just the largest.
+    /// Three bands of 1/2/1 triangles (distinct vertex pairs, as vanilla's
+    /// disjoint bands are) must yield `sum(lod_counts)` = 4 triangles, in LOD
+    /// order. The pre-fix pick-the-max rule returned band 1's two only.
+    #[test]
+    fn decode_keeps_every_lod_band() {
+        let vertex_desc: u64 = 0x0041_b000_0065_0407;
+        let mut psg = Vec::new();
+        for i in 0..6 {
+            psg.extend_from_slice(&half(i as f32));
+            psg.extend_from_slice(&half(0.0));
+            psg.extend_from_slice(&half(0.0));
+            psg.extend_from_slice(&half(1.0));
+            psg.extend_from_slice(&half(0.0));
+            psg.extend_from_slice(&half(0.0));
+            psg.extend_from_slice(&[nbyte(0.0), nbyte(0.0), nbyte(1.0), nbyte(0.0)]);
+            psg.extend_from_slice(&[nbyte(1.0), nbyte(0.0), nbyte(0.0), nbyte(0.0)]);
+        }
+        let tris: [[u16; 3]; 4] = [[0, 1, 0], [2, 3, 2], [3, 2, 3], [4, 5, 4]];
+        for tri in tris {
+            for i in tri {
+                psg.extend_from_slice(&i.to_le_bytes());
+            }
+        }
+
+        let counts = [1, 2, 1];
+        let offsets = [0, 3, 9];
+        let g = decode_shared_geom_object(&psg, vertex_desc, 6, counts, offsets).unwrap();
+        assert_eq!(
+            g.indices.len() / 3,
+            counts.iter().sum::<u32>() as usize,
+            "all three bands must be decoded"
+        );
+        assert_eq!(g.indices, vec![0, 1, 0, 2, 3, 2, 3, 2, 3, 4, 5, 4]);
+    }
+
+    /// #4234 — an empty band's offset is not trusted. Vanilla writes
+    /// `counts=[1126, 0, 21] offsets=[0, 3378, 3378]` as often as
+    /// `counts=[835, 0, 0] offsets=[0, 0, 0]`; both must resolve to the
+    /// populated bands only, and the read extent must cover the last one.
+    #[test]
+    fn lod_bands_skip_empty_bands_and_bound_the_read() {
+        assert_eq!(
+            precombine_lod_bands([1126, 0, 21], [0, 3378, 3378]),
+            vec![(0, 1126), (1126, 21)]
+        );
+        assert_eq!(precombine_triangle_end([1126, 0, 21], [0, 3378, 3378]), 1147);
+        assert_eq!(precombine_lod_bands([835, 0, 0], [0, 0, 0]), vec![(0, 835)]);
+        assert_eq!(precombine_triangle_end([835, 0, 0], [0, 0, 0]), 835);
+        assert_eq!(precombine_triangle_end([0, 0, 0], [0, 0, 0]), 0);
+        // A band that sits past a skipped empty one still bounds the read.
+        assert_eq!(precombine_triangle_end([170, 44, 128], [0, 510, 642]), 342);
     }
 
     #[test]

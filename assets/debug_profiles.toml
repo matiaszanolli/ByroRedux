@@ -34,6 +34,15 @@
 #                         --sounds-bsa alike because these are whole-mod
 #                         bundles rather than category archives (#3924).
 #   sample_cells          Curated cell editor IDs for one-click loads.
+#   [[profiles.<key>.releases]]
+#                         Alternate releases of the same game whose
+#                         archives are named differently (2011 Skyrim vs
+#                         Special Edition). Each carries a `name` plus any
+#                         of the five default_*_bsas lists; an omitted list
+#                         inherits the profile's. The files on disk choose:
+#                         the profile's own lists when all its mesh and
+#                         texture archives exist, else the first release
+#                         whose do. No flag or key selects a release.
 #
 # Optional [defaults] table — launch defaults applied when the engine
 # is run with no CLI load flags. Left unset in the shipped file so a
@@ -220,6 +229,19 @@ sample_cells = [
     "WhiterunDragonsreach",
     "RiverwoodSleepingGiantInn",
 ]
+
+# The original 2011 release. Same game and plugin, unnumbered archives: one
+# Meshes and one Textures instead of the 0/1 and 0..8 series. Selected only when
+# these are on disk and the SE archives above are not. Measured on a vanilla
+# install, 2026-09-13: every BSA is v104, and both voice archives hold
+# `sound\voice\skyrim.esm\` lines. A release list replaces the whole list, so
+# Animations and Sounds are re-listed beside the renamed archives; only the
+# scripts list (`Skyrim - Misc.bsa`) is inherited.
+[[profiles.skyrim_se.releases]]
+name = "Skyrim (2011)"
+default_bsas = ["Skyrim - Meshes.bsa", "Skyrim - Animations.bsa"]
+default_textures_bsas = ["Skyrim - Textures.bsa"]
+default_sounds_bsas = ["Skyrim - Sounds.bsa", "Skyrim - Voices.bsa", "Skyrim - VoicesExtra.bsa"]
 
 [profiles.fo4]
 name = "Fallout 4"

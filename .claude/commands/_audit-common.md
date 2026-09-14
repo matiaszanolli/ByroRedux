@@ -203,6 +203,9 @@ the report's scope line.
 Oblivion:      /mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/
 Fallout 3:     /mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/
 Fallout NV:    /mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/
+Skyrim LE:     /home/matias/Games/skyrim-original/drive_c/Program Files (x86)/The Elder Scrolls V Skyrim/Data/
+               (original 2011 release, Wine prefix; BSA v104 zlib, Skyrim.esm HEDR 0.94 / form v40 —
+               not SE's v105 LZ4 / 1.71 / v44. No BYROREDUX_* env var reads this path yet.)
 Skyrim SE:     /mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/
 Fallout 4:     /mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/
 Fallout 76:    /mnt/data/SteamLibrary/steamapps/common/Fallout76/Data/
