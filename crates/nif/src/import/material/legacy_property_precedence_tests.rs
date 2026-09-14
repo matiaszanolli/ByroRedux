@@ -327,3 +327,111 @@ fn inherited_texturing_property_clamp_still_fills_the_gap() {
 
     assert_eq!(info.texture_clamp_mode, 2);
 }
+
+fn source_texture(path: &str) -> crate::blocks::texture::NiSourceTexture {
+    crate::blocks::texture::NiSourceTexture {
+        net: empty_net(),
+        use_external: true,
+        filename: Some(Arc::from(path)),
+        pixel_data_ref: BlockRef::NULL,
+        pixel_layout: 0,
+        use_mipmaps: 0,
+        alpha_format: 0,
+        is_static: false,
+    }
+}
+
+/// `NiTexturingProperty` binding blocks `[0]` (base) and `[1]` (normal).
+fn texturing_with_base_and_normal() -> crate::blocks::properties::NiTexturingProperty {
+    use crate::blocks::properties::{NiTexturingProperty, TexDesc};
+    let desc = |source: u32| TexDesc {
+        source_ref: BlockRef(source),
+        flags: 0,
+        clamp_mode: 3,
+        transform: None,
+    };
+    NiTexturingProperty {
+        net: empty_net(),
+        flags: 0,
+        apply_mode: 2,
+        texture_count: 7,
+        base_texture: Some(desc(0)),
+        dark_texture: None,
+        detail_texture: None,
+        gloss_texture: None,
+        glow_texture: None,
+        bump_texture: None,
+        normal_texture: Some(desc(1)),
+        parallax_texture: None,
+        parallax_offset: 0.0,
+        decal_textures: Vec::new(),
+    }
+}
+
+/// Scene for the #4235 tests: legacy texture sources at `[0]`/`[1]`, the
+/// `NiTexturingProperty` at `[2]`, the texture set at `[3]`, and a
+/// `BSShaderPPLightingProperty` bound to it at `[4]`.
+fn scene_with_both_texture_families(texture_set: Vec<String>) -> NifScene {
+    let mut pp = pp_lighting_with_clamp_and_env(3, 1.0);
+    pp.texture_set_ref = BlockRef(3);
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(source_texture("textures\\legacy_d.dds")),
+        Box::new(source_texture("textures\\legacy_n.dds")),
+        Box::new(texturing_with_base_and_normal()),
+        Box::new(crate::blocks::shader::BSShaderTextureSet {
+            textures: texture_set,
+        }),
+        Box::new(pp),
+    ];
+    NifScene {
+        blocks,
+        ..NifScene::default()
+    }
+}
+
+/// #4235 (FO3-D1-2026-09-11-01) — a `NiTexturingProperty` listed ahead of
+/// the shape's `BSShaderPPLightingProperty` used to keep base and normal,
+/// discarding the texture set the bound shader samples. The texture set
+/// must win both roles.
+#[test]
+fn texture_set_outranks_an_earlier_texturing_property() {
+    let scene = scene_with_both_texture_families(vec![
+        "textures\\set_d.dds".to_string(),
+        "textures\\set_n.dds".to_string(),
+    ]);
+    let shape = make_tri_shape_with_props(vec![BlockRef(2), BlockRef(4)]);
+
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(
+        info.texture_path,
+        intern_texture_path(&mut pool, "textures\\set_d.dds"),
+        "the shader's own base texture must replace the texturing property's"
+    );
+    assert_eq!(
+        info.normal_map,
+        intern_texture_path(&mut pool, "textures\\set_n.dds"),
+        "the shader's own normal map must replace the texturing property's"
+    );
+}
+
+/// …but an empty texture set has nothing to offer, so the legacy paths
+/// stay bound rather than being cleared.
+#[test]
+fn empty_texture_set_keeps_the_texturing_property_paths() {
+    let scene = scene_with_both_texture_families(Vec::new());
+    let shape = make_tri_shape_with_props(vec![BlockRef(2), BlockRef(4)]);
+
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(
+        info.texture_path,
+        intern_texture_path(&mut pool, "textures\\legacy_d.dds")
+    );
+    assert_eq!(
+        info.normal_map,
+        intern_texture_path(&mut pool, "textures\\legacy_n.dds")
+    );
+}

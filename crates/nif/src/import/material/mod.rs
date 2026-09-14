@@ -615,6 +615,12 @@ pub(super) struct MaterialInfo {
     /// — the same "more specific source wins" ordering
     /// [`Self::texture_clamp_mode_consumed`] enforces.
     pub refraction_strength_consumed: bool,
+    /// #4235 — bitmask of the texture roles (base, normal, glow) whose
+    /// current path came from a legacy `NiTexturingProperty`. A `BSShader*`
+    /// property's own texture for a marked role replaces it wherever the two
+    /// sit in the property chain, because the bound shader samples its own
+    /// texture set. Bits are private to `legacy_properties.rs`.
+    pub texturing_property_roles: u8,
     pub two_sided: bool,
     /// `NiAlphaProperty.flags` bit 13 (0x2000, "No Sorter") — the shape
     /// author's per-draw instruction to `NiAlphaAccumulator` to skip
@@ -1201,6 +1207,7 @@ impl Default for MaterialInfo {
             window_env_mapping: false,
             window_env_mapping_consumed: false,
             refraction_strength_consumed: false,
+            texturing_property_roles: 0,
             two_sided: false,
             no_sorter: false,
             is_decal: false,

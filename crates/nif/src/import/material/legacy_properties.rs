@@ -43,6 +43,32 @@ fn legacy_window_env_mapping(shader_flags_1: u32) -> bool {
     shader_flags_1 & (WINDOW_ENVIRONMENT_MAPPING | EYE_ENVIRONMENT_MAPPING) != 0
 }
 
+/// #4235 — role bits for [`MaterialInfo::texturing_property_roles`].
+const TEXTURING_BASE: u8 = 1 << 0;
+const TEXTURING_NORMAL: u8 = 1 << 1;
+const TEXTURING_GLOW: u8 = 1 << 2;
+
+/// #4235 — write a shader property's own texture into `slot`.
+///
+/// First writer wins (#208), except over a path a legacy
+/// `NiTexturingProperty` wrote: the bound `BSShader*` samples its own
+/// texture, so it outranks the legacy property for the same role wherever
+/// the two sit in the chain. An empty shader slot never displaces a bound
+/// path.
+fn claim_shader_texture(
+    slot: &mut Option<FixedString>,
+    texturing_property_roles: &mut u8,
+    role: u8,
+    path: Option<FixedString>,
+) {
+    if slot.is_none() {
+        *slot = path;
+    } else if *texturing_property_roles & role != 0 && path.is_some() {
+        *slot = path;
+        *texturing_property_roles &= !role;
+    }
+}
+
 /// Whether a FO3/FNV `BSShaderPPLightingProperty` actually authors POM,
 /// per nif.xml's FO3 `BSShaderFlags` bits 11 (`Parallax_Shader_Index_15`)
 /// and 28 (`Parallax_Occulsion`) — texture-slot-3 presence alone is not
@@ -191,8 +217,14 @@ fn apply_texturing_property(
     info: &mut MaterialInfo,
 ) {
     if let Some(tex_prop) = scene.get_as::<NiTexturingProperty>(idx) {
+        // #4235 — each role this property fills is recorded, so a
+        // `BSShader*` texture for the same role can still take it over
+        // (`claim_shader_texture`).
         if info.texture_path.is_none() {
             info.texture_path = tex_desc_source_path(scene, tex_prop.base_texture.as_ref(), pool);
+            if info.texture_path.is_some() {
+                info.texturing_property_roles |= TEXTURING_BASE;
+            }
         }
         // Oblivion stores tangent-space normal maps in the `bump_texture`
         // slot (the dedicated `normal_texture` slot landed later in FO3).
@@ -202,6 +234,9 @@ fn apply_texturing_property(
         if info.normal_map.is_none() {
             info.normal_map = tex_desc_source_path(scene, tex_prop.normal_texture.as_ref(), pool)
                 .or_else(|| tex_desc_source_path(scene, tex_prop.bump_texture.as_ref(), pool));
+            if info.normal_map.is_some() {
+                info.texturing_property_roles |= TEXTURING_NORMAL;
+            }
         }
         // Secondary texture slots (#214). NiTexturingProperty has
         // up to 8 slots — base and normal/bump are consumed above,
@@ -214,6 +249,9 @@ fn apply_texturing_property(
         // already set them, matching the base/normal policy.
         if info.glow_map.is_none() {
             info.glow_map = tex_desc_source_path(scene, tex_prop.glow_texture.as_ref(), pool);
+            if info.glow_map.is_some() {
+                info.texturing_property_roles |= TEXTURING_GLOW;
+            }
         }
         if info.detail_map.is_none() {
             info.detail_map = tex_desc_source_path(scene, tex_prop.detail_texture.as_ref(), pool);
@@ -432,23 +470,41 @@ fn apply_pp_lighting_property(
         let parallax_authored = fo3_parallax_authored(shader.shader_flags_1());
         if let Some(ts_idx) = shader.texture_set_ref.index() {
             if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
-                if info.texture_path.is_none() {
-                    if let Some(path) = tex_set.textures.first() {
-                        info.texture_path = intern_texture_path(pool, path);
-                    }
-                }
+                // #4235 — slots 0-2 outrank an `NiTexturingProperty`'s base,
+                // normal-or-bump and glow (`claim_shader_texture`). Before,
+                // whichever property came first in the chain won, so a
+                // texturing property listed ahead of this shader replaced
+                // the shader's own textures. Vanilla FO3 and FNV each carry
+                // five such shapes, all naming the same base path.
+                let slot_path = |pool: &mut StringPool, i: usize| {
+                    tex_set
+                        .textures
+                        .get(i)
+                        .and_then(|p| intern_texture_path(pool, p))
+                };
+                let base = slot_path(pool, 0);
+                claim_shader_texture(
+                    &mut info.texture_path,
+                    &mut info.texturing_property_roles,
+                    TEXTURING_BASE,
+                    base,
+                );
                 // Normal map is textures[1] in BSShaderTextureSet (same layout as Skyrim).
-                if info.normal_map.is_none() {
-                    if let Some(normal) = tex_set.textures.get(1) {
-                        info.normal_map = intern_texture_path(pool, normal);
-                    }
-                }
+                let normal = slot_path(pool, 1);
+                claim_shader_texture(
+                    &mut info.normal_map,
+                    &mut info.texturing_property_roles,
+                    TEXTURING_NORMAL,
+                    normal,
+                );
                 // Glow / emissive map is textures[2].
-                if info.glow_map.is_none() {
-                    if let Some(glow) = tex_set.textures.get(2) {
-                        info.glow_map = intern_texture_path(pool, glow);
-                    }
-                }
+                let glow = slot_path(pool, 2);
+                claim_shader_texture(
+                    &mut info.glow_map,
+                    &mut info.texturing_property_roles,
+                    TEXTURING_GLOW,
+                    glow,
+                );
                 // Parallax / height map is textures[3] (FO3/FNV
                 // Parallax_Shader_Index_15 / Parallax_Occlusion).
                 // See #452.
@@ -643,9 +699,13 @@ fn apply_no_lighting_property(
         // Typically SHADER_NOLIGHTING (33) here, but capture whatever was
         // actually authored rather than assuming it.
         info.legacy_shader_type = Some(shader.shader.shader_type);
-        if info.texture_path.is_none() {
-            info.texture_path = intern_texture_path(pool, &shader.file_name);
-        }
+        let file_name = intern_texture_path(pool, &shader.file_name);
+        claim_shader_texture(
+            &mut info.texture_path,
+            &mut info.texturing_property_roles,
+            TEXTURING_BASE,
+            file_name,
+        );
         // Same rationale as the PPLighting branch above: no Double_Sided
         // bit on the FO3/FNV flag enum. #441. Pre-#454 this branch
         // was missing the `ALPHA_DECAL_F2` (flag2 bit 21) check, so
@@ -759,9 +819,13 @@ fn apply_misc_shader_properties(
     // takes priority over an inherited parent NiNode's, matching the
     // documented precedence (#208) instead of last-writer-wins.
     if let Some(shader) = scene.get_as::<TileShaderProperty>(idx) {
-        if info.texture_path.is_none() {
-            info.texture_path = intern_texture_path(pool, &shader.file_name);
-        }
+        let file_name = intern_texture_path(pool, &shader.file_name);
+        claim_shader_texture(
+            &mut info.texture_path,
+            &mut info.texturing_property_roles,
+            TEXTURING_BASE,
+            file_name,
+        );
         if !info.texture_clamp_mode_consumed {
             info.texture_clamp_mode = shader.texture_clamp_mode as u8;
             info.texture_clamp_mode_consumed = true;
@@ -780,9 +844,13 @@ fn apply_misc_shader_properties(
         }
     }
     if let Some(shader) = scene.get_as::<SkyShaderProperty>(idx) {
-        if info.texture_path.is_none() {
-            info.texture_path = intern_texture_path(pool, &shader.file_name);
-        }
+        let file_name = intern_texture_path(pool, &shader.file_name);
+        claim_shader_texture(
+            &mut info.texture_path,
+            &mut info.texturing_property_roles,
+            TEXTURING_BASE,
+            file_name,
+        );
         if !info.texture_clamp_mode_consumed {
             info.texture_clamp_mode = shader.texture_clamp_mode as u8;
             info.texture_clamp_mode_consumed = true;
@@ -801,9 +869,13 @@ fn apply_misc_shader_properties(
         }
     }
     if let Some(shader) = scene.get_as::<TallGrassShaderProperty>(idx) {
-        if info.texture_path.is_none() {
-            info.texture_path = intern_texture_path(pool, &shader.file_name);
-        }
+        let file_name = intern_texture_path(pool, &shader.file_name);
+        claim_shader_texture(
+            &mut info.texture_path,
+            &mut info.texturing_property_roles,
+            TEXTURING_BASE,
+            file_name,
+        );
         if !info.env_map_scale_consumed {
             info.env_map_scale =
                 legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
