@@ -1,7 +1,9 @@
 //! Byte-level `.pex` reader — a structural port of Champollion's
 //! `Pex::FileReader`. Mirrors its read order and endianness handling
 //! exactly; the only behavioural change is resolving string indices to
-//! owned `String`s as they're read (see [`crate::model`]).
+//! owned `String`s as they're read (see [`crate::model`]). Champollion keeps
+//! the index, so that change is also a memory amplifier — every copy is
+//! charged against [`crate::string_byte_budget`] (#4317).
 
 use crate::model::*;
 use crate::opcode::OpCode;
@@ -26,6 +28,9 @@ pub(crate) struct Reader<'a> {
     /// Filled after the string table is read; every `string_index` read
     /// resolves against it.
     strings: Vec<String>,
+    /// Bytes copied out of `strings` so far, and the ceiling on that total.
+    string_bytes: usize,
+    string_budget: usize,
 }
 
 type R<T> = Result<T, PexError>;
@@ -38,6 +43,8 @@ impl<'a> Reader<'a> {
             // Provisional; set for real once the magic is read.
             endian: Endian::Little,
             strings: Vec::new(),
+            string_bytes: 0,
+            string_budget: crate::string_byte_budget(data.len()),
         }
     }
 
@@ -136,15 +143,24 @@ impl<'a> Reader<'a> {
 
     /// A `u16` index into the already-read string table, resolved to its
     /// string. Out-of-range indices are an error (Champollion throws).
+    ///
+    /// #4317 — the copy is charged before it is made. A 2-byte index can name
+    /// a 65 535-byte string, so without the budget a ~330 KB wire-valid file
+    /// allocated past 8 GB and aborted the process — an allocation failure
+    /// is not a panic, so no `catch_unwind` above this could recover it.
     fn string_index(&mut self) -> R<String> {
         let idx = self.u16()? as usize;
-        self.strings
-            .get(idx)
-            .cloned()
-            .ok_or(PexError::BadStringIndex {
-                index: idx,
-                table_len: self.strings.len(),
-            })
+        let string = self.strings.get(idx).ok_or(PexError::BadStringIndex {
+            index: idx,
+            table_len: self.strings.len(),
+        })?;
+        self.string_bytes = self.string_bytes.saturating_add(string.len());
+        if self.string_bytes > self.string_budget {
+            return Err(PexError::StringBudgetExceeded {
+                budget: self.string_budget,
+            });
+        }
+        Ok(string.clone())
     }
 
     fn value(&mut self) -> R<Value> {

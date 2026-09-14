@@ -66,19 +66,40 @@ impl Pex {
         // 11.6 s at F = D = 65 535 (release, single thread) against 15 µs for
         // the vanilla-shaped F = D = 60.
         let debug_lines = debug_line_index(self);
+        // #4317 — see `ScanBudget`.
+        let mut budget = ScanBudget {
+            remaining: crate::string_byte_budget(self.string_table.iter().map(String::len).sum()),
+            exhausted: false,
+        };
         for object in &self.objects {
             for property in &object.properties {
                 if let Some(function) = &property.read_function {
                     let scope = CallScope::PropertyGetter {
                         property: property.name.clone(),
                     };
-                    scan_function(self, object, function, scope, &debug_lines, &mut scan);
+                    scan_function(
+                        self,
+                        object,
+                        function,
+                        scope,
+                        &debug_lines,
+                        &mut budget,
+                        &mut scan,
+                    );
                 }
                 if let Some(function) = &property.write_function {
                     let scope = CallScope::PropertySetter {
                         property: property.name.clone(),
                     };
-                    scan_function(self, object, function, scope, &debug_lines, &mut scan);
+                    scan_function(
+                        self,
+                        object,
+                        function,
+                        scope,
+                        &debug_lines,
+                        &mut budget,
+                        &mut scan,
+                    );
                 }
             }
             for state in &object.states {
@@ -87,11 +108,65 @@ impl Pex {
                         state: state.name.clone(),
                         function: function.name.clone(),
                     };
-                    scan_function(self, object, function, scope, &debug_lines, &mut scan);
+                    scan_function(
+                        self,
+                        object,
+                        function,
+                        scope,
+                        &debug_lines,
+                        &mut budget,
+                        &mut scan,
+                    );
                 }
+            }
+            if budget.exhausted {
+                break;
             }
         }
         scan
+    }
+}
+
+/// #4317 — every [`CallSite`] / [`CallSiteDiagnostic`] copies the source-file,
+/// object and scope names plus the call's own strings. `parse` bounds what a
+/// file can reference, but not how many times this scan copies it: one
+/// 65 535-byte `source_file_name` and 20 000 calls asked for 3.8 GB here from
+/// a 366 KB file. Every record is charged against one budget sized from the
+/// file's own string table; the scan stops at the first record that would
+/// exceed it and reports that it did.
+struct ScanBudget {
+    remaining: usize,
+    exhausted: bool,
+}
+
+impl ScanBudget {
+    fn charge(&mut self, bytes: usize) -> bool {
+        match self.remaining.checked_sub(bytes) {
+            Some(left) => {
+                self.remaining = left;
+                true
+            }
+            None => {
+                self.exhausted = true;
+                false
+            }
+        }
+    }
+}
+
+fn scope_bytes(scope: &CallScope) -> usize {
+    match scope {
+        CallScope::StateFunction { state, function } => state.len() + function.len(),
+        CallScope::PropertyGetter { property } | CallScope::PropertySetter { property } => {
+            property.len()
+        }
+    }
+}
+
+fn target_bytes(target: &CallTarget) -> usize {
+    match target {
+        CallTarget::StaticType(name) | CallTarget::ParentType(name) => name.len(),
+        CallTarget::Receiver(receiver) => receiver.as_ref().map_or(0, String::len),
     }
 }
 
@@ -101,8 +176,12 @@ fn scan_function(
     function: &Function,
     scope: CallScope,
     debug_lines: &DebugLineIndex<'_>,
+    budget: &mut ScanBudget,
     scan: &mut CallSiteScan,
 ) {
+    if budget.exhausted {
+        return;
+    }
     let line_numbers = lookup_debug_lines(debug_lines, &object.name, &scope);
     for (instruction_index, instruction) in function.instructions.iter().enumerate() {
         if !matches!(
@@ -112,7 +191,28 @@ fn scan_function(
             continue;
         }
         let source_line = line_numbers.and_then(|lines| lines.get(instruction_index).copied());
-        match decode_call(instruction, &object.parent_class_name) {
+        let decoded = decode_call(instruction, &object.parent_class_name);
+        let record_bytes = pex.header.source_file_name.len()
+            + object.name.len()
+            + scope_bytes(&scope)
+            + match &decoded {
+                Ok((target, called_function)) => target_bytes(target) + called_function.len(),
+                Err(message) => message.len(),
+            };
+        if !budget.charge(record_bytes) {
+            scan.diagnostics.push(CallSiteDiagnostic {
+                source_file: pex.header.source_file_name.clone(),
+                object: object.name.clone(),
+                scope,
+                instruction_index,
+                source_line,
+                message: "call-site scan stopped: this file's string data exceeds the \
+                          copy budget for its size, so later calls were not extracted"
+                    .to_owned(),
+            });
+            return;
+        }
+        match decoded {
             Ok((target, called_function)) => scan.calls.push(CallSite {
                 source_file: pex.header.source_file_name.clone(),
                 object: object.name.clone(),
@@ -334,6 +434,59 @@ mod tests {
             "call_sites took {elapsed:?} for {COUNT} functions against \
              {COUNT} debug entries — the per-function rescan is back (#3938)"
         );
+    }
+
+    /// Regression for #4317. One 65 535-byte `source_file_name` is copied
+    /// into every record, so 400 calls ask for ~26 MB of copies against the
+    /// 16 MiB floor (the string table is empty). The scan must stop short and
+    /// say so rather than copy without bound — the shape that reached 3.8 GB
+    /// from a 366 KB file.
+    #[test]
+    fn call_site_copies_are_bounded_by_the_string_budget() {
+        const CALLS: usize = 400;
+        let pex = Pex {
+            script_type: ScriptType::Fallout4,
+            header: Header {
+                source_file_name: "x".repeat(65_535),
+                ..Default::default()
+            },
+            string_table: Vec::new(),
+            debug_info: DebugInfo::default(),
+            user_flags: Vec::new(),
+            objects: vec![Object {
+                name: "Hostile".to_owned(),
+                states: vec![State {
+                    functions: vec![Function {
+                        name: "OnInit".to_owned(),
+                        instructions: (0..CALLS)
+                            .map(|_| {
+                                call(
+                                    OpCode::CallStatic,
+                                    &["StorageUtil", "GetIntValue", "::temp0"],
+                                    0,
+                                )
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let scan = pex.call_sites();
+        let copied: usize = scan.calls.iter().map(|site| site.source_file.len()).sum();
+        assert!(
+            scan.calls.len() < CALLS,
+            "the scan must stop before copying all {CALLS} records"
+        );
+        assert!(
+            copied <= crate::string_byte_budget(0),
+            "copied {copied} source-file bytes, past the budget"
+        );
+        assert_eq!(scan.diagnostics.len(), 1, "the truncation must be reported");
+        assert!(scan.diagnostics[0].message.contains("copy budget"));
     }
 
     #[test]

@@ -588,10 +588,12 @@ lifecycle, and the engine wiring.
   (`onactivate`, `onload`, `ontriggerenter`, `onhit`, `ontimer`, `oninit`,
   `onupdate`) are all present.
 - **`decompile_script` assembly**: synthetic `::`-prefixed variables dropped;
-  auto-state functions → script-scope items, named states → `State` items;
-  property getter/setter bodies decompiled via `build_named_function`. Verify the
-  auto-state match uses `state.name == object.auto_state_name` (a Skyrim
-  empty-string auto-state vs FO4 named auto-state both handled).
+  the empty-named (`""`) state's functions → script-scope items; every named
+  state → a `State` item, marked `is_auto` when it matches `auto_state_name`
+  (case-insensitively, via `is_auto_state`); property getter/setter bodies
+  decompiled via `build_named_function`. Verify the empty name — not an
+  `auto_state_name` match — decides script scope: keying it on the match
+  inverted all 983 vanilla scripts with a named `Auto State` (#4319).
 - **The 99.996% claim**: this dimension owns verifying the corpus-smoke harness
   (`crates/pex/examples/pex_corpus_smoke.rs`) actually decompiles (not just
   parses) every `.pex` and counts panics/`Err` as failures. The README/docs claim

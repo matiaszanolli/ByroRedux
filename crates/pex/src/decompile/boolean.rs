@@ -23,9 +23,10 @@
 //!    is silently collapsed and the loop disappears (#2655).
 //!
 //!    Note the corpus decompile rate does **not** validate this departure:
-//!    the smoke harness discards the resulting `Script`, so it measures
-//!    robustness (no panic, no `Err`), not fidelity — a wrong AST scores as
-//!    a success. The R5 fidelity gate does check shape, but it is a single
+//!    the smoke harness checks only the resulting `Script`'s top-level item
+//!    count (#3017), so it measures robustness (no panic, no `Err`) plus that
+//!    coarse shape, not fidelity — a wrong AST scores as a success (#4319's
+//!    inverted auto states passed it for exactly that reason). The R5 fidelity gate does check shape, but it is a single
 //!    `#[ignore]`d script that only runs with Skyrim SE data on disk.
 //! 2. **Termination guard.** The C++ unconditionally re-processes the
 //!    source block after a potential `||`; we re-process only when a

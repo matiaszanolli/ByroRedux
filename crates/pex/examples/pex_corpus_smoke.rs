@@ -18,10 +18,7 @@
 use std::collections::BTreeMap;
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
-use byroredux_pex::{
-    decompile::{decompile_script, is_auto_state},
-    parse, OpCode, ScriptType, MAX_OPCODE,
-};
+use byroredux_pex::{decompile::decompile_script, parse, OpCode, ScriptType, MAX_OPCODE};
 
 /// Minimal archive abstraction over the two container formats — both
 /// expose `list_files` + `extract`.
@@ -95,12 +92,11 @@ fn expected_top_level_item_count(object: &byroredux_pex::Object) -> usize {
         .count();
     let mut items = non_synthetic_vars + object.properties.len();
     for state in &object.states {
-        // #3943 — call the decompiler's own predicate rather than
-        // re-spelling it. This was a hand-copied `==` while
-        // `decompile_script` had moved to a case-insensitive match
-        // (#3786 / `88e7dbfc`), so a mismatched-casing auto state made
-        // this shape check disagree with the thing it is checking.
-        if is_auto_state(object, state) {
+        // #4319 — script scope is the empty-named state, not the auto state.
+        // This used to call the decompiler's own auto-state predicate
+        // (#3943), which kept the two in agreement — on the same wrong rule,
+        // so the 983 inverted vanilla scripts never showed as a mismatch.
+        if state.name.is_empty() {
             items += state.functions.len();
         } else {
             items += 1;

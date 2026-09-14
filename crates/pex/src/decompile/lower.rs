@@ -384,11 +384,14 @@ fn lower_property(
 
 /// Decompile a whole `.pex` into a Papyrus [`Script`].
 ///
-/// The single object becomes the script; its auto/default state's
-/// functions become top-level items, named states become `State` items.
+/// The single object becomes the script; its empty-named default state's
+/// functions become top-level items, and every named state becomes a `State`
+/// item — the one matching `auto_state_name` marked `is_auto` (#4319).
 /// Synthetic (`::`-prefixed) variables — temps and property backing
 /// stores — are dropped (they're not source-level declarations).
-/// Is `state` the object's auto (default) state?
+/// Is `state` the object's auto state — the one it boots into?
+///
+/// Not the script-scope state: that is always the one named `""` (#4319).
 ///
 /// The single source of truth for that question. `88e7dbfc` (#3786) made the
 /// comparison case-INSENSITIVE here — Papyrus identifiers are case-insensitive
@@ -430,17 +433,16 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
     }
 
     for state in &object.states {
-        // #3786 — Papyrus identifiers are case-insensitive, and every other
-        // identifier comparison in this file (parent-class-name, return-type,
-        // event-name lookup, the `true`/`false`/`none` literals) already
-        // matches that way. `==` here would silently drop this state's
-        // callables to script scope only in the false-negative direction
-        // (missed auto-state match), so mismatched casing degrades to a
-        // named state rather than corrupting anything — but it's still the
-        // one inconsistent comparison, and identifiers are untrusted `.pex`
-        // string-table data.
-        if is_auto_state(object, state) {
-            // Auto/default state: its callables live at script scope.
+        // #4319 — the script-scope state is the one named `""`, always.
+        // `auto_state_name` names the state the object *boots into*, which is
+        // `""` only when the source declares no `Auto State`. Keying script
+        // scope on that match (as this did before) was right for that case
+        // alone: `Auto State Waiting` had `Waiting`'s callables hoisted to
+        // script scope and the real `""` default demoted to a non-auto
+        // `State ''`, with nothing ever marked `Auto` — 983 vanilla scripts.
+        // Champollion's `PscCoder::writeStates` and the `.psc` frontend both
+        // key script scope on the empty name.
+        if state.name.is_empty() {
             for f in &state.functions {
                 let item = handler_to_script_item(build_handler(object, f, &f.name)?);
                 body.push(sp(item));
@@ -454,7 +456,8 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
             }
             body.push(sp(ScriptItem::State(State {
                 name: ident(&state.name),
-                is_auto: false,
+                // #3786 — case-insensitive, through the shared predicate.
+                is_auto: is_auto_state(object, state),
                 body: items,
             })));
         }
@@ -596,15 +599,16 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_casing_auto_state_still_hoists_its_callables_to_script_scope() {
-        // #3786 — `auto_state_name` and a state's own `name` are two
-        // independently-set `.pex` fields; Papyrus identifiers are
-        // case-insensitive, so a compiler encoding them with different
-        // casing must still match. Before the fix (`==`), this state would
-        // have landed as a named `State { is_auto: false }` instead of
-        // hoisting its `OnActivate` handler to script scope.
-        let func = PexFunction {
-            name: "OnActivate".into(),
+    fn named_auto_state_stays_an_auto_state_and_the_empty_state_is_script_scope() {
+        // #4319 — the layout every vanilla `Auto State` script has: a `""`
+        // default state plus the named auto state. Script scope is the `""`
+        // state; `auto_state_name` only marks which named state the object
+        // boots into. The pre-fix rule hoisted `waiting`'s handler to script
+        // scope and demoted `""` to a non-auto `State ''`. The auto state's
+        // casing deliberately differs from `auto_state_name`, keeping the
+        // #3786 case-insensitive match pinned.
+        let handler = |name: &str| PexFunction {
+            name: name.into(),
             return_type_name: "None".into(),
             instructions: vec![ins(OpCode::Return, vec![id("::NoneVar")])],
             ..PexFunction::default()
@@ -619,27 +623,43 @@ mod tests {
                 name: "MyScript".into(),
                 parent_class_name: "ObjectReference".into(),
                 auto_state_name: "Waiting".into(),
-                states: vec![PexState {
-                    name: "waiting".into(),
-                    functions: vec![func],
-                }],
+                states: vec![
+                    PexState {
+                        name: String::new(),
+                        functions: vec![handler("OnInit")],
+                    },
+                    PexState {
+                        name: "waiting".into(),
+                        functions: vec![handler("OnActivate")],
+                    },
+                ],
                 ..Object::default()
             }],
         };
         let script = decompile_script(&pex).unwrap();
-        assert_eq!(
-            script.body.len(),
-            1,
-            "no separate named State item should exist for the auto state: {:?}",
-            script.body
-        );
+        assert_eq!(script.body.len(), 2, "{:?}", script.body);
         let ScriptItem::Event(e) = &script.body[0].node else {
             panic!(
-                "auto state's OnActivate should hoist to script scope as an Event, got {:?}",
+                "the empty-named state's OnInit belongs at script scope, got {:?}",
                 script.body[0].node
             );
         };
-        assert_eq!(e.name.node.0, "OnActivate");
+        assert_eq!(e.name.node.0, "OnInit");
+        let ScriptItem::State(state) = &script.body[1].node else {
+            panic!(
+                "the named auto state must stay a State item, got {:?}",
+                script.body[1].node
+            );
+        };
+        assert_eq!(state.name.node.0, "waiting");
+        assert!(
+            state.is_auto,
+            "the state matching auto_state_name is the Auto State"
+        );
+        assert_eq!(state.body.len(), 1);
+        assert!(
+            matches!(&state.body[0].node, StateItem::Event(ev) if ev.name.node.0 == "OnActivate")
+        );
     }
 
     #[test]

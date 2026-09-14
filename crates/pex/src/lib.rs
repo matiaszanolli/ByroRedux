@@ -64,6 +64,29 @@ pub enum PexError {
     /// A var-arg opcode's count operand wasn't a non-negative integer.
     #[error("var-arg count operand was not a non-negative integer")]
     BadVarArgCount,
+
+    /// String-table references would copy more bytes than
+    /// [`string_byte_budget`] allows for a file this size (#4317).
+    #[error("string references exceed the {budget}-byte budget for this file")]
+    StringBudgetExceeded { budget: usize },
+}
+
+/// Most bytes of string data one decode may copy out of a `.pex` whose size
+/// (or string-table size, for [`Pex::call_sites`]) is `base`.
+///
+/// #4317 — the model holds owned `String`s, so every 2-byte string-table
+/// reference copies its target, up to 65 535 bytes. Linear in the file, but
+/// at up to ~32 000× per reference: a ~330 KB wire-valid file aborted the
+/// process out of memory. Measured over all 26 641 `.pex` in the Skyrim SE,
+/// FO4 and Starfield `Misc` archives, the worst `parse` copies ≤ 9× its file
+/// size and the worst `call_sites` scan 3.2 MB (133× its string table) —
+/// both upper bounds, taken from each model's `Debug` length. 64× with a
+/// 16 MiB floor keeps every vanilla script ≥ 5× clear of the ceiling while
+/// holding that 330 KB file to ~21 MB.
+pub(crate) fn string_byte_budget(base: usize) -> usize {
+    const AMPLIFICATION: usize = 64;
+    const FLOOR: usize = 16 * 1024 * 1024;
+    base.saturating_mul(AMPLIFICATION).max(FLOOR)
 }
 
 /// Decode a `.pex` byte buffer into a [`Pex`] model.
@@ -171,6 +194,7 @@ mod tests {
             "::temp0",
             "Self",
             "Bar",
+            "",
         ] {
             w.intern(s);
         }
@@ -206,8 +230,8 @@ mod tests {
         w.sidx("None"); // doc string ("" would need an interned empty; reuse None)
         w.u8(0); // const flag (FO4)
         w.u32(0); // user flags
-        w.sidx("None"); // auto-state name
-                        // struct infos (FO4): 0
+        w.sidx(""); // auto-state name: no `Auto State`
+                    // struct infos (FO4): 0
         w.u16(0);
         // variables: 0
         w.u16(0);
@@ -222,7 +246,10 @@ mod tests {
         w.sidx("Bar"); // auto var name
                        // states: 1 (the empty default state) with one function
         w.u16(1);
-        w.sidx("None"); // state name (reuse "None" as a non-empty token)
+        // State name: the empty default state, whose callables are script
+        // scope (#4319). This used to reuse "None" and relied on it matching
+        // the auto-state name, the very rule #4319 found wrong.
+        w.sidx("");
         w.u16(1); // function count
         w.sidx("OnActivate"); // function name
                               // function body:
@@ -307,6 +334,68 @@ mod tests {
         assert_eq!(call.args.len(), 3);
         assert_eq!(call.args[0].as_identifier(), Some("Bar"));
         assert_eq!(call.var_args, vec![Value::Bool(true)]);
+    }
+
+    /// #4317 — a wire-valid `.pex` whose references copy one 65 535-byte
+    /// string far past its own size is refused, not decoded into gigabytes.
+    /// 256 params naming it twice ask for ~33 MB of copies from a ~66 KB file;
+    /// the same shape at 65 535 params aborted the process under an 8 GB cap.
+    #[test]
+    fn string_copies_past_the_budget_are_refused() {
+        let big = "x".repeat(65_535);
+        let mut w = PexWriter::new();
+        for s in ["Foo", "ObjectReference", "", "None", "F", big.as_str()] {
+            w.intern(s);
+        }
+        w.magic(0xFA57_C0DE);
+        w.u8(3);
+        w.u8(2);
+        w.u16(0); // game_id (FO4)
+        w.i64(0);
+        w.string("Foo.psc");
+        w.string("user");
+        w.string("computer");
+        let table = w.strings.clone();
+        w.u16(table.len() as u16);
+        for s in &table {
+            w.string(s);
+        }
+        w.u8(0); // debug info: absent
+        w.u16(0); // user flags: none
+        w.u16(1); // objects
+        w.sidx("Foo");
+        w.u32(0); // size
+        w.sidx("ObjectReference");
+        w.sidx(""); // doc
+        w.u8(0); // const flag
+        w.u32(0); // user flags
+        w.sidx(""); // auto-state name
+        w.u16(0); // struct infos
+        w.u16(0); // variables
+        w.u16(0); // properties
+        w.u16(1); // states
+        w.sidx("");
+        w.u16(1); // functions
+        w.sidx("F");
+        w.sidx("None"); // return type
+        w.sidx(""); // doc
+        w.u32(0); // user flags
+        w.u8(0); // flags
+        w.u16(256); // params, each naming the 65 535-byte string twice
+        for _ in 0..256 {
+            w.sidx(&big);
+            w.sidx(&big);
+        }
+        w.u16(0); // locals
+        w.u16(0); // instructions
+        let bytes = w.buf;
+
+        assert!(bytes.len() < 70_000, "the fixture itself stays small");
+        assert!(
+            matches!(parse(&bytes), Err(PexError::StringBudgetExceeded { .. })),
+            "copying ~33 MB out of a {}-byte file must be refused",
+            bytes.len()
+        );
     }
 
     /// #3017 — the default `cargo test` run had ZERO coverage of the
