@@ -317,7 +317,10 @@ fn no_sorter_draw_does_not_follow_the_depth_sort() {
         cmds[0].entity_id, 2,
         "the depth-sorted draw stays in its own partition ahead of no_sorter draws"
     );
-    assert_eq!(cmds[1].entity_id, 1, "the no_sorter draw is not depth-ordered against it");
+    assert_eq!(
+        cmds[1].entity_id, 1,
+        "the no_sorter draw is not depth-ordered against it"
+    );
 }
 
 /// Regression for #4191: `no_sorter` only means something on the true

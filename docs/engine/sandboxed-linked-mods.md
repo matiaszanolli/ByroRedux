@@ -62,8 +62,10 @@ access to private executable memory.
 
 ByroRedux needs the former without inheriting the latter. The design must:
 
-- preserve ordinary content mods and unofficial patches as external,
-  load-ordered content;
+- preserve ordinary content mods as external, load-ordered content. Unofficial
+  patches remain loadable the same way, but the engine never *requires* one:
+  their fixes, and those of extender fix plugins, are built into core
+  ([Built-in Fixes](builtin-fixes.md));
 - let code mods participate deeply in gameplay without gaining ambient host
   authority;
 - make cross-mod collaboration a supported contract instead of an accidental

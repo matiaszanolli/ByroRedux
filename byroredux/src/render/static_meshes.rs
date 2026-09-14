@@ -513,8 +513,7 @@ pub(super) fn collect_static_mesh_draws(
                     mat.is_some_and(|material| material.parallax_height_in_alpha);
                 if parallax_map_index != 0 && parallax_height_in_alpha {
                     if normal_has_alpha {
-                        parallax_map_index |=
-                            crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT;
+                        parallax_map_index |= crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT;
                     } else {
                         // #4260 (OB-D4-01) — `parallax_height_in_alpha` means
                         // the height slot was bound to the NORMAL map's own
@@ -1199,8 +1198,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let expected_count =
-            byroredux_renderer::vulkan::material::supplemental_texture_slot::COUNT;
+        let expected_count = byroredux_renderer::vulkan::material::supplemental_texture_slot::COUNT;
         assert_eq!(
             declared.len(),
             expected_count,
@@ -1264,7 +1262,10 @@ mod tests {
         );
         for name in &declared {
             assert_eq!(
-                assigned.iter().filter(|assigned_name| *assigned_name == name).count(),
+                assigned
+                    .iter()
+                    .filter(|assigned_name| *assigned_name == name)
+                    .count(),
                 1,
                 "supplemental slot {name} must be written exactly once",
             );
