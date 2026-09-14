@@ -268,6 +268,29 @@ pub fn should_evict_skin_slot(last_used_frame: u64, current_frame: u64, min_idle
     idle >= min_idle
 }
 
+/// #4294 — stamp the LRU of every slot whose entity is still live.
+///
+/// A `SkinSlot` is lazily recreated on its next dispatch, so "was
+/// dispatched this frame" is a safe liveness signal for it. A `MorphSlot`
+/// is created once at spawn and never rebuilt, so the same signal reaped it
+/// permanently whenever its entity missed the skin dispatch loop for
+/// [`should_evict_skin_slot`]'s idle threshold: hidden by
+/// `AnimatedVisibility`, left without a `SkinSlot` by a full pool or a
+/// failed allocation, or drawn from a non-RT-capable mesh. Stamping from
+/// entity liveness keeps those slots alive, while a despawned entity stops
+/// being stamped and ages out on the same threshold.
+pub fn refresh_live_slot_stamps<'a>(
+    stamps: impl IntoIterator<Item = (byroredux_core::ecs::EntityId, &'a mut u64)>,
+    current_frame: u64,
+    is_live: impl Fn(byroredux_core::ecs::EntityId) -> bool,
+) {
+    for (entity, stamp) in stamps {
+        if is_live(entity) {
+            *stamp = current_frame;
+        }
+    }
+}
+
 /// #1297 / #1298 (DIM12-A-01) — does an existing [`SkinSlot`]'s
 /// allocated capacity no longer match the live mesh vertex count?
 ///
@@ -1223,6 +1246,32 @@ mod tests {
     /// Active this frame: idle = 0, must NOT evict regardless of
     /// threshold. Catches a "fence-post" off-by-one where current ==
     /// last_used wraps to a huge unsigned value via subtraction.
+    /// #4294 — a live entity that never reaches the skin dispatch keeps a
+    /// current stamp and is never reaped; a despawned one stops being
+    /// stamped and ages out on the ordinary idle threshold.
+    #[test]
+    fn live_slots_are_refreshed_and_despawned_slots_age_out() {
+        let live: byroredux_core::ecs::EntityId = 7;
+        let despawned: byroredux_core::ecs::EntityId = 9;
+        let min_idle = 3;
+        let (mut live_stamp, mut despawned_stamp) = (1u64, 1u64);
+        for frame in 2..=10u64 {
+            refresh_live_slot_stamps(
+                [(live, &mut live_stamp), (despawned, &mut despawned_stamp)],
+                frame,
+                |entity| entity == live,
+            );
+            assert!(
+                !should_evict_skin_slot(live_stamp, frame, min_idle),
+                "a live entity's slot must survive frame {frame} without any dispatch"
+            );
+        }
+        assert!(
+            should_evict_skin_slot(despawned_stamp, 10, min_idle),
+            "a despawned entity's slot must age out once it stops being stamped"
+        );
+    }
+
     #[test]
     fn should_evict_keeps_active_slot() {
         assert!(!should_evict_skin_slot(

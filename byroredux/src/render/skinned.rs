@@ -279,6 +279,14 @@ fn mix_morph_weights(mut h: u64, weights: &[f32]) -> u64 {
 /// reads this buffer — see `mix_morph_weights` above for why that hash
 /// now also depends on these weights.
 pub(super) fn update_morph_weights(world: &World, ctx: &mut byroredux_renderer::VulkanContext) {
+    // #4294 — keep every live entity's `MorphSlot` from being reaped. A
+    // morph entity is a mesh entity and despawn drops its `MeshHandle`, so a
+    // slot whose entity lost it stops being stamped and ages out. Runs ahead
+    // of the early return below: a scene with no morph animation still owns
+    // slots that need stamping.
+    if let Some(meshes) = world.query::<byroredux_core::ecs::components::MeshHandle>() {
+        ctx.refresh_morph_slot_lru(|entity| meshes.contains(entity));
+    }
     let Some(weights_q) = world.query::<AnimatedMorphWeights>() else {
         return;
     };
@@ -289,6 +297,32 @@ pub(super) fn update_morph_weights(world: &World, ctx: &mut byroredux_renderer::
         // #3687 — writes directly into `slot`'s own pending-weights
         // buffer via the closure, no per-frame `Vec` allocation.
         slot.stage_weights(|i| weights.get(i));
+    }
+}
+
+#[cfg(test)]
+mod morph_lru_refresh_tests {
+    /// #4294 — the LRU refresh must run before `update_morph_weights`' early
+    /// return on a world with no `AnimatedMorphWeights` storage. Below it,
+    /// slots in a scene without morph animation would never be stamped, and a
+    /// despawned entity's slot would never age out.
+    #[test]
+    fn morph_lru_refresh_precedes_the_weights_early_return() {
+        let src = include_str!("skinned.rs");
+        let body = src
+            .split_once("pub(super) fn update_morph_weights(")
+            .expect("update_morph_weights must still exist")
+            .1;
+        let refresh = body
+            .find("ctx.refresh_morph_slot_lru(")
+            .expect("update_morph_weights must refresh the MorphSlot LRU");
+        let early_return = body
+            .find("world.query::<AnimatedMorphWeights>()")
+            .expect("update_morph_weights must still query AnimatedMorphWeights");
+        assert!(
+            refresh < early_return,
+            "the LRU refresh must precede the AnimatedMorphWeights early return"
+        );
     }
 }
 

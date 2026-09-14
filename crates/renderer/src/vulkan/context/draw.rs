@@ -1625,6 +1625,21 @@ impl VulkanContext {
         Ok(())
     }
 
+    /// #4294 — stamp the LRU of every `MorphSlot` whose entity `is_live`
+    /// reports alive, ahead of this frame's eviction sweep. The app calls
+    /// this once per frame before `draw_frame`; see
+    /// [`crate::vulkan::skin_compute::refresh_live_slot_stamps`] for why a
+    /// `MorphSlot` cannot take its liveness from the skin dispatch loop.
+    pub fn refresh_morph_slot_lru(&mut self, is_live: impl Fn(EntityId) -> bool) {
+        crate::vulkan::skin_compute::refresh_live_slot_stamps(
+            self.morph_slots
+                .iter_mut()
+                .map(|(&entity, slot)| (entity, &mut slot.last_used_frame)),
+            self.frame_counter as u64,
+            is_live,
+        );
+    }
+
     /// Whether FSR is not merely the *selected* upscaler mode but is
     /// actually dispatching this frame (#2518).
     ///

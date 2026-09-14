@@ -509,17 +509,10 @@ impl VulkanContext {
                                 // entity as "active this frame" even
                                 // when the dispatch is skipped.
                                 slot.last_used_frame = self.frame_counter as u64;
-                                // #3231 — same LRU bump for this entity's
-                                // `MorphSlot`, if it has one. Folded into
-                                // the skin-dispatch loop (rather than a
-                                // separate pass) because v1 only creates
-                                // a `MorphSlot` for entities that also
-                                // have a `SkinSlot`-eligible mesh, so
-                                // every entity that reaches here is the
-                                // complete set of candidates.
-                                if let Some(morph_slot) = self.morph_slots.get_mut(&entity_id) {
-                                    morph_slot.last_used_frame = self.frame_counter as u64;
-                                }
+                                // #4294 — no `MorphSlot` LRU bump here. This loop skips hidden,
+                                // slot-less and non-RT-capable entities, and a `MorphSlot` is never
+                                // rebuilt once reaped; `VulkanContext::refresh_morph_slot_lru` stamps
+                                // it from entity liveness instead.
 
                                 // #1195 / PERF-DIM7-01 — skip the
                                 // dispatch when the entity's pose is
@@ -952,8 +945,9 @@ impl VulkanContext {
             // folded into the skin one: a `MorphSlot` has no matching BLAS
             // entry to drop, and the two resources are deliberately
             // independent so a bug in one loop can't corrupt the other's
-            // bookkeeping. Same `min_idle`/`now` threshold — both resources
-            // are keyed to the same entity's draw presence.
+            // bookkeeping. Same `min_idle`/`now` threshold, different
+            // stamp source: morph stamps come from entity liveness
+            // (`refresh_morph_slot_lru`, #4294), not this dispatch loop.
             let mut morph_evictees: Vec<EntityId> =
                 std::mem::take(&mut self.pending_morph_unload_victims);
             morph_evictees.extend(self.morph_slots.iter().filter_map(|(&eid, slot)| {
