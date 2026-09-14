@@ -1978,6 +1978,37 @@ mod tests {
         );
     }
 
+    /// #4291 — the blade's directional loop must take the light's radiance
+    /// from its colour alone, exactly as `shadowableLightRadiance`'s
+    /// directional arm does (`atten = 1.0`). `params.x` is the point/spot
+    /// falloff exponent and `collect_lights` writes it as `0.0` for every
+    /// directional source, so any read of it inside this loop zeroes the sun,
+    /// its traced shadow and the backlit transmission on every exterior blade
+    /// — which is how the shader shipped from Phase 1 until this pin.
+    #[test]
+    fn directional_radiance_is_not_scaled_by_the_falloff_exponent() {
+        let src = include_str!("../../shaders/groundcover_blade.frag");
+        let body = src
+            .split_once("void main()")
+            .expect("the blade shader must still have a main")
+            .1;
+        let code: String = body
+            .lines()
+            .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("params.x"),
+            "the blade lights directional sources only; params.x is the \
+             point/spot falloff exponent (0.0 on every directional GpuLight)"
+        );
+        assert!(
+            code.contains("vec3 incoming = lights[i].color_type.rgb * shadow * canopy;"),
+            "a directional light's incoming radiance is its colour times the \
+             traced shadow and canopy transmittance"
+        );
+    }
+
     /// §12.1 and §12.5 are the same extinction through the same slab, so a
     /// build that gave occlusion its own strength parameter would let the two
     /// disagree about how thick the same grass is (§11.6's answer).

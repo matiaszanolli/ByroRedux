@@ -150,7 +150,12 @@ void main() {
         // `L` points from the surface toward the light, so `L.y` is the
         // cosine of the light's angle from vertical.
         float canopy = byroGcCanopyTransmittance(vDGround, canopyAbove, L.y);
-        vec3 incoming = lights[i].color_type.rgb * lights[i].params.x * shadow * canopy;
+        // A directional light's radiance is its colour alone. `params.x` is
+        // the point/spot falloff exponent, which `collect_lights` writes as
+        // 0.0 for every directional source and `shadowableLightRadiance`
+        // never reads on its directional arm — scaling by it here zeroed the
+        // sun on every blade (#4291).
+        vec3 incoming = lights[i].color_type.rgb * shadow * canopy;
 
         lit += incoming * (diffuse + sheenLobe);
         transmitted += incoming * (lobe * bladeTransmittance);
