@@ -676,7 +676,7 @@ fn manual_bench_draw_sort_serial_vs_parallel() {
 }
 
 /// #2681 (PERF-D2-04) — third arm: decorate-sort-undecorate. Extracts the
-/// 11-tuple key once per element into a `Vec<(Key, usize)>` (a fraction of
+/// sort key (11-tuple then, 12 now) once per element into a `Vec<(Key, usize)>` (a fraction of
 /// `DrawCommand`'s ~480 bytes), sorts THAT by key (O(N) key extractions
 /// instead of `sort_unstable_by_key`'s ~2·N·log₂N re-extractions from the
 /// full struct on every comparison — the same transform #2034 already
@@ -711,6 +711,17 @@ fn manual_bench_draw_sort_serial_vs_parallel() {
 /// over decorate's saved extractions. This bench is kept as the permanent,
 /// re-runnable falsification — re-run it (not the reasoning) before ever
 /// revisiting this optimization.
+///
+/// **Re-run 2026-09-14 for #4194 (12-tuple key, same hardware): same
+/// verdict.** The baseline wins N=800..2750 (baseline/decorate 0.62–0.81),
+/// and wins again at N=10000 (0.94). Decorate "wins" only at N=3000/3400/5000
+/// (2.1–3.0×), and `decorate_serial` falls from 657 µs at N=3000 to 209 µs
+/// at N=3400: sorting more elements three times faster. That is the same
+/// non-monotonic artifact recorded above, not a crossover. Every committed
+/// runtime baseline sits at `bench_draws_raster_cmds` ≤ 283, deep in the
+/// range where the baseline wins, so the production sort stays as it is.
+/// The companion serial-vs-parallel sweep still crosses between N=2750
+/// (s/p 0.98) and N=3000 (1.09), so `DRAW_SORT_PARALLEL_THRESHOLD` stays 3000.
 ///
 /// `cargo test -p byroredux --release manual_bench_draw_sort_decorate_sort_undecorate -- --ignored --nocapture`.
 #[test]
