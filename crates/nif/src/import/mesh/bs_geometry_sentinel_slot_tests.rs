@@ -323,3 +323,39 @@ fn stage_b_all_sentinel_external_slots_returns_none() {
     )
     .is_none());
 }
+
+// ── #4394: authored bounding sphere unit conversion ────────────────────
+
+/// Regression for #4394 — `BSGeometry.bounding_sphere` is authored in the
+/// `.mesh` format's normalised units while positions are decoded
+/// ×`HAVOK_SCALE`, so the local bound must be converted at the boundary.
+/// Pre-fix it was used verbatim: a sphere ~70× too small for its geometry.
+#[test]
+fn authored_bounding_sphere_is_converted_to_decoded_position_units() {
+    let k = BSGeometryMeshData::HAVOK_SCALE;
+    let mut shape = bs_geometry_with_meshes(
+        FLAG_INTERNAL_GEOM_DATA,
+        vec![BSGeometryMesh {
+            lod_slot: 0,
+            tri_size: 0,
+            num_verts: 0,
+            flags: 0,
+            kind: BSGeometryMeshKind::Internal {
+                mesh_data: Box::new(populated_mesh_data()),
+            },
+        }],
+    );
+    shape.bounding_sphere = ([0.25, -0.5, 1.0], 2.0);
+
+    let scene = NifScene::default();
+    let mut pool = StringPool::new();
+    let mesh = extract_bs_geometry(&scene, &shape, &shape.av.transform, &mut pool, None)
+        .expect("populated Internal slot must import");
+
+    assert_eq!(mesh.local_bound_center, [0.25 * k, -0.5 * k, 1.0 * k]);
+    assert_eq!(
+        mesh.local_bound_radius,
+        2.0 * k,
+        "the authored radius must be scaled by HAVOK_SCALE like the positions (#4394)"
+    );
+}

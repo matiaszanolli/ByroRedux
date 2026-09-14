@@ -371,20 +371,25 @@ pub fn extract_bs_geometry(
     let t = &world_transform.translation;
     let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
 
-    // BSGeometry bounding sphere is already in Y-up (Starfield-native), so
-    // use it directly when radius > 0; otherwise fall back to centroid.
+    // BSGeometry bounding sphere shares the decoded vertices' basis
+    // (Starfield-native Y-up), but NOT their units: it is authored in the
+    // `.mesh` format's normalised units, while `BSGeometryMeshData` decodes
+    // every position ×`HAVOK_SCALE`. #4394 — the sphere used to be taken
+    // verbatim, leaving `local_bound_*` ~70× too small (frustum pop, every
+    // architecture sub-mesh escalated to the Clutter depth bias). Measured
+    // over 40,000 vanilla Starfield shapes: the verbatim sphere enclosed
+    // its vertices on 0, the scaled sphere on 39,939. Falls back to the
+    // vertex centroid when no sphere is authored.
     let (local_bound_center, local_bound_radius) = {
-        let [cx, cy, cz] = shape.bounding_sphere.0;
-        let r = shape.bounding_sphere.1;
+        let k = BSGeometryMeshData::HAVOK_SCALE;
+        let [cx, cy, cz] = shape.bounding_sphere.0.map(|c| c * k);
+        let r = shape.bounding_sphere.1 * k;
         if r > 0.0 {
-            // #2098 (SF2D2-01) — the raw authored sphere is used verbatim
-            // here with no cross-check that it's expressed in the same
-            // units as the decoded vertices. If a future content source
-            // (or a parser regression) ever authors/decodes the two in
-            // divergent scales (e.g. a havok-scaled sphere against
-            // renderer-scaled vertices), the bound could be far too
-            // small — off-axis culling pop. Non-fatal, log-only, mirrors
-            // `bs_geometry_hint_mismatch`'s pattern.
+            // #2098 (SF2D2-01) — cross-check that the (now unit-converted)
+            // authored sphere actually covers the decoded vertices. Still
+            // non-fatal and log-only, mirroring `bs_geometry_hint_mismatch`:
+            // after #4394 a hit means genuinely divergent content, not the
+            // systematic unit gap it used to report on every mesh.
             if let Some(mismatch) =
                 bs_geometry_bounding_sphere_mismatch([cx, cy, cz], r, &positions)
             {

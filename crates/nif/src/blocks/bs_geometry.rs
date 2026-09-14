@@ -356,7 +356,11 @@ impl BSGeometryMeshData {
     /// files are normalised to metric units; this scale brings the
     /// default vertex positions back to Skyrim-equivalent sizes.
     /// Per `BSGeometryMeshData::havokScale` (private member).
-    const HAVOK_SCALE: f32 = 69.969;
+    ///
+    /// `pub(crate)` so the import boundary can bring the parent
+    /// `BSGeometry.bounding_sphere` — authored in the same normalised
+    /// units — into the unit system these decoded positions use (#4394).
+    pub(crate) const HAVOK_SCALE: f32 = 69.969;
 
     /// Parse a standalone external `.mesh` file (SF-D4-02 Stage B).
     ///
