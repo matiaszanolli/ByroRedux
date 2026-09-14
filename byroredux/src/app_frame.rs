@@ -277,7 +277,7 @@ impl App {
             // can resolve, and #4052 settled that it must be resolved every
             // frame (the registry compacts).
             if ctx.groundcover.is_some() && !self.groundcover_off {
-                crate::render::groundcover::collect_groundcover_frame(
+                let chunks_truncated = crate::render::groundcover::collect_groundcover_frame(
                     &self.world,
                     &ctx.mesh_registry,
                     byroredux_core::math::Vec3::from_array(frame.camera_pos),
@@ -357,6 +357,7 @@ impl App {
                     debug_points: self.groundcover_debug_points,
                     disturbers: &self.groundcover_disturbers,
                     delta_seconds: frame_dt,
+                    chunks_truncated,
                 };
                 ctx.prepare_groundcover(&input);
             } else if ctx.groundcover.is_some() {
@@ -385,6 +386,7 @@ impl App {
                     // trail decaying behind a feature that is not drawing.
                     disturbers: &[],
                     delta_seconds: 0.0,
+                    chunks_truncated: 0,
                 };
                 ctx.prepare_groundcover(&input);
             }

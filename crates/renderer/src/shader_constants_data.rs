@@ -293,6 +293,12 @@ pub const GROUNDCOVER_MAX_BLADES_PER_CHUNK: u32 = 4096;
 /// after the behind-camera cull. 256 keeps ~4× headroom while holding the blade
 /// buffer at `256 × 4096 × 16 B` = 16 MB, the same size it had at 1,024 chunks
 /// × 1,024 blades before the candidate budget rose.
+///
+/// The headroom is enforced rather than argued: the binary's
+/// `chunk_cap_covers_every_chunk_in_reach` bounds the chunks the distance cull
+/// can keep from this file's chunk size and draw distance, so a §11.2 sweep
+/// that outgrows the cap fails a test instead of silently dropping chunks at
+/// runtime (#4338).
 pub const GROUNDCOVER_MAX_CHUNKS: u32 = 256;
 /// Density-histogram buckets (§11.3). The scatter tallies `d_ground` per
 /// candidate so the field can be calibrated against real cells rather than

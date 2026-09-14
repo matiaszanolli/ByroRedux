@@ -20,15 +20,19 @@
 //!
 //! ## Why the blade buffer is sized the way it is
 //!
-//! [`GROUNDCOVER_MAX_CHUNKS`] × [`GROUNDCOVER_MAX_BLADES_PER_CHUNK`] × 16 B =
-//! 16 MB device-local, against the 4 GB total budget: 256 chunks × 4,096
+//! [`GROUNDCOVER_MAX_CHUNKS`] × [`GROUNDCOVER_MAX_BLADES_PER_CHUNK`] ×
+//! `size_of::<GpuGroundCoverBlade>()` (16 B) = 16 MB device-local, against the 4 GB total budget: 256 chunks × 4,096
 //! blades since the candidate budget rose on 2026-09-13 (design §12.13), the
 //! same bytes as the earlier 1,024 × 1,024. The visible set at the shipped
 //! 512-unit chunk and 2000-unit draw distance is ~50 chunks, so this is ~5×
 //! headroom. **That is no longer enough for §11.2's chunk-size sweep**:
 //! halving the chunk to 256 units quadruples the chunk count past the cap, so
 //! the sweep now needs `GROUNDCOVER_MAX_CHUNKS` raised with it, and the blade
-//! buffer grows unless the per-chunk cap falls by the same factor.
+//! buffer grows unless the per-chunk cap falls by the same factor. The binary's
+//! `chunk_cap_covers_every_chunk_in_reach` fails the moment a chunk size or
+//! draw distance outgrows the cap; a frame that still overflows it keeps its
+//! nearest chunks and reports the rest as [`GroundCoverStats::chunks_truncated`]
+//! (#4338).
 //!
 //! ## Ownership
 //!
@@ -127,6 +131,27 @@ pub struct GpuGroundCoverSpecies {
 }
 // SAFETY: 64 bytes of `f32`, no padding.
 unsafe impl NoUninit for GpuGroundCoverSpecies {}
+
+/// One accepted blade. Mirrors `GroundCoverBlade` in the shared GLSL header.
+///
+/// No host code ever writes one — `groundcover_scatter.comp` appends them and
+/// `groundcover_blade.vert` reads them. The mirror exists so the blade buffer
+/// is sized from `size_of` rather than from a literal stride that had to match
+/// the GLSL record by hand (#4335): grow the record and the buffer grows with
+/// it, while `name_diverging_glsl_rust_mirrors_stay_in_lockstep` fails until
+/// both sides agree, instead of the scatter writing past the SSBO's end.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct GpuGroundCoverBlade {
+    /// Chunk-relative XZ as 2×16-bit fixed point.
+    pub packed_xz: u32,
+    /// World-space Y of the blade base.
+    pub base_y: f32,
+    /// `seed << 8 | species_index`.
+    pub seed_species: u32,
+    /// `d_ground` at the root (§3), not the view-faded `d_draw`.
+    pub d_ground: f32,
+}
 
 /// World units one interaction-field texel covers (§12.4).
 pub const GROUNDCOVER_INTERACTION_TEXEL_UNITS: f32 =
@@ -236,12 +261,23 @@ pub struct GroundCoverFrame<'a> {
     /// renderer-side: a long hitch must not clear a trail outright, and a
     /// negative or non-finite value must not revive one.
     pub delta_seconds: f32,
+    /// Culled-in chunks the host dropped to fit the per-frame chunk and cell
+    /// caps, farthest first (#4338). Carried through so the drop is visible in
+    /// [`GroundCoverStats::chunks_truncated`] rather than only in the list
+    /// being shorter than it should be.
+    pub chunks_truncated: u32,
 }
 
 /// Per-frame scatter telemetry, harvested one pipelined cycle late.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct GroundCoverStats {
     pub chunks_dispatched: u32,
+    /// Culled-in chunks dropped to fit `GROUNDCOVER_MAX_CHUNKS` /
+    /// `MAX_GROUNDCOVER_CELLS` — the host's nearest-first cut plus any
+    /// renderer-side clamp (#4338). Zero at the shipped chunk size and draw
+    /// distance; non-zero means a tuning change outgrew the cap and the far
+    /// rim of the field is missing.
+    pub chunks_truncated: u32,
     pub blades_accepted: u32,
     /// Candidates dropped because their chunk's slice was already full.
     /// Non-zero is not a bug — §4 designs for it — but a large fraction means
@@ -284,7 +320,8 @@ impl GroundCoverStats {
             .join(",");
         format!(
             "groundcover: chunks={} blades={} overflow={} d_ground={:.4}..{:.4} \
-             view_dist={:.0}..{:.0} factor_max={} d_ground_hist={} covered={}",
+             view_dist={:.0}..{:.0} factor_max={} d_ground_hist={} covered={} \
+             truncated={}",
             self.chunks_dispatched,
             self.blades_accepted,
             self.blades_overflowed,
@@ -299,7 +336,8 @@ impl GroundCoverStats {
                 .collect::<Vec<_>>()
                 .join(","),
             hist,
-            self.blades_covered
+            self.blades_covered,
+            self.chunks_truncated
         )
     }
 }
@@ -386,9 +424,14 @@ pub struct GroundCoverPipeline {
     /// Chunk count each in-flight slot dispatched, so the readback taken one
     /// cycle later is attributed to the right frame.
     pending_chunks: [u32; MAX_FRAMES_IN_FLIGHT],
+    /// `frame_chunks_truncated` for each in-flight slot, harvested alongside
+    /// `pending_chunks`.
+    pending_truncated: [u32; MAX_FRAMES_IN_FLIGHT],
     stats: GroundCoverStats,
     /// Chunks uploaded for the frame currently being recorded.
     frame_chunk_count: u32,
+    /// Chunks dropped at the caps for the frame currently being recorded.
+    frame_chunks_truncated: u32,
     frame_debug_points: bool,
     /// The placed-geometry cover test's reach this frame: the palette's
     /// tallest blade. A surface lower than that over a root is one a blade
@@ -439,8 +482,10 @@ impl GroundCoverPipeline {
             frame_disturber_count: 0,
             bound_vertex_buffer: vk::Buffer::null(),
             pending_chunks: [0; MAX_FRAMES_IN_FLIGHT],
+            pending_truncated: [0; MAX_FRAMES_IN_FLIGHT],
             stats: GroundCoverStats::default(),
             frame_chunk_count: 0,
+            frame_chunks_truncated: 0,
             frame_debug_points: false,
             frame_cover_reach: 0.0,
             frame_push: BladePush::default(),
@@ -531,10 +576,12 @@ impl GroundCoverPipeline {
             INTERACTION_TEXEL_COUNT * 2 * 4,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
         )?);
-        // 16 B per blade × the cap. See the module docs on why the cap is
-        // sized for a chunk-size sweep rather than for today's visible set.
-        let blade_bytes =
-            (GROUNDCOVER_MAX_CHUNKS as u64) * (GROUNDCOVER_MAX_BLADES_PER_CHUNK as u64) * 16;
+        // One `GpuGroundCoverBlade` per slot × the cap — the stride comes from
+        // the Rust mirror, never a literal (#4335). See the module docs on why
+        // the cap is sized for a chunk-size sweep rather than today's visible set.
+        let blade_bytes = (GROUNDCOVER_MAX_CHUNKS as u64)
+            * (GROUNDCOVER_MAX_BLADES_PER_CHUNK as u64)
+            * std::mem::size_of::<GpuGroundCoverBlade>() as u64;
         self.blade_buffer = Some(GpuBuffer::create_device_local_uninit(
             device,
             allocator,
@@ -998,6 +1045,14 @@ impl GroundCoverPipeline {
         // the buffers it describes are overwritten.
         self.harvest(device, frame);
 
+        // #4338 — the host has already cut its farthest chunks to the cap;
+        // anything still over it is clamped just below, and both count.
+        self.frame_chunks_truncated = input.chunks_truncated.saturating_add(
+            input
+                .chunks
+                .len()
+                .saturating_sub(GROUNDCOVER_MAX_CHUNKS as usize) as u32,
+        );
         if input.chunks.is_empty() || input.cells.is_empty() || vertex_buffer == vk::Buffer::null()
         {
             self.frame_chunk_count = 0;
@@ -1118,6 +1173,7 @@ impl GroundCoverPipeline {
     }
 
     fn harvest(&mut self, device: &ash::Device, frame: usize) {
+        let truncated = std::mem::take(&mut self.pending_truncated[frame]);
         let dispatched = std::mem::take(&mut self.pending_chunks[frame]);
         if dispatched == 0 {
             return;
@@ -1139,6 +1195,7 @@ impl GroundCoverPipeline {
         }
         let mut stats = GroundCoverStats {
             chunks_dispatched: dispatched,
+            chunks_truncated: truncated,
             ..Default::default()
         };
         // Clamped, not summed raw: the append cursor deliberately runs past
@@ -1394,6 +1451,7 @@ impl GroundCoverPipeline {
             );
         }
         self.pending_chunks[frame] = self.frame_chunk_count;
+        self.pending_truncated[frame] = self.frame_chunks_truncated;
     }
 
     /// Record §12.4's field update. Runs from `record_scatter`, before the
@@ -1743,10 +1801,15 @@ mod tests {
         assert_eq!(std::mem::size_of::<GpuGroundCoverCell>(), 64);
         assert_eq!(std::mem::size_of::<GpuGroundCoverChunk>(), 16);
         assert_eq!(std::mem::size_of::<GpuGroundCoverSpecies>(), 64);
-        // §4's blade record is "~16 bytes", and the blade buffer is sized by
-        // that number in `create_buffers`.
+        // §4's blade record is "~16 bytes". Nothing on the host writes one,
+        // but `create_buffers` sizes the blade buffer from it, and
+        // `name_diverging_glsl_rust_mirrors_stay_in_lockstep` pins the GLSL
+        // record to these same four fields (#4335).
+        assert_eq!(std::mem::size_of::<GpuGroundCoverBlade>(), 16);
         assert_eq!(
-            (GROUNDCOVER_MAX_CHUNKS as u64) * (GROUNDCOVER_MAX_BLADES_PER_CHUNK as u64) * 16,
+            (GROUNDCOVER_MAX_CHUNKS as u64)
+                * (GROUNDCOVER_MAX_BLADES_PER_CHUNK as u64)
+                * std::mem::size_of::<GpuGroundCoverBlade>() as u64,
             16 * 1024 * 1024,
             "the blade buffer's documented 16 MB is derived from these two caps"
         );
@@ -2179,5 +2242,7 @@ mod tests {
         }
         // 15 histogram separators plus the four between the five factors.
         assert_eq!(line.matches(',').count(), 19);
+        // #4338 — a cap-truncated frame is reported, not just shorter.
+        assert!(line.ends_with(" truncated=0"), "{line}");
     }
 }

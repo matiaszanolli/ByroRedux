@@ -33,11 +33,53 @@ use crate::components::{TerrainCellOrigin, TerrainCoverInputs};
 /// far edge of the field.
 const CHUNK_BOUND_RADIUS: f32 = GROUNDCOVER_CHUNK_UNITS * std::f32::consts::FRAC_1_SQRT_2;
 
+/// A chunk that survived the distance and behind-camera culls, before the
+/// per-frame caps are applied.
+struct ChunkCandidate {
+    /// Position in the cull walk — origin-sorted cell, then row, then column.
+    /// Survivors are emitted in this order, so a frame that stays under the
+    /// cap produces exactly the chunk list it always did.
+    order: usize,
+    /// Index into the origin-sorted resident cell list.
+    cell: usize,
+    base_xz: [f32; 2],
+    /// Horizontal camera distance to the chunk centre, as the cull measured it.
+    horizontal: f32,
+}
+
+/// Fit the culled chunk list to `cap`: keep the nearest chunks, then restore
+/// walk order among the survivors. Returns how many were dropped (#4338).
+///
+/// Nearest-first for the reason the disturber list is sorted: whatever falls
+/// off the end is lost, and losing the far rim of the field is the only
+/// truncation that reads as distance. Walk order alone drops by cell origin —
+/// west to east — so the grass on one side of the camera went instead.
+fn keep_nearest_chunks(candidates: &mut Vec<ChunkCandidate>, cap: usize) -> u32 {
+    if candidates.len() <= cap {
+        return 0;
+    }
+    let dropped = candidates.len() - cap;
+    candidates.sort_by(|a, b| {
+        a.horizontal
+            .total_cmp(&b.horizontal)
+            .then(a.order.cmp(&b.order))
+    });
+    candidates.truncate(cap);
+    candidates.sort_unstable_by_key(|candidate| candidate.order);
+    dropped as u32
+}
+
 /// Collect this frame's ground-cover scatter input.
 ///
 /// `cells` and `chunks` are caller-owned scratch, cleared on entry so their
 /// allocations persist across frames — the same pattern `draw_commands` and
 /// the light buffers use.
+///
+/// Returns how many culled-in chunks were dropped to fit
+/// `GROUNDCOVER_MAX_CHUNKS` / `MAX_GROUNDCOVER_CELLS`, for
+/// `GroundCoverStats::chunks_truncated`. The shipped chunk size and draw
+/// distance never reach the cap — `chunk_cap_covers_every_chunk_in_reach`
+/// pins that — so a non-zero count means a tuning change outgrew it (#4338).
 pub(crate) fn collect_groundcover_frame(
     world: &World,
     mesh_registry: &MeshRegistry,
@@ -45,7 +87,7 @@ pub(crate) fn collect_groundcover_frame(
     camera_forward: Vec3,
     cells: &mut Vec<GpuGroundCoverCell>,
     chunks: &mut Vec<GpuGroundCoverChunk>,
-) {
+) -> u32 {
     cells.clear();
     chunks.clear();
 
@@ -54,7 +96,7 @@ pub(crate) fn collect_groundcover_frame(
         world.query::<TerrainCoverInputs>(),
         world.query::<MeshHandle>(),
     ) else {
-        return;
+        return 0;
     };
 
     // Sorted by origin so the cell indices chunk records point at are stable
@@ -83,17 +125,10 @@ pub(crate) fn collect_groundcover_frame(
     resident.sort_by(|a, b| a.1[0].total_cmp(&b.1[0]).then(a.1[1].total_cmp(&b.1[1])));
 
     let max_dist = GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS;
-    for (cell, _) in resident.into_iter().take(MAX_GROUNDCOVER_CELLS) {
-        // A cell contributes nothing if none of its chunks survive the cull,
-        // so the cell record is only emitted once one does — otherwise a
-        // 49-cell ring would fill the 128-cell cap with cells whose chunks are
-        // all a kilometre behind the camera.
-        let mut cell_index: Option<u32> = None;
+    let mut candidates: Vec<ChunkCandidate> = Vec::new();
+    for (cell_ordinal, (cell, _)) in resident.iter().enumerate() {
         for cz in 0..GROUNDCOVER_CHUNKS_PER_CELL_SIDE {
             for cx in 0..GROUNDCOVER_CHUNKS_PER_CELL_SIDE {
-                if chunks.len() >= GROUNDCOVER_MAX_CHUNKS as usize {
-                    return;
-                }
                 // +X and −Z from the cell origin, matching the terrain grid's
                 // row direction.
                 let base_xz = [
@@ -124,42 +159,66 @@ pub(crate) fn collect_groundcover_frame(
                 if to_chunk.dot(camera_forward) < -(CHUNK_BOUND_RADIUS + GROUNDCOVER_CHUNK_UNITS) {
                     continue;
                 }
-                let index = *cell_index.get_or_insert_with(|| {
-                    cells.push(GpuGroundCoverCell {
-                        origin_xz: cell.origin_xz,
-                        vertex_offset: cell.vertex_offset,
-                        pad0: 0,
-                        affinity0: [
-                            cell.layer_affinity[0],
-                            cell.layer_affinity[1],
-                            cell.layer_affinity[2],
-                            cell.layer_affinity[3],
-                        ],
-                        affinity1: [
-                            cell.layer_affinity[4],
-                            cell.layer_affinity[5],
-                            cell.layer_affinity[6],
-                            cell.layer_affinity[7],
-                        ],
-                        water_y: cell.water_y,
-                        pad1: [0.0; 3],
-                    });
-                    (cells.len() - 1) as u32
-                });
-                chunks.push(GpuGroundCoverChunk {
+                candidates.push(ChunkCandidate {
+                    order: candidates.len(),
+                    cell: cell_ordinal,
                     base_xz,
-                    cell_index: index,
-                    seed: chunk_seed(base_xz),
+                    horizontal,
                 });
             }
         }
-        if cells.len() >= MAX_GROUNDCOVER_CELLS {
-            break;
-        }
+    }
+    let mut truncated = keep_nearest_chunks(&mut candidates, GROUNDCOVER_MAX_CHUNKS as usize);
+
+    // A cell contributes nothing if none of its chunks survive, so the cell
+    // record is only emitted once one does — otherwise a 49-cell ring would
+    // fill the 128-cell cap with cells whose chunks are all a kilometre behind
+    // the camera. Survivors arrive in walk order, so one cell's chunks are
+    // contiguous and only the last emitted cell can match.
+    let mut emitted: Option<(usize, u32)> = None;
+    for candidate in &candidates {
+        let index = match emitted {
+            Some((cell_ordinal, index)) if cell_ordinal == candidate.cell => index,
+            _ => {
+                if cells.len() >= MAX_GROUNDCOVER_CELLS {
+                    truncated += 1;
+                    continue;
+                }
+                let cell = &resident[candidate.cell].0;
+                cells.push(GpuGroundCoverCell {
+                    origin_xz: cell.origin_xz,
+                    vertex_offset: cell.vertex_offset,
+                    pad0: 0,
+                    affinity0: [
+                        cell.layer_affinity[0],
+                        cell.layer_affinity[1],
+                        cell.layer_affinity[2],
+                        cell.layer_affinity[3],
+                    ],
+                    affinity1: [
+                        cell.layer_affinity[4],
+                        cell.layer_affinity[5],
+                        cell.layer_affinity[6],
+                        cell.layer_affinity[7],
+                    ],
+                    water_y: cell.water_y,
+                    pad1: [0.0; 3],
+                });
+                let index = (cells.len() - 1) as u32;
+                emitted = Some((candidate.cell, index));
+                index
+            }
+        };
+        chunks.push(GpuGroundCoverChunk {
+            base_xz: candidate.base_xz,
+            cell_index: index,
+            seed: chunk_seed(candidate.base_xz),
+        });
     }
     debug_assert!(chunks.len() <= GROUNDCOVER_MAX_CHUNKS as usize);
     debug_assert!(cells.len() <= MAX_GROUNDCOVER_CELLS);
     let _ = CHUNKS_PER_CELL;
+    truncated
 }
 
 /// Collect this frame's §12.4 interaction disturbers (#4058), nearest first.
@@ -528,6 +587,63 @@ mod tests {
     /// The cull radius has to bound the chunk, not its centre: a chunk whose
     /// centre is just past the draw distance still has a near corner inside
     /// it, and culling on the centre eats a visible wedge out of the far edge.
+    /// #4338 — the chunk cap must hold every chunk the distance cull can keep
+    /// at the shipped chunk size and draw distance. A kept chunk's centre lies
+    /// within `GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS` horizontally, so
+    /// its whole footprint lies within one more bound radius; footprints do
+    /// not overlap, so that disc's area over one footprint bounds the count
+    /// (89 today). §11.2's 256-unit chunk sweep bounds at ~268, and fails here
+    /// rather than silently dropping chunks at runtime.
+    #[test]
+    fn chunk_cap_covers_every_chunk_in_reach() {
+        let reach = GROUNDCOVER_DRAW_DISTANCE + 2.0 * CHUNK_BOUND_RADIUS;
+        let bound = (std::f32::consts::PI * reach * reach
+            / (GROUNDCOVER_CHUNK_UNITS * GROUNDCOVER_CHUNK_UNITS))
+            .ceil() as u32;
+        assert!(
+            bound <= GROUNDCOVER_MAX_CHUNKS,
+            "up to {bound} chunks can survive the distance cull, but \
+             GROUNDCOVER_MAX_CHUNKS is {GROUNDCOVER_MAX_CHUNKS} — raise the cap (and \
+             the blade buffer with it) alongside the chunk size or draw distance"
+        );
+    }
+
+    /// #4338 — over the cap, the farthest chunks go, and the survivors keep
+    /// walk order so the chunk list is unchanged on frames under the cap.
+    #[test]
+    fn chunk_cap_keeps_the_nearest_chunks_in_walk_order() {
+        let candidate = |order: usize, cell: usize, horizontal: f32| ChunkCandidate {
+            order,
+            cell,
+            base_xz: [order as f32, 0.0],
+            horizontal,
+        };
+        // Walk order is cell origin, so a west-side cell's far chunks come
+        // first when the camera stands to the east — exactly what a walk-order
+        // cut used to keep.
+        let mut over = vec![
+            candidate(0, 0, 900.0),
+            candidate(1, 0, 100.0),
+            candidate(2, 1, 800.0),
+            candidate(3, 1, 200.0),
+            candidate(4, 2, 300.0),
+        ];
+        assert_eq!(keep_nearest_chunks(&mut over, 3), 2);
+        assert_eq!(
+            over.iter().map(|c| c.order).collect::<Vec<_>>(),
+            vec![1, 3, 4],
+            "the nearest three, back in walk order"
+        );
+
+        let mut under = vec![candidate(0, 0, 5.0), candidate(1, 0, 1.0)];
+        assert_eq!(keep_nearest_chunks(&mut under, 3), 0);
+        assert_eq!(
+            under.iter().map(|c| c.order).collect::<Vec<_>>(),
+            vec![0, 1],
+            "under the cap nothing is dropped or reordered"
+        );
+    }
+
     #[test]
     fn chunk_bound_radius_covers_the_footprint() {
         let half_diagonal = (2.0f32).sqrt() * GROUNDCOVER_CHUNK_UNITS * 0.5;

@@ -1500,6 +1500,8 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
     let bindings = include_str!("../../../shaders/include/bindings.glsl");
     let volumetrics_rs = include_str!("../volumetrics.rs");
     let compute_rs = include_str!("../compute.rs");
+    let groundcover_scene = include_str!("../../../shaders/include/groundcover_scene.glsl");
+    let groundcover_rs = include_str!("../groundcover.rs");
 
     for (label, glsl_src, glsl_decl, rust_src, rust_decl) in [
         // Three GLSL copies against one Rust struct — comparing each to the
@@ -1540,6 +1542,15 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct CombustionLightMoment",
             volumetrics_rs,
             "struct GpuCombustionLightMoment",
+        ),
+        // #4335 — no host writer, but the host sizes the blade buffer from the
+        // Rust side's `size_of`, so the two must describe the same record.
+        (
+            "GroundCoverBlade",
+            groundcover_scene,
+            "struct GroundCoverBlade",
+            groundcover_rs,
+            "struct GpuGroundCoverBlade",
         ),
     ] {
         let glsl = parse_glsl_struct_fields_typed(glsl_src, glsl_decl);
@@ -1594,6 +1605,16 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
         "FogClusterEntry's std430 stride left 8 B — a wrong `count` decode is \
          what makes a stale cluster live under the #3834 partial-upload \
          contract (#3982)"
+    );
+    assert_eq!(
+        std430_struct_size(&parse_glsl_struct_fields_typed(
+            groundcover_scene,
+            "struct GroundCoverBlade"
+        )),
+        std::mem::size_of::<crate::vulkan::groundcover::GpuGroundCoverBlade>(),
+        "GroundCoverBlade's std430 stride no longer matches the Rust mirror the \
+         blade buffer is sized from — the scatter would write past the SSBO's \
+         end (#4335)"
     );
 }
 
@@ -1700,7 +1721,10 @@ fn every_shader_struct_is_classified() {
             MirroredPendingGuard("Rust side is a stride constant, not a struct"),
         ),
         ("GroundCoverFactors", ShaderLocal),
-        ("GroundCoverBlade", ShaderLocal),
+        (
+            "GroundCoverBlade",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
         ("GcDrawIndirect", ShaderLocal),
         ("TerrainSample", ShaderLocal),
         ("LocalMedium", ShaderLocal),
