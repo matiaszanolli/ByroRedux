@@ -12,7 +12,7 @@ use byroredux_core::ecs::World;
 use byroredux_core::string::StringPool;
 use std::sync::Arc;
 
-use crate::asset_provider::{merge_external_material, MaterialProvider};
+use crate::asset_provider::MaterialProvider;
 
 use super::nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
 use super::references::{find_flame_attach_offset, furniture_component};
@@ -74,14 +74,14 @@ pub(crate) fn finish_partial_import(
         reintern_imported_meshes(&mut meshes, &worker_pool, &mut pool);
         meshes
     };
-    if let Some(provider) = mat_provider {
-        let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-        for mesh in &mut meshes {
-            // #2709 (SF-D9-03) — outcome discarded deliberately; this
-            // path has no per-cell material tally to feed it into.
-            let _ = merge_external_material(&mut mesh.material, provider, &mut pool);
+    // #4290 — same merge + pre-merge snapshot as the synchronous path.
+    let pre_merge_materials = match mat_provider {
+        Some(provider) => {
+            let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+            super::nif_import_registry::merge_external_materials(&mut meshes, provider, &mut pool)
         }
-    }
+        None => Vec::new(),
+    };
 
     // Embedded animation clip — register exactly once per unique NIF.
     let clip_handle = embedded_clip.as_ref().map(|nif_clip| {
@@ -146,6 +146,7 @@ pub(crate) fn finish_partial_import(
         attach_points: None,
         child_attach_connections: None,
         furniture,
+        pre_merge_materials,
     });
 
     let freed_clip_handles = {

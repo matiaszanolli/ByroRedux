@@ -719,9 +719,10 @@ pub(super) fn spawn_placed_instances(
             base_layer,
         );
 
-    let resolved_paths = resolve_mesh_paths(
+    let resolved_paths = resolve_mesh_paths_with_pre_merge(
         world,
         imported,
+        &cached.pre_merge_materials,
         refr_overlay,
         mat_provider,
         Some(tex_provider),
@@ -1339,7 +1340,9 @@ fn spawn_collision_shapes(
 
 // Per-sub-mesh instance spawn (#2410 / TD1-007).
 pub(super) mod mesh_instance;
-use mesh_instance::{prepare_mesh_uploads, resolve_mesh_paths, spawn_mesh_instance, PlacementCtx};
+use mesh_instance::{
+    prepare_mesh_uploads, resolve_mesh_paths_with_pre_merge, spawn_mesh_instance, PlacementCtx,
+};
 
 #[cfg(test)]
 mod synthesize_trimesh_tests;

@@ -13,7 +13,7 @@
 use byroredux_core::ecs::BillboardMode;
 use std::sync::Arc;
 
-use crate::asset_provider::{merge_external_material, MaterialProvider};
+use crate::asset_provider::MaterialProvider;
 
 use crate::cell_loader::nif_import_registry::CachedNifImport;
 
@@ -84,16 +84,14 @@ pub(super) fn parse_and_import_nif(
     // FO4+ external material resolution (#493). Walk once at cache-fill
     // time so every REFR sharing this NIF sees the merged texture paths.
     // NIF fields take precedence; only empty slots are filled from the
-    // resolved BGSM/BGEM chain.
-    if let Some(provider) = mat_provider {
-        for mesh in &mut meshes {
-            // #2709 (SF-D9-03) — the merge mutates `mesh.material` in
-            // place; the outcome is a diagnostic signal this path has no
-            // sink for yet (there is no per-cell material tally to feed).
-            // Discarded deliberately, not overlooked.
-            let _ = merge_external_material(&mut mesh.material, provider, pool);
+    // resolved BGSM/BGEM chain. #4290 keeps the pre-merge snapshot so a
+    // REFR material swap can merge its target onto the NIF-authored state.
+    let pre_merge_materials = match mat_provider {
+        Some(provider) => {
+            super::super::nif_import_registry::merge_external_materials(&mut meshes, provider, pool)
         }
-    }
+        None => Vec::new(),
+    };
     let lights = byroredux_nif::import::import_nif_lights(&scene);
     let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
     // #3602 — `import_embedded_animations` alone never looks at
@@ -206,6 +204,7 @@ pub(super) fn parse_and_import_nif(
         attach_points,
         child_attach_connections,
         furniture,
+        pre_merge_materials,
     }))
 }
 
@@ -582,5 +581,7 @@ pub(super) fn parse_and_import_spt(
         child_attach_connections: None,
         // SpeedTree placeholders carry no furniture markers. M41.5 Phase B.
         furniture: None,
+        // No external material sidecar is merged into a `.spt` placeholder.
+        pre_merge_materials: Vec::new(),
     }))
 }

@@ -159,6 +159,30 @@ mod spt_cache_key_tests {
     }
 }
 
+/// Merge each mesh's own external material (BGSM/BGEM/`.mat`) into its
+/// `ImportedMaterial`, returning the pre-merge snapshot of every mesh the
+/// merge could have touched — [`CachedNifImport::pre_merge_materials`].
+///
+/// The one cache-fill merge loop, shared by the synchronous
+/// (`references/import.rs`) and streaming (`partial.rs`) paths. Each
+/// outcome is discarded deliberately (#2709): neither path has a per-cell
+/// material tally to feed it into.
+pub(super) fn merge_external_materials(
+    meshes: &mut [byroredux_nif::import::ImportedMesh],
+    provider: &mut crate::asset_provider::MaterialProvider,
+    pool: &mut byroredux_core::string::StringPool,
+) -> Vec<Option<byroredux_nif::import::ImportedMaterial>> {
+    meshes
+        .iter_mut()
+        .map(|mesh| {
+            let pre_merge = mesh.material.material_path.map(|_| mesh.material.clone());
+            let _ =
+                crate::asset_provider::merge_external_material(&mut mesh.material, provider, pool);
+            pre_merge
+        })
+        .collect()
+}
+
 /// Parsed + imported NIF scene data cached per unique model path.
 pub(crate) struct CachedNifImport {
     pub(super) meshes: Vec<byroredux_nif::import::ImportedMesh>,
@@ -278,6 +302,19 @@ pub(crate) struct CachedNifImport {
     /// case. Surfacing the markers is the foundation for actor seating
     /// (M41.5 Phase C); this just lands them in the ECS. See M41.5 Phase B.
     pub(super) furniture: Option<byroredux_core::ecs::components::Furniture>,
+    /// #4290 — each mesh's `ImportedMaterial` as the NIF authored it, taken
+    /// just before `merge_external_material` folded the mesh's OWN sidecar
+    /// in. Parallel to `meshes`; `None` for a mesh with no `material_path`
+    /// (the merge never runs, so `meshes[i].material` already is the
+    /// pre-merge state), and empty when no material provider was present.
+    ///
+    /// A REFR material swap (MSWP / XMSP, or a TXST MNAM) replaces the whole
+    /// material, and the merge is fill-if-unset with one-way `two_sided` /
+    /// `alpha_test` / `is_decal` flags — so merging the swap target over the
+    /// already-merged `meshes[i].material` would keep the source sidecar's
+    /// values. The spawn path merges the target onto this snapshot instead
+    /// (`resolve_mesh_paths_with_pre_merge`).
+    pub(super) pre_merge_materials: Vec<Option<byroredux_nif::import::ImportedMaterial>>,
     // SPT-NEW-03 / #1711 — route divergence, documented intentionally.
     //
     // `ImportedScene::bs_bound` (an OBND/BSBound-derived AABB) is deliberately

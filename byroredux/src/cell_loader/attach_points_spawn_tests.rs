@@ -35,6 +35,7 @@ fn cached_with_attach(
         attach_points,
         child_attach_connections,
         furniture: None,
+        pre_merge_materials: Vec::new(),
     }
 }
 

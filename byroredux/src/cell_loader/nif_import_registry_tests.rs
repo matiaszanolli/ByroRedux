@@ -33,6 +33,7 @@ fn dummy_cached() -> Arc<CachedNifImport> {
         attach_points: None,
         child_attach_connections: None,
         furniture: None,
+        pre_merge_materials: Vec::new(),
     })
 }
 

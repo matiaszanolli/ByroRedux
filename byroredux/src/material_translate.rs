@@ -3031,6 +3031,12 @@ mod overlay_pbr_divergence_tests {
     /// explicit external-file signal, not a keyword classification — an
     /// overlay-path divergence must NOT trigger a keyword re-classification
     /// that would silently discard the authored BGSM scalars.
+    ///
+    /// Scope: a texture-only overlay (TXST / XTXR). An MSWP material swap
+    /// never reaches this boundary with the SOURCE sidecar's scalars —
+    /// `resolve_mesh_paths_with_pre_merge` merges the swap target onto the
+    /// pre-merge snapshot first, so `source` already carries the target's
+    /// authored values (#4290).
     #[test]
     fn bgsm_authored_scalars_are_never_reclassified_by_an_overlay_swap() {
         let mut source = metal_wall_source();

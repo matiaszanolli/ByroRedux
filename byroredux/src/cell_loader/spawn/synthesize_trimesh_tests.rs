@@ -305,6 +305,7 @@ fn packed_proxy_placement_scale_is_applied_once_end_to_end() {
         attach_points: None,
         child_attach_connections: None,
         furniture: None,
+        pre_merge_materials: Vec::new(),
     };
 
     let mut world = World::new();
@@ -539,6 +540,7 @@ fn packed_proxy_is_keyframed_and_parented_to_visual_placement() {
         attach_points: None,
         child_attach_connections: None,
         furniture: None,
+        pre_merge_materials: Vec::new(),
     };
     let mut world = World::new();
     let root = world.spawn();

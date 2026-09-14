@@ -29,7 +29,25 @@ pub(super) struct ResolvedMeshPaths {
     /// recompute the stale NIF-import-time PBR classification instead of
     /// carrying it onto a materially different surface.
     source_base_color: Option<String>,
+    /// #4290 — the swap target's external material merged onto the mesh's
+    /// pre-merge snapshot, when a REFR material swap (MSWP / XMSP, or a TXST
+    /// MNAM) changed this shape's `material_path`. `None` when no swap fired;
+    /// read through [`ResolvedMeshPaths::material`], never directly.
+    swapped_material: Option<byroredux_nif::import::ImportedMaterial>,
 }
+
+impl ResolvedMeshPaths {
+    /// The raw material every spawn-side consumer of this shape reads: the
+    /// swapped material when a REFR material swap fired, otherwise the
+    /// cached mesh's own merged material.
+    pub(super) fn material<'a>(
+        &'a self,
+        mesh: &'a byroredux_nif::import::ImportedMesh,
+    ) -> &'a byroredux_nif::import::ImportedMaterial {
+        self.swapped_material.as_ref().unwrap_or(&mesh.material)
+    }
+}
+
 fn resolve_to_owned(
     pool: &byroredux_core::string::StringPool,
     sym: Option<byroredux_core::string::FixedString>,
@@ -46,9 +64,18 @@ fn resolve_to_owned(
 /// `mat_provider` param) — needed here so a per-shape MSWP swap (#973 /
 /// FO4-D4-NEW-08-followup) can walk the swapped target's BGSM/BGEM chain,
 /// not just substitute the `material_path` string.
-pub(super) fn resolve_mesh_paths(
+///
+/// Takes the cache entry's pre-merge material snapshots
+/// ([`crate::cell_loader::nif_import_registry::CachedNifImport`]'s
+/// `pre_merge_materials`, parallel to `imported`). With them, a REFR
+/// material swap re-merges the swap TARGET's sidecar onto the NIF-authored
+/// material instead of only walking its textures (#4290); without them (an
+/// empty slice) a swap on a mesh that had its own sidecar keeps the cached
+/// material, as before.
+pub(super) fn resolve_mesh_paths_with_pre_merge(
     world: &mut World,
     imported: &[byroredux_nif::import::ImportedMesh],
+    pre_merge: &[Option<byroredux_nif::import::ImportedMaterial>],
     refr_overlay: Option<&RefrTextureOverlay>,
     mut mat_provider: Option<&mut MaterialProvider>,
     tex_provider: Option<&crate::asset_provider::TextureProvider>,
@@ -57,7 +84,8 @@ pub(super) fn resolve_mesh_paths(
     let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
     imported
         .iter()
-        .map(|mesh| {
+        .enumerate()
+        .map(|(sub_mesh_index, mesh)| {
             // #973 / FO4-D4-NEW-08-followup — apply the REFR's XMSP
             // material-swap table per shape. `build_refr_texture_overlay`
             // only substitutes ONE shape's `material_path` (whichever the
@@ -127,20 +155,51 @@ pub(super) fn resolve_mesh_paths(
             }
             let ov = shape_ov.as_ref().or(ov);
 
+            // #4290 — a material swap replaces the whole material, not just
+            // its textures. `mesh.material` was merged at cache-fill time
+            // with the shape's OWN sidecar, and that merge is fill-if-unset
+            // with one-way `two_sided` / `alpha_test` / `is_decal` flags, so
+            // the target merged over it would keep the source's values. Merge
+            // the target onto the pre-merge snapshot instead: the same
+            // precedence rule (NIF-authored fields win), the swapped sidecar.
+            let swapped_material = ov
+                .and_then(|o| o.material_path)
+                .filter(|&target| Some(target) != mesh.material.material_path)
+                .and_then(|target| {
+                    let base = match pre_merge.get(sub_mesh_index) {
+                        Some(Some(snapshot)) => snapshot,
+                        // No sidecar of its own: the merge never ran, so the
+                        // cached material already is the pre-merge state.
+                        _ if mesh.material.material_path.is_none() => &mesh.material,
+                        _ => return None,
+                    };
+                    let provider = mat_provider.as_deref_mut()?;
+                    let mut material = base.clone();
+                    material.material_path = Some(target);
+                    // #2709 — outcome discarded; no per-shape tally sink.
+                    let _ = crate::asset_provider::merge_external_material(
+                        &mut material,
+                        provider,
+                        &mut pool,
+                    );
+                    Some(material)
+                });
+            let material = swapped_material.as_ref().unwrap_or(&mesh.material);
+
             let mut textures = mesh
                 .material
                 .textures
                 .map_ref(|path| resolve_to_owned(&pool, *path));
-            let mut sources = mesh.material.textures.zip_map_ref(
-                &mesh.material.texture_sources,
-                |path, source| {
-                    if path.is_some() {
-                        (*source).into()
-                    } else {
-                        MaterialTextureSource::Absent
-                    }
-                },
-            );
+            let mut sources =
+                material
+                    .textures
+                    .zip_map_ref(&material.texture_sources, |path, source| {
+                        if path.is_some() {
+                            (*source).into()
+                        } else {
+                            MaterialTextureSource::Absent
+                        }
+                    });
             let resolve_effective =
                 |override_path: Option<FixedString>,
                  mesh_path: Option<FixedString>,
@@ -177,7 +236,7 @@ pub(super) fn resolve_mesh_paths(
             let source_base_color = textures.base_color.clone();
             (textures.base_color, sources.base_color) = resolve_effective(
                 ov.and_then(|o| o.diffuse),
-                mesh.material.textures.base_color,
+                material.textures.base_color,
                 sources.base_color,
             );
             // Oblivion/FO3 ship normal maps via the `<base>_n.dds`
@@ -202,7 +261,7 @@ pub(super) fn resolve_mesh_paths(
             // sibling still gets it.
             (textures.normal, sources.normal) = resolve_effective(
                 ov.and_then(|o| o.normal),
-                mesh.material.textures.normal,
+                material.textures.normal,
                 sources.normal,
             );
             if textures.normal.is_none() {
@@ -241,15 +300,15 @@ pub(super) fn resolve_mesh_paths(
             // Computed before the slot routing because slot 7's role depends on
             // it (alternate specular vs. nothing).
             let effective_model_space_normals =
-                mesh.material.model_space_normals || ov.is_some_and(|o| o.model_space_normals);
+                material.model_space_normals || ov.is_some_and(|o| o.model_space_normals);
             let slot_context = TextureSlotContext {
-                layout: mesh.material.texture_slot_layout,
-                shader_type: mesh.material.shader_type,
-                glow_map: mesh.material.slot2_glow_enabled,
+                layout: material.texture_slot_layout,
+                shader_type: material.shader_type,
+                glow_map: material.slot2_glow_enabled,
                 model_space_normals: effective_model_space_normals,
-                soft_lighting: mesh.material.soft_lighting,
-                rim_lighting: mesh.material.rim_lighting,
-                back_lighting: mesh.material.back_lighting,
+                soft_lighting: material.soft_lighting,
+                rim_lighting: material.rim_lighting,
+                back_lighting: material.back_lighting,
             };
             // #3732 (NIFAL-2026-08-30-D8-01) — `slot_to_role` alone cannot
             // express slot colocation: #3458 established that Skyrim/
@@ -272,19 +331,19 @@ pub(super) fn resolve_mesh_paths(
 
             (textures.emissive, sources.emissive) = resolve_effective(
                 ov.and_then(|o| pick(2, o.glow, TextureRole::Emissive)),
-                mesh.material.textures.emissive,
+                material.textures.emissive,
                 sources.emissive,
             );
             // Slot 2 on the tint family (FaceTint / SkinTint / HairTint) is the
             // `*_sk.dds` skin-tint mask, not a glow map.
             (textures.tint, sources.tint) = resolve_effective(
                 ov.and_then(|o| pick(2, o.glow, TextureRole::Tint)),
-                mesh.material.textures.tint,
+                material.textures.tint,
                 sources.tint,
             );
             (textures.height, sources.height) = resolve_effective(
                 ov.and_then(|o| pick(3, o.height, TextureRole::Height)),
-                mesh.material.textures.height,
+                material.textures.height,
                 sources.height,
             );
 
@@ -300,7 +359,7 @@ pub(super) fn resolve_mesh_paths(
             //
             // The shader-side alpha-presence gate (#3562) still applies: a
             // BC1/BC5 normal with no real alpha is not treated as height.
-            if textures.height.is_none() && mesh.material.parallax_height_in_alpha {
+            if textures.height.is_none() && material.parallax_height_in_alpha {
                 textures.height = textures.normal.clone();
                 if textures.height.is_some() {
                     sources.height = sources.normal;
@@ -308,14 +367,14 @@ pub(super) fn resolve_mesh_paths(
             }
             (textures.greyscale_lut, sources.greyscale_lut) = resolve_effective(
                 ov.and_then(|o| pick(3, o.height, TextureRole::GreyscaleLut)),
-                mesh.material.textures.greyscale_lut,
+                material.textures.greyscale_lut,
                 sources.greyscale_lut,
             );
             // Slot 3 on FaceTint is a complexion detail map; routing it to
             // `height` made the shader ray-march POM over a face.
             (textures.detail, sources.detail) = resolve_effective(
                 ov.and_then(|o| pick(3, o.height, TextureRole::Detail)),
-                mesh.material.textures.detail,
+                material.textures.detail,
                 sources.detail,
             );
             // BGSM authors smoothness/specular-strength separately from its
@@ -323,22 +382,22 @@ pub(super) fn resolve_mesh_paths(
             // slot here, so preserve the canonical role directly.
             (textures.smooth_spec, sources.smooth_spec) = resolve_effective(
                 ov.and_then(|o| o.smooth_spec),
-                mesh.material.textures.smooth_spec,
+                material.textures.smooth_spec,
                 sources.smooth_spec,
             );
             (textures.environment, sources.environment) = resolve_effective(
                 ov.and_then(|o| pick(4, o.env, TextureRole::Environment)),
-                mesh.material.textures.environment,
+                material.textures.environment,
                 sources.environment,
             );
             (textures.environment_mask, sources.environment_mask) = resolve_effective(
                 ov.and_then(|o| pick(5, o.env_mask, TextureRole::EnvironmentMask)),
-                mesh.material.textures.environment_mask,
+                material.textures.environment_mask,
                 sources.environment_mask,
             );
             (textures.inner_layer, sources.inner_layer) = resolve_effective(
                 ov.and_then(|o| pick(6, o.inner, TextureRole::InnerLayer)),
-                mesh.material.textures.inner_layer,
+                material.textures.inner_layer,
                 sources.inner_layer,
             );
             // Specular comes from Skyrim/FO4 slot 7 or FO76 slot 6. The table
@@ -351,17 +410,17 @@ pub(super) fn resolve_mesh_paths(
             });
             (textures.specular, sources.specular) = resolve_effective(
                 specular_override,
-                mesh.material.textures.specular,
+                material.textures.specular,
                 sources.specular,
             );
             (textures.lighting_mask, sources.lighting_mask) = resolve_effective(
                 ov.and_then(|o| pick(2, o.glow, TextureRole::LightingMask)),
-                mesh.material.textures.lighting_mask,
+                material.textures.lighting_mask,
                 sources.lighting_mask,
             );
             (textures.back_lighting, sources.back_lighting) = resolve_effective(
                 ov.and_then(|o| pick(7, o.specular, TextureRole::BackLighting)),
-                mesh.material.textures.back_lighting,
+                material.textures.back_lighting,
                 sources.back_lighting,
             );
             // `wrinkle` is an FO4/FO76 TX02 role, not a BSShaderTextureSet slot
@@ -385,7 +444,7 @@ pub(super) fn resolve_mesh_paths(
                     o.wrinkle
                         .or_else(|| pick(5, o.env_mask, TextureRole::Wrinkle))
                 }),
-                mesh.material.textures.wrinkle,
+                material.textures.wrinkle,
                 sources.wrinkle,
             );
             // #2594 — `lighting` / `flow` are BGSM-only roles with no
@@ -395,12 +454,12 @@ pub(super) fn resolve_mesh_paths(
             // override via `fill_from_bgsm` can.
             (textures.lighting, sources.lighting) = resolve_effective(
                 ov.and_then(|o| o.lighting),
-                mesh.material.textures.lighting,
+                material.textures.lighting,
                 sources.lighting,
             );
             (textures.flow, sources.flow) = resolve_effective(
                 ov.and_then(|o| o.flow),
-                mesh.material.textures.flow,
+                material.textures.flow,
                 sources.flow,
             );
             let material_path = resolve_to_owned(
@@ -420,6 +479,7 @@ pub(super) fn resolve_mesh_paths(
                 material_path,
                 name_sym,
                 source_base_color,
+                swapped_material,
             }
         })
         .collect()
@@ -596,9 +656,10 @@ pub(super) fn prepare_mesh_uploads(
             continue;
         }
 
+        let material = paths[sub_mesh_index].material(mesh);
         let for_rt = ctx.device_caps.ray_query_supported
-            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
-            && !mesh.material.is_decal;
+            && material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+            && !material.is_decal;
         fresh.push(FreshMeshUpload {
             sub_mesh_index,
             vertices: super::super::lod_support::imported_mesh_to_vertices(mesh),
@@ -832,6 +893,9 @@ pub(super) fn spawn_mesh_instance(
     let eff_textures = paths.textures.clone();
     let eff_texture_path = eff_textures.base_color.clone();
     let eff_material_path = paths.material_path.clone();
+    // #4290 — every raw-material read below sees the swap target's merged
+    // material when a REFR material swap fired for this shape.
+    let source_material = paths.material(mesh);
 
     // Canonical material translation — the single boundary that
     // resolves a raw `ImportedMesh` into the engine `Material`
@@ -850,7 +914,7 @@ pub(super) fn spawn_mesh_instance(
         .map(|_| byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS)
         .unwrap_or(0);
     let material = crate::material_translate::translate_material(
-        &mesh.material,
+        source_material,
         mesh.name.as_deref(),
         crate::material_translate::ResolvedPaths {
             textures: eff_textures.clone(),
@@ -1117,7 +1181,7 @@ pub(super) fn spawn_mesh_instance(
     crate::material_translate::resolve_normal_alpha_spec_roughness(
         world,
         entity,
-        mesh.material.bgsm_pbr_scalars_authored,
+        source_material.bgsm_pbr_scalars_authored,
     );
     // #2826 (REN-D19-02) — same "resolve once from MaterialTextureHandles"
     // pattern, for whether the model-space normal map's blue channel
@@ -1131,7 +1195,7 @@ pub(super) fn spawn_mesh_instance(
     crate::material_translate::resolve_unresolved_gloss_neutral_roughness(
         world,
         entity,
-        mesh.material.bgsm_pbr_scalars_authored,
+        source_material.bgsm_pbr_scalars_authored,
     );
     // #2490 — the blend/decal/facing markers derive from the raw
     // `ImportedMaterial` at the same single boundary the `Material`
@@ -1139,7 +1203,7 @@ pub(super) fn spawn_mesh_instance(
     crate::material_translate::attach_blend_and_facing_markers(
         world,
         entity,
-        &mesh.material,
+        source_material,
         canonical_src_blend_mode,
         canonical_dst_blend_mode,
     );
@@ -1191,8 +1255,8 @@ pub(super) fn spawn_mesh_instance(
             escalate_small_static_to_clutter(base_layer, mesh.local_bound_radius * ref_scale);
         let layer = render_layer_with_decal_escalation(
             layer,
-            mesh.material.is_decal,
-            mesh.material.alpha_test,
+            source_material.is_decal,
+            source_material.alpha_test,
         );
         world.insert(entity, layer);
     }
@@ -1253,9 +1317,9 @@ pub(super) fn spawn_mesh_instance(
     // sub-decomposed architecture changes behaviour.
     if collision_fallback == MissingCollisionFallback::ArchitectureTriMesh
         && mesh.skin.is_none()
-        && !mesh.material.is_decal
-        && !mesh.material.alpha_test
-        && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+        && !source_material.is_decal
+        && !source_material.alpha_test
+        && source_material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
         && mesh.positions.len() >= 3
         && mesh.indices.len() >= 3
     {
@@ -1357,10 +1421,30 @@ fn flatten_morph_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use byroredux_core::ecs::World;
     use byroredux_core::string::StringPool;
     use byroredux_nif::import::{ImportedMesh, ImportedMorphTarget, TextureSlotLayout};
     use std::sync::Arc;
+
+    /// The pre-#4290 entry point, kept for the tests that exercise path
+    /// resolution without pre-merge snapshots.
+    fn resolve_mesh_paths(
+        world: &mut World,
+        imported: &[byroredux_nif::import::ImportedMesh],
+        refr_overlay: Option<&RefrTextureOverlay>,
+        mat_provider: Option<&mut MaterialProvider>,
+        tex_provider: Option<&crate::asset_provider::TextureProvider>,
+    ) -> Vec<ResolvedMeshPaths> {
+        resolve_mesh_paths_with_pre_merge(
+            world,
+            imported,
+            &[],
+            refr_overlay,
+            mat_provider,
+            tex_provider,
+        )
+    }
 
     fn empty_mesh() -> ImportedMesh {
         ImportedMesh::from_geometry(
@@ -1823,6 +1907,125 @@ mod tests {
              on its NIF-authored BGSM because build_refr_texture_overlay only ever \
              substitutes one shared material_path"
         );
+    }
+
+    /// #4290 — an MSWP swap replaces the whole material. The cached mesh was
+    /// merged with its SOURCE sidecar (two-sided, alpha-tested, emissive);
+    /// the swap target authors none of that. Merging the target over the
+    /// cached material would keep all three (the merge is fill-if-unset with
+    /// one-way flags), so the spawn side must see the target merged onto the
+    /// pre-merge snapshot.
+    #[test]
+    fn mswp_swap_merges_the_target_material_onto_the_pre_merge_snapshot() {
+        use crate::asset_provider::MaterialProvider;
+        use byroredux_bgsm::template::ResolvedMaterial;
+        use byroredux_bgsm::{BaseMaterial, BgsmFile};
+
+        let source_path = r"materials\tests\wall_source.bgsm";
+        let target_path = r"materials\tests\wall_target.bgsm";
+        let mut provider = MaterialProvider::new();
+        let source_file = BgsmFile {
+            base: BaseMaterial {
+                two_sided: true,
+                alpha_test: true,
+                ..Default::default()
+            },
+            emit_enabled: true,
+            emittance_mult: 4.0,
+            ..Default::default()
+        };
+        provider.insert_bgsm_for_test(
+            source_path,
+            ResolvedMaterial {
+                file: source_file,
+                parent: None,
+            },
+        );
+        let target_file = BgsmFile {
+            specular_mult: 0.25,
+            ..Default::default()
+        };
+        provider.insert_bgsm_for_test(
+            target_path,
+            ResolvedMaterial {
+                file: target_file,
+                parent: None,
+            },
+        );
+
+        let mut pool = StringPool::new();
+        let mut mesh = empty_mesh();
+        mesh.material.material_path = Some(pool.intern(source_path));
+        let pre_merge = crate::cell_loader::nif_import_registry::merge_external_materials(
+            std::slice::from_mut(&mut mesh),
+            &mut provider,
+            &mut pool,
+        );
+        assert!(
+            mesh.material.two_sided && mesh.material.alpha_test,
+            "fixture: the cache-fill merge must have applied the source sidecar"
+        );
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let overlay = RefrTextureOverlay {
+            material_swaps: vec![swap_entry(source_path, target_path)],
+            ..Default::default()
+        };
+        let resolved = resolve_mesh_paths_with_pre_merge(
+            &mut world,
+            std::slice::from_ref(&mesh),
+            &pre_merge,
+            Some(&overlay),
+            Some(&mut provider),
+            None,
+        );
+        let swapped = resolved[0]
+            .swapped_material
+            .as_ref()
+            .expect("a swap that changed the material path must produce a swapped material");
+        assert!(
+            !swapped.two_sided,
+            "the source sidecar's two-sided flag must not survive the swap"
+        );
+        assert!(
+            !swapped.alpha_test,
+            "the source sidecar's alpha test must not survive the swap"
+        );
+        assert_ne!(
+            swapped.emissive_mult, 4.0,
+            "the source sidecar's emittance must not survive the swap"
+        );
+        assert_eq!(
+            swapped.specular_strength, 0.25,
+            "the target sidecar's scalars must apply"
+        );
+        assert!(
+            std::ptr::eq(resolved[0].material(&mesh), swapped),
+            "spawn-side consumers must read the swapped material"
+        );
+    }
+
+    /// No swap, no re-merge: the shape keeps the cached material and pays no
+    /// clone.
+    #[test]
+    fn a_shape_without_a_swap_reads_its_cached_material() {
+        let mut pool = StringPool::new();
+        let mut mesh = empty_mesh();
+        mesh.material.material_path = Some(pool.intern(r"materials\tests\plain.bgsm"));
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let resolved = resolve_mesh_paths_with_pre_merge(
+            &mut world,
+            std::slice::from_ref(&mesh),
+            &[Some(mesh.material.clone())],
+            None,
+            None,
+            None,
+        );
+        assert!(resolved[0].swapped_material.is_none());
+        assert!(std::ptr::eq(resolved[0].material(&mesh), &mesh.material));
     }
 
     /// The FNAM path-prefix filter on an MSWP must be re-evaluated against

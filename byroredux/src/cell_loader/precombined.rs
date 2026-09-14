@@ -824,6 +824,9 @@ fn geometry_only_cached(meshes: Vec<ImportedMesh>, geometry_dedup: Vec<u32>) -> 
         attach_points: None,
         child_attach_connections: None,
         furniture: None,
+        // Precombines spawn with no REFR overlay, so no material swap can
+        // ever need a pre-merge snapshot (#4290).
+        pre_merge_materials: Vec::new(),
     }
 }
 
