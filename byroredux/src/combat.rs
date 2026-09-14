@@ -264,10 +264,9 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             bash_attack: false,
             // `block_held` is the *aggressor's* own Block state, snapshotted
             // above (#2976). Canonically `HitEvent::blocked` describes the
-            // target's defense, but this slice has exactly one HitEvent
-            // producer and it is always player-initiated — no hostile/NPC
-            // attack path exists to give a target its own blocking signal
-            // yet. Wiring the aggressor's own hold here at least makes the
+            // target's defense, but no producer models a target's own guard
+            // yet — neither this player path nor `npc_combat_ai_system`'s
+            // NPC strikes (#4324). Wiring the aggressor's own hold here at least makes the
             // field live and testable rather than a permanently-false
             // constant: swinging while holding Block now deals no damage
             // instead of costing the player nothing. `projectile`,

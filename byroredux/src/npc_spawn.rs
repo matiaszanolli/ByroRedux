@@ -130,15 +130,14 @@ fn stamp_actor_values(
 /// `CreatureStats::damage` reached the parser and stopped there. #3390 gave
 /// creatures SPECIAL + Health, but the one number that defines a creature's
 /// attack had no reader — this stamp makes it available to a future combat
-/// consumer. **Corrected (#4105 / D5-03):** no such consumer exists yet.
-/// `attack_damage`'s only production call site is `combat_input_system`,
-/// whose aggressor is always the player entity, and the engine has exactly
-/// one `HitEvent` producer, always player-initiated — creatures don't
-/// attack at all today, so nothing (not `combat_damage_system`, not
-/// `UNARMED_DAMAGE`) currently reads a wrong number for the 692 FNV / 186
-/// FO3 creatures that author a non-zero `DATA.Damage`. The real gap this
-/// stamp closes is that a future NPC/creature aggressor path will find the
-/// value waiting for it instead of having to add this parse step first.
+/// consumer. **Corrected (#4105 / D5-03), updated for #4324:** that consumer
+/// now exists. `attack_damage` is called by `combat_input_system` for the
+/// player and by `npc_combat_ai_system` for any actor a quest fragment arms
+/// with `StartCombat`, so `HitEvent` has two producers and a creature in
+/// scripted combat strikes with the `DATA.Damage` this stamps (692 FNV / 186
+/// FO3 creatures author a non-zero value). Creatures still start no combat of
+/// their own — there is no ambient AI aggro — so the value is reached only
+/// through a scripted `StartCombat`.
 ///
 /// No-op for `NPC_` (no `creature_stats`) and for a creature whose `DATA`
 /// leaves damage at zero or negative: absence means "no authored attack",

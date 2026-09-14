@@ -42,13 +42,22 @@ struct Decision {
     strike: Option<(EntityId, f32)>,
 }
 
-/// Two-pass, mirroring `wander_system_inner`'s read/write split: gather a
-/// decision per `AiCombatState` entity while holding read guards, then
-/// apply movement/state/`HitEvent` after they drop.
+/// Mirrors `wander_system_inner`'s read/write split: gather a decision per
+/// `AiCombatState` entity while holding storage read guards, resolve the
+/// chase steps against `PhysicsWorld` with no storage guard held, then apply
+/// `HitEvent`/movement/state.
+///
+/// #4325 — `PhysicsWorld` used to be taken first and held across every
+/// storage acquisition, the `Transform` write included. That reversed
+/// `ragdoll_writeback_system`'s `Transform → PhysicsWorld` order and closed a
+/// cycle in the lock-order checker — the "no storage under a `PhysicsWorld`
+/// guard" rule #2134, #3262 and #3655 restructured their systems to follow.
 pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
     let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
-    let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
     let mut decisions = Vec::new();
+    // `(decision index, from, rotation, target_xz)` for each attacker still
+    // closing the distance, stepped once the storage guards are gone.
+    let mut steps = Vec::new();
     {
         let Some(combat_q) = world.query::<AiCombatState>() else {
             return;
@@ -96,17 +105,16 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
                     actor_transform.translation.y,
                     target_transform.translation.z,
                 );
-                let (new_pos, rotation) = step_toward(
+                steps.push((
+                    decisions.len(),
                     actor_transform.translation,
                     actor_transform.rotation,
                     target_xz,
-                    dt,
-                    physics.as_deref(),
-                );
+                ));
                 decisions.push(Decision {
                     entity,
-                    new_translation: new_pos,
-                    new_rotation: rotation,
+                    new_translation: actor_transform.translation,
+                    new_rotation: None,
                     state: Some(*state),
                     strike: None,
                 });
@@ -143,6 +151,50 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
         return;
     }
 
+    if !steps.is_empty() {
+        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
+        for (index, from, rotation, target_xz) in steps {
+            let (new_pos, new_rotation) =
+                step_toward(from, rotation, target_xz, dt, physics.as_deref());
+            decisions[index].new_translation = new_pos;
+            decisions[index].new_rotation = new_rotation;
+        }
+    }
+
+    // #4324 — `HitEvent` is one SparseSet row per *target* and `insert`
+    // replaces it. `combat_input_system` runs first, so a strike on a target
+    // the player (or an earlier attacker in this loop) already hit this frame
+    // used to overwrite that hit before `combat_damage_system` read it. Such a
+    // strike is held instead: the attacker stays ready and lands it next
+    // frame, so no hit is lost and simultaneous attackers fall out of step.
+    if let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() {
+        for decision in &mut decisions {
+            let Some((target, damage)) = decision.strike else {
+                continue;
+            };
+            if events.get(target).is_some() {
+                decision.strike = None;
+                decision.state = Some(AiCombatState {
+                    target,
+                    attack_cooldown_remaining: 0.0,
+                });
+                continue;
+            }
+            events.insert(
+                target,
+                byroredux_scripting::HitEvent {
+                    aggressor: decision.entity,
+                    source: decision.entity,
+                    projectile: 0,
+                    damage,
+                    power_attack: false,
+                    sneak_attack: false,
+                    bash_attack: false,
+                    blocked: false,
+                },
+            );
+        }
+    }
     if let Some(mut transforms) = world.query_mut::<Transform>() {
         for decision in &decisions {
             if let Some(transform) = transforms.get_mut(decision.entity) {
@@ -160,25 +212,6 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
                 None => {
                     states.remove(decision.entity);
                 }
-            }
-        }
-    }
-    if let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() {
-        for decision in &decisions {
-            if let Some((target, damage)) = decision.strike {
-                events.insert(
-                    target,
-                    byroredux_scripting::HitEvent {
-                        aggressor: decision.entity,
-                        source: decision.entity,
-                        projectile: 0,
-                        damage,
-                        power_attack: false,
-                        sneak_attack: false,
-                        bash_attack: false,
-                        blocked: false,
-                    },
-                );
             }
         }
     }
@@ -325,6 +358,125 @@ mod tests {
         npc_combat_ai_system(&world, 1.0);
 
         assert!(world.get::<AiCombatState>(attacker).is_none());
+    }
+
+    fn hit_from(aggressor: EntityId) -> HitEvent {
+        HitEvent {
+            aggressor,
+            source: aggressor,
+            projectile: 0,
+            damage: 5.0,
+            power_attack: false,
+            sneak_attack: false,
+            bash_attack: false,
+            blocked: false,
+        }
+    }
+
+    /// End-of-frame `event_cleanup_system` stand-in.
+    fn drain_hits(world: &World, target: EntityId) {
+        world.query_mut::<HitEvent>().unwrap().remove(target);
+    }
+
+    /// #4324 — the player's `combat_input_system` hit lands earlier in the
+    /// same frame; an NPC strike on the same target must not replace it.
+    #[test]
+    fn a_same_frame_hit_on_the_target_survives_and_the_strike_lands_next_frame() {
+        let mut world = fixture();
+        let player = world.spawn();
+        let attacker = world.spawn();
+        let target = world.spawn();
+        world.insert(attacker, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            target,
+            Transform::from_translation(Vec3::new(10.0, 0.0, 0.0)),
+        );
+        world.insert(
+            attacker,
+            AiCombatState {
+                target,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+        world.insert(target, hit_from(player));
+
+        npc_combat_ai_system(&world, 1.0 / 60.0);
+        assert_eq!(
+            world.get::<HitEvent>(target).unwrap().aggressor,
+            player,
+            "the player's same-frame hit must not be overwritten"
+        );
+        assert!(
+            world
+                .get::<AiCombatState>(attacker)
+                .unwrap()
+                .attack_cooldown_remaining
+                <= 0.0,
+            "the held strike stays ready"
+        );
+
+        drain_hits(&world, target);
+        npc_combat_ai_system(&world, 1.0 / 60.0);
+        assert_eq!(world.get::<HitEvent>(target).unwrap().aggressor, attacker);
+    }
+
+    /// #4324 — two attackers armed on one fragment strike the same frame;
+    /// both hits must land rather than the second replacing the first.
+    #[test]
+    fn simultaneous_attackers_on_one_target_all_land() {
+        let mut world = fixture();
+        let target = world.spawn();
+        world.insert(
+            target,
+            Transform::from_translation(Vec3::new(10.0, 0.0, 0.0)),
+        );
+        let attackers = [world.spawn(), world.spawn()];
+        for attacker in attackers {
+            world.insert(attacker, Transform::from_translation(Vec3::ZERO));
+            world.insert(
+                attacker,
+                AiCombatState {
+                    target,
+                    attack_cooldown_remaining: 0.0,
+                },
+            );
+        }
+
+        let mut landed = Vec::new();
+        for _ in 0..2 {
+            npc_combat_ai_system(&world, 1.0 / 60.0);
+            landed.push(world.get::<HitEvent>(target).unwrap().aggressor);
+            drain_hits(&world, target);
+        }
+        landed.sort_unstable();
+        let mut expected = attackers.to_vec();
+        expected.sort_unstable();
+        assert_eq!(landed, expected, "each attacker's hit lands exactly once");
+    }
+
+    /// #4325 — `PhysicsWorld` must be acquired after the storage read guards
+    /// drop and released before any storage write, never held across one.
+    #[test]
+    fn physics_world_is_taken_only_between_the_storage_passes() {
+        const SRC: &str = include_str!("combat_ai.rs");
+        let body = SRC
+            .split_once("pub(crate) fn npc_combat_ai_system")
+            .expect("npc_combat_ai_system definition")
+            .1
+            .split_once("#[cfg(test)]")
+            .expect("test module marker")
+            .0;
+        let last_read = body.rfind("world.query::<").expect("the storage read pass");
+        let physics = body
+            .find("world.try_resource::<byroredux_physics::PhysicsWorld>()")
+            .expect("the PhysicsWorld acquisition");
+        let first_write = body
+            .find("world.query_mut::<")
+            .expect("the storage write pass");
+        assert!(
+            last_read < physics && physics < first_write,
+            "PhysicsWorld must sit strictly between the read and write passes (#4325)"
+        );
     }
 
     #[test]
