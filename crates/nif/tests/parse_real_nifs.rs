@@ -245,6 +245,15 @@ fn parse_rate_fallout_3() {
 }
 
 #[test]
+#[ignore = "needs Skyrim LE (2011) game data on disk"]
+fn parse_rate_skyrim_le() {
+    // Not a duplicate of the SE gate: SE rebuilt every mesh (BSVER 83 →
+    // 100, `NiTriShape` → `BSTriShape`), so the 2011 corpus exercises the
+    // classic-geometry path under Skyrim's shader and skinning blocks.
+    run_game(Game::SkyrimLE, None);
+}
+
+#[test]
 #[ignore = "needs Skyrim SE game data on disk"]
 fn parse_rate_skyrim_se() {
     run_game(Game::SkyrimSE, None);
@@ -659,6 +668,7 @@ fn parse_rate_smoke_all_games() {
     for game in [
         Game::FalloutNV,
         Game::Fallout3,
+        Game::SkyrimLE,
         Game::SkyrimSE,
         Game::Oblivion,
         Game::Fallout4,

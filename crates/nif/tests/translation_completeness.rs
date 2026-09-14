@@ -56,6 +56,7 @@ const HARNESS_GAMES: &[(&str, Game)] = &[
     ("Oblivion", Game::Oblivion),
     ("FO3", Game::Fallout3),
     ("FNV", Game::FalloutNV),
+    ("SkyrimLE", Game::SkyrimLE),
     ("SkyrimSE", Game::SkyrimSE),
     ("FO4", Game::Fallout4),
     ("FO76", Game::Fallout76),
@@ -517,6 +518,38 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
                 assert_pbr_override_fill(s, label, 82.0);
+            }),
+        ),
+        (
+            "SkyrimLE",
+            Box::new(|s, label| {
+                // The 2011 corpus: classic `NiTriShape` geometry under inline
+                // BSLightingShaderProperty, which SE later rebuilt as
+                // `BSTriShape`. Measured 2026-09-13 (stratified, 529 meshes):
+                // texture_path 92.4%, material_kind 42.3%, tangents 94.0%,
+                // normal_map 67.7%, metO/rghO 99.2% — floors keep the usual
+                // ~10-15pp margin.
+                assert!(
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 82.0,
+                    "[{label}] texture_path fill < 82% (got {:.1}%)",
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_material_kind, s.imported_meshes) >= 30.0,
+                    "[{label}] material_kind fill < 30% (got {:.1}%)",
+                    MaterialStats::pct(s.with_material_kind, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 80.0,
+                    "[{label}] tangents fill < 80% (got {:.1}%)",
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes) >= 55.0,
+                    "[{label}] normal_map fill < 55% (got {:.1}%)",
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes)
+                );
+                assert_pbr_override_fill(s, label, 80.0);
             }),
         ),
         (

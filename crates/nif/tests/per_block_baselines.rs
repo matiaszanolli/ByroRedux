@@ -94,6 +94,7 @@ fn baseline_stem(game: Game) -> &'static str {
         Game::Oblivion => "oblivion",
         Game::Fallout3 => "fallout_3",
         Game::FalloutNV => "fallout_nv",
+        Game::SkyrimLE => "skyrim_le",
         Game::SkyrimSE => "skyrim_se",
         Game::Fallout4 => "fallout_4",
         Game::Fallout76 => "fallout_76",
@@ -242,6 +243,12 @@ fn per_block_baseline_fallout_3() {
 #[ignore = "needs Oblivion game data on disk"]
 fn per_block_baseline_oblivion() {
     run_baseline(Game::Oblivion);
+}
+
+#[test]
+#[ignore = "needs Skyrim LE (2011) game data on disk"]
+fn per_block_baseline_skyrim_le() {
+    run_baseline(Game::SkyrimLE);
 }
 
 #[test]

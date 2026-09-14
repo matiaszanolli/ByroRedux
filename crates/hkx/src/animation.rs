@@ -51,6 +51,195 @@ pub struct HkxAnimation {
 /// process (#3011).
 const MAX_TRANSFORM_SAMPLES: usize = 16_000_000;
 
+/// An `hkArray` field: the data pointer, then the `u32` element count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ArrayField {
+    pointer: usize,
+    count: usize,
+}
+
+/// Walks a class's fields in declaration order, applying the packfile's
+/// pointer width and C++ alignment, so one field list yields the offsets of
+/// both the 32-bit (2011 Skyrim) and the 64-bit (Special Edition) layout.
+struct Fields {
+    pointer: usize,
+    offset: usize,
+    align: usize,
+}
+
+impl Fields {
+    fn plain(pointer: usize) -> Self {
+        Self {
+            pointer,
+            offset: 0,
+            align: 1,
+        }
+    }
+
+    /// Start of a class deriving from `hkReferencedObject`: vtable pointer,
+    /// `hkUint16 m_memSizeAndFlags`, `hkInt16 m_referenceCount`, padded to
+    /// the base class's pointer alignment.
+    fn referenced_object(pointer: usize) -> Self {
+        let mut fields = Self::plain(pointer);
+        fields.pointer();
+        fields.take(4, 4);
+        fields.end_base_class();
+        fields
+    }
+
+    fn take(&mut self, size: usize, align: usize) -> usize {
+        self.align = self.align.max(align);
+        let at = pad(self.offset, align);
+        self.offset = at + size;
+        at
+    }
+
+    /// `int`, `hkReal` or an `hkInt32`-backed enum.
+    fn int(&mut self) -> usize {
+        self.take(4, 4)
+    }
+
+    fn byte(&mut self) -> usize {
+        self.take(1, 1)
+    }
+
+    /// A raw pointer, `hkRefPtr` or `hkStringPtr`.
+    fn pointer(&mut self) -> usize {
+        self.take(self.pointer, self.pointer)
+    }
+
+    /// `hkArray<T>`: pointer, `int m_size`, `int m_capacityAndFlags`.
+    fn array(&mut self) -> ArrayField {
+        let pointer = self.take(self.pointer + 8, self.pointer);
+        ArrayField {
+            pointer,
+            count: pointer + self.pointer,
+        }
+    }
+
+    fn end_base_class(&mut self) {
+        self.offset = pad(self.offset, self.align);
+    }
+
+    fn size(&self) -> usize {
+        pad(self.offset, self.align)
+    }
+}
+
+const fn pad(value: usize, align: usize) -> usize {
+    (value + align - 1) & !(align - 1)
+}
+
+/// Field offsets of every Havok class this crate reads, for one pointer
+/// width. Field order is Havok's own declaration order (`hkaSkeleton.h`,
+/// `hkaBone.h`, `hkaAnimation.h`, `hkaSplineCompressedAnimation.h`,
+/// `hkaAnimationBinding.h`, `hkaAnnotationTrack.h`); fields this crate never
+/// reads are still walked so the ones after them land correctly.
+#[derive(Debug, PartialEq, Eq)]
+struct Layout {
+    skeleton_name: usize,
+    skeleton_parents: ArrayField,
+    skeleton_bones: ArrayField,
+    skeleton_pose: ArrayField,
+    bone_stride: usize,
+    animation_type: usize,
+    animation_duration: usize,
+    transform_tracks: usize,
+    float_tracks: usize,
+    annotation_tracks: ArrayField,
+    num_frames: usize,
+    num_blocks: usize,
+    max_frames_per_block: usize,
+    mask_size: usize,
+    frame_duration: usize,
+    block_offsets: ArrayField,
+    float_block_offsets: ArrayField,
+    spline_data: ArrayField,
+    binding_track_to_bone: ArrayField,
+    track_name: usize,
+    track_annotations: ArrayField,
+    track_stride: usize,
+    annotation_time: usize,
+    annotation_text: usize,
+    annotation_stride: usize,
+}
+
+impl Layout {
+    fn new(pointer: usize) -> Self {
+        let mut skeleton = Fields::referenced_object(pointer);
+        let skeleton_name = skeleton.pointer();
+        let skeleton_parents = skeleton.array();
+        let skeleton_bones = skeleton.array();
+        let skeleton_pose = skeleton.array();
+
+        let mut bone = Fields::plain(pointer);
+        bone.pointer(); // m_name
+        bone.byte(); // m_lockTranslation
+
+        let mut clip = Fields::referenced_object(pointer);
+        let animation_type = clip.int();
+        let animation_duration = clip.int();
+        let transform_tracks = clip.int();
+        let float_tracks = clip.int();
+        clip.pointer(); // m_extractedMotion
+        let annotation_tracks = clip.array();
+        clip.end_base_class(); // hkaAnimation → hkaSplineCompressedAnimation
+        let num_frames = clip.int();
+        let num_blocks = clip.int();
+        let max_frames_per_block = clip.int();
+        let mask_size = clip.int();
+        clip.int(); // m_blockDuration
+        clip.int(); // m_blockInverseDuration
+        let frame_duration = clip.int();
+        let block_offsets = clip.array();
+        let float_block_offsets = clip.array();
+        clip.array(); // m_transformOffsets
+        clip.array(); // m_floatOffsets
+        let spline_data = clip.array();
+
+        let mut binding = Fields::referenced_object(pointer);
+        binding.pointer(); // m_originalSkeletonName
+        binding.pointer(); // m_animation
+        let binding_track_to_bone = binding.array();
+
+        let mut track = Fields::plain(pointer);
+        let track_name = track.pointer();
+        let track_annotations = track.array();
+
+        let mut annotation = Fields::plain(pointer);
+        let annotation_time = annotation.int();
+        let annotation_text = annotation.pointer();
+
+        Self {
+            skeleton_name,
+            skeleton_parents,
+            skeleton_bones,
+            skeleton_pose,
+            bone_stride: bone.size(),
+            animation_type,
+            animation_duration,
+            transform_tracks,
+            float_tracks,
+            annotation_tracks,
+            num_frames,
+            num_blocks,
+            max_frames_per_block,
+            mask_size,
+            frame_duration,
+            block_offsets,
+            float_block_offsets,
+            spline_data,
+            binding_track_to_bone,
+            track_name,
+            track_annotations,
+            track_stride: track.size(),
+            annotation_time,
+            annotation_text,
+            annotation_stride: annotation.size(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HkxAnnotation {
     pub track_name: String,
@@ -58,20 +247,25 @@ pub struct HkxAnnotation {
     pub text: String,
 }
 
-/// Decode the first `hkaSkeleton` in a Skyrim-era 64-bit packfile.
+/// Decode the first `hkaSkeleton` in a Skyrim-era packfile (32- or 64-bit).
 pub fn decode_skeleton(bytes: &[u8]) -> Result<HkxSkeleton> {
     let pack = Packfile::parse(bytes)?;
+    let layout = Layout::new(pack.pointer_size());
     let object = pack.object("hkaSkeleton")?;
     let name = pack
-        .local_target(object + 0x10)
+        .local_target(object + layout.skeleton_name)
         .map(|offset| pack.cstr(offset, "skeleton name"))
         .transpose()?
         .unwrap_or_default()
         .to_owned();
 
-    let bone_count = pack.u32(object + 0x30, "skeleton bone count")? as usize;
-    let parent_count = pack.u32(object + 0x20, "skeleton parent count")? as usize;
-    let pose_count = pack.u32(object + 0x40, "skeleton pose count")? as usize;
+    let bone_count =
+        pack.u32(object + layout.skeleton_bones.count, "skeleton bone count")? as usize;
+    let parent_count = pack.u32(
+        object + layout.skeleton_parents.count,
+        "skeleton parent count",
+    )? as usize;
+    let pose_count = pack.u32(object + layout.skeleton_pose.count, "skeleton pose count")? as usize;
     if bone_count == 0
         || bone_count > 4096
         || parent_count != bone_count
@@ -82,13 +276,13 @@ pub fn decode_skeleton(bytes: &[u8]) -> Result<HkxSkeleton> {
         ));
     }
     let parents_offset = pack
-        .local_target(object + 0x18)
+        .local_target(object + layout.skeleton_parents.pointer)
         .ok_or(HkxError::InvalidData("skeleton parent array is unbound"))?;
     let bones_offset = pack
-        .local_target(object + 0x28)
+        .local_target(object + layout.skeleton_bones.pointer)
         .ok_or(HkxError::InvalidData("skeleton bone array is unbound"))?;
     let poses_offset = pack
-        .local_target(object + 0x38)
+        .local_target(object + layout.skeleton_pose.pointer)
         .ok_or(HkxError::InvalidData("skeleton pose array is unbound"))?;
     let parents = pack.data_slice(parents_offset, bone_count * 2, "skeleton parents")?;
     let poses = pack.data_slice(poses_offset, bone_count * 48, "skeleton poses")?;
@@ -96,7 +290,7 @@ pub fn decode_skeleton(bytes: &[u8]) -> Result<HkxSkeleton> {
     let mut bones = Vec::with_capacity(bone_count);
     for index in 0..bone_count {
         let name_offset = pack
-            .local_target(bones_offset + index * 16)
+            .local_target(bones_offset + index * layout.bone_stride)
             .ok_or(HkxError::InvalidData("skeleton bone name is unbound"))?;
         let name = pack.cstr(name_offset, "skeleton bone name")?.to_owned();
         let parent_index =
@@ -121,19 +315,24 @@ pub fn decode_skeleton(bytes: &[u8]) -> Result<HkxSkeleton> {
 /// the engine's animation sampler then interpolates between those keys.
 pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
     let pack = Packfile::parse(bytes)?;
+    let layout = Layout::new(pack.pointer_size());
     let object = pack.object("hkaSplineCompressedAnimation")?;
-    let animation_type = pack.u32(object + 0x10, "animation type")?;
+    let animation_type = pack.u32(object + layout.animation_type, "animation type")?;
     if animation_type != 5 {
         return Err(HkxError::InvalidData("animation is not spline-compressed"));
     }
-    let duration = pack.f32(object + 0x14, "animation duration")?;
-    let transform_count = pack.u32(object + 0x18, "transform-track count")? as usize;
-    let float_count = pack.u32(object + 0x1c, "float-track count")? as usize;
-    let num_frames = pack.u32(object + 0x38, "animation frame count")?;
-    let num_blocks = pack.u32(object + 0x3c, "animation block count")? as usize;
-    let max_frames_per_block = pack.u32(object + 0x40, "maximum frames per block")?;
-    let mask_size = pack.u32(object + 0x44, "mask table size")? as usize;
-    let frame_duration = pack.f32(object + 0x50, "animation frame duration")?;
+    let duration = pack.f32(object + layout.animation_duration, "animation duration")?;
+    let transform_count =
+        pack.u32(object + layout.transform_tracks, "transform-track count")? as usize;
+    let float_count = pack.u32(object + layout.float_tracks, "float-track count")? as usize;
+    let num_frames = pack.u32(object + layout.num_frames, "animation frame count")?;
+    let num_blocks = pack.u32(object + layout.num_blocks, "animation block count")? as usize;
+    let max_frames_per_block = pack.u32(
+        object + layout.max_frames_per_block,
+        "maximum frames per block",
+    )?;
+    let mask_size = pack.u32(object + layout.mask_size, "mask table size")? as usize;
+    let frame_duration = pack.f32(object + layout.frame_duration, "animation frame duration")?;
     let frame_count = usize::try_from(num_frames)
         .map_err(|_| HkxError::InvalidData("animation frame count overflows usize"))?;
     let sample_count = transform_count
@@ -158,11 +357,11 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         return Err(HkxError::InvalidData("unsupported spline clip dimensions"));
     }
     let block_offsets =
-        read_pack_u32_array(&pack, object + 0x58, object + 0x60, "block-offset array")?;
+        read_pack_u32_array(&pack, object, layout.block_offsets, "block-offset array")?;
     let float_block_offsets = read_pack_u32_array(
         &pack,
-        object + 0x68,
-        object + 0x70,
+        object,
+        layout.float_block_offsets,
         "float block-offset array",
     )?;
     if block_offsets.len() != num_blocks || float_block_offsets.len() != num_blocks {
@@ -176,9 +375,9 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         ));
     }
     let data_offset = pack
-        .local_target(object + 0x98)
+        .local_target(object + layout.spline_data.pointer)
         .ok_or(HkxError::InvalidData("spline data array is unbound"))?;
-    let data_len = pack.u32(object + 0xa0, "spline data size")? as usize;
+    let data_len = pack.u32(object + layout.spline_data.count, "spline data size")? as usize;
     let data = pack.data_slice(data_offset, data_len, "spline data")?;
     let mut blocks = Vec::with_capacity(num_blocks);
     for block_index in 0..num_blocks {
@@ -253,7 +452,10 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
     }
 
     let binding = pack.object("hkaAnimationBinding")?;
-    let binding_count = pack.u32(binding + 0x28, "transform binding count")? as usize;
+    let binding_count = pack.u32(
+        binding + layout.binding_track_to_bone.count,
+        "transform binding count",
+    )? as usize;
     let track_to_bone = if binding_count == 0 {
         (0..transform_count)
             .map(|index| {
@@ -267,14 +469,14 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
             ));
         }
         let offset = pack
-            .local_target(binding + 0x20)
+            .local_target(binding + layout.binding_track_to_bone.pointer)
             .ok_or(HkxError::InvalidData("transform binding array is unbound"))?;
         let raw = pack.data_slice(offset, binding_count * 2, "transform bindings")?;
         raw.chunks_exact(2)
             .map(|bytes| Ok(u16::from_le_bytes(bytes.try_into().unwrap())))
             .collect::<Result<Vec<_>>>()?
     };
-    let annotations = read_annotations(&pack, object, duration)?;
+    let annotations = read_annotations(&pack, &layout, object, duration)?;
 
     Ok(HkxAnimation {
         duration,
@@ -288,15 +490,17 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
 
 fn read_annotations(
     pack: &Packfile<'_>,
+    layout: &Layout,
     animation: usize,
     duration: f32,
 ) -> Result<Vec<HkxAnnotation>> {
-    const TRACK_SIZE: usize = 0x18;
-    const ANNOTATION_SIZE: usize = 0x10;
     const MAX_TRACKS: usize = 4096;
     const MAX_ANNOTATIONS: usize = 65_536;
 
-    let track_count = pack.u32(animation + 0x30, "annotation-track count")? as usize;
+    let track_count = pack.u32(
+        animation + layout.annotation_tracks.count,
+        "annotation-track count",
+    )? as usize;
     if track_count > MAX_TRACKS {
         return Err(HkxError::InvalidData("implausible annotation-track count"));
     }
@@ -304,24 +508,25 @@ fn read_annotations(
         return Ok(Vec::new());
     }
     let tracks = pack
-        .local_target(animation + 0x28)
+        .local_target(animation + layout.annotation_tracks.pointer)
         .ok_or(HkxError::InvalidData("annotation-track array is unbound"))?;
     let tracks_size = track_count
-        .checked_mul(TRACK_SIZE)
+        .checked_mul(layout.track_stride)
         .ok_or(HkxError::InvalidData("annotation-track size overflow"))?;
     pack.data_slice(tracks, tracks_size, "annotation tracks")?;
 
     let mut result = Vec::new();
     let mut total_annotations = 0usize;
     for track_index in 0..track_count {
-        let track = tracks + track_index * TRACK_SIZE;
+        let track = tracks + track_index * layout.track_stride;
         let track_name = pack
-            .local_target(track)
+            .local_target(track + layout.track_name)
             .map(|offset| pack.cstr(offset, "annotation-track name"))
             .transpose()?
             .unwrap_or_default()
             .to_owned();
-        let annotation_count = pack.u32(track + 0x10, "annotation count")? as usize;
+        let annotation_count =
+            pack.u32(track + layout.track_annotations.count, "annotation count")? as usize;
         total_annotations = total_annotations
             .checked_add(annotation_count)
             .ok_or(HkxError::InvalidData("annotation count overflow"))?;
@@ -332,16 +537,16 @@ fn read_annotations(
             continue;
         }
         let annotations = pack
-            .local_target(track + 0x08)
+            .local_target(track + layout.track_annotations.pointer)
             .ok_or(HkxError::InvalidData("annotation array is unbound"))?;
         let annotations_size = annotation_count
-            .checked_mul(ANNOTATION_SIZE)
+            .checked_mul(layout.annotation_stride)
             .ok_or(HkxError::InvalidData("annotation array size overflow"))?;
         pack.data_slice(annotations, annotations_size, "annotations")?;
 
         for annotation_index in 0..annotation_count {
-            let annotation = annotations + annotation_index * ANNOTATION_SIZE;
-            let time = pack.f32(annotation, "annotation time")?;
+            let annotation = annotations + annotation_index * layout.annotation_stride;
+            let time = pack.f32(annotation + layout.annotation_time, "annotation time")?;
             // #3018 (SCR-D8-2026-08-16-03) — an out-of-range annotation
             // timestamp used to hard-fail the whole clip decode, discarding
             // every transform track over one bad piece of text-event
@@ -359,7 +564,7 @@ fn read_annotations(
                 continue;
             }
             let text_offset = pack
-                .local_target(annotation + 0x08)
+                .local_target(annotation + layout.annotation_text)
                 .ok_or(HkxError::InvalidData("annotation text is unbound"))?;
             let text = pack.cstr(text_offset, "annotation text")?;
             if !text.is_empty() {
@@ -470,16 +675,16 @@ impl QuaternionCurve {
 
 fn read_pack_u32_array(
     pack: &Packfile<'_>,
-    pointer_field: usize,
-    count_field: usize,
+    object: usize,
+    field: ArrayField,
     label: &'static str,
 ) -> Result<Vec<u32>> {
-    let count = pack.u32(count_field, label)? as usize;
+    let count = pack.u32(object + field.count, label)? as usize;
     if count == 0 {
         return Ok(Vec::new());
     }
     let offset = pack
-        .local_target(pointer_field)
+        .local_target(object + field.pointer)
         .ok_or(HkxError::InvalidData("spline offset array is unbound"))?;
     let byte_count = count
         .checked_mul(4)
@@ -911,6 +1116,149 @@ mod tests {
         assert!((q[1] + 1.0).abs() < 1e-6);
     }
 
+    const SKELETON: &str = r"meshes\actors\character\character assets\skeleton.hkx";
+    const CART_PLAYER_IDLE: &str = r"meshes\actors\character\animations\carttravelplayeridle.hkx";
+    /// The MQ101 cart family beyond the player idle, shared by both releases.
+    const CART_CLIPS: [&str; 15] = [
+        r"meshes\actors\character\animations\carttraveldriveridle.hkx",
+        r"meshes\actors\character\animations\cartdriveridlesway.hkx",
+        r"meshes\actors\character\animations\cartprisonerasway.hkx",
+        r"meshes\actors\character\animations\cartprisonerbsway.hkx",
+        r"meshes\actors\character\animations\cartprisonercsway.hkx",
+        r"meshes\actors\character\animations\cartprisonerdsway.hkx",
+        r"meshes\actors\character\animations\cartprisoneraidle.hkx",
+        r"meshes\actors\character\animations\cartprisonerbidle.hkx",
+        r"meshes\actors\character\animations\cartprisonercidle.hkx",
+        r"meshes\actors\character\animations\cartprisonerdidle.hkx",
+        r"meshes\actors\character\animations\cartdriverexit.hkx",
+        r"meshes\actors\character\animations\cartprisoneraexit.hkx",
+        r"meshes\actors\character\animations\cartprisonerbexit.hkx",
+        r"meshes\actors\character\animations\cartprisonercexit.hkx",
+        r"meshes\actors\character\animations\cartprisonerdexit.hkx",
+    ];
+
+    fn animations_archive(env: &str, default: &str) -> Option<byroredux_bsa::BsaArchive> {
+        let data_dir = std::env::var_os(env)
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(default));
+        let archive_path = data_dir.join("Skyrim - Animations.bsa");
+        if !archive_path.is_file() {
+            eprintln!("SKIP: {} not found (no game data?)", archive_path.display());
+            return None;
+        }
+        Some(byroredux_bsa::BsaArchive::open(archive_path).unwrap())
+    }
+
+    /// The layout walk must reproduce, for 8-byte pointers, exactly the
+    /// offsets this decoder hard-coded while it read Skyrim SE only — those
+    /// were validated against the shipped SE assets, so they pin the field
+    /// order and alignment rules the 32-bit layout is derived from.
+    #[test]
+    fn layout_walk_reproduces_the_skyrim_se_offsets() {
+        let array = |pointer, count| ArrayField { pointer, count };
+        let se = Layout::new(8);
+        assert_eq!(
+            se,
+            Layout {
+                skeleton_name: 0x10,
+                skeleton_parents: array(0x18, 0x20),
+                skeleton_bones: array(0x28, 0x30),
+                skeleton_pose: array(0x38, 0x40),
+                bone_stride: 16,
+                animation_type: 0x10,
+                animation_duration: 0x14,
+                transform_tracks: 0x18,
+                float_tracks: 0x1c,
+                annotation_tracks: array(0x28, 0x30),
+                num_frames: 0x38,
+                num_blocks: 0x3c,
+                max_frames_per_block: 0x40,
+                mask_size: 0x44,
+                frame_duration: 0x50,
+                block_offsets: array(0x58, 0x60),
+                float_block_offsets: array(0x68, 0x70),
+                spline_data: array(0x98, 0xa0),
+                binding_track_to_bone: array(0x20, 0x28),
+                track_name: 0,
+                track_annotations: array(0x08, 0x10),
+                track_stride: 0x18,
+                annotation_time: 0,
+                annotation_text: 0x08,
+                annotation_stride: 0x10,
+            }
+        );
+    }
+
+    /// The 2011 release's 32-bit packfiles must decode to the same rig and the
+    /// same clips as Special Edition's 64-bit re-export of that content. The
+    /// 32-bit offsets are derived, not measured one by one, so agreement with
+    /// the SE decode on real files is what verifies them.
+    ///
+    /// `cargo test -p byroredux-hkx -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs Skyrim LE and Skyrim SE game data on disk"]
+    fn skyrim_le_packfiles_decode_to_the_same_rig_and_clips_as_se() {
+        let (Some(le), Some(se)) = (
+            animations_archive(
+                "BYROREDUX_SKYRIMLE_DATA",
+                "/home/matias/Games/skyrim-original/drive_c/Program Files (x86)/The Elder Scrolls V Skyrim/Data",
+            ),
+            animations_archive(
+                "BYROREDUX_SKYRIM_DATA",
+                "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+            ),
+        ) else {
+            return;
+        };
+
+        let le_skeleton = decode_skeleton(&le.extract(SKELETON).unwrap()).unwrap();
+        let se_skeleton = decode_skeleton(&se.extract(SKELETON).unwrap()).unwrap();
+        assert_eq!(le_skeleton.name, se_skeleton.name);
+        assert_eq!(le_skeleton.bones.len(), se_skeleton.bones.len());
+        for (le_bone, se_bone) in le_skeleton.bones.iter().zip(&se_skeleton.bones) {
+            assert_eq!(le_bone.name, se_bone.name);
+            assert_eq!(
+                le_bone.parent_index, se_bone.parent_index,
+                "{}",
+                le_bone.name
+            );
+            assert_transforms_match(
+                &le_bone.reference_pose,
+                &se_bone.reference_pose,
+                &le_bone.name,
+            );
+        }
+
+        for path in std::iter::once(CART_PLAYER_IDLE).chain(CART_CLIPS) {
+            let le_clip = decode_spline_animation(&le.extract(path).unwrap())
+                .unwrap_or_else(|error| panic!("LE {path}: {error}"));
+            let se_clip = decode_spline_animation(&se.extract(path).unwrap()).unwrap();
+            assert_eq!(le_clip.num_frames, se_clip.num_frames, "{path}");
+            assert_eq!(le_clip.duration, se_clip.duration, "{path}");
+            assert_eq!(le_clip.frame_duration, se_clip.frame_duration, "{path}");
+            assert_eq!(le_clip.track_to_bone, se_clip.track_to_bone, "{path}");
+            assert_eq!(le_clip.annotations, se_clip.annotations, "{path}");
+            assert_eq!(le_clip.tracks.len(), se_clip.tracks.len(), "{path}");
+            for (le_track, se_track) in le_clip.tracks.iter().zip(&se_clip.tracks) {
+                for (le_sample, se_sample) in le_track.iter().zip(se_track) {
+                    assert_transforms_match(le_sample, se_sample, path);
+                }
+            }
+        }
+    }
+
+    fn assert_transforms_match(le: &HkxTransform, se: &HkxTransform, context: &str) {
+        let pairs = le
+            .translation
+            .iter()
+            .zip(&se.translation)
+            .chain(le.rotation.iter().zip(&se.rotation))
+            .chain(le.scale.iter().zip(&se.scale));
+        for (a, b) in pairs {
+            assert!((a - b).abs() <= 1e-4, "{context}: LE {le:?} vs SE {se:?}");
+        }
+    }
+
     /// #3014 (SCR-D8-2026-08-16-04) — this test needs the Skyrim SE
     /// animation archive on disk, so it never runs in CI. `#[ignore]`
     /// makes a skipped run show as `ignored`, not `ok` — pre-fix this was
@@ -958,23 +1306,7 @@ mod tests {
                 && sample.scale.iter().all(|value| value.is_finite())
         }));
 
-        for path in [
-            r"meshes\actors\character\animations\carttraveldriveridle.hkx",
-            r"meshes\actors\character\animations\cartdriveridlesway.hkx",
-            r"meshes\actors\character\animations\cartprisonerasway.hkx",
-            r"meshes\actors\character\animations\cartprisonerbsway.hkx",
-            r"meshes\actors\character\animations\cartprisonercsway.hkx",
-            r"meshes\actors\character\animations\cartprisonerdsway.hkx",
-            r"meshes\actors\character\animations\cartprisoneraidle.hkx",
-            r"meshes\actors\character\animations\cartprisonerbidle.hkx",
-            r"meshes\actors\character\animations\cartprisonercidle.hkx",
-            r"meshes\actors\character\animations\cartprisonerdidle.hkx",
-            r"meshes\actors\character\animations\cartdriverexit.hkx",
-            r"meshes\actors\character\animations\cartprisoneraexit.hkx",
-            r"meshes\actors\character\animations\cartprisonerbexit.hkx",
-            r"meshes\actors\character\animations\cartprisonercexit.hkx",
-            r"meshes\actors\character\animations\cartprisonerdexit.hkx",
-        ] {
+        for path in CART_CLIPS {
             let bytes = archive.extract(path).unwrap();
             let dynamic = decode_spline_animation(&bytes)
                 .unwrap_or_else(|error| panic!("failed to decode {path}: {error}"));
@@ -1111,7 +1443,8 @@ mod tests {
         let bytes = builder.build();
         let pack = Packfile::parse(&bytes).unwrap();
 
-        let annotations = read_annotations(&pack, 0, 1.0).expect(
+        // The fixture uses Skyrim SE's 64-bit annotation layout.
+        let annotations = read_annotations(&pack, &Layout::new(8), 0, 1.0).expect(
             "an out-of-range annotation must be skipped, not fail the whole decode (#3018)",
         );
         assert_eq!(

@@ -19,6 +19,7 @@ struct Section {
 /// Resolved view of a Havok 2010 binary packfile.
 pub(crate) struct Packfile<'a> {
     bytes: &'a [u8],
+    pointer_size: usize,
     sections: Vec<Section>,
     data_section: usize,
     local_fixups: Vec<(usize, usize)>,
@@ -35,9 +36,14 @@ impl<'a> Packfile<'a> {
         }
         let pointer_size = *bytes.get(0x10).ok_or(HkxError::Truncated("layout rules"))?;
         let little_endian = *bytes.get(0x11).ok_or(HkxError::Truncated("layout rules"))?;
-        if pointer_size != 8 || little_endian != 1 {
+        // Skyrim ships both: the 2011 release's packfiles are 32-bit, Special
+        // Edition re-exported the same `hk_2010.2.0-r1` content as 64-bit.
+        // The header, section table and fixup tables are fixed-width either
+        // way; only object field offsets depend on this byte, and
+        // `animation.rs` derives those from it.
+        if !matches!(pointer_size, 4 | 8) || little_endian != 1 {
             return Err(HkxError::UnsupportedLayout(
-                "expected a 64-bit little-endian packfile",
+                "expected a 32- or 64-bit little-endian packfile",
             ));
         }
 
@@ -160,12 +166,18 @@ impl<'a> Packfile<'a> {
 
         Ok(Self {
             bytes,
+            pointer_size: usize::from(pointer_size),
             sections,
             data_section,
             local_fixups,
             global_fixups,
             objects,
         })
+    }
+
+    /// Width of a pointer in the file's object data: 4 or 8.
+    pub(crate) fn pointer_size(&self) -> usize {
+        self.pointer_size
     }
 
     pub(crate) fn object(&self, class_name: &'static str) -> Result<usize> {
@@ -482,15 +494,25 @@ mod tests {
         assert_eq!(parse_err(&bytes), (HkxError::InvalidMagic));
     }
 
-    /// The crate deliberately supports one layout — Skyrim SE's. A 32-bit or
-    /// big-endian packfile must be refused, not misread.
+    /// Skyrim's two releases: 32-bit (2011) and 64-bit (Special Edition).
     #[test]
-    fn rejects_layouts_other_than_64_bit_little_endian() {
-        for (offset, value) in [(0x10, 4u8), (0x11, 0u8)] {
+    fn accepts_32_and_64_bit_little_endian_layouts() {
+        for pointer_size in [4u8, 8] {
+            let bytes = sample().build_with(|bytes| bytes[0x10] = pointer_size);
+            let pack = Packfile::parse(&bytes).unwrap();
+            assert_eq!(pack.pointer_size(), usize::from(pointer_size));
+        }
+    }
+
+    /// Any other pointer width, or a big-endian (console) packfile, must be
+    /// refused rather than misread.
+    #[test]
+    fn rejects_layouts_other_than_32_or_64_bit_little_endian() {
+        for (offset, value) in [(0x10, 2u8), (0x10, 16u8), (0x11, 0u8)] {
             let bytes = sample().build_with(|bytes| bytes[offset] = value);
             assert_eq!(
                 parse_err(&bytes),
-                (HkxError::UnsupportedLayout("expected a 64-bit little-endian packfile"))
+                (HkxError::UnsupportedLayout("expected a 32- or 64-bit little-endian packfile"))
             );
         }
     }

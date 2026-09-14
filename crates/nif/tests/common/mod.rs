@@ -15,6 +15,7 @@
 //! | `BYROREDUX_OBLIVION_DATA`  | Oblivion          |
 //! | `BYROREDUX_FO3_DATA`       | Fallout 3         |
 //! | `BYROREDUX_FNV_DATA`       | Fallout New Vegas |
+//! | `BYROREDUX_SKYRIMLE_DATA`  | Skyrim (2011)     |
 //! | `BYROREDUX_SKYRIMSE_DATA`  | Skyrim SE         |
 //!
 //! If a variable is unset, the helper falls back to the canonical Steam
@@ -48,6 +49,9 @@ pub enum Game {
     Oblivion,
     Fallout3,
     FalloutNV,
+    /// The original 2011 Skyrim: NIF 20.2.0.7 / BSVER 83 geometry that
+    /// Special Edition later rebuilt, so its corpus is not SE's.
+    SkyrimLE,
     SkyrimSE,
     Fallout4,
     Fallout76,
@@ -66,10 +70,11 @@ impl Game {
     /// exhaustive over games (e.g. the cross-game translation-completeness
     /// harness, #1362) iterate this so a newly-added variant can't be
     /// silently omitted from cross-game coverage.
-    pub const ALL: [Game; 7] = [
+    pub const ALL: [Game; 8] = [
         Game::Oblivion,
         Game::Fallout3,
         Game::FalloutNV,
+        Game::SkyrimLE,
         Game::SkyrimSE,
         Game::Fallout4,
         Game::Fallout76,
@@ -81,6 +86,7 @@ impl Game {
             Game::Oblivion => "BYROREDUX_OBLIVION_DATA",
             Game::Fallout3 => "BYROREDUX_FO3_DATA",
             Game::FalloutNV => "BYROREDUX_FNV_DATA",
+            Game::SkyrimLE => "BYROREDUX_SKYRIMLE_DATA",
             Game::SkyrimSE => "BYROREDUX_SKYRIMSE_DATA",
             Game::Fallout4 => "BYROREDUX_FO4_DATA",
             Game::Fallout76 => "BYROREDUX_FO76_DATA",
@@ -97,6 +103,10 @@ impl Game {
             Game::Oblivion => PathBuf::from(format!("{base}/Oblivion/Data")),
             Game::Fallout3 => PathBuf::from(format!("{base}/Fallout 3 goty/Data")),
             Game::FalloutNV => PathBuf::from(format!("{base}/Fallout New Vegas/Data")),
+            // Not a Steam install: the reference copy lives in a Wine prefix.
+            Game::SkyrimLE => PathBuf::from(
+                "/home/matias/Games/skyrim-original/drive_c/Program Files (x86)/The Elder Scrolls V Skyrim/Data",
+            ),
             Game::SkyrimSE => PathBuf::from(format!("{base}/Skyrim Special Edition/Data")),
             Game::Fallout4 => PathBuf::from(format!("{base}/Fallout 4/Data")),
             Game::Fallout76 => PathBuf::from(format!("{base}/Fallout76/Data")),
@@ -183,6 +193,10 @@ impl Game {
             // and stay out of *this* list for the reproducibility rule
             // above — they are swept by [`optional_mesh_archives`] instead
             // (#3369).
+            // The 2011 base game ships one unnumbered meshes archive. Its
+            // `Skyrim - Animations.bsa` holds no NIFs at all (measured
+            // 2026-09-13: 0, against SE's 44), so it has no optional tier.
+            Game::SkyrimLE => &["Skyrim - Meshes.bsa"],
             Game::SkyrimSE => &["Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa"],
             Game::Fallout4 => &["Fallout4 - Meshes.ba2"],
             Game::Fallout76 => &["SeventySix - Meshes.ba2"],
@@ -257,7 +271,9 @@ impl Game {
 
     pub fn archive_kind(self) -> ArchiveKind {
         match self {
-            Game::Oblivion | Game::Fallout3 | Game::FalloutNV | Game::SkyrimSE => ArchiveKind::Bsa,
+            Game::Oblivion | Game::Fallout3 | Game::FalloutNV | Game::SkyrimLE | Game::SkyrimSE => {
+                ArchiveKind::Bsa
+            }
             Game::Fallout4 | Game::Fallout76 | Game::Starfield => ArchiveKind::Ba2,
         }
     }
@@ -267,6 +283,7 @@ impl Game {
             Game::Oblivion => "Oblivion",
             Game::Fallout3 => "Fallout 3",
             Game::FalloutNV => "Fallout New Vegas",
+            Game::SkyrimLE => "Skyrim LE",
             Game::SkyrimSE => "Skyrim SE",
             Game::Fallout4 => "Fallout 4",
             Game::Fallout76 => "Fallout 76",

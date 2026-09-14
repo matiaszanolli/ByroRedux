@@ -1,8 +1,8 @@
 //! Minimal, safe Havok packfile reader for Bethesda animation assets.
 //!
-//! Skyrim SE stores actor rigs and clips as 64-bit little-endian Havok
-//! 2010 packfiles. This crate deliberately starts at that shipping format:
-//! it decodes `hkaSkeleton` and expands static or dynamic
+//! Skyrim stores actor rigs and clips as little-endian Havok 2010
+//! packfiles — 32-bit in the 2011 release, 64-bit in Special Edition. This
+//! crate reads both: it decodes `hkaSkeleton` and expands static or dynamic
 //! `hkaSplineCompressedAnimation` transform tracks without loading or
 //! executing a behavior graph.
 
