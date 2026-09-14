@@ -251,14 +251,14 @@ pub enum Effect {
     /// not write a save file — see `CinematicPresentationState::
     /// request_save`'s doc for why a mid-fragment write is out of scope.
     RequestSave { auto: bool },
-    /// `<faction>.SetEnemy(<other_faction>, abModifyPlayer, abModifyEnemy)`.
-    /// See [`crate::FactionRelations`] for what this does and does not
-    /// drive at runtime.
+    /// `<faction>.SetEnemy(<other_faction>, false, false)` — the mutual-enemy
+    /// form. The flags are `abSelfIsNeutralToOther`/`abOtherIsNeutralToSelf`
+    /// and a `true` one makes that direction neutral, so any other shape
+    /// declines (#4318). See [`crate::FactionRelations`] for what this does
+    /// and does not drive at runtime.
     SetEnemy {
         faction: ObjectRef,
         other_faction: ObjectRef,
-        modify_player: bool,
-        modify_enemy: bool,
     },
     /// `<actor>.StartCombat(<target>)`. See [`crate::AiCombatState`] for
     /// the runtime chase-and-strike behavior this arms.
@@ -316,6 +316,22 @@ pub enum Effect {
 pub enum ActorRef {
     Player,
     Object(ObjectRef),
+}
+
+impl Effect {
+    /// Whether this effect's runtime arm only *records* that the call ran —
+    /// a counter nothing reads — without doing what the call does (#4328).
+    /// `Game.ShowRaceMenu` opens no menu; `Game.RequestSave` and
+    /// `RequestAutoSave` write no save.
+    ///
+    /// Lowering them is deliberate: declining would discard every sibling
+    /// effect in MQ101's chargen fragments. But a fragment claimed only by
+    /// way of one is coverage with a hole in it, so the coverage harnesses
+    /// count those fragments separately rather than letting the stub pass
+    /// for the real behavior.
+    pub fn is_placeholder(&self) -> bool {
+        matches!(self, Effect::ShowRaceMenu | Effect::RequestSave { .. })
+    }
 }
 
 /// The local-variable scope built while lowering a fragment body.
@@ -1281,16 +1297,22 @@ fn prim_request_auto_save(e: &Expr, _scope: &Scope) -> Option<Effect> {
     args.is_empty().then_some(Effect::RequestSave { auto: true })
 }
 
+/// #4318 — Skyrim's own `faction.pex` declares `SetEnemy(Faction akOther,
+/// Bool abSelfIsNeutralToOther, Bool abOtherIsNeutralToSelf)`. A `true` flag
+/// makes that direction *neutral* rather than hostile, which the single
+/// undirected hostile pair in `FactionRelations` cannot represent. This used
+/// to accept the flags under invented names and drop them at dispatch, so
+/// `SetEnemy(x, true, true)` — "mutually neutral" — was recorded as mutual
+/// enmity. Only the literal `false, false` form is modeled; everything else
+/// declines.
 fn prim_set_enemy(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetEnemy")?;
-    if args.len() != 3 {
+    if args.len() != 3 || bool_arg(args, 1)? != Some(false) || bool_arg(args, 2)? != Some(false) {
         return None;
     }
     Some(Effect::SetEnemy {
         faction: receiver_object(object, scope)?,
         other_faction: receiver_object(&args[0].value.node, scope)?,
-        modify_player: bool_arg(args, 1)?.unwrap_or(true),
-        modify_enemy: bool_arg(args, 2)?.unwrap_or(true),
     })
 }
 
@@ -1299,8 +1321,16 @@ fn prim_start_combat(e: &Expr, scope: &Scope) -> Option<Effect> {
     if args.len() != 1 {
         return None;
     }
+    let actor = receiver_actor(object, scope)?;
+    // #4323 — the runtime this arms is an NPC chase-and-strike: it steers the
+    // combatant's own Transform and emits hits on cooldown. On the player
+    // that would fight the character controller and auto-attack, which is
+    // not what `StartCombat` means, so a player combatant is unmodeled.
+    if actor == ActorRef::Player {
+        return None;
+    }
     Some(Effect::StartCombat {
-        actor: receiver_actor(object, scope)?,
+        actor,
         target: receiver_actor(&args[0].value.node, scope)?,
     })
 }
@@ -2744,6 +2774,26 @@ mod tests {
     }
 
     #[test]
+    fn request_save_primitives_decline_with_args() {
+        // #4328 — both are 0-arg natives; the `is_empty` arity guard had no
+        // decline test of its own.
+        for call in ["Game.RequestSave(true)", "Game.RequestAutoSave(1)"] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_31()\n{call}\n EndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), None, "{call}");
+        }
+    }
+
+    #[test]
+    fn only_the_counter_only_primitives_are_placeholders() {
+        assert!(Effect::ShowRaceMenu.is_placeholder());
+        assert!(Effect::RequestSave { auto: false }.is_placeholder());
+        assert!(Effect::RequestSave { auto: true }.is_placeholder());
+        assert!(!Effect::SetHudCartMode { cart_mode: true }.is_placeholder());
+    }
+
+    #[test]
     fn lowers_request_auto_save() {
         // Real vanilla shape: `QF_MQ101_0003372B::Fragment_11` (stage 80),
         // minus the trailing `AddRaceSpells()` call — that one is a
@@ -2795,8 +2845,6 @@ mod tests {
             Some(Effect::SetEnemy {
                 faction: ObjectRef::Property("::MQ101StormcloakFaction_var".into()),
                 other_faction: ObjectRef::Property("::PlayerFaction_var".into()),
-                modify_player: false,
-                modify_enemy: false,
             })
         );
     }
@@ -2837,11 +2885,64 @@ mod tests {
     }
 
     #[test]
+    fn set_enemy_declines_unless_both_neutral_flags_are_literal_false() {
+        // #4318 — a `true` `abSelfIsNeutralToOther`/`abOtherIsNeutralToSelf`
+        // makes that direction neutral, which one undirected hostile pair
+        // cannot express; recording it as enmity inverted the call. A
+        // non-literal flag is an unknown runtime value and declines too.
+        let call = |self_neutral: Expr, other_neutral: Expr| Expr::Call {
+            callee: Box::new(sp(Expr::MemberAccess {
+                object: Box::new(sp(Expr::Ident(Identifier("::SomeFaction_var".into())))),
+                member: sp(Identifier("SetEnemy".into())),
+            })),
+            args: vec![
+                CallArg {
+                    name: None,
+                    value: sp(Expr::Ident(Identifier("::OtherFaction_var".into()))),
+                },
+                CallArg {
+                    name: None,
+                    value: sp(self_neutral),
+                },
+                CallArg {
+                    name: None,
+                    value: sp(other_neutral),
+                },
+            ],
+        };
+        for (self_neutral, other_neutral) in [
+            (Expr::BoolLit(true), Expr::BoolLit(false)),
+            (Expr::BoolLit(false), Expr::BoolLit(true)),
+            (Expr::BoolLit(true), Expr::BoolLit(true)),
+            (
+                Expr::Ident(Identifier("bNeutral".into())),
+                Expr::BoolLit(false),
+            ),
+        ] {
+            let expr = call(self_neutral, other_neutral);
+            assert_eq!(classify_effect(&expr, &Scope::default()), None, "{expr:?}");
+        }
+    }
+
+    #[test]
     fn start_combat_declines_on_wrong_arg_count() {
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_32()\n\
              Game.GetPlayer().StartCombat()\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn start_combat_declines_a_player_combatant() {
+        // #4323 — the player target in `lowers_mq101_start_combat` resolves
+        // fine, so this declines on the receiver alone: the NPC chase-and-
+        // strike runtime must never be armed on the player.
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_33()\n\
+             Game.GetPlayer().StartCombat(Game.GetPlayer())\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
     }

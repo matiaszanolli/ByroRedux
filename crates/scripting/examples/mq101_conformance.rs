@@ -1551,6 +1551,8 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                         let mut no_op = 0usize;
                         let mut behavioral = 0usize;
                         let mut lowered = 0usize;
+                        // #4328 — see `Effect::is_placeholder`.
+                        let mut lowered_with_placeholder = 0usize;
                         let mut effects = BTreeMap::<&'static str, usize>::new();
                         let mut declined_shapes = BTreeMap::<String, usize>::new();
                         let mut declined_samples = Vec::new();
@@ -1571,6 +1573,9 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                 &quest_properties,
                             ) {
                                 lowered += 1;
+                                if fragment_effects.iter().any(Effect::is_placeholder) {
+                                    lowered_with_placeholder += 1;
+                                }
                                 for effect in &fragment_effects {
                                     *effects.entry(effect_kind(effect)).or_default() += 1;
                                 }
@@ -1743,6 +1748,10 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                         println!("bound no-op fragments:       {no_op}");
                         println!("bound behavioral fragments: {behavioral}");
                         println!("fully lowered today:         {lowered} ({pct:.1}%)");
+                        println!(
+                            "  via a placeholder effect:   {lowered_with_placeholder} \
+                             (counter-only stub inside)"
+                        );
                         println!("declined/backlog:            {}", behavioral - lowered);
                         if !effects.is_empty() {
                             println!("effects emitted:");

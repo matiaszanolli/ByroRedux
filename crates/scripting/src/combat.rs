@@ -68,13 +68,11 @@ impl FactionRelations {
         }
     }
 
-    /// `<faction>.SetEnemy(<other_faction>, ..)` — marks the pair mutually
-    /// hostile. `abModifyPlayer`/`abModifyEnemy` are accepted by the
-    /// fragment lowerer (declining an unrecognized shape matters more than
-    /// this resource acting on them) but not modeled here: real Skyrim
-    /// uses them to scope *which* direction's own separate relation entry
-    /// changes, and this table is already a single undirected relation,
-    /// not two directed ones.
+    /// `<faction>.SetEnemy(<other_faction>, false, false)` — marks the pair
+    /// mutually hostile. The two Papyrus flags are `abSelfIsNeutralToOther`
+    /// and `abOtherIsNeutralToSelf`: a `true` one makes that direction
+    /// *neutral* instead, which this single undirected hostile pair cannot
+    /// represent, so the lowerer declines any call that sets either (#4318).
     pub fn set_enemy(&mut self, faction: u32, other_faction: u32) {
         self.hostile_pairs.insert(Self::key(faction, other_faction));
     }

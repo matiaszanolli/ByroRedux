@@ -179,6 +179,10 @@ fn main() {
 
     let mut behavioral = 0usize; // non-empty fragments
     let mut claimed = 0usize; // fully lowered
+
+    // #4328 — claimed fragments whose effects include a placeholder
+    // (`Effect::is_placeholder`): lowered, but part of the call is a stub.
+    let mut claimed_with_placeholder = 0usize;
     let mut empty = 0usize; // empty fragments (trivially lowered)
     let mut effect_hist: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut claimed_effects = 0usize;
@@ -234,6 +238,9 @@ fn main() {
                     Some(effects) => {
                         claimed += 1;
                         claimed_effects += effects.len();
+                        if effects.iter().any(Effect::is_placeholder) {
+                            claimed_with_placeholder += 1;
+                        }
                         for e in &effects {
                             *effect_hist.entry(effect_kind(e)).or_default() += 1;
                         }
@@ -261,6 +268,10 @@ fn main() {
     println!(
         "fully lowered (claimed): {claimed} ({:.1}% of behavioral)",
         pct(claimed, behavioral)
+    );
+    println!(
+        "  of which rely on a placeholder effect: {claimed_with_placeholder} \
+         (lowered, but a call in them is a counter-only stub)"
     );
     println!(
         "declined: {} ({:.1}%)",

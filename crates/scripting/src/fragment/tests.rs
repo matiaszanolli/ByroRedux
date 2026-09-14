@@ -915,8 +915,6 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
         Effect::SetEnemy {
             faction: ObjectRef::Property("MQ101StormcloakFaction".into()),
             other_faction: ObjectRef::Property("PlayerFaction".into()),
-            modify_player: false,
-            modify_enemy: false,
         },
         Effect::StartCombat {
             actor: crate::translate::effects::ActorRef::Object(ObjectRef::Property(
@@ -2362,6 +2360,148 @@ fn dispatch_set_locked_records_the_change_in_the_persistent_ledger() {
             lock_level: 90,
             key_form_id: None
         })
+    );
+}
+
+/// #4329 — a first `SetLockLevel` on a keyed door must record the whole live
+/// outcome, key included. Queuing only the level let the ledger invent
+/// `key_form_id: None`, and the ledger outranks the authored `XLOC` on the
+/// next load, so the door stopped accepting its own key after a revisit.
+#[test]
+fn dispatch_set_lock_level_on_an_untouched_keyed_door_keeps_the_key_in_the_ledger() {
+    use crate::{LockOverride, ReferenceLockState};
+    use byroredux_core::ecs::components::Locked;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const DOOR_FORM: u32 = 0x0009_0C23;
+    let mut world = fixture();
+    let door = spawn_with_form_id(&mut world, DOOR_FORM);
+    world.register::<Locked>();
+    world.insert(
+        door,
+        Locked {
+            lock_level: 75,
+            key_form_id: Some(0x1234),
+        },
+    );
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "QF_LOCK".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "MyDoor".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: DOOR_FORM,
+                            alias: -1,
+                        },
+                    }],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::SetLockLevel {
+                target: crate::translate::compose::ObjectRef::Property("::MyDoor_var".into()),
+                level: 90,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    let live = *world.get::<Locked>(door).unwrap();
+    assert_eq!((live.lock_level, live.key_form_id), (90, Some(0x1234)));
+    assert_eq!(
+        world
+            .resource::<ReferenceLockState>()
+            .override_for(DOOR_FORM),
+        Some(LockOverride::Locked {
+            lock_level: 90,
+            key_form_id: Some(0x1234)
+        }),
+        "the ledger must match the live component, key included (#4329)"
+    );
+}
+
+/// #4330 — unlocking a direct reference whose cell is not loaded still
+/// reaches the ledger, the `Disable` posture (#3278), so the door is unlocked
+/// when its cell next loads. A re-lock of an unloaded reference records
+/// nothing: with no live component there is no authored level or key to keep.
+#[test]
+fn dispatch_set_locked_on_an_unloaded_reference_records_only_an_unlock() {
+    use crate::{LockOverride, ReferenceLockState};
+    use byroredux_core::ecs::components::Locked;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const FAR_DOOR: u32 = 0x0009_0C24;
+    const OTHER_DOOR: u32 = 0x0009_0C25;
+    let mut world = fixture();
+    world.register::<Locked>();
+    // No entity carries either FormID: both references' cells are unloaded.
+    let property = |name: &str, form_id: u32| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "QF_LOCK".into(),
+                    status: 0,
+                    properties: vec![
+                        property("FarDoor", FAR_DOOR),
+                        property("OtherDoor", OTHER_DOOR),
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::SetLocked {
+                    target: crate::translate::compose::ObjectRef::Property("::FarDoor_var".into()),
+                    locked: false,
+                },
+                Effect::SetLocked {
+                    target: crate::translate::compose::ObjectRef::Property(
+                        "::OtherDoor_var".into(),
+                    ),
+                    locked: true,
+                },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    let ledger = world.resource::<ReferenceLockState>();
+    assert_eq!(
+        ledger.override_for(FAR_DOOR),
+        Some(LockOverride::Unlocked),
+        "an unlock of an unloaded reference must still be recorded (#4330)"
+    );
+    assert_eq!(
+        ledger.override_for(OTHER_DOOR),
+        None,
+        "a re-lock with no live component has no authored lock to record"
     );
 }
 

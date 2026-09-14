@@ -88,16 +88,17 @@ impl ReferenceLockState {
     /// Update only the difficulty of an already-recorded lock, mirroring
     /// `Effect::SetLockLevel`'s "never locks or unlocks" contract.
     ///
-    /// A no-op when the reference is scripted-*unlocked*: there is no lock
-    /// record to carry a difficulty on, which is the same reasoning the
-    /// live component path uses. When no override exists yet the plugin's
-    /// authored lock is still in force, so the level is recorded against
-    /// it with no key — matching what the component ends up holding.
+    /// A no-op when the reference is scripted-*unlocked* (there is no lock
+    /// record to carry a difficulty on) and when no override exists yet
+    /// (#4329). In the second case the plugin's authored lock is still in
+    /// force, but its key is known only to the live component, so recording
+    /// a lock here would invent `key_form_id: None` — and a ledger entry
+    /// outranks the authored `XLOC` on the next load. The dispatcher records
+    /// a first difficulty change as the component's full outcome through
+    /// [`Self::set_locked`] instead.
     pub fn set_lock_level(&mut self, form_id: u32, lock_level: u8) {
-        match self.overrides.get_mut(&form_id) {
-            Some(LockOverride::Locked { lock_level: l, .. }) => *l = lock_level,
-            Some(LockOverride::Unlocked) => {}
-            None => self.set_locked(form_id, lock_level, None),
+        if let Some(LockOverride::Locked { lock_level: l, .. }) = self.overrides.get_mut(&form_id) {
+            *l = lock_level;
         }
     }
 
@@ -438,20 +439,15 @@ mod reference_lock_state_tests {
         );
     }
 
-    /// An untouched reference is still under its authored lock, so
-    /// recording a level against it keeps it locked at that level — which
-    /// is what the live component ends up holding on the same path.
+    /// #4329 — an untouched reference is still under its authored lock,
+    /// whose key this ledger cannot see, so a bare level records nothing
+    /// rather than a keyless lock that would outrank the authored `XLOC` on
+    /// reload. This used to record `Locked { key_form_id: None }`.
     #[test]
-    fn set_lock_level_on_an_untouched_reference_records_the_authored_lock() {
+    fn set_lock_level_on_an_untouched_reference_records_nothing() {
         let mut state = ReferenceLockState::default();
         state.set_lock_level(DOOR, 50);
-        assert_eq!(
-            state.override_for(DOOR),
-            Some(LockOverride::Locked {
-                lock_level: 50,
-                key_form_id: None
-            })
-        );
+        assert_eq!(state.override_for(DOOR), None);
     }
 
     #[test]

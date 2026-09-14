@@ -245,8 +245,6 @@ enum DeferredLockChange {
         key_form_id: Option<u32>,
     },
     Unlocked,
-    /// `SetLockLevel` — difficulty only, never locks or unlocks.
-    Level(u8),
 }
 
 #[derive(Debug)]
@@ -370,9 +368,6 @@ impl DeferredFragmentEffects {
                                 key_form_id,
                             } => state.set_locked(form_id, lock_level, key_form_id),
                             DeferredLockChange::Unlocked => state.set_unlocked(form_id),
-                            DeferredLockChange::Level(level) => {
-                                state.set_lock_level(form_id, level)
-                            }
                         }
                     }
                 }
@@ -920,8 +915,24 @@ pub(crate) fn apply_effect(
             // lock was a one-way door for the session and any fragment
             // containing `Lock(false)` declined wholesale — discarding its
             // sibling stage/objective effects too.
-            let target_entity =
-                resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+            let Some(target_entity) =
+                resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)
+            else {
+                // #4330 — no loaded entity. The ledger exists to outlive the
+                // entity (the `ReferenceEnableState` posture, #3278), so an
+                // *unlock* of a direct VMAD reference is still recorded and
+                // takes effect when its cell next loads. A re-lock is not:
+                // with no live component there is no authored `XLOC` level or
+                // key to record, and inventing one would overwrite both.
+                if !*locked {
+                    if let Some(form_id) = resolve_property_form_id(vmad, target.property_name()) {
+                        deferred
+                            .reference_lock_changes
+                            .push((form_id, DeferredLockChange::Unlocked));
+                    }
+                }
+                return None;
+            };
             // Through `query_mut`, not `World::insert`/`remove`: this system
             // holds `&World`, so structural mutation is unavailable, but
             // inserting into and removing from an *existing* storage is not
@@ -975,11 +986,20 @@ pub(crate) fn apply_effect(
             // level, so this is a no-op there rather than an implicit lock.
             let target_entity =
                 resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
-            let mut applied = false;
+            let mut recorded = None;
             if let Some(mut locks) = world.query_mut::<Locked>() {
                 if let Some(state) = locks.get_mut(target_entity) {
                     state.lock_level = *level;
-                    applied = true;
+                    // #4329 — record the whole outcome, key included, the
+                    // same read-back `SetLocked` does. Queuing only the level
+                    // let the ledger invent `key_form_id: None` for a
+                    // reference with no prior override, so a keyed door's
+                    // entry lost its key while the live component kept it —
+                    // and the ledger wins over `XLOC` on the next load.
+                    recorded = Some(DeferredLockChange::Locked {
+                        lock_level: state.lock_level,
+                        key_form_id: state.key_form_id,
+                    });
                 } else {
                     log::debug!(
                         "fragment SetLockLevel skipped: '{}' is not locked, so there is \
@@ -992,11 +1012,9 @@ pub(crate) fn apply_effect(
             // change. Queuing it unconditionally would let the ledger
             // re-lock a door on the next cell load that `SetLockLevel`
             // explicitly declined to lock here.
-            if applied {
+            if let Some(recorded) = recorded {
                 if let Some(form_id) = lock_ledger_key(vmad, world, context, target, deferred) {
-                    deferred
-                        .reference_lock_changes
-                        .push((form_id, DeferredLockChange::Level(*level)));
+                    deferred.reference_lock_changes.push((form_id, recorded));
                 }
             }
             None
@@ -1189,7 +1207,6 @@ pub(crate) fn apply_effect(
         Effect::SetEnemy {
             faction,
             other_faction,
-            ..
         } => {
             let faction = resolve_property_form_id(vmad, faction.property_name())?;
             let other_faction = resolve_property_form_id(vmad, other_faction.property_name())?;

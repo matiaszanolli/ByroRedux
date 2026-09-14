@@ -575,8 +575,17 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // is on `registry_completeness_tests.rs`'s `NOT_SAVED_BY_DESIGN`
     // allowlist (re-resolved by `attach_animation_sinks` on load), so no
     // snapshot has ever contained either shape.
+    //
+    // #4318 — fingerprint refreshed WITHOUT a major bump: `Effect::SetEnemy`
+    // lost its `modify_player`/`modify_enemy` bools, invented names for
+    // Papyrus's `abSelfIsNeutralToOther`/`abOtherIsNeutralToSelf` (only the
+    // literal `false, false` form lowers now, so the fields carried nothing).
+    // Removing fields from an externally-tagged `serde_json` struct variant
+    // still decodes a pre-this-commit tail: serde ignores the two stale keys,
+    // nothing in this shape sets `deny_unknown_fields`, and no remaining
+    // field was reordered, renamed or retyped.
     const BASELINE_MAJOR: u16 = 23;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x8cfd_915f_3cb4_e01c;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xaef2_a35c_3e79_fadb;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,
