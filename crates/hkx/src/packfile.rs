@@ -46,6 +46,34 @@ impl<'a> Packfile<'a> {
                 "expected a 32- or 64-bit little-endian packfile",
             ));
         }
+        // #4332 — pointer width and endianness are not the whole layout.
+        // `animation.rs`'s `Layout` also assumes Havok 2010 class field order
+        // and MSVC struct packing, and neither byte above confirms either: an
+        // `hk_2014` file, or one written with tail-padding reuse (which
+        // shifts every derived member of `hkReferencedObject`), would pass
+        // and decode with wrong offsets. The header states all three
+        // (`hkPackfileHeader`: `m_fileVersion` @0x0C, `m_layoutRules[2]` =
+        // `m_reusePaddingOptimization` @0x12, `m_contentsVersion` @0x28).
+        // Every sampled vanilla Skyrim LE and SE packfile is version 8,
+        // `hk_2010.2.0-r1`, reuse-padding 0.
+        if read_u32(bytes, 0x0C, "file version")? != 8 {
+            return Err(HkxError::UnsupportedLayout(
+                "expected a version-8 (Havok 2010) packfile",
+            ));
+        }
+        if *bytes.get(0x12).ok_or(HkxError::Truncated("layout rules"))? != 0 {
+            return Err(HkxError::UnsupportedLayout(
+                "expected MSVC struct layout without tail-padding reuse",
+            ));
+        }
+        let contents_version = bytes
+            .get(0x28..0x38)
+            .ok_or(HkxError::Truncated("contents version"))?;
+        if !contents_version.starts_with(b"hk_2010") {
+            return Err(HkxError::UnsupportedLayout(
+                "expected hk_2010 packfile contents",
+            ));
+        }
 
         let section_count = read_u32(bytes, 0x14, "section count")? as usize;
         if section_count == 0 || section_count > 64 {
@@ -327,9 +355,12 @@ pub(crate) mod fixtures {
             let mut bytes = vec![0u8; names_start];
             bytes[0..4].copy_from_slice(&MAGIC_0.to_le_bytes());
             bytes[4..8].copy_from_slice(&MAGIC_1.to_le_bytes());
+            bytes[0x0C..0x10].copy_from_slice(&8u32.to_le_bytes()); // Havok 2010
             bytes[0x10] = 8; // 64-bit pointers
             bytes[0x11] = 1; // little endian
+            bytes[0x13] = 1; // empty-base-class optimization, as MSVC writes
             bytes[0x14..0x18].copy_from_slice(&2u32.to_le_bytes());
+            bytes[0x28..0x28 + 14].copy_from_slice(b"hk_2010.2.0-r1");
 
             let section = |bytes: &mut Vec<u8>,
                            index: usize,
@@ -515,6 +546,30 @@ mod tests {
                 (HkxError::UnsupportedLayout("expected a 32- or 64-bit little-endian packfile"))
             );
         }
+    }
+
+    /// #4332 — a header that passes the pointer/endian check but was written
+    /// by another Havok version, or with tail-padding reuse, must be refused
+    /// rather than decoded with Havok 2010 MSVC field offsets.
+    #[test]
+    fn rejects_packfiles_that_are_not_havok_2010_msvc_layout() {
+        let version =
+            sample().build_with(|bytes| bytes[0x0C..0x10].copy_from_slice(&11u32.to_le_bytes()));
+        assert_eq!(
+            parse_err(&version),
+            HkxError::UnsupportedLayout("expected a version-8 (Havok 2010) packfile")
+        );
+        let reuse_padding = sample().build_with(|bytes| bytes[0x12] = 1);
+        assert_eq!(
+            parse_err(&reuse_padding),
+            HkxError::UnsupportedLayout("expected MSVC struct layout without tail-padding reuse")
+        );
+        let contents =
+            sample().build_with(|bytes| bytes[0x28..0x28 + 14].copy_from_slice(b"hk_2014.1.0-r1"));
+        assert_eq!(
+            parse_err(&contents),
+            HkxError::UnsupportedLayout("expected hk_2010 packfile contents")
+        );
     }
 
     #[test]
