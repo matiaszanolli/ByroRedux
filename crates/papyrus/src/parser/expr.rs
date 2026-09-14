@@ -33,41 +33,75 @@ impl Parser {
     ///
     /// Tracks `self.expr_depth` across recursion so a pathologically
     /// nested expression hits the depth cap and surfaces an error
-    /// rather than stack-overflowing. Increment-on-entry,
-    /// decrement-on-exit happens here; the body is in
-    /// [`Self::parse_expr_bp_inner`] so the bookkeeping sits at a
-    /// single entry/exit regardless of which `?` early-returns inside.
+    /// rather than stack-overflowing. The body is in
+    /// [`Self::parse_expr_bp_inner`], which also charges every node its
+    /// loop wraps around `lhs` ([`Self::enter_chain_link`]); restoring the
+    /// saved depth here — rather than decrementing once — undoes both kinds
+    /// of increment on every exit, including each `?` early return.
     pub(crate) fn parse_expr_bp(&mut self, min_bp: u8) -> Result<Spanned<Expr>, ParseError> {
         if self.expr_depth >= MAX_EXPR_DEPTH {
             let span = self.current_span();
             return Err(ParseError::expression_too_deep(MAX_EXPR_DEPTH, span));
         }
+        let saved = self.expr_depth;
         self.expr_depth += 1;
         let result = self.parse_expr_bp_inner(min_bp);
-        self.expr_depth -= 1;
+        self.expr_depth = saved;
         result
+    }
+
+    /// Charge one AST level for a node the Pratt loop builds *iteratively*
+    /// around `lhs` — member access, index, call, cast, or a binary operator.
+    ///
+    /// #4320 — `MAX_EXPR_DEPTH` used to count only recursive
+    /// [`Self::parse_expr_bp`] calls, and these wraps never recurse, so
+    /// `a.a.a…` or `a+a+a…` built a tree as deep as the input was long while
+    /// `expr_depth` stayed at 1. Around 200k links the resulting AST aborted
+    /// the process with a stack overflow in its recursive `Drop`. Charging
+    /// each wrap makes `expr_depth` the real depth of the node being built,
+    /// so operands and arguments parsed beneath it inherit that depth too.
+    fn enter_chain_link(&mut self) -> Result<(), ParseError> {
+        if self.expr_depth >= MAX_EXPR_DEPTH {
+            let span = self.current_span();
+            return Err(ParseError::expression_too_deep(MAX_EXPR_DEPTH, span));
+        }
+        self.expr_depth += 1;
+        Ok(())
     }
 
     fn parse_expr_bp_inner(&mut self, min_bp: u8) -> Result<Spanned<Expr>, ParseError> {
         let mut lhs = self.parse_prefix()?;
 
         // Check for postfix / infix operators each iteration.
-        while let Some(tok) = self.peek() {
+        //
+        // #4321 — `peek_raw`, not `peek`: a newline ends the expression.
+        // `peek` skips `Token::Newline`, so a line opening with `(` became a
+        // call on the previous line's expression (`SetStage(10)` ⏎
+        // `(akRef as ObjectReference).Disable()` parsed as one statement with
+        // no error). Explicit `\` continuations are already joined by
+        // `preprocess`, and an operator ending a line still continues, since
+        // the operand after it is parsed through `parse_prefix`, which skips
+        // newlines.
+        while let Some(tok) = self.peek_raw() {
             // Postfix: dot, index, call
             match tok {
                 Token::Dot if PREC_POSTFIX > min_bp => {
+                    self.enter_chain_link()?;
                     lhs = self.parse_member_access(lhs)?;
                     continue;
                 }
                 Token::LBracket if PREC_POSTFIX > min_bp => {
+                    self.enter_chain_link()?;
                     lhs = self.parse_index(lhs)?;
                     continue;
                 }
                 Token::LParen if PREC_POSTFIX > min_bp => {
+                    self.enter_chain_link()?;
                     lhs = self.parse_call(lhs)?;
                     continue;
                 }
                 Token::KwAs if PREC_CAST > min_bp => {
+                    self.enter_chain_link()?;
                     lhs = self.parse_cast(lhs)?;
                     continue;
                 }
@@ -82,6 +116,7 @@ impl Parser {
             if op_prec <= min_bp {
                 break;
             }
+            self.enter_chain_link()?;
 
             // Consume the operator
             let (_, _op_span) = self.advance().unwrap();
@@ -941,5 +976,62 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let _ = parser.parse_expr().expect("second parse ok");
         assert_eq!(parser.expr_depth, 0);
+    }
+
+    // ── #4320 — iteratively built chains count against MAX_EXPR_DEPTH ──
+
+    #[test]
+    fn long_postfix_and_binary_chains_hit_the_depth_cap() {
+        // Before #4320 each of these built a 10 000-deep AST with
+        // `expr_depth` never above 1; around 200k links the tree's recursive
+        // `Drop` aborted the process.
+        for link in [".a", "()", "[0]", " + a"] {
+            let (tokens, _) = lex(&format!("a{}", link.repeat(10_000)));
+            let mut parser = Parser::new(tokens);
+            let err = parser
+                .parse_expr()
+                .expect_err("a 10 000-link chain must be refused");
+            assert!(
+                matches!(err.kind, crate::error::ErrorKind::ExpressionTooDeep { .. }),
+                "`{link}` chain: expected ExpressionTooDeep, got {:?}",
+                err.kind,
+            );
+            assert_eq!(
+                parser.expr_depth, 0,
+                "the error path must release every charge"
+            );
+        }
+    }
+
+    #[test]
+    fn realistic_chains_still_parse_and_release_their_depth() {
+        let (tokens, _) = lex(&format!("a{}.c(1)[2] + x * y", ".b".repeat(64)));
+        let mut parser = Parser::new(tokens);
+        parser
+            .parse_expr()
+            .expect("a 70-link expression is legitimate");
+        assert_eq!(parser.expr_depth, 0);
+    }
+
+    // ── #4321 — a newline ends the expression ──
+
+    #[test]
+    fn a_line_opening_with_a_paren_is_not_a_call_on_the_previous_line() {
+        let (tokens, _) = lex("SetStage(10)\n(akRef as ObjectReference).Disable()");
+        let mut parser = Parser::new(tokens);
+        let e = parser.parse_expr().expect("the first line parses");
+        match &e.node {
+            Expr::Call { callee, args } => {
+                assert_ident(&callee.node, "SetStage");
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("the next line must not be glued onto `SetStage(10)`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_operator_ending_a_line_still_continues_onto_the_next() {
+        let e = parse_expr_str("a +\nb").expect("a trailing operator continues the expression");
+        assert!(matches!(e.node, Expr::BinaryOp { .. }), "got {:?}", e.node);
     }
 }
