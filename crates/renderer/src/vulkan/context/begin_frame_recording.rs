@@ -146,7 +146,11 @@ impl VulkanContext {
         // path anchor here predated the `acceleration.rs` → `acceleration/`
         // split; symbols survive refactors, file paths do not.)
         let tlas_t0 = Instant::now();
-        let instance_map: Vec<Option<u32>> = super::super::acceleration::build_instance_map(
+        // #4193 — reuse the persistent scratch (#243); `draw_frame` hands it
+        // back once TLAS and SSBO building have read it.
+        let mut instance_map = std::mem::take(&mut self.instance_map_scratch);
+        super::super::acceleration::build_instance_map(
+            &mut instance_map,
             draw_commands.len(),
             super::super::scene_buffer::MAX_INSTANCES,
             |i| {

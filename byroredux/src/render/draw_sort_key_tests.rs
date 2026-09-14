@@ -100,6 +100,42 @@ fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
     }
 }
 
+/// #4192 — refractive glass gets its own blended pipeline
+/// (`PipelineKey::Blended { preserve_opaque_gbuffer }`), so the
+/// state-primary branches must keep glass and non-glass draws in separate
+/// runs. Pre-fix the key had no glass axis, and mesh order alone
+/// interleaved them: glass, plain, glass — three pipeline binds for two
+/// pipelines.
+#[test]
+fn state_primary_blend_branches_keep_refractive_glass_contiguous() {
+    let glass_kind = byroredux_renderer::MATERIAL_KIND_GLASS;
+    for no_sorter in [false, true] {
+        let make = |mesh: u32, is_glass: bool| {
+            let mut c = cmd(true, false, false);
+            // dst 0 (ONE) takes the additive branch; no_sorter takes its own.
+            c.dst_blend = if no_sorter { 7 } else { 0 };
+            c.no_sorter = no_sorter;
+            c.mesh_handle = mesh;
+            c.entity_id = mesh;
+            if is_glass {
+                c.material_kind = glass_kind;
+            }
+            c
+        };
+        let mut draws = vec![make(1, true), make(2, false), make(3, true)];
+        draws.sort_unstable_by_key(draw_sort_key);
+        let glass: Vec<bool> = draws
+            .iter()
+            .map(|c| c.material_kind == glass_kind)
+            .collect();
+        assert_eq!(
+            glass,
+            [false, true, true],
+            "no_sorter={no_sorter}: glass draws must form one contiguous run"
+        );
+    }
+}
+
 /// Regression for #500 (PERF D3-M2): a stale debug_assert! in
 /// `draw_frame` had the sort-key tuple fields in the wrong order.
 /// This test owns the sort contract in the same crate as the sort

@@ -1234,7 +1234,10 @@ pub(super) fn is_caustic_source(cmd: &DrawCommand) -> bool {
 ///     roughness + not a decal). See #515 / #706.
 ///   * Skyrim+ `MultiLayerParallax` (kind 11) with a non-zero inner-layer
 ///     refraction scale — real two-layer refractive surface.
-pub(super) fn is_refractive_glass(cmd: &DrawCommand) -> bool {
+///
+/// Public for `byroredux::render::draw_sort_key` (#4192), which must cluster
+/// on the same pipeline axis `PipelineKey::Blended` builds from this.
+pub fn is_refractive_glass(cmd: &DrawCommand) -> bool {
     if cmd.material_kind == MATERIAL_KIND_GLASS {
         return true;
     }
@@ -1878,6 +1881,9 @@ impl VulkanContext {
         self.frame_lights_scratch = frame_lights;
         self.gpu_instances_scratch = gpu_instances;
         self.previous_models_scratch = previous_models;
+        // #4193 — `instance_map`'s last readers (TLAS build, SSBO upload)
+        // are behind us, so it returns to its scratch here as well.
+        self.instance_map_scratch = instance_map;
 
         let cmd_t0 = Instant::now();
         self.record_geometry_pass(

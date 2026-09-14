@@ -502,6 +502,20 @@ fn pack_depth_state(cmd: &DrawCommand) -> u8 {
         | ((cmd.z_function & 0x0F) << 4)
 }
 
+/// #4192 — the blended pipeline's `dst` and `preserve_opaque_gbuffer` axes
+/// in one sort slot.
+///
+/// `PipelineKey::Blended` builds a distinct pipeline for refractive glass
+/// (`is_refractive_glass`). Without that axis in the key, two draws agreeing
+/// on every other sorted slot could interleave by mesh and re-bind the
+/// pipeline once per run. Only the state-primary branches (additive,
+/// `no_sorter`) use this slot: the depth-primary alpha-over branch cannot
+/// cluster on pipeline state anyway. `dst_blend` is a Gamebryo blend enum
+/// below 256, so bit 8 is free.
+fn blend_pipeline_slot(cmd: &DrawCommand) -> u32 {
+    cmd.dst_blend as u32 | (byroredux_renderer::is_refractive_glass(cmd) as u32) << 8
+}
+
 /// Apply the optional `BYRO_FOG_NEAR` / `BYRO_FOG_FAR` distance overrides
 /// (Bethesda units) to the authored fog ramp. See the call site in
 /// `build_render_data` for rationale. Each override is parsed once and
@@ -759,7 +773,7 @@ pub(crate) fn draw_sort_key(
                 cmd.render_layer as u32,
                 cmd.two_sided as u32,
                 cmd.src_blend as u32,
-                cmd.dst_blend as u32,
+                blend_pipeline_slot(cmd),
                 pack_depth_state(cmd) as u32,
                 cmd.mesh_handle,
                 cmd.sort_depth,
@@ -789,7 +803,7 @@ pub(crate) fn draw_sort_key(
                 cmd.render_layer as u32,
                 cmd.two_sided as u32,
                 cmd.src_blend as u32,
-                cmd.dst_blend as u32,
+                blend_pipeline_slot(cmd),
                 pack_depth_state(cmd) as u32,
                 cmd.mesh_handle,
                 cmd.sort_depth,

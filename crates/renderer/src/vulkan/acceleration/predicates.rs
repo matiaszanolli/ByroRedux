@@ -285,8 +285,8 @@ pub(super) fn decide_use_update(
 /// [`AccelerationManager::build_tlas`] and the SSBO builder in
 /// `draw_frame` both honour. `keep(draw_idx)` returns true when the
 /// corresponding draw command survives the SSBO filter (typically
-/// `mesh_registry.get(handle).is_some()` in the caller). The returned
-/// map is `Some(compacted_idx)` for every kept command in enumeration
+/// `mesh_registry.get(handle).is_some()` in the caller). The map written
+/// to `out` is `Some(compacted_idx)` for every kept command in enumeration
 /// order and `None` for every dropped or capacity-clipped one. See
 /// #419 — this is the single source of truth the TLAS
 /// `instance_custom_index` and the SSBO position must agree on; before
@@ -302,12 +302,18 @@ pub(super) fn decide_use_update(
 /// are the lowest-priority ones (RT-only off-frustum occluders per
 /// the `!in_raster` prefix in `byroredux::render::draw_sort_key`),
 /// so the dropped contribution is bounded to off-screen RT bounces.
+///
+/// #4193 — `out` is cleared and refilled rather than returned, so the
+/// caller can keep one allocation across frames (the #243 scratch
+/// convention every neighbouring per-frame buffer already follows).
 pub fn build_instance_map(
+    out: &mut Vec<Option<u32>>,
     len: usize,
     max_kept: usize,
     mut keep: impl FnMut(usize) -> bool,
-) -> Vec<Option<u32>> {
-    let mut out = Vec::with_capacity(len);
+) {
+    out.clear();
+    out.reserve(len);
     let mut next: u32 = 0;
     for i in 0..len {
         if keep(i) && (next as usize) < max_kept {
@@ -317,7 +323,6 @@ pub fn build_instance_map(
             out.push(None);
         }
     }
-    out
 }
 
 /// Grow-only policy for BLAS / TLAS scratch buffers. Returns `true`

@@ -1695,6 +1695,7 @@ impl VulkanContext {
             current_rigid_models_scratch: FxHashMap::default(),
             previous_models_scratch: Vec::new(),
             batches_scratch: Vec::new(),
+            instance_map_scratch: Vec::new(),
             indirect_draws_scratch: Vec::new(),
             indirect_upload_ok: true,
             skin_dispatch_seen_scratch: FxHashSet::default(),

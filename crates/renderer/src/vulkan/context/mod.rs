@@ -1440,6 +1440,10 @@ pub struct VulkanContext {
     /// Per-frame scratch buffer for draw batch metadata. Same lifecycle
     /// as `gpu_instances_scratch`. See issue #243.
     batches_scratch: Vec<draw::DrawBatch>,
+    /// Per-frame `draw_idx → ssbo_idx` map filled by `build_instance_map`.
+    /// Taken in `begin_frame_recording`, restored in `draw_frame` once the
+    /// TLAS and SSBO builders have read it. #4193 / #243.
+    instance_map_scratch: Vec<Option<u32>>,
     /// Per-frame scratch buffer for indirect draw commands. Replaces the
     /// per-frame `Vec::collect()` allocation that was untracked by the
     /// scratch-buffer pattern.
@@ -2871,7 +2875,7 @@ mod egui_pending_output_tests {
 
 // Method implementations split across submodules:
 mod draw;
-pub use draw::FrameInputs;
+pub use draw::{is_refractive_glass, FrameInputs};
 mod assemble_camera_and_lights;
 mod begin_frame_recording;
 mod build_and_upload_instances;
