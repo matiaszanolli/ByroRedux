@@ -126,10 +126,12 @@ pub struct TreeRecord {
     /// which leaf cards animate under wind versus stay rigid (vanilla
     /// canopy setups carry both kinds in a single tree).
     ///
-    /// **Parse-but-don't-consume gate (TD5-011):** gated on SpeedTree
-    /// Phase 2 — real geometry tail (billboard→mesh, leaf animation).
+    /// **Parse-but-don't-consume gate (TD5-011):** gated on a real SpeedTree
+    /// mesh path (billboard→mesh, leaf animation). `.spt` cannot supply
+    /// one directly: it carries no geometry (#3808), and
+    /// `docs/engine/exal-trees.md` §3 records the re-scoped options.
     /// Currently the importer returns a placeholder billboard
-    /// (`crates/spt/src/import/mod.rs:116-180`).
+    /// (`crates/spt/src/import/mod.rs`, `import_spt_scene`).
     pub leaf_indices: Vec<u32>,
     /// CNAM — canopy / wind parameters as raw f32. 8 floats on all three
     /// games (Oblivion, FO3, FNV — no split); semantics aren't pinned

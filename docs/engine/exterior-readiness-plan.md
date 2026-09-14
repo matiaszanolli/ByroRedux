@@ -633,17 +633,19 @@ Phases 1-5 per [`exal-groundcover.md`](exal-groundcover.md) §9:
 (`crates/spt/src/import/mod.rs` — always emits one placeholder quad,
 fully wired and tested via `byroredux/src/systems/billboard.rs`). **Design
 authority now exists**: [`exal-trees.md`](exal-trees.md) (PROPOSED,
-2026-08-23) — covers geometry-tail decode strategy, branch/frond + leaf-card
-import shape, the RT/BLAS boundary, wind response (reusing ground cover's
-`WindField`, not a second system), and a 5-phase rollout (2.1 geometry-tail
-dissection → 2.2 branch/frond + static BLAS → 2.3 leaf-card canopy → 2.4 wind
-→ Phase 3 mid-distance LOD tier, deferred). The geometry-tail decode itself
-(Phase 2.1) remains genuinely unstarted — `format-notes.md`'s own log
-identifies two candidate high-tag markers past `tail_offset` and stops there,
-no vertex/index layout confirmed — and is Phase 2.1's whole job, not assumed
-solved by writing the design doc. No code lands from the design doc itself;
-Phase 2.1 is real research-spike work, scope as its own follow-up issue per
-the doc's own §8 rollout.
+2026-08-23) — covers branch/frond + leaf-card import shape, the RT/BLAS
+boundary, wind response (reusing ground cover's `WindField`, not a second
+system), and a 5-phase rollout (2.1 dissection of the region past
+`tail_offset` → 2.2 branch/frond + static BLAS → 2.3 leaf-card canopy → 2.4
+wind → Phase 3 mid-distance LOD tier, deferred). **Phase 2.1 is done, and it
+removed the premise of 2.2–2.4** (#3808, 2026-09-07,
+`crates/spt/docs/format-notes.md`): the region past `tail_offset` is the same
+parameter TLV stream beyond `TAG_MAX`, the two candidate high-tag markers were
+mis-conversions, and no `.spt` in the corpus is large enough to hold baked
+geometry. `.spt` is a procedural tree definition. `exal-trees.md` §3's
+re-scoping note leaves three directions open (generate geometry from the
+parameters, keep the billboard, or source tree geometry outside `.spt`); the
+choice is deliberately unmade, and each would be its own follow-up issue.
 
 **C. Persistent refs across parent worlds + FO4 precombine previs/occlusion.**
 

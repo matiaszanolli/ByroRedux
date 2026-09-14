@@ -4,8 +4,9 @@
 //! `crates/plugin/tests/parse_real_esm.rs`: env-var gated, `#[ignore]`,
 //! requires a vanilla BSA on disk. Asserts the SpeedTree
 //! compatibility plan's Phase 1.3 acceptance gate — ≥ 95 % of FNV
-//! `.spt` files reach the geometry tail without falling into an
-//! unknown-tag bail-out before then.
+//! `.spt` files reach the walker's out-of-range stop (or EOF) without
+//! falling into an unknown-tag bail-out first. That stop is `TAG_MAX`,
+//! not a geometry section: the TLV stream continues past it (#3808).
 //!
 //! ## Usage
 //!
@@ -27,7 +28,7 @@ struct Stats {
     total_files: u32,
     parsed_with_entries: u32,
     /// Files whose parse hit `unknown_tags` non-empty — i.e. bailed
-    /// out before reaching the geometry tail.
+    /// out before reaching the out-of-range stop.
     files_with_unknown_tags: u32,
     /// Total entries decoded across the corpus (sanity bound).
     total_entries: u64,

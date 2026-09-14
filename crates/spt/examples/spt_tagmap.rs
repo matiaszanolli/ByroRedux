@@ -3,7 +3,7 @@
 //! Walks every `.spt` in one or more BSAs as a TLV stream:
 //!
 //! ```text
-//! magic (20 bytes) | (u32 tag, payload)*  | binary geometry tail
+//! magic (20 bytes) | (u32 tag, payload)*
 //! ```
 //!
 //! At each offset the walker tries to classify the 4-byte tag's
@@ -15,10 +15,10 @@
 //!   and f32, both forms recorded for sample roll-up).
 //!
 //! Once the walker enters a region where neither classification fits
-//! cleanly (consecutive failures), it bails — that's the binary
-//! geometry tail past the parameter section, deferred to a follow-up
-//! sub-phase. The tail-region cutoff offset is recorded per file so
-//! we can later enumerate the geometry tags too.
+//! cleanly (consecutive failures), it bails and records the offset per
+//! file. That offset was once read as the start of a binary geometry
+//! section; the 2026-09-07 dissection (#3808) found the same TLV stream
+//! continuing past it and no `.spt` holding geometry at all.
 //!
 //! Output: a Markdown report grouped by tag value, with occurrence
 //! count, dominant payload kind, sample u32 / f32 values, and a
@@ -89,7 +89,7 @@ impl TagStats {
 #[derive(Default, Debug, Clone)]
 struct TailRegion {
     /// Sample of the byte offset where the TLV walker first failed
-    /// to classify a tag — start of the binary geometry tail.
+    /// to classify a tag — where this heuristic walk stopped.
     sample_offsets: Vec<usize>,
     /// File count where we observed a tail region at all.
     files_with_tail: u32,
@@ -152,7 +152,7 @@ fn main() {
         tail.files_clean
     );
     println!(
-        "- {} files transitioned to a binary geometry tail (sample offsets: {:?})\n",
+        "- {} files stopped before EOF (sample offsets: {:?})\n",
         tail.files_with_tail,
         &tail.sample_offsets[..tail.sample_offsets.len().min(8)],
     );
@@ -198,8 +198,7 @@ fn main() {
 
 /// Walk a single `.spt` file as a TLV stream until the walker can
 /// no longer classify the current 4 bytes as a tag → payload pair.
-/// The bail-out offset gets recorded as the start of the binary
-/// geometry tail.
+/// The bail-out offset gets recorded in `tail`.
 fn walk_one_file(bytes: &[u8], tags: &mut BTreeMap<u32, TagStats>, tail: &mut TailRegion) {
     if !bytes.starts_with(MAGIC_HEAD) {
         return;

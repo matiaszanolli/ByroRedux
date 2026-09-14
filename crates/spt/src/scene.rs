@@ -125,8 +125,8 @@ pub struct SptScene {
     /// Treat it as "where parsing gave up", which is what it measures.
     pub tail_offset: usize,
     /// True when the walker stopped because it ran out of bytes
-    /// (`is_eof`) rather than because it hit a non-tag value (the
-    /// geometry tail).
+    /// (`is_eof`) rather than because it hit an out-of-range value (see
+    /// [`Self::tail_offset`]).
     pub reached_eof: bool,
     /// Tags the walker encountered that aren't in the dictionary
     /// (`SptTagKind::Unknown`). Empty on a clean parse. Bumped at

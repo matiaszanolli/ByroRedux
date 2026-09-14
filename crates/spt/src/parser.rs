@@ -3,23 +3,29 @@
 //! Walks the file from offset 20 (right after the magic header) as
 //! a sequence of `(u32 tag, payload)` pairs, dispatching on tag via
 //! [`crate::tag::dispatch_tag`] and decoding the payload per
-//! [`crate::tag::SptTagKind`]. Stops cleanly when the next tag is
-//! out of range — that's the binary geometry tail (Phase 1.3
-//! follow-up).
+//! [`crate::tag::SptTagKind`]. Stops cleanly when the next value is
+//! outside `[TAG_MIN, TAG_MAX]`.
 //!
-//! ## Tail detection
+//! That stop is not a section boundary. The 2026-09-07 dissection (#3808,
+//! `crates/spt/docs/format-notes.md`) found the same TLV stream continuing
+//! past it in all 159 corpus files — the next tag bands start at 14 000,
+//! above `TAG_MAX` — and no `.spt` large enough to hold baked geometry.
+//! See [`SptScene::tail_offset`](crate::scene::SptScene::tail_offset).
+//!
+//! ## Stop conditions
 //!
 //! The walker stops without error when:
 //!
 //! - `is_eof()` — reached end of file. Sets `SptScene::reached_eof = true`.
-//! - The peeked u32 isn't in `[TAG_MIN, TAG_MAX]` — geometry tail.
-//!   Records `tail_offset = current position`.
+//! - The peeked u32 isn't in `[TAG_MIN, TAG_MAX]` — an undictionaried tag
+//!   band, or a payload the walker mis-sized. Records
+//!   `tail_offset = current position`.
 //!
 //! ## Unknown tags
 //!
 //! When the walker encounters an in-range tag that isn't in the
 //! dictionary, it's recorded into `SptScene::unknown_tags` and the
-//! walker stops at the same offset as if it hit the geometry tail.
+//! walker stops at that offset, as it does for an out-of-range value.
 //! This is how the parser stays defensive against mod content with
 //! tags we haven't observed yet — the placeholder fallback path
 //! kicks in cleanly without aborting.
@@ -30,11 +36,12 @@ use crate::tag::{dispatch_tag, SptTagKind};
 use crate::version::MAGIC_HEAD;
 use std::io;
 
-/// Lower bound of plausible parameter-section tag values. Below this,
-/// the walker assumes it's reading binary noise (geometry tail).
+/// Lower bound of the parameter-section tag values this walker
+/// dictionaries. A value below it stops the walk.
 pub const TAG_MIN: u32 = 100;
-/// Upper bound of plausible parameter-section tag values. Above this,
-/// same assumption.
+/// Upper bound of the dictionaried tag values. A value above it stops the
+/// walk too, but the stream does not end here: tags in the 14 000–22 000
+/// bands follow it in every corpus file, not yet dictionaried (#3808).
 pub const TAG_MAX: u32 = 13_999;
 
 /// Parse a `.spt` byte stream into an [`SptScene`].
@@ -116,20 +123,20 @@ pub fn parse_spt(bytes: &[u8]) -> io::Result<SptScene> {
                 } else {
                     // #1822 — "not a known tag" alone isn't enough to
                     // conclude String: a bare 13005 sitting immediately
-                    // before the binary geometry tail looks identical
-                    // from here, since the tail's leading u32 is just as
-                    // likely to fall outside the dictionary as a genuine
+                    // before the walker's stop looks identical from here,
+                    // since the out-of-range value there is just as likely
+                    // to fall outside the dictionary as a genuine
                     // curve-string length. Every observed curve string is
                     // printable-ASCII BezierSpline text (see the fixture
                     // in `tag_13005_followed_by_string_length_resolves_
-                    // as_string` below); geometry-tail bytes essentially
-                    // never satisfy that uniformly by chance. Peek the
-                    // candidate string's bytes and only take the String
-                    // branch if they pass — otherwise fall back to
-                    // `Bare` without consuming anything, so tail
-                    // detection sees the real tail value next iteration
-                    // instead of a slab of it having been swallowed as a
-                    // bogus string.
+                    // as_string` below); tag values and float payloads
+                    // essentially never satisfy that uniformly by chance.
+                    // Peek the candidate string's bytes and only take the
+                    // String branch if they pass — otherwise fall back to
+                    // `Bare` without consuming anything, so the stop check
+                    // sees the real value next iteration instead of a
+                    // slab of the stream having been swallowed as a bogus
+                    // string.
                     match stream
                         .peek_string_lp_bytes()
                         .filter(|bytes| is_plausible_spt_curve_string(bytes))
@@ -167,21 +174,21 @@ pub fn parse_spt(bytes: &[u8]) -> io::Result<SptScene> {
 /// `tag_13005_followed_by_string_length_resolves_as_string`'s fixture:
 /// `"BezierSpline 0\t1\t0\n{\n\n\t2\n\t0 1 0.714831 ...\n\n}\n"`). Every
 /// byte must be printable ASCII (0x20..=0x7E) or one of the whitespace
-/// control codes that format actually uses (tab, LF, CR). Binary geometry-
-/// tail bytes essentially never satisfy this uniformly across a candidate
-/// length, which is what makes it a robust discriminator for #1822 — unlike
-/// a bare length-range check, it doesn't get fooled by a tail u32 that
-/// happens to decode to a small, in-bounds "length".
+/// control codes that format actually uses (tab, LF, CR). Tag values and
+/// float payloads essentially never satisfy this uniformly across a
+/// candidate length, which is what makes it a robust discriminator for #1822
+/// — unlike a bare length-range check, it doesn't get fooled by a u32 past
+/// the walker's stop that happens to decode to a small, in-bounds "length".
 fn is_plausible_spt_curve_string(bytes: &[u8]) -> bool {
     // #3531 — the emptiness check is load-bearing, not defensive tidying.
     // `Iterator::all` is vacuously true on an empty slice and
     // `peek_string_lp_bytes` returns `Some(&[])` for a declared length of
-    // `0`, so without this a bare 13005 sitting before a geometry tail whose
-    // leading `u32` is `0` still took the String arm, consumed 4 bytes and
-    // shifted `tail_offset` past the true tail start — the exact #1822
-    // failure mode, for the one candidate length the printable-ASCII
-    // discriminator cannot discriminate. A leading `0` (a zero count or
-    // index) is an ordinary way for a binary tail to begin.
+    // `0`, so without this a bare 13005 sitting before a stop whose leading
+    // `u32` is `0` still took the String arm, consumed 4 bytes and shifted
+    // `tail_offset` past the true stop — the exact #1822 failure mode, for
+    // the one candidate length the printable-ASCII discriminator cannot
+    // discriminate. A `0` (a zero count, index or float) is an ordinary value
+    // to find there.
     //
     // Which arm is right for a zero-length candidate is a format question,
     // and the corpus does not answer it directly: instrumenting this arm over
@@ -291,9 +298,10 @@ mod tests {
         // Tag 8003 (fixed 52 bytes).
         buf.extend_from_slice(&8003u32.to_le_bytes());
         buf.extend_from_slice(&[0u8; 52]);
-        // "Geometry tail" marker — out-of-range u32 = 0x4E25 (= 20 005).
+        // Stop value — out-of-range u32 = 0x4E25 (= 20 005), a tag band
+        // past TAG_MAX.
         buf.extend_from_slice(&0x00004E25u32.to_le_bytes());
-        buf.extend_from_slice(&[0xCAu8, 0xFE, 0xBA, 0xBE]); // body of the tail
+        buf.extend_from_slice(&[0xCAu8, 0xFE, 0xBA, 0xBE]); // bytes past the stop
         buf
     }
 
@@ -444,29 +452,28 @@ mod tests {
     }
 
     /// Regression: #1822 (SPT-NEW-07). A bare 13005 sitting immediately
-    /// before the binary geometry tail must resolve as `Bare` with
-    /// `tail_offset` at 13005's successor — not have the tail's leading
-    /// u32 misread as a string length, swallowing tail bytes as a bogus
-    /// string (and, since that string's declared length here exactly
-    /// matches the bytes available, the pre-fix walker would have
-    /// consumed the *entire* rest of the stream as "string payload"
-    /// without erroring — silently losing the tail rather than crashing).
-    /// The leading tail value (8) is deliberately `< TAG_MIN` so, once
-    /// correctly left unconsumed, the *existing* out-of-range tail-
-    /// detection guard is what stops the walker on the next iteration —
-    /// proving the fix reinstates that guard's ability to see the tail at
-    /// all, rather than merely swapping one swallow bug for another.
+    /// before an out-of-range value must resolve as `Bare` with
+    /// `tail_offset` at 13005's successor — not have that value misread as
+    /// a string length, swallowing the bytes after it as a bogus string
+    /// (and, since that string's declared length here exactly matches the
+    /// bytes available, the pre-fix walker would have consumed the *entire*
+    /// rest of the stream as "string payload" without erroring — silently
+    /// losing it rather than crashing). The value (8) is deliberately
+    /// `< TAG_MIN` so, once correctly left unconsumed, the *existing*
+    /// out-of-range stop check is what stops the walker on the next
+    /// iteration — proving the fix reinstates that check's ability to see
+    /// the value at all, rather than merely swapping one swallow bug for
+    /// another.
     #[test]
-    fn tag_13005_before_geometry_tail_resolves_as_bare_not_swallowed_string() {
+    fn tag_13005_before_out_of_range_stop_resolves_as_bare_not_swallowed_string() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC_HEAD);
         bytes.extend_from_slice(&13005u32.to_le_bytes());
         let tail_start = bytes.len();
-        // Geometry tail: leading u32 = 8 (out-of-range for
-        // TAG_MIN..=TAG_MAX, *and* — pre-fix — a perfectly plausible
-        // string length matching the 8 trailing bytes exactly), followed
-        // by non-ASCII binary bytes a real curve string would never
-        // contain.
+        // Stop value: u32 = 8 (out-of-range for TAG_MIN..=TAG_MAX, *and* —
+        // pre-fix — a perfectly plausible string length matching the 8
+        // trailing bytes exactly), followed by non-ASCII bytes a real curve
+        // string would never contain.
         bytes.extend_from_slice(&8u32.to_le_bytes());
         bytes.extend_from_slice(&[0xFF, 0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x80, 0x01]);
 
@@ -476,7 +483,7 @@ mod tests {
         assert_eq!(
             scene.entries[0].value,
             SptValue::Bare,
-            "the tail's leading u32 must not be misread as a string length"
+            "the out-of-range u32 must not be misread as a string length"
         );
         assert_eq!(
             scene.tail_offset, tail_start,
@@ -498,9 +505,9 @@ mod tests {
         bytes.extend_from_slice(MAGIC_HEAD);
         bytes.extend_from_slice(&13005u32.to_le_bytes());
         let tail_start = bytes.len();
-        // A geometry tail beginning with a zero count/index — an ordinary
-        // shape for a binary tail, and a "declared length 0" string to the
-        // peek. Follow it with binary bytes so nothing else can absorb them.
+        // A stop whose first u32 is zero (a zero count, index or float) —
+        // an ordinary value, and a "declared length 0" string to the peek.
+        // Follow it with non-ASCII bytes so nothing else can absorb them.
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&[0xFF, 0x00, 0xDE, 0xAD]);
 

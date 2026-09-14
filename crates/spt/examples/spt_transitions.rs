@@ -18,10 +18,12 @@
 //! any one classification heuristic.
 //!
 //! Tags are deemed plausible if they fall in `[TAG_MIN, TAG_MAX]`,
-//! same range as `spt_tagmap`'s parameter section. The geometry tail
-//! gets noise rejected automatically because high-tag values
-//! (19 985+) and uniformly-zero "tags" don't make it into the
-//! transition aggregate.
+//! same range as `spt_tagmap`'s parameter section. Everything past the
+//! walker's stop is rejected automatically, because tag bands above
+//! `TAG_MAX` (14 000+) and uniformly-zero "tags" don't make it into the
+//! transition aggregate. That region is more of the same TLV stream, not a
+//! geometry section (#3808), so dictionarying it is a matter of raising
+//! the range.
 //!
 //! ## Usage
 //!

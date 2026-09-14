@@ -8,9 +8,8 @@
 //!
 //! ## What lands today (Phase 1.4 first ship)
 //!
-//! The geometry-tail decoder isn't wired yet, so this importer ships
-//! the **placeholder fallback** described in the SpeedTree
-//! compatibility plan's section 1.7: a single yaw-billboard quad
+//! This importer ships the **placeholder fallback** described in the
+//! SpeedTree compatibility plan's section 1.7: a single yaw-billboard quad
 //! textured with the leaf texture. Strictly better than today's
 //! treeless cells:
 //!
@@ -31,21 +30,29 @@
 //! - **Two-sided** is on, since the billboard rotates and we want
 //!   both faces visible from any camera angle.
 //!
-//! ## SpeedTree Phase 2 (planned, no ROADMAP row — gated by
-//! `crates/spt/docs/format-notes.md`'s "Geometry tail" section)
+//! ## Beyond the placeholder (open — `docs/engine/exal-trees.md` §3)
 //!
-//! - Decode the geometry tail past `tail_offset` → real branch /
-//!   frond meshes with the bark texture (`SptScene::bark_textures`).
-//! - Decode leaf-card data → multiple per-leaf billboards positioned
-//!   around the canopy (auto-instanced by the renderer's existing
-//!   batching path, #272).
-//! - Decode `BezierSpline` curves into typed wind-response data on
-//!   a per-tree component (consumed by [`SptImportParams::wind`]).
+//! There is no geometry to decode. `.spt` is a procedural tree
+//! *definition* (parameters, BezierSpline curves, texture names), not a
+//! geometry container: the 2026-09-07 dissection (#3808,
+//! `crates/spt/docs/format-notes.md`) found the parameter TLV stream
+//! continuing past `tail_offset`, and no file large enough to hold baked
+//! meshes. `exal-trees.md` §3's re-scoping note leaves three directions
+//! open, with the choice deliberately unmade:
 //!
-//! Each plugs in here without changing the public signature. Until
-//! Phase 2 lands, the parser-captured `wind` / `bound_radius` /
-//! `billboard_size` fields below ride through onto `SptImportParams`
-//! so the silent-drop is at the consumer, not the parser surface.
+//! - Generate branch / frond / leaf-card geometry from the authored
+//!   parameters — blocked on dictionarying the 14 000–22 000 tag bands.
+//! - Keep the billboard permanently, which is what ships today.
+//! - Source tree geometry outside `.spt` (Skyrim+ bakes trees into
+//!   `BSTreeNode` NIFs; whether that serves pre-Skyrim content is its own
+//!   question).
+//!
+//! Separately, `BezierSpline` curves could become typed wind-response data
+//! on a per-tree component (consumed by [`SptImportParams::wind`]). Any of
+//! these plugs in here without changing the public signature. Until then,
+//! the parser-captured `wind` / `bound_radius` / `billboard_size` fields
+//! below ride through onto `SptImportParams` so the silent-drop is at the
+//! consumer, not the parser surface.
 
 use std::sync::Arc;
 
@@ -647,9 +654,10 @@ mod tests {
         );
     }
 
-    /// #1002 — BNAM (FO3/FNV billboard width × height) is consumed
-    /// when OBND is absent but BNAM is present. Mod-content edge case;
-    /// vanilla FO3/FNV ship both fields and OBND wins.
+    /// #1002 — BNAM (billboard width × height, present on all three games)
+    /// is consumed when OBND is absent but BNAM is present — every vanilla
+    /// Oblivion tree, which ships no OBND (#3740). Vanilla FO3/FNV ship
+    /// both fields and OBND wins.
     #[test]
     fn bnam_drives_placeholder_size_when_obnd_absent() {
         let mut pool = StringPool::new();

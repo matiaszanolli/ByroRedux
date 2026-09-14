@@ -45,14 +45,14 @@ fn worldspace_extent_ceiling_predicate() {
 
 /// Minimal vanilla-shaped `.spt` byte stream: 20-byte magic + one
 /// section marker tag + an out-of-range u32 sentinel so the walker
-/// stops cleanly at the geometry-tail boundary.
+/// stops cleanly there.
 fn minimal_spt_bytes() -> Vec<u8> {
     // Magic header (`E8 03 00 00 0C 00 00 00 __IdvSpt_02_`).
     let mut bytes = vec![0xE8, 0x03, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00];
     bytes.extend_from_slice(b"__IdvSpt_02_");
     // Single bare-marker tag (`1002` is in the bare set).
     bytes.extend_from_slice(&1002u32.to_le_bytes());
-    // Tail sentinel — out-of-range u32 so the walker stops cleanly.
+    // Stop sentinel — out-of-range u32 so the walker stops cleanly.
     bytes.extend_from_slice(&0x4E25u32.to_le_bytes());
     bytes
 }

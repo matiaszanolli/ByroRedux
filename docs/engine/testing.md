@@ -78,7 +78,7 @@ each crate's `tests/` directory and the binary crate's own
 - **`byroredux-bgsm`** — FO4 `.bgsm` / `.bgem` material parsing; unit tests on field decode plus a `#[ignore]`d corpus integration test (`tests/parse_all.rs`) over `Fallout4 - Materials.ba2`
 - **`byroredux-sfmaterial`** — Starfield CDB material database: synthetic minimum-header round-trip + magic recognition/rejection (`tests/header_smoke.rs`), and a `#[ignore]`d real-data smoke test against vanilla `materialsbeta.cdb` (`tests/real_cdb.rs`)
 - **`byroredux-facegen`** — FaceGen `.tri` / `.egm` parsers with `#[ignore]`d real-data integrations against vanilla FNV / FO3 content (`tests/parse_real_facegen.rs`)
-- **`byroredux-spt`** — SpeedTree `.spt` TLV walker; synthetic-fixture unit tests (`tests/parse_synthetic_spt.rs`) plus a `#[ignore]`d FNV corpus test (`tests/parse_real_spt.rs`) asserting the Phase-1.3 ≥95% geometry-tail acceptance gate
+- **`byroredux-spt`** — SpeedTree `.spt` TLV walker; synthetic-fixture unit tests (`tests/parse_synthetic_spt.rs`) plus a `#[ignore]`d FNV corpus test (`tests/parse_real_spt.rs`) asserting the Phase-1.3 ≥95% clean-walk acceptance gate (no unknown-tag bail-out before the walker's out-of-range stop)
 
 ### Renderer — `byroredux-renderer`
 The renderer crate carries real unit tests now, not just doc-tests. Coverage that runs without a GPU lives in pure-data modules:
@@ -143,7 +143,7 @@ paths on the reference development machine.
 | `parse_all`                                                | bgsm/`tests/parse_all.rs`                      | FO4 BGSM/BGEM corpus parse-rate                                             |
 | `real_cdb`                                                 | sfmaterial/`tests/real_cdb.rs`                 | Starfield CDB material DB smoke                                            |
 | `parse_real_facegen`                                       | facegen/`tests/parse_real_facegen.rs`          | FaceGen `.tri` / `.egm` against vanilla FNV / FO3                            |
-| `parse_real_spt`                                           | spt/`tests/parse_real_spt.rs`                  | FNV SpeedTree corpus geometry-tail gate                                     |
+| `parse_real_spt`                                           | spt/`tests/parse_real_spt.rs`                  | FNV SpeedTree corpus clean-walk gate                                        |
 | `skinning_e2e`                                             | byroredux/`tests/skinning_e2e.rs`              | M29 end-to-end skinning chain (FNV legacy + SSE global-buffer)              |
 | `byroredux` binary doc tests / args parsing                | byroredux                                      | CLI help, env-var override                                                  |
 

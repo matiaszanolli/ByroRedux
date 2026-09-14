@@ -36,7 +36,7 @@ use byroredux_spt::{parse_spt, SptValue};
 /// 8. String (`2000`, length-prefix 18 + ASCII `trees/oak/bark.dds`)
 /// 9. ArrayBytes{stride=1} (`10002`, count=4 + 4 bytes `0xDE 0xAD 0xBE 0xEF`)
 /// 10. ArrayBytes{stride=8} (`10003`, count=2 + 16 bytes)
-/// 11. Geometry-tail sentinel (`0x4E25` — out-of-range u32)
+/// 11. Stop sentinel (`0x4E25` — out-of-range u32)
 fn build_synthetic_spt() -> Vec<u8> {
     let mut bytes = Vec::new();
     // Magic header.
@@ -77,7 +77,7 @@ fn build_synthetic_spt() -> Vec<u8> {
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // first stride-8 entry
         0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, // second stride-8 entry
     ]);
-    // Geometry-tail sentinel — out-of-range u32 so the walker bails
+    // Stop sentinel — out-of-range u32 so the walker bails
     // cleanly without recording it as an unknown tag.
     bytes.extend_from_slice(&0x4E25u32.to_le_bytes());
     bytes
@@ -111,7 +111,7 @@ const PINNED_BYTES: &[u8] = &[
     // Tag 10003 — ArrayBytes(stride=8), count=2, two 8-byte entries.
     0x13, 0x27, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
     0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-    // Geometry-tail sentinel (0x4E25 — out of [TAG_MIN, TAG_MAX]).
+    // Stop sentinel (0x4E25 — out of [TAG_MIN, TAG_MAX]).
     0x25, 0x4E, 0x00, 0x00,
 ];
 
@@ -141,7 +141,7 @@ fn parser_decodes_every_dispatch_arm_against_pinned_fixture() {
     );
     assert!(
         !scene.reached_eof,
-        "walker stops at the geometry-tail sentinel, not EOF"
+        "walker stops at the out-of-range sentinel, not EOF"
     );
     assert_eq!(
         scene.entries.len(),

@@ -431,9 +431,12 @@ pub(super) fn resolve_spt_model_path(model_path: &str, probe: impl Fn(&str) -> b
 /// Today (Phase 1.4 + 1.5) the SPT importer ships the **placeholder
 /// fallback** — a single yaw-billboard quad textured with the leaf
 /// icon resolved from the matching `TreeRecord` (TREE.ICON wins,
-/// `.spt` tag 4003 falls back). When the geometry-tail decoder lands
-/// later, `byroredux_spt::import_spt_scene` will start producing
-/// real branch / frond meshes + per-leaf billboards without any
+/// `.spt` tag 4003 falls back). `.spt` carries no baked geometry to decode
+/// (#3808, `crates/spt/docs/format-notes.md` 2026-09-07): it is a
+/// procedural tree definition. Real branch / leaf meshes would come from one
+/// of `docs/engine/exal-trees.md` §3's re-scoped directions (generate them
+/// from the parameters, or source tree geometry outside `.spt`), and
+/// `byroredux_spt::import_spt_scene` can start producing them without any
 /// signature change here.
 ///
 /// Parse failures degrade to the placeholder (with a warning) so a malformed
@@ -452,9 +455,10 @@ pub(super) fn parse_and_import_spt(
             // input: `detect_variant` had zero production callers, which
             // read as a live per-game hook while actually being inert
             // (the placeholder importer below is variant-agnostic).
-            // Logging it here gives the Phase 2 geometry-tail decoder a
-            // corpus trail to consult once it needs Oblivion-vs-FO3/FNV
-            // body disambiguation, without changing today's behaviour.
+            // Logging it here leaves a corpus trail for later per-game
+            // parameter work (dictionarying the tag bands past `TAG_MAX`,
+            // #3808) that needs Oblivion-vs-FO3/FNV body disambiguation,
+            // without changing today's behaviour.
             let variant = byroredux_spt::detect_variant(spt_data);
             log::debug!(
                 "Parsed SPT '{}': {} entries, tail at offset {}, variant={}",
@@ -506,27 +510,28 @@ pub(super) fn parse_and_import_spt(
         (min, max)
     });
 
-    // CNAM's positional semantics remain unpinned across the 5-float
-    // Oblivion and 8-float Fallout layouts. Do not invent named wind fields
-    // from it: the placeholder uses a neutral runtime response until the real
+    // CNAM is 8 × f32 on all three games — Oblivion, FO3 and FNV, no split
+    // (#3751: 142/142, 9/9 and 3/3 records measured) — but its positional
+    // semantics are still unpinned. Do not invent named wind fields from it:
+    // the placeholder uses a neutral runtime response until the real
     // SpeedTree parameter layout has a citable decoder (#3190).
     let wind = Some((1.0, 0.0));
 
     let form_id = tree_record.map(|t| t.form_id);
 
-    // #1001 — Oblivion ships MODB on 100 % of TREE records and OBND
-    // on none, so the placeholder size fallback needs MODB to size
-    // Cyrodiil trees correctly (vanilla MODB range 157–3621 game
-    // units). FO3/FNV are inverse: 100 % OBND, 0 % MODB. Surface both
-    // and let `compute_billboard_size` pick its precedence.
+    // #1001 / #1002 / #3740 — every TREE size source is surfaced and
+    // `compute_billboard_size` picks OBND, then BNAM, then MODB. Measured
+    // corpus: FO3/FNV ship OBND on 100 % of TREE records, so OBND sizes
+    // them. Oblivion ships no OBND but carries BNAM *and* MODB on 100 % of
+    // `.spt`-bearing records, so BNAM, which outranks MODB, sizes every
+    // vanilla Cyrodiil tree. MODB (vanilla range 157–3621 game units) is
+    // reached by no vanilla record in any game and stays for mod content.
     let bound_radius = tree_record.map(|t| t.bound_radius).filter(|r| *r > 0.0);
 
-    // #1002 — BNAM (FO3/FNV billboard width × height) as a fallback
-    // BELOW OBND. Corpus inspection (2026-05-13) showed BNAM clamps
-    // tall trees vs their physical OBND extent (e.g. `WhiteOak01`
-    // BNAM 768×768 vs OBND 802×1567), so OBND wins for the
-    // whole-tree placeholder. BNAM only reaches `compute_billboard_size`
-    // when OBND is absent — a rare mod-content case in FO3/FNV.
+    // #1002 — BNAM (billboard width × height, present on all three games)
+    // ranks BELOW OBND: corpus inspection (2026-05-13) showed it clamps
+    // tall trees against their physical OBND extent (e.g. `WhiteOak01`
+    // BNAM 768×768 vs OBND 802×1567), so OBND wins wherever it exists.
     let billboard_size = tree_record.and_then(|t| t.billboard_size);
 
     let params = byroredux_spt::SptImportParams {
@@ -552,9 +557,9 @@ pub(super) fn parse_and_import_spt(
         meshes: imported.meshes,
         geometry_dedup: Vec::new(),
         // No collisions / lights / particles / animation clips on
-        // the placeholder. Real branch geometry might emit a sphere
-        // collision (tree-trunk collider) once the geometry tail is
-        // decoded — follow-up sub-phase.
+        // the placeholder. A tree-trunk collider would come with real
+        // branch geometry, which `.spt` does not carry (#3808) — see
+        // `exal-trees.md` §3's re-scoping note.
         collisions: Vec::new(),
         collision_authoring: Default::default(),
         lights: Vec::new(),
