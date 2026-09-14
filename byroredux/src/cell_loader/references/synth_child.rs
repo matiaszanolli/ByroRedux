@@ -167,6 +167,10 @@ pub(super) fn spawn_synth_child(
     ref_scale: f32,
     refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
     is_primary_synth: bool,
+    // #4327 — the REFR's recorded `Disable()`, checked once per REFR by the
+    // caller. The branches below that never reach `spawn_placed_instances`
+    // (trigger volume, LIGH-only, fxlight) honor it here.
+    placement_disabled: bool,
 ) {
     let &CellLoadCtx {
         index,
@@ -219,10 +223,18 @@ pub(super) fn spawn_synth_child(
                 let entity = world.spawn();
                 world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
-                world.insert(entity, volume);
-                if let Some(current) = water_current_volume_from_ref(placed_ref, ref_pos, ref_scale)
-                {
-                    world.insert(entity, current);
+                // #4326 — a `Disable()`d trigger keeps its identity and
+                // scripts but gets no volume, so it can never fire; its
+                // re-attached `QuestAdvanceOnActivate` stays inert. Before
+                // this, a disabled or once-only trigger re-armed on every load.
+                if !placement_disabled {
+                    world.insert(entity, volume);
+                    if let Some(current) =
+                        water_current_volume_from_ref(placed_ref, ref_pos, ref_scale)
+                    {
+                        world.insert(entity, current);
+                    }
+                    accum.trigger_volumes += 1;
                 }
                 stamp_quest_reference(world, entity, placed_ref, load_order);
                 if attach_script_for_refr(
@@ -234,7 +246,6 @@ pub(super) fn spawn_synth_child(
                 ) {
                     accum.scripts_recognized += 1;
                 }
-                accum.trigger_volumes += 1;
                 accum.bounds_min = accum.bounds_min.min(ref_pos);
                 accum.bounds_max = accum.bounds_max.max(ref_pos);
                 accum.entity_count += 1;
@@ -285,7 +296,9 @@ pub(super) fn spawn_synth_child(
 
     // Spawn light-only entities (LIGH with no mesh).
     if stat.model_path.is_empty() {
-        if let Some(ref ld) = stat.light_data {
+        // #4327 — a `Disable()`d light spawns no `LightSource`; the logical
+        // branch below keeps its identity and scripts.
+        if let Some(ld) = stat.light_data.as_ref().filter(|_| !placement_disabled) {
             let entity = world.spawn();
             world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
             world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
@@ -388,7 +401,7 @@ pub(super) fn spawn_synth_child(
     }
 
     if model_lower.contains("fxlightrays") || model_lower.contains("fxlight") {
-        if let Some(ref ld) = stat.light_data {
+        if let Some(ld) = stat.light_data.as_ref().filter(|_| !placement_disabled) {
             let entity = world.spawn();
             world.insert(entity, Transform::from_translation(ref_pos));
             world.insert(entity, GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0));

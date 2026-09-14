@@ -606,6 +606,13 @@ pub(super) fn load_references_budgeted(
         // spirit — one REFR-level property, applied once — but VMAD
         // attachment is behavioral, not visual, so it goes to a single
         // child instead of being broadcast to all of them.
+        // #4327 — one `Disable()` check per REFR, ahead of every spawn
+        // branch. Only the static-mesh path reached `spawn_placed_instances`'
+        // gate; the actor job, trigger volumes and LIGH/fxlight placements
+        // bypassed it, so a disabled NPC, trigger or light came back in full
+        // on the next load. A disabled REFR keeps its identity and scripts —
+        // as a disabled mesh placement keeps its root — but spawns no content.
+        let placement_disabled = super::spawn::reference_is_disabled(world, placed_ref.form_id);
         let synth_count = synth_refs.len();
         let mut synth_idx = job.next_synth;
         while synth_idx < synth_count {
@@ -627,6 +634,31 @@ pub(super) fn load_references_budgeted(
             // static-mesh path below — which rendered the creature's MODL, i.e.
             // its bare skeleton, and never animated it.
             if let Some(npc) = record_index.actor(child_form_id) {
+                if placement_disabled {
+                    // #4327 — no NPC job (body, armor, skeleton, collision):
+                    // the canonical identity and scripts only.
+                    if synth_idx == 0 {
+                        let entity = spawn_logical_quest_reference(
+                            world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+                        );
+                        attach_quest_reference_script(
+                            world,
+                            entity,
+                            child_form_id,
+                            record_index,
+                            refr_script_instance_for_synth_child(
+                                synth_idx,
+                                placed_ref.script_instance.as_ref(),
+                            ),
+                            &mut job.accum,
+                        );
+                        job.accum.entity_count += 1;
+                    }
+                    job.next_synth = synth_idx + 1;
+                    budget.complete_unit();
+                    synth_idx += 1;
+                    continue;
+                }
                 if job.active_npc.is_none() {
                     job.accum.bounds_min = job.accum.bounds_min.min(ref_pos);
                     job.accum.bounds_max = job.accum.bounds_max.max(ref_pos);
@@ -761,6 +793,7 @@ pub(super) fn load_references_budgeted(
                 ref_scale,
                 refr_script_instance,
                 synth_idx == 0,
+                placement_disabled,
             );
             job.next_synth = synth_idx + 1;
             budget.complete_unit();

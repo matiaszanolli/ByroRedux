@@ -117,6 +117,7 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
             ActivatorGate::Any
         },
         disable_after_advance: false,
+        disable_reference_after_advance: false,
     };
 
     Some(Recognized::new(
@@ -211,13 +212,17 @@ fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> 
     } else {
         Vec::new()
     };
+    // #4326 — the shipped script's two options differ: `disableWhenDone` calls
+    // `self.Disable(false)`, `onlyOnce` calls `GotoState("hasBeenTriggered")`.
+    // Both stop the trigger in-session; only the first disables the reference.
+    let disable_when_done = opt_bool_property("disableWhenDone")?.unwrap_or(false);
     let component = QuestAdvanceOnActivate {
         owning_quest: QuestFormId(owning_quest),
         conditions,
         target_stage,
         activator_gate: ActivatorGate::BaseForm(trigger_actor),
-        disable_after_advance: opt_bool_property("disableWhenDone")?.unwrap_or(false)
-            || opt_bool_property("onlyOnce")?.unwrap_or(false),
+        disable_after_advance: disable_when_done || opt_bool_property("onlyOnce")?.unwrap_or(false),
+        disable_reference_after_advance: disable_when_done,
     };
     Some(Recognized::new(
         format!("quest_stage_gate@{}", script.name.node),
@@ -627,6 +632,32 @@ mod tests {
             ActivatorGate::BaseForm(0x654E5)
         ));
         assert!(component.disable_after_advance);
+        assert!(
+            component.disable_reference_after_advance,
+            "disableWhenDone is the shipped script's self.Disable(false) (#4326)"
+        );
+    }
+
+    /// #4326 — `onlyOnce` stops the trigger (the shipped script's
+    /// `GotoState("hasBeenTriggered")`) but never disables the reference, so
+    /// it must not reach `ReferenceEnableState` the way `disableWhenDone` does.
+    #[test]
+    fn only_once_stops_the_trigger_without_disabling_the_reference() {
+        let script = specific_actor_source();
+        let instance = specific_actor_instance(Some(("onlyOnce", PropertyValue::Bool(true))));
+        let source = ScriptSource::PapyrusSource(&script);
+        let recognized = translate_script(&source, GameKind::Skyrim, Some(&instance), None)
+            .expect("onlyOnce trigger recognized");
+
+        let mut world = byroredux_core::ecs::world::World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        (recognized.spawn)(&mut world, entity);
+        let component = world
+            .get::<QuestAdvanceOnActivate>(entity)
+            .expect("quest stage trigger component");
+        assert!(component.disable_after_advance);
+        assert!(!component.disable_reference_after_advance);
     }
 
     /// #3940 — build the `defaultSetStageTRIGSpecificActor` VMAD shape with
@@ -744,6 +775,7 @@ mod tests {
             !component.disable_after_advance,
             "absent `disableWhenDone`/`onlyOnce` default to false"
         );
+        assert!(!component.disable_reference_after_advance);
     }
 
     /// #2186 — the same shape, but the `Quest Property` is alias-bound.

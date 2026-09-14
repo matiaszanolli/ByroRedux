@@ -464,9 +464,23 @@ pub(crate) fn placement_is_disabled(
     else {
         return false;
     };
+    reference_is_disabled(world, local)
+}
+
+/// Has a Papyrus `Disable()` been recorded against the reference whose own
+/// form id is `reference_form_id` (a `PlacedRef::form_id`)?
+///
+/// #4327 — the per-REFR form of [`placement_is_disabled`], for spawn paths
+/// that hold the placed reference rather than an interned placement id. The
+/// actor job, invisible trigger volumes and LIGH-only / fxlight placements
+/// never reach `spawn_placed_instances`, so they bypassed that gate and a
+/// `Disable()`d NPC, trigger or light respawned in full on the next load.
+/// `load_references_budgeted` now asks this once per REFR, ahead of every
+/// branch.
+pub(crate) fn reference_is_disabled(world: &World, reference_form_id: u32) -> bool {
     world
         .try_resource::<byroredux_scripting::ReferenceEnableState>()
-        .is_some_and(|state| !state.is_enabled(local))
+        .is_some_and(|state| !state.is_enabled(reference_form_id))
 }
 
 /// The scripted lock override for this placement, if a fragment has

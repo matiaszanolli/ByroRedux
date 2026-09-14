@@ -593,6 +593,7 @@ mod tests {
                 target_stage: stage,
                 activator_gate: gate,
                 disable_after_advance: false,
+                disable_reference_after_advance: false,
             };
         let stages = QuestStageState::default();
 
@@ -983,6 +984,7 @@ mod tests {
                 target_stage: 30,
                 activator_gate: ActivatorGate::BaseForm(0xB9E1D),
                 disable_after_advance: true,
+                disable_reference_after_advance: false,
             },
         );
 
@@ -1105,6 +1107,7 @@ mod tests {
                     target_stage,
                     activator_gate: ActivatorGate::BaseForm(0xB9E1D),
                     disable_after_advance: true,
+                    disable_reference_after_advance: false,
                 },
             );
         }

@@ -241,6 +241,54 @@ fn trigger_enter_advances_quest() {
     );
 }
 
+/// #4326 — a `disableWhenDone` trigger that fires records its reference in
+/// `ReferenceEnableState` (the shipped script's `self.Disable(false)`), so
+/// the cell loader's spawn gate keeps it inert after a reload instead of
+/// re-arming it. An `onlyOnce` trigger stops in-session but stays enabled:
+/// its script only moves to `hasBeenTriggered`.
+#[test]
+fn disable_when_done_records_the_reference_but_only_once_does_not() {
+    const DISABLING_REF: u32 = 0x0008_4058;
+    const ONCE_REF: u32 = 0x0008_4059;
+    let (mut world, player, disabling) = setup_da10_world();
+    world.insert_resource(crate::ReferenceEnableState::default());
+    let once = world.spawn();
+    for (entity, reference_form_id, disable_reference) in
+        [(disabling, DISABLING_REF, true), (once, ONCE_REF, false)]
+    {
+        let mut component = da10_main_door(DA10_QUEST_FORM_ID);
+        component.disable_after_advance = true;
+        component.disable_reference_after_advance = disable_reference;
+        world.insert(entity, component);
+        world.insert(
+            entity,
+            crate::scene::SceneAliasCandidate {
+                reference_form_id,
+                ..Default::default()
+            },
+        );
+    }
+    world
+        .resource_mut::<QuestStageState>()
+        .set_stage(DA10_QUEST_FORM_ID, 37);
+
+    fire_trigger_enter(&world, disabling, player);
+    fire_trigger_enter(&world, once, player);
+    quest_advance_system(&world);
+
+    assert!(world.get::<QuestAdvanceOnActivate>(disabling).is_none());
+    assert!(world.get::<QuestAdvanceOnActivate>(once).is_none());
+    let enable = world.resource::<crate::ReferenceEnableState>();
+    assert!(
+        !enable.is_enabled(DISABLING_REF),
+        "disableWhenDone must survive a reload through the enable ledger (#4326)"
+    );
+    assert!(
+        enable.is_enabled(ONCE_REF),
+        "onlyOnce parks the script; it must not fabricate a Disable()"
+    );
+}
+
 /// The activator gate applies on the trigger path too: a `PlayerOnly`
 /// volume ignores a non-player triggerer (an NPC patrol crossing it).
 #[test]

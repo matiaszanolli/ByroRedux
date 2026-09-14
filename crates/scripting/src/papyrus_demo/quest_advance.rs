@@ -131,7 +131,15 @@ pub struct QuestAdvanceOnActivate {
     pub activator_gate: ActivatorGate,
     /// Remove this trigger behavior after its first passing advance. Mirrors
     /// the vanilla `disableWhenDone` / `onlyOnce` trigger-script options.
+    /// In-session only: the attach chain re-inserts the component on reload.
     pub disable_after_advance: bool,
+    /// #4326 — the `disableWhenDone` half alone. Vanilla
+    /// `defaultSetStageTRIGSpecificActor` calls `self.Disable(false)` for it,
+    /// so the advance also records the reference in `ReferenceEnableState`,
+    /// which the cell loader's spawn gate honors across reloads. `onlyOnce`
+    /// instead calls `GotoState("hasBeenTriggered")` (an empty state) and
+    /// leaves the reference enabled, so it must not set this.
+    pub disable_reference_after_advance: bool,
 }
 
 impl Component for QuestAdvanceOnActivate {
@@ -259,6 +267,7 @@ pub fn da10_main_door(owning_quest: QuestFormId) -> QuestAdvanceOnActivate {
         // DA10's source has no player gate.
         activator_gate: ActivatorGate::Any,
         disable_after_advance: false,
+        disable_reference_after_advance: false,
     }
 }
 
@@ -367,6 +376,7 @@ pub fn quest_advance_system(world: &World) {
         quest: QuestFormId,
         target_stage: u16,
         disable_after_advance: bool,
+        disable_reference_after_advance: bool,
     }
     let mut pending: Vec<PendingAdvance> = Vec::new();
     for (entity, triggerer) in triggered {
@@ -413,6 +423,7 @@ pub fn quest_advance_system(world: &World) {
                 quest: comp.owning_quest,
                 target_stage: comp.target_stage,
                 disable_after_advance: comp.disable_after_advance,
+                disable_reference_after_advance: comp.disable_reference_after_advance,
             });
         }
     }
@@ -440,14 +451,38 @@ pub fn quest_advance_system(world: &World) {
                 new_stage: p.target_stage,
             });
             if p.disable_after_advance {
-                disable_sources.push(p.source);
+                disable_sources.push((p.source, p.disable_reference_after_advance));
             }
         }
     }
     if !disable_sources.is_empty() {
         if let Some(mut components) = world.query_mut::<QuestAdvanceOnActivate>() {
-            for entity in disable_sources {
-                components.remove(entity);
+            for (entity, _) in &disable_sources {
+                components.remove(*entity);
+            }
+        }
+        // #4326 — `disableWhenDone` is vanilla's `self.Disable(false)`, so it
+        // is recorded where every `Disable()` goes. Removing the component
+        // alone lasted only until the cell reloaded: the attach chain
+        // re-inserted an armed component, and the trigger could `SetStage`
+        // again — moving the stage backward and re-running its fragment.
+        // `onlyOnce` is left out: it parks the script in `hasBeenTriggered`
+        // without disabling anything, and no persistent Papyrus script-state
+        // ledger exists to record that in yet.
+        let disabled_references: Vec<u32> = disable_sources
+            .iter()
+            .filter(|(_, disable_reference)| *disable_reference)
+            .filter_map(|(entity, _)| {
+                world
+                    .get::<crate::scene::SceneAliasCandidate>(*entity)
+                    .map(|identity| identity.reference_form_id)
+            })
+            .collect();
+        if !disabled_references.is_empty() {
+            if let Some(mut enable) = world.try_resource_mut::<crate::ReferenceEnableState>() {
+                for form_id in disabled_references {
+                    enable.set_enabled(form_id, false);
+                }
             }
         }
     }
