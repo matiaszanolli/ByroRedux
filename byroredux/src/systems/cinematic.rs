@@ -562,18 +562,29 @@ fn scene_trigger_actor_approach_system_inner(
                     let target = advances
                         .iter()
                         .filter(|(_, advance)| {
-                            advance.owning_quest.0 == quest_form_id
-                                && advance.target_stage <= awaited_stage
-                                && (awaited_stage != u16::MAX
-                                    || advance.target_stage >= current_stage)
-                                && matches!(
-                                    advance.activator_gate,
-                                    ActivatorGate::BaseForm(candidate) if candidate == base_form_id
+                            if !matches!(
+                                advance.activator_gate,
+                                ActivatorGate::BaseForm(candidate) if candidate == base_form_id
+                            ) {
+                                return false;
+                            }
+                            if awaited_stage == u16::MAX {
+                                // #4333 — between scenes the router asks the
+                                // gate's question through the gate's own
+                                // predicate. #3954 extracted it for exactly
+                                // this, but the router kept an inline copy.
+                                byroredux_scripting::base_form_advance_is_eligible(
+                                    advance,
+                                    byroredux_scripting::QuestFormId(quest_form_id),
+                                    current_stage,
+                                    &stages,
                                 )
-                                && !stages.get_stage_done(
-                                    advance.owning_quest,
-                                    advance.target_stage,
-                                )
+                            } else {
+                                advance.owning_quest.0 == quest_form_id
+                                    && advance.target_stage <= awaited_stage
+                                    && !stages
+                                        .get_stage_done(advance.owning_quest, advance.target_stage)
+                            }
                         })
                         .filter(|(trigger, advance)| {
                             byroredux_scripting::evaluate_condition_list(
@@ -1544,6 +1555,27 @@ mod tests {
              holding it across the quest/transform acquisitions records an \
              edge out of the canonical order's sink and cycles against \
              actor_quest_trigger_is_in_sequence (#3937); see docs/engine/ecs.md",
+        );
+    }
+
+    /// #4333 — #3954 extracted `base_form_advance_is_eligible` so this router
+    /// and the trigger gate answer "which stage is next" identically, but the
+    /// router kept an inline copy of the conjunction, so a later change to
+    /// the gate's rule would not have reached it. Pin the call, not the copy.
+    #[test]
+    fn the_router_calls_the_gates_shared_eligibility_predicate() {
+        const CINEMATIC_RS: &str = include_str!("cinematic.rs");
+
+        let body = CINEMATIC_RS
+            .split_once("fn scene_trigger_actor_approach_system_inner")
+            .expect("scene_trigger_actor_approach_system_inner definition")
+            .1
+            .split_once("#[cfg(test)]")
+            .expect("test module marker")
+            .0;
+        assert!(
+            body.contains("byroredux_scripting::base_form_advance_is_eligible("),
+            "the between-scenes router must call the gate's shared predicate (#4333)"
         );
     }
 }
