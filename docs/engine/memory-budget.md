@@ -499,13 +499,17 @@ overhead that exceeds the traversal saving). Switching back recovered
 
 ### LRU eviction
 
-`AccelerationManager::evict_unused_blas` runs at **three** points inside
+`AccelerationManager::evict_unused_blas` runs at **four** points inside
 `build_blas_batched`: pre-batch, mid-batch (triggered at 90% of BLAS budget),
-and once at the head of the compaction phase (`alloc_compact`, #2927 /
-`PERF-D3-03`). The third passes the exact `total_before + total_after` peak
+per mesh at the admission step once residency plus the batch crosses the
+budget (#4196), and once at the head of the compaction phase (`alloc_compact`,
+#2927 / `PERF-D3-03`). The admission pass runs regardless of loop index —
+per-reference batches are a handful of meshes and never reach the mid-batch
+interval — and a pass that reclaims nothing declines the rest of the batch.
+The compaction pass passes the exact `total_before + total_after` peak
 rather than `0`, because it is the only site that sees a batch's real
 residency peak — the compaction destinations are allocated while every Phase-1
-original is still live. Eviction check interval:
+original is still live. Mid-batch check interval:
 `BATCH_EVICTION_CHECK_INTERVAL` = 64 BLAS builds. LRU victim = the BLAS
 with the smallest last-used frame tick.
 
@@ -775,7 +779,11 @@ find a gap in it. One is known and unquantified:
 
 - **`StagingPool` retained capacity** beyond the geometry rebuild's 64 MiB
   above. The pool's budget is a *retention* bound (128 MiB default), not an
-  in-flight bound, and texture uploads share it.
+  in-flight bound, and texture uploads share it. Texture uploads' in-flight
+  staging is bounded separately since #4197: `flush_pending_uploads` drains
+  its queue in sub-batches of at most `MAX_UPLOAD_BATCH_BYTES` (= the 128 MiB
+  retention budget) of DDS bytes, or one larger texture alone, so one submit
+  never stages more than that.
 
 It is listed rather than estimated on purpose: a fabricated number on
 this page is worse than an acknowledged hole, because the page is cited as

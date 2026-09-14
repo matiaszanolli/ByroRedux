@@ -578,6 +578,48 @@ pub(super) fn blas_admission_exhausted(
         && resident_static_bytes.saturating_add(pending_bytes) > budget_bytes
 }
 
+/// One Phase-1 admission decision in `build_blas_batched`: may the next mesh
+/// allocate its result buffer? (#4196)
+///
+/// [`blas_admission_exhausted`] alone was reachable only through the
+/// every-`BATCH_EVICTION_CHECK_INTERVAL` block, the sole writer of
+/// `eviction_can_still_reclaim`. The dominant production caller submits one
+/// batch per placed reference — a single NIF's handful of sub-meshes — so
+/// `idx` never reached 64, the flag never left its initial `true`, and the
+/// gate never closed. Over budget, each per-REFR batch then pre-evicted the
+/// *paper* figure back down and allocated again while the evicted BLAS stayed
+/// resident, so real residency grew for the rest of a synchronous load.
+///
+/// This step is independent of the loop index. Under budget it admits without
+/// touching eviction. Over budget, while eviction may still reclaim, it runs
+/// `try_evict` (one `evict_unused_blas` pass against the batch's real
+/// `pending_bytes`, returning whether it moved any bytes) and records the
+/// answer; a pass that reclaims nothing closes the gate exactly as the
+/// interval-gated pass does. Each call therefore either makes eviction
+/// progress or ends admission, so the loop cannot spin.
+///
+/// `try_evict` is a closure so the policy is testable without a Vulkan device.
+pub(super) fn admit_next_static_blas(
+    resident_static_bytes: vk::DeviceSize,
+    pending_bytes: vk::DeviceSize,
+    budget_bytes: vk::DeviceSize,
+    eviction_can_still_reclaim: &mut bool,
+    try_evict: impl FnOnce() -> bool,
+) -> bool {
+    if resident_static_bytes.saturating_add(pending_bytes) <= budget_bytes {
+        return true;
+    }
+    if *eviction_can_still_reclaim {
+        *eviction_can_still_reclaim = try_evict();
+    }
+    !blas_admission_exhausted(
+        resident_static_bytes,
+        pending_bytes,
+        budget_bytes,
+        *eviction_can_still_reclaim,
+    )
+}
+
 /// Decide whether a `DrawCommand` should emit a TLAS instance.
 ///
 /// Three-axis gate (#516 + #1024 + #2297):

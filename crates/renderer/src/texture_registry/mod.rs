@@ -65,11 +65,27 @@ struct PendingSetWrite {
     sampler: vk::Sampler,
 }
 
+/// Upper bound on the DDS bytes one `flush_pending_uploads` submit stages
+/// (#4197).
+///
+/// Every staging buffer recorded into a submit stays live until that
+/// submit's fence wait returns, and `StagingPool`'s budget bounds only what
+/// it *retains*, so a batch sized by texture count alone had no memory bound:
+/// 64 × a 4K BC7 mip chain is ~1.4 GB of simultaneous host-visible staging,
+/// 64 × a 512² BC1 is ~11 MB. The flush splits its queue into sub-batches of
+/// at most this many bytes (one oversized texture still goes alone), and the
+/// cell loader's yield trigger also fires once the queue reaches it. Tied to
+/// the pool's retention budget so a sub-batch's buffers can all return to the
+/// pool instead of being destroyed.
+pub const MAX_UPLOAD_BATCH_BYTES: vk::DeviceSize =
+    crate::vulkan::buffer::DEFAULT_STAGING_BUDGET_BYTES;
+
 /// One queued DDS upload waiting for the next batched
 /// `flush_pending_uploads` call. Pre-#881 every fresh DDS paid its
 /// own `with_one_time_commands` (submit + fence-wait); the queue
 /// collects them so a cell-load completion gate can drain N uploads
-/// with ONE submit + ONE fence-wait. The DDS bytes are owned (boxed
+/// with one submit + fence-wait per byte-bounded sub-batch (#4197).
+/// The DDS bytes are owned (boxed
 /// `Vec<u8>`) because the parser holds borrowed slices and we don't
 /// retain the source `BsaArchive` extraction past `acquire_by_path`'s
 /// return. See `flush_pending_uploads` for the drain side.

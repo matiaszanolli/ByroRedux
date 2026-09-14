@@ -337,12 +337,18 @@ mod pending_destroy_static_bytes_stays_balanced_tests {
     /// iteration and the only budget interaction was an eviction request.
     #[test]
     fn the_phase_one_loop_declines_rather_than_allocating_past_residency() {
+        // #4196 — the gate is now the per-mesh `admit_next_static_blas` step:
+        // `blas_admission_exhausted` alone was armed only from the
+        // every-64-meshes eviction block, which a per-reference batch never
+        // reaches.
         assert!(
-            BLAS_STATIC_RS.contains("if blas_admission_exhausted("),
-            "build_blas_batched's Phase-1 loop must consult the admission gate              before allocating another result buffer — without it the resident              counter cannot change any outcome (#3979)"
+            BLAS_STATIC_RS.contains("if !admit_next_static_blas("),
+            "build_blas_batched's Phase-1 loop must consult the admission gate \
+             before allocating another result buffer — without it the resident \
+             counter cannot change any outcome (#3979 / #4196)"
         );
         let gate = BLAS_STATIC_RS
-            .find("if blas_admission_exhausted(")
+            .find("if !admit_next_static_blas(")
             .expect("the admission gate call must still exist");
         let alloc = BLAS_STATIC_RS
             .find("let mut result_buffer = GpuBuffer::create_device_local_uninit(")
@@ -358,6 +364,15 @@ mod pending_destroy_static_bytes_stays_balanced_tests {
         assert!(
             BLAS_STATIC_RS.contains("eviction_can_still_reclaim = self.static_blas_bytes < paper_before;"),
             "the gate's 'eviction is out of candidates' input must be derived from              the PAPER figure moving across an eviction pass — the resident figure              is unchanged by eviction inside a batch, so a resident-based test would              never report progress (#3979)"
+        );
+        assert!(
+            BLAS_STATIC_RS[gate..alloc].contains("&mut eviction_can_still_reclaim,")
+                && BLAS_STATIC_RS[gate..alloc]
+                    .contains("self.evict_unused_blas(device, allocator, pending_bytes);"),
+            "the admission step must own an eviction pass against the batch's real \
+             `pending_bytes` and write the reclaim flag itself — if only the \
+             interval block writes it, a per-reference batch never arms the gate \
+             (#4196)"
         );
         assert!(
             BLAS_STATIC_RS.contains("if prepared.is_empty() {"),
@@ -480,7 +495,8 @@ mod hot_path_hashing_tests {
 }
 
 /// #3997 — `memory-budget.md`'s eviction census must name the file that
-/// actually holds the per-frame call, and must count all three internal ones.
+/// actually holds the per-frame call, and must count every internal one (four
+/// since #4196 added the per-mesh admission pass).
 ///
 /// `7463204e` ("split `draw_frame` into phase helpers") moved the per-frame
 /// `evict_unused_blas` out of `draw.rs` and the doc kept pointing there, while
@@ -528,17 +544,18 @@ mod memory_budget_eviction_census_tests {
     fn the_doc_counts_every_internal_eviction_site() {
         let sites = BLAS_STATIC_RS.matches("self.evict_unused_blas(").count();
         assert_eq!(
-            sites, 3,
+            sites, 4,
             "build_blas_batched's internal eviction-site count changed; \
              memory-budget.md and `evict_unused_blas`'s own doc both state \
-             three (pre-batch, mid-batch, compaction) and must be updated \
-             together (#3997 / #2927)"
+             four (pre-batch, mid-batch, per-mesh admission, compaction) and \
+             must be updated together (#3997 / #2927 / #4196)"
         );
         assert!(
-            DOC.contains("**three**") || DOC.contains("at **three** points"),
-            "memory-budget.md must state all three internal eviction sites — \
-             it said \"pre-batch and mid-batch\", omitting the compaction-phase \
-             call that passes the real residency peak (#2927 / #3997)"
+            DOC.contains("at **four** points"),
+            "memory-budget.md must state all four internal eviction sites — \
+             it once said \"pre-batch and mid-batch\", omitting the compaction \
+             call that passes the real residency peak (#2927 / #3997), and the \
+             per-mesh admission pass joined them in #4196"
         );
     }
 }

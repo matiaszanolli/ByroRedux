@@ -338,6 +338,66 @@ fn blas_over_budget_accounts_for_pending_bytes() {
     let _ = blas_over_budget(u64::MAX / 2, u64::MAX / 2, budget);
 }
 
+/// #4196 — admission must be decided per mesh, not only when the Phase-1 loop
+/// index reaches `BATCH_EVICTION_CHECK_INTERVAL`. The production caller
+/// submits one batch per placed reference — a handful of meshes — so the
+/// interval-gated pass never ran, `eviction_can_still_reclaim` never left
+/// `true`, and the #3979 gate never closed.
+#[test]
+fn admit_next_static_blas_decides_on_the_first_over_budget_mesh() {
+    let budget: vk::DeviceSize = 1_000_000_000; // 1 GB
+
+    // Under budget: admitted, and eviction is not consulted at all.
+    let mut can_reclaim = true;
+    assert!(admit_next_static_blas(
+        400_000_000,
+        100_000_000,
+        budget,
+        &mut can_reclaim,
+        || panic!("eviction must not run while the batch fits the budget"),
+    ));
+    assert!(can_reclaim);
+
+    // Over budget with no eviction candidates: the very first over-budget
+    // mesh of a small batch (index 0, far below the 64 interval) runs one
+    // eviction pass and, when it reclaims nothing, is declined.
+    let mut can_reclaim = true;
+    let mut passes = 0;
+    assert!(!admit_next_static_blas(
+        1_200_000_000,
+        0,
+        budget,
+        &mut can_reclaim,
+        || {
+            passes += 1;
+            false
+        },
+    ));
+    assert_eq!(passes, 1, "exactly one eviction pass before declining");
+    assert!(!can_reclaim);
+
+    // Once eviction is known to be out of candidates, later meshes are
+    // declined without paying for another pass.
+    assert!(!admit_next_static_blas(
+        1_200_000_000,
+        5_000_000,
+        budget,
+        &mut can_reclaim,
+        || panic!("an exhausted eviction must not be retried within the batch"),
+    ));
+
+    // Over budget while eviction still reclaims: admitted, flag stays armed.
+    let mut can_reclaim = true;
+    assert!(admit_next_static_blas(
+        1_200_000_000,
+        0,
+        budget,
+        &mut can_reclaim,
+        || true,
+    ));
+    assert!(can_reclaim);
+}
+
 /// #3979 / REN-2026-09-06-D1-01 — the admission gate `build_blas_batched`'s
 /// Phase-1 loop never had. `#3840` added `resident_static_blas_bytes` for
 /// exactly this job and wired it only into `should_evict_mid_batch`'s first

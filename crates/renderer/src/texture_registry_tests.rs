@@ -5,6 +5,37 @@
 
 use super::*;
 
+/// #4197 — one flush must never stage more than `budget` bytes in a single
+/// submit. The splitter keeps queue order, covers every upload exactly once,
+/// and gives a texture larger than the budget a sub-batch of its own rather
+/// than dropping it.
+#[test]
+fn upload_batch_ranges_bound_each_submit_by_bytes() {
+    use super::upload::upload_batch_ranges;
+
+    assert!(upload_batch_ranges(&[], 100).is_empty());
+
+    // 40+40 fit, the next 40 would reach 120 → new batch; 40+90 is over, so
+    // 90 starts one; 90+10 lands exactly on the budget and shares it; the
+    // last 10 would pass it and starts another.
+    let sizes = [40, 40, 40, 90, 10, 10];
+    let ranges = upload_batch_ranges(&sizes, 100);
+    assert_eq!(ranges, vec![0..2, 2..3, 3..5, 5..6]);
+    for range in &ranges {
+        let bytes: u64 = sizes[range.clone()].iter().sum();
+        assert!(bytes <= 100 || range.len() == 1, "{range:?} = {bytes} B");
+    }
+
+    // An oversized texture travels alone and is not dropped.
+    assert_eq!(
+        upload_batch_ranges(&[10, 500, 10], 100),
+        vec![0..1, 1..2, 2..3]
+    );
+
+    // Everything fits: one submit, exactly as before #4197.
+    assert_eq!(upload_batch_ranges(&[1; 64], 100), vec![0..64]);
+}
+
 #[test]
 fn normalize_backslashes_and_case() {
     assert_eq!(
@@ -740,6 +771,26 @@ fn enqueue_reserves_slot_and_queues_upload_on_miss() {
         "path_map must point at the new handle so a sibling enqueue dedupes",
     );
     assert_eq!(reg.pending_dds_upload_count(), 1);
+}
+
+/// #4197 — the cell loader's yield trigger reads the queued byte total, so it
+/// must sum exactly what a flush would stage from, and a cache hit (which
+/// queues nothing) must not count.
+#[test]
+fn pending_dds_upload_bytes_sums_the_queue_and_ignores_cache_hits() {
+    let mut reg = make_registry_with_entry("chair.dds", 1);
+    assert_eq!(reg.pending_dds_upload_bytes(), 0);
+
+    reg.queue_or_hit("table.dds", vec![0u8; 1000], 3).unwrap();
+    reg.queue_or_hit("lamp.dds", vec![0u8; 24], 3).unwrap();
+    assert_eq!(reg.pending_dds_upload_bytes(), 1024);
+
+    reg.queue_or_hit("chair.dds", vec![0u8; 4096], 3).unwrap();
+    assert_eq!(
+        reg.pending_dds_upload_bytes(),
+        1024,
+        "a cache hit queues no upload, so it adds no bytes"
+    );
 }
 
 /// Repeat enqueue of the same `(path, clamp_mode)` pair must hit

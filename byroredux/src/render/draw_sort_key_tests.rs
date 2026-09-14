@@ -320,6 +320,53 @@ fn no_sorter_draw_does_not_follow_the_depth_sort() {
     assert_eq!(cmds[1].entity_id, 1, "the no_sorter draw is not depth-ordered against it");
 }
 
+/// Regression for #4191: `no_sorter` only means something on the true
+/// alpha-over branch. On the opaque and additive branches slot 3 outranks
+/// render layer, cull mode, depth state and mesh, so carrying the flag there
+/// split every population that contained one `no_sorter` draw (Oblivion's
+/// alpha-tested bit-13 shapes are opaque) into two blocks. The key must be
+/// identical with and without the flag on those two branches.
+#[test]
+fn no_sorter_does_not_change_the_opaque_or_additive_key() {
+    for (label, alpha_blend, dst_blend) in [("opaque", false, 7u8), ("additive", true, 0u8)] {
+        let mut plain = cmd(alpha_blend, false, false);
+        plain.dst_blend = dst_blend;
+        let mut opted_out = cmd(alpha_blend, false, false);
+        opted_out.dst_blend = dst_blend;
+        opted_out.no_sorter = true;
+        assert_eq!(
+            draw_sort_key(&plain),
+            draw_sort_key(&opted_out),
+            "{label}: no_sorter must not partition this branch"
+        );
+    }
+
+    // And a mixed opaque population still clusters by render layer first:
+    // pre-fix the Clutter `no_sorter` draw sorted after the Architecture
+    // plain one purely because of slot 3.
+    use byroredux_core::ecs::components::RenderLayer;
+    let mut clutter_opted_out = cmd(false, false, false);
+    clutter_opted_out.render_layer = RenderLayer::Clutter;
+    clutter_opted_out.no_sorter = true;
+    clutter_opted_out.entity_id = 1;
+    let mut architecture_opted_out = cmd(false, false, false);
+    architecture_opted_out.no_sorter = true;
+    architecture_opted_out.entity_id = 2;
+    let mut architecture_plain = cmd(false, false, false);
+    architecture_plain.entity_id = 3;
+    let mut cmds = [
+        clutter_opted_out,
+        architecture_plain,
+        architecture_opted_out,
+    ];
+    cmds.sort_by_key(draw_sort_key);
+    assert_eq!(
+        cmds.iter().map(|c| c.entity_id).collect::<Vec<_>>(),
+        vec![2, 3, 1],
+        "both Architecture draws form one run ahead of Clutter"
+    );
+}
+
 /// Regression for #3797: a `no_sorter` alpha-over shape falls back to the
 /// SAME state-clustered shape the additive branch uses (mirrors
 /// `additive_same_mesh_draws_stay_contiguous_for_instancing`), so an

@@ -780,12 +780,24 @@ pub(super) fn load_references_budgeted(
 /// round trip at a cooperative yield. Phase and cell completion still force a
 /// flush regardless of count. FO4 boundary traces showed 145 post-bootstrap
 /// flushes for only ~550 new textures (typically 3–17 per batch); accumulating
-/// up to this threshold preserves bounded staging memory while avoiding those
-/// tiny serial submissions.
+/// up to this threshold avoids those tiny serial submissions.
+///
+/// #4197 — a count is not a memory bound: 64 × a 4K BC7 mip chain is ~1.4 GB
+/// of queued bytes, 64 × a 512² BC1 is ~11 MB. A yield therefore also flushes
+/// once the queue reaches `MAX_UPLOAD_BATCH_BYTES`, and the flush itself splits
+/// whatever it drains into sub-batches of that size, so the forced flushes are
+/// bounded too.
 const YIELDED_TEXTURE_UPLOAD_BATCH_MIN: usize = 64;
 
-fn should_flush_pending_cell_textures(pending_uploads: usize, force: bool) -> bool {
-    pending_uploads > 0 && (force || pending_uploads >= YIELDED_TEXTURE_UPLOAD_BATCH_MIN)
+fn should_flush_pending_cell_textures(
+    pending_uploads: usize,
+    pending_bytes: u64,
+    force: bool,
+) -> bool {
+    pending_uploads > 0
+        && (force
+            || pending_uploads >= YIELDED_TEXTURE_UPLOAD_BATCH_MIN
+            || pending_bytes >= byroredux_renderer::texture_registry::MAX_UPLOAD_BATCH_BYTES)
 }
 
 /// Flush textures accumulated by a completed reference phase or cell.
@@ -801,7 +813,8 @@ pub(super) fn flush_pending_cell_textures_on_yield(ctx: &mut VulkanContext) {
 
 fn flush_pending_cell_textures_inner(ctx: &mut VulkanContext, force: bool) {
     let pending_uploads = ctx.texture_registry.pending_dds_upload_count();
-    if !should_flush_pending_cell_textures(pending_uploads, force) {
+    let pending_bytes = ctx.texture_registry.pending_dds_upload_bytes();
+    if !should_flush_pending_cell_textures(pending_uploads, pending_bytes, force) {
         return;
     }
     let started = std::time::Instant::now();
@@ -828,21 +841,33 @@ mod texture_flush_policy_tests {
 
     #[test]
     fn yielded_slices_accumulate_until_the_batch_threshold() {
-        assert!(!should_flush_pending_cell_textures(0, false));
+        assert!(!should_flush_pending_cell_textures(0, 0, false));
         assert!(!should_flush_pending_cell_textures(
             YIELDED_TEXTURE_UPLOAD_BATCH_MIN - 1,
+            1024,
             false,
         ));
         assert!(should_flush_pending_cell_textures(
             YIELDED_TEXTURE_UPLOAD_BATCH_MIN,
+            1024,
             false,
         ));
     }
 
     #[test]
     fn completion_forces_any_nonempty_texture_batch() {
-        assert!(!should_flush_pending_cell_textures(0, true));
-        assert!(should_flush_pending_cell_textures(1, true));
+        assert!(!should_flush_pending_cell_textures(0, 0, true));
+        assert!(should_flush_pending_cell_textures(1, 1024, true));
+    }
+
+    /// #4197 — the count threshold is a floor, not a memory bound: a few
+    /// 4K BC7 textures reach the per-submit staging bound long before 64
+    /// textures do, so a yield must flush on bytes as well.
+    #[test]
+    fn yielded_slices_flush_once_queued_bytes_reach_the_staging_bound() {
+        let bound = byroredux_renderer::texture_registry::MAX_UPLOAD_BATCH_BYTES;
+        assert!(!should_flush_pending_cell_textures(6, bound - 1, false));
+        assert!(should_flush_pending_cell_textures(6, bound, false));
     }
 }
 

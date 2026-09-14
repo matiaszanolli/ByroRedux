@@ -10,7 +10,7 @@ use super::super::descriptors::memory_barrier;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::constants::{BATCH_EVICTION_CHECK_INTERVAL, STATIC_BLAS_FLAGS};
 use super::predicates::{
-    align_scratch_address, blas_admission_exhausted, blas_over_budget, scratch_alignment_padding,
+    admit_next_static_blas, align_scratch_address, blas_over_budget, scratch_alignment_padding,
     scratch_needs_growth, should_evict_mid_batch, submit_one_time,
 };
 use super::types::{BlasBuildSource, BlasEntry};
@@ -422,6 +422,9 @@ impl AccelerationManager {
         // eviction trigger is never declined by the admission gate below;
         // an eviction pass that reclaims nothing flips it, which is the
         // signal that no further iteration can bring residency back down.
+        // #4196 — written by the interval pass below AND by the per-mesh
+        // admission step; the interval pass alone never ran on a
+        // per-reference batch.
         let mut eviction_can_still_reclaim = true;
         // Now build geometries referencing the stored triangles data.
         for (idx, source) in meshes.iter().enumerate() {
@@ -485,11 +488,25 @@ impl AccelerationManager {
             // installed for `restore_missing_static_blas_for_draws`; the
             // caller already treats a short count as "RT loses the tail of
             // this cell", which raster is unaffected by.
-            if blas_admission_exhausted(
+            //
+            // #4196 — that gate was armed only from inside the interval block
+            // above, which a per-reference batch (a single NIF's sub-meshes)
+            // never reaches, so on the production path it never closed and
+            // residency grew for the rest of a synchronous load.
+            // `admit_next_static_blas` decides per mesh: once residency plus
+            // this batch crosses the budget it runs one eviction pass against
+            // the real `pending_bytes`, and declines once a pass reclaims
+            // nothing. The interval pass above stays as the 90% early warning.
+            if !admit_next_static_blas(
                 self.resident_static_blas_bytes(),
                 pending_bytes,
                 self.blas_budget_bytes,
-                eviction_can_still_reclaim,
+                &mut eviction_can_still_reclaim,
+                || {
+                    let paper_before = self.static_blas_bytes;
+                    self.evict_unused_blas(device, allocator, pending_bytes);
+                    self.static_blas_bytes < paper_before
+                },
             ) {
                 // One-shot: being over the BLAS budget with nothing left to
                 // evict is a property of the loaded set, so it holds for
@@ -1187,9 +1204,9 @@ impl AccelerationManager {
         // The GPU free is deferred (see the loop body), so this function never
         // touches `device`/`allocator` directly — `tick_deferred_destroy` does.
         // The params are retained so the call sites
-        // (`build_blas_batched`'s three internal call sites plus
+        // (`build_blas_batched`'s four internal call sites plus
         // `dispatch_skin_and_cluster.rs`) keep a stable signature. The
-        // deleted single-shot `build_blas` (#2914) used to be a fourth.
+        // deleted single-shot `build_blas` (#2914) used to be one more.
         // The vestigial `unsafe` marker this comment used to promise a follow-up
         // for was dropped in #2692.
         let _ = (device, allocator);

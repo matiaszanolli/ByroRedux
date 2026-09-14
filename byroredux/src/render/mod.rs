@@ -664,9 +664,13 @@ fn compute_directional_upload(
 ///                 data. The two groups do NOT interleave by raw depth
 ///                 against each other; that partition is the necessary
 ///                 cost of honouring the opt-out. Opaque and additive
-///                 always write `0` here (or, harmlessly, `no_sorter`'s
-///                 raw value where it doesn't change anything) — the
-///                 slot exists to keep arity uniform across branches.
+///                 always write `0` here — the slot exists only to keep
+///                 arity uniform across branches. It must not carry the
+///                 raw flag there (#4191): slot 3 outranks render_layer /
+///                 two_sided / depth_state / mesh, so one `no_sorter` draw
+///                 (Oblivion's alpha-tested bit-13 shapes reach the opaque
+///                 branch) would cut its whole population in two and
+///                 duplicate the state ladder for nothing.
 ///   Opaque      — slots 4/5 = render layer/two-sided; slots 6/7 = 0
 ///                 (blend factors unused); slot 8 = depth_state; slot 9 =
 ///                 mesh (cluster key); slot 10 = the high 10 bits of
@@ -767,9 +771,9 @@ pub(crate) fn draw_sort_key(
                 rt_only,
                 composition_phase,
                 0u8, // additive before alpha-over
-                cmd.no_sorter as u8, // #3797 — inert here; additive is
-                // already order-independent, so this slot only keeps
-                // arity uniform with the other two branches.
+                0u8, // #3797 / #4191 — additive is already order-independent;
+                // `no_sorter` has no meaning here, and writing it would split
+                // the state-clustered population in two.
                 cmd.render_layer as u32,
                 cmd.two_sided as u32,
                 cmd.src_blend as u32,
@@ -858,9 +862,9 @@ pub(crate) fn draw_sort_key(
             rt_only,
             0u8,
             0u8,
-            cmd.no_sorter as u8, // #3797 — inert here; opaque draws
-            // never reach the alpha-over back-to-front sort in the
-            // first place, so this slot only keeps arity uniform.
+            0u8, // #3797 / #4191 — opaque draws never reach the alpha-over
+            // back-to-front sort, so `no_sorter` (which alpha-tested
+            // Oblivion shapes do carry) must not partition this branch.
             cmd.render_layer as u32,
             cmd.two_sided as u32,
             0,

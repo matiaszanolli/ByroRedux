@@ -337,17 +337,31 @@ impl TextureRegistry {
         self.pending_dds_uploads.len()
     }
 
-    /// Drain the queued DDS uploads with ONE batched submit + ONE
-    /// fence-wait. Pre-#881 each `Texture::from_dds_with_mip_chain`
+    /// Total DDS bytes currently queued — the figure the cell loader's
+    /// yield trigger compares against [`MAX_UPLOAD_BATCH_BYTES`] (#4197).
+    /// File bytes slightly over-count the staged size (the DDS header is not
+    /// staged), which is the safe direction for a memory bound.
+    pub fn pending_dds_upload_bytes(&self) -> vk::DeviceSize {
+        self.pending_dds_uploads
+            .iter()
+            .map(|upload| upload.dds_bytes.len() as vk::DeviceSize)
+            .sum()
+    }
+
+    /// Drain the queued DDS uploads with one batched submit + fence-wait
+    /// per sub-batch of at most [`MAX_UPLOAD_BATCH_BYTES`] (#4197).
+    /// Pre-#881 each `Texture::from_dds_with_mip_chain`
     /// paid its own `vkQueueSubmit` + `vkWaitForFences(.., u64::MAX)`,
     /// so a worldspace edge crossing with 100 fresh DDS textures
     /// burned ~100 sync stalls (~50–100 ms) on the main thread. The
-    /// queueing path collapses those to one stall covering all
-    /// queued uploads.
+    /// queueing path collapses those to one stall per byte-bounded
+    /// sub-batch — usually a single one, since a cell's queue rarely
+    /// reaches the bound.
     ///
     /// Returns the number of textures uploaded (≥ 0). On any
     /// recording error the queue is taken and dropped, not preserved
-    /// for retry — every entry in the failed batch is gone, and any
+    /// for retry — sub-batches that already completed stay installed, but
+    /// every entry in the failed sub-batch and every later one is gone, and any
     /// handle already reserved for it (via `queue_or_hit`) stays
     /// `texture: None` forever, cache-HIT-redirected to a dead handle
     /// until every reference to it drops (see #1922 for the fix-vs-
@@ -373,10 +387,68 @@ impl TextureRegistry {
 
         // Move the queue out so we can borrow `&mut self` across the
         // record loop without aliasing the field. On a recording
-        // error the taken `pending` is simply dropped below — there
+        // error the rest of the taken queue is simply dropped — there
         // is no push-back, so any entries not yet staged at the point
         // of failure are lost, not retried (#1922).
         let pending = std::mem::take(&mut self.pending_dds_uploads);
+        let count = pending.len();
+
+        // #4197 — every staging buffer in one submit stays live until that
+        // submit's fence wait returns, and `StagingPool` bounds only what it
+        // retains. Drain in sub-batches of at most `MAX_UPLOAD_BATCH_BYTES`;
+        // each releases its staging back to the pool before the next one
+        // acquires, so peak staging is one sub-batch rather than the queue.
+        let sizes: Vec<vk::DeviceSize> = pending
+            .iter()
+            .map(|upload| upload.dds_bytes.len() as vk::DeviceSize)
+            .collect();
+        let batches = upload_batch_ranges(&sizes, MAX_UPLOAD_BATCH_BYTES);
+        let batch_count = batches.len();
+        let mut remaining = pending.into_iter();
+        let mut uploaded = 0;
+        for (index, range) in batches.into_iter().enumerate() {
+            let batch: Vec<PendingDdsUpload> = remaining.by_ref().take(range.len()).collect();
+            match self.flush_upload_batch(
+                device,
+                allocator,
+                queue,
+                command_pool,
+                transfer_fence,
+                batch,
+            ) {
+                Ok(staged) => uploaded += staged,
+                Err(e) => {
+                    let dropped = remaining.len();
+                    if dropped > 0 {
+                        log::warn!(
+                            "flush_pending_uploads: sub-batch {}/{batch_count} failed; \
+                             {dropped} later queued uploads dropped with it",
+                            index + 1,
+                        );
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        log::info!(
+            "Flushed {uploaded} queued DDS uploads ({count} originally enqueued, \
+             {batch_count} sub-batch(es))",
+        );
+        Ok(uploaded)
+    }
+
+    /// Record, submit, fence-wait and install one sub-batch of queued
+    /// uploads for [`Self::flush_pending_uploads`].
+    fn flush_upload_batch(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+        transfer_fence: &std::sync::Mutex<vk::Fence>,
+        pending: Vec<PendingDdsUpload>,
+    ) -> Result<usize> {
         let count = pending.len();
 
         // Per-upload outputs assembled during recording; consumed
@@ -544,11 +616,35 @@ impl TextureRegistry {
             }
         }
 
-        log::info!(
-            "Flushed {} queued DDS uploads ({} originally enqueued)",
-            staged_count,
-            count,
-        );
+        log::debug!("Flushed DDS upload sub-batch: {staged_count} of {count} staged");
         Ok(staged_count)
     }
+}
+
+/// #4197 — split queued uploads, in queue order, into contiguous sub-batches
+/// whose byte sizes sum to at most `budget`.
+///
+/// An upload larger than `budget` on its own gets a sub-batch of one: a single
+/// image cannot be split across submits here, and refusing it would turn a
+/// memory bound into a missing texture. Every returned range is non-empty and
+/// together they cover `0..sizes.len()` exactly, in order.
+pub(super) fn upload_batch_ranges(
+    sizes: &[vk::DeviceSize],
+    budget: vk::DeviceSize,
+) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut bytes: vk::DeviceSize = 0;
+    for (index, &size) in sizes.iter().enumerate() {
+        if index > start && bytes.saturating_add(size) > budget {
+            ranges.push(start..index);
+            start = index;
+            bytes = 0;
+        }
+        bytes = bytes.saturating_add(size);
+    }
+    if start < sizes.len() {
+        ranges.push(start..sizes.len());
+    }
+    ranges
 }
