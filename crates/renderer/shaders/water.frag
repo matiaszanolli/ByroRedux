@@ -931,14 +931,15 @@ void main() {
     vec3 R = reflect(-V, Nperturbed);
     float reflDist; bool reflHit;
     // Reflection miss follows the same environment contract as the main
-    // material path: exterior rays see the weather sky; interior rays see
-    // the cell ambient. For exterior water, blend the ambient horizon into
-    // the zenith tint using the reflected ray's elevation. A single zenith
+    // material path: exterior rays see the baked sky cube along the reflected
+    // ray (#4292); interior rays see the cell ambient. When the bake is
+    // absent, exterior water falls back to blending the ambient horizon into
+    // the zenith tint by the reflected ray's elevation — a single zenith
     // colour made sparse exterior cells read as a flat blue mirror.
     vec3 reflectionMiss = sceneFlags.yzw;
     if (jitter.w > 0.5) {
         float skyWeight = smoothstep(-0.2, 0.8, R.y);
-        reflectionMiss = mix(sceneFlags.yzw, skyTint.xyz, skyWeight);
+        reflectionMiss = exteriorSkyRadianceOr(R, mix(sceneFlags.yzw, skyTint.xyz, skyWeight));
     }
     vec3 reflColor = traceWaterRay(
         offsetRayOriginForDirection(vWorldPos, N, R),

@@ -1989,16 +1989,19 @@ void main() {
         // glass fragment even when its contribution was ~4%; a shelf full of
         // overlapping cups consequently spent most of the frame on invisible
         // rays. Keep the expensive ray for edges/grazing faces where it is the
-        // dominant glass cue, and use the local environment at face-on angles.
+        // dominant glass cue, and use the local environment at face-on angles:
+        // the same sky `traceReflection` returns on a miss, sampled along the
+        // same reflected direction, so exterior glass does not change sky at
+        // the 0.05 threshold (#4292).
         bool isExteriorGlass = jitter.w > 0.5;
+        vec3 glassReflectDir = reflect(-V, N_geom_view);
         vec3 reflColor = isExteriorGlass
-            ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
+            ? exteriorSkyRadianceOr(glassReflectDir, skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
             : sceneFlags.yzw;
         if (fresnelScalar > 0.05) {
-            vec3 R = reflect(-V, N_geom_view);
             vec4 reflRay = traceReflection(
-                offsetRayOriginForDirection(fragWorldPos, N_geom_view, R),
-                R, 3000.0,
+                offsetRayOriginForDirection(fragWorldPos, N_geom_view, glassReflectDir),
+                glassReflectDir, 3000.0,
                 glassOpticalRoughness * 8.0, fragInstanceIndex);
             reflColor = reflRay.rgb;
         }
@@ -2326,14 +2329,17 @@ void main() {
                 // chem-glass look reported on #789. Cell ambient
                 // (`sceneFlags.yzw`) is the per-cell room mood; in
                 // exteriors it's already sky-derived from CLMT/WTHR,
-                // so half-sky half-ambient is correct there. Match the
-                // `traceReflection` miss fallback above on the same
-                // gate — interior cells (where `SkyParams::default()`
-                // pins `skyTint` at clear-noon-blue) drop to cell
-                // ambient alone to keep daylight tint out of sealed-
-                // interior glass refractions. See #1125 / REN-D9-NEW-01.
+                // so the exterior arm takes the same sky
+                // `traceReflection` returns on a miss: the baked cube
+                // along the escaping ray, or half-sky half-ambient when
+                // the bake is absent (#4292). Interior cells (where
+                // `SkyParams::default()` pins `skyTint` at
+                // clear-noon-blue) drop to cell ambient alone to keep
+                // daylight tint out of sealed-interior glass
+                // refractions. See #1125 / REN-D9-NEW-01.
                 refrColor = isExteriorGlass
-                    ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
+                    ? exteriorSkyRadianceOr(
+                        refractDir, skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
                     : sceneFlags.yzw;
             } else {
                 GpuInstance tInst = instances[tIdx];

@@ -357,6 +357,15 @@ layout(set = 1, binding = 15) uniform sampler2D depthHistoryTex;
 // existing.
 layout(set = 1, binding = 20) uniform samplerCube skyCube;
 
+// The exterior sky radiance along `direction`: the baked cube when the bake
+// is live, `fallback` otherwise. Every exterior sky-escape site reads the
+// cube through here, so the ready-flag gate above lives in one place (#4292).
+// Every includer of this file is a fragment shader, which the implicit-LOD
+// sample requires; the cube has a single mip, so the LOD is always 0.
+vec3 exteriorSkyRadianceOr(vec3 direction, vec3 fallback) {
+    return exteriorSkyTint.w > 0.5 ? texture(skyCube, direction).rgb : fallback;
+}
+
 // Global geometry SSBOs for RT reflection UV lookups.
 //
 // Vertex layout (104 B = 26 floats per vertex, mirrors Rust `Vertex`

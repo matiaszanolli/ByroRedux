@@ -740,34 +740,82 @@ mod tests {
         );
     }
 
-    /// Both sky-cube consumers must gate on the ready flag.
+    /// Every sky-cube consumer must gate on the ready flag.
     ///
     /// The bake is optional and set 1 / binding 20 is PARTIALLY_BOUND, so
     /// an ungated read samples a descriptor that was never written when the
     /// pipeline failed to initialise. Nothing else catches this: it needs a
     /// VRAM-pressure failure at init to reach, and the result is undefined
     /// data rather than a crash.
+    ///
+    /// #4292 — the gate lives once, in `exteriorSkyRadianceOr`
+    /// (`include/bindings.glsl`). This used to hand-list two consumer files,
+    /// which is how three exterior sky-escape sites kept returning the flat
+    /// pre-SKYAL blend unnoticed. Now it walks the whole shader tree: no
+    /// source but the helper may sample `skyCube`, and every known escape
+    /// site must call the helper.
     #[test]
     fn every_sky_cube_consumer_gates_on_the_ready_flag() {
-        for (name, src) in [
+        let bindings = include_str!("../../shaders/include/bindings.glsl");
+        let helper = bindings
+            .split_once("vec3 exteriorSkyRadianceOr(vec3 direction, vec3 fallback) {")
+            .expect("bindings.glsl must define the one gated sky-cube sampler")
+            .1
+            .split_once("\n}")
+            .expect("unterminated exteriorSkyRadianceOr")
+            .0;
+        assert!(
+            helper.contains("exteriorSkyTint.w > 0.5") && helper.contains("(skyCube,"),
+            "exteriorSkyRadianceOr must sample skyCube only behind the ready flag — when \
+             the bake fails to initialise, binding 20 is never written",
+        );
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        for dir in [root.clone(), root.join("include")] {
+            for entry in std::fs::read_dir(&dir).expect("shader directory must exist") {
+                let path = entry.expect("readable dir entry").path();
+                let is_glsl = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| matches!(ext, "vert" | "frag" | "comp" | "glsl"));
+                if !is_glsl {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("readable shader source");
+                let samples = text.matches("(skyCube").count();
+                let allowed = usize::from(path.ends_with("include/bindings.glsl"));
+                assert_eq!(
+                    samples,
+                    allowed,
+                    "{} passes skyCube to a sampling call directly; route it through \
+                     exteriorSkyRadianceOr so the ready-flag gate stays in one place",
+                    path.display(),
+                );
+            }
+        }
+
+        for (name, src, sites) in [
             (
                 "raytrace.glsl",
                 include_str!("../../shaders/include/raytrace.glsl"),
+                1,
             ),
             (
                 "lighting.glsl",
                 include_str!("../../shaders/include/lighting.glsl"),
+                1,
             ),
+            (
+                "triangle.frag",
+                include_str!("../../shaders/triangle.frag"),
+                2,
+            ),
+            ("water.frag", include_str!("../../shaders/water.frag"), 1),
         ] {
             assert!(
-                src.contains("texture(skyCube,"),
-                "{name} is expected to consume the baked sky cubemap",
-            );
-            assert!(
-                src.contains("exteriorSkyTint.w > 0.5"),
-                "{name} samples skyCube without gating on the ready flag — when the \
-                 bake fails to initialise, binding 20 is never written and this reads \
-                 an unwritten descriptor",
+                src.matches("exteriorSkyRadianceOr(").count() >= sites,
+                "{name} must resolve each exterior sky escape through \
+                 exteriorSkyRadianceOr (#4292)",
             );
         }
     }

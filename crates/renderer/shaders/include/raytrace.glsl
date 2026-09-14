@@ -65,14 +65,9 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     // `exteriorSkyTint.w` gates it: the bake is an optional pass and this
     // binding is PARTIALLY_BOUND, so when it is absent fall back to the
     // historical blend rather than sampling an unwritten descriptor.
-    vec3 missCol;
-    if (_isExt) {
-        missCol = exteriorSkyTint.w > 0.5
-            ? texture(skyCube, direction).rgb
-            : (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5);
-    } else {
-        missCol = sceneFlags.yzw;
-    }
+    vec3 missCol = _isExt
+        ? exteriorSkyRadianceOr(direction, skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
+        : sceneFlags.yzw;
     // Every caller supplies a scale-aware origin from offsetRayOriginForDirection.
     // Continue alpha/self skips with the same representable-float offset and a
     // zero tMin; no world-space epsilon is valid across all seven games.

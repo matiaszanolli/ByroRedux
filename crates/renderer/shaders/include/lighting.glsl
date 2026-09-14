@@ -459,9 +459,7 @@ vec3 pathEnvironmentRadiance(vec3 direction) {
         // unlike the irradiance arms below it — see the #2472 note above,
         // whose unit argument applies unchanged).
         float skyWeight = smoothstep(-0.2, 0.8, rayDir.y);
-        vec3 skyRadiance = exteriorSkyTint.w > 0.5
-            ? texture(skyCube, rayDir).rgb
-            : skyTint.xyz;
+        vec3 skyRadiance = exteriorSkyRadianceOr(rayDir, skyTint.xyz);
         return mix(sceneFlags.yzw * (1.0 / PI), skyRadiance, skyWeight);
     }
     if (dalcFlags.x > 0.5) {

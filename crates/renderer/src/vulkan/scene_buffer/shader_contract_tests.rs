@@ -852,9 +852,11 @@ fn water_reflection_and_refraction_keep_distinct_two_sided_semantics() {
     assert!(
         frag.contains("vec3 reflectionMiss = sceneFlags.yzw;")
             && frag.contains("float skyWeight = smoothstep(-0.2, 0.8, R.y);")
-            && frag.contains("reflectionMiss = mix(sceneFlags.yzw, skyTint.xyz, skyWeight);"),
-        "water reflection misses must use a directional outdoor sky gradient and
-         cell ambient indoors."
+            && frag.contains(
+                "reflectionMiss = exteriorSkyRadianceOr(R, mix(sceneFlags.yzw, skyTint.xyz, skyWeight));"
+            ),
+        "water reflection misses must see the baked sky cube outdoors (the directional \
+         zenith/ambient gradient when the bake is absent, #4292) and cell ambient indoors."
     );
     assert!(
         frag.contains("offsetRayOriginForDirection(vWorldPos, N, Tdir)")
@@ -2695,11 +2697,7 @@ fn assert_mirror_list_is_complete(decl: &str, sources: &[(&str, &str)], issue: &
 /// The default (`assert_mirror_list_is_complete`) stays strict so
 /// `skin_vertices.comp`'s *comment* mentioning `struct GpuInstance` keeps
 /// not matching — only callers that name a `uniform`-qualified struct opt in.
-fn assert_mirror_list_is_complete_after_layout(
-    decl: &str,
-    sources: &[(&str, &str)],
-    issue: &str,
-) {
+fn assert_mirror_list_is_complete_after_layout(decl: &str, sources: &[(&str, &str)], issue: &str) {
     assert_mirror_list_is_complete_impl(decl, sources, issue, true);
 }
 
@@ -3940,11 +3938,25 @@ fn bounded_path_converts_scene_flags_ambient_to_environment_radiance_in_every_ar
         .expect("that assignment is still terminated")
         .0;
     assert!(
-        sky_radiance_assignment.contains("texture(skyCube, rayDir).rgb")
-            && sky_radiance_assignment.contains("skyTint.xyz")
+        sky_radiance_assignment.contains("exteriorSkyRadianceOr(rayDir, skyTint.xyz)")
             && !sky_radiance_assignment.contains("PI"),
-        "skyRadiance must be the cubemap sample or skyTint, both already radiance — \
-         got `{sky_radiance_assignment}`"
+        "skyRadiance must be the gated cubemap sample with skyTint as its fallback, both \
+         already radiance — got `{sky_radiance_assignment}`"
+    );
+    // #4292 — the cubemap half of `skyRadiance` now comes from the shared
+    // `exteriorSkyRadianceOr` helper, so its radiance-side invariant is
+    // pinned there: the raw sample, unconverted.
+    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    let helper_body = bindings
+        .split_once("vec3 exteriorSkyRadianceOr(vec3 direction, vec3 fallback) {")
+        .expect("bindings.glsl still defines exteriorSkyRadianceOr")
+        .1
+        .split_once("\n}")
+        .expect("exteriorSkyRadianceOr is still terminated")
+        .0;
+    assert!(
+        helper_body.contains("texture(skyCube, direction).rgb") && !helper_body.contains("PI"),
+        "exteriorSkyRadianceOr must return the cubemap sample as radiance — got `{helper_body}`"
     );
     assert!(
         lighting.contains("return sceneFlags.yzw * (1.0 / PI) * 0.5;"),
