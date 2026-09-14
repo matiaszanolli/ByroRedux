@@ -733,7 +733,16 @@ pub(crate) fn translate_material(
         // environment-mapping bit: a positive glass signal independent of
         // the keyword/mesh-name match, for windows whose filename doesn't
         // happen to contain a glass keyword.
-        source.window_env_mapping,
+        //
+        // #4391 — only with BLENDED coverage. Vanilla authors these bits on
+        // alpha-TESTED cutout atlases far more than on panes: the bit alone
+        // promoted 458 FNV / 182 FO3 non-keyword meshes, of which 448 / 178
+        // were alpha-test-only (Big MT `mz03.dds` room shells, `rowhousetrim01`
+        // railings, office/storefront facade atlases). The blend-covered
+        // remainder (10 / 4) is transparent content — lighthouse bulbs,
+        // recharger bulbs/tubes, bottles, camera lenses. Alpha-test stays
+        // valid coverage for the keyword/BGEM arms above, not this one.
+        source.window_env_mapping && source.has_alpha,
     );
     material
 }
@@ -1845,6 +1854,44 @@ mod tests {
         assert_eq!(material.rimlight_power, 2.50);
         assert_eq!(material.backlight_power, 1.75);
         assert_eq!(material.fresnel_power, 3.5);
+    }
+
+    /// Regression for #4391 — the FO3/FNV window/eye environment-mapping
+    /// bit promotes a keyword-less surface to glass only with BLENDED
+    /// coverage. Drives the signal through `translate_material` itself (not
+    /// the classifier helper), so the call site's coverage pairing is pinned.
+    /// Mesh names are real census rows: an alpha-tested railing cutout that
+    /// the bit alone used to promote, and a blended lighthouse bulb.
+    #[test]
+    fn window_env_mapping_promotes_to_glass_only_with_blended_coverage() {
+        let paths = || ResolvedPaths {
+            textures: MaterialTextureSet::default(),
+            material_path: None,
+            source_base_color: None,
+        };
+        let cutout = ImportedMaterial {
+            window_env_mapping: true,
+            alpha_test: true,
+            ..ImportedMaterial::default()
+        };
+        let railing = translate_material(&cutout, Some("Railings04:16"), paths(), 0);
+        assert_ne!(
+            railing.material_kind,
+            byroredux_renderer::MATERIAL_KIND_GLASS,
+            "an alpha-tested cutout carrying the window bit is not glass (#4391)"
+        );
+
+        let blended = ImportedMaterial {
+            window_env_mapping: true,
+            has_alpha: true,
+            ..ImportedMaterial::default()
+        };
+        let bulb = translate_material(&blended, Some("DLC04LighthouseBulb:5"), paths(), 0);
+        assert_eq!(
+            bulb.material_kind,
+            byroredux_renderer::MATERIAL_KIND_GLASS,
+            "a blend-covered surface carrying the window bit stays glass (#4237)"
+        );
     }
 
     /// Regression: #2443 (MAT-D3-01) — the palette-remap strength must

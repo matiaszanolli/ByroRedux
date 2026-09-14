@@ -156,11 +156,11 @@ pub(crate) fn classify_glass_into_material(
     }
     // #4237 / FO3-D1-2026-09-11-02 — an authored FO3/FNV
     // `Window_Environment_Mapping`/`Eye_Environment_Mapping` shader-flag
-    // bit is an independent positive glass signal, same standing as
-    // `bgem_glass`: it comes from the shader property itself, not a
-    // filename rescan, so a window mesh whose path/name happens not to
-    // contain a glass keyword (e.g. an atlas-shared texture) is still
-    // correctly classified.
+    // bit is an independent positive glass signal: it comes from the shader
+    // property itself, not a filename rescan. Unlike `bgem_glass` it is NOT
+    // self-sufficient — the caller must pass it only for blend-covered
+    // surfaces (#4391, measured in `translate_material`), because vanilla
+    // sets these bits on alpha-tested cutout atlases that are not glass.
     if !keyword_match && !bgem_glass && !window_env_mapping {
         return;
     }
