@@ -434,6 +434,10 @@ struct FarSubMesh {
     /// — so it routes through the full `translate_material` boundary rather
     /// than the texture-path-only helper.
     material: byroredux_core::ecs::components::Material,
+    /// The sub-mesh's imported material, kept for the blend / decal / facing
+    /// markers every placement instance gets (#4245 sibling — this path
+    /// translated the `Material` but never attached the markers).
+    raw_material: byroredux_nif::import::ImportedMaterial,
 }
 
 /// Resolve + import + spawn one cell's `.lod`. Returns `None` when the cell
@@ -582,6 +586,7 @@ fn spawn_placement_lod_cell(
                 local_radius,
                 texture,
                 material,
+                raw_material: mesh.material.clone(),
             });
         }
 
@@ -614,6 +619,13 @@ fn spawn_placement_lod_cell(
                 // placement instance. Cloned from the once-translated
                 // sub-mesh material rather than re-translated per placement:
                 // the boundary ran once, at import.
+                crate::material_translate::attach_blend_and_facing_markers(
+                    world,
+                    entity,
+                    &sub.raw_material,
+                    sub.material.src_blend_mode,
+                    sub.material.dst_blend_mode,
+                );
                 world.insert(entity, sub.material.clone());
                 world.insert(entity, RenderLayer::Architecture);
                 // No BLAS, lean static draw, kept out of the TLAS (shared with

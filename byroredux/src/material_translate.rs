@@ -808,7 +808,10 @@ pub(crate) fn attach_blend_and_facing_markers(
 /// populations; measured at five caller files / six call sites —
 /// `cell_loader/terrain.rs`, `cell_loader/object_lod.rs`,
 /// `cell_loader/terrain_lod.rs`, `cell_loader/terrain_lod_btr.rs` (#3336),
-/// and `cell_loader/water.rs` twice (#3733). See
+/// and `cell_loader/water.rs` twice (#3733). #4245 moved
+/// `cell_loader/object_lod.rs` to [`translate_material`]: its `.bto`
+/// sub-meshes carry a real `ImportedMaterial`, so they never belonged in
+/// this population. See
 /// [`every_exterior_spawner_inserts_a_boundary_material`] for the guard
 /// that owns the current set — it is the source of truth for the count,
 /// not this doc. None of them comes from a NIF shader property or a

@@ -300,6 +300,56 @@ struct ObjectLodQuadKey {
     qy: i32,
 }
 
+/// Insert one `.bto` sub-mesh's canonical `Material` and its blend / decal /
+/// facing markers (#4245).
+///
+/// A quad runs a full `import_nif_scene_with_resolver`, so every sub-mesh
+/// carries a real `ImportedMaterial`. It therefore goes through
+/// `translate_material`, the same boundary a full-detail spawn uses, and
+/// keeps its authored alpha test, two-sidedness, material kind and shader
+/// flags. `translate_texture_only_material` is for draws with no source
+/// record, which these are not.
+///
+/// The only override is the base-color path: it is the texture this draw
+/// actually samples (#3412 — the sub-mesh's own, or the worldspace atlas
+/// when that missed). The mesh's own path goes in as `source_base_color`,
+/// so `translate_material` re-classifies the keyword PBR scalars whenever
+/// the sampled texture differs from it.
+fn insert_object_lod_submesh_material(
+    world: &mut World,
+    entity: EntityId,
+    source: &byroredux_nif::import::ImportedMaterial,
+    mesh_name: Option<&str>,
+    pool: &byroredux_core::string::StringPool,
+    sampled_base_color: Option<String>,
+) {
+    let mut textures = source
+        .textures
+        .map_ref(|sym| sym.and_then(|s| pool.resolve(s)).map(str::to_owned));
+    let source_base_color = std::mem::replace(&mut textures.base_color, sampled_base_color);
+    let material = crate::material_translate::translate_material(
+        source,
+        mesh_name,
+        crate::material_translate::ResolvedPaths {
+            textures,
+            material_path: source
+                .material_path
+                .and_then(|s| pool.resolve(s))
+                .map(str::to_owned),
+            source_base_color,
+        },
+        0,
+    );
+    crate::material_translate::attach_blend_and_facing_markers(
+        world,
+        entity,
+        source,
+        material.src_blend_mode,
+        material.dst_blend_mode,
+    );
+    world.insert(entity, material);
+}
+
 /// Resolve + import + spawn one quad's `.bto`. Returns `None` when the quad
 /// has no baked `.bto` (the common case), `Some(empty)`-equivalent is handled
 /// by the caller. Each imported sub-mesh becomes an [`IsLodTerrain`] entity
@@ -475,23 +525,16 @@ fn spawn_object_lod_quad(
             world.insert(entity, TextureHandle(texture));
         }
         world.insert(entity, bound);
-        // #2444 (MAT-D3-02) — imposters are drawn surfaces and need a
-        // canonical `Material` like everything else. There is no per-object
-        // source record to carry through (a quad bakes many statics into one
-        // atlas-sampling mesh), so the honest classifier input is the atlas
-        // this draw actually samples. That lands on the same matte default
-        // the full architecture models resolve to, which is what closes the
-        // shading pop the pre-fix hardcoded 0.5 stacked on top of the
-        // geometric LOD pop.
-        world.insert(
+        // #2444 (MAT-D3-02) / #4245 — imposters are drawn surfaces and need
+        // a canonical `Material` like everything else, from the sub-mesh's
+        // own imported material.
+        insert_object_lod_submesh_material(
+            world,
             entity,
-            crate::material_translate::translate_texture_only_material(if texture != 0 {
-                // #3412 — classify against the texture this draw actually
-                // samples, which is now the sub-mesh's own when it named one.
-                Some(tex_path.clone())
-            } else {
-                None
-            }),
+            &mesh.material,
+            mesh.name.as_deref(),
+            &pool,
+            (texture != 0).then(|| tex_path.clone()),
         );
         world.insert(entity, RenderLayer::Architecture);
         // No BLAS, lean static draw, kept out of the TLAS (shared with terrain
@@ -738,6 +781,85 @@ mod submesh_texture_tests {
 /// for mesh upload / real texture resolution and can't run headless — same
 /// constraint `unload_greyscale_lut_tests.rs` documents for its own #1341
 /// fix, solved the same way: test the GPU-free collection logic directly).
+#[cfg(test)]
+mod submesh_material_tests {
+    use super::insert_object_lod_submesh_material;
+    use crate::components::TwoSided;
+    use byroredux_core::ecs::components::Material;
+    use byroredux_core::ecs::World;
+    use byroredux_core::string::StringPool;
+    use byroredux_nif::import::ImportedMaterial;
+
+    /// #4245 — an alpha-tested, two-sided `.bto` sub-mesh (fences,
+    /// railings, billboard foliage) must keep its cutout and its facing.
+    /// Pre-fix the texture-only helper dropped both, so the cutout drew as
+    /// an opaque quad at LOD distance.
+    #[test]
+    fn alpha_tested_two_sided_submesh_keeps_its_authored_state() {
+        let mut pool = StringPool::new();
+        let mut source = ImportedMaterial {
+            alpha_test: true,
+            alpha_threshold: 0.5,
+            two_sided: true,
+            ..ImportedMaterial::default()
+        };
+        source.textures.base_color = Some(pool.intern("textures\\lod\\fence01.dds"));
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        insert_object_lod_submesh_material(
+            &mut world,
+            entity,
+            &source,
+            None,
+            &pool,
+            Some("textures\\lod\\fence01.dds".to_string()),
+        );
+
+        let materials = world.query::<Material>().unwrap();
+        let material = materials.get(entity).expect("a canonical Material");
+        assert!(material.alpha_test);
+        assert_eq!(material.alpha_threshold, 0.5);
+        assert_eq!(
+            material.texture_path.as_deref(),
+            Some("textures\\lod\\fence01.dds")
+        );
+        assert!(
+            world.query::<TwoSided>().unwrap().get(entity).is_some(),
+            "two-sided LOD geometry needs the TwoSided marker"
+        );
+    }
+
+    /// The atlas fallback (#3412) still wins the base-color slot: the draw
+    /// samples the atlas, so the canonical material must name it.
+    #[test]
+    fn sampled_atlas_path_replaces_the_missing_authored_texture() {
+        let mut pool = StringPool::new();
+        let mut source = ImportedMaterial::default();
+        source.textures.base_color = Some(pool.intern("textures\\missing.dds"));
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        insert_object_lod_submesh_material(
+            &mut world,
+            entity,
+            &source,
+            None,
+            &pool,
+            Some("textures\\terrain\\tamriel\\tamriel.objects.dds".to_string()),
+        );
+
+        let materials = world.query::<Material>().unwrap();
+        assert_eq!(
+            materials.get(entity).unwrap().texture_path.as_deref(),
+            Some("textures\\terrain\\tamriel\\tamriel.objects.dds")
+        );
+        assert!(world
+            .query::<TwoSided>()
+            .is_none_or(|q| q.get(entity).is_none()));
+    }
+}
+
 #[cfg(test)]
 mod release_texture_set_tests {
     use super::object_lod_release_texture_set;
