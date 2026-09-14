@@ -108,7 +108,8 @@ last step is skipped on Windows).
 
 `SaveRing` (`disk.rs:143`) is a fixed-size round-robin cursor — size
 `10`, directory `saves/` relative to the working directory (both set in
-`boot.rs`), filename scheme `save_<n>.ess`. `BYROREDUX_SAVE_DIR` overrides the
+`boot::registries::install_runtime_registries`, `byroredux/src/boot/registries.rs`;
+the directory comes from `save_io::discover_save_dir`), filename scheme `save_<n>.ess`. `BYROREDUX_SAVE_DIR` overrides the
 directory (#3009), mirroring `BYROREDUX_SETTINGS_PATH`: the vertical-slice
 gate-5 smoke check saves and reloads for real, and the smoke harness runs the
 engine from the repository root, so without the override it would write into

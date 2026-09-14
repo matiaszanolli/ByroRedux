@@ -65,9 +65,9 @@ byroredux/              Binary — game loop, scene setup, systems
     mod.rs                   TextureProvider, resolve_texture, re-exports
     archive.rs               GameArchive — wraps BSA (Oblivion-Skyrim SE) or BA2 (FO4-Starfield)
     texture.rs                File-data lookup by searching BSA/BA2 archives
-    material.rs              Material-path resolution incl. Starfield materialsbeta.cdb
+    material/                Material-path resolution incl. Starfield materialsbeta.cdb (provider, merge, cdb)
     script.rs                Compiled Papyrus (.pex) lookup by script name (M47.2 attach path)
-    tests.rs                  Archive-provider regression tests
+    tests/                   Archive-provider regression tests
   src/render/              Per-frame render data collection (build_render_data), split by pass
     mod.rs                   Top-level build_render_data + shared collection state
     camera.rs                View-projection + frustum setup
@@ -149,7 +149,7 @@ crates/
     src/vulkan/compute.rs    Compute pipeline utilities
     src/vulkan/texture.rs    Texture upload (RGBA + BC-compressed DDS, staging, layout transitions)
     src/vulkan/dds.rs        DDS header parser (BC1/BC3/BC5, FourCC + DX10 extended, mip sizes)
-    src/texture_registry.rs  TextureRegistry (path→handle cache, per-texture descriptor sets)
+    src/texture_registry/    TextureRegistry (path→handle cache, per-texture descriptor sets; lookup / upload / release)
     src/mesh.rs              MeshRegistry, global vertex/index SSBOs, cube/triangle/quad helpers
     src/vertex.rs            Vertex (position + color + normal + uv + bone_idx + bone_wt + splat0/1 + tangent), 9 attribute descriptions, 104 B (20 f32 + 4 u32 + 8 u8; color widened vec3→vec4, `cd2b5fe4`)
     shaders/                 GLSL → SPIR-V (pre-compiled, include_bytes!) — see crates/renderer/shaders/ for the full set; key passes:

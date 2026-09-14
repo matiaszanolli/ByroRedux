@@ -1202,7 +1202,7 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    made the originally-scoped "REGN-keyed `AudioEmitter`" the wrong
    shape for this field. `asset_provider::audio::SoundArchiveProvider`
    (mirrors `ScriptProvider`: repeatable `--sounds-bsa`, first-hit-wins,
-   registered once at boot in `boot.rs`) gives arbitrary-FormID-driven
+   registered once at boot in `boot::world::build_world`, `byroredux/src/boot/world.rs`) gives arbitrary-FormID-driven
    archive lookups a persistent handle, unlike
    `try_load_default_footstep`/`try_load_default_water_splash`'s ad hoc
    single-hardcoded-path reopens. `dispatch_region_ambient_music`

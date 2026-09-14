@@ -185,7 +185,7 @@ package's authored `PLDT.radius` when present. (The per-procedure
 section used to describe were replaced by that single resolve in #2031
 and are dead code tracked as #3042.) At runtime,
 `sandbox_seat_system` (`byroredux/src/systems/sandbox.rs`) — **opt-in
-only**, registered when `BYRO_SANDBOX_SIT` is set (`boot.rs`) —
+only**, registered when `BYRO_SANDBOX_SIT` is set (`byroredux/src/boot/schedule/post_update.rs`) —
 finds the nearest unreserved `Furniture` sit marker within radius,
 snaps the placement-root `Transform` onto it, and swaps
 `AnimationPlayer` onto a sit-**enter** clip.
@@ -504,13 +504,13 @@ animation-clip swap).
   `BYRO_SANDBOX_SIT=1` / `BYRO_WANDER=1` / `BYRO_TRAVEL=1` /
   `BYRO_FOLLOW=1` / `BYRO_ESCORT=1` / `BYRO_GUARD=1` / `BYRO_PATROL=1`
   respectively. `ambient_ai_package_system` is the exception and runs in
-  the default configuration (`boot.rs`, `Stage::Update`, exclusive), so
+  the default configuration (`byroredux/src/boot/schedule/update.rs`, `Stage::Update`, exclusive), so
   packages are selected and behavior components maintained even when no
   locomotion system is enabled to act on them.
 - **Selection re-runs once per in-game minute, not per frame.**
   Superseded 2026 by M42.9 / #2652: `ambient_ai_package_system`
   (`npc_spawn/ai_package.rs`, registered *unconditionally* at
-  `boot.rs` — unlike the seven locomotion systems, this one is not
+  `byroredux/src/boot/schedule/update.rs` — unlike the seven locomotion systems, this one is not
   behind an env gate) re-selects the winning package once per in-game
   minute per actor, and immediately on an `EvaluatePackageRequest`. The
   behavior component is swapped only when the winning PACK **FormID**

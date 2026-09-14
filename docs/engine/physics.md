@@ -91,7 +91,7 @@ runs in `Stage::Physics`, after transform propagation. It early-returns
 if no `PhysicsWorld` resource is present — which covers test fixtures and
 embedders that omit the resource, **not** a loose-NIF viewer opt-out: the
 shipping binary inserts `PhysicsWorld` unconditionally in
-[`boot.rs`](../../byroredux/src/boot.rs), so every path including
+[`boot/world.rs`](../../byroredux/src/boot/world.rs) (`build_world`), so every path including
 `cargo run -- mesh.nif` runs the full tick (#2880).
 
 It's structured as four phases plus a 2.5 buoyancy hook:

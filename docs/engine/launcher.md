@@ -3,7 +3,7 @@
 **Status**: PROPOSED (2026-08-30); **P1 landed the same day, minus the
 non-Steam probes** — [`crates/boot-request/`](../../crates/boot-request/) (the
 contract, 16 tests), the `expand_boot_request` seam in
-[`boot.rs`](../../byroredux/src/boot.rs) (7 tests, including argv equivalence
+[`boot/cli.rs`](../../byroredux/src/boot/cli.rs) (7 tests, including argv equivalence
 against the documented CLI), [`crates/game-detect/`](../../crates/game-detect/)
 (Steam discovery + validation + `[roots]` write-back, 38 tests), and
 [`tools/byro-detect/`](../../tools/byro-detect/). Verified against six real
@@ -117,10 +117,10 @@ accounting so the plan does not re-implement any of it.
 | Piece | Location | State |
 |---|---|---|
 | **Game profile registry** | [`assets/debug_profiles.toml`](../../assets/debug_profiles.toml), [`byroredux/src/game_profiles.rs`](../../byroredux/src/game_profiles.rs), `GameProfileEntry` in [`crates/core/src/ecs/game_profiles.rs`](../../crates/core/src/ecs/game_profiles.rs) | **Done.** 6 profiles (`fnv`, `fo3`, `oblivion`, `skyrim_se`, `fo4`, `starfield`), each with `root`/`subdir`, `esm`, five archive categories (`default_bsas`, `_textures_`, `_scripts_`, `_sounds_`, `_materials_`), `new_game_worldspace`/`_grid`/`_radius`, and `sample_cells`. Per-user override at `~/.byroredux/profiles.toml` already layers over the shipped file. |
-| **Profile → argv expander** | [`byroredux/src/boot/cli.rs:256`](../../byroredux/src/boot/cli.rs) `expand_game_profile_args` | **Done.** `--game skyrim_se --new-game` already fans out to the full flag vector, with a `[defaults]` table that boots straight into a game/cell. |
+| **Profile → argv expander** | [`byroredux/src/boot/cli.rs`](../../byroredux/src/boot/cli.rs) `expand_game_profile_args` | **Done.** `--game skyrim_se --new-game` already fans out to the full flag vector, with a `[defaults]` table that boots straight into a game/cell. |
 | **Settings model** | [`crates/core/src/settings/`](../../crates/core/src/settings/) | **Done, and built for this.** `SettingEntry { id, section, label, description, value, default, control, restart_required }`; `SettingControl` is `Toggle` / `Slider{min,max,step,unit}` / `Choice{options}`; `SettingsRegistry` validates on `register` and `set`. Its module doc already states it exists so that "native game menus later" need not depend on a menu implementation. |
 | **Settings persistence** | [`byroredux/src/settings_io.rs`](../../byroredux/src/settings_io.rs) | **Done.** Versioned TOML (`SETTINGS_VERSION = 1`), `(id, value)` pairs overlaid onto freshly-registered defaults, unknown/stale keys skipped individually. Path overridable via `BYROREDUX_SETTINGS_PATH`. Atomic write shared with the save container (#3472). |
-| **Settings applied pre-device** | [`byroredux/src/main.rs:520-545`](../../byroredux/src/main.rs) | **Done, and load-bearing for §4.** The registry is loaded *before* `VulkanContext` is created, and the persisted `render.upscaler` choice already drives renderer config at that point specifically to avoid a first-frame upscaler rebuild. A launcher that writes the settings file therefore already steers device setup with zero engine changes. |
+| **Settings applied pre-device** | [`byroredux/src/main.rs`](../../byroredux/src/main.rs) `install_universal_settings` | **Done, and load-bearing for §4.** The registry is loaded *before* `VulkanContext` is created, and the persisted `render.upscaler` choice already drives renderer config at that point specifically to avoid a first-frame upscaler rebuild. A launcher that writes the settings file therefore already steers device setup with zero engine changes. |
 | **Panel harness** | [`crates/debug-ui/src/panels.rs`](../../crates/debug-ui/src/panels.rs) | **Reusable pattern, not reusable code.** Snapshot-in (`PanelSnapshot`) / outputs-out (`PanelOutputs`) with a player-facing `GameMenuState`/`GameMenuPage` pause menu and a `draw_player_setting` renderer. The *shape* is what §4 adopts. |
 | **Save slots on disk** | [`crates/save/src/disk.rs`](../../crates/save/src/disk.rs) | **Partly done.** `save_<slot>.ess`, atomic write + ring, `list_slots`, `latest_slot`, `slots_by_recency`. Root from `BYROREDUX_SAVE_DIR`, default `saves`. |
 | **Per-game compatibility data** | [`ROADMAP.md`](../../ROADMAP.md) compat matrix | **Done as prose.** Per-game archive format, NIF clean/recoverable parse rates, and which cells are known-good. Not machine-readable — see §5. |
@@ -192,7 +192,7 @@ load_order = []                                      # P4; empty until then
 ### 2.3 Engine side
 
 One new flag, `--boot <path>`, handled in
-[`boot.rs`](../../byroredux/src/boot.rs) at the **same seam** as
+[`boot/cli.rs`](../../byroredux/src/boot/cli.rs) at the **same seam** as
 `expand_game_profile_args` and by the same mechanism: a `BootRequest` expands
 into the argv vector the rest of the binary already consumes. Nothing
 downstream of that function learns the launcher exists.
@@ -353,7 +353,7 @@ Resolution — move registration down, not up. All three steps landed:
    `std` file IO with no save-format knowledge, and three writers now share the
    durability contract #3472 established for two.
 3. The engine, unchanged, reads that file before `VulkanContext::new`
-   ([`main.rs:520`](../../byroredux/src/main.rs)).
+   ([`install_universal_settings`](../../byroredux/src/main.rs), `main.rs`).
 
 **A data-loss bug this exposed.** The two front ends do not register the same
 settings: the engine registers the built-ins *and* the input bindings, the

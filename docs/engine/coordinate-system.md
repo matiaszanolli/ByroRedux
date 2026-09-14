@@ -243,7 +243,7 @@ independently at the import boundary:
 
 `cell_loader.rs` was split into the
 [`byroredux/src/cell_loader/`](../../byroredux/src/cell_loader/) directory;
-REFR placement now lives in `references.rs` / `refr.rs`, the spawn
+REFR placement now lives in `references/` / `refr.rs`, the spawn
 composition in `spawn.rs`, and the Euler dispatcher in `euler.rs`.
 
 Each REFR (placed reference) has a Z-up position and Euler rotation. These

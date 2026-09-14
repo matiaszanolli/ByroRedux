@@ -90,7 +90,7 @@ crates/plugin/src/esm/
     ├── items.rs      WEAP, ARMO, AMMO, MISC, KEYM, ALCH, INGR, BOOK, NOTE
     ├── container.rs  CONT, LVLI/LVLN/LVLC (parse_leveled_list)
     ├── list_record.rs FLST FormID lists
-    ├── actor.rs      NPC_, CREA (shared parse_npc), RACE, CLAS, FACT
+    ├── actor/        NPC_, CREA (shared parse_npc), RACE, CLAS, FACT
     ├── global.rs     GLOB, GMST
     ├── climate.rs    CLMT + TNAM sunrise/sunset hours
     ├── weather.rs    WTHR sky-color tables, cloud layers, fog (FNV + Skyrim schemas)
@@ -528,7 +528,7 @@ pub struct LeveledList {
 byte-identical — they only differ in which type of base record the
 entries reference.
 
-### Actors (`actor.rs`)
+### Actors (`actor/`)
 
 NPCs, creatures, races, classes, factions. `NpcRecord` (used for both
 NPC_ and CREA via `parse_npc`):

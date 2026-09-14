@@ -54,7 +54,7 @@ The NIF parser now handles the full `NiLight` hierarchy (#156):
   flame/candle sources. (The cell loader itself lives in
   [`byroredux/src/cell_loader.rs`](../../byroredux/src/cell_loader.rs) +
   the `cell_loader/` submodule directory: `load.rs`, `spawn.rs`,
-  `references.rs`, `exterior.rs`, `terrain.rs`, `water.rs`,
+  `references/`, `exterior.rs`, `terrain.rs`, `water.rs`,
   `transition.rs`, `unload.rs`, … — the original monolithic
   `cell_loader.rs` was split during the Session 34/35 refactors.)
 

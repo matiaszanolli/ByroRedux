@@ -245,7 +245,7 @@ VMAD decode exists at the record level (`ScriptInstanceData::parse`); the
 integration work is **threading `script_instance` and `owning_quest` into
 `RecognizeCtx` at attach time** and resolving which frontend a given
 game+record uses. The hardcoded demo registration **is** retired in favor
-of this path (#2191, done): `boot.rs` inserts a bare `ScriptRegistry` and
+of this path (#2191, done): `boot::world::build_world` (`byroredux/src/boot/world.rs`) inserts a bare `ScriptRegistry` and
 no longer calls `papyrus_demo::register_spawners`, which no longer exists
 — `recognizers::rumble` promotes `defaultRumbleOnActivate` dynamically to
 the same `RumbleOnActivate` component at the same `.psc` author defaults.

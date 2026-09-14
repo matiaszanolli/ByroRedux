@@ -163,7 +163,7 @@ worth recording:
 - **No new flag needed either.** Every `AmbientBehavior` variant already
   attaches unconditionally at spawn; only the *consuming* system
   (`sandbox_seat_system`) is opt-in, gated by the pre-existing
-  `BYRO_SANDBOX_SIT` in `boot.rs`. Attaching `SandboxBehavior` to more
+  `BYRO_SANDBOX_SIT` in `byroredux/src/boot/schedule/post_update.rs`. Attaching `SandboxBehavior` to more
   actors doesn't need a new gate — the existing one already controls
   whether anything acts on it.
 

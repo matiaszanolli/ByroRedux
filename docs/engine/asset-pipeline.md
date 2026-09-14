@@ -59,7 +59,7 @@ otherwise BSA) — there is no separate `--ba2` flag; a `.ba2` passed to
 order, so multiple archives layer naturally.
 
 BGSM/BGEM material archives are opened separately by
-[`build_material_provider()`](../../byroredux/src/asset_provider/material.rs) from
+[`build_material_provider()`](../../byroredux/src/asset_provider/material/provider.rs) from
 repeated `--materials-ba2 <path>` flags (see step 9.5). The main binary
 also auto-appends a `--materials-ba2` for each of the selected game
 entry's `default_materials_bsas` (e.g. `Fallout4 - Materials.ba2` /
@@ -272,7 +272,7 @@ per-step breakdown.
 
 When `ImportedMesh.material.material_path` points at a `.bgsm` / `.bgem`
 (`.mat` for Starfield), the loader calls
-[`merge_external_material()`](../../byroredux/src/asset_provider/material.rs)
+[`merge_external_material()`](../../byroredux/src/asset_provider/material/merge.rs)
 against the `MaterialProvider`. NIF fields take precedence — only empty
 slots are filled from the resolved material:
 
