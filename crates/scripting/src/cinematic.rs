@@ -183,15 +183,23 @@ pub struct CinematicPresentationState {
     active_image_space_modifiers: Vec<ActiveImageSpaceModifier>,
     player_imod_event: Option<PlayerAnimationEventRegistration>,
     player_furniture_exit_event: Option<PlayerAnimationEventRegistration>,
-    /// `Game.SetInChargen`'s current authored flags (MQ101 stages 0/10/255/
-    /// 260/318 all toggle this around the execution-block race menu). No
-    /// system currently reads `in_chargen` to gate anything (no dedicated
-    /// chargen camera/input mode exists yet) — it is tracked so a future
-    /// consumer has ground truth and so tests can observe the effect
-    /// actually applied instead of declining the whole fragment.
-    pub in_chargen: bool,
-    pub chargen_wait_for_race_sex: bool,
-    pub chargen_stay_in_first_person: bool,
+    /// `Game.SetInChargen`'s current authored flags, named for Skyrim's own
+    /// declaration: `SetInChargen(abDisableSaving, abDisableWaiting,
+    /// abShowControlsDisabledMessage)` (#4322). MQ101 stages 0/10/255/260/318
+    /// toggle them around the execution-block race menu. No system reads
+    /// them yet — saving and waiting are not actually blocked while set, and
+    /// no controls-disabled message is shown — they are tracked so a future
+    /// consumer has ground truth and tests can observe the effect applied.
+    ///
+    /// v23 saves carry them as `in_chargen` / `chargen_wait_for_race_sex` /
+    /// `chargen_stay_in_first_person`, invented names for the same three
+    /// positional arguments; the aliases keep those saves loading.
+    #[cfg_attr(feature = "save", serde(alias = "in_chargen"))]
+    pub disable_saving: bool,
+    #[cfg_attr(feature = "save", serde(alias = "chargen_wait_for_race_sex"))]
+    pub disable_waiting: bool,
+    #[cfg_attr(feature = "save", serde(alias = "chargen_stay_in_first_person"))]
+    pub show_controls_disabled_message: bool,
     /// Bumped each `Game.ShowRaceMenu()`. There is no interactive race-menu
     /// UI yet (a full slider-based character creator is its own milestone),
     /// so the call is treated as an instant auto-accept of the player's
@@ -219,9 +227,9 @@ impl Default for CinematicPresentationState {
             active_image_space_modifiers: Vec::new(),
             player_imod_event: None,
             player_furniture_exit_event: None,
-            in_chargen: false,
-            chargen_wait_for_race_sex: false,
-            chargen_stay_in_first_person: false,
+            disable_saving: false,
+            disable_waiting: false,
+            show_controls_disabled_message: false,
             race_menu_shown_count: 0,
             save_requested_count: 0,
             last_save_was_auto: false,
@@ -276,16 +284,17 @@ impl CinematicPresentationState {
         }
     }
 
-    /// `Game.SetInChargen(abEnabled, abWaitForRaceSex, abStayInFirstPerson)`.
+    /// `Game.SetInChargen(abDisableSaving, abDisableWaiting,
+    /// abShowControlsDisabledMessage)`.
     pub fn set_in_chargen(
         &mut self,
-        enabled: bool,
-        wait_for_race_sex: bool,
-        stay_in_first_person: bool,
+        disable_saving: bool,
+        disable_waiting: bool,
+        show_controls_disabled_message: bool,
     ) {
-        self.in_chargen = enabled;
-        self.chargen_wait_for_race_sex = wait_for_race_sex;
-        self.chargen_stay_in_first_person = stay_in_first_person;
+        self.disable_saving = disable_saving;
+        self.disable_waiting = disable_waiting;
+        self.show_controls_disabled_message = show_controls_disabled_message;
     }
 
     /// `Game.ShowRaceMenu()` — see the field doc on `race_menu_shown_count`

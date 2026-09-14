@@ -235,11 +235,17 @@ pub enum Effect {
     SetPlayerAiDriven { ai_driven: bool },
     /// `Game.SetHudCartMode(cart_mode)` presentation state.
     SetHudCartMode { cart_mode: bool },
-    /// `Game.SetInChargen(abEnabled, abWaitForRaceSex, abStayInFirstPerson)`.
+    /// `Game.SetInChargen(abDisableSaving, abDisableWaiting,
+    /// abShowControlsDisabledMessage)` — Skyrim's own declaration (#4322).
+    /// The aliases decode saves written under the earlier invented names,
+    /// which held the same positional arguments.
     SetInChargen {
-        enabled: bool,
-        wait_for_race_sex: bool,
-        stay_in_first_person: bool,
+        #[cfg_attr(feature = "save", serde(alias = "enabled"))]
+        disable_saving: bool,
+        #[cfg_attr(feature = "save", serde(alias = "wait_for_race_sex"))]
+        disable_waiting: bool,
+        #[cfg_attr(feature = "save", serde(alias = "stay_in_first_person"))]
+        show_controls_disabled_message: bool,
     },
     /// `Game.ShowRaceMenu()`. No interactive race-menu UI exists yet (a full
     /// slider-based character creator is its own milestone); the runtime
@@ -1276,9 +1282,9 @@ fn prim_set_in_chargen(e: &Expr, _scope: &Scope) -> Option<Effect> {
         return None;
     }
     Some(Effect::SetInChargen {
-        enabled: bool_arg(args, 0)?.unwrap_or(false),
-        wait_for_race_sex: bool_arg(args, 1)?.unwrap_or(false),
-        stay_in_first_person: bool_arg(args, 2)?.unwrap_or(false),
+        disable_saving: bool_arg(args, 0)?.unwrap_or(false),
+        disable_waiting: bool_arg(args, 1)?.unwrap_or(false),
+        show_controls_disabled_message: bool_arg(args, 2)?.unwrap_or(false),
     })
 }
 
@@ -2714,9 +2720,9 @@ mod tests {
             lower_fragment(&body),
             Some(vec![
                 Effect::SetInChargen {
-                    enabled: false,
-                    wait_for_race_sex: true,
-                    stay_in_first_person: true,
+                    disable_saving: false,
+                    disable_waiting: true,
+                    show_controls_disabled_message: true,
                 },
                 Effect::RequestSave { auto: false },
             ])
@@ -2746,9 +2752,9 @@ mod tests {
         assert_eq!(
             lower_fragment(&body),
             Some(vec![Effect::SetInChargen {
-                enabled: false,
-                wait_for_race_sex: false,
-                stay_in_first_person: false,
+                disable_saving: false,
+                disable_waiting: false,
+                show_controls_disabled_message: false,
             }])
         );
     }

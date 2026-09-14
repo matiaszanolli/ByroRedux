@@ -584,8 +584,16 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // still decodes a pre-this-commit tail: serde ignores the two stale keys,
     // nothing in this shape sets `deny_unknown_fields`, and no remaining
     // field was reordered, renamed or retyped.
+    //
+    // #4322 — refreshed again WITHOUT a major bump: `SetInChargen`'s three
+    // flags, on both `CinematicPresentationState` and `Effect::SetInChargen`,
+    // were renamed to Skyrim's declared parameter names. Each renamed field
+    // carries `serde(alias = "<old name>")`, so a v23 save written under the
+    // invented names decodes into the same values —
+    // `set_in_chargen_renames_still_decode_v23_keys` round-trips both carriers
+    // through the old keys to prove it. No field was retyped or reordered.
     const BASELINE_MAJOR: u16 = 23;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xaef2_a35c_3e79_fadb;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2323_9a4f_1066_c2f1;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,
@@ -596,6 +604,64 @@ fn saved_type_shape_changes_require_format_major_bump() {
         actual, BASELINE_SHAPE_FINGERPRINT,
         "saved serialized type shape changed without updating FORMAT_MAJOR/baseline; actual={actual:#018x}"
     );
+}
+
+/// #4322 — `SetInChargen`'s flags were renamed to Skyrim's declared
+/// parameter names. Both saved carriers — the resource and the queued
+/// `Effect` — must still decode a v23 save written under the invented
+/// names, into the same values, through their `serde(alias)`es.
+#[test]
+fn set_in_chargen_renames_still_decode_v23_keys() {
+    use byroredux_scripting::translate::effects::Effect;
+    use byroredux_scripting::CinematicPresentationState;
+
+    fn rename_keys(
+        object: &mut serde_json::Map<String, serde_json::Value>,
+        pairs: [(&str, &str); 3],
+    ) {
+        for (new, old) in pairs {
+            let value = object
+                .remove(new)
+                .unwrap_or_else(|| panic!("`{new}` serialized"));
+            object.insert(old.to_owned(), value);
+        }
+    }
+
+    let mut state = CinematicPresentationState::default();
+    state.set_in_chargen(true, false, true);
+    let mut json = serde_json::to_value(&state).unwrap();
+    rename_keys(
+        json.as_object_mut().unwrap(),
+        [
+            ("disable_saving", "in_chargen"),
+            ("disable_waiting", "chargen_wait_for_race_sex"),
+            (
+                "show_controls_disabled_message",
+                "chargen_stay_in_first_person",
+            ),
+        ],
+    );
+    let decoded: CinematicPresentationState = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded, state);
+
+    let effect = Effect::SetInChargen {
+        disable_saving: true,
+        disable_waiting: false,
+        show_controls_disabled_message: true,
+    };
+    let mut json = serde_json::to_value(&effect).unwrap();
+    rename_keys(
+        json.get_mut("SetInChargen")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("externally tagged"),
+        [
+            ("disable_saving", "enabled"),
+            ("disable_waiting", "wait_for_race_sex"),
+            ("show_controls_disabled_message", "stay_in_first_person"),
+        ],
+    );
+    let decoded: Effect = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded, effect);
 }
 
 #[test]

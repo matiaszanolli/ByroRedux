@@ -811,9 +811,9 @@ fn chargen_effects_apply_through_deferred_cinematic_presentation() {
     let world = fixture();
     let effects = [
         Effect::SetInChargen {
-            enabled: false,
-            wait_for_race_sex: true,
-            stay_in_first_person: true,
+            disable_saving: false,
+            disable_waiting: true,
+            show_controls_disabled_message: true,
         },
         Effect::ShowRaceMenu,
         Effect::RequestSave { auto: false },
@@ -839,16 +839,16 @@ fn chargen_effects_apply_through_deferred_cinematic_presentation() {
     // Not applied until the guard scope drops, same as the sibling test above.
     {
         let presentation = world.resource::<crate::CinematicPresentationState>();
-        assert!(!presentation.in_chargen);
+        assert!(!presentation.disable_waiting);
         assert_eq!(presentation.race_menu_shown_count, 0);
         assert_eq!(presentation.save_requested_count, 0);
     }
 
     deferred.apply(&world);
     let presentation = world.resource::<crate::CinematicPresentationState>();
-    assert!(!presentation.in_chargen);
-    assert!(presentation.chargen_wait_for_race_sex);
-    assert!(presentation.chargen_stay_in_first_person);
+    assert!(!presentation.disable_saving);
+    assert!(presentation.disable_waiting);
+    assert!(presentation.show_controls_disabled_message);
     assert_eq!(presentation.race_menu_shown_count, 1);
     assert_eq!(presentation.save_requested_count, 2);
     assert!(presentation.last_save_was_auto);

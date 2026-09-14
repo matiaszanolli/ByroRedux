@@ -191,6 +191,9 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// `ShowRaceMenu`/`RequestSave` primitives: `in_chargen`/
 /// `chargen_wait_for_race_sex`/`chargen_stay_in_first_person`/
 /// `race_menu_shown_count`/`save_requested_count`/`last_save_was_auto`).
+/// #4322 later renamed the first three to Skyrim's declared parameter names
+/// (`disable_saving`/`disable_waiting`/`show_controls_disabled_message`) with
+/// `serde(alias)` for the old keys, so v23 saves still decode — no bump.
 /// SAVE-D2-01 (#1714) forbids `#[serde(default)]` as the compatibility
 /// mechanism here — it would mask a real intra-type change — so a pre-v23
 /// save (missing those keys entirely) is rejected by the version check

@@ -205,9 +205,9 @@ enum DeferredCinematicPresentationEffect {
         image_space_modifiers: Vec<crate::ImageSpaceModifierApplication>,
     },
     SetInChargen {
-        enabled: bool,
-        wait_for_race_sex: bool,
-        stay_in_first_person: bool,
+        disable_saving: bool,
+        disable_waiting: bool,
+        show_controls_disabled_message: bool,
     },
     ShowRaceMenu,
     RequestSave {
@@ -397,11 +397,15 @@ impl DeferredFragmentEffects {
                             );
                         }
                         DeferredCinematicPresentationEffect::SetInChargen {
-                            enabled,
-                            wait_for_race_sex,
-                            stay_in_first_person,
+                            disable_saving,
+                            disable_waiting,
+                            show_controls_disabled_message,
                         } => {
-                            state.set_in_chargen(enabled, wait_for_race_sex, stay_in_first_person);
+                            state.set_in_chargen(
+                                disable_saving,
+                                disable_waiting,
+                                show_controls_disabled_message,
+                            );
                         }
                         DeferredCinematicPresentationEffect::ShowRaceMenu => {
                             state.show_race_menu();
@@ -1179,17 +1183,17 @@ pub(crate) fn apply_effect(
             None
         }
         Effect::SetInChargen {
-            enabled,
-            wait_for_race_sex,
-            stay_in_first_person,
+            disable_saving,
+            disable_waiting,
+            show_controls_disabled_message,
         } => {
-            deferred
-                .cinematic_presentation
-                .push(DeferredCinematicPresentationEffect::SetInChargen {
-                    enabled: *enabled,
-                    wait_for_race_sex: *wait_for_race_sex,
-                    stay_in_first_person: *stay_in_first_person,
-                });
+            deferred.cinematic_presentation.push(
+                DeferredCinematicPresentationEffect::SetInChargen {
+                    disable_saving: *disable_saving,
+                    disable_waiting: *disable_waiting,
+                    show_controls_disabled_message: *show_controls_disabled_message,
+                },
+            );
             None
         }
         Effect::ShowRaceMenu => {
