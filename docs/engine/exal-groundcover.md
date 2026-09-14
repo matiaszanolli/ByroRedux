@@ -766,9 +766,11 @@ real worldspaces before the phase that depends on it.
 
    §11.1 originally described path A as reading "via a base-vertex offset
    carried on the terrain-tile record". No such field exists.
-   `GpuTerrainTile` is 24 texture indices and nothing else — 96 bytes of
-   `uint[8] × 3`, pinned by `gpu_terrain_tile_is_96_bytes` and by
-   `ArrayStride 96` in the shipped `triangle.frag.spv`.
+   `GpuTerrainTile` was then 24 texture indices and nothing else — 96 bytes of
+   `uint[8] × 3`, pinned by *gpu_terrain_tile_is_96_bytes* and by
+   `ArrayStride 96` in the shipped `triangle.frag.spv`. (#4057 has since grown
+   it to 144 B with §12.5's terrain-receiver fields — pinned by
+   `gpu_terrain_tile_is_144_bytes` — and it still carries no vertex offset.)
 
    The locator is one record over: `GpuInstance.vertex_offset`
    ([`gpu_types.rs:109`](../../crates/renderer/src/vulkan/scene_buffer/gpu_types.rs#L109)).

@@ -93,7 +93,7 @@ Constants in [`scene_buffer/constants.rs`](../../crates/renderer/src/vulkan/scen
 | Previous-model SSBO (`33d9a468`) | `MAX_INSTANCES` = 262 144 | 262 144 | 64 B (`mat4`) | 16.8 MB | **33.6 MB** |
 | Indirect draw SSBO | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
 | Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 432 B | 6.75 MB | **13.5 MB** |
-| Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 96 B (`GpuTerrainTile`, 3× `[u32; 8]`) | — | **~96 KB** (single shared buffer, NOT FIF-doubled) |
+| Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 144 B (`GpuTerrainTile`: 3× `[u32; 8]` texture indices + #4057's two `[f32; 4]` cover-affinity rows, `cell_origin_xz`, `water_y`, `canopy_height`; pinned by `gpu_terrain_tile_is_144_bytes`) | — | **~144 KB** (single shared buffer, NOT FIF-doubled) |
 | Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |
 | Camera UBO | — | 1 | 368 B (#3323) | 368 B | **736 B** |
 
