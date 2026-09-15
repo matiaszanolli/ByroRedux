@@ -599,10 +599,18 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///   - **via [`entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
 ///
-/// so ~15 distinct storage/resource types across ~20 sites in this
-/// function plus three helpers. The `FragmentExecutionQueue` write is
-/// *not* in this list: it belongs to the latent-continuation path in the
-/// dispatch system, outside these guards.
+/// so ~15 distinct storage/resource types across ~20 sites. "Directly in
+/// the match arms" is now one delegation hop away: #4340 moved each family
+/// of arms into an `apply_<family>_effect` helper below (globals,
+/// inventory, placement, scene, lock ledger, player control, vehicle
+/// cinematics, AI/combat), plus the pre-existing [`resolve_actor`],
+/// [`entity_global_form_id`], [`update_actor_cinematic_state`] and
+/// [`apply_quest_scoped_effect`]. Nothing about the nesting changed — the
+/// helpers run inside the same two guards, this list still inventories
+/// every lock any of them takes, and the #3949 scan below reads their
+/// bodies together with this function's. The `FragmentExecutionQueue`
+/// write is *not* in this list: it belongs to the latent-continuation path
+/// in the dispatch system, outside these guards.
 ///
 /// This is only safe because every system that touches the quest resources
 /// is registered `add_exclusive` in `byroredux/src/boot/schedule/` (parallel
@@ -633,6 +641,63 @@ pub(crate) fn apply_effect(
     deferred: &mut DeferredFragmentEffects,
 ) -> Option<QuestStageAdvanced> {
     match effect {
+        Effect::SetGlobalValue { .. } => apply_global_effect(effect, vmad, world),
+        Effect::AddItem { .. } | Effect::EquipItem { .. } => {
+            apply_inventory_effect(effect, context, vmad, world, deferred)
+        }
+        Effect::MoveTo { .. } | Effect::Disable { .. } | Effect::Enable { .. } => {
+            apply_placement_effect(effect, context, vmad, world, deferred)
+        }
+        Effect::StartScene { .. }
+        | Effect::StopScene { .. }
+        | Effect::Activate { .. }
+        | Effect::SetOpen { .. } => {
+            apply_scene_effect(effect, context, vmad, world, stages, deferred)
+        }
+        Effect::SetLocked { .. } | Effect::SetLockLevel { .. } => {
+            apply_lock_effect(effect, context, vmad, world, deferred)
+        }
+        Effect::SetPlayerRestrained { .. }
+        | Effect::SetPlayerControls { .. }
+        | Effect::SetPlayerAiDriven { .. }
+        | Effect::SetHudCartMode { .. }
+        | Effect::SetSittingRotation { .. }
+        | Effect::SetInChargen { .. }
+        | Effect::ShowRaceMenu
+        | Effect::RequestSave { .. }
+        | Effect::RegisterPlayerAnimationEvent { .. } => {
+            apply_player_control_effect(effect, context, vmad, world, deferred)
+        }
+        Effect::PlayIdle { .. }
+        | Effect::SetVehicle { .. }
+        | Effect::TetherToHorse { .. }
+        | Effect::SetMotionType { .. }
+        | Effect::ExitCart { .. } => {
+            apply_vehicle_cinematic_effect(effect, context, vmad, world, deferred)
+        }
+        Effect::SetEnemy { .. } | Effect::StartCombat { .. } | Effect::EvaluatePackage { .. } => {
+            apply_ai_combat_effect(effect, context, vmad, world, deferred)
+        }
+        Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
+        Effect::Conditional { .. } => {
+            unreachable!("conditional effects are expanded by apply_effects")
+        }
+        _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives, deferred),
+    }
+}
+
+/// `SetGlobalValue` — the one arm that writes the `Globals` resource.
+///
+/// #4340 — split out of [`apply_effect`], whose arms are now one-line
+/// delegates. The bodies moved verbatim; every lock they take stays
+/// named in `apply_effect`'s nested-lock residual list, which the #3949
+/// scan now reads across these helpers too.
+fn apply_global_effect(
+    effect: &Effect,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+) -> Option<QuestStageAdvanced> {
+    match effect {
         Effect::SetGlobalValue { global, value } => {
             let form_id = resolve_property_form_id(vmad, global.property_name())?;
             if let Some(mut globals) = world.try_resource_mut::<crate::Globals>() {
@@ -644,6 +709,24 @@ pub(crate) fn apply_effect(
             }
             None
         }
+        _ => unreachable!("apply_global_effect received a non-global effect"),
+    }
+}
+
+/// `AddItem` / `EquipItem` — the `Inventory` + `EquipmentSlots` arms.
+///
+/// #4340 — split out of [`apply_effect`], whose arms are now one-line
+/// delegates. The bodies moved verbatim; every lock they take stays
+/// named in `apply_effect`'s nested-lock residual list, which the #3949
+/// scan now reads across these helpers too.
+fn apply_inventory_effect(
+    effect: &Effect,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    deferred: &mut DeferredFragmentEffects,
+) -> Option<QuestStageAdvanced> {
+    match effect {
         Effect::AddItem {
             container,
             item,
@@ -746,6 +829,24 @@ pub(crate) fn apply_effect(
             crate::emit_equipment_changes(world, actor, changes);
             None
         }
+        _ => unreachable!("apply_inventory_effect received a non-inventory effect"),
+    }
+}
+
+/// `MoveTo` / `Disable` / `Enable` — placement and reference-enable state.
+///
+/// #4340 — split out of [`apply_effect`], whose arms are now one-line
+/// delegates. The bodies moved verbatim; every lock they take stays
+/// named in `apply_effect`'s nested-lock residual list, which the #3949
+/// scan now reads across these helpers too.
+fn apply_placement_effect(
+    effect: &Effect,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    deferred: &mut DeferredFragmentEffects,
+) -> Option<QuestStageAdvanced> {
+    match effect {
         Effect::MoveTo { moved, destination } => {
             let moved_entity =
                 resolve_object(vmad, world, context, moved, &deferred.scene_actor_bindings)?;
@@ -810,6 +911,28 @@ pub(crate) fn apply_effect(
             deferred.reference_enable_changes.push((form_id, enabled));
             None
         }
+        _ => unreachable!("apply_placement_effect received a non-placement effect"),
+    }
+}
+
+/// `StartScene` / `StopScene` / `Activate` / `SetOpen` — the scene-registry
+/// arms. `StartScene` doubles as Papyrus' quest `Start`/`Stop` (the
+/// decompiled AST does not retain a property's declared type), which is why
+/// this family is the one that needs `stages` and can return an advance.
+///
+/// #4340 — split out of [`apply_effect`], whose arms are now one-line
+/// delegates. The bodies moved verbatim; every lock they take stays
+/// named in `apply_effect`'s nested-lock residual list, which the #3949
+/// scan now reads across these helpers too.
+fn apply_scene_effect(
+    effect: &Effect,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    stages: &mut QuestStageState,
+    deferred: &mut DeferredFragmentEffects,
+) -> Option<QuestStageAdvanced> {
+    match effect {
         Effect::StartScene { scene } | Effect::StopScene { scene } => {
             let scene_form_id = resolve_property_form_id(vmad, scene.property_name())?;
             let scene_entity = world
@@ -912,6 +1035,25 @@ pub(crate) fn apply_effect(
             }
             None
         }
+        _ => unreachable!("apply_scene_effect received a non-scene effect"),
+    }
+}
+
+/// `SetLocked` / `SetLockLevel` — the `Locked` component and the persistent
+/// lock ledger (#3159 / #4136 / #4329 / #4330).
+///
+/// #4340 — split out of [`apply_effect`], whose arms are now one-line
+/// delegates. The bodies moved verbatim; every lock they take stays
+/// named in `apply_effect`'s nested-lock residual list, which the #3949
+/// scan now reads across these helpers too.
+fn apply_lock_effect(
+    effect: &Effect,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    deferred: &mut DeferredFragmentEffects,
+) -> Option<QuestStageAdvanced> {
+    match effect {
         Effect::SetLocked { target, locked } => {
             // #3159 — the removal half that did not exist. `Locked` had one
             // insert (the cell loader's XLOC stamp) and one read (the
@@ -1023,6 +1165,26 @@ pub(crate) fn apply_effect(
             }
             None
         }
+        _ => unreachable!("apply_lock_effect received a non-lock effect"),
+    }
+}
+
+/// Player control, chargen and presentation: the `PlayerControlState` /
+/// `ActorControlState` arms plus the ones that only queue a deferred
+/// presentation effect.
+///
+/// #4340 — split out of [`apply_effect`], whose arms are now one-line
+/// delegates. The bodies moved verbatim; every lock they take stays
+/// named in `apply_effect`'s nested-lock residual list, which the #3949
+/// scan now reads across these helpers too.
+fn apply_player_control_effect(
+    effect: &Effect,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    deferred: &mut DeferredFragmentEffects,
+) -> Option<QuestStageAdvanced> {
+    match effect {
         Effect::SetPlayerRestrained { restrained } => {
             let Some(player) = world
                 .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
@@ -1065,6 +1227,81 @@ pub(crate) fn apply_effect(
             }
             None
         }
+        Effect::SetSittingRotation { degrees } => {
+            deferred.cinematic_presentation.push(
+                DeferredCinematicPresentationEffect::SetSittingRotation(*degrees),
+            );
+            None
+        }
+        Effect::SetInChargen {
+            disable_saving,
+            disable_waiting,
+            show_controls_disabled_message,
+        } => {
+            deferred.cinematic_presentation.push(
+                DeferredCinematicPresentationEffect::SetInChargen {
+                    disable_saving: *disable_saving,
+                    disable_waiting: *disable_waiting,
+                    show_controls_disabled_message: *show_controls_disabled_message,
+                },
+            );
+            None
+        }
+        Effect::ShowRaceMenu => {
+            deferred
+                .cinematic_presentation
+                .push(DeferredCinematicPresentationEffect::ShowRaceMenu);
+            None
+        }
+        Effect::RequestSave { auto } => {
+            deferred
+                .cinematic_presentation
+                .push(DeferredCinematicPresentationEffect::RequestSave { auto: *auto });
+            None
+        }
+        Effect::RegisterPlayerAnimationEvent { event } => {
+            let image_space_modifiers = match event {
+                crate::CinematicAnimationEvent::PlayImod => {
+                    ["PlayerAlduinIMOD", "CGDragonAttackBlurLong"]
+                        .into_iter()
+                        .filter_map(|property| resolve_property_form_id(vmad, property))
+                        .map(|form_id| crate::ImageSpaceModifierApplication {
+                            form_id,
+                            strength: 1.0,
+                        })
+                        .collect()
+                }
+                crate::CinematicAnimationEvent::IdleFurnitureExit
+                | crate::CinematicAnimationEvent::ExitCartEnd => Vec::new(),
+            };
+            deferred.cinematic_presentation.push(
+                DeferredCinematicPresentationEffect::RegisterPlayerAnimationEvent {
+                    event: *event,
+                    quest: context,
+                    image_space_modifiers,
+                },
+            );
+            None
+        }
+        _ => unreachable!("apply_player_control_effect received a non-player-control effect"),
+    }
+}
+
+/// The cart/vehicle cinematic arms — `ActorCinematicState`,
+/// `HorseTetherState` and the `MotionTypeChangeRequest` bridge.
+///
+/// #4340 — split out of [`apply_effect`], whose arms are now one-line
+/// delegates. The bodies moved verbatim; every lock they take stays
+/// named in `apply_effect`'s nested-lock residual list, which the #3949
+/// scan now reads across these helpers too.
+fn apply_vehicle_cinematic_effect(
+    effect: &Effect,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    deferred: &mut DeferredFragmentEffects,
+) -> Option<QuestStageAdvanced> {
+    match effect {
         Effect::PlayIdle { actor, idle } => {
             let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
             let idle_form_id = resolve_property_form_id(vmad, idle.property_name())?;
@@ -1176,62 +1413,6 @@ pub(crate) fn apply_effect(
             }
             None
         }
-        Effect::SetSittingRotation { degrees } => {
-            deferred.cinematic_presentation.push(
-                DeferredCinematicPresentationEffect::SetSittingRotation(*degrees),
-            );
-            None
-        }
-        Effect::SetInChargen {
-            disable_saving,
-            disable_waiting,
-            show_controls_disabled_message,
-        } => {
-            deferred.cinematic_presentation.push(
-                DeferredCinematicPresentationEffect::SetInChargen {
-                    disable_saving: *disable_saving,
-                    disable_waiting: *disable_waiting,
-                    show_controls_disabled_message: *show_controls_disabled_message,
-                },
-            );
-            None
-        }
-        Effect::ShowRaceMenu => {
-            deferred
-                .cinematic_presentation
-                .push(DeferredCinematicPresentationEffect::ShowRaceMenu);
-            None
-        }
-        Effect::RequestSave { auto } => {
-            deferred
-                .cinematic_presentation
-                .push(DeferredCinematicPresentationEffect::RequestSave { auto: *auto });
-            None
-        }
-        Effect::SetEnemy {
-            faction,
-            other_faction,
-        } => {
-            let faction = resolve_property_form_id(vmad, faction.property_name())?;
-            let other_faction = resolve_property_form_id(vmad, other_faction.property_name())?;
-            deferred.faction_relations.push((faction, other_faction));
-            None
-        }
-        Effect::StartCombat { actor, target } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
-            let target =
-                resolve_actor(vmad, world, context, target, &deferred.scene_actor_bindings)?;
-            if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
-                states.insert(
-                    actor,
-                    crate::AiCombatState {
-                        target,
-                        attack_cooldown_remaining: 0.0,
-                    },
-                );
-            }
-            None
-        }
         Effect::ExitCart { actor, seat } => {
             let actor =
                 resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
@@ -1264,28 +1445,47 @@ pub(crate) fn apply_effect(
             }
             None
         }
-        Effect::RegisterPlayerAnimationEvent { event } => {
-            let image_space_modifiers = match event {
-                crate::CinematicAnimationEvent::PlayImod => {
-                    ["PlayerAlduinIMOD", "CGDragonAttackBlurLong"]
-                        .into_iter()
-                        .filter_map(|property| resolve_property_form_id(vmad, property))
-                        .map(|form_id| crate::ImageSpaceModifierApplication {
-                            form_id,
-                            strength: 1.0,
-                        })
-                        .collect()
-                }
-                crate::CinematicAnimationEvent::IdleFurnitureExit
-                | crate::CinematicAnimationEvent::ExitCartEnd => Vec::new(),
-            };
-            deferred.cinematic_presentation.push(
-                DeferredCinematicPresentationEffect::RegisterPlayerAnimationEvent {
-                    event: *event,
-                    quest: context,
-                    image_space_modifiers,
-                },
-            );
+        _ => unreachable!("apply_vehicle_cinematic_effect received a non-vehicle-cinematic effect"),
+    }
+}
+
+/// `SetEnemy` / `StartCombat` / `EvaluatePackage` — faction relations,
+/// `AiCombatState` and package re-evaluation.
+///
+/// #4340 — split out of [`apply_effect`], whose arms are now one-line
+/// delegates. The bodies moved verbatim; every lock they take stays
+/// named in `apply_effect`'s nested-lock residual list, which the #3949
+/// scan now reads across these helpers too.
+fn apply_ai_combat_effect(
+    effect: &Effect,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    deferred: &mut DeferredFragmentEffects,
+) -> Option<QuestStageAdvanced> {
+    match effect {
+        Effect::SetEnemy {
+            faction,
+            other_faction,
+        } => {
+            let faction = resolve_property_form_id(vmad, faction.property_name())?;
+            let other_faction = resolve_property_form_id(vmad, other_faction.property_name())?;
+            deferred.faction_relations.push((faction, other_faction));
+            None
+        }
+        Effect::StartCombat { actor, target } => {
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let target =
+                resolve_actor(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+            if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
+                states.insert(
+                    actor,
+                    crate::AiCombatState {
+                        target,
+                        attack_cooldown_remaining: 0.0,
+                    },
+                );
+            }
             None
         }
         Effect::EvaluatePackage { actor } => {
@@ -1296,11 +1496,7 @@ pub(crate) fn apply_effect(
             }
             None
         }
-        Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
-        Effect::Conditional { .. } => {
-            unreachable!("conditional effects are expanded by apply_effects")
-        }
-        _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives, deferred),
+        _ => unreachable!("apply_ai_combat_effect received a non-ai/combat effect"),
     }
 }
 

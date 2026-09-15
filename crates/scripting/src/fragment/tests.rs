@@ -3722,6 +3722,39 @@ fn next_top_level_fn(src: &str, from: usize) -> Option<(usize, &str)> {
     None
 }
 
+/// `apply_effect`'s own body concatenated with every
+/// `apply_<family>_effect` helper body it delegates to (#4340).
+///
+/// The acquisitions the #3949 scan inventories used to sit directly in the
+/// 680-line match; they now sit in the per-family helpers. Scanning only
+/// `apply_effect` would find almost nothing and report green, so the scan
+/// follows the delegation instead — a helper is not a place an unlisted
+/// lock gets to hide.
+fn apply_effect_family_bodies(src: &str) -> String {
+    let mut bodies = String::new();
+    let mut at = 0usize;
+    let mut found = 0usize;
+    while let Some((nl, name)) = next_top_level_fn(src, at) {
+        at = nl + 1;
+        if name != "apply_effect" && !(name.starts_with("apply_") && name.ends_with("_effect")) {
+            continue;
+        }
+        let end = src[nl..]
+            .find("\n}\n")
+            .map(|offset| nl + offset)
+            .unwrap_or(src.len());
+        bodies.push_str(&src[nl..end]);
+        bodies.push('\n');
+        found += 1;
+    }
+    assert!(
+        found > 1,
+        "found only {found} apply_*_effect bodies — the delegation scan broke, \
+         not the doc"
+    );
+    bodies
+}
+
 /// The declaration of `apply_effect` in [`crate::fragment::SOURCES`], as
 /// (offset of the leading newline, declaration line start).
 fn apply_effect_declaration(src: &str) -> usize {
@@ -3782,11 +3815,8 @@ fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
         .expect("apply_effect's nested-lock residual list");
     let body_start = apply_effect_declaration(FRAGMENT_RS);
     let doc = &FRAGMENT_RS[contract_start..body_start];
-    let body_end = FRAGMENT_RS[body_start..]
-        .find("\n}\n")
-        .expect("the end of apply_effect's body")
-        + body_start;
-    let body = &FRAGMENT_RS[body_start..body_end];
+    let bodies = apply_effect_family_bodies(FRAGMENT_RS);
+    let body = bodies.as_str();
 
     // `.query_mut::<crate::HorseTetherState>()` -> `HorseTetherState`.
     // Needle composed at runtime so this test's own source cannot be what
