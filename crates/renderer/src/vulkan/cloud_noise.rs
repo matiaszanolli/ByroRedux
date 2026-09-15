@@ -20,10 +20,9 @@
 //! possible but is left for a change that touches that pipeline.
 
 use super::allocator::SharedAllocator;
-use super::buffer::GpuBuffer;
 use super::image::{GpuImage, GpuImageDesc};
 use super::volumetrics::noise::{
-    cached_base_density_noise, cached_detail_density_noise, BASE_NOISE_SIZE, DETAIL_NOISE_SIZE,
+    create_density_noise_staging, record_density_noise_upload, BASE_NOISE_SIZE, DETAIL_NOISE_SIZE,
 };
 use anyhow::{Context, Result};
 use ash::vk;
@@ -124,43 +123,15 @@ impl CloudNoiseVolumes {
                 .context("sky cloud noise sampler")?
         };
 
-        // Memoized in `volumetrics::noise` — regenerating ~10^7 hashes here
-        // would repeat work the froxel pipeline has already paid for.
-        let payloads = [
-            (cached_base_density_noise(), BASE_NOISE_SIZE),
-            (cached_detail_density_noise(), DETAIL_NOISE_SIZE),
-        ];
-        let mut staging: Vec<GpuBuffer> = Vec::with_capacity(payloads.len());
-        for (bytes, _) in payloads {
-            let mut buffer = match GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                bytes.len() as vk::DeviceSize,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-            ) {
-                Ok(buffer) => buffer,
-                Err(error) => {
-                    for mut done in staging {
-                        done.destroy(device, allocator);
-                    }
-                    return Err(error);
-                }
-            };
-            if let Err(error) = buffer.write_mapped(device, bytes) {
-                buffer.destroy(device, allocator);
-                for mut done in staging {
-                    done.destroy(device, allocator);
-                }
-                return Err(error);
-            }
-            staging.push(buffer);
-        }
+        // Memoized in `volumetrics::noise`, which also owns the staging and
+        // copy sequence (#4344) — regenerating ~10^7 hashes here would repeat
+        // work the froxel pipeline has already paid for.
+        let mut staging = create_density_noise_staging(device, allocator)?;
 
         let images = [
             self.base.as_ref().expect("base noise").image,
             self.detail.as_ref().expect("detail noise").image,
         ];
-        let range = super::descriptors::color_subresource_single_mip();
         let result = super::texture::with_one_time_commands(device, queue, pool, |cmd| {
             let to_dst = images
                 .map(|image| super::descriptors::image_barrier_undef_to_transfer_dst(image, 1));
@@ -178,44 +149,16 @@ impl CloudNoiseVolumes {
                 );
             }
 
-            let subresource = vk::ImageSubresourceLayers::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .mip_level(0)
-                .base_array_layer(0)
-                .layer_count(1);
-            for (index, (_, size)) in payloads.iter().enumerate() {
-                let copy = vk::BufferImageCopy::default()
-                    .image_subresource(subresource)
-                    .image_extent(vk::Extent3D {
-                        width: *size,
-                        height: *size,
-                        depth: *size,
-                    });
-                // SAFETY: the staging buffer is live and fully populated; the
-                // destination is in TRANSFER_DST_OPTIMAL with a matching R8
-                // extent and TRANSFER_DST usage.
-                unsafe {
-                    device.cmd_copy_buffer_to_image(
-                        cmd,
-                        staging[index].buffer,
-                        images[index],
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        &[copy],
-                    );
-                }
-            }
+            // SAFETY: the staging buffers are live and fully populated, and
+            // both destinations were just moved to TRANSFER_DST_OPTIMAL with
+            // matching R8 extents and TRANSFER_DST usage.
+            unsafe { record_density_noise_upload(device, cmd, &staging, images) };
 
             // Both consumers sample from their own shader stage (compute for
             // the bake, fragment for composite), so publish the transfer
             // writes to every stage that can read them.
             let ready = images.map(|image| {
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(image)
-                    .subresource_range(range)
+                super::descriptors::image_barrier_transfer_dst_to_shader_read(image, 1)
             });
             // SAFETY: `cmd` is recording and both images were written by the
             // copies above; this publishes those writes and moves each image
@@ -237,7 +180,7 @@ impl CloudNoiseVolumes {
 
         // The one-time submit waits on the queue before returning, so no
         // staging buffer can still be referenced here.
-        for mut buffer in staging {
+        for buffer in staging.iter_mut() {
             buffer.destroy(device, allocator);
         }
         result

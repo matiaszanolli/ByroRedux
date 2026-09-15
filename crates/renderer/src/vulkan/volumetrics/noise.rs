@@ -10,6 +10,10 @@
 //! Horizon: Zero Dawn"). Generating a second, near-identical set for
 //! clouds would have been duplication, not independence.
 
+use super::super::allocator::SharedAllocator;
+use super::super::buffer::GpuBuffer;
+use anyhow::Result;
+use ash::vk;
 use std::sync::OnceLock;
 
 pub(crate) const BASE_NOISE_SIZE: u32 = 64;
@@ -192,6 +196,95 @@ pub(crate) fn cached_detail_density_noise() -> &'static [u8] {
     DETAIL_NOISE_CACHE.get_or_init(|| generate_density_noise(DETAIL_NOISE_SIZE, true))
 }
 
+fn create_staging(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+    bytes: &[u8],
+) -> Result<GpuBuffer> {
+    let mut buffer = GpuBuffer::create_host_visible(
+        device,
+        allocator,
+        bytes.len() as vk::DeviceSize,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+    )?;
+    if let Err(error) = buffer.write_mapped(device, bytes) {
+        buffer.destroy(device, allocator);
+        return Err(error);
+    }
+    Ok(buffer)
+}
+
+/// Host-visible staging buffers holding both volumes' texels, base first.
+/// The caller destroys them once its one-time submit has completed.
+///
+/// #4344 — both consumers (the froxel pipeline's `initialize_layouts` and
+/// SKYAL's `CloudNoiseVolumes`) upload these same memoized texels into their
+/// own R8 images, and each had grown its own copy of the staging-buffer and
+/// buffer-to-image-copy sequence. The images and their barriers stay with the
+/// consumers: the layouts they start from and the stages they publish to
+/// legitimately differ (compute-only for froxels, compute + fragment for
+/// clouds).
+pub(crate) fn create_density_noise_staging(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+) -> Result<[GpuBuffer; 2]> {
+    let mut base = create_staging(device, allocator, cached_base_density_noise())?;
+    match create_staging(device, allocator, cached_detail_density_noise()) {
+        Ok(detail) => Ok([base, detail]),
+        Err(error) => {
+            base.destroy(device, allocator);
+            Err(error)
+        }
+    }
+}
+
+/// Record the two staging → image copies, base first, each at its volume's
+/// full `size³` extent.
+///
+/// # Safety
+///
+/// `cmd` must be recording, `staging` must be the buffers
+/// [`create_density_noise_staging`] returned (still live), and `images` must
+/// be `R8_UNORM` 3D images of `BASE_NOISE_SIZE³` / `DETAIL_NOISE_SIZE³` with
+/// `TRANSFER_DST` usage, already in `TRANSFER_DST_OPTIMAL`.
+pub(crate) unsafe fn record_density_noise_upload(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    staging: &[GpuBuffer; 2],
+    images: [vk::Image; 2],
+) {
+    let subresource = vk::ImageSubresourceLayers::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .mip_level(0)
+        .base_array_layer(0)
+        .layer_count(1);
+    for ((buffer, image), size) in staging
+        .iter()
+        .zip(images)
+        .zip([BASE_NOISE_SIZE, DETAIL_NOISE_SIZE])
+    {
+        let copy = vk::BufferImageCopy::default()
+            .image_subresource(subresource)
+            .image_extent(vk::Extent3D {
+                width: size,
+                height: size,
+                depth: size,
+            });
+        // SAFETY: the caller's contract — `cmd` recording, buffer live and
+        // fully populated, destination in TRANSFER_DST_OPTIMAL with a
+        // matching R8 extent and TRANSFER_DST usage.
+        unsafe {
+            device.cmd_copy_buffer_to_image(
+                cmd,
+                buffer.buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[copy],
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +318,29 @@ mod tests {
             assert!(
                 (55.0..200.0).contains(&mean),
                 "noise mean is unusable: {mean}"
+            );
+        }
+    }
+
+    /// #4344 — both consumers must go through the shared upload path. The
+    /// duplication this closes was not the generator (already shared) but the
+    /// staging + `cmd_copy_buffer_to_image` sequence around it, which each
+    /// consumer had spelled out with its own extents; a size fixed in one
+    /// copy and not the other would have uploaded a truncated volume.
+    #[test]
+    fn both_density_noise_consumers_use_the_shared_upload() {
+        for (name, src) in [
+            ("cloud_noise.rs", include_str!("../cloud_noise.rs")),
+            ("volumetrics/init.rs", include_str!("init.rs")),
+        ] {
+            assert!(
+                src.contains("create_density_noise_staging(")
+                    && src.contains("record_density_noise_upload("),
+                "{name} must upload the density volumes through volumetrics::noise"
+            );
+            assert!(
+                !src.contains("cmd_copy_buffer_to_image"),
+                "{name} still records its own density-noise copy"
             );
         }
     }

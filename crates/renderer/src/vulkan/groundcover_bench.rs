@@ -70,6 +70,9 @@ use ash::vk;
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{
+    image_barrier_general_to_shader_read_layers, image_barrier_to_general_write_layers,
+};
 use super::gpu_timers::GpuPerFrameTimers;
 use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
@@ -1178,30 +1181,14 @@ impl GroundcoverBench {
         unsafe { device.update_descriptor_sets(&writes, &[]) };
     }
 
-    fn image_barrier(
-        &self,
-        image: vk::Image,
-        old: vk::ImageLayout,
-        new: vk::ImageLayout,
-        src_access: vk::AccessFlags,
-        dst_access: vk::AccessFlags,
-    ) -> vk::ImageMemoryBarrier<'static> {
-        vk::ImageMemoryBarrier::default()
-            .src_access_mask(src_access)
-            .dst_access_mask(dst_access)
-            .old_layout(old)
-            .new_layout(new)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(image)
-            .subresource_range(
-                vk::ImageSubresourceRange::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .base_mip_level(0)
-                    .level_count(1)
-                    .base_array_layer(0)
-                    .layer_count(MAX_BENCH_CELLS as u32),
-            )
+    /// Path B's three attribute images, in binding order.
+    fn bake_images(&self) -> [vk::Image; 3] {
+        [&self.attr_image, &self.splat0_image, &self.splat1_image].map(|image| {
+            image
+                .as_ref()
+                .expect("groundcover bench images read before create_images")
+                .image
+        })
     }
 
     /// Record this frame's measurement. Returns the variant that was timed,
@@ -1322,38 +1309,15 @@ impl GroundcoverBench {
         } else {
             vk::ImageLayout::UNDEFINED
         };
-        let to_general = [
-            self.image_barrier(
-                self.attr_image
-                    .as_ref()
-                    .expect("groundcover bench images read before create_images")
-                    .image,
+        let images = self.bake_images();
+        let to_general = images.map(|image| {
+            image_barrier_to_general_write_layers(
+                image,
                 old,
-                vk::ImageLayout::GENERAL,
                 vk::AccessFlags::SHADER_READ,
-                vk::AccessFlags::SHADER_WRITE,
-            ),
-            self.image_barrier(
-                self.splat0_image
-                    .as_ref()
-                    .expect("groundcover bench images read before create_images")
-                    .image,
-                old,
-                vk::ImageLayout::GENERAL,
-                vk::AccessFlags::SHADER_READ,
-                vk::AccessFlags::SHADER_WRITE,
-            ),
-            self.image_barrier(
-                self.splat1_image
-                    .as_ref()
-                    .expect("groundcover bench images read before create_images")
-                    .image,
-                old,
-                vk::ImageLayout::GENERAL,
-                vk::AccessFlags::SHADER_READ,
-                vk::AccessFlags::SHADER_WRITE,
-            ),
-        ];
+                MAX_BENCH_CELLS as u32,
+            )
+        });
         // SAFETY: `cmd` is recording. The source stage set covers every stage
         // that can be sampling these images — the graphics queue is the only
         // queue that touches them, and submissions on it execute in order, so
@@ -1398,38 +1362,9 @@ impl GroundcoverBench {
             );
         }
 
-        let to_read = [
-            self.image_barrier(
-                self.attr_image
-                    .as_ref()
-                    .expect("groundcover bench images read before create_images")
-                    .image,
-                vk::ImageLayout::GENERAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                vk::AccessFlags::SHADER_WRITE,
-                vk::AccessFlags::SHADER_READ,
-            ),
-            self.image_barrier(
-                self.splat0_image
-                    .as_ref()
-                    .expect("groundcover bench images read before create_images")
-                    .image,
-                vk::ImageLayout::GENERAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                vk::AccessFlags::SHADER_WRITE,
-                vk::AccessFlags::SHADER_READ,
-            ),
-            self.image_barrier(
-                self.splat1_image
-                    .as_ref()
-                    .expect("groundcover bench images read before create_images")
-                    .image,
-                vk::ImageLayout::GENERAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                vk::AccessFlags::SHADER_WRITE,
-                vk::AccessFlags::SHADER_READ,
-            ),
-        ];
+        let to_read = images.map(|image| {
+            image_barrier_general_to_shader_read_layers(image, MAX_BENCH_CELLS as u32)
+        });
         // SAFETY: `cmd` is recording; the barrier makes the bake's writes
         // visible to both consumers' reads.
         unsafe {

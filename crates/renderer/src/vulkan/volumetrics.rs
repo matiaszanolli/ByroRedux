@@ -22,9 +22,10 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    image_barrier_general_write_to_read, image_barrier_undef_to_general, memory_barrier,
-    write_acceleration_structure, write_combined_image_sampler, write_storage_buffer,
-    write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
+    image_barrier_general_read_to_write, image_barrier_general_write_to_read,
+    image_barrier_undef_to_general, memory_barrier, write_acceleration_structure,
+    write_combined_image_sampler, write_storage_buffer, write_storage_image, write_uniform_buffer,
+    DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::scene_buffer::GpuLight;
@@ -1195,77 +1196,22 @@ impl VolumetricsPipeline {
         // the slot being recycled from last frame's history READ to this
         // frame's WRITE, and publish the previous slot's WRITE to both
         // reprojected history reads.
-        let pre_inject = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.lighting_volumes[frame].image)
-            .subresource_range(subresource);
         let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
-        let history_ready = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.lighting_volumes[previous].image)
-            .subresource_range(subresource);
-        let pre_emission_history_write = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.emission_history_volumes[frame].image)
-            .subresource_range(subresource);
-        let emission_history_ready = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.emission_history_volumes[previous].image)
-            .subresource_range(subresource);
-        let pre_combustion_state_write = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.combustion_state_volumes[frame].image)
-            .subresource_range(subresource);
-        let combustion_state_ready = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.combustion_state_volumes[previous].image)
-            .subresource_range(subresource);
-        let pre_combustion_dynamics_write = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.combustion_dynamics_volumes[frame].image)
-            .subresource_range(subresource);
-        let combustion_dynamics_ready = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.combustion_dynamics_volumes[previous].image)
-            .subresource_range(subresource);
-        let pre_combustion_optical_write = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.combustion_optical_volumes[frame].image)
-            .subresource_range(subresource);
-        let combustion_optical_ready = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.combustion_optical_volumes[previous].image)
-            .subresource_range(subresource);
+        // One pair per history field: this frame's slot READ → WRITE, the
+        // previous slot WRITE → READ.
+        let history_barriers = [
+            &self.lighting_volumes,
+            &self.emission_history_volumes,
+            &self.combustion_state_volumes,
+            &self.combustion_dynamics_volumes,
+            &self.combustion_optical_volumes,
+        ]
+        .map(|slots| {
+            [
+                image_barrier_general_read_to_write(slots[frame].image),
+                image_barrier_general_write_to_read(slots[previous].image),
+            ]
+        });
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1273,18 +1219,7 @@ impl VolumetricsPipeline {
             vk::DependencyFlags::empty(),
             &[],
             &[],
-            &[
-                pre_inject,
-                history_ready,
-                pre_emission_history_write,
-                emission_history_ready,
-                pre_combustion_state_write,
-                combustion_state_ready,
-                pre_combustion_dynamics_write,
-                combustion_dynamics_ready,
-                pre_combustion_optical_write,
-                combustion_optical_ready,
-            ],
+            history_barriers.as_flattened(),
         );
 
         // ── Stage C: dispatch injection ──────────────────────────────

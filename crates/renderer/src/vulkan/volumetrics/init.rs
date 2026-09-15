@@ -878,27 +878,9 @@ impl VolumetricsPipeline {
         // resize was pure waste. See `noise::cached_base_density_noise`.
         let base_texels = cached_base_density_noise();
         let detail_texels = cached_detail_density_noise();
-        let make_staging = |bytes: &[u8]| -> Result<GpuBuffer> {
-            let mut buffer = GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                bytes.len() as vk::DeviceSize,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-            )?;
-            if let Err(error) = buffer.write_mapped(device, bytes) {
-                buffer.destroy(device, allocator);
-                return Err(error);
-            }
-            Ok(buffer)
-        };
-        let mut base_staging = make_staging(base_texels)?;
-        let mut detail_staging = match make_staging(detail_texels) {
-            Ok(buffer) => buffer,
-            Err(error) => {
-                base_staging.destroy(device, allocator);
-                return Err(error);
-            }
-        };
+        // Staging creation lives with the generator (#4344) — SKYAL's cloud
+        // volumes upload the same texels and shared this sequence.
+        let mut staging = noise::create_density_noise_staging(device, allocator)?;
 
         let upload_result = texture::with_one_time_commands(device, queue, pool, |cmd| {
             let full_range = descriptors::color_subresource_single_mip();
@@ -996,42 +978,15 @@ impl VolumetricsPipeline {
             }
 
             // ── 3. Copy deterministic R8 fields into their immutable images.
-            let subresource = vk::ImageSubresourceLayers::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .mip_level(0)
-                .base_array_layer(0)
-                .layer_count(1);
-            let base_copy = vk::BufferImageCopy::default()
-                .image_subresource(subresource)
-                .image_extent(vk::Extent3D {
-                    width: BASE_NOISE_SIZE,
-                    height: BASE_NOISE_SIZE,
-                    depth: BASE_NOISE_SIZE,
-                });
-            let detail_copy = vk::BufferImageCopy::default()
-                .image_subresource(subresource)
-                .image_extent(vk::Extent3D {
-                    width: DETAIL_NOISE_SIZE,
-                    height: DETAIL_NOISE_SIZE,
-                    depth: DETAIL_NOISE_SIZE,
-                });
             // SAFETY: both staging buffers are live and fully populated; both
             // destination images are in TRANSFER_DST_OPTIMAL with matching R8
             // extents and TRANSFER_DST usage.
             unsafe {
-                device.cmd_copy_buffer_to_image(
+                noise::record_density_noise_upload(
+                    device,
                     cmd,
-                    base_staging.buffer,
-                    base_noise.image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &[base_copy],
-                );
-                device.cmd_copy_buffer_to_image(
-                    cmd,
-                    detail_staging.buffer,
-                    detail_noise.image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &[detail_copy],
+                    &staging,
+                    [base_noise.image, detail_noise.image],
                 );
             }
 
@@ -1044,14 +999,8 @@ impl VolumetricsPipeline {
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
             );
-            let noise_ready = [base_noise, detail_noise].map(|noise| {
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image(noise.image)
-                    .subresource_range(full_range)
+            let noise_ready = [base_noise, detail_noise].map(|image| {
+                descriptors::image_barrier_transfer_dst_to_shader_read(image.image, 1)
             });
             // SAFETY: `cmd` is recording and the noise images were written by
             // the preceding copies. This makes those writes visible and moves
@@ -1073,8 +1022,9 @@ impl VolumetricsPipeline {
 
         // The one-time submit waits for the queue before returning, so neither
         // staging buffer can still be referenced here.
-        base_staging.destroy(device, allocator);
-        detail_staging.destroy(device, allocator);
+        for buffer in staging.iter_mut() {
+            buffer.destroy(device, allocator);
+        }
         upload_result?;
         log::info!(
             "Volumetric density noise uploaded: {}^3 base + {}^3 detail ({} KiB R8)",

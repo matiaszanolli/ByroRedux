@@ -277,17 +277,27 @@ pub fn image_barrier_general_write_to_read(image: vk::Image) -> vk::ImageMemoryB
         .subresource_range(color_subresource_single_mip())
 }
 
-/// SHADER_READ_ONLY_OPTIMAL → GENERAL on a single-mip COLOR image that a
-/// render pass just finished producing (its documented `final_layout`) and
-/// that a compute shader is about to read-modify-write as a storage image.
-/// #2796 / REN-D16-01 — `BloomPipeline::apply_to_scene`'s only caller:
-/// `composite`'s render pass leaves its scene attachment
-/// SHADER_READ_ONLY_OPTIMAL, and nothing else in the frame transitions it
-/// before the bloom-apply compute step needs GENERAL for `imageLoad` +
-/// `imageStore`.
+/// GENERAL → GENERAL shader-read-to-compute-write handoff on a single-mip
+/// COLOR image — the mirror of [`image_barrier_general_write_to_read`] for a
+/// history slot that last frame's pass sampled and this frame's pass is
+/// about to overwrite:
 ///   src_access = SHADER_READ
-///   dst_access = SHADER_READ | SHADER_WRITE
+///   dst_access = SHADER_WRITE
+/// Layout stays GENERAL. Caller owns the surrounding `cmd_pipeline_barrier`
+/// stage masks. A slot whose prior use may have been a clear needs
+/// `TRANSFER_WRITE` in its source mask, which this helper deliberately does
+/// not add — see [`clear_general_accumulator`].
 #[inline]
+pub fn image_barrier_general_read_to_write(image: vk::Image) -> vk::ImageMemoryBarrier<'static> {
+    vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .image(image)
+        .subresource_range(color_subresource_single_mip())
+}
+
 /// Zero a GENERAL-layout per-FIF accumulator: barrier in, clear, barrier out.
 ///
 /// The whole sandwich, because the part that keeps getting dropped is not the
@@ -382,6 +392,17 @@ pub unsafe fn clear_general_accumulator(
     }
 }
 
+/// SHADER_READ_ONLY_OPTIMAL → GENERAL on a single-mip COLOR image that a
+/// render pass just finished producing (its documented `final_layout`) and
+/// that a compute shader is about to read-modify-write as a storage image.
+/// #2796 / REN-D16-01 — `BloomPipeline::apply_to_scene`'s only caller:
+/// `composite`'s render pass leaves its scene attachment
+/// SHADER_READ_ONLY_OPTIMAL, and nothing else in the frame transitions it
+/// before the bloom-apply compute step needs GENERAL for `imageLoad` +
+/// `imageStore`.
+///   src_access = SHADER_READ
+///   dst_access = SHADER_READ | SHADER_WRITE
+#[inline]
 pub fn image_barrier_shader_read_to_general(image: vk::Image) -> vk::ImageMemoryBarrier<'static> {
     vk::ImageMemoryBarrier::default()
         .src_access_mask(vk::AccessFlags::SHADER_READ)
@@ -409,6 +430,57 @@ pub fn image_barrier_general_to_shader_read(image: vk::Image) -> vk::ImageMemory
         .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
         .image(image)
         .subresource_range(color_subresource_single_mip())
+}
+
+/// Any layout → GENERAL on every array layer of a single-mip COLOR image,
+/// ahead of a compute pass that overwrites all of them. #4349 — the sky-cube
+/// bake (`CUBE_FACES` layers) and the ground-cover bench bake (one layer per
+/// resident cell) each hand-rolled this.
+///   src_queue_family = dst_queue_family = QUEUE_FAMILY_IGNORED
+///   src_access = `src_access` (empty from UNDEFINED; whatever last read it
+///                otherwise)
+///   dst_access = SHADER_WRITE
+#[inline]
+pub fn image_barrier_to_general_write_layers(
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    src_access: vk::AccessFlags,
+    layer_count: u32,
+) -> vk::ImageMemoryBarrier<'static> {
+    vk::ImageMemoryBarrier::default()
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .src_access_mask(src_access)
+        .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+        .old_layout(old_layout)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .image(image)
+        .subresource_range(color_subresource_mips_layers(1, layer_count))
+}
+
+/// GENERAL → SHADER_READ_ONLY_OPTIMAL on every array layer of a single-mip
+/// COLOR image — the layered counterpart of
+/// [`image_barrier_general_to_shader_read`], following the
+/// [`image_barrier_transfer_dst_to_shader_read_layers`] convention of naming
+/// `QUEUE_FAMILY_IGNORED` explicitly. The single-layer helper is not
+/// rerouted through this one: its callers have always used the zeroed
+/// family indices, and both forms mean "no ownership transfer".
+///   src_access = SHADER_WRITE
+///   dst_access = SHADER_READ
+#[inline]
+pub fn image_barrier_general_to_shader_read_layers(
+    image: vk::Image,
+    layer_count: u32,
+) -> vk::ImageMemoryBarrier<'static> {
+    vk::ImageMemoryBarrier::default()
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .image(image)
+        .subresource_range(color_subresource_mips_layers(1, layer_count))
 }
 
 /// UNDEFINED → TRANSFER_DST_OPTIMAL on a (potentially multi-mip) COLOR
@@ -673,6 +745,72 @@ mod tests {
         let sizes = builder.sizes();
         assert_eq!(sizes.len(), 1);
         assert_eq!(sizes[0].descriptor_count, 1024);
+    }
+
+    /// #4343 — the paired history barriers volumetrics used to hand-roll:
+    /// `read_to_write` must be the exact mirror of `write_to_read`, since a
+    /// swapped mask pair would silently leave the recycled slot's write
+    /// unsynchronised against last frame's read.
+    #[test]
+    fn general_read_to_write_mirrors_general_write_to_read() {
+        let image = vk::Image::null();
+        let to_write = image_barrier_general_read_to_write(image);
+        let to_read = image_barrier_general_write_to_read(image);
+        assert_eq!(to_write.src_access_mask, to_read.dst_access_mask);
+        assert_eq!(to_write.dst_access_mask, to_read.src_access_mask);
+        assert_eq!(to_write.src_access_mask, vk::AccessFlags::SHADER_READ);
+        assert_eq!(to_write.dst_access_mask, vk::AccessFlags::SHADER_WRITE);
+        for barrier in [to_write, to_read] {
+            assert_eq!(barrier.old_layout, vk::ImageLayout::GENERAL);
+            assert_eq!(barrier.new_layout, vk::ImageLayout::GENERAL);
+            assert_eq!(barrier.subresource_range.layer_count, 1);
+        }
+    }
+
+    /// #4349 — the layered bake helpers must cover every array layer the
+    /// caller names (six cube faces, one per resident bench cell) rather than
+    /// the single layer the unlayered family builds, and must keep the
+    /// explicit `QUEUE_FAMILY_IGNORED` pair the migrated sites recorded.
+    #[test]
+    fn layered_bake_barriers_cover_every_layer() {
+        let image = vk::Image::null();
+        let to_general = image_barrier_to_general_write_layers(
+            image,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::AccessFlags::SHADER_READ,
+            6,
+        );
+        assert_eq!(
+            to_general.old_layout,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        );
+        assert_eq!(to_general.new_layout, vk::ImageLayout::GENERAL);
+        assert_eq!(to_general.src_access_mask, vk::AccessFlags::SHADER_READ);
+        assert_eq!(to_general.dst_access_mask, vk::AccessFlags::SHADER_WRITE);
+
+        let to_read = image_barrier_general_to_shader_read_layers(image, 6);
+        assert_eq!(to_read.old_layout, vk::ImageLayout::GENERAL);
+        assert_eq!(
+            to_read.new_layout,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        );
+        assert_eq!(to_read.src_access_mask, vk::AccessFlags::SHADER_WRITE);
+        assert_eq!(to_read.dst_access_mask, vk::AccessFlags::SHADER_READ);
+
+        for barrier in [to_general, to_read] {
+            assert_eq!(barrier.subresource_range.layer_count, 6);
+            assert_eq!(barrier.subresource_range.level_count, 1);
+            assert_eq!(barrier.subresource_range.base_array_layer, 0);
+            assert_eq!(barrier.src_queue_family_index, vk::QUEUE_FAMILY_IGNORED);
+            assert_eq!(barrier.dst_queue_family_index, vk::QUEUE_FAMILY_IGNORED);
+        }
+        // The single-layer helper keeps its own (zeroed-family) shape.
+        assert_eq!(
+            image_barrier_general_to_shader_read(image)
+                .subresource_range
+                .layer_count,
+            1
+        );
     }
 
     /// Repeated `DescriptorType` across bindings collapses to a

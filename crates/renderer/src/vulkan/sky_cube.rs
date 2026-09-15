@@ -20,6 +20,7 @@ use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::cloud_noise::CloudNoiseViews;
 use super::descriptors::{
+    image_barrier_general_to_shader_read_layers, image_barrier_to_general_write_layers,
     write_combined_image_sampler, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::image::{GpuImage, GpuImageDesc};
@@ -502,22 +503,12 @@ impl SkyCubePipeline {
         frame: usize,
         bindless_set: vk::DescriptorSet,
     ) {
-        let range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .base_mip_level(0)
-            .level_count(1)
-            .base_array_layer(0)
-            .layer_count(CUBE_FACES);
-
-        let to_general = vk::ImageMemoryBarrier::default()
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.cubes[frame].image)
-            .subresource_range(range);
+        let to_general = image_barrier_to_general_write_layers(
+            self.cubes[frame].image,
+            vk::ImageLayout::UNDEFINED,
+            vk::AccessFlags::empty(),
+            CUBE_FACES,
+        );
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -530,15 +521,8 @@ impl SkyCubePipeline {
 
         self.dispatch(device, cmd, frame, bindless_set);
 
-        let to_read = vk::ImageMemoryBarrier::default()
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image(self.cubes[frame].image)
-            .subresource_range(range);
+        let to_read =
+            image_barrier_general_to_shader_read_layers(self.cubes[frame].image, CUBE_FACES);
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
