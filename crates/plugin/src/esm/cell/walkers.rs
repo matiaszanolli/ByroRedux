@@ -750,7 +750,7 @@ fn parse_refr_group_inner(
             // Children). Inside a type-6 body the code is unambiguous, so
             // this is the one place it can be read safely.
             let nested_group_type = match sub.group_type {
-                8 | 9 | 10 => sub.group_type as u8,
+                8..=10 => sub.group_type as u8,
                 _ => group_type,
             };
             parse_refr_group_inner(

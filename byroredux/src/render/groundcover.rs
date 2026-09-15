@@ -217,6 +217,7 @@ fn keep_nearest_chunks(candidates: &mut Vec<ChunkCandidate>, cap: usize) -> u32 
 /// Returns only cell-table overflow for `GroundCoverStats::chunks_truncated`.
 /// The GPU blade arena remains statically sized, but its slots are now owned
 /// by [`GroundCoverResidency`] instead of by a per-frame nearest-chunk cap.
+#[allow(clippy::too_many_arguments)] // Caller-owned per-frame scratch plus frame inputs.
 pub(crate) fn collect_groundcover_frame(
     world: &World,
     mesh_registry: &MeshRegistry,

@@ -255,6 +255,10 @@ impl AnimatedTextureFlip {
     }
 }
 
+impl Component for AnimatedTextureFlip {
+    type Storage = SparseSetStorage<Self>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,8 +311,4 @@ mod tests {
         }]);
         assert_eq!(flip.handle_for_role(FlipTextureRole::BaseColor), None);
     }
-}
-
-impl Component for AnimatedTextureFlip {
-    type Storage = SparseSetStorage<Self>;
 }

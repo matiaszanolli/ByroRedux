@@ -66,6 +66,7 @@ fn is_mirror_pane(
 /// #2710 for why the keyword arm is gated rather than absent.
 /// Call AFTER `Material::resolve_pbr` so the behavior write wins over
 /// source-derived PBR scalars.
+#[allow(clippy::too_many_arguments)] // One flag per independent glass signal (#4391).
 pub(crate) fn classify_glass_into_material(
     material: &mut Material,
     mesh_name: Option<&str>,

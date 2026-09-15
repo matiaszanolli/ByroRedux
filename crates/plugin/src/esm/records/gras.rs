@@ -132,8 +132,9 @@ pub struct GrasRecord {
     ///
     /// **Zero-based**, as xEdit defines it (`wbDefinitionsFO3.pas` /
     /// `wbDefinitionsTES4.pas`, "Unit from water type": `{0} 'Above - At
-    /// Least'`, `{1} 'Above - At Most'`, `{2} 'Below - At Least'`, `{3} 'Below
-    /// - At Most'`, then the `Either` variants). OpenMW's `loadgras.hpp` and
+    /// Least'`, `{1} 'Above - At Most'`, `{2} 'Below - At Least'`,
+    /// `{3} 'Below - At Most'`, then the `Either` variants). OpenMW's
+    /// `loadgras.hpp` and
     /// UESP list the same eight names numbered from 1, but the vanilla data
     /// only fits the zero-based reading: across the four installed games
     /// (184 records, census 2026-09-13) the values used are 0, 2 and 3, and
@@ -144,7 +145,7 @@ pub struct GrasRecord {
     /// emergent plant, not a submerged one.
     ///
     /// Not yet consumed; the authored-model ground cover tier is where it
-    /// belongs (`docs/engine/exal-groundcover.md` §12.12).
+    /// belongs (`docs/engine/exal-groundcover.md` §12.12, tracked by #4413).
     pub water_distance_application: u32,
     /// `DATA` — per-instance placement jitter, units. Ignored.
     pub position_range: f32,
