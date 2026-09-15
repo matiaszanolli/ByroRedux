@@ -415,7 +415,7 @@ vec3 multiScatterEnergyCompensation(vec3 F0, float NdotV, float roughness) {
 // the shader-wide convention is alpha = roughness².
 
 float pathLuminance(vec3 value) {
-    return dot(max(value, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
+    return dot(max(value, vec3(0.0)), LUMA_REC709);
 }
 
 float ggxSmithG1(float NdotW, float roughness) {

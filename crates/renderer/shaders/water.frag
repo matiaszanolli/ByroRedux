@@ -1099,8 +1099,7 @@ void main() {
                 0.0,
                 VISIBILITY_MASK_FULL
             );
-            sunVisibility = dot(
-                sunTransmission, vec3(0.2126, 0.7152, 0.0722));
+            sunVisibility = dot(sunTransmission, LUMA_REC709);
         }
     }
     vec3 sunHalfVector = V + sunDir;

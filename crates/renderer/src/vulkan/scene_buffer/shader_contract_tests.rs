@@ -4637,14 +4637,21 @@ fn blue_noise_ranks_is_declared_exactly_once() {
     let header = include_str!("../../../shaders/include/blue_noise.glsl");
     let composite = include_str!("../../../shaders/composite.frag");
     let volumetrics = include_str!("../../../shaders/volumetrics_inject.comp");
+    let blade = include_str!("../../../shaders/groundcover_blade.frag");
 
     assert!(
         header.contains("const uint BLUE_NOISE_RANKS[64]"),
         "include/blue_noise.glsl must declare BLUE_NOISE_RANKS"
     );
+    assert!(
+        header.contains("float blueNoiseRankAt(ivec2 pixel)")
+            && header.contains("BLUE_NOISE_RANKS.length()"),
+        "include/blue_noise.glsl must own the tile indexing and normalisation (#4379)"
+    );
     for (name, src) in [
         ("composite.frag", composite),
         ("volumetrics_inject.comp", volumetrics),
+        ("groundcover_blade.frag", blade),
     ] {
         assert!(
             !src.contains("const uint BLUE_NOISE_RANKS[64]"),
@@ -4654,6 +4661,43 @@ fn blue_noise_ranks_is_declared_exactly_once() {
         assert!(
             src.contains("#include \"include/blue_noise.glsl\""),
             "{name} must #include \"include/blue_noise.glsl\" to reach BLUE_NOISE_RANKS"
+        );
+        // #4379 — consumers choose a pixel and call the helper; indexing the
+        // table themselves is how the `& 7` / `* 8` / `/ 64.0` copies started.
+        assert!(
+            !src.contains("BLUE_NOISE_RANKS["),
+            "{name} indexes BLUE_NOISE_RANKS directly instead of calling blueNoiseRankAt"
+        );
+    }
+}
+
+/// #4348 — the ground-cover candidate-point sequence is defined once, in
+/// `include/groundcover_candidate.glsl`, and both the production scatter and
+/// the §11.1 bench that times it include that copy instead of re-typing it.
+#[test]
+fn groundcover_candidate_sequence_is_declared_exactly_once() {
+    let shared = include_str!("../../../shaders/include/groundcover_candidate.glsl");
+    let scatter = include_str!("../../../shaders/groundcover_scatter.comp");
+    let bench = include_str!("../../../shaders/include/groundcover_bench.glsl");
+    // The R2 lattice's first plastic-constant coefficient identifies a copy.
+    const R2_A1: &str = "0.7548776662466927";
+
+    assert!(
+        shared.contains("vec2 byroGcCandidate(uint index, uint seed)") && shared.contains(R2_A1),
+        "include/groundcover_candidate.glsl must define byroGcCandidate"
+    );
+    for (name, src) in [
+        ("groundcover_scatter.comp", scatter),
+        ("include/groundcover_bench.glsl", bench),
+    ] {
+        assert!(
+            src.contains("#include \"include/groundcover_candidate.glsl\"")
+                && src.contains("byroGcCandidate("),
+            "{name} must draw its candidates from the shared sequence"
+        );
+        assert!(
+            !src.contains(R2_A1),
+            "{name} carries its own copy of the R2 candidate sequence"
         );
     }
 }

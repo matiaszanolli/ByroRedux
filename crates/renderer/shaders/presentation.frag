@@ -150,7 +150,7 @@ void main() {
     }
 
     vec4 scene = sampleImageSpace(fragUV);
-    float luminance = dot(scene.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float luminance = dot(scene.rgb, LUMA_REC709);
     vec3 graded = mix(vec3(luminance), scene.rgb, max(params.grade.x, 0.0));
     graded = (graded - vec3(0.18)) * max(params.grade.z, 0.0) + vec3(0.18);
     graded *= max(params.grade.y, 0.0);

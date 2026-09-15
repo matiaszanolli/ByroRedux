@@ -152,28 +152,9 @@ const uint SLOT_FACTOR_BASE = EXTREMA_BASE + 4u;
 /// the count that says the cover test is doing work, and how much.
 const uint SLOT_COVERED = SLOT_FACTOR_BASE + 5u;
 
-/// The R2 lattice (Roberts 2018) — a progressive low-discrepancy sequence,
-/// scrambled per chunk by Cranley–Patterson rotation.
-///
-/// Progressive is the requirement §4 spells out: every prefix is
-/// well-distributed, so a chunk that saturates its slice degrades to a
-/// uniformly sparser chunk rather than to a directionally clumped one.
-/// Deterministic in the chunk's world position, so a blade does not move when
-/// the camera does.
-vec2 gcCandidate(uint index, uint seed) {
-    const float A1 = 0.7548776662466927;
-    const float A2 = 0.5698402909980532;
-    float u = fract(0.5 + A1 * float(index));
-    float v = fract(0.5 + A2 * float(index));
-    uint h = seed * 0x9E3779B9u;
-    h ^= h >> 15;
-    h *= 0x85EBCA6Bu;
-    h ^= h >> 13;
-    return vec2(
-        fract(u + float(h & 0xFFFFu) * (1.0 / 65536.0)),
-        fract(v + float((h >> 16) & 0xFFFFu) * (1.0 / 65536.0))
-    );
-}
+// The candidate-point sequence (`byroGcCandidate`), shared with the §11.1
+// sampling bench so it times exactly this distribution (#4348).
+#include "include/groundcover_candidate.glsl"
 
 /// Per-candidate hash, for the stochastic accept and the blade seed. Kept
 /// separate from the point sequence so changing one does not perturb the
@@ -232,7 +213,7 @@ void main() {
 
     for (uint i = 0u; i < GROUNDCOVER_CANDIDATES_PER_THREAD; ++i) {
         uint seqIndex = i * GROUNDCOVER_SCATTER_WORKGROUP + lane;
-        vec2 uv = gcCandidate(seqIndex, chunk.seed);
+        vec2 uv = byroGcCandidate(seqIndex, chunk.seed);
         vec2 worldXZ = vec2(
             chunk.baseXZ.x + uv.x * GROUNDCOVER_CHUNK_UNITS,
             chunk.baseXZ.y - uv.y * GROUNDCOVER_CHUNK_UNITS

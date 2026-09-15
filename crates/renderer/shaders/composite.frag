@@ -127,16 +127,10 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out float outReactive;
 layout(location = 2) out float outTransparency;
 
+#include "include/froxel_slices.glsl"
+
 float hybridSliceCoordinate(float distanceAlongRay) {
-    float farDistance = max(params.volume_params.x, 1.0);
-    float linearDepth = clamp(params.volume_params.y, 1.0, farDistance);
-    float linearFraction = clamp(params.volume_params.z, 1.0e-4, 0.9999);
-    float d = clamp(distanceAlongRay, 0.0, farDistance);
-    if (d <= linearDepth) {
-        return linearFraction * (d / linearDepth);
-    }
-    return linearFraction + (1.0 - linearFraction)
-        * log(d / linearDepth) / log(farDistance / linearDepth);
+    return froxelSliceCoordinate(distanceAlongRay, params.volume_params.xyz);
 }
 
 // #3308 — delegates to `include/depth_convention.glsl` so the decode flips
@@ -284,8 +278,7 @@ float heightFogOpticalDepth(
 float blueNoiseRank() {
     uint frame = uint(params.depth_params.w);
     ivec2 pixel = ivec2(gl_FragCoord.xy) + ivec2(frame * 5u, frame * 3u);
-    int index = (pixel.y & 7) * 8 + (pixel.x & 7);
-    return (float(BLUE_NOISE_RANKS[index]) + 0.5) / 64.0;
+    return blueNoiseRankAt(pixel);
 }
 
 float preResolveDither() {
@@ -684,8 +677,8 @@ void main() {
                 vec3 gridRadiance = vol.rgb / gridOpacity;
                 // Bound the continuation to the authored energy scale; the
                 // grid can hold local emitters the distant medium does not.
-                float authoredLuma = max(dot(authoredRadiance, vec3(0.2126, 0.7152, 0.0722)), 1.0e-4);
-                float gridLuma = max(dot(gridRadiance, vec3(0.2126, 0.7152, 0.0722)), 0.0);
+                float authoredLuma = max(dot(authoredRadiance, LUMA_REC709), 1.0e-4);
+                float gridLuma = max(dot(gridRadiance, LUMA_REC709), 0.0);
                 float scale = min(1.0, (authoredLuma * 4.0) / max(gridLuma, 1.0e-4));
                 sourceRadiance = gridRadiance * scale;
             }

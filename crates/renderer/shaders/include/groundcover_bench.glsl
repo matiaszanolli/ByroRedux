@@ -137,36 +137,19 @@ float benchFold(TerrainSample s) {
          + (s.valid ? 1.0 : 0.0);
 }
 
-/// §4's candidate-point generator: a progressive low-discrepancy sequence
-/// (the R2 lattice) scrambled per chunk via Cranley–Patterson rotation.
-///
-/// Progressive matters for a reason §4 spells out — a truncated prefix has to
-/// stay well-distributed — but it matters here for a second one: the points
-/// are deliberately *incoherent*, so path A's cost is a scattered gather
-/// across the vertex SSBO. A tight synthetic loop over adjacent points would
-/// understate exactly the quantity §11.1 is asking about.
-vec2 benchCandidate(uint index, uint seed) {
-    // R2: the 2-D generalisation of the golden-ratio sequence
-    // (Roberts 2018), plastic constant 1.32471795724474602596.
-    const float A1 = 0.7548776662466927;
-    const float A2 = 0.5698402909980532;
-    float u = fract(0.5 + A1 * float(index));
-    float v = fract(0.5 + A2 * float(index));
-    // Cranley–Patterson rotation by a per-chunk hash keeps every chunk's
-    // prefix well-distributed while decorrelating chunks from each other.
-    uint h = seed * 0x9E3779B9u;
-    h ^= h >> 15;
-    h *= 0x85EBCA6Bu;
-    h ^= h >> 13;
-    float ru = float(h & 0xFFFFu) * (1.0 / 65536.0);
-    float rv = float((h >> 16) & 0xFFFFu) * (1.0 / 65536.0);
-    return vec2(fract(u + ru), fract(v + rv));
-}
+// §4's candidate-point generator — the production scatter's own sequence, not
+// a copy of it (#4348).
+#include "include/groundcover_candidate.glsl"
 
 /// Candidate `index` of `chunk`, in Y-up world XZ. −Z on the second axis
 /// because the terrain grid's row direction is −Z (see `terrain_sample.glsl`).
+///
+/// The sequence being progressive matters here for a second reason beyond
+/// §4's: the points are deliberately *incoherent*, so path A's cost is a
+/// scattered gather across the vertex SSBO. A tight synthetic loop over
+/// adjacent points would understate exactly the quantity §11.1 is asking about.
 vec2 benchCandidateWorld(BenchChunk chunk, uint index) {
-    vec2 uv = benchCandidate(index, chunk.seed);
+    vec2 uv = byroGcCandidate(index, chunk.seed);
     return vec2(
         chunk.baseXZ.x + uv.x * GROUNDCOVER_CHUNK_UNITS,
         chunk.baseXZ.y - uv.y * GROUNDCOVER_CHUNK_UNITS

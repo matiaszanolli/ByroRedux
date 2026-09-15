@@ -260,8 +260,8 @@ void main() {
     // Fixed bounded history weight. Monte-Carlo convergence belongs to the
     // surface-validated SVGF/ReSTIR histories; TAA must stay responsive.
     float alpha = params.params.x;
-    float lumCurr = max(currRgb.r * 0.2126 + currRgb.g * 0.7152 + currRgb.b * 0.0722, 1e-4);
-    float lumHist = max(clampedHist.r * 0.2126 + clampedHist.g * 0.7152 + clampedHist.b * 0.0722, 1e-4);
+    float lumCurr = max(dot(currRgb, LUMA_REC709), 1e-4);
+    float lumHist = max(dot(clampedHist, LUMA_REC709), 1e-4);
     float wCurr = 1.0 / (1.0 + lumCurr);
     float wHist = 1.0 / (1.0 + lumHist);
     // Weighted average under the temporal blend α.

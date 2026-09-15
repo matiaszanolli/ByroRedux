@@ -418,6 +418,10 @@ pub fn height_fog_optical_depth(
     ((sigma_at_end - sigma_at_origin) / -slope).max(0.0)
 }
 
+/// Host mirror of `froxelSliceDistance` (`shaders/include/froxel_slices.glsl`).
+/// #4346 — the floors match the shader's (far and linear depth at 1.0, not
+/// 1e-4), so this mirror can catch a shader drift instead of disagreeing with
+/// it on every sub-unit input.
 pub fn hybrid_slice_distance(
     normalized_slice: f32,
     far_distance: f32,
@@ -425,8 +429,8 @@ pub fn hybrid_slice_distance(
     linear_fraction: f32,
 ) -> f32 {
     let u = normalized_slice.clamp(0.0, 1.0);
-    let far = far_distance.max(1.0e-4);
-    let linear = linear_depth.clamp(1.0e-4, far);
+    let far = far_distance.max(1.0);
+    let linear = linear_depth.clamp(1.0, far);
     let fraction = linear_fraction.clamp(1.0e-4, 0.9999);
     if u <= fraction {
         linear * (u / fraction)
@@ -436,14 +440,15 @@ pub fn hybrid_slice_distance(
     }
 }
 
+/// Host mirror of `froxelSliceCoordinate`, with the same floors (#4346).
 pub fn hybrid_slice_coordinate(
     distance: f32,
     far_distance: f32,
     linear_depth: f32,
     linear_fraction: f32,
 ) -> f32 {
-    let far = far_distance.max(1.0e-4);
-    let linear = linear_depth.clamp(1.0e-4, far);
+    let far = far_distance.max(1.0);
+    let linear = linear_depth.clamp(1.0, far);
     let fraction = linear_fraction.clamp(1.0e-4, 0.9999);
     let d = distance.clamp(0.0, far);
     if d <= linear {
@@ -746,7 +751,7 @@ fn combustion_light_from_moment(
         moment.radiant_b as f32 / COMBUSTION_LIGHT_FIXED_SCALE,
     ]
     .map(|channel| channel * COMBUSTION_SURFACE_LIGHT_BOOST);
-    let luma = radiant[0] * 0.2126 + radiant[1] * 0.7152 + radiant[2] * 0.0722;
+    let luma = byroredux_core::radiometry::linear_srgb_luminance(radiant);
     if !luma.is_finite() || luma < COMBUSTION_LIGHT_CUTOFF_IRRADIANCE {
         return None;
     }
@@ -2472,6 +2477,45 @@ mod unit_tests {
             ),
             LINEAR_DEPTH
         );
+    }
+
+    /// #4346 — the slice mapping lives in one GLSL include with the host
+    /// mirror's floors, and no consumer re-types it.
+    #[test]
+    fn froxel_slice_mapping_is_shared_and_matches_the_host_floors() {
+        let include = include_str!("../../shaders/include/froxel_slices.glsl");
+        for floor in [
+            "float farDistance = max(grid.x, 1.0);",
+            "float linearDepth = clamp(grid.y, 1.0, farDistance);",
+            "float linearFraction = clamp(grid.z, 1.0e-4, 0.9999);",
+        ] {
+            assert!(include.contains(floor), "froxel_slices.glsl lost `{floor}`");
+        }
+        for (name, src) in [
+            (
+                "volumetrics_inject.comp",
+                include_str!("../../shaders/volumetrics_inject.comp"),
+            ),
+            (
+                "volumetrics_integrate.comp",
+                include_str!("../../shaders/volumetrics_integrate.comp"),
+            ),
+            (
+                "composite.frag",
+                include_str!("../../shaders/composite.frag"),
+            ),
+        ] {
+            assert!(
+                src.contains("#include \"include/froxel_slices.glsl\""),
+                "{name} must use the shared slice mapping"
+            );
+            assert!(
+                !src.contains("pow(farDistance / linearDepth"),
+                "{name} re-types the slice mapping instead of calling the include"
+            );
+        }
+        // The host floor is 1.0, as in the shader: sub-unit inputs clamp up.
+        assert_eq!(hybrid_slice_distance(1.0, 0.5, 0.25, 0.5), 1.0);
     }
 
     #[test]

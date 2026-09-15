@@ -277,9 +277,9 @@ layout(std430, set = 0, binding = 21) readonly buffer BoundaryIndexBuffer {
 };
 
 const float PI = 3.14159265358979323846;
-// Rec. 709 luma weights, matching `byroredux_core::radiometry`'s
-// `linear_srgb_luminance` so CPU and GPU agree on what "brightness" means.
-const vec3 LUMA_REC709 = vec3(0.2126, 0.7152, 0.0722);
+// Rec. 709 luma weights come from the generated header's `LUMA_REC709`,
+// pinned to `byroredux_core::radiometry::LINEAR_SRGB_LUMA` so CPU and GPU agree
+// on what "brightness" means (#4347).
 const float AMBIENT_TEMPERATURE_K = 293.15;
 const float IGNITION_TEMPERATURE_K = 720.0;
 const float MAX_COMBUSTION_TEMPERATURE_K = 4200.0;
@@ -1340,28 +1340,14 @@ float henyey_greenstein(float cos_theta, float g) {
     return medium_henyey_greenstein(cos_theta, g);
 }
 
+#include "include/froxel_slices.glsl"
+
 float sliceDistance(float normalizedSlice) {
-    float u = clamp(normalizedSlice, 0.0, 1.0);
-    float farDistance = max(params.volume_params.x, 1.0);
-    float linearDepth = clamp(params.volume_params.y, 1.0, farDistance);
-    float linearFraction = clamp(params.volume_params.z, 1.0e-4, 0.9999);
-    if (u <= linearFraction) {
-        return linearDepth * (u / linearFraction);
-    }
-    float q = (u - linearFraction) / (1.0 - linearFraction);
-    return linearDepth * pow(farDistance / linearDepth, q);
+    return froxelSliceDistance(normalizedSlice, params.volume_params.xyz);
 }
 
 float sliceCoordinate(float distanceAlongRay) {
-    float farDistance = max(params.volume_params.x, 1.0);
-    float linearDepth = clamp(params.volume_params.y, 1.0, farDistance);
-    float linearFraction = clamp(params.volume_params.z, 1.0e-4, 0.9999);
-    float d = clamp(distanceAlongRay, 0.0, farDistance);
-    if (d <= linearDepth) {
-        return linearFraction * (d / linearDepth);
-    }
-    return linearFraction + (1.0 - linearFraction)
-        * log(d / linearDepth) / log(farDistance / linearDepth);
+    return froxelSliceCoordinate(distanceAlongRay, params.volume_params.xyz);
 }
 
 // Progressive best-candidate blue-noise ranks on a toroidal 8x8 tile
@@ -1370,11 +1356,7 @@ float sliceCoordinate(float distanceAlongRay) {
 // pass while preserving the high-frequency distribution temporal accumulation
 // expects. Cranley-Patterson rotation below supplies the temporal dimension.
 float blueNoiseRank(ivec2 pixel, int channel) {
-    ivec2 tiled = ivec2(
-        (pixel.x + channel * 3) & 7,
-        (pixel.y + channel * 5) & 7
-    );
-    return (float(BLUE_NOISE_RANKS[tiled.y * 8 + tiled.x]) + 0.5) / 64.0;
+    return blueNoiseRankAt(pixel + ivec2(channel * 3, channel * 5));
 }
 
 vec3 froxelJitter(ivec3 coord) {

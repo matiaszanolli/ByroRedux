@@ -1,8 +1,8 @@
 // Shared 8×8 void-and-cluster blue-noise rank table.
 //
-// NON-STANDALONE shader fragment. Included by composite.frag and
-// volumetrics_inject.comp via GL_GOOGLE_include_directive. Do not compile
-// on its own.
+// NON-STANDALONE shader fragment. Included by composite.frag,
+// volumetrics_inject.comp and groundcover_blade.frag via
+// GL_GOOGLE_include_directive. Do not compile on its own.
 //
 // #3742 (TD2-2026-08-30-02) — was hand-duplicated byte-identically in both
 // consumers (composite.frag's `preResolveDither`, volumetrics_inject.comp's
@@ -12,6 +12,8 @@
 // dither and the froxel jitter fall out of phase and produce correlated
 // banding that looks like a denoiser bug, not a constants bug. One copy
 // here instead.
+#ifndef BYRO_BLUE_NOISE_GLSL
+#define BYRO_BLUE_NOISE_GLSL
 
 const uint BLUE_NOISE_RANKS[64] = uint[64](
      0u, 41u, 11u, 59u,  2u, 40u, 10u, 32u,
@@ -23,3 +25,22 @@ const uint BLUE_NOISE_RANKS[64] = uint[64](
     13u, 43u,  5u, 58u,  9u, 46u,  7u, 34u,
     63u, 16u, 57u, 27u, 37u, 19u, 56u, 30u
 );
+
+// Side of the square tile. BLUE_NOISE_RANKS holds one tile row-major, so its
+// length is this squared.
+const int BLUE_NOISE_TILE = 8;
+
+// Rank in (0, 1) at `pixel`, wrapped onto the tile.
+//
+// #4379 — the one place the table's dimensions are applied. Each consumer used
+// to retype `& 7`, `* 8` and `/ 64.0` around its own offsets; now a consumer
+// only chooses the pixel (frame rotation, channel or per-blade decorrelation)
+// and passes it here. Only the pixel's low tile bits are read, so offsets may
+// be added without wrapping them first.
+float blueNoiseRankAt(ivec2 pixel) {
+    ivec2 tiled = pixel & ivec2(BLUE_NOISE_TILE - 1);
+    return (float(BLUE_NOISE_RANKS[tiled.y * BLUE_NOISE_TILE + tiled.x]) + 0.5)
+        / float(BLUE_NOISE_RANKS.length());
+}
+
+#endif // BYRO_BLUE_NOISE_GLSL

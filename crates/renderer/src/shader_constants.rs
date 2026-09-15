@@ -106,6 +106,14 @@ mod tests {
         );
     }
 
+    /// #4347 — the generated `LUMA_REC709` shader constant and the CPU's
+    /// `linear_srgb_luminance` weights are the same three numbers, so CPU and
+    /// GPU cannot disagree on what "brightness" means.
+    #[test]
+    fn luma_rec709_matches_core_radiometry() {
+        assert_eq!(LUMA_REC709, byroredux_core::radiometry::LINEAR_SRGB_LUMA);
+    }
+
     /// #3563 / REN-2026-08-30-D3-01 — the census guard above compares
     /// `DBG_BITS.len()` against a TEXT count of `pub const DBG_*` lines; it
     /// asserts nothing about the values. That is the one guard the `DBG_*`
@@ -248,7 +256,8 @@ mod tests {
         ("include/ray_origin.glsl", "INT_SCALE"),
         ("include/caustic_kernel.glsl", "CAUSTIC_GAUSS5"),
         ("include/blue_noise.glsl", "BLUE_NOISE_RANKS"),
-        ("volumetrics_inject.comp", "LUMA_REC709"),
+        // The rank table's tile side (#4379) — its format, not a tuning value.
+        ("include/blue_noise.glsl", "BLUE_NOISE_TILE"),
         ("volumetrics_inject.comp", "ISOTROPIC_PHASE"),
         ("taa.comp", "OFFSETS"),
         ("taa.comp", "N"),
@@ -293,15 +302,12 @@ mod tests {
         ("include/groundcover_bench.glsl", "BENCH_PATH"),
         // The R2 low-discrepancy lattice's two basis constants (Roberts
         // 2018), derived from the plastic number. Mathematical constants of
-        // the sequence, in the only file that generates candidate points —
-        // no CPU mirror to drift against.
-        ("include/groundcover_bench.glsl", "A1"),
-        ("include/groundcover_bench.glsl", "A2"),
+        // the sequence, in the one include both the production scatter and
+        // the §11.1 bench draw candidates from (#4348) — no CPU mirror to
+        // drift against.
+        ("include/groundcover_candidate.glsl", "A1"),
+        ("include/groundcover_candidate.glsl", "A2"),
         // ── #4054 / #4055, EXAL ground cover ─────────────────────────
-        // The same R2 lattice basis constants as the bench above, in the
-        // production scatter. Mathematical constants of the sequence.
-        ("groundcover_scatter.comp", "A1"),
-        ("groundcover_scatter.comp", "A2"),
         // The terrain vertex spacing, bound once as a local so the
         // Laplacian stencil reads as a stencil. `LAND_VERTEX_SPACING`
         // itself is shared and comes from the header. #4057 moved the
@@ -744,6 +750,14 @@ mod tests {
     fn generated_header_contains_all_defines() {
         let header = include_str!("../shaders/include/shader_constants.glsl");
         for (name, expected) in [
+            // #4347 — the one GPU copy of the Rec. 709 luma weights.
+            (
+                "LUMA_REC709",
+                format!(
+                    "#define LUMA_REC709 vec3({:?}, {:?}, {:?})",
+                    LUMA_REC709[0], LUMA_REC709[1], LUMA_REC709[2]
+                ),
+            ),
             ("CLUSTER_TILES_X", format!("#define CLUSTER_TILES_X {CLUSTER_TILES_X}u")),
             ("CLUSTER_TILES_Y", format!("#define CLUSTER_TILES_Y {CLUSTER_TILES_Y}u")),
             ("CLUSTER_SLICES_Z", format!("#define CLUSTER_SLICES_Z {CLUSTER_SLICES_Z}u")),

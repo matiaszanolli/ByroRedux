@@ -19,6 +19,12 @@ pub const BYRO_REVERSED_Z: u32 =
 pub const BYRO_DEPTH_CLEAR: f32 =
     byroredux_core::ecs::components::camera::ACTIVE_DEPTH_MAPPING.clear_value();
 
+// Rec. 709 luma weights for linear-sRGB (R, G, B), emitted as the
+// `LUMA_REC709` vec3. #4347 — every shader that weights a colour into a
+// luminance used to retype these three numbers; a test in shader_constants.rs
+// pins this array to `byroredux_core::radiometry::LINEAR_SRGB_LUMA`.
+pub const LUMA_REC709: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
 // Cluster grid
 pub const CLUSTER_TILES_X: u32 = 16;
 pub const CLUSTER_TILES_Y: u32 = 9;
@@ -295,8 +301,10 @@ pub const GROUNDCOVER_CANDIDATES_PER_THREAD: u32 = 64;
 ///
 /// Equal to the candidate count per chunk, so a chunk whose every candidate is
 /// accepted never overflows; overflow can then only come from the cap being
-/// lowered, never from the field.
-pub const GROUNDCOVER_MAX_BLADES_PER_CHUNK: u32 = 4096;
+/// lowered, never from the field. Derived rather than restated (#4377), so the
+/// two tuning constants above cannot be edited out of step with it.
+pub const GROUNDCOVER_MAX_BLADES_PER_CHUNK: u32 =
+    GROUNDCOVER_SCATTER_WORKGROUP * GROUNDCOVER_CANDIDATES_PER_THREAD;
 /// Ceiling on chunks dispatched in one frame. At 512 units a chunk and a
 /// 2000-unit draw distance the chunks within reach number ~67 (the disc of
 /// radius draw distance + chunk half-diagonal), and Skyrim tundra dispatches 48

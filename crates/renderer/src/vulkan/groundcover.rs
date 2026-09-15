@@ -1924,7 +1924,7 @@ mod tests {
         assert!(
             frag.contains("layout(location = 2) out vec2 outMotion;")
                 && frag.contains("outMotion = (currNDC - prevNDC) * 0.5;")
-                && frag.contains("BLUE_NOISE_RANKS")
+                && frag.contains("blueNoiseRankAt(")
                 && frag.contains("vLodMidWeight * (1.0 - vCardWeight)")
                 && frag
                     .contains("float midTransition = 4.0 * vLodMidWeight * (1.0 - vLodMidWeight);")

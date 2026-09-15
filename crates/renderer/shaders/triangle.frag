@@ -1338,7 +1338,7 @@ void main() {
     // already said so; the mix() was what a weight reading required.
     if ((mat.materialFlags & MAT_FLAG_EFFECT_PALETTE_COLOR) != 0u
         && mat.greyscaleLutIndex != 0u) {
-        float gsIndex = dot(texColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float gsIndex = dot(texColor.rgb, LUMA_REC709);
         texColor.rgb = texture(
             textures[nonuniformEXT(mat.greyscaleLutIndex)],
             vec2(gsIndex, clamp(mat.grayscaleToPaletteScale, 0.0, 1.0))).rgb;
@@ -1455,10 +1455,7 @@ void main() {
         emissiveMask = glowSample;
     }
     if (mat.emittanceGradientMapIndex != 0u) {
-        float gradientCoordinate = dot(
-            emissiveMask,
-            vec3(0.2126, 0.7152, 0.0722)
-        );
+        float gradientCoordinate = dot(emissiveMask, LUMA_REC709);
         emissiveMask = texture(
             textures[nonuniformEXT(mat.emittanceGradientMapIndex)],
             vec2(gradientCoordinate, 0.5)
@@ -1627,7 +1624,7 @@ void main() {
     // the authored source. A high safety cap only contains malformed assets;
     // the former 1.5 clamp erased the distinction between a glowing surface
     // and the light it was meant to emit.
-    float emissiveLum = dot(emissiveColor, vec3(0.2126, 0.7152, 0.0722));
+    float emissiveLum = dot(emissiveColor, LUMA_REC709);
     vec3 emissive = vec3(0.0);
     if (emissiveMult > 0.01 && emissiveLum > 0.01) {
         emissive = min(emissiveColor * emissiveMult * emissiveMask, vec3(64.0));
@@ -3087,9 +3084,9 @@ void main() {
         // paying the legacy array footprint.
         bool useRestir = directShadowRayEnabled;
 #endif
-        const float RESTIR_LUMA_X = 0.2126;
-        const float RESTIR_LUMA_Y = 0.7152;
-        const float RESTIR_LUMA_Z = 0.0722;
+        const float RESTIR_LUMA_X = LUMA_REC709.x;
+        const float RESTIR_LUMA_Y = LUMA_REC709.y;
+        const float RESTIR_LUMA_Z = LUMA_REC709.z;
         const float RESTIR_M_CAP = 20.0; // bound temporal history → limit ghosting
         uint  restirY = 0xFFFFFFFFu;     // selected light index
         float restirWSum = 0.0;          // running reservoir weight sum
@@ -4358,9 +4355,7 @@ void main() {
         // so it cannot alias an opaque hit (black). Glass transmittance is
         // collapsed to Rec.709 luminance for a one-channel transport answer.
         bool hasVisibilitySample = selectedVisibilityDebug.x >= 0.0;
-        float visibilityLuma = dot(
-            max(selectedVisibilityDebug, vec3(0.0)),
-            vec3(0.2126, 0.7152, 0.0722));
+        float visibilityLuma = dot(max(selectedVisibilityDebug, vec3(0.0)), LUMA_REC709);
         vec3 visibilityColor = hasVisibilitySample
             ? vec3(clamp(visibilityLuma, 0.0, 1.0))
             : vec3(1.0, 0.0, 1.0);

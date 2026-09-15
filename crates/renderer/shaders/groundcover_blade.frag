@@ -75,9 +75,14 @@ void main() {
     // noise tile. The tile rotates per blade and per replayable frame serial,
     // preventing a fixed screen-door pattern while preserving exact coverage
     // at either end of the projected-pixel transition.
-    uint x = (uint(gl_FragCoord.x) + (vBladeSeed & 7u) + vFrameSerial * 5u) & 7u;
-    uint y = (uint(gl_FragCoord.y) + ((vBladeSeed >> 3u) & 7u) + vFrameSerial * 3u) & 7u;
-    float rank = (float(BLUE_NOISE_RANKS[y * 8u + x]) + 0.5) / 64.0;
+    // `blueNoiseRankAt` reads only the tile bits, so the per-blade offsets need
+    // no pre-masking: the low bits select the X shift, the next ones the Y.
+    ivec2 tilePixel = ivec2(
+        uvec2(gl_FragCoord.xy)
+        + uvec2(vBladeSeed, vBladeSeed >> 3u)
+        + vFrameSerial * uvec2(5u, 3u)
+    );
+    float rank = blueNoiseRankAt(tilePixel);
     float keep = vLodTier == 0u
         ? 1.0 - vLodMidWeight
         : vLodMidWeight * (1.0 - vCardWeight);

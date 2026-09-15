@@ -14,6 +14,9 @@
 #define BYRO_REVERSED_Z 0
 #define BYRO_DEPTH_CLEAR 1.0
 
+// Rec. 709 luma weights, linear sRGB (#4347)
+#define LUMA_REC709 vec3(0.2126, 0.7152, 0.0722)
+
 // Cluster grid
 #define CLUSTER_TILES_X 16u
 #define CLUSTER_TILES_Y 9u

@@ -72,6 +72,18 @@ fn main() {
     writeln!(out, "#define BYRO_DEPTH_CLEAR {BYRO_DEPTH_CLEAR:?}").unwrap();
     writeln!(out).unwrap();
 
+    // #4347 — one GPU copy of the Rec. 709 luma weights, pinned to
+    // `byroredux_core::radiometry::LINEAR_SRGB_LUMA` by a test. A macro, not a
+    // `const vec3`, so every consumer folds the same literals it used to type.
+    writeln!(out, "// Rec. 709 luma weights, linear sRGB (#4347)").unwrap();
+    writeln!(
+        out,
+        "#define LUMA_REC709 vec3({:?}, {:?}, {:?})",
+        LUMA_REC709[0], LUMA_REC709[1], LUMA_REC709[2]
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// Cluster grid").unwrap();
     writeln!(out, "#define CLUSTER_TILES_X {CLUSTER_TILES_X}u").unwrap();
     writeln!(out, "#define CLUSTER_TILES_Y {CLUSTER_TILES_Y}u").unwrap();

@@ -568,8 +568,7 @@ vec3 reflectionHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
         float contrib;
         if (!giLightSample(i, p, n, dbgFlags, L, dist, contrib)) continue;
         float score = contrib
-            * dot(max(lights[i].color_type.rgb, vec3(0.0)),
-                  vec3(0.2126, 0.7152, 0.0722));
+            * dot(max(lights[i].color_type.rgb, vec3(0.0)), LUMA_REC709);
         int insertAt = -1;
         for (int k = 0; k < REFLECTION_LIGHT_CANDIDATES; ++k) {
             if (score > selectedScore[k]) {

@@ -307,9 +307,14 @@ pub fn blackbody_radiance_srgb(
     radiance.iter().all(|c| c.is_finite()).then_some(radiance)
 }
 
+/// Rec. 709 luma weights for linear-sRGB (R, G, B). The one CPU source of the
+/// weights; the renderer's generated `LUMA_REC709` shader constant is pinned to
+/// this array by a test (#4347).
+pub const LINEAR_SRGB_LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
 /// Photometric luminance of a linear-sRGB triple (Rec. 709 luma weights).
 pub fn linear_srgb_luminance(rgb: [f32; 3]) -> f32 {
-    0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+    LINEAR_SRGB_LUMA[0] * rgb[0] + LINEAR_SRGB_LUMA[1] * rgb[1] + LINEAR_SRGB_LUMA[2] * rgb[2]
 }
 
 #[cfg(test)]

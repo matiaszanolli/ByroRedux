@@ -47,16 +47,10 @@ layout(set = 0, binding = 2) uniform IntegrationParams {
     vec4 grid;
 } params;
 
+#include "include/froxel_slices.glsl"
+
 float sliceDistance(float normalizedSlice) {
-    float u = clamp(normalizedSlice, 0.0, 1.0);
-    float farDistance = max(params.grid.x, 1.0);
-    float linearDepth = clamp(params.grid.y, 1.0, farDistance);
-    float linearFraction = clamp(params.grid.z, 1.0e-4, 0.9999);
-    if (u <= linearFraction) {
-        return linearDepth * (u / linearFraction);
-    }
-    float q = (u - linearFraction) / (1.0 - linearFraction);
-    return linearDepth * pow(farDistance / linearDepth, q);
+    return froxelSliceDistance(normalizedSlice, params.grid.xyz);
 }
 
 void main() {
