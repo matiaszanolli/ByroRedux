@@ -129,15 +129,6 @@ pub fn evaluate(
         ),
 
         DebugRequest::ListGameProfiles => eval_list_game_profiles(world),
-
-        // ListLoadedAssets needs server-visible accessors on
-        // MeshRegistry / TextureRegistry / NifImportRegistry —
-        // those live in the renderer + binary crates today.
-        // Out of scope for this phase; stub stays explicit so the
-        // dispatch is exhaustive.
-        DebugRequest::ListLoadedAssets { .. } => {
-            DebugResponse::error("ListLoadedAssets handler not yet implemented")
-        }
     }
 }
 

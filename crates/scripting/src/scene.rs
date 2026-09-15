@@ -82,10 +82,6 @@ impl SceneActorBindings {
         self.actors.insert((quest, alias_id), entity);
     }
 
-    pub fn unbind(&mut self, quest: QuestFormId, alias_id: i32) -> Option<EntityId> {
-        self.actors.remove(&(quest, alias_id))
-    }
-
     pub fn resolve(&self, quest: QuestFormId, alias_id: i32) -> Option<EntityId> {
         self.actors.get(&(quest, alias_id)).copied()
     }

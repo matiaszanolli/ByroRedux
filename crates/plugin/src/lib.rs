@@ -27,12 +27,6 @@ pub mod datastore;
 pub mod equip;
 pub mod esm;
 pub mod extension;
-// Legacy Form ID bridge (LegacyFormId / LegacyLoadOrder). Kept `pub(crate)`
-// rather than `pub`: it is forward-looking scaffolding for the stable
-// content-addressed Form ID resolver and has no consumer yet. Its first real
-// consumer is the in-crate esm→`Record` plumbing (see `legacy/mod.rs` module
-// docs), so it does not need to sit on the crate's external API surface. #1322.
-pub(crate) mod legacy;
 pub mod manifest;
 pub mod record;
 pub mod resolver;

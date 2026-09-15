@@ -2208,22 +2208,6 @@ impl VulkanContext {
             .drain_pending_destroys(&self.device, &allocator);
     }
 
-    /// Run a closure in a one-time-submit command buffer, reusing the
-    /// persistent transfer fence (#302). Prefer this over the free-function
-    /// `with_one_time_commands` to avoid per-call fence create/destroy.
-    pub fn with_transfer_commands<F>(&self, f: F) -> Result<()>
-    where
-        F: FnOnce(vk::CommandBuffer) -> Result<()>,
-    {
-        super::texture::with_one_time_commands_reuse_fence(
-            &self.device,
-            &self.graphics_queue,
-            self.transfer_pool,
-            &self.transfer_fence,
-            f,
-        )
-    }
-
     /// Look up the cached blended pipeline for a given Gamebryo
     /// `(src, dst)` factor pair, or create + cache it on first use.
     /// The cache is keyed by the raw `NiAlphaProperty.flags` nibbles,
@@ -2711,6 +2695,8 @@ impl VulkanContext {
             stats.blas_pending_destroy_count = accel.pending_destroy_blas_count() as u32;
             stats.scratch_pending_destroy_count = accel.pending_destroy_scratch_count() as u32;
         }
+        // #4117 — the texture-side deferred-destroy backlog, read the same way.
+        stats.texture_pending_destroy_count = self.texture_registry.pending_destroy_count() as u32;
     }
 
     /// #3305 — publish the shadow-mask census from the last TLAS gather.

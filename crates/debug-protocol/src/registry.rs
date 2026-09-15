@@ -11,8 +11,6 @@ use std::collections::BTreeMap;
 // + an entity id. Aliased to keep [`ComponentDescriptor`] readable and to
 // satisfy `clippy::type_complexity`.
 type GetJsonFn = Box<dyn Fn(&dyn std::any::Any, u32) -> Option<serde_json::Value> + Send + Sync>;
-type SetJsonFn =
-    Box<dyn Fn(&dyn std::any::Any, u32, serde_json::Value) -> Result<(), String> + Send + Sync>;
 type ListEntitiesFn = Box<dyn Fn(&dyn std::any::Any) -> Vec<u32> + Send + Sync>;
 type GetFieldFn =
     Box<dyn Fn(&dyn std::any::Any, u32, &str) -> Option<serde_json::Value> + Send + Sync>;
@@ -33,8 +31,6 @@ pub struct ComponentDescriptor {
     /// Serialize the entire component on an entity to JSON.
     /// Returns None if the entity doesn't have this component.
     pub get_json: GetJsonFn,
-    /// Deserialize a JSON value and overwrite the entire component on an entity.
-    pub set_json: SetJsonFn,
     /// List all entity IDs that have this component.
     pub list_entities: ListEntitiesFn,
     /// Serialize a single field of the component to JSON.

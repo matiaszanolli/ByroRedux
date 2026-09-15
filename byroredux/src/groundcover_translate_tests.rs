@@ -143,16 +143,6 @@ fn every_affinity_is_a_valid_weight() {
     }
 }
 
-#[test]
-fn layer_affinities_preserves_order_and_handles_gaps() {
-    let names = [Some("LGrassGreenSuburbs"), None, Some("LRockWasteland05")];
-    let out = layer_affinities(&names);
-    assert_eq!(out.len(), 3);
-    assert!(out[0] > out[2]);
-    // An unnamed layer must not read as a hole.
-    assert_eq!(out[1], DEFAULT_AFFINITY);
-}
-
 // ── climate + palette ───────────────────────────────────
 
 #[test]

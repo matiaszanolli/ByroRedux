@@ -115,23 +115,8 @@ pub enum DebugRequest {
     /// the per-user override at `~/.byroredux/profiles.toml` if
     /// present. Phase-5 wiring.
     ListGameProfiles,
-    /// Enumerate loaded asset handles. `kind` picks between the
-    /// MeshRegistry, TextureRegistry, and NIF import cache views.
-    ListLoadedAssets { kind: AssetKind },
     /// Ping / keep-alive.
     Ping,
-}
-
-/// Which asset registry [`DebugRequest::ListLoadedAssets`] enumerates.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AssetKind {
-    /// GPU mesh handles in the MeshRegistry.
-    Meshes,
-    /// GPU texture handles in the TextureRegistry.
-    Textures,
-    /// Parsed NIF scenes in the `NifImportRegistry` cache.
-    NifCache,
 }
 
 // ── Response ────────────────────────────────────────────────────────────
@@ -266,14 +251,6 @@ pub enum DebugResponse {
     /// `assets/debug_profiles.toml` (engine defaults) merged with
     /// `~/.byroredux/profiles.toml` (per-user overrides). Phase 5.
     GameProfiles { profiles: Vec<GameProfile> },
-    /// Loaded-asset enumeration. `asset_kind` echoes the request so
-    /// a pipelined caller can tell which list it's looking at.
-    /// (Field is `asset_kind` rather than `kind` so it doesn't
-    /// collide with serde's enum-discriminator tag.)
-    AssetList {
-        asset_kind: AssetKind,
-        items: Vec<AssetItem>,
-    },
     /// An error message.
     Error { message: String },
 }
@@ -310,23 +287,6 @@ pub struct GameProfile {
     /// Curated cell editor IDs the debug UI offers as one-click
     /// quick-loads.
     pub sample_cells: Vec<String>,
-}
-
-/// One asset item in a [`DebugResponse::AssetList`]. Fields are
-/// optional because different kinds expose different attributes —
-/// textures carry bytes + path, the NIF cache carries a parse-stat
-/// summary, meshes carry vertex / index totals via `summary`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssetItem {
-    pub handle: u32,
-    /// Source path (BSA-relative for archive-resolved assets, loose
-    /// absolute path otherwise). `None` for synthetic placeholders.
-    pub path: Option<String>,
-    /// On-disk / on-GPU size in bytes when meaningful (textures).
-    pub bytes: Option<u64>,
-    /// Human-readable one-line summary — vertex / index counts for
-    /// meshes, "parsed N blocks" for cache entries, etc.
-    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

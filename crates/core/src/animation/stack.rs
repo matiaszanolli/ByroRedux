@@ -352,24 +352,6 @@ mod inspect_tests {
     }
 }
 
-/// Allocation-full wrapper around `visit_stack_text_events` — retained
-/// for test ergonomics. Hot paths in `byroredux::systems` should
-/// call the visitor form directly and keep `FixedString` symbols.
-pub fn collect_stack_text_events(
-    stack: &AnimationStack,
-    registry: &AnimationClipRegistry,
-    pool: &crate::string::StringPool,
-) -> Vec<(String, f32)> {
-    let mut events = Vec::new();
-    let mut seen: Vec<FixedString> = Vec::new();
-    visit_stack_text_events(stack, registry, &mut seen, |time, sym| {
-        if let Some(s) = pool.resolve(sym) {
-            events.push((s.to_owned(), time));
-        }
-    });
-    events
-}
-
 /// Does this channel carry any transform keys at all?
 ///
 /// #3471 — hoisted out of [`sample_blended_transform`]'s weight pass so its

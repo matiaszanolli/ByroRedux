@@ -477,6 +477,8 @@ fn synthetic_morrowind_variant_detection() {
 
 #[test]
 fn synthetic_morrowind_node_has_name() {
+    use byroredux_nif::blocks::traits::HasObjectNET;
+
     let data = build_morrowind_nif();
     let scene = byroredux_nif::parse_nif(&data).unwrap();
     let node = scene.blocks[0]

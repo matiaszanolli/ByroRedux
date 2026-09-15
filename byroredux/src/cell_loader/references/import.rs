@@ -11,6 +11,7 @@
 //! and committing the per-cell NifImportRegistry deltas.
 
 use byroredux_core::ecs::BillboardMode;
+use byroredux_nif::blocks::traits::{HasAVObject, HasObjectNET};
 use std::sync::Arc;
 
 use crate::asset_provider::MaterialProvider;

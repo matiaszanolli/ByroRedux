@@ -327,10 +327,6 @@ impl FrameUpscaler {
         self.outputs.iter().map(|output| output.view).collect()
     }
 
-    pub fn output_image(&self, frame: usize) -> vk::Image {
-        self.outputs[frame].image
-    }
-
     pub fn is_fsr_dispatch_active(&self) -> bool {
         self.context.is_some() && self.dispatch_failure.is_none()
     }
@@ -1049,7 +1045,7 @@ impl FrameUpscaler {
     ///
     /// The device must be idle — no submitted command buffer may still
     /// reference the SDK's internal resources.
-    pub unsafe fn destroy_device_objects(&mut self, _device: &ash::Device) {
+    pub unsafe fn destroy_device_objects(&mut self) {
         self.context.take();
         self.dispatched_this_frame = false;
         self.dispatch_failure = None;
@@ -1090,7 +1086,7 @@ impl FrameUpscaler {
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         // SAFETY: the caller's device-idle contract is inherited by both halves.
         unsafe {
-            self.destroy_device_objects(device);
+            self.destroy_device_objects();
             self.destroy_allocations(device, allocator);
         }
     }

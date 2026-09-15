@@ -934,7 +934,7 @@ impl BSLightingShaderProperty {
         } else if bsver >= crate::version::bsver::FALLOUT4 {
             Self::parse_fo4(stream, bsver)?
         } else {
-            Self::parse_skyrim(stream, bsver)?
+            Self::parse_skyrim(stream)?
         };
         me.starfield_tail = read_starfield_tail(stream, block_start, block_size, bsver)?;
         Ok(me)
@@ -954,7 +954,7 @@ impl BSLightingShaderProperty {
     ///   `MaterialInfo::default()`. See #2589.
     /// - `glossiness` stays raw (0-100 scale authored).
     /// - Shader-type-data dispatches through the legacy `BSLightingShaderType` enum.
-    fn parse_skyrim(stream: &mut NifStream, _bsver: u32) -> io::Result<Self> {
+    fn parse_skyrim(stream: &mut NifStream) -> io::Result<Self> {
         let shader_type = stream.read_u32_le()?;
         let net = NiObjectNETData::parse(stream)?;
         let shader_flags_1 = stream.read_u32_le()?;

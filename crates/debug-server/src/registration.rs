@@ -26,17 +26,6 @@ fn register_component<T>(
             let comp = world.get::<T>(entity)?;
             serde_json::to_value(&*comp).ok()
         }),
-        set_json: Box::new(
-            |world_any: &dyn std::any::Any, entity: u32, value: serde_json::Value| {
-                // Note: set_json requires &mut World which we don't have in an exclusive system
-                // that takes &World. For now, return an error — mutation will go through set_field.
-                let _ = (world_any, entity, value);
-                Err(
-                    "whole-component replacement not yet supported; use field-level set"
-                        .to_string(),
-                )
-            },
-        ),
         list_entities: Box::new(|world_any: &dyn std::any::Any| {
             let world = match world_any.downcast_ref::<World>() {
                 Some(w) => w,

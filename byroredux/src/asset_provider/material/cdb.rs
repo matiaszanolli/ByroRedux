@@ -36,9 +36,10 @@ pub(crate) fn is_materialsbeta_cdb_path(path: &str) -> bool {
 /// provider rebuilds instead of being discarded with the provider — the
 /// Phase 1 only needs the header validity/count; retaining inflated bytes here
 /// held every discovered CDB (233 MB across a Creation-heavy install) for the
-/// process lifetime without a consumer. The cache stores that tiny result
-/// instead, preserving #2705's skip-reextract behavior without the resident
-/// blob. A cap keeps untrusted/modded archive sets from growing keys forever.
+/// process lifetime without a consumer. The cache stores only whether the
+/// probe succeeded (#4386 — registration reads nothing else from the header),
+/// preserving #2705's skip-reextract behavior without the resident blob. A cap
+/// keeps untrusted/modded archive sets from growing keys forever.
 pub(crate) const SF_CDB_CACHE_MAX_ENTRIES: usize = 128;
 
 /// Every caller takes this lock as `.unwrap_or_else(|e| e.into_inner())`,
@@ -48,19 +49,22 @@ pub(crate) const SF_CDB_CACHE_MAX_ENTRIES: usize = 128;
 /// is hand back a header probe that gets re-read from the archive, and a
 /// panicking material load must not permanently poison texture resolution for
 /// every later mesh in the cell.
-pub(crate) fn sf_cdb_cache() -> &'static Mutex<HashMap<String, Option<CdbHeaderInfo>>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Option<CdbHeaderInfo>>>> = OnceLock::new();
+pub(crate) fn sf_cdb_cache() -> &'static Mutex<HashMap<String, bool>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(crate) fn sf_cdb_cache_insert(key: String, probe: Option<CdbHeaderInfo>) {
+/// Memoise whether one (archive source, CDB path) pair probed as a valid
+/// component database. Only validity is kept: registration counts a CDB and
+/// reads nothing else from its header (#4386).
+pub(crate) fn sf_cdb_cache_insert(key: String, valid: bool) {
     let mut cache = sf_cdb_cache().lock().unwrap_or_else(|e| e.into_inner());
     if !cache.contains_key(&key) && cache.len() >= SF_CDB_CACHE_MAX_ENTRIES {
         if let Some(evicted) = cache.keys().next().cloned() {
             cache.remove(&evicted);
         }
     }
-    cache.insert(key, probe);
+    cache.insert(key, valid);
 }
 
 /// Scan one archive for Starfield component databases and load each into
@@ -88,13 +92,13 @@ pub(crate) fn discover_starfield_cdbs(
             .unwrap_or_else(|e| e.into_inner())
             .get(&cache_key)
             .copied();
-        let probe = match cached {
-            Some(probe) => {
+        let valid = match cached {
+            Some(valid) => {
                 log::info!(
                     "Discovered Starfield CDB '{path}' in '{source}' (cached header probe, \
                      skipped re-extract)"
                 );
-                probe
+                valid
             }
             None => match archive.extract(&path) {
                 Ok(raw) => {
@@ -102,18 +106,18 @@ pub(crate) fn discover_starfield_cdbs(
                         "Discovered Starfield CDB '{path}' in '{source}' ({} bytes, extracted)",
                         raw.len()
                     );
-                    let probe = probe_starfield_cdb(&raw, &path);
-                    sf_cdb_cache_insert(cache_key, probe);
-                    probe
+                    let valid = probe_starfield_cdb(&raw, &path).is_some();
+                    sf_cdb_cache_insert(cache_key, valid);
+                    valid
                 }
                 Err(e) => {
                     log::warn!("Failed to extract CDB '{path}' from '{source}': {e}");
-                    None
+                    false
                 }
             },
         };
-        if let Some(info) = probe {
-            provider.register_starfield_cdb_probe(info);
+        if valid {
+            provider.register_starfield_cdb_probe();
         }
     }
 }

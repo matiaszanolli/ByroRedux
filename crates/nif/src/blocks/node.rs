@@ -20,34 +20,6 @@ pub struct NiNode {
     pub children: Vec<BlockRef>,
     /// NiNode-specific: dynamic effect references (removed in FO4+).
     pub effects: Vec<BlockRef>,
-    // Public accessors for backward compatibility with existing code
-    // that accesses fields directly. These will be removed once all
-    // consumers migrate to trait-based access.
-}
-
-// Convenience accessors for direct field access (backward compat).
-impl NiNode {
-    pub fn name(&self) -> Option<&str> {
-        self.av.net.name.as_deref()
-    }
-    pub fn flags(&self) -> u32 {
-        self.av.flags
-    }
-    pub fn transform(&self) -> &NiTransform {
-        &self.av.transform
-    }
-    pub fn collision_ref(&self) -> BlockRef {
-        self.av.collision_ref
-    }
-    pub fn properties(&self) -> &[BlockRef] {
-        &self.av.properties
-    }
-    pub fn extra_data_refs(&self) -> &[BlockRef] {
-        &self.av.net.extra_data_refs
-    }
-    pub fn controller_ref(&self) -> BlockRef {
-        self.av.net.controller_ref
-    }
 }
 
 impl NiObject for NiNode {

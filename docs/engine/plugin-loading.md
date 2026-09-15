@@ -108,8 +108,10 @@ identity without any manifest file — the filename alone is enough.
 | **ESH (Medium Master, Starfield)** | `0xFD_SS_FFFF` | 8-bit sub-slot (bits 16–23) | 65 536 per ESH |
 | **Save-generated** | `0xFF_*` | — | ephemeral, never interned |
 
-`LegacyLoadOrder::resolve(LegacyFormId)` converts any of these to a
-`FormIdPair` by looking up the plugin at the given slot index.
+`FormIdRemap` + `GlobalSlot` (`crates/plugin/src/esm/reader.rs`, #1554)
+resolve the standard and ESL (`0xFE`) layouts to global slots at parse time.
+The ESH (`0xFD`) layout is not modelled yet — see "Legacy Bridge (removed)"
+below.
 
 ### FormIdPool (ECS Resource)
 
@@ -276,49 +278,22 @@ Each `CellData` holds:
 
 ---
 
-## Legacy Bridge
+## Legacy Bridge (removed)
 
-[`crates/plugin/src/legacy/`](../../crates/plugin/src/legacy/)
-
-Scaffolding for converting the load-order-dependent Bethesda Form IDs
-encountered in ESM binaries into stable `FormIdPair` values.
-
-```rust
-pub struct LegacyLoadOrder {
-    slots:     Vec<Option<PluginId>>,  // 0x00–0xFC
-    esl_slots: Vec<Option<PluginId>>,  // 0x000–0xFFF
-    esh_slots: Vec<Option<PluginId>>,  // 0x00–0xFF
-}
-
-pub fn resolve(&self, legacy: LegacyFormId) -> Option<FormIdPair>
-```
-
-Register plugins by their slot before resolving:
-
-```rust
-let mut lo = LegacyLoadOrder::new();
-// `register` takes the filename; it builds the `PluginId` itself.
-lo.register(0x00, "FalloutNV.esm");
-lo.register(0x01, "DeadMoney.esm");
-
-let pair = lo.resolve(LegacyFormId(0x01_000014));
-// → FormIdPair { plugin: PluginId("DeadMoney.esm"), local: LocalFormId(0x000014) }
-```
-
-**Status:** The bridge type exists and has **no production consumer** — it is
-not the mechanism multi-master stacks actually use, and no work is in flight
-to make it one.
+The *crates/plugin/src/legacy/* module (*LegacyFormId* / *LegacyLoadOrder*)
+was scaffolding for converting load-order-dependent Bethesda Form IDs into
+stable `FormIdPair` values. It never had a production consumer and was
+deleted under #4384.
 
 Load-order FormID resolution shipped under a different design: `FormIdRemap`
 + `GlobalSlot` (`crates/plugin/src/esm/reader.rs`, #1554), built per plugin
 from its own TES4 header and handed to `parse_esm_with_load_order`. That is
 what `cell_loader/load_order.rs` calls today.
 
-`LegacyLoadOrder` is forward-looking scaffolding for the stable
-content-addressed FormID resolver, and `crates/plugin/src/lib.rs` keeps the
-whole `legacy` module `pub(crate)` for exactly that reason (#1322) — so the
-example above is illustrative of the type's shape, not of a supported public
-API. Do not re-implement the `FormIdRemap` wiring here; it exists.
+The deleted module was the only code that knew the ESH (`0xFD`, Starfield
+medium master) layout. When a Starfield multi-master load needs it, add that
+layout to `GlobalSlot` rather than reviving a second slot model; the old
+decoder is recoverable from git history before #4384's commit.
 
 ---
 

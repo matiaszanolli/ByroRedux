@@ -282,7 +282,6 @@ Where each major capability lives:
 | String interning | `core` | [crates/core/src/string/](../../crates/core/src/string/) |
 | Plugin manifests + DataStore | `plugin` | [crates/plugin/src/](../../crates/plugin/src/) |
 | ESM cell + record parsing | `plugin` | [crates/plugin/src/esm/](../../crates/plugin/src/esm/) |
-| Legacy ESM/ESP/ESL bridge | `plugin` | [crates/plugin/src/legacy/](../../crates/plugin/src/legacy/) |
 | NIF binary parser | `nif` | [crates/nif/src/blocks/](../../crates/nif/src/blocks/) |
 | NIF→ECS scene import (NIFAL) | `nif` | [crates/nif/src/import/](../../crates/nif/src/import/) |
 | KF animation import | `nif` | [crates/nif/src/anim/](../../crates/nif/src/anim/) |

@@ -44,6 +44,7 @@
 
 use crate::blocks::node::NiNode;
 use crate::blocks::skin::BsSkinBoneTrans;
+use crate::blocks::traits::{HasAVObject, HasObjectNET};
 use crate::scene::NifScene;
 use std::sync::Arc;
 

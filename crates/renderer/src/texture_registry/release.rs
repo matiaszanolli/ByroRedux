@@ -157,9 +157,9 @@ impl TextureRegistry {
     }
 
     /// Total number of textures still waiting across every entry's
-    /// `pending_destroy` queue. Surfaced for the
-    /// [`drain_pending_destroys`] regression test and shutdown
-    /// telemetry. See #732.
+    /// `pending_destroy` queue. Published every frame as
+    /// `RtIntegrityStats::texture_pending_destroy_count` on the
+    /// `rt-integrity` line (#4117), beside the BLAS-side backlog. See #732.
     pub fn pending_destroy_count(&self) -> usize {
         self.textures.iter().map(|e| e.pending_destroy.len()).sum()
     }

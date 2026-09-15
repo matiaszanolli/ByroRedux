@@ -119,8 +119,6 @@ mod tests {
     /// only surface across the full set.
     #[test]
     fn round_trip_phase1_request_variants() {
-        use crate::AssetKind;
-
         let cases = vec![
             DebugRequest::Metrics,
             DebugRequest::LoadNif {
@@ -145,9 +143,6 @@ mod tests {
                 textures_bsas: vec![],
             },
             DebugRequest::ListGameProfiles,
-            DebugRequest::ListLoadedAssets {
-                kind: AssetKind::Textures,
-            },
         ];
         for req in cases {
             let encoded = encode(&req).unwrap();
@@ -165,7 +160,7 @@ mod tests {
     /// against a quiet null field.
     #[test]
     fn round_trip_phase1_response_variants() {
-        use crate::{AssetItem, AssetKind, GameProfile};
+        use crate::GameProfile;
 
         let cases = vec![
             DebugResponse::Metrics {
@@ -194,15 +189,6 @@ mod tests {
                     default_bsas: vec!["Fallout - Meshes.bsa".to_string()],
                     default_textures_bsas: vec!["Fallout - Textures.bsa".to_string()],
                     sample_cells: vec!["GSDocMitchellHouse".to_string()],
-                }],
-            },
-            DebugResponse::AssetList {
-                asset_kind: AssetKind::Meshes,
-                items: vec![AssetItem {
-                    handle: 7,
-                    path: Some("meshes\\foo.nif".to_string()),
-                    bytes: None,
-                    summary: Some("1024 verts / 3072 idx".to_string()),
                 }],
             },
         ];

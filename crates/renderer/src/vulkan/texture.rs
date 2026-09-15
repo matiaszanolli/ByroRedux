@@ -486,45 +486,6 @@ impl Texture {
         ))
     }
 
-    /// Create a texture from DDS file bytes (header + pixel data).
-    ///
-    /// Parses the DDS header, then uploads via
-    /// [`Self::from_dds_with_mip_chain`] regardless of whether the
-    /// payload is block-compressed or uncompressed RGBA — both paths
-    /// share the same per-mip upload shape, only the byte-size math
-    /// changes (and `dds::mip_size` already gates that on
-    /// `meta.compressed`). Pre-#730 the uncompressed branch routed
-    /// through `from_rgba` which hard-coded `mip_levels(1)` and lost
-    /// every authored mip below 0 — uncompressed cloud sprites were
-    /// the visible victim.
-    pub fn from_dds(
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
-        dds_bytes: &[u8],
-        sampler: vk::Sampler,
-        staging_pool: Option<&mut StagingPool>,
-    ) -> Result<Self> {
-        let meta = super::dds::parse_dds(dds_bytes)?;
-        // #1542: expands a 16/24-bpp DDPF_RGB source to R8G8B8A8, else a
-        // zero-copy borrow of the raw slice.
-        let pixel_data = super::dds::upload_pixels(&meta, dds_bytes);
-
-        Self::from_dds_with_mip_chain(
-            GpuUploadCtx {
-                device,
-                allocator,
-                queue,
-                command_pool,
-            },
-            &meta,
-            pixel_data.as_ref(),
-            sampler,
-            staging_pool,
-        )
-    }
-
     /// Destroy the texture and free GPU memory.
     ///
     /// Does NOT destroy the sampler — it's shared across all textures

@@ -9,7 +9,6 @@ use super::*;
 
 use byroredux_bgsm::template::ResolvedMaterial;
 use byroredux_bgsm::{BgemFile, TemplateCache, TemplateResolver};
-use byroredux_sfmaterial::CdbHeaderInfo;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -289,7 +288,7 @@ impl MaterialProvider {
         self.sf_cdb_count > 0
     }
 
-    pub(crate) fn register_starfield_cdb_probe(&mut self, _info: CdbHeaderInfo) {
+    pub(crate) fn register_starfield_cdb_probe(&mut self) {
         self.sf_cdb_count += 1;
     }
 

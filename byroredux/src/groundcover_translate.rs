@@ -56,16 +56,12 @@ use byroredux_core::ecs::components::groundcover::{
 /// design exists to remove — while a high default would carpet asphalt in any
 /// game whose naming we have not seen.
 ///
-/// # Consumer status (#4054 updated this from the original Phase-0 note)
+/// # Consumer status
 ///
-/// `layer_affinity` (singular) now has a real, non-test production consumer:
-/// `cell_loader/terrain.rs`'s `CellSplatLayer` builder, which flows into
-/// `render/groundcover.rs`'s GPU upload. Only the GPU-side
-/// `groundcover_scatter.comp` `affinity(splat)` dispatch itself is still
-/// pending (Phase 1) — the CPU-side resolution this module does is
-/// already live. The sibling `layer_affinities` (plural, batch form) is
-/// still genuinely uncalled outside its own test and correctly keeps its
-/// `#[allow(dead_code)]`. The palette/wind half below is already live via
+/// `layer_affinity` is live end to end: `cell_loader/terrain.rs`'s
+/// `CellSplatLayer` builder resolves each layer once, `render/groundcover.rs`
+/// uploads the result, and the scatter shader weights candidates by it
+/// (`byroGcAffinity`). The palette/wind half below is live via
 /// `install_ground_cover`.
 ///
 /// #4054 — re-exported from `byroredux_core` rather than defined here: the
@@ -181,20 +177,6 @@ pub fn layer_affinity(name: &str) -> f32 {
     DEFAULT_AFFINITY
 }
 
-/// Resolve affinities for a cell's splat layers, in layer order.
-///
-/// The scatter pass dots this against the bilinearly-sampled splat weights to
-/// get the `affinity(splat)` term of §3. Layers with no name resolve to
-/// [`DEFAULT_AFFINITY`] rather than zero, for the same reason the default is
-/// nonzero.
-#[allow(dead_code)] // see DEFAULT_AFFINITY — Phase 1 scatter is the consumer
-pub fn layer_affinities(names: &[Option<&str>]) -> Vec<f32> {
-    names
-        .iter()
-        .map(|n| n.map_or(DEFAULT_AFFINITY, layer_affinity))
-        .collect()
-}
-
 /// Classify a vegetation climate from a worldspace's `WNAM` ancestry, most
 /// specific first.
 ///
@@ -276,7 +258,7 @@ pub fn resolve_palette_for_chain(chain: &[String]) -> GroundCoverPalette {
 /// worldspace matcher does it: standing water is the strongest vegetation
 /// signal, and Skyrim's `FrozenMarshGrass01` must not read as merely
 /// alpine when it names a marsh.
-#[allow(dead_code)] // §12.12 Phase C — the authored-model tier weights records by climate
+#[allow(dead_code)] // #4413 — §12.12 Phase C, the authored-model tier, weights records by climate
 fn classify_species_name(editor_id: &str) -> Option<Climate> {
     let lowered = editor_id.to_ascii_lowercase();
     const WETLAND: &[&str] = &[
@@ -312,7 +294,7 @@ fn classify_species_name(editor_id: &str) -> Option<Climate> {
 /// a reduced showing in temperate as the generic middle ground, and a
 /// small but non-zero tail elsewhere. Non-zero matters — a hard zero is
 /// the boolean boundary the whole design exists to remove, one level up.
-#[allow(dead_code)] // §12.12 Phase C, as above
+#[allow(dead_code)] // #4413, as above
 fn climate_weights_for(climate: Climate) -> ClimateWeights {
     const STRONG: f32 = 2.0;
     const MIDDLE: f32 = 0.4;

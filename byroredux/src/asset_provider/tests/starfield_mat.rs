@@ -20,8 +20,8 @@ use super::imported_mesh_with_material_path;
 /// count on success — so a regression in `probe_starfield_cdb` now fails
 /// these tests instead of passing them.
 fn register_probed(provider: &mut MaterialProvider, bytes: &[u8]) {
-    if let Some(info) = crate::asset_provider::material::probe_starfield_cdb(bytes, "test") {
-        provider.register_starfield_cdb_probe(info);
+    if crate::asset_provider::material::probe_starfield_cdb(bytes, "test").is_some() {
+        provider.register_starfield_cdb_probe();
     }
 }
 
@@ -283,8 +283,11 @@ fn unresolved_material_warning_generic_for_non_mat_path() {
 fn sf_cdb_cache_returns_the_same_probe_and_stays_bounded() {
     let key = "sf_cdb_cache_test_key_2705_unique_marker".to_string();
     let other_key = "sf_cdb_cache_test_key_2705_never_inserted".to_string();
-    let probe = byroredux_sfmaterial::ComponentDatabaseFile::probe_header(&minimal_cdb_bytes())
-        .expect("minimal CDB probe");
+    assert!(
+        crate::asset_provider::material::probe_starfield_cdb(&minimal_cdb_bytes(), "test")
+            .is_some(),
+        "minimal CDB must probe as valid"
+    );
 
     sf_cdb_cache()
         .lock()
@@ -300,14 +303,14 @@ fn sf_cdb_cache_returns_the_same_probe_and_stays_bounded() {
         "fresh key must miss before any insert"
     );
 
-    sf_cdb_cache_insert(key.clone(), Some(probe));
+    sf_cdb_cache_insert(key.clone(), true);
 
     let cached = sf_cdb_cache()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&key)
-        .cloned();
-    assert_eq!(cached, Some(Some(probe)));
+        .copied();
+    assert_eq!(cached, Some(true));
 
     assert!(
         sf_cdb_cache()
@@ -319,7 +322,7 @@ fn sf_cdb_cache_returns_the_same_probe_and_stays_bounded() {
     );
 
     for i in 0..(SF_CDB_CACHE_MAX_ENTRIES + 8) {
-        sf_cdb_cache_insert(format!("{key}-{i}"), Some(probe));
+        sf_cdb_cache_insert(format!("{key}-{i}"), true);
     }
     let cache = sf_cdb_cache().lock().unwrap_or_else(|e| e.into_inner());
     assert!(cache.len() <= SF_CDB_CACHE_MAX_ENTRIES);

@@ -282,24 +282,6 @@ pub fn print_response(response: &DebugResponse) {
                 }
             }
         }
-        DebugResponse::AssetList { asset_kind, items } => {
-            println!("{:?}: {} item(s)", asset_kind, items.len());
-            for item in items {
-                let mut row = format!("  [{:>5}]", item.handle);
-                if let Some(p) = &item.path {
-                    row.push(' ');
-                    row.push_str(p);
-                }
-                if let Some(b) = item.bytes {
-                    row.push_str(&format!("  ({} bytes)", b));
-                }
-                if let Some(s) = &item.summary {
-                    row.push_str("  — ");
-                    row.push_str(s);
-                }
-                println!("{}", row);
-            }
-        }
         DebugResponse::Error { message } => {
             eprintln!("Error: {}", message);
         }

@@ -141,26 +141,6 @@ pub(crate) struct FragmentProviderScope<'a> {
     principal: Option<&'a byroredux_sdk::identity::PrincipalId>,
 }
 
-/// Provider-aware quest-fragment lowering from the same decompiled PEX AST.
-pub fn populate_quest_fragments_from_pex_detailed_with_providers(
-    frags: &mut QuestStageFragments,
-    quest: QuestFormId,
-    pex_bytes: &[u8],
-    bindings: &[(u16, &str)],
-    providers: &crate::PapyrusProviderCatalog,
-) -> FragmentPexTranslation {
-    populate_quest_fragments_from_pex_detailed_internal(
-        frags,
-        quest,
-        pex_bytes,
-        bindings,
-        Some(FragmentProviderScope {
-            catalog: providers,
-            principal: None,
-        }),
-    )
-}
-
 /// Provider-aware quest-fragment lowering attributed to the archive package
 /// that supplied the compiled PEX.
 pub fn populate_owned_quest_fragments_from_pex_detailed_with_providers(
@@ -248,26 +228,6 @@ pub fn populate_quest_fragments_from_script(
     bindings: &[(u16, &str)],
 ) -> usize {
     populate_quest_fragments_from_script_internal(frags, quest, script, bindings, None)
-}
-
-/// Provider-aware AST lowering for quest-stage fragments.
-pub fn populate_quest_fragments_from_script_with_providers(
-    frags: &mut QuestStageFragments,
-    quest: QuestFormId,
-    script: &Script,
-    bindings: &[(u16, &str)],
-    providers: &crate::PapyrusProviderCatalog,
-) -> usize {
-    populate_quest_fragments_from_script_internal(
-        frags,
-        quest,
-        script,
-        bindings,
-        Some(FragmentProviderScope {
-            catalog: providers,
-            principal: None,
-        }),
-    )
 }
 
 /// Provider-aware AST lowering attributed to one legacy script package.
@@ -393,30 +353,6 @@ pub fn populate_scene_fragments_from_pex_detailed(
     )
 }
 
-/// Provider-aware scene-fragment lowering from the same decompiled PEX AST.
-pub fn populate_scene_fragments_from_pex_detailed_with_providers(
-    frags: &mut SceneFragments,
-    scene_form_id: u32,
-    context: QuestFormId,
-    vmad: Option<&ScriptInstanceData>,
-    pex_bytes: &[u8],
-    bindings: &[(SceneFragmentEvent, &str)],
-    providers: &crate::PapyrusProviderCatalog,
-) -> FragmentPexTranslation {
-    populate_scene_fragments_from_pex_detailed_internal(
-        frags,
-        scene_form_id,
-        context,
-        vmad,
-        pex_bytes,
-        bindings,
-        Some(FragmentProviderScope {
-            catalog: providers,
-            principal: None,
-        }),
-    )
-}
-
 /// Provider-aware scene-fragment lowering attributed to the archive package
 /// that supplied the compiled PEX.
 pub fn populate_owned_scene_fragments_from_pex_detailed_with_providers(
@@ -525,51 +461,6 @@ impl FragmentPexTranslation {
             fingerprint,
         }
     }
-}
-
-/// AST half of [`populate_scene_fragments_from_pex`], exposed for focused
-/// conformance tests without requiring compiled game-data fixtures.
-pub fn populate_scene_fragments_from_script(
-    frags: &mut SceneFragments,
-    scene_form_id: u32,
-    context: QuestFormId,
-    vmad: Option<&ScriptInstanceData>,
-    script: &Script,
-    bindings: &[(SceneFragmentEvent, &str)],
-) -> usize {
-    populate_scene_fragments_from_script_internal(
-        frags,
-        scene_form_id,
-        context,
-        vmad,
-        script,
-        bindings,
-        None,
-    )
-}
-
-/// Provider-aware AST lowering for authored scene lifecycle fragments.
-pub fn populate_scene_fragments_from_script_with_providers(
-    frags: &mut SceneFragments,
-    scene_form_id: u32,
-    context: QuestFormId,
-    vmad: Option<&ScriptInstanceData>,
-    script: &Script,
-    bindings: &[(SceneFragmentEvent, &str)],
-    providers: &crate::PapyrusProviderCatalog,
-) -> usize {
-    populate_scene_fragments_from_script_internal(
-        frags,
-        scene_form_id,
-        context,
-        vmad,
-        script,
-        bindings,
-        Some(FragmentProviderScope {
-            catalog: providers,
-            principal: None,
-        }),
-    )
 }
 
 /// Provider-aware scene AST lowering attributed to one legacy script package.

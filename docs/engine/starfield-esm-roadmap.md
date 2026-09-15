@@ -91,7 +91,7 @@ Verify the existing TES4 + master-list infrastructure handles Starfield's edge c
 - **`BlueprintShips-*.esm`** — these are content patches that depend on Starfield.esm. Verify multi-master load is correct (form-id remap, override semantics).
 - **Localized strings** — Starfield's STRINGS / DLSTRINGS / ILSTRINGS files live inside `Starfield - Localization.ba2` (`strings/starfield_en.*`), not loose beside the ESMs. **Encoding answered, #4170** (measured 2026-09-12): the guess "probably UTF-8" is half right. The *localized* tables really are UTF-8, but `starfield_en` is not — 228 of its 187 563 entries carry Windows-1252 bytes that are invalid UTF-8. `strings_table.rs` now decodes UTF-8-first with a cp1252 fallback, which is correct for both. Filename tag is `_en`, not `_english` (#4168).
 - **HEDR-version sub-band detection** — Constellation, Shattered Space, BlueprintShips might use bumped HEDR sub-versions (e.g. 0.96 vs 0.96.1) that need distinct sub-arms. Phase 0 measurement reveals if this matters.
-- **DLC ordering** — Shattered Space depends on Starfield.esm; the existing load-order infra (`crates/plugin/src/legacy/`) needs validation that ordering works for SF.
+- **DLC ordering** — Shattered Space depends on Starfield.esm; the existing load-order infra (`FormIdRemap` / `GlobalSlot` in `crates/plugin/src/esm/reader.rs`) needs validation that ordering works for SF, including the ESH `0xFD` medium-master layout it does not model yet (#4384).
 
 **Deliverables**: pass tests against a real multi-master Starfield load (Starfield.esm + Constellation.esm + ShatteredSpace.esm) with form-id resolution correct.
 

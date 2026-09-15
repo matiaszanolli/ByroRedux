@@ -113,7 +113,6 @@ crates/
     src/record.rs            Record (component bundles), ErasedComponentData
     src/datastore.rs         DataStore resource, ResolvedRecord, Conflict
     src/resolver.rs          DependencyResolver (DAG), ConflictResolution
-    src/legacy/              Legacy ESM/ESP/ESL/ESH bridge (LegacyFormId, LegacyLoadOrder). Per-game parser stubs were removed under #390 — see `crates/plugin/src/esm/` for the live ESM path.
     src/esm/cell/            CELL walker + per-feature submodules (helpers / support / walkers / wrld)
       tests/                 CELL parsing regression tests (per-topic siblings)
   renderer/                  Vulkan graphics (ash, gpu-allocator, image)

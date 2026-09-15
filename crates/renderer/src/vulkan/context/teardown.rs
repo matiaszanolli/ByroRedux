@@ -305,7 +305,7 @@ impl Drop for VulkanContext {
             // them. Ordered after `presentation.destroy()` above, which is what
             // the guard-side comment required.
             if let Some(ref mut upscaler) = self.frame_upscaler {
-                upscaler.destroy_device_objects(&self.device);
+                upscaler.destroy_device_objects();
             }
 
             self.destroy_screenshot_staging();

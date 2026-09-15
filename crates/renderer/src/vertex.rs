@@ -105,29 +105,6 @@ impl Vertex {
         }
     }
 
-    /// Construct a skinned vertex with explicit bone bindings. `bone_weights`
-    /// should sum to approximately 1.0.
-    pub const fn new_skinned(
-        position: [f32; 3],
-        color: [f32; 3],
-        normal: [f32; 3],
-        uv: [f32; 2],
-        bone_indices: [u32; 4],
-        bone_weights: [f32; 4],
-    ) -> Self {
-        Self {
-            position,
-            color: [color[0], color[1], color[2], 1.0],
-            normal,
-            uv,
-            bone_indices,
-            bone_weights,
-            splat_weights_0: [0, 0, 0, 0],
-            splat_weights_1: [0, 0, 0, 0],
-            tangent: [0.0, 0.0, 0.0, 0.0],
-        }
-    }
-
     /// Skinned counterpart to [`Self::new_rgba`].
     pub const fn new_skinned_rgba(
         position: [f32; 3],

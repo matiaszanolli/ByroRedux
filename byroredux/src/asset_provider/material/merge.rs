@@ -43,14 +43,10 @@ pub(crate) enum MergeOutcome {
     Merged,
 }
 
-// Consumed by the merge regression tests today; no production caller
-// reads the outcome yet (all four discard it explicitly — see their
-// `let _ =` sites). Kept as the type's API rather than inlined into the
-// tests so the deferred per-cell "materials resolved / of which
-// presence-only" telemetry sink #2709 asks for has something to call,
-// and so a future reader doesn't reach for `== MergeOutcome::Merged`
-// spelled out at each site.
-#[cfg_attr(not(test), allow(dead_code))]
+// Test-only: every production reader compares the variant directly
+// (`trace_merge_outcome`, #4289), so these predicates exist for the merge
+// regression tests alone.
+#[cfg(test)]
 impl MergeOutcome {
     /// True when the sidecar resolved at all, whether or not it supplied
     /// any authored field. This is the old `bool` return's meaning —

@@ -417,8 +417,9 @@ fallbacks to panics, so any hit is genuinely notable. For each:
 - Trait impls with empty bodies that the trait docs say should do work.
 - Per-game ESM record coverage in `crates/plugin/src/esm/records/` — fully wired
   vs stubbed per game; cross-check ROADMAP.md per-game compat matrix. (The legacy
-  per-game stubs in `crates/plugin/src/legacy/` were removed under #390 — coverage
-  now lives in the unified records tree; do not re-file the removed stubs.)
+  per-game stubs in *crates/plugin/src/legacy/* were removed under #390, and the
+  rest of that module under #4384 — coverage lives in the unified records tree;
+  do not re-file either.)
 - Console commands in `byroredux/src/commands/` that exist but no-op / print "TODO".
 
 ### Dimension 7: Magic Numbers & Hardcoded Constants

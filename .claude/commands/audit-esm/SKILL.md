@@ -52,9 +52,11 @@ those here.
 - `crates/plugin/src/{datastore,manifest,record,resolver}.rs` — the
   Redux-native plugin tier (`DataStore`, `PluginManifest`, `Record`,
   `DependencyResolver`).
-- `crates/plugin/src/legacy/mod.rs` — the `pub(crate)` LegacyFormId /
-  load-order bridge. Forward-looking scaffolding; audit for rot, not for
-  correctness against a consumer that doesn't exist.
+- Load-order FormID resolution — `FormIdRemap` + `GlobalSlot` in
+  `crates/plugin/src/esm/reader.rs` (#1554). The consumer-less
+  *crates/plugin/src/legacy/* LegacyFormId / LegacyLoadOrder bridge was deleted
+  under #4384; it was the only code that modelled the ESH `0xFD` layout, which
+  `GlobalSlot` does not cover yet.
 
 **Not in scope** (owned elsewhere, cross-reference only): the cell loader's
 consumption of `CellData` (`/audit-<game>` per-game Dimension 1), Papyrus
@@ -480,8 +482,9 @@ and `byroredux/src/npc_spawn.rs`
   current `Record` shape, are its docs consistent with
   `docs/engine/plugin-loading.md`) and flag dead-but-documented API — do not
   report "unused" as a bug on its own.
-- `legacy/mod.rs` is `pub(crate)` scaffolding with a documented rationale
-  (#1322). Same treatment: rot only.
+- The *legacy/mod.rs* scaffolding this bullet used to exempt was deleted under
+  #4384; do not re-file its absence. A missing ESH `0xFD` arm in `GlobalSlot` is
+  a real gap, not rot.
 **Output**: `/tmp/audit/esm/dim_7.md`
 
 ### Dimension 8: Real-Data Validation

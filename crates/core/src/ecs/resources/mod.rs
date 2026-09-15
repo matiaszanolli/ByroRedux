@@ -975,6 +975,14 @@ pub struct RtIntegrityStats {
     pub blas_pending_destroy_count: u32,
     /// Retired scratch buffers waiting in the deferred-destroy scratch queue.
     pub scratch_pending_destroy_count: u32,
+    /// Textures waiting in `TextureRegistry`'s deferred-destroy queues.
+    ///
+    /// #4117 — the texture-side twin of the two BLAS/scratch backlogs above:
+    /// the registry computed it behind a `pub` accessor whose doc named a
+    /// telemetry consumer that did not exist, so a stalled
+    /// `tick_deferred_destroy` would only have surfaced later as VRAM
+    /// pressure. Telemetry like its siblings; not part of the verdict.
+    pub texture_pending_destroy_count: u32,
 }
 
 impl RtIntegrityStats {
@@ -1011,7 +1019,8 @@ impl RtIntegrityStats {
              cluster_max={} \
              blas_total_bytes={} blas_static_bytes={} \
              blas_pending_destroy_bytes={} blas_pending_destroy_count={} \
-             scratch_pending_destroy_count={} verdict={}",
+             scratch_pending_destroy_count={} texture_pending_destroy_count={} \
+             verdict={}",
             self.frame,
             u8::from(self.sampled),
             u8::from(self.rt_supported),
@@ -1034,6 +1043,7 @@ impl RtIntegrityStats {
             self.blas_pending_destroy_bytes,
             self.blas_pending_destroy_count,
             self.scratch_pending_destroy_count,
+            self.texture_pending_destroy_count,
             self.verdict(),
         )
     }
@@ -1705,7 +1715,8 @@ mod tests {
              cluster_overflowed=0 cluster_dropped=0 cluster_max=23 \
              blas_total_bytes=0 blas_static_bytes=0 \
              blas_pending_destroy_bytes=0 blas_pending_destroy_count=0 \
-             scratch_pending_destroy_count=0 verdict=PASS"
+             scratch_pending_destroy_count=0 texture_pending_destroy_count=0 \
+             verdict=PASS"
         );
 
         // #3999 — BLAS residency is telemetry, not a correctness predicate.
@@ -1720,6 +1731,7 @@ mod tests {
             blas_pending_destroy_bytes: 4_194_304,
             blas_pending_destroy_count: 3,
             scratch_pending_destroy_count: 1,
+            texture_pending_destroy_count: 5,
             ..clean
         };
         assert_eq!(backlogged.verdict(), "PASS");
@@ -1731,7 +1743,7 @@ mod tests {
         assert!(
             line.contains(
                 "blas_pending_destroy_bytes=4194304 blas_pending_destroy_count=3 \
-                 scratch_pending_destroy_count=1"
+                 scratch_pending_destroy_count=1 texture_pending_destroy_count=5"
             ),
             "{line}"
         );

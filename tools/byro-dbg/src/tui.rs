@@ -371,7 +371,6 @@ fn variant_name(resp: &DebugResponse) -> &'static str {
         DebugResponse::Inspect { .. } => "Inspect",
         DebugResponse::Metrics { .. } => "Metrics",
         DebugResponse::GameProfiles { .. } => "GameProfiles",
-        DebugResponse::AssetList { .. } => "AssetList",
         DebugResponse::Error { .. } => "Error",
     }
 }

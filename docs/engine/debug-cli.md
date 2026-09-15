@@ -14,8 +14,8 @@ live beside their implementations.
 
 > Last reconciled 2026-08-25 (Session 72 closeout). The doc was substantially
 > rewritten 2026-05-11 (`478b9c0`); since then the debug-UI plan (Phases 1–5)
-> added the `Metrics` / `LoadNif` / `Load*Cell` / `ListGameProfiles` /
-> `ListLoadedAssets` protocol surface, the `--tui` dashboard, the `near` /
+> added the `Metrics` / `LoadNif` / `Load*Cell` / `ListGameProfiles`
+> protocol surface, the `--tui` dashboard, the `near` /
 > `pick` / `door.teleport` / `script.activate` console commands, an enriched
 > `mesh.info` (PBR + parent-chain + FormID + markers), save/load, quest/scene,
 > gameplay, physics, water, renderer-integrity command families, and a set of robustness
@@ -70,8 +70,8 @@ are fire-and-forget. We need:
 4. The **evaluator** dispatches by request kind:
    - `Ping`, `Stats`, `Metrics`, `ListComponents`, `ListSystems`,
      `FindEntity`, `ListEntities`, `GetComponent`, `SetField`, `WalkEntity`,
-     `InspectSkinnedMesh`, `Inspect`, `Screenshot`, `ListGameProfiles`,
-     `ListLoadedAssets` — direct resource/query access.
+     `InspectSkinnedMesh`, `Inspect`, `Screenshot`, `ListGameProfiles` —
+     direct resource/query access.
    - `LoadNif`, `LoadInteriorCell`, `LoadExteriorCell` — queued for the
      engine binary to drain on a frame where it holds both `&mut World` and
      `&mut VulkanContext` (mirrors the existing `PendingCellTransition`
@@ -123,13 +123,12 @@ enum is tagged with `#[serde(tag = "cmd", rename_all = "snake_case")]`.
 | `LoadInteriorCell { esm, cell, masters, bsas, textures_bsas }` | Queue an interior cell load by editor ID (same async-via-queue semantics). |
 | `LoadExteriorCell { esm, grid_x, grid_y, radius, worldspace?, masters, bsas, textures_bsas }` | Queue an exterior grid load (radius clamped `1..=7` engine-side). |
 | `ListGameProfiles` | Enumerate configured game profiles from `assets/debug_profiles.toml` + `~/.byroredux/profiles.toml` (debug-UI Phase 5). |
-| `ListLoadedAssets { kind }` | Enumerate loaded asset handles. `kind` ∈ `Meshes` / `Textures` / `NifCache` (`AssetKind`). |
 | `Ping` | Keep-alive / connection check |
 
 Notable response variants (`#[serde(tag = "kind", rename_all = "snake_case")]`):
 `Value`, `EntityList`, `ComponentList`, `SystemList`, `Stats`, `Screenshot`
 (base64 PNG), `ScreenshotSaved`, `Ok`, `Pong`, `Hierarchy`, `SkinnedMesh`,
-`Inspect`, `Metrics`, `GameProfiles`, `AssetList`, `Error`.
+`Inspect`, `Metrics`, `GameProfiles`, `Error`.
 
 ### `Stats` field breakdown (#1258 / PERF-D3-NEW-03 + #637 / FNV-D5-02)
 
@@ -158,7 +157,6 @@ pub struct ComponentDescriptor {
     pub name: &'static str,
     pub field_names: Vec<&'static str>,
     pub get_json:      Box<dyn Fn(&dyn Any, u32) -> Option<Value> + Send + Sync>,
-    pub set_json:      Box<dyn Fn(&dyn Any, u32, Value) -> Result<(), String> + Send + Sync>,
     pub list_entities: Box<dyn Fn(&dyn Any) -> Vec<u32> + Send + Sync>,
     pub get_field:     Box<dyn Fn(&dyn Any, u32, &str) -> Option<Value> + Send + Sync>,
     pub set_field:     Box<dyn Fn(&dyn Any, u32, &str, Value) -> Result<(), String> + Send + Sync>,
@@ -736,10 +734,10 @@ swap content into a live session without a relaunch.
 stable `key`, display `name`, data `root`, main `esm`, default mesh/texture
 archives, and curated `sample_cells` the TUI offers as one-click quick-loads.
 
-`ListLoadedAssets { kind }` enumerates loaded handles — `Meshes` (MeshRegistry),
-`Textures` (TextureRegistry), or `NifCache` (the `NifImportRegistry` parse
-cache). Each `AssetItem` carries a `handle` plus optional `path` / `bytes` /
-`summary`.
+There is no protocol request for listing loaded assets. A *ListLoadedAssets*
+request existed with no handler and no client, and was removed under #4374;
+the `tex.loaded` and `mesh.*` console commands (sent through `Eval`) cover
+that use.
 
 ## TUI Dashboard (`--tui`)
 
@@ -831,10 +829,11 @@ byro> skin.coverage
 
 Field-level set uses the `SetField` protocol message. The evaluator reads the
 component → serializes to JSON → modifies the field → deserializes back →
-writes via `query_mut` (interior mutability on `&World`). Whole-component
-replacement (`set_json`) is **not** supported — it would need `&mut World`,
-which the exclusive `Stage::Late` system doesn't have; the closure returns a
-"use field-level set" error.
+writes via `query_mut` (interior mutability on `&World`). There is no
+whole-component replacement: it would need `&mut World`, which the exclusive
+`Stage::Late` system doesn't have. The stub accessor that only returned an
+error was removed (#4380); add one back together with a request variant if
+the feature is ever wanted.
 
 ## Screenshot Capture
 
@@ -929,8 +928,8 @@ Total render-thread cost: sub-microsecond.
 ```
 crates/debug-protocol/
   src/
-    lib.rs                  DebugRequest / DebugResponse enums, AssetKind,
-                            GameProfile, AssetItem, HierarchyNode, EntityInfo
+    lib.rs                  DebugRequest / DebugResponse enums,
+                            GameProfile, HierarchyNode, EntityInfo
     wire.rs                 Length-prefixed JSON encode/decode (6 tests)
     registry.rs             ComponentDescriptor, ComponentRegistry
 
