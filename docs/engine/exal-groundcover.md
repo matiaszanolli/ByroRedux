@@ -15,7 +15,9 @@ which entities feed the field. Phase 3 (#4056) tier 3 and the T0→T1
 projected-pixel ribbon crossover with reduced-density widened Tier 1
 IMPLEMENTED (2026-09-15); Tier 2 palette-atlas clump cards and their area fade
 IMPLEMENTED (2026-09-15). Live visual acceptance evidence remains pending.
-Phase 4 is gated on a demonstrated need (§5 Stage 2). Rolls out per §9.
+Step 7's live `GpuTerrainTile` size claims and blade-geometry literal naming
+were reconciled and test-pinned (2026-09-15). Phase 4 is gated on a
+demonstrated need (§5 Stage 2). Rolls out per §9.
 
 **Goal**: grass that reads as an *organic, continuous ground stratum* rather
 than a set of authored patches, generated procedurally from terrain-derived
