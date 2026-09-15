@@ -770,12 +770,9 @@ must commit that exact value before treating its output as a reference. The
 manifest preserves the PNG hash plus the `bench:` and `groundcover:` rows.
 Use `BYROREDUX_RENDER_EVAL_RUNNER` for a local display/Xvfb wrapper. Store an
 accepted baseline or after image under `docs/audits/` with the tested commit
-hash in its filename. The FNV default was measured on 2026-09-15 at
-`2048,8556,-1848`: its shallow south-west view dispatched 46 chunks and
-accepted 7,069 blades with `truncated=0`. The local capture remains a probe
-until it is repeated from a clean `HEAD`; the earlier working-tree test had no
-reachable compositor, but the host compositor is usable through the approved
-capture runner.
+hash in its filename. The clean-HEAD four-case baseline is recorded in
+[`gc-reference-00d4ef5d0.md`](../audits/gc-reference-00d4ef5d0.md); the
+native Wayland capture runner is the supported local path.
 
 `BYROREDUX_GROUNDCOVER_EVAL_CASES` accepts a comma-separated subset of those
 four case names. Its only purpose is operational: it appends each selected
