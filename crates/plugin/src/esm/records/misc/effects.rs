@@ -54,7 +54,7 @@ pub fn parse_avif(
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     for sub in subs {
@@ -139,7 +139,7 @@ pub fn parse_proj(form_id: u32, subs: &[SubRecord]) -> ProjRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     out.model_path = common.model_path;
@@ -181,7 +181,7 @@ pub fn parse_efsh(form_id: u32, subs: &[SubRecord]) -> EfshRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
@@ -219,7 +219,7 @@ pub fn parse_imod(form_id: u32, subs: &[SubRecord]) -> ImodRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     for sub in subs {
@@ -259,7 +259,7 @@ pub fn parse_repu(form_id: u32, subs: &[SubRecord]) -> RepuRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     for sub in subs {
@@ -298,7 +298,7 @@ pub fn parse_expl(form_id: u32, subs: &[SubRecord]) -> ExplRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     for sub in subs {
@@ -336,7 +336,7 @@ pub fn parse_ipct(form_id: u32, subs: &[SubRecord]) -> IpctRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     out.model_path = common.model_path;
     out
@@ -367,7 +367,7 @@ pub fn parse_ipds(form_id: u32, subs: &[SubRecord]) -> IpdsRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     for sub in subs {
         if &sub.sub_type == b"DATA" {

@@ -141,6 +141,39 @@ mod dispatch_misc_gameplay_b;
 mod dispatch_misc_stub;
 mod dispatch_world_placement;
 
+/// Every top-level GRUP FourCC `parse_esm_with_load_order`'s dispatch
+/// routes to a parser, for tools that report routing coverage.
+///
+/// #4278 — `sf_smoke` kept its own hand-written copy of this list and it
+/// drifted three times (LCTN, then SECH/AOPF, then OMOD/LVSP/SCEN), each
+/// time reporting live dispatch arms as "skip" and understating coverage.
+/// The list lives next to the match it describes, and
+/// `dispatch_handled_fourccs_matches_the_live_dispatch_arms` fails if the
+/// two ever disagree.
+///
+/// Era-gated arms (SCOL, PKIN, MOVS, MSWP) count as handled: the dispatch
+/// routes them on the eras that have them and warn-skips them elsewhere,
+/// which is a routing decision rather than a gap. `PDCL` is deliberately
+/// absent — it has a dedicated arm that skips consciously and routes
+/// nowhere (no decal-projection consumer exists yet), so a tool reporting
+/// it as handled would be wrong.
+pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
+    *b"ACTI", *b"ADDN", *b"ALCH", *b"ALOC", *b"AMEF", *b"AMMO", *b"ANIO", *b"AOPF", *b"APPA",
+    *b"ARMA", *b"ARMO", *b"ASPC", *b"AVIF", *b"BNDS", *b"BOOK", *b"BPTD", *b"BSGN", *b"CAMS",
+    *b"CCRD", *b"CDCK", *b"CELL", *b"CHAL", *b"CHIP", *b"CLAS", *b"CLMT", *b"CLOT", *b"CMNY",
+    *b"COBJ", *b"CONT", *b"CPTH", *b"CREA", *b"CSNO", *b"CSTY", *b"DEBR", *b"DEHY", *b"DIAL",
+    *b"DOBJ", *b"DOOR", *b"ECZN", *b"EFSH", *b"ENCH", *b"EXPL", *b"EYES", *b"FACT", *b"FLOR",
+    *b"FLST", *b"FURN", *b"GLOB", *b"GMST", *b"GRAS", *b"HAIR", *b"HDPT", *b"HUNG", *b"IDLE",
+    *b"IDLM", *b"IMAD", *b"IMGS", *b"IMOD", *b"INGR", *b"IPCT", *b"IPDS", *b"KEYM", *b"LGTM",
+    *b"LIGH", *b"LSCR", *b"LSCT", *b"LTEX", *b"LVLC", *b"LVLI", *b"LVLN", *b"LVSP", *b"MESG",
+    *b"MGEF", *b"MICN", *b"MISC", *b"MOVS", *b"MSET", *b"MSTT", *b"MSWP", *b"MUSC", *b"NAVI",
+    *b"NAVM", *b"NOTE", *b"NPC_", *b"OMOD", *b"OTFT", *b"PACK", *b"PERK", *b"PKIN", *b"PROJ",
+    *b"PWAT", *b"QUST", *b"RACE", *b"RADS", *b"RCCT", *b"RCPE", *b"REGN", *b"REPU", *b"RGDL",
+    *b"SCEN", *b"SCOL", *b"SCPT", *b"SECH", *b"SGST", *b"SLGM", *b"SLPD", *b"SOUN", *b"SPEL",
+    *b"STAT", *b"TACT", *b"TERM", *b"TREE", *b"TXST", *b"VTYP", *b"WATR", *b"WEAP", *b"WRLD",
+    *b"WTHR",
+];
+
 /// Parse an entire ESM/ESP file in a single pass.
 ///
 /// First fills the cell index using the existing `parse_esm_cells` walker

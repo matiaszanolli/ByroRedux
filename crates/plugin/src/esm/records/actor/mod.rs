@@ -1447,7 +1447,7 @@ pub fn parse_race(
     // Helper claims a single MODL; RACE records carry multiple body
     // parts in MODL — keep that arm custom and ignore the helper's
     // last-MODL string. TD3-203 / #1113.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut record = RaceRecord {
         form_id,
         editor_id: common.editor_id,
@@ -1765,7 +1765,7 @@ pub fn parse_race(
 }
 
 pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassRecord {
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     let mut record = ClassRecord {
         form_id,
         editor_id: common.editor_id,
@@ -1866,7 +1866,7 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
 }
 
 pub fn parse_fact(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> FactionRecord {
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut record = FactionRecord {
         form_id,
         editor_id: common.editor_id,

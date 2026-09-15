@@ -223,7 +223,7 @@ impl GrasRecord {
 /// `DATA`-derived field at its default — a short payload cannot be
 /// partially decoded without guessing which fields survived.
 pub fn parse_gras(form_id: u32, subs: &[SubRecord]) -> GrasRecord {
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     let mut out = GrasRecord {
         form_id,
         editor_id: common.editor_id,

@@ -29,7 +29,7 @@ pub fn parse_hdpt(form_id: u32, subs: &[SubRecord]) -> HdptRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     out.model_path = common.model_path;
@@ -65,7 +65,7 @@ pub fn parse_eyes(form_id: u32, subs: &[SubRecord]) -> EyesRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     out.icon_path = common.icon_path;
@@ -101,7 +101,7 @@ pub fn parse_hair(form_id: u32, subs: &[SubRecord]) -> HairRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     out.model_path = common.model_path;
@@ -149,7 +149,7 @@ pub fn parse_csty(form_id: u32, subs: &[SubRecord]) -> CstyRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
@@ -188,7 +188,7 @@ pub fn parse_idle(form_id: u32, subs: &[SubRecord]) -> IdleRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {

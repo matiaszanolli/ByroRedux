@@ -2702,3 +2702,156 @@ fn remap_fid_has_exactly_one_definition() {
         "common.rs must own the single definition",
     );
 }
+
+/// #4278 — [`DISPATCH_HANDLED_FOURCCS`] must stay in lockstep with the
+/// `match &label` arms it describes. That list is what `sf_smoke` reports
+/// routing coverage from, and while it was hand-maintained in the tool it
+/// drifted three times, each time calling a live dispatch arm "skip".
+///
+/// The arm set is re-derived from `mod.rs`'s own source at test time, and
+/// only from the slice between the match and its catch-all — so the
+/// const's own literals cannot be what the scan finds.
+#[test]
+fn dispatch_handled_fourccs_matches_the_live_dispatch_arms() {
+    const MOD_RS: &str = include_str!("mod.rs");
+
+    let start = MOD_RS
+        .find("        match &label {")
+        .expect("the top-level dispatch match");
+    let end = MOD_RS[start..]
+        .find("            _ => {")
+        .expect("the dispatch catch-all arm")
+        + start;
+
+    let mut arms: Vec<[u8; 4]> = Vec::new();
+    for line in MOD_RS[start..end].lines() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find("b\"") {
+            rest = &rest[at + 2..];
+            let Some(close) = rest.find('"') else { break };
+            if close == 4 {
+                let mut fourcc = [0u8; 4];
+                fourcc.copy_from_slice(&rest.as_bytes()[..4]);
+                if !arms.contains(&fourcc) {
+                    arms.push(fourcc);
+                }
+            }
+            rest = &rest[close + 1..];
+        }
+    }
+    assert!(
+        arms.len() > 100,
+        "the arm scan found only {} labels — the scan broke, not the list",
+        arms.len()
+    );
+
+    // PDCL's arm skips consciously and routes nowhere; see the const's doc.
+    arms.retain(|fourcc| fourcc != b"PDCL");
+    arms.sort_unstable();
+    let mut listed = DISPATCH_HANDLED_FOURCCS.to_vec();
+    listed.sort_unstable();
+
+    let name = |f: &[u8; 4]| String::from_utf8_lossy(f).into_owned();
+    let missing: Vec<String> = arms
+        .iter()
+        .filter(|f| !listed.contains(f))
+        .map(name)
+        .collect();
+    let extra: Vec<String> = listed
+        .iter()
+        .filter(|f| !arms.contains(f))
+        .map(name)
+        .collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "DISPATCH_HANDLED_FOURCCS has drifted from the dispatch match: \
+         dispatched but unlisted {missing:?}, listed but not dispatched {extra:?}"
+    );
+}
+
+/// #4175 — a parser that has a real `FormIdRemap` in scope must never
+/// hand `&None` to `CommonNamedFields`/`CommonItemFields`, which would
+/// decode that record's `SCRI`/`VMAD` FormIDs in plugin-local space and
+/// silently drop the load-order composition the caller was given.
+///
+/// There used to be an identity `from_subs(subs)` wrapper doing exactly
+/// that at 18 of its ~40 call sites. Deleting it fixed those sites, but
+/// nothing stopped the next parser from passing `&None` by hand — and the
+/// damage is invisible on the single-master case every default CLI
+/// invocation uses, which is how #2189 and #4067 each survived a release.
+///
+/// The `records/` tree is walked at test time rather than compared against
+/// a list of files, because the file nobody wrote down is precisely the one
+/// a hardcoded list cannot see.
+#[test]
+fn no_parser_with_a_remap_in_scope_passes_an_identity_remap() {
+    fn enclosing_fn_signature(src: &str, at: usize) -> &str {
+        let head = &src[..at];
+        let mut cursor = head.len();
+        while let Some(line_start) = head[..cursor].rfind('\n') {
+            let line = &head[line_start + 1..];
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") {
+                let end = line.find('{').unwrap_or(line.len().min(400));
+                return &line[..end];
+            }
+            cursor = line_start;
+        }
+        ""
+    }
+
+    // Composed at runtime so this test's own source cannot satisfy the scan.
+    let identity = format!("{}{}", ",&", "None)");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/esm/records");
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("records/ must be readable") {
+            let path = entry.expect("readable dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("readable source file");
+            scanned += 1;
+            for (at, _) in src.match_indices("::from_subs_with_remap(") {
+                // Whitespace-insensitive: rustfmt may have split the call
+                // across lines, and a wrapped call is exactly the one a
+                // line-oriented scan would wave through.
+                let tail: String = src[at..]
+                    .chars()
+                    .take_while(|c| *c != ';')
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                if !tail.contains(&identity) {
+                    continue;
+                }
+                let signature = enclosing_fn_signature(&src, at);
+                if signature.contains("remap") {
+                    offenders.push(format!(
+                        "{}: {}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        signature.trim()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        scanned > 20,
+        "the records/ walk scanned only {scanned} files — the walk broke, not the code"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these parsers take a `remap` but pass the identity remap to the shared \
+         common-field decoder, so their SCRI/VMAD FormIDs stay plugin-local \
+         (#4175): {offenders:?}"
+    );
+}

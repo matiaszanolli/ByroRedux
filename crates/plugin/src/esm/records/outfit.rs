@@ -54,7 +54,7 @@ pub fn parse_otft(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     };
     // #2414 / TD2-117 SIBLING — same swap as the `misc/` family; these two
     // sites sit outside it and were not named in the issue.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     for sub in subs {
         // #3356 — `INAM` is ONE sub-record holding an ARRAY of 4-byte

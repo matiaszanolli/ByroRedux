@@ -299,16 +299,19 @@ pub struct CommonNamedFields {
 }
 
 impl CommonNamedFields {
-    /// Walk `subs` and populate the universal named fields.
-    /// All other sub-records are silently ignored — the caller handles them
-    /// in its own loop.
-    pub fn from_subs(subs: &[SubRecord]) -> Self {
-        Self::from_subs_with_remap(subs, &None)
-    }
-
-    /// Load-order-aware form of [`Self::from_subs`]. Use this whenever the
-    /// returned `script_instance` survives into `EsmIndex`; VMAD Object
-    /// properties are authored in plugin-local FormID space.
+    /// Walk `subs` and populate the universal named fields; all other
+    /// sub-records are silently ignored, the caller handles them in its own
+    /// loop.
+    ///
+    /// `remap` is not optional, by design. #4175 — there used to be an
+    /// identity `from_subs(subs)` wrapper passing `&None`, and ~40 parsers
+    /// called it, including 18 that had a real `FormIdRemap` in scope and
+    /// silently discarded it. That was harmless only because none of those
+    /// records happened to keep `script_form_id`/`script_instance` past
+    /// this struct — an invariant nothing enforced, and the same trap
+    /// #2189 and #4067 already sprang twice for this exact method pair.
+    /// Genuinely remap-free callers now pass `&None` explicitly, which is
+    /// a visible claim rather than a default.
     pub fn from_subs_with_remap(
         subs: &[SubRecord],
         remap: &Option<crate::esm::reader::FormIdRemap>,
@@ -389,13 +392,6 @@ pub struct CommonItemFields {
 }
 
 impl CommonItemFields {
-    /// Walk a sub-record list and pull out the universal item fields. Each
-    /// type-specific parser starts from this and then handles its own DNAM /
-    /// type-specific blocks.
-    pub fn from_subs(subs: &[SubRecord]) -> Self {
-        Self::from_subs_with_remap(subs, &None)
-    }
-
     /// Load-order-aware item common-field decode. Item records retain their
     /// VMAD attachments, so production dispatch must use this entry point.
     pub fn from_subs_with_remap(
@@ -484,7 +480,7 @@ mod tests {
         vmad.push(0); // script status
         vmad.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
         let subs = vec![sub(b"EDID", b"ScriptedActi\0"), sub(b"VMAD", &vmad)];
-        let c = CommonNamedFields::from_subs(&subs);
+        let c = CommonNamedFields::from_subs_with_remap(&subs, &None);
         assert!(c.has_script, "presence flag preserved");
         let inst = c
             .script_instance
@@ -495,7 +491,7 @@ mod tests {
 
     #[test]
     fn common_named_fields_without_vmad_has_no_instance() {
-        let c = CommonNamedFields::from_subs(&[sub(b"EDID", b"Plain\0")]);
+        let c = CommonNamedFields::from_subs_with_remap(&[sub(b"EDID", b"Plain\0")], &None);
         assert!(!c.has_script);
         assert!(c.script_instance.is_none());
     }
@@ -523,7 +519,7 @@ mod tests {
         vmad.push(0); // script status
         vmad.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
         let subs = vec![sub(b"EDID", b"ScriptedSword\0"), sub(b"VMAD", &vmad)];
-        let c = CommonItemFields::from_subs(&subs);
+        let c = CommonItemFields::from_subs_with_remap(&subs, &None);
         assert!(c.has_script, "presence flag preserved");
         let inst = c
             .script_instance
@@ -534,7 +530,7 @@ mod tests {
 
     #[test]
     fn common_item_fields_without_vmad_has_no_instance() {
-        let c = CommonItemFields::from_subs(&[sub(b"EDID", b"PlainSword\0")]);
+        let c = CommonItemFields::from_subs_with_remap(&[sub(b"EDID", b"PlainSword\0")], &None);
         assert!(!c.has_script);
         assert!(c.script_instance.is_none());
     }
@@ -547,7 +543,7 @@ mod tests {
             sub(b"EDID", b"ScriptedItem\0"),
             sub(b"VMAD", b"\x05\x00\x02\x00\x00\x00"),
         ];
-        let c = CommonItemFields::from_subs(&subs);
+        let c = CommonItemFields::from_subs_with_remap(&subs, &None);
         assert!(c.has_script);
         assert_eq!(c.editor_id, "ScriptedItem");
     }
@@ -555,7 +551,7 @@ mod tests {
     #[test]
     fn item_without_vmad_has_script_false() {
         let subs = vec![sub(b"EDID", b"PlainItem\0")];
-        let c = CommonItemFields::from_subs(&subs);
+        let c = CommonItemFields::from_subs_with_remap(&subs, &None);
         assert!(!c.has_script);
     }
 
@@ -642,7 +638,7 @@ mod tests {
             sub(b"EDID", b"WeapIronSword\0"),
             sub(b"FULL", &[0x45u8, 0x23, 0x01, 0x00]),
         ];
-        let c = CommonItemFields::from_subs(&subs);
+        let c = CommonItemFields::from_subs_with_remap(&subs, &None);
         assert_eq!(c.editor_id, "WeapIronSword");
         assert_eq!(c.full_name, "<lstring 0x00012345>");
         set_localized_plugin(false);
@@ -661,7 +657,7 @@ mod tests {
         assert!(!is_localized_plugin());
         // Post-clear FULL reads as inline cstring.
         let subs = vec![sub(b"FULL", b"PlainName\0")];
-        let c = CommonItemFields::from_subs(&subs);
+        let c = CommonItemFields::from_subs_with_remap(&subs, &None);
         assert_eq!(c.full_name, "PlainName");
     }
 

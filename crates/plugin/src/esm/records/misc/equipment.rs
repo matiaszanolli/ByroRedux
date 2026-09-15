@@ -91,7 +91,7 @@ pub fn parse_arma(
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
@@ -177,7 +177,7 @@ pub fn parse_bptd(form_id: u32, subs: &[SubRecord]) -> BptdRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     for sub in subs {
         if &sub.sub_type == b"BPTN" {
@@ -222,7 +222,7 @@ pub fn parse_cobj(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
@@ -284,7 +284,7 @@ pub fn parse_minimal_esm_record(form_id: u32, subs: &[SubRecord]) -> MinimalEsmR
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     out
@@ -341,7 +341,7 @@ pub fn parse_slgm(form_id: u32, subs: &[SubRecord]) -> SlgmRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     out.model_path = common.model_path;

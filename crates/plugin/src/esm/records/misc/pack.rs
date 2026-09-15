@@ -687,7 +687,7 @@ pub fn parse_pack(
     // #2414 / TD2-117 — the universal named fields come from the shared
     // walker instead of a hand-rolled copy of its arms. It ignores every
     // other sub-record, so the per-record loop below is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     let pkcu_index = subs.iter().position(|sub| sub.sub_type == *b"PKCU");
     for (sub_index, sub) in subs.iter().enumerate() {

@@ -115,7 +115,7 @@ pub fn parse_imad(form_id: u32, subs: &[SubRecord]) -> ImadRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {

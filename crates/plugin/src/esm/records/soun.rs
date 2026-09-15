@@ -104,7 +104,7 @@ impl SounRecord {
 /// Parse a SOUN record from its sub-record list. Unknown sub-records are
 /// ignored — see the module doc for what's deliberately deferred.
 pub fn parse_soun(form_id: u32, subs: &[SubRecord]) -> SounRecord {
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     let looping = subs
         .iter()
         .find(|s| s.sub_type == *b"SNDD" || s.sub_type == *b"SNDX")

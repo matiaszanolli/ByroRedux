@@ -461,7 +461,7 @@ pub fn parse_qust(
     // record-level fields stay in `parse_qust_header`: QUST's `VMAD` arm
     // decodes the stage→fragment table on top of the common script data,
     // so it is not the shared walker's arm.
-    let common = CommonNamedFields::from_subs(subs);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     let mut block = QustBlock::None;
