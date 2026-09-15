@@ -487,7 +487,17 @@ fn every_tail_capturing_block_reports_it_and_parse_nif_records_it() {
     // `opaque_tail_len`. A new tail-capturing block that skips the override
     // silently reintroduces the blind spot for its own type.
     for (label, src) in [
-        ("blocks/shader.rs", include_str!("../shader.rs")),
+        // #4339 — one entry per shader family file. The scan is per-file
+        // by construction (declarations vs overrides must balance within
+        // a file), which is why the two hand-written `NiObject` impls
+        // moved next to their structs rather than staying in the shared
+        // head: there they would have been counted against a file that
+        // declares no tail at all.
+        ("blocks/shader/mod.rs", include_str!("../shader/mod.rs")),
+        ("blocks/shader/legacy.rs", include_str!("../shader/legacy.rs")),
+        ("blocks/shader/sky_water.rs", include_str!("../shader/sky_water.rs")),
+        ("blocks/shader/lighting.rs", include_str!("../shader/lighting.rs")),
+        ("blocks/shader/effect.rs", include_str!("../shader/effect.rs")),
         ("blocks/node.rs", include_str!("../node.rs")),
     ] {
         let declarations = src.matches("starfield_tail: Vec<u8>,").count();

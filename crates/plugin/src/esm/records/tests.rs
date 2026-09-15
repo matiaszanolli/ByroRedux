@@ -3,11 +3,14 @@
 //! file readable; pulled in as a child module via `#[cfg(test)] mod tests;`.
 
 use super::*;
+// #4219 — these used to ride in on the barrel's own `use` statements.
+// The barrel no longer needs them, so the tests that do name them here.
+use super::parse::character_rules_profile;
+use byroredux_core::character::CharacterRulesProfile;
+use crate::esm::reader::FormIdRemap;
 
 #[test]
 fn esm_header_selects_one_canonical_character_profile() {
-    use byroredux_core::character::CharacterRulesProfile;
-
     assert_eq!(
         character_rules_profile(GameKind::Fallout3NV, 0.94),
         CharacterRulesProfile::FALLOUT3
@@ -2423,8 +2426,11 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     ("misc/equipment.rs", "parse_bptd"),
     ("condition.rs", "parse_condition_list"),
     ("misc/effects.rs", "parse_efsh"),
-    ("mod.rs", "parse_esm"),
-    ("mod.rs", "parse_esm_with_load_order"),
+    // #4219 — the walker entry points moved to `parse.rs`; the exemption
+    // follows the code, and the table's mechanical no-u32-reads check still
+    // verifies the claim from the new location.
+    ("parse.rs", "parse_esm"),
+    ("parse.rs", "parse_esm_with_load_order"),
     ("misc/effects.rs", "parse_expl"),
     ("misc/character.rs", "parse_eyes"),
     ("global.rs", "parse_glob"),
@@ -2708,23 +2714,24 @@ fn remap_fid_has_exactly_one_definition() {
 /// routing coverage from, and while it was hand-maintained in the tool it
 /// drifted three times, each time calling a live dispatch arm "skip".
 ///
-/// The arm set is re-derived from `mod.rs`'s own source at test time, and
+/// The arm set is re-derived from `parse.rs`'s own source at test time,
+/// and
 /// only from the slice between the match and its catch-all — so the
 /// const's own literals cannot be what the scan finds.
 #[test]
 fn dispatch_handled_fourccs_matches_the_live_dispatch_arms() {
-    const MOD_RS: &str = include_str!("mod.rs");
+    const PARSE_RS: &str = include_str!("parse.rs");
 
-    let start = MOD_RS
+    let start = PARSE_RS
         .find("        match &label {")
         .expect("the top-level dispatch match");
-    let end = MOD_RS[start..]
+    let end = PARSE_RS[start..]
         .find("            _ => {")
         .expect("the dispatch catch-all arm")
         + start;
 
     let mut arms: Vec<[u8; 4]> = Vec::new();
-    for line in MOD_RS[start..end].lines() {
+    for line in PARSE_RS[start..end].lines() {
         if line.trim_start().starts_with("//") {
             continue;
         }

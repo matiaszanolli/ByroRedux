@@ -5,6 +5,7 @@
 //! `EsmIndex.trees` entry + `cells.statics`).
 
 use super::*;
+use crate::esm::cell::support::parse_modl_group;
 
 /// Handles one of the world-placement labels; the caller has already
 /// verified `label` is one of this domain's via the outer dispatch match.
