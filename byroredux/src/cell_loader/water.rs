@@ -212,9 +212,13 @@ fn build_full_detail_water_grid(
             };
 
             const LAND_SEGMENTS: usize = 32;
+            // Grid row `r` runs from normalized z = -1 (north) to +1 (south);
+            // LAND rows run south to north (`terrain.rs` places row 0 at
+            // Z-up `origin_y`, the cell's +z edge after `zup_to_yup_pos`).
+            // Reading row `r` directly mirrored the wet mask north↔south.
             let sample = |r: usize, c: usize| {
                 land.heights.get(
-                    (r * LAND_SEGMENTS / segments) * (LAND_SEGMENTS + 1)
+                    ((segments - r) * LAND_SEGMENTS / segments) * (LAND_SEGMENTS + 1)
                         + c * LAND_SEGMENTS / segments,
                 )
             };
@@ -298,10 +302,12 @@ fn terrain_water_components(
 ) -> Option<Vec<(f32, f32, f32, f32)>> {
     const WATER_SEGMENTS: usize = FULL_DETAIL_WATER_GRID_SEGMENTS;
     const LAND_SEGMENTS: usize = 32;
+    // Same south-first LAND row order as `build_full_detail_water_grid`:
+    // mask row `r` (north → south) reads LAND row `WATER_SEGMENTS - r`.
     let sample = |r: usize, c: usize| {
         land.heights
             .get(
-                (r * LAND_SEGMENTS / WATER_SEGMENTS) * (LAND_SEGMENTS + 1)
+                ((WATER_SEGMENTS - r) * LAND_SEGMENTS / WATER_SEGMENTS) * (LAND_SEGMENTS + 1)
                     + c * LAND_SEGMENTS / WATER_SEGMENTS,
             )
             .copied()
@@ -1276,14 +1282,15 @@ mod tests {
             vertex_colors: None,
             quadrants: Default::default(),
         };
-        // Only the top-left LAND sample is below XCLW. The first water cell
-        // must therefore be a clipped polygon, not the original full quad.
+        // Only LAND sample (row 0, col 0) — the south-west corner — is below
+        // XCLW. The south-west water cell must therefore be a clipped
+        // polygon, not the original full quad.
         land.heights[0] = -100.0;
         let (vertices, indices) = build_full_detail_water_grid(2048.0, Some(&land), 0.0);
         assert!(!indices.is_empty());
         assert!(vertices.iter().any(|vertex| {
             (vertex.position[0] + 1.0).abs() < 1.0e-6
-                && (vertex.position[2] + 0.9375).abs() < 1.0e-6
+                && (vertex.position[2] - 0.9375).abs() < 1.0e-6
         }));
         assert!(vertices.iter().all(|vertex| {
             vertex.position[0] >= -1.0
@@ -1301,11 +1308,52 @@ mod tests {
             vertex_colors: None,
             quadrants: Default::default(),
         };
+        // LAND (row 0, col 0) is the south-west corner → normalized (-x, +z);
+        // LAND (row 32, col 32) is the north-east corner → (+x, -z). The mask
+        // is seeded north-first, so the north-east pond is found first.
         land.heights[0] = -10.0;
         land.heights[32 * 33 + 32] = -20.0;
         assert_eq!(
             terrain_water_components(&land, 0.0),
-            Some(vec![(-1.0, -0.875, -1.0, -0.875), (0.875, 1.0, 0.875, 1.0)])
+            Some(vec![(0.875, 1.0, -1.0, -0.875), (-1.0, -0.875, 0.875, 1.0)])
+        );
+    }
+
+    /// LAND rows are south-first: `terrain.rs` places row 0 at Z-up
+    /// `origin_y`, which `zup_to_yup_pos` maps to the cell's +z edge — the
+    /// edge an exterior water plane reaches at normalized z = +1
+    /// (`exterior_water_tile_transform` centres it at `origin.z - half`).
+    /// Sampling LAND row `r` for grid row `r` mirrored every shoreline mask:
+    /// Riverwood's (4,-11) riverbed rendered dry beside wet patches on its
+    /// banks, and the plane's volume footprint was flipped with it.
+    #[test]
+    fn land_row_zero_wets_the_same_south_edge_the_terrain_mesh_occupies() {
+        let terrain_row_0_z = zup_to_yup_pos([0.0, 0.0, 0.0])[2];
+        let terrain_row_32_z = zup_to_yup_pos([0.0, EXTERIOR_CELL_UNITS, 0.0])[2];
+        assert!(
+            terrain_row_0_z > terrain_row_32_z,
+            "terrain row 0 is the +z edge"
+        );
+
+        let mut land = esm::cell::LandscapeData {
+            heights: vec![100.0; 33 * 33],
+            normals: None,
+            vertex_colors: None,
+            quadrants: Default::default(),
+        };
+        // The whole southern LAND row sits below XCLW.
+        for col in 0..33 {
+            land.heights[col] = -100.0;
+        }
+        let (vertices, indices) = build_full_detail_water_grid(2048.0, Some(&land), 0.0);
+        assert!(!indices.is_empty());
+        assert!(
+            vertices.iter().all(|vertex| vertex.position[2] > 0.8),
+            "southern wet row must clip water on the +z edge"
+        );
+        assert_eq!(
+            terrain_water_components(&land, 0.0),
+            Some(vec![(-1.0, 1.0, 0.875, 1.0)])
         );
     }
 
