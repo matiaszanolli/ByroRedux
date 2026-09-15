@@ -504,6 +504,17 @@ struct App {
     /// `draw_commands` and the light buffers.
     groundcover_cells: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverCell>,
     groundcover_chunks: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverChunk>,
+    /// Camera-centred fixed-slab ownership for ground-cover chunks.  Kept on
+    /// the app, not rebuilt in the render collector, so a chunk retains its
+    /// blade-arena slot until it genuinely leaves the residency ring.
+    groundcover_residency: crate::render::groundcover::GroundCoverResidency,
+    /// One-shot warning latch for an actual ground-cover capacity fault. Ring
+    /// fill-in is normal and is never logged as truncation.
+    groundcover_truncation_logged: bool,
+    /// Bindless generated Tier-3 atlas and the palette signature currently in
+    /// it. The handle is updated in place on a worldspace palette change, so
+    /// it never grows the registry during travel.
+    groundcover_detail_atlas: Option<(u32, u64)>,
     groundcover_species: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverSpecies>,
     /// The scatter's species selection table (§7), rebuilt alongside
     /// `groundcover_species` each frame from the palette's climate weights.
@@ -846,6 +857,9 @@ impl App {
             tlas_policy: Default::default(),
             groundcover_cells: Vec::new(),
             groundcover_chunks: Vec::new(),
+            groundcover_residency: Default::default(),
+            groundcover_truncation_logged: false,
+            groundcover_detail_atlas: None,
             groundcover_species: Vec::new(),
             groundcover_species_table: Vec::new(),
             groundcover_disturbers: Vec::new(),

@@ -198,6 +198,16 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define GROUNDCOVER_DETAIL_ATLAS_EDGE {GROUNDCOVER_DETAIL_ATLAS_EDGE}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define GROUNDCOVER_DETAIL_NORMAL_STRENGTH {GROUNDCOVER_DETAIL_NORMAL_STRENGTH:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define GROUNDCOVER_CHUNKS_PER_CELL_SIDE {GROUNDCOVER_CHUNKS_PER_CELL_SIDE}u"
     )
     .unwrap();
@@ -257,7 +267,51 @@ fn main() {
             "GROUNDCOVER_WIND_ADVECTION_SCALE",
             GROUNDCOVER_WIND_ADVECTION_SCALE,
         ),
+        (
+            "GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER",
+            GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER,
+        ),
+        (
+            "GROUNDCOVER_WIND_SECONDARY_AMPLITUDE",
+            GROUNDCOVER_WIND_SECONDARY_AMPLITUDE,
+        ),
+        (
+            "GROUNDCOVER_WIND_LATERAL_FRACTION",
+            GROUNDCOVER_WIND_LATERAL_FRACTION,
+        ),
         ("GROUNDCOVER_MAX_WIND_SPEED", GROUNDCOVER_MAX_WIND_SPEED),
+        ("GROUNDCOVER_TWO_PI", GROUNDCOVER_TWO_PI),
+        ("GROUNDCOVER_WIND_FLOW_FLOOR", GROUNDCOVER_WIND_FLOW_FLOOR),
+        (
+            "GROUNDCOVER_WIND_STIFFNESS_ATTENUATION",
+            GROUNDCOVER_WIND_STIFFNESS_ATTENUATION,
+        ),
+        ("GROUNDCOVER_REST_LEAN_BASE", GROUNDCOVER_REST_LEAN_BASE),
+        (
+            "GROUNDCOVER_REST_LEAN_VARIATION",
+            GROUNDCOVER_REST_LEAN_VARIATION,
+        ),
+        (
+            "GROUNDCOVER_TERRAIN_NORMAL_WEIGHT",
+            GROUNDCOVER_TERRAIN_NORMAL_WEIGHT,
+        ),
+        ("GROUNDCOVER_TWIST_RADIANS", GROUNDCOVER_TWIST_RADIANS),
+        (
+            "GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS",
+            GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS,
+        ),
+        (
+            "GROUNDCOVER_MAX_WIDTH_MULTIPLIER",
+            GROUNDCOVER_MAX_WIDTH_MULTIPLIER,
+        ),
+        (
+            "GROUNDCOVER_COLOUR_JITTER_MIN",
+            GROUNDCOVER_COLOUR_JITTER_MIN,
+        ),
+        (
+            "GROUNDCOVER_COLOUR_JITTER_MAX",
+            GROUNDCOVER_COLOUR_JITTER_MAX,
+        ),
     ] {
         writeln!(out, "#define {name} {value:?}").unwrap();
     }
@@ -333,6 +387,10 @@ fn main() {
         (
             "GROUNDCOVER_BLADE_SEGMENTS_NEAR",
             GROUNDCOVER_BLADE_SEGMENTS_NEAR,
+        ),
+        (
+            "GROUNDCOVER_BLADE_SEGMENTS_MID",
+            GROUNDCOVER_BLADE_SEGMENTS_MID,
         ),
         (
             "GROUNDCOVER_VERTS_PER_SEGMENT",

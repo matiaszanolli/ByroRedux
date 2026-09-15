@@ -710,22 +710,43 @@ void main() {
     // ── Wave UVs ──
     // For flat surfaces (Calm/River/Rapids), drive the UV from world
     // XZ so the surface texture is continuous across the cell grid
-    // (no seams at quad edges). For waterfalls, the UV runs along
-    // the surface tangent (mesh-provided flow axis) so the sheet
-    // scrolls down naturally.
+    // (no seams at quad edges). A waterfall must instead derive its UV
+    // basis from the canonical world-space WaterFlow. Mesh tangents are
+    // useful for normal-map lighting, but are not a reliable fall axis:
+    // legacy sheets commonly author them across the sheet, which made the
+    // waterfall texture travel sideways. `push.flow` is Y-up and points
+    // downward for WaterKind::Waterfall, so its second UV axis is always
+    // the actual direction of travel.
     vec2 uvWorld;
     vec2 uvOrigin;
+    vec2 normalScrollA = push.scroll.xy;
+    vec2 normalScrollB = push.scroll.zw;
+    vec2 normalScrollC = push.scroll_c.xy;
     if (kind == WATER_WATERFALL) {
-        // Project world position onto the flow tangent (T) for v,
-        // and the bitangent for u. The vertex shader sets up T as
-        // the mesh tangent — for a waterfall the artist authors that
-        // pointing along the fall direction.
-        uvWorld = vec2(dot(vWorldPos, B), dot(vWorldPos, T));
+        vec3 fallAxis = length(push.flow.xyz) > 1.0e-5
+            ? normalize(push.flow.xyz)
+            : vec3(0.0, -1.0, 0.0);
+        vec3 sheetAcross = cross(Nsurface, fallAxis);
+        sheetAcross = length(sheetAcross) > 1.0e-5
+            ? normalize(sheetAcross)
+            : B;
+        uvWorld = vec2(dot(vWorldPos, sheetAcross), dot(vWorldPos, fallAxis));
         // Render origin projected into the same tangent-space basis, so
         // the procedural branch of `sampleScrollingNormal` can rebase
         // its hash input origin-relative (#1997) without disturbing the
         // textured branch's absolute (wrapping) UV.
-        uvOrigin = vec2(dot(renderOrigin.xyz, B), dot(renderOrigin.xyz, T));
+        uvOrigin = vec2(dot(renderOrigin.xyz, sheetAcross), dot(renderOrigin.xyz, fallAxis));
+        // A sampled texture moves opposite its UV scroll. `fallAxis` is
+        // downward, hence negative V advances the pattern down the sheet.
+        // Retain each authored layer's rate, but remove horizontal weather /
+        // tangent contamination from this vertical-only representation.
+        normalScrollA = vec2(0.0, -length(push.scroll.xy));
+        normalScrollB = vec2(0.0, -length(push.scroll.zw));
+        normalScrollC = vec2(0.0, -length(push.scroll_c.xy));
+        // Flow-map vectors are tangent/UV-space, so they cannot establish
+        // a dependable world-down direction on legacy waterfall meshes.
+        // The canonical WaterFlow above owns motion for this representation.
+        flowOffset = vec2(0.0);
     } else {
         // Use world XZ — flat-plane water.
         uvWorld = vWorldPos.xz;
@@ -736,8 +757,8 @@ void main() {
     // baked from `flow` on the CPU side, so we don't have to branch
     // here. Push constants carry the final scroll vectors.
     vec2 normalUvOffset = push.uv_offset.xy + flowOffset;
-    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, push.scroll.xy, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale);
-    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, push.scroll.zw, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale);
+    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, normalScrollA, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale);
+    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, normalScrollB, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale);
 
     // A distinct authored NAM4 layer contributes on every horizontal water
     // kind. Rapids uses the faster flow-biased path for whitewater; calm and
@@ -752,7 +773,7 @@ void main() {
     if (blendAuthoredNormals && (kind == WATER_RAPIDS || hasAuthoredThirdLayer)) {
         vec2 thirdScroll = kind == WATER_RAPIDS
             ? vec2(push.flow.x, push.flow.z) * push.flow.w * 2.0
-            : push.scroll_c.xy;
+            : normalScrollC;
         float thirdWeight = kind == WATER_RAPIDS ? 0.7 : 0.35;
         vec3 nC = sampleScrollingNormal(
             noiseMapC,

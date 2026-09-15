@@ -17,6 +17,7 @@ use byroredux_core::ecs::components::groundcover::{GroundCoverDimmer, WindField}
 use byroredux_core::ecs::{DebugStats, DeltaTime, ScratchTelemetry};
 use byroredux_renderer::vulkan::context::FrameInputs;
 use byroredux_renderer::vulkan::GpuUploadCtx;
+use byroredux_renderer::shader_constants::GROUNDCOVER_DETAIL_ATLAS_EDGE;
 use byroredux_renderer::ImageSpaceModifier;
 use byroredux_ui::{ScaleformHostDispatch, MAX_DISTINCT_HOST_METHOD_NAMES};
 use std::time::Instant;
@@ -35,7 +36,62 @@ fn host_method_diagnostic_key(menu_name: &str, method: &str) -> (String, String)
     (menu_name.to_owned(), method.to_owned())
 }
 
+/// Ensure the terrain-side Tier-3 detail atlas represents the active engine
+/// blade palette. It is a persistent bindless allocation whose image is
+/// replaced in place when a worldspace changes palette; terrain tiles receive
+/// the handle through their existing SSBO row.
+fn publish_groundcover_detail_atlas(
+    world: &byroredux_core::ecs::World,
+    atlas_state: &mut Option<(u32, u64)>,
+    ctx: &mut byroredux_renderer::VulkanContext,
+) {
+    let atlas = crate::render::groundcover::build_groundcover_detail_atlas(world);
+    let edge = GROUNDCOVER_DETAIL_ATLAS_EDGE;
+    let height = edge * atlas.species_count.max(1);
+    let allocator = match ctx.allocator.as_ref() {
+        Some(allocator) => allocator,
+        None => return,
+    };
+    let upload_ctx = GpuUploadCtx {
+        device: &ctx.device,
+        allocator,
+        queue: &ctx.graphics_queue,
+        command_pool: ctx.transfer_pool,
+    };
+        let handle = match *atlas_state {
+            Some((handle, signature)) if signature == atlas.signature => handle,
+            Some((handle, _)) => match ctx.texture_registry.update_rgba(
+                upload_ctx,
+                handle,
+                edge,
+                height,
+                &atlas.pixels,
+            ) {
+                Ok(()) => {
+                    *atlas_state = Some((handle, atlas.signature));
+                    handle
+                }
+                Err(error) => {
+                    log::warn!(target: "engine::groundcover", "failed to refresh Tier-3 detail atlas: {error:#}");
+                    return;
+                }
+            },
+            None => match ctx.texture_registry.register_rgba(upload_ctx, edge, height, &atlas.pixels) {
+                Ok(handle) => {
+                    *atlas_state = Some((handle, atlas.signature));
+                    handle
+                }
+                Err(error) => {
+                    log::warn!(target: "engine::groundcover", "failed to create Tier-3 detail atlas: {error:#}");
+                    return;
+                }
+            },
+        };
+    ctx.set_groundcover_detail_atlas(handle, atlas.species_count);
+}
+
 impl App {
+
     /// Phase 14 — pulled out of the original `WindowEvent::RedrawRequested`
     /// arm so the game loop can call it directly from `about_to_wait`
     /// instead of routing through `request_redraw()` → wait for the
@@ -282,14 +338,32 @@ impl App {
             // can resolve, and #4052 settled that it must be resolved every
             // frame (the registry compacts).
             if ctx.groundcover.is_some() && !self.groundcover_off {
+                let groundcover_dt = self
+                    .world
+                    .try_resource::<DeltaTime>()
+                    .map_or(0.0, |dt| dt.0);
                 let chunks_truncated = crate::render::groundcover::collect_groundcover_frame(
                     &self.world,
                     &ctx.mesh_registry,
                     byroredux_core::math::Vec3::from_array(frame.camera_pos),
                     byroredux_core::math::Vec3::from_array(frame.cam_forward),
+                    groundcover_dt,
+                    &mut self.groundcover_residency,
                     &mut self.groundcover_cells,
                     &mut self.groundcover_chunks,
                 );
+                if chunks_truncated != 0 {
+                    if !self.groundcover_truncation_logged {
+                        log::warn!(
+                            target: "engine::groundcover",
+                            "ground-cover cell table overflow: {chunks_truncated} resident chunks were not published; \
+                             this is a capacity fault, not normal residency-ring fill-in"
+                        );
+                        self.groundcover_truncation_logged = true;
+                    }
+                } else {
+                    self.groundcover_truncation_logged = false;
+                }
                 // #4057 — the per-weather grass dimmer, read live each frame
                 // from the slot `weather_system` writes it into. Absent (every
                 // non-Oblivion game, and any frame before weather resolves) is
@@ -299,9 +373,15 @@ impl App {
                     .try_resource::<GroundCoverDimmer>()
                     .map(|d| *d)
                     .unwrap_or(GroundCoverDimmer::NEUTRAL);
+                publish_groundcover_detail_atlas(
+                    &self.world,
+                    &mut self.groundcover_detail_atlas,
+                    ctx,
+                );
                 crate::render::groundcover::collect_groundcover_species(
                     &self.world,
                     dimmer,
+                    self.groundcover_detail_atlas.map_or(0, |(handle, _)| handle),
                     &mut self.groundcover_species,
                 );
                 // §7 — built from the same palette, in the same order and
@@ -372,6 +452,8 @@ impl App {
                 // the renderer that could drift from the live one.
                 self.groundcover_cells.clear();
                 self.groundcover_chunks.clear();
+                self.groundcover_residency.clear();
+                self.groundcover_truncation_logged = false;
                 self.groundcover_species.clear();
                 let input = byroredux_renderer::vulkan::groundcover::GroundCoverFrame {
                     cells: &self.groundcover_cells,

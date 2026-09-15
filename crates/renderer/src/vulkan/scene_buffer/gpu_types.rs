@@ -47,6 +47,11 @@ pub struct GpuTerrainTile {
     /// is what an interior, a LOD tile, or a worldspace with no resolved
     /// ground-cover palette gets, and is why no separate enable flag exists.
     pub canopy_height: f32,
+    /// Bindless handle of the generated per-species ground-cover detail
+    /// atlas, followed by the number of active species. Zero disables the
+    /// Tier-3 terrain detail layer while the atlas has not been published.
+    /// The remaining lanes keep this tail a std430 vec4.
+    pub groundcover_detail_atlas: [u32; 4],
 }
 
 impl GpuTerrainTile {

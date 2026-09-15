@@ -11,12 +11,16 @@
 //! texture) and the registry compacts, so a cached offset would silently point
 //! into another mesh's vertices and grow grass out of a rock.
 
+use std::collections::{HashMap, HashSet};
+
 use byroredux_core::ecs::components::groundcover::{GroundCoverDimmer, GroundCoverPalette};
 use byroredux_core::ecs::{MeshHandle, World};
 use byroredux_core::math::Vec3;
 use byroredux_renderer::shader_constants::{
-    GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_CHUNK_UNITS, GROUNDCOVER_DRAW_DISTANCE,
-    GROUNDCOVER_INTERACTION_MAX_DISTURBERS, GROUNDCOVER_INTERACTION_UNITS, GROUNDCOVER_MAX_CHUNKS,
+    GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_CHUNK_UNITS, GROUNDCOVER_DETAIL_ATLAS_EDGE,
+    GROUNDCOVER_DRAW_DISTANCE, GROUNDCOVER_INTERACTION_MAX_DISTURBERS,
+    GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS, GROUNDCOVER_INTERACTION_UNITS,
+    GROUNDCOVER_MAX_CHUNKS,
 };
 use byroredux_renderer::vulkan::groundcover::{
     GpuGroundCoverCell, GpuGroundCoverChunk, GpuGroundCoverDisturber, GpuGroundCoverSpecies,
@@ -35,6 +39,7 @@ const CHUNK_BOUND_RADIUS: f32 = GROUNDCOVER_CHUNK_UNITS * std::f32::consts::FRAC
 
 /// A chunk that survived the distance and behind-camera culls, before the
 /// per-frame caps are applied.
+#[derive(Clone, Copy)]
 struct ChunkCandidate {
     /// Position in the cull walk — origin-sorted cell, then row, then column.
     /// Survivors are emitted in this order, so a frame that stays under the
@@ -47,6 +52,139 @@ struct ChunkCandidate {
     horizontal: f32,
 }
 
+/// Identity of a resident chunk.  The base coordinate is integral in normal
+/// terrain generation, but its bit representation is the actual renderer
+/// identity: it is exactly what `chunk_seed` and the GPU record use.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ChunkKey {
+    x: u32,
+    z: u32,
+}
+
+impl ChunkKey {
+    fn from_base(base_xz: [f32; 2]) -> Self {
+        Self {
+            x: base_xz[0].to_bits(),
+            z: base_xz[1].to_bits(),
+        }
+    }
+}
+
+/// Camera-centred ground-cover residency ring.
+///
+/// The blade SSBO is partitioned into equal slabs by the chunk record index.
+/// Keeping a chunk in the same slot while it remains in the ring therefore
+/// keeps its slab ownership stable; only eviction releases a slab.  The ring
+/// itself is host-side because terrain-cell streaming is host-side too.
+#[derive(Debug, Default)]
+pub(crate) struct GroundCoverResidency {
+    slots: Vec<Option<ChunkKey>>,
+    entry_progress: Vec<f32>,
+}
+
+impl GroundCoverResidency {
+    /// Start a fresh worldspace ring.  The next collection fills it through
+    /// the normal placement budget rather than issuing a one-frame burst.
+    pub(crate) fn clear(&mut self) {
+        self.slots.clear();
+        self.entry_progress.clear();
+    }
+
+    fn ensure_slot_count(&mut self) {
+        let radius_chunks = ((GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS)
+            / GROUNDCOVER_CHUNK_UNITS)
+            .ceil() as usize;
+        // A square is a conservative allocation for the circular desired
+        // ring.  It is derived solely from the draw radius and chunk extent,
+        // not an independently tuned cap.
+        let side = radius_chunks * 2 + 1;
+        let required = side * side;
+        debug_assert!(required <= GROUNDCOVER_MAX_CHUNKS as usize);
+        self.slots.resize(required, None);
+        self.entry_progress.resize(required, 0.0);
+    }
+
+    /// Reconcile ring slots with this frame's camera-centred desired set.
+    ///
+    /// The placement budget is the plan's cited starting value (24 chunks per
+    /// frame): a teleport fills in over several frames instead of forcing one
+    /// large scatter dispatch.  Existing residents are never re-slotted.
+    fn reconcile(&mut self, candidates: &[ChunkCandidate], delta_seconds: f32) -> Vec<(usize, ChunkCandidate)> {
+        const PLACEMENTS_PER_FRAME: usize = 24;
+
+        self.ensure_slot_count();
+        let desired: HashMap<ChunkKey, ChunkCandidate> = candidates
+            .iter()
+            .map(|candidate| (ChunkKey::from_base(candidate.base_xz), *candidate))
+            .collect();
+        let wanted: HashSet<ChunkKey> = desired.keys().copied().collect();
+
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if slot.is_some_and(|key| !wanted.contains(&key)) {
+                *slot = None;
+                self.entry_progress[index] = 0.0;
+            }
+        }
+
+        // Reuse the cited interaction-field half-life as the bounded entry
+        // ramp: it is already the renderer's established short temporal
+        // response. New slots stay at zero until after this advance.
+        let step = delta_seconds.clamp(0.0, 0.25) / GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS;
+        for (slot, progress) in self.slots.iter().zip(&mut self.entry_progress) {
+            if slot.is_some() {
+                *progress = (*progress + step).min(1.0);
+            }
+        }
+
+        let resident: HashSet<ChunkKey> = self.slots.iter().flatten().copied().collect();
+        let mut pending: Vec<(ChunkKey, ChunkCandidate)> = desired
+            .iter()
+            .filter(|(key, _)| !resident.contains(key))
+            .map(|(key, candidate)| (*key, *candidate))
+            .collect();
+        pending.sort_by(|a, b| {
+            a.1.horizontal
+                .total_cmp(&b.1.horizontal)
+                .then(a.1.order.cmp(&b.1.order))
+        });
+
+        let mut pending = pending.into_iter();
+        let mut placed = 0usize;
+        for (slot_index, slot) in self.slots.iter_mut().enumerate() {
+            if placed == PLACEMENTS_PER_FRAME {
+                break;
+            }
+            if slot.is_none() {
+                if let Some((key, _)) = pending.next() {
+                    *slot = Some(key);
+                    self.entry_progress[slot_index] = 0.0;
+                    placed += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, key)| {
+                let key = (*key)?;
+                // A slot can only contain a key from `wanted`: stale slots
+                // were evicted above, and newly placed keys came from it.
+                desired
+                    .get(&key)
+                    .copied()
+                    .map(|candidate| (slot, candidate))
+            })
+            .collect()
+    }
+
+    fn entry_progress(&self, slot: usize) -> f32 {
+        self.entry_progress.get(slot).copied().unwrap_or(0.0)
+    }
+}
+
 /// Fit the culled chunk list to `cap`: keep the nearest chunks, then restore
 /// walk order among the survivors. Returns how many were dropped (#4338).
 ///
@@ -54,6 +192,7 @@ struct ChunkCandidate {
 /// off the end is lost, and losing the far rim of the field is the only
 /// truncation that reads as distance. Walk order alone drops by cell origin —
 /// west to east — so the grass on one side of the camera went instead.
+#[cfg(test)]
 fn keep_nearest_chunks(candidates: &mut Vec<ChunkCandidate>, cap: usize) -> u32 {
     if candidates.len() <= cap {
         return 0;
@@ -75,16 +214,16 @@ fn keep_nearest_chunks(candidates: &mut Vec<ChunkCandidate>, cap: usize) -> u32 
 /// allocations persist across frames — the same pattern `draw_commands` and
 /// the light buffers use.
 ///
-/// Returns how many culled-in chunks were dropped to fit
-/// `GROUNDCOVER_MAX_CHUNKS` / `MAX_GROUNDCOVER_CELLS`, for
-/// `GroundCoverStats::chunks_truncated`. The shipped chunk size and draw
-/// distance never reach the cap — `chunk_cap_covers_every_chunk_in_reach`
-/// pins that — so a non-zero count means a tuning change outgrew it (#4338).
+/// Returns only cell-table overflow for `GroundCoverStats::chunks_truncated`.
+/// The GPU blade arena remains statically sized, but its slots are now owned
+/// by [`GroundCoverResidency`] instead of by a per-frame nearest-chunk cap.
 pub(crate) fn collect_groundcover_frame(
     world: &World,
     mesh_registry: &MeshRegistry,
     camera_pos: Vec3,
-    camera_forward: Vec3,
+    _camera_forward: Vec3,
+    delta_seconds: f32,
+    residency: &mut GroundCoverResidency,
     cells: &mut Vec<GpuGroundCoverCell>,
     chunks: &mut Vec<GpuGroundCoverChunk>,
 ) -> u32 {
@@ -150,15 +289,6 @@ pub(crate) fn collect_groundcover_frame(
                 if horizontal > max_dist {
                     continue;
                 }
-                // Cheap behind-the-camera reject. Not a full frustum cull:
-                // this is a hemisphere test, so it keeps everything the side
-                // planes would also keep. The scatter is one workgroup per
-                // chunk and the draw is indirect, so the cost of a kept-but-
-                // offscreen chunk is small — while a chunk wrongly culled at
-                // the screen edge is a visible bite out of the field.
-                if to_chunk.dot(camera_forward) < -(CHUNK_BOUND_RADIUS + GROUNDCOVER_CHUNK_UNITS) {
-                    continue;
-                }
                 candidates.push(ChunkCandidate {
                     order: candidates.len(),
                     cell: cell_ordinal,
@@ -168,18 +298,32 @@ pub(crate) fn collect_groundcover_frame(
             }
         }
     }
-    let mut truncated = keep_nearest_chunks(&mut candidates, GROUNDCOVER_MAX_CHUNKS as usize);
+    // The residency ring owns the fixed GPU slabs.  Do not retain the old
+    // nearest-first truncation here: it still made a teleport or a larger
+    // draw radius silently drop coverage at one edge instead of queuing it.
+    let residents = residency.reconcile(&candidates, delta_seconds);
+    let mut truncated = 0;
 
     // A cell contributes nothing if none of its chunks survive, so the cell
     // record is only emitted once one does — otherwise a 49-cell ring would
     // fill the 128-cell cap with cells whose chunks are all a kilometre behind
     // the camera. Survivors arrive in walk order, so one cell's chunks are
     // contiguous and only the last emitted cell can match.
-    let mut emitted: Option<(usize, u32)> = None;
-    for candidate in &candidates {
-        let index = match emitted {
-            Some((cell_ordinal, index)) if cell_ordinal == candidate.cell => index,
-            _ => {
+    let mut emitted: HashMap<usize, u32> = HashMap::new();
+    // Preserve the residency slot as the GPU record index.  Compacting this
+    // list would make a hole at (say) slot 3 move slot 4's chunk into slab 3,
+    // defeating the ring's no-move ownership guarantee.  Inactive records
+    // are explicitly skipped by scatter and retain an empty indirect draw.
+    let slot_count = residents
+        .iter()
+        .map(|(slot, _)| *slot + 1)
+        .max()
+        .unwrap_or(0);
+    chunks.resize(slot_count, GpuGroundCoverChunk::default());
+    for (slot, candidate) in residents {
+        let index = match emitted.get(&candidate.cell).copied() {
+            Some(index) => index,
+            None => {
                 if cells.len() >= MAX_GROUNDCOVER_CELLS {
                     truncated += 1;
                     continue;
@@ -205,15 +349,18 @@ pub(crate) fn collect_groundcover_frame(
                     pad1: [0.0; 3],
                 });
                 let index = (cells.len() - 1) as u32;
-                emitted = Some((candidate.cell, index));
+                emitted.insert(candidate.cell, index);
                 index
             }
         };
-        chunks.push(GpuGroundCoverChunk {
+        chunks[slot] = GpuGroundCoverChunk {
             base_xz: candidate.base_xz,
             cell_index: index,
             seed: chunk_seed(candidate.base_xz),
-        });
+            active: 1,
+            entry_progress: residency.entry_progress(slot),
+            pad: [0; 2],
+        };
     }
     debug_assert!(chunks.len() <= GROUNDCOVER_MAX_CHUNKS as usize);
     debug_assert!(cells.len() <= MAX_GROUNDCOVER_CELLS);
@@ -323,6 +470,87 @@ struct EntityCell {
     layer_affinity: [f32; 8],
 }
 
+/// CPU payload for the bindless Tier-3 detail atlas. Its rows are generated
+/// from the active engine species rather than guessed from GRAS card assets:
+/// the palette deliberately owns the blade identity (§12.12).
+pub(crate) struct GroundCoverDetailAtlas {
+    pub(crate) pixels: Vec<u8>,
+    pub(crate) species_count: u32,
+    pub(crate) signature: u64,
+}
+
+/// Build one repeatable texture row per palette species. RGB is the species'
+/// own base/tip gradient. Alpha is a small deterministic blade silhouette:
+/// terrain consumes it as compact height detail while Tier 2 uses the same
+/// palette-owned rows as clump-card cutouts. `d_ground`, evaluated in the
+/// terrain fragment, remains the sole density authority.
+pub(crate) fn build_groundcover_detail_atlas(world: &World) -> GroundCoverDetailAtlas {
+    use byroredux_core::ecs::components::groundcover::GroundCoverSpecies;
+
+    let fallback = [GroundCoverSpecies::DEFAULT_TEMPERATE];
+    let palette = world.try_resource::<GroundCoverPalette>();
+    let species: &[GroundCoverSpecies] = match palette.as_ref() {
+        Some(p) if !p.species.is_empty() => &p.species,
+        _ => &fallback,
+    };
+    let count = species.len().min(MAX_GROUNDCOVER_SPECIES);
+    let edge = GROUNDCOVER_DETAIL_ATLAS_EDGE as usize;
+    let mut pixels = vec![0u8; edge * edge * count * 4];
+    let mut signature = count as u64;
+    for (species_index, species) in species.iter().take(count).enumerate() {
+        for channel in species.colour_gradient.iter().flatten() {
+            signature = signature.rotate_left(7) ^ u64::from(channel.to_bits());
+        }
+        for y in 0..edge {
+            for x in 0..edge {
+                // Integer-only checker phase: immutable texture detail must
+                // never use time or frame state, for the same reason the
+                // blade seed cannot (§3's AMD determinism requirement).
+                let bit = ((x.wrapping_mul(13) ^ y.wrapping_mul(17) ^ species_index) & 1) as f32;
+                let colour = [0, 1, 2].map(|channel| {
+                    species.colour_gradient[0][channel]
+                        + (species.colour_gradient[1][channel]
+                            - species.colour_gradient[0][channel])
+                            * bit
+                });
+                let texel = ((species_index * edge + y) * edge + x) * 4;
+                for channel in 0..3 {
+                    pixels[texel + channel] = linear_to_srgb8(colour[channel]);
+                }
+                // Tier 2 samples this same immutable atlas as a clump card.
+                // Four narrow full-height strokes are derived from Outerra's
+                // already-cited `GROUNDCOVER_BLADES_PER_POINT`, so the alpha
+                // lane is a deterministic grass silhouette rather than the
+                // old checker that only served Tier 3 normal detail. The
+                // terrain still reads it as a compact local height field.
+                let blade_count = GROUNDCOVER_BLADES_PER_POINT as usize;
+                let lane = x * blade_count / edge;
+                let lane_start = lane * edge / blade_count;
+                let lane_width = (edge / (blade_count * blade_count)).max(1);
+                let lane_centre = lane_start + edge / (blade_count * 2);
+                let left = lane_centre.saturating_sub(lane_width / 2);
+                let right = (left + lane_width).min(edge);
+                pixels[texel + 3] = if x >= left && x < right { u8::MAX } else { 0 };
+            }
+        }
+    }
+    GroundCoverDetailAtlas {
+        pixels,
+        species_count: count as u32,
+        signature,
+    }
+}
+
+fn linear_to_srgb8(value: f32) -> u8 {
+    let value = value.clamp(0.0, 1.0);
+    let encoded = if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded * 255.0).round() as u8
+}
+
 /// Scramble seed for a chunk's candidate sequence.
 ///
 /// §4 requires blade placement stable frame to frame **and across sessions** —
@@ -364,6 +592,7 @@ fn chunk_seed(base_xz: [f32; 2]) -> u32 {
 pub(crate) fn collect_groundcover_species(
     world: &World,
     dimmer: GroundCoverDimmer,
+    card_atlas_handle: u32,
     out: &mut Vec<GpuGroundCoverSpecies>,
 ) {
     use byroredux_core::ecs::components::groundcover::GroundCoverSpecies;
@@ -406,6 +635,7 @@ pub(crate) fn collect_groundcover_species(
                 // also flatten the silvering that overcast light produces.
                 s.sheen,
             ],
+            card_atlas: [card_atlas_handle, 0, 0, 0],
         });
     }
 }
@@ -644,6 +874,75 @@ mod tests {
         );
     }
 
+    /// #4338 — the structural fix is a fixed-slot ring, not a different
+    /// ordering for the old cap. A cold ring takes the documented 24-chunk
+    /// placement budget, then keeps those slot assignments while admitting
+    /// more work on the next frame.
+    #[test]
+    fn residency_ring_places_in_budget_and_never_moves_residents() {
+        let candidate = |order: usize, horizontal: f32| ChunkCandidate {
+            order,
+            cell: 0,
+            base_xz: [order as f32 * GROUNDCOVER_CHUNK_UNITS, 0.0],
+            horizontal,
+        };
+        let candidates: Vec<_> = (0..60)
+            .map(|order| candidate(order, order as f32))
+            .collect();
+        let mut ring = GroundCoverResidency::default();
+        let first = ring.reconcile(&candidates, 0.0);
+        assert_eq!(first.len(), 24, "cold ring obeys the placement budget");
+        let first_slots: Vec<_> = first
+            .iter()
+            .map(|(slot, chunk)| (*slot, ChunkKey::from_base(chunk.base_xz)))
+            .collect();
+
+        let second = ring.reconcile(&candidates, 0.0);
+        assert_eq!(second.len(), 48, "the next frame admits another budget");
+        for (slot, key) in first_slots {
+            assert_eq!(ring.slots[slot], Some(key), "resident chunk moved slots");
+        }
+    }
+
+    #[test]
+    fn residency_ring_grows_existing_slots_but_not_newly_placed_ones() {
+        let candidate = |order: usize| ChunkCandidate {
+            order,
+            cell: 0,
+            base_xz: [order as f32 * GROUNDCOVER_CHUNK_UNITS, 0.0],
+            horizontal: order as f32,
+        };
+        let candidates: Vec<_> = (0..25).map(candidate).collect();
+        let mut ring = GroundCoverResidency::default();
+        let first = ring.reconcile(&candidates[..24], 0.0);
+        let existing_slot = first[0].0;
+        assert_eq!(ring.entry_progress(existing_slot), 0.0);
+
+        let second = ring.reconcile(&candidates, GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS);
+        assert!(
+            (ring.entry_progress(existing_slot)
+                - (0.25 / GROUNDCOVER_INTERACTION_HALF_LIFE_SECONDS))
+                .abs()
+                < f32::EPSILON
+        );
+        let new_slot = second
+            .iter()
+            .find_map(|(slot, candidate)| (candidate.order == 24).then_some(*slot))
+            .expect("the next placement budget must admit the 25th candidate");
+        assert_eq!(ring.entry_progress(new_slot), 0.0);
+    }
+
+    #[test]
+    fn residency_ring_capacity_is_derived_from_draw_radius() {
+        let mut ring = GroundCoverResidency::default();
+        ring.ensure_slot_count();
+        let radius_chunks = ((GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS)
+            / GROUNDCOVER_CHUNK_UNITS)
+            .ceil() as usize;
+        assert_eq!(ring.slots.len(), (radius_chunks * 2 + 1).pow(2));
+        assert!(ring.slots.len() <= GROUNDCOVER_MAX_CHUNKS as usize);
+    }
+
     #[test]
     fn chunk_bound_radius_covers_the_footprint() {
         let half_diagonal = (2.0f32).sqrt() * GROUNDCOVER_CHUNK_UNITS * 0.5;
@@ -662,9 +961,47 @@ mod tests {
     fn species_collection_is_never_empty() {
         let world = World::new();
         let mut out = Vec::new();
-        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, &mut out);
+        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, 0, &mut out);
         assert_eq!(out.len(), 1);
         assert!(out[0].size_range[1] >= out[0].size_range[0]);
+    }
+
+    #[test]
+    fn tier3_detail_atlas_is_palette_sized_and_carries_height_detail() {
+        let world = World::new();
+        let atlas = build_groundcover_detail_atlas(&world);
+        let edge = GROUNDCOVER_DETAIL_ATLAS_EDGE as usize;
+        assert_eq!(atlas.species_count, 1);
+        assert_eq!(atlas.pixels.len(), edge * edge * 4);
+        assert!(atlas.pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
+        assert!(atlas
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel[3] == u8::MAX));
+        // Tier 2 relies on this being a blade silhouette rather than the old
+        // checker alpha: every occupied lane extends continuously up a row.
+        let first_row_alpha: Vec<u8> = (0..edge)
+            .map(|x| atlas.pixels[x * 4 + 3])
+            .collect();
+        for y in 1..edge {
+            let row_alpha: Vec<u8> = (0..edge)
+                .map(|x| atlas.pixels[(y * edge + x) * 4 + 3])
+                .collect();
+            assert_eq!(row_alpha, first_row_alpha);
+        }
+
+        let mut palette_world = World::new();
+        palette_world.insert_resource(GroundCoverPalette::resolve(
+            vec![
+                byroredux_core::ecs::components::groundcover::GroundCoverSpecies::DEFAULT_TEMPERATE,
+                byroredux_core::ecs::components::groundcover::GroundCoverSpecies::DEFAULT_ARID,
+            ],
+            byroredux_core::ecs::components::groundcover::Climate::Temperate,
+        ));
+        let two = build_groundcover_detail_atlas(&palette_world);
+        assert_eq!(two.species_count, 2);
+        assert_eq!(two.pixels.len(), edge * edge * 2 * 4);
+        assert_ne!(two.signature, atlas.signature);
     }
 
     /// The grass dimmer has to reach the GPU record every frame, or a `WTHR`
@@ -675,8 +1012,8 @@ mod tests {
         let world = World::new();
         let mut neutral = Vec::new();
         let mut dimmed = Vec::new();
-        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, &mut neutral);
-        collect_groundcover_species(&world, GroundCoverDimmer(0.5), &mut dimmed);
+        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, 0, &mut neutral);
+        collect_groundcover_species(&world, GroundCoverDimmer(0.5), 0, &mut dimmed);
         for c in 0..3 {
             assert!((dimmed[0].base_colour[c] - neutral[0].base_colour[c] * 0.5).abs() < 1.0e-6);
             assert!((dimmed[0].tip_colour[c] - neutral[0].tip_colour[c] * 0.5).abs() < 1.0e-6);
@@ -693,6 +1030,14 @@ mod tests {
             dimmed[0].transmission_sheen[3],
             neutral[0].transmission_sheen[3]
         );
+    }
+
+    #[test]
+    fn species_collection_carries_the_palette_card_atlas_handle() {
+        let world = World::new();
+        let mut out = Vec::new();
+        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, 37, &mut out);
+        assert!(out.iter().all(|species| species.card_atlas == [37, 0, 0, 0]));
     }
 
     /// §12.4's disturber list is the actors, nearest first, capped. The cap

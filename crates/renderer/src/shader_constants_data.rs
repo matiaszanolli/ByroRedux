@@ -147,6 +147,16 @@ pub const EXTERIOR_CELL_UNITS: f32 = byroredux_core::math::coord::EXTERIOR_CELL_
 // batched samples some other way would not price the per-chunk setup the real
 // scatter pays (chunk record fetch, cell-origin load, sequence scramble).
 pub const GROUNDCOVER_CHUNK_UNITS: f32 = 512.0;
+
+/// Width and per-species row height of the generated Tier-3 ground-cover
+/// detail atlas. The #4056 plan requires a real per-species texture floor;
+/// this compact resolution is a colour/detail lookup, while `d_ground`
+/// supplies the non-repeating world-space density variation.
+pub const GROUNDCOVER_DETAIL_ATLAS_EDGE: u32 = 16;
+/// Terrain-normal perturbation of Tier-3's generated detail atlas. This is an
+/// uncited visual calibration required by #4056; it is listed in
+/// `exal-groundcover.md` §12.12 rather than hidden in GLSL.
+pub const GROUNDCOVER_DETAIL_NORMAL_STRENGTH: f32 = 0.15;
 pub const GROUNDCOVER_CHUNKS_PER_CELL_SIDE: u32 = 8;
 /// No `u` suffix in GLSL — used in `layout(local_size_x = ...)`.
 pub const GROUNDCOVER_BENCH_WORKGROUP: u32 = 64;
@@ -313,6 +323,10 @@ pub const GROUNDCOVER_HISTOGRAM_BUCKETS: u32 = 16;
 /// so the same shader emits a 3-segment near blade and a 1-segment far blade
 /// branching only on a per-chunk constant.
 pub const GROUNDCOVER_BLADE_SEGMENTS_NEAR: u32 = 3;
+/// Segments in a tier-1 blade, specified by the credibility track's Step 4
+/// tier ladder. The fixed blade arena is drawn twice during the projected-size
+/// cross-fade; only the indirect vertex stride changes.
+pub const GROUNDCOVER_BLADE_SEGMENTS_MID: u32 = 1;
 /// Two triangles per segment, non-indexed. The tip ring collapses to zero
 /// width, so the last segment degenerates into a triangle without needing a
 /// special case in the vertex shader.
@@ -358,11 +372,55 @@ pub const GROUNDCOVER_WIND_MAX_BEND: f32 = 0.7;
 /// `WindField::speed`. Gust *fronts* travel faster than the air; a factor of 1
 /// makes the pattern appear frozen relative to the air it describes.
 pub const GROUNDCOVER_WIND_ADVECTION_SCALE: f32 = 1.6;
+/// The secondary wind mode's non-integer frequency ratio.
+///
+/// The ground-cover credibility track's Step 6 calls for a second mode at
+/// `2.17×` the fundamental: an integer multiple makes the complete pose loop
+/// visibly, while this ratio breaks that short repetition without adding a
+/// second clock or a per-vertex noise sample.
+pub const GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER: f32 = 2.17;
+/// Secondary-mode and lateral-sway weight, relative to the downwind bend.
+///
+/// Step 6 specifies a lateral component of about a third of downwind motion;
+/// using the same one-third contribution for the smaller harmonic keeps both
+/// additions bounded under the existing maximum-bend contract.
+pub const GROUNDCOVER_WIND_SECONDARY_AMPLITUDE: f32 = 1.0 / 3.0;
+pub const GROUNDCOVER_WIND_LATERAL_FRACTION: f32 = 1.0 / 3.0;
 /// `WindField::speed`'s ceiling — the denominator that turns it into a [0,1]
 /// bend fraction. Re-exported so the shader and the translate boundary cannot
 /// disagree about what "full wind" is.
 pub const GROUNDCOVER_MAX_WIND_SPEED: f32 =
     byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED;
+
+/// Full turn in radians. Mathematical identity, named here so the seed-derived
+/// yaw and wind phase share one exact conversion.
+pub const GROUNDCOVER_TWO_PI: f32 = std::f32::consts::TAU;
+/// Legacy wind-flow floor, rest-lean range, and stiffness attenuation.
+///
+/// These are the pre-#4378 shipping blade-shape values, named rather than
+/// retuned. They remain uncited empirical shaping inputs; EXAL §12.12 records
+/// that debt until Phase B replaces the engine palette with sourced dimensions.
+pub const GROUNDCOVER_WIND_FLOW_FLOOR: f32 = 0.35;
+pub const GROUNDCOVER_WIND_STIFFNESS_ATTENUATION: f32 = 0.7;
+pub const GROUNDCOVER_REST_LEAN_BASE: f32 = 0.12;
+pub const GROUNDCOVER_REST_LEAN_VARIATION: f32 = 0.10;
+/// Terrain-normal blend used when a ribbon grows from a sloped triangle.
+/// Migrated unchanged from the original shader literal (#4378); it is an
+/// uncited compatibility value tracked in EXAL §12.12.
+pub const GROUNDCOVER_TERRAIN_NORMAL_WEIGHT: f32 = 0.75;
+/// Maximum seed-derived ribbon twist, in radians along a blade's length.
+/// Migrated unchanged from the original shader literal (#4378); uncited as
+/// recorded in EXAL §12.12.
+pub const GROUNDCOVER_TWIST_RADIANS: f32 = 1.4;
+/// Screen-space ribbon floor and cap for sub-pixel blades (§6).
+/// These existing, uncited anti-aliasing shape values are named by #4378 and
+/// recorded in EXAL §12.12; this change deliberately does not tune them.
+pub const GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS: f32 = 0.5;
+pub const GROUNDCOVER_MAX_WIDTH_MULTIPLIER: f32 = 4.0;
+/// Per-blade colour-jitter range. Existing visual variation, named without a
+/// retune by #4378; its empirical status is recorded in EXAL §12.12.
+pub const GROUNDCOVER_COLOUR_JITTER_MIN: f32 = 0.82;
+pub const GROUNDCOVER_COLOUR_JITTER_MAX: f32 = 1.18;
 
 // ── The light response (§12.1, §12.2, §12.5, §12.6; #4057) ──────────────
 //

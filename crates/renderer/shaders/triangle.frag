@@ -388,6 +388,42 @@ void main() {
         }
     }
 
+    // ── EXAL ground cover §6 Tier 3 (#4056) ────────────────────────────
+    // The terrain floor uses intrinsic `d_ground`, never `d_draw`: geometry
+    // may fade with the camera, but this species-detail layer remains under
+    // it at every distance.
+    float groundcoverDetailDensity = 0.0;
+    vec4 groundcoverDetail = vec4(0.5, 0.5, 0.5, 0.0);
+    if (terrainSplatActive && terrainTile.groundcoverDetailAtlas.x != 0u
+        && terrainTile.groundcoverDetailAtlas.y != 0u) {
+        TerrainSample gcDetailSample;
+        gcDetailSample.height = fragWorldPos.y;
+        gcDetailSample.normal = normalize(fragNormalEffective);
+        gcDetailSample.splat0 = terrainSplat[0];
+        gcDetailSample.splat1 = terrainSplat[1];
+        gcDetailSample.valid = true;
+        float gcDetailLap = byroGcLaplacian(
+            inst.vertexOffset, terrainTile.cellOriginXZ, fragWorldPos.xz, fragWorldPos.y);
+        groundcoverDetailDensity = byroGcDensityGround(
+            gcDetailSample, fragWorldPos.xz, terrainTile.coverAffinity0,
+            terrainTile.coverAffinity1, terrainTile.waterY, gcDetailLap);
+        uint speciesCount = terrainTile.groundcoverDetailAtlas.y;
+        uint species = min(
+            uint(byroGcHash1(floor(fragWorldPos.xz / GROUNDCOVER_CHUNK_UNITS))
+                * float(speciesCount)),
+            speciesCount - 1u);
+        vec2 detailUv = fract(fragWorldPos.xz / GROUNDCOVER_CLUMP_CELL_UNITS);
+        detailUv.y = (float(species) + detailUv.y) / float(speciesCount);
+        vec2 detailDx = splatPosdx.xz / GROUNDCOVER_CLUMP_CELL_UNITS;
+        vec2 detailDy = splatPosdy.xz / GROUNDCOVER_CLUMP_CELL_UNITS;
+        detailDx.y /= float(speciesCount);
+        detailDy.y /= float(speciesCount);
+        groundcoverDetail = textureGrad(
+            textures[nonuniformEXT(terrainTile.groundcoverDetailAtlas.x)],
+            detailUv, detailDx, detailDy);
+        texColor.rgb = mix(texColor.rgb, groundcoverDetail.rgb, groundcoverDetailDensity);
+    }
+
     // Per-instance alpha test (#263). When alphaThreshold > 0 the material
     // has an alpha test enabled; alphaTestFunc selects the Gamebryo comparison:
     //   0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL,
@@ -604,6 +640,36 @@ void main() {
             );
             N = normalize(mix(N, layerNormal, w));
         }
+    }
+    if (groundcoverDetailDensity > 0.0) {
+        // The atlas alpha is a small height field. Its tangent-plane tilt is
+        // gated by the same intrinsic density as the colour contribution.
+        uint speciesCount = terrainTile.groundcoverDetailAtlas.y;
+        vec2 detailUv = fract(fragWorldPos.xz / GROUNDCOVER_CLUMP_CELL_UNITS);
+        uint species = min(
+            uint(byroGcHash1(floor(fragWorldPos.xz / GROUNDCOVER_CHUNK_UNITS))
+                * float(speciesCount)),
+            speciesCount - 1u);
+        detailUv.y = (float(species) + detailUv.y) / float(speciesCount);
+        vec2 detailDx = splatPosdx.xz / GROUNDCOVER_CLUMP_CELL_UNITS;
+        vec2 detailDy = splatPosdy.xz / GROUNDCOVER_CLUMP_CELL_UNITS;
+        detailDx.y /= float(speciesCount);
+        detailDy.y /= float(speciesCount);
+        uint atlasIndex = terrainTile.groundcoverDetailAtlas.x;
+        float hx = textureGrad(textures[nonuniformEXT(atlasIndex)],
+            detailUv + vec2(1.0 / float(GROUNDCOVER_DETAIL_ATLAS_EDGE), 0.0),
+            detailDx, detailDy).a - groundcoverDetail.a;
+        float hy = textureGrad(textures[nonuniformEXT(atlasIndex)],
+            detailUv + vec2(0.0, 1.0 / float(GROUNDCOVER_DETAIL_ATLAS_EDGE * speciesCount)),
+            detailDx, detailDy).a - groundcoverDetail.a;
+        // Choose the reference axis away from N before crossing. Projecting a
+        // fixed X axis onto an X-facing cliff produces a zero vector and a
+        // NaN normal exactly where the slope gate merely intends thin cover.
+        vec3 detailRef = abs(N.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3 detailX = normalize(cross(detailRef, N));
+        vec3 detailZ = normalize(cross(N, detailX));
+        N = normalize(N - (detailX * hx + detailZ * hy)
+            * groundcoverDetailDensity * GROUNDCOVER_DETAIL_NORMAL_STRENGTH);
     }
 
     // Weathered exterior LAND response. `WeatherSurfaceState` is temporal;
@@ -2669,24 +2735,32 @@ void main() {
     // worldspace whose ground-cover palette never resolved. `gGcCanopyHeight`
     // then stays at its neutral zero and `shadowableLightRadiance` skips it.
     if (terrainSplatActive && terrainTile.canopyHeight > 0.0) {
-        TerrainSample gcSample;
-        gcSample.height = fragWorldPos.y;
-        gcSample.normal = terrainGeometryNormal;
-        gcSample.splat0 = terrainSplat[0];
-        gcSample.splat1 = terrainSplat[1];
-        gcSample.valid = true;
-        float gcLap = byroGcLaplacian(
-            inst.vertexOffset,
-            terrainTile.cellOriginXZ,
-            fragWorldPos.xz,
-            fragWorldPos.y);
-        gGcDGround = byroGcDensityGround(
-            gcSample,
-            fragWorldPos.xz,
-            terrainTile.coverAffinity0,
-            terrainTile.coverAffinity1,
-            terrainTile.waterY,
-            gcLap);
+        if (terrainTile.groundcoverDetailAtlas.x != 0u
+            && terrainTile.groundcoverDetailAtlas.y != 0u) {
+            // Tier 3 already evaluated the canonical intrinsic field above.
+            // Reuse it so the terrain colour, normal, and canopy receiver
+            // cannot drift and the new floor does not double the stencil cost.
+            gGcDGround = groundcoverDetailDensity;
+        } else {
+            TerrainSample gcSample;
+            gcSample.height = fragWorldPos.y;
+            gcSample.normal = terrainGeometryNormal;
+            gcSample.splat0 = terrainSplat[0];
+            gcSample.splat1 = terrainSplat[1];
+            gcSample.valid = true;
+            float gcLap = byroGcLaplacian(
+                inst.vertexOffset,
+                terrainTile.cellOriginXZ,
+                fragWorldPos.xz,
+                fragWorldPos.y);
+            gGcDGround = byroGcDensityGround(
+                gcSample,
+                fragWorldPos.xz,
+                terrainTile.coverAffinity0,
+                terrainTile.coverAffinity1,
+                terrainTile.waterY,
+                gcLap);
+        }
         gGcCanopyHeight = terrainTile.canopyHeight;
     }
 

@@ -477,6 +477,10 @@ struct GpuTerrainTile {
     /// a LOD tile, an interior, or a worldspace with no ground-cover
     /// palette, which is why there is no separate enable flag.
     float canopyHeight;
+    // x = bindless per-species detail-atlas handle; y = active species
+    // count. Zero x keeps Tier 3 disabled until the host has published the
+    // palette-generated texture. z/w are std430 padding.
+    uvec4 groundcoverDetailAtlas;
 };
 // Binding 11: adaptive RT quality + glass-work telemetry. The CPU zeroes the
 // first word before each render pass; Phase-3 IOR glass fragments atomically

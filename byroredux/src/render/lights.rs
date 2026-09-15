@@ -471,6 +471,12 @@ mod directional_source_contract_tests {
         assert!((l.color_type[0] - 0.8).abs() < 1e-5);
         assert!((l.color_type[1] - 0.7).abs() < 1e-5);
         assert!((l.color_type[2] - 0.5).abs() < 1e-5);
+        assert_eq!(
+            l.params[0], 0.0,
+            "directional params.x is the point/spot falloff sentinel; blade \
+             shading must use directional radiance directly rather than \
+             multiplying its sun by this value (#4291)"
+        );
     }
 
     /// Skyrim-era XCLL supplies both a six-face irradiance cube and a

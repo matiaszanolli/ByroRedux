@@ -172,6 +172,22 @@ impl VulkanContext {
         Some(slot)
     }
 
+    /// Publish the active procedural ground-cover detail atlas to every live
+    /// LAND tile. The tile SSBO is the existing per-terrain binding used by
+    /// `triangle.frag`, so this keeps the Tier-3 floor aligned with terrain
+    /// streaming without a second parallel tile table.
+    pub fn set_groundcover_detail_atlas(&mut self, handle: u32, species_count: u32) {
+        let value = [handle, species_count, 0, 0];
+        let mut changed = false;
+        for tile in self.terrain_tiles.iter_mut().flatten() {
+            if tile.groundcover_detail_atlas != value {
+                tile.groundcover_detail_atlas = value;
+                changed = true;
+            }
+        }
+        self.terrain_tiles_dirty |= changed;
+    }
+
     /// Release a terrain tile slot back to the free list and schedule
     /// the SSBO to be reuploaded to every frame-in-flight. Must be
     /// called from `unload_cell` before the mesh / BLAS drop so a late

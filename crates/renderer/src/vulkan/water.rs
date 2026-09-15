@@ -1094,6 +1094,17 @@ mod tests {
     }
 
     #[test]
+    fn waterfall_uv_motion_uses_downward_water_flow_not_mesh_tangent() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(src.contains("vec3 fallAxis = length(push.flow.xyz) > 1.0e-5"));
+        assert!(src.contains("uvWorld = vec2(dot(vWorldPos, sheetAcross), dot(vWorldPos, fallAxis));"));
+        assert!(src.contains("normalScrollA = vec2(0.0, -length(push.scroll.xy));"));
+        assert!(src.contains("normalScrollB = vec2(0.0, -length(push.scroll.zw));"));
+        assert!(src.contains("normalScrollC = vec2(0.0, -length(push.scroll_c.xy));"));
+        assert!(src.contains("flowOffset = vec2(0.0);"));
+    }
+
+    #[test]
     fn water_fragment_shader_honors_authored_noise_falloff() {
         let src = include_str!("../../shaders/water.frag");
         assert!(src.contains("float noiseFalloff = push.noise_falloff.x"));

@@ -7,9 +7,9 @@
 // Bezier ribbon — base point, a control point displaced by the bend, a tip —
 // generated here from the 24-bit seed the scatter stored. `gl_VertexIndex`
 // selects the segment and the side; height, width, yaw, twist and colour
-// jitter all derive from the seed. Segment count comes from a push constant,
-// so the same shader emits a 3-segment near blade and a 1-segment far blade
-// branching on nothing but a per-chunk value (§6).
+// jitter all derive from the seed. The shipping tier-0 path uses the generated
+// 3-segment constant; the planned tier chain will add the 1-segment and card
+// representations without making this per-frame shape state (§6).
 //
 // That is where "efficient" actually comes from: no vertex fetch, no per-blade
 // CPU touch, no instance-buffer growth.
@@ -87,8 +87,10 @@ layout(push_constant) uniform GcBladePush {
     vec4 originTime;
     /// xy = unit wind direction, z = speed, w = gust amplitude.
     vec4 wind;
-    /// x = gust frequency (bitcast float), yzw = blades-per-chunk, segments,
-    /// species count.
+/// x = gust frequency, y = previous shared wind-clock sample, z = species
+/// count. `w` packs `(frame serial << 1) | lod tier` for the blue-noise LOD
+/// cross-fade; the fixed blade arena and segment counts are generated shader
+/// constants, not per-frame tuning state.
     vec4 gustAndCounts;
 } pc;
 
@@ -97,9 +99,11 @@ layout(push_constant) uniform GcBladePush {
 #define GC_RENDER_ORIGIN    pc.originTime.xyz
 #define GC_TIME             pc.originTime.w
 #define GC_GUST_FREQUENCY   pc.gustAndCounts.x
-#define GC_BLADES_PER_CHUNK uint(pc.gustAndCounts.y)
-#define GC_SEGMENTS         uint(pc.gustAndCounts.z)
-#define GC_SPECIES_COUNT    uint(pc.gustAndCounts.w)
+#define GC_PREV_TIME        pc.gustAndCounts.y
+#define GC_SPECIES_COUNT    uint(pc.gustAndCounts.z)
+#define GC_LOD_WORD         uint(pc.gustAndCounts.w)
+#define GC_LOD_TIER         (GC_LOD_WORD & 1u)
+#define GC_FRAME_SERIAL     (GC_LOD_WORD >> 1u)
 
 #include "include/terrain_sample.glsl"
 #include "include/groundcover_density.glsl"
@@ -111,8 +115,8 @@ layout(push_constant) uniform GcBladePush {
 /// blades a few units apart read almost the same value and therefore lean
 /// almost the same way, so a walker opens a *channel* through the sward
 /// rather than tipping a ring of blades individually.
-vec2 byroGcSampleField(vec2 worldXZ) {
-    vec2 coord = byroGcFieldCoord(gcFieldCurrent.xy, worldXZ);
+vec2 byroGcSampleField(vec2 worldXZ, vec4 fieldState) {
+    vec2 coord = byroGcFieldCoord(fieldState.xy, worldXZ);
     vec2 base = floor(coord);
     vec2 frac = coord - base;
     ivec2 b = ivec2(base);
@@ -128,7 +132,7 @@ vec2 byroGcSampleField(vec2 worldXZ) {
             }
             float w = (dx == 0 ? 1.0 - frac.x : frac.x)
                     * (dy == 0 ? 1.0 - frac.y : frac.y);
-            acc += unpackHalf2x16(gcField[byroGcFieldIndex(t, uint(gcFieldCurrent.w))]) * w;
+            acc += unpackHalf2x16(gcField[byroGcFieldIndex(t, uint(fieldState.w))]) * w;
         }
     }
     return acc;
@@ -154,6 +158,28 @@ layout(location = 5) out float vColourJitter;
 /// triangles, which is not a thing a slab does.
 layout(location = 6) flat out float vBladeHeight;
 layout(location = 7) out float vBladeWidth;
+// Both positions remain unjittered. The fragment shader performs the
+// perspective divide, just as triangle.vert/triangle.frag do for opaque
+// meshes, so interpolation stays correct at blade edges.
+layout(location = 8) out vec4 vCurrClipPos;
+layout(location = 9) out vec4 vPrevClipPos;
+/// Cross-fade payload. The fragment uses a screen-space blue-noise rank; the
+/// seed rotates its tile per blade and the packed clock rotates it per frame.
+layout(location = 10) flat out uint vBladeSeed;
+layout(location = 11) flat out uint vLodTier;
+layout(location = 12) flat out uint vFrameSerial;
+layout(location = 13) out float vLodMidWeight;
+layout(location = 14) out vec2 vCardUv;
+layout(location = 15) flat out uint vCard;
+layout(location = 16) out float vCardWeight;
+
+// The scene set already binds CameraUBO at set 1 / binding 1.  Only the two
+// leading matrices are declared here; the descriptor's full range is larger,
+// which Vulkan permits, and this avoids another clock or camera-history copy.
+layout(set = 1, binding = 1) uniform GcCameraMotionUBO {
+    mat4 gcViewProj;
+    mat4 gcPrevViewProj;
+};
 
 /// Split the 24-bit seed into independent [0,1) streams. Multiplying by
 /// distinct large odd constants and taking the high bits decorrelates them;
@@ -170,22 +196,102 @@ float gcSeedStream(uint seed, uint stream) {
     return float(h >> 8) * (1.0 / 16777216.0);
 }
 
+vec3 byroGcWindBend(
+    vec3 base,
+    vec3 facing,
+    float height,
+    float maxSpeciesHeight,
+    float stiffness,
+    uint seed,
+    float timeS
+) {
+    vec2 windDir = pc.wind.xy;
+    float windSpeed = pc.wind.z;
+    vec2 advected = base.xz - windDir
+        * (windSpeed * GROUNDCOVER_WIND_ADVECTION_SCALE * timeS);
+    float flow = byroGcFbm(advected / GROUNDCOVER_WIND_NOISE_UNITS);
+    float phase = gcSeedStream(seed, 3u) * GROUNDCOVER_TWO_PI;
+    float gustClock = timeS * GC_GUST_FREQUENCY * GROUNDCOVER_TWO_PI;
+    float primaryWave = sin(gustClock + phase);
+    float secondaryWave = sin(
+        gustClock * GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER
+        + phase * GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER);
+    float gust = 1.0 + pc.wind.w * (
+        primaryWave + GROUNDCOVER_WIND_SECONDARY_AMPLITUDE * secondaryWave);
+    float bendFraction = clamp(windSpeed / GROUNDCOVER_MAX_WIND_SPEED, 0.0, 1.0)
+        * mix(GROUNDCOVER_WIND_FLOW_FLOOR, 1.0, clamp(flow, 0.0, 1.0))
+        * gust * (1.0 - GROUNDCOVER_WIND_STIFFNESS_ATTENUATION * stiffness);
+    bendFraction = clamp(bendFraction, 0.0, 1.0) * GROUNDCOVER_WIND_MAX_BEND;
+    vec3 leanDir = length(windDir) > 1.0e-4
+        ? normalize(vec3(windDir.x, 0.0, -windDir.y))
+        : facing;
+    vec3 lateralDir = vec3(-leanDir.z, 0.0, leanDir.x);
+    float restLean = GROUNDCOVER_REST_LEAN_BASE
+        + GROUNDCOVER_REST_LEAN_VARIATION * gcSeedStream(seed, 4u);
+    float downwindBend = bendFraction + restLean * (1.0 - bendFraction);
+    // The phase is seeded once at the blade base and used for the whole
+    // ribbon, so this adds lateral motion without the heat-haze shimmer from
+    // per-vertex noise. Its one-third scale is the Step 6 checklist ratio.
+    float lateralBend = bendFraction
+        * GROUNDCOVER_WIND_LATERAL_FRACTION * secondaryWave;
+    // A cantilever's visible deflection should fall off faster than length:
+    // scale with height² while normalising by the authored species maximum so
+    // the tallest blade retains the established full-strength response.
+    float heightSquaredScale = height * height / max(maxSpeciesHeight, 1.0e-4);
+    return (leanDir * downwindBend + lateralDir * lateralBend) * heightSquaredScale;
+}
+
+void byroGcControlPoints(
+    vec3 base, vec3 up, float height, vec3 windBend, vec2 disturbance,
+    out vec3 p1, out vec3 p2
+) {
+    float disturbAmount = min(length(disturbance), 1.0);
+    vec3 bend = windBend;
+    if (disturbAmount > 1.0e-4) {
+        vec3 pushDir = normalize(vec3(disturbance.x, 0.0, disturbance.y));
+        float k = GROUNDCOVER_INTERACTION_MAX_BEND * disturbAmount;
+        bend += pushDir * (height * k);
+    }
+    // A horizontal Bezier-tip offset without a matching vertical reduction
+    // makes the plant grow whenever either a gust or a disturbance bends it.
+    // Keep the root-to-tip chord exactly `height`: this is the right bounded
+    // approximation for the ribbon here, and crucially it is evaluated from
+    // the *combined* bend so wind and interaction cannot each preserve a
+    // different fictional length.
+    float bendFraction = min(length(bend) / max(height, 1.0e-4), 1.0);
+    float uprightScale = sqrt(max(1.0 - bendFraction * bendFraction, 0.0));
+    p1 = base + up * (height * 0.5 * uprightScale) + bend * 0.5;
+    p2 = base + up * (height * uprightScale) + bend;
+}
+
 void main() {
+    bool cardTier = GC_LOD_TIER == 2u;
+    uint cardCluster = GROUNDCOVER_BLADES_PER_POINT * GROUNDCOVER_BLADES_PER_POINT;
+    uint segments = GC_LOD_TIER == 0u
+        ? GROUNDCOVER_BLADE_SEGMENTS_NEAR
+        : GROUNDCOVER_BLADE_SEGMENTS_MID;
     uint vertsPerBlade = GC_DEBUG_POINTS == 1u
         ? 1u
-        : GC_SEGMENTS * GROUNDCOVER_VERTS_PER_SEGMENT;
-    // Each accepted scatter point grows GROUNDCOVER_BLADES_PER_POINT blades
-    // from its root (Outerra 2012 — see the constant). The debug view stays
-    // one point per scatter point, since it judges the distribution.
-    uint bladesPerPoint = GC_DEBUG_POINTS == 1u ? 1u : GROUNDCOVER_BLADES_PER_POINT;
+        : segments * GROUNDCOVER_VERTS_PER_SEGMENT;
+    // Tier 0 grows the cited four-blade tuft. Tier 1 keeps only its stable
+    // representative and widens it below, reducing the geometric population
+    // without changing the root sequence or residency slab. Debug remains one
+    // point per accepted root because it judges placement, not LOD density.
+    uint bladesPerPoint = (GC_DEBUG_POINTS == 1u || GC_LOD_TIER == 1u || cardTier)
+        ? 1u
+        : GROUNDCOVER_BLADES_PER_POINT;
     uint vertsPerPoint = vertsPerBlade * bladesPerPoint;
-    uint pointIndex = uint(gl_VertexIndex) / vertsPerPoint;
-    uint vertInPoint = uint(gl_VertexIndex) % vertsPerPoint;
+    uint pointIndex = cardTier
+        ? (uint(gl_VertexIndex) / GROUNDCOVER_VERTS_PER_SEGMENT) * cardCluster
+        : uint(gl_VertexIndex) / vertsPerPoint;
+    uint vertInPoint = cardTier
+        ? uint(gl_VertexIndex) % GROUNDCOVER_VERTS_PER_SEGMENT
+        : uint(gl_VertexIndex) % vertsPerPoint;
     uint subBlade = vertInPoint / vertsPerBlade;
     uint vertInBlade = vertInPoint % vertsPerBlade;
 
     GroundCoverBlade blade = gcBlades[pointIndex];
-    uint chunkIndex = pointIndex / GC_BLADES_PER_CHUNK;
+    uint chunkIndex = pointIndex / GROUNDCOVER_MAX_BLADES_PER_CHUNK;
     GroundCoverChunk chunk = gcChunks[chunkIndex];
     GroundCoverCell cell = gcCells[chunk.cellIndex];
 
@@ -202,23 +308,44 @@ void main() {
     vSpecies = min(species, max(GC_SPECIES_COUNT, 1u) - 1u);
     vDGround = blade.dGround;
     vColourJitter = gcSeedStream(seed, 5u);
+    vBladeSeed = seed;
+    vLodTier = GC_LOD_TIER;
+    vFrameSerial = GC_FRAME_SERIAL;
+    vCard = cardTier ? 1u : 0u;
 
     GroundCoverSpecies sp = gcSpecies[vSpecies];
-    float height = mix(sp.sizeRange.x, sp.sizeRange.y, gcSeedStream(seed, 0u));
+    float height = mix(sp.sizeRange.x, sp.sizeRange.y, gcSeedStream(seed, 0u))
+        * chunk.entryProgress;
     float width = mix(sp.sizeRange.z, sp.sizeRange.w, gcSeedStream(seed, 1u));
     float stiffness = clamp(sp.baseColour.a, 0.0, 1.0);
+    float projectedHeight = height * GC_PIXELS_PER_UNIT
+        / max(distance(base, GC_CAMERA_POS), 1.0e-3);
+    // 0 = all tier 0; 1 = all tier 1. Both streams remain present during the
+    // band and the fragment admits complementary blue-noise samples.
+    vLodMidWeight = 1.0 - smoothstep(
+        GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS,
+        GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS * GROUNDCOVER_MAX_WIDTH_MULTIPLIER,
+        projectedHeight);
+    // The card band follows the mid ribbon band using only the same existing
+    // pixel floor/cap: Tier 1 is complete at the floor, then yields to cards
+    // over the next cap-derived interval without a distance threshold.
+    vCardWeight = 1.0 - smoothstep(
+        GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS / GROUNDCOVER_MAX_WIDTH_MULTIPLIER,
+        GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS,
+        projectedHeight);
 
     // Ground normal, re-sampled (see the header). A blade grows out of the
     // ground it sits on, not straight up: on a 20° slope the difference is the
     // whole reason grass looks planted rather than stuck on.
     TerrainSample ground = byroSampleTerrain(cell.vertexOffset, cell.originXZ, base.xz);
-    vec3 up = ground.valid ? normalize(mix(vec3(0.0, 1.0, 0.0), ground.normal, 0.75))
+    vec3 up = ground.valid ? normalize(mix(
+        vec3(0.0, 1.0, 0.0), ground.normal, GROUNDCOVER_TERRAIN_NORMAL_WEIGHT))
                            : vec3(0.0, 1.0, 0.0);
 
     // Per-blade yaw. The ribbon's width axis is perpendicular to both `up` and
     // the blade's facing, so a blade is a flat ribbon standing on the ground
     // rather than a billboard.
-    float yaw = gcSeedStream(seed, 2u) * 6.2831853;
+    float yaw = gcSeedStream(seed, 2u) * GROUNDCOVER_TWO_PI;
     vec3 facing = normalize(vec3(cos(yaw), 0.0, sin(yaw)));
     vec3 side = normalize(cross(up, facing));
 
@@ -227,32 +354,11 @@ void main() {
     // The field is sampled in world space and advected downwind, so the
     // pattern is shared by every blade near the sample point — that shared
     // sampling is what produces a gust *front* instead of noise.
-    vec2 windDir = pc.wind.xy;
-    float windSpeed = pc.wind.z;
-    float gustAmp = pc.wind.w;
-    float gustFreq = GC_GUST_FREQUENCY;
     float timeS = GC_TIME;
-    vec2 advected = base.xz - windDir * (windSpeed * GROUNDCOVER_WIND_ADVECTION_SCALE * timeS);
-    float flow = byroGcFbm(advected / GROUNDCOVER_WIND_NOISE_UNITS);
-    // Per-blade phase keeps the response out of lockstep without breaking the
-    // shared front: it perturbs *when* a blade answers the gust, not where the
-    // gust is.
-    float phase = gcSeedStream(seed, 3u) * 6.2831853;
-    float gust = 1.0 + gustAmp * sin(timeS * gustFreq * 6.2831853 + phase);
-    float bendFraction = clamp(windSpeed / GROUNDCOVER_MAX_WIND_SPEED, 0.0, 1.0)
-                       * mix(0.35, 1.0, clamp(flow, 0.0, 1.0))
-                       * gust
-                       * (1.0 - 0.7 * stiffness);
-    bendFraction = clamp(bendFraction, 0.0, 1.0) * GROUNDCOVER_WIND_MAX_BEND;
-
-    // Even in dead calm a blade is not a rigid spike; a small seeded lean
-    // gives the sward its silhouette. Without it, zero wind renders a bed of
-    // nails.
-    vec3 leanDir = length(windDir) > 1.0e-4
-        ? normalize(vec3(windDir.x, 0.0, -windDir.y))
-        : facing;
-    float restLean = 0.12 + 0.10 * gcSeedStream(seed, 4u);
-    vec3 bend = leanDir * (height * (bendFraction + restLean * (1.0 - bendFraction)));
+    vec3 bend = byroGcWindBend(
+        base, facing, height, sp.sizeRange.y, stiffness, seed, timeS);
+    vec3 prevBend = byroGcWindBend(
+        base, facing, height, sp.sizeRange.y, stiffness, seed, GC_PREV_TIME);
 
     // ── Interaction (§12.4, #4058) ──────────────────────────────────────
     //
@@ -267,28 +373,51 @@ void main() {
     // certainly is not going. The sum is clamped through `bend`'s use below,
     // where the Bezier control point keeps the tip on the near side of the
     // ground.
-    vec2 disturbance = byroGcSampleField(base.xz);
-    float disturbAmount = min(length(disturbance), 1.0);
+    vec2 disturbance = byroGcSampleField(base.xz, gcFieldCurrent);
+    vec2 previousDisturbance = byroGcSampleField(base.xz, gcFieldPrevious);
     // A trodden blade gets shorter as it lies over, because a blade is not a
     // rubber band. Without this the tip stays at full height and only slides
     // sideways — a lean, not a flattening — and the channel reads as grass
     // combed rather than walked through. `sqrt(1 - k²)` is the vertical leg of
     // a blade of fixed length whose tip has moved `k` of that length
     // horizontally, so the plant keeps its length as it bends.
-    float uprightScale = 1.0;
-    if (disturbAmount > 1.0e-4) {
-        vec3 pushDir = normalize(vec3(disturbance.x, 0.0, disturbance.y));
-        float k = GROUNDCOVER_INTERACTION_MAX_BEND * disturbAmount;
-        bend += pushDir * (height * k);
-        uprightScale = sqrt(max(1.0 - k * k, 0.0));
-    }
-
     // Quadratic Bezier: P0 base, P1 control (half height, displaced by bend),
-    // P2 tip. The control at half height is what makes the blade curve rather
-    // than hinge.
+    // P2 tip. Evaluate both shared-clock samples so TAA/FSR reprojects the
+    // blade itself, rather than whichever terrain was behind it last frame.
     vec3 p0 = base;
-    vec3 p1 = base + up * (height * 0.5 * uprightScale) + bend * 0.5;
-    vec3 p2 = base + up * (height * uprightScale) + bend;
+    vec3 p1;
+    vec3 p2;
+    vec3 prevP1;
+    vec3 prevP2;
+    byroGcControlPoints(base, up, height, bend, disturbance, p1, p2);
+    byroGcControlPoints(base, up, height, prevBend, previousDisturbance, prevP1, prevP2);
+
+    if (cardTier) {
+        const uint QUAD[6] = uint[6](0u, 1u, 2u, 2u, 1u, 3u);
+        uint corner = QUAD[vertInBlade];
+        float t = float(corner >> 1);
+        float sideSign = (corner & 1u) == 0u ? -1.0 : 1.0;
+        // The card preserves the summed ribbon coverage of the 4×4 root
+        // cluster. Its atlas alpha supplies the individual blade silhouette.
+        float areaScale = sqrt(vCardWeight);
+        float halfWidth = 0.5 * width * float(cardCluster) * areaScale;
+        vec3 tangent = normalize(p2 - p0);
+        vec3 prevTangent = normalize(prevP2 - p0);
+        vec3 widthAxis = normalize(cross(tangent, facing));
+        vec3 prevWidthAxis = normalize(cross(prevTangent, facing));
+        vWorldPos = mix(p0, mix(p0, p2, areaScale), t) + widthAxis * (halfWidth * sideSign);
+        vWorldNormal = normalize(cross(widthAxis, tangent));
+        vBladeT = t;
+        vBladeHeight = height;
+        vBladeWidth = width;
+        vCardUv = vec2(float(corner & 1u), t);
+        vCurrClipPos = pc.viewProj * vec4(vWorldPos - GC_RENDER_ORIGIN, 1.0);
+        vPrevClipPos = gcPrevViewProj * vec4(
+            mix(p0, mix(p0, prevP2, areaScale), t) + prevWidthAxis * (halfWidth * sideSign) - GC_RENDER_ORIGIN,
+            1.0);
+        gl_Position = vCurrClipPos;
+        return;
+    }
 
     if (GC_DEBUG_POINTS == 1u) {
         // The distribution view. One point at the accepted position, sized so
@@ -300,6 +429,8 @@ void main() {
         vBladeHeight = height;
         vBladeWidth = width;
         gl_Position = pc.viewProj * vec4(base - GC_RENDER_ORIGIN, 1.0);
+        vCurrClipPos = gl_Position;
+        vPrevClipPos = gcPrevViewProj * vec4(base - GC_RENDER_ORIGIN, 1.0);
         gl_PointSize = clamp(64.0 / max(distance(base, GC_CAMERA_POS) * 0.02, 1.0), 1.0, 6.0);
         return;
     }
@@ -310,14 +441,16 @@ void main() {
     // (0,1,2) and (2,1,3). Index 0/2 are the low/high ring's left edge.
     const uint QUAD[6] = uint[6](0u, 1u, 2u, 2u, 1u, 3u);
     uint quadCorner = QUAD[corner];
-    float t = (float(segment) + float(quadCorner >> 1)) / float(GC_SEGMENTS);
+    float t = (float(segment) + float(quadCorner >> 1)) / float(segments);
     float sideSign = (quadCorner & 1u) == 0u ? -1.0 : 1.0;
 
     float omt = 1.0 - t;
     vec3 pos = omt * omt * p0 + 2.0 * omt * t * p1 + t * t * p2;
+    vec3 prevPos = omt * omt * p0 + 2.0 * omt * t * prevP1 + t * t * prevP2;
     // Bezier derivative — the blade's own tangent, which the width axis and
     // the shading normal both have to follow around the curve.
     vec3 tangent = normalize(2.0 * omt * (p1 - p0) + 2.0 * t * (p2 - p1));
+    vec3 prevTangent = normalize(2.0 * omt * (prevP1 - p0) + 2.0 * t * (prevP2 - prevP1));
 
     // Width tapers to zero at the tip, so the last segment degenerates into a
     // triangle with no special case. `1 - t*t` keeps the blade full-width for
@@ -331,14 +464,24 @@ void main() {
     // the same scene shimmers at 4K and is stable at 1080p.
     float viewDist = max(distance(pos, GC_CAMERA_POS), 1.0e-3);
     float pixelsPerUnit = GC_PIXELS_PER_UNIT / viewDist;
-    float minHalfWidth = 0.5 / max(pixelsPerUnit, 1.0e-6);
-    halfWidth = max(halfWidth, min(minHalfWidth, width * 4.0));
+    float minHalfWidth = GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS
+        / max(pixelsPerUnit, 1.0e-6);
+    halfWidth = max(halfWidth, min(minHalfWidth, width * GROUNDCOVER_MAX_WIDTH_MULTIPLIER));
+    // One tier-1 ribbon stands for the four near-tuft ribbons emitted from a
+    // scatter root. The same existing width cap is the coverage bound, so this
+    // is density compensation rather than a new far-field tuning parameter.
+    if (GC_LOD_TIER == 1u) {
+        halfWidth = min(
+            halfWidth * float(GROUNDCOVER_BLADES_PER_POINT),
+            width * GROUNDCOVER_MAX_WIDTH_MULTIPLIER);
+    }
 
     // Twist: the ribbon rotates about its own tangent along its length, so a
     // blade catches light on one face near the base and the other near the
     // tip. Without it every blade is a flat card and the field reads as cards.
-    float twist = (gcSeedStream(seed, 6u) - 0.5) * 1.4 * t;
+    float twist = (gcSeedStream(seed, 6u) - 0.5) * GROUNDCOVER_TWIST_RADIANS * t;
     vec3 widthAxis = normalize(cross(tangent, facing) * cos(twist) + facing * sin(twist));
+    vec3 prevWidthAxis = normalize(cross(prevTangent, facing) * cos(twist) + facing * sin(twist));
 
     vWorldPos = pos + widthAxis * (halfWidth * sideSign);
     // Shading normal faces out of the ribbon's flat side, tilted outward
@@ -378,5 +521,8 @@ void main() {
     vBladeWidth = width * (1.0 - t * t);
     // Absolute out to the fragment shader (lighting and the RT shadow ray
     // both want world space), render-origin-relative into the projection.
-    gl_Position = pc.viewProj * vec4(vWorldPos - GC_RENDER_ORIGIN, 1.0);
+    vCurrClipPos = pc.viewProj * vec4(vWorldPos - GC_RENDER_ORIGIN, 1.0);
+    vPrevClipPos = gcPrevViewProj * vec4(
+        prevPos + prevWidthAxis * (halfWidth * sideSign) - GC_RENDER_ORIGIN, 1.0);
+    gl_Position = vCurrClipPos;
 }

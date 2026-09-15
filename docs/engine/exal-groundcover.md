@@ -11,8 +11,11 @@ MEASURED AND ANSWERED (2026-09-06, #4052); Phases 1–2 IMPLEMENTED (2026-09-06,
 #4054 / #4055); Phase 6 IMPLEMENTED (2026-09-06, #4057) — which answered §11.6,
 §11.7, §11.9 and §11.10 and closed Phase 5's `grass_dimmer` remainder; Phase 7
 IMPLEMENTED (2026-09-06, #4058), which answered its own open question about
-which entities feed the field. Phase 3 (#4056) proposed; Phase 4 gated on a
-demonstrated need (§5 Stage 2). Rolls out per §9.
+which entities feed the field. Phase 3 (#4056) tier 3 and the T0→T1
+projected-pixel ribbon crossover with reduced-density widened Tier 1
+IMPLEMENTED (2026-09-15); Tier 2 palette-atlas clump cards and their area fade
+IMPLEMENTED (2026-09-15). Live visual acceptance evidence remains pending.
+Phase 4 is gated on a demonstrated need (§5 Stage 2). Rolls out per §9.
 
 **Goal**: grass that reads as an *organic, continuous ground stratum* rather
 than a set of authored patches, generated procedurally from terrain-derived
@@ -368,7 +371,7 @@ be tuned against real worldspaces, not derived constants:
 | Tier | Range (units) | Form |
 |---|---|---|
 | 0 | 0 – 2 000 | 3-segment blades, full density |
-| 1 | 2 000 – 6 000 | 1-segment blades, reduced density, compensating width |
+| 1 | 2 000 – 6 000 | 1-segment ribbons; density thinning and compensating width follow the geometric crossover |
 | 2 | 6 000 – 15 000 | clump cards — a few crossed quads per clump, from a baked atlas |
 | 3 | 15 000+ | terrain detail layer only |
 
@@ -392,14 +395,74 @@ a hardware problem rather than a shader one and is correspondingly hard to
 track down.
 
 **The terrain detail layer is always on.** The terrain fragment shader modulates
-its albedo and normal with a ground-cover detail texture whose strength is *the
-same density field*, at every distance including zero. Grass geometry is drawn
+its albedo and normal with the active palette's generated per-species
+ground-cover detail atlas, whose strength is *the same density field*, at every
+distance including zero. Grass geometry is drawn
 **on top of** a surface that already shows the right colour, the right
 variation, and the right density. So when the last geometry tier fades out,
 what remains underneath is already a match — there is nothing to pop *to*.
 
 This is the single most important item in the document for the stated goal.
 Tier 3 is not "where grass stops"; it is where grass stops being geometry.
+
+### Current geometric LOD implementation
+
+The first geometric crossover is now driven by projected blade height rather
+than the table's indicative world-distance ranges. Its band is derived from
+the existing `min_visible_half_width` screen-space floor and
+`max_width_multiplier` cap—no new distance or pixel tuning knob was added.
+Both representations draw from separate indirect streams over the **same fixed
+blade slab** inside that band. Complementary 8×8 blue-noise coverage,
+rotated by the blade seed and replayable frame serial, makes the band a
+stochastic cross-fade rather than a pop. The transition writes a bounded FSR
+reactive value only inside the band; its endpoints stay ordinary opaque,
+depth-writing geometry with their normal velocity vectors.
+
+Tier 1 retains one deterministic representative from each four-blade near
+tuft and widens it by that same existing tuft count, bounded by the existing
+screen-space width cap. It therefore reduces its vertex population by 12×
+relative to Tier 0 (three segments × four blades) without adding a tuning
+constant or moving a slab.
+
+Tier 2 groups a four-by-four set of those roots into one six-vertex vertical
+clump card. It samples the same palette-generated per-species atlas that Tier
+3 uses for terrain detail, so the card colour and cutout cannot drift from the
+underlying field. Tier 1's blue-noise coverage falls as `mid * (1 - card)`;
+the card grows its width and height by `sqrt(card)` and keeps its alpha
+silhouette stable. This preserves summed projected area across both handoffs,
+while the reactive mask covers either crossover. The implementation is in
+place; fixed-camera visual acceptance is still required before calling the
+chain complete.
+
+Scatter compacts accepted candidates in ascending candidate index within each
+workgroup round before reserving a blade-slab range. This replaces the former
+per-candidate atomic append: an atomic race could reorder roots between runs,
+which is harmless for independent ribbons but not for a card that groups every
+four-by-four roots. The retained order makes both the card representative and
+its blue-noise seed reproducible across workgroup scheduling.
+
+New residency-ring slots begin with zero blade height and advance to full
+height using the existing cited interaction-field temporal response. The
+progress value is carried in the chunk record, so eviction resets it while a
+resident slot continues growing without moving its blade slab.
+
+### Residency of the geometric tiers (#4338)
+
+The fixed blade arena is divided into one equal slab per camera-centred
+residency-ring slot. Ring capacity is derived from
+`GROUNDCOVER_DRAW_DISTANCE / GROUNDCOVER_CHUNK_UNITS` (with the chunk bounding
+radius included); it is not a second, hand-tuned visible-chunk cap. A chunk
+keeps its slot—and consequently its blade slab—until it leaves the ring.
+
+On a teleport or large turn, newly desired chunks enter in nearest-first order
+through a **24 chunks/frame** placement budget (the initial value specified by
+the #4338 follow-up plan). The field therefore fills over several frames rather
+than hitching or silently deleting the far or west-side chunks. A vacant slot is
+still uploaded as an explicit inactive chunk record and scatter writes it a
+zero-instance indirect command; compacting the remaining records would move
+their blade slabs and break residency. `GroundCoverStats::chunks_truncated`
+now reports only an actual cell-table capacity fault; ordinary pending ring
+work is not lost.
 
 ---
 
@@ -468,6 +531,25 @@ points, they bend together — you get travelling gust waves crossing a meadow
 rather than per-blade jitter, which is most of what sells grass as a living
 surface. A per-blade phase offset from the seed keeps the response from being
 perfectly lockstep.
+
+The wind pose has a fundamental plus a one-third-amplitude `2.17×` harmonic,
+and a one-third lateral component. Those values are the explicit starting
+ratios in the credibility track's Step 6 checklist, rather than uncited blade
+shape tuning. Both modes are evaluated from the blade base seed for the
+current and previous shared clock samples, so they improve the visible motion
+without breaking the velocity contract.
+
+Wind deflection is quadratic in a blade's sampled height, normalised by that
+species' authored maximum height. The tallest blade consequently retains the
+established response while shorter siblings flex less, rather than every
+height moving by the same linear proportion.
+
+The control-point construction preserves the root-to-tip chord after **all**
+horizontal displacement has been combined (wind plus the §12.4 interaction
+field): its vertical reach is `height * sqrt(1 - (bend / height)^2)`. A gust
+therefore changes pose instead of making a blade visibly grow, and evaluating
+the same construction at the prior shared wind clock preserves that contract
+for motion vectors as well.
 
 **The per-weather path already exists, and only wind uses it.**
 `weather_system` writes `WindField` on every weather change
@@ -544,9 +626,12 @@ Each phase is independently useful and independently reviewable.
   texture to bake.
 - **Phase 2 — blades + wind.** Vertex-shader Bezier ribbons, the wind field,
   the near tier only.
-- **Phase 3 — LOD chain.** Tiers 1–3, the stochastic density fade, and the
-  always-on terrain detail layer. The tier-3 layer should land *first* within
-  this phase, so every later tier is authored against a correct backdrop.
+- **Phase 3 — LOD chain.** The always-on tier-3 terrain detail layer and the
+  projected-pixel T0→T1 ribbon cross-fade are implemented; Tier 1 renders one
+  widened representative per four-blade near tuft; Tier 2 groups those roots
+  into palette-atlas clump cards with area-preserving fade. Tier 3 landed first
+  so every later tier is authored against a correct backdrop. Fixed-camera
+  visual acceptance remains pending.
 - **Phase 4 — RT proxy shell.** Per-chunk shell, stochastic-absorption hit
   handling, refit on density change. **Gated, not scheduled** (revised
   2026-09-06): §12.5 supplies the shadow this phase existed to provide, at a
@@ -665,6 +750,39 @@ Each phase is independently useful and independently reviewable.
 Not answerable from source reading; each needs a `--bench-hold` session against
 real worldspaces before the phase that depends on it.
 
+### 11.5 Credibility reference frames (2026-09-15)
+
+[`scripts/renderer-eval-groundcover.sh`](../../scripts/renderer-eval-groundcover.sh)
+defines the four review anchors for this track. It freezes the canonical game
+clock with `BYRO_HOUR=7`, runs a fixed-dt static-camera bench, and writes a
+PNG, log, and `manifest.tsv` row for each named case:
+
+| Case | Worldspace / grid | View |
+|---|---|---|
+| `gc-backlit-fnv` | FNV `WastelandNV` / `0,0` (Goodsprings outskirts) | camera faces the low sun |
+| `gc-frontlit-fnv` | FNV `WastelandNV` / `0,0` | same root, reverse heading |
+| `gc-backlit-skyrim` | Skyrim `Tamriel` / `2,-4` (Whiterun tundra) | camera faces the low sun |
+| `gc-frontlit-skyrim` | Skyrim `Tamriel` / `2,-4` | same root, reverse heading |
+
+The script's pose variables are deliberate, reviewable defaults; an operator
+may supply `BYROREDUX_GC_*_CAMERA_*` only to establish a replacement pose, then
+must commit that exact value before treating its output as a reference. The
+manifest preserves the PNG hash plus the `bench:` and `groundcover:` rows.
+Use `BYROREDUX_RENDER_EVAL_RUNNER` for a local display/Xvfb wrapper. Store an
+accepted baseline or after image under `docs/audits/` with the tested commit
+hash in its filename. The FNV default was measured on 2026-09-15 at
+`2048,8556,-1848`: its shallow south-west view dispatched 46 chunks and
+accepted 7,069 blades with `truncated=0`. The local capture remains a probe
+until it is repeated from a clean `HEAD`; the earlier working-tree test had no
+reachable compositor, but the host compositor is usable through the approved
+capture runner.
+
+`BYROREDUX_GROUNDCOVER_EVAL_CASES` accepts a comma-separated subset of those
+four case names. Its only purpose is operational: it appends each selected
+case to an existing manifest so a bounded local runner can collect the exact
+same four fixed captures independently. With the variable unset, the harness
+still starts a fresh full-suite manifest.
+
 1. **Terrain attribute sampling path — ANSWERED 2026-09-06 (#4052).** Both
    candidates were built and measured on real terrain. **Read the global vertex
    SSBO directly (path A). Do not bake an attribute texture.** And, for §4:
@@ -769,8 +887,9 @@ real worldspaces before the phase that depends on it.
    `GpuTerrainTile` was then 24 texture indices and nothing else — 96 bytes of
    `uint[8] × 3`, pinned by *gpu_terrain_tile_is_96_bytes* and by
    `ArrayStride 96` in the shipped `triangle.frag.spv`. (#4057 has since grown
-   it to 144 B with §12.5's terrain-receiver fields — pinned by
-   `gpu_terrain_tile_is_144_bytes` — and it still carries no vertex offset.)
+   it to 144 B with §12.5's terrain-receiver fields, then #4056 added the
+   Tier-3 detail-atlas selector and brought it to its current 160 B — pinned
+   by `gpu_terrain_tile_is_160_bytes` — and it still carries no vertex offset.)
 
    The locator is one record over: `GpuInstance.vertex_offset`
    ([`gpu_types.rs:109`](../../crates/renderer/src/vulkan/scene_buffer/gpu_types.rs#L109)).
@@ -1128,7 +1247,8 @@ attributes; the height stencil §3's shelter term needs goes through
 `byroSampleTerrain` against the global vertex SSBO, which `triangle.frag`
 already binds. The four remaining per-cell inputs — the affinity table, the
 water plane, the cell origin and the canopy thickness — ride `GpuTerrainTile`,
-which grew from 96 to 144 bytes for them. They ride that record rather than a
+which grew from 96 to 144 bytes for them and is now 160 B with the Tier-3
+detail-atlas selector. They ride that record rather than a
 new SSBO because that is exactly what it is: per-LAND-tile data indexed by the
 tile slot `GpuInstance.flags` already carries, so there is no parallel array
 and no second descriptor binding to keep in step.
@@ -1403,6 +1523,15 @@ Phases:
    density-field points, weighted by climate, honouring its water rule.
 4. **Phase D — the handoff** between blades and authored models.
 
+Until Phase B supplies sourced blade dimensions, the legacy procedural-shape
+inputs `wind_flow_floor`, `wind_stiffness_attenuation`, `rest_lean`,
+`terrain_normal_weight`, `twist_radians`, `min_visible_half_width`,
+`max_width_multiplier`, `colour_jitter`, and the Tier-3
+`groundcover_detail_normal_strength` are explicitly **uncited**. They
+are named in `shader_constants_data.rs` (rather than left as shader literals)
+so the pending evidence and any eventual retune are reviewable; #4378 moved
+them without changing their values.
+
 ### 12.13 Density from the candidate budget (2026-09-13)
 
 **Measured cause.** After §12.12 Phase A, Skyrim `2,-4` accepted 5,923 of
@@ -1438,6 +1567,24 @@ The distant ground now reads as a continuous sward. **Up close it still reads
 as sprouts:** the built-in species' blades are 6–14 units tall, so near the
 camera each covers little of the screen. That is blade size — §12.12 Phase B's
 sourced dimensions — not blade count.
+
+### 12.14 Upscaler contract (2026-09-15)
+
+The opaque ribbon tier is ordinary temporal geometry, not a global FSR mask
+exception. `groundcover_blade.vert` evaluates the complete blade pose twice:
+at the renderer's shared wind clock and at its preceding `delta_seconds`
+sample. Both evaluations include the advected wind field and the matching half
+of the interaction displacement ping-pong. It projects the preceding pose with
+the scene's origin-corrected `prevViewProj`, then `groundcover_blade.frag`
+writes `0.5 * (current_ndc - previous_ndc)` into the normal motion attachment.
+
+The ribbon tier is depth-writing and opaque, so both FSR reactive and
+transparency/composition masks are `0.0`. A future stochastic card cross-fade
+may write a material-driven reactive value, bounded by `0.9`; it must not
+reintroduce a blanket `1.0` mask. This is the ground-cover instantiation of
+the [FSR 3.1 input contract](fsr3-upscaler-integration-plan.md#14-fsr-input-contracts),
+which keeps vector sign, jitter exclusion, and material-driven masks shared
+with the main geometry pass.
 
 ---
 

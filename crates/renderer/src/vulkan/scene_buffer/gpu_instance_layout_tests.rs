@@ -324,19 +324,20 @@ fn mesh_id_format_is_r32_uint() {
 /// exterior cell. No test fails, no validation layer fires: the byte count
 /// is legal either way.
 #[test]
-fn gpu_terrain_tile_is_144_bytes() {
+fn gpu_terrain_tile_is_160_bytes() {
     assert_eq!(
         size_of::<GpuTerrainTile>(),
-        144,
-        "GpuTerrainTile must stay 144 B (3 × uint[8], then #4057's two vec4 \
-         affinity rows and the vec2+float+float canopy tail) to match the \
+        160,
+        "GpuTerrainTile must stay 160 B (3 × uint[8], then #4057's two vec4 \
+         affinity rows, the vec2+float+float canopy tail, and Tier-3's atlas \
+         vec4) to match the \
          std430 `struct GpuTerrainTile` in include/bindings.glsl. The shipped \
-         triangle.frag.spv carries `ArrayStride 144` for this type; changing \
+         triangle.frag.spv carries `ArrayStride 160` for this type; changing \
          the Rust side alone silently misaligns every tile after index 0. \
          It was 96 B until #4057 added §12.5's terrain receiver."
     );
     // std430 rounds a `vec4` member to a 16-byte boundary. Both vec4 rows
-    // land on multiples of 16 by construction (96, 112) and the struct's
+    // land on multiples of 16 by construction (96, 112, 144) and the struct's
     // total is a multiple of 16, so the array stride needs no tail padding
     // the Rust side would have to reproduce by hand.
     assert_eq!(size_of::<GpuTerrainTile>() % 16, 0);
@@ -345,8 +346,8 @@ fn gpu_terrain_tile_is_144_bytes() {
 
 #[test]
 fn gpu_terrain_tile_field_offsets_match_shader_contract() {
-    // Matches `OpDecorate ... ArrayStride 144` + members at 0 / 32 / 64 /
-    // 96 / 112 / 128 / 136 / 140 in the shipped triangle.frag.spv.
+    // Matches `OpDecorate ... ArrayStride 160` + members at 0 / 32 / 64 /
+    // 96 / 112 / 128 / 136 / 140 / 144 in the shipped triangle.frag.spv.
     assert_eq!(offset_of!(GpuTerrainTile, layer_diffuse_index), 0);
     assert_eq!(offset_of!(GpuTerrainTile, layer_normal_index), 32);
     assert_eq!(offset_of!(GpuTerrainTile, layer_specular_index), 64);
@@ -358,6 +359,7 @@ fn gpu_terrain_tile_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuTerrainTile, cell_origin_xz), 128);
     assert_eq!(offset_of!(GpuTerrainTile, water_y), 136);
     assert_eq!(offset_of!(GpuTerrainTile, canopy_height), 140);
+    assert_eq!(offset_of!(GpuTerrainTile, groundcover_detail_atlas), 144);
 }
 
 /// The shipped SPIR-V is the contract's other half. A Rust-side layout change
@@ -367,7 +369,7 @@ fn gpu_terrain_tile_field_offsets_match_shader_contract() {
 fn shipped_triangle_frag_spv_carries_the_terrain_tile_stride() {
     let spv = include_bytes!("../../../shaders/triangle.frag.spv");
     // ArrayStride is `OpDecorate <id> ArrayStride <n>`: opcode 71, decoration
-    // 6. Scan the word stream for any array decorated with 144 rather than
+    // 6. Scan the word stream for any array decorated with 160 rather than
     // parsing the module — the point is only that the new stride is present
     // and the old one is not still describing this array.
     let words: Vec<u32> = spv
@@ -388,9 +390,9 @@ fn shipped_triangle_frag_spv_carries_the_terrain_tile_stride() {
         i += len;
     }
     assert!(
-        strides.contains(&144),
-        "no ArrayStride 144 in the shipped triangle.frag.spv — recompile it \
-         after changing GpuTerrainTile (#4057). Found: {strides:?}"
+        strides.contains(&160),
+        "no ArrayStride 160 in the shipped triangle.frag.spv — recompile it \
+         after changing GpuTerrainTile (#4056). Found: {strides:?}"
     );
 }
 

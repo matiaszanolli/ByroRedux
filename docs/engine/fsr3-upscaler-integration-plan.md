@@ -516,6 +516,11 @@ execution phase 7 (2026-07-24) FSR Quality is the default** and
 existing shared material/transparency behavior instead of adding asset-name
 special cases.
 
+Ground cover's opaque ribbon tier follows this table directly: it emits an
+unjittered current-to-previous velocity from its shared-clock wind and
+displacement samples and writes zero to both masks. Its detailed contract is
+documented in [EXAL ground cover §12.14](exal-groundcover.md#1214-upscaler-contract-2026-09-15).
+
 For every dispatch, provide the exact current render/upscale sizes, FSR pixel
 jitter, motion scale, frame delta in milliseconds, exposure/pre-exposure,
 camera near/far/vertical FOV, and a one-frame reset flag. Enable FSR's debug

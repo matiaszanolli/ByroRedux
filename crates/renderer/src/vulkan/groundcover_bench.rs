@@ -54,8 +54,8 @@
 //! ## The chunk-to-instance association
 //!
 //! §11.1's original text put path A's locator on the terrain-tile record;
-//! `GpuTerrainTile` is 24 texture indices and nothing else. The locator is
-//! `GpuInstance.vertex_offset`, and the missing link is the chunk → covering-
+//! `GpuTerrainTile` carries terrain-material and ground-cover metadata but no
+//! vertex locator. The locator is `GpuInstance.vertex_offset`, and the missing link is the chunk → covering-
 //! terrain-instance association. The harness builds it (host-side, from the
 //! resident terrain cells) and makes **both** paths go through it — path B's
 //! array layer is the same cell index path A's vertex offset comes from — so

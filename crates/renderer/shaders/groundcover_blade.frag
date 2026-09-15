@@ -20,13 +20,10 @@
 //
 // ## What this writes, and what it deliberately does not
 //
-// The G-buffer's normal / motion / mesh-ID attachments stay unwritten, exactly
-// as `water.frag` leaves them and for the same reason: this geometry is
-// generated in the vertex shader from a seed and a *time-varying* wind field,
-// so it has no motion vector that a reprojection could believe. Instead the
-// FSR reactive and transparency masks are written at full strength, which is
-// the documented remedy for precisely this case — surface colour that the
-// pass's own depth and motion vectors do not describe.
+// The blade vertex shader evaluates the same wind and displacement model at
+// the current and preceding shared clock sample, so this opaque, depth-writing
+// geometry writes a real velocity just like the ordinary opaque path. It is
+// therefore not a blanket FSR reactive/transparency exception.
 //
 // Compile with:
 //   glslangValidator -V -Icrates/renderer/shaders groundcover_blade.frag -o groundcover_blade.frag.spv
@@ -42,8 +39,18 @@ layout(location = 4) flat in uint vSpecies;
 layout(location = 5) in float vColourJitter;
 layout(location = 6) flat in float vBladeHeight;
 layout(location = 7) in float vBladeWidth;
+layout(location = 8) in vec4 vCurrClipPos;
+layout(location = 9) in vec4 vPrevClipPos;
+layout(location = 10) flat in uint vBladeSeed;
+layout(location = 11) flat in uint vLodTier;
+layout(location = 12) flat in uint vFrameSerial;
+layout(location = 13) in float vLodMidWeight;
+layout(location = 14) in vec2 vCardUv;
+layout(location = 15) flat in uint vCard;
+layout(location = 16) in float vCardWeight;
 
 layout(location = 0) out vec4 outColor;
+layout(location = 2) out vec2 outMotion;
 layout(location = 5) out vec4 outAlbedo;
 layout(location = 6) out float outFsrReactive;
 layout(location = 7) out float outFsrTransparency;
@@ -57,22 +64,54 @@ layout(location = 7) out float outFsrTransparency;
 #include "include/shadow_transport.glsl"
 #include "include/lighting.glsl"
 #include "include/groundcover_light.glsl"
+#include "include/blue_noise.glsl"
 
 layout(std430, set = 2, binding = 6) readonly buffer GcSpeciesBuffer {
     GroundCoverSpecies gcSpecies[];
 };
 
 void main() {
+    // The two geometric streams cover complementary samples of one 8×8 blue
+    // noise tile. The tile rotates per blade and per replayable frame serial,
+    // preventing a fixed screen-door pattern while preserving exact coverage
+    // at either end of the projected-pixel transition.
+    uint x = (uint(gl_FragCoord.x) + (vBladeSeed & 7u) + vFrameSerial * 5u) & 7u;
+    uint y = (uint(gl_FragCoord.y) + ((vBladeSeed >> 3u) & 7u) + vFrameSerial * 3u) & 7u;
+    float rank = (float(BLUE_NOISE_RANKS[y * 8u + x]) + 0.5) / 64.0;
+    float keep = vLodTier == 0u
+        ? 1.0 - vLodMidWeight
+        : vLodMidWeight * (1.0 - vCardWeight);
+    if (vCard == 0u && rank >= keep) {
+        discard;
+    }
     GroundCoverSpecies sp = gcSpecies[vSpecies];
+    vec4 cardSample = vec4(1.0);
+    if (vCard != 0u) {
+        if (sp.cardAtlas.x == 0u) {
+            discard;
+        }
+        vec2 atlasSize = vec2(textureSize(textures[nonuniformEXT(sp.cardAtlas.x)], 0));
+        float atlasY = (float(vSpecies * GROUNDCOVER_DETAIL_ATLAS_EDGE)
+            + vCardUv.y * float(GROUNDCOVER_DETAIL_ATLAS_EDGE - 1u) + 0.5) / atlasSize.y;
+        cardSample = texture(textures[nonuniformEXT(sp.cardAtlas.x)], vec2(vCardUv.x, atlasY));
+        if (cardSample.a <= 0.0) {
+            discard;
+        }
+    }
 
     // §7's colour gradient: base → tip. Post-#4057 this is the plant's own
     // colour variation and nothing else — the dark base it used to bake as a
     // stand-in for self-shadowing is now §12.1's job, and leaving both in
     // would compound them until the base went black.
-    vec3 albedo = mix(sp.baseColour.rgb, sp.tipColour.rgb, vBladeT);
+    vec3 albedo = vCard != 0u
+        ? cardSample.rgb
+        : mix(sp.baseColour.rgb, sp.tipColour.rgb, vBladeT);
     // Per-blade colour jitter. A field of identically-coloured blades reads as
     // one object with a texture on it rather than as many plants.
-    albedo *= mix(0.82, 1.18, vColourJitter);
+    albedo *= mix(
+        GROUNDCOVER_COLOUR_JITTER_MIN,
+        GROUNDCOVER_COLOUR_JITTER_MAX,
+        vColourJitter);
     vec3 transmissionColour = sp.transmissionSheen.rgb;
     float sheen = max(sp.transmissionSheen.a, 0.0);
 
@@ -185,9 +224,21 @@ void main() {
     outColor = vec4(colour, 1.0);
     outAlbedo = vec4(albedo * skyVisibility, 1.0);
 
-    // See the header. Procedural, wind-animated geometry has no motion vector
-    // this pass could write, so the reconstruction is told to trust the
-    // current frame here rather than reproject history onto it.
-    outFsrReactive = 1.0;
-    outFsrTransparency = 1.0;
+    // Match triangle.frag's current-UV → previous-UV convention. The two
+    // positions are unjittered; TAA jitter is only applied to gl_Position.
+    vec2 currNDC = vCurrClipPos.xy / vCurrClipPos.w;
+    vec2 prevNDC = vPrevClipPos.xy / vPrevClipPos.w;
+    outMotion = (currNDC - prevNDC) * 0.5;
+
+    // Outside the transition this remains ordinary opaque, depth-writing
+    // geometry. Inside it the stochastic complementary coverage can change
+    // composition at a pixel even when blade motion is correct, so expose a
+    // bounded reactive term rather than poisoning the whole grass field.
+    float midTransition = 4.0 * vLodMidWeight * (1.0 - vLodMidWeight);
+    float cardTransition = 4.0 * vCardWeight * (1.0 - vCardWeight);
+    // Cards have a stable alpha silhouette, but the Tier-1 coverage that
+    // hands off to them is stochastic.  Flag either crossover (not the whole
+    // field) so the upscaler avoids treating a changing composition as motion.
+    outFsrReactive = 0.9 * max(midTransition, cardTransition);
+    outFsrTransparency = 0.0;
 }

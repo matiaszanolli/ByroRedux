@@ -25,14 +25,11 @@
 //! blades since the candidate budget rose on 2026-09-13 (design §12.13), the
 //! same bytes as the earlier 1,024 × 1,024. The visible set at the shipped
 //! 512-unit chunk and 2000-unit draw distance is ~50 chunks, so this is ~5×
-//! headroom. **That is no longer enough for §11.2's chunk-size sweep**:
-//! halving the chunk to 256 units quadruples the chunk count past the cap, so
-//! the sweep now needs `GROUNDCOVER_MAX_CHUNKS` raised with it, and the blade
-//! buffer grows unless the per-chunk cap falls by the same factor. The binary's
-//! `chunk_cap_covers_every_chunk_in_reach` fails the moment a chunk size or
-//! draw distance outgrows the cap; a frame that still overflows it keeps its
-//! nearest chunks and reports the rest as [`GroundCoverStats::chunks_truncated`]
-//! (#4338).
+//! headroom. The host assigns these fixed slices through a camera-centred
+//! residency ring: a chunk keeps its index while resident and newly visible
+//! chunks enter through a bounded placement queue. A change that makes the
+//! ring exceed this physical arena still fails the capacity assertion rather
+//! than silently dropping a side of the field (#4338).
 //!
 //! ## Ownership
 //!
@@ -51,7 +48,8 @@ use super::allocator::SharedAllocator;
 use super::buffer::{GpuBuffer, NoUninit};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
-    GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_BLADE_SEGMENTS_NEAR,
+    GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_BLADE_SEGMENTS_MID,
+    GROUNDCOVER_BLADE_SEGMENTS_NEAR,
     GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_HISTOGRAM_BUCKETS,
     GROUNDCOVER_INTERACTION_MAX_DISTURBERS, GROUNDCOVER_INTERACTION_TEXELS,
     GROUNDCOVER_INTERACTION_UNITS, GROUNDCOVER_INTERACTION_WORKGROUP,
@@ -103,15 +101,22 @@ pub struct GpuGroundCoverCell {
 // with named fields, so every byte is initialised by a field write.
 unsafe impl NoUninit for GpuGroundCoverCell {}
 
-/// One 512-unit chunk. Mirrors `GroundCoverChunk` in the shared GLSL header.
+/// One fixed residency-ring slot. Mirrors `GroundCoverChunk` in the shared
+/// GLSL header.  Inactive slots remain in the uploaded prefix so their index
+/// continues to name the same blade-arena slab; scatter writes a zero indirect
+/// command for them and never reads their cell index.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
 pub struct GpuGroundCoverChunk {
     pub base_xz: [f32; 2],
     pub cell_index: u32,
     pub seed: u32,
+    pub active: u32,
+    pub entry_progress: f32,
+    pub pad: [u32; 2],
 }
-// SAFETY: as `GpuGroundCoverCell` — 16 bytes, no padding.
+// SAFETY: as `GpuGroundCoverCell` — 32 bytes, all padding is named and
+// initialised by the host.
 unsafe impl NoUninit for GpuGroundCoverChunk {}
 
 /// One palette entry's *rendering* fields. Mirrors `GroundCoverSpecies` in the
@@ -128,8 +133,12 @@ pub struct GpuGroundCoverSpecies {
     pub tip_colour: [f32; 4],
     /// Transmission colour RGB (§12.2) + sheen amount (§12.6). #4057.
     pub transmission_sheen: [f32; 4],
+    /// Bindless palette-generated clump-card atlas (§6 Tier 2), in x. The
+    /// remaining lanes reserve the std430 vec4 and keep card sampling out of
+    /// the fixed 128-byte push block.
+    pub card_atlas: [u32; 4],
 }
-// SAFETY: 64 bytes of `f32`, no padding.
+// SAFETY: 64 bytes of `f32` plus one fully initialised `uvec4`, no padding.
 unsafe impl NoUninit for GpuGroundCoverSpecies {}
 
 /// One accepted blade. Mirrors `GroundCoverBlade` in the shared GLSL header.
@@ -221,9 +230,10 @@ struct BladePush {
     origin_time: [f32; 4],
     /// xy = unit wind direction, z = speed, w = gust amplitude.
     wind: [f32; 4],
-    /// x = gust frequency, yzw = blades-per-chunk / segments / species count,
-    /// carried as floats because they share a `vec4` with the frequency.
-    gust_and_counts: [f32; 4],
+    /// x = gust frequency, y = the preceding wind-clock sample, z = species
+    /// count.  The first two fields form the vertex-motion contract; keeping
+    /// them adjacent makes their std430/push-constant offsets explicit.
+    gust_and_timing: [f32; 4],
 }
 
 /// Everything the host publishes for one frame of ground cover.
@@ -244,6 +254,9 @@ pub struct GroundCoverFrame<'a> {
     /// `[dir.x, dir.y, speed, gust_amplitude]`.
     pub wind: [f32; 4],
     pub gust_frequency: f32,
+    /// The one renderer-owned wind clock. `prepare` derives the prior sample
+    /// from this and `delta_seconds`; ground cover never accumulates a second
+    /// clock of its own.
     pub time_seconds: f32,
     /// Pixels per world unit at one unit of depth: `render_height * 0.5 /
     /// tan(fov_y * 0.5)`. §6 keys blade widening to projected pixel size
@@ -261,10 +274,9 @@ pub struct GroundCoverFrame<'a> {
     /// renderer-side: a long hitch must not clear a trail outright, and a
     /// negative or non-finite value must not revive one.
     pub delta_seconds: f32,
-    /// Culled-in chunks the host dropped to fit the per-frame chunk and cell
-    /// caps, farthest first (#4338). Carried through so the drop is visible in
-    /// [`GroundCoverStats::chunks_truncated`] rather than only in the list
-    /// being shorter than it should be.
+    /// Host cell-table overflow. The camera-centred residency ring does not
+    /// truncate chunks to the blade arena; a non-zero value is therefore an
+    /// explicit cell-table capacity fault, not ordinary ring fill-in (#4338).
     pub chunks_truncated: u32,
 }
 
@@ -272,11 +284,10 @@ pub struct GroundCoverFrame<'a> {
 #[derive(Clone, Copy, Default, Debug)]
 pub struct GroundCoverStats {
     pub chunks_dispatched: u32,
-    /// Culled-in chunks dropped to fit `GROUNDCOVER_MAX_CHUNKS` /
-    /// `MAX_GROUNDCOVER_CELLS` — the host's nearest-first cut plus any
-    /// renderer-side clamp (#4338). Zero at the shipped chunk size and draw
-    /// distance; non-zero means a tuning change outgrew the cap and the far
-    /// rim of the field is missing.
+    /// Chunks lost to an explicit host cell-table capacity fault. A residency
+    /// ring filling over several frames is deliberately not counted: the
+    /// pending chunks remain queued and will be placed, rather than being
+    /// discarded as the old per-frame cap did (#4338).
     pub chunks_truncated: u32,
     pub blades_accepted: u32,
     /// Candidates dropped because their chunk's slice was already full.
@@ -367,6 +378,11 @@ const EXTREMA_MIN_SEED: u32 = u32::MAX;
 /// Vertices one tier-0 blade emits.
 pub const VERTS_PER_BLADE_NEAR: u32 =
     GROUNDCOVER_BLADE_SEGMENTS_NEAR * GROUNDCOVER_VERTS_PER_SEGMENT;
+/// Vertices one tier-1 blade emits. Both representations index the same fixed
+/// blade slab; their independent indirect streams carry their own stride.
+pub const VERTS_PER_BLADE_MID: u32 = GROUNDCOVER_BLADE_SEGMENTS_MID * GROUNDCOVER_VERTS_PER_SEGMENT;
+/// Near ribbons, reduced mid ribbons, and far clump cards.
+const GROUNDCOVER_INDIRECT_STREAMS: u64 = 3;
 
 pub struct GroundCoverPipeline {
     scatter_set_layout: vk::DescriptorSetLayout,
@@ -424,12 +440,18 @@ pub struct GroundCoverPipeline {
     /// Chunk count each in-flight slot dispatched, so the readback taken one
     /// cycle later is attributed to the right frame.
     pending_chunks: [u32; MAX_FRAMES_IN_FLIGHT],
+    /// Physical ring-slot prefix dispatched for each in-flight frame. This is
+    /// distinct from `pending_chunks`: inactive holes must be scanned by
+    /// scatter/draw to preserve slab indices, but are not visible chunks.
+    pending_chunk_slots: [u32; MAX_FRAMES_IN_FLIGHT],
     /// `frame_chunks_truncated` for each in-flight slot, harvested alongside
     /// `pending_chunks`.
     pending_truncated: [u32; MAX_FRAMES_IN_FLIGHT],
     stats: GroundCoverStats,
     /// Chunks uploaded for the frame currently being recorded.
     frame_chunk_count: u32,
+    /// Active records in `frame_chunk_count`'s fixed-slot prefix.
+    frame_active_chunk_count: u32,
     /// Chunks dropped at the caps for the frame currently being recorded.
     frame_chunks_truncated: u32,
     frame_debug_points: bool,
@@ -482,9 +504,11 @@ impl GroundCoverPipeline {
             frame_disturber_count: 0,
             bound_vertex_buffer: vk::Buffer::null(),
             pending_chunks: [0; MAX_FRAMES_IN_FLIGHT],
+            pending_chunk_slots: [0; MAX_FRAMES_IN_FLIGHT],
             pending_truncated: [0; MAX_FRAMES_IN_FLIGHT],
             stats: GroundCoverStats::default(),
             frame_chunk_count: 0,
+            frame_active_chunk_count: 0,
             frame_chunks_truncated: 0,
             frame_debug_points: false,
             frame_cover_reach: 0.0,
@@ -591,7 +615,7 @@ impl GroundCoverPipeline {
         self.indirect_buffer = Some(GpuBuffer::create_device_local_uninit(
             device,
             allocator,
-            (GROUNDCOVER_MAX_CHUNKS as u64) * 16,
+            (GROUNDCOVER_MAX_CHUNKS as u64) * 16 * GROUNDCOVER_INDIRECT_STREAMS,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER,
         )?);
         self.counter_buffer = Some(GpuBuffer::create_device_local_uninit(
@@ -952,13 +976,12 @@ impl GroundCoverPipeline {
                 .depth_test_enable(true)
                 .depth_write_enable(true)
                 .depth_compare_op(crate::vulkan::pipeline::default_depth_compare_op());
-            // Eight attachments to match the main pass. 0 (HDR colour), 5
-            // (albedo) and 6/7 (the FSR masks) are written; the G-buffer's
-            // normal / motion / mesh-ID / raw-indirect attachments stay masked
-            // off. Normal, motion and mesh ID for the reason water leaves them
-            // — see the fragment shader's header on why procedural
-            // wind-animated geometry has no motion vector this pass could
-            // honestly write. Raw indirect is left holding the ground's GI on
+            // Eight attachments to match the main pass. 0 (HDR colour), 2
+            // (motion), 5 (albedo), and 6/7 (the FSR masks) are written by
+            // the blade pipeline. The debug-point pipeline leaves motion
+            // masked because its diagnostic fragment shader does not write
+            // it. Normal / mesh-ID / raw-indirect remain masked: raw indirect
+            // is left holding the ground's GI on
             // purpose, and albedo is written so composite's
             // `indirect * albedo` lights the blade with it rather than
             // re-adding the terrain's own reflectance on top of the blade.
@@ -975,6 +998,10 @@ impl GroundCoverPipeline {
                     | vk::ColorComponentFlags::G
                     | vk::ColorComponentFlags::B,
             );
+            if debug == 0 {
+                blend_attachments[2] = blend_attachments[2]
+                    .color_write_mask(vk::ColorComponentFlags::R | vk::ColorComponentFlags::G);
+            }
             blend_attachments[6] =
                 blend_attachments[6].color_write_mask(vk::ColorComponentFlags::R);
             blend_attachments[7] =
@@ -1056,6 +1083,7 @@ impl GroundCoverPipeline {
         if input.chunks.is_empty() || input.cells.is_empty() || vertex_buffer == vk::Buffer::null()
         {
             self.frame_chunk_count = 0;
+            self.frame_active_chunk_count = 0;
             return false;
         }
         let chunks = &input.chunks[..input.chunks.len().min(GROUNDCOVER_MAX_CHUNKS as usize)];
@@ -1066,6 +1094,7 @@ impl GroundCoverPipeline {
             // reaching here means the host published one it had not resolved.
             // Drawing anyway would index `gcSpecies[0]` out of bounds.
             self.frame_chunk_count = 0;
+            self.frame_active_chunk_count = 0;
             return false;
         }
 
@@ -1100,6 +1129,7 @@ impl GroundCoverPipeline {
         if let Err(error) = uploads {
             log::warn!("ground cover: record upload failed: {error}");
             self.frame_chunk_count = 0;
+            self.frame_active_chunk_count = 0;
             return false;
         }
         self.frame_field_state = field_state;
@@ -1108,6 +1138,8 @@ impl GroundCoverPipeline {
         self.bound_vertex_buffer = vertex_buffer;
 
         self.frame_chunk_count = chunks.len() as u32;
+        self.frame_active_chunk_count =
+            chunks.iter().filter(|chunk| chunk.active != 0).count() as u32;
         self.frame_debug_points = input.debug_points;
         // `size_range[1]` is each species' height ceiling. Non-finite entries
         // cannot reach here (`GroundCoverSpecies::is_well_formed` rejects
@@ -1116,11 +1148,6 @@ impl GroundCoverPipeline {
             .iter()
             .map(|s| s.size_range[1])
             .fold(0.0_f32, f32::max);
-        let segments = if input.debug_points {
-            1
-        } else {
-            GROUNDCOVER_BLADE_SEGMENTS_NEAR
-        };
         self.frame_push = BladePush {
             view_proj: input.view_proj,
             camera_pixels: [
@@ -1136,11 +1163,14 @@ impl GroundCoverPipeline {
                 input.time_seconds,
             ],
             wind: input.wind,
-            gust_and_counts: [
+            gust_and_timing: [
                 input.gust_frequency,
-                GROUNDCOVER_MAX_BLADES_PER_CHUNK as f32,
-                segments as f32,
+                input.time_seconds - input.delta_seconds.max(0.0),
                 species.len() as f32,
+                // Packed `(frame serial << 1) | lod tier`. It retains the
+                // portable 128-byte block and makes the blue-noise transition
+                // repeat under a replayed simulation clock.
+                (input.time_seconds.max(0.0) * 60.0).floor() * 2.0,
             ],
         };
         true
@@ -1175,7 +1205,8 @@ impl GroundCoverPipeline {
     fn harvest(&mut self, device: &ash::Device, frame: usize) {
         let truncated = std::mem::take(&mut self.pending_truncated[frame]);
         let dispatched = std::mem::take(&mut self.pending_chunks[frame]);
-        if dispatched == 0 {
+        let slots = std::mem::take(&mut self.pending_chunk_slots[frame]);
+        if slots == 0 {
             return;
         }
         let buffer = &mut self.counter_readback[frame];
@@ -1201,7 +1232,7 @@ impl GroundCoverPipeline {
         // Clamped, not summed raw: the append cursor deliberately runs past
         // the cap (§4's saturating overflow), so the raw value is "candidates
         // that tried", not "blades that exist".
-        stats.blades_accepted = counters[..dispatched as usize]
+        stats.blades_accepted = counters[..slots as usize]
             .iter()
             .map(|c| c.min(&GROUNDCOVER_MAX_BLADES_PER_CHUNK))
             .sum();
@@ -1305,6 +1336,7 @@ impl GroundCoverPipeline {
         // than draw last frame's indirect list over this frame's scene.
         let Some(tlas) = tlas else {
             self.frame_chunk_count = 0;
+            self.frame_active_chunk_count = 0;
             return;
         };
         let accel_structs = [tlas];
@@ -1392,7 +1424,7 @@ impl GroundCoverPipeline {
                     // exactly this product to find the point.
                     VERTS_PER_BLADE_NEAR * GROUNDCOVER_BLADES_PER_POINT
                 },
-                species_count: self.frame_push.gust_and_counts[3] as u32,
+                species_count: self.frame_push.gust_and_timing[2] as u32,
             };
             device.cmd_push_constants(
                 cmd,
@@ -1450,7 +1482,8 @@ impl GroundCoverPipeline {
                 &[vk::BufferCopy::default().size(counters.size)],
             );
         }
-        self.pending_chunks[frame] = self.frame_chunk_count;
+        self.pending_chunks[frame] = self.frame_active_chunk_count;
+        self.pending_chunk_slots[frame] = self.frame_chunk_count;
         self.pending_truncated[frame] = self.frame_chunks_truncated;
     }
 
@@ -1551,19 +1584,33 @@ impl GroundCoverPipeline {
                 &[texture_set, scene_set, self.draw_sets[frame]],
                 &[],
             );
-            device.cmd_push_constants(
-                cmd,
-                self.draw_pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                blade_push_bytes(&self.frame_push),
-            );
-            // One `VkDrawIndirectCommand` per chunk, written by the scatter.
-            // `firstVertex` carries the chunk's blade-slice base, so the
-            // vertex shader indexes the global blade buffer directly with
-            // `gl_VertexIndex` — no `firstInstance`, and therefore no
-            // dependency on `drawIndirectFirstInstance`.
-            device.cmd_draw_indirect(cmd, indirect.buffer, 0, self.frame_chunk_count, 16);
+            let mut push = self.frame_push;
+            // Stream 0 is the three-segment tier and stream 1 the one-segment
+            // tier. They share every residency slab, while their separate
+            // first-vertex strides prevent an LOD change from re-addressing a
+            // neighbouring chunk's blade records.
+            let streams = if self.frame_debug_points {
+                1
+            } else {
+                GROUNDCOVER_INDIRECT_STREAMS
+            };
+            for tier in 0..streams {
+                push.gust_and_timing[3] = self.frame_push.gust_and_timing[3] + tier as f32;
+                device.cmd_push_constants(
+                    cmd,
+                    self.draw_pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    blade_push_bytes(&push),
+                );
+                device.cmd_draw_indirect(
+                    cmd,
+                    indirect.buffer,
+                    tier * GROUNDCOVER_MAX_CHUNKS as u64 * 16,
+                    self.frame_chunk_count,
+                    16,
+                );
+            }
         }
     }
 
@@ -1799,8 +1846,8 @@ mod tests {
     #[test]
     fn gpu_records_match_their_std430_layout() {
         assert_eq!(std::mem::size_of::<GpuGroundCoverCell>(), 64);
-        assert_eq!(std::mem::size_of::<GpuGroundCoverChunk>(), 16);
-        assert_eq!(std::mem::size_of::<GpuGroundCoverSpecies>(), 64);
+        assert_eq!(std::mem::size_of::<GpuGroundCoverChunk>(), 32);
+        assert_eq!(std::mem::size_of::<GpuGroundCoverSpecies>(), 80);
         // §4's blade record is "~16 bytes". Nothing on the host writes one,
         // but `create_buffers` sizes the blade buffer from it, and
         // `name_diverging_glsl_rust_mirrors_stay_in_lockstep` pins the GLSL
@@ -1815,6 +1862,32 @@ mod tests {
         );
     }
 
+    /// #4338 — slot indices are blade-arena ownership, not a compact draw
+    /// list.  A vacant ring slot must remain an explicit 32-byte record and
+    /// produce a no-op indirect command; otherwise the next resident shifts
+    /// into its slab even though the host-side ring says it did not move.
+    #[test]
+    fn inactive_residency_slots_remain_explicit_and_are_skipped_by_scatter() {
+        let inactive = GpuGroundCoverChunk::default();
+        assert_eq!(inactive.active, 0);
+        assert_eq!(inactive.entry_progress, 0.0);
+        assert_eq!(inactive.pad, [0; 2]);
+
+        let scene = include_str!("../../shaders/include/groundcover_scene.glsl");
+        let scatter = include_str!("../../shaders/groundcover_scatter.comp");
+        assert!(
+            scene.contains("uint slotActive;")
+                && scene.contains("float entryProgress;")
+                && scene.contains("uvec2 pad;"),
+            "the GLSL record must retain the host's explicit inactive-slot and grow-in lanes"
+        );
+        assert!(
+            scatter.contains("if (chunk.slotActive == 0u)")
+                && scatter.contains("gcDraws[chunkIdx].instanceCount = 0u;"),
+            "scatter must turn a vacant slot into a no-op indirect draw before reading its cell"
+        );
+    }
+
     /// `cmd_draw_indirect` is issued with a hard-coded stride of 16, which is
     /// `sizeof(VkDrawIndirectCommand)`. A mismatch would read every command
     /// but the first from the wrong offset.
@@ -1825,6 +1898,106 @@ mod tests {
         // fail on hardware nobody in this repo is testing on.
         assert_eq!(std::mem::size_of::<BladePush>(), 128);
         assert!(std::mem::size_of::<ScatterPush>() <= 128);
+        assert_eq!(
+            std::mem::offset_of!(BladePush, gust_and_timing) + std::mem::size_of::<f32>(),
+            116,
+            "the previous wind-clock sample is push-constant byte 116; the \
+             GLSL `GcBladePush.gustAndCounts.y` motion contract must be kept \
+             in lockstep (#4297)"
+        );
+    }
+
+    /// #4297 / LOD tiers 1–2 — the opaque endpoints retain real
+    /// wind/displacement velocity and zero FSR masks; only either stochastic
+    /// projected-size handoff raises a bounded reactive contribution. Shader
+    /// text catches a future pipeline mask or output regression without a GPU.
+    #[test]
+    fn blade_motion_and_fsr_mask_contract_stay_material_driven() {
+        let vert = include_str!("../../shaders/groundcover_blade.vert");
+        let frag = include_str!("../../shaders/groundcover_blade.frag");
+        assert!(
+            vert.contains("#define GC_PREV_TIME        pc.gustAndCounts.y")
+                && vert.contains("byroGcSampleField(base.xz, gcFieldPrevious)")
+                && vert.contains("gcPrevViewProj"),
+            "the vertex shader must evaluate the preceding shared wind clock, \
+             previous displacement field, and previous camera projection"
+        );
+        assert!(
+            frag.contains("layout(location = 2) out vec2 outMotion;")
+                && frag.contains("outMotion = (currNDC - prevNDC) * 0.5;")
+                && frag.contains("BLUE_NOISE_RANKS")
+                && frag.contains("vLodMidWeight * (1.0 - vCardWeight)")
+                && frag.contains("float midTransition = 4.0 * vLodMidWeight * (1.0 - vLodMidWeight);")
+                && frag.contains("float cardTransition = 4.0 * vCardWeight * (1.0 - vCardWeight);")
+                && frag.contains("outFsrReactive = 0.9 * max(midTransition, cardTransition);")
+                && frag.contains("outFsrTransparency = 0.0;"),
+            "blade ribbons must write real velocity, use complementary blue-noise \
+             coverage for both LOD bands, and keep reactive output bounded"
+        );
+        let module = include_str!("groundcover.rs");
+        let production = module
+            .split_once("mod tests {")
+            .expect("groundcover production module must precede tests")
+            .0;
+        assert!(
+            production.contains("blend_attachments[2]") && production.contains("if debug == 0"),
+            "the blade pipeline must enable RG motion writes while the debug \
+             point pipeline keeps its unwritten attachment masked"
+        );
+    }
+
+    /// #4297 / Step 3 — every stochastic ground-cover seed is derived in the
+    /// integer domain. A vendor-dependent float-trig hash makes a dithered LOD
+    /// transition shear on AMD; a frame/time-derived seed instead becomes
+    /// full-screen temporal noise. Keep the three live seed paths pinned here
+    /// until their GLSL can share one common include.
+    #[test]
+    fn groundcover_seed_hashes_are_integer_and_frame_invariant() {
+        let scatter = include_str!("../../shaders/groundcover_scatter.comp");
+        let density = include_str!("../../shaders/include/groundcover_density.glsl");
+        let blade = include_str!("../../shaders/groundcover_blade.vert");
+        let scatter_hash = scatter
+            .split_once("uint gcHash(uint seed, uint index)")
+            .expect("scatter must retain its per-candidate integer finalizer")
+            .1
+            .split_once("/// #4057")
+            .expect("gcHash must remain bounded before the density helpers")
+            .0;
+        let density_hash = density
+            .split_once("vec2 byroGcHash2(vec2 cell)")
+            .expect("density noise must retain its integer hash")
+            .1
+            .split_once("float byroGcHash1")
+            .expect("byroGcHash2 must remain bounded before its scalar wrapper")
+            .0;
+        let blade_seed = blade
+            .split_once("float gcSeedStream(uint seed, uint stream)")
+            .expect("blade attributes must retain their seed stream")
+            .1
+            .split_once("vec3 byroGcWindBend")
+            .expect("gcSeedStream must remain bounded before the wind model")
+            .0;
+
+        for (name, source) in [
+            ("scatter candidate", scatter_hash),
+            ("density noise", density_hash),
+            ("blade attribute", blade_seed),
+        ] {
+            assert!(
+                !source.contains("sin(")
+                    && !source.contains("fract(")
+                    && !source.contains("43758")
+                    && !source.contains("frameIndex")
+                    && !source.contains("time"),
+                "{name} seed path must be an integer-only, frame-invariant hash"
+            );
+        }
+        assert!(
+            scatter_hash.contains("uint h = seed ^ (index * 0x9E3779B9u);")
+                && scatter_hash.contains("h *= 0x7FEB352Du;")
+                && scatter_hash.contains("h *= 0x846CA68Bu;"),
+            "scatter seeds must be a pure function of chunk seed and candidate index"
+        );
     }
 
     #[test]
@@ -1878,7 +2051,30 @@ mod tests {
     #[test]
     fn tier_zero_blade_vertex_count() {
         assert_eq!(VERTS_PER_BLADE_NEAR, 18);
+        assert_eq!(VERTS_PER_BLADE_MID, 6);
         assert_eq!(crate::shader_constants::GROUNDCOVER_SCATTER_WORKGROUP, 64);
+    }
+
+    /// Tier changes are draw representations, not residency changes. Pin both
+    /// streams to the one arena and make the shader publish a no-op command
+    /// for both of an inactive ring slot.
+    #[test]
+    fn tiered_indirect_streams_preserve_fixed_blade_slabs() {
+        let scatter = include_str!("../../shaders/groundcover_scatter.comp");
+        let blade = include_str!("../../shaders/groundcover_blade.vert");
+        let module = include_str!("groundcover.rs");
+        assert_eq!(GROUNDCOVER_INDIRECT_STREAMS, 3);
+        assert!(scatter.contains("uint midIndex = chunkIdx + GROUNDCOVER_MAX_CHUNKS;"));
+        assert!(scatter.contains("gcDraws[midIndex].firstVertex = sliceBase * midVertsPerPoint;"));
+        assert!(scatter.contains("gcDraws[midIndex].instanceCount = 0u;"));
+        assert!(scatter.contains("uint cardIndex = chunkIdx + 2u * GROUNDCOVER_MAX_CHUNKS;"));
+        assert!(scatter.contains("gcDraws[cardIndex].firstVertex = (sliceBase / cardCluster)"));
+        assert!(scatter.contains("uint midVertsPerPoint = GROUNDCOVER_BLADE_SEGMENTS_MID\n                * GROUNDCOVER_VERTS_PER_SEGMENT;"));
+        assert!(blade.contains("GC_DEBUG_POINTS == 1u || GC_LOD_TIER == 1u || cardTier"));
+        assert!(blade.contains("halfWidth * float(GROUNDCOVER_BLADES_PER_POINT)"));
+        assert!(blade.contains("width * GROUNDCOVER_MAX_WIDTH_MULTIPLIER"));
+        assert!(blade.contains("bool cardTier = GC_LOD_TIER == 2u;"));
+        assert!(module.contains("tier * GROUNDCOVER_MAX_CHUNKS as u64 * 16"));
     }
 
     /// The scatter packs three different things into one counter buffer and
@@ -1974,7 +2170,7 @@ mod tests {
             "the blade record must never store the view-faded value (#4054)"
         );
         let accept = src
-            .find("if (accept >= dDraw)")
+            .find("accept < dDraw")
             .expect("the accept test must read d_draw");
         let fade = src
             .find("byroGcDistanceFade(")
@@ -1982,17 +2178,59 @@ mod tests {
         assert!(fade < accept, "d_draw must be computed before it is tested");
     }
 
-    /// §4's overflow policy: the atomic append saturates, it does not wrap,
-    /// and a losing thread drops its candidate rather than writing outside its
-    /// chunk's slice.
     #[test]
-    fn the_atomic_append_saturates() {
+    fn blade_control_points_preserve_length_after_combined_bends() {
+        let src = include_str!("../../shaders/groundcover_blade.vert");
+        assert!(
+            src.contains("float bendFraction = min(length(bend) / max(height, 1.0e-4), 1.0);")
+                && src.contains("float uprightScale = sqrt(max(1.0 - bendFraction * bendFraction, 0.0));"),
+            "combined wind and interaction bend must reduce vertical reach so gusts cannot grow blades"
+        );
+    }
+
+    #[test]
+    fn blade_wind_uses_seeded_harmonic_and_lateral_sway() {
+        let src = include_str!("../../shaders/groundcover_blade.vert");
+        let wind = src
+            .split_once("vec3 byroGcWindBend")
+            .expect("blade shader must retain its wind function")
+            .1
+            .split_once("void byroGcControlPoints")
+            .expect("wind function must end before control-point construction")
+            .0;
+        for token in [
+            "GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER",
+            "GROUNDCOVER_WIND_SECONDARY_AMPLITUDE",
+            "GROUNDCOVER_WIND_LATERAL_FRACTION",
+            "vec3 lateralDir",
+            "float lateralBend",
+            "float heightSquaredScale = height * height / max(maxSpeciesHeight, 1.0e-4);",
+        ] {
+            assert!(wind.contains(token), "wind polish must retain {token}");
+        }
+        assert!(
+            !wind.contains("gl_VertexIndex"),
+            "wind phase must remain blade-base/seed-derived rather than per vertex"
+        );
+    }
+
+    /// §4's overflow policy: ordered workgroup compaction saturates, it does
+    /// not wrap, and candidate order remains reproducible for card clusters.
+    #[test]
+    fn deterministic_compaction_saturates() {
         let src = include_str!("../../shaders/groundcover_scatter.comp");
         assert!(
-            src.contains("uint slot = atomicAdd(gcCounters[chunkIdx], 1u);")
-                && src.contains("if (slot >= pc.bladesPerChunk) {"),
-            "the append must bail on a slot past the cap rather than wrapping \
-             into the next chunk's slice (#4054 / §4)"
+            src.contains("shared uint gcAcceptedLanes[GROUNDCOVER_SCATTER_WORKGROUP];")
+                && src.contains("gcBatchBase = atomicAdd(gcCounters[chunkIdx], batchCount);")
+                && src.contains("for (uint j = 0u; j < lane; ++j)"),
+            "the scatter must compact in candidate-index order before reserving \
+             its one batch range, so card clusters cannot depend on atomic order"
+        );
+        assert!(
+            src.contains("if (slot < pc.bladesPerChunk) {")
+                && src.contains("atomicAdd(gcCounters[OVERFLOW_SLOT], 1u);"),
+            "a deterministic append must still count overflow rather than write \
+             into the next chunk's fixed blade slice"
         );
         assert!(
             src.contains("uint accepted = min(gcCounters[chunkIdx], pc.bladesPerChunk);"),

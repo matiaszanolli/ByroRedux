@@ -786,6 +786,7 @@ pub(super) fn spawn_terrain_mesh(
             cell_origin_xz: [origin_x, -origin_y],
             water_y: cover_water_y,
             canopy_height,
+            groundcover_detail_atlas: [0; 4],
         })
     } else {
         None

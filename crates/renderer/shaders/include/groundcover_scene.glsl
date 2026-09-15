@@ -50,6 +50,13 @@ struct GroundCoverChunk {
     /// stable frame to frame and across sessions — a blade must not move when
     /// the camera does.
     uint seed;
+    /// A vacant residency-ring slot remains in the uploaded record prefix to
+    /// keep every live chunk's blade-arena slab stable. Scatter skips it and
+    /// writes an empty indirect command before reading `cellIndex`.
+    uint slotActive;
+    /// 0→1 grow-in for a newly placed residency-ring slot.
+    float entryProgress;
+    uvec2 pad;
 };
 
 /// One accepted blade. §4's ~16-byte record, and deliberately not a
@@ -114,6 +121,10 @@ struct GroundCoverSpecies {
     /// and an invented scalar in a canonical type is how a placeholder becomes
     /// the value nobody revisits.
     vec4 transmissionSheen;
+    /// x = bindless palette-generated atlas for the Tier-2 clump card.
+    /// Kept per species so card sampling follows the same palette selection as
+    /// blades, rather than receiving an unrelated global material.
+    uvec4 cardAtlas;
 };
 
 #endif // BYRO_GROUNDCOVER_SCENE_GLSL
