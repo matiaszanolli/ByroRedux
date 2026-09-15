@@ -44,13 +44,20 @@ impl NiObject for BhkConstraint {
     }
 }
 
-/// Decoded per-variant `bhkConstraintCInfo` payload. Three CInfo structs
-/// cover four wire types today — a `bhkHingeConstraint` decodes into
+/// Decoded per-variant `bhkConstraintCInfo` payload. Six CInfo structs
+/// cover seven wire types today — a `bhkHingeConstraint` decodes into
 /// [`LimitedHinge`](BhkConstraintData::LimitedHinge) with synthesized ±π
 /// limits, an unlimited hinge being a limited one with the limits opened.
 /// Anything else stays [`Other`](BhkConstraintData::Other) (the bytes are
 /// still consumed/skipped, just not surfaced). Inventory:
 /// `docs/engine/physal.md` §3.
+///
+/// #4212 — the ball-and-socket / stiff-spring / chain variants below are
+/// *decoded* but have no importer yet: `extract_ragdoll` declines them the
+/// same way it declines `Other`, because no canonical joint kind exists
+/// for a point-to-point or distance joint. Decoding them anyway is what
+/// makes the residual honest — every one of the three consumes its whole
+/// body, so their stream drift is 0 rather than a suppressed under-read.
 #[derive(Debug, Clone)]
 pub enum BhkConstraintData {
     /// `bhkRagdollConstraintCInfo` — a 3-DOF cone/twist ball joint.
@@ -59,8 +66,91 @@ pub enum BhkConstraintData {
     LimitedHinge(LimitedHingeCInfo),
     /// `bhkPrismaticConstraintCInfo` — a 1-DOF sliding rail (#3792).
     Prismatic(PrismaticCInfo),
+    /// `bhkBallAndSocketConstraintCInfo` — a 3-DOF point-to-point joint
+    /// that keeps two bodies' pivots coincident (#4212).
+    BallAndSocket(BallAndSocketCInfo),
+    /// `bhkStiffSpringConstraintCInfo` — holds two bodies at a fixed
+    /// distance from one another (#4212).
+    StiffSpring(StiffSpringCInfo),
+    /// `bhkBallSocketConstraintChain`'s retained pivot chain (#4212).
+    BallSocketChain(BallSocketChainCInfo),
     /// Any constraint type we don't decode the body of yet.
     Other,
+}
+
+/// `bhkBallAndSocketConstraintCInfo` — nif.xml carries `size="32"` with no
+/// version branch at all: two `Vector4` pivots, one in each entity's
+/// space, and no motor field. Raw Havok Z-up like every sibling CInfo;
+/// coordinate conversion happens at the import boundary.
+#[derive(Debug, Clone)]
+pub struct BallAndSocketCInfo {
+    /// Constraint pivot in entity A's space.
+    pub pivot_a: [f32; 4],
+    /// The same pivot expressed in entity B's space.
+    pub pivot_b: [f32; 4],
+}
+
+impl BallAndSocketCInfo {
+    /// 2 × Vec4 = 32 bytes — the `(0, _) => Some(32)` row in
+    /// [`BhkBreakableConstraint::wrapped_payload_size`], which this now
+    /// decodes instead of skipping.
+    fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let pivot_a = super::read_vec4(stream)?;
+        let pivot_b = super::read_vec4(stream)?;
+        Ok(Self { pivot_a, pivot_b })
+    }
+}
+
+/// `bhkStiffSpringConstraintCInfo` — nif.xml `size="36"`, likewise with no
+/// version branch and no motor: the ball-and-socket pair plus the rest
+/// length the constraint holds between them.
+#[derive(Debug, Clone)]
+pub struct StiffSpringCInfo {
+    pub pivot_a: [f32; 4],
+    pub pivot_b: [f32; 4],
+    /// Distance the constraint maintains between the two pivots.
+    pub length: f32,
+}
+
+impl StiffSpringCInfo {
+    /// 2 × Vec4 + f32 = 36 bytes — the `(8, _) => Some(36)` row.
+    fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let pivot_a = super::read_vec4(stream)?;
+        let pivot_b = super::read_vec4(stream)?;
+        let length = stream.read_f32_le()?;
+        Ok(Self {
+            pivot_a,
+            pivot_b,
+            length,
+        })
+    }
+}
+
+/// `bhkBallSocketConstraintChain`'s body — a rope/chain of point-to-point
+/// constraints between `chained_entities`, plus the solver tuning the
+/// chain carries instead of per-constraint limits.
+///
+/// #4212 — [`BhkConstraint::parse_ball_socket_chain`] already consumed all
+/// of this byte-exactly (#1604) but discarded it, so a chain surfaced as
+/// `Other` with nothing but its trailing entity refs. The pivots are the
+/// only record of where the chain's links attach.
+#[derive(Debug, Clone)]
+pub struct BallSocketChainCInfo {
+    /// One pivot pair per link — `num_pivots / 2` entries, since nif.xml
+    /// counts pivots (A and B) rather than constraints.
+    pub pivots: Vec<BallAndSocketCInfo>,
+    /// Higher values are harder and more reactive, lower ones smoother.
+    pub tau: f32,
+    /// Damping strength applied to the current velocity.
+    pub damping: f32,
+    /// Added to the diagonal of the constraint matrix; 0.0 can divide by
+    /// zero for some chain configurations, hence nif.xml's 1.19e-08
+    /// default.
+    pub constraint_force_mixing: f32,
+    /// Distance error tolerated before the stabiliser engages.
+    pub max_error_distance: f32,
+    /// The chain's bodies, in order, from `bhkConstraintChainCInfo`.
+    pub chained_entities: Vec<BlockRef>,
 }
 
 /// `bhkRagdollConstraintCInfo`, FO3/FNV (`!#NI_BS_LTE_16#`) layout from
@@ -438,20 +528,22 @@ impl BhkConstraint {
         let num_pivots = stream.read_u32_le()?;
         // Each bhkBallAndSocketConstraintCInfo = Pivot A + Pivot B (2 × Vec4).
         // A corrupt count walks the stream to EOF (read errors out) rather
-        // than looping unboundedly.
+        // than looping unboundedly, so the capacity is grown as pivots are
+        // read rather than reserved from the declared count.
+        let mut pivots = Vec::new();
         for _ in 0..(num_pivots / 2) {
-            let _pivot_a = super::read_vec4(stream)?;
-            let _pivot_b = super::read_vec4(stream)?;
+            pivots.push(BallAndSocketCInfo::parse(stream)?);
         }
-        let _tau = stream.read_f32_le()?;
-        let _damping = stream.read_f32_le()?;
-        let _constraint_force_mixing = stream.read_f32_le()?;
-        let _max_error_distance = stream.read_f32_le()?;
+        let tau = stream.read_f32_le()?;
+        let damping = stream.read_f32_le()?;
+        let constraint_force_mixing = stream.read_f32_le()?;
+        let max_error_distance = stream.read_f32_le()?;
         // bhkConstraintChainCInfo: chained-entity Ptr array, then the real
         // trailing bhkConstraintCInfo.
         let num_chained = stream.read_u32_le()?;
+        let mut chained_entities = Vec::new();
         for _ in 0..num_chained {
-            let _chained = stream.read_block_ref()?;
+            chained_entities.push(stream.read_block_ref()?);
         }
         let (entity_a, entity_b, priority) = Self::parse_base(stream)?;
         Ok(Self {
@@ -459,7 +551,14 @@ impl BhkConstraint {
             entity_a,
             entity_b,
             priority,
-            data: BhkConstraintData::Other,
+            data: BhkConstraintData::BallSocketChain(BallSocketChainCInfo {
+                pivots,
+                tau,
+                damping,
+                constraint_force_mixing,
+                max_error_distance,
+                chained_entities,
+            }),
         })
     }
 
@@ -482,6 +581,10 @@ impl BhkConstraint {
             1 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_hinge_fo3(stream)?),
             // 6 Prismatic — #3792.
             6 => BhkConstraintData::Prismatic(PrismaticCInfo::parse_fo3(stream)?),
+            // #4212 — the two non-motor types, previously byte-skipped
+            // through the tables below. Same body on every era.
+            0 => BhkConstraintData::BallAndSocket(BallAndSocketCInfo::parse(stream)?),
+            8 => BhkConstraintData::StiffSpring(StiffSpringCInfo::parse(stream)?),
             other => {
                 // #1609 — mirror the Oblivion size-skip on FO3+: consume the
                 // undecoded inner CInfo's FIXED body so stream consumption is
@@ -576,35 +679,30 @@ impl BhkConstraint {
                         data: BhkConstraintData::Prismatic(PrismaticCInfo::parse_oblivion(stream)?),
                     });
                 }
+                // #4212 — both carry the same body on every era (nif.xml
+                // gives each a fixed `size` with no version branch), so
+                // one parser serves both branches. These were the last two
+                // entries in the Oblivion byte-skip table this arm
+                // replaces; with them decoded the table had no rows left.
+                "bhkBallAndSocketConstraint" => {
+                    return Ok(Self {
+                        type_name,
+                        entity_a,
+                        entity_b,
+                        priority,
+                        data: BhkConstraintData::BallAndSocket(BallAndSocketCInfo::parse(stream)?),
+                    });
+                }
+                "bhkStiffSpringConstraint" => {
+                    return Ok(Self {
+                        type_name,
+                        entity_a,
+                        entity_b,
+                        priority,
+                        data: BhkConstraintData::StiffSpring(StiffSpringCInfo::parse(stream)?),
+                    });
+                }
                 _ => {}
-            }
-
-            // The remaining types aren't decoded yet; consume their fixed
-            // Oblivion payload by byte size and stay `Other`.
-            let payload_size: Option<u64> = match type_name {
-                // 2 × Vec4
-                "bhkBallAndSocketConstraint" => Some(32),
-                // `bhkHingeConstraint` (5 × Vec4 = 80) and
-                // `bhkPrismaticConstraint` (8 × Vec4 + 3 × f32 = 140) are
-                // decoded above (since #3330 / #3792) and no longer skipped
-                // here.
-                // 2 × Vec4 + f32
-                "bhkStiffSpringConstraint" => Some(36),
-                // Malleable wrapper has a runtime-dispatched inner
-                // CInfo — handle separately below.
-                "bhkMalleableConstraint" => None,
-                _ => None,
-            };
-
-            if let Some(size) = payload_size {
-                stream.skip(size)?;
-                return Ok(Self {
-                    type_name,
-                    entity_a,
-                    entity_b,
-                    priority,
-                    data: BhkConstraintData::Other,
-                });
             }
 
             if type_name == "bhkMalleableConstraint" {
@@ -626,22 +724,20 @@ impl BhkConstraint {
                     )?),
                     // 6 Prismatic — #3792.
                     6 => BhkConstraintData::Prismatic(PrismaticCInfo::parse_oblivion(stream)?),
-                    other => {
-                        let inner_size: u64 = match other {
-                            0 => 32, // Ball and Socket
-                            8 => 36, // Stiff Spring
-                            unknown => {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    format!(
-                                        "bhkMalleableConstraint: unknown inner type {unknown} — \
-                                         stream position unreliable"
-                                    ),
-                                ));
-                            }
-                        };
-                        stream.skip(inner_size)?;
-                        BhkConstraintData::Other
+                    // #4212 — decoded rather than size-skipped, so a
+                    // malleable-wrapped point-to-point or distance joint
+                    // surfaces like a bare one. Byte consumption is
+                    // unchanged (32 / 36).
+                    0 => BhkConstraintData::BallAndSocket(BallAndSocketCInfo::parse(stream)?),
+                    8 => BhkConstraintData::StiffSpring(StiffSpringCInfo::parse(stream)?),
+                    unknown => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "bhkMalleableConstraint: unknown inner type {unknown} — \
+                                 stream position unreliable"
+                            ),
+                        ));
                     }
                 };
                 // Tau + Damping (Oblivion trailer).
@@ -682,6 +778,15 @@ impl BhkConstraint {
             // above.
             "bhkPrismaticConstraint" => {
                 BhkConstraintData::Prismatic(PrismaticCInfo::parse_fo3(stream)?)
+            }
+            // #4212 — version-independent bodies (nif.xml `size` attrs, no
+            // `since`/`until` branch and no motor field), so the same
+            // parsers serve this branch and the Oblivion one above.
+            "bhkBallAndSocketConstraint" => {
+                BhkConstraintData::BallAndSocket(BallAndSocketCInfo::parse(stream)?)
+            }
+            "bhkStiffSpringConstraint" => {
+                BhkConstraintData::StiffSpring(StiffSpringCInfo::parse(stream)?)
             }
             "bhkMalleableConstraint" => Self::parse_fo3_malleable_inner(stream)?,
             _ => BhkConstraintData::Other,
@@ -908,16 +1013,16 @@ impl BhkBreakableConstraint {
                 BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?),
                 true,
             ),
-            (0, _) => {
-                // BallAndSocket — 2 × Vec4, no version difference.
-                stream.skip(32)?;
-                (BhkConstraintData::Other, true)
-            }
-            (8, _) => {
-                // StiffSpring — 2 × Vec4 + f32, no version difference.
-                stream.skip(36)?;
-                (BhkConstraintData::Other, true)
-            }
+            // #4212 — decoded instead of skipped; consumption is identical
+            // (32 / 36 bytes), so the trailer stays exactly as reachable.
+            (0, _) => (
+                BhkConstraintData::BallAndSocket(BallAndSocketCInfo::parse(stream)?),
+                true,
+            ),
+            (8, _) => (
+                BhkConstraintData::StiffSpring(StiffSpringCInfo::parse(stream)?),
+                true,
+            ),
             _ => (BhkConstraintData::Other, false), // Malleable(13) or unknown
         };
 

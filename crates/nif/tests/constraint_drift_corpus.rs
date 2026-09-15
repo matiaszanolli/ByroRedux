@@ -28,14 +28,23 @@ mod common;
 use byroredux_nif::corpus::is_known_constraint_motor_tail_drift;
 use common::{open_all_mesh_archives, Game};
 
-/// The five `bhk*Constraint` types with typed CInfo decoders (see
+/// The `bhk*Constraint` types with typed CInfo decoders (see
 /// `is_havok_constraint_stub`'s #3713 note in `lib.rs`).
+///
+/// #4212 added the last three. They differ from the five above in having
+/// no motor field at all, so their expected residual is 0 rather than a
+/// motor tail — `is_known_constraint_motor_tail_drift` enforces that
+/// distinction, and it is the reason they were removed from the stub list
+/// rather than added to the motor-tail set.
 const DECODED_CONSTRAINT_TYPES: &[&str] = &[
     "bhkRagdollConstraint",
     "bhkLimitedHingeConstraint",
     "bhkHingeConstraint",
     "bhkMalleableConstraint",
     "bhkPrismaticConstraint",
+    "bhkBallAndSocketConstraint",
+    "bhkStiffSpringConstraint",
+    "bhkBallSocketConstraintChain",
 ];
 
 #[test]

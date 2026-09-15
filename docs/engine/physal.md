@@ -129,7 +129,7 @@ both produces scale² geometry while ragdoll articulation remains scale¹ (#3064
 
 The per-game seam **in the constraint graph** is the typed decode of the
 constraint CInfos (`crates/nif/src/blocks/collision/constraints.rs`). At HEAD that
-is **four wire types → three CInfo structs → three importer functions**, reachable
+is **seven wire types → six CInfo structs → three importer functions**, reachable
 through **three wrappers** (bare, `bhkMalleableConstraint`-wrapped, and
 `BhkBreakableConstraint`-wrapped):
 
@@ -139,12 +139,26 @@ through **three wrappers** (bare, `bhkMalleableConstraint`-wrapped, and
 | `bhkLimitedHingeConstraint` | `LimitedHingeCInfo` | `limited_hinge_joint` | M41.x slice 1 |
 | `bhkHingeConstraint` | `LimitedHingeCInfo` (synthesized ±π limits, zero friction) | `limited_hinge_joint` | #3330 |
 | `bhkPrismaticConstraint` | `PrismaticCInfo` | `prismatic_joint` | #3792 |
+| `bhkBallAndSocketConstraint` | `BallAndSocketCInfo` | *none yet* | #4212 |
+| `bhkStiffSpringConstraint` | `StiffSpringCInfo` | *none yet* | #4212 |
+| `bhkBallSocketConstraintChain` | `BallSocketChainCInfo` | *none yet* | #4212 |
 
 > Two counts, not one — a hinge is decoded into the *LimitedHinge* CInfo because
-> an unlimited hinge is a limited one with the limits opened to ±π. Any type not
-> in this table (`bhkBallAndSocketConstraint`, `bhkStiffSpringConstraint`,
-> `bhkMalleableConstraint` with an undecoded inner, …) still reads its base, skips
-> its fixed Oblivion payload, and stays `BhkConstraintData::Other`.
+> an unlimited hinge is a limited one with the limits opened to ±π.
+>
+> **Decoded ≠ imported.** The last three rows are parsed and retained but have no
+> importer: `extract_ragdoll` declines them exactly as it declines `Other`, because
+> no canonical joint kind exists yet for a point-to-point or distance joint. They
+> were decoded anyway because the alternative was a suppressed under-read —
+> nif.xml gives all three a fixed size with no motor field, so each now consumes
+> its whole body and its stream drift is 0. That is why #4212 also removed them
+> from `is_havok_constraint_stub`: with nothing left unread, suppressing their
+> drift telemetry would hide real parser drift rather than a by-design tail. The
+> one type still in that list is `bhkGenericConstraint`, for which nif.xml carries
+> a name and no field spec at all.
+>
+> `bhkMalleableConstraint` with an inner type outside this table still reads its
+> base, skips its fixed payload, and stays `BhkConstraintData::Other`.
 
 Each importer reads the **common subset** of fields — twist/plane/pivot + angle
 limits for ragdoll; axis/perp/pivot + limits for hinge (the LimitedHinge perp-axis

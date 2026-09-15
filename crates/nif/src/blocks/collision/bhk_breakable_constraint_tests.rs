@@ -36,6 +36,17 @@ fn trailer(threshold: f32, remove_when_broken: bool) -> Vec<u8> {
     d
 }
 
+/// A `Vector4`'s 16 wire bytes. Most tests here fill their wrapped payload
+/// with a constant (the byte *count* being what they assert), so this only
+/// appears where a test reads the decoded values back.
+fn vec4(x: f32, y: f32, z: f32, w: f32) -> Vec<u8> {
+    let mut d = Vec::with_capacity(16);
+    for c in [x, y, z, w] {
+        d.extend_from_slice(&c.to_le_bytes());
+    }
+    d
+}
+
 /// Oblivion baseline — pre-fix this path already worked. Locks
 /// the existing behaviour so the version-aware refactor doesn't
 /// regress the Oblivion table.
@@ -351,19 +362,32 @@ fn oblivion_wrapped_limited_hinge_decodes_real_geometry() {
     assert_eq!(stream.position() as usize, bytes.len());
 }
 
-/// A wrapped BallAndSocket (Type 0) stays `Other` — no canonical joint
-/// kind exists for it yet (#3792's explicit deferral, matching the issue's
-/// own SIBLING checklist item).
+/// A wrapped BallAndSocket (Type 0) decodes its pivots since #4212 — it
+/// was `Other` under #3792's deferral. Byte consumption is unchanged (32 B,
+/// no version difference), which is what keeps the trailer reachable: the
+/// threshold assertion below is the same one that guarded the skip.
+///
+/// There is still no canonical joint kind for a point-to-point constraint,
+/// so `extract_ragdoll` declines it exactly as before — what changed is
+/// that the geometry survives the parse instead of being discarded.
 #[test]
-fn fnv_wrapped_ball_and_socket_stays_other() {
+fn fnv_wrapped_ball_and_socket_decodes_pivots() {
     let mut bytes = shared_prefix(0); // wrapped_type = 0 (BallAndSocket)
-    bytes.extend(vec![0xEE; 32]); // 2 × Vec4, no version diff
+    bytes.extend(vec4(1.0, 2.0, 3.0, 1.0)); // pivot_a
+    bytes.extend(vec4(4.0, 5.0, 6.0, 1.0)); // pivot_b
     bytes.extend(trailer(5.0, false));
 
     let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let block = BhkBreakableConstraint::parse(&mut stream).unwrap();
     assert_eq!(block.threshold, 5.0);
-    assert!(matches!(block.data, BhkConstraintData::Other));
+    let BhkConstraintData::BallAndSocket(b) = block.data else {
+        panic!(
+            "a breakable-wrapped BallAndSocket must decode (#4212), got {:?}",
+            block.data
+        );
+    };
+    assert_eq!(b.pivot_a, [1.0, 2.0, 3.0, 1.0]);
+    assert_eq!(b.pivot_b, [4.0, 5.0, 6.0, 1.0]);
     assert_eq!(stream.position() as usize, bytes.len());
 }

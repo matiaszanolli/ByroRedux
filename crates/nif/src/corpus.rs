@@ -70,7 +70,8 @@ pub fn per_block_tsv_header(total: usize, clean_truncated: Option<(usize, usize)
 /// unread, stacked on top of its WRAPPED inner type's own motor-tail
 /// drift — 0 for an inner type with no motor field at all
 /// (`bhkBallAndSocketConstraint` / `bhkStiffSpringConstraint`, the two
-/// non-motor arms `parse_fo3_malleable_inner` byte-skips), or one of the
+/// non-motor arms `parse_fo3_malleable_inner` decodes in full since
+/// #4212 — the byte count is the same as the skip it replaced), or one of the
 /// four values above for an inner Ragdoll/LimitedHinge/Hinge/Prismatic.
 /// So Malleable's own observed set is `{4}` (no-motor inner) ∪
 /// `{5, 22, 23, 30}` (motor-tail-drift + 4) — verified against a real FO3
@@ -84,6 +85,17 @@ pub fn per_block_tsv_header(total: usize, clean_truncated: Option<(usize, usize)
 /// (#939) is the human-facing sibling for spot-checking a corpus by eye.
 pub fn is_known_constraint_motor_tail_drift(type_name: &str, drift: i64) -> bool {
     const MOTOR_TAIL_DRIFTS: [i64; 4] = [1, 18, 19, 26];
+    // #4212 — these three carry no `bhkConstraintMotorCInfo` at all in
+    // nif.xml, so there is no by-design tail to leave unread: their
+    // decoders consume the whole body and any residual at all is real
+    // drift. Folding them into the motor-tail set would have accepted a
+    // 1-, 18-, 19- or 26-byte under-read that cannot be a motor.
+    if matches!(
+        type_name,
+        "bhkBallAndSocketConstraint" | "bhkStiffSpringConstraint" | "bhkBallSocketConstraintChain"
+    ) {
+        return drift == 0;
+    }
     if type_name == "bhkMalleableConstraint" {
         return drift == 4 || MOTOR_TAIL_DRIFTS.iter().any(|&d| drift == d + 4);
     }
@@ -177,6 +189,44 @@ mod tests {
                  the +4 Strength trailer every Malleable residual carries"
             );
         }
+    }
+
+    /// #4212 — `bhkBallAndSocketConstraint`, `bhkStiffSpringConstraint` and
+    /// `bhkBallSocketConstraintChain` have no `bhkConstraintMotorCInfo` in
+    /// nif.xml at all, so their decoders consume the whole body and 0 is
+    /// their only by-design residual.
+    ///
+    /// The negative half is the one that matters: a motor-tail value must
+    /// be *rejected* for these three. A 1-byte under-read on a constraint
+    /// with no motor-type byte to read is real drift, and accepting it
+    /// would hand back exactly the blindness `is_havok_constraint_stub`
+    /// used to give these types before they were decoded.
+    #[test]
+    fn motorless_constraint_types_accept_only_a_zero_residual() {
+        for ty in [
+            "bhkBallAndSocketConstraint",
+            "bhkStiffSpringConstraint",
+            "bhkBallSocketConstraintChain",
+        ] {
+            assert!(
+                is_known_constraint_motor_tail_drift(ty, 0),
+                "{ty} consumes its whole body, so 0 must be known-good"
+            );
+            // 1/18/19/26 are the motor tails; 32/36 are whole undecoded
+            // CInfos — the shape of the historic bhkHingeConstraint +128.
+            for &drift in &[1, 18, 19, 26, 32, 36] {
+                assert!(
+                    !is_known_constraint_motor_tail_drift(ty, drift),
+                    "{ty} has no motor field, so drift={drift} is real drift, not a tail"
+                );
+            }
+        }
+        // The mirror: a motor-bearing type's tail is always at least the
+        // motor-type byte, so 0 is not in its known set.
+        assert!(!is_known_constraint_motor_tail_drift(
+            "bhkRagdollConstraint",
+            0
+        ));
     }
 
     /// +4 (and its `+motor` variants) are Malleable-specific — a bare

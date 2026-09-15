@@ -250,16 +250,95 @@ fn fnv_malleable_wrapping_ragdoll_surfaces_as_ragdoll() {
 /// Non-decoded FO3+ types stay name-only stubs (16-byte base read; the
 /// rest recovered via block_size) — unchanged from pre-M41.x behaviour.
 ///
-/// The exemplar used to be `bhkHingeConstraint`; #3330 decodes that one, so
-/// this now uses `bhkStiffSpringConstraint` — still genuinely undecoded.
+/// The exemplar has moved twice as the decode widened: `bhkHingeConstraint`
+/// until #3330, then `bhkStiffSpringConstraint` until #4212. It is now
+/// `bhkGenericConstraint`, which is the last genuinely undecodable type —
+/// nif.xml carries only its name, with no field spec to decode against, so
+/// unlike its predecessors this one cannot be promoted by a future issue.
 #[test]
 fn fnv_other_constraint_type_stays_stub() {
     let bytes = base();
     let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
-    let c = BhkConstraint::parse(&mut stream, "bhkStiffSpringConstraint").unwrap();
+    let c = BhkConstraint::parse(&mut stream, "bhkGenericConstraint").unwrap();
     assert!(matches!(c.data, BhkConstraintData::Other));
     assert_eq!(stream.position() as usize, 16, "only the base is read");
+}
+
+/// #4212 — a bare `bhkBallAndSocketConstraint` decodes its two pivots.
+/// nif.xml gives the CInfo a fixed `size="32"` with no version branch, so
+/// the same 16 + 32 accounting holds on every era; this pins the FO3+ side
+/// and `oblivion_ball_and_socket_decodes_pivots` the other.
+#[test]
+fn fnv_bare_ball_and_socket_decodes_pivots() {
+    let mut bytes = base();
+    bytes.extend(vec4(1.0, 2.0, 3.0, 1.0)); // pivot_a
+    bytes.extend(vec4(-1.0, -2.0, -3.0, 1.0)); // pivot_b
+    assert_eq!(bytes.len(), 16 + 32);
+
+    let header = NifHeader::test_fo3_fnv();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse(&mut stream, "bhkBallAndSocketConstraint").unwrap();
+
+    let BhkConstraintData::BallAndSocket(b) = c.data else {
+        panic!("bhkBallAndSocketConstraint must decode, got {:?}", c.data);
+    };
+    assert_eq!(b.pivot_a, [1.0, 2.0, 3.0, 1.0]);
+    assert_eq!(b.pivot_b, [-1.0, -2.0, -3.0, 1.0]);
+    assert_eq!(
+        stream.position() as usize,
+        16 + 32,
+        "the whole body is consumed — no motor field exists to leave behind"
+    );
+}
+
+/// #4212 — Oblivion sibling of the test above. The byte layout is
+/// identical (nif.xml declares no `until`/`since` variant for this CInfo),
+/// which is why one parser serves both branches; this pins that claim
+/// rather than assuming it.
+#[test]
+fn oblivion_ball_and_socket_decodes_pivots() {
+    let mut bytes = base();
+    bytes.extend(vec4(4.0, 5.0, 6.0, 1.0));
+    bytes.extend(vec4(7.0, 8.0, 9.0, 1.0));
+
+    let header = oblivion_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse(&mut stream, "bhkBallAndSocketConstraint").unwrap();
+
+    let BhkConstraintData::BallAndSocket(b) = c.data else {
+        panic!(
+            "Oblivion bhkBallAndSocketConstraint must decode, got {:?}",
+            c.data
+        );
+    };
+    assert_eq!(b.pivot_a, [4.0, 5.0, 6.0, 1.0]);
+    assert_eq!(b.pivot_b, [7.0, 8.0, 9.0, 1.0]);
+    assert_eq!(stream.position() as usize, 16 + 32);
+}
+
+/// #4212 — a bare `bhkStiffSpringConstraint` decodes both pivots plus the
+/// rest length, the one field that distinguishes it from a ball-and-socket
+/// (nif.xml `size="36"`, no version branch, no motor).
+#[test]
+fn fnv_bare_stiff_spring_decodes_pivots_and_length() {
+    let mut bytes = base();
+    bytes.extend(vec4(1.0, 0.0, 0.0, 1.0));
+    bytes.extend(vec4(0.0, 1.0, 0.0, 1.0));
+    bytes.extend_from_slice(&12.5f32.to_le_bytes());
+    assert_eq!(bytes.len(), 16 + 36);
+
+    let header = NifHeader::test_fo3_fnv();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse(&mut stream, "bhkStiffSpringConstraint").unwrap();
+
+    let BhkConstraintData::StiffSpring(s) = c.data else {
+        panic!("bhkStiffSpringConstraint must decode, got {:?}", c.data);
+    };
+    assert_eq!(s.pivot_a, [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(s.pivot_b, [0.0, 1.0, 0.0, 1.0]);
+    assert_eq!(s.length, 12.5);
+    assert_eq!(stream.position() as usize, 16 + 36);
 }
 
 /// #3330 — a bare FNV `bhkHingeConstraint` is a `bhkLimitedHingeConstraint`
@@ -561,7 +640,29 @@ fn ball_socket_chain_consumes_block_and_reads_trailing_refs() {
     assert_eq!(c.entity_a.0, 42);
     assert_eq!(c.entity_b.0, 43);
     assert_eq!(c.priority, 1);
-    assert!(matches!(c.data, BhkConstraintData::Other));
+
+    // #4212 — the chain's own data is retained now, not just consumed. The
+    // pivots are the only record of where its links attach, so a chain that
+    // parses but surfaces as `Other` is indistinguishable from one that was
+    // skipped.
+    let BhkConstraintData::BallSocketChain(chain) = &c.data else {
+        panic!("the chain must retain its pivots, got {:?}", c.data);
+    };
+    assert_eq!(chain.pivots.len(), 6, "num_pivots 12 = 6 pivot pairs");
+    assert_eq!(chain.pivots[0].pivot_a, [0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(chain.pivots[5].pivot_b, [5.0, 1.0, 0.0, 1.0]);
+    assert_eq!(chain.tau, 1.0);
+    assert_eq!(chain.damping, 0.6);
+    assert_eq!(chain.max_error_distance, 0.1);
+    assert_eq!(
+        chain
+            .chained_entities
+            .iter()
+            .filter_map(|e| e.index())
+            .collect::<Vec<_>>(),
+        (100..107).collect::<Vec<_>>(),
+        "all seven chained bodies, in order",
+    );
 }
 
 /// #1609 — a malleable-wrapped Hinge (type 1, FNV fixed body = 8×Vec4 =
@@ -601,7 +702,8 @@ fn fo3_malleable_wrapped_hinge_consumes_inner_body() {
 }
 
 /// Sibling: a malleable-wrapped StiffSpring (type 8, 36 B body) — the other
-/// non-motor non-decoded type — likewise consumes its fixed body.
+/// non-motor type — likewise consumes its fixed body, and since #4212
+/// surfaces the decoded spring rather than `Other`.
 #[test]
 fn fo3_malleable_wrapped_stiffspring_consumes_inner_body() {
     let mut bytes = base();
@@ -616,6 +718,13 @@ fn fo3_malleable_wrapped_stiffspring_consumes_inner_body() {
     let header = NifHeader::test_fo3_fnv();
     let mut stream = NifStream::new(&bytes, &header);
     let c = BhkConstraint::parse(&mut stream, "bhkMalleableConstraint").unwrap();
-    assert!(matches!(c.data, BhkConstraintData::Other));
+    let BhkConstraintData::StiffSpring(s) = c.data else {
+        panic!(
+            "a malleable-wrapped StiffSpring must surface as StiffSpring (#4212), got {:?}",
+            c.data
+        );
+    };
+    assert_eq!(s.pivot_a, [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(s.length, 0.5);
     assert_eq!(stream.position() as usize, 16 + 4 + 16 + 36);
 }

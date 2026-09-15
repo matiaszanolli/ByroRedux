@@ -187,14 +187,14 @@ fn is_animation_block(type_name: &str) -> bool {
 /// by exact-consumption assertions in `bhk_constraint_tests.rs`
 /// (`stream.position() == 16 + prefix`).
 fn is_havok_constraint_stub(type_name: &str) -> bool {
-    matches!(
-        type_name,
-        "bhkBallAndSocketConstraint"
-            | "bhkStiffSpringConstraint"
-            | "bhkGenericConstraint"
-            // #979 / NIF-D5-NEW-03
-            | "bhkBallSocketConstraintChain"
-    )
+    // #4212 — `bhkBallAndSocketConstraint`, `bhkStiffSpringConstraint` and
+    // `bhkBallSocketConstraintChain` left this list when they gained typed
+    // CInfo decoders. Each consumes its whole body, so suppressing their
+    // drift would now hide real parser drift rather than a by-design tail.
+    // `bhkGenericConstraint` stays: nif.xml carries no field spec for it
+    // (only the name), so there is nothing to decode against and its
+    // under-read is genuinely by design.
+    matches!(type_name, "bhkGenericConstraint")
 }
 
 /// Whether this file's blocks carry their type name inline (as a sized

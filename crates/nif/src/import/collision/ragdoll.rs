@@ -202,23 +202,31 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
             // #3792 — the `creatures\protectron\skeleton.nif` edges this
             // arm used to fall through to `Other` for.
             BhkConstraintData::Prismatic(p) => prismatic_joint(p, scale),
-            // #1539 — `bhkBallAndSocketConstraint` / `bhkStiffSpringConstraint`
-            // still decode to `Other` (#3792 closed the third named class,
-            // `bhkPrismaticConstraint`, above). Dropping one that links two
-            // ragdoll bones silently disconnects the articulation:
-            // `orient_tree` (`crates/physics/src/ragdoll.rs`) then yields a
-            // forest and `build_ragdoll` builds the detached limb as an
-            // independent free-floating multibody that free-falls. Every
-            // other block-drop in this file logs (the FO4-NP / phantom arms
+            // #1539 — point-to-point (`bhkBallAndSocketConstraint`),
+            // distance (`bhkStiffSpringConstraint`) and chain
+            // (`bhkBallSocketConstraintChain`) constraints have no canonical
+            // joint kind yet. #4212 decodes their CInfos, so the geometry is
+            // available when one lands, but decoding is not mapping: they
+            // are dropped here exactly as an undecoded `Other` is.
+            //
+            // Dropping one that links two ragdoll bones silently
+            // disconnects the articulation: `orient_tree`
+            // (`crates/physics/src/ragdoll.rs`) then yields a forest and
+            // `build_ragdoll` builds the detached limb as an independent
+            // free-floating multibody that free-falls. Every other
+            // block-drop in this file logs (the FO4-NP / phantom arms
             // `log::debug!`); this one warns — louder, because unlike those
             // benign out-of-scope drops it can visibly break the ragdoll.
-            BhkConstraintData::Other => {
+            BhkConstraintData::BallAndSocket(_)
+            | BhkConstraintData::StiffSpring(_)
+            | BhkConstraintData::BallSocketChain(_)
+            | BhkConstraintData::Other => {
                 log::warn!(
-                    "extract_ragdoll: dropping unsupported constraint linking bones \
-                     '{a}' <-> '{b}' — decoded as Other (bhkBallAndSocket / \
-                     bhkStiffSpring not yet mapped to a canonical joint). \
-                     The ragdoll edge is lost; if it was the sole link to a limb, that \
-                     limb will detach and free-fall (#1539).",
+                    "extract_ragdoll: dropping constraint block {constraint_idx} ({ty}) \
+                     linking bones '{a}' <-> '{b}' — no canonical joint kind exists for \
+                     this constraint type. The ragdoll edge is lost; if it was the sole \
+                     link to a limb, that limb will detach and free-fall (#1539).",
+                    ty = c.type_name,
                     a = bodies[body_a].bone_name,
                     b = bodies[body_b].bone_name,
                 );
@@ -309,7 +317,13 @@ fn try_breakable_joint(
         BhkConstraintData::Ragdoll(r) => ragdoll_joint(r, scale)?,
         BhkConstraintData::LimitedHinge(h) => limited_hinge_joint(h, scale)?,
         BhkConstraintData::Prismatic(p) => prismatic_joint(p, scale)?,
-        BhkConstraintData::Other => return None,
+        // #4212 — decoded, but with no canonical joint kind to build (see
+        // the sibling arm in `extract_ragdoll`), so they decline here the
+        // same way undecoded data does.
+        BhkConstraintData::BallAndSocket(_)
+        | BhkConstraintData::StiffSpring(_)
+        | BhkConstraintData::BallSocketChain(_)
+        | BhkConstraintData::Other => return None,
     };
     Some((body_a, body_b, kind))
 }
@@ -1217,9 +1231,13 @@ mod drop_site_diagnostics_tests {
                 "breakable constraint (#1850)",
                 "dropping bhkBreakableConstraint",
             ),
+            // #4212 reworded this one: the arm now covers decoded-but-unmapped
+            // kinds (ball-and-socket, stiff spring, chain) alongside undecoded
+            // `Other`, and names the block and type instead of listing the two
+            // types in prose. Keyed on the reason that survived the reword.
             (
-                "unsupported constraint kind (#1539)",
-                "dropping unsupported constraint linking bones",
+                "unsupported constraint kind (#1539/#4212)",
+                "no canonical joint kind exists for",
             ),
         ] {
             assert!(
