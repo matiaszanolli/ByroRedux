@@ -130,6 +130,84 @@ fn mesh_water_reemit_preserves_sorted_slots_for_many_surfaces() {
     assert!(byroredux_renderer::vulkan::water::water_commands_match_draw_slots(&water, &draws));
 }
 
+/// Particle billboards carry `entity_id = emitter ^ particle_index`, so an
+/// unrelated emitter's particle can share a water plane's id. An entity-only
+/// re-emit index then flagged the billboard as the water draw: the water
+/// pass drew the particle quad, and the plane's own command stayed on the
+/// triangle path shading its WATR normal map as albedo at world-unit UVs —
+/// the concentric moiré sheet over Riverwood's (4,-11) riverbed.
+#[test]
+fn water_reemit_ignores_particle_draws_that_share_the_plane_id() {
+    let mut world = world_with_water_plane(
+        0.05,
+        0.6,
+        50.0,
+        1.0 / 512.0,
+        [1.0; 3],
+        [1.0; 4],
+        [0.0, 0.0, 1.0, 1.0],
+    );
+    let plane = world
+        .query::<WaterPlane>()
+        .and_then(|q| q.iter().next().map(|(entity, _)| entity))
+        .expect("fixture spawns one plane");
+    let emitter_entity = world.spawn();
+    let colliding_index = (emitter_entity ^ plane) as usize;
+    let mut emitter = byroredux_core::ecs::ParticleEmitter::torch_flame();
+    for _ in 0..=colliding_index {
+        emitter.particles.push(
+            [0.0, 0.0, -5.0],
+            [0.0; 3],
+            1.0,
+            emitter.start_color,
+            emitter.start_size,
+        );
+    }
+    world.insert(emitter_entity, emitter);
+    world.insert(emitter_entity, byroredux_core::ecs::TextureHandle(9));
+
+    const PARTICLE_QUAD: u32 = 77;
+    let mut draws = Vec::new();
+    let mut water = Vec::new();
+    let max_skinned = ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
+        / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
+        - 1) as u32;
+    let _ = build_render_data(
+        &world,
+        &mut draws,
+        &mut water,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut rustc_hash::FxHashMap::default(),
+        &mut byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned),
+        &mut byroredux_renderer::MaterialTable::new(),
+        Some(PARTICLE_QUAD),
+    );
+
+    assert!(
+        draws
+            .iter()
+            .any(|d| d.entity_id == plane && d.mesh_handle == PARTICLE_QUAD),
+        "fixture must actually emit a billboard carrying the plane's id"
+    );
+    assert_eq!(water.len(), 1);
+    assert_eq!(
+        water[0].mesh_handle, 1,
+        "water pass must draw the plane mesh"
+    );
+    let plane_draw = &draws[water[0].instance_index as usize];
+    assert_eq!(plane_draw.entity_id, plane);
+    assert!(plane_draw.is_water);
+    assert!(
+        !draws
+            .iter()
+            .any(|d| d.mesh_handle == PARTICLE_QUAD && d.is_water),
+        "no particle billboard may be routed through the water pass"
+    );
+}
+
 #[test]
 fn authored_wave_and_sun_params_reach_the_water_gpu_record() {
     let world = world_with_water_plane(

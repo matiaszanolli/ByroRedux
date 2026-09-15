@@ -4,14 +4,18 @@
 //! `DrawCommand` (the main mesh-iteration loop above produced it
 //! because water entities carry `MeshHandle`), flips its `is_water`
 //! flag so the regular triangle path skips it, and emits a parallel
-//! `WaterDrawCommand` whose `instance_index` matches the SSBO slot
-//! the renderer will assign to that draw.
+//! `WaterDrawCommand` whose `instance_index` records that draw's
+//! position in `draw_commands`.
 //!
-//! The slot-index ↔ Vec position map relies on the renderer's 1:1
-//! contract: `gpu_instances` is populated by iterating `draw_commands`
-//! in order, and frustum-culled draws keep their SSBO slot per #516.
-//! So the index into `draw_commands` equals `gl_InstanceIndex` after
-//! upload.
+//! That position is not the SSBO slot: the renderer compacts out draws
+//! whose mesh is not resident, and resolves each water draw through the
+//! frame's `instance_map` (`byroredux_renderer::vulkan::water::water_instance_slot`).
+//!
+//! The draw is located by `(entity, MeshHandle)`, not entity alone.
+//! Particle billboards carry `entity_id = emitter ^ particle_index`, so
+//! particle 0 of the splash emitter every water plane owns shares the
+//! plane's id; an entity-only index picked that billboard, drew the
+//! particle quad as water and left the plane on the triangle path.
 //!
 //! ⚠ **No-resort contract** (#1026 / F-WAT-05) — once the
 //! `instance_index` captured below is written, `draw_commands` MUST
@@ -22,19 +26,21 @@
 //! the renderer consumes them.
 
 use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterMaterial, WaterPlane};
-use byroredux_core::ecs::{EntityId, Resource, TotalTime, World};
+use byroredux_core::ecs::{EntityId, MeshHandle, Resource, TotalTime, World};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::water::{GpuWaterParams, WaterDrawCommand};
 use byroredux_scripting::RippleEvent;
 use rustc_hash::FxHashMap;
 
-/// Reused entity-to-slot index for the post-sort water re-emit pass.
-/// Mesh-authored water can contribute dozens of surfaces, so production
-/// frames build this once in O(draws) instead of rescanning every draw for
-/// every water entity (#3141). Bare test worlds use a local fallback.
+/// Reused `(entity, mesh handle)`-to-draw-position index for the post-sort
+/// water re-emit pass. Mesh-authored water can contribute dozens of
+/// surfaces, so production frames build this once in O(draws) instead of
+/// rescanning every draw for every water entity (#3141). Keyed by the mesh
+/// too because draw `entity_id`s are not unique — see the module doc. Bare
+/// test worlds use a local fallback.
 #[derive(Default)]
 pub(crate) struct WaterDrawIndexScratch {
-    indices: FxHashMap<EntityId, usize>,
+    indices: FxHashMap<(EntityId, u32), usize>,
 }
 
 impl Resource for WaterDrawIndexScratch {}
@@ -154,12 +160,19 @@ pub(super) fn reemit_water_planes(
         draw_commands
             .iter()
             .enumerate()
-            .map(|(index, command)| (command.entity_id, index)),
+            .map(|(index, command)| ((command.entity_id, command.mesh_handle), index)),
     );
     let fq = world.query::<WaterFlow>();
     let rq = world.query::<RippleEvent>();
+    let Some(mq) = world.query::<MeshHandle>() else {
+        return;
+    };
     for (entity, plane) in wq.iter() {
-        let Some(&idx) = draw_indices.get(&entity) else {
+        // Volume-only water components carry no mesh and draw nothing.
+        let Some(&MeshHandle(mesh_handle)) = mq.get(entity) else {
+            continue;
+        };
+        let Some(&idx) = draw_indices.get(&(entity, mesh_handle)) else {
             // Entity has WaterPlane but no DrawCommand was emitted —
             // typically because the cell loader spawned the water
             // entity but the mesh wasn't yet uploaded, or the
