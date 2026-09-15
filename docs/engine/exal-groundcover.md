@@ -795,6 +795,18 @@ It shows a clean moving-camera frame rather than the green reprojection trail
 that the pre-motion-vector contract produced. This is a single end-of-pan
 artifact, not a substitute for the Step 6 wind clip.
 
+#### Wind review clip (2026-09-15)
+
+[`gc-wind-skyrim-pan-3s-c7c9900e6.mp4`](../audits/gc-wind-skyrim-pan-3s-c7c9900e6.mp4)
+is the retained three-second Skyrim backlit wind review. It contains six
+fresh-process captures at 2 fps, sampled at fixed `1/60 s` simulation times
+from 0 to 3 s with the deterministic `pan` path. Restarting for each sample
+keeps the final pan pose constant while the shared wind clock advances, so the
+clip isolates blade motion from a changing viewpoint. Its contact sheet shows
+the field changing coherently across nearby roots rather than each ribbon
+shimmering independently. The clip is evidence for the Step 6 checklist, not
+a claim that the separate ten-second no-loop inspection has been completed.
+
 1. **Terrain attribute sampling path — ANSWERED 2026-09-06 (#4052).** Both
    candidates were built and measured on real terrain. **Read the global vertex
    SSBO directly (path A). Do not bake an attribute texture.** And, for §4:
