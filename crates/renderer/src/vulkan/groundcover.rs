@@ -2214,6 +2214,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn wind_harmonic_cannot_repeat_its_full_phase_within_ten_seconds() {
+        // 2.17 = 217 / 100: primary and secondary phases first align after
+        // 100 fundamental cycles. `WindField::from_weather_byte` tops out at
+        // 0.15 + 0.45 = 0.60 Hz, making that earliest full repeat 166.7 s.
+        let harmonic = crate::shader_constants::GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER;
+        assert_eq!(
+            harmonic, 2.17,
+            "this proof relies on the documented 217/100 ratio"
+        );
+        let fastest_gust_hz = 0.15 + 0.45;
+        let full_phase_repeat_seconds = 100.0 / fastest_gust_hz;
+        assert!(
+            full_phase_repeat_seconds > 10.0,
+            "the mixed wind modes must not complete a full phase loop in the ten-second review window"
+        );
+    }
+
     /// §4's overflow policy: ordered workgroup compaction saturates, it does
     /// not wrap, and candidate order remains reproducible for card clusters.
     #[test]
