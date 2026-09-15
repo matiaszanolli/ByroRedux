@@ -438,7 +438,7 @@ mod ai_storage_registration_tests {
         let after_fn = BOOT_SRC
             .split("pub(crate) fn build_world")
             .nth(1)
-            .expect("build_world must exist in boot.rs");
+            .expect("build_world must exist in boot/world.rs");
         let build_world = after_fn
             .split_once("#[cfg(test)]")
             .map_or(after_fn, |(body, _)| body);

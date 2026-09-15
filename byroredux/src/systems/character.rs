@@ -74,8 +74,8 @@ impl Resource for PlayerMode {}
 /// — the inner systems keep their identities + unit-testability and
 /// run exactly as before, just through one indirection.
 ///
-/// Access (declared at registration in `byroredux/src/boot.rs`'s
-/// `build_scheduler`) is the union of the two inner systems' accesses.
+/// Access (declared at its registration under `byroredux/src/boot/schedule/`,
+/// reached from `build_scheduler`) is the union of the two inner systems' accesses.
 /// The `PlayerMode` read here is itself part of that union.
 pub(crate) fn player_controller_system(world: &World, dt: f32) {
     crate::interaction::refresh_action_state(world);

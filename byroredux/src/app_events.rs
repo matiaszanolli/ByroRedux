@@ -569,7 +569,7 @@ impl ApplicationHandler for App {
                 || {
                     // Preserve the environment override for non-benchmark
                     // tools. Finite benches resolve it once into a named mode
-                    // in boot.rs.
+                    // in boot/schedule/.
                     std::env::var("BYROREDUX_FIXED_DT")
                         .ok()
                         .and_then(|s| s.parse::<f32>().ok())

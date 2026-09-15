@@ -409,7 +409,8 @@ fn camera_follow_declaration_reads_player_mode() {
 fn late_telemetry_declarations_read_all_their_resources() {
     // The needle carries the registration's own indentation + the
     // following `Access::new()` so it can't match the `use
-    // crate::systems::{…}` import list at the top of boot.rs.
+    // crate::systems::{…}` import lists at the top of the boot/schedule/
+    // stage files.
     for (system, needles) in [
         (
             "        log_stats_system,\n        Access::new()",

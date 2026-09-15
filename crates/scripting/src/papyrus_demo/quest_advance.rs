@@ -340,7 +340,7 @@ pub fn quest_advance_system(world: &World) {
     // a no-op. It is here because that disjointness is a property of
     // unbuilt code: the recognizer test `on_activate_wins_over_on_trigger_enter`
     // proves a single script can legitimately define *both* handlers, so
-    // once boot.rs's "Stage 4" (the real player-activates-a-REFR system)
+    // once boot/schedule/'s "Stage 4" (the real player-activates-a-REFR system)
     // lands, one player action against a trigger-volume-bearing REFR would
     // otherwise push the entity twice. The stage write itself is
     // idempotent, but the `QuestStageAdvanced` marker is not — a

@@ -19,7 +19,7 @@
 //! For a marker with *no single owning consumer*: anything a re-evaluating
 //! system might observe, or that several systems read in the same frame.
 //! `event_cleanup_system` is the last system scheduled overall
-//! (`byroredux/src/boot.rs`, `Stage::Late`), so a Pattern-A marker is
+//! (`byroredux/src/boot/schedule/`, `Stage::Late`), so a Pattern-A marker is
 //! visible to every system in the frame it was raised and to none in the
 //! next.
 //!

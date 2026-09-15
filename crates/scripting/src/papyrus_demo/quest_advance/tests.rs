@@ -464,7 +464,7 @@ fn two_doors_same_quest_advance_in_one_pass() {
 /// Not reachable today: a `TriggerVolume` only lands on a mesh-less REFR,
 /// and no live system emits `ActivateEvent` yet (only the debug console).
 /// But the recognizer test `on_activate_wins_over_on_trigger_enter` proves
-/// one script can define both handlers, so once boot.rs's "Stage 4"
+/// one script can define both handlers, so once boot/schedule/'s "Stage 4"
 /// player-activation system lands, one player action could deliver both.
 ///
 /// Without the dedup this fails on the batch length, not the stage value:

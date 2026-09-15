@@ -1,6 +1,6 @@
 //! Wander procedure (M42.3) — the first non-Sandbox AI-package runtime and
 //! the first NPC locomotion primitive in the engine. **Registered only
-//! when `BYRO_WANDER` is set** (see `boot.rs`), mirroring the
+//! when `BYRO_WANDER` is set** (see `boot/schedule/post_update.rs`), mirroring the
 //! `BYRO_SANDBOX_SIT` opt-in gate for `sandbox_seat_system`.
 //!
 //! For each [`WanderBehavior`] actor, walk toward a randomly picked point

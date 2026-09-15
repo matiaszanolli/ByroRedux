@@ -605,7 +605,7 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 /// dispatch system, outside these guards.
 ///
 /// This is only safe because every system that touches the quest resources
-/// is registered `add_exclusive` in `byroredux/src/boot.rs` (parallel
+/// is registered `add_exclusive` in `byroredux/src/boot/schedule/` (parallel
 /// systems never run concurrently with an exclusive one), so no other
 /// holder can ever form the other half of an ABBA cycle. Adding a new
 /// nested component/resource lock here, or moving
@@ -940,7 +940,7 @@ pub(crate) fn apply_effect(
             // Through `query_mut`, not `World::insert`/`remove`: this system
             // holds `&World`, so structural mutation is unavailable, but
             // inserting into and removing from an *existing* storage is not
-            // structural. `boot.rs` pre-registers `Locked` so the storage is
+            // structural. `byroredux/src/boot/world.rs` pre-registers `Locked` so the storage is
             // there even in a session whose cells authored no XLOC at all —
             // otherwise the very first scripted lock would silently no-op.
             let Some(mut locks) = world.query_mut::<Locked>() else {

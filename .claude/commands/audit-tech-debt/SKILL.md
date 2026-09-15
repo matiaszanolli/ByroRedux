@@ -23,7 +23,8 @@ methodology, deduplication, context rules, severity, and finding format. Do not
 duplicate any of that here. The newest crates — `crates/sdk/` (the
 renderer-independent Studio surface, landed 2026-08-25 with its engine-side
 adapter `byroredux/src/studio_host.rs` and, per #3457, without a layout row),
-`crates/mod-runtime/` (the sandboxed-WASM mod host, still consumer-less),
+`crates/mod-runtime/` (the sandboxed-WASM mod host, consumed by
+`byroredux/src/extensions/` since `24df5304`),
 `crates/pex/` (M47.2 compiled-Papyrus `.pex` decompiler), `crates/save/` (M45
 full-ECS snapshot save/load), `crates/hkx/` (M47.2 Havok packfile reader for the
 MQ101 cinematic slice), and the expanded `crates/scripting/` (M47.1/M47.2
@@ -119,26 +120,21 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    (mostly Vulkan/smoke gating, not debt) — do not compare against a raw
    whole-repo grep, which also matches markdown prose mentioning the literal
    string `#[ignore]` (#2262).
-   The **production**>2000-LOC set (Dim 1's actual subject, re-measured
-   2026-09-11 with *prod_loc* over every `.rs` file in `crates/` + `byroredux/`)
-   is **2 files**, down from the 12 recorded on 2026-09-05. Three files left
-   the bucket since: the sandbox-runtime/ECS-event adapter that led this
-   list — 5921 production lines in one file — was split into
-   `byroredux/src/extensions/` under #3843 on 2026-09-11 (eight production
-   modules, largest 1053 lines); `crates/scripting/src/fragment.rs` (2682 on
-   2026-09-09) was split under #3854 (`f5127c1c`, 2026-09-10) into
-   `crates/scripting/src/fragment/` — `effects.rs` (1443), `populate.rs`
-   (634), `systems.rs` (336), `state.rs` (275), beside the pre-existing
-   `tests.rs` — leaving the front file at 144 lines; and
-   `crates/nif/src/blocks/shader.rs` dropped back under threshold on its own
-   (1990 total as of 2026-09-11, down from the 2019 that newly crossed on
-   2026-09-05 — incidental shrinkage from unrelated edits, not a split; #3845
-   nets −31 lines there). Do not re-propose any of the three. The remaining
-   set is: `crates/renderer/src/vulkan/context/mod.rs` (2831, up from ~2650)
-   and `crates/sdk/src/compatibility/storage_util.rs` (2160, **newly
-   crossed** on 2026-09-05 — it grew in `e142e3d4` when the FourCC→FormType
-   mapping became a table; still 2160 production as of 2026-09-11 though its
-   total line count grew further to 2218).
+   The **production**>2000-LOC set (Dim 1's actual subject) must be
+   re-measured with *prod_loc* over every `.rs` file in `crates/` +
+   `byroredux/` on every run — never quote a count from this file. Dated
+   history, for diff direction only: 12 files on 2026-09-05; 2 on 2026-09-11
+   (`context/mod.rs` 2831, `compatibility/storage_util.rs` 2160); 3 on
+   2026-09-14 under the string-aware counter (#4336), because
+   `crates/nif/src/blocks/shader.rs` — which had dipped under threshold on
+   2026-09-11 through incidental shrinkage, **not** a split — re-crossed on
+   2026-09-12 at 2058 production (#4339). A file that dips under by
+   shrinkage is still a live candidate; only an actual split removes one.
+   Splits that did land and should not be re-proposed: the
+   sandbox-runtime/ECS-event adapter → `byroredux/src/extensions/` (#3843,
+   2026-09-11); `crates/scripting/src/fragment.rs` →
+   `crates/scripting/src/fragment/` (#3854, `f5127c1c`, 2026-09-10), leaving
+   the front file at 144 lines.
    *crates/renderer/src/texture_registry.rs* left the bucket on 2026-09-11:
    split into `crates/renderer/src/texture_registry/` under #3737 by
    lifecycle phase (lookup / upload / release), largest survivor
@@ -163,19 +159,19 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    helper and GPU-struct definition in the parent. Same construct-vs-record
    seam as the `draw.rs` split below, and the same instruction: do not
    re-propose splitting `volumetrics.rs` on the strength of a pre-2026-09-08
-   figure — re-measure first. The set is **11** files after this.
-   `compatibility.rs`, `papyrus_provider.rs`, `runtime.rs` and `extensions.rs`
+   figure — re-measure first.
+   *compatibility.rs*, *papyrus_provider.rs*, *runtime.rs* and *extensions.rs*
    were all split in 2026-09 (#3851 / #3852 / #3853 / #3843) and are no
    longer single files — see the young-crate note below and the `extensions/`
-   split noted above. Every monolith this skill was tracking is now split;
-   `crates/sdk`, `crates/scripting`, `crates/mod-runtime` are still the
+   split noted above. Re-run the recipe rather than assuming the bucket is
+   empty; `crates/sdk`, `crates/scripting`, `crates/mod-runtime` are still the
    "young crates … not yet seen a debt sweep" case named at the top of this
    skill — file real Dim 1 findings there as they emerge, don't just note the
    crate is young.
    **`context/draw.rs` dropped OUT of the bucket entirely (~3620 → ~1760
    production)** — #3282 (`7463204e`, 2026-09-02) split the re-grown
    ~2500-LOC `draw_frame` into phase helpers, and `crates/renderer/src/vulkan/context/`
-   now holds 19 files, not the handful the Session-34/35/36 split left behind:
+   now holds 18 files, not the handful the Session-34/35/36 split left behind:
    alongside `draw.rs`/`mod.rs` there's `dispatch_skin_and_cluster.rs`,
    `assemble_camera_and_lights.rs`, `geometry_pass.rs`,
    `build_and_upload_instances.rs`, `skinned_blas_refit.rs`, `post_passes.rs`,
@@ -198,16 +194,16 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    only via an external `#[cfg(test)] mod` declaration in its parent) both
    confirm as false positives under the OLD total-LOC recipe. The separate
    total-LOC->2000 bucket (test-heavy files, lower priority — report but do
-   not auto-file as Dim 1) had **40** members at the 2026-09-05 re-check, up
-   from 30; naming them here would rot within a session, so re-run the command
+   not auto-file as Dim 1) had 40 members at the 2026-09-05 re-check and 43
+   on 2026-09-14; naming them here would rot within a session, so re-run the command
    and check each hit with *prod_loc* before filing — only a production count
    over 2000 belongs in Dim 1. Note #2258/#2259 (2026-08-03,
    `record_post_passes` / `build_tlas` decomposition) and, in this same window,
    #3739 (`build_scheduler` → five `register_*_systems` functions inside
-   `boot.rs`) and #3738 (`recreate_screen_passes` → five phase methods inside
+   *boot.rs*, since split into `byroredux/src/boot/`) and #3738 (`recreate_screen_passes` → five phase methods inside
    `resize.rs`) all extracted helpers *within* a file rather than splitting the
    file itself — none of the three moved their host file across the 2000-LOC
-   line (in `boot.rs`'s case the file crossed threshold anyway, from unrelated
+   line (in *boot.rs*'s case the file crossed threshold anyway, from unrelated
    growth) — file-level crossings and function-level splits are independent
    signals; don't assume one moves the other.
 
@@ -309,7 +305,9 @@ sweep for content rot the gate cannot see:
   Do NOT trust prose — cross-check against the layout test, whose value is
   authoritative and whose *name* may itself be stale:
   ```bash
-  grep -rn "fn gpu_camera_is\|fn gpu_instance_is\|assert_eq.*size_of" crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs
+  # The pins are spread across files — `GpuMaterial`'s lives in
+  # `material_tests.rs`, not the layout-tests file — so search the directory.
+  grep -rn "fn gpu_.*_is_[0-9]\+_bytes\|size_of::<Gpu" crates/renderer/src/vulkan/
   ```
 - Doc comments naming renamed/deleted symbols. The recurring one: the **deleted
   render-time `Material::classify_pbr`** (PBR resolution moved to the parse-time
@@ -436,11 +434,14 @@ literals are legitimate).
   `shader_constants_data.rs`; flag any literal that bypasses it"** (lockstep risk
   HIGH — `feedback_shader_struct_sync.md`).
 - **GPU `#[repr(C)]` size literals**: `GpuCamera`, `GpuInstance`, `GpuMaterial`
-  sizes are pinned by `gpu_instance_layout_tests.rs`. Flag any inline size literal
-  that should reference those tests, and any doc comment quoting an outdated size
-  (overlaps Dim 3). Get the live values from the test, not from memory:
+  sizes are pinned by `gpu_*_is_N_bytes` tests spread across
+  `crates/renderer/src/vulkan/` (`GpuCamera`/`GpuInstance` in
+  `gpu_instance_layout_tests.rs`, `GpuMaterial` in `material_tests.rs`). Flag any
+  inline size literal that should reference those tests, and any doc comment
+  quoting an outdated size (overlaps Dim 3). Get the live values from the tests,
+  not from memory:
   ```bash
-  grep -rn "fn gpu_camera_is\|fn gpu_instance_is\|size_of::<Gpu" crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs
+  grep -rn "fn gpu_.*_is_[0-9]\+_bytes\|size_of::<Gpu" crates/renderer/src/vulkan/
   ```
 - Frame/ray/cache budgets (`GLASS_RAY_BUDGET`, `MAX_TOTAL_BONES`, `MAX_MATERIALS`, …) scattered vs in one tunable module.
 - ESM sub-record sizes hardcoded (`if data.len() == 24`) → named constant from the record struct.

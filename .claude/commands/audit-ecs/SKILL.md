@@ -151,8 +151,10 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   can't impl `System::access`). Any parallel system registered via plain
   `add_to` (no declared access) is a regression. Do not pin the registration
   count: enumerate live declarations with
-  `rg -n '^\s*scheduler\.add_to_with_access\(' byroredux/src/boot.rs`, then
-  verify that `rg -n '^\s*scheduler\.add_to\(' byroredux/src/boot.rs` is empty.
+  `rg -n '^\s*scheduler\.add_to_with_access\(' byroredux/src/boot/schedule/`, then
+  verify that `rg -n '^\s*scheduler\.add_to\(' byroredux/src/boot/schedule/` is empty
+  (the scheduler is built across `mod.rs` + the per-stage `early`/`update`/
+  `post_update`/`physics`/`late` files since the #3855 split).
   The invariant is the zeroed access report below, not a wiring total.
 - **M27 Phase 3** (`05fe2bac`): 4 analyzer-visible conflicts were resolved two
   ways — one dispatcher merge plus two exclusive re-stages. `player_controller_system`

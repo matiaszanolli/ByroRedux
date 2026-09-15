@@ -2,7 +2,7 @@
 //! that runs no algorithm of its own: it calls
 //! `wander_system`'s shared oscillating-walk core
 //! (`super::wander::step_oscillating_wander`) directly. **Registered only
-//! when `BYRO_PATROL` is set** (see `boot.rs`), mirroring
+//! when `BYRO_PATROL` is set** (see `boot/schedule/post_update.rs`), mirroring
 //! `BYRO_GUARD`/`BYRO_ESCORT`/`BYRO_FOLLOW`/`BYRO_TRAVEL`/`BYRO_WANDER`.
 //!
 //! Real Bethesda Patrol packages walk a route defined by linked

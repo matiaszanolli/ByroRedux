@@ -2,7 +2,7 @@
 //! locomotion, reusing `wander_system`/`travel_system`/`follow_system`/
 //! `escort_system`'s straight-line walk primitive via
 //! `super::locomotion::step_toward`. **Registered only when `BYRO_GUARD`
-//! is set** (see `boot.rs`), mirroring
+//! is set** (see `boot/schedule/post_update.rs`), mirroring
 //! `BYRO_ESCORT`/`BYRO_FOLLOW`/`BYRO_TRAVEL`/`BYRO_WANDER`.
 //!
 //! Guard needs only `PLDT` — no new sub-record decode work. Anchor

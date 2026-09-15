@@ -172,7 +172,7 @@ pub(crate) fn apply_color_channels(
     //
     // Fixed instead: one pass per target, in a fixed declared order
     // (matching the `Stage::Update` access-declaration order in
-    // `boot.rs`), each pass acquiring its guard, applying every channel
+    // `boot/schedule/`), each pass acquiring its guard, applying every channel
     // that targets it, and dropping the guard before the next target's
     // pass begins. No two guards are ever held at once, so the
     // acquisition order the lock tracker observes is fixed at compile
@@ -259,7 +259,7 @@ pub(crate) fn apply_float_channels(
 ) {
     // #2399 — same fix as `apply_color_channels`: one pass per target
     // group, in a fixed declared order (Alpha → UV → ShaderFloat →
-    // MorphWeights → LightSource, matching `boot.rs`'s access
+    // MorphWeights → LightSource, matching `boot/schedule/`'s access
     // declarations), each pass acquiring its guard, applying every
     // channel that targets it, and dropping the guard before the next
     // group's pass begins. See that function's comment for the full
@@ -510,7 +510,7 @@ struct AnimScratch {
 /// component storage (`AnimationPlayer`/`AnimationStack`/`Transform`/etc.),
 /// or a system on another rayon worker taking that reverse order closes an
 /// ABBA cycle the scheduler's parallel lane for this system doesn't
-/// currently backstop (`Stage::Update`, `boot.rs`). Mirrors the
+/// currently backstop (`Stage::Update`, `boot/schedule/`). Mirrors the
 /// NameIndex-before-`Name` rule documented at the `NameIndex` rebuild
 /// check below (#824/#827), generalized to the whole function body. See
 /// CONC-D3-2026-08-07-02 / #2153 / #2126.
@@ -1735,7 +1735,7 @@ mod animation_system_e2e_tests {
         world.register::<AnimationStack>();
         // `animation_system_inner` early-returns the *entire* function
         // (both the player and stack passes) when `AnimationPlayer`
-        // storage has never been created — production `boot.rs` always
+        // storage has never been created — production `boot/world.rs` always
         // registers it regardless of whether a given entity uses a
         // player or a stack, so this guard never fires there. Mirror
         // that here even though this test drives no `AnimationPlayer`.

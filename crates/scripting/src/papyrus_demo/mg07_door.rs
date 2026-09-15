@@ -498,7 +498,7 @@ pub fn mg07_tick_system(world: &World, dt: f32) {
     // target's own OnActivate handler picks up.
     //
     // #3936 — queued, not inserted inline. `mg07_tick_system` is
-    // registered after every ActivateEvent consumer (`boot.rs`), and
+    // registered after every ActivateEvent consumer (`boot/schedule/`), and
     // `event_cleanup_system` drains the marker at `Stage::Late`, so a
     // marker written here reached nothing and vanished the same frame —
     // the sibling of the scene-package `Activate` defect, found by that

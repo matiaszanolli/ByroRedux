@@ -141,6 +141,18 @@ path_exists() {
     grep -qE "(^|/)${p//./\\.}\$" "$all_paths_file"
 }
 
+# #4366 — can a repo-rooted token lifted out of a fenced block be checked as
+# a single path? Templates, globs, truncated brace lists and filename stems
+# name no one file, so reporting them STALE would say nothing about the doc.
+fenced_token_is_checkable() {
+    local t="$1"
+    [[ "$t" == *"<"* || "$t" == *">"* || "$t" == *"*"* ]] && return 1
+    local opens="${t//[^\{]/}" closes="${t//[^\}]/}"
+    (( ${#opens} != ${#closes} )) && return 1
+    [[ "$t" == *_ || "$t" == *- ]] && return 1
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # `--selftest` — regression coverage for the skip rules (#3439).
 #
@@ -180,6 +192,25 @@ if [[ "${1:-}" == "--selftest" ]]; then
     # Unchanged rules, pinned so a future edit to the block notices.
     expect skip "brace-expansion artifacts still skipped" "byroredux/src/fog}.rs"
     expect skip "prose elision still skipped" "byroredux/src/systems/....rs"
+
+    # #4366 — the fenced-block scan's token filter.
+    expect_fenced() {
+        local want="$1" desc="$2" t="$3"
+        if fenced_token_is_checkable "$t"; then got="check"; else got="ignore"; fi
+        if [[ "$got" != "$want" ]]; then
+            echo "SELFTEST FAIL: fenced \`$t\` — expected $want, got $got ($desc)"
+            selftest_failures=$((selftest_failures + 1))
+        else
+            echo "ok: fenced \`$t\` -> $got ($desc)"
+        fi
+    }
+    expect_fenced check "plain repo path is checked" "crates/renderer/src/mesh.rs"
+    expect_fenced check "directory path is checked" "crates/renderer/src/texture_registry/"
+    expect_fenced check "closed brace list is checked" "docs/smoke-tests/{a,b}.sh"
+    expect_fenced ignore "placeholder template" "docs/audits/AUDIT_<X>_<date>.md"
+    expect_fenced ignore "glob" "crates/renderer/shaders/*.comp"
+    expect_fenced ignore "brace list truncated mid-line" "byroredux/src/systems/{animation,"
+    expect_fenced ignore "filename stem" "docs/audits/AUDIT_TECH_DEBT_"
 
     if (( selftest_failures > 0 )); then
         echo "SELFTEST: $selftest_failures failure(s)."
@@ -227,6 +258,48 @@ for skill in "${skill_files[@]}"; do
             fi
         done < <(expand_braces "$local_path")
     done < <(grep -noE '`[A-Za-z0-9_./{},-]+\.(rs|md|toml|comp|frag|vert|glsl|wgsl|sh|xml)' "$skill" || true)
+done
+
+# ---------------------------------------------------------------------------
+# Fenced-block path scan (#4366)
+#
+# The loop above only reads backticked tokens, but `_audit-common.md`'s
+# Project Layout — the map every audit is told to trust — is a fenced block
+# with no backticks, so its rows sat outside the gate. *texture_registry.rs*,
+# *boot.rs* and *asset_provider/material.rs* each outlived their split there
+# (#4365, and #4121 / #4244 / #4020 before it). Inside fences, repo-rooted
+# path tokens get the same FATAL rule; bare basenames go to the deleted-file
+# advisory, since a layout row names a module by basename once its directory
+# is established.
+#
+# Command files only: `docs/engine/` fences are shell snippets and format
+# dumps, not layout claims.
+# ---------------------------------------------------------------------------
+for skill in "${command_files[@]}"; do
+    [[ -f "$skill" ]] || continue
+    while IFS=$'\t' read -r line_num text; do
+        while read -r token; do
+            [[ -n "$token" ]] || continue
+            token="${token%%:[0-9]*}"
+            token="${token%[.,;:)]}"
+            fenced_token_is_checkable "$token" || continue
+            while read -r p; do
+                # A nested brace pair the one-pair expander cannot resolve.
+                [[ "$p" == *"{"* || "$p" == *"}"* ]] && continue
+                checked_count=$((checked_count + 1))
+                if ! path_exists "${p%/}"; then
+                    echo "STALE: $skill:$line_num — $p (fenced block)"
+                    stale_count=$((stale_count + 1))
+                fi
+            done < <(expand_braces "$token")
+        done < <(grep -oE '(crates|byroredux|docs|tools|scripts)/[A-Za-z0-9_./{},<>*-]+' <<< "$text" || true)
+        while read -r b; do
+            [[ -n "$b" ]] || continue
+            path_exists "$b" && continue
+            missing_basenames+=("$skill:$line_num — \`$b\` (fenced block)")
+        done < <(grep -oE '(^|[[:space:](,;])[A-Za-z0-9_]+\.(rs|md|toml|comp|frag|vert|glsl|sh)\b' <<< "$text" \
+                    | sed -E 's/^[[:space:](,;]+//' || true)
+    done < <(awk '/^[[:space:]]*```/ { fenced = !fenced; next } fenced { printf "%d\t%s\n", NR, $0 }' "$skill")
 done
 
 echo

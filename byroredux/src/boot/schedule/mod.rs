@@ -67,7 +67,7 @@ mod fragment_activation_order_tests {
         let pos = |needle: &str| {
             setup
                 .find(needle)
-                .unwrap_or_else(|| panic!("`{needle}` is no longer registered in boot.rs"))
+                .unwrap_or_else(|| panic!("`{needle}` is no longer registered in boot/schedule/"))
         };
 
         // Match the *registration* sites, not the `fn` definitions above them.
@@ -102,7 +102,7 @@ mod fragment_activation_order_tests {
         let pos = |needle: &str| {
             setup
                 .rfind(needle)
-                .unwrap_or_else(|| panic!("{needle} is no longer registered in boot.rs"))
+                .unwrap_or_else(|| panic!("{needle} is no longer registered in boot/schedule/"))
         };
 
         let settings = pos("crate::extensions::extension_engine_settings_sync_system");
@@ -259,7 +259,7 @@ mod scheduler_timings_gate_tests {
 
     const BOOT_SRC: &str = crate::boot::SOURCES;
 
-    /// The only `SchedulerSystemTimings` insert in `boot.rs` must sit
+    /// The only `SchedulerSystemTimings` insert in `boot/schedule/` must sit
     /// behind the `BYRO_PROFILE` env gate.
     #[test]
     fn scheduler_timings_insert_is_env_gated() {
@@ -276,7 +276,7 @@ mod scheduler_timings_gate_tests {
         assert_eq!(
             inserts.len(),
             1,
-            "expected exactly one SchedulerSystemTimings insert in boot.rs, found {}: {:?}",
+            "expected exactly one SchedulerSystemTimings insert in boot/schedule/, found {}: {:?}",
             inserts.len(),
             inserts,
         );
@@ -284,12 +284,12 @@ mod scheduler_timings_gate_tests {
         let gate = setup
             .find("if std::env::var_os(\"BYRO_PROFILE\").is_some() {")
             .expect(
-                "boot.rs must gate the SchedulerSystemTimings insert on BYRO_PROFILE — an \
+                "boot/schedule/ must gate the SchedulerSystemTimings insert on BYRO_PROFILE — an \
                  unconditional insert re-arms the scheduler tracker every frame (#2166)",
             );
         let insert = setup
             .find("insert_resource(byroredux_core::ecs::SchedulerSystemTimings::default())")
-            .expect("SchedulerSystemTimings insert not found in boot.rs");
+            .expect("SchedulerSystemTimings insert not found in boot/schedule/");
         assert!(
             insert > gate,
             "the SchedulerSystemTimings insert must appear inside the BYRO_PROFILE gate, \
@@ -307,7 +307,7 @@ mod scheduler_timings_gate_tests {
         assert!(
             EVENT_SRC.contains("SchedulerSystemTimings::default()"),
             "app_events.rs must insert SchedulerSystemTimings when the F3 debug overlay \
-             first opens — boot.rs no longer does it unconditionally (#2166)"
+             first opens — boot/schedule/ no longer does it unconditionally (#2166)"
         );
     }
 }
@@ -326,7 +326,7 @@ mod scheduler_access_report_tests {
     //! This is the honest-declaration half of #3111's fix, not the
     //! scheduling half — `weather_system` moved to
     //! `add_exclusive_with_access` and `player_controller_system` gained
-    //! the `WindField` read declaration in the same change (`boot.rs`
+    //! the `WindField` read declaration in the same change (`boot/schedule/`
     //! `build_scheduler`, see the `#3111` comment there). Without a real
     //! `cargo test` assertion, a future regression that re-declared
     //! `weather_system` as parallel (or dropped the `WindField` read) would
@@ -516,7 +516,7 @@ mod system_access_declaration_tests {
             }
             cursor = paren + 1;
         }
-        panic!("{system}: no `add_*_with_access` registration found in boot.rs");
+        panic!("{system}: no `add_*_with_access` registration found in boot/schedule/");
     }
 
     /// Body of `name` in `src`, delimited by the closing brace at the
@@ -654,7 +654,7 @@ mod system_access_declaration_tests {
         assert_eq!(
             registered,
             PARALLEL_SYSTEMS.len(),
-            "boot.rs has {registered} `add_to_with_access` registrations but \
+            "boot/schedule/ has {registered} `add_to_with_access` registrations but \
              PARALLEL_SYSTEMS lists {}. Every parallel system's declaration is \
              load-bearing for the boot deadlock proof, so a new one must be \
              added to the table with the function bodies that make up its \

@@ -944,7 +944,7 @@ pub(crate) fn camera_ray(world: &World) -> Option<(Vec3, Vec3)> {
 }
 
 /// #3059 (PERF-D1-02) — reuses [`InteractionCandidateScratch`] when
-/// registered (the live engine, via `boot.rs`), falling back to a fresh
+/// registered (the live engine, via `boot/schedule/`), falling back to a fresh
 /// map otherwise (bare test worlds) so correctness never depends on the
 /// scratch resource being present. Either way the map is `FxHashMap`
 /// (SipHash → FxHash over an `EntityId` keyspace, per the project's
@@ -1470,7 +1470,7 @@ mod tests {
 
     /// #3059 — `select_interaction_target` must still find the same target
     /// when `InteractionCandidateScratch` is registered (the live-engine
-    /// path via `boot.rs`) as when it isn't (every other test in this
+    /// path via `boot/schedule/`) as when it isn't (every other test in this
     /// module, via `input_fixture`/`physics_fixture`) — the scratch is a
     /// reuse optimisation, not a behaviour change.
     #[test]

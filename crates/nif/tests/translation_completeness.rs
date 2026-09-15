@@ -37,7 +37,8 @@
 //! ```
 //!
 //! All tests are `#[ignore]`d because they require real game data
-//! (BYROREDUX_*_DATA env vars or default Steam install paths). CI runs
+//! (BYROREDUX_*_DATA env vars, or the default install paths in
+//! `common/mod.rs` — Steam for most games, a Wine prefix for Skyrim LE). CI runs
 //! them only on the dev machine where the data is present.
 
 mod common;
@@ -360,7 +361,7 @@ fn collect_stats(archive: &MeshArchive, resolver: Option<&dyn MeshResolver>) -> 
 /// table that's the regression-detection signal for the canonical
 /// translation layer.
 #[test]
-#[ignore = "needs game data on disk for one or more of Oblivion/FO3/FNV/SkyrimSE/FO4/FO76/Starfield"]
+#[ignore = "needs game data on disk for one or more of Oblivion/FO3/FNV/SkyrimLE/SkyrimSE/FO4/FO76/Starfield"]
 fn cross_game_translation_completeness() {
     eprintln!("\n=== #1277 Task 8: cross-game translation completeness ===");
     eprintln!(

@@ -279,7 +279,7 @@ stale either.
   declines on an alias-bound entry — quests themselves aren't alias-fillable,
   so that's still correct, not a regression
   (`dispatch_skips_property_targeted_effect_when_the_property_is_alias_bound`).
-  `ObjectRef::Property` (`fragment.rs::resolve_object`, Dim 5) and
+  `ObjectRef::Property` (`fragment/effects.rs::resolve_object`, Dim 5) and
   `RunOn::QuestAlias` (`condition.rs`, Dim 6) now resolve an alias-bound
   entry (`alias >= 0`) through `SceneActorBindings::resolve` instead of
   declining — verified live by
@@ -794,7 +794,7 @@ refresh; not otherwise covered by this dimension's checklist below).
   does not enumerate them individually, so treat the decline invariant above
   as the load-bearing thing to re-verify rather than assuming the older,
   smaller primitive table.
-- **`Effect::Conditional` dispatch (`fragment.rs::apply_effects`, 2026-08-24;
+- **`Effect::Conditional` dispatch (`fragment/effects.rs::apply_effects`, 2026-08-24;
   guard-resolution behavior fixed 2026-09-02, Fix #3785, `46cb7515` — the
   framing below is the POST-fix behavior, don't re-flag it)**:
   handled as a special case at the *top* of the per-effect loop, not inside
@@ -846,7 +846,7 @@ refresh; not otherwise covered by this dimension's checklist below).
     deliberately **FormID-keyed, not entity-keyed**, so a disable survives its
     reference's cell being unloaded — an alias-bound receiver resolves to an
     entity and must therefore come back to a form id via `entity_global_form_id`
-    (`fragment.rs`). A "simplification" that keys the sink by entity is the
+    (`fragment/effects.rs`). A "simplification" that keys the sink by entity is the
     regression. `Effect::SetGlobalValue` keeping `resolve_property_form_id` is
     also correct (a GLOB is a top-level resource, never alias-bound).
   * *Runtime consumer (half a, `265f0c9b`)*: `ReferenceEnableState::is_enabled`
@@ -860,7 +860,7 @@ refresh; not otherwise covered by this dimension's checklist below).
     first: `AnimatedVisibility` is honoured in `render/static_meshes.rs` but not
     in `render/skinned.rs`. Regression = moving the gate to the render side, or
     after collider/light spawn. Guard: `byroredux/src/cell_loader/reference_enable_gate_tests.rs`.
-- **`Effect::SetGlobalValue` (`fragment.rs::apply_effect`)**: resolves the
+- **`Effect::SetGlobalValue` (`fragment/effects.rs::apply_effect`)**: resolves the
   `global: ObjectRef` the same strict way as `Disable`
   (`resolve_property_form_id`, no alias branch — correct here, since a GLOB
   is a top-level resource never bound through a quest alias) and writes
@@ -871,7 +871,7 @@ refresh; not otherwise covered by this dimension's checklist below).
   — so this is not the #1862-class "serde derive with no registry entry" gap;
   confirm that registration still holds on future `save_io.rs` refactors
   rather than re-deriving it each time.
-- **Multi-fragment-per-stage ordering (`fragment.rs::populate_quest_fragments_from_script`,
+- **Multi-fragment-per-stage ordering (`fragment/populate.rs::populate_quest_fragments_from_script`,
   2026-08-24, `cee35507`)**: a QUST stage can carry several `QSDT` log
   entries, each with its own `Fragment_N` binding (the module doc cites
   MQ101 stage 0 having five). The function now accumulates all of a stage's
@@ -909,7 +909,7 @@ refresh; not otherwise covered by this dimension's checklist below).
   `receiver_object`, so an object-typed local **does** resolve today. Verify
   against the live three-map behavior (`scope.quest_locals` /
   `scope.decl_locals` / `scope.object_locals`), not the two-map "always
-  declines" claim this bullet used to make. At *dispatch* time, `fragment.rs::resolve_object`
+  declines" claim this bullet used to make. At *dispatch* time, `fragment/effects.rs::resolve_object`
   (M47.3 Phase 2, updated 2026-08-07) branches on the VMAD
   `PropertyValue::Object`: `alias == -1` still resolves via
   `resolve_entity_by_global_form_id` (the same M42.5–8/M47.1 resolver,
@@ -1069,7 +1069,7 @@ Papyrus `GlobalVariable`, now save-serialized); `crates/scripting/src/recurring_
   Dimension 6's own §"ECS lock held across a second resource/component
   mutation" severity row already rates this class HIGH if it's a real
   deadlock vector, not merely theoretical).
-- **Scene-fragment dispatch parallels quest-fragment dispatch (`fragment.rs::
+- **Scene-fragment dispatch parallels quest-fragment dispatch (`fragment/systems.rs::
   scene_fragment_dispatch_system`, 2026-08-23, `27875a02`)**: a second
   fragment-execution pipeline, structurally mirroring
   `quest_fragment_dispatch_system` but for SCEN `Begin`/`End`/phase
@@ -1449,7 +1449,7 @@ dimensions covers it.
   diagnostic command that mutates would be a much higher-severity finding
   given it's reachable from the debug console) and that the alias resolution
   it displays (`bindings.resolve(quest, actor.actor_id as i32)`) uses the same
-  entry point `fragment.rs::resolve_object`/`condition.rs::RunOn::QuestAlias`
+  entry point `fragment/effects.rs::resolve_object`/`condition.rs::RunOn::QuestAlias`
   do (Dim 5/6), so a debugging session against this command's output isn't
   looking at a different resolution path than the one actually driving
   gameplay.
