@@ -317,3 +317,31 @@ default_textures_bsas = [
 ]
 default_materials_bsas = ["Starfield - Materials.ba2"]
 sample_cells = ["citycydoniamainlevel"]
+
+# Asset-level profile: meshes, textures and materials for the Studio gallery
+# and the NIF corpus. No sample cells — FO76 is not a supported cell-load
+# target. The `NNUpdate*` archives are not listed: their contents have not
+# been surveyed, so which of them override which base archive is unknown.
+[profiles.fo76]
+name = "Fallout 76"
+subdir = "Fallout76/Data"
+root = ""
+esm = "SeventySix.esm"
+default_bsas = [
+    "SeventySix - Meshes.ba2",
+    "SeventySix - MeshesExtra.ba2",
+    "SeventySix - StaticMeshes.ba2",
+]
+default_textures_bsas = [
+    "SeventySix - Textures01.ba2",
+    "SeventySix - Textures02.ba2",
+    "SeventySix - Textures03.ba2",
+    "SeventySix - Textures04.ba2",
+    "SeventySix - Textures05.ba2",
+    "SeventySix - Textures06.ba2",
+    "SeventySix - Textures07.ba2",
+    "SeventySix - Textures08.ba2",
+    "SeventySix - Textures09.ba2",
+    "SeventySix - Textures10.ba2",
+]
+default_materials_bsas = ["SeventySix - Materials.ba2"]

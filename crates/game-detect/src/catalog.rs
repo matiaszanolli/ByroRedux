@@ -54,6 +54,11 @@ pub const STEAM_APPS: &[SteamApp] = &[
         profile: "starfield",
         install_dir: "Starfield",
     },
+    SteamApp {
+        appid: 1151340,
+        profile: "fo76",
+        install_dir: "Fallout76",
+    },
 ];
 
 /// The title with this appid, if the engine has a profile for it.

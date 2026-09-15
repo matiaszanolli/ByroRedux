@@ -235,6 +235,15 @@ cargo run --release -- --studio path/to/mesh.nif
 cargo run --release -- --game skyrim_se --studio \
              --mesh 'meshes\\clutter\\ingredients\\sweetroll01.nif'
 
+# Material gallery: `--studio` with no asset opens an empty Cornell room. The
+# Studio tab's "Add object" picker lists every installed game (Oblivion → FO76 →
+# Starfield); pick one, filter its meshes, and add objects one at a time. Each
+# stands on the floor beside the last and the room refits and relights around
+# all of them. Scriptable over byro-dbg: studio.games / studio.find <game>
+# [filter] / studio.add <game> <path> / studio.list / studio.remove <id> /
+# studio.clear.
+cargo run --release -- --studio --bench-hold
+
 # Cornell-box RT reference harness (no game data needed). `--cornell` is the
 # interior / point-light scene; `--cornell-sun` is the exterior counterpart —
 # ceiling removed, local lights dropped, a fixed-direction sun as the only

@@ -444,6 +444,35 @@ pub fn float_target_from_operation(operation: u32) -> FloatTarget {
     }
 }
 
+/// Map a Skyrim+ shader float controller's `Controlled Variable` onto a
+/// [`FloatTarget`]. Shared by the embedded-controller arm (`entry.rs`) and
+/// the KF-sequence arm (`sequence.rs`) for the same reason as
+/// [`float_target_from_operation`].
+///
+/// The UV slots are nif.xml-documented — `EffectShaderControlledVariable`
+/// 6/7/8/9 and `LightingShaderControlledFloat` 20/21/22/23 are U Offset /
+/// U Scale / V Offset / V Scale — and already have a canonical sink
+/// (`AnimatedUvTransform`). Skyrim's river whitewater, rapids, and waterfall
+/// sheets scroll exclusively through these: every placed `fxrapids*`,
+/// `fxwaterfall*`, and `fxcreek*` shape carries a V Offset saw. Collapsing
+/// them into the generic `ShaderFloat` slot left all of that water frozen
+/// and let a shape's several channels overwrite one another.
+///
+/// Every other variable keeps the generic `ShaderFloat` sink (#2221) until
+/// its uniform has a researched consumer.
+pub fn float_target_from_shader_controller(
+    kind: crate::blocks::controller::ShaderControllerKind,
+) -> FloatTarget {
+    use crate::blocks::controller::ShaderControllerKind::{EffectFloat, LightingFloat};
+    match kind {
+        EffectFloat(6) | LightingFloat(20) => FloatTarget::UvOffsetU,
+        EffectFloat(7) | LightingFloat(21) => FloatTarget::UvScaleU,
+        EffectFloat(8) | LightingFloat(22) => FloatTarget::UvOffsetV,
+        EffectFloat(9) | LightingFloat(23) => FloatTarget::UvScaleV,
+        _ => FloatTarget::ShaderFloat,
+    }
+}
+
 /// Extract a texture transform float channel.
 /// Maps NiTextureTransformController.operation to the appropriate FloatTarget.
 pub fn extract_texture_transform_channel(

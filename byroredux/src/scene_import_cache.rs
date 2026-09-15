@@ -118,6 +118,12 @@ impl SceneImportCache {
         entry
     }
 
+    /// [`Self::get`] without touching the hit/miss telemetry — for callers
+    /// inspecting a scene the loader just inserted, not loading one.
+    pub(crate) fn peek(&self, key: &str) -> Option<Arc<ImportedScene>> {
+        self.core.get(key).cloned().flatten()
+    }
+
     /// Insert a freshly-parsed scene (or `None` for a parse failure /
     /// empty scene). Returns the inserted `Arc` (cloned) so the
     /// caller can keep walking the same allocation without a second

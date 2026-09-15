@@ -111,6 +111,232 @@ fn import_embedded_animations_captures_texture_transform_controller() {
     assert!((ch.keys[1].value - 0.5).abs() < 1e-6);
 }
 
+/// Regression: Skyrim's river whitewater, rapids, and waterfall sheets
+/// scroll through `BS{Effect,Lighting}ShaderPropertyFloatController`
+/// with a UV `Controlled Variable` (vanilla `fxrapids.nif` authors
+/// effect variable 8 = V Offset; `fxwaterfallbodytall.nif`'s lit body
+/// authors lighting 20/21/22/23). Every such channel used to collapse
+/// into the generic `ShaderFloat` slot, which nothing samples, so all of
+/// that water rendered frozen. The UV variables must map onto the UV
+/// targets; a non-UV variable keeps `ShaderFloat`.
+#[test]
+fn import_embedded_animations_maps_shader_controller_uv_variables() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::controller::{
+        BsShaderController, NiSingleInterpController, NiTimeControllerBase, ShaderControllerKind,
+    };
+    use crate::blocks::node::NiNode;
+    use crate::types::{BlockRef, NiTransform};
+    use std::sync::Arc;
+
+    let cases = [
+        (
+            "BSEffectShaderPropertyFloatController",
+            ShaderControllerKind::EffectFloat(8),
+            FloatTarget::UvOffsetV,
+        ),
+        (
+            "BSEffectShaderPropertyFloatController",
+            ShaderControllerKind::EffectFloat(7),
+            FloatTarget::UvScaleU,
+        ),
+        (
+            "BSLightingShaderPropertyFloatController",
+            ShaderControllerKind::LightingFloat(20),
+            FloatTarget::UvOffsetU,
+        ),
+        (
+            "BSLightingShaderPropertyFloatController",
+            ShaderControllerKind::LightingFloat(23),
+            FloatTarget::UvScaleV,
+        ),
+        (
+            "BSEffectShaderPropertyFloatController",
+            ShaderControllerKind::EffectFloat(0),
+            FloatTarget::ShaderFloat,
+        ),
+    ];
+    for (type_name, kind, expected) in cases {
+        let ctrl = BsShaderController {
+            type_name,
+            base: NiSingleInterpController {
+                base: NiTimeControllerBase {
+                    next_controller_ref: BlockRef::NULL,
+                    flags: 0,
+                    frequency: 1.0,
+                    phase: 0.0,
+                    start_time: 0.0,
+                    stop_time: 6.667,
+                    target_ref: BlockRef::NULL,
+                },
+                interpolator_ref: BlockRef(0),
+            },
+            kind,
+        };
+        let node = NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from("Plane07")),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef(1),
+                },
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        };
+        let scene = NifScene {
+            blocks: vec![
+                Box::new(NiFloatInterpolator {
+                    value: -0.25,
+                    data_ref: BlockRef::NULL,
+                }),
+                Box::new(ctrl),
+                Box::new(node),
+            ],
+            ..NifScene::default()
+        };
+
+        let clip = import_embedded_animations(&scene).expect("expected embedded clip");
+        assert_eq!(clip.float_channels.len(), 1, "{type_name} {kind:?}");
+        assert_eq!(
+            clip.float_channels[0].1.target, expected,
+            "{type_name} {kind:?}"
+        );
+    }
+}
+
+/// Regression: vanilla Skyrim hosts whitewater UV scrolls on the shape's
+/// **unnamed** `BSEffectShaderProperty` (`fxrapids.nif` Plane07/08/09,
+/// `fxcreekflatlong01.nif` modeledFoam:0/1 — every property `name=None`).
+/// The embedded importer keyed channels by the controller-hosting block's
+/// own name and skipped unnamed blocks, so none of that animation reached
+/// a clip. Runtime channels bind by entity `Name`, and entities are the
+/// shapes, so a property-hosted chain must key by its owning shape(s) — one
+/// channel per owner when the property is shared.
+#[test]
+fn import_embedded_animations_keys_property_controllers_by_owning_shape() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::controller::{
+        BsShaderController, NiSingleInterpController, NiTimeControllerBase, ShaderControllerKind,
+    };
+    use crate::blocks::shader::BSEffectShaderProperty;
+    use crate::blocks::tri_shape::NiTriShape;
+    use crate::types::{BlockRef, NiTransform};
+    use std::sync::Arc;
+
+    let shape = |name: &str| NiTriShape {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(Arc::from(name)),
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        data_ref: BlockRef::NULL,
+        skin_instance_ref: BlockRef::NULL,
+        shader_property_ref: BlockRef(2),
+        alpha_property_ref: BlockRef::NULL,
+        num_materials: 0,
+        active_material_index: 0,
+    };
+    // Scene layout:
+    //   [0] NiFloatInterpolator (constant)
+    //   [1] BSEffectShaderPropertyFloatController var 8 (V Offset) → [0]
+    //   [2] BSEffectShaderProperty, name = None, controller_ref = [1]
+    //   [3] NiTriShape "Plane07" → shader [2]
+    //   [4] NiTriShape "Plane08" → shader [2]
+    let property = BSEffectShaderProperty {
+        net: NiObjectNETData {
+            name: None,
+            extra_data_refs: Vec::new(),
+            controller_ref: BlockRef(1),
+        },
+        material_reference: false,
+        shader_flags_1: 0,
+        shader_flags_2: 0,
+        sf1_crcs: Vec::new(),
+        sf2_crcs: Vec::new(),
+        uv_offset: [0.0, 0.0],
+        uv_scale: [1.0, 1.0],
+        source_texture: String::from("textures\\effects\\FXWhiteWater01.dds"),
+        texture_clamp_mode: 3,
+        lighting_influence: 0,
+        env_map_min_lod: 0,
+        falloff_start_angle: 1.0,
+        falloff_stop_angle: 1.0,
+        falloff_start_opacity: 0.0,
+        falloff_stop_opacity: 0.0,
+        refraction_power: 0.0,
+        base_color: [0.0; 4],
+        base_color_scale: 1.0,
+        soft_falloff_depth: 0.0,
+        greyscale_texture: String::new(),
+        env_map_texture: String::new(),
+        normal_texture: String::new(),
+        env_mask_texture: String::new(),
+        env_map_scale: 1.0,
+        reflectance_texture: String::new(),
+        lighting_texture: String::new(),
+        emittance_color: [0.0; 3],
+        emit_gradient_texture: String::new(),
+        luminance: None,
+        starfield_tail: Vec::new(),
+    };
+    let ctrl = BsShaderController {
+        type_name: "BSEffectShaderPropertyFloatController",
+        base: NiSingleInterpController {
+            base: NiTimeControllerBase {
+                next_controller_ref: BlockRef::NULL,
+                flags: 0,
+                frequency: 1.0,
+                phase: 0.0,
+                start_time: 0.0,
+                stop_time: 6.667,
+                target_ref: BlockRef::NULL,
+            },
+            interpolator_ref: BlockRef(0),
+        },
+        kind: ShaderControllerKind::EffectFloat(8),
+    };
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(NiFloatInterpolator {
+                value: -0.5,
+                data_ref: BlockRef::NULL,
+            }),
+            Box::new(ctrl),
+            Box::new(property),
+            Box::new(shape("Plane07")),
+            Box::new(shape("Plane08")),
+        ],
+        ..NifScene::default()
+    };
+
+    let clip = import_embedded_animations(&scene).expect("property-hosted scroll must import");
+    let mut owners: Vec<&str> = clip
+        .float_channels
+        .iter()
+        .map(|(name, ch)| {
+            assert_eq!(ch.target, FloatTarget::UvOffsetV);
+            &**name
+        })
+        .collect();
+    owners.sort_unstable();
+    assert_eq!(
+        owners,
+        ["Plane07", "Plane08"],
+        "one channel per owning shape"
+    );
+}
+
 /// Regression: #3097. An authored `NiTimeControllerBase` envelope
 /// (non-default cycle type, frequency, phase, timing) must reach the
 /// merged embedded clip instead of the old hardcoded

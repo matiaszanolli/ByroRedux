@@ -1220,7 +1220,9 @@ mod mat_set_tests {
         ] {
             let out = MatSetCommand.execute(&world, &format!("{e} {field} {input}"));
             assert!(
-                out.lines.join("\n").contains(&format!("{field} = {expected:.4}")),
+                out.lines
+                    .join("\n")
+                    .contains(&format!("{field} = {expected:.4}")),
                 "{field} {input} must round-trip unclamped"
             );
             let q = world.query::<Material>().unwrap();
@@ -1234,7 +1236,12 @@ mod mat_set_tests {
 
         MatSetCommand.execute(&world, &format!("{e} glass_fresnel_color 0.2 0.4 0.6"));
         assert_eq!(
-            world.query::<Material>().unwrap().get(e).unwrap().glass_fresnel_color,
+            world
+                .query::<Material>()
+                .unwrap()
+                .get(e)
+                .unwrap()
+                .glass_fresnel_color,
             [0.2, 0.4, 0.6]
         );
 

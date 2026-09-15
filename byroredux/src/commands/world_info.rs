@@ -357,7 +357,10 @@ mod ctx_scratch_tests {
             .iter()
             .position(|l| l.trim() == "engine:")
             .expect("must print an engine: header");
-        assert!(renderer_idx < engine_idx, "renderer section must come first");
+        assert!(
+            renderer_idx < engine_idx,
+            "renderer section must come first"
+        );
 
         let gpu_instances_idx = output
             .lines

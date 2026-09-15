@@ -24,7 +24,7 @@ use crate::components::{InputState, Spinning};
 #[cfg(test)]
 use crate::components::CellLightingRes;
 use crate::streaming::WorldStreamingState;
-use byroredux_sdk::studio::{AssetBounds, AssetSource, BoundSphere, CornellFit};
+use byroredux_sdk::studio::AssetBounds;
 
 // Test child modules (procedural_fallback_tests, cloud_tile_scale_tests)
 // reach for these via `use super::*;` — keep them in scope under
@@ -375,7 +375,7 @@ impl GroundProbe {
 /// `atan2` arguments vanish, and yaw is genuinely arbitrary — every yaw yields
 /// the same view. `atan2(0.0, 0.0)` is defined as `0.0`, so this returns a
 /// finite, straight-up/down pose rather than a NaN.
-fn yaw_pitch_from_forward(forward: Vec3) -> (f32, f32) {
+pub(crate) fn yaw_pitch_from_forward(forward: Vec3) -> (f32, f32) {
     let pitch = forward.y.clamp(-1.0, 1.0).asin();
     let yaw = (-forward.x).atan2(-forward.z);
     (yaw, pitch)
@@ -393,7 +393,7 @@ fn yaw_pitch_from_forward(forward: Vec3) -> (f32, f32) {
 ///
 /// Silent no-op when nothing is queued, so the archive-backed and
 /// already-cached cases cost one integer read.
-fn flush_pending_loose_textures(ctx: &mut VulkanContext) {
+pub(crate) fn flush_pending_loose_textures(ctx: &mut VulkanContext) {
     let pending = ctx.texture_registry.pending_dds_upload_count();
     if pending == 0 {
         return;
@@ -1032,68 +1032,36 @@ pub(crate) fn setup_scene(
         // the value this path never supplied. A model authored away from the
         // origin, or tall relative to it, ended up framed arbitrarily.
         //
-        // The bounds walk was already here, gated behind `studio_mode`. It is
-        // hoisted rather than duplicated; the two propagation systems it needs
-        // are the same ones the scheduler runs every frame, so running them
-        // once at setup is idempotent.
-        if has_nif_content {
-            let last_asset_entity = world.next_entity_id();
-            let mut propagate = byroredux_core::ecs::systems::make_transform_propagation_system();
-            propagate(world, 0.0);
-            let mut propagate_bounds = crate::systems::make_world_bound_propagation_system();
-            propagate_bounds(world, 0.0);
-
-            let mut objects: Vec<EntityId> = world
-                .query::<byroredux_core::ecs::LocalBound>()
-                .map(|query| {
-                    query
-                        .iter()
-                        .filter_map(|(entity, _)| {
-                            (entity >= first_asset_entity && entity < last_asset_entity)
-                                .then_some(entity)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            // Canonicalize the import order before assigning SDK ObjectIds.
-            // Entity allocation follows the deterministic NIF/SPT traversal,
-            // while storage iteration order is an implementation detail.
-            objects.sort_unstable();
-            let bounds = AssetBounds::from_spheres(objects.iter().filter_map(|&entity| {
-                world
-                    .get::<byroredux_core::ecs::WorldBound>(entity)
-                    .map(|bound| BoundSphere {
-                        center: bound.center.to_array(),
-                        radius: bound.radius,
-                    })
-            }))
-            .unwrap_or(AssetBounds {
-                min: [-1.0; 3],
-                max: [1.0; 3],
+        // Both consumers share `studio_host::loaded_objects` for the bounds
+        // walk rather than duplicating it.
+        let last_asset_entity = world.next_entity_id();
+        if studio_mode {
+            // Studio owns placement: the boot asset (if any) becomes the
+            // gallery's first entry, stood in a room fitted around it. With
+            // no asset the gallery still opens, as an empty room.
+            let boot_asset = has_nif_content.then(|| crate::studio_host::BootAsset {
+                label: studio_source_label(&args),
+                first: first_asset_entity,
+                last: last_asset_entity,
             });
-            if studio_mode {
-                let fit = CornellFit::around(bounds);
-                let (camera, target) = crate::cornell::setup_studio_room(world, ctx, fit);
-                harness_cam = Some((camera, target));
-                cam_center = target;
-                crate::studio_host::install_session(
-                    world,
-                    AssetSource {
-                        label: studio_source_label(&args),
-                    },
-                    objects,
-                );
-            } else {
-                // Plain loose load: aim at the midpoint of what was actually
-                // loaded. Studio takes its centre from `setup_studio_room`
-                // instead, which places the model inside a fitted room and
-                // returns that room's look-at target.
-                cam_center = Vec3::new(
-                    0.5 * (bounds.min[0] + bounds.max[0]),
-                    0.5 * (bounds.min[1] + bounds.max[1]),
-                    0.5 * (bounds.min[2] + bounds.max[2]),
-                );
-            }
+            let (camera, target) = crate::studio_host::open(world, ctx, boot_asset);
+            harness_cam = Some((camera, target));
+            cam_center = target;
+            // A populated harness scene either way: no demo primitives.
+            has_nif_content = true;
+        } else if has_nif_content {
+            // Plain loose load: aim at the midpoint of what was loaded.
+            let (_, bounds) = crate::studio_host::loaded_objects(
+                world,
+                first_asset_entity,
+                last_asset_entity,
+            );
+            cam_center = bounds
+                .unwrap_or(AssetBounds {
+                    min: [-1.0; 3],
+                    max: [1.0; 3],
+                })
+                .center();
         }
     }
 

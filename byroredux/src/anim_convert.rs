@@ -6,8 +6,8 @@ use byroredux_core::animation::{
     TransformChannel, TranslationKey,
 };
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{Children, FlipTextureRole, Name, World};
-use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::ecs::{Children, FlipTextureRole, Material, Name, World};
+use byroredux_core::math::{Quat, Vec2, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_renderer::VulkanContext;
 use rustc_hash::FxHashMap;
@@ -192,7 +192,21 @@ pub(crate) fn attach_animation_sinks(
             | FloatTarget::UvScaleU
             | FloatTarget::UvScaleV
             | FloatTarget::UvRotation => {
-                let t = uv.entry(e).or_insert_with(AnimatedUvTransform::identity);
+                // The component REPLACES the material's UV transform at
+                // draw time, so the slots no channel animates must keep
+                // the authored values — a Skyrim creek-foam shape tiles
+                // 4×4 and scrolls only V Offset. Identity is the fallback
+                // for a target with no `Material`.
+                let t = uv.entry(e).or_insert_with(|| {
+                    world
+                        .get::<Material>(e)
+                        .map(|m| AnimatedUvTransform {
+                            offset: Vec2::from(m.uv_offset),
+                            scale: Vec2::from(m.uv_scale),
+                            rotation: 0.0,
+                        })
+                        .unwrap_or_else(AnimatedUvTransform::identity)
+                });
                 match channel.target {
                     FloatTarget::UvOffsetU => t.offset.x = v,
                     FloatTarget::UvOffsetV => t.offset.y = v,
@@ -804,6 +818,37 @@ mod sink_attachment_tests {
         assert_eq!(m.get(0), 0.3);
         assert_eq!(m.get(1), 0.0, "gap between morph indices zero-pads");
         assert_eq!(m.get(2), 0.9);
+    }
+
+    #[test]
+    fn uv_sink_seeds_unanimated_slots_from_the_authored_material() {
+        // `AnimatedUvTransform` replaces `Material.uv_*` at draw time.
+        // Vanilla Skyrim `fxcreekflatlong01.nif` foam tiles 4×4 and
+        // animates only V Offset; seeding from identity would reset its
+        // tiling to 1×1 the moment the scroll channel attached.
+        let mut world = World::new();
+        let mut pool = StringPool::new();
+        let (root, child, child_name) = subtree(&mut world, &mut pool);
+        world.insert(
+            child,
+            Material {
+                uv_offset: [0.078, -1.97],
+                uv_scale: [4.0, 4.0],
+                ..Material::default()
+            },
+        );
+
+        let floats = vec![(child_name, float_channel(FloatTarget::UvOffsetV, -0.5))];
+        attach_animation_sinks(&mut world, &[], &floats, &[], &[], None, None, root);
+
+        let uv = world.query::<AnimatedUvTransform>().unwrap();
+        let t = uv.get(child).unwrap();
+        assert_eq!(t.offset.y, -0.5, "the animated slot takes the channel");
+        assert_eq!(
+            t.offset.x, 0.078,
+            "unanimated offset keeps the authored value"
+        );
+        assert_eq!(t.scale, Vec2::new(4.0, 4.0), "authored tiling survives");
     }
 
     #[test]

@@ -7,6 +7,12 @@ use byroredux_renderer::{TextureColorSpace, VulkanContext};
 pub(crate) struct TextureProvider {
     texture_archives: Vec<Archive>,
     mesh_archives: Vec<Archive>,
+    /// Prefix for this provider's texture-registry cache keys — never for
+    /// archive lookups. The registry keys bindless slots by path alone, which
+    /// is exact for one game per process; the Studio gallery keeps several
+    /// titles resident at once and they ship *different* files under one path
+    /// (FO76 re-authors FO4's, SE re-exports LE's). `None` everywhere else.
+    registry_namespace: Option<String>,
 }
 
 impl TextureProvider {
@@ -14,7 +20,42 @@ impl TextureProvider {
         Self {
             texture_archives: Vec::new(),
             mesh_archives: Vec::new(),
+            registry_namespace: None,
         }
+    }
+
+    /// Scope this provider's texture-registry entries to `namespace`.
+    pub(crate) fn with_registry_namespace(mut self, namespace: &str) -> Self {
+        self.registry_namespace = Some(format!("{namespace}@"));
+        self
+    }
+
+    fn registry_key<'a>(&self, canonical: &'a str) -> std::borrow::Cow<'a, str> {
+        match &self.registry_namespace {
+            Some(namespace) => std::borrow::Cow::Owned(format!("{namespace}{canonical}")),
+            None => std::borrow::Cow::Borrowed(canonical),
+        }
+    }
+
+    /// Every importable model (`.nif`, plus SpeedTree `.spt`) across the mesh
+    /// archives, sorted and de-duplicated, as exact archive keys.
+    ///
+    /// Reads each backend's own file table: `Archive::list_files` is blank
+    /// for BSAs on purpose (see its doc), which would hide every pre-FO4 game.
+    pub(crate) fn mesh_asset_paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self
+            .mesh_archives
+            .iter()
+            .flat_map(|archive| match archive {
+                Archive::Bsa(bsa) => bsa.list_files(),
+                Archive::Ba2(ba2) => ba2.list_files(),
+            })
+            .filter(|path| path.ends_with(".nif") || path.ends_with(".spt"))
+            .map(str::to_owned)
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        paths
     }
 
     /// Extract a texture (DDS) from texture archives.
@@ -572,6 +613,7 @@ fn resolve_texture_view_with_clamp(
     // never hit. Same key-drift shape as #3038 / #3412, one layer down.
     let canonical = canonical_texture_key(tex_path);
     let tex_path: &str = &canonical;
+    let registry_key = tex_provider.registry_key(tex_path);
     // `acquire_by_path` (not `get_by_path`) — bumps the refcount on a
     // cache hit so each resolve pairs with one drop_texture on cell
     // unload. `load_dds` on the miss path bumps from 0→1 on fresh
@@ -579,10 +621,10 @@ fn resolve_texture_view_with_clamp(
     // caller. See #524.
     let cached = if cubemap {
         ctx.texture_registry
-            .acquire_cubemap_by_path_with_clamp(tex_path, clamp_mode)
+            .acquire_cubemap_by_path_with_clamp(&registry_key, clamp_mode)
     } else {
         ctx.texture_registry
-            .acquire_by_path_with_clamp_and_color_space(tex_path, clamp_mode, color_space)
+            .acquire_by_path_with_clamp_and_color_space(&registry_key, clamp_mode, color_space)
     };
     if let Some(cached) = cached {
         return cached;
@@ -600,14 +642,14 @@ fn resolve_texture_view_with_clamp(
         let queued = if cubemap {
             ctx.texture_registry.enqueue_cubemap_dds_with_clamp(
                 &ctx.device,
-                tex_path,
+                &registry_key,
                 dds_bytes,
                 clamp_mode,
             )
         } else {
             ctx.texture_registry.enqueue_dds_with_clamp_and_color_space(
                 &ctx.device,
-                tex_path,
+                &registry_key,
                 dds_bytes,
                 clamp_mode,
                 color_space,

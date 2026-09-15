@@ -346,6 +346,17 @@ impl App {
         }
     }
 
+    /// Apply queued Studio gallery operations (add / remove / clear). They
+    /// import or reclaim GPU resources, so they run here with the renderer
+    /// rather than inside the egui output pass that queued them. No-op
+    /// outside `--studio`.
+    pub(crate) fn step_studio(&mut self) {
+        let Some(ctx) = self.renderer.as_mut() else {
+            return;
+        };
+        crate::studio_host::step(&mut self.world, ctx);
+    }
+
     /// Cancel an unfinished interior apply and reclaim every object already
     /// spawned under its cell root. Used by shutdown and kept as a single
     /// choke point so future transition sources cannot accidentally drop a

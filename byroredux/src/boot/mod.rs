@@ -16,6 +16,7 @@ mod registries;
 mod schedule;
 mod world;
 
+pub(crate) use cli::profile_archive_args;
 use cli::{expand_boot_request, expand_game_profile_args};
 pub(crate) use registries::install_runtime_registries;
 pub(crate) use schedule::build_scheduler;

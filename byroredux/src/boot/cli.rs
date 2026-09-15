@@ -253,6 +253,53 @@ fn push_optional_archive_args(
     }
 }
 
+/// The archive flags a profile expands into for `data_dir`: `--bsa`,
+/// `--textures-bsa`, `--scripts-bsa`, `--sounds-bsa`, `--materials-ba2`, then
+/// the present-only tier. Shared by `--game` expansion and the Studio gallery,
+/// which opens every installed title exactly the way a launch of it would.
+pub(crate) fn profile_archive_args(
+    entry: &byroredux_core::ecs::GameProfileEntry,
+    data_dir: &std::path::Path,
+    game_key: &str,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    let lists = [
+        ("--bsa", &entry.default_bsas),
+        ("--textures-bsa", &entry.default_textures_bsas),
+        ("--scripts-bsa", &entry.default_scripts_bsas),
+        ("--sounds-bsa", &entry.default_sounds_bsas),
+        ("--materials-ba2", &entry.default_materials_bsas),
+    ];
+    for (flag, archives) in lists {
+        for archive in archives {
+            args.push(flag.to_string());
+            args.push(data_dir.join(archive).to_string_lossy().into_owned());
+        }
+    }
+
+    // #3924 — the present-only tier. AE ships `_ResourcePack.bsa` and a
+    // per-account set of `cc*.bsa` Creation Club bundles that no naming rule
+    // can reach: none is a numeric sibling of a listed archive, so
+    // `numeric_sibling_paths` cannot find them, and until this list existed
+    // the runtime had no way to name them at all. The NIF corpus gate has
+    // swept exactly this tier since #3369, which left it measuring content
+    // the engine could not open.
+    //
+    // Appended last so #3637's last-wins precedence puts add-on content on
+    // top of vanilla. Skipped in silence when absent — which of these an
+    // install carries depends on the account and edition, so a miss is the
+    // normal case, unlike a `default_bsas` miss, which is a broken install.
+    //
+    // Expanded into all three content flags rather than `--bsa` alone: a
+    // Creation Club archive is a mod bundle, not a category archive, so one
+    // file carries that mod's meshes, textures and sounds together. The
+    // already-opened sets in `build_texture_provider` are per pool (#2584),
+    // so naming one path in two of them opens it in both rather than
+    // deduplicating it away.
+    push_optional_archive_args(&mut args, data_dir, &entry.optional_bsas, game_key);
+    args
+}
+
 pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     let new_game = args.iter().any(|arg| arg == "--new-game");
     // Launch defaults from the `[defaults]` table (profiles.toml,
@@ -349,52 +396,9 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         entry.name,
         data_dir.display(),
     );
-    let join_arg =
-        |archive: &str| -> String { data_dir.join(archive).to_string_lossy().into_owned() };
-
     args.push("--esm".to_string());
-    args.push(join_arg(&entry.esm));
-    for bsa in &entry.default_bsas {
-        args.push("--bsa".to_string());
-        args.push(join_arg(bsa));
-    }
-    for bsa in &entry.default_textures_bsas {
-        args.push("--textures-bsa".to_string());
-        args.push(join_arg(bsa));
-    }
-    for bsa in &entry.default_scripts_bsas {
-        args.push("--scripts-bsa".to_string());
-        args.push(join_arg(bsa));
-    }
-    for bsa in &entry.default_sounds_bsas {
-        args.push("--sounds-bsa".to_string());
-        args.push(join_arg(bsa));
-    }
-    for bsa in &entry.default_materials_bsas {
-        args.push("--materials-ba2".to_string());
-        args.push(join_arg(bsa));
-    }
-
-    // #3924 — the present-only tier. AE ships `_ResourcePack.bsa` and a
-    // per-account set of `cc*.bsa` Creation Club bundles that no naming rule
-    // can reach: none is a numeric sibling of a listed archive, so
-    // `numeric_sibling_paths` cannot find them, and until this list existed
-    // the runtime had no way to name them at all. The NIF corpus gate has
-    // swept exactly this tier since #3369, which left it measuring content
-    // the engine could not open.
-    //
-    // Appended last so #3637's last-wins precedence puts add-on content on
-    // top of vanilla. Skipped in silence when absent — which of these an
-    // install carries depends on the account and edition, so a miss is the
-    // normal case, unlike a `default_bsas` miss, which is a broken install.
-    //
-    // Expanded into all three content flags rather than `--bsa` alone: a
-    // Creation Club archive is a mod bundle, not a category archive, so one
-    // file carries that mod's meshes, textures and sounds together. The
-    // already-opened sets in `build_texture_provider` are per pool (#2584),
-    // so naming one path in two of them opens it in both rather than
-    // deduplicating it away.
-    push_optional_archive_args(&mut args, &data_dir, &entry.optional_bsas, &game_key);
+    args.push(data_dir.join(&entry.esm).to_string_lossy().into_owned());
+    args.extend(profile_archive_args(&entry, &data_dir, &game_key));
 
     if new_game {
         let has_location = ["--cell", "--grid", "--wrld"]

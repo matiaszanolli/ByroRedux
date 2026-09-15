@@ -1243,8 +1243,12 @@ pub fn cube_vertices() -> (Vec<Vertex>, Vec<u32>) {
     let indices = vec![
         0, 1, 2, 2, 3, 0, // front
         4, 6, 5, 6, 4, 7, // back
-        8, 9, 10, 10, 11, 8, // top
-        12, 14, 13, 14, 12, 15, // bottom
+        // ±Y were wound opposite to the other four faces: their geometric
+        // normal pointed inward, so a floor seen from above (or a ceiling
+        // from below) was a back face and shaded black. Pinned by
+        // `primitive_winding_agrees_with_vertex_normals`.
+        8, 10, 9, 10, 8, 11, // top
+        12, 13, 14, 14, 15, 12, // bottom
         16, 17, 18, 18, 19, 16, // right
         20, 22, 21, 22, 20, 23, // left
     ];
@@ -1339,8 +1343,12 @@ pub fn box_vertices_colored(half: [f32; 3], color: [f32; 3]) -> (Vec<Vertex>, Ve
     let indices = vec![
         0, 1, 2, 2, 3, 0, // front
         4, 6, 5, 6, 4, 7, // back
-        8, 9, 10, 10, 11, 8, // top
-        12, 14, 13, 14, 12, 15, // bottom
+        // ±Y were wound opposite to the other four faces: their geometric
+        // normal pointed inward, so a floor seen from above (or a ceiling
+        // from below) was a back face and shaded black. Pinned by
+        // `primitive_winding_agrees_with_vertex_normals`.
+        8, 10, 9, 10, 8, 11, // top
+        12, 13, 14, 14, 15, 12, // bottom
         16, 17, 18, 18, 19, 16, // right
         20, 22, 21, 22, 20, 23, // left
     ];
@@ -1398,6 +1406,49 @@ pub fn fullscreen_quad_ui_vertices() -> (Vec<UiVertex>, Vec<u32>) {
     ];
     let indices = vec![0, 1, 2, 2, 3, 0];
     (vertices, indices)
+}
+
+#[cfg(test)]
+mod primitive_winding_tests {
+    use super::*;
+
+    /// Every triangle's winding-derived normal must point the same way as
+    /// its authored vertex normals. RT hit shading and front-face tests use
+    /// the geometric normal; a mismatch shades a lit face as a back face.
+    fn assert_winding(name: &str, (vertices, indices): (Vec<Vertex>, Vec<u32>)) {
+        for (triangle, corners) in indices.chunks_exact(3).enumerate() {
+            let [a, b, c] =
+                [corners[0], corners[1], corners[2]].map(|index| &vertices[index as usize]);
+            let sub = |p: [f32; 3], q: [f32; 3]| [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+            let (e1, e2) = (sub(b.position, a.position), sub(c.position, a.position));
+            let geometric = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let authored: [f32; 3] =
+                std::array::from_fn(|axis| a.normal[axis] + b.normal[axis] + c.normal[axis]);
+            let area: f32 = geometric.iter().map(|v| v * v).sum();
+            if area < 1e-12 {
+                // Zero-area pole triangles carry no winding to check.
+                continue;
+            }
+            let dot: f32 = (0..3).map(|axis| geometric[axis] * authored[axis]).sum();
+            assert!(
+                dot > 0.0,
+                "{name}: triangle {triangle} winds against its normals \
+                 (geometric {geometric:?}, authored {authored:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn primitive_winding_agrees_with_vertex_normals() {
+        assert_winding("cube", cube_vertices());
+        assert_winding("box", box_vertices_colored([2.0, 0.1, 3.0], [1.0; 3]));
+        assert_winding("quad", quad_vertices());
+        assert_winding("sphere", uv_sphere(1.0, [1.0; 3], 8, 12));
+    }
 }
 
 #[cfg(test)]

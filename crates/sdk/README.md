@@ -116,10 +116,15 @@ The current public surface includes:
   their cadence. Session events report new-game, committed-save, and
   completed-load transitions with an optional numeric slot, never a host path.
 - `AssetBounds`, `BoundSphere`, and `CornellFit` provide deterministic,
-  testable scene fitting.
-- `StudioSnapshot` and `ObjectSnapshot` are immutable projections for any UI.
+  testable scene fitting. `CornellFit` grounds the floor at the envelope's
+  lowest point, and `gallery_offset` stands each additional asset on that
+  floor beside the ones already placed.
+- `StudioSnapshot` and `ObjectSnapshot` are immutable projections for any UI;
+  `CatalogView` / `PlacedAssetSnapshot` project the material gallery (installed
+  games, a filtered asset page from `filter_catalog`, and the placed assets).
 - `StudioCommand` is the mutation protocol shared by GUI, CLI automation, and
-  other trusted tool clients.
+  other trusted tool clients, including the gallery's `BrowseCatalog`,
+  `AddAsset`, `RemoveAsset`, and `ClearAssets`.
 - `pick_spheres` is a host-neutral center-ray selector.
 
 The `byroredux` binary is the first host adapter. It imports NIF/SPT assets from
@@ -161,6 +166,8 @@ Run the current tool with:
 cargo run --release -- --studio path/to/asset.nif
 cargo run --release -- --game skyrim_se --studio \
   --mesh 'meshes\\clutter\\ingredients\\sweetroll01.nif'
+# Empty gallery room; add objects from any installed game in the Studio tab.
+cargo run --release -- --studio
 ```
 
 This is intentionally an initial SDK surface, not a stability promise for the

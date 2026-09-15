@@ -78,6 +78,11 @@ impl App {
         // a Vec of Strings every frame. Gate those diagnostics on
         // `visible`; the interaction prompt is the only snapshot field
         // populated while the operator overlay is hidden.
+        if let Some(visible) = crate::studio_host::take_overlay_request(&self.world) {
+            if let Some(ui) = self.debug_ui.as_mut() {
+                ui.set_visible(visible);
+            }
+        }
         let mut snapshot = if self
             .debug_ui
             .as_ref()

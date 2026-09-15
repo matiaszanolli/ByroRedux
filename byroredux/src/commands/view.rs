@@ -103,7 +103,12 @@ impl ConsoleCommand for CombatStatusCommand {
         let melee = world
             .try_resource::<crate::systems::PlayerEntity>()
             .and_then(|player| player.0)
-            .and_then(|player| world.query::<crate::combat::MeleeState>()?.get(player).copied());
+            .and_then(|player| {
+                world
+                    .query::<crate::combat::MeleeState>()?
+                    .get(player)
+                    .copied()
+            });
         let melee = melee.unwrap_or_default();
         let mut lines = vec!["Combat status:".to_string()];
         lines.push(format!(

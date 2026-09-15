@@ -1420,6 +1420,13 @@ pub struct ActiRecord {
     /// to fetch + decompile the attached `.pex`. Activators are the most
     /// common scripted base record in Skyrim cells (levers, doors, traps).
     pub script_instance: Option<crate::esm::records::script_instance::ScriptInstanceData>,
+    /// Skyrim+ `WNAM` — the WATR record a placed water activator renders and
+    /// behaves as. Vanilla Skyrim authors its sloped river and stream
+    /// sections this way (`Water1024RiverFlowNE`, `TundraStreamStraight01WaterA`
+    /// → `CreekWaterFlow`): a `BSWaterShaderProperty` mesh whose colours,
+    /// current and noise come from this water type rather than the NIF.
+    /// `0` when absent. Consumers must resolve it against the WATR table.
+    pub water_type_form: u32,
 }
 
 pub fn parse_acti(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ActiRecord {
@@ -1448,6 +1455,9 @@ pub fn parse_acti(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             }
             b"RNAM" | b"RADR" => {
                 out.radio_form_id = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+            }
+            b"WNAM" => {
+                out.water_type_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             _ => {}
         }
@@ -1797,6 +1807,29 @@ mod tests {
         assert_eq!(a.sound_form_id, 0x0009_0000);
         // Radio form defaults to 0 when RNAM/RADR absent.
         assert_eq!(a.radio_form_id, 0);
+        // Water type defaults to 0 when WNAM is absent.
+        assert_eq!(a.water_type_form, 0);
+    }
+
+    /// Skyrim's placed river/stream sections are activators whose `WNAM`
+    /// names the WATR they render and behave as. Vanilla
+    /// `TundraStreamStraight01WaterA` (0001608E) authors
+    /// `PNAM SNAM WNAM(00015429 CreekWaterFlow) FNAM`; the WNAM FormID must
+    /// survive parsing and go through the load-order remap like every other
+    /// cross-record reference.
+    #[test]
+    fn parse_acti_extracts_wnam_water_type() {
+        let subs = vec![
+            sub(b"EDID", b"TundraStreamStraight01WaterA\0"),
+            sub(b"MODL", b"Water\\TundraStreamStraight01WaterA.nif\0"),
+            sub(b"PNAM", &[0xcc, 0x4c, 0x33, 0x00]),
+            sub(b"SNAM", &0x0003_D0A7u32.to_le_bytes()),
+            sub(b"WNAM", &0x0001_5429u32.to_le_bytes()),
+            sub(b"FNAM", &[0x01, 0x00]),
+        ];
+        let a = parse_acti(0x0001_608E, &subs, &None);
+        assert_eq!(a.water_type_form, 0x0001_5429);
+        assert_eq!(a.sound_form_id, 0x0003_D0A7);
     }
 
     /// Regression for #4067. `CommonNamedFields::from_subs_with_remap`

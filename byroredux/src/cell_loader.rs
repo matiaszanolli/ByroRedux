@@ -171,11 +171,14 @@ pub use unload::{unload_cell, unload_cells, UnloadPhaseTimings};
 pub(crate) use water::{spawn_lod_water_plane, unload_lod_water_plane};
 pub(crate) use work_budget::FrameTimeBudget;
 
+// The Studio gallery owns imported assets and its room through cell roots
+// so removal reuses `unload_cell`'s GPU reference accounting.
+pub(crate) use load::stamp_cell_root;
 // Test-only re-exports so the `use super::*;` patterns inside the
 // child test modules see the helpers they exercise. Production code
 // paths reach these via their owning submodule path.
 #[cfg(test)]
-pub(crate) use load::{register_cell_root, stamp_cell_root, stamp_cell_root_range};
+pub(crate) use load::{register_cell_root, stamp_cell_root_range};
 #[cfg(test)]
 pub(crate) use spawn::{
     count_spawnable_nif_lights, is_known_exporter_artifact_light_name, is_spawnable_nif_light,

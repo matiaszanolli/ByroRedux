@@ -657,7 +657,7 @@ pub fn draw(
         ui.separator();
 
         match state.active_tab {
-            PanelTab::Studio => draw_studio(ui, studio, outputs),
+            PanelTab::Studio => draw_studio(ui, studio, state, outputs),
             PanelTab::Metrics => draw_metrics(ui, snapshot.metrics.as_ref()),
             PanelTab::Loader => draw_loader(ui, state, outputs),
             PanelTab::Entities => draw_entities(ui, snapshot.entities.as_deref(), outputs),
@@ -680,13 +680,19 @@ pub enum PanelTab {
     Settings,
 }
 
-fn draw_studio(ui: &mut egui::Ui, snapshot: Option<&StudioSnapshot>, outputs: &mut PanelOutputs) {
+fn draw_studio(
+    ui: &mut egui::Ui,
+    snapshot: Option<&StudioSnapshot>,
+    state: &mut PanelState,
+    outputs: &mut PanelOutputs,
+) {
     let Some(snapshot) = snapshot else {
         ui.label("No Studio document is open.");
         return;
     };
 
     ui.heading(&snapshot.source_label);
+    draw_gallery(ui, snapshot, state, outputs);
     ui.label(
         RichText::new(format!(
             "{} editable objects · revision {}",
@@ -709,7 +715,7 @@ fn draw_studio(ui: &mut egui::Ui, snapshot: Option<&StudioSnapshot>, outputs: &m
         columns[0].label(RichText::new("Scene objects").strong());
         egui::ScrollArea::vertical()
             .id_salt("studio_object_list")
-            .max_height(430.0)
+            .max_height(260.0)
             .show(&mut columns[0], |ui| {
                 for object in &snapshot.objects {
                     let label = if object.name.is_empty() {
@@ -814,6 +820,147 @@ fn draw_studio(ui: &mut egui::Ui, snapshot: Option<&StudioSnapshot>, outputs: &m
             }
         }
     });
+}
+
+/// Material gallery: pick a game, filter its meshes, add one at a time.
+fn draw_gallery(
+    ui: &mut egui::Ui,
+    snapshot: &StudioSnapshot,
+    state: &mut PanelState,
+    outputs: &mut PanelOutputs,
+) {
+    let catalog = &snapshot.catalog;
+    egui::CollapsingHeader::new(RichText::new("Add object").strong())
+        .id_salt("studio_gallery")
+        .default_open(true)
+        .show(ui, |ui| {
+            if catalog.games.is_empty() {
+                ui.label(
+                    RichText::new("No installed game data found (games root / profiles).")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+                return;
+            }
+            if state.studio_game.is_empty() {
+                if let Some(game) = &catalog.game {
+                    state.studio_game = game.clone();
+                }
+            }
+            let mut browse = false;
+            ui.horizontal(|ui| {
+                let current = catalog
+                    .games
+                    .iter()
+                    .find(|game| game.key == state.studio_game)
+                    .map_or("Choose a game…", |game| game.name.as_str());
+                egui::ComboBox::from_id_salt("studio_gallery_game")
+                    .selected_text(current)
+                    .width(170.0)
+                    .show_ui(ui, |ui| {
+                        for game in &catalog.games {
+                            if ui
+                                .selectable_label(game.key == state.studio_game, &game.name)
+                                .clicked()
+                                && game.key != state.studio_game
+                            {
+                                state.studio_game = game.key.clone();
+                                browse = true;
+                            }
+                        }
+                    });
+                browse |= ui
+                    .add(
+                        egui::TextEdit::singleline(&mut state.studio_filter)
+                            .hint_text("filter, e.g. clutter bottle")
+                            .desired_width(220.0),
+                    )
+                    .changed();
+            });
+            if browse && !state.studio_game.is_empty() {
+                state.studio_pick = None;
+                outputs.studio_commands.push(StudioCommand::BrowseCatalog {
+                    game: state.studio_game.clone(),
+                    filter: state.studio_filter.clone(),
+                });
+            }
+
+            if let Some(game) = &catalog.game {
+                ui.label(
+                    RichText::new(format!(
+                        "{} shown · {} matching · {} meshes",
+                        catalog.page.matches.len(),
+                        catalog.page.total_matches,
+                        catalog.total_assets
+                    ))
+                    .small()
+                    .color(Color32::GRAY),
+                );
+                let mut add: Option<String> = None;
+                egui::ScrollArea::vertical()
+                    .id_salt("studio_gallery_matches")
+                    .max_height(150.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for path in &catalog.page.matches {
+                            let picked = state.studio_pick.as_deref() == Some(path.as_str());
+                            let response = ui.selectable_label(picked, path);
+                            if response.clicked() {
+                                state.studio_pick = Some(path.clone());
+                            }
+                            if response.double_clicked() {
+                                add = Some(path.clone());
+                            }
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            state.studio_pick.is_some(),
+                            egui::Button::new("Add to room"),
+                        )
+                        .clicked()
+                    {
+                        add = state.studio_pick.clone();
+                    }
+                    ui.label(RichText::new("double-click a row to add it").small());
+                });
+                if let Some(path) = add {
+                    outputs.studio_commands.push(StudioCommand::AddAsset {
+                        game: game.clone(),
+                        path,
+                    });
+                }
+            }
+
+            if !snapshot.assets.is_empty() {
+                ui.add_space(4.0);
+                ui.label(RichText::new("In the room").strong());
+                for asset in &snapshot.assets {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Remove").clicked() {
+                            outputs
+                                .studio_commands
+                                .push(StudioCommand::RemoveAsset(asset.id));
+                        }
+                        ui.label(
+                            RichText::new(format!(
+                                "{} · {} ({} objects)",
+                                asset.game, asset.path, asset.object_count
+                            ))
+                            .small(),
+                        );
+                    });
+                }
+                if ui.button("Clear room").clicked() {
+                    outputs.studio_commands.push(StudioCommand::ClearAssets);
+                }
+            }
+            if let Some(status) = &snapshot.status {
+                ui.label(RichText::new(status).small().color(Color32::LIGHT_YELLOW));
+            }
+        });
+    ui.separator();
 }
 
 fn edit_vec3(ui: &mut egui::Ui, label: &str, value: &mut [f32; 3], speed: f64) -> bool {

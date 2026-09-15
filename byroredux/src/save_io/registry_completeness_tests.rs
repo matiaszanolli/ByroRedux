@@ -461,6 +461,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SoundArchiveProvider", "engine-wide --sounds-bsa archive handle(s) opened once at startup (EX-16 item 5 / #2372), same posture as FootstepConfig/WaterAudioConfig/ScriptProvider — audio assets are re-resolved, not gameplay save state"),
         ("Spinning", "demo-scene marker component, not present on any real gameplay content"),
         ("StudioSession", "editor-mode state for the `--studio` asset-preview/inspection host (SDK v0.1); ObjectId bindings and undo transforms describe a tooling session over loose NIF/asset content, never gameplay in a player save"),
+        ("StudioArchives", "the `--studio` material gallery's per-game archive providers and asset listings, opened on demand for a tooling session — re-openable from the game profiles, never gameplay save state"),
         ("SubtreeCache", "lazily-rebuilt animation subtree cache, invalidated alongside NameIndex (#278)"),
         ("TerrainTileSlot", "index into the renderer's per-frame GpuTerrainTile SSBO, rebuilt by the terrain-spawn path every load (#470)"),
         ("TerrainCellOrigin", "Y-up world XZ of the LAND tile's (row 0, col 0) vertex, recomputed from grid_x/grid_y by the terrain-spawn path every load (#4052) — same posture as its TerrainTileSlot sibling"),

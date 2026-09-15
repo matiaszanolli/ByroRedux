@@ -254,6 +254,13 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     register_component::<AnimatedSpecularColor>(registry, "AnimatedSpecularColor", vec!["0"]);
     register_component::<AnimatedEmissiveColor>(registry, "AnimatedEmissiveColor", vec!["0"]);
     register_component::<AnimatedShaderColor>(registry, "AnimatedShaderColor", vec!["0"]);
+    // Live UV scroll state: the observable proof that a shape's authored
+    // U/V offset controller (river whitewater, waterfall sheets) is running.
+    register_component::<AnimatedUvTransform>(
+        registry,
+        "AnimatedUvTransform",
+        vec!["offset", "scale", "rotation"],
+    );
 
     // Animation playback state (#486) — debug snapshots must capture
     // `reverse_direction` (ping-pong flip latch for `CycleType::Reverse`)

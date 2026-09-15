@@ -361,6 +361,14 @@ phys.census / phys.stats    → inspect nearby bodies and Rapier telemetry
 mat.list / mat.dump / mat.set → inspect and live-edit material state
 ragdoll                     → inspect or control an actor ragdoll
 
+# Studio material gallery (--studio)
+studio.games                → installed games the gallery can import from
+studio.find <game> [terms]  → open a game's archives, list meshes matching every term
+studio.add <game> <path>    → stand one asset on the floor beside the others; room refits
+studio.list                 → placed assets with IDs and world-space bounds
+studio.remove <id> / studio.clear → take assets back out (GPU refs reclaimed via unload_cell)
+studio.overlay <on|off>     → hide the Studio window so screenshots show only the room
+
 # Renderer and ownership integrity
 r.health                    → renderer health summary
 rt.integrity                → ray-tracing structure integrity checks

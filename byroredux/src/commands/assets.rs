@@ -946,9 +946,7 @@ mod tex_missing_tests {
         world.insert(
             e2,
             Material {
-                texture_path: Some(
-                    "setdressing/wallconsoles/wallconsole01_sm_d_n.dds".to_string(),
-                ),
+                texture_path: Some("setdressing/wallconsoles/wallconsole01_sm_d_n.dds".to_string()),
                 ..Default::default()
             },
         );

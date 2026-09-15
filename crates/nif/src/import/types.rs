@@ -1525,6 +1525,219 @@ pub struct ImportedScene {
     pub lights: Vec<ImportedLight>,
 }
 
+impl ImportedScene {
+    /// Axis-aligned envelope of every finite mesh vertex, composed through
+    /// each mesh's parent-node chain into the space the scene's root node is
+    /// spawned into (renderer Y-up).
+    ///
+    /// The per-mesh bounding spheres only *enclose* geometry, so a floor
+    /// placed at a sphere's lowest point leaves the asset hovering; this is
+    /// the tight box a host needs to stand an asset on a surface. Skinned
+    /// meshes contribute their bind-pose positions. `None` when no mesh has
+    /// a finite vertex.
+    pub fn geometry_bounds(&self) -> Option<([f32; 3], [f32; 3])> {
+        let nodes: Vec<SceneTransform> = self
+            .nodes
+            .iter()
+            .map(|node| SceneTransform {
+                translation: node.translation,
+                rotation: node.rotation,
+                scale: node.scale,
+                parent: node.parent_node,
+            })
+            .collect();
+        compose_geometry_bounds(
+            &nodes,
+            self.meshes.iter().map(|mesh| {
+                (
+                    SceneTransform {
+                        translation: mesh.translation,
+                        rotation: mesh.rotation,
+                        scale: mesh.scale,
+                        parent: mesh.parent_node,
+                    },
+                    mesh.positions.as_slice(),
+                )
+            }),
+        )
+    }
+}
+
+/// Local TRS of one node or mesh plus its parent-node index.
+#[derive(Debug, Clone, Copy)]
+struct SceneTransform {
+    translation: [f32; 3],
+    rotation: [f32; 4],
+    scale: f32,
+    parent: Option<usize>,
+}
+
+/// Uniform-scale similarity transform, the shape every NIF node carries.
+#[derive(Debug, Clone, Copy)]
+struct Similarity {
+    translation: byroredux_core::math::Vec3,
+    rotation: byroredux_core::math::Quat,
+    scale: f32,
+}
+
+impl Similarity {
+    const IDENTITY: Self = Self {
+        translation: byroredux_core::math::Vec3::ZERO,
+        rotation: byroredux_core::math::Quat::IDENTITY,
+        scale: 1.0,
+    };
+
+    fn local(transform: &SceneTransform) -> Self {
+        let rotation = byroredux_core::math::Quat::from_array(transform.rotation);
+        Self {
+            translation: byroredux_core::math::Vec3::from_array(transform.translation),
+            rotation: if rotation.length_squared() > 1e-12 {
+                rotation.normalize()
+            } else {
+                byroredux_core::math::Quat::IDENTITY
+            },
+            scale: transform.scale,
+        }
+    }
+
+    fn then(self, child: Self) -> Self {
+        Self {
+            translation: self.translation + self.rotation * (child.translation * self.scale),
+            rotation: self.rotation * child.rotation,
+            scale: self.scale * child.scale,
+        }
+    }
+
+    fn apply(self, point: byroredux_core::math::Vec3) -> byroredux_core::math::Vec3 {
+        self.translation + self.rotation * (point * self.scale)
+    }
+}
+
+fn compose_geometry_bounds<'a>(
+    nodes: &[SceneTransform],
+    meshes: impl Iterator<Item = (SceneTransform, &'a [[f32; 3]])>,
+) -> Option<([f32; 3], [f32; 3])> {
+    use byroredux_core::math::Vec3;
+    let mut resolved: Vec<Option<Similarity>> = vec![None; nodes.len()];
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    let mut found = false;
+    for (mesh, positions) in meshes {
+        let parent = match mesh.parent {
+            Some(index) => match node_to_root(nodes, index, &mut resolved) {
+                Some(parent) => parent,
+                None => continue,
+            },
+            None => Similarity::IDENTITY,
+        };
+        let transform = parent.then(Similarity::local(&mesh));
+        for position in positions {
+            let point = transform.apply(Vec3::from_array(*position));
+            if point.is_finite() {
+                min = min.min(point);
+                max = max.max(point);
+                found = true;
+            }
+        }
+    }
+    found.then(|| (min.to_array(), max.to_array()))
+}
+
+/// Root-space transform of node `index`, memoised in `resolved`. `None` for
+/// an out-of-range index or a parent cycle.
+fn node_to_root(
+    nodes: &[SceneTransform],
+    index: usize,
+    resolved: &mut [Option<Similarity>],
+) -> Option<Similarity> {
+    let mut chain = Vec::new();
+    let mut cursor = Some(index);
+    let mut base = Similarity::IDENTITY;
+    while let Some(current) = cursor {
+        if let Some(done) = *resolved.get(current)? {
+            base = done;
+            break;
+        }
+        if chain.len() > nodes.len() {
+            return None;
+        }
+        chain.push(current);
+        cursor = nodes[current].parent;
+    }
+    for &node in chain.iter().rev() {
+        base = base.then(Similarity::local(&nodes[node]));
+        resolved[node] = Some(base);
+    }
+    Some(base)
+}
+
+#[cfg(test)]
+mod geometry_bounds_tests {
+    use super::*;
+
+    fn transform(
+        translation: [f32; 3],
+        rotation: [f32; 4],
+        scale: f32,
+        parent: Option<usize>,
+    ) -> SceneTransform {
+        SceneTransform {
+            translation,
+            rotation,
+            scale,
+            parent,
+        }
+    }
+
+    #[test]
+    fn mesh_vertices_compose_through_the_parent_chain() {
+        let quarter_turn_y = [
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+        ];
+        let nodes = [
+            transform([0.0, 10.0, 0.0], [0.0, 0.0, 0.0, 1.0], 2.0, None),
+            transform([1.0, 0.0, 0.0], quarter_turn_y, 1.0, Some(0)),
+        ];
+        let positions = [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0]];
+        let mesh = transform([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0, Some(1));
+        let (min, max) =
+            compose_geometry_bounds(&nodes, std::iter::once((mesh, positions.as_slice()))).unwrap();
+        // Node 1 sits at x = 2 (parent scale 2). The quarter turn about +Y
+        // maps local +X to -Z, scaled by 2; local -Y stays -Y, scaled by 2.
+        let expect_min = [2.0, 8.0, -2.0];
+        let expect_max = [2.0, 10.0, 0.0];
+        for axis in 0..3 {
+            assert!((min[axis] - expect_min[axis]).abs() < 1e-5, "min {min:?}");
+            assert!((max[axis] - expect_max[axis]).abs() < 1e-5, "max {max:?}");
+        }
+    }
+
+    #[test]
+    fn broken_parent_links_and_non_finite_vertices_are_skipped() {
+        let nodes = [transform([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0, Some(0))];
+        let cyclic = transform([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0, Some(0));
+        let dangling = transform([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0, Some(7));
+        let rooted = transform([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0, None);
+        let finite = [[1.0, 2.0, 3.0]];
+        let nan = [[f32::NAN, 0.0, 0.0]];
+        let bounds = compose_geometry_bounds(
+            &nodes,
+            [
+                (cyclic, finite.as_slice()),
+                (dangling, finite.as_slice()),
+                (rooted, nan.as_slice()),
+            ]
+            .into_iter(),
+        );
+        assert!(bounds.is_none());
+        let bounds = compose_geometry_bounds(&nodes, std::iter::once((rooted, finite.as_slice())));
+        assert_eq!(bounds, Some(([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])));
+    }
+}
+
 /// A Havok ragdoll articulation, engine-native (Y-up, havok-scaled).
 ///
 /// `bodies` and `constraints` form a kinematic tree: each constraint

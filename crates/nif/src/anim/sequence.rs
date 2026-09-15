@@ -86,7 +86,15 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
                 }
             }
             "BSEffectShaderPropertyFloatController" | "BSLightingShaderPropertyFloatController" => {
-                if let Some(ch) = extract_float_channel(scene, cb, FloatTarget::ShaderFloat) {
+                let target = cb
+                    .controller_ref
+                    .index()
+                    .and_then(|idx| {
+                        scene.get_as::<crate::blocks::controller::BsShaderController>(idx)
+                    })
+                    .map(|c| float_target_from_shader_controller(c.kind))
+                    .unwrap_or(FloatTarget::ShaderFloat);
+                if let Some(ch) = extract_float_channel(scene, cb, target) {
                     float_channels.push((Arc::clone(&node_name), ch));
                 }
             }

@@ -840,6 +840,7 @@ impl ApplicationHandler for App {
         // `door.teleport` doesn't trample the transition's mid-load
         // state.
         self.step_debug_loads();
+        self.step_studio();
         self.step_upscaler_switch(event_loop);
 
         // M45.1 refinement — snapshot the player/camera pose now that the

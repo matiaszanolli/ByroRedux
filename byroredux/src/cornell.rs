@@ -101,10 +101,15 @@ pub(crate) fn setup_studio_room(
     let center = Vec3::from_array(fit.center);
     let room_center_y = fit.floor_y + fit.height * 0.5;
     let thickness = fit.wall_thickness;
-    let horizontal = builder.box_mesh([fit.half_width, thickness, fit.half_depth]);
-    let back = builder.box_mesh([fit.half_width, fit.height * 0.5, thickness]);
-    let side = builder.box_mesh([thickness, fit.height * 0.5, fit.half_depth]);
-    for (mesh, position, color, name) in [
+    let horizontal = [fit.half_width, thickness, fit.half_depth];
+    let back = [fit.half_width, fit.height * 0.5, thickness];
+    let side = [thickness, fit.height * 0.5, fit.half_depth];
+    // One mesh per slab, never shared between two entities: the Studio
+    // gallery rebuilds this room on every change and reclaims it through
+    // `unload_cell`, which drops one mesh reference per holder. A shared
+    // upload (refcount 1, two holders) would be released twice and keep its
+    // BLAS alive over a freed buffer.
+    for (half_extents, position, color, name) in [
         (
             horizontal,
             Vec3::new(center.x, fit.floor_y - thickness, center.z),
@@ -148,6 +153,7 @@ pub(crate) fn setup_studio_room(
             "studio_right_wall",
         ),
     ] {
+        let mesh = builder.box_mesh(half_extents);
         spawn_object(
             world,
             mesh,

@@ -112,6 +112,12 @@ pub struct PanelState {
     pub settings_filter: String,
     /// Bounded scrollback for the Console tab.
     pub console_history: Vec<String>,
+    /// Studio gallery: profile key chosen in the game picker.
+    pub studio_game: String,
+    /// Studio gallery: asset-path filter text.
+    pub studio_filter: String,
+    /// Studio gallery: highlighted asset path awaiting "Add to room".
+    pub studio_pick: Option<String>,
 }
 
 /// Cap on the Console tab's scrollback so a long debugging session
@@ -211,7 +217,12 @@ impl DebugUiState {
 
     /// Toggle the overlay. Idempotent.
     pub fn toggle(&mut self) {
-        self.visible = !self.visible;
+        self.set_visible(!self.visible);
+    }
+
+    /// Show or hide the overlay explicitly (scripted captures).
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
         if !self.visible {
             // Drop any stashed FullOutput so the renderer sees the
             // overlay as cleanly hidden — otherwise a one-frame

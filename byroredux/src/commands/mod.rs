@@ -30,6 +30,8 @@
 //!   (`phys.census`, `phys.stats`)
 //! - [`scene`] — scene / lighting / material / script state
 //!   (`light.*`, `door.teleport`, `script.activate`, `mat.*`, `ragdoll`)
+//! - [`studio`] — Studio material gallery (`studio.games`, `studio.find`,
+//!   `studio.add`, `studio.list`, `studio.remove`, `studio.clear`)
 
 mod actor_value;
 mod assets;
@@ -44,6 +46,7 @@ mod scene;
 // `commands`) can reuse `resolve_entity_name`'s canonical `Name ->
 // StringPool` acquisition order instead of re-deriving it.
 pub(crate) mod shared;
+mod studio;
 mod time;
 mod view;
 mod water;
@@ -59,6 +62,7 @@ use physics::*;
 use quest::*;
 use scene::*;
 use shared::*;
+use studio::*;
 use time::*;
 use view::*;
 use water::*;
@@ -135,6 +139,13 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(RagdollCommand);
     registry.register(PhysCensusCommand);
     registry.register(PhysStatsCommand);
+    registry.register(StudioGamesCommand);
+    registry.register(StudioFindCommand);
+    registry.register(StudioAddCommand);
+    registry.register(StudioListCommand);
+    registry.register(StudioRemoveCommand);
+    registry.register(StudioClearCommand);
+    registry.register(StudioOverlayCommand);
     // M45 — save/load (the matching `SaveRegistry` + `SaveState`
     // resources are installed alongside the command registry).
     registry.register(crate::save_io::SaveCommand);

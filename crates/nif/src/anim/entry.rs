@@ -149,6 +149,68 @@ fn net_of(block: &dyn crate::NiObject) -> Option<&crate::blocks::base::NiObjectN
     None
 }
 
+// The property block types `net_of` resolves. A controller chain hosted on
+// one of these animates the geometry that owns the property, never the
+// property itself — see `property_owner_names`.
+fn is_property_block(block: &dyn crate::NiObject) -> bool {
+    let any = block.as_any();
+    any.is::<crate::blocks::properties::NiMaterialProperty>()
+        || any.is::<crate::blocks::properties::NiTexturingProperty>()
+        || any.is::<crate::blocks::shader::BSLightingShaderProperty>()
+        || any.is::<crate::blocks::shader::BSEffectShaderProperty>()
+}
+
+// Property block index → names of every named node/shape referencing it,
+// through the Skyrim+ dedicated shader/alpha slots or the legacy
+// `NiAVObject` property list. A shared property yields one name per owner so
+// each owner's entity receives the channel.
+fn property_owner_names(scene: &NifScene) -> HashMap<usize, Vec<Arc<str>>> {
+    use crate::blocks::bs_geometry::BSGeometry;
+    use crate::blocks::node::NiNode;
+    use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
+    use crate::types::BlockRef;
+
+    let mut owners: HashMap<usize, Vec<Arc<str>>> = HashMap::new();
+    for block in &scene.blocks {
+        let any = block.as_any();
+        let (av, slots) = if let Some(s) = any.downcast_ref::<BsTriShape>() {
+            (&s.av, [s.shader_property_ref, s.alpha_property_ref])
+        } else if let Some(s) = any.downcast_ref::<NiTriShape>() {
+            (&s.av, [s.shader_property_ref, s.alpha_property_ref])
+        } else if let Some(g) = any.downcast_ref::<BSGeometry>() {
+            (&g.av, [g.shader_property_ref, g.alpha_property_ref])
+        } else if let Some(n) = any.downcast_ref::<NiNode>() {
+            (&n.av, [BlockRef::NULL, BlockRef::NULL])
+        } else {
+            continue;
+        };
+        let Some(name) = av.net.name.as_ref() else {
+            continue;
+        };
+        for idx in slots
+            .iter()
+            .chain(av.properties.iter())
+            .filter_map(|r| r.index())
+        {
+            let names = owners.entry(idx).or_default();
+            if !names.contains(name) {
+                names.push(Arc::clone(name));
+            }
+        }
+    }
+    owners
+}
+
+// Clone the channels a walk appended past `from` onto another owner, so a
+// property shared by several shapes animates each of them.
+fn fan_out_channels<T: Clone>(channels: &mut Vec<(Arc<str>, T)>, from: usize, owner: &Arc<str>) {
+    let copies: Vec<(Arc<str>, T)> = channels[from..]
+        .iter()
+        .map(|(_, channel)| (Arc::clone(owner), channel.clone()))
+        .collect();
+    channels.extend(copies);
+}
+
 // Resolve the `NiTimeControllerBase` envelope for a controller block,
 // dispatching per known type at the same `.base` depth used by
 // `walk_controller_chain`'s `next_controller_ref` advance below — the
@@ -327,18 +389,38 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
     // produce duplicate channels.
     let mut seen_controllers = std::collections::HashSet::<usize>::new();
 
-    for block in &scene.blocks {
+    let property_owners = property_owner_names(scene);
+
+    for (block_idx, block) in scene.blocks.iter().enumerate() {
         let Some(net) = net_of(block.as_ref()) else {
             continue;
         };
         if net.controller_ref.is_null() {
             continue;
         }
-        let Some(node_name) = net.name.clone() else {
+        // Channels bind at runtime by entity `Name`, and entities are the
+        // scene-graph nodes and shapes — never property blocks. A controller
+        // hosted on a property animates the shape(s) that own the property.
+        // Skyrim's effect/lighting shader properties are also unnamed, so
+        // keying by the property's own name dropped every UV scroll on
+        // vanilla rapids, waterfall sheets, and creek foam.
+        let owners: Vec<Arc<str>> = if is_property_block(block.as_ref()) {
+            property_owners.get(&block_idx).cloned().unwrap_or_default()
+        } else {
             // Unnamed nodes can't receive animation at runtime — the
             // animation stack keys channels by FixedString(name).
+            net.name.clone().into_iter().collect()
+        };
+        let Some((node_name, other_owners)) = owners.split_first() else {
             continue;
         };
+        let node_name = Arc::clone(node_name);
+        let first_new = (
+            clip.float_channels.len(),
+            clip.color_channels.len(),
+            clip.bool_channels.len(),
+            clip.texture_flip_channels.len(),
+        );
 
         walk_controller_chain(scene, net.controller_ref, |ctrl_idx, ctrl_block, base| {
             if !seen_controllers.insert(ctrl_idx) {
@@ -495,14 +577,12 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                 }
                 "BSEffectShaderPropertyFloatController"
                 | "BSLightingShaderPropertyFloatController" => {
-                    let interp_idx = any
-                        .downcast_ref::<BsShaderController>()
-                        .and_then(|c| c.base.interpolator_ref.index());
-                    if let Some(idx) = interp_idx {
-                        if let Some(ch) =
-                            extract_float_channel_at(scene, idx, FloatTarget::ShaderFloat)
-                        {
-                            clip.float_channels.push((Arc::clone(&node_name), ch));
+                    if let Some(c) = any.downcast_ref::<BsShaderController>() {
+                        let target = float_target_from_shader_controller(c.kind);
+                        if let Some(idx) = c.base.interpolator_ref.index() {
+                            if let Some(ch) = extract_float_channel_at(scene, idx, target) {
+                                clip.float_channels.push((Arc::clone(&node_name), ch));
+                            }
                         }
                     }
                 }
@@ -650,6 +730,13 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                 }
             }
         });
+
+        for owner in other_owners {
+            fan_out_channels(&mut clip.float_channels, first_new.0, owner);
+            fan_out_channels(&mut clip.color_channels, first_new.1, owner);
+            fan_out_channels(&mut clip.bool_channels, first_new.2, owner);
+            fan_out_channels(&mut clip.texture_flip_channels, first_new.3, owner);
+        }
     }
 
     if !clip_has_data(&clip) {
