@@ -518,6 +518,26 @@ pub(crate) fn resolve_texture(
     resolve_texture_with_clamp(ctx, tex_provider, tex_path, 3)
 }
 
+/// `resolve_texture` for data textures — normal, noise, and flow maps whose
+/// texels are vectors, not colours. Uploads with a linear (UNORM) format so
+/// the GPU does not apply the sRGB decode curve: a flat tangent-space normal
+/// texel of 125/255 must read back as ≈0.49, not ≈0.21. Material normal slots
+/// already take this path through the per-role color-space table; this is the
+/// entry point for callers that resolve a single data texture directly.
+pub(crate) fn resolve_linear_texture(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    tex_path: Option<&str>,
+) -> u32 {
+    resolve_texture_with_clamp_and_color_space(
+        ctx,
+        tex_provider,
+        tex_path,
+        3,
+        TextureColorSpace::Linear,
+    )
+}
+
 /// `resolve_texture`'s clamp-aware variant (#610 / D4-NEW-02). Routes
 /// through the registry's per-`(path, clamp_mode)` cache so the same
 /// DDS path requested with two different `TexClampMode` values gets

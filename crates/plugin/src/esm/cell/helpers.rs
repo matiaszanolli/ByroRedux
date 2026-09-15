@@ -81,7 +81,7 @@ pub(super) fn xclw_water_height(data: &[u8]) -> Option<f32> {
 /// Returns `None` for a payload that is not a whole number of entries or
 /// whose velocity is non-finite.
 pub(super) fn xwcu_linear_velocity(data: &[u8]) -> Option<[f32; 3]> {
-    if data.len() < 16 || data.len() % 16 != 0 {
+    if data.len() < 16 || !data.len().is_multiple_of(16) {
         return None;
     }
     let float = |offset: usize| f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());

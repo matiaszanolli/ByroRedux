@@ -38,7 +38,7 @@ use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 use std::collections::HashMap;
 
-use crate::asset_provider::{resolve_texture, TextureProvider};
+use crate::asset_provider::{resolve_linear_texture, TextureProvider};
 use crate::components::{NormalMapHandle, WaterLodInfo, WaterNoiseMapHandles};
 use crate::streaming::LodWaterPlane;
 use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
@@ -603,7 +603,8 @@ pub(super) fn spawn_water_plane(
 }
 
 /// Resolve a WATR record's normal and noise texture paths into bindless
-/// handles on `material`. Each non-zero handle holds a registry refcount the
+/// handles on `material`. Both are vector data, so they upload linear — an
+/// sRGB decode tilts every flat texel by roughly 20°. Each non-zero handle holds a registry refcount the
 /// caller must pair with [`NormalMapHandle`] / [`WaterNoiseMapHandles`] so
 /// `unload_cell` releases it.
 ///
@@ -619,12 +620,12 @@ fn resolve_water_textures(
     noise_paths: &[Option<String>; 3],
 ) -> (u32, [u32; 3]) {
     let resolved_normal = normal_path
-        .map(|path| resolve_texture(ctx, tex_provider, Some(path)))
+        .map(|path| resolve_linear_texture(ctx, tex_provider, Some(path)))
         .unwrap_or(0);
     let mut resolved_noise = [0u32; 3];
     for (slot, path) in resolved_noise.iter_mut().zip(noise_paths) {
         if let Some(path) = path {
-            *slot = resolve_texture(ctx, tex_provider, Some(path.as_str()));
+            *slot = resolve_linear_texture(ctx, tex_provider, Some(path.as_str()));
         }
     }
     if resolved_normal != 0 {
@@ -934,28 +935,14 @@ pub(crate) fn spawn_lod_water_plane(
     // consumes `normal_texture_path` by value; see `spawn_water_plane`'s
     // sibling comment for the full rationale.
     let canonical_material_texture_path = normal_texture_path.clone();
-    let resolved_normal_idx = if let Some(path) = normal_texture_path {
-        resolve_texture(ctx, tex_provider, Some(path.as_str()))
-    } else {
-        0
-    };
-    let mut resolved_noise = [0u32; 3];
-    for (idx, path) in noise_texture_paths.into_iter().enumerate() {
-        if let Some(path) = path {
-            resolved_noise[idx] = resolve_texture(ctx, tex_provider, Some(path.as_str()));
-        }
-    }
     let mut material = material;
-    if resolved_normal_idx != 0 {
-        material.normal_map_index = resolved_normal_idx;
-    }
-    material.noise_map_indices = resolved_noise.map(|idx| {
-        if idx != 0 {
-            idx
-        } else {
-            material.normal_map_index
-        }
-    });
+    let (resolved_normal_idx, resolved_noise) = resolve_water_textures(
+        ctx,
+        tex_provider,
+        &mut material,
+        normal_texture_path.as_deref(),
+        &noise_texture_paths,
+    );
 
     let entity = world.spawn();
     world.insert(entity, Transform::IDENTITY);
@@ -1092,7 +1079,9 @@ mod tests {
         assert_eq!(plane.kind, WaterKind::River);
         assert_eq!(plane.material.source_form, 0x000E_717C);
         assert_eq!(plane.material.shader_flags, 0x00C4, "NIF gates are kept");
-        assert_eq!(flow, Some(watr_flow));
+        let flow = flow.expect("WATR current");
+        assert_eq!(flow.direction, watr_flow.direction);
+        assert_eq!(flow.speed, watr_flow.speed);
     }
 
     #[test]
@@ -1140,7 +1129,9 @@ mod tests {
             Some([3.0, 4.0, 0.0]),
         );
         assert_eq!(plane.kind, WaterKind::Waterfall);
-        assert_eq!(flow, Some(down));
+        let flow = flow.expect("waterfall flow");
+        assert_eq!(flow.direction, down.direction);
+        assert_eq!(flow.speed, down.speed);
     }
 
     // `resolve_water_material` (+ its WATR reflection-tint / default-tint
