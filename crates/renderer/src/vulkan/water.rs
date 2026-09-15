@@ -222,8 +222,11 @@ pub struct WaterDrawCommand {
     /// Mesh registry handle for the flat water quad (or per-cell
     /// shoreline-fit mesh — both work).
     pub mesh_handle: u32,
-    /// Instance buffer slot — must match the `gl_InstanceIndex`
-    /// emitted for this water entity's regular draw command.
+    /// Position of this water entity's regular draw command in
+    /// `draw_commands`. NOT an instance-buffer slot: the SSBO compacts out
+    /// draws whose mesh is not resident (and anything past `MAX_INSTANCES`),
+    /// so the slot must be resolved through the frame's `instance_map` with
+    /// [`water_instance_slot`] before it is used as `gl_InstanceIndex`.
     pub instance_index: u32,
     /// Material payload uploaded into this frame's compact water SSBO.
     pub params: GpuWaterParams,
@@ -255,6 +258,24 @@ pub fn water_commands_match_draw_slots(
             Some(dc) => dc.is_water && dc.mesh_handle == wc.mesh_handle,
             None => false,
         })
+}
+
+/// The instance-buffer slot the water pipeline must draw `wc` with, or
+/// `None` when its draw command has no slot this frame.
+///
+/// `instance_map[i]` is the single source of truth for draw `i`'s SSBO
+/// position (`acceleration::build_instance_map`, #419 / #2913): the SSBO
+/// skips every draw whose mesh is not in the registry. Using the raw
+/// `draw_commands` position instead made every water plane after such a
+/// skip read a later draw's `GpuInstance` — the wrong model matrix and
+/// material. At Riverwood (Tamriel 4,-11) the cell's own river plane
+/// vanished from its footprint while small water squares appeared on the
+/// mill props whose transforms it had borrowed, leaving the riverbed bare.
+pub fn water_instance_slot(wc: &WaterDrawCommand, instance_map: &[Option<u32>]) -> Option<u32> {
+    instance_map
+        .get(wc.instance_index as usize)
+        .copied()
+        .flatten()
 }
 
 /// Owns the water graphics pipeline + its layout.
@@ -1611,6 +1632,39 @@ mod tests {
     fn empty_water_commands_passes() {
         let draws = vec![make_draw_command(7, false)];
         assert!(water_commands_match_draw_slots(&[], &draws));
+    }
+
+    /// The SSBO compacts out a draw whose mesh is not resident, so a water
+    /// plane recorded after it at `draw_commands[3]` lives in slot 2. The
+    /// draw-position contract above still holds for this layout — which is
+    /// exactly why it could not catch the water pass drawing with slot 3
+    /// (the next draw's `GpuInstance`).
+    #[test]
+    fn water_slot_resolves_through_the_compacted_instance_map() {
+        let draws = vec![
+            make_draw_command(7, false),
+            make_draw_command(8, false), // mesh not resident → no slot
+            make_draw_command(9, false),
+            make_draw_command(42, true),
+            make_draw_command(10, false),
+        ];
+        let instance_map = [Some(0), None, Some(1), Some(2), Some(3)];
+        let water = water_cmd(42, 3);
+        assert!(water_commands_match_draw_slots(
+            std::slice::from_ref(&water),
+            &draws
+        ));
+        assert_eq!(water_instance_slot(&water, &instance_map), Some(2));
+    }
+
+    /// A water draw that received no slot (non-resident mesh, or past the
+    /// `MAX_INSTANCES` cap) and an index past the map both resolve to
+    /// `None` instead of borrowing a neighbour's instance.
+    #[test]
+    fn water_slot_is_none_without_an_instance_entry() {
+        let instance_map = [Some(0), None];
+        assert_eq!(water_instance_slot(&water_cmd(42, 1), &instance_map), None);
+        assert_eq!(water_instance_slot(&water_cmd(42, 5), &instance_map), None);
     }
 }
 

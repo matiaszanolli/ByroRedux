@@ -5,7 +5,7 @@
 //! unchanged from the pre-split `draw_frame`.
 
 use super::super::pipeline::{default_depth_compare_op, depth_compare_op, PipelineKey};
-use super::super::water::WaterDrawCommand;
+use super::super::water::{water_instance_slot, WaterDrawCommand};
 use super::draw::{group_state, needs_two_sided_blend_split, should_use_indirect_draws, DrawBatch};
 use super::{DrawCommand, VulkanContext};
 use ash::vk;
@@ -25,6 +25,7 @@ impl VulkanContext {
         batches: &[DrawBatch],
         draw_commands: &[DrawCommand],
         water_commands: &[WaterDrawCommand],
+        instance_map: &[Option<u32>],
     ) {
         // SAFETY: `cmd` is recording (begin_command_buffer succeeded above) and `framebuffers[frame]` / `render_pass` / pipeline layout + descriptor sets / global VB+IB are all live for this frame. `cmd_begin_render_pass` opens the pass; viewport/scissor/cull/depth dynamic state is set before any draw; all binds use the GRAPHICS bind point with the matching `pipeline_layout`; `cmd` is recorded by this thread only and `end_command_buffer` closes it. The fence wait at frame start guarantees no in-flight frame is still using this buffer or its bound resources.
         unsafe {
@@ -566,6 +567,13 @@ impl VulkanContext {
                             self.scene_buffers.descriptor_set(frame), // #1258 — set 1
                         );
                         for (water_index, wc) in water_commands.iter().enumerate() {
+                            // `wc.instance_index` is a `draw_commands`
+                            // position; the SSBO slot is its `instance_map`
+                            // entry. A plane whose draw got no slot this
+                            // frame has no model matrix to read — skip it.
+                            let Some(instance_slot) = water_instance_slot(wc, instance_map) else {
+                                continue;
+                            };
                             if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
                                 // #2505 / D12-2026-08-07-03 — no live path
                                 // registers a water plane global-only today
@@ -601,7 +609,7 @@ impl VulkanContext {
                                     cmd,
                                     water_index as u32,
                                     mesh.index_count,
-                                    wc.instance_index,
+                                    instance_slot,
                                 );
                             }
                         }

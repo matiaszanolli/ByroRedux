@@ -1896,9 +1896,6 @@ impl VulkanContext {
         self.frame_lights_scratch = frame_lights;
         self.gpu_instances_scratch = gpu_instances;
         self.previous_models_scratch = previous_models;
-        // #4193 — `instance_map`'s last readers (TLAS build, SSBO upload)
-        // are behind us, so it returns to its scratch here as well.
-        self.instance_map_scratch = instance_map;
 
         let cmd_t0 = Instant::now();
         self.record_geometry_pass(
@@ -1908,10 +1905,15 @@ impl VulkanContext {
             &batches,
             draw_commands,
             water_commands,
+            &instance_map,
         );
         // #3837 — last use of `batches`; hand it back before the three
         // `return Err` sites below (see the sibling note above).
         self.batches_scratch = batches;
+        // #4193 — `instance_map`'s last reader is the water pass inside the
+        // geometry pass (it resolves each plane's SSBO slot through it), so
+        // it returns to its scratch alongside `batches`.
+        self.instance_map_scratch = instance_map;
         // #3991 — the three tail `Err` sites each need `&mut self` for the
         // skin-state rollback, which cannot be taken inside their `unsafe`
         // blocks while the sync-object recovery holds a disjoint field borrow.
