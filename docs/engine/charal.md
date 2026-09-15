@@ -349,7 +349,8 @@ it is unwired.** `CharacterRulesProfile::OBLIVION` carries `ruleset: RulesetBuil
 Oblivion `CharacterRuleset` at load, and more fundamentally `Oblivion.esm` authors no `AVIF`
 records at all (the record type postdates Oblivion) — so a legacy actor-value index resolver
 is needed before wiring can even start, not just a `RulesetBuilder` arm (`docs/feature-matrix.md`'s
-"~ built, unwired" is the accurate summary; see #3170 for Skyrim's parallel unwired-ruleset gap).
+"~ built, unwired" is the accurate summary). Skyrim is no longer a parallel case:
+#3848 wired `RulesetBuilder::Skyrim`.
 
 The user-provided per-game **data tables**, by family — each slots directly into
 the struct above; **the canonical runtime never changes**:

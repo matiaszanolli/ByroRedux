@@ -349,9 +349,6 @@ Animation runtime tests live alongside the modules in
 - **Registry** — `add` / `get` / handle reuse.
 - **Stack blending** — `sample_blended_transform` applies `clip.weight`
   (#469); priority-aware blend.
-- **Controller** — `resolve_blend_time` rules and `apply_pending_transition`
-  (first-play zero blend, explicit/default duration, sync-group fallback,
-  unknown-sequence drop, last-write-wins catalog).
 - **Root motion** — `split_root_motion` vertical/horizontal partition.
 - **Text events** — forward crossing, loop wrap, empty clip.
 - **Inspect round-trip** (`feature = "inspect"`) — JSON snapshot recovery

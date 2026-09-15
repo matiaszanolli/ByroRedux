@@ -279,10 +279,10 @@ struct RosterCase {
     ///
     /// Not a second source of truth: for every case that *does* build a
     /// ruleset, the body below asserts the built `leveling` equals this
-    /// entry, so the table cannot drift away from the builders. For Skyrim,
-    /// where `build_ruleset` returns `None` (#3848), it is the only handle
-    /// on the model — and the only reason `fXPLevelUpBase` /
-    /// `fXPLevelUpMult` get any real-data coverage before that lands.
+    /// entry, so the table cannot drift away from the builders. Skyrim was
+    /// the case this field was added for — before #3848 wired its builder it
+    /// was the only handle on the model — and it is now checked like the
+    /// Fallout families.
     leveling: byroredux_core::character::LevelingModel,
     /// Vanilla Oblivion ships **no `AVIF` records at all** — TES4 predates the
     /// record type and hardwires actor-value indices in the engine (verified:
@@ -336,7 +336,14 @@ const ROSTER_CASES: &[RosterCase] = &[
         master: "Skyrim.esm",
         profile: byroredux_core::character::CharacterRulesProfile::SKYRIM,
         attributes: byroredux_core::character::AttributeSet::SKYRIM,
-        derived_rows: None,
+        // Light Armor Rating + Carry Weight. #3848 wired
+        // `RulesetBuilder::Skyrim`, so `build_ruleset` now returns `Some` and
+        // the `None` arm below would panic here before reaching Oblivion.
+        // The figure matches both `skyrim_ruleset_resolves_against_the_real_master`
+        // (the builder against the real AVIF table) and core's full-resolver
+        // `light_armor_rating_bonus_matches_uesp`; the GMST overlay changes
+        // the leveling model, not which derived rows resolve.
+        derived_rows: Some(2),
         leveling: byroredux_core::character::LevelingModel::SKYRIM,
         authors_actor_values: true,
     },
@@ -380,18 +387,15 @@ fn assert_rosters_resolve(case: &RosterCase) {
     // `LevelingModel::with_gmst` is the only consumer of authored GMSTs in
     // the whole engine, and its only caller is `build_ruleset`, *after* the
     // `RulesetBuilder` match. Skyrim is the one family whose model reads
-    // any GMST at all, and Skyrim's arm is `RulesetBuilder::None`, so
-    // `build_ruleset` returns before the overlay runs and
-    // `EsmIndex::game_setting_float` has no reachable production consumer.
-    // The load path parses 2,039 `GMST` records out of `Skyrim.esm` on
-    // every load and nothing reads them.
+    // any GMST at all. Before #3848 wired `RulesetBuilder::Skyrim`,
+    // `build_ruleset` returned before the overlay ran, so the 2,039 `GMST`
+    // records `Skyrim.esm` authors were parsed on every load and read by
+    // nothing.
     //
-    // That leaves the decode side — `GMST` float → `game_setting_float` →
-    // the overlay — fully plumbed and entirely unexercised against real
-    // data, so it would execute for the first time on the same commit that
-    // wires the builder (#3848). This asserts the decode now, independently
-    // of the wiring, so #3848 lands on a proven precondition instead of
-    // discovering a broken one.
+    // This assertion was written to prove the decode side — `GMST` float →
+    // `game_setting_float` → the overlay — against real data before that
+    // wiring landed. It stays independent of the builder so a decode
+    // regression is reported as one, not as a changed derived-row count.
     //
     // The setting names are not written down here: they are recovered from
     // `with_gmst` itself by handing it a recording probe, exactly as
@@ -487,9 +491,8 @@ fn assert_rosters_resolve(case: &RosterCase) {
                 .derived_row_len();
             // #3923 — where the builder *is* reachable, it settles what this
             // case's `leveling` entry claims, so the table cannot drift away
-            // from the models the builders actually attach. Skyrim has no
-            // such anchor until #3848 lands, which is exactly why its entry
-            // needed writing down.
+            // from the models the builders actually attach. Skyrim gained
+            // this anchor when #3848 wired its builder.
             assert_eq!(
                 ruleset.as_ref().unwrap().leveling,
                 case.leveling,
@@ -508,11 +511,10 @@ fn assert_rosters_resolve(case: &RosterCase) {
         }
         None => assert!(
             ruleset.is_none(),
-            "[{}] profile {} has no wired RulesetBuilder arm; if one landed \
-             (#3848), give this case its expected derived_rows — and note the \
-             GMST overlay above now runs for real for the first time, so a \
-             `derived_rows` figure measured before that is not the same \
-             number",
+            "[{}] profile {} has no wired RulesetBuilder arm; if one landed, \
+             give this case its expected derived_rows — measured with the GMST \
+             overlay active, since a figure taken before the arm existed is \
+             not the same number",
             case.label,
             case.profile.name()
         ),

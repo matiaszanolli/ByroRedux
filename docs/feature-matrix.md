@@ -83,7 +83,8 @@ FO4 humanoid actors are `~` because `character assets\skeleton.nif` is absent
 from vanilla FO4 BA2s (only `_1stperson` skeleton exists). `Inventory` +
 `EquipmentSlots` components still land; visible skinned geometry awaits a
 Havok `.hkx` loader for FO4's packfile layout (M41.x, Tier 5) — the
-`crates/hkx` reader that shipped covers Skyrim SE only.
+`crates/hkx` reader that shipped covers Skyrim only (the 2011 release's
+32-bit packfiles and Special Edition's 64-bit ones).
 
 AI / behavior is `~` (M42, Tier 7) — 7 of ~17 `PACK` procedures have a
 runtime, each opt-in behind its own `BYRO_*` env flag: Sandbox
@@ -91,15 +92,18 @@ runtime, each opt-in behind its own `BYRO_*` env flag: Sandbox
 (`BYRO_FOLLOW`), Escort (`BYRO_ESCORT`), Guard (`BYRO_GUARD`), and Patrol
 (`BYRO_PATROL`, aliases Wander's algorithm — no patrol-route data is decoded
 anywhere in this codebase). v0 scope limits apply across all seven: package
-selection is spawn-time-only (schedule + priority + CTDA conditions,
-evaluated once, no per-frame re-evaluation as game time advances), and none
-swap animation clips for locomotion (straight-line walk, ground-snapped,
-no NAVM pathing). The remaining 10 procedures (Find/Eat/Sleep/Accompany/
-UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) are parse-only —
-each blocked on a subsystem (item/furniture-use beyond Sandbox's seat-snap,
-magic, dialogue) that doesn't exist in the engine yet, or (UseWeapon) on
-`PACK` not yet driving the player-only P2 melee vertical slice (see
-Gameplay/Combat below). See
+selection (schedule + priority + CTDA conditions) runs at spawn and is
+re-evaluated once per in-game minute by `ambient_ai_package_system`
+(M42.9 / #2652) — not per frame — and none swap animation clips for
+locomotion. Their shared walk-to-point step routes through NAVM A*
+(`byroredux/src/systems/navmesh_path.rs`, #2372). The remaining 10
+procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/
+CastMagic/Dialogue/UseWeapon) are parse-only — each blocked on a subsystem
+(item/furniture-use beyond Sandbox's seat-snap, magic, dialogue) that doesn't
+exist in the engine yet, or (UseWeapon) on `PACK` not yet driving combat:
+both the P2 melee slice and the MQ101 `npc_combat_ai_system` are
+player- or script-initiated, never package-selected (see Gameplay/Combat
+below). See
 [docs/engine/npc-spawn-ai-packages.md](engine/npc-spawn-ai-packages.md) for
 the full trace.
 
@@ -119,10 +123,11 @@ the full trace.
 | Particle animation (birth rate, grow/fade size) | ✓ | All |
 | Runtime morph updates (FaceGen) | ✗ | — spawn-time only |
 | UV scrolling (animated UV offset) | ✗ | — parsed, not rendered |
-| Havok `.hkx` skeleton + clip loader | ~ | Skyrim SE — see note |
+| Havok `.hkx` skeleton + clip loader | ~ | Skyrim LE + SE — see note |
 
 The `.hkx` row is `~` because `crates/hkx` (shipped 2026-08-01) reads
-Skyrim SE's 64-bit Havok 2010 packfiles: it decodes `hkaSkeleton` and
+Skyrim's Havok 2010 packfiles — Special Edition's 64-bit layout, and since
+`fb8173fe` (2026-09-14) the 2011 release's 32-bit one: it decodes `hkaSkeleton` and
 expands static / spline-compressed `hkaSplineCompressedAnimation`
 transform tracks, with no behavior-graph loading or execution. It is wired
 into the animation asset provider to install the MQ101 cart-idle catalog
@@ -215,11 +220,12 @@ capability on this route takes precedence over renderer polish.
 | P0 — door / `[E]` interaction | ✓ Closed 2026-08-10 | Camera-forward XTEL target → native `[E] Open` prompt → one bound E-key edge → canonical `ActivateEvent` → deferred cell-transition arrival. Smoke: [`p0-door-interaction.sh`](smoke-tests/p0-door-interaction.sh) |
 | P1 — reliable character control | ~ Core traversal gate passes; not closed | Movement/jump/sprint consumers share one once-per-frame `ActionState` snapshot; native Escape menu owns pause/focus/cursor transfer; settings-backed key rebinding. Gamepad physical sources remain open. Smoke: [`p1-character-traversal.sh`](smoke-tests/p1-character-traversal.sh) |
 | P2 — melee combat core | ✓ Landed 2026-08-16 | Skyrim race Health + signed ACBS offset → actor-owned bone ray hit → bound Attack edge → canonical `HitEvent` → layered Health damage → one `Dead`/AI-disable transition → the existing 18-body ragdoll. Deterministic weapon selection (highest authored damage, FormID tie-break); explicit 8-damage unarmed fallback. Core checkpoint, not P2 closure. Smoke: [`p2-melee-core.sh`](smoke-tests/p2-melee-core.sh) |
+| NPC combat AI (MQ101 slice) | ~ Landed 2026-09-13 | `Faction.SetEnemy` / `Actor.StartCombat` arm `AiCombatState`; `npc_combat_ai_system` chases its target in a straight line and strikes on cooldown through the same `HitEvent` → `combat_damage_system` pipeline as the player, with creature damage from `CreatureAttack`. Script-initiated only: no ambient hostility (`FactionRelations` is recorded but unread), ranged/magic attacks or attack animation |
 | Authored attack/hit/death animation + sound | ✗ | P2 remainder |
 | Corpse interaction / loot transfer | ✗ | P2 remainder |
 | Save → exit → reload continuity | ✓ | M45/M45.1 — atomic rotating slots, interior/exterior live reload, stable FormID delta overlay, player pose, typed preflight, corrupt-slot fallback and player notifications |
 
-Implementation: `byroredux/src/combat.rs` (melee vertical slice), `byroredux/src/interaction.rs` (Activate/E-key), `byroredux/src/systems.rs` + action-state consumers (movement).
+Implementation: `byroredux/src/combat.rs` (melee vertical slice), `byroredux/src/systems/combat_ai.rs` (NPC combat AI), `byroredux/src/interaction.rs` (Activate/E-key), `byroredux/src/systems.rs` + action-state consumers (movement).
 
 ---
 
@@ -248,18 +254,18 @@ scheduler registration), not just present as a buildable function.
 
 | Feature | Oblivion | FO3 | FNV | Skyrim SE | FO4 | FO76 | Starfield |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Ruleset wired (`CharacterRuleset`: derived-stat formulas + leveling model) | ~ built, unwired | ✓ | ✓ | ~ built, unwired | ✓ | ✗ | ✗ |
+| Ruleset wired (`CharacterRuleset`: derived-stat formulas + leveling model) | ~ built, unwired | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
 | NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ✓ Health+Magicka+Stamina | ✓ stored `PRPS`+`DNAM` | ~ stored, unverified | ~ stored, unverified |
 | Creature (`CREA`) actor-value population at spawn | ✗ `CREA.DATA` layout unsourced | ✓ SPECIAL + Health | ✓ SPECIAL + Health | n/a (no `CREA`) | n/a | n/a | n/a |
 | Runtime leveling (XP grant / level-up) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | Pool regen tick (Health/Magicka/Stamina) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 | Affliction tick (radiation/disease/addiction) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 
-`oblivion_ruleset()` (`crates/core/src/character/tes.rs`) and `skyrim_ruleset()`
-(`crates/core/src/character/skyrim.rs`) both build a real `CharacterRuleset`,
-but `CharacterRulesProfile::build_ruleset`'s `RulesetBuilder` enum has no
-Oblivion/Skyrim arm — both profiles map to `RulesetBuilder::None`, so neither
-ever reaches a live actor. FO76/Starfield have data captures
+`oblivion_ruleset()` (`crates/core/src/character/tes.rs`) builds a real
+`CharacterRuleset`, but `CharacterRulesProfile::OBLIVION` still maps to
+`RulesetBuilder::None`, so it never reaches a live actor. Skyrim's
+`skyrim_ruleset()` was wired by #3848 (`RulesetBuilder::Skyrim`), which also
+makes it the first family whose leveling model reads authored GMSTs at load. FO76/Starfield have data captures
 (`charal-fo76-ruleset.md`, `charal-starfield-ruleset.md`) but no ruleset
 builder at all; Starfield's is additionally blocked on its XP/level curve and
 category-spend thresholds being unpublished research (charal.md §9).
@@ -271,10 +277,11 @@ aggregate skills (Combat / Magic / Stealth) because FO3/FNV publish no `AVIF`
 they map onto and inventing one would be a guess. `DATA.Damage` is likewise
 not an actor value — it reaches the spawned entity as the dedicated
 `CreatureAttack` component instead (#3762), which `combat::attack_damage`
-would read in place of its flat unarmed baseline once a creature can be an
-aggressor. **Corrected (#4105):** no creature attacks today — the engine has
-exactly one `HitEvent` producer, always player-initiated — so the fix makes
-the value available rather than correcting a live symptom.
+reads in place of its flat unarmed baseline when a creature is the
+aggressor. Since `f61ea044` that can happen: `npc_combat_ai_system` is a
+second `HitEvent` producer beside the player's melee, so a creature that a
+script arms with `Actor.StartCombat` strikes for its authored damage.
+Nothing arms combat ambiently, though, so most creatures still never attack.
 
 Skyrim's NPC population derives Health, Magicka and Stamina, each
 independently from its own `RACE.DATA` starting value plus its own signed
@@ -304,7 +311,7 @@ is not registered in the scheduler at all.
 | Starfield CDB material system (`materialsbeta.cdb`) | ✓ Phase 1 |
 | XCLL 108-byte interior lighting (volumetric height-fog model) | ✓ |
 | Static-trimesh collider synthesize from render geometry | ✓ |
-| `.hkx` animation skeleton | ✗ — `crates/hkx` reads Skyrim SE's Havok 2010 packfiles only, not Starfield's layout |
+| `.hkx` animation skeleton | ✗ — `crates/hkx` reads Skyrim's (LE + SE) Havok 2010 packfiles only, not Starfield's layout |
 
 ---
 
@@ -321,10 +328,10 @@ is not registered in the scheduler at all.
 | Havok `.hkx` loader (FO4 / Starfield layouts) | FO4 humanoid actors; Starfield animation | M41.x (Tier 5) |
 | General NPC locomotion from `.hkx` | Skyrim actors animating outside the MQ101 cart-idle catalog | M41.x (Tier 5) |
 | `.btr` terrain normal maps | distant-terrain normal detail on Skyrim SE/FO4. Distance-based multi-band selection is **no longer a gap** — the four-level ladder shipped in #2371 and runs on every quad-based scheme, FO3/FNV included (#3508) | M35 |
-| Remaining `PACK` procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) + per-frame package re-evaluation | NPCs perform item-use/combat/magic/dialogue behaviors; packages react to game-time changes | M42 (Tier 7) |
+| Remaining `PACK` procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) | NPCs perform item-use/combat/magic/dialogue behaviors | M42 (Tier 7) |
 | Full Papyrus transpiler (M47.2) | Arbitrary script execution on real content (`.pex` recognizer slice shipped Session 51) | M47.2 (Tier 3) |
 | Script-extender compatibility layer verified against real mods | Confidence that SKSE-family mod scripts (StorageUtil / JContainers / ModEvent consumers) actually run. The layer *exists* — ~23.9k LOC, six provider families, tested in-crate — but no audit pass has exercised it against shipped mod content, so its real-world coverage is unmeasured, not zero and not proven (#3953) | M47.2 follow-up |
 | Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |
 | UV scroll animated materials | Animated terminals / displays | audited, not prioritised |
 | Per-material footsteps (FOOT) | Correct surface audio | M44 follow-up |
-| CHARAL: Oblivion/Skyrim rulesets built but unwired; regen + affliction ticks inert everywhere | Derived Health/AP/leveling formulas on Oblivion + Skyrim; passive Health/Magicka/Stamina regen and radiation/disease/addiction on all seven games | CHARAL (charal.md §8) |
+| CHARAL: Oblivion ruleset built but unwired; regen + affliction ticks inert everywhere | Derived Health/leveling formulas on Oblivion; passive Health/Magicka/Stamina regen and radiation/disease/addiction on all seven games | CHARAL (charal.md §8) |

@@ -131,7 +131,8 @@ not `UPDATE_AFTER_BIND`). **No new barriers, no `device_wait_idle`.**
 **GPU-confirmed:** `(2,-10) BleakfallsBarrowPath` loads clean ("92 entities, terrain
 BLAS 1/1"), 0 device-loss, recovers to 97–106 fps. The only residual hitch is a
 single ~200–290 ms `atw_post`-dominated frame on cell-load (synchronous per-cell
-upload cost, `MAX_CELLS_SPAWNED_PER_FRAME`) — GPU idle (`fence_wait=0`), nowhere
+upload cost, then bounded by the *MAX_CELLS_SPAWNED_PER_FRAME* cap, which has
+since been removed) — GPU idle (`fence_wait=0`), nowhere
 near the ~2 s watchdog; a separate perf item, not a fault.
 
 ### 0.3 Refuted alternatives (recorded so they aren't re-investigated)

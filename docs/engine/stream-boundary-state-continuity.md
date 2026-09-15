@@ -84,8 +84,8 @@ The `Seated.furniture: EntityId` problem generalizes: **any snapshot that
 might outlive the entities it references must store those references as
 FormIDs, and re-resolve them to live `EntityId`s at restore time — never
 store a raw `EntityId` across a despawn/respawn boundary.** This isn't a
-new idea to invent; it's the exact pattern `PersistentRefIndex`
-(`cell_loader::persistent_ref_index`) already demonstrates for a different
+new idea to invent; it's the exact pattern *PersistentRefIndex*
+(*cell_loader::persistent_ref_index*, since deleted in #3884) demonstrated for a different
 population (globally-persistent actors, resolved within `persistent_root`):
 an `O(1)`-after-rebuild `FormId → EntityId` map scoped to one cell root,
 invalidated when that root's content changes.
@@ -184,8 +184,9 @@ in this codebase gets (`crates/core/src/ecs/resources/ownership.rs`):
 
 1. **§3's ordinary-cell-root `FormId → EntityId` index** first — it's the
    one piece both C2's and item 4's fixes need, and it's buildable and
-   testable in isolation (mirrors `persistent_ref_index.rs`'s existing test
-   shape exactly: resolve/miss/cross-root-exclusion/rebuild/invalidate).
+   testable in isolation (mirrors the test shape the since-deleted
+   *persistent_ref_index.rs* used — resolve/miss/cross-root-exclusion/
+   rebuild/invalidate; that type was removed in #3884).
 2. **EX-14/15 item C2's reconcile half** next — smaller diff, higher
    confidence (compares identity, skips work; doesn't invent a new runtime
    state store), and real regression risk to already-working transition

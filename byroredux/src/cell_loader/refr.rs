@@ -328,12 +328,6 @@ impl RefrTextureOverlay {
             // `material.textures.base_color`. Mirrors that reference
             // implementation exactly (same field, same fill-first-wins
             // policy via `Self::fill`).
-            // #4287 / SF-2026-09-11-D9-02 — `base_texture` is BGEM's
-            // diffuse role; dropped here entirely pre-fix, unlike
-            // `merge_external_material`'s BGEM arm which forwards it into
-            // `material.textures.base_color`. Mirrors that reference
-            // implementation exactly (same field, same fill-first-wins
-            // policy via `Self::fill`).
             Self::fill(&mut self.diffuse, Some(bgem.base_texture.as_str()), pool);
             Self::fill(&mut self.normal, Some(bgem.normal_texture.as_str()), pool);
             Self::fill(&mut self.glow, Some(bgem.glow_texture.as_str()), pool);

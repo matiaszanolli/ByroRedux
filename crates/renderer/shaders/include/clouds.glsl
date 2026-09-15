@@ -53,8 +53,9 @@
 
 #include "include/medium_transport.glsl"
 
-// CLOUD_LAYER_BOTTOM / _TOP / _PLANET_RADIUS / _VIEW_STEPS / _LIGHT_STEPS
-// come from the `#include`d `shader_constants.glsl`, generated from
+// CLOUD_LAYER_BOTTOM / _TOP / _PLANET_RADIUS / _LIGHT_STEPS and
+// CLOUD_CHEAP_SAMPLES_ZENITH / _HORIZON (the adaptive view march's sample
+// budget) come from the `#include`d `shader_constants.glsl`, generated from
 // `src/shader_constants_data.rs` — which is where their values and the
 // reasoning behind them are documented. Do not redeclare them here.
 
@@ -230,8 +231,9 @@ float cloud_shell_distance(vec3 dir, float height, float shell) {
 // passes 0.5 (step-centred, deterministic): the cube is re-baked each frame
 // and reflections have no temporal filter of their own, so a varying offset
 // would flicker there. The composite background passes a per-pixel,
-// per-frame blue-noise rank, which TAA / FSR integrate, so 48 steps do not
-// band.
+// per-frame blue-noise rank, which TAA / FSR integrate, so the adaptive
+// march's sample budget (CLOUD_CHEAP_SAMPLES_ZENITH at the zenith up to
+// CLOUD_CHEAP_SAMPLES_HORIZON at the horizon) does not band.
 vec4 cloud_march(
     SkyDome dome,
     vec3 dir,

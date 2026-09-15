@@ -113,7 +113,7 @@ scripting systems in this order:
    `recurring_update_tick_system` count down their components and emit
    `TimerExpired` / `OnUpdateEvent` markers.
 2. **Handler systems** (exclusive, Update stage): the `papyrus_demo` dispatchers
-   — `rumble_on_activate_system`, `quest_advance_on_activate_system`,
+   — `rumble_on_activate_system`, `quest_advance_system`,
    `dlc2_ttr4a_on_init_system`, `dlc2_ttr4a_on_update_system`,
    `mg07_on_load_system`, `mg07_on_activate_system` — plus the `rumble_tick_system`
    and `mg07_tick_system` continuations. They read event markers + script-state
@@ -597,7 +597,7 @@ EndEvent
 ```
 
 ECS (illustrative; cf. `rumble_on_activate_system` /
-`quest_advance_on_activate_system`):
+`quest_advance_system`):
 ```rust
 fn activator_on_activate(world: &World) {
     let Some(events) = world.query::<ActivateEvent>() else { return };

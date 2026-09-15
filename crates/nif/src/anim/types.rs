@@ -165,13 +165,11 @@ pub struct AnimationClip {
     pub frequency: f32,
     /// Phase offset within the cycle, as authored on
     /// `NiControllerSequence.Phase` (.kf clips) or the 2-bit-adjacent
-    /// `NiTimeControllerBase.phase` field (embedded controllers). #3097
-    /// — parsed and stored here; NOT yet consumed downstream. Wiring it
-    /// into playback (staggering same-mesh instances that should not
-    /// animate in lockstep) needs `AnimationPlayer` to seed its initial
-    /// elapsed time from this value, which is deferred follow-up: no
-    /// field for it exists yet on `byroredux_core`'s `AnimationClip` or
-    /// on `AnimationPlayer` itself.
+    /// `NiTimeControllerBase.phase` field (embedded controllers). Parsed
+    /// under #3097 and consumed since #3345: `AnimationPlayer::with_phase`
+    /// seeds a player's initial elapsed time from it at each spawn site
+    /// (`scene.rs`, `scene/nif_loader.rs`, `cell_loader/spawn.rs`), so
+    /// same-mesh instances do not animate in lockstep.
     pub phase: f32,
     /// Default weight from NiControllerSequence (0.0–1.0).
     pub weight: f32,

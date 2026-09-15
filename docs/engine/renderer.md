@@ -309,8 +309,9 @@ the allocator fires after the logical device has already been destroyed.
 13. Begin the main render pass into the HDR + G-buffer attachments. Instanced
     draw batching merges identical `mesh_handle` draws sharing pipeline /
     two-sided / layer state; the global geometry SSBO means no per-draw VB/IB
-    rebind — only push constants (`model_index`, `bone_offset`, `material_id`)
-    change per draw. After opaque + alpha-blend draws but before
+    rebind, and there are no per-draw push constants — `triangle.vert` reads
+    each draw's model matrix, bone offset and material index from the
+    instance SSBO through `gl_InstanceIndex`. After opaque + alpha-blend draws but before
     `cmd_end_render_pass`, the `WaterPipeline` records water-surface draws
     (depth write off, G-buffer attachments masked off so water never
     pollutes SVGF inputs).

@@ -629,7 +629,8 @@ render-pass / pipeline.
      world coords — verified to match the full-detail / terrain-LOD placement), so
      sub-meshes spawn directly at their import transform, no per-quad offset.
    - `byroredux/src/cell_loader/object_lod.rs`: pure quad addressing
-     (`quad_origin`, `bto_archive_path`, unit-tested against the real filenames)
+     (`object_lod_archive_path`, with `quad_origin` now shared from
+     `byroredux/src/cell_loader/lod_support.rs`; unit-tested against the real filenames)
      + `stream_object_lod_blocks` — a streaming ring (mirroring `terrain_lod`)
      that, for Skyrim/FO4 worldspaces, resolves
      `meshes\terrain\<world>\objects\<world>.<level>.<x>.<y>.bto` from the BSA,

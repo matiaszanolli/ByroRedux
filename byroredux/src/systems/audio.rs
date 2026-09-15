@@ -301,6 +301,10 @@ pub(crate) fn water_audio_system(world: &World, dt: f32) {
             std::sync::Arc::clone(&sound),
             position,
             byroredux_audio::Attenuation {
+                // Uncited: tighter than `Attenuation::default()`'s 2 m →
+                // 30 m because a splash is a near-surface sound, but no
+                // authored SOUN range or measured source backs 1 m → 24 m.
+                // Revisit if water audio gets per-material SOUN data.
                 min_distance: 1.0,
                 max_distance: 24.0,
             },
@@ -312,10 +316,14 @@ pub(crate) fn water_audio_system(world: &World, dt: f32) {
             audio_world.play_oneshot(
                 std::sync::Arc::clone(&sound),
                 position,
+                // Same uncited range as the splash above.
                 byroredux_audio::Attenuation {
                     min_distance: 1.0,
                     max_distance: 24.0,
                 },
+                // Uncited 0.45 damping: a wading ripple should read quieter
+                // than a direct splash from the same surface; the factor
+                // itself has no source.
                 (volume * intensity * 0.45).clamp(0.0, 1.0),
             );
             Some(surface)

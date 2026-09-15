@@ -11,12 +11,16 @@ use crate::ecs::storage::Component;
 /// there is no `WEAP` to equip and no `AVIF` this maps onto, so it is
 /// neither an [`crate::ecs::components::ActorValues`] entry nor an
 /// [`crate::ecs::components::EquippedWeapon`]. `CreatureStats::damage`
-/// carried it as far as the parser; this component makes it available to a
-/// future combat consumer. **Corrected (#4105 / D5-03):** no such consumer
-/// exists yet — the engine has exactly one `HitEvent` producer and it is
-/// always player-initiated, so creatures don't attack at all today. The
-/// 692 FNV / 186 FO3 creatures that author a non-zero damage aren't hitting
-/// for `combat.rs`'s flat `UNARMED_DAMAGE` baseline; nothing hits for them.
+/// carried it as far as the parser; this component makes it available to
+/// combat. `combat::attack_damage` reads it for a creature aggressor, and
+/// there are two `HitEvent` producers: the player's melee in `combat.rs`
+/// and `npc_combat_ai_system` (`byroredux/src/systems/combat_ai.rs`,
+/// `f61ea044`), which strikes for `attack_damage`'s value. A creature
+/// therefore hits for its authored damage once combat is armed on it — but
+/// combat is armed only by a script's `Actor.StartCombat`; there is no
+/// ambient hostility, so most of the 692 FNV / 186 FO3 creatures that author
+/// a non-zero damage never attack. (#4105 recorded the earlier state, when
+/// the player was the only producer.)
 ///
 /// Deliberately **not** an actor value: inventing an `AVIF` FO3/FNV do not
 /// publish would be a guess (the same reasoning that keeps `CreatureStats`'

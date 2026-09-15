@@ -27,17 +27,21 @@ parses end-to-end. Numbers from the
 `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`
 sweep against unmodded retail data; refreshed 2026-07-11 (#1900 / NIF-D3-02
 — the 2026-04-26/27 figures had gone stale-low by 2-4 points on every row
-but Fallout 3 / FNV / Skyrim SE).
+but Fallout 3 / FNV / Skyrim SE). Counts re-synced 2026-09-15 to
+[ROADMAP's compatibility matrix](../../ROADMAP.md#compatibility-matrix), which
+is the single home for these figures: the 2026-08-29 widening (#3466) put
+every mesh-bearing archive each game ships in the gate, and Oblivion's eight
+DLC archives joined on 2026-09-07 (#3925). Prefer that table over this one.
 
 | Game              | Archive            | NIF clean rate            | Recoverable | Notes |
 |-------------------|--------------------|---------------------------|-------------|-------|
-| Oblivion          | BSA v103           | **100%** (8 032 / 8 032) | 100%        | `#687` recovered 83 truncations (NiGeomMorpherController + NiControllerSequence Phase). The corrupt-by-design debug marker (#698) is closed and no longer a hard failure. The 6 v3.3.0.13 NetImmerse-era marker files (`meshes/marker_*.nif`) no longer truncate as of the 2026-08-19 baseline regen (#3082). |
-| Fallout 3         | BSA v104           | **100%** (10 989)         | 100%        | — |
-| Fallout New Vegas | BSA v104           | **100%** (14 881)         | 100%        | Reference title — most engine features shipped against FNV first. |
-| Skyrim SE         | BSA v105 (LZ4)     | **100%** (18 862)         | 100%        | — |
-| Fallout 4         | BA2 BTDX v1/v7/v8  | **100%** (34 995 + 124 871 MeshesExtra) | 100% | FaceGen truncation tail resolved (#1457, 2026-06-14). |
-| Fallout 76        | BA2 BTDX v1 GNRL   | **100%** (58 469)         | 100%        | — |
-| Starfield         | BA2 BTDX v2/v3 LZ4 | **99.99%** aggregate      | 100%        | Per-archive (all 5): Meshes01 100% (31 058), Meshes02 100% (7 552), MeshesPatch 99.98% (29 849), LODMeshes 100% (19 535), FaceMeshes 100% (1 282). MeshesPatch's populated-`BSWeakReferenceNode` truncation tail (was 325/29 849, mis-attributed to closed #746/#747) fixed by #2105 — an undocumented 2-byte field between the weak-ref array and `unkInt1`, gated on the same `bsver >= SF_FORM_ID` threshold as the per-entry `formID`. A residual 6/29 849 files with a distinct, still-unexplained cause remain truncated. |
+| Oblivion          | BSA v103           | **100%** (9 612 / 9 612) | 100%        | `#687` recovered 83 truncations (NiGeomMorpherController + NiControllerSequence Phase). The corrupt-by-design debug marker (#698) is closed and no longer a hard failure. The 6 v3.3.0.13 NetImmerse-era marker files (`meshes/marker_*.nif`) no longer truncate as of the 2026-08-19 baseline regen (#3082). |
+| Fallout 3         | BSA v104           | **100%** (17 172, 6 archives) | 100%    | — |
+| Fallout New Vegas | BSA v104           | **100%** (20 746, 11 archives) | 100%   | Reference title — most engine features shipped against FNV first. |
+| Skyrim SE         | BSA v105 (LZ4)     | **100%** (33 424, 7 archives) | 100%    | — |
+| Fallout 4         | BA2 BTDX v1/v7/v8  | **100%** (235 082, 8 archives) | 100%   | FaceGen truncation tail resolved (#1457, 2026-06-14). |
+| Fallout 76        | BA2 BTDX v1 GNRL   | **98.18%** (165 152 / 168 208) | 100%   | A 3 056-NIF truncation tail in the two `GeneratedMeshes` archives, which no gate opened before #3466. |
+| Starfield         | BA2 BTDX v2/v3 LZ4 | **99.98%** aggregate (120 524 / 120 543, 13 archives) | 100% | Per-archive figures are in ROADMAP's matrix. MeshesPatch's populated-`BSWeakReferenceNode` truncation tail (was 325/29 849, mis-attributed to closed #746/#747) fixed by #2105 — an undocumented 2-byte field between the weak-ref array and `unkInt1`, gated on the same `bsver >= SF_FORM_ID` threshold as the per-entry `formID`. A residual 6/29 849 files with a distinct, still-unexplained cause remain truncated. |
 
 The full multi-game sweep runs the seven `Game` variants in
 [`crates/nif/tests/common/mod.rs`](../../crates/nif/tests/common/mod.rs)
