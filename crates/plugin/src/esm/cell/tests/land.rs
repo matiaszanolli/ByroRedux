@@ -287,7 +287,10 @@ fn atxt_immediately_followed_by_another_atxt_flushes_the_first_with_no_alpha() {
          not a fabricated all-zero Vec"
     );
     assert_eq!(layers[1].ltex_form_id, 0x2222);
-    assert!(layers[1].alpha.is_some(), "the second ATXT still got its own VTXT");
+    assert!(
+        layers[1].alpha.is_some(),
+        "the second ATXT still got its own VTXT"
+    );
 }
 
 /// Regression for #4078, the end-of-record half: the LAST sub-record in a
@@ -303,7 +306,11 @@ fn atxt_as_the_final_sub_record_still_flushes() {
 
     let land = parse_synthetic_land(&[(b"ATXT", atxt)]);
     let layers = &land.quadrants[3].layers;
-    assert_eq!(layers.len(), 1, "a trailing ATXT with no VTXT must still surface");
+    assert_eq!(
+        layers.len(),
+        1,
+        "a trailing ATXT with no VTXT must still surface"
+    );
     assert_eq!(layers[0].ltex_form_id, 0x3333);
     assert!(layers[0].alpha.is_none());
 }

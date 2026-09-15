@@ -385,43 +385,16 @@ pub(super) fn spawn_water_plane(
     waters: &HashMap<u32, esm::records::misc::WatrRecord>,
     xclw_height: f32,
     xcwt_form: Option<u32>,
-    cell_water_velocity: Option<[f32; 3]>,
     cell_origin_world_xz: (f32, f32),
     half_extent: f32,
     terrain: Option<&esm::cell::LandscapeData>,
 ) -> Option<usize> {
     // ── Resolve WATR → engine WaterMaterial (EXAL boundary) ──
-    let (mut material, mut kind, mut flow, normal_texture_path, noise_texture_paths) =
+    // The plane's current comes from its WATR (`NAM0`). CELL-level `XWCU`
+    // is deliberately not a current source: its shipped entries carry no
+    // velocity (see the plugin's `xwcu_linear_velocity`).
+    let (mut material, kind, flow, normal_texture_path, noise_texture_paths) =
         crate::env_translate::resolve_water_material(waters, xcwt_form);
-    // CELL.XWCU is a local current vector and takes precedence over the
-    // WATR-level synthesized current for this plane. Convert Gamebryo Z-up
-    // horizontal axes (X/Y) into renderer Y-up (X/Z) once at this boundary;
-    // cell planes are horizontal, so the source vertical component is not a
-    // current target for this path.
-    if let Some(cell_flow) = cell_water_flow(cell_water_velocity) {
-        // XWCU is an authored current on the cell, so it is stronger
-        // classification evidence than a neutral/localized WATR EDID. A
-        // calm WATR with a non-zero cell current must take a flow shader
-        // path (River or Rapids by speed); otherwise the flow reaches
-        // physics and UV scroll but the renderer suppresses its aligned foam
-        // response.
-        kind = kind_with_cell_flow(kind, cell_flow.speed);
-        material.foam_strength = kind.canonical_foam_strength();
-        // Keep the authored WATR layer motion, but add the cell-local
-        // current as a world-space UV bias so XWCU affects both physics and
-        // the visible surface rather than only drifting debris.
-        const CELL_CURRENT_UV_PER_BU_S: f32 = 0.0015;
-        let scroll = cell_flow.speed * CELL_CURRENT_UV_PER_BU_S;
-        let dx = cell_flow.direction[0] * scroll;
-        let dz = cell_flow.direction[2] * scroll;
-        material.scroll_a[0] += dx;
-        material.scroll_a[1] += dz;
-        material.scroll_b[0] += dx * 0.65;
-        material.scroll_b[1] += dz * 0.65;
-        material.scroll_c[0] += dx * 0.45;
-        material.scroll_c[1] += dz * 0.45;
-        flow = Some(cell_flow);
-    }
 
     let allocator = ctx.allocator.as_ref()?;
 
@@ -660,28 +633,6 @@ pub(super) fn spawn_water_plane(
     );
 
     Some(1)
-}
-
-/// Convert a CELL.XWCU Gamebryo velocity into the canonical renderer flow.
-/// X/Y are the horizontal Z-up axes; the source Z component is vertical and
-/// is intentionally ignored for horizontal cell planes.
-fn cell_water_flow(velocity: Option<[f32; 3]>) -> Option<WaterFlow> {
-    let [x, y, _z] = velocity?;
-    let speed = x.hypot(y);
-    (speed.is_finite() && speed > 1.0e-5).then(|| WaterFlow::new([x, 0.0, -y], speed))
-}
-
-#[inline]
-fn kind_with_cell_flow(kind: WaterKind, speed: f32) -> WaterKind {
-    if matches!(kind, WaterKind::Calm) && speed.is_finite() && speed > 1.0e-5 {
-        if speed >= WaterFlow::SPEED_RAPIDS {
-            WaterKind::Rapids
-        } else {
-            WaterKind::River
-        }
-    } else {
-        kind
-    }
 }
 
 /// Extra cushion (in cells) beyond `radius_unload` the LOD-water hole cuts
@@ -963,33 +914,6 @@ pub(super) fn exterior_half_extent() -> f32 {
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::water::{WaterKind, WaterMaterial};
-
-    #[test]
-    fn cell_water_velocity_converts_zup_horizontal_current() {
-        let flow = cell_water_flow(Some([3.0, 4.0, 99.0])).expect("non-zero XWCU");
-        assert_eq!(flow.direction, [0.6, 0.0, -0.8]);
-        assert_eq!(flow.speed, 5.0);
-    }
-
-    #[test]
-    fn zero_cell_water_velocity_keeps_watr_flow_fallback() {
-        assert!(cell_water_flow(Some([0.0, 0.0, 2.0])).is_none());
-        assert!(cell_water_flow(None).is_none());
-    }
-
-    #[test]
-    fn authored_cell_current_promotes_neutral_water_to_river_shader() {
-        assert_eq!(kind_with_cell_flow(WaterKind::Calm, 2.0), WaterKind::River);
-        assert_eq!(
-            kind_with_cell_flow(WaterKind::Calm, WaterFlow::SPEED_RAPIDS),
-            WaterKind::Rapids
-        );
-        assert_eq!(
-            kind_with_cell_flow(WaterKind::Rapids, 2.0),
-            WaterKind::Rapids
-        );
-        assert_eq!(kind_with_cell_flow(WaterKind::Calm, 0.0), WaterKind::Calm);
-    }
 
     // `resolve_water_material` (+ its WATR reflection-tint / default-tint
     // regressions for #1069) moved to the EXAL boundary in

@@ -67,6 +67,31 @@ pub(super) fn xclw_water_height(data: &[u8]) -> Option<f32> {
     }
 }
 
+/// Linear velocity from a REFR `XWCU` water-current array (Gamebryo Z-up).
+///
+/// `XWCU` is an array of 16-byte entries whose length is announced by the
+/// preceding `XWCN` count — not a single `vec3`. Censused over the installed
+/// masters (2026-09-14, `examples/water_current_census.rs`): every one of
+/// Skyrim.esm's 128 REFR payloads is `XWCN = 3` + 48 bytes, and entry 0's
+/// first three floats equal the placed water activator's WATR `NAM0` linear
+/// velocity (`Water1024RiverFlowNE` → `2.54, 1.35, 0`), with entries 1–2
+/// zero. Fallout 4 carries the same shape on 171 REFRs; FO3/FNV/Oblivion
+/// author none. Only entry 0 has verified semantics, so only it is read.
+///
+/// Returns `None` for a payload that is not a whole number of entries or
+/// whose velocity is non-finite.
+pub(super) fn xwcu_linear_velocity(data: &[u8]) -> Option<[f32; 3]> {
+    if data.len() < 16 || data.len() % 16 != 0 {
+        return None;
+    }
+    let float = |offset: usize| f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+    let velocity = [float(0), float(4), float(8)];
+    velocity
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(velocity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::xclw_water_height;

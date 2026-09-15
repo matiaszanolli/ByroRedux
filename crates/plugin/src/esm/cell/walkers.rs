@@ -216,7 +216,6 @@ fn parse_cell_group_inner(
                 let mut water_height_is_explicit = false;
                 let mut image_space_form: Option<u32> = None;
                 let mut water_type_form: Option<u32> = None;
-                let mut water_velocity: Option<[f32; 3]> = None;
                 let mut acoustic_space_form: Option<u32> = None;
                 let mut music_type_form: Option<u32> = None;
                 // #693 / O3-N-05 — pre-Skyrim XCMT (1-byte enum) and
@@ -303,17 +302,6 @@ fn parse_cell_group_inner(
                         // quest system had no per-cell context.
                         b"XCIM" => image_space_form = read_form_id(reader, &sub.data),
                         b"XCWT" => water_type_form = read_form_id(reader, &sub.data),
-                        b"XWCU" if sub.data.len() >= 12 => {
-                            let mut values = [0.0; 3];
-                            for (slot, bytes) in
-                                values.iter_mut().zip(sub.data.chunks_exact(4).take(3))
-                            {
-                                *slot = f32::from_le_bytes(bytes.try_into().unwrap());
-                            }
-                            if values.iter().all(|value| value.is_finite()) {
-                                water_velocity = Some(values);
-                            }
-                        }
                         // LTMP — lighting-template FormID (SK-D6-02 / #566).
                         // Same shape as the other 4-byte FormID slots; the
                         // cell loader walks `EsmIndex.lighting_templates`
@@ -651,7 +639,6 @@ fn parse_cell_group_inner(
                             water_height_is_explicit,
                             image_space_form,
                             water_type_form,
-                            water_velocity,
                             acoustic_space_form,
                             music_type_form,
                             music_type_enum,
@@ -1097,13 +1084,11 @@ fn parse_refr_group_inner(
                             flags,
                         });
                     }
-                    // XWCU — water-current velocity on a placed current
-                    // marker. The first three floats are the documented
-                    // Gamebryo X/Y/Z velocity; tolerate the trailing flags
-                    // bytes used by Skyrim-family records.
-                    b"XWCU" if sub.data.len() >= 12 => {
-                        let velocity = r.f32_array::<3>().unwrap_or([0.0; 3]);
-                        if velocity.iter().all(|value| value.is_finite()) {
+                    // XWCU — per-reference water current. Entry 0 of the
+                    // XWCN-counted 16-byte array is the linear velocity; see
+                    // `xwcu_linear_velocity` for the shipped-data evidence.
+                    b"XWCU" => {
+                        if let Some(velocity) = super::helpers::xwcu_linear_velocity(&sub.data) {
                             water_velocity = Some(velocity);
                         }
                     }
@@ -1270,11 +1255,13 @@ pub(crate) fn parse_land_record(
                 // quadrant flushes and clears rather than leaving a stale
                 // pending header for the next VTXT to wrongly attach to.
                 if let Some((pending_quadrant, pending_ltex, pending_layer)) = pending_atxt.take() {
-                    quadrants[pending_quadrant].layers.push(TerrainTextureLayer {
-                        ltex_form_id: pending_ltex,
-                        layer: pending_layer,
-                        alpha: None,
-                    });
+                    quadrants[pending_quadrant]
+                        .layers
+                        .push(TerrainTextureLayer {
+                            ltex_form_id: pending_ltex,
+                            layer: pending_layer,
+                            alpha: None,
+                        });
                 }
                 let mut r = SubReader::new(&sub.data);
                 let ltex_id = reader.remap_form_id(r.u32_or_default());

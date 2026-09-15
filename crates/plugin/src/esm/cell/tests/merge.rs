@@ -34,7 +34,6 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
         water_height_is_explicit: false,
         image_space_form: None,
         water_type_form: None,
-        water_velocity: None,
         acoustic_space_form: None,
         music_type_form: None,
         music_type_enum: None,
@@ -303,26 +302,6 @@ fn cross_plugin_delete_removes_a_base_master_exterior_refr() {
             .collect::<Vec<_>>(),
         vec![0x31],
         "deleted exterior REFR 0x30 is gone; untouched 0x31 survives"
-    );
-}
-
-#[test]
-fn merge_from_partial_override_inherits_cell_water_velocity() {
-    let mut master = EsmCellIndex::default();
-    let mut base = make_interior_cell(0x100, "CurrentPool");
-    base.water_velocity = Some([3.0, 4.0, 0.0]);
-    master.cells.insert("currentpool".into(), base);
-
-    let mut child = EsmCellIndex::default();
-    child.cells.insert(
-        "currentpool".into(),
-        make_interior_cell(0x100, "CurrentPool"),
-    );
-    master.merge_from(child);
-
-    assert_eq!(
-        master.cells["currentpool"].water_velocity,
-        Some([3.0, 4.0, 0.0])
     );
 }
 

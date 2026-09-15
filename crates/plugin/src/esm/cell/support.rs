@@ -377,7 +377,8 @@ fn parse_modl_group_inner(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, end, "parse_modl_group")
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub, depth, end, "parse_modl_group")
             else {
                 continue;
             };
@@ -423,7 +424,8 @@ fn parse_ltex_group_inner(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, end, "parse_ltex_group")
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub, depth, end, "parse_ltex_group")
             else {
                 continue;
             };
@@ -495,7 +497,8 @@ fn parse_txst_group_inner(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, end, "parse_txst_group")
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub, depth, end, "parse_txst_group")
             else {
                 continue;
             };
@@ -637,7 +640,8 @@ fn parse_scol_group_inner(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, end, "parse_scol_group")
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub, depth, end, "parse_scol_group")
             else {
                 continue;
             };
@@ -729,7 +733,8 @@ fn parse_pkin_group_inner(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, end, "parse_pkin_group")
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub, depth, end, "parse_pkin_group")
             else {
                 continue;
             };
@@ -813,7 +818,8 @@ fn parse_movs_group_inner(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, end, "parse_movs_group")
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub, depth, end, "parse_movs_group")
             else {
                 continue;
             };
@@ -892,7 +898,8 @@ fn parse_mswp_group_inner(
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
-            let Some(sub_end) = reader.bounded_group_content_end(&sub, depth, end, "parse_mswp_group")
+            let Some(sub_end) =
+                reader.bounded_group_content_end(&sub, depth, end, "parse_mswp_group")
             else {
                 continue;
             };

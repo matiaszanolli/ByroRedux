@@ -114,17 +114,52 @@ fn parse_one_refr_with_remap(record: &[u8], remap: crate::esm::reader::FormIdRem
 
 #[test]
 fn refr_xwcu_preserves_finite_water_velocity() {
+    // One 16-byte entry: velocity + a trailing word.
     let mut payload = Vec::new();
     for value in [3.0f32, 4.0, 9.0] {
         payload.extend_from_slice(&value.to_le_bytes());
     }
-    // Skyrim-family records append four flags bytes after the velocity.
     payload.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
     let refr = parse_one_refr(&build_refr_with_subs(
         0x1234,
         &[(b"XWCU", payload.as_slice())],
     ));
     assert_eq!(refr.water_velocity, Some([3.0, 4.0, 9.0]));
+}
+
+/// Vanilla Skyrim shape: `XWCN = 3` + a 48-byte `XWCU` whose entry 0 is the
+/// placed water activator's WATR `NAM0` (REFR 0010CB64 → `2.54, 1.35, 0`)
+/// and whose other two entries are zero. Only entry 0 is the velocity.
+#[test]
+fn refr_xwcu_reads_entry_zero_of_the_counted_array() {
+    let mut payload = Vec::new();
+    for value in [2.54f32, 1.35, 0.0, 0.0] {
+        payload.extend_from_slice(&value.to_le_bytes());
+    }
+    payload.extend_from_slice(&[0u8; 32]);
+    let refr = parse_one_refr(&build_refr_with_subs(
+        0x1234,
+        &[
+            (b"XWCN", 3u32.to_le_bytes().as_slice()),
+            (b"XWCU", payload.as_slice()),
+        ],
+    ));
+    assert_eq!(refr.water_velocity, Some([2.54, 1.35, 0.0]));
+}
+
+/// A payload that is not a whole number of 16-byte entries is malformed and
+/// must not fabricate a current from its leading bytes.
+#[test]
+fn refr_xwcu_rejects_partial_entries() {
+    let mut payload = Vec::new();
+    for value in [3.0f32, 4.0, 9.0] {
+        payload.extend_from_slice(&value.to_le_bytes());
+    }
+    let refr = parse_one_refr(&build_refr_with_subs(
+        0x1234,
+        &[(b"XWCU", payload.as_slice())],
+    ));
+    assert_eq!(refr.water_velocity, None);
 }
 
 /// #2906 / ESM-D3-01 — every FormID-bearing REFR field must cross the

@@ -819,14 +819,19 @@ fn world_children_group_cannot_overrun_its_top_level_parent() {
     // rest of the file the dispatcher still has to walk.
     let next_top = build_wrld_group(&[build_cell_record(
         0x0000_2001,
-        &[(b"EDID", b"NextGroupCell\0".to_vec()), (b"XCLC", xclc(1, 1))],
+        &[
+            (b"EDID", b"NextGroupCell\0".to_vec()),
+            (b"XCLC", xclc(1, 1)),
+        ],
     )]);
 
     let mut buf = top;
     buf.extend_from_slice(&next_top);
 
     let mut reader = EsmReader::new(&buf);
-    let gh = reader.read_group_header().expect("top-level WRLD group header");
+    let gh = reader
+        .read_group_header()
+        .expect("top-level WRLD group header");
     let end = reader.group_content_end(&gh);
     assert_eq!(end, top_len, "the top-level group's own size is honest");
 

@@ -231,11 +231,6 @@ pub struct CellData {
     /// an LTEX form on FNV/Oblivion). Selects the water material to
     /// use when rendering the plane at `water_height`.
     pub water_type_form: Option<u32>,
-    /// Per-cell water current from `XWCU` (Gamebryo X/Y/Z velocity).
-    /// The horizontal components are preserved in source coordinates so the
-    /// loader can convert them once at the renderer boundary. `None` means
-    /// the cell does not author a local current and the WATR fallback applies.
-    pub water_velocity: Option<[f32; 3]>,
     /// Acoustic space (XCAS, FormID — references an ASPC record).
     /// Drives reverb / occlusion presets for cell audio.
     pub acoustic_space_form: Option<u32>,
@@ -536,10 +531,12 @@ pub struct PlacedRef {
     /// presence). Applies to both doors and containers; `None` means
     /// unlocked / not applicable. See #3098.
     pub lock: Option<LockData>,
-    /// Authored local water-current velocity from the REFR `XWCU`
-    /// sub-record, in Gamebryo Z-up coordinates. Water-current marker
-    /// references use this alongside their placement bounds; `None` means
-    /// the reference does not author a local current.
+    /// Authored local water-current velocity from entry 0 of the REFR `XWCU`
+    /// array, in Gamebryo Z-up coordinates. Vanilla Skyrim authors it on
+    /// placed water activators, mirroring their WATR `NAM0`; current-marker
+    /// references use it alongside their placement bounds. `None` means the
+    /// reference does not author a local current. CELL-level `XWCU` is not
+    /// read: its shipped entries carry no velocity (see `xwcu_linear_velocity`).
     pub water_velocity: Option<[f32; 3]>,
 }
 
@@ -1373,9 +1370,6 @@ fn merge_cell_override(base: &CellData, over: &mut CellData) {
     if over.water_type_form.is_none() {
         over.water_type_form = base.water_type_form;
     }
-    if over.water_velocity.is_none() {
-        over.water_velocity = base.water_velocity;
-    }
     if over.acoustic_space_form.is_none() {
         over.acoustic_space_form = base.acoustic_space_form;
     }
@@ -1729,13 +1723,11 @@ mod plugin_loading_doc_pin_tests {
             "the field scan found only {fields:?} — the extraction broke, not the doc",
         );
 
-        let block_start = PLUGIN_LOADING_MD
-            .find("pub struct EsmCellIndex {")
-            .expect(
-                "plugin-loading.md must still carry the EsmCellIndex block — it is the \
+        let block_start = PLUGIN_LOADING_MD.find("pub struct EsmCellIndex {").expect(
+            "plugin-loading.md must still carry the EsmCellIndex block — it is the \
                  structured output of cell parsing and the doc's reason to exist for \
                  this tier (#4075)",
-            );
+        );
         let block = &PLUGIN_LOADING_MD[block_start..];
         let block = &block[..block.find("\n}").expect("the documented block must close")];
 
