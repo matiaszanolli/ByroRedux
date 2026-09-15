@@ -78,7 +78,19 @@ impl ApplicationHandler for App {
             return;
         }
 
-        let config = WindowConfig::default();
+        let mut config = WindowConfig::default();
+        match crate::cli_args::parse_window_size(&crate::cli_args::effective_args()) {
+            Ok(Some((width, height))) => {
+                config.width = width;
+                config.height = height;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                log::error!("Invalid --window-size: {error}");
+                event_loop.exit();
+                return;
+            }
+        }
 
         let win = match window::create_window(event_loop, &config) {
             Ok(w) => w,

@@ -67,6 +67,30 @@ pub fn parse_string_arg(args: &[String], flag: &str) -> Option<String> {
     matched
 }
 
+/// Parse `--window-size <width>x<height>` for deterministic capture runs.
+///
+/// The window remains 1280×720 unless this explicit CLI override is present.
+/// Keeping resolution in argv rather than compositor state makes visual
+/// baselines reproducible on both Wayland and headless runners.
+pub fn parse_window_size(args: &[String]) -> Result<Option<(u32, u32)>> {
+    let Some(spec) = parse_string_arg(args, "--window-size") else {
+        return Ok(None);
+    };
+    let Some((width, height)) = spec.split_once('x') else {
+        bail!("--window-size must be WIDTHxHEIGHT, got '{spec}'");
+    };
+    let width = width.parse::<u32>().map_err(|_| {
+        anyhow::anyhow!("--window-size width must be a positive integer, got '{width}'")
+    })?;
+    let height = height.parse::<u32>().map_err(|_| {
+        anyhow::anyhow!("--window-size height must be a positive integer, got '{height}'")
+    })?;
+    if width == 0 || height == 0 {
+        bail!("--window-size dimensions must be positive, got '{spec}'");
+    }
+    Ok(Some((width, height)))
+}
+
 /// Emit the one diagnostic that would have made the trap above self-evident.
 /// Split out so it can be tested without a live arg vector, and kept pure:
 /// it returns the message rather than deciding to log it.
@@ -283,6 +307,18 @@ mod tests {
 
         // A flag that simply is not present must not invent a diagnostic.
         assert_eq!(equals_form_diagnostic(&argv, "--grid"), None);
+    }
+
+    #[test]
+    fn window_size_is_explicit_and_validated() {
+        assert_eq!(
+            parse_window_size(&args(&["byroredux", "--window-size", "3840x2160"])).unwrap(),
+            Some((3840, 2160))
+        );
+        assert_eq!(parse_window_size(&args(&["byroredux"])).unwrap(), None);
+        for invalid in ["3840", "3840X2160", "0x720", "1280x0", "wide x720"] {
+            assert!(parse_window_size(&args(&["byroredux", "--window-size", invalid])).is_err());
+        }
     }
 
     /// Every mode must survive `Display` -> `parse_upscaler_spec`. The

@@ -22,6 +22,9 @@ bench_camera="${BYROREDUX_GROUNDCOVER_EVAL_BENCH_CAMERA:-static}"
 # short observation deadline can execute and retain each deterministic case
 # independently without copying its pose or invocation.
 case_filter="${BYROREDUX_GROUNDCOVER_EVAL_CASES:-}"
+# Optional native output resolution for projected-pixel LOD review.  Passed
+# directly to the engine so Wayland compositor scaling cannot change it.
+window_size="${BYROREDUX_GROUNDCOVER_EVAL_WINDOW_SIZE:-}"
 
 # These are renderer Y-up positions framing the established exterior smoke
 # cells. Keep overrides explicit so an audited pose change cannot silently
@@ -64,6 +67,14 @@ if [[ "${bench_camera}" != "static" ]]; then
     bench_mode="renderer-stepped"
     bench_camera_args=(--bench-camera "${bench_camera}")
 fi
+window_size_args=()
+if [[ -n "${window_size}" ]]; then
+    if [[ ! "${window_size}" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
+        echo "renderer-eval-groundcover: invalid window size '${window_size}' (expected WIDTHxHEIGHT)" >&2
+        exit 2
+    fi
+    window_size_args=(--window-size "${window_size}")
+fi
 
 mkdir -p "${output_root}"
 cargo build --manifest-path "${repo_root}/Cargo.toml" --release -p byroredux --bin byroredux
@@ -102,6 +113,7 @@ capture() {
         --fly --camera-pos "${pos}" --camera-forward "${forward}" \
         --bench-frames "${frames}" --bench-mode "${bench_mode}" \
         "${bench_camera_args[@]}" \
+        "${window_size_args[@]}" \
         --bench-groundcover-sampling --screenshot "${png}" >"${log}" 2>&1
 
     if [[ ! -s "${png}" ]]; then

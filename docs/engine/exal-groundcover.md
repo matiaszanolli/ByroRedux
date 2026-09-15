@@ -792,6 +792,11 @@ It shows a clean moving-camera frame rather than the green reprojection trail
 that the pre-motion-vector contract produced. This is a single end-of-pan
 artifact, not a substitute for the Step 6 wind clip.
 
+For projected-pixel LOD review, set
+`BYROREDUX_GROUNDCOVER_EVAL_WINDOW_SIZE=1920x1080` or `3840x2160`. The harness
+passes that exact native size as `--window-size`; it does not depend on Wayland
+compositor scaling.
+
 #### Wind review clip (2026-09-15)
 
 [`gc-wind-skyrim-pan-3s-c7c9900e6.mp4`](../audits/gc-wind-skyrim-pan-3s-c7c9900e6.mp4)
