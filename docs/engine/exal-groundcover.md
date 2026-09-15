@@ -783,6 +783,18 @@ case to an existing manifest so a bounded local runner can collect the exact
 same four fixed captures independently. With the variable unset, the harness
 still starts a fresh full-suite manifest.
 
+For the temporal acceptance path, set
+`BYROREDUX_GROUNDCOVER_EVAL_BENCH_CAMERA=pan`. The harness then selects
+`renderer-stepped`, which fixes simulation time at 1/60 s and drives the
+engine's deterministic pan instead of silently combining a moving camera with
+the static benchmark mode. The native-Wayland FNV backlit run at revision
+`fd0cd577c` completed 180 requested frames (182 rendered), with 8,467 blades,
+66 chunks and `truncated=0`; its final frame is retained as
+[`gc-backlit-fnv-pan-fd0cd577c.png`](../audits/gc-backlit-fnv-pan-fd0cd577c.png).
+It shows a clean moving-camera frame rather than the green reprojection trail
+that the pre-motion-vector contract produced. This is a single end-of-pan
+artifact, not a substitute for the Step 6 wind clip.
+
 1. **Terrain attribute sampling path — ANSWERED 2026-09-06 (#4052).** Both
    candidates were built and measured on real terrain. **Read the global vertex
    SSBO directly (path A). Do not bake an attribute texture.** And, for §4:

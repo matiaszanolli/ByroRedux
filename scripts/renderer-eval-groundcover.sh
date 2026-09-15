@@ -13,6 +13,10 @@ skyrim_data="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Sk
 output_root="${BYROREDUX_GROUNDCOVER_EVAL_OUT:-${repo_root}/target/renderer-eval-groundcover}"
 frames="${BYROREDUX_GROUNDCOVER_EVAL_FRAMES:-180}"
 runner="${BYROREDUX_RENDER_EVAL_RUNNER:-}"
+# Optional deterministic camera path for temporal acceptance captures.  The
+# normal reference suite stays static; a non-static path switches to the
+# fixed-dt renderer-stepped bench mode required by the engine.
+bench_camera="${BYROREDUX_GROUNDCOVER_EVAL_BENCH_CAMERA:-static}"
 # Optional comma-separated subset of the four stable case names.  The default
 # remains the full review suite; this exists so an external runner with a
 # short observation deadline can execute and retain each deterministic case
@@ -46,6 +50,19 @@ done
 if [[ ! "${frames}" =~ ^[1-9][0-9]*$ ]]; then
     echo "renderer-eval-groundcover: invalid frame count: ${frames}" >&2
     exit 2
+fi
+case "${bench_camera}" in
+    static|pan|orbit|dolly|cut|grid-cross|grid-soak) ;;
+    *)
+        echo "renderer-eval-groundcover: invalid bench camera '${bench_camera}'" >&2
+        exit 2
+        ;;
+esac
+bench_mode="renderer-static"
+bench_camera_args=()
+if [[ "${bench_camera}" != "static" ]]; then
+    bench_mode="renderer-stepped"
+    bench_camera_args=(--bench-camera "${bench_camera}")
 fi
 
 mkdir -p "${output_root}"
@@ -83,7 +100,8 @@ capture() {
         "$@" \
         --grid "${grid}" --radius 1 --wrld "${game}" \
         --fly --camera-pos "${pos}" --camera-forward "${forward}" \
-        --bench-frames "${frames}" --bench-mode renderer-static \
+        --bench-frames "${frames}" --bench-mode "${bench_mode}" \
+        "${bench_camera_args[@]}" \
         --bench-groundcover-sampling --screenshot "${png}" >"${log}" 2>&1
 
     if [[ ! -s "${png}" ]]; then
