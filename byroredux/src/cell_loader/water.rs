@@ -26,10 +26,12 @@
 //!
 //! Returns the number of water-plane entities spawned (0 or 1 today).
 
-use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane, WaterVolume};
+use byroredux_core::ecs::components::water::{
+    WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+};
 use byroredux_core::ecs::components::ParticleEmitter;
 use byroredux_core::ecs::components::RenderLayer;
-use byroredux_core::ecs::{GlobalTransform, MeshHandle, Transform, World};
+use byroredux_core::ecs::{Children, EntityId, GlobalTransform, MeshHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::vulkan::GpuUploadCtx;
@@ -440,38 +442,13 @@ pub(super) fn spawn_water_plane(
     // already use for populations with no source material record.
     let canonical_material_texture_path = normal_texture_path.clone();
 
-    // Texture resolve — the water material's normal_map_index points
-    // here. When the WATR record's TNAM is unset (e.g., default
-    // interior water with no XCWT), fall back to the canonical
-    // engine water normal map path.
-    let resolved_normal_idx = if let Some(path) = normal_texture_path {
-        resolve_texture(ctx, tex_provider, Some(path.as_str()))
-    } else {
-        // Empty path → resolve_texture returns 0 (placeholder), which
-        // the shader interprets as `u32::MAX` via floatBitsToUint —
-        // *but* we want the procedural fallback in that case. Encode
-        // u32::MAX directly into the material instead of letting it
-        // pass through the texture registry.
-        0
-    };
-
-    let mut resolved_noise = [0u32; 3];
-    for (idx, path) in noise_texture_paths.into_iter().enumerate() {
-        if let Some(path) = path {
-            resolved_noise[idx] = resolve_texture(ctx, tex_provider, Some(path.as_str()));
-        }
-    }
-
-    if resolved_normal_idx != 0 {
-        material.normal_map_index = resolved_normal_idx;
-    } // else material.normal_map_index stays at u32::MAX (default — triggers shader procedural)
-    material.noise_map_indices = resolved_noise.map(|idx| {
-        if idx != 0 {
-            idx
-        } else {
-            material.normal_map_index
-        }
-    });
+    let (resolved_normal_idx, resolved_noise) = resolve_water_textures(
+        ctx,
+        tex_provider,
+        &mut material,
+        normal_texture_path.as_deref(),
+        &noise_texture_paths,
+    );
 
     // ── Spawn the entity ──
     let position = Vec3::new(
@@ -504,17 +481,7 @@ pub(super) fn spawn_water_plane(
         entity,
         crate::material_translate::translate_texture_only_material(canonical_material_texture_path),
     );
-    let damage_per_second = xcwt_form
-        .and_then(|form| waters.get(&form))
-        .filter(|record| {
-            record
-                .water_flags
-                .or(record.legacy_flags)
-                .is_some_and(|flags| flags & 0x01 != 0)
-        })
-        .and_then(|record| record.legacy_damage)
-        .map(f32::from)
-        .unwrap_or(0.0);
+    let damage_per_second = watr_damage_per_second(waters, xcwt_form);
     world.insert(
         entity,
         WaterPlane {
@@ -633,6 +600,182 @@ pub(super) fn spawn_water_plane(
     );
 
     Some(1)
+}
+
+/// Resolve a WATR record's normal and noise texture paths into bindless
+/// handles on `material`. Each non-zero handle holds a registry refcount the
+/// caller must pair with [`NormalMapHandle`] / [`WaterNoiseMapHandles`] so
+/// `unload_cell` releases it.
+///
+/// An absent normal path leaves `normal_map_index` at `u32::MAX`, the
+/// shader's procedural-normal sentinel, rather than resolving to the
+/// registry's diagnostic placeholder (handle 0). Missing noise layers reuse
+/// the normal map.
+fn resolve_water_textures(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    material: &mut WaterMaterial,
+    normal_path: Option<&str>,
+    noise_paths: &[Option<String>; 3],
+) -> (u32, [u32; 3]) {
+    let resolved_normal = normal_path
+        .map(|path| resolve_texture(ctx, tex_provider, Some(path)))
+        .unwrap_or(0);
+    let mut resolved_noise = [0u32; 3];
+    for (slot, path) in resolved_noise.iter_mut().zip(noise_paths) {
+        if let Some(path) = path {
+            *slot = resolve_texture(ctx, tex_provider, Some(path.as_str()));
+        }
+    }
+    if resolved_normal != 0 {
+        material.normal_map_index = resolved_normal;
+    }
+    material.noise_map_indices = resolved_noise.map(|idx| {
+        if idx != 0 {
+            idx
+        } else {
+            material.normal_map_index
+        }
+    });
+    (resolved_normal, resolved_noise)
+}
+
+/// Damage per second a WATR record deals, from its hazard flag + legacy
+/// damage word. `0.0` when the record is absent or not a hazard.
+fn watr_damage_per_second(
+    waters: &HashMap<u32, esm::records::misc::WatrRecord>,
+    form: Option<u32>,
+) -> f32 {
+    form.and_then(|form| waters.get(&form))
+        .filter(|record| {
+            record
+                .water_flags
+                .or(record.legacy_flags)
+                .is_some_and(|flags| flags & 0x01 != 0)
+        })
+        .and_then(|record| record.legacy_damage)
+        .map(f32::from)
+        .unwrap_or(0.0)
+}
+
+/// Merge a placed water activator's WATR translation onto the mesh water its
+/// NIF produced. Pure so the precedence is testable without a device.
+///
+/// - Optics, colours, noise and tiling come from the WATR — Skyrim's
+///   `BSWaterShaderProperty` meshes carry no water parameters of their own.
+///   The NIF's authored reflection/refraction gates still apply.
+/// - A vertical sheet the NIF path classified as `Waterfall` keeps that kind
+///   and its downward flow; every other piece takes the WATR's kind.
+/// - The REFR's own `XWCU` velocity (entry 0, Gamebyro Z-up) wins over the
+///   WATR current; in vanilla the two are equal.
+fn merge_placed_water(
+    mesh: &WaterPlane,
+    mesh_flow: Option<WaterFlow>,
+    watr_material: WaterMaterial,
+    watr_kind: WaterKind,
+    watr_flow: Option<WaterFlow>,
+    damage_per_second: f32,
+    refr_velocity: Option<[f32; 3]>,
+) -> (WaterPlane, Option<WaterFlow>) {
+    let mut material = watr_material;
+    material.shader_flags = mesh.material.shader_flags;
+    crate::material_translate::apply_water_shader_flag_gates(&mut material);
+    if mesh.kind == WaterKind::Waterfall {
+        material.foam_strength = WaterKind::Waterfall.canonical_foam_strength();
+        let plane = WaterPlane {
+            kind: WaterKind::Waterfall,
+            material,
+            damage_per_second,
+        };
+        return (plane, mesh_flow);
+    }
+    let reference_flow = refr_velocity.and_then(|[x, y, _z]| {
+        let speed = x.hypot(y);
+        (speed.is_finite() && speed > 1.0e-5).then(|| WaterFlow::new([x, 0.0, -y], speed))
+    });
+    let plane = WaterPlane {
+        kind: watr_kind,
+        material,
+        damage_per_second,
+    };
+    (plane, reference_flow.or(watr_flow))
+}
+
+/// Give the mesh water spawned under `placement_root` the WATR named by its
+/// base activator's `WNAM`. Vanilla Skyrim builds its sloped rivers and
+/// streams from these (`Water1024RiverFlowNE`, `TundraStreamStraight01WaterA`
+/// → `CreekWaterFlow`); without this they rendered and behaved as generic
+/// NIF water with no colour, current, or noise of their own.
+///
+/// Returns the number of water entities updated.
+pub(super) fn apply_placed_water_type(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    waters: &HashMap<u32, esm::records::misc::WatrRecord>,
+    placement_root: EntityId,
+    water_form: u32,
+    refr_velocity: Option<[f32; 3]>,
+) -> usize {
+    if !waters.contains_key(&water_form) {
+        log::debug!("placed water type {water_form:08X} is not a WATR record; mesh water kept");
+        return 0;
+    }
+    let targets: Vec<(EntityId, WaterPlane, Option<WaterFlow>)> = {
+        let Some(planes) = world.query::<WaterPlane>() else {
+            return 0;
+        };
+        let children = world.query::<Children>();
+        let flows = world.query::<WaterFlow>();
+        let mut found = Vec::new();
+        let mut stack = vec![placement_root];
+        while let Some(entity) = stack.pop() {
+            if let Some(plane) = planes.get(entity) {
+                let flow = flows.as_ref().and_then(|q| q.get(entity)).copied();
+                found.push((entity, *plane, flow));
+            }
+            if let Some(kids) = children.as_ref().and_then(|q| q.get(entity)) {
+                stack.extend(kids.0.iter().copied());
+            }
+        }
+        found
+    };
+    if targets.is_empty() {
+        return 0;
+    }
+
+    let (watr_material, watr_kind, watr_flow, normal_path, noise_paths) =
+        crate::env_translate::resolve_water_material(waters, Some(water_form));
+    let damage_per_second = watr_damage_per_second(waters, Some(water_form));
+    for (entity, mesh, mesh_flow) in &targets {
+        let (mut plane, flow) = merge_placed_water(
+            mesh,
+            *mesh_flow,
+            watr_material,
+            watr_kind,
+            watr_flow,
+            damage_per_second,
+            refr_velocity,
+        );
+        let (normal, noise) = resolve_water_textures(
+            ctx,
+            tex_provider,
+            &mut plane.material,
+            normal_path.as_deref(),
+            &noise_paths,
+        );
+        world.insert(*entity, plane);
+        if let Some(flow) = flow {
+            world.insert(*entity, flow);
+        }
+        if normal != 0 {
+            world.insert(*entity, NormalMapHandle(normal));
+        }
+        if noise.iter().any(|&idx| idx != 0) {
+            world.insert(*entity, WaterNoiseMapHandles(noise));
+        }
+    }
+    targets.len()
 }
 
 /// Extra cushion (in cells) beyond `radius_unload` the LOD-water hole cuts
@@ -914,6 +1057,91 @@ pub(super) fn exterior_half_extent() -> f32 {
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::water::{WaterKind, WaterMaterial};
+
+    fn mesh_plane(kind: WaterKind, shader_flags: u32) -> WaterPlane {
+        WaterPlane {
+            kind,
+            material: WaterMaterial {
+                shader_flags,
+                ..WaterMaterial::default()
+            },
+            damage_per_second: 0.0,
+        }
+    }
+
+    fn watr(foam: f32) -> WaterMaterial {
+        WaterMaterial {
+            foam_strength: foam,
+            source_form: 0x000E_717C,
+            ..WaterMaterial::default()
+        }
+    }
+
+    #[test]
+    fn placed_water_takes_watr_optics_kind_and_current() {
+        let watr_flow = WaterFlow::new([0.883, 0.0, -0.469], 2.876);
+        let (plane, flow) = merge_placed_water(
+            &mesh_plane(WaterKind::Calm, 0x00C4),
+            None,
+            watr(WaterKind::River.canonical_foam_strength()),
+            WaterKind::River,
+            Some(watr_flow),
+            0.0,
+            None,
+        );
+        assert_eq!(plane.kind, WaterKind::River);
+        assert_eq!(plane.material.source_form, 0x000E_717C);
+        assert_eq!(plane.material.shader_flags, 0x00C4, "NIF gates are kept");
+        assert_eq!(flow, Some(watr_flow));
+    }
+
+    #[test]
+    fn placed_water_honours_the_nif_reflection_gate() {
+        // Flags 0x0084 = DEPTH | REFRACTIONS: no REFLECTIONS bit.
+        let (plane, _) = merge_placed_water(
+            &mesh_plane(WaterKind::Calm, 0x0084),
+            None,
+            watr(0.2),
+            WaterKind::River,
+            None,
+            0.0,
+            None,
+        );
+        assert_eq!(plane.material.effect_controls[2], 0.0);
+    }
+
+    #[test]
+    fn reference_current_overrides_the_watr_current() {
+        // REFR XWCU entry 0 in Gamebryo Z-up: X east, Y north.
+        let (_, flow) = merge_placed_water(
+            &mesh_plane(WaterKind::Calm, 0x00C4),
+            None,
+            watr(0.2),
+            WaterKind::River,
+            Some(WaterFlow::new([1.0, 0.0, 0.0], 1.0)),
+            0.0,
+            Some([3.0, 4.0, 0.0]),
+        );
+        let flow = flow.expect("reference current");
+        assert_eq!(flow.direction, [0.6, 0.0, -0.8]);
+        assert_eq!(flow.speed, 5.0);
+    }
+
+    #[test]
+    fn vertical_waterfall_sheet_keeps_its_kind_and_downward_flow() {
+        let down = WaterFlow::for_kind(WaterKind::Waterfall, [0.0, -1.0, 0.0]);
+        let (plane, flow) = merge_placed_water(
+            &mesh_plane(WaterKind::Waterfall, 0x00C4),
+            Some(down),
+            watr(0.2),
+            WaterKind::River,
+            Some(WaterFlow::new([1.0, 0.0, 0.0], 2.0)),
+            0.0,
+            Some([3.0, 4.0, 0.0]),
+        );
+        assert_eq!(plane.kind, WaterKind::Waterfall);
+        assert_eq!(flow, Some(down));
+    }
 
     // `resolve_water_material` (+ its WATR reflection-tint / default-tint
     // regressions for #1069) moved to the EXAL boundary in

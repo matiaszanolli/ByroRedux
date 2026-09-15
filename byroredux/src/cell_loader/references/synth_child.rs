@@ -714,6 +714,28 @@ pub(super) fn spawn_synth_child(
         mat_provider,
     );
     accum.entity_count += count;
+    // Skyrim's placed river/stream sections are activators whose `WNAM`
+    // names the WATR they render and behave as — the NIF only supplies the
+    // surface geometry and optical gates. The REFR's `XWCU` current is
+    // REFR-level data, so only the primary synthetic child carries it.
+    if let Some(water_form) = record_index
+        .activators
+        .get(&child_form_id)
+        .map(|acti| acti.water_type_form)
+        .filter(|form| *form != 0)
+    {
+        super::super::water::apply_placed_water_type(
+            world,
+            ctx,
+            tex_provider,
+            &record_index.waters,
+            placement_root,
+            water_form,
+            is_primary_synth
+                .then_some(placed_ref.water_velocity)
+                .flatten(),
+        );
+    }
     accum.packed_collision_fallbacks += spawn_stats.packed_collision_fallbacks;
     accum.unresolved_packed_collision += spawn_stats.unresolved_packed_collision;
     if is_primary_synth {

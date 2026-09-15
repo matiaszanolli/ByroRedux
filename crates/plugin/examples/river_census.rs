@@ -1,11 +1,11 @@
 //! Census how an exterior worldspace authors moving water: per-cell water
-//! height / WATR type / XWCU current, plus every placed reference whose model
+//! height / WATR type, plus every placed reference whose model
 //! is water geometry or a river / rapids / waterfall effect mesh.
 //!
 //! Evidence harness for WATAL W2 (rivers, rapids, falls). Answers, from
 //! shipped data rather than assumption: do descending rivers step the cell
-//! XCLW height, or ride on placed water meshes above it; how often XWCU is
-//! authored and at what magnitudes; and which effect meshes accompany them.
+//! XCLW height, or ride on placed water meshes above it; and which effect
+//! meshes accompany them. (Water-current arrays: `water_current_census.rs`.)
 //!
 //! Usage:
 //!   cargo run --release -p byroredux-plugin --example river_census -- <ESM> [WORLD_SUBSTR]
@@ -67,7 +67,6 @@ fn main() -> anyhow::Result<()> {
 
         let mut watr_hist: BTreeMap<String, usize> = BTreeMap::new();
         let mut explicit_heights: Vec<f32> = Vec::new();
-        let mut xwcu: Vec<((i32, i32), [f32; 3], String)> = Vec::new();
         // model path → (count, min z, max z, sum of (z - cell water height))
         let mut models: BTreeMap<String, (usize, f32, f32)> = BTreeMap::new();
         let mut cat_totals: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -83,9 +82,6 @@ fn main() -> anyhow::Result<()> {
                 if let Some(h) = cell.water_height {
                     explicit_heights.push(h);
                 }
-            }
-            if let Some(v) = cell.water_velocity {
-                xwcu.push((grid, v, watr.clone()));
             }
 
             let mut per_cat: HashMap<&'static str, Vec<f32>> = HashMap::new();
@@ -119,7 +115,7 @@ fn main() -> anyhow::Result<()> {
                 e.1 = e.1.min(z);
                 e.2 = e.2.max(z);
             }
-            if per_cat.is_empty() && cell.water_velocity.is_none() {
+            if per_cat.is_empty() {
                 continue;
             }
             let height = cell
@@ -145,12 +141,8 @@ fn main() -> anyhow::Result<()> {
                     format!("{k}×{} z[{lo:.0}..{hi:.0}]", zs.len())
                 })
                 .collect();
-            let vel = cell
-                .water_velocity
-                .map(|v| format!(" xwcu=[{:.1},{:.1},{:.1}]", v[0], v[1], v[2]))
-                .unwrap_or_default();
             rows.push(format!(
-                "  ({:>4},{:>4}) h={height} watr={watr}{vel}  {}  edid='{}'",
+                "  ({:>4},{:>4}) h={height} watr={watr}  {}  edid='{}'",
                 grid.0,
                 grid.1,
                 cat_text.join(" "),
@@ -174,30 +166,12 @@ fn main() -> anyhow::Result<()> {
                 .map(|h| h.round() as i32)
                 .collect::<Vec<_>>()
         );
-        println!("-- XWCU authored on {} cells", xwcu.len());
-        let mut speeds: Vec<f32> = xwcu
-            .iter()
-            .map(|(_, v, _)| (v[0] * v[0] + v[1] * v[1]).sqrt())
-            .collect();
-        speeds.sort_by(f32::total_cmp);
-        if !speeds.is_empty() {
-            let q = |p: f32| speeds[((speeds.len() - 1) as f32 * p) as usize];
-            println!(
-                "   horizontal |v|: min {:.2} p25 {:.2} p50 {:.2} p75 {:.2} max {:.2}; vertical nonzero on {}",
-                q(0.0),
-                q(0.25),
-                q(0.5),
-                q(0.75),
-                q(1.0),
-                xwcu.iter().filter(|(_, v, _)| v[2].abs() > 1e-4).count()
-            );
-        }
         println!("-- placed water/fx references by category: {cat_totals:?}");
         println!("-- per model (count, z range)");
         for (m, (n, lo, hi)) in &models {
             println!("  {n:>5}  z[{lo:>8.0} .. {hi:>8.0}]  {m}");
         }
-        println!("-- cells with XWCU or water/fx placements ({})", rows.len());
+        println!("-- cells with water/fx placements ({})", rows.len());
         for r in &rows {
             println!("{r}");
         }

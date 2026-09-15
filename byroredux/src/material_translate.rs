@@ -177,6 +177,33 @@ pub(crate) struct ResolvedPaths {
     pub source_base_color: Option<String>,
 }
 
+/// Apply the authored `BSWaterShaderProperty` optical gates carried in
+/// `water.shader_flags` to the compact canonical material. Shared by mesh
+/// water built from the NIF alone and by placed water whose optics come from
+/// a WATR record (`ACTI.WNAM`) but whose NIF still decides which lobes exist.
+///
+/// `BSWaterShaderProperty::WaterFlag` uses nif.xml's dedicated
+/// WaterShaderPropertyFlags vocabulary (bits 0..=13), not generic shader
+/// flags. The zero word remains the compatibility sentinel for the older
+/// field-less `WaterShaderProperty`. Reflection/refraction are the only
+/// optical gates this compact material currently exposes; other bits stay
+/// preserved in `shader_flags` for future consumers (#3152).
+pub(crate) fn apply_water_shader_flag_gates(water: &mut WaterMaterial) {
+    if water.shader_flags != 0 {
+        const REFLECTIONS: u32 = 1 << 6;
+        const REFRACTIONS: u32 = 1 << 7;
+        if water.shader_flags & REFLECTIONS == 0 {
+            water.effect_controls[2] = 0.0;
+        }
+        if water.shader_flags & REFRACTIONS == 0 {
+            // Positive/zero is the authored/default refraction-magnitude
+            // domain. A negative value is the compact canonical sentinel
+            // consumed by water.frag to skip the refraction ray entirely.
+            water.effect_controls[0] = -1.0;
+        }
+    }
+}
+
 /// Build the canonical water payload for a mesh-bound water shader. Legacy
 /// NIF water properties do not carry a WATR record, so they cannot use the
 /// cell-loader's full per-record translation; they still author optical
@@ -239,25 +266,7 @@ pub(crate) fn water_material_from_mesh(
     if material.uv_offset.iter().all(|value| value.is_finite()) {
         water.uv_offset = material.uv_offset;
     }
-    // `BSWaterShaderProperty::WaterFlag` uses nif.xml's dedicated
-    // WaterShaderPropertyFlags vocabulary (bits 0..=13), not generic shader
-    // flags. The zero word remains the compatibility sentinel for the older
-    // field-less `WaterShaderProperty`. Reflection/refraction are the only
-    // optical gates this compact material currently exposes; other bits stay
-    // preserved in `shader_flags` for future consumers (#3152).
-    if water.shader_flags != 0 {
-        const REFLECTIONS: u32 = 1 << 6;
-        const REFRACTIONS: u32 = 1 << 7;
-        if water.shader_flags & REFLECTIONS == 0 {
-            water.effect_controls[2] = 0.0;
-        }
-        if water.shader_flags & REFRACTIONS == 0 {
-            // Positive/zero is the authored/default refraction-magnitude
-            // domain. A negative value is the compact canonical sentinel
-            // consumed by water.frag to skip the refraction ray entirely.
-            water.effect_controls[0] = -1.0;
-        }
-    }
+    apply_water_shader_flag_gates(&mut water);
     water
 }
 
