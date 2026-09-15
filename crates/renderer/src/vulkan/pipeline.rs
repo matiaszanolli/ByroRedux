@@ -452,12 +452,13 @@ fn triangle_pipeline_inner(
     // depth_test/write/compare_op are all dynamic (#398); these static values are
     // ignored at runtime but must match the dynamic default to prevent silent breakage
     // if the dynamic-state declaration is ever dropped.
-    // `stencil_test_enable(false)` is hardcoded — the stencil state
-    // captured by the importer at `MaterialInfo.stencil_state` is
-    // dormant until per-material stencil pipeline variants land.
-    // Wiring those needs a depth-format flip too: `find_depth_format`
-    // prefers `D32_SFLOAT` (no stencil bits) which is the better
-    // precision pick when no consumer reads stencil. See #337.
+    // `stencil_test_enable(false)` is hardcoded, so the stencil state the
+    // importer captures at `MaterialInfo.stencil_state` has no effect. That
+    // is a recorded known gap, not work in progress (ROADMAP "Open — Misc",
+    // #4213; #337 closed without the wiring): closing it needs per-material
+    // stencil pipeline variants *and* a depth-format flip, since
+    // `find_depth_format` prefers `D32_SFLOAT` (no stencil bits), the better
+    // precision pick while no consumer reads stencil.
     let depth_stencil_opaque = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(true)
         .depth_write_enable(true)

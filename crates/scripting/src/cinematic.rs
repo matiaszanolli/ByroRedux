@@ -186,9 +186,11 @@ pub struct CinematicPresentationState {
     /// `Game.SetInChargen`'s current authored flags, named for Skyrim's own
     /// declaration: `SetInChargen(abDisableSaving, abDisableWaiting,
     /// abShowControlsDisabledMessage)` (#4322). MQ101 stages 0/10/255/260/318
-    /// toggle them around the execution-block race menu. No system reads
-    /// them yet — saving and waiting are not actually blocked while set, and
-    /// no controls-disabled message is shown — they are tracked so a future
+    /// toggle them around the execution-block race menu. `disable_saving` is
+    /// honored: the save command (and so quicksave) refuses while it is set
+    /// (`byroredux/src/save_io.rs`, #4372). `disable_waiting` has nothing to
+    /// block — the engine has no player wait feature — and no
+    /// controls-disabled message is shown; both are tracked so a future
     /// consumer has ground truth and tests can observe the effect applied.
     ///
     /// v23 saves carry them as `in_chargen` / `chargen_wait_for_race_sex` /

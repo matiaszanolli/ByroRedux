@@ -1483,6 +1483,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
   material-slot-aware discovery. PNG intermediates are intentional until
   those policies exist.
 - [ ] `parry3d` panics on nested compound collision shapes (catch_unwind guard in place)
+- [ ] **`NiStencilProperty` is parsed but never applied (known gap, not in progress).** The importer captures all seven stencil fields into `MaterialInfo.stencil_state`, but `crates/renderer/src/vulkan/pipeline.rs` builds every pipeline with `stencil_test_enable(false)`, and `find_depth_format` prefers `D32_SFLOAT`, which has no stencil bits. Content that relies on stencil masking (portal masks, mirror clipping, some decal techniques) renders as if it had no stencil property. Closing it needs per-material stencil pipeline variants *and* a stencil-bearing depth format, so it waits for a consumer that needs it. Recorded under #4213 (the original #337 closed without the wiring).
 - [ ] **Starfield CDB Phase 2 — per-field `.mat` material extraction, single highest-value remaining Starfield fidelity item.** [#3398](https://github.com/matiaszanolli/ByroRedux/issues/3398).
   (Tracker repointed 2026-08-27 under [#3395](https://github.com/matiaszanolli/ByroRedux/issues/3395): this row used to cite #2359, which is **closed-completed** — its deliverable was the deferral note plus the invariant test below, not the feature — so the chain read as shipped work.)
   `crates/sfmaterial` parses the Component Database end-to-end (97 classes /

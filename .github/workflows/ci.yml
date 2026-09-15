@@ -150,6 +150,22 @@ jobs:
       # `required-features`, so this one line closes the whole class.
       - name: cargo check (spt recon examples, feature-gated out of the workspace lane)
         run: cargo check -p byroredux-spt --features recon --examples
+      # #4390 — the examples check above never builds `cfg(test)`, and
+      # `cargo test --workspace` leaves `recon` off, so the value-asserting
+      # unit tests inside `crates/spt/src/recon/` ran in no lane at all.
+      - name: cargo test (spt recon unit tests)
+        run: cargo test -p byroredux-spt --features recon --lib
+      # #4387 — the binary's three feature gates are only ever compiled in
+      # their default state by the workspace lane: the
+      # `not(feature = "debug-server")` arms, the Tracy span bridge and the
+      # dhat global allocator could each rot unnoticed until someone reached
+      # for the profiler. One `cargo check` per non-default state.
+      - name: cargo check (byroredux without the debug server)
+        run: cargo check -p byroredux --no-default-features
+      - name: cargo check (byroredux with tracing-tracy)
+        run: cargo check -p byroredux --features tracing-tracy
+      - name: cargo check (byroredux with dhat-heap)
+        run: cargo check -p byroredux --features dhat-heap
       - name: cargo test
         run: cargo test --workspace
       - name: cargo clippy

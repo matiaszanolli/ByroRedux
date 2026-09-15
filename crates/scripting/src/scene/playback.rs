@@ -196,13 +196,53 @@ fn snapshot_entities<T: Component>(world: &World) -> HashSet<EntityId> {
         .unwrap_or_default()
 }
 
-fn drain<T: Component>(world: &World) {
+/// Clone every `T` currently in the world, keyed by entity. Shared by the
+/// scene, dialogue and package runtimes (#4350).
+pub(crate) fn snapshot<T: Component + Clone>(world: &World) -> HashMap<EntityId, T> {
+    world
+        .query::<T>()
+        .map(|query| {
+            query
+                .iter()
+                .map(|(entity, component)| (entity, component.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Remove every `T` from the world. Shared by the scene, dialogue and package
+/// runtimes (#4350).
+pub(crate) fn drain<T: Component>(world: &World) {
     let Some(mut query) = world.query_mut::<T>() else {
         return;
     };
     let entities: Vec<EntityId> = query.iter().map(|(entity, _)| entity).collect();
     for entity in entities {
         query.remove(entity);
+    }
+}
+
+/// Merge completed action indices into each actor's
+/// [`SceneActionCompletionBatch`], skipping indices already present. The one
+/// completion-merge rule for every runtime that finishes scene actions
+/// (dialogue lines, packages); #4350 folded two identical copies into this.
+pub(crate) fn append_scene_completions(world: &World, pending: HashMap<EntityId, Vec<u32>>) {
+    let Some(mut batches) = world.query_mut::<SceneActionCompletionBatch>() else {
+        return;
+    };
+    for (entity, action_indices) in pending {
+        if action_indices.is_empty() {
+            continue;
+        }
+        if let Some(batch) = batches.get_mut(entity) {
+            for action_index in action_indices {
+                if !batch.0.contains(&action_index) {
+                    batch.0.push(action_index);
+                }
+            }
+        } else {
+            batches.insert(entity, SceneActionCompletionBatch(action_indices));
+        }
     }
 }
 

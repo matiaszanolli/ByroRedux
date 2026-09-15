@@ -938,11 +938,15 @@ pub(super) struct MaterialInfo {
     /// 5=Underwater, 6=Reflections, 7=Refractions, 8=Vertex_UV,
     /// 9=Vertex_Alpha_Depth, 10=Procedural, 11=Fog,
     /// 12=Update_Constants, 13=Cubemap`. Zero when no
-    /// `BSWaterShaderProperty` was bound. Renderer-side dispatch (#977
-    /// follow-up) will let the M38 `WaterPipeline` honor authored
-    /// reflection / refraction / cubemap intent on legacy mesh-driven
-    /// water surfaces (Oblivion `meshes/water/*.nif`, Skyrim river
-    /// segments). See `BSWaterShaderProperty` in
+    /// `BSWaterShaderProperty` was bound. Consumed at the translation
+    /// boundary, not the renderer: `WaterMaterial.shader_flags` carries the
+    /// word, and `apply_water_shader_flag_gates`
+    /// (`byroredux/src/material_translate.rs`, since `45f65380`) turns the
+    /// Reflections (6) and Refractions (7) bits into the compact material's
+    /// reflection and refraction controls, which `water.frag` honors. The
+    /// other bits (Displacement, Depth, Fog, Cubemap, …) are preserved but
+    /// still unconsumed; the M38 `WaterPipeline` applies its fixed default
+    /// for them. See `BSWaterShaderProperty` in
     /// `crates/nif/src/blocks/shader.rs`.
     ///
     /// **Skyrim+ only, and by construction — not a wire-up gap.** The

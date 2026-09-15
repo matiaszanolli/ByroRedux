@@ -891,6 +891,19 @@ impl ConsoleCommand for SaveCommand {
                  once the destination has finished loading.",
             );
         }
+        // #4372 — honor `Game.SetInChargen(abDisableSaving = true)`. MQ101
+        // disables saving around the execution-block race menu; before this
+        // gate the flag was recorded and read by nothing, so a quicksave went
+        // through inside a block Bethesda's own runtime refuses.
+        if world
+            .try_resource::<byroredux_scripting::CinematicPresentationState>()
+            .is_some_and(|presentation| presentation.disable_saving)
+        {
+            return CommandOutput::error(
+                "save REFUSED: the running quest has disabled saving \
+                 (Game.SetInChargen) — try again once it re-enables it.",
+            );
+        }
 
         // Explicit slot, or the ring's next slot — a quicksave only
         // actually *advances* the ring once validation passes and the

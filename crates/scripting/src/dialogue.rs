@@ -21,7 +21,8 @@ use crate::condition::{evaluate, ConditionContext};
 use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::QuestFormId;
 use crate::scene::{
-    SceneActionCompletionBatch, SceneAliasCandidate, SceneEvent, SceneEventBatch, ScenePlayer,
+    append_scene_completions, drain, snapshot, SceneAliasCandidate, SceneEvent, SceneEventBatch,
+    ScenePlayer,
 };
 
 /// Immutable authored dialogue topics keyed by global-space DIAL FormID.
@@ -167,28 +168,6 @@ pub fn estimate_dialogue_duration(text: &str) -> f32 {
     (0.55 + words / 2.6).clamp(1.5, 12.0)
 }
 
-fn snapshot<T: Component + Clone>(world: &World) -> HashMap<EntityId, T> {
-    world
-        .query::<T>()
-        .map(|query| {
-            query
-                .iter()
-                .map(|(entity, component)| (entity, component.clone()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn drain<T: Component>(world: &World) {
-    let Some(mut query) = world.query_mut::<T>() else {
-        return;
-    };
-    let entities: Vec<EntityId> = query.iter().map(|(entity, _)| entity).collect();
-    for entity in entities {
-        query.remove(entity);
-    }
-}
-
 fn actor_matches(info: &InfoRecord, world: &World, actor: Option<EntityId>) -> bool {
     if info.actor_form_id == 0 {
         return true;
@@ -220,26 +199,6 @@ fn select_info<'a>(
     topic.infos.iter().find(|info| {
         actor_matches(info, world, actor) && evaluate(&info.conditions, world, &context)
     })
-}
-
-fn append_scene_completions(world: &World, pending: HashMap<EntityId, Vec<u32>>) {
-    let Some(mut batches) = world.query_mut::<SceneActionCompletionBatch>() else {
-        return;
-    };
-    for (entity, action_indices) in pending {
-        if action_indices.is_empty() {
-            continue;
-        }
-        if let Some(batch) = batches.get_mut(entity) {
-            for action_index in action_indices {
-                if !batch.0.contains(&action_index) {
-                    batch.0.push(action_index);
-                }
-            }
-        } else {
-            batches.insert(entity, SceneActionCompletionBatch(action_indices));
-        }
-    }
 }
 
 fn finish_line(
@@ -473,6 +432,7 @@ pub fn scene_dialogue_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::SceneActionCompletionBatch;
     use byroredux_plugin::esm::records::{ScenRecord, SceneAction, ScenePhase};
 
     const SCENE: u32 = 0x100;

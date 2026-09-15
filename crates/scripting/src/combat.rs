@@ -50,8 +50,9 @@ impl Component for AiCombatState {
 ///
 /// Not saved: plain `u32` FormIDs rather than `FormIdPair`s, so a
 /// differing load order across a save/reload could silently mismatch —
-/// and since nothing reads this yet, losing it is a fully inert loss
-/// (identical posture to `FactionRelations` having no runtime consumer).
+/// and since nothing reads this yet (`is_enemy` has no production caller),
+/// losing it on reload changes no behavior. Ambient hostility, the consumer
+/// this is waiting for, is tracked by #4414.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FactionRelations {
     hostile_pairs: HashSet<(u32, u32)>,

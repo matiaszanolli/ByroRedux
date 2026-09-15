@@ -25,7 +25,8 @@ use crate::condition::{evaluate, resolve_entity_by_global_form_id, ConditionCont
 use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::QuestFormId;
 use crate::scene::{
-    SceneActionCompletionBatch, SceneActorBindings, SceneEvent, SceneEventBatch, ScenePlayer,
+    append_scene_completions, drain, snapshot, SceneActorBindings, SceneEvent, SceneEventBatch,
+    ScenePlayer,
 };
 
 const MOVE_SPEED_UNITS_PER_SECOND: f32 = 140.0;
@@ -294,48 +295,6 @@ pub fn install_package_target_directions(
         .directions
         .extend(directions);
     count
-}
-
-fn snapshot<T: Component + Clone>(world: &World) -> HashMap<EntityId, T> {
-    world
-        .query::<T>()
-        .map(|query| {
-            query
-                .iter()
-                .map(|(entity, component)| (entity, component.clone()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn drain<T: Component>(world: &World) {
-    let Some(mut query) = world.query_mut::<T>() else {
-        return;
-    };
-    let entities: Vec<EntityId> = query.iter().map(|(entity, _)| entity).collect();
-    for entity in entities {
-        query.remove(entity);
-    }
-}
-
-fn append_scene_completions(world: &World, pending: HashMap<EntityId, Vec<u32>>) {
-    let Some(mut batches) = world.query_mut::<SceneActionCompletionBatch>() else {
-        return;
-    };
-    for (entity, action_indices) in pending {
-        if action_indices.is_empty() {
-            continue;
-        }
-        if let Some(batch) = batches.get_mut(entity) {
-            for action_index in action_indices {
-                if !batch.0.contains(&action_index) {
-                    batch.0.push(action_index);
-                }
-            }
-        } else {
-            batches.insert(entity, SceneActionCompletionBatch(action_indices));
-        }
-    }
 }
 
 fn select_package(
@@ -887,6 +846,7 @@ pub fn scene_package_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::SceneActionCompletionBatch;
     use byroredux_core::math::Vec3;
     use byroredux_plugin::esm::records::{
         PackDataTarget, PackLocation, ScenRecord, SceneAction, SceneActionType, ScenePhase,

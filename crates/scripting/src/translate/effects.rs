@@ -326,9 +326,12 @@ pub enum ActorRef {
 
 impl Effect {
     /// Whether this effect's runtime arm only *records* that the call ran —
-    /// a counter nothing reads — without doing what the call does (#4328).
-    /// `Game.ShowRaceMenu` opens no menu; `Game.RequestSave` and
-    /// `RequestAutoSave` write no save.
+    /// a counter or flag nothing reads — without doing what the call does
+    /// (#4328). `Game.ShowRaceMenu` opens no menu; `Game.RequestSave` and
+    /// `RequestAutoSave` write no save; `Game.SetHudCartMode` sets
+    /// `PlayerControlState::hud_cart_mode`, which no HUD reads (#4372).
+    /// `Game.SetInChargen` is not a placeholder: its `abDisableSaving` flag
+    /// gates the save command.
     ///
     /// Lowering them is deliberate: declining would discard every sibling
     /// effect in MQ101's chargen fragments. But a fragment claimed only by
@@ -336,7 +339,10 @@ impl Effect {
     /// count those fragments separately rather than letting the stub pass
     /// for the real behavior.
     pub fn is_placeholder(&self) -> bool {
-        matches!(self, Effect::ShowRaceMenu | Effect::RequestSave { .. })
+        matches!(
+            self,
+            Effect::ShowRaceMenu | Effect::RequestSave { .. } | Effect::SetHudCartMode { .. }
+        )
     }
 }
 
@@ -2796,7 +2802,15 @@ mod tests {
         assert!(Effect::ShowRaceMenu.is_placeholder());
         assert!(Effect::RequestSave { auto: false }.is_placeholder());
         assert!(Effect::RequestSave { auto: true }.is_placeholder());
-        assert!(!Effect::SetHudCartMode { cart_mode: true }.is_placeholder());
+        // #4372 — `hud_cart_mode` has no reader, so the arm only records.
+        assert!(Effect::SetHudCartMode { cart_mode: true }.is_placeholder());
+        // …whereas SetInChargen's `disable_saving` gates the save command.
+        assert!(!Effect::SetInChargen {
+            disable_saving: true,
+            disable_waiting: false,
+            show_controls_disabled_message: false,
+        }
+        .is_placeholder());
     }
 
     #[test]

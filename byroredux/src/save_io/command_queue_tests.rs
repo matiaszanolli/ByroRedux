@@ -634,6 +634,58 @@ fn a_save_taken_mid_cell_transition_is_refused_not_written() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Regression: #4372 — `Game.SetInChargen(abDisableSaving = true)` must block
+/// saving, the way MQ101's execution-block race menu expects. The flag used to
+/// be recorded and read by nothing, so a quicksave succeeded inside the block.
+#[test]
+fn a_save_taken_while_chargen_disables_saving_is_refused_not_written() {
+    use crate::cell_loader::CurrentCellContext;
+
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(build_save_registry());
+    let dir = std::env::temp_dir().join(format!("byro_4372_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    world.insert_resource(SaveState::new(dir.clone(), 4));
+    world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(crate::extensions::SessionEventQueue::default());
+    // A fully loaded, otherwise saveable world: only the chargen flag differs.
+    world.insert_resource(CurrentCellContext {
+        cell_editor_id: "GSDocMitchellHouse".to_string(),
+        esm_path: "FalloutNV.esm".to_string(),
+        masters: vec![],
+    });
+    let mut presentation = byroredux_scripting::CinematicPresentationState::default();
+    presentation.disable_saving = true;
+    world.insert_resource(presentation);
+
+    let out = SaveCommand.execute(&world, "0");
+    assert!(
+        out.lines
+            .iter()
+            .any(|l| l.contains("REFUSED") && l.contains("SetInChargen")),
+        "a save inside a SetInChargen save-disabled block must be refused: {:?}",
+        out.lines
+    );
+    assert!(
+        !dir.join("slot0.sav").exists(),
+        "the refusal must happen before any disk write"
+    );
+
+    // Re-enabling saving lifts the gate.
+    world
+        .resource_mut::<byroredux_scripting::CinematicPresentationState>()
+        .disable_saving = false;
+    let out = SaveCommand.execute(&world, "0");
+    assert!(
+        out.lines.iter().any(|l| l.contains("saved slot 0")),
+        "the gate must lift when the quest re-enables saving: {:?}",
+        out.lines
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// #4138 — a session that genuinely has no cell context (loose-NIF `--mesh`
 /// mode) must still be saveable. The gate keys on the transition flag, not
 /// on context absence, precisely so these two stay distinguishable.

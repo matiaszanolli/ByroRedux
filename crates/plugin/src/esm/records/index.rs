@@ -133,7 +133,8 @@ pub struct EsmIndex {
     /// silently produced nothing; a resolver that receives a leveled
     /// spell FormID (via a future `SPLO` decoder — not parsed anywhere
     /// in this crate yet, a separate gap) still has nowhere to look it
-    /// up without this map.
+    /// up without this map. No production reader yet: the `SPLO` →
+    /// spell-list → MGEF runtime that consumes it is tracked by #4415.
     pub leveled_spells: HashMap<u32, LeveledList>,
     pub npcs: HashMap<u32, NpcRecord>,
     /// Creature base records (FO3 bestiary: super mutants, deathclaws,
@@ -216,6 +217,10 @@ pub struct EsmIndex {
     /// weapon-enchant table). See FNV-D2-01.
     pub enchantments: HashMap<u32, EnchRecord>,
     /// `MGEF` magic effects — universal bridge for Actor Value mods.
+    ///
+    /// Parsed on every load but, like `spells`, `enchantments`,
+    /// `leveled_spells` and `magic_effects_by_code`, not yet read by any
+    /// production system; the magic runtime is tracked by #4415.
     pub magic_effects: HashMap<u32, MgefRecord>,
     /// Oblivion-only secondary index: 4-char effect code → MGEF FormID.
     /// On Oblivion, SPEL/ENCH/ALCH/INGR cross-reference effects via

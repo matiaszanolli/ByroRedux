@@ -1342,8 +1342,10 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord]) -> LgtmRecord {
 ///
 /// This stub captures `EDID` + the raw `DNAM` payload so a future
 /// per-cell HDR-LUT consumer can decode the tone-map fields lazily
-/// without re-walking the ESM. The full DNAM struct decode + IMAD
-/// modifier-graph parser are deferred to M48.
+/// without re-walking the ESM. Nothing reads `EsmIndex::image_spaces` yet:
+/// the DNAM decode and the render-side consumer are tracked by #4416.
+/// (Image-space *modifiers*, `IMAD`, are a separate path that already
+/// reaches the renderer through the MQ101 cinematic slice.)
 #[derive(Debug, Clone, Default)]
 pub struct ImgsRecord {
     pub form_id: u32,
