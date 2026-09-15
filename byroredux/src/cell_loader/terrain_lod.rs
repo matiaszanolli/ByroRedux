@@ -34,7 +34,7 @@ use byroredux_plugin::esm::cell::CellData;
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::{Vertex, VulkanContext};
 
-use crate::asset_provider::{resolve_texture, TextureProvider};
+use crate::asset_provider::{resolve_linear_texture, resolve_texture, TextureProvider};
 use crate::components::{IsLodTerrain, MaterialTextureHandles};
 use crate::env_translate::translate_terrain_lod_textures;
 use crate::streaming::LodBlock;
@@ -750,7 +750,8 @@ fn spawn_lod_block(
         .filter(|_| lod_quad_tex != 0 && lod_quad_tex != ctx.texture_registry.fallback());
     let resolved_normal = translated_lod
         .as_ref()
-        .map(|lod| resolve_texture(ctx, tex_provider, Some(lod.normal_path.as_str())))
+        // Normal maps are vector data: linear upload, like the material slot.
+        .map(|lod| resolve_linear_texture(ctx, tex_provider, Some(lod.normal_path.as_str())))
         .unwrap_or(0);
     let normal_texture_handle =
         if resolved_normal != 0 && resolved_normal != ctx.texture_registry.fallback() {

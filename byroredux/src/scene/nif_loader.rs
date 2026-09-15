@@ -499,6 +499,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             is_spt,
             &node_entities,
             &node_by_name,
+            imported.phantom_bounds,
             &mut blas_specs,
         ) {
             count += 1;
@@ -838,6 +839,7 @@ fn spawn_nif_mesh(
     is_spt: bool,
     node_entities: &[EntityId],
     node_by_name: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+    phantom_bounds: Option<([f32; 3], [f32; 3])>,
     blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> bool {
     // M41.0 Phase 1b.x temp gate — vanilla FNV / FO3 actor body NIFs
@@ -1292,6 +1294,10 @@ fn spawn_nif_mesh(
                     mesh.local_bound_center[2],
                 ),
                 local_bound_radius: mesh.local_bound_radius,
+                phantom_bounds,
+                // A loose NIF's root node entity sits at the root transform
+                // the phantom bounds already include.
+                root_transform: (Vec3::ZERO, Quat::IDENTITY, 1.0),
             },
         );
     }

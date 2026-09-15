@@ -26,7 +26,7 @@ use byroredux_renderer::vulkan::scene_buffer::GpuTerrainTile;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
-use crate::asset_provider::{resolve_texture, TextureProvider};
+use crate::asset_provider::{resolve_linear_texture, resolve_texture, TextureProvider};
 use crate::components::{MaterialTextureHandles, TerrainTileSlot};
 use byroredux_nif::import::MaterialTextureSet;
 
@@ -208,6 +208,14 @@ pub(super) fn build_cell_splat_layers(
 /// diagnostic checkerboard is useful for a missing diffuse surface, but a
 /// missing normal/specular contribution must be treated as "no contribution"
 /// or it perturbs lighting with magenta placeholder data.
+///
+/// Both roles this serves — TX01 normal and TX07 specular — are data
+/// textures, and upload linear exactly as the same slots do on placed meshes
+/// (`map_secondary_texture_handles`). Through the sRGB diffuse path a flat
+/// tangent-space texel of 128/255 decoded to ≈0.22 before `* 2 - 1`, tilting
+/// every layer normal; every Skyrim (67/67) and FNV (88/88) LTEX texture set
+/// authors TX01, and Fallout 4 authors TX07 on 74 of 105
+/// (`plugin/examples/landscape_txst_census.rs`).
 fn resolve_optional_terrain_texture(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
@@ -216,7 +224,7 @@ fn resolve_optional_terrain_texture(
     let Some(path) = path else {
         return 0;
     };
-    let handle = resolve_texture(ctx, tex_provider, Some(path));
+    let handle = resolve_linear_texture(ctx, tex_provider, Some(path));
     if handle == ctx.texture_registry.fallback() {
         0
     } else {

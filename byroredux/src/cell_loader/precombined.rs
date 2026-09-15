@@ -817,6 +817,7 @@ fn geometry_only_cached(meshes: Vec<ImportedMesh>, geometry_dedup: Vec<u32>) -> 
         placement_root_billboard: None,
         speedtree_wind: None,
         bsx_flags: 0,
+        phantom_bounds: None,
         root_flags: 0,
         flame_attach_offset: None,
         // Precombines are baked static architecture — no FO4 weapon-mod

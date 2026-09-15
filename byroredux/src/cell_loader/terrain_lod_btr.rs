@@ -95,7 +95,7 @@ use byroredux_core::math::Vec3;
 use byroredux_nif::import::MaterialTextureSet;
 use byroredux_renderer::{Vertex, VulkanContext};
 
-use crate::asset_provider::{resolve_texture, TextureProvider};
+use crate::asset_provider::{resolve_linear_texture, resolve_texture, TextureProvider};
 use crate::components::{IsLodTerrain, MaterialTextureHandles};
 use crate::streaming::LodBlock;
 
@@ -325,9 +325,10 @@ pub(crate) fn spawn_btr_block(
     // so distant terrain never samples the checker as a normal map.
     // (`resolve_texture` returns the fallback handle *without* acquiring a
     // reference, so a miss must be discarded by value, never `drop_texture`d
-    // — same contract `object_lod` relies on for its atlas.)
+    // — same contract `object_lod` relies on for its atlas.) Linear upload:
+    // the texels are vectors the shader remaps with `* 2 - 1`.
     let normal_path = btr_normal_path(worldspace_key, level, qx, qy);
-    let resolved_normal = resolve_texture(ctx, tex_provider, Some(normal_path.as_str()));
+    let resolved_normal = resolve_linear_texture(ctx, tex_provider, Some(normal_path.as_str()));
     let normal_handle = if resolved_normal == ctx.texture_registry.fallback() {
         0
     } else {

@@ -76,6 +76,7 @@ pub(super) fn parse_and_import_nif(
     // Root-node NiAVObject.flags — surfaced for the placement-root
     // SceneFlags row. See #1235 / LC-D1-NEW-01.
     let root_flags = byroredux_nif::import::extract_root_flags(&scene);
+    let phantom_bounds = byroredux_nif::import::collision::extract_phantom_bounds(&scene);
     let collision_authoring =
         byroredux_nif::import::collision::summarize_collision_authoring(&scene);
 
@@ -197,6 +198,7 @@ pub(super) fn parse_and_import_nif(
         // MultiBound metadata; the walker has already culled individual
         // editor-marker children without discarding their real siblings.
         bsx_flags: bsx,
+        phantom_bounds,
         // #1235 / LC-D1-NEW-01 — root-node NiAVObject.flags for
         // placement-root SceneFlags parity with the loose-NIF loader.
         root_flags,
@@ -569,6 +571,7 @@ pub(super) fn parse_and_import_spt(
         // SpeedTree `.spt` files carry no BSXFlags — they're a
         // separate format outside the NIF block hierarchy. #1214.
         bsx_flags: 0,
+        phantom_bounds: None,
         // SpeedTree `.spt` placeholders have no NiAVObject root, so no
         // NiAVObject.flags to propagate. #1235 / LC-D1-NEW-01.
         root_flags: 0,

@@ -1477,6 +1477,10 @@ pub struct ImportedScene {
     pub bsx_flags: Option<u32>,
     /// BSBound from the root node's extra data (object-level bounding box).
     pub bs_bound: Option<([f32; 3], [f32; 3])>, // (center, half_extents)
+    /// `(min, max)` of the scene's `bhkSimpleShapePhantom` volume in
+    /// NIF-root Y-up space — the authored water volume of Skyrim's placed
+    /// water meshes. See [`crate::import::collision::extract_phantom_bounds`].
+    pub phantom_bounds: Option<([f32; 3], [f32; 3])>,
     /// FO4+ `BSConnectPoint::Parents` extra-data — named attach points
     /// this NIF *exposes* for modular accessories to connect to (e.g.
     /// `CON_Magazine`, `CON_Scope` on a 10mm pistol). Maps 1:1 onto the

@@ -517,6 +517,16 @@ pub(crate) fn attach_mesh_water(/* canonical Material + mesh geometry */);
 The final two return fields are the optional normal path and three optional
 noise-layer paths; absence is the procedural-texture sentinel.
 
+**Mesh water volume.** Skyrim's placed water meshes author their gameplay
+volume as a `bhkSimpleShapePhantom` (`collision::extract_phantom_bounds`), and
+`attach_mesh_water` places that box under the REFR transform. Every vanilla
+`meshes\water\*.nif` phantom tops out at the rendered surface: `water1024.nif`
+is 1024 across and 1024 deep, `tundrastream*` ≈69 deep along the bed, and
+`waterpuddlelong.nif` hangs its convex phantom off a child node. Only water
+meshes with no phantom fall back to the named `4 × radius` depth heuristic —
+before this, a 1.5-scaled `water1024` at Tamriel 29,-3 reached 4 344 units
+below its surface instead of the authored 1 536.
+
 **Contract for every function above:**
 
 1. **One composition site per authored family.** ESM WATR/XCWT content resolves

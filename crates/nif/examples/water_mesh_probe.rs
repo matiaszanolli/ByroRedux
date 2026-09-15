@@ -111,6 +111,11 @@ fn main() {
                 continue;
             }
         };
+        // The authored water volume the production importer extracts.
+        println!(
+            "  phantom bounds (Y-up, NIF units) = {:?}",
+            byroredux_nif::import::collision::extract_phantom_bounds(&scene)
+        );
         // What the production importer hands the animation system.
         if let Some(clip) = byroredux_nif::anim::import_embedded_animations(&scene) {
             for (node, ch) in &clip.float_channels {

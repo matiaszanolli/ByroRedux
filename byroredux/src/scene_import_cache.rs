@@ -241,6 +241,7 @@ mod tests {
             particle_emitters: Vec::new(),
             bsx_flags: None,
             bs_bound: None,
+            phantom_bounds: None,
             attach_points: None,
             child_attach_connections: None,
             furniture_markers: Vec::new(),

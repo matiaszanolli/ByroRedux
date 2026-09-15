@@ -256,6 +256,11 @@ pub(crate) struct CachedNifImport {
     /// placement root without re-reading the scene. See #1214 /
     /// D1-NEW-03. `0` when the NIF authors no BSXFlags.
     pub(super) bsx_flags: u32,
+    /// `(min, max)` of the scene's `bhkSimpleShapePhantom` in NIF-root Y-up
+    /// space — Skyrim's authored water volume for placed water meshes, read
+    /// at spawn by `attach_mesh_water`. `None` for NIFs without one and for
+    /// generated imports. See `collision::extract_phantom_bounds`.
+    pub(super) phantom_bounds: Option<([f32; 3], [f32; 3])>,
     /// `NiAVObject.flags` from the root NiNode (SELECTIVE_UPDATE,
     /// DISABLE_SORTING, DISPLAY_OBJECT, IS_NODE, …). Captured at parse
     /// time so the spawn site can attach a `SceneFlags` ECS row on the

@@ -1160,6 +1160,8 @@ pub(super) fn spawn_mesh_instance(
                     mesh.local_bound_center[2],
                 ),
                 local_bound_radius: mesh.local_bound_radius,
+                phantom_bounds: cached.phantom_bounds,
+                root_transform: (ref_pos, ref_rot, ref_scale),
             },
         );
     }

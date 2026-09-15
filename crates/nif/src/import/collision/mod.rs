@@ -537,6 +537,128 @@ fn extract_from_phantom(
     None
 }
 
+/// Union bounds of every `bhkSimpleShapePhantom` volume on the scene's node
+/// tree, as `(min, max)` in NIF-root engine space (Y-up, Gamebryo units) —
+/// the frame flat-imported meshes are composed into.
+///
+/// Skyrim's placed water meshes author their water volume this way: a
+/// `bhkPCollisionObject` (or its `bhkSPCollisionObject` alias) wrapping a
+/// `bhkSimpleShapePhantom`. Measured over every vanilla `meshes\water\*.nif`
+/// (`examples/water_mesh_probe.rs`): 12 of the 13 phantoms sit on the root
+/// and are boxes whose `bhkTransformShape` offset is exactly minus the box
+/// half-height, so each volume's top is the rendered surface —
+/// `water1024.nif` is a 7.3152-havok-unit half-extent cube (1024 units across
+/// and 1024 deep at Skyrim's ×69.99 scale), `tundrastream*` a shallow compound
+/// of three ≈69-unit-deep boxes following the stream bed. The 13th,
+/// `waterpuddlelong.nif`, hangs a `bhkConvexVerticesShape` phantom off a child
+/// `NiNode`, which is why the whole tree is walked.
+///
+/// `None` when no node authors a simple-shape phantom, or none resolves to
+/// finite geometry.
+pub fn extract_phantom_bounds(scene: &NifScene) -> Option<([f32; 3], [f32; 3])> {
+    let mut bounds = None;
+    let mut visited = HashSet::new();
+    let mut stack = vec![(scene.root_index?, crate::types::NiTransform::default())];
+    while let Some((idx, parent)) = stack.pop() {
+        if !visited.insert(idx) {
+            continue;
+        }
+        let Some(node) = scene.get(idx).and_then(super::walk::as_ni_node) else {
+            continue;
+        };
+        // Same composition and Z-up → Y-up conversion `walk_node_flat` gives
+        // mesh transforms, so the volume lands in their frame.
+        let world = super::transform::compose_transforms(&parent, &node.av.transform);
+        if let Some((min, max)) = phantom_local_bounds(scene, node.av.collision_ref) {
+            let rotation = Quat::from_array(super::coord::zup_matrix_to_yup_quat(&world.rotation));
+            let translation = Vec3::from_array(super::coord::zup_point_to_yup(&world.translation));
+            for corner in box_corners(min, max) {
+                extend_bounds(&mut bounds, translation + rotation * (corner * world.scale));
+            }
+        }
+        stack.extend(
+            node.children
+                .iter()
+                .filter_map(|child| child.index())
+                .map(|child| (child, world)),
+        );
+    }
+    let (min, max) = bounds?;
+    (min.is_finite() && max.is_finite()).then(|| (min.to_array(), max.to_array()))
+}
+
+/// Bounds of the `bhkSimpleShapePhantom` behind one node's `collision_ref`,
+/// in that node's local Y-up frame.
+fn phantom_local_bounds(scene: &NifScene, collision_ref: BlockRef) -> Option<(Vec3, Vec3)> {
+    let coll = scene.get_as::<BhkPCollisionObject>(collision_ref.index()?)?;
+    let phantom = scene.get_as::<BhkSimpleShapePhantom>(coll.body_ref.index()?)?;
+    let shape = resolve_shape(scene, phantom.shape_ref, &mut HashSet::new())?;
+    let (translation, rotation) = decompose_havok_matrix(&phantom.transform, scene.havok_scale);
+    let mut bounds = None;
+    accumulate_shape_bounds(&shape, translation, rotation, &mut bounds);
+    bounds
+}
+
+/// Grow `bounds` by `shape` placed at `(translation, rotation)`. Rounded
+/// primitives contribute their enclosing box — conservative, and exact for
+/// the boxes that author every vanilla water volume.
+fn accumulate_shape_bounds(
+    shape: &CollisionShape,
+    translation: Vec3,
+    rotation: Quat,
+    bounds: &mut Option<(Vec3, Vec3)>,
+) {
+    let enclosing_box = |half: Vec3, bounds: &mut Option<(Vec3, Vec3)>| {
+        for corner in box_corners(-half, half) {
+            extend_bounds(bounds, translation + rotation * corner);
+        }
+    };
+    match shape {
+        CollisionShape::Ball { radius } => enclosing_box(Vec3::splat(*radius), bounds),
+        CollisionShape::Cuboid { half_extents } => enclosing_box(*half_extents, bounds),
+        CollisionShape::Capsule {
+            half_height,
+            radius,
+        } => enclosing_box(Vec3::new(*radius, half_height + radius, *radius), bounds),
+        CollisionShape::Cylinder {
+            half_height,
+            radius,
+        } => enclosing_box(Vec3::new(*radius, *half_height, *radius), bounds),
+        CollisionShape::ConvexHull { vertices } | CollisionShape::TriMesh { vertices, .. } => {
+            for vertex in vertices {
+                extend_bounds(bounds, translation + rotation * *vertex);
+            }
+        }
+        CollisionShape::Compound { children } => {
+            for (child_translation, child_rotation, child) in children {
+                accumulate_shape_bounds(
+                    child,
+                    translation + rotation * *child_translation,
+                    rotation * *child_rotation,
+                    bounds,
+                );
+            }
+        }
+    }
+}
+
+fn box_corners(min: Vec3, max: Vec3) -> [Vec3; 8] {
+    std::array::from_fn(|i| {
+        Vec3::new(
+            if i & 1 == 0 { min.x } else { max.x },
+            if i & 2 == 0 { min.y } else { max.y },
+            if i & 4 == 0 { min.z } else { max.z },
+        )
+    })
+}
+
+fn extend_bounds(bounds: &mut Option<(Vec3, Vec3)>, point: Vec3) {
+    *bounds = Some(match *bounds {
+        Some((min, max)) => (min.min(point), max.max(point)),
+        None => (point, point),
+    });
+}
+
 /// Reject a non-finite scalar (NaN / ±Inf) read from a corrupt or
 /// adversarial NIF before it reaches a `CollisionShape` field. A
 /// non-finite radius / half-extent flows into the parry3d/Rapier
@@ -711,6 +833,60 @@ mod dispatch_coverage_tests {
             "these bhk*Shape blocks are parse-dispatched but have NO resolve arm in \
              resolve_shape_inner — authored collision silently drops: {missing:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod phantom_bounds_tests {
+    use super::*;
+
+    /// `water1024.nif`'s phantom after `resolve_shape`: a 512-unit
+    /// half-extent cube behind a `bhkTransformShape` that turns it 180° and
+    /// drops it by its own half-height, so the box spans `y ∈ [-1024, 0]`.
+    #[test]
+    fn transformed_box_bounds_hang_below_the_surface() {
+        let shape = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(0.0, -512.0, 0.0),
+                Quat::from_rotation_y(std::f32::consts::PI),
+                Box::new(CollisionShape::Cuboid {
+                    half_extents: Vec3::splat(512.0),
+                }),
+            )],
+        };
+        let mut bounds = None;
+        accumulate_shape_bounds(&shape, Vec3::ZERO, Quat::IDENTITY, &mut bounds);
+        let (min, max) = bounds.expect("box contributes bounds");
+        assert!(
+            min.abs_diff_eq(Vec3::new(-512.0, -1024.0, -512.0), 1e-3),
+            "{min}"
+        );
+        assert!(max.abs_diff_eq(Vec3::new(512.0, 0.0, 512.0), 1e-3), "{max}");
+    }
+
+    /// Nested offsets compose parent-first, and hull vertices contribute
+    /// directly rather than through an enclosing box.
+    #[test]
+    fn nested_compound_offsets_compose_parent_first() {
+        let hull = CollisionShape::ConvexHull {
+            vertices: vec![Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0)],
+        };
+        let shape = CollisionShape::Compound {
+            children: vec![(
+                Vec3::new(10.0, 0.0, 0.0),
+                Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+                Box::new(CollisionShape::Compound {
+                    children: vec![(Vec3::new(0.0, 5.0, 0.0), Quat::IDENTITY, Box::new(hull))],
+                }),
+            )],
+        };
+        let mut bounds = None;
+        accumulate_shape_bounds(&shape, Vec3::ZERO, Quat::IDENTITY, &mut bounds);
+        let (min, max) = bounds.expect("hull contributes bounds");
+        // +90° about Z maps local (x, y) → (-y, x): the inner +5 Y offset
+        // lands at X = 10 - 5, the hull points at (-0, 1) and (-2, 0).
+        assert!(min.abs_diff_eq(Vec3::new(3.0, 0.0, 0.0), 1e-4), "{min}");
+        assert!(max.abs_diff_eq(Vec3::new(5.0, 1.0, 0.0), 1e-4), "{max}");
     }
 }
 

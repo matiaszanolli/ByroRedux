@@ -245,6 +245,8 @@ pub fn import_spt_scene(
             let half_yup = [hx, hz, hy];
             (center_yup, half_yup)
         }),
+        // SpeedTree placeholders carry no Havok phantom volume.
+        phantom_bounds: None,
         // SpeedTree placeholders carry no FO4-weapon-mod attach graph.
         attach_points: None,
         child_attach_connections: None,

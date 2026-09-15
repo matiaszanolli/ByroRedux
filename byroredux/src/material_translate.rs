@@ -396,9 +396,38 @@ pub(crate) fn water_kind_from_mesh_geometry(
     }
 }
 
-/// Derive a conservative physics volume for a mesh-bound water surface. NIF
-/// water blocks do not author a volume or current; the rendered surface is the
-/// entity's transformed Y plane, while imported bounds provide coverage/depth.
+/// Place an authored phantom volume (`(min, max)` in NIF-root Y-up
+/// space, see `collision::extract_phantom_bounds`) under the placement
+/// root's transform. Rotated placements get the enclosing world AABB, which
+/// is what `WaterVolume` models. `None` for a non-finite or degenerate box.
+pub(crate) fn water_volume_from_phantom(
+    (min, max): ([f32; 3], [f32; 3]),
+    (position, rotation, scale): (Vec3, Quat, f32),
+) -> Option<WaterVolume> {
+    let (min, max) = (Vec3::from_array(min), Vec3::from_array(max));
+    let mut world_min = Vec3::splat(f32::INFINITY);
+    let mut world_max = Vec3::splat(f32::NEG_INFINITY);
+    for i in 0..8 {
+        let corner = Vec3::new(
+            if i & 1 == 0 { min.x } else { max.x },
+            if i & 2 == 0 { min.y } else { max.y },
+            if i & 4 == 0 { min.z } else { max.z },
+        );
+        let world = position + rotation * (corner * scale);
+        world_min = world_min.min(world);
+        world_max = world_max.max(world);
+    }
+    let valid = world_min.is_finite() && world_max.is_finite() && world_max.cmpgt(world_min).all();
+    valid.then(|| WaterVolume {
+        min: world_min.to_array(),
+        max: world_max.to_array(),
+    })
+}
+
+/// Derive a conservative physics volume for a mesh-bound water surface that
+/// authors no phantom (`water_volume_from_phantom` takes precedence);
+/// the rendered surface is the entity's transformed Y plane, while imported
+/// bounds provide coverage/depth.
 pub(crate) fn water_volume_from_mesh(
     position: Vec3,
     rotation: Quat,
@@ -434,6 +463,11 @@ pub(crate) struct MeshWaterSource<'a> {
     pub scale: f32,
     pub local_bound_center: Vec3,
     pub local_bound_radius: f32,
+    /// The NIF's authored phantom volume, NIF-root space.
+    pub phantom_bounds: Option<([f32; 3], [f32; 3])>,
+    /// World transform of the NIF root the phantom bounds are relative to
+    /// (the REFR placement on the cell path).
+    pub root_transform: (Vec3, Quat, f32),
 }
 
 pub(crate) fn attach_mesh_water(
@@ -463,16 +497,19 @@ pub(crate) fn attach_mesh_water(
         world.insert(entity, flow);
     }
     if kind != WaterKind::Waterfall {
-        world.insert(
-            entity,
-            water_volume_from_mesh(
-                source.position,
-                source.rotation,
-                source.scale,
-                source.local_bound_center,
-                source.local_bound_radius,
-            ),
-        );
+        let volume = source
+            .phantom_bounds
+            .and_then(|bounds| water_volume_from_phantom(bounds, source.root_transform))
+            .unwrap_or_else(|| {
+                water_volume_from_mesh(
+                    source.position,
+                    source.rotation,
+                    source.scale,
+                    source.local_bound_center,
+                    source.local_bound_radius,
+                )
+            });
+        world.insert(entity, volume);
     }
 }
 
@@ -1538,6 +1575,8 @@ mod tests {
                 scale: 1.0,
                 local_bound_center: Vec3::ZERO,
                 local_bound_radius: 8.0,
+                phantom_bounds: None,
+                root_transform: (Vec3::ZERO, Quat::IDENTITY, 1.0),
             },
         );
         let plane = world.get::<WaterPlane>(entity).expect("WaterPlane");
@@ -1545,6 +1584,63 @@ mod tests {
         assert_eq!(plane.material.foam_strength, 0.20);
         assert!(world.get::<WaterFlow>(entity).is_none());
         assert!(world.get::<WaterVolume>(entity).is_some());
+    }
+
+    /// `water1024x512.nif`'s authored phantom: a 256×512 half-extent box
+    /// (3.6576 / 7.3152 havok units at ×69.99) hanging 1024 deep below its
+    /// surface. The authored volume must replace the 4×radius heuristic and
+    /// follow a rotated, scaled placement.
+    #[test]
+    fn authored_phantom_volume_replaces_the_radius_heuristic() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, Material::default());
+        let positions = [[-256.0, 0.0, -512.0], [256.0, 0.0, 512.0], [0.0, 0.0, 0.0]];
+        let placement = Vec3::new(100.0, 50.0, 200.0);
+        attach_mesh_water(
+            &mut world,
+            entity,
+            0,
+            0,
+            MeshWaterSource {
+                name: None,
+                positions: &positions,
+                position: placement,
+                rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                scale: 2.0,
+                local_bound_center: Vec3::ZERO,
+                local_bound_radius: 572.0,
+                phantom_bounds: Some(([-256.0, -1024.0, -512.0], [256.0, 0.0, 512.0])),
+                root_transform: (
+                    placement,
+                    Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                    2.0,
+                ),
+            },
+        );
+        let volume = world.get::<WaterVolume>(entity).expect("WaterVolume");
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3);
+        // 90° about Y swaps the X and Z extents; ×2 scale doubles them.
+        assert!(
+            close(volume.min, [-924.0, -1998.0, -312.0]),
+            "{:?}",
+            volume.min
+        );
+        assert!(close(volume.max, [1124.0, 50.0, 712.0]), "{:?}", volume.max);
+    }
+
+    #[test]
+    fn degenerate_phantom_bounds_fall_back_to_the_mesh_volume() {
+        assert!(water_volume_from_phantom(
+            ([0.0, -10.0, 0.0], [0.0, 0.0, 5.0]),
+            (Vec3::ZERO, Quat::IDENTITY, 1.0)
+        )
+        .is_none());
+        assert!(water_volume_from_phantom(
+            ([f32::NAN, -10.0, 0.0], [1.0, 0.0, 5.0]),
+            (Vec3::ZERO, Quat::IDENTITY, 1.0)
+        )
+        .is_none());
     }
 
     #[test]

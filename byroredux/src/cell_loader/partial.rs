@@ -131,6 +131,7 @@ pub(crate) fn finish_partial_import(
         // MultiBound metadata on later content), never that the whole NIF
         // is a marker. The shared walker culls marker children individually.
         bsx_flags: bsx,
+        phantom_bounds: byroredux_nif::import::collision::extract_phantom_bounds(&scene),
         // #1235 / LC-D1-NEW-01 — root NiAVObject.flags surfaced from
         // the streaming partial for placement-root SceneFlags parity.
         root_flags,

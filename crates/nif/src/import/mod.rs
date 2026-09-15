@@ -140,6 +140,7 @@ fn import_nif_scene_impl(
         particle_emitters: Vec::new(),
         bsx_flags: None,
         bs_bound: None,
+        phantom_bounds: collision::extract_phantom_bounds(scene),
         attach_points: None,
         child_attach_connections: None,
         furniture_markers: extract_furniture_markers(scene),
