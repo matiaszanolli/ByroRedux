@@ -327,6 +327,12 @@ pub const GROUNDCOVER_BLADE_SEGMENTS_NEAR: u32 = 3;
 /// tier ladder. The fixed blade arena is drawn twice during the projected-size
 /// cross-fade; only the indirect vertex stride changes.
 pub const GROUNDCOVER_BLADE_SEGMENTS_MID: u32 = 1;
+/// Quadratic Bézier control points sit half-way along each end-point chord.
+/// This is geometry, not a visual tuning knob.
+pub const GROUNDCOVER_BEZIER_CONTROL_FRACTION: f32 = 0.5;
+/// Numerical guards for zero-length blade/wind vectors; not artistic tuning.
+pub const GROUNDCOVER_BLADE_VECTOR_EPSILON: f32 = 1.0e-4;
+pub const GROUNDCOVER_PROJECTED_DEPTH_EPSILON: f32 = 1.0e-3;
 /// Two triangles per segment, non-indexed. The tip ring collapses to zero
 /// width, so the last segment degenerates into a triangle without needing a
 /// special case in the vertex shader.
@@ -1202,10 +1208,8 @@ pub const MAX_FOG_VOLUMES_PER_CLUSTER: u32 = 8;
 // numeric tables.
 pub const FOG_VOLUME_PROFILE_HOMOGENEOUS: f32 =
     byroredux_core::ecs::FogProfile::Homogeneous as u32 as f32;
-pub const FOG_VOLUME_PROFILE_SMOKE: f32 =
-    byroredux_core::ecs::FogProfile::Smoke as u32 as f32;
-pub const FOG_VOLUME_PROFILE_FLAME: f32 =
-    byroredux_core::ecs::FogProfile::Flame as u32 as f32;
+pub const FOG_VOLUME_PROFILE_SMOKE: f32 = byroredux_core::ecs::FogProfile::Smoke as u32 as f32;
+pub const FOG_VOLUME_PROFILE_FLAME: f32 = byroredux_core::ecs::FogProfile::Flame as u32 as f32;
 pub const FOG_VOLUME_PROFILE_EXPLOSION: f32 =
     byroredux_core::ecs::FogProfile::Explosion as u32 as f32;
 pub const FOG_VOLUME_PROFILE_EXPLOSION_OIL: f32 =
@@ -1219,10 +1223,7 @@ pub const FOG_VOLUME_PROFILES: &[(&str, f32)] = &[
     ),
     ("FOG_VOLUME_PROFILE_SMOKE", FOG_VOLUME_PROFILE_SMOKE),
     ("FOG_VOLUME_PROFILE_FLAME", FOG_VOLUME_PROFILE_FLAME),
-    (
-        "FOG_VOLUME_PROFILE_EXPLOSION",
-        FOG_VOLUME_PROFILE_EXPLOSION,
-    ),
+    ("FOG_VOLUME_PROFILE_EXPLOSION", FOG_VOLUME_PROFILE_EXPLOSION),
     (
         "FOG_VOLUME_PROFILE_EXPLOSION_OIL",
         FOG_VOLUME_PROFILE_EXPLOSION_OIL,
@@ -1273,10 +1274,7 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_MATERIAL_LOBE", RENDER_DEBUG_MATERIAL_LOBE),
     ("RENDER_DEBUG_COMPOSITE_TERM", RENDER_DEBUG_COMPOSITE_TERM),
     ("RENDER_DEBUG_RT_LOD", RENDER_DEBUG_RT_LOD),
-    (
-        "RENDER_DEBUG_VOLUMETRIC_TERM",
-        RENDER_DEBUG_VOLUMETRIC_TERM,
-    ),
+    ("RENDER_DEBUG_VOLUMETRIC_TERM", RENDER_DEBUG_VOLUMETRIC_TERM),
     ("RENDER_DEBUG_MATERIAL_ROLE", RENDER_DEBUG_MATERIAL_ROLE),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),

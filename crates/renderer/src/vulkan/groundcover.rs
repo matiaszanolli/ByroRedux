@@ -48,8 +48,7 @@ use super::allocator::SharedAllocator;
 use super::buffer::{GpuBuffer, NoUninit};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
-    GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_BLADE_SEGMENTS_MID,
-    GROUNDCOVER_BLADE_SEGMENTS_NEAR,
+    GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_BLADE_SEGMENTS_MID, GROUNDCOVER_BLADE_SEGMENTS_NEAR,
     GROUNDCOVER_CHUNKS_PER_CELL_SIDE, GROUNDCOVER_HISTOGRAM_BUCKETS,
     GROUNDCOVER_INTERACTION_MAX_DISTURBERS, GROUNDCOVER_INTERACTION_TEXELS,
     GROUNDCOVER_INTERACTION_UNITS, GROUNDCOVER_INTERACTION_WORKGROUP,
@@ -1927,7 +1926,8 @@ mod tests {
                 && frag.contains("outMotion = (currNDC - prevNDC) * 0.5;")
                 && frag.contains("BLUE_NOISE_RANKS")
                 && frag.contains("vLodMidWeight * (1.0 - vCardWeight)")
-                && frag.contains("float midTransition = 4.0 * vLodMidWeight * (1.0 - vLodMidWeight);")
+                && frag
+                    .contains("float midTransition = 4.0 * vLodMidWeight * (1.0 - vLodMidWeight);")
                 && frag.contains("float cardTransition = 4.0 * vCardWeight * (1.0 - vCardWeight);")
                 && frag.contains("outFsrReactive = 0.9 * max(midTransition, cardTransition);")
                 && frag.contains("outFsrTransparency = 0.0;"),
@@ -2182,7 +2182,7 @@ mod tests {
     fn blade_control_points_preserve_length_after_combined_bends() {
         let src = include_str!("../../shaders/groundcover_blade.vert");
         assert!(
-            src.contains("float bendFraction = min(length(bend) / max(height, 1.0e-4), 1.0);")
+            src.contains("float bendFraction = min(length(bend) / max(height, GROUNDCOVER_BLADE_VECTOR_EPSILON), 1.0);")
                 && src.contains("float uprightScale = sqrt(max(1.0 - bendFraction * bendFraction, 0.0));"),
             "combined wind and interaction bend must reduce vertical reach so gusts cannot grow blades"
         );
@@ -2204,7 +2204,7 @@ mod tests {
             "GROUNDCOVER_WIND_LATERAL_FRACTION",
             "vec3 lateralDir",
             "float lateralBend",
-            "float heightSquaredScale = height * height / max(maxSpeciesHeight, 1.0e-4);",
+            "float heightSquaredScale = height * height / max(maxSpeciesHeight, GROUNDCOVER_BLADE_VECTOR_EPSILON);",
         ] {
             assert!(wind.contains(token), "wind polish must retain {token}");
         }

@@ -419,6 +419,25 @@ fn main() {
     }
     writeln!(out).unwrap();
 
+    writeln!(out, "// Ground-cover blade geometry guards").unwrap();
+    for (name, value) in [
+        (
+            "GROUNDCOVER_BEZIER_CONTROL_FRACTION",
+            GROUNDCOVER_BEZIER_CONTROL_FRACTION,
+        ),
+        (
+            "GROUNDCOVER_BLADE_VECTOR_EPSILON",
+            GROUNDCOVER_BLADE_VECTOR_EPSILON,
+        ),
+        (
+            "GROUNDCOVER_PROJECTED_DEPTH_EPSILON",
+            GROUNDCOVER_PROJECTED_DEPTH_EPSILON,
+        ),
+    ] {
+        writeln!(out, "#define {name} {value:?}").unwrap();
+    }
+    writeln!(out).unwrap();
+
     writeln!(out, "// Skinning").unwrap();
     writeln!(out, "#define MAX_BONES_PER_MESH {MAX_BONES_PER_MESH}u").unwrap();
     // No `u` suffix — used in `layout(local_size_x = SKIN_WORKGROUP_SIZE)`.

@@ -222,7 +222,7 @@ vec3 byroGcWindBend(
         * mix(GROUNDCOVER_WIND_FLOW_FLOOR, 1.0, clamp(flow, 0.0, 1.0))
         * gust * (1.0 - GROUNDCOVER_WIND_STIFFNESS_ATTENUATION * stiffness);
     bendFraction = clamp(bendFraction, 0.0, 1.0) * GROUNDCOVER_WIND_MAX_BEND;
-    vec3 leanDir = length(windDir) > 1.0e-4
+    vec3 leanDir = length(windDir) > GROUNDCOVER_BLADE_VECTOR_EPSILON
         ? normalize(vec3(windDir.x, 0.0, -windDir.y))
         : facing;
     vec3 lateralDir = vec3(-leanDir.z, 0.0, leanDir.x);
@@ -237,7 +237,7 @@ vec3 byroGcWindBend(
     // A cantilever's visible deflection should fall off faster than length:
     // scale with height² while normalising by the authored species maximum so
     // the tallest blade retains the established full-strength response.
-    float heightSquaredScale = height * height / max(maxSpeciesHeight, 1.0e-4);
+    float heightSquaredScale = height * height / max(maxSpeciesHeight, GROUNDCOVER_BLADE_VECTOR_EPSILON);
     return (leanDir * downwindBend + lateralDir * lateralBend) * heightSquaredScale;
 }
 
@@ -247,7 +247,7 @@ void byroGcControlPoints(
 ) {
     float disturbAmount = min(length(disturbance), 1.0);
     vec3 bend = windBend;
-    if (disturbAmount > 1.0e-4) {
+    if (disturbAmount > GROUNDCOVER_BLADE_VECTOR_EPSILON) {
         vec3 pushDir = normalize(vec3(disturbance.x, 0.0, disturbance.y));
         float k = GROUNDCOVER_INTERACTION_MAX_BEND * disturbAmount;
         bend += pushDir * (height * k);
@@ -258,9 +258,10 @@ void byroGcControlPoints(
     // approximation for the ribbon here, and crucially it is evaluated from
     // the *combined* bend so wind and interaction cannot each preserve a
     // different fictional length.
-    float bendFraction = min(length(bend) / max(height, 1.0e-4), 1.0);
+    float bendFraction = min(length(bend) / max(height, GROUNDCOVER_BLADE_VECTOR_EPSILON), 1.0);
     float uprightScale = sqrt(max(1.0 - bendFraction * bendFraction, 0.0));
-    p1 = base + up * (height * 0.5 * uprightScale) + bend * 0.5;
+    p1 = base + up * (height * GROUNDCOVER_BEZIER_CONTROL_FRACTION * uprightScale)
+        + bend * GROUNDCOVER_BEZIER_CONTROL_FRACTION;
     p2 = base + up * (height * uprightScale) + bend;
 }
 
@@ -319,7 +320,7 @@ void main() {
     float width = mix(sp.sizeRange.z, sp.sizeRange.w, gcSeedStream(seed, 1u));
     float stiffness = clamp(sp.baseColour.a, 0.0, 1.0);
     float projectedHeight = height * GC_PIXELS_PER_UNIT
-        / max(distance(base, GC_CAMERA_POS), 1.0e-3);
+        / max(distance(base, GC_CAMERA_POS), GROUNDCOVER_PROJECTED_DEPTH_EPSILON);
     // 0 = all tier 0; 1 = all tier 1. Both streams remain present during the
     // band and the fragment admits complementary blue-noise samples.
     vLodMidWeight = 1.0 - smoothstep(
@@ -462,7 +463,7 @@ void main() {
     // high-contrast geometry is the case TAA handles worst. Keyed to distance
     // instead the floor is only correct at the resolution it was tuned at —
     // the same scene shimmers at 4K and is stable at 1080p.
-    float viewDist = max(distance(pos, GC_CAMERA_POS), 1.0e-3);
+    float viewDist = max(distance(pos, GC_CAMERA_POS), GROUNDCOVER_PROJECTED_DEPTH_EPSILON);
     float pixelsPerUnit = GC_PIXELS_PER_UNIT / viewDist;
     float minHalfWidth = GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS
         / max(pixelsPerUnit, 1.0e-6);
