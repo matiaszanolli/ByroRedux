@@ -172,17 +172,23 @@ index units** (so the triangle start is `tri_offset / 3`): e.g. e2db's
 object has `lod0 cnt=888 off=0`, `lod1 cnt=0 off=2664`, `lod2 cnt=122
 off=2664` (2664 = 888 × 3).
 
-These are **levels of detail** (nif.xml: "switch a geometry at a
-specified distance") — alternative triangulations of the *same* surface,
-not disjoint segments. Rendering more than one z-fights (overlapping
-coplanar triangulations). The importer therefore selects **exactly one
-LOD** and emits only its triangles.
+The three bands are **disjoint sub-meshes whose union is the whole
+model**, not alternative triangulations of one surface (#4234). This page
+originally said the opposite, and the importer used to keep only the band
+with the most triangles. Measured on retail FO4 data: the band counts sum
+to the shape's triangle total for 12,096/12,096 `BSMeshLODTriShape` blocks,
+and no two bands share a vertex in any of the 5,292 multi-band shapes.
+NifSkope draws the bands additively, falling through its LOD `switch`
+(`tools/nifskope/src/gl/bsshape.cpp`). Keeping only the largest band
+dropped 12.45% of `Fallout4 - MeshesExtra.ba2`'s baked triangles.
 
-**LOD index is not a reliable detail order**: some objects ship
-`lod0 ≫ lod2` (e2db: 888 vs 122), others `lod0 ≪ lod2` (another object:
-16 vs 127). So the importer picks the **finest** LOD by *highest triangle
-count*, reading `tri_count` triangles from `tri_offset / 3`. Verified:
-within each LOD, indices are 0-based and dense (`max == num_verts − 1`).
+The importer decodes **every populated band**
+(`precombine_lod_bands` / `decode_shared_geom_object` in
+`crates/nif/src/import/precombine.rs`), reading each band's `tri_count`
+triangles from `tri_offset / 3`. An empty band's offset is not trusted.
+Distance LOD, if it is ever added, has to drop tail bands; it must never
+pick a single band. Verified: indices are 0-based and dense
+(`max == num_verts − 1`).
 
 ### Placement
 
