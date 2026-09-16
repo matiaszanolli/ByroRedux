@@ -258,7 +258,7 @@ guard below.
 
 ### 6. R1 Material Table Layout Soundness
 
-- **`GpuMaterial` size is pinned at 432 B** by `gpu_material_size_is_432_bytes`
+- **`GpuMaterial` size is pinned at 428 B** by `gpu_material_size_is_428_bytes`
   (`crates/renderer/src/vulkan/material.rs`) — the test name now matches the
   asserted size (history: 272 → 260 after #804 dropped `avg_albedo`, → 280
   under #1147 (+20 B, `translucency_subsurface_r/g/b` + `…_transmissive_scale`
@@ -266,20 +266,21 @@ guard below.
   Disney sheen/subsurface lobe #1249, → 300 with `anisotropic` #1250, → 348 on
   2026-07-27 (`1d94eb24`) with the twelve common supplemental texture roles, →
   364 on 2026-08-23 (#2221) with animated shader color/float fields, → 396 with
-  BGEM v21+ glass optics, → **432 on 2026-08-25 with the soft/rim/back Bethesda
-  lighting response**).
-  A stale 260/272/296/300/348/364/396 in audit prose, or any test-name-vs-asserted-size
+  BGEM v21+ glass optics, → 432 on 2026-08-25 with the soft/rim/back Bethesda
+  lighting response, → **428 on 2026-09-07 (#3909) when the unsampled
+  `texture_index` lane was removed**).
+  A stale 260/272/296/300/348/364/396/432 in audit prose, or any test-name-vs-asserted-size
   mismatch, means the GPU is reading wrong bytes.
 - **Per-field offset pin** `gpu_material_field_offsets_match_shader_contract` (#806):
   every named field's byte offset asserted against the shader contract. The size pin
-  alone cannot catch a within-vec4 reorder (swap `texture_index ↔ normal_map_index`
+  alone cannot catch a within-vec4 reorder (swap `normal_map_index ↔ dark_map_index`
   is size-invisible, runtime-lethal). Adding a field without updating this assertion
   is a regression.
 - ALL fields are flat scalar `f32`/`u32` — never `[f32; 3]` (std430 vec3 alignment).
   This includes the newest scalars: the BGSM translucency suite
   (`translucency_subsurface_r/g/b`, `…_transmissive_scale`, `…_turbulence`) and the
   Disney lobe (`ior`, `subsurface`, `sheen`, `sheen_tint`, `anisotropic`).
-- Pad fields explicitly zeroed (the byte-`Hash`/`Eq` dedup hashes the raw 432 B; an
+- Pad fields explicitly zeroed (the byte-`Hash`/`Eq` dedup hashes the raw 428 B; an
   uninit hole poisons dedup). New scalars must be zeroed in `GpuMaterial::default()`
   so default materials still dedup to slot 0.
 - **Intern cap (#797).** `MaterialTable::intern` caps at `MAX_MATERIALS = 16384`

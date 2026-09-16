@@ -82,7 +82,7 @@ Residual gap (#2284 / MAT-D1-NEW-04, fixed 2026-08-05): six
 `BSLightingShaderProperty` shading scalars (`lighting_effect_1/2`,
 `subsurface_rolloff`, `rimlight_power`, `backlight_power`, `fresnel_power`) now
 land on the canonical `Material`. **The GPU-side follow-up closed on
-2026-08-25:** all six are present in the 432-byte `GpuMaterial`, hashed in both
+2026-08-25:** all six are present in the `GpuMaterial`, hashed in both
 material-table paths, mirrored in GLSL, and consumed by the canonical direct,
 glass, and GI response. Soft/rim/back feature flags and their lighting-mask /
 back-light texture roles are normalized before the renderer; the shader never

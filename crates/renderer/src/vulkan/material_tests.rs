@@ -55,7 +55,8 @@ use super::*;
 ///   texture roles), then 364 → 396 for the BGEM v21+ glass optical
 ///   scalars and two dedicated overlay-map handles, then 396 → 432 for
 ///   seven Bethesda lighting-response scalars and two translated mask
-///   handles. Test name includes
+///   handles, then 432 → 428 when #3909 dropped the unsampled
+///   `texture_index`. Test name includes
 ///   the size so a future size
 ///   shift updates it in lockstep with the assertion.
 #[test]
@@ -1373,5 +1374,293 @@ mod bindings_glsl_contract_pin {
             "`{named}` exists but does not assert `size_of::<GpuMaterial>()` — the comment \
              would point at a test that cannot catch the drift it warns about (#3846)",
         );
+    }
+}
+
+/// #4114 — the fourth sweep of a stale `GpuMaterial` size (#3240/#3414,
+/// #3846, #3909's leftovers) found it in sixteen files, two of them the
+/// audit skills that exist to catch it. Every earlier fix corrected the
+/// sites it was shown; this scans for the claim instead.
+///
+/// Three rules, all against `size_of::<GpuMaterial>()`:
+///
+/// 1. Every `gpu_material_size_is_<N>_bytes` token in the tree names the
+///    live size. The test name is the half that misdirects a reader.
+/// 2. A line that mentions `GpuMaterial` and states a size (`N B`,
+///    `N-byte`, `N bytes`) states the live one — unless the number is the
+///    "from" side of a history arrow (`396 → 432`) or the line is dated
+///    history (`at R1`).
+/// 3. The anchored statements that name the size without naming the type
+///    on the same line (the struct's own doc, its trailing offset comment,
+///    the layout doc's heading and table total, the memory-budget row).
+///
+/// Scope is live source, engine docs, the audit skills and the top-level
+/// status docs. `docs/audits/`, `HISTORY.md` and `.claude/issues/` are
+/// dated records and are not scanned.
+#[cfg(test)]
+mod gpu_material_size_claims {
+    use super::GpuMaterial;
+    use std::path::{Path, PathBuf};
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry
+                .expect("size-claim guard: unreadable dir entry")
+                .path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !matches!(name, "target" | ".git" | "audits" | "issues") {
+                    collect(&path, out);
+                }
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str());
+            if matches!(ext, Some("rs" | "md" | "glsl" | "vert" | "frag" | "comp")) {
+                out.push(path);
+            }
+        }
+    }
+
+    fn scanned_files() -> Vec<PathBuf> {
+        let root = workspace_root();
+        let mut files = Vec::new();
+        for dir in [
+            "crates",
+            "byroredux",
+            "tools",
+            "docs/engine",
+            ".claude/commands",
+        ] {
+            collect(&root.join(dir), &mut files);
+        }
+        for top in ["README.md", "ROADMAP.md", "CLAUDE.md"] {
+            files.push(root.join(top));
+        }
+        files
+    }
+
+    /// Every `(value, end_index)` of a run of digits in `line`.
+    fn numbers(line: &str) -> Vec<(usize, usize, usize)> {
+        let bytes = line.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_digit() {
+                let start = i;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if let Ok(value) = line[start..i].parse() {
+                    out.push((value, start, i));
+                }
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Dated narrative. Mirrors #4042's `HISTORIC_MARKERS`: a line that
+    /// tells the story of an old size is not a claim about the current one.
+    const HISTORIC_MARKERS: &[&str] = &[" at R1", "was ", "grew", "before", "used to", "Closed ("];
+
+    /// Every `Gpu*` type name on `line`, as `(start, name)`.
+    fn gpu_types(line: &str) -> Vec<(usize, &str)> {
+        line.match_indices("Gpu")
+            .filter_map(|(start, _)| {
+                let rest = &line[start..];
+                let len = rest
+                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .unwrap_or(rest.len());
+                let name = &rest[..len];
+                let prev = line[..start].chars().last();
+                (name.len() > 3
+                    && name.as_bytes()[3].is_ascii_uppercase()
+                    && !prev.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_'))
+                .then_some((start, name))
+            })
+            .collect()
+    }
+
+    /// Whether `rest` (the text after a number) starts with a history arrow.
+    fn starts_with_arrow(rest: &str) -> bool {
+        let rest = rest.trim_start_matches(['*', ' ', 'B']);
+        rest.starts_with('→') || rest.starts_with("->")
+    }
+
+    /// The sizes a line asserts as the current `GpuMaterial` size (rule 2).
+    ///
+    /// A number counts when it carries a size unit, the nearest `Gpu*` type
+    /// on the line is `GpuMaterial` (so `368-byte GpuCamera` on the same line
+    /// is not read as a material size), and it is not the "from" side of a
+    /// history arrow anywhere on the line — which also excuses the last
+    /// element of one chain that a later `432 → 428` continues.
+    fn current_size_claims(line: &str) -> Vec<usize> {
+        let types = gpu_types(line);
+        if !types.iter().any(|&(_, name)| name == "GpuMaterial") {
+            return Vec::new();
+        }
+        // "300 bytes at R1, 432 bytes today" is history and a current claim
+        // on one line; the `today` size is read even past the markers.
+        if HISTORIC_MARKERS.iter().any(|m| line.contains(m)) {
+            return numbers(line)
+                .into_iter()
+                .filter(|&(_, _, end)| {
+                    let after = &line[end..];
+                    after.starts_with(" bytes today") || after.starts_with(" B today")
+                })
+                .map(|(value, _, _)| value)
+                .collect();
+        }
+        let all = numbers(line);
+        let from_sides: Vec<usize> = all
+            .iter()
+            .filter(|&&(_, _, end)| starts_with_arrow(&line[end..]))
+            .map(|&(value, _, _)| value)
+            .collect();
+        all.iter()
+            .filter(|&&(value, start, end)| {
+                // Part of an identifier, a `#1234` reference, or a
+                // `0x`/decimal/thousands literal: not a size.
+                let glued = line[..start].chars().last().is_some_and(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, '_' | '#' | '.' | ',')
+                });
+                let after = line[end..].trim_start_matches('*');
+                let unit = (after.starts_with(" B")
+                    && !after[2..].starts_with(|c: char| c.is_ascii_alphanumeric()))
+                    || after.starts_with("-byte")
+                    || after.starts_with(" bytes");
+                let nearest = types
+                    .iter()
+                    .min_by_key(|&&(pos, _)| pos.abs_diff(start))
+                    .map(|&(_, name)| name);
+                !glued && unit && nearest == Some("GpuMaterial") && !from_sides.contains(&value)
+            })
+            .map(|&(value, _, _)| value)
+            .collect()
+    }
+
+    #[test]
+    fn no_file_states_a_stale_gpu_material_size() {
+        let live = std::mem::size_of::<GpuMaterial>();
+        let prefix = concat!("gpu_material_size_is", "_");
+        let mut stale = Vec::new();
+        for path in scanned_files() {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // This module quotes stale sizes on purpose, to test the scanner.
+            let text = match text.split_once(concat!("mod gpu_material_size", "_claims {")) {
+                Some((head, _)) => head.to_string(),
+                None => text,
+            };
+            for (idx, line) in text.lines().enumerate() {
+                // Rule 1.
+                let dated = HISTORIC_MARKERS.iter().any(|m| line.contains(m));
+                for (pos, _) in line.match_indices(prefix).filter(|_| !dated) {
+                    let rest = &line[pos + prefix.len()..];
+                    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                    if rest[digits.len()..].starts_with("_bytes")
+                        && digits.parse::<usize>().ok() != Some(live)
+                    {
+                        stale.push(format!("{}:{}: {}", path.display(), idx + 1, line.trim()));
+                    }
+                }
+                // Rule 2.
+                if current_size_claims(line).iter().any(|&n| n != live) {
+                    stale.push(format!("{}:{}: {}", path.display(), idx + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            stale.is_empty(),
+            "these lines state a GpuMaterial size other than the live {live} B \
+             (#4114) — correct them, or phrase history as `old → new`:\n{}",
+            stale.join("\n")
+        );
+    }
+
+    #[test]
+    fn anchored_size_statements_match_the_struct() {
+        let live = std::mem::size_of::<GpuMaterial>();
+        let root = workspace_root();
+        let anchors: [(&str, &str); 5] = [
+            (
+                "crates/renderer/src/vulkan/material.rs",
+                "/// std430 GPU-side material record. **",
+            ),
+            (
+                "crates/renderer/src/vulkan/material.rs",
+                "back_lighting_map_index: u32,",
+            ),
+            ("docs/engine/shader-pipeline.md", "### `GpuMaterial` — "),
+            ("docs/engine/shader-pipeline.md", "map indices → total **"),
+            (
+                "docs/engine/memory-budget.md",
+                "| Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | ",
+            ),
+        ];
+        for (file, anchor) in anchors {
+            let text = std::fs::read_to_string(root.join(file))
+                .unwrap_or_else(|e| panic!("read {file}: {e}"));
+            let rest = text
+                .split_once(anchor)
+                .unwrap_or_else(|| panic!("{file} no longer carries {anchor:?}; re-point this pin"))
+                .1;
+            let line = rest.lines().next().unwrap_or("");
+            // The last number on the anchored line is the stated size:
+            // `// offset 424 → total 428` carries an offset first.
+            let stated = if anchor.starts_with("back_lighting") {
+                numbers(line).last().map(|n| n.0)
+            } else {
+                numbers(line).first().map(|n| n.0)
+            };
+            assert_eq!(
+                stated,
+                Some(live),
+                "{file}: {anchor:?} states a GpuMaterial size other than {live} B (#4114): {line}"
+            );
+        }
+    }
+
+    /// The scanner itself: history reads as history, a current claim does
+    /// not, and identifiers or issue numbers are not sizes.
+    #[test]
+    fn the_claim_scanner_separates_history_from_current_sizes() {
+        assert_eq!(
+            current_size_claims("the 432-byte `GpuMaterial` layout"),
+            vec![432]
+        );
+        assert_eq!(
+            current_size_claims("`GpuMaterial` — 428 bytes, SSBO"),
+            vec![428]
+        );
+        assert_eq!(
+            current_size_claims("**`GpuMaterial` size is pinned at 432 B** by"),
+            vec![432]
+        );
+        assert_eq!(
+            current_size_claims("`GpuMaterial` 396 → 432 → 428 B (#3909)"),
+            vec![428]
+        );
+        assert_eq!(
+            current_size_claims("`GpuMaterial` 348→432 B (glass), then 432→428 B (#3909)"),
+            vec![428]
+        );
+        assert!(current_size_claims("`GpuMaterial` was 300 bytes at R1").is_empty());
+        assert_eq!(
+            current_size_claims("`GpuMaterial` was 300 bytes at R1 (432 bytes today,"),
+            vec![432]
+        );
+        assert!(current_size_claims("the 368-byte `GpuCamera` and `GpuMaterial` tests").is_empty());
+        assert!(current_size_claims("`GpuMaterial` (#3909) x432 B_ok").is_empty());
+        assert!(current_size_claims("no type here: 432 B").is_empty());
     }
 }

@@ -367,7 +367,7 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 | 8 | `INSTANCE_FLAG_DIFFUSE_ALPHA` | BC1 diffuse texture carries alpha (guards `NiAlphaProperty`-less alpha test) |
 | 16–31 | terrain tile index | `(flags >> 16) & 0xFFFF` (when bit 3 set) |
 
-### `GpuMaterial` — 432 bytes, SSBO (Set 1, Binding 13)
+### `GpuMaterial` — 428 bytes, SSBO (Set 1, Binding 13)
 
 Indexed by `GpuInstance.material_id`. Deduplicated per frame: identical
 material params share one entry. Up to `MAX_MATERIALS` = 16 384 entries.
@@ -384,37 +384,37 @@ Selected fields (full layout in
 | 16–27 | `emissive_rgb` | Self-illumination colour (3 × f32) |
 | 28–43 | `specular` | Strength + tint RGB |
 | 44 | `alpha_threshold` | Alpha test cutoff |
-| 48–83 | texture indices | diffuse, normal, dark, glow, detail, gloss, parallax, env, env_mask (9 × u32) |
-| 84 | `alpha_test_func` | 0=ALWAYS … 7=NEVER |
-| 88 | `material_kind` | Classification — see below |
-| 92 | `material_alpha` | Authored material alpha (`NiAlphaProperty`-independent) |
-| 96–100 | parallax POM | height scale, max sample passes |
-| 104–119 | UV transform | offset U/V + scale U/V |
-| 120–140 | diffuse/ambient | legacy diffuse RGB + ambient RGB |
-| 144–171 | tinting | skin tint ARGB, hair tint RGB (Skyrim+) |
-| 172–231 | multi-layer / eye / sparkle | envmap strength, eye cubemap centers + scale, refraction scale, sparkle RGB |
-| 232 | `sparkle_intensity` | Sparkle/glitter effect strength |
-| 236–255 | BSEffect falloff | start/stop angle, start/stop opacity, soft depth |
-| 256 | `greyscale_lut_index` | Bindless index of the BSEffectShaderProperty palette LUT (0 = none) |
-| 260–276 | BGSM translucency | subsurface RGB, transmissive scale, turbulence |
-| 280 | `ior` | Refractive index (default 1.5) |
-| 284 | `subsurface` | Disney diffuse subsurface strength |
-| 288 | `sheen` | Disney sheen strength |
-| 292 | `sheen_tint` | 0 = white sheen, 1 = albedo-tinted sheen |
-| 296 | `anisotropic` | Anisotropic GGX strength [0, 1] |
-| 300 | `tint_map_index` | Supplemental role — bindless index (0 = none) |
-| 304 | `inner_layer_map_index` | Supplemental role |
-| 308 | `specular_map_index` | Supplemental role |
-| 312 | `lighting_map_index` | Supplemental role — imported/uploaded but deliberately **unsampled** pending coordinate semantics |
-| 316 | `flow_map_index` | Supplemental role — deliberately **unsampled** |
-| 320 | `wrinkle_map_index` | Supplemental role — deliberately **unsampled** pending actor-control semantics |
-| 324 | `reflectance_map_index` | Supplemental role |
-| 328 | `emittance_gradient_map_index` | Supplemental role |
-| 332–344 | `decal_map_0..3_index` | Four decal role indices (4 × u32) |
-| 348–360 | animated shader sinks | Animated shader colour RGB + scalar; captured pending named-controller dispatch |
-| 364–392 | BGEM glass optics | Fresnel tint RGB, refraction deviation, blur scale/factor, scratch-roughness and dirt-overlay indices |
-| 396–420 | authored lighting response | lighting-effect pair, subsurface rolloff, rim/back powers, Fresnel power, greyscale-to-palette scale |
-| 424–428 | lighting texture roles | soft/rim lighting mask and back-lighting map indices → total **432** |
+| 48–79 | texture indices | normal, dark, glow, detail, gloss, parallax, env, env_mask (8 × u32; the diffuse index lives on `GpuInstance`, #3909) |
+| 80 | `alpha_test_func` | 0=ALWAYS … 7=NEVER |
+| 84 | `material_kind` | Classification — see below |
+| 88 | `material_alpha` | Authored material alpha (`NiAlphaProperty`-independent) |
+| 92–96 | parallax POM | height scale, max sample passes |
+| 100–115 | UV transform | offset U/V + scale U/V |
+| 116–136 | diffuse/ambient | legacy diffuse RGB + ambient RGB |
+| 140–167 | tinting | skin tint ARGB, hair tint RGB (Skyrim+) |
+| 168–227 | multi-layer / eye / sparkle | envmap strength, eye cubemap centers + scale, refraction scale, sparkle RGB |
+| 228 | `sparkle_intensity` | Sparkle/glitter effect strength |
+| 232–251 | BSEffect falloff | start/stop angle, start/stop opacity, soft depth |
+| 252 | `greyscale_lut_index` | Bindless index of the BSEffectShaderProperty palette LUT (0 = none) |
+| 256–272 | BGSM translucency | subsurface RGB, transmissive scale, turbulence |
+| 276 | `ior` | Refractive index (default 1.5) |
+| 280 | `subsurface` | Disney diffuse subsurface strength |
+| 284 | `sheen` | Disney sheen strength |
+| 288 | `sheen_tint` | 0 = white sheen, 1 = albedo-tinted sheen |
+| 292 | `anisotropic` | Anisotropic GGX strength [0, 1] |
+| 296 | `tint_map_index` | Supplemental role — bindless index (0 = none) |
+| 300 | `inner_layer_map_index` | Supplemental role |
+| 304 | `specular_map_index` | Supplemental role |
+| 308 | `lighting_map_index` | Supplemental role — imported/uploaded but deliberately **unsampled** pending coordinate semantics |
+| 312 | `flow_map_index` | Supplemental role — deliberately **unsampled** |
+| 316 | `wrinkle_map_index` | Supplemental role — deliberately **unsampled** pending actor-control semantics |
+| 320 | `reflectance_map_index` | Supplemental role |
+| 324 | `emittance_gradient_map_index` | Supplemental role |
+| 328–340 | `decal_map_0..3_index` | Four decal role indices (4 × u32) |
+| 344–356 | animated shader sinks | Animated shader colour RGB + scalar; captured pending named-controller dispatch |
+| 360–388 | BGEM glass optics | Fresnel tint RGB, refraction deviation, blur scale/factor, scratch-roughness and dirt-overlay indices |
+| 392–416 | authored lighting response | lighting-effect pair, subsurface rolloff, rim/back powers, Fresnel power, greyscale-to-palette scale |
+| 420–424 | lighting texture roles | soft/rim lighting mask and back-lighting map indices → total **428** |
 
 The twelve entries at 300–344 are the original source-agnostic supplemental
 texture roles introduced with `MaterialTextureSet<T>`. Three of them
@@ -490,7 +490,7 @@ ReSTIR invalid-selection sentinel and is never occupied by a real light.
 | `MAX_LIGHTS` | 1023 | Per-frame point/spot/directional lights; packed index 1023 remains invalid |
 | `MAX_LIGHTS_PER_CLUSTER` | 512 | Candidate indices retained by each 16×9×24 cluster; overflow/high-water/drop telemetry is fence-lagged |
 | `MAX_INSTANCES` | 262 144 | One indirect draw command per instance worst-case |
-| `MAX_MATERIALS` | 16 384 | 432 B each; deduplicated per frame |
+| `MAX_MATERIALS` | 16 384 | 428 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 366 | First-sight bind-inverse upload cap |
 | `MAX_TERRAIN_TILES` | 1 024 | 32 B each |

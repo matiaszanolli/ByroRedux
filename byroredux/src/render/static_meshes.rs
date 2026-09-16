@@ -1153,7 +1153,7 @@ pub(super) fn collect_static_mesh_draws(
                     is_water: false,
                 };
                 // #781 / PERF-N4 — `intern_by_hash` skips the
-                // `to_gpu_material()` 432-byte construction on the
+                // `to_gpu_material()` construction on the
                 // dedup-hit path (~97% of calls on Prospector).
                 cmd.material_id =
                     material_table.intern_by_hash(cmd.material_hash(), || cmd.to_gpu_material());

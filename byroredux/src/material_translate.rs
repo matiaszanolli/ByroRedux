@@ -102,10 +102,10 @@ use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet};
 /// fire-refraction proxy instead stores the authored heat-haze distortion
 /// strength there; the material kind makes the two meanings unambiguous
 /// without adding another field to the hot GPU material record. That
-/// record's size is pinned by `gpu_material_size_is_432_bytes`
+/// record's size is pinned by `gpu_material_size_is_428_bytes`
 /// (`crates/renderer/src/vulkan/material.rs`) — cited rather than restated
 /// here because the literal has already drifted once: this doc said
-/// "348-byte" through the 348 → 364 → 396 → 432 B growth chain, and #3240's
+/// "348-byte" through the 348 → 364 → 396 → 432 → 428 B size chain, and #3240's
 /// sweep of that same stale figure out of `bindings.glsl` missed this site
 /// (#3414).
 ///

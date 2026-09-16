@@ -92,7 +92,7 @@ Constants in [`scene_buffer/constants.rs`](../../crates/renderer/src/vulkan/scen
 | Instance SSBO ² | `INITIAL_INSTANCE_CAPACITY` = 65 536, grows to `MAX_INSTANCES` = 262 144 | 65 536 | 160 B (#3231) | 10.5 MB | **21.0 MB** (≤ 83.9 MB) |
 | Previous-model SSBO (`33d9a468`) ² | same | 65 536 | 64 B (`mat4`) | 4.2 MB | **8.4 MB** (≤ 33.6 MB) |
 | Indirect draw SSBO | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
-| Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 432 B | 6.75 MB | **13.5 MB** |
+| Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 428 B | 7.0 MB | **14.0 MB** |
 | Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 160 B (`GpuTerrainTile`: 3× `[u32; 8]` texture indices + #4057's two `[f32; 4]` cover-affinity rows, `cell_origin_xz`, `water_y`, `canopy_height`, and #4056's ground-cover detail-atlas `uvec4`; pinned by `gpu_terrain_tile_is_160_bytes`) | — | **~160 KB** (single shared buffer, NOT FIF-doubled) |
 | Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |
 | Camera UBO | — | 1 | 368 B (#3323) | 368 B | **736 B** |
@@ -118,8 +118,11 @@ deferred-destroy countdown. The parenthesised figures are the ceiling a grown
 slot pair can reach. Measured on MedTek, GPU memory allocated fell by the
 computed 88.1 MB (84.0 MiB).
 
-**Total resident scene buffers:** ≈ **137 MB** across all copies at the
-starting capacity (≈ 225 MB if both instance pairs grow to the ceiling).
+**Total resident scene buffers:** ≈ **155 MB** across all copies at the
+starting capacity (≈ 243 MB if both instance pairs grow to the ceiling) —
+the sum of the rows above, in decimal MB like them. The ≈ 225 MB this line
+carried before #4199 was already ~18 MB below that sum, and the 137 MB #4199
+derived from it inherited the gap (#4114).
 
 Exceeding `MAX_INSTANCES` logs a one-shot `warn!` and clamps to
 `MAX_INSTANCES` (#956/#992) — it is no longer a `debug_assert`. Exceeding

@@ -23,8 +23,8 @@
 > decoded yet, so those roles remain explicitly absent; see
 > [RT Lighting and Material Correctness Recovery](rt-lighting-material-recovery.md).
 >
-> **2026-08-25 lighting/material convergence.** The canonical record is now
-> 432 bytes and carries BGEM Fresnel tint, refraction deviation, blur,
+> **2026-08-25 lighting/material convergence.** The canonical record grew to
+> 432 bytes (428 since #3909 removed the unsampled `texture_index`) and carries BGEM Fresnel tint, refraction deviation, blur,
 > scratch/dirt maps, Bethesda lighting-effect/rim/back/Fresnel/palette scalars,
 > and semantic lighting-mask/back-light roles end to end. `triangle.frag`
 > consumes those fields through format-agnostic flags and roles: authored

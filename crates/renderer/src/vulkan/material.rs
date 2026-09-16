@@ -40,13 +40,14 @@ use std::sync::Once;
 /// (`scene_buffer/upload.rs`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
-/// std430 GPU-side material record. **432 bytes** per material.
+/// std430 GPU-side material record. **428 bytes** per material.
 /// Size history: 272 B → 260 B (#804 R1-N4 dropped `avg_albedo_r/g/b`)
 /// → 296 B (#1249 Disney sheen/subsurface) → 300 B (#1250 `anisotropic`)
 /// → 348 B (common supplemental texture roles) → 364 B (#2221 animated
 /// shader color/float, unsampled) → 396 B (BGEM v21+ glass optics)
-/// → 432 B (Bethesda lighting response + canonical mask roles).
-/// Pinned by `gpu_material_size_is_432_bytes`.
+/// → 432 B (Bethesda lighting response + canonical mask roles) → 428 B
+/// (#3909 dropped the unsampled `texture_index`).
+/// Pinned by `gpu_material_size_is_428_bytes`.
 ///
 /// (Historical: the per-instance → per-material migration shipped as
 /// R1 Phases 4–6, finishing with #785. The layout below was originally
@@ -389,7 +390,7 @@ pub struct GpuMaterial {
     pub fresnel_power: f32,              // offset 412
     pub grayscale_to_palette_scale: f32, // offset 416
     pub lighting_mask_map_index: u32,    // offset 420
-    pub back_lighting_map_index: u32,    // offset 424 → total 432
+    pub back_lighting_map_index: u32,    // offset 424 → total 428
 }
 
 // SAFETY: `#[repr(C)]` over 107 four-byte scalars (`f32` / `u32`) only, so
@@ -1191,7 +1192,7 @@ impl MaterialTable {
     // the first frame after construction then re-runs `clear()` →
     // `seed_neutral_default` AND uploads the (identical) neutral
     // entry. That re-upload is one std430-aligned `GpuMaterial`
-    // (432 B) of redundant host→device traffic per first frame
+    // of redundant host→device traffic per first frame
     // and is not visible in steady-state telemetry. Documented
     // here rather than skipped because the alternative (suppress
     // first-frame clear) gates the seed on a `dirty` flag, which
@@ -1233,7 +1234,7 @@ impl MaterialTable {
     /// Hot-path intern entry: take a precomputed u64 hash + a closure
     /// that produces the [`GpuMaterial`] only on dedup miss. The
     /// closure is NOT invoked when the hash already maps to a stored
-    /// material — `to_gpu_material` (the dominant 432-byte construction
+    /// material — `to_gpu_material` (the dominant construction
     /// cost) is skipped on the ~97% dedup-hit path. See #781 / PERF-N4.
     ///
     /// **Hash quality contract**: callers must produce a u64 that is a
