@@ -154,6 +154,22 @@ impl ScaleformHostCatalog {
 // callback argument are requests; the remainder are commands.
 //
 // Source: https://github.com/schlangster/skyui/tree/master/src
+//
+// #3103 — now *measured* against the shipped corpus, not only read off that
+// snapshot. `avm1_host::tests::installed_skyrim_host_calls_are_all_cataloged`
+// walks every `GameDelegate.call` site in all 53 movies of `Skyrim -
+// Interface.bsa`: 141 distinct host methods across 35 movies, of which **68
+// are missing from this table** and exactly 1 entry here (`SliderClose`) is
+// never called by a vanilla menu. A further 72 call sites pass a runtime name
+// (`this.callbackName` and friends) that no static walk can resolve.
+//
+// So this table is close to a *subset* of what the game actually calls, which
+// is the expected shape for a SkyUI-sourced list — SkyUI replaces these menus
+// — but it is not the measurement #2966 gave Fallout 4. Regenerating it from
+// the sweep is blocked on one missing rule, not on data: every vanilla call
+// site passes exactly two arguments, so SkyUI's "a fourth argument means
+// request" test cannot classify the 68. The sweep pins the gap at its measured
+// size so it cannot drift unnoticed while that rule is worked out.
 static SKYRIM_SKYUI_METHODS: &[ScaleformHostMethod] = &[
     ScaleformHostMethod::command("AuxButtonPress"),
     ScaleformHostMethod::request("CalculateCharge"),
