@@ -343,7 +343,11 @@ internal resolution** and upscales to the swapchain's **output resolution** —
 the two axes are no longer the same, so figures below are split accordingly.
 Leak-free and FIF-correct (verified 2026-07-25 sweep); reactive/transparency
 masks are G-buffer attachments (see [Shader Pipeline](shader-pipeline.md)'s
-G-Buffer table), not counted again here.
+G-Buffer table), not counted again here. They are allocated and written
+(main pass and composite pass) under `--upscaler taa` too, including the
+FSR-construction-failure fallback (#2480), where nothing reads them: 2 B/px ×
+2 FIF, ≈ 14.1 MB at 2560×1440. Kept deliberately — see `FSR_MASK_FORMAT` in
+`gbuffer.rs` (#4203).
 
 | Resource | Resolution axis | Notes |
 |---|---|---|

@@ -85,6 +85,26 @@ pub const ALBEDO_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 ///
 /// `R8_UNORM` is what the SDK's own samples use; the mask is a hint that
 /// biases history rejection, so 8 bits of coverage is ample.
+///
+/// # Cost under `--upscaler taa` (#4203)
+///
+/// Both masks are unconditional: attachments 6/7 of the fixed eight-attachment
+/// main render pass (cleared, then written by `triangle.frag`, `water.frag`
+/// and the ground-cover shaders, whose outputs carry no upscaler-mode
+/// specialization), and attachments 1/2 of the composite pass
+/// (loaded, fog coverage blended in, stored). Their only reader is the FSR
+/// dispatch in `record_upscale_pass` — see
+/// `fsr_masks_are_read_only_by_the_fsr_dispatch` — so under
+/// `UpscalerMode::Taa`, including the fallback when FSR fails to construct
+/// (#2480), that work is paid for nothing: 2 B/px written by two passes per
+/// frame, and 2 B/px × `MAX_FRAMES_IN_FLIGHT` of residency (≈ 14.1 MB at
+/// 2560×1440). The shipped default (`Fsr3(Quality)`) consumes them.
+///
+/// Left as is on purpose. Dropping them on the TAA path means a second main
+/// and composite render-pass variant, with every pipeline, framebuffer and
+/// fragment output location kept in lockstep across both, and that must not
+/// land without RenderDoc and `BYRO_VALIDATION=1` evidence on both upscaler
+/// modes.
 pub const FSR_MASK_FORMAT: vk::Format = vk::Format::R8_UNORM;
 
 /// A single G-buffer attachment slot (one image per frame-in-flight).
@@ -459,5 +479,57 @@ impl GBuffer {
             self.reactive.destroy(device, allocator);
             self.transparency.destroy(device, allocator);
         }
+    }
+}
+
+#[cfg(test)]
+mod fsr_mask_reader_tests {
+    /// #4203 — `FSR_MASK_FORMAT`'s cost note says the FSR dispatch is the
+    /// masks' only reader, which is what makes them dead weight under TAA.
+    /// If a second reader appears (a debug view, a TAA reactive term), that
+    /// note is wrong and the TAA-path trade-off has to be re-argued.
+    #[test]
+    fn fsr_masks_are_read_only_by_the_fsr_dispatch() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sites = Vec::new();
+        let mut stack = vec![dir];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read src dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs")
+                    || path.ends_with("gbuffer.rs")
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("read source");
+                for accessor in ["reactive_image(", "transparency_image("] {
+                    if text.contains(&format!(".{accessor}")) {
+                        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                        sites.push(name);
+                    }
+                }
+            }
+        }
+        sites.sort();
+        assert_eq!(
+            sites,
+            ["post_passes.rs", "post_passes.rs"],
+            "the FSR mask images gained a reader outside `record_upscale_pass`; \
+             update FSR_MASK_FORMAT's TAA cost note (#4203)"
+        );
+        let upscale = include_str!("context/post_passes.rs")
+            .split_once("fn record_upscale_pass(")
+            .expect("record_upscale_pass must exist")
+            .1;
+        let body = &upscale[..upscale.find("\n    fn ").unwrap_or(upscale.len())];
+        assert!(
+            body.contains("gbuffer.reactive_image(frame)")
+                && body.contains("gbuffer.transparency_image(frame)"),
+            "both mask images must be read inside record_upscale_pass"
+        );
     }
 }
