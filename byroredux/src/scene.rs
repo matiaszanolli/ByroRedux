@@ -728,6 +728,66 @@ pub(crate) fn setup_scene(
 ) {
     // Load content from CLI: cell, loose NIF, or BSA NIF.
     let args: Vec<String> = crate::cli_args::effective_args();
+    let content = load_scene_content(world, ctx, streaming_slot, &args);
+    start_cli_animation(world, ctx, &args, content.nif_root);
+    spawn_demo_primitives(world, ctx, content.has_nif_content);
+    let (cam_pos, forward) = spawn_initial_camera(
+        world,
+        camera_pos_override,
+        camera_forward_override,
+        content.cam_center,
+        content.has_nif_content,
+        content.harness_cam,
+    );
+    let (spawn_plan, player_mode) = select_and_spawn_player_mode(
+        world,
+        streaming_slot,
+        &args,
+        content.has_nif_content,
+        content.foreground_ready_for_character,
+        content.diagnostic_scene,
+        cam_pos,
+    );
+    spawn_player_body(world, ctx, cam_pos, forward, spawn_plan, player_mode);
+    launch_archive_menu(ctx, ui_manager, ui_texture_handle, &args);
+}
+
+/// What [`load_scene_content`] settled about the scene, for the phases that
+/// follow it.
+///
+/// #4341 — `setup_scene` was 1023 lines at nesting depth 10, and these six
+/// values are the entire coupling between its phases: every other local is
+/// consumed inside the phase that binds it. Returning them as one value is
+/// what let the phases become functions.
+struct SceneContent {
+    /// Centre of the loaded content, used to place the initial camera.
+    cam_center: Vec3,
+    /// Whether any renderable content loaded at all. Drives demo-primitive
+    /// spawning and the Character-mode decision.
+    has_nif_content: bool,
+    /// Exterior CELL presence is not sufficient for Character mode — Bethesda
+    /// masters contain valid empty tiles — so this is lowered only when the
+    /// selected foreground has no authored content source.
+    foreground_ready_for_character: bool,
+    /// Root of the loaded NIF subtree, for scoping `--kf` playback.
+    nif_root: Option<EntityId>,
+    /// A renderer harness (Cornell, combustion lab, studio) rather than game
+    /// content: intentionally has no gameplay colliders, so it resolves to
+    /// FlyCam.
+    diagnostic_scene: bool,
+    /// A harness's own declared camera, which wins over the NIF-oriented
+    /// fallback offset.
+    harness_cam: Option<(Vec3, Vec3)>,
+}
+
+/// Phase 1 — decode the harness flags and load the content source: Cornell /
+/// combustion / studio harness, an ESM cell or exterior grid, or a loose NIF.
+fn load_scene_content(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    streaming_slot: &mut Option<WorldStreamingState>,
+    args: &[String],
+) -> SceneContent {
     // Game time is global gameplay state, not an exterior-render resource.
     // Seed it for every scene kind so direct-to-interior sessions advance the
     // same persistent clock before they ever visit a worldspace.
@@ -757,11 +817,11 @@ pub(crate) fn setup_scene(
     // `--camera-forward`). `--cornell-sun` selects the exterior /
     // sun-only variant (#1942); see `crate::cornell`.
     let cornell_oracle =
-        crate::cornell::cornell_oracle_rung(&args).unwrap_or_else(|message| panic!("{message}"));
-    let combustion_lab = crate::cornell::combustion_lab_mode(&args);
-    let combustion_lab_nuclear = crate::cornell::combustion_lab_nuclear_mode(&args);
-    let cornell_glass_dragon = crate::cornell::glass_dragon_mode(&args);
-    let cornell_sun = cornell_sun_mode(&args);
+        crate::cornell::cornell_oracle_rung(args).unwrap_or_else(|message| panic!("{message}"));
+    let combustion_lab = crate::cornell::combustion_lab_mode(args);
+    let combustion_lab_nuclear = crate::cornell::combustion_lab_nuclear_mode(args);
+    let cornell_glass_dragon = crate::cornell::glass_dragon_mode(args);
+    let cornell_sun = cornell_sun_mode(args);
     let studio_mode = args.iter().any(|arg| arg == "--studio");
     let diagnostic_scene = combustion_lab
         || cornell_glass_dragon
@@ -778,13 +838,13 @@ pub(crate) fn setup_scene(
         cam_center = target;
         has_nif_content = true;
     } else if cornell_glass_dragon {
-        let (pos, target) = crate::cornell::setup_cornell_glass_dragon_scene(world, ctx, &args)
+        let (pos, target) = crate::cornell::setup_cornell_glass_dragon_scene(world, ctx, args)
             .unwrap_or_else(|message| panic!("{message}"));
         harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;
     } else if let Some(rung) = cornell_oracle {
-        let world_offset = crate::cornell::cornell_oracle_world_offset(&args)
+        let world_offset = crate::cornell::cornell_oracle_world_offset(args)
             .unwrap_or_else(|message| panic!("{message}"));
         let (pos, target) =
             crate::cornell::setup_cornell_oracle_scene(world, ctx, rung, world_offset);
@@ -882,7 +942,7 @@ pub(crate) fn setup_scene(
             // and the attach path falls through, same as an unregistered
             // SCPT. Inserted once; it persists across door-walk cell
             // transitions (which reuse the same World).
-            let script_provider = crate::asset_provider::build_script_provider(&args);
+            let script_provider = crate::asset_provider::build_script_provider(args);
             let script_principals = script_provider.principals().cloned().collect::<Vec<_>>();
             crate::extensions::register_legacy_script_principals(world, script_principals)
                 .expect("engine extension host must be installed before scene setup");
@@ -891,8 +951,8 @@ pub(crate) fn setup_scene(
 
         if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {
             // Interior cell mode
-            let tex_provider = build_texture_provider(&args);
-            let mut mat_provider = build_material_provider(&args);
+            let tex_provider = build_texture_provider(args);
+            let mut mat_provider = build_material_provider(args);
             match cell_loader::load_cell_with_masters(
                 &masters,
                 esm_path,
@@ -941,8 +1001,8 @@ pub(crate) fn setup_scene(
             // Interactive startup waits only for the foreground cell;
             // deterministic benches keep the fully-populated-radius contract.
             let (cx, cy) = parse_grid_coords(grid);
-            let tex_provider = build_texture_provider(&args);
-            let mat_provider = build_material_provider(&args);
+            let tex_provider = build_texture_provider(args);
+            let mat_provider = build_material_provider(args);
             match cell_loader::build_exterior_world_context(
                 &masters,
                 esm_path,
@@ -956,7 +1016,7 @@ pub(crate) fn setup_scene(
                     foreground_ready_for_character = foreground_readiness.is_content_backed();
                     has_nif_content = true;
                     let worldspace_key = wctx.worldspace_key.clone();
-                    let bootstrap_mode = ExteriorBootstrapMode::from_cli_args(&args);
+                    let bootstrap_mode = ExteriorBootstrapMode::from_cli_args(args);
                     let (state, center) = crate::scene::assemble_exterior_streaming(
                         world,
                         ctx,
@@ -1040,7 +1100,7 @@ pub(crate) fn setup_scene(
             // gallery's first entry, stood in a room fitted around it. With
             // no asset the gallery still opens, as an empty room.
             let boot_asset = has_nif_content.then(|| crate::studio_host::BootAsset {
-                label: studio_source_label(&args),
+                label: studio_source_label(args),
                 first: first_asset_entity,
                 last: last_asset_entity,
             });
@@ -1051,11 +1111,8 @@ pub(crate) fn setup_scene(
             has_nif_content = true;
         } else if has_nif_content {
             // Plain loose load: aim at the midpoint of what was loaded.
-            let (_, bounds) = crate::studio_host::loaded_objects(
-                world,
-                first_asset_entity,
-                last_asset_entity,
-            );
+            let (_, bounds) =
+                crate::studio_host::loaded_objects(world, first_asset_entity, last_asset_entity);
             cam_center = bounds
                 .unwrap_or(AssetBounds {
                     min: [-1.0; 3],
@@ -1064,12 +1121,29 @@ pub(crate) fn setup_scene(
                 .center();
         }
     }
+    SceneContent {
+        cam_center,
+        has_nif_content,
+        foreground_ready_for_character,
+        nif_root,
+        diagnostic_scene,
+        harness_cam,
+    }
+}
 
+/// Phase 2 — `--kf <path>` loads a KF animation and starts playback, scoped
+/// to the loaded NIF subtree.
+fn start_cli_animation(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    args: &[String],
+    nif_root: Option<EntityId>,
+) {
     // Animation: --kf <path> loads a .kf file and starts playback.
     // Tries BSA extraction first (KF files live in mesh BSAs), falls back to loose file.
     if let Some(kf_idx) = args.iter().position(|a| a == "--kf") {
         if let Some(kf_path) = args.get(kf_idx + 1).cloned() {
-            let kf_provider = build_texture_provider(&args);
+            let kf_provider = build_texture_provider(args);
             let kf_data = kf_provider
                 .extract_mesh(&kf_path)
                 .inspect(|_| {
@@ -1161,7 +1235,11 @@ pub(crate) fn setup_scene(
             }
         }
     }
+}
 
+/// Phase 3 — the sweet-roll demo primitives, spawned only when no NIF
+/// content loaded.
+fn spawn_demo_primitives(world: &mut World, ctx: &mut VulkanContext, has_nif_content: bool) {
     // Only spawn demo primitives when no NIF content was loaded.
     if !has_nif_content {
         let alloc = ctx.allocator.as_ref().unwrap();
@@ -1240,7 +1318,18 @@ pub(crate) fn setup_scene(
         world.insert(blue_tri, MeshHandle(blue_handle));
         world.insert(blue_tri, Spinning);
     }
+}
 
+/// Phase 4 — spawn the camera entity and return its `(position, forward)`,
+/// which the player phases place the body against.
+fn spawn_initial_camera(
+    world: &mut World,
+    camera_pos_override: Option<(f32, f32, f32)>,
+    camera_forward_override: Option<(f32, f32, f32)>,
+    cam_center: Vec3,
+    has_nif_content: bool,
+    harness_cam: Option<(Vec3, Vec3)>,
+) -> (Vec3, Vec3) {
     // Spawn camera entity looking at the scene center — unless CLI
     // overrides are supplied (`--camera-pos` / `--camera-forward`),
     // in which case the requested pose wins. Useful for offline
@@ -1318,7 +1407,25 @@ pub(crate) fn setup_scene(
         byroredux_core::ecs::components::water::SubmersionState::default(),
     );
     world.insert_resource(ActiveCamera(cam));
+    (cam_pos, forward)
+}
 
+/// Phase 5 — probe for walkable ground, then choose the player mode.
+///
+/// EX-04 / #2375 — the probe runs *before* the mode is chosen; the reverse
+/// order is the indefinite free-fall EX-02 describes, where the probe knew
+/// the ground was unwalkable but the decision had already been made. That
+/// ordering lives inside this function so it cannot be separated by an edit
+/// to `setup_scene`.
+fn select_and_spawn_player_mode(
+    world: &mut World,
+    streaming_slot: &mut Option<WorldStreamingState>,
+    args: &[String],
+    has_nif_content: bool,
+    foreground_ready_for_character: bool,
+    diagnostic_scene: bool,
+    cam_pos: Vec3,
+) -> (Option<CharacterSpawnPlan>, crate::systems::PlayerMode) {
     // M28.5 — Player rig selection. Character mode requires actual
     // content in the world (cell loaded successfully OR loose NIF
     // loaded) — spawning the capsule into an empty void falls forever
@@ -1403,7 +1510,18 @@ pub(crate) fn setup_scene(
     } else {
         log::info!("Player rig: Character (M28.5 kinematic capsule + gravity)");
     }
+    (spawn_plan, player_mode)
+}
 
+/// Phase 6 — M28.5: spawn the player character body when in Character mode.
+fn spawn_player_body(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    cam_pos: Vec3,
+    forward: Vec3,
+    spawn_plan: Option<CharacterSpawnPlan>,
+    player_mode: crate::systems::PlayerMode,
+) {
     // M28.5 — Spawn the player character body when in Character mode.
     // The body sits at `cam_pos` (the camera's initial spawn point)
     // minus eye_height so the eyes end up where the camera was.
@@ -1552,7 +1670,9 @@ pub(crate) fn setup_scene(
         // Player / Camera / Reference components. Cost: one
         // unused EntityId.
         let placeholder = world.spawn();
-        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(placeholder));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(
+            placeholder,
+        ));
         // M47.0 — same insert as the Character-mode branch above so
         // the quest-stage-aware systems don't panic on FlyCam scenes
         // (debug bench, --mesh standalone NIF loads, headless smoke).
@@ -1614,10 +1734,18 @@ pub(crate) fn setup_scene(
     if let Err(e) = ctx.register_particle_quad() {
         log::error!("Failed to register particle quad: {e:#}");
     }
+}
 
+/// Phase 7 — `--menu` launches a vanilla archive-backed Scaleform menu.
+fn launch_archive_menu(
+    ctx: &mut VulkanContext,
+    ui_manager: &mut Option<UiManager>,
+    ui_texture_handle: &mut Option<u32>,
+    args: &[String],
+) {
     // UI: `--menu` launches a vanilla archive-backed menu with its relative
     // imports; `--swf` remains the loose-file developer route.
-    let archive_menu = archive_menu_args(&args);
+    let archive_menu = archive_menu_args(args);
     if let Ok(Some((menu_path, archive_path))) = archive_menu.as_ref() {
         match Archive::open(archive_path) {
             // #3771 — this used to `archive.extract(menu_path)` +
@@ -1649,7 +1777,10 @@ pub(crate) fn setup_scene(
                             queue: &ctx.graphics_queue,
                             command_pool: ctx.transfer_pool,
                         };
-                        match ctx.texture_registry.register_rgba(upload_ctx, w, h, &pixels) {
+                        match ctx
+                            .texture_registry
+                            .register_rgba(upload_ctx, w, h, &pixels)
+                        {
                             Ok(handle) => {
                                 // #3273 — the only success-side observable
                                 // on this route. Every other arm below logs
