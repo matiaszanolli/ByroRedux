@@ -1482,6 +1482,25 @@ impl GroundCoverPipeline {
             // the end of the previous frame keeps the whole lifetime inside
             // one command buffer.
             device.cmd_fill_buffer(cmd, counters.buffer, 0, counters.size, 0);
+            // #4293 — the seed fills below write ranges this zero fill already
+            // wrote, and nothing orders the two: under the sync model this
+            // crate follows (#4177/#4179/#4181) their relative order is
+            // undefined, so sync validation reports each seed as a
+            // WRITE_AFTER_WRITE hazard. If the zero fill landed last, both
+            // `atomicMin` extrema would start at 0 and
+            // `GroundCoverStats::d_ground_min` / `view_dist_min` would read 0 —
+            // telemetry EXAL tuning reads directly. A TRANSFER → TRANSFER
+            // barrier is the device edge that sequences them. Confirmed as the
+            // source of the ten `vkCmdFillBuffer` WAW hazards on a
+            // `BYRO_VALIDATION=1` Skyrim tundra capture, and cleared by this.
+            buffer_barrier(
+                device,
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::AccessFlags::TRANSFER_WRITE,
+            );
             // Zero is the identity for every counter here except the two
             // `atomicMin` extrema, which need the opposite. Two four-byte
             // fills rather than a staging upload: this is 8 bytes.
@@ -1632,11 +1651,19 @@ impl GroundCoverPipeline {
         unsafe {
             // The field is one persistent allocation shared by every
             // frame-in-flight, and this dispatch READS the half the *previous*
-            // frame's dispatch wrote. The per-slot fence only serialises
-            // frames MAX_FRAMES_IN_FLIGHT apart, so consecutive frames can
-            // overlap on the queue and that read is a genuine hazard. A
-            // barrier's first synchronization scope covers everything
-            // submitted earlier on the queue, so this one edge closes it.
+            // frame's dispatch wrote. A barrier's first synchronization scope
+            // covers everything submitted earlier on the queue, so this one
+            // edge sequences that read against that write.
+            //
+            // #4293 — this comment used to justify the edge by saying "the
+            // per-slot fence only serialises frames MAX_FRAMES_IN_FLIGHT
+            // apart, so consecutive frames can overlap on the queue". The
+            // host does not do that: `sync_and_acquire_frame` waits on every
+            // frame-in-flight fence, so the previous frame has finished before
+            // this one records. The barrier is still required, for the reason
+            // #4177/#4179 settled: a host-side fence wait is not a device
+            // edge, and the queue's synchronization model — which is what sync
+            // validation checks — only sees barriers.
             buffer_barrier(
                 device,
                 cmd,
@@ -2678,5 +2705,43 @@ mod tests {
         assert_eq!(line.matches(',').count(), 19);
         // #4338 — a cap-truncated frame is reported, not just shorter.
         assert!(line.ends_with(" truncated=0"), "{line}");
+    }
+    /// #4293 — the counter clear's seed fills must be sequenced after the zero
+    /// fill by a device edge.
+    ///
+    /// Three `vkCmdFillBuffer`s hit the one shared counter buffer: a
+    /// whole-buffer zero, then two 4-byte `EXTREMA_MIN_SEED` writes into
+    /// ranges the zero already covered. With nothing between them their order
+    /// is undefined under the sync model this crate follows, and sync
+    /// validation reports each seed as WRITE_AFTER_WRITE — the ten standing
+    /// hazards a `BYRO_VALIDATION=1` Skyrim tundra capture showed, and which a
+    /// TRANSFER → TRANSFER barrier took to zero. If the zero landed last, both
+    /// `atomicMin` extrema would start at 0 and the `d_ground` / `view_dist`
+    /// minima EXAL tuning reads would report 0.
+    ///
+    /// `cargo test` cannot run sync validation, so this pins the shape that
+    /// validation accepted: a TRANSFER-to-TRANSFER barrier between the zero
+    /// fill and the first seed fill.
+    #[test]
+    fn counter_seed_fills_are_sequenced_after_the_zero_fill() {
+        let src = include_str!("groundcover.rs");
+        let production = &src[..src.find("\nmod tests {").expect("test module")];
+        let zero = production
+            .find("device.cmd_fill_buffer(cmd, counters.buffer, 0, counters.size, 0);")
+            .expect("the whole-buffer zero fill");
+        let after_zero = &production[zero..];
+        let first_seed = after_zero
+            .find("EXTREMA_MIN_SEED")
+            .expect("the extrema seed fills follow the zero fill");
+        let between = &after_zero[..first_seed];
+        assert!(
+            between.contains("buffer_barrier(")
+                && between.contains(
+                    "vk::PipelineStageFlags::TRANSFER,\n                vk::AccessFlags::TRANSFER_WRITE,\n                vk::PipelineStageFlags::TRANSFER,"
+                ),
+            "a TRANSFER -> TRANSFER barrier must separate the zero fill from the seed fills \
+             (#4293); without it sync validation reports two WRITE_AFTER_WRITE hazards per \
+             scatter frame"
+        );
     }
 }
