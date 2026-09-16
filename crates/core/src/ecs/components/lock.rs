@@ -4,8 +4,8 @@ use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
 
 /// REFR placement carries an `XLOC` lock — this entity (door or
-/// container) is locked and must not be treated as activatable until
-/// the deferred key-check / lockpicking policy exists.
+/// container) is locked. Player activation requires its matching carried key;
+/// lockpicking is not implemented yet.
 ///
 /// Captured from `PlacedRef.lock` at spawn time (#3098). Deliberately a
 /// component of its own rather than a field bolted onto `DoorTeleport`:
@@ -21,9 +21,9 @@ use crate::ecs::storage::Component;
 /// removed it*, which made an authored lock a one-way door for the whole
 /// session.
 ///
-/// Key checks and lock-level-gated lockpicking are still deferred: the
-/// only consumers today are the interaction gate and the two scripting
-/// effects.
+/// The interaction path removes a lock when its matching key is carried and
+/// records the unlock in the same persistent ledger used by scripting effects.
+/// Lock-level-gated lockpicking is still deferred.
 ///
 /// Sparse storage — locked REFRs are a small minority of placements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,8 +37,8 @@ pub struct Locked {
     /// does not need a second data-plumbing pass, and so a fragment that
     /// sets it does not have to decline wholesale.
     pub lock_level: u8,
-    /// FormID of the key that opens this lock, if any. Not yet consumed
-    /// — key-carry / key-check gameplay is deferred (see struct doc).
+    /// FormID of the key that opens this lock, if any. Player activation
+    /// checks for a positive-count stack with this base FormID.
     pub key_form_id: Option<u32>,
 }
 

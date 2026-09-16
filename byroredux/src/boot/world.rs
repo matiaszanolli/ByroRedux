@@ -247,6 +247,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::Locked>();
     // #3299 — actor state carried across ordinary stream-tile eviction.
     world.insert_resource(crate::cell_loader::stream_snapshot::StreamStateSnapshots::default());
+    world.insert_resource(crate::cell_loader::reference_state::PersistentReferenceStates::default());
     world.register::<byroredux_core::ecs::components::CellFormId>();
     // WATAL Phase 2 — pre-register `WaterContact` so the buoyancy phase's
     // `query_mut::<WaterContact>().insert(..)` succeeds the first time a

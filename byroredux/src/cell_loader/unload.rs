@@ -243,6 +243,7 @@ fn unload_cell_inner(
     // FormID, so the restore never depends on an `EntityId` that respawn
     // will not reissue. Actors with nothing accumulated produce no row.
     crate::cell_loader::stream_snapshot::capture_actor_snapshots(world, &victims);
+    crate::cell_loader::reference_state::capture(world, &victims);
 
     // Collect every GPU handle the victims hold (mesh / texture /
     // terrain-tile slot) in one fan-out walk, then release them below.

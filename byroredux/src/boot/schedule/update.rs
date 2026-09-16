@@ -99,6 +99,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         crate::interaction::interaction_system,
         Access::new()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .writes_resource::<byroredux_scripting::ReferenceLockState>()
+            .writes::<byroredux_core::ecs::components::Locked>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads::<byroredux_core::ecs::components::Dead>()
             .reads::<byroredux_physics::ActorColliderOwner>()

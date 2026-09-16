@@ -167,9 +167,9 @@ impl StreamStateSnapshots {
 /// The global FormID an entity's `FormIdComponent` resolves to, matching
 /// the key space `resolve_entity_by_global_form_id` searches.
 fn global_form_id(world: &World, entity: EntityId) -> Option<u32> {
+    let fid = world.get::<FormIdComponent>(entity).map(|fid| fid.0)?;
     let pool = world.try_resource::<FormIdPool>()?;
-    let fid = world.get::<FormIdComponent>(entity)?;
-    pool.resolve(fid.0).map(|pair| pair.local.0)
+    pool.resolve(fid).map(|pair| pair.local.0)
 }
 
 /// Capture the keep-set state of every victim that has any, keyed by FormID.

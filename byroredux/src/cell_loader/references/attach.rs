@@ -983,6 +983,30 @@ mod container_inventory_tests {
     }
 
     #[test]
+    fn container_attach_restores_evicted_empty_inventory() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPool, FormIdPair, PluginId, LocalFormId};
+        use crate::cell_loader::reference_state::{capture, PersistentReferenceStates};
+        let mut index = EsmIndex::default();
+        index.containers.insert(1, container_with_contents(1, &[(0xAAAA, 5)]));
+        let mut world = World::new();
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(PersistentReferenceStates::default());
+        let id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(0x1234),
+        });
+        let first = world.spawn();
+        world.insert(first, FormIdComponent(id));
+        world.insert(first, Inventory::new());
+        capture(&mut world, &[first]);
+        world.despawn(first);
+        let next = world.spawn();
+        world.insert(next, FormIdComponent(id));
+        assert!(attach_container_inventory(&mut world, next, 1, &index));
+        assert!(world.get::<Inventory>(next).unwrap().is_empty());
+    }
+
+    #[test]
     fn attaches_inventory_from_container_record() {
         let mut index = EsmIndex::default();
         index.containers.insert(

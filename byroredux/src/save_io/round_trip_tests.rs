@@ -1531,3 +1531,188 @@ fn character_controller_breath_state_survives_live_delta_overlay() {
     assert_eq!(restored.breath_remaining, 12.25);
     assert_eq!(restored.drowning_damage_accumulator, 0.625);
 }
+
+/// Exercise the shipped serializer and live overlay, not just cloning the
+/// post-loot components. Entity IDs and interned FormIds deliberately differ
+/// between the saved and respawned worlds.
+#[test]
+fn container_and_corpse_loot_survive_encoded_live_overlay() {
+    use byroredux_core::ecs::components::{
+        Dead, EquipmentSlots, EquippedWeapon, FormIdComponent, Inventory, InventoryIndex, ItemStack,
+    };
+    use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+    use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+    use byroredux_plugin::esm::records::{container::parse_cont, EsmIndex};
+    use byroredux_scripting::{ActivateEvent, SceneAliasCandidate};
+
+    fn placement(world: &mut World, local: u32) -> byroredux_core::ecs::EntityId {
+        let entity = world.spawn();
+        let fid = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("LootFixture.esm"),
+            local: LocalFormId(local),
+        });
+        world.insert(entity, FormIdComponent(fid));
+        entity
+    }
+    fn seed(
+        world: &mut World,
+        player: byroredux_core::ecs::EntityId,
+        chest: byroredux_core::ecs::EntityId,
+        corpse: byroredux_core::ecs::EntityId,
+        stacks: &[ItemStack],
+    ) {
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(
+            player,
+            Inventory {
+                items: vec![ItemStack::new(0x1111, 1)],
+            },
+        );
+        let mut player_slots = EquipmentSlots::new();
+        player_slots.equip(1 << 12, InventoryIndex(0));
+        world.insert(player, player_slots);
+        world.insert(
+            chest,
+            Inventory {
+                items: vec![ItemStack::new(0x2222, 10)],
+            },
+        );
+        world.insert(
+            chest,
+            SceneAliasCandidate {
+                base_form_id: 0xCAFE,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            corpse,
+            Inventory {
+                items: stacks.to_vec(),
+            },
+        );
+        let mut equipment = EquipmentSlots::new();
+        equipment.equip(0b110, InventoryIndex(0));
+        equipment.equip_weapon(InventoryIndex(1));
+        world.insert(corpse, equipment);
+        world.insert(
+            corpse,
+            EquippedWeapon {
+                inventory_index: InventoryIndex(1),
+                base_form_id: 0x4444,
+                damage: 12.0,
+                reach: 1.0,
+                speed: 1.0,
+            },
+        );
+    }
+    let registry = build_save_registry();
+    let mut index = EsmIndex::default();
+    index
+        .containers
+        .insert(0xCAFE, parse_cont(0xCAFE, &[], &None));
+    let mut saved = World::new();
+    saved.insert_resource(StringPool::new());
+    saved.insert_resource(FormIdPool::new());
+    let mut pool = ItemInstancePool::new();
+    let armor = pool.allocate(ItemInstance::default());
+    let weapon = pool.allocate(ItemInstance::default());
+    saved.insert_resource(pool);
+    byroredux_scripting::register(&mut saved);
+    crate::inventory::install_catalog(&mut saved, &index);
+    let player = placement(&mut saved, 0x14);
+    let chest = placement(&mut saved, 0x100);
+    let corpse = placement(&mut saved, 0x200);
+    let corpse_stacks = [
+        ItemStack {
+            base_form_id: 0x3333,
+            count: 1,
+            instance: Some(armor),
+        },
+        ItemStack {
+            base_form_id: 0x4444,
+            count: 1,
+            instance: Some(weapon),
+        },
+    ];
+    seed(&mut saved, player, chest, corpse, &corpse_stacks);
+    saved.insert(corpse, Dead);
+    let before = save_world(&saved, &registry).unwrap();
+    for target in [chest, corpse] {
+        saved.insert(target, ActivateEvent { activator: player });
+    }
+    crate::inventory::container_loot_system(&saved, 0.0);
+    let expected = saved.get::<Inventory>(player).unwrap().items.clone();
+    assert_eq!(expected.len(), 4);
+    let after = save_world(&saved, &registry).unwrap();
+
+    for (looted, snapshot) in [(false, before), (true, after)] {
+        let bytes = encode(&snapshot, registry.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, registry.schema_fingerprint()).unwrap();
+        let mut live = World::new();
+        live.insert_resource(StringPool::new());
+        live.insert_resource(FormIdPool::new());
+        live.spawn(); // No saved entity may match by numeric EntityId.
+        live.spawn();
+        live.spawn();
+        let new_corpse = placement(&mut live, 0x200);
+        let new_chest = placement(&mut live, 0x100);
+        let new_player = placement(&mut live, 0x14);
+        byroredux_scripting::register(&mut live);
+        crate::inventory::install_catalog(&mut live, &index);
+        seed(&mut live, new_player, new_chest, new_corpse, &corpse_stacks);
+        byroredux_save::restore_resources(&mut live, &registry, &decoded).unwrap();
+        let remap = byroredux_save::build_form_id_remap(&live, &registry, &decoded);
+        assert_eq!(remap.get(&player), Some(&new_player));
+        assert_eq!(remap.get(&corpse), Some(&new_corpse));
+        byroredux_save::apply_deltas(
+            &mut live,
+            &registry,
+            &decoded,
+            &remap,
+            MUTABLE_DELTA_COLUMNS,
+        )
+        .unwrap();
+        assert_eq!(crate::combat::reconcile_dead_actor_runtime_state(&live), 1);
+        assert_eq!(live.get::<Inventory>(new_chest).unwrap().is_empty(), looted);
+        assert_eq!(
+            live.get::<Inventory>(new_corpse).unwrap().is_empty(),
+            looted
+        );
+        assert_eq!(live.get::<EquippedWeapon>(new_corpse).is_none(), looted);
+        assert_eq!(
+            live.get::<EquipmentSlots>(new_corpse)
+                .unwrap()
+                .weapon
+                .is_none(),
+            looted
+        );
+        assert_eq!(
+            live.get::<EquipmentSlots>(new_player).unwrap().at(12),
+            Some(InventoryIndex(0))
+        );
+        assert!(live.resource::<ItemInstancePool>().get(armor).is_some());
+        assert!(live.resource::<ItemInstancePool>().get(weapon).is_some());
+        assert!(
+            live.get::<ActivateEvent>(new_corpse).is_none(),
+            "transient activations must not be saved"
+        );
+        for target in [new_chest, new_corpse] {
+            live.insert(
+                target,
+                ActivateEvent {
+                    activator: new_player,
+                },
+            );
+        }
+        crate::inventory::container_loot_system(&live, 0.0);
+        let mut actual = live.get::<Inventory>(new_player).unwrap().items.clone();
+        let mut expected = expected.clone();
+        // Sparse-set iteration order is not a saved inventory-order promise.
+        actual.sort_by_key(|stack| stack.base_form_id);
+        expected.sort_by_key(|stack| stack.base_form_id);
+        assert_eq!(
+            actual, expected,
+            "reloaded loot must neither duplicate nor disappear"
+        );
+    }
+}

@@ -279,7 +279,38 @@ and no duplication on another activation. All 64 binary save tests pass with
 `BYRO_LOCK_ORDER_CHECK=1`. This validates the same-cell persistence machinery,
 not a Vulkan-driven load or cross-cell continuity. The existing stream snapshot
 stores actor position/package/seat state but not inventory/death state; retaining
-looted state across ordinary cell eviction and later revisits is still required.
+looted state across ordinary cell eviction and later revisits was still required
+at that checkpoint.
+
+**Eviction persistence progress (2026-09-16):** a separate
+`PersistentReferenceStates` resource now captures reference inventories,
+equipment, actor values, and death state before cell teardown. Container attach
+and NPC placement-identity stamping consume those rows on respawn. Keys include
+the plugin identity, and item instances are stored as owned payloads rather than
+soon-to-be-freed arena handles. The resource survives worldspace-cache drains
+and is registered in saves, so unloaded references are not discarded by saving
+in another cell. Save reload bypasses the outgoing session's store during
+teardown/respawn, then installs the saved store alongside resident component
+deltas. Headless tests cover repeated eviction, empty containers/dead actors,
+handle reuse, plugin-key separation, save encoding, and reload isolation.
+The new registry entry changes the save-schema fingerprint: older saves are
+rejected rather than silently dropping unloaded reference state. Authored cell
+reset/restock timing, visual corpse stripping, and a live cross-cell/save/reload
+smoke remain open. The initial store captures every unloaded reference carrying
+inventory/death state; baseline-difference compaction is not implemented yet.
+Validation: the cell-loader suite passed 516 tests (8 ignored), and all 64
+save tests passed, with `BYRO_LOCK_ORDER_CHECK=1` enabled for both suites.
+
+**Placed-actor restoration fix (2026-09-16):** spawn-boundary tests now distinguish
+two ACHR placements sharing the same NPC base: only the looted placement restores
+empty/dead state. They also exposed an older movement-state wiring bug: NPC jobs
+requested streaming snapshots by base NPC FormID, but eviction captured them by
+placed reference FormID. Both runtime and pre-baked actor paths now defer that
+restore until placement stamping, restoring the correct actor's position and
+Travel completion without affecting its sibling. The new travel regression
+failed before the fix and passes afterward. Save reload also suppresses and
+invalidates the outgoing transient streaming cache, preventing its state from
+being mistaken for state in the loaded save.
 
 **Cross-game loot progress (2026-09-16):** container loading now resolves
 CNTO leveled-list references into terminal item stacks, preserves nested LVLO

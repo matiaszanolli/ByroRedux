@@ -1148,18 +1148,68 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
 }
 
 fn activation_is_blocked(world: &World, entity: EntityId) -> bool {
-    // #3098 — locked ⇒ not activatable. This is the deliberately blunt
-    // first policy: no key check, no lockpicking, no "locked but you
-    // have the key" carve-out. Every REFR that reaches this gate with a
-    // `Locked` component was parsed off an authored `XLOC`, so this
-    // covers doors today and containers as soon as they gain an
-    // activation path of their own (see `Locked`'s doc for scope).
-    if world.get::<Locked>(entity).is_some() {
+    if world.get::<Locked>(entity).is_some() && carried_unlock_key(world, entity).is_none() {
         return true;
     }
     world
         .get::<byroredux_scripting::papyrus_demo::mg07_door::MG07LabyrinthianDoor>(entity)
         .is_some_and(|door| door.disabled || door.activation_blocked)
+}
+
+fn carried_unlock_key(world: &World, target: EntityId) -> Option<u32> {
+    let key = world
+        .get::<Locked>(target)
+        .and_then(|lock| lock.key_form_id)
+        .filter(|key| *key != 0)?;
+    let player = world
+        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()?
+        .0;
+    world
+        .get::<byroredux_core::ecs::components::Inventory>(player)?
+        .items
+        .iter()
+        .any(|stack| stack.base_form_id == key && stack.count > 0)
+        .then_some(key)
+}
+
+/// Commit a key unlock only on activation, not while displaying the prompt.
+/// The key remains in inventory; the existing saved ledger overrides XLOC on
+/// future cell loads just as it does for a scripted Lock(false).
+fn unlock_with_carried_key(world: &World, target: EntityId) -> bool {
+    if world.get::<Locked>(target).is_none() {
+        return true;
+    }
+    if carried_unlock_key(world, target).is_none() {
+        return false;
+    }
+    let form = world
+        .get::<byroredux_scripting::SceneAliasCandidate>(target)
+        .map(|identity| identity.reference_form_id)
+        .or_else(|| {
+            let id = world.get::<FormIdComponent>(target).map(|id| id.0)?;
+            world
+                .try_resource::<byroredux_core::form_id::FormIdPool>()?
+                .resolve(id)
+                .map(|pair| pair.local.0)
+        });
+    // Do not unlock a placed reference if its persistent outcome cannot be
+    // recorded. The live engine registers this resource before scene loading.
+    if form.is_some()
+        && world
+            .try_resource::<byroredux_scripting::ReferenceLockState>()
+            .is_none()
+    {
+        return false;
+    }
+    if let Some(mut locks) = world.query_mut::<Locked>() {
+        locks.remove(target);
+    }
+    if let Some(form) = form {
+        world
+            .resource_mut::<byroredux_scripting::ReferenceLockState>()
+            .set_unlocked(form);
+    }
+    true
 }
 
 fn interaction_bound(world: &World, entity: EntityId) -> Option<WorldBound> {
@@ -1199,6 +1249,10 @@ fn ray_sphere_distance(origin: Vec3, direction: Vec3, bound: WorldBound) -> Opti
 }
 
 fn activate_target(world: &World, target: InteractionTarget) {
+    if activation_is_blocked(world, target.entity) || !unlock_with_carried_key(world, target.entity)
+    {
+        return;
+    }
     let event = emit_activate_event(world, target.entity);
     let (activator, event_emitted, event_outcome) = match event {
         Ok(activator) => (Some(activator), true, "ActivateEvent emitted".to_string()),
@@ -1649,6 +1703,87 @@ mod tests {
         spawn_static_collider(&mut world, Vec3::new(0.0, 0.0, -40.0), None);
         byroredux_physics::physics_sync_system(&world, 0.0);
         assert!(select_interaction_target(&world).is_none());
+    }
+
+    #[test]
+    fn matching_key_unlocks_on_physical_activation_and_records_persistent_override() {
+        use byroredux_core::ecs::components::{Inventory, ItemStack};
+        let mut world = input_fixture();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        world.insert_resource(byroredux_scripting::ReferenceLockState::default());
+        let player = spawn_camera(&mut world);
+        world.insert(
+            player,
+            Inventory {
+                items: vec![ItemStack::new(0xCAFE, 1)],
+            },
+        );
+        let door = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -80.0));
+        world.insert(
+            door,
+            Locked {
+                lock_level: 100,
+                key_form_id: Some(0xCAFE),
+            },
+        );
+        world.insert(
+            door,
+            byroredux_scripting::SceneAliasCandidate {
+                reference_form_id: 0x1234,
+                base_form_id: 0x5678,
+                ..Default::default()
+            },
+        );
+        assert_eq!(select_interaction_target(&world).unwrap().entity, door);
+        assert!(
+            world.has::<Locked>(door),
+            "looking at a lock must not unlock it"
+        );
+        world
+            .resource_mut::<InputState>()
+            .keys_held
+            .insert(KeyCode::KeyE);
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+        assert!(!world.has::<Locked>(door));
+        assert!(world.has::<byroredux_scripting::ActivateEvent>(door));
+        assert_eq!(
+            world.get::<Inventory>(player).unwrap().items,
+            vec![ItemStack::new(0xCAFE, 1)]
+        );
+        assert_eq!(
+            world
+                .resource::<byroredux_scripting::ReferenceLockState>()
+                .override_for(0x1234),
+            Some(byroredux_scripting::LockOverride::Unlocked)
+        );
+    }
+
+    #[test]
+    fn key_gate_rejects_missing_zero_count_wrong_and_keyless_locks() {
+        use byroredux_core::ecs::components::{Inventory, ItemStack};
+        let mut world = input_fixture();
+        let player = spawn_camera(&mut world);
+        let door = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -80.0));
+        for (key, items) in [
+            (Some(0xCAFE), vec![]),
+            (Some(0xCAFE), vec![ItemStack::new(0xCAFE, 0)]),
+            (Some(0xCAFE), vec![ItemStack::new(0xBEEF, 1)]),
+            (None, vec![ItemStack::new(0xCAFE, 1)]),
+            (Some(0), vec![ItemStack::new(0, 1)]),
+        ] {
+            world.insert(player, Inventory { items });
+            world.insert(
+                door,
+                Locked {
+                    lock_level: 50,
+                    key_form_id: key,
+                },
+            );
+            assert!(activation_is_blocked(&world, door));
+            assert!(!unlock_with_carried_key(&world, door));
+            assert!(world.has::<Locked>(door));
+        }
     }
 
     #[test]

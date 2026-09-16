@@ -469,6 +469,9 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_component::<RumbleOnActivate>("RumbleOnActivate")
         .register_form_id_component("FormIdComponent")
         .register_resource::<ItemInstancePool>("ItemInstancePool")
+        .register_resource::<crate::cell_loader::reference_state::PersistentReferenceStates>(
+            "PersistentReferenceStates",
+        )
         // M45.1 — the cell identity + plugin set the save was taken in,
         // so `load` knows which cell to reload before applying deltas.
         .register_resource::<CurrentCellContext>("CurrentCellContext")
@@ -1673,16 +1676,22 @@ pub fn execute_pending_save_loads(
         return;
     }
 
-    let outcome = if let Some(cell_ctx) = snapshot_cell_context(&snapshot) {
-        reload_interior_session(world, ctx, streaming, &args, &cell_ctx)
-    } else if let Some(ext_ctx) = snapshot_exterior_context(&snapshot) {
-        reload_exterior_session(world, ctx, streaming, &args, &ext_ctx)
-    } else {
-        let message = "save load: snapshot lost its cell/exterior context between queue and drain";
-        log::error!("{message}");
-        notify_player(world, message);
-        return;
-    };
+    // Suppress ordinary eviction capture/respawn restoration during a save
+    // load: the outgoing session's parked state must not contaminate the save.
+    // Resident rows arrive from the snapshot's component overlay; nonresident
+    // rows arrive with the post-reload resource restore below.
+    let outcome = crate::cell_loader::reference_state::without_parked_state(world, |world| {
+        if let Some(cell_ctx) = snapshot_cell_context(&snapshot) {
+            reload_interior_session(world, ctx, streaming, &args, &cell_ctx)
+        } else if let Some(ext_ctx) = snapshot_exterior_context(&snapshot) {
+            reload_exterior_session(world, ctx, streaming, &args, &ext_ctx)
+        } else {
+            let message = "save load: snapshot lost its cell/exterior context between queue and drain";
+            log::error!("{message}");
+            notify_player(world, message);
+            None
+        }
+    });
     let Some(ReloadOutcome {
         location_label,
         count_label,

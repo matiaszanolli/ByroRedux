@@ -8,6 +8,135 @@ use super::*;
 // Test-only symbols not referenced by production code in this module
 // (they'd warn as unused at file scope). #1877 split.
 
+fn actor_placement_fixture() -> esm::cell::PlacedRef {
+    esm::cell::PlacedRef {
+        form_id: 0x100,
+        base_form_id: 0x200,
+        group_type: 0xFF,
+        position: [0.0; 3],
+        rotation: [0.0; 3],
+        scale: 1.0,
+        enable_parent: None,
+        teleport: None,
+        reputation_ref: None,
+        primitive: None,
+        linked_refs: Vec::new(),
+        location_ref_types: Vec::new(),
+        rooms: Vec::new(),
+        portals: Vec::new(),
+        radius_override: None,
+        alt_texture_ref: None,
+        land_texture_ref: None,
+        texture_slot_swaps: Vec::new(),
+        emissive_light_ref: None,
+        material_swap_ref: None,
+        ownership: None,
+        script_instance: None,
+        lock: None,
+        water_velocity: None,
+    }
+}
+
+#[test]
+fn actor_placement_stamp_restores_only_the_looted_instance_of_a_shared_base() {
+    use crate::cell_loader::reference_state::{capture, PersistentReferenceStates};
+    use byroredux_core::ecs::components::{Dead, Inventory, ItemStack};
+    let mut world = World::new();
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(PersistentReferenceStates::default());
+    let placement = actor_placement_fixture();
+    let order = crate::cell_loader::load_order::LoadOrder::all_regular(vec!["Test.esm".into()]);
+    let old = world.spawn();
+    world.insert(old, Inventory::new());
+    stamp_quest_reference(&mut world, old, &placement, &order);
+    world.insert(old, Dead);
+    capture(&mut world, &[old]);
+    world.despawn(old);
+
+    // Both actor jobs produce the same authored inventory. Only the ACHR
+    // identity stamped after each job distinguishes their persisted state.
+    let other = world.spawn();
+    world.insert(
+        other,
+        Inventory {
+            items: vec![ItemStack::new(0xAAAA, 3)],
+        },
+    );
+    let mut other_placement = placement.clone();
+    other_placement.form_id = 0x101;
+    stamp_quest_reference(&mut world, other, &other_placement, &order);
+    assert_eq!(world.get::<Inventory>(other).unwrap().items[0].count, 3);
+    assert!(world.get::<Dead>(other).is_none());
+
+    let restored = world.spawn();
+    world.insert(
+        restored,
+        Inventory {
+            items: vec![ItemStack::new(0xAAAA, 3)],
+        },
+    );
+    stamp_quest_reference(&mut world, restored, &placement, &order);
+    assert!(world.get::<Inventory>(restored).unwrap().is_empty());
+    assert!(world.get::<Dead>(restored).is_some());
+    assert_eq!(
+        world
+            .get::<byroredux_scripting::SceneAliasCandidate>(restored)
+            .unwrap()
+            .base_form_id,
+        placement.base_form_id
+    );
+}
+
+#[test]
+fn actor_placement_stamp_restores_travel_using_placed_not_base_identity() {
+    use crate::cell_loader::stream_snapshot::{capture_actor_snapshots, StreamStateSnapshots};
+    use byroredux_core::ecs::components::{Inventory, Transform, TravelState, Traveled};
+    let mut world = World::new();
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(StreamStateSnapshots::default());
+    let placement = actor_placement_fixture();
+    let order = crate::cell_loader::load_order::LoadOrder::all_regular(vec!["Test.esm".into()]);
+    let old = world.spawn();
+    world.insert(old, Inventory::new());
+    world.insert(old, Transform::from_translation(Vec3::new(400.0, 0.0, 0.0)));
+    world.insert(
+        old,
+        TravelState {
+            destination: Vec3::new(500.0, 0.0, 0.0),
+        },
+    );
+    world.insert(old, Traveled);
+    stamp_quest_reference(&mut world, old, &placement, &order);
+    capture_actor_snapshots(&mut world, &[old]);
+    world.despawn(old);
+
+    let other = world.spawn();
+    world.insert(other, Inventory::new());
+    world.insert(other, Transform::IDENTITY);
+    let mut other_placement = placement.clone();
+    other_placement.form_id = 0x101;
+    stamp_quest_reference(&mut world, other, &other_placement, &order);
+    assert!(!world.has::<Traveled>(other));
+    assert_eq!(
+        world.get::<Transform>(other).unwrap().translation,
+        Vec3::ZERO
+    );
+    let restored = world.spawn();
+    world.insert(restored, Inventory::new());
+    world.insert(restored, Transform::IDENTITY);
+    stamp_quest_reference(&mut world, restored, &placement, &order);
+    assert!(world.has::<Traveled>(restored));
+    assert_eq!(
+        world.get::<Transform>(restored).unwrap().translation,
+        Vec3::new(400.0, 0.0, 0.0)
+    );
+    assert_eq!(
+        world.get::<TravelState>(restored).unwrap().destination,
+        Vec3::new(500.0, 0.0, 0.0)
+    );
+    assert!(world.resource::<StreamStateSnapshots>().is_empty());
+}
+
 /// #1890 / DELTA-01 — the spawn-path half of the VWD chain: a base record
 /// whose `visible_when_distant` flag is set ends with a `VisibleWhenDistant`
 /// marker on its placement root, and an unflagged one does not. Complements

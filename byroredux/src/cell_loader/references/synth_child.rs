@@ -76,6 +76,26 @@ pub(super) fn stamp_quest_reference(
         },
     );
     byroredux_scripting::mark_scene_actor_bindings_dirty(world);
+    // NPC jobs finish their authored inventory before the caller stamps the
+    // placed ACHR identity. Restore here, not inside the job (where only the
+    // base NPC identity is known). CONT inventory attaches later and restores
+    // at its own attach boundary instead.
+    if world
+        .get::<byroredux_core::ecs::components::Inventory>(entity)
+        .is_some()
+    {
+        let authored_position = world
+            .get::<byroredux_core::ecs::Transform>(entity)
+            .map(|transform| transform.translation)
+            .unwrap_or_default();
+        crate::cell_loader::stream_snapshot::restore_actor_snapshot(
+            world,
+            entity,
+            placed_ref.form_id,
+            authored_position,
+        );
+        crate::cell_loader::reference_state::restore(world, entity);
+    }
 }
 
 /// Spawn the identity-only entity for a REFR that produced no 3D, carrying a
