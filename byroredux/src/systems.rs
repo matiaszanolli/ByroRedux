@@ -24,6 +24,7 @@ mod metrics;
 pub(crate) mod navmesh_path;
 mod particle;
 mod patrol;
+pub(crate) mod restoration;
 mod sandbox;
 mod travel;
 mod wander;

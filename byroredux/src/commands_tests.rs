@@ -8,6 +8,20 @@ use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
 
 #[test]
+fn hardcore_command_changes_the_canonical_flag_and_rejects_bad_input() {
+    use byroredux_core::ecs::resources::HardcoreMode;
+    let mut world = World::new();
+    world.insert_resource(HardcoreMode::default());
+    assert!(build_command_registry().list().iter().any(|(name, _)| *name == "hardcore"));
+    HardcoreCommand.execute(&world, "on");
+    assert!(world.resource::<HardcoreMode>().enabled);
+    HardcoreCommand.execute(&world, "off extra");
+    assert!(world.resource::<HardcoreMode>().enabled);
+    HardcoreCommand.execute(&world, "off");
+    assert!(!world.resource::<HardcoreMode>().enabled);
+}
+
+#[test]
 fn sdk_compat_command_is_registered_and_reports_an_empty_world() {
     let mut world = World::new();
     world.insert_resource(byroredux_scripting::CompatibilityRegistry::default());

@@ -609,7 +609,50 @@ Verification: **55 save-library tests** and **68 save-I/O tests**, including
 explicit installed-master tests, passed; save-I/O ran with lock-order checking.
 This remains a headless overlay check, not the Vulkan cell-reload smoke.
 
-This is not a general magic system: the remaining games' consumption, timed effects,
+The full engine regression suite subsequently passed **2,186 tests** with 31
+ignored and lock-order checking enabled. Its first run took 415 seconds with
+the last footstep test waiting alongside an ALSA/PipeWire thread. Footstep,
+water-event, and reverb logic fixtures now use explicit `AudioWorld::headless()`
+instead of opening the host audio device; the next full run took 5.90 seconds.
+Production `new()`/`Default` still initialize audio normally. A new audio test
+checks that explicit headless playback retains neither queued sounds nor their
+shared references. This verifies logic without claiming audible playback or a
+diagnosis of the unsymbolized backend wait.
+
+Constant-rate, non-recover restorative Value Modifiers now run over their
+authored duration. The inventory catalog uses one checked plan for immediate,
+conditional, and timed branches. Use consumes one stack entry; timed branches
+restore no health upfront, then tick in simulation seconds with the last frame
+clamped to the remaining duration. Zero/invalid deltas do not advance effects,
+overheal is discarded, and dead/zero-health actors cannot be revived by ticking.
+`TimedRestorations` persists source/AV FormIDs, rate, and remaining time with
+authoritative-absence replacement. The new registry column changes the schema
+fingerprint again: earlier saves are rejected, not migrated.
+
+Installed New Vegas data now exposes **two** base-restoration plans:
+`NVBitterDrink` (`001613BD`, 2 health/second for 18 seconds) and `BloodPack`
+(`00034051`, 1 immediate health plus 4/second for 5 seconds with Hematophage).
+Real-master disk tests verify midpoint save/load, exact remaining restoration
+after an oversized frame, repeated before-use/midpoint loads, inventory counts,
+and Blood Pack's no-perk 1-point path. Skyrim remains at 84 immediate plans and
+FO3 at five unconditional plus one conditional plan; neither adds a timed item
+under the current capability check. Verification: **2,188 engine tests** passed
+(32 ignored), **70 save-I/O tests** passed including installed masters with
+lock-order checking, and **998 plugin unit tests**, one integration test, and
+two doctests passed.
+
+The timed decoder distinguishes FO3/FNV No Duration (bit 7) from Skyrim's bit 9;
+it excludes no-death-dispel effects, and Skyrim keyword-dispel, no-recast, and
+nonzero taper-duration effects. Layouts are checked against xEdit's
+[FNV definitions](https://raw.githubusercontent.com/TES5Edit/TES5Edit/dev-4.1.6/Core/wbDefinitionsFNV.pas)
+and [TES5 definitions](https://raw.githubusercontent.com/TES5Edit/TES5Edit/dev-4.1.6/Core/wbDefinitionsTES5.pas).
+Rates above are authored base rates, not a claim of Survival/Medicine/perk
+scaling parity. Each consumed timed instance currently runs independently;
+game/equip-category-specific stacking and replacement remain to be verified
+and implemented. These are headless native-action/overlay checks, not a live
+Vulkan consumption or door-transition smoke.
+
+This is not a general magic system: the remaining games' consumption, other timed effects,
 poison application, addiction, scripted effects, other condition functions, linked abilities,
 image-space effects, perks, dynamic magnitude modifiers, audio/VFX, and item-use
 script event delivery remain unimplemented. Unsupported items stay unavailable

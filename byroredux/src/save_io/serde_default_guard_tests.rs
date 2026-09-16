@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 fn registered_type_names(registry_source: &str) -> Vec<&str> {
-    [".register_component::<", ".register_resource::<"]
+    [".register_component::<", ".register_replacing_component::<", ".register_resource::<"]
         .into_iter()
         .flat_map(|prefix| {
             registry_source
@@ -613,10 +613,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
     const BASELINE_MAJOR: u16 = 23;
-    // Perks/PerkRank are newly saved types, not shape changes to an existing
-    // saved column. The registry fingerprint rejects older saves without
-    // Perks and includes its new authoritative-absence overlay policy.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x55e2_862a_af77_d52d;
+    // HardcoreMode is a newly saved resource, not a shape change to an
+    // existing column. The registry fingerprint rejects earlier snapshots
+    // so their missing mode flag cannot retain an outgoing live selection.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xfab2_629a_f945_56e2;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

@@ -215,7 +215,7 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
     } else {
         index.character_rules.npc_stat_model()
     };
-    match model {
+    let mut values = match model {
         NpcStatModel::Stored => derive_stored_actor_values(npc, level, index),
         NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(stats, traits, index),
         NpcStatModel::ClassAutoCalc { health } => {
@@ -223,7 +223,21 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
         }
         NpcStatModel::CreatureData => derive_creature_actor_values(stats, index),
         NpcStatModel::None => Vec::new(),
+    };
+    if index.game == super::super::reader::GameKind::Fallout3NV
+        && index.health_actor_value_key().is_some_and(|health| values.iter().any(|&(id, _)| id == health))
+    {
+        // GECK Stats List: body-condition AVs start at 100, independently of
+        // actor health. Damage/restoration then use the same saved AV layers.
+        for name in crate::consumables::BODY_CONDITION_VALUES {
+            if let Some(id) = index.actor_value_form_id(name) {
+                if !values.iter().any(|&(key, _)| key == id) {
+                    values.push((id, 100.0));
+                }
+            }
+        }
     }
+    values
 }
 
 /// FO3 / FNV `CREA`: the seven SPECIAL attributes and Health, verbatim from

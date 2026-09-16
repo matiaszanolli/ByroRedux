@@ -117,6 +117,8 @@ pub enum ItemKind {
         /// Header permits simple consumption: no attached script, poison,
         /// addiction or withdrawal. Effect capability must still be checked.
         simple_consumption_header: bool,
+        /// FO3/FNV ENIT Medicine flag: positive effects scale with Medicine.
+        medicine: bool,
     },
     /// KEYM: key — same as MISC but the engine treats it specially.
     Key,
@@ -954,6 +956,7 @@ pub fn parse_alch(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             immediate_effects: None,
             authored_effects: None,
             simple_consumption_header: false,
+            medicine: false,
         },
     }
 }
@@ -998,6 +1001,7 @@ pub fn parse_alch_for_game(
         return item;
     }
     let mut valid_header = false;
+    let mut medicine_flag = false;
     for sub in subs {
         match &sub.sub_type {
             b"ENIT" => {
@@ -1018,6 +1022,7 @@ pub fn parse_alch_for_game(
                     return item;
                 }
                 valid_header = true;
+                medicine_flag = game == GameKind::Fallout3NV && flags & 4 != 0;
             }
             _ => {}
         }
@@ -1026,10 +1031,12 @@ pub fn parse_alch_for_game(
         if let ItemKind::Aid {
             immediate_effects,
             simple_consumption_header,
+            medicine,
             ..
         } = &mut item.kind
         {
             *immediate_effects = immediate;
+            *medicine = medicine_flag;
             *simple_consumption_header = true;
         }
     }

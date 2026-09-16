@@ -13,6 +13,15 @@ use crate::systems::{animate_lights_system, make_animation_system, spin_system};
 
 /// `Stage::Update` registrations (#3739 split of `build_scheduler`).
 pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::systems::restoration::restoration_system,
+        Access::new()
+            .reads::<byroredux_core::ecs::components::ActorVitals>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .writes::<byroredux_core::ecs::components::ActorValues>()
+            .writes::<byroredux_core::ecs::components::TimedRestorations>(),
+    );
     // M47.0 Phase 1 — R5 papyrus_demo dispatchers. These are
     // event-driven (early-return when no ActivateEvent /
     // OnUpdateEvent / RecurringUpdate is present), so they

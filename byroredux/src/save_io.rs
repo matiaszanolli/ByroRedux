@@ -100,6 +100,8 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // Ranked perk FormIDs (u32) and ranks (u8) are session-stable. Its
     // replacing registration also clears a saved absence on the live player.
     "Perks",
+    // Stable source/AV FormIDs and scalar rate/remaining simulation seconds.
+    "TimedRestorations",
     // Combat state is session-stable: the weapon points into the saved
     // Inventory by u32 index and Dead is a zero-field lifecycle marker.
     "EquippedWeapon",
@@ -384,6 +386,7 @@ pub fn build_save_registry() -> SaveRegistry {
         // re-derived spawn base. Also a MUTABLE_DELTA_COLUMN (delta-safe).
         .register_component::<ActorValues>("ActorValues")
         .register_replacing_component::<byroredux_core::character::Perks>("Perks")
+        .register_replacing_component::<byroredux_core::ecs::components::TimedRestorations>("TimedRestorations")
         // #3027 (SAVE-D1-2026-08-16-02) — registered (so a hand load of an
         // older save still resolves the column), but deliberately absent
         // from `MUTABLE_DELTA_COLUMNS` below: despite the name/field
@@ -485,6 +488,7 @@ pub fn build_save_registry() -> SaveRegistry {
         // hour/rate/day. Restoring after the cell reload lets the next
         // weather tick re-derive sky, fog, sun, and directional lighting.
         .register_resource::<GameTimeRes>("GameTimeRes")
+        .register_resource::<byroredux_core::ecs::resources::HardcoreMode>("HardcoreMode")
         // #1862 / SAVE-07 — quest stage/objective progress is live gameplay
         // state (Papyrus `SetStage`/`GetStage`/`GetStageDone` and
         // `SetObjectiveDisplayed`/`SetObjectiveCompleted`/`SetObjectiveFailed`),

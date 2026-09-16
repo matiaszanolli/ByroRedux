@@ -616,6 +616,10 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 pub struct MgefRecord {
     /// Game-local vital AV index eligible for immediate restoration, not a FormID.
     pub instant_restoration_av: Option<u32>,
+    /// Same vital mapping, additionally safe for a constant-rate duration.
+    pub timed_restoration_av: Option<u32>,
+    /// FO3/FNV Value and Parts also restores the body-condition actor values.
+    pub restores_body_parts: bool,
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
@@ -645,6 +649,8 @@ impl Default for MgefRecord {
     fn default() -> Self {
         Self {
             instant_restoration_av: None,
+            timed_restoration_av: None,
+            restores_body_parts: false,
             form_id: 0,
             editor_id: String::new(),
             full_name: String::new(),
@@ -692,11 +698,17 @@ pub fn parse_mgef_for_game(
                 let av = read(68);
                 if read(0) & (1 | 2 | 4 | 0x100 | 0x80000 | 0x100000) == 0
                     && read(0) & 0x10 != 0
-                    && read(64) == 0
+                    && (read(64) == 0 || (read(64) == 34 && av == 16))
                     && read(20) & 0xffff == 0
                     && matches!(av, 12 | 16)
                 {
                     out.instant_restoration_av = Some(av);
+                    out.restores_body_parts = read(64) == 34;
+                    // FO3/FNV No Duration is bit 7 (TES5 uses bit 9).
+                    // No Death Dispel needs a different lifecycle policy.
+                    if read(0) & (0x80 | 0x10000000) == 0 {
+                        out.timed_restoration_av = Some(av);
+                    }
                 }
             }
             return out;
@@ -720,6 +732,14 @@ pub fn parse_mgef_for_game(
                 && (24..=26).contains(&av)
             {
                 out.instant_restoration_av = Some(av);
+                // TES5 taper duration is DATA+56. No-recast, keyword dispel,
+                // and no-death-dispel require lifecycle policies not yet
+                // implemented by the ordinary restorative tick.
+                if read(0) & (0x200 | 0x20000 | 0x100 | 0x10000000) == 0
+                    && f32::from_bits(read(56)) == 0.0
+                {
+                    out.timed_restoration_av = Some(av);
+                }
             }
         }
     }

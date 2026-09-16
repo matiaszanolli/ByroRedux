@@ -382,13 +382,9 @@ mod footstep_tests {
             default_sound: Some(Arc::clone(&sound)),
             volume,
         });
-        // AudioWorld via `Default::default()` — picks up the
-        // headless fallback path when the test host has no audio
-        // device, otherwise creates a real manager. Either way
-        // `play_oneshot` enqueues without immediately dispatching
-        // (drain only fires inside `audio_system`, which we don't
-        // call from the footstep tests).
-        world.insert_resource(byroredux_audio::AudioWorld::default());
+        // Test stride/event logic without opening the host's audio device.
+        // Headless playback is discarded; FootstepScratch records triggers.
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
         world.insert_resource(FootstepScratch::default());
         (world, sound)
     }
@@ -659,13 +655,12 @@ mod footstep_tests {
 
         water_audio_system(&world, 0.016);
 
-        // Headless AudioWorlds drop immediately; device-backed worlds retain
-        // the pending one-shot. Both paths are valid, but neither may panic.
-        assert!(
+        // Headless playback must not retain discarded sounds.
+        assert_eq!(
             world
                 .resource::<byroredux_audio::AudioWorld>()
-                .pending_oneshot_count()
-                <= 1
+                .pending_oneshot_count(),
+            0
         );
 
         // A recurring ripple is throttled rather than dispatched every tick.
@@ -752,7 +747,7 @@ mod reverb_tests {
     #[test]
     fn interior_cell_sets_subtle_reverb_send() {
         let mut world = World::new();
-        world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
         world.insert_resource(cell_lit(true));
 
         // Pre-condition: default AudioWorld boots with NEG_INFINITY.
@@ -780,7 +775,7 @@ mod reverb_tests {
     #[test]
     fn exterior_cell_keeps_dry_send() {
         let mut world = World::new();
-        world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
         world.insert_resource(cell_lit(false));
 
         reverb_zone_system(&world, 0.016);
@@ -800,7 +795,7 @@ mod reverb_tests {
     #[test]
     fn interior_to_exterior_transition_resets_send_to_dry() {
         let mut world = World::new();
-        world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
 
         // Tick 1 — interior: send = -12 dB.
         world.insert_resource(cell_lit(true));
@@ -830,7 +825,7 @@ mod reverb_tests {
     #[test]
     fn no_cell_lighting_resource_is_safe_noop() {
         let mut world = World::new();
-        world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
         // Deliberately omit CellLightingRes.
 
         reverb_zone_system(&world, 0.016);

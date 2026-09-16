@@ -33,6 +33,7 @@ pub mod perk_list;
 pub mod physics_source;
 pub mod precombine;
 pub mod render_layer;
+pub mod restoration;
 pub mod sandbox;
 pub mod scene_flags;
 pub mod skinned_mesh;
@@ -45,6 +46,7 @@ pub mod world_bound;
 
 pub use actor_state::Dead;
 pub use actor_values::{ActorValue, ActorValues, ActorVitals};
+pub use restoration::{TimedRestoration, TimedRestorations};
 pub use animated::{
     AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
     AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,

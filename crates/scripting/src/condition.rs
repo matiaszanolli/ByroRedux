@@ -144,6 +144,8 @@ pub enum ConditionFunction {
     /// (also 0.0 when the actor carries no `Perks`). Index **449** (FO3 / FNV),
     /// **448** (Skyrim) — both map here.
     HasPerk,
+    /// New Vegas CTDA 586: the saved Hardcore selection.
+    IsHardcore,
     /// `GetReputation(reputation_form_id, axis) → f32`. The Run-On actor's
     /// raw Fame/Infamy with `param_1` (a FNV `REPU` FormID) from its
     /// `FactionReputation` component; `param_2` selects the axis
@@ -195,6 +197,7 @@ impl ConditionFunction {
             555 => Self::HasLoaded3D,
             573 => Self::GetReputation,
             575 => Self::GetReputationThreshold,
+            586 => Self::IsHardcore,
             630 => Self::GetVMScriptVariable,
             other => Self::Unknown(other),
         }
@@ -202,7 +205,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 19] = [
+    pub const CATALOG: [ConditionFunction; 20] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -216,6 +219,7 @@ impl ConditionFunction {
         Self::GetLevel,
         Self::GetEquipped,
         Self::HasPerk,
+        Self::IsHardcore,
         Self::GetXPForNextLevel,
         Self::IsSceneActionComplete,
         Self::HasLoaded3D,
@@ -240,6 +244,7 @@ impl ConditionFunction {
             Self::GetLevel => "GetLevel",
             Self::GetEquipped => "GetEquipped",
             Self::HasPerk => "HasPerk",
+            Self::IsHardcore => "IsHardcore",
             Self::GetXPForNextLevel => "GetXPForNextLevel",
             Self::IsSceneActionComplete => "IsSceneActionComplete",
             Self::HasLoaded3D => "HasLoaded3D",
@@ -761,6 +766,10 @@ pub fn evaluate_function(
                 _ => 0.0,
             }
         }
+        ConditionFunction::IsHardcore => {
+            if world.try_resource::<byroredux_core::ecs::resources::HardcoreMode>()
+                .is_some_and(|mode| mode.enabled) { 1.0 } else { 0.0 }
+        }
         ConditionFunction::HasPerk => {
             // 1.0 iff the Run-On actor's canonical ranked `Perks` component
             // owns `param_1`. Spawned NPCs carry this component; the legacy
@@ -897,6 +906,19 @@ mod tests {
     use super::*;
     use byroredux_core::ecs::world::World;
     use byroredux_plugin::esm::records::condition::{ComparisonOp, RunOn};
+
+    #[test]
+    fn hardcore_condition_reads_the_live_mode_flag() {
+        use byroredux_core::ecs::resources::HardcoreMode;
+        let mut world = World::new();
+        let actor = world.spawn();
+        let condition = cond(586, ComparisonOp::Eq, 1.0, false);
+        assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
+        world.insert_resource(HardcoreMode { enabled: true });
+        assert!(evaluate_condition(&condition, &world, &ctx(actor)));
+        world.resource_mut::<HardcoreMode>().enabled = false;
+        assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
+    }
 
     fn ctx(subject: EntityId) -> ConditionContext<'static> {
         ConditionContext::for_subject(subject)

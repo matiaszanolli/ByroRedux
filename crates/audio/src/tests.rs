@@ -4,6 +4,26 @@
 
 use super::*;
 
+#[test]
+fn explicit_headless_world_discards_playback_without_retaining_sound() {
+    let mut audio = AudioWorld::headless();
+    assert!(!audio.is_active());
+    assert!(audio.manager_mut().is_none());
+    assert_eq!(audio.reverb_send_db(), f32::NEG_INFINITY);
+    let sound = Arc::new(StaticSoundData {
+        sample_rate: 44_100,
+        frames: Arc::new([Frame::ZERO; 64]),
+        settings: kira::sound::static_sound::StaticSoundSettings::default(),
+        slice: None,
+    });
+    for _ in 0..300 {
+        audio.play_oneshot(Arc::clone(&sound), Vec3::ZERO, Attenuation::default(), 1.0);
+    }
+    assert_eq!(audio.pending_oneshot_count(), 0);
+    assert_eq!(audio.active_sound_count(), 0);
+    assert_eq!(Arc::strong_count(&sound), 1);
+}
+
 /// AudioWorld must construct cleanly even when there's no audio
 /// device — CI and headless servers have neither, and a panic
 /// here would refuse to launch the engine.

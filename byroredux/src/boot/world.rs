@@ -27,6 +27,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // Register built-in resources.
     world.insert_resource(DeltaTime(0.0));
     world.insert_resource(TotalTime(0.0));
+    world.insert_resource(byroredux_core::ecs::resources::HardcoreMode::default());
     world.insert_resource(EngineConfig {
         debug_logging: debug_mode || cfg!(debug_assertions),
         ..Default::default()
@@ -231,6 +232,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_physics::ActorBoneCollider>();
     world.register::<byroredux_physics::ActorColliderOwner>();
     world.register::<byroredux_core::ecs::components::ActorVitals>();
+    world.register::<byroredux_core::ecs::components::TimedRestorations>();
     world.register::<byroredux_core::ecs::components::EquippedWeapon>();
     // #3762 — a creature's authored `CREA.DATA.Damage`, read by
     // `combat::attack_damage`'s no-weapon arm. Registered beside

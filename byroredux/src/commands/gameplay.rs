@@ -4,6 +4,38 @@ use super::shared::*;
 use byroredux_core::ecs::components::{EquipmentSlots, EquippedWeapon, Inventory};
 use byroredux_core::settings::{SettingValue, SettingsRegistry};
 
+/// Select the saved condition flag; other Hardcore mechanics are still pending.
+pub(crate) struct HardcoreCommand;
+
+impl ConsoleCommand for HardcoreCommand {
+    fn name(&self) -> &str {
+        "hardcore"
+    }
+    fn description(&self) -> &str {
+        "Inspect/select New Vegas Hardcore effect branches: hardcore [on|off] (needs simulation not yet implemented)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let requested = match args.trim() {
+            "" => None,
+            "on" | "1" => Some(true),
+            "off" | "0" => Some(false),
+            _ => return CommandOutput::error("usage: hardcore [on|off]"),
+        };
+        let Some(mut mode) =
+            world.try_resource_mut::<byroredux_core::ecs::resources::HardcoreMode>()
+        else {
+            return CommandOutput::error("Hardcore mode resource unavailable");
+        };
+        if let Some(enabled) = requested {
+            mode.enabled = enabled;
+        }
+        CommandOutput::line(format!(
+            "Hardcore effect conditions: {} (hunger/thirst/sleep simulation pending)",
+            if mode.enabled { "on" } else { "off" }
+        ))
+    }
+}
+
 /// `inventory.status` — expose the live player loadout used by combat.
 pub(crate) struct InventoryStatusCommand;
 

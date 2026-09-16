@@ -500,13 +500,25 @@ impl AudioWorld {
             }
         });
         Self {
+            reverb_send,
+            manager,
+            ..Self::headless()
+        }
+    }
+
+    /// Construct without contacting an audio device or starting backend threads.
+    /// Useful for dedicated servers and hardware-independent gameplay tests.
+    /// Playback is discarded, just as when device initialization fails; listener
+    /// and reverb configuration can still be updated by gameplay systems.
+    pub fn headless() -> Self {
+        Self {
             active_sounds: Vec::new(),
             pending_oneshots: VecDeque::new(),
             music: None,
-            reverb_send,
+            reverb_send: None,
             reverb_send_db: f32::NEG_INFINITY,
             listener: None,
-            manager,
+            manager: None,
             multi_listener_warned: false,
             underwater: false,
         }

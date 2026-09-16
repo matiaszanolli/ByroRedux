@@ -47,6 +47,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         "ActorValues",
         // Perks: Vec<PerkRank { perk_form_id: u32, rank: u8 }>.
         "Perks",
+        // TimedRestorations: source/AV u32 FormIDs, f32 rate, f64 time.
+        "TimedRestorations",
         // EquippedWeapon: u32 inventory index + u32 base FormID + f32
         // damage. Dead: empty marker. Neither carries session identity.
         "EquippedWeapon",

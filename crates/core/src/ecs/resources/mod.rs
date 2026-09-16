@@ -4,6 +4,9 @@ use super::components::ItemInstanceId;
 use super::resource::Resource;
 use std::num::NonZeroU32;
 
+mod hardcore;
+pub use hardcore::HardcoreMode;
+
 /// System names stored as a resource for debug and console queries.
 pub struct SystemList(pub Vec<String>);
 impl Resource for SystemList {}
