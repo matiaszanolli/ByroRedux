@@ -84,6 +84,9 @@ impl InventoryCatalog {
             "Junk" => ItemCategory::Junk,
             "Mods" => ItemCategory::Mod,
             "Book" => ItemCategory::Book,
+            "Scroll" => ItemCategory::Scroll,
+            "Light" => ItemCategory::Light,
+            "Apparatus" => ItemCategory::Apparatus,
             "Note" => ItemCategory::Note,
             "Ingredient" => ItemCategory::Ingredient,
             "Aid" => ItemCategory::Aid,
@@ -199,6 +202,17 @@ fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<EquipTarget>)
         ItemKind::Aid { .. } => ("Aid", "Consumable".to_owned(), None),
         ItemKind::Ingredient { .. } => ("Ingredient", "Ingredient".to_owned(), None),
         ItemKind::Book { .. } => ("Book", "Book".to_owned(), None),
+        ItemKind::Scroll { .. } => ("Scroll", "Scroll (casting unavailable)".to_owned(), None),
+        ItemKind::Apparatus { .. } => (
+            "Apparatus",
+            "Alchemy apparatus (crafting unavailable)".to_owned(),
+            None,
+        ),
+        ItemKind::Light { .. } => (
+            "Light",
+            "Carried light (equipping unavailable)".to_owned(),
+            None,
+        ),
         ItemKind::Note { .. } => ("Note", "Note".to_owned(), None),
         ItemKind::Key => ("Key", "Key".to_owned(), None),
         ItemKind::Mod { .. } => ("Mods", "Loose object modification".to_owned(), None),
@@ -425,6 +439,7 @@ pub(crate) fn container_loot_system(world: &World, _dt: f32) {
             continue;
         };
         let stacks = std::mem::take(&mut source.items);
+        let item_count: u64 = stacks.iter().map(|stack| u64::from(stack.count)).sum();
         let form_ids: Vec<_> = stacks.iter().map(|stack| stack.base_form_id).collect();
         let destination = inventories
             .get_mut(player)
@@ -433,6 +448,15 @@ pub(crate) fn container_loot_system(world: &World, _dt: f32) {
         // distinct instance-pool identities are never merged or discarded.
         destination.items.extend(stacks);
         drop(inventories);
+        if item_count > 0 {
+            crate::notifications::push(
+                world,
+                format!(
+                    "Took {item_count} {}",
+                    if item_count == 1 { "item" } else { "items" }
+                ),
+            );
+        }
         // Equipment points into the source inventory, not the destination.
         // Snapshot unique indices and release every storage guard before
         // acquiring the next one or publishing the script event batch.
@@ -1025,6 +1049,73 @@ mod tests {
         assert_eq!(metadata.name(), "Iron Armor");
         assert_eq!(metadata.category(), ItemCategory::Armor);
         assert_eq!((metadata.value(), metadata.weight()), (125, 30.0));
+    }
+
+    #[test]
+    fn scroll_catalog_exposes_metadata_without_claiming_cast_support() {
+        let mut index = EsmIndex::default();
+        let item = byroredux_plugin::esm::records::parse_scrl(0x1234, &[], &None);
+        index.items.insert(0x1234, item);
+        let mut world = World::new();
+        install_catalog(&mut world, &index);
+        let catalog = world.resource::<InventoryCatalog>();
+        let definition = &catalog.entries[&0x1234];
+        assert_eq!(definition.category, "Scroll");
+        assert!(definition.equip_target.is_none());
+        assert!(definition.details.contains("casting unavailable"));
+        assert_eq!(
+            catalog.sdk_metadata(0x1234).unwrap().category(),
+            ItemCategory::Scroll
+        );
+    }
+
+    #[test]
+    fn carried_light_catalog_does_not_claim_equipping_support() {
+        let mut index = EsmIndex::default();
+        let mut data = vec![0; 48];
+        data[12] = 2;
+        let item = byroredux_plugin::esm::records::parse_carryable_light(
+            0x1234,
+            &[byroredux_plugin::esm::reader::SubRecord {
+                sub_type: *b"DATA",
+                data,
+            }],
+            GameKind::Skyrim,
+            &None,
+        )
+        .unwrap();
+        index.items.insert(0x1234, item);
+        let mut world = World::new();
+        install_catalog(&mut world, &index);
+        let catalog = world.resource::<InventoryCatalog>();
+        assert!(catalog.entries[&0x1234].equip_target.is_none());
+        assert!(catalog.entries[&0x1234]
+            .details
+            .contains("equipping unavailable"));
+        assert_eq!(
+            catalog.sdk_metadata(0x1234).unwrap().category(),
+            ItemCategory::Light
+        );
+    }
+
+    #[test]
+    fn apparatus_catalog_exposes_metadata_without_claiming_crafting() {
+        let mut index = EsmIndex::default();
+        let item =
+            byroredux_plugin::esm::records::parse_appa(0x1234, &[], GameKind::Oblivion, &None)
+                .unwrap();
+        index.items.insert(0x1234, item);
+        let mut world = World::new();
+        install_catalog(&mut world, &index);
+        let catalog = world.resource::<InventoryCatalog>();
+        assert!(catalog.entries[&0x1234].equip_target.is_none());
+        assert!(catalog.entries[&0x1234]
+            .details
+            .contains("crafting unavailable"));
+        assert_eq!(
+            catalog.sdk_metadata(0x1234).unwrap().category(),
+            ItemCategory::Apparatus
+        );
     }
 
     #[test]

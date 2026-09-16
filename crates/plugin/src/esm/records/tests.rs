@@ -273,6 +273,84 @@ fn extract_records_walks_one_group() {
 }
 
 #[test]
+fn carryable_light_dispatch_and_override_keep_world_lighting() {
+    let plugin = |carry: bool| {
+        let mut data = vec![0; 48];
+        data[..4].copy_from_slice(&240i32.to_le_bytes());
+        data[4..8].copy_from_slice(&512u32.to_le_bytes());
+        data[8..11].copy_from_slice(&[255, 128, 32]);
+        data[12] = if carry { 2 } else { 0 };
+        data[40..44].copy_from_slice(&25u32.to_le_bytes());
+        data[44..48].copy_from_slice(&0.5f32.to_le_bytes());
+        let mut bytes = tes4_with_hedr(1.71);
+        bytes.extend(wrap_group(
+            b"LIGH",
+            &build_record(
+                b"LIGH",
+                0x0100_0010,
+                &[
+                    (b"FULL", b"Torch\0".to_vec()),
+                    (b"MODL", b"clutter\\torch.nif\0".to_vec()),
+                    (b"DATA", data),
+                    (b"SCRI", 0x0100_0020u32.to_le_bytes().to_vec()),
+                ],
+            ),
+        ));
+        parse_esm_with_load_order(&bytes, Some(FormIdRemap::regular(2, vec![0]))).unwrap()
+    };
+    let mut merged = plugin(true);
+    let item = &merged.items[&0x0200_0010];
+    assert_eq!(item.kind.label(), "LIGH");
+    assert_eq!(item.common.full_name, "Torch");
+    assert_eq!(item.common.script_form_id, 0x0200_0020);
+    assert_eq!((item.common.value, item.common.weight), (25, 0.5));
+    for carry in [false, true] {
+        merged.merge_from(plugin(carry));
+        assert_eq!(merged.items.contains_key(&0x0200_0010), carry);
+        let object = &merged.cells.statics[&0x0200_0010];
+        assert_eq!(object.model_path, "clutter\\torch.nif");
+        assert_eq!(object.light_data.as_ref().unwrap().radius, 512.0);
+        assert_eq!(object.light_data.as_ref().unwrap().flags & 2 != 0, carry);
+    }
+}
+
+#[test]
+fn skyrim_scroll_dispatch_preserves_inventory_model_and_remapped_effects() {
+    let mut bytes = tes4_with_hedr(1.71);
+    let data = [250u32.to_le_bytes(), 0.5f32.to_le_bytes()].concat();
+    let subs = vec![
+        (b"EDID" as &[u8; 4], b"ScrollTest\0".to_vec()),
+        (b"FULL", b"Scroll of Test\0".to_vec()),
+        (b"MODL", b"clutter\\scroll.nif\0".to_vec()),
+        (b"DATA", data),
+        (b"EFID", 0x0100_0123u32.to_le_bytes().to_vec()),
+        (b"EFID", 0x0000_0456u32.to_le_bytes().to_vec()),
+    ];
+    bytes.extend(wrap_group(
+        b"SCRL",
+        &build_record(b"SCRL", 0x0100_0010, &subs),
+    ));
+    let index = parse_esm_with_load_order(&bytes, Some(FormIdRemap::regular(2, vec![0]))).unwrap();
+    let item = &index.items[&0x0200_0010];
+    assert_eq!(item.common.full_name, "Scroll of Test");
+    assert_eq!((item.common.value, item.common.weight), (250, 0.5));
+    assert_eq!(item.kind.label(), "SCRL");
+    let ItemKind::Scroll { magic_effects } = &item.kind else {
+        panic!("expected scroll")
+    };
+    assert_eq!(magic_effects, &[0x0200_0123, 0x0000_0456]);
+    assert_eq!(index.record_types[&0x0200_0010], *b"SCRL");
+    assert_eq!(
+        index.cells.statics[&0x0200_0010].model_path,
+        "clutter\\scroll.nif"
+    );
+    assert!(!index.spells.contains_key(&0x0200_0010));
+    let mut loot = Vec::new();
+    crate::equip::expand_leveled_loot(0x0200_0010, 3, 1, &index, &mut loot);
+    assert_eq!(loot, vec![(0x0200_0010, 3)]);
+}
+
+#[test]
 fn fnv_special_loot_records_reach_catalog_and_keep_their_typed_data() {
     let mut bytes = tes4_with_hedr(1.34);
     for (label, id, value, weight) in [
@@ -315,6 +393,44 @@ fn fnv_special_loot_records_reach_catalog_and_keep_their_typed_data() {
     assert!(index.caravan_cards.contains_key(&0x0200_0010));
     assert!(index.caravan_money.contains_key(&0x0200_0020));
     assert_eq!(index.item_mods[&0x0200_0030].value, 250);
+}
+
+#[test]
+fn oblivion_apparatus_reaches_inventory_and_keeps_world_and_legacy_indexes() {
+    let data = [
+        vec![2],
+        200u32.to_le_bytes().to_vec(),
+        3.0f32.to_le_bytes().to_vec(),
+        0.5f32.to_le_bytes().to_vec(),
+    ]
+    .concat();
+    let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", b"TestCalcinator\0".to_vec()),
+        (b"FULL", b"Apprentice Calcinator\0".to_vec()),
+        (b"DATA", data),
+        (b"MODL", b"clutter\\calcinator.nif\0".to_vec()),
+        (b"SCRI", 0x0100_5678u32.to_le_bytes().to_vec()),
+    ];
+    let mut bytes = build_oblivion_tes4();
+    bytes.extend(wrap_group_obl(
+        b"APPA",
+        &build_record_obl(b"APPA", 0x0100_1234, &subs),
+    ));
+    let index = parse_esm_with_load_order(&bytes, Some(FormIdRemap::regular(2, vec![0]))).unwrap();
+    let id = 0x0200_1234;
+    let item = &index.items[&id];
+    assert_eq!(item.kind.label(), "APPA");
+    assert_eq!(item.common.full_name, "Apprentice Calcinator");
+    assert_eq!((item.common.value, item.common.weight), (200, 3.0));
+    assert_eq!(item.common.script_form_id, 0x0200_5678);
+    assert_eq!(
+        index.cells.statics[&id].model_path,
+        "clutter\\calcinator.nif"
+    );
+    assert!(index.apparatuses.contains_key(&id));
+    let mut loot = Vec::new();
+    crate::equip::expand_leveled_loot(id, 2, 1, &index, &mut loot);
+    assert_eq!(loot, vec![(id, 2)]);
 }
 
 #[test]

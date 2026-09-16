@@ -312,6 +312,25 @@ failed before the fix and passes afterward. Save reload also suppresses and
 invalidates the outgoing transient streaming cache, preventing its state from
 being mistaken for state in the loaded save.
 
+**Key-based unlocking (2026-09-16):** normal Activate input now checks the
+authored lock's key FormID against positive-count player inventory stacks.
+Looking at a keyed lock does not mutate it; pressing Activate removes the lock
+and records an unlocked override in the existing saved `ReferenceLockState`
+ledger. Keys are not consumed. The same path supports doors and take-all
+containers, while wrong keys, zero-count stacks, missing keys, and keyless locks
+remain blocked. Physical-input tests cover the door ledger update and both
+locked/unlocked container transfers. Lockpicking remains open.
+
+**Gameplay feedback (2026-09-16):** key unlocks and successful take-all transfers
+now feed the native four-second HUD message used by save/load feedback. The
+shared `PlayerNotifications` queue retains at most eight pending messages;
+same-frame unlock and loot messages display together rather than hiding the
+second action in the debug console. Loot feedback reports the total item count,
+and an empty/repeated transfer emits nothing. Input-path regressions cover both
+keyed and unlocked containers, message order, and held-key non-repetition. This
+uses the existing HUD renderer, independent of debug-panel visibility; a live
+visual smoke remains pending.
+
 **Cross-game loot progress (2026-09-16):** container loading now resolves
 CNTO leveled-list references into terminal item stacks, preserves nested LVLO
 counts, and rejects cyclic, zero-count, and 100%-chance-none branches. It uses
@@ -388,6 +407,58 @@ After the FO76 decoder change, the full plugin library suite passed with
 977 tests passing and 27 data-dependent tests ignored. The decoder tests pin
 companion-field scoping, malformed-entry isolation, finite/bounded scalar
 conversion, FormID remapping, and rejection of four-byte LVLO on other games.
+
+#### Skyrim scroll inventory metadata (2026-09-16)
+
+SCRL now enters the item catalog and world-model index as a distinct Scroll
+category, including the native inventory and SDK/WIT metadata projection.
+The parser retains names, value, weight, and remapped effect identities using
+[xEdit's Skyrim SCRL definition](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES5.pas).
+It does not interpret SPIT casting parameters or EFIT effect magnitudes yet;
+scrolls are not registered as learned spells, equipped as weapons, or consumed.
+The native inventory explicitly reports casting as unavailable.
+
+The installed Skyrim SE master probe at levels 1, 10, and 50 still expands
+8,922 stack occurrences from 2,409 leveled container seeds. Missing item
+metadata fell from 207 to **54**, recovering all 153 scroll occurrences;
+the remaining missing leaves are LIGH. This measures catalog coverage, not
+randomized loot fidelity or scroll casting. Plugin tests pass **982**, with
+27 ignored; native inventory tests pass **16**, with one real-data test ignored.
+New tests cover full dispatch, model retention, load-order remapping, truncated
+payloads, and the native/SDK category. All **70** mod-runtime tests pass,
+including Scroll's WIT metadata conversion. Live gameplay verification is pending:
+this environment has no `/dev/dri` Vulkan device.
+
+#### Carryable light inventory metadata (2026-09-16)
+
+LIGH dispatch now retains world-model/light data and adds item metadata only
+when the authored Can Be Carried flag is set. A plugin override clearing the
+flag removes earlier inventory metadata without deleting the world light.
+Names, duration, and available value/weight are retained; native inventory and
+SDK/WIT expose a distinct Light category. Equipping, held-light emission,
+burn-time consumption, and loose-world pickup are not implemented by this
+change; native inventory labels equipping unavailable.
+
+Economic offsets follow xEdit's [Oblivion](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES4.pas),
+[FNV](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsFNV.pas),
+[Skyrim](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES5.pas),
+[FO4](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsFO4.pas), and
+[FO76](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsFO76.pas)
+definitions, rather than guessing from payload length. Starfield uses its
+[DAT2 layout](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsSF1.pas);
+that block has no economic fields, so those remain zero rather than interpreting
+photometric data as value/weight. Optional absent economic fields also stay zero.
+
+The installed-master container probes recovered **54** Skyrim and **375**
+Oblivion light-stack occurrences. All **8,922** measured Skyrim stack occurrences
+now have catalog metadata. Oblivion has **165** missing entries out of **7,947**,
+all APPA. These figures cover deterministic leveled container expansion at
+levels 1, 10, and 50, not all inventories or full gameplay compatibility.
+Plugin tests pass **986** (27 ignored); native inventory tests pass **17**
+(one ignored). Tests cover per-game layouts, carryability, truncated data,
+world-light preservation, plugin override/remapping, and native metadata.
+All **71** mod-runtime tests pass, including Light's WIT category conversion.
+Live equipped-light behavior remains unverified and unimplemented.
 
 ### P4 — Authored objective and dialogue loop
 

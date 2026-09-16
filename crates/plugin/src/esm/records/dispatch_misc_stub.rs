@@ -7,6 +7,8 @@
 //! `parse_soun` (FNAM sound-path decode, EX-16 item 1 / #2372) and GRAS to
 //! `parse_gras` (EXAL ground-cover Phase 5 / #3807); the other 29 stay on
 //! the minimal-stub path.
+//! APPA now dispatches through `dispatch_items`, retaining its legacy map
+//! while decoding inventory economics and apparatus quality per game.
 
 use super::*;
 
@@ -233,11 +235,6 @@ pub(super) fn dispatch_misc_stub_group(
                 .insert(fid, items::parse_clot(fid, subs, &remap));
             index
                 .clothing
-                .insert(fid, parse_minimal_esm_record(fid, subs));
-        })?,
-        b"APPA" => extract_records_with_modl(reader, end, b"APPA", statics, &mut |fid, subs| {
-            index
-                .apparatuses
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
         b"SGST" => extract_records_with_modl(reader, end, b"SGST", statics, &mut |fid, subs| {

@@ -66,8 +66,9 @@ pub use gras::{
     GRAS_FLAG_VERTEX_LIGHTING,
 };
 pub use items::{
-    parse_alch, parse_ammo, parse_armo, parse_book, parse_ingr, parse_keym, parse_misc, parse_note,
-    parse_omod_loose_item, parse_weap, ItemKind, ItemRecord,
+    parse_alch, parse_ammo, parse_appa, parse_armo, parse_book, parse_carryable_light, parse_ingr,
+    parse_keym, parse_misc, parse_note, parse_omod_loose_item, parse_scrl, parse_weap, ItemKind,
+    ItemRecord,
 };
 pub use misc::{
     active_package, parse_acti, parse_arma, parse_avif, parse_bptd, parse_cobj, parse_csty,

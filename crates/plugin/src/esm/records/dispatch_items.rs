@@ -19,6 +19,22 @@ pub(super) fn dispatch_item_group(
 ) -> Result<()> {
     let remap = reader.get_form_id_remap();
     match label {
+        b"APPA" => extract_records_with_modl(reader, end, b"APPA", statics, &mut |fid, subs| {
+            index
+                .apparatuses
+                .insert(fid, parse_minimal_esm_record(fid, subs));
+            if let Some(item) = parse_appa(fid, subs, game, &remap) {
+                index.items.insert(fid, item);
+            }
+        })?,
+        b"LIGH" => extract_records_with_modl(reader, end, b"LIGH", statics, &mut |fid, subs| {
+            if let Some(item) = parse_carryable_light(fid, subs, game, &remap) {
+                index.items.insert(fid, item);
+            } else {
+                // A later record in this file may clear Can Be Carried.
+                index.items.remove(&fid);
+            }
+        })?,
         // ── Dual-target labels — typed record + cells.statics in one walk. ──
         //
         // Every label below ships BOTH a typed `EsmIndex.<map>`
@@ -52,6 +68,9 @@ pub(super) fn dispatch_item_group(
         })?,
         b"BOOK" => extract_records_with_modl(reader, end, b"BOOK", statics, &mut |fid, subs| {
             index.items.insert(fid, parse_book(fid, subs, game, &remap));
+        })?,
+        b"SCRL" => extract_records_with_modl(reader, end, b"SCRL", statics, &mut |fid, subs| {
+            index.items.insert(fid, parse_scrl(fid, subs, &remap));
         })?,
         b"NOTE" => extract_records_with_modl(reader, end, b"NOTE", statics, &mut |fid, subs| {
             index.items.insert(fid, parse_note(fid, subs, &remap));

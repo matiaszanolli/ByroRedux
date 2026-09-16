@@ -78,7 +78,7 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
     // #3113 — keyboard/menu/SDK save actions enter through one FIFO and
     // execute only after the scheduler has joined its parallel batch.
     world.insert_resource(crate::save_io::PendingPlayerSaveActions::default());
-    world.insert_resource(crate::save_io::SaveLoadNotifications::default());
+    world.insert_resource(crate::notifications::PlayerNotifications::default());
     // M45.1 refinement — player/camera pose, refreshed each frame by
     // `capture_player_pose` and rode along in the snapshot so `load`
     // restores the saved spot instead of the cell's default door.

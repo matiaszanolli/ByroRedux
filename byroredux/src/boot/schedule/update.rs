@@ -99,6 +99,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         crate::interaction::interaction_system,
         Access::new()
+            .writes_resource::<crate::notifications::PlayerNotifications>()
             .reads_resource::<byroredux_core::form_id::FormIdPool>()
             .reads::<byroredux_core::ecs::components::FormIdComponent>()
             .writes_resource::<byroredux_scripting::ReferenceLockState>()
@@ -135,6 +136,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         crate::inventory::container_loot_system,
         Access::new()
+            .writes_resource::<crate::notifications::PlayerNotifications>()
             .reads::<byroredux_core::ecs::components::Dead>()
             .writes::<byroredux_core::ecs::components::EquipmentSlots>()
             .writes::<byroredux_core::ecs::components::EquippedWeapon>()

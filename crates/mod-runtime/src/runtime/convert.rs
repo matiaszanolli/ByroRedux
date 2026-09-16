@@ -119,6 +119,9 @@ pub(crate) fn wit_item_metadata(metadata: &ItemMetadata) -> inventory::ItemMetad
         ItemCategory::Junk => inventory::ItemCategory::Junk,
         ItemCategory::Mod => inventory::ItemCategory::Mod,
         ItemCategory::Book => inventory::ItemCategory::Book,
+        ItemCategory::Scroll => inventory::ItemCategory::Scroll,
+        ItemCategory::Light => inventory::ItemCategory::Light,
+        ItemCategory::Apparatus => inventory::ItemCategory::Apparatus,
         ItemCategory::Note => inventory::ItemCategory::Note,
         ItemCategory::Ingredient => inventory::ItemCategory::Ingredient,
         ItemCategory::Aid => inventory::ItemCategory::Aid,
@@ -314,6 +317,40 @@ mod projection_tests {
     use byroredux_sdk::identity::FormRef;
     use byroredux_sdk::projection::WorldTransform;
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn scroll_metadata_preserves_its_category_across_wit() {
+        let metadata = ItemMetadata::new("Scroll".into(), ItemCategory::Scroll, 250, 0.5).unwrap();
+        let projected = wit_item_metadata(&metadata);
+        assert!(matches!(
+            projected.category,
+            inventory::ItemCategory::Scroll
+        ));
+        assert_eq!(projected.name, "Scroll");
+        assert_eq!((projected.value, projected.weight), (250, 0.5));
+    }
+
+    #[test]
+    fn light_metadata_preserves_its_category_across_wit() {
+        let metadata = ItemMetadata::new("Torch".into(), ItemCategory::Light, 25, 0.5).unwrap();
+        let projected = wit_item_metadata(&metadata);
+        assert!(matches!(projected.category, inventory::ItemCategory::Light));
+        assert_eq!(projected.name, "Torch");
+        assert_eq!((projected.value, projected.weight), (25, 0.5));
+    }
+
+    #[test]
+    fn apparatus_metadata_preserves_its_category_across_wit() {
+        let metadata =
+            ItemMetadata::new("Retort".into(), ItemCategory::Apparatus, 150, 2.5).unwrap();
+        let projected = wit_item_metadata(&metadata);
+        assert!(matches!(
+            projected.category,
+            inventory::ItemCategory::Apparatus
+        ));
+        assert_eq!(projected.name, "Retort");
+        assert_eq!((projected.value, projected.weight), (150, 2.5));
+    }
 
     #[test]
     fn wit_projection_preserves_portable_fields_and_redacts_transform_without_grant() {

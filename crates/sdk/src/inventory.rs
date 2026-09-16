@@ -23,6 +23,9 @@ pub enum ItemCategory {
     Ammo,
     Armor,
     Weapon,
+    Scroll,
+    Light,
+    Apparatus,
 }
 
 /// Validated presentation and economic metadata for one base item.

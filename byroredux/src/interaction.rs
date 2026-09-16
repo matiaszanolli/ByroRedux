@@ -1209,6 +1209,7 @@ fn unlock_with_carried_key(world: &World, target: EntityId) -> bool {
             .resource_mut::<byroredux_scripting::ReferenceLockState>()
             .set_unlocked(form);
     }
+    crate::notifications::push(world, "Unlocked with key");
     true
 }
 
@@ -1323,6 +1324,7 @@ mod tests {
 
     fn input_fixture() -> World {
         let mut world = World::new();
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
         world.insert_resource(InputState::default());
         world.insert_resource(ActionBindings::default());
         world.insert_resource(ActionState::default());
@@ -1791,79 +1793,104 @@ mod tests {
         use byroredux_core::ecs::components::{Inventory, ItemStack};
         use byroredux_plugin::esm::records::{ContainerRecord, EsmIndex};
 
-        let mut world = input_fixture();
-        world.register::<byroredux_scripting::ActivateEvent>();
-        let player = spawn_camera(&mut world);
-        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
-        world.insert(player, Inventory::new());
-        let mut index = EsmIndex::default();
-        index.containers.insert(
-            0xCAFE,
-            ContainerRecord {
-                form_id: 0xCAFE,
-                editor_id: "TestChest".into(),
-                full_name: "Chest".into(),
-                model_path: String::new(),
-                weight: 0.0,
-                flags: 0,
-                open_sound: 0,
-                close_sound: 0,
-                script_form_id: 0,
-                script_instance: None,
-                contents: Vec::new(),
-            },
-        );
-        crate::inventory::install_catalog(&mut world, &index);
-        let chest = world.spawn();
-        let center = Vec3::new(0.0, 0.0, -80.0);
-        world.insert(chest, WorldBound::new(center, 10.0));
-        world.insert(
-            chest,
-            byroredux_scripting::SceneAliasCandidate {
-                reference_form_id: 0xABCD,
-                base_form_id: 0xCAFE,
-                ..Default::default()
-            },
-        );
-        world.insert(
-            chest,
-            Inventory {
-                items: vec![ItemStack::new(0x1234, 9)],
-            },
-        );
-        world
-            .resource_mut::<InputState>()
-            .keys_held
-            .insert(KeyCode::KeyE);
-        refresh_action_state(&world);
-        interaction_system(&world, 0.0);
-        let selected = world.resource::<InteractionState>().target.unwrap();
-        assert_eq!(selected.entity, chest);
-        assert_eq!(selected.kind, InteractionKind::Container);
-        assert_eq!(selected.kind.verb(), "Take all");
-        crate::inventory::container_loot_system(&world, 0.0);
-        assert!(world.get::<Inventory>(chest).unwrap().is_empty());
-        assert_eq!(
-            world.get::<Inventory>(player).unwrap().items,
-            vec![ItemStack::new(0x1234, 9)]
-        );
-        assert_eq!(
+        for locked in [false, true] {
+            let mut world = input_fixture();
+            world.register::<byroredux_scripting::ActivateEvent>();
+            let player = spawn_camera(&mut world);
+            world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+            world.insert(player, Inventory::new());
+            let mut index = EsmIndex::default();
+            world.insert_resource(byroredux_scripting::ReferenceLockState::default());
+            if locked {
+                world
+                    .get_mut::<Inventory>(player)
+                    .unwrap()
+                    .push(ItemStack::new(0xBEEF, 1));
+            }
+            let mut expected = world.get::<Inventory>(player).unwrap().items.clone();
+            expected.push(ItemStack::new(0x1234, 9));
+            index.containers.insert(
+                0xCAFE,
+                ContainerRecord {
+                    form_id: 0xCAFE,
+                    editor_id: "TestChest".into(),
+                    full_name: "Chest".into(),
+                    model_path: String::new(),
+                    weight: 0.0,
+                    flags: 0,
+                    open_sound: 0,
+                    close_sound: 0,
+                    script_form_id: 0,
+                    script_instance: None,
+                    contents: Vec::new(),
+                },
+            );
+            crate::inventory::install_catalog(&mut world, &index);
+            let chest = world.spawn();
+            if locked {
+                world.insert(
+                    chest,
+                    Locked {
+                        lock_level: 50,
+                        key_form_id: Some(0xBEEF),
+                    },
+                );
+            }
+            let center = Vec3::new(0.0, 0.0, -80.0);
+            world.insert(chest, WorldBound::new(center, 10.0));
+            world.insert(
+                chest,
+                byroredux_scripting::SceneAliasCandidate {
+                    reference_form_id: 0xABCD,
+                    base_form_id: 0xCAFE,
+                    ..Default::default()
+                },
+            );
+            world.insert(
+                chest,
+                Inventory {
+                    items: vec![ItemStack::new(0x1234, 9)],
+                },
+            );
             world
-                .get::<byroredux_scripting::ActivateEvent>(chest)
-                .unwrap()
-                .activator,
-            player
-        );
+                .resource_mut::<InputState>()
+                .keys_held
+                .insert(KeyCode::KeyE);
+            refresh_action_state(&world);
+            interaction_system(&world, 0.0);
+            let selected = world.resource::<InteractionState>().target.unwrap();
+            assert_eq!(selected.entity, chest);
+            assert_eq!(selected.kind, InteractionKind::Container);
+            assert_eq!(selected.kind.verb(), "Take all");
+            assert!(!world.has::<Locked>(chest));
+            crate::inventory::container_loot_system(&world, 0.0);
+            assert!(world.get::<Inventory>(chest).unwrap().is_empty());
+            let expected_messages = if locked {
+                vec!["Unlocked with key".to_owned(), "Took 9 items".to_owned()]
+            } else {
+                vec!["Took 9 items".to_owned()]
+            };
+            assert_eq!(crate::notifications::drain(&world), expected_messages);
+            assert_eq!(world.get::<Inventory>(player).unwrap().items, expected);
+            assert_eq!(
+                world
+                    .get::<byroredux_scripting::ActivateEvent>(chest)
+                    .unwrap()
+                    .activator,
+                player
+            );
 
-        refresh_action_state(&world);
-        interaction_system(&world, 0.0);
-        crate::inventory::container_loot_system(&world, 0.0);
-        assert!(world.resource::<InteractionState>().target.is_none());
-        assert_eq!(world.resource::<InteractionTrace>().activation_count, 1);
-        assert_eq!(
-            world.get::<Inventory>(player).unwrap().items,
-            vec![ItemStack::new(0x1234, 9)]
-        );
+            refresh_action_state(&world);
+            interaction_system(&world, 0.0);
+            crate::inventory::container_loot_system(&world, 0.0);
+            assert!(world.resource::<InteractionState>().target.is_none());
+            assert_eq!(world.resource::<InteractionTrace>().activation_count, 1);
+            assert!(
+                crate::notifications::drain(&world).is_empty(),
+                "holding E must not repeat feedback"
+            );
+            assert_eq!(world.get::<Inventory>(player).unwrap().items, expected);
+        }
     }
 
     #[test]

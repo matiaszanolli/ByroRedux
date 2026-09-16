@@ -222,6 +222,7 @@ interface content-catalog {
     enum plugin-kind {
         regular,
         light,
+        apparatus,
     }
 
     record plugin-info {
@@ -287,6 +288,8 @@ interface inventory {
         ammo,
         armor,
         weapon,
+        scroll,
+        light,
     }
 
     record item-metadata {

@@ -55,9 +55,9 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"MGEF", *b"MICN", *b"MISC", *b"MOVS", *b"MSET", *b"MSTT", *b"MSWP", *b"MUSC", *b"NAVI",
     *b"NAVM", *b"NOTE", *b"NPC_", *b"OMOD", *b"OTFT", *b"PACK", *b"PERK", *b"PKIN", *b"PROJ",
     *b"PWAT", *b"QUST", *b"RACE", *b"RADS", *b"RCCT", *b"RCPE", *b"REGN", *b"REPU", *b"RGDL",
-    *b"SCEN", *b"SCOL", *b"SCPT", *b"SECH", *b"SGST", *b"SLGM", *b"SLPD", *b"SOUN", *b"SPEL",
-    *b"STAT", *b"TACT", *b"TERM", *b"TREE", *b"TXST", *b"VTYP", *b"WATR", *b"WEAP", *b"WRLD",
-    *b"WTHR",
+    *b"SCEN", *b"SCOL", *b"SCPT", *b"SCRL", *b"SECH", *b"SGST", *b"SLGM", *b"SLPD", *b"SOUN",
+    *b"SPEL", *b"STAT", *b"TACT", *b"TERM", *b"TREE", *b"TXST", *b"VTYP", *b"WATR", *b"WEAP",
+    *b"WRLD", *b"WTHR",
 ];
 
 /// Parse an entire ESM/ESP file in a single pass.
@@ -352,7 +352,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             // `dispatch_*` function; the original per-label bodies moved
             // verbatim into those functions — see them for the per-record
             // history/rationale comments.
-            b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"LIGH" | b"FLOR" | b"IDLM" | b"BNDS"
+            b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"FLOR" | b"IDLM" | b"BNDS"
             | b"ADDN" | b"TACT" | b"TREE" => {
                 dispatch_world_placement::dispatch_world_placement_group(
                     &label,
@@ -363,7 +363,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 )?;
             }
             b"WEAP" | b"ARMO" | b"AMMO" | b"MISC" | b"KEYM" | b"ALCH" | b"INGR" | b"BOOK"
-            | b"NOTE" | b"OMOD" => {
+            | b"SCRL" | b"NOTE" | b"OMOD" | b"LIGH" | b"APPA" => {
                 dispatch_items::dispatch_item_group(
                     &label,
                     &mut reader,
@@ -422,7 +422,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             | b"MUSC" | b"SOUN" | b"VTYP" | b"AMEF" | b"DEBR" | b"GRAS" | b"IMAD" | b"LSCR"
             | b"LSCT" | b"PWAT" | b"RGDL" | b"DEHY" | b"HUNG" | b"RADS" | b"SLPD" | b"CCRD"
             | b"CDCK" | b"CHAL" | b"CHIP" | b"CMNY" | b"CSNO" | b"RCCT" | b"RCPE" | b"BSGN"
-            | b"CLOT" | b"APPA" | b"SGST" | b"SLGM" | b"SECH" | b"AOPF" => {
+            | b"CLOT" | b"SGST" | b"SLGM" | b"SECH" | b"AOPF" => {
                 dispatch_misc_stub::dispatch_misc_stub_group(
                     &label,
                     &mut reader,

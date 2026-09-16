@@ -188,11 +188,6 @@ pub struct PlayerPose {
     pub character_mode: bool,
 }
 
-#[derive(Default)]
-pub struct SaveLoadNotifications(pub Vec<String>);
-
-impl Resource for SaveLoadNotifications {}
-
 /// A player-facing save/load request that must execute only after the frame's
 /// scheduler has joined all parallel systems.
 ///
@@ -238,9 +233,7 @@ pub fn queue_player_save_action(
 }
 
 fn notify_player(world: &World, message: impl Into<String>) {
-    if let Some(mut notifications) = world.try_resource_mut::<SaveLoadNotifications>() {
-        notifications.0.push(message.into());
-    }
+    crate::notifications::push(world, message);
 }
 
 impl Resource for PlayerPose {}

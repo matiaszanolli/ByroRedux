@@ -1012,6 +1012,15 @@ impl EsmIndex {
         // Nested cell index — needs per-worldspace handling.
         self.cells.merge_from(std::mem::take(&mut other.cells));
 
+        // LIGH remains a world record when an override clears Can Be
+        // Carried. Absence from that plugin's item map must remove an
+        // earlier master's inventory metadata, not leave a phantom torch.
+        for (&form_id, record_type) in &other.record_types {
+            if record_type == b"LIGH" && !other.items.contains_key(&form_id) {
+                self.items.remove(&form_id);
+            }
+        }
+
         let deleted_record_metadata = std::mem::take(&mut other.deleted_record_metadata);
         for form_id in &deleted_record_metadata {
             self.record_types.remove(form_id);

@@ -1,4 +1,4 @@
-//! Item record parsers — WEAP, ARMO, AMMO, ALCH, MISC, INGR, BOOK, NOTE, KEYM.
+//! Item record parsers — WEAP, ARMO, AMMO, ALCH, MISC, INGR, BOOK, SCRL, LIGH, APPA, NOTE, KEYM.
 //!
 //! Every item record shares the same set of "this is a thing in the world"
 //! fields (`editor_id`, `full_name`, `model_path`, `value`, `weight`) plus a
@@ -53,6 +53,18 @@ pub struct WeaponVats {
 /// What kind of item this is, with kind-specific stats.
 #[derive(Debug, Clone)]
 pub enum ItemKind {
+    /// APPA alchemy equipment. TES4 uses a type byte and floating quality;
+    /// TES5 uses a separate integer tier. Missing fields remain absent.
+    Apparatus {
+        apparatus_type: Option<u8>,
+        quality: Option<f32>,
+        quality_tier: Option<i32>,
+    },
+    /// Carryable LIGH. Rendering properties remain in `cells.statics`.
+    Light { duration_seconds: i32 },
+    /// Skyrim SCRL: a carried scroll, not a learned SPEL or readable BOOK.
+    /// Effect identities are retained; casting is not implemented here.
+    Scroll { magic_effects: Vec<u32> },
     /// MISC: weight + value already on the parent record. No extra fields.
     Misc,
     /// Fallout 4 / 76 MISC carrying component rows (`CVPA`). These are shown
@@ -212,6 +224,9 @@ impl ItemKind {
             // underlying plugin record type.
             ItemKind::Misc | ItemKind::Junk | ItemKind::Mod { .. } => "MISC",
             ItemKind::Book { .. } => "BOOK",
+            ItemKind::Scroll { .. } => "SCRL",
+            ItemKind::Light { .. } => "LIGH",
+            ItemKind::Apparatus { .. } => "APPA",
             ItemKind::Note { .. } => "NOTE",
             ItemKind::Ingredient { .. } => "INGR",
             ItemKind::Aid { .. } => "ALCH",
@@ -944,6 +959,112 @@ pub fn parse_ingr(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     }
 }
 
+/// TES4/TES5 APPA layouts from xEdit's per-game definitions. In particular,
+/// TES4 DATA is packed: type(u8), value(u32), weight(f32), quality(f32).
+pub fn parse_appa(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> Option<ItemRecord> {
+    if !matches!(game, GameKind::Oblivion | GameKind::Skyrim) {
+        return None;
+    }
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
+    let mut apparatus_type = None;
+    let mut quality = None;
+    let mut quality_tier = None;
+    for sub in subs {
+        let mut reader = SubReader::new(&sub.data);
+        match (&sub.sub_type, game) {
+            (b"DATA", GameKind::Oblivion) if sub.data.len() >= 13 => {
+                apparatus_type = Some(reader.u8_or_default());
+                common.value = reader.u32_or_default();
+                common.weight = reader.f32_or_default();
+                quality = Some(reader.f32_or_default());
+            }
+            (b"DATA", GameKind::Skyrim) if sub.data.len() >= 8 => {
+                common.value = reader.u32_or_default();
+                common.weight = reader.f32_or_default();
+            }
+            (b"QUAL", GameKind::Skyrim) if sub.data.len() >= 4 => {
+                quality_tier = Some(i32::from_le_bytes(sub.data[..4].try_into().unwrap()));
+            }
+            _ => {}
+        }
+    }
+    Some(ItemRecord {
+        form_id,
+        common,
+        kind: ItemKind::Apparatus {
+            apparatus_type,
+            quality,
+            quality_tier,
+        },
+    })
+}
+
+/// Inventory metadata for a carryable LIGH; fixed lights are not items.
+pub fn parse_carryable_light(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> Option<ItemRecord> {
+    // xEdit's per-game LIGH definitions: the carry flag is bit 1 at
+    // offset 12. Starfield uses DAT2 and a u16 flag field; its DAT2 has
+    // no economic fields (do not reinterpret its light-temperature data).
+    let (tag, value_offset) = match game {
+        GameKind::Oblivion | GameKind::Fallout3NV => (b"DATA", Some(24)),
+        GameKind::Skyrim => (b"DATA", Some(40)),
+        GameKind::Fallout4 | GameKind::Fallout76 => (b"DATA", Some(56)),
+        GameKind::Starfield => (b"DAT2", None),
+    };
+    let data = &subs.iter().rev().find(|sub| &sub.sub_type == tag)?.data;
+    if data.len() < 16 || data[12] & 2 == 0 {
+        return None;
+    }
+    let duration_seconds = i32::from_le_bytes(data[..4].try_into().unwrap());
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
+    if let Some(offset) = value_offset {
+        if let Some(economics) = data.get(offset..offset + 8) {
+            let mut reader = SubReader::new(economics);
+            common.value = reader.u32_or_default();
+            common.weight = reader.f32_or_default();
+        }
+    }
+    Some(ItemRecord {
+        form_id,
+        common,
+        kind: ItemKind::Light { duration_seconds },
+    })
+}
+
+/// Skyrim SCRL DATA is value(u32), weight(f32), unlike BOOK's 16-byte DATA.
+/// Layout: TES5Edit `Core/wbDefinitionsTES5.pas`, `wbRecord(SCRL, ...)`.
+pub fn parse_scrl(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
+    let mut magic_effects = Vec::new();
+    for sub in subs {
+        match &sub.sub_type {
+            b"DATA" if sub.data.len() >= 8 => {
+                let mut reader = SubReader::new(&sub.data);
+                common.value = reader.u32_or_default();
+                common.weight = reader.f32_or_default();
+            }
+            b"EFID" if sub.data.len() >= 4 => {
+                magic_effects.push(remap_fid(SubReader::new(&sub.data).u32_or_default(), remap));
+            }
+            _ => {}
+        }
+    }
+    ItemRecord {
+        form_id,
+        common,
+        kind: ItemKind::Scroll { magic_effects },
+    }
+}
+
 pub fn parse_book(
     form_id: u32,
     subs: &[SubRecord],
@@ -1076,6 +1197,157 @@ pub fn parse_note(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 mod tests {
     use super::*;
     use crate::esm::records::test_support::sub;
+
+    #[test]
+    fn apparatus_layouts_keep_packed_tes4_data_separate_from_tes5() {
+        let data = [
+            vec![3],
+            150u32.to_le_bytes().to_vec(),
+            2.5f32.to_le_bytes().to_vec(),
+            0.75f32.to_le_bytes().to_vec(),
+        ]
+        .concat();
+        let item = parse_appa(1, &[sub(b"DATA", &data)], GameKind::Oblivion, &None).unwrap();
+        assert_eq!((item.common.value, item.common.weight), (150, 2.5));
+        assert!(matches!(
+            item.kind,
+            ItemKind::Apparatus {
+                apparatus_type: Some(3),
+                quality: Some(0.75),
+                quality_tier: None
+            }
+        ));
+        let data = [500u32.to_le_bytes(), 1.5f32.to_le_bytes()].concat();
+        let item = parse_appa(
+            1,
+            &[sub(b"DATA", &data), sub(b"QUAL", 4i32.to_le_bytes())],
+            GameKind::Skyrim,
+            &None,
+        )
+        .unwrap();
+        assert_eq!((item.common.value, item.common.weight), (500, 1.5));
+        assert!(matches!(
+            item.kind,
+            ItemKind::Apparatus {
+                apparatus_type: None,
+                quality: None,
+                quality_tier: Some(4)
+            }
+        ));
+    }
+
+    #[test]
+    fn apparatus_truncated_data_does_not_decode_partial_fields() {
+        for (game, width) in [(GameKind::Oblivion, 13), (GameKind::Skyrim, 8)] {
+            for length in 0..width {
+                let item = parse_appa(
+                    1,
+                    &[sub(b"DATA", vec![0xff; length]), sub(b"QUAL", [1, 2, 3])],
+                    game,
+                    &None,
+                )
+                .unwrap();
+                assert_eq!((item.common.value, item.common.weight), (0, 0.0));
+                assert!(matches!(
+                    item.kind,
+                    ItemKind::Apparatus {
+                        apparatus_type: None,
+                        quality: None,
+                        quality_tier: None
+                    }
+                ));
+            }
+        }
+        for game in [
+            GameKind::Fallout3NV,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            assert!(parse_appa(1, &[sub(b"DATA", [0; 13])], game, &None).is_none());
+        }
+    }
+
+    #[test]
+    fn carryable_light_economics_use_game_specific_offsets() {
+        for (game, offset) in [
+            (GameKind::Oblivion, 24),
+            (GameKind::Fallout3NV, 24),
+            (GameKind::Skyrim, 40),
+            (GameKind::Fallout4, 56),
+            (GameKind::Fallout76, 56),
+        ] {
+            let mut data = vec![0; offset + 8];
+            data[..4].copy_from_slice(&(-1i32).to_le_bytes());
+            data[12] = 2;
+            data[offset..offset + 4].copy_from_slice(&25u32.to_le_bytes());
+            data[offset + 4..].copy_from_slice(&0.5f32.to_le_bytes());
+            let item = parse_carryable_light(1, &[sub(b"DATA", &data)], game, &None).unwrap();
+            assert_eq!(
+                (item.common.value, item.common.weight),
+                (25, 0.5),
+                "{game:?}"
+            );
+            assert!(matches!(
+                item.kind,
+                ItemKind::Light {
+                    duration_seconds: -1
+                }
+            ));
+            data[12] = 0;
+            assert!(parse_carryable_light(1, &[sub(b"DATA", &data)], game, &None).is_none());
+        }
+    }
+
+    #[test]
+    fn light_optional_economics_and_short_headers_are_safe() {
+        let mut data = vec![0; 32];
+        data[12] = 2;
+        data[24..28].copy_from_slice(&25u32.to_le_bytes());
+        for length in 0..32 {
+            let item = parse_carryable_light(
+                1,
+                &[sub(b"DATA", &data[..length])],
+                GameKind::Oblivion,
+                &None,
+            );
+            if length < 16 {
+                assert!(item.is_none());
+            } else {
+                let item = item.unwrap();
+                assert_eq!((item.common.value, item.common.weight), (0, 0.0));
+            }
+        }
+    }
+
+    #[test]
+    fn starfield_light_does_not_interpret_photometry_as_economics() {
+        let mut data = vec![0x40; 76];
+        data[12] = 2;
+        let item =
+            parse_carryable_light(1, &[sub(b"DAT2", &data)], GameKind::Starfield, &None).unwrap();
+        assert_eq!((item.common.value, item.common.weight), (0, 0.0));
+        assert!(
+            parse_carryable_light(1, &[sub(b"DATA", &data)], GameKind::Starfield, &None).is_none()
+        );
+    }
+
+    #[test]
+    fn scroll_truncated_fields_do_not_invent_value_weight_or_effects() {
+        for length in 0..8 {
+            let data = [250u32.to_le_bytes(), 0.5f32.to_le_bytes()].concat();
+            let item = parse_scrl(
+                1,
+                &[sub(b"DATA", &data[..length]), sub(b"EFID", &[1, 2, 3])],
+                &None,
+            );
+            assert_eq!((item.common.value, item.common.weight), (0, 0.0));
+            let ItemKind::Scroll { magic_effects } = item.kind else {
+                panic!("expected scroll")
+            };
+            assert!(magic_effects.is_empty());
+        }
+    }
 
     fn build_data_weap(value: u32, weight: f32, damage: u16, clip: u8) -> Vec<u8> {
         let mut d = Vec::new();

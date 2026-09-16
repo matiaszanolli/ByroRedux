@@ -177,18 +177,10 @@ impl App {
         }
         self.debug_ui_refresh_entities = false;
 
-        let save_load_messages = self
-            .world
-            .try_resource_mut::<crate::save_io::SaveLoadNotifications>()
-            .map(|mut notifications| std::mem::take(&mut notifications.0))
-            .unwrap_or_default();
+        let player_messages = crate::notifications::drain(&self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
-            let mut messages = save_load_messages.into_iter();
-            if let Some(first) = messages.next() {
-                ui.push_player_message(first);
-            }
-            for message in messages {
-                ui.push_console_line(message);
+            if !player_messages.is_empty() {
+                ui.push_player_message(player_messages.join("\n"));
             }
         }
 

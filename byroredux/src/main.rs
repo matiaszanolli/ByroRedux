@@ -32,6 +32,7 @@ mod groundcover_translate;
 mod helpers;
 mod interaction;
 mod inventory;
+mod notifications;
 mod list_cells;
 mod material_translate;
 mod name_lookup;

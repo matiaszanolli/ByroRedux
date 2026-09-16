@@ -1444,6 +1444,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gameplay_feedback_draws_without_debug_panels() {
+        let ctx = Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_player_message(&ctx, "Unlocked with key\nTook 9 items");
+        let output = ctx.end_pass();
+        assert!(!output.shapes.is_empty(), "gameplay feedback must produce renderable geometry");
+    }
+
+    #[test]
     fn interaction_prompt_produces_hud_shapes_without_debug_panels() {
         let ctx = Context::default();
         ctx.begin_pass(egui::RawInput::default());

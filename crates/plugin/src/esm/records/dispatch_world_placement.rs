@@ -1,6 +1,6 @@
 //! MODL-only static-placement dispatch — split out of
 //! `parse_esm_with_load_order` (#2060) to shrink that 949-line, 110-arm
-//! dispatch table. STAT/MSTT/FURN/DOOR/LIGH/FLOR/IDLM/BNDS/ADDN/TACT carry
+//! dispatch table. STAT/MSTT/FURN/DOOR/FLOR/IDLM/BNDS/ADDN/TACT carry
 //! a MODL but no dedicated record-side parser; TREE is dual-target (typed
 //! `EsmIndex.trees` entry + `cells.statics`).
 
@@ -19,12 +19,11 @@ pub(super) fn dispatch_world_placement_group(
     match label {
         // MODL-only labels — populate `cells.statics` for visual
         // placement, no typed map. STAT / MSTT / FURN / DOOR /
-        // LIGH / FLOR / IDLM / BNDS / ADDN / TACT all carry a MODL
+        // FLOR / IDLM / BNDS / ADDN / TACT all carry a MODL
         // but no record-side parser yet. TREE was here too pre-#TREE
         // (SpeedTree Phase 1.1) but split out below so ICON / SNAM /
         // CNAM / BNAM / PFIG don't silently fall on the floor.
-        b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"LIGH" | b"FLOR" | b"IDLM" | b"BNDS" | b"ADDN"
-        | b"TACT" => {
+        b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"FLOR" | b"IDLM" | b"BNDS" | b"ADDN" | b"TACT" => {
             parse_modl_group(reader, end, statics)?;
         }
         // TREE — dual-target: typed `EsmIndex.trees` entry AND
