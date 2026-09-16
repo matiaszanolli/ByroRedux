@@ -383,6 +383,16 @@ pub const VERTS_PER_BLADE_MID: u32 = GROUNDCOVER_BLADE_SEGMENTS_MID * GROUNDCOVE
 /// Near ribbons, reduced mid ribbons, and far clump cards.
 const GROUNDCOVER_INDIRECT_STREAMS: u64 = 3;
 
+/// The multiplier the frame serial is scaled by before the tier index is added
+/// into `BladePush::gust_and_timing[3]`, i.e. `1 << tier_bits`.
+///
+/// It must be a power of two strictly greater than the largest tier index, so
+/// that the shader's `& (stride - 1)` recovers the tier and `>> tier_bits`
+/// recovers the serial. Sized from `GROUNDCOVER_INDIRECT_STREAMS` rather than
+/// written as a literal so adding a stream widens the field instead of
+/// silently carrying into the serial — the #4056 bug.
+const GROUNDCOVER_LOD_TIER_STRIDE: u64 = GROUNDCOVER_INDIRECT_STREAMS.next_power_of_two();
+
 pub struct GroundCoverPipeline {
     scatter_set_layout: vk::DescriptorSetLayout,
     scatter_pipeline_layout: vk::PipelineLayout,
@@ -1166,10 +1176,13 @@ impl GroundCoverPipeline {
                 input.gust_frequency,
                 input.time_seconds - input.delta_seconds.max(0.0),
                 species.len() as f32,
-                // Packed `(frame serial << 1) | lod tier`. It retains the
+                // Packed `(frame serial << 2) | lod tier`. It retains the
                 // portable 128-byte block and makes the blue-noise transition
-                // repeat under a replayed simulation clock.
-                (input.time_seconds.max(0.0) * 60.0).floor() * 2.0,
+                // repeat under a replayed simulation clock. The shift is two
+                // bits, not one, because `GROUNDCOVER_INDIRECT_STREAMS` is 3:
+                // a one-bit tier field cannot encode the clump-card tier, and
+                // its value carried into the serial instead.
+                (input.time_seconds.max(0.0) * 60.0).floor() * GROUNDCOVER_LOD_TIER_STRIDE as f32,
             ],
         };
         true
@@ -2075,6 +2088,53 @@ mod tests {
         assert!(blade.contains("width * GROUNDCOVER_MAX_WIDTH_MULTIPLIER"));
         assert!(blade.contains("bool cardTier = GC_LOD_TIER == 2u;"));
         assert!(module.contains("tier * GROUNDCOVER_MAX_CHUNKS as u64 * 16"));
+    }
+
+    /// #4056 — the tier field must be wide enough for every dispatched stream.
+    ///
+    /// The host packs `(serial * stride) + tier` into one float and the vertex
+    /// shader unpacks it with a mask and a shift. Those three numbers are
+    /// written in two languages and were not derived from each other: the mask
+    /// was `1u` while three streams were dispatched, so the clump-card tier
+    /// decoded as `2 & 1 == 0`. Tier 2 drew its card-strided indirect command
+    /// as three-segment tuft blades — wrong geometry addressing a chunk slab
+    /// it does not own — and the dropped bit carried into the serial, moving
+    /// that stream's blue-noise rank a frame out of step with the others.
+    ///
+    /// Recomputing both halves here from `GROUNDCOVER_INDIRECT_STREAMS` is
+    /// what keeps a fourth stream from reintroducing it silently.
+    #[test]
+    fn lod_tier_field_is_wide_enough_for_every_indirect_stream() {
+        let blade = include_str!("../../shaders/groundcover_blade.vert");
+        let stride = GROUNDCOVER_LOD_TIER_STRIDE;
+        assert!(
+            stride.is_power_of_two() && stride > GROUNDCOVER_INDIRECT_STREAMS - 1,
+            "stride {stride} cannot represent tier {}",
+            GROUNDCOVER_INDIRECT_STREAMS - 1
+        );
+        let bits = stride.trailing_zeros();
+        assert!(
+            blade.contains(&format!(
+                "#define GC_LOD_TIER         (GC_LOD_WORD & {}u)",
+                stride - 1
+            )),
+            "GC_LOD_TIER must mask {bits} bits"
+        );
+        assert!(
+            blade.contains(&format!(
+                "#define GC_FRAME_SERIAL     (GC_LOD_WORD >> {bits}u)"
+            )),
+            "GC_FRAME_SERIAL must shift past the {bits}-bit tier field"
+        );
+        // Every tier the draw loop dispatches must round-trip through the
+        // packing the host actually writes.
+        for serial in [0_u64, 1, 12_345] {
+            for tier in 0..GROUNDCOVER_INDIRECT_STREAMS {
+                let word = serial * stride + tier;
+                assert_eq!(word & (stride - 1), tier);
+                assert_eq!(word >> bits, serial);
+            }
+        }
     }
 
     /// The scatter packs three different things into one counter buffer and

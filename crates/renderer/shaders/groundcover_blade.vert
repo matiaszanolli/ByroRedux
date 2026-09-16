@@ -88,9 +88,15 @@ layout(push_constant) uniform GcBladePush {
     /// xy = unit wind direction, z = speed, w = gust amplitude.
     vec4 wind;
 /// x = gust frequency, y = previous shared wind-clock sample, z = species
-/// count. `w` packs `(frame serial << 1) | lod tier` for the blue-noise LOD
+/// count. `w` packs `(frame serial << 2) | lod tier` for the blue-noise LOD
 /// cross-fade; the fixed blade arena and segment counts are generated shader
 /// constants, not per-frame tuning state.
+///
+/// The tier field is **two** bits because three streams are dispatched (tier 0
+/// tuft, tier 1 ribbon, tier 2 clump card). A one-bit field cannot represent
+/// tier 2 at all: `2 & 1 == 0`, so the card stream decoded as tier 0 and drew
+/// card-strided vertices as three-segment tuft blades, while the carry into
+/// the serial desynchronised that stream's blue-noise rank.
     vec4 gustAndCounts;
 } pc;
 
@@ -102,8 +108,8 @@ layout(push_constant) uniform GcBladePush {
 #define GC_PREV_TIME        pc.gustAndCounts.y
 #define GC_SPECIES_COUNT    uint(pc.gustAndCounts.z)
 #define GC_LOD_WORD         uint(pc.gustAndCounts.w)
-#define GC_LOD_TIER         (GC_LOD_WORD & 1u)
-#define GC_FRAME_SERIAL     (GC_LOD_WORD >> 1u)
+#define GC_LOD_TIER         (GC_LOD_WORD & 3u)
+#define GC_FRAME_SERIAL     (GC_LOD_WORD >> 2u)
 
 #include "include/terrain_sample.glsl"
 #include "include/groundcover_density.glsl"
