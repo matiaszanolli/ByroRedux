@@ -10,12 +10,45 @@
 use super::descriptors::{
     write_combined_image_sampler, write_storage_buffer, DescriptorPoolBuilder,
 };
+use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
 
 const PRESENTATION_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
 const PRESENTATION_FRAG_SPV: &[u8] = include_bytes!("../../shaders/presentation.frag.spv");
+
+/// Set 0 of the presentation pass: the upscaled scene sampler and, for
+/// EX-05 / #2736, the per-frame image-health counters the fragment shader
+/// increments atomically on a non-finite scene texel.
+fn presentation_set_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 2] {
+    [
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    ]
+}
+
+/// The two stages [`presentation_set_bindings`] is validated against.
+fn presentation_shaders() -> [ReflectedShader<'static>; 2] {
+    [
+        ReflectedShader {
+            name: "composite.vert",
+            spirv: PRESENTATION_VERT_SPV,
+        },
+        ReflectedShader {
+            name: "presentation.frag",
+            spirv: PRESENTATION_FRAG_SPV,
+        },
+    ]
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -217,23 +250,13 @@ impl PresentationPipeline {
         }
         .context("create presentation sampler")?;
 
-        let bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            // EX-05 / #2736 — per-frame image-health counters, incremented
-            // atomically by the fragment shader on a non-finite scene texel.
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        ];
+        let bindings = presentation_set_bindings();
+        validate_set_layout(0, &bindings, &presentation_shaders(), "presentation", &[])
+            .expect("presentation layout drifted against composite.vert/presentation.frag (#4110)");
         self.descriptor_set_layout = unsafe {
-            // SAFETY: `bindings` outlives the call and the returned layout is
-            // owned by this pipeline.
+            // SAFETY: `bindings` (validated above against the presentation
+            // shaders) outlives the call and the returned layout is owned by
+            // this pipeline.
             device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
                 None,
@@ -803,6 +826,20 @@ impl PresentationPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #4110 — the set-0 layout is validated against the SPIR-V under
+    /// `cargo test`, not only when a device builds the pipeline.
+    #[test]
+    fn presentation_layout_matches_its_shaders() {
+        validate_set_layout(
+            0,
+            &presentation_set_bindings(),
+            &presentation_shaders(),
+            "presentation",
+            &[],
+        )
+        .expect("presentation set 0 drifted");
+    }
 
     #[test]
     fn presentation_push_constants_match_shader_alignment() {

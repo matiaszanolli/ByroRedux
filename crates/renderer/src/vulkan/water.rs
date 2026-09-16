@@ -65,6 +65,7 @@ use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{write_storage_buffer, write_storage_image, DescriptorPoolBuilder};
 use super::pipeline::{auxiliary_blend_attachment, coverage_alpha_factors, load_shader_module};
+use super::reflect::{validate_set_layout, ReflectedShader};
 use crate::vertex::Vertex;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -337,6 +338,40 @@ pub(super) const WATER_PIPELINE_DYNAMIC_STATES: [vk::DynamicState; 6] = [
     vk::DynamicState::CULL_MODE,
 ];
 
+/// Set 2 of the water pipeline: the water-caustic `STORAGE_IMAGE`
+/// accumulator (#1255 / Phase C of #1210) and the `GpuWaterParams[]` SSBO.
+/// `water.frag` writes the accumulator (`layout(set = 2, binding = 0, r32ui)
+/// uniform uimage2D waterCausticAccum`) and `composite.frag` reads it;
+/// both water stages read the params.
+fn water_set_2_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 2] {
+    [
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+    ]
+}
+
+/// The two stages [`water_set_2_bindings`] is validated against.
+fn water_shaders() -> [ReflectedShader<'static>; 2] {
+    [
+        ReflectedShader {
+            name: "water.vert",
+            spirv: WATER_VERT_SPV,
+        },
+        ReflectedShader {
+            name: "water.frag",
+            spirv: WATER_FRAG_SPV,
+        },
+    ]
+}
+
 impl WaterPipeline {
     /// Create the water pipeline.
     ///
@@ -359,20 +394,13 @@ impl WaterPipeline {
         // matches: `layout(set = 2, binding = 0, r32ui)
         //          uniform uimage2D waterCausticAccum;`. water.frag
         // writes it and composite.frag reads it (Phase D/E, live).
-        let water_caustic_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-        let water_params_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
-        let water_caustic_bindings = [water_caustic_binding, water_params_binding];
+        let water_caustic_bindings = water_set_2_bindings();
+        validate_set_layout(2, &water_caustic_bindings, &water_shaders(), "water set 2", &[])
+            .expect("water set-2 layout drifted against water.vert/water.frag (#4110)");
         let water_caustic_set_layout = unsafe {
-            // SAFETY: `device` is live; both bindings are a stack slice valid
-            // for this call; the returned layout is owned by `WaterPipeline`.
+            // SAFETY: `device` is live; both bindings (validated above against
+            // the water shaders) are a stack array valid for this call; the
+            // returned layout is owned by `WaterPipeline`.
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&water_caustic_bindings),
@@ -1018,6 +1046,14 @@ fn build_pipeline(
 mod tests {
     use super::*;
     use crate::vulkan::context::DrawCommand;
+
+    /// #4110 — the set-2 layout is validated against the SPIR-V under
+    /// `cargo test`, not only when a device builds the pipeline.
+    #[test]
+    fn water_set_2_layout_matches_the_water_shaders() {
+        validate_set_layout(2, &water_set_2_bindings(), &water_shaders(), "water set 2", &[])
+            .expect("water set 2 drifted");
+    }
 
     #[test]
     fn water_gpu_contract_layouts_are_stable() {

@@ -46,6 +46,7 @@ use ash::vk;
 
 use super::allocator::SharedAllocator;
 use super::buffer::{GpuBuffer, NoUninit};
+use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
     GROUNDCOVER_BLADES_PER_POINT, GROUNDCOVER_BLADE_SEGMENTS_MID, GROUNDCOVER_BLADE_SEGMENTS_NEAR,
@@ -645,30 +646,14 @@ impl GroundCoverPipeline {
         texture_set_layout: vk::DescriptorSetLayout,
         scene_set_layout: vk::DescriptorSetLayout,
     ) -> Result<()> {
-        // The scatter's own set 0: chunks, cells, the global vertex SSBO
-        // (§11.1 path A), blades, the indirect draws it writes, and the
-        // counters it appends through.
         let compute = vk::ShaderStageFlags::COMPUTE;
-        let mut scatter_bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..6)
-            .map(|binding| {
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(binding)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(compute)
-            })
-            .collect();
-        // §7's species selection table.
-        scatter_bindings.push(storage_binding(7, compute));
-        // The TLAS, for the placed-geometry cover test (ground cover must not
-        // grow through roads, flagstones or rock bases).
-        scatter_bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(6)
-                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(1)
-                .stage_flags(compute),
-        );
+        let [scatter, interaction, draw] = set_layout_contracts();
+        for contract in [&scatter, &interaction, &draw] {
+            contract
+                .validate()
+                .expect("ground-cover descriptor layout drifted against its shaders (#4110)");
+        }
+        let scatter_bindings = scatter.bindings;
         // SAFETY: `scatter_bindings` outlives the call; `device` is live and
         // the layout is owned here until `destroy`.
         self.scatter_set_layout = unsafe {
@@ -696,16 +681,7 @@ impl GroundCoverPipeline {
                 .context("create ground-cover scatter pipeline layout")?
         };
 
-        // §12.4's own set: the field, its header, and the frame's disturbers.
-        let interaction_bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..3)
-            .map(|binding| {
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(binding)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count(1)
-                    .stage_flags(compute)
-            })
-            .collect();
+        let interaction_bindings = interaction.bindings;
         // SAFETY: `interaction_bindings` outlives the call; the layout is
         // owned here until `destroy`.
         self.interaction_set_layout = unsafe {
@@ -729,21 +705,8 @@ impl GroundCoverPipeline {
                 .context("create ground-cover interaction pipeline layout")?
         };
 
-        // Set 2 for the draw pipelines. Bindings 4 and 5 (indirect, counters)
-        // are deliberately absent: the draw reads neither, and declaring them
-        // would let a future edit sample the scatter's scratch from a fragment
-        // shader without anything failing.
         let vertex = vk::ShaderStageFlags::VERTEX;
-        let draw_bindings = [
-            storage_binding(0, vertex),
-            storage_binding(1, vertex),
-            storage_binding(2, vertex),
-            storage_binding(3, vertex),
-            storage_binding(6, vertex | vk::ShaderStageFlags::FRAGMENT),
-            // §12.4's field and header, read-only in the vertex shader.
-            storage_binding(7, vertex),
-            storage_binding(8, vertex),
-        ];
+        let draw_bindings = draw.bindings;
         // SAFETY: as above.
         self.draw_set_layout = unsafe {
             device
@@ -771,6 +734,88 @@ impl GroundCoverPipeline {
         };
         Ok(())
     }
+}
+
+/// One ground-cover descriptor-set layout and the shaders that must agree
+/// with it.
+struct SetLayoutContract {
+    name: &'static str,
+    set: u32,
+    bindings: Vec<vk::DescriptorSetLayoutBinding<'static>>,
+    shaders: Vec<ReflectedShader<'static>>,
+}
+
+impl SetLayoutContract {
+    fn validate(&self) -> Result<()> {
+        validate_set_layout(self.set, &self.bindings, &self.shaders, self.name, &[])
+    }
+}
+
+/// The scatter, interaction and draw set layouts, in that order, each paired
+/// with the shaders that declare it. Built once here so construction and
+/// `cargo test` validate the same lists (#4110).
+fn set_layout_contracts() -> [SetLayoutContract; 3] {
+    let compute = vk::ShaderStageFlags::COMPUTE;
+    let vertex = vk::ShaderStageFlags::VERTEX;
+    // The scatter's own set 0: chunks, cells, the global vertex SSBO
+    // (§11.1 path A), blades, the indirect draws it writes, and the counters
+    // it appends through; then §7's species selection table, and the TLAS
+    // for the placed-geometry cover test (ground cover must not grow through
+    // roads, flagstones or rock bases).
+    let mut scatter: Vec<_> = (0..6)
+        .map(|binding| storage_binding(binding, compute))
+        .collect();
+    scatter.push(storage_binding(7, compute));
+    scatter.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(6)
+            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+            .descriptor_count(1)
+            .stage_flags(compute),
+    );
+    // §12.4's own set: the field, its header, and the frame's disturbers.
+    let interaction = (0..3)
+        .map(|binding| storage_binding(binding, compute))
+        .collect();
+    // Set 2 for the draw pipelines. Bindings 4 and 5 (indirect, counters) are
+    // deliberately absent: the draw reads neither, and declaring them would
+    // let a future edit sample the scatter's scratch from a fragment shader
+    // without anything failing. 7 and 8 are §12.4's field and header,
+    // read-only in the vertex shader.
+    let draw = vec![
+        storage_binding(0, vertex),
+        storage_binding(1, vertex),
+        storage_binding(2, vertex),
+        storage_binding(3, vertex),
+        storage_binding(6, vertex | vk::ShaderStageFlags::FRAGMENT),
+        storage_binding(7, vertex),
+        storage_binding(8, vertex),
+    ];
+    let shader = |name, spirv| ReflectedShader { name, spirv };
+    [
+        SetLayoutContract {
+            name: "ground-cover scatter",
+            set: 0,
+            bindings: scatter,
+            shaders: vec![shader("groundcover_scatter.comp", SCATTER_SPV)],
+        },
+        SetLayoutContract {
+            name: "ground-cover interaction",
+            set: 0,
+            bindings: interaction,
+            shaders: vec![shader("groundcover_interaction.comp", INTERACTION_SPV)],
+        },
+        SetLayoutContract {
+            name: "ground-cover draw",
+            set: 2,
+            bindings: draw,
+            shaders: vec![
+                shader("groundcover_blade.vert", BLADE_VERT_SPV),
+                shader("groundcover_blade.frag", BLADE_FRAG_SPV),
+                shader("groundcover_debug.frag", DEBUG_FRAG_SPV),
+            ],
+        },
+    ]
 }
 
 fn storage_binding(
@@ -2106,6 +2151,17 @@ mod tests {
             "the blade pipeline must enable RG motion writes while the debug \
              point pipeline keeps its unwritten attachment masked"
         );
+    }
+
+    /// #4110 — every ground-cover set layout is validated against the SPIR-V
+    /// under `cargo test`, not only when a device builds the pipelines.
+    #[test]
+    fn set_layouts_match_their_shaders() {
+        for contract in set_layout_contracts() {
+            contract
+                .validate()
+                .unwrap_or_else(|e| panic!("{} drifted: {e:#}", contract.name));
+        }
     }
 
     /// #4296 — blades project with the camera UBO's view-projection and take
