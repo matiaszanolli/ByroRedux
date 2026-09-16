@@ -1591,4 +1591,82 @@ mod bright_pass_tests {
             "the shader must gate the knee on the per-level enable lane",
         );
     }
+    /// #4311 — the shader's stated footprint must match the offsets it uses.
+    ///
+    /// The header called the four taps "provably equivalent to a 4×4 box
+    /// filter", which was the stated reason for choosing a box over Jimenez's
+    /// 13-tap. It is a 2×2 box, and the arithmetic that settles it is short
+    /// enough to run here rather than argue about:
+    ///
+    /// `inv_resolutions.xy` is `1 / src_extent` (see `upload_params`), so a
+    /// tap offset is in *source* texels. Destination texel `i` sits at source
+    /// coordinate `(i + 0.5) · 2 = 2i + 1`, the corner shared by source texels
+    /// `2i` and `2i+1`. Adding ±0.5 lands on `2i + 0.5` and `2i + 1.5` — the
+    /// two texel *centres* — so every bilinear tap collapses to a point
+    /// sample and the four cover exactly 2×2. The 4×4 needs ±1.0, which lands
+    /// on corners where bilinear really does average 2×2 per tap.
+    ///
+    /// This pins the two halves together: change the offsets without the
+    /// header, or the header without the offsets, and this fails. What it
+    /// deliberately does not do is *require* either footprint — moving to 4×4
+    /// is a visual change needing an in-engine A/B under motion.
+    #[test]
+    fn downsample_taps_match_the_documented_footprint() {
+        const SRC: &str = include_str!("../../shaders/bloom_downsample.comp");
+
+        // The offset magnitude actually used by the four taps.
+        let offsets: Vec<f32> = SRC
+            .match_indices("vec2(")
+            .filter_map(|(at, _)| {
+                let tail = &SRC[at..];
+                let close = tail.find(')')?;
+                let args = &tail[5..close];
+                if !tail[close..].starts_with(") * src_pixel") {
+                    return None;
+                }
+                args.split(',')
+                    .next()?
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+                    .map(f32::abs)
+            })
+            .collect();
+        assert_eq!(
+            offsets.len(),
+            4,
+            "expected four `* src_pixel` taps, found {}: {offsets:?}",
+            offsets.len()
+        );
+        assert!(
+            offsets
+                .iter()
+                .all(|o| (o - offsets[0]).abs() < f32::EPSILON),
+            "the four taps must share one offset magnitude: {offsets:?}"
+        );
+
+        // Destination centre `2i + 1` in source-texel units, ± the offset.
+        // Landing on `*.5` is a texel centre (point sample, 1 texel per tap);
+        // landing on a whole number is a texel corner (bilinear, 2×2 per tap).
+        let per_tap_side = if (2.0 + offsets[0] - (2.0 + offsets[0]).floor() - 0.5).abs() < 1e-6 {
+            1.0
+        } else {
+            2.0
+        };
+        let footprint = (2.0 * per_tap_side) as u32;
+        let claimed = if SRC.contains("4-tap **2×2** box filter") {
+            2
+        } else if SRC.contains("equivalent to a 4×4 box filter") {
+            4
+        } else {
+            panic!("bloom_downsample.comp's header no longer states its footprint");
+        };
+        assert_eq!(
+            footprint, claimed,
+            "the header claims a {claimed}×{claimed} footprint but a ±{} source-texel offset \
+             gives {footprint}×{footprint} (#4311). Taps at ±0.5 land on source texel centres \
+             and point-sample; only ±1.0 lands on corners and averages 2×2 per tap.",
+            offsets[0],
+        );
+    }
 }
