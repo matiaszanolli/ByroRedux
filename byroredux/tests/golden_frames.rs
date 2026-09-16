@@ -402,29 +402,30 @@ fn manifest_comparison_detects_drift_in_both_directions() {
     );
 }
 
-/// The committed baseline IS stale, and is committed saying so (#3849): its
-/// PNG was captured by `4376f7a6` on 2026-06-04, before `--bench-mode
-/// renderer-static` (2026-08-11) and before FSR3 became the `--upscaler`
-/// default. Regenerating needs a Vulkan device and overwrites the committed
-/// PNG, so it is a human's call at the machine.
+/// The committed baseline was captured with the invocation the harness
+/// passes today (#4227). It was stale from `4376f7a6` (2026-06-04) until the
+/// regen, predating both `--bench-mode renderer-static` and FSR3 becoming
+/// the `--upscaler` default; #3849 pinned that known-stale state and told
+/// whoever regenerated it to flip this assertion, which is what happened.
 ///
-/// This test pins that known state so the situation stays visible in the
-/// default lane rather than only to whoever runs `--ignored` with a GPU.
-/// **Whoever regenerates the baseline should flip this to `assert_eq!`** —
-/// the failure message tells them so.
+/// Keeping the check in the default lane — rather than only behind
+/// `--ignored` with a GPU — is what makes a future drift visible: change
+/// `CAPTURE_ARGS` or `FRAMES` without recapturing and this fails here,
+/// instead of the pixel comparison failing confusingly on a device.
 #[test]
-fn committed_baseline_is_still_the_known_stale_one() {
+fn committed_baseline_matches_the_current_invocation() {
     let manifest = capture_manifest_path(&manifest_relative(&format!(
         "{GOLDEN_DIR}/cube_demo_60f.png"
     )));
     let recorded = std::fs::read_to_string(&manifest)
         .unwrap_or_else(|e| panic!("capture manifest missing at {}: {e}", manifest.display()));
-    assert_ne!(
+    assert_eq!(
         manifest_significant(&recorded),
         manifest_significant(&capture_manifest_body()),
-        "The committed baseline's capture manifest now MATCHES the current \
-         invocation — so it was regenerated. Good: flip this assert_ne! to an \
-         assert_eq! and drop the #3849 staleness note from \
-         tests/golden/cube_demo_60f.capture."
+        "The committed baseline was captured with a different invocation than \
+         the harness passes now, so the pixel comparison would be measuring \
+         two different scenes. Recapture both together:\n  \
+         BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- \
+         --ignored cube_demo_golden_frame"
     );
 }
