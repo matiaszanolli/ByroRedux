@@ -134,8 +134,6 @@ mod dispatch_misc_gameplay_b;
 mod dispatch_misc_stub;
 mod dispatch_world_placement;
 
-
-
 // ── #4219 split — the parsing entry point lives in `parse.rs` so this
 // file can be the pure re-export barrel it mostly already was. Both
 // public entry points are re-exported here, so no caller's path moved.

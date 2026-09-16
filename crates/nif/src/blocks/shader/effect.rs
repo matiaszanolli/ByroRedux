@@ -341,7 +341,6 @@ impl BSEffectShaderProperty {
     }
 }
 
-
 impl NiObject for BSEffectShaderProperty {
     fn block_type_name(&self) -> &'static str {
         "BSEffectShaderProperty"

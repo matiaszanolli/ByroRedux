@@ -198,7 +198,6 @@ pub struct BSLightingShaderProperty {
     pub starfield_tail: Vec<u8>,
 }
 
-
 impl BSLightingShaderProperty {
     /// Construct a stub for the FO76+ stopcond short-circuit: when Name is a
     /// non-empty BGSM path, the block body is absent and all other fields stay
@@ -1063,7 +1062,6 @@ fn parse_shader_type_data_fo76(
         _ => Ok(ShaderTypeData::None),
     }
 }
-
 
 // #2625 — the two Starfield tail-carrying shader properties are hand-written
 // rather than listed above, because `impl_ni_object!` emits only the trivial

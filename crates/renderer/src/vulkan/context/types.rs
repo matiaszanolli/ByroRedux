@@ -317,7 +317,8 @@ pub struct DrawCommand {
     pub greyscale_lut_index: u32,
     /// Bindless handles for the common supplemental semantic roles.
     /// Ordering is defined by `material::supplemental_texture_slot`.
-    pub supplemental_texture_indices: [u32; super::super::material::supplemental_texture_slot::COUNT],
+    pub supplemental_texture_indices:
+        [u32; super::super::material::supplemental_texture_slot::COUNT],
     /// #1147 Phase 2b — BGSM v>=8 translucency suite, forwarded to
     /// `GpuMaterial.translucency_*`. Default zeros (no contribution
     /// when `MAT_FLAG_BGSM_TRANSLUCENCY` is unset). Populated by

@@ -6,8 +6,8 @@ use super::*;
 // #4219 — these used to ride in on the barrel's own `use` statements.
 // The barrel no longer needs them, so the tests that do name them here.
 use super::parse::character_rules_profile;
-use byroredux_core::character::CharacterRulesProfile;
 use crate::esm::reader::FormIdRemap;
+use byroredux_core::character::CharacterRulesProfile;
 
 #[test]
 fn esm_header_selects_one_canonical_character_profile() {
