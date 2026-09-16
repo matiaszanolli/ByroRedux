@@ -699,6 +699,8 @@ impl ActionState {
 pub(crate) enum InteractionKind {
     Activate,
     Door,
+    Container,
+    Corpse,
 }
 
 impl InteractionKind {
@@ -706,6 +708,7 @@ impl InteractionKind {
         match self {
             Self::Activate => "Activate",
             Self::Door => "Open",
+            Self::Container | Self::Corpse => "Take all",
         }
     }
 }
@@ -833,10 +836,14 @@ pub(crate) fn refresh_action_state(world: &World) {
 fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
     let (origin, direction) = camera_ray(world)?;
     let candidates = collect_candidates(world);
+    let physical_corpses = corpse_collider_actors(world, &candidates);
 
     let mut targets: Vec<_> = candidates
         .iter()
         .filter(|(entity, _)| !activation_is_blocked(world, **entity))
+        // Collider-backed corpses must be targeted at the body, not also at
+        // the stale placement-root bound after the ragdoll has moved away.
+        .filter(|(entity, _)| !physical_corpses.contains(*entity))
         .filter_map(|(entity, kind)| {
             let bound = interaction_bound(world, *entity)?;
             let distance = ray_sphere_distance(origin, direction, bound)?;
@@ -847,6 +854,26 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
             })
         })
         .collect();
+    // A ragdoll may fall away from the placement root's bound. Its nearest
+    // physical hit identifies the same canonical actor inventory; never cast
+    // through the first obstruction to find a body behind a wall.
+    if candidates
+        .values()
+        .any(|kind| *kind == InteractionKind::Corpse)
+    {
+        if let Some((entity, distance)) = ray_hit_actor(world, origin, direction) {
+            if candidates.get(&entity) == Some(&InteractionKind::Corpse)
+                && !activation_is_blocked(world, entity)
+            {
+                targets.retain(|target| target.entity != entity);
+                targets.push(InteractionTarget {
+                    entity,
+                    kind: InteractionKind::Corpse,
+                    distance,
+                });
+            }
+        }
+    }
     // #3059 — hand the map's allocated capacity back to the scratch
     // resource for next frame instead of letting it drop here.
     if let Some(mut scratch) = world.try_resource_mut::<InteractionCandidateScratch>() {
@@ -856,6 +883,71 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
     targets
         .into_iter()
         .find(|target| target_has_line_of_sight(world, *target, origin, direction))
+}
+
+fn corpse_collider_actors(
+    world: &World,
+    candidates: &FxHashMap<EntityId, InteractionKind>,
+) -> rustc_hash::FxHashSet<EntityId> {
+    if !candidates
+        .values()
+        .any(|kind| *kind == InteractionKind::Corpse)
+        || world
+            .try_resource::<byroredux_physics::PhysicsWorld>()
+            .is_none()
+    {
+        return Default::default();
+    }
+    let owners: Vec<_> = world
+        .query::<byroredux_physics::ActorColliderOwner>()
+        .map(|owners| {
+            owners
+                .iter()
+                .filter(|(_, owner)| candidates.get(&owner.0) == Some(&InteractionKind::Corpse))
+                .map(|(body, owner)| (body, owner.0))
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(handles) = world.query::<byroredux_physics::RapierHandles>() else {
+        return Default::default();
+    };
+    let mut actors: rustc_hash::FxHashSet<_> = owners
+        .into_iter()
+        .filter(|(body, _)| handles.get(*body).is_some())
+        .map(|(_, actor)| actor)
+        .collect();
+    actors.extend(
+        candidates
+            .iter()
+            .filter(|(entity, kind)| {
+                **kind == InteractionKind::Corpse && handles.get(**entity).is_some()
+            })
+            .map(|(entity, _)| *entity),
+    );
+    actors
+}
+
+fn ray_hit_actor(world: &World, origin: Vec3, direction: Vec3) -> Option<(EntityId, f32)> {
+    let player = world
+        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
+        .map(|player| player.0);
+    let excluded = player.and_then(|player| {
+        world
+            .get::<byroredux_physics::RapierHandles>(player)
+            .map(|handles| handles.body)
+    });
+    let hit = world
+        .try_resource::<byroredux_physics::PhysicsWorld>()?
+        .cast_ray(origin, direction, INTERACTION_REACH_BU, excluded)?;
+    let body = hit.body?;
+    let collider = world
+        .query::<byroredux_physics::RapierHandles>()?
+        .iter()
+        .find_map(|(entity, handles)| (handles.body == body).then_some(entity))?;
+    let actor = world
+        .get::<byroredux_physics::ActorColliderOwner>(collider)
+        .map_or(collider, |owner| owner.0);
+    Some((actor, hit.distance))
 }
 
 fn target_has_line_of_sight(
@@ -917,6 +1009,12 @@ fn collider_belongs_to_target(world: &World, collider_entity: EntityId, target: 
     if collider_entity == target {
         return true;
     }
+    if world
+        .get::<byroredux_physics::ActorColliderOwner>(collider_entity)
+        .is_some_and(|owner| owner.0 == target)
+    {
+        return true;
+    }
     let target_form = world.get::<FormIdComponent>(target).map(|form| form.0);
     let collider_form = world
         .get::<FormIdComponent>(collider_entity)
@@ -975,6 +1073,30 @@ fn collect_candidates(world: &World) -> FxHashMap<EntityId, InteractionKind> {
 }
 
 fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, InteractionKind>) {
+    // Release Inventory before checking reference identity/catalog resources.
+    let inventories: Vec<_> = world
+        .query::<byroredux_core::ecs::components::Inventory>()
+        .map(|query| {
+            query
+                .iter()
+                .filter(|(_, inventory)| inventory.items.iter().any(|stack| stack.count > 0))
+                .map(|(entity, _)| entity)
+                .collect()
+        })
+        .unwrap_or_default();
+    for entity in inventories {
+        if crate::inventory::is_loot_source(world, entity) {
+            let kind = if world
+                .get::<byroredux_core::ecs::components::Dead>(entity)
+                .is_some()
+            {
+                InteractionKind::Corpse
+            } else {
+                InteractionKind::Container
+            };
+            candidates.insert(entity, kind);
+        }
+    }
     if let Some(query) = world.query::<DoorTeleport>() {
         candidates.extend(
             query
@@ -1418,7 +1540,9 @@ mod tests {
         let camera = world.spawn();
         world.insert(camera, Transform::IDENTITY);
         world.insert_resource(ActiveCamera(camera));
-        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(camera));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(
+            camera,
+        ));
 
         let far = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -150.0));
         let near = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -80.0));
@@ -1439,6 +1563,172 @@ mod tests {
         let trace = world.resource::<InteractionTrace>();
         assert_eq!(trace.activation_count, 1);
         assert!(trace.last.as_ref().unwrap().event_emitted);
+    }
+
+    #[test]
+    fn lethal_combat_then_physical_activation_loots_corpse_through_its_collider() {
+        use byroredux_core::ecs::components::{
+            ActorValues, ActorVitals, Dead, Inventory, ItemStack,
+        };
+        let mut world = physics_fixture();
+        byroredux_scripting::register(&mut world);
+        world.register::<Dead>();
+        world.insert_resource(crate::combat::CombatState::default());
+        let player = spawn_camera(&mut world);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(player, Inventory::new());
+        let actor = world.spawn();
+        world.insert(actor, WorldBound::new(Vec3::new(1000.0, 0.0, -100.0), 10.0));
+        world.insert(
+            actor,
+            Inventory {
+                items: vec![ItemStack::new(0x5678, 5)],
+            },
+        );
+        world.insert(actor, ActorValues::from_pairs([(0x2D4, 10.0)]));
+        world.insert(actor, ActorVitals { health: 0x2D4 });
+        // A separate ragdoll body can move completely off the actor-root bound.
+        let body = spawn_static_collider(&mut world, Vec3::new(0.0, 0.0, -80.0), None);
+        world.insert(body, byroredux_physics::ActorColliderOwner(actor));
+        byroredux_physics::physics_sync_system(&world, 0.0);
+        assert!(
+            select_interaction_target(&world).is_none(),
+            "living actor is not lootable"
+        );
+        world.insert(
+            actor,
+            byroredux_scripting::HitEvent {
+                aggressor: player,
+                source: player,
+                projectile: 0,
+                damage: 20.0,
+                power_attack: false,
+                sneak_attack: false,
+                bash_attack: false,
+                blocked: false,
+            },
+        );
+        crate::combat::combat_damage_system(&world, 0.0);
+        assert!(world.get::<Dead>(actor).is_some());
+        world
+            .resource_mut::<InputState>()
+            .keys_held
+            .insert(KeyCode::KeyE);
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+        let target = world.resource::<InteractionState>().target.unwrap();
+        assert_eq!(target.entity, actor);
+        assert_eq!(target.kind, InteractionKind::Corpse);
+        crate::inventory::container_loot_system(&world, 0.0);
+        assert!(world.get::<Inventory>(actor).unwrap().is_empty());
+        assert_eq!(
+            world.get::<Inventory>(player).unwrap().items,
+            vec![ItemStack::new(0x5678, 5)]
+        );
+        assert!(select_interaction_target(&world).is_none());
+    }
+
+    #[test]
+    fn wall_blocks_corpse_collider_targeting() {
+        use byroredux_core::ecs::components::{Dead, Inventory, ItemStack};
+        let mut world = physics_fixture();
+        spawn_camera(&mut world);
+        let actor = world.spawn();
+        // The old placement bound is in front of the wall; it must not act
+        // as a second loot target after the body has fallen behind it.
+        world.insert(actor, WorldBound::new(Vec3::new(0.0, 0.0, -20.0), 5.0));
+        world.insert(actor, Dead);
+        world.insert(
+            actor,
+            Inventory {
+                items: vec![ItemStack::new(0x1234, 1)],
+            },
+        );
+        let body = spawn_static_collider(&mut world, Vec3::new(0.0, 0.0, -80.0), None);
+        world.insert(body, byroredux_physics::ActorColliderOwner(actor));
+        spawn_static_collider(&mut world, Vec3::new(0.0, 0.0, -40.0), None);
+        byroredux_physics::physics_sync_system(&world, 0.0);
+        assert!(select_interaction_target(&world).is_none());
+    }
+
+    #[test]
+    fn physical_activate_takes_container_inventory_once() {
+        use byroredux_core::ecs::components::{Inventory, ItemStack};
+        use byroredux_plugin::esm::records::{ContainerRecord, EsmIndex};
+
+        let mut world = input_fixture();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        let player = spawn_camera(&mut world);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(player, Inventory::new());
+        let mut index = EsmIndex::default();
+        index.containers.insert(
+            0xCAFE,
+            ContainerRecord {
+                form_id: 0xCAFE,
+                editor_id: "TestChest".into(),
+                full_name: "Chest".into(),
+                model_path: String::new(),
+                weight: 0.0,
+                flags: 0,
+                open_sound: 0,
+                close_sound: 0,
+                script_form_id: 0,
+                script_instance: None,
+                contents: Vec::new(),
+            },
+        );
+        crate::inventory::install_catalog(&mut world, &index);
+        let chest = world.spawn();
+        let center = Vec3::new(0.0, 0.0, -80.0);
+        world.insert(chest, WorldBound::new(center, 10.0));
+        world.insert(
+            chest,
+            byroredux_scripting::SceneAliasCandidate {
+                reference_form_id: 0xABCD,
+                base_form_id: 0xCAFE,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            chest,
+            Inventory {
+                items: vec![ItemStack::new(0x1234, 9)],
+            },
+        );
+        world
+            .resource_mut::<InputState>()
+            .keys_held
+            .insert(KeyCode::KeyE);
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+        let selected = world.resource::<InteractionState>().target.unwrap();
+        assert_eq!(selected.entity, chest);
+        assert_eq!(selected.kind, InteractionKind::Container);
+        assert_eq!(selected.kind.verb(), "Take all");
+        crate::inventory::container_loot_system(&world, 0.0);
+        assert!(world.get::<Inventory>(chest).unwrap().is_empty());
+        assert_eq!(
+            world.get::<Inventory>(player).unwrap().items,
+            vec![ItemStack::new(0x1234, 9)]
+        );
+        assert_eq!(
+            world
+                .get::<byroredux_scripting::ActivateEvent>(chest)
+                .unwrap()
+                .activator,
+            player
+        );
+
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+        crate::inventory::container_loot_system(&world, 0.0);
+        assert!(world.resource::<InteractionState>().target.is_none());
+        assert_eq!(world.resource::<InteractionTrace>().activation_count, 1);
+        assert_eq!(
+            world.get::<Inventory>(player).unwrap().items,
+            vec![ItemStack::new(0x1234, 9)]
+        );
     }
 
     #[test]
@@ -1538,8 +1828,7 @@ mod tests {
     /// panic under the live detector.
     #[test]
     fn collect_candidates_does_not_close_scratch_component_lock_cycle() {
-        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1"))
-        {
+        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1")) {
             return;
         }
 
@@ -1571,7 +1860,9 @@ mod tests {
         let camera = world.spawn();
         world.insert(camera, Transform::IDENTITY);
         world.insert_resource(ActiveCamera(camera));
-        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(camera));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(
+            camera,
+        ));
         camera
     }
 

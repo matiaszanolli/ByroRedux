@@ -15,6 +15,7 @@ pub(super) fn dispatch_container_group(
     statics: &mut HashMap<u32, StaticObject>,
     index: &mut EsmIndex,
 ) -> Result<()> {
+    let game = index.game;
     match label {
         // Containers and leveled lists. Embedded FormIDs
         // (CNTO/SNAM/QNAM/SCRI, LVLO) are plugin-local; remap to
@@ -31,17 +32,19 @@ pub(super) fn dispatch_container_group(
         b"LVLI" => {
             let lvli_remap = reader.get_form_id_remap();
             extract_records(reader, end, b"LVLI", &mut |fid, subs| {
-                index
-                    .leveled_items
-                    .insert(fid, parse_leveled_list(fid, subs, &lvli_remap));
+                index.leveled_items.insert(
+                    fid,
+                    container::parse_leveled_list_for_game(fid, subs, &lvli_remap, game),
+                );
             })?
         }
         b"LVLN" => {
             let lvln_remap = reader.get_form_id_remap();
             extract_records(reader, end, b"LVLN", &mut |fid, subs| {
-                index
-                    .leveled_npcs
-                    .insert(fid, parse_leveled_list(fid, subs, &lvln_remap));
+                index.leveled_npcs.insert(
+                    fid,
+                    container::parse_leveled_list_for_game(fid, subs, &lvln_remap, game),
+                );
             })?
         }
         // Leveled creatures (CREA spawn tables) — byte-identical to
@@ -51,9 +54,10 @@ pub(super) fn dispatch_container_group(
         b"LVLC" => {
             let lvlc_remap = reader.get_form_id_remap();
             extract_records(reader, end, b"LVLC", &mut |fid, subs| {
-                index
-                    .leveled_creatures
-                    .insert(fid, parse_leveled_list(fid, subs, &lvlc_remap));
+                index.leveled_creatures.insert(
+                    fid,
+                    container::parse_leveled_list_for_game(fid, subs, &lvlc_remap, game),
+                );
             })?
         }
         // Leveled spell lists (NPC_/CREA SPLO targets) — byte-identical
@@ -62,9 +66,10 @@ pub(super) fn dispatch_container_group(
         b"LVSP" => {
             let lvsp_remap = reader.get_form_id_remap();
             extract_records(reader, end, b"LVSP", &mut |fid, subs| {
-                index
-                    .leveled_spells
-                    .insert(fid, parse_leveled_list(fid, subs, &lvsp_remap));
+                index.leveled_spells.insert(
+                    fid,
+                    container::parse_leveled_list_for_game(fid, subs, &lvsp_remap, game),
+                );
             })?
         }
         _ => unreachable!("dispatch_container_group: unexpected label {label:?}"),

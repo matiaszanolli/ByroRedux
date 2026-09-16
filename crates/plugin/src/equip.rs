@@ -773,6 +773,70 @@ fn expand_leveled_inner(
     }
 }
 
+/// Resolve container loot into `(form_id, count)` stacks. Uses the equipment
+/// resolver's stable highest-eligible selection (or every eligible Use All
+/// entry), while preserving nested LVLO quantities and non-equipment leaves
+/// such as FNV caravan cards. Counts saturate instead of allocating one row
+/// per item. Unknown terminal IDs are retained, like direct CONT contents.
+///
+/// This is deterministic bootstrap loot: partial chance-none probabilities
+/// are not rolled yet; an authored 100% chance-none list is always empty.
+pub fn expand_leveled_loot(
+    form_id: u32,
+    count: u32,
+    level: u16,
+    index: &EsmIndex,
+    out: &mut Vec<(u32, u32)>,
+) {
+    fn walk(
+        form_id: u32,
+        count: u32,
+        level: u16,
+        index: &EsmIndex,
+        out: &mut Vec<(u32, u32)>,
+        path: &mut Vec<u32>,
+    ) {
+        if count == 0 {
+            return;
+        }
+        let Some(list) = index.leveled_items.get(&form_id) else {
+            out.push((form_id, count));
+            return;
+        };
+        if list.chance_none >= 100
+            || path.len() >= LVLI_MAX_DEPTH as usize
+            || path.contains(&form_id)
+        {
+            return;
+        }
+        path.push(form_id);
+        let eligible = list.entries.iter().filter(|entry| entry.level <= level);
+        if list.flags & 0x04 != 0 {
+            for entry in eligible {
+                walk(
+                    entry.form_id,
+                    count.saturating_mul(u32::from(entry.count)),
+                    level,
+                    index,
+                    out,
+                    path,
+                );
+            }
+        } else if let Some(entry) = eligible.max_by_key(|entry| entry.level) {
+            walk(
+                entry.form_id,
+                count.saturating_mul(u32::from(entry.count)),
+                level,
+                index,
+                out,
+                path,
+            );
+        }
+        path.pop();
+    }
+    walk(form_id, count, level, index, out, &mut Vec::new());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1316,6 +1380,43 @@ mod tests {
                     .collect(),
             },
         );
+    }
+
+    #[test]
+    fn leveled_loot_preserves_nested_quantities_and_non_equipment_leaves() {
+        let mut index = empty_index();
+        add_lvli(&mut index, 1, 0x04, vec![(1, 2, 3), (1, 30, 5)]);
+        add_lvli(&mut index, 2, 0, vec![(1, 10, 2), (5, 20, 4), (20, 40, 1)]);
+        let mut out = Vec::new();
+        expand_leveled_loot(1, 2, 5, &index, &mut out);
+        assert_eq!(out, vec![(20, 24), (30, 10)]);
+    }
+
+    #[test]
+    fn leveled_loot_rejects_empty_ineligible_and_cyclic_branches() {
+        let mut index = empty_index();
+        add_lvli(
+            &mut index,
+            1,
+            0x04,
+            vec![(1, 1, 1), (1, 2, 0), (20, 3, 1), (1, 4, 1)],
+        );
+        add_lvli(&mut index, 4, 0, vec![(1, 5, 1)]);
+        index.leveled_items.get_mut(&4).unwrap().chance_none = 100;
+        let mut out = Vec::new();
+        expand_leveled_loot(1, 1, 5, &index, &mut out);
+        assert!(out.is_empty());
+        expand_leveled_loot(99, 0, 5, &index, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn leveled_loot_saturates_counts_without_expanding_each_copy() {
+        let mut index = empty_index();
+        add_lvli(&mut index, 1, 0x02, vec![(1, 2, u16::MAX)]);
+        let mut out = Vec::new();
+        expand_leveled_loot(1, u32::MAX, 1, &index, &mut out);
+        assert_eq!(out, vec![(2, u32::MAX)]);
     }
 
     /// Direct ARMO ref passes through: the resolver pushes the form ID

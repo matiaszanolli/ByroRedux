@@ -139,10 +139,9 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     // `crates/core/src/ecs/world.rs`'s house rule forbids. Cheap either way
     // (one component lookup), so precomputing it unconditionally rather
     // than only on the frames that arm a cooldown is the simpler flattening.
-    let armed_cooldown = aggressor
-        .map_or(MELEE_COOLDOWN_SECONDS, |aggressor| {
-            attack_cooldown_seconds(world, aggressor)
-        });
+    let armed_cooldown = aggressor.map_or(MELEE_COOLDOWN_SECONDS, |aggressor| {
+        attack_cooldown_seconds(world, aggressor)
+    });
 
     // #3709 (ECS-P2-06) — cooldown/blocking are per-combatant facts, tracked
     // on `MeleeState` (the aggressor entity's own component), not on the
@@ -151,28 +150,26 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     // past the `let Some(aggressor) = aggressor else { record_miss(...) }`
     // bail below regardless.
     let attack_ready = match aggressor {
-        Some(aggressor) => world
-            .query_mut::<MeleeState>()
-            .is_some_and(|mut melee| {
-                if melee.get_mut(aggressor).is_none() {
-                    melee.insert(aggressor, MeleeState::default());
-                }
-                let state = melee
-                    .get_mut(aggressor)
-                    .expect("just inserted if it was missing");
-                // Continuous state, not an edge: the cooldown clock and the
-                // block flag keep tracking in every mode, so entering and
-                // leaving fly-cam neither freezes a running cooldown nor
-                // strands `blocking` true.
-                state.blocking = block_held;
-                state.cooldown_remaining = (state.cooldown_remaining - dt.max(0.0)).max(0.0);
-                if attack_pressed && in_character_mode && state.cooldown_remaining <= 0.0 {
-                    state.cooldown_remaining = armed_cooldown;
-                    true
-                } else {
-                    false
-                }
-            }),
+        Some(aggressor) => world.query_mut::<MeleeState>().is_some_and(|mut melee| {
+            if melee.get_mut(aggressor).is_none() {
+                melee.insert(aggressor, MeleeState::default());
+            }
+            let state = melee
+                .get_mut(aggressor)
+                .expect("just inserted if it was missing");
+            // Continuous state, not an edge: the cooldown clock and the
+            // block flag keep tracking in every mode, so entering and
+            // leaving fly-cam neither freezes a running cooldown nor
+            // strands `blocking` true.
+            state.blocking = block_held;
+            state.cooldown_remaining = (state.cooldown_remaining - dt.max(0.0)).max(0.0);
+            if attack_pressed && in_character_mode && state.cooldown_remaining <= 0.0 {
+                state.cooldown_remaining = armed_cooldown;
+                true
+            } else {
+                false
+            }
+        }),
         None => false,
     };
     if attack_ready {
@@ -506,6 +503,22 @@ fn disable_actor_ai(world: &World, actor: EntityId) {
 /// format. Both the combat transition and save-load drain call this one
 /// reconciler, keeping those derived removals consistent (#3022).
 pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
+    // A freshly respawned corpse can regain its authored weapon before the
+    // save's empty inventory is overlaid. Absence of EquippedWeapon is not a
+    // saved tombstone, so reconstruct the take-all result from saved inventory.
+    if world
+        .get::<byroredux_core::ecs::components::Inventory>(actor)
+        .is_some_and(|inventory| inventory.is_empty())
+    {
+        if let Some(mut equipment) =
+            world.query_mut::<byroredux_core::ecs::components::EquipmentSlots>()
+        {
+            if let Some(slots) = equipment.get_mut(actor) {
+                *slots = byroredux_core::ecs::components::EquipmentSlots::new();
+            }
+        }
+        remove_component::<EquippedWeapon>(world, actor);
+    }
     disable_actor_ai(world, actor);
     // #3708 (ECS-P2-03) — `disable_actor_ai` -> `clear_ambient_behavior`
     // deliberately does NOT remove `AmbientPackageRuntime` (it's shared
@@ -579,9 +592,9 @@ fn record_miss(world: &World, outcome: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::AmbientPackageRuntime;
     use byroredux_core::ecs::components::InventoryIndex;
     use byroredux_core::ecs::components::{FollowBehavior, FollowState};
-    use crate::components::AmbientPackageRuntime;
     use byroredux_scripting::EvaluatePackageRequest;
 
     fn damage_fixture(
@@ -1015,6 +1028,44 @@ mod tests {
     }
 
     #[test]
+    fn dead_reconciliation_clears_respawned_equipment_only_for_empty_inventory() {
+        use byroredux_core::ecs::components::{EquipmentSlots, Inventory, ItemStack};
+        for looted in [false, true] {
+            let (mut world, _, actor) = damage_fixture(10.0, None, false);
+            world.insert(actor, Dead);
+            let mut slots = EquipmentSlots::new();
+            slots.equip_weapon(InventoryIndex(0));
+            world.insert(actor, slots);
+            world.insert(
+                actor,
+                EquippedWeapon {
+                    inventory_index: InventoryIndex(0),
+                    base_form_id: 0x1234,
+                    damage: 12.0,
+                    reach: 1.0,
+                    speed: 1.0,
+                },
+            );
+            world.insert(
+                actor,
+                Inventory {
+                    items: if looted {
+                        vec![]
+                    } else {
+                        vec![ItemStack::new(0x1234, 1)]
+                    },
+                },
+            );
+            reconcile_dead_actor_runtime_state(&world);
+            assert_eq!(world.get::<EquippedWeapon>(actor).is_none(), looted);
+            assert_eq!(
+                world.get::<EquipmentSlots>(actor).unwrap().weapon.is_none(),
+                looted
+            );
+        }
+    }
+
+    #[test]
     fn dead_state_reconciliation_removes_respawned_ai() {
         let mut world = World::new();
         world.register::<Dead>();
@@ -1243,8 +1294,7 @@ mod tests {
     /// read and the `CombatState` write never nest.
     #[test]
     fn combat_input_system_does_not_close_combat_state_equipped_weapon_lock_cycle() {
-        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1"))
-        {
+        if std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() != Some(std::ffi::OsStr::new("1")) {
             return;
         }
 

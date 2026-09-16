@@ -1,9 +1,9 @@
-//! Native inventory presentation and player-facing equipment mutations.
+//! Native inventory presentation, container loot, and equipment mutations.
 //!
 //! The canonical state remains [`Inventory`] + [`EquipmentSlots`]. This module
-//! only carries immutable item-record metadata into the ECS, seeds the player
-//! from the master NPC record, and translates native-menu actions back into
-//! those existing components.
+//! carries immutable item-record metadata into the ECS, seeds the player
+//! from the master NPC record, and translates activation/native-menu actions
+//! back into those existing components.
 
 use byroredux_core::ecs::components::{
     EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemStack,
@@ -73,6 +73,7 @@ pub(crate) struct InventoryItemDefinition {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InventoryCatalog {
     entries: FxHashMap<u32, InventoryItemDefinition>,
+    containers: rustc_hash::FxHashSet<u32>,
 }
 
 impl InventoryCatalog {
@@ -158,7 +159,10 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
             )
         })
         .collect();
-    world.insert_resource(InventoryCatalog { entries });
+    world.insert_resource(InventoryCatalog {
+        entries,
+        containers: index.containers.keys().copied().collect(),
+    });
     world.insert_resource(build_player_template(index));
 }
 
@@ -352,6 +356,110 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
     world.insert(player, equipment);
     if let Some(weapon) = template.equipped_weapon {
         world.insert(player, weapon);
+    }
+}
+
+pub(crate) fn is_loot_source(world: &World, entity: byroredux_core::ecs::EntityId) -> bool {
+    if world
+        .try_resource::<PlayerEntity>()
+        .and_then(|player| player.0)
+        == Some(entity)
+    {
+        return false;
+    }
+    if world
+        .get::<byroredux_core::ecs::components::Dead>(entity)
+        .is_some()
+    {
+        return true;
+    }
+    let Some(base) = world
+        .get::<byroredux_scripting::SceneAliasCandidate>(entity)
+        .map(|identity| identity.base_form_id)
+    else {
+        return false;
+    };
+    world
+        .try_resource::<InventoryCatalog>()
+        .is_some_and(|catalog| catalog.containers.contains(&base))
+}
+
+/// Consume canonical activation events without draining them: scripts observe
+/// the same activation later in Update. Only real CONT references and dead actors
+/// are lootable; live actors are never eligible merely because they own inventory.
+pub(crate) fn container_loot_system(world: &World, _dt: f32) {
+    let Some(player) = world
+        .try_resource::<PlayerEntity>()
+        .and_then(|player| player.0)
+    else {
+        return;
+    };
+    let events: Vec<_> = world
+        .query::<byroredux_scripting::ActivateEvent>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|(entity, event)| (entity, event.activator))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (container, activator) in events {
+        if activator != player
+            || container == player
+            || !is_loot_source(world, container)
+            || world
+                .get::<byroredux_core::ecs::components::Locked>(container)
+                .is_some()
+        {
+            continue;
+        }
+        let Some(mut inventories) = world.query_mut::<Inventory>() else {
+            continue;
+        };
+        // One storage write guard covers both inventories; validate the
+        // destination before taking anything so a missing player loses no loot.
+        if inventories.get_mut(player).is_none() {
+            continue;
+        }
+        let Some(source) = inventories.get_mut(container) else {
+            continue;
+        };
+        let stacks = std::mem::take(&mut source.items);
+        let form_ids: Vec<_> = stacks.iter().map(|stack| stack.base_form_id).collect();
+        let destination = inventories
+            .get_mut(player)
+            .expect("validated under the same guard");
+        // Append whole stacks: existing equipment indices stay stable and
+        // distinct instance-pool identities are never merged or discarded.
+        destination.items.extend(stacks);
+        drop(inventories);
+        // Equipment points into the source inventory, not the destination.
+        // Snapshot unique indices and release every storage guard before
+        // acquiring the next one or publishing the script event batch.
+        let mut equipped = Vec::new();
+        if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
+            if let Some(slots) = equipment.get_mut(container) {
+                equipped.extend(slots.equipped_indices());
+                *slots = EquipmentSlots::new();
+            }
+        }
+        if let Some(mut weapons) = world.query_mut::<EquippedWeapon>() {
+            weapons.remove(container);
+        }
+        equipped.sort_unstable_by_key(|index| index.0);
+        equipped.dedup();
+        byroredux_scripting::emit_equipment_changes(
+            world,
+            container,
+            equipped.into_iter().filter_map(|index| {
+                form_ids.get(index.0 as usize).map(|&item_form_id| {
+                    byroredux_scripting::EquipmentChange {
+                        item_form_id,
+                        equipped: false,
+                    }
+                })
+            }),
+        );
     }
 }
 
@@ -607,6 +715,7 @@ mod tests {
         world.insert(player, EquipmentSlots::new());
         world.insert_resource(PlayerEntity(Some(player)));
         world.insert_resource(InventoryCatalog {
+            containers: Default::default(),
             entries: FxHashMap::from_iter([
                 (
                     0x1234,
@@ -653,6 +762,181 @@ mod tests {
             ]),
         });
         (world, player)
+    }
+
+    fn activated_container(
+        world: &mut World,
+        player: byroredux_core::ecs::EntityId,
+    ) -> byroredux_core::ecs::EntityId {
+        world
+            .resource_mut::<InventoryCatalog>()
+            .containers
+            .insert(0xCAFE);
+        let container = world.spawn();
+        world.insert(
+            container,
+            byroredux_scripting::SceneAliasCandidate {
+                reference_form_id: 0xDEAD,
+                base_form_id: 0xCAFE,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        world.insert(
+            container,
+            Inventory {
+                items: vec![ItemStack::new(0x5678, 7)],
+            },
+        );
+        world.insert(
+            container,
+            byroredux_scripting::ActivateEvent { activator: player },
+        );
+        container
+    }
+
+    #[test]
+    fn container_loot_preserves_stacks_instances_equipment_and_activation() {
+        let (mut world, player) = fixture();
+        let container = activated_container(&mut world, player);
+        world
+            .get_mut::<EquipmentSlots>(player)
+            .unwrap()
+            .equip_weapon(InventoryIndex(2));
+        let instance =
+            byroredux_core::ecs::components::ItemInstanceId(std::num::NonZeroU32::new(17).unwrap());
+        let stacks = vec![
+            ItemStack::new(0x5678, u32::MAX),
+            ItemStack {
+                base_form_id: 0x9ABC,
+                count: 1,
+                instance: Some(instance),
+            },
+            ItemStack {
+                base_form_id: 0x1111,
+                count: 0,
+                instance: Some(byroredux_core::ecs::components::ItemInstanceId(
+                    std::num::NonZeroU32::new(18).unwrap(),
+                )),
+            },
+        ];
+        world.get_mut::<Inventory>(container).unwrap().items = stacks.clone();
+        let original = world.get::<Inventory>(player).unwrap().items.clone();
+        container_loot_system(&world, 0.0);
+        container_loot_system(&world, 0.0);
+        let inventory = world.get::<Inventory>(player).unwrap();
+        assert_eq!(&inventory.items[..original.len()], original.as_slice());
+        assert_eq!(&inventory.items[original.len()..], stacks.as_slice());
+        drop(inventory);
+        assert!(world.get::<Inventory>(container).unwrap().is_empty());
+        assert_eq!(
+            world.get::<EquipmentSlots>(player).unwrap().weapon,
+            Some(InventoryIndex(2))
+        );
+        assert!(
+            world
+                .get::<byroredux_scripting::ActivateEvent>(container)
+                .is_some(),
+            "script consumers must still observe the activation"
+        );
+    }
+
+    #[test]
+    fn container_loot_rejects_locked_nonplayer_and_noncontainer_targets() {
+        let (mut world, player) = fixture();
+        let locked = activated_container(&mut world, player);
+        world.insert(
+            locked,
+            byroredux_core::ecs::components::Locked {
+                lock_level: 25,
+                key_form_id: None,
+            },
+        );
+        let npc = world.spawn();
+        let npc_activation = activated_container(&mut world, npc);
+        let actor_inventory = activated_container(&mut world, player);
+        world
+            .get_mut::<byroredux_scripting::SceneAliasCandidate>(actor_inventory)
+            .unwrap()
+            .base_form_id = 0xBEEF;
+        container_loot_system(&world, 0.0);
+        assert_eq!(world.get::<Inventory>(player).unwrap().len(), 3);
+        for target in [locked, npc_activation, actor_inventory] {
+            assert_eq!(
+                world.get::<Inventory>(target).unwrap().items,
+                vec![ItemStack::new(0x5678, 7)]
+            );
+        }
+    }
+
+    #[test]
+    fn corpse_loot_clears_source_equipment_and_emits_each_unequip_once() {
+        let (mut world, player) = fixture();
+        let corpse = activated_container(&mut world, player);
+        world.remove::<byroredux_scripting::SceneAliasCandidate>(corpse);
+        world.insert(corpse, byroredux_core::ecs::components::Dead);
+        world.get_mut::<Inventory>(corpse).unwrap().items =
+            vec![ItemStack::new(0x1234, 1), ItemStack::new(0x9ABC, 1)];
+        let mut slots = EquipmentSlots::new();
+        slots.equip(0b110, InventoryIndex(0));
+        slots.equip_weapon(InventoryIndex(1));
+        world.insert(corpse, slots);
+        world.insert(
+            corpse,
+            EquippedWeapon {
+                inventory_index: InventoryIndex(1),
+                base_form_id: 0x9ABC,
+                damage: 12.0,
+                reach: 1.0,
+                speed: 1.0,
+            },
+        );
+        container_loot_system(&world, 0.0);
+        container_loot_system(&world, 0.0);
+        assert!(world.get::<Inventory>(corpse).unwrap().is_empty());
+        assert_eq!(world.get::<Inventory>(player).unwrap().len(), 5);
+        assert_eq!(
+            world
+                .get::<EquipmentSlots>(corpse)
+                .unwrap()
+                .equipped_indices()
+                .count(),
+            0
+        );
+        assert!(world.get::<EquippedWeapon>(corpse).is_none());
+        assert_eq!(
+            world
+                .get::<byroredux_scripting::EquipmentEventBatch>(corpse)
+                .unwrap()
+                .0,
+            vec![
+                byroredux_scripting::EquipmentChange {
+                    item_form_id: 0x1234,
+                    equipped: false
+                },
+                byroredux_scripting::EquipmentChange {
+                    item_form_id: 0x9ABC,
+                    equipped: false
+                },
+            ]
+        );
+        world.insert(player, byroredux_core::ecs::components::Dead);
+        assert!(
+            !is_loot_source(&world, player),
+            "the player must not target their own inventory"
+        );
+    }
+
+    #[test]
+    fn container_loot_keeps_source_when_player_inventory_is_missing() {
+        let (mut world, player) = fixture();
+        let container = activated_container(&mut world, player);
+        world.remove::<Inventory>(player);
+        container_loot_system(&world, 0.0);
+        assert_eq!(
+            world.get::<Inventory>(container).unwrap().items,
+            vec![ItemStack::new(0x5678, 7)]
+        );
     }
 
     /// #3488 — the removal direction across a live load. The save overlay is

@@ -237,8 +237,126 @@ stale-entry recovery. Tab now opens a native inventory backed by the player's
 canonical `Inventory` / `EquipmentSlots`: it resolves authored item metadata,
 filters by category, shows stack/value/weight/equipped state, and mutates armor equip slots. Fallout
 4/76 `Mods`, component-bearing `Junk`, and ordinary `Misc` remain distinct.
-Container/corpse transfer, weapon equip, visible player-mesh attachment, bars,
-notifications, and objective text remain the P3 closure work.
+At that checkpoint, container/corpse transfer, weapon equip, visible player-mesh
+attachment, bars, notifications, and objective text remained P3 closure work.
+
+**Container interaction progress (2026-09-16):** nonempty placed CONT references
+now expose `Take all` through the normal ray-selected Activate binding (E by
+default). A scheduled consumer transfers their canonical inventory into the
+player's inventory, before script consumers and without removing ActivateEvent.
+Locked targets, non-player activators, and inventories whose base is not CONT
+are rejected. Transfers append intact stack rows, preserving instance handles,
+counts, and the player's existing equipment indices; a missing player inventory
+leaves the source untouched. Reprocessing the emptied source adds no duplicates.
+The input-path regression covers selection, E activation, transfer, and removal
+of the empty-container prompt; focused transfer tests cover the safety gates.
+This is a basic take-all action, not a container browser: selective transfer,
+pickup handling, theft/ownership rules, item-added/removed script events,
+open/close presentation, and live save/reload validation remain open. No Vulkan
+device was available for the live smoke.
+Validation: inventory tests 14 passed / 1 ignored; interaction tests 20 passed
+with `BYRO_LOCK_ORDER_CHECK=1`; boot schedule tests 11 passed.
+
+**Corpse-loot progress (2026-09-16):** the same activation consumer accepts actors
+with the canonical `Dead` marker, excluding the player and living NPCs. Physical
+ragdoll targeting resolves `ActorColliderOwner` back to the actor inventory even
+when the body has fallen away from its placement bound. Collider-backed corpses
+no longer expose a second target at that old bound; intervening walls still block
+looting. Taking equipment clears the source's slots/weapon and emits one unequip
+event per inventory index (not one per occupied biped slot). Death reconciliation
+also clears a respawned weapon when a save overlays an empty corpse inventory.
+Regression coverage drives lethal damage through combat, then E activation and
+transfer; it also covers obstruction, equipment events, and post-overlay logical
+equipment reconciliation. Visible armor meshes are still spawn-time attachments:
+stripping/rebuilding corpse visuals and a full live save/reload smoke remain open.
+
+**Loot save-overlay validation (2026-09-16):** a headless regression now captures
+both pre-loot and post-loot worlds, encodes/decodes the real save format, restores
+resources, remaps stable FormIDs onto different entity IDs, applies the production
+mutable-column overlay, and runs corpse reconciliation. It verifies empty source
+inventories, surviving instance-pool handles, preserved player equipment indices,
+and no duplication on another activation. All 64 binary save tests pass with
+`BYRO_LOCK_ORDER_CHECK=1`. This validates the same-cell persistence machinery,
+not a Vulkan-driven load or cross-cell continuity. The existing stream snapshot
+stores actor position/package/seat state but not inventory/death state; retaining
+looted state across ordinary cell eviction and later revisits is still required.
+
+**Cross-game loot progress (2026-09-16):** container loading now resolves
+CNTO leveled-list references into terminal item stacks, preserves nested LVLO
+counts, and rejects cyclic, zero-count, and 100%-chance-none branches. It uses
+the live player's level when available, otherwise level 1. Selection remains
+deterministic (highest eligible entry, or all eligible Use All entries);
+random rolls, partial chance-none probabilities, and encounter-zone levels
+are still open. This is progress toward playability across all games, not
+closure of container interaction or the playable slice.
+
+`cargo run -p byroredux-plugin --example probe_container_loot -- <ESM>...`
+checks parsed container lists at levels 1, 10, and 50 without Vulkan. The
+installed base masters produced these results; stack counts sum the three
+levels, and missing item metadata includes specialized non-equipment records:
+
+| Game | Container list references | Resolved stacks | Leaves outside item catalog |
+|---|---:|---:|---:|
+| Oblivion | 2718 | 7947 | 540 |
+| Fallout 3 | 1018 | 8121 | 0 |
+| Fallout New Vegas | 4826 | 37059 | 0 |
+| Skyrim SE | 2409 | 8922 | 207 |
+| Fallout 4 | 1162 | 9020 | 0 |
+| Fallout 76 | 1004 | 63502 | 1068 |
+| Starfield | 737 | 21725 | 1677 |
+
+No output retained a known LVLI ID or a zero-count stack. Fallout 76 originally
+yielded only 105 stacks: its newer four-byte LVLO references were discarded by
+the legacy twelve-byte decoder. Game-specific LVLO + LVLV/LVIV scalar decoding
+reduced empty parsed lists from 9988 to 701 out of 10784. The decoder also reads
+the list-level LVCV chance-none scalar. Layouts were checked against
+[xEdit's FO76 definitions](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsFO76.pas).
+Global/curve overrides, per-entry chance-none and conditions remain unsupported;
+the higher yield proves restored data flow, not authored loot parity.
+
+Soul gems now populate the shared item catalog as well as their typed soul
+table. This restores inventory names, value, weight, icon/model and script
+metadata, and prevents NPC inventory expansion from dropping SLGM leaves.
+The two real-master probes recovered all 381 Oblivion and 216 Skyrim soul-gem
+stack occurrences. Enchanting interactions are not implied by this change.
+
+Oblivion CLOT records now enter the wearable item catalog with their authored
+value/weight, low-16-bit biped slots, and male/female worn models. Clothing uses
+the existing equipment contract with zero armor rating and durability. The
+real-master probe recovered all 1176 clothing stack occurrences, and a parser
+integration test verifies FormID/script remapping and both gender mesh paths.
+General clothing flags and enchanted clothing effects remain follow-up work;
+this does not establish visual equip correctness without a live run.
+
+New Vegas CCRD, CMNY, and IMOD now populate the item catalog and world-model
+index alongside their existing specialized tables. Cards/money retain authored
+value with zero weight; IMOD retains value/weight and uses the native Mods
+category. Their layouts follow [xEdit's FNV definitions](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsFNV.pas).
+This recovered the remaining 164 occurrences (CCRD 45, CMNY 27, IMOD 92), so
+every resolved leaf in the measured New Vegas container probe now has item
+metadata. Mod installation and Caravan rules/UI are still separate work.
+The full plugin suite passed 980 tests, with 27 ignored; the new integration
+test covers plugin remapping, value/weight, models, typed records, and inventory
+expansion.
+
+The probe now reports missing catalog leaves by record signature: Oblivion's
+540 comprise APPA (165) and LIGH (375). Skyrim's 207 comprise LIGH
+(54) and untracked IDs (153). Fallout 76's 1068 and Starfield's
+1677 are untracked IDs. These remain concrete follow-up work for usable loot.
+The raw-header follow-up identifies Skyrim's untracked `000E0CD5` as SCRL;
+Fallout 76's largest missing leaf is CNCY `0000000F` (576 stacks), followed
+by LGDI records. Starfield's five most frequent untracked leaves are LGDI.
+The probe now prints raw signatures for the five most frequent untracked IDs
+so unsupported dispatch can be distinguished from references absent on disk.
+Resolver tests (47 equipment tests including three new
+loot regressions) and all five container attachment tests passed. Live
+interaction/save-reload validation remains pending: this run had no Vulkan
+device.
+
+After the FO76 decoder change, the full plugin library suite passed with
+977 tests passing and 27 data-dependent tests ignored. The decoder tests pin
+companion-field scoping, malformed-entry isolation, finite/bounded scalar
+conversion, FormID remapping, and rejection of four-byte LVLO on other games.
 
 ### P4 — Authored objective and dialogue loop
 

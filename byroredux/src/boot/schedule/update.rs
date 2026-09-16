@@ -99,6 +99,12 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         crate::interaction::interaction_system,
         Access::new()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .reads::<byroredux_physics::ActorColliderOwner>()
+            .reads_resource::<crate::inventory::InventoryCatalog>()
+            .reads::<byroredux_scripting::SceneAliasCandidate>()
+            .reads::<byroredux_core::ecs::components::Inventory>()
             .reads_resource::<ActionState>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
@@ -120,6 +126,21 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::papyrus_demo::quest_advance::QuestAdvanceOnActivate>()
             .reads::<byroredux_scripting::papyrus_demo::mg07_door::MG07LabyrinthianDoor>()
             .writes::<byroredux_scripting::ActivateEvent>(),
+    );
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::inventory::container_loot_system,
+        Access::new()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .writes::<byroredux_core::ecs::components::EquipmentSlots>()
+            .writes::<byroredux_core::ecs::components::EquippedWeapon>()
+            .writes::<byroredux_scripting::EquipmentEventBatch>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<crate::inventory::InventoryCatalog>()
+            .reads::<byroredux_scripting::ActivateEvent>()
+            .reads::<byroredux_scripting::SceneAliasCandidate>()
+            .reads::<byroredux_core::ecs::components::Locked>()
+            .writes::<byroredux_core::ecs::components::Inventory>(),
     );
     // Combat follows the same producer-before-consumer event contract as
     // activation: physical Attack emits HitEvent, then health/death resolves
@@ -176,6 +197,9 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         crate::combat::combat_damage_system,
         Access::new()
+            .reads::<byroredux_core::ecs::components::Inventory>()
+            .writes::<byroredux_core::ecs::components::EquipmentSlots>()
+            .writes::<byroredux_core::ecs::components::EquippedWeapon>()
             .writes_resource::<crate::combat::CombatState>()
             .reads::<byroredux_scripting::HitEvent>()
             .reads::<byroredux_core::ecs::components::ActorVitals>()

@@ -6,7 +6,7 @@
 
 use super::common::{read_zstring, remap_fid, CommonNamedFields};
 use super::script_instance::ScriptInstanceData;
-use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// One entry in a container's inventory list.
@@ -168,6 +168,22 @@ pub fn parse_leveled_list(
     subs: &[SubRecord],
     remap: &Option<FormIdRemap>,
 ) -> LeveledList {
+    parse_leveled_list_for_game(form_id, subs, remap, GameKind::Skyrim)
+}
+
+/// FO76 form-version 174+ splits LVLO into a reference and float-valued
+/// LVLV (minimum level) / LVIV (quantity) companions. Keep this decoding
+/// game-gated: a truncated legacy LVLO must not become a valid reference.
+/// Source: xEdit dev-4.1.6 Core/wbDefinitionsFO76.pas, definitions of
+/// wbLeveledListEntryItem/NPC and wbLVLV/wbLVIV (lines 3918–3923).
+/// <https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsFO76.pas>
+/// Global/curve overrides and entry conditions still require runtime support.
+pub fn parse_leveled_list_for_game(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<FormIdRemap>,
+    game: GameKind,
+) -> LeveledList {
     let mut record = LeveledList {
         form_id,
         editor_id: String::new(),
@@ -175,11 +191,46 @@ pub fn parse_leveled_list(
         flags: 0,
         entries: Vec::new(),
     };
+    let mut split_entry = None;
     for sub in subs {
+        // Even a malformed LVLO begins a new entry; its companions must
+        // never overwrite the preceding valid entry.
+        if sub.sub_type == *b"LVLO" {
+            split_entry = None;
+        }
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
             b"LVLD" if !sub.data.is_empty() => record.chance_none = sub.data[0],
             b"LVLF" if !sub.data.is_empty() => record.flags = sub.data[0],
+            b"LVLO" if game == GameKind::Fallout76 && sub.data.len() == 4 => {
+                split_entry = Some(record.entries.len());
+                record.entries.push(LeveledEntry {
+                    level: 1,
+                    form_id: remap_fid(SubReader::new(&sub.data).u32_or_default(), remap),
+                    count: 1,
+                });
+            }
+            b"LVLV" | b"LVIV" if game == GameKind::Fallout76 && sub.data.len() == 4 => {
+                if let Some(entry_index) = split_entry {
+                    let value = SubReader::new(&sub.data).f32_or_default();
+                    if value.is_finite() {
+                        let entry = &mut record.entries[entry_index];
+                        if sub.sub_type == *b"LVLV" {
+                            // Preserve a fractional minimum as an integer gate:
+                            // level 5 must not satisfy an authored minimum 5.5.
+                            entry.level = value.ceil().clamp(0.0, u16::MAX as f32) as u16;
+                        } else {
+                            entry.count = value.clamp(0.0, u16::MAX as f32) as u16;
+                        }
+                    }
+                }
+            }
+            b"LVCV" if game == GameKind::Fallout76 && sub.data.len() == 4 => {
+                let value = SubReader::new(&sub.data).f32_or_default();
+                if value.is_finite() {
+                    record.chance_none = value.clamp(0.0, 100.0) as u8;
+                }
+            }
             // LVLO: level(u16) + pad(u16) + form_id(u32) + count(u16) + pad(u16)
             b"LVLO" if sub.data.len() >= 12 => {
                 let mut r = SubReader::new(&sub.data);
@@ -321,6 +372,59 @@ mod tests {
         assert_eq!(r.entries[1].level, 10);
         assert_eq!(r.entries[1].form_id, 0x200);
         assert_eq!(r.entries[1].count, 3);
+    }
+
+    #[test]
+    fn fo76_split_entries_decode_scoped_values_and_remap() {
+        let subs = vec![
+            sub(b"LVCV", &25.0f32.to_le_bytes()),
+            sub(b"LVIV", &99.0f32.to_le_bytes()), // orphan
+            sub(b"LVLO", &0x0100_1234u32.to_le_bytes()),
+            sub(b"LVLV", &5.5f32.to_le_bytes()),
+            sub(b"LVIV", &3.0f32.to_le_bytes()),
+            sub(b"LVLO", &0x100u32.to_le_bytes()),
+            sub(b"LVLO", &[0, 0, 0]), // malformed next entry
+            sub(b"LVIV", &99.0f32.to_le_bytes()),
+        ];
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let list = parse_leveled_list_for_game(1, &subs, &remap, GameKind::Fallout76);
+        assert_eq!(list.chance_none, 25);
+        assert_eq!(list.entries.len(), 2);
+        assert_eq!(list.entries[0].form_id, 0x0200_1234);
+        assert_eq!((list.entries[0].level, list.entries[0].count), (6, 3));
+        assert_eq!((list.entries[1].level, list.entries[1].count), (1, 1));
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Starfield,
+        ] {
+            assert!(parse_leveled_list_for_game(1, &subs, &remap, game)
+                .entries
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn fo76_split_entry_values_are_finite_bounded_and_legacy_entries_survive() {
+        let subs = vec![
+            sub(b"LVLO", &lvlo_bytes(10, 0x100, 2)),
+            sub(b"LVLO", &0x200u32.to_le_bytes()),
+            sub(b"LVIV", &f32::NAN.to_le_bytes()),
+            sub(b"LVLV", &f32::INFINITY.to_le_bytes()),
+            sub(b"LVLO", &0x300u32.to_le_bytes()),
+            sub(b"LVIV", &(-10.0f32).to_le_bytes()),
+            sub(b"LVLV", &1e20f32.to_le_bytes()),
+        ];
+        let list = parse_leveled_list_for_game(1, &subs, &None, GameKind::Fallout76);
+        assert_eq!(list.entries.len(), 3);
+        assert_eq!((list.entries[0].level, list.entries[0].count), (10, 2));
+        assert_eq!((list.entries[1].level, list.entries[1].count), (1, 1));
+        assert_eq!(
+            (list.entries[2].level, list.entries[2].count),
+            (u16::MAX, 0)
+        );
     }
 
     /// FNV-D4-01 / #2079 — every embedded FormID on `ContainerRecord`

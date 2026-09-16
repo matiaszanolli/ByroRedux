@@ -114,7 +114,12 @@ pub(super) fn dispatch_misc_gameplay_b_group(
         b"EFSH" => extract_records(reader, end, b"EFSH", &mut |fid, subs| {
             index.effect_shaders.insert(fid, parse_efsh(fid, subs));
         })?,
-        b"IMOD" => extract_records(reader, end, b"IMOD", &mut |fid, subs| {
+        b"IMOD" => extract_records_with_modl(reader, end, b"IMOD", statics, &mut |fid, subs| {
+            // FNV IMOD is itself the carried item. Its DATA has the same
+            // value(u32)/weight(f32) shape as MISC (xEdit FNV definition).
+            let mut item = parse_misc(fid, subs, game, &remap);
+            item.kind = ItemKind::Mod { was_junk: false };
+            index.items.insert(fid, item);
             index.item_mods.insert(fid, parse_imod(fid, subs));
         })?,
         b"ARMA" => extract_records(reader, end, b"ARMA", &mut |fid, subs| {

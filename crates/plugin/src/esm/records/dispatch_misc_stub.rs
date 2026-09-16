@@ -19,6 +19,7 @@ pub(super) fn dispatch_misc_stub_group(
     statics: &mut HashMap<u32, StaticObject>,
     index: &mut EsmIndex,
 ) -> Result<()> {
+    let remap = reader.get_form_id_remap();
     match label {
         // #810 / FNV-D2-NEW-03 — long-tail records that fell
         // through the catch-all skip. Bulk-dispatched here using
@@ -166,7 +167,12 @@ pub(super) fn dispatch_misc_stub_group(
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
         // FNV Caravan + Casino (6):
-        b"CCRD" => extract_records(reader, end, b"CCRD", &mut |fid, subs| {
+        b"CCRD" => extract_records_with_modl(reader, end, b"CCRD", statics, &mut |fid, subs| {
+            // xEdit wbDefinitionsFNV.pas: DATA is value(u32), with no
+            // weight field. The shared item decoder leaves weight at zero.
+            index
+                .items
+                .insert(fid, parse_misc(fid, subs, GameKind::Fallout3NV, &remap));
             index
                 .caravan_cards
                 .insert(fid, parse_minimal_esm_record(fid, subs));
@@ -186,7 +192,10 @@ pub(super) fn dispatch_misc_stub_group(
                 .poker_chips
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
-        b"CMNY" => extract_records(reader, end, b"CMNY", &mut |fid, subs| {
+        b"CMNY" => extract_records_with_modl(reader, end, b"CMNY", statics, &mut |fid, subs| {
+            index
+                .items
+                .insert(fid, parse_misc(fid, subs, GameKind::Fallout3NV, &remap));
             index
                 .caravan_money
                 .insert(fid, parse_minimal_esm_record(fid, subs));
@@ -220,6 +229,9 @@ pub(super) fn dispatch_misc_stub_group(
         })?,
         b"CLOT" => extract_records_with_modl(reader, end, b"CLOT", statics, &mut |fid, subs| {
             index
+                .items
+                .insert(fid, items::parse_clot(fid, subs, &remap));
+            index
                 .clothing
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
@@ -234,7 +246,23 @@ pub(super) fn dispatch_misc_stub_group(
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
         b"SLGM" => extract_records_with_modl(reader, end, b"SLGM", statics, &mut |fid, subs| {
-            index.soul_gems.insert(fid, parse_slgm(fid, subs));
+            let gem = parse_slgm(fid, subs);
+            // Inventory/equipment consumers resolve through `items`; keeping
+            // gems only in `soul_gems` made authored loot appear unknown and
+            // caused the NPC inventory resolver to discard it entirely.
+            // Soul state remains in the typed table for enchanting consumers.
+            let mut common = common::CommonItemFields::from_subs_with_remap(subs, &remap);
+            common.value = gem.value.max(0) as u32;
+            common.weight = gem.weight;
+            index.items.insert(
+                fid,
+                ItemRecord {
+                    form_id: fid,
+                    common,
+                    kind: ItemKind::Misc,
+                },
+            );
+            index.soul_gems.insert(fid, gem);
         })?,
         _ => unreachable!("dispatch_misc_stub_group: unexpected label {label:?}"),
     }

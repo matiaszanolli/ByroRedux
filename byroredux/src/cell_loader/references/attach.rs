@@ -212,6 +212,15 @@ pub(super) fn attach_container_inventory(
         return false;
     };
     let mut inventory = Inventory::new();
+    // Initial loading can precede player spawn. Level one is the bootstrap
+    // policy until a live player level exists; subsequent cell loads use it.
+    let player = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|player| player.0);
+    let level = player
+        .and_then(|entity| world.get::<byroredux_core::character::CharacterLevel>(entity))
+        .map_or(1, |level| level.level.max(1));
+    let mut resolved = Vec::new();
     for entry in &cont.contents {
         // Negative parsed counts are remove-from-inventory deltas, not
         // live state — clamp at runtime per `ItemStack::count` docs
@@ -221,9 +230,20 @@ pub(super) fn attach_container_inventory(
         if runtime_count == 0 {
             continue;
         }
-        inventory.push(ItemStack::new(entry.item_form_id, runtime_count));
+        resolved.clear();
+        byroredux_plugin::equip::expand_leveled_loot(
+            entry.item_form_id,
+            runtime_count,
+            level,
+            index,
+            &mut resolved,
+        );
+        for (form_id, count) in resolved.drain(..) {
+            inventory.push(ItemStack::new(form_id, count));
+        }
     }
     world.insert(entity, inventory);
+    crate::cell_loader::reference_state::restore(world, entity);
     true
 }
 
@@ -1018,6 +1038,53 @@ mod container_inventory_tests {
             .get::<Inventory>(entity)
             .expect("Inventory attached")
             .is_empty());
+    }
+
+    #[test]
+    fn container_loot_resolves_lists_using_live_player_level() {
+        use byroredux_core::character::CharacterLevel;
+        use byroredux_plugin::esm::records::container::{LeveledEntry, LeveledList};
+
+        let mut index = EsmIndex::default();
+        index
+            .containers
+            .insert(1, container_with_contents(1, &[(2, 3)]));
+        index.leveled_items.insert(
+            2,
+            LeveledList {
+                form_id: 2,
+                editor_id: String::new(),
+                chance_none: 0,
+                flags: 0,
+                entries: vec![
+                    LeveledEntry {
+                        level: 1,
+                        form_id: 10,
+                        count: 2,
+                    },
+                    LeveledEntry {
+                        level: 5,
+                        form_id: 20,
+                        count: 4,
+                    },
+                ],
+            },
+        );
+        let mut world = World::new();
+        let first = world.spawn();
+        attach_container_inventory(&mut world, first, 1, &index);
+        {
+            let inv = world.get::<Inventory>(first).unwrap();
+            assert_eq!((inv.items[0].base_form_id, inv.items[0].count), (10, 6));
+        }
+        let player = world.spawn();
+        world.insert(player, CharacterLevel { level: 5, xp: 0 });
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        let next = world.spawn();
+        attach_container_inventory(&mut world, next, 1, &index);
+        let inv = world.get::<Inventory>(next).unwrap();
+        assert_eq!(inv.items.len(), 1);
+        assert_eq!((inv.items[0].base_form_id, inv.items[0].count), (20, 12));
     }
 
     #[test]

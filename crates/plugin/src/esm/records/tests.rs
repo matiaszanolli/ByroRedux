@@ -272,6 +272,165 @@ fn extract_records_walks_one_group() {
     }
 }
 
+#[test]
+fn fnv_special_loot_records_reach_catalog_and_keep_their_typed_data() {
+    let mut bytes = tes4_with_hedr(1.34);
+    for (label, id, value, weight) in [
+        (b"CCRD", 0x0100_0010, 7u32, None),
+        (b"CMNY", 0x0100_0020, 100u32, None),
+        (b"IMOD", 0x0100_0030, 250u32, Some(0.5f32)),
+    ] {
+        let mut data = value.to_le_bytes().to_vec();
+        if let Some(weight) = weight {
+            data.extend_from_slice(&weight.to_le_bytes());
+        }
+        let subs = vec![
+            (b"EDID" as &[u8; 4], b"SpecialLoot\0".to_vec()),
+            (b"FULL", b"Named loot\0".to_vec()),
+            (b"MODL", b"clutter\\loot.nif\0".to_vec()),
+            (b"DATA", data),
+            (b"SCRI", 0x0100_1234u32.to_le_bytes().to_vec()),
+        ];
+        bytes.extend(wrap_group(label, &build_record(label, id, &subs)));
+    }
+    let index = parse_esm_with_load_order(&bytes, Some(FormIdRemap::regular(2, vec![0]))).unwrap();
+    for (id, value, weight) in [
+        (0x0200_0010, 7, 0.0),
+        (0x0200_0020, 100, 0.0),
+        (0x0200_0030, 250, 0.5),
+    ] {
+        let item = &index.items[&id];
+        assert_eq!(item.common.full_name, "Named loot");
+        assert_eq!((item.common.value, item.common.weight), (value, weight));
+        assert_eq!(item.common.script_form_id, 0x0200_1234);
+        assert!(index.cells.statics.contains_key(&id));
+        let mut out = Vec::new();
+        crate::equip::expand_leveled_form_id(id, 1, &index, &mut out);
+        assert_eq!(out, vec![id]);
+    }
+    assert!(matches!(
+        index.items[&0x0200_0030].kind,
+        ItemKind::Mod { was_junk: false }
+    ));
+    assert!(index.caravan_cards.contains_key(&0x0200_0010));
+    assert!(index.caravan_money.contains_key(&0x0200_0020));
+    assert_eq!(index.item_mods[&0x0200_0030].value, 250);
+}
+
+#[test]
+fn oblivion_clothing_enters_inventory_and_gender_aware_equipment() {
+    use crate::equip::{expand_leveled_form_id, resolve_armor_mesh, Gender};
+    let mut data = 20u32.to_le_bytes().to_vec();
+    data.extend_from_slice(&1.5f32.to_le_bytes());
+    let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", b"TestRobe\0".to_vec()),
+        (b"FULL", b"Linen Robe\0".to_vec()),
+        (b"DATA", data),
+        (b"BMDT", vec![0x0c, 0, 0x43, 0]),
+        (b"MODL", b"clothes\\robe\\m.nif\0".to_vec()),
+        (b"MOD3", b"clothes\\robe\\f.nif\0".to_vec()),
+        (b"SCRI", 0x0100_5678u32.to_le_bytes().to_vec()),
+    ];
+    let mut bytes = build_oblivion_tes4();
+    bytes.extend(wrap_group_obl(
+        b"CLOT",
+        &build_record_obl(b"CLOT", 0x0100_1234, &subs),
+    ));
+    let index = parse_esm_with_load_order(&bytes, Some(FormIdRemap::regular(2, vec![0]))).unwrap();
+    let id = 0x0200_1234;
+    let item = &index.items[&id];
+    assert_eq!(item.common.full_name, "Linen Robe");
+    assert_eq!((item.common.value, item.common.weight), (20, 1.5));
+    assert_eq!(item.common.script_form_id, 0x0200_5678);
+    match &item.kind {
+        ItemKind::Armor {
+            biped_flags,
+            slot_mask,
+            armor_rating_x100,
+            health,
+            dt,
+            dr,
+            ..
+        } => {
+            assert_eq!((*biped_flags, *slot_mask), (0x0c, 0x0c));
+            assert_eq!((*armor_rating_x100, *health, *dt, *dr), (0, 0, 0.0, 0));
+        }
+        _ => panic!("clothing must use the wearable item contract"),
+    }
+    assert_eq!(
+        resolve_armor_mesh(item, Gender::Male, 0, &index, index.game),
+        Some("clothes\\robe\\m.nif")
+    );
+    assert_eq!(
+        resolve_armor_mesh(item, Gender::Female, 0, &index, index.game),
+        Some("clothes\\robe\\f.nif")
+    );
+    let mut forms = Vec::new();
+    expand_leveled_form_id(id, 1, &index, &mut forms);
+    assert_eq!(forms, vec![id]);
+    assert!(index.clothing.contains_key(&id));
+    assert!(index.cells.statics.contains_key(&id));
+}
+
+#[test]
+fn soul_gems_reach_inventory_catalog_and_preserve_soul_data_across_eras() {
+    for oblivion in [true, false] {
+        let raw_id = 0x0100_1234;
+        let mut data = 75i32.to_le_bytes().to_vec();
+        data.extend_from_slice(&0.25f32.to_le_bytes());
+        let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"EDID", b"TestSoulGem\0".to_vec()),
+            (b"FULL", b"Filled Soul Gem\0".to_vec()),
+            (b"MODL", b"clutter\\soulgem.nif\0".to_vec()),
+            (b"ICON", b"icons\\soulgem.dds\0".to_vec()),
+            (b"SCRI", 0x0100_5678u32.to_le_bytes().to_vec()),
+            (b"DATA", data),
+            (b"SOUL", vec![2]),
+            (b"SLCP", vec![5]),
+        ];
+        let bytes = if oblivion {
+            let mut bytes = build_oblivion_tes4();
+            bytes.extend(wrap_group_obl(
+                b"SLGM",
+                &build_record_obl(b"SLGM", raw_id, &subs),
+            ));
+            bytes
+        } else {
+            let mut hedr = 1.71f32.to_le_bytes().to_vec();
+            hedr.extend_from_slice(&[0; 8]);
+            let mut bytes = build_record(b"TES4", 0, &[(b"HEDR", hedr)]);
+            bytes.extend(wrap_group(b"SLGM", &build_record(b"SLGM", raw_id, &subs)));
+            bytes
+        };
+        let index =
+            parse_esm_with_load_order(&bytes, Some(FormIdRemap::regular(2, vec![0]))).unwrap();
+        assert_eq!(
+            index.game,
+            if oblivion {
+                GameKind::Oblivion
+            } else {
+                GameKind::Skyrim
+            }
+        );
+        let id = 0x0200_1234;
+        let item = &index.items[&id];
+        assert_eq!(item.form_id, id);
+        assert_eq!(item.common.full_name, "Filled Soul Gem");
+        assert_eq!(item.common.model_path, "clutter\\soulgem.nif");
+        assert_eq!(item.common.icon_path, "icons\\soulgem.dds");
+        assert_eq!(item.common.value, 75);
+        assert_eq!(item.common.weight, 0.25);
+        assert_eq!(item.common.script_form_id, 0x0200_5678);
+        assert!(matches!(item.kind, ItemKind::Misc));
+        let gem = &index.soul_gems[&id];
+        assert_eq!((gem.current_soul, gem.soul_capacity), (2, 5));
+        assert!(index.cells.statics.contains_key(&id));
+        let mut inventory_forms = Vec::new();
+        crate::equip::expand_leveled_form_id(id, 1, &index, &mut inventory_forms);
+        assert_eq!(inventory_forms, vec![id]);
+    }
+}
+
 /// LTEX.GNAM is the authored bridge from a painted LAND layer to its GRAS
 /// record.  Keep the FormID remap at the parser boundary: carrying the raw
 /// master-local value here makes DLC terrain silently lose its vegetation.

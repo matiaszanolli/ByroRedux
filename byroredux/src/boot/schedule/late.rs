@@ -192,6 +192,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
         Stage::Late,
         crate::combat::reconcile_pending_dead_actors_system,
         Access::new()
+            .reads::<byroredux_core::ecs::components::Inventory>()
+            .writes::<byroredux_core::ecs::components::EquipmentSlots>()
+            .writes::<byroredux_core::ecs::components::EquippedWeapon>()
             .writes_resource::<crate::combat::PendingDeathReconciliations>()
             .reads::<byroredux_core::ecs::components::Dead>(),
     );

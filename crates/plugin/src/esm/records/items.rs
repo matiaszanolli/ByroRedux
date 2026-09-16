@@ -58,9 +58,9 @@ pub enum ItemKind {
     /// Fallout 4 / 76 MISC carrying component rows (`CVPA`). These are shown
     /// under Junk rather than the generic Misc inventory category.
     Junk,
-    /// Fallout 4 / 76 loose object-mod item. The inventory object is a MISC
-    /// record referenced by an OMOD's `LNAM`; the OMOD definition itself is
-    /// not the carried stack.
+    /// FNV IMOD or Fallout 4 / 76 loose object-mod item. On FO4/76 the
+    /// inventory object is a MISC record referenced by an OMOD's `LNAM`;
+    /// the OMOD definition itself is not the carried stack.
     Mod {
         /// Whether the underlying MISC record's own `CVPA` classified it
         /// `Junk` before `EsmIndex::classify_fallout_inventory_kinds`
@@ -782,6 +782,48 @@ pub fn parse_ammo(
     }
 }
 
+/// Oblivion CLOT: wearable clothing, with no armor rating or durability.
+/// BMDT is biped slots (u16), general flags (u8), padding (u8);
+/// DATA is value (u32), weight (f32). MODL/MOD3 are worn male/female meshes.
+/// Source: xEdit dev-4.1.6, wbDefinitionsTES4.pas CLOT definition.
+/// <https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES4.pas>
+pub fn parse_clot(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {
+    let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
+    let mut slots = 0;
+    let mut female_model_path = String::new();
+    for sub in subs {
+        match &sub.sub_type {
+            b"DATA" if sub.data.len() >= 8 => {
+                let mut reader = SubReader::new(&sub.data);
+                common.value = reader.u32_or_default();
+                common.weight = reader.f32_or_default();
+            }
+            b"BMDT" if sub.data.len() >= 4 => {
+                slots = SubReader::new(&sub.data).u16_or_default();
+            }
+            b"MOD3" => {
+                female_model_path = super::common::read_zstring(&sub.data);
+            }
+            _ => {}
+        }
+    }
+    ItemRecord {
+        form_id,
+        common,
+        kind: ItemKind::Armor {
+            biped_flags: u32::from(slots),
+            slot_mask: slots,
+            female_model_path,
+            dt: 0.0,
+            dr: 0,
+            health: 0,
+            armor_rating_x100: 0,
+            armor_type: None,
+            armatures: Vec::new(),
+        },
+    }
+}
+
 pub fn parse_misc(
     form_id: u32,
     subs: &[SubRecord],
@@ -1093,10 +1135,17 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes()); // health
         data.extend_from_slice(&1.5f32.to_le_bytes()); // weight
         data.push(0x2A); // one stray byte of what would be `damage`
-        assert_eq!(data.len(), 13, "test fixture must match the issue's worked case exactly");
+        assert_eq!(
+            data.len(),
+            13,
+            "test fixture must match the issue's worked case exactly"
+        );
 
         let item = parse_weap(0x100, &[sub(b"DATA", &data)], GameKind::Fallout3NV, &None);
-        assert_eq!(item.common.value, 0, "a short record must not partially decode");
+        assert_eq!(
+            item.common.value, 0,
+            "a short record must not partially decode"
+        );
         assert_eq!(item.common.weight, 0.0);
         match item.kind {
             ItemKind::Weapon {
@@ -1470,7 +1519,10 @@ mod tests {
             0x80, 0x3F,
         ];
         let item = parse_book(0x0000_1234, &[sub(b"DATA", &data)], GameKind::Skyrim, &None);
-        assert_eq!(item.common.value, 730, "value must read from offset 8, not 2");
+        assert_eq!(
+            item.common.value, 730,
+            "value must read from offset 8, not 2"
+        );
         assert!(
             (item.common.weight - 1.0).abs() < 1e-6,
             "weight must read from offset 12, not 6 (got {})",
@@ -1482,9 +1534,15 @@ mod tests {
                 flags,
                 skill_bonus,
             } => {
-                assert_eq!(teaches_skill, 0x0010_DDEC, "teaches must read from offset 4");
+                assert_eq!(
+                    teaches_skill, 0x0010_DDEC,
+                    "teaches must read from offset 4"
+                );
                 assert_eq!(flags, 4);
-                assert_eq!(skill_bonus, 0, "Skyrim's 16-byte layout has no skill_bonus byte");
+                assert_eq!(
+                    skill_bonus, 0,
+                    "Skyrim's 16-byte layout has no skill_bonus byte"
+                );
             }
             other => panic!("expected Book kind, got {other:?}"),
         }
