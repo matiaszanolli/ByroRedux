@@ -1893,9 +1893,9 @@ impl VulkanContext {
         // destructure above and that tail, so both come back here too.
         // `batches_scratch` is the same case but has one more use
         // (`record_geometry_pass`), so it is restored just after it.
-        self.frame_lights_scratch = frame_lights;
-        self.gpu_instances_scratch = gpu_instances;
-        self.previous_models_scratch = previous_models;
+        self.scratch.frame_lights_scratch = frame_lights;
+        self.scratch.gpu_instances_scratch = gpu_instances;
+        self.scratch.previous_models_scratch = previous_models;
 
         let cmd_t0 = Instant::now();
         self.record_geometry_pass(
@@ -1909,11 +1909,11 @@ impl VulkanContext {
         );
         // #3837 — last use of `batches`; hand it back before the three
         // `return Err` sites below (see the sibling note above).
-        self.batches_scratch = batches;
+        self.scratch.batches_scratch = batches;
         // #4193 — `instance_map`'s last reader is the water pass inside the
         // geometry pass (it resolves each plane's SSBO slot through it), so
         // it returns to its scratch alongside `batches`.
-        self.instance_map_scratch = instance_map;
+        self.scratch.instance_map_scratch = instance_map;
         // #3991 — the three tail `Err` sites each need `&mut self` for the
         // skin-state rollback, which cannot be taken inside their `unsafe`
         // blocks while the sync-object recovery holds a disjoint field borrow.
@@ -2232,7 +2232,7 @@ impl VulkanContext {
             &mut current_rigid_models,
         );
         current_rigid_models.clear();
-        self.current_rigid_models_scratch = current_rigid_models;
+        self.scratch.current_rigid_models_scratch = current_rigid_models;
         // #2486 / D5-01 — same shrink policy the two scratch Vecs get at the
         // bottom of this function. Both maps are `clear()`-then-`reserve(
         // draw_commands.len())`, so without this their capacity is the session
@@ -2247,7 +2247,7 @@ impl VulkanContext {
             512,
         );
         super::super::acceleration::shrink_map_scratch_if_oversized(
-            &mut self.current_rigid_models_scratch,
+            &mut self.scratch.current_rigid_models_scratch,
             working_rigid,
             512,
         );
@@ -2296,17 +2296,17 @@ impl VulkanContext {
         // its last use, so none of them is vacated across the error paths
         // between here and there. The shrink policy below is unchanged; it
         // just reads its working-set lengths from the fields now.
-        let working_instances = self.gpu_instances_scratch.len();
-        let working_lights = self.frame_lights_scratch.len();
-        let working_previous = self.previous_models_scratch.len();
-        let working_batches = self.batches_scratch.len();
+        let working_instances = self.scratch.gpu_instances_scratch.len();
+        let working_lights = self.scratch.frame_lights_scratch.len();
+        let working_previous = self.scratch.previous_models_scratch.len();
+        let working_batches = self.scratch.batches_scratch.len();
         super::super::acceleration::shrink_scratch_if_oversized(
-            &mut self.gpu_instances_scratch,
+            &mut self.scratch.gpu_instances_scratch,
             working_instances,
             512,
         );
         super::super::acceleration::shrink_scratch_if_oversized(
-            &mut self.frame_lights_scratch,
+            &mut self.scratch.frame_lights_scratch,
             working_lights,
             128,
         );
@@ -2315,12 +2315,12 @@ impl VulkanContext {
         // the session. It grows one entry per instance, so its own `len()` is
         // the working set.
         super::super::acceleration::shrink_scratch_if_oversized(
-            &mut self.previous_models_scratch,
+            &mut self.scratch.previous_models_scratch,
             working_previous,
             512,
         );
         super::super::acceleration::shrink_scratch_if_oversized(
-            &mut self.batches_scratch,
+            &mut self.scratch.batches_scratch,
             working_batches,
             512,
         );

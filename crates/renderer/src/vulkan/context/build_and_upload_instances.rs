@@ -91,16 +91,18 @@ impl VulkanContext {
         // amortization for one frame only — acceptable since the draw
         // has already failed. See issue #243.
         let ssbo_t0 = Instant::now();
-        let mut gpu_instances: Vec<GpuInstance> = std::mem::take(&mut self.gpu_instances_scratch);
+        let mut gpu_instances: Vec<GpuInstance> =
+            std::mem::take(&mut self.scratch.gpu_instances_scratch);
         gpu_instances.clear();
         gpu_instances.reserve(draw_commands.len() + 1); // +1 for optional UI quad
-        let mut previous_models = std::mem::take(&mut self.previous_models_scratch);
+        let mut previous_models = std::mem::take(&mut self.scratch.previous_models_scratch);
         previous_models.clear();
         previous_models.reserve(draw_commands.len() + 1);
-        let mut current_rigid_models = std::mem::take(&mut self.current_rigid_models_scratch);
+        let mut current_rigid_models =
+            std::mem::take(&mut self.scratch.current_rigid_models_scratch);
         current_rigid_models.clear();
         current_rigid_models.reserve(draw_commands.len());
-        let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);
+        let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.scratch.batches_scratch);
         batches.clear();
         // #3675 (PERF-D9-2026-08-30-02) — deliberately NOT
         // `reserve(draw_commands.len())`, unlike the three scratch
@@ -717,14 +719,15 @@ impl VulkanContext {
         // The scratch Vec lives on self so its capacity amortizes across
         // cell loads — `mem::take` moves it out so the fill can run while
         // `&mut self.scene_buffers` consumes the slice. #496.
-        let mut tile_scratch: Vec<GpuTerrainTile> = std::mem::take(&mut self.terrain_tile_scratch);
+        let mut tile_scratch: Vec<GpuTerrainTile> =
+            std::mem::take(&mut self.scratch.terrain_tile_scratch);
         if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
             let allocator = self.allocator.as_ref().expect("allocator missing");
             self.scene_buffers
                 .upload_terrain_tiles(&self.device, allocator, cmd, frame, &tile_scratch)
                 .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
         }
-        self.terrain_tile_scratch = tile_scratch;
+        self.scratch.terrain_tile_scratch = tile_scratch;
 
         // Build + upload indirect-draw commands for this frame (#309).
         // One `VkDrawIndexedIndirectCommand` per DrawBatch, laid out in
@@ -734,7 +737,7 @@ impl VulkanContext {
         // — the upload is ~N × 20 B for small N, and this keeps the
         // indirect path always ready when it is enabled.
         if !batches.is_empty() && self.device_caps.multi_draw_indirect_supported {
-            let indirect_scratch = &mut self.indirect_draws_scratch;
+            let indirect_scratch = &mut self.scratch.indirect_draws_scratch;
             indirect_scratch.clear();
             indirect_scratch.extend(batches.iter().map(|b| vk::DrawIndexedIndirectCommand {
                 index_count: b.index_count,
@@ -786,7 +789,7 @@ impl VulkanContext {
         // The subset check after the walk also lets us skip the
         // creation pass entirely when every seen key is cached —
         // the common steady-state path.
-        self.blend_seen_scratch.clear();
+        self.scratch.blend_seen_scratch.clear();
         for batch in &batches {
             if let PipelineKey::Blended {
                 src,
@@ -800,23 +803,29 @@ impl VulkanContext {
                 // for a regular opaque blend. Matches the gate in
                 // `get_or_create_blend_pipeline`. #869.
                 let wireframe = wireframe && self.device_caps.fill_mode_non_solid_supported;
-                self.blend_seen_scratch
-                    .insert((src, dst, wireframe, preserve_opaque_gbuffer));
+                self.scratch.blend_seen_scratch.insert((
+                    src,
+                    dst,
+                    wireframe,
+                    preserve_opaque_gbuffer,
+                ));
             }
         }
         // Skip the creation pass when every seen key is already cached
         // (the steady-state fast path — after warmup, no new pipeline
         // creation needed).
         let all_cached = self
+            .scratch
             .blend_seen_scratch
             .iter()
             .all(|key| self.blend_pipeline_cache.contains_key(key));
         if !all_cached {
             // Collect missing keys into a local Vec so we can release
-            // the borrow on `blend_seen_scratch` before calling
+            // the borrow on `scratch.blend_seen_scratch` before calling
             // `get_or_create_blend_pipeline` (which takes `&mut self`
             // and would re-borrow scratch via the cache field).
             let missing: Vec<(u8, u8, bool, bool)> = self
+                .scratch
                 .blend_seen_scratch
                 .iter()
                 .filter(|key| !self.blend_pipeline_cache.contains_key(key))
@@ -1104,11 +1113,18 @@ mod batches_scratch_reserve_tests {
         let module_start = full_src
             .find("mod batches_scratch_reserve_tests")
             .expect("this test module must still exist under its own name");
-        let src = &full_src[..module_start];
+        // Whitespace-collapsed: #3736 moved these under `self.scratch`, and a
+        // line-oriented needle would read as "the take is gone" the first time
+        // rustfmt reflows the statement rather than when it is deleted.
+        let flat = full_src[..module_start]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src = flat.as_str();
 
         assert!(
             src.contains(
-                "let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);"
+                "let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.scratch.batches_scratch);"
             ),
             "batches must still be taken from batches_scratch via mem::take (#243) — \
              the needle this test scopes its check around has moved or been renamed"

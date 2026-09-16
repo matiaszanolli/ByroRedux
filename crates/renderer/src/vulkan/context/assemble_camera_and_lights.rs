@@ -37,7 +37,7 @@ pub(super) fn pack_weather_surface(wetness: f32, snow: f32) -> u32 {
 pub(super) struct CameraAssemblyOutput {
     /// Lights for this frame, including any transported-combustion
     /// contribution — owned so it can survive back to `draw_frame`'s tail
-    /// (`self.frame_lights_scratch` amortization), which reads it well
+    /// (`self.scratch.frame_lights_scratch` amortization), which reads it well
     /// after `record_geometry_pass`. `draw_frame` re-derives the `lights`
     /// slice via `.as_slice()` wherever a later phase needs it, exactly as
     /// the pre-split code re-bound the same local.
@@ -83,7 +83,7 @@ impl VulkanContext {
         // scene lights. This is intentionally a renderer boundary: the app
         // submits canonical medium primitives, while only the renderer owns
         // the advected/cooled field that actually emits this delayed light.
-        let mut frame_lights = std::mem::take(&mut self.frame_lights_scratch);
+        let mut frame_lights = std::mem::take(&mut self.scratch.frame_lights_scratch);
         frame_lights.clear();
         frame_lights.extend_from_slice(lights);
         if let Some(ref mut volumetrics) = self.volumetrics {
@@ -238,7 +238,7 @@ impl VulkanContext {
                 // happens, so give the field its capacity back explicitly
                 // rather than dropping it and regrowing 0 -> MAX_LIGHTS next
                 // frame.
-                self.frame_lights_scratch = frame_lights;
+                self.scratch.frame_lights_scratch = frame_lights;
                 return Err(e);
             }
         };

@@ -250,6 +250,100 @@ struct TemporalHistory {
     suppress_rigid_history_next_build: bool,
 }
 
+/// The renderer's reusable per-frame CPU buffers.
+///
+/// #3736 — `VulkanContext`'s second field group. Each of these is
+/// `mem::take`n, filled, drained and put back every frame so its
+/// allocation survives; that shared lifecycle is what makes them a unit,
+/// and `fill_scratch_telemetry` already reported them as one. Like
+/// [`TemporalHistory`], none holds a device object, so this grouping is
+/// provably irrelevant to `teardown.rs`'s reverse-order destroy chain.
+struct ScratchBuffers {
+    /// Per-frame scratch buffer for the GPU instance SSBO payload. Held on
+    /// the context so that capacity amortizes across frames instead of
+    /// heap-allocating fresh each `draw_frame`. Cleared + reserved at the
+    /// top of draw_frame. See issue #243.
+    gpu_instances_scratch: Vec<scene_buffer::GpuInstance>,
+    /// Canonical scene lights plus delayed transported-combustion lights for
+    /// the current frame. The input slice belongs to the application, so the
+    /// renderer needs one reusable merge buffer before cluster upload.
+    frame_lights_scratch: Vec<scene_buffer::GpuLight>,
+    /// Current-frame map reused while assembling the next submitted history.
+    current_rigid_models_scratch: FxHashMap<u32, [f32; 16]>,
+    /// Previous transforms realigned to this frame's sorted instance indices.
+    previous_models_scratch: Vec<scene_buffer::GpuPreviousModel>,
+    /// Per-frame scratch buffer for draw batch metadata. Same lifecycle
+    /// as `gpu_instances_scratch`. See issue #243.
+    batches_scratch: Vec<draw::DrawBatch>,
+    /// Per-frame `draw_idx → ssbo_idx` map filled by `build_instance_map`.
+    /// Taken in `begin_frame_recording`, restored in `draw_frame` once the
+    /// TLAS and SSBO builders have read it. #4193 / #243.
+    instance_map_scratch: Vec<Option<u32>>,
+    /// Per-frame scratch buffer for indirect draw commands. Replaces the
+    /// per-frame `Vec::collect()` allocation that was untracked by the
+    /// scratch-buffer pattern.
+    indirect_draws_scratch: Vec<ash::vk::DrawIndexedIndirectCommand>,
+    /// Per-frame scratch for the skin-compute dispatch walker
+    /// (#1133 / PERF-D7-NEW-01). Pre-fix the skinned hot path
+    /// allocated 3 fresh containers per frame; on Prospector that's
+    /// ~9 reallocs × 34 NPCs × 60 fps ≈ 18 K reallocs/s. Same
+    /// `mem::take` → `clear()` → `mem::replace` pattern as the
+    /// instance / batch / indirect scratches above.
+    ///
+    /// #3045 / REN-D9-01 — `FxHashSet`, not the std default. #2923 converted
+    /// the rest of the skinning path and stopped one field short of this one:
+    /// `insert` runs once per skinned draw command per frame, which is the
+    /// per-frame per-entity keyspace SipHash-1-3 is the wrong default for.
+    /// Pinned by `pose_dirty_crosses_the_crate_boundary_without_siphash`.
+    skin_dispatch_seen_scratch: FxHashSet<byroredux_core::ecs::storage::EntityId>,
+    /// Sibling of `skin_dispatch_seen_scratch` — entity → SkinPushConstants
+    /// + buffer handles for the per-frame compute dispatch.
+    skin_dispatches_scratch: Vec<(
+        byroredux_core::ecs::storage::EntityId,
+        super::skin_compute::SkinPushConstants,
+        vk::Buffer,
+        u32,
+        u32,
+    )>,
+    /// Sibling of `skin_dispatches_scratch` — first-sight BLAS BUILD
+    /// queue for entities that don't yet have a SkinSlot or skinned
+    /// BLAS. Drained by the batched on-cmd builder each frame.
+    skin_first_sight_builds_scratch: Vec<(
+        byroredux_core::ecs::storage::EntityId,
+        vk::Buffer,
+        u32,
+        vk::Buffer,
+        u32,
+    )>,
+    /// Sibling of `skin_first_sight_builds_scratch` — entities whose
+    /// skinned BLAS was just BUILT (not refit) on `cmd` this frame
+    /// (D6-05 / #1812). The refit loop right below the build batch
+    /// skips these entirely: a full UPDATE against the identical
+    /// vertex data the BUILD consumed moments earlier in the same
+    /// command buffer is pure wasted work, not a correctness
+    /// requirement — `accel`'s BLAS entry is already complete after
+    /// the BUILD.
+    ///
+    /// #3045 SIBLING — `FxHashSet` for the same reason as
+    /// `skin_dispatch_seen_scratch` above: the refit loop probes it once per
+    /// skinned entity per frame. Same cluster, same keyspace, same miss.
+    skin_built_this_frame_scratch: FxHashSet<byroredux_core::ecs::storage::EntityId>,
+    /// Per-frame scratch — the set of distinct blend cache keys seen in
+    /// this frame's batch list. Used by the pre-pop walk
+    /// in `draw_frame` to skip the full per-batch `contains_key` sweep
+    /// when every seen key is already in `blend_pipeline_cache`. Cleared
+    /// at the top of the walk; capacity persists across frames for
+    /// amortized churn-free reuse. #1259 / PERF-D3-NEW-04.
+    /// #3061 — `FxHashSet`, the per-frame half of `blend_pipeline_cache`.
+    blend_seen_scratch: FxHashSet<(u8, u8, bool, bool)>,
+    /// Persistent scratch buffer reused across frames to stage the live
+    /// high-water `GpuTerrainTile` prefix before upload. Same amortization
+    /// pattern as `gpu_instances_scratch`; fresh `Vec::collect()` every
+    /// dirty frame was 32 KB × MAX_FRAMES_IN_FLIGHT of heap churn per cell
+    /// transition. See #496 / #3664.
+    terrain_tile_scratch: Vec<scene_buffer::GpuTerrainTile>,
+}
+
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
@@ -361,15 +455,11 @@ pub struct VulkanContext {
     // rest of the context. Documented as a group per REN-D7-NEW-06 so
     // adding a new scratch Vec to the cluster is an obvious "matches
     // pattern" review.
-    /// Per-frame scratch buffer for the GPU instance SSBO payload. Held on
-    /// the context so that capacity amortizes across frames instead of
-    /// heap-allocating fresh each `draw_frame`. Cleared + reserved at the
-    /// top of draw_frame. See issue #243.
-    gpu_instances_scratch: Vec<scene_buffer::GpuInstance>,
-    /// Canonical scene lights plus delayed transported-combustion lights for
-    /// the current frame. The input slice belongs to the application, so the
-    /// renderer needs one reusable merge buffer before cluster upload.
-    frame_lights_scratch: Vec<scene_buffer::GpuLight>,
+    /// Per-frame CPU scratch whose capacity amortises across frames
+    /// (#3736). `fill_scratch_telemetry` already enumerated these as one
+    /// family — a row per scratch — and none owns a Vulkan handle, so the
+    /// grouping cannot affect teardown order.
+    scratch: ScratchBuffers,
     /// Previous frame's caustic scene key — the light rig plus every
     /// caustic-source instance's placement, folded to a `u64` (#2468 /
     /// REN-D14-2026-08-07-01). The caustic accumulator's parked-camera
@@ -379,21 +469,6 @@ pub struct VulkanContext {
     /// player standing still while a torch-carrying NPC walks past keeps
     /// a ~3 s caustic ghost of the old pool.
     prev_caustic_scene_key: u64,
-    /// Current-frame map reused while assembling the next submitted history.
-    current_rigid_models_scratch: FxHashMap<u32, [f32; 16]>,
-    /// Previous transforms realigned to this frame's sorted instance indices.
-    previous_models_scratch: Vec<scene_buffer::GpuPreviousModel>,
-    /// Per-frame scratch buffer for draw batch metadata. Same lifecycle
-    /// as `gpu_instances_scratch`. See issue #243.
-    batches_scratch: Vec<draw::DrawBatch>,
-    /// Per-frame `draw_idx → ssbo_idx` map filled by `build_instance_map`.
-    /// Taken in `begin_frame_recording`, restored in `draw_frame` once the
-    /// TLAS and SSBO builders have read it. #4193 / #243.
-    instance_map_scratch: Vec<Option<u32>>,
-    /// Per-frame scratch buffer for indirect draw commands. Replaces the
-    /// per-frame `Vec::collect()` allocation that was untracked by the
-    /// scratch-buffer pattern.
-    indirect_draws_scratch: Vec<ash::vk::DrawIndexedIndirectCommand>,
     /// Set each frame right after `upload_indirect_draws` (`true` on
     /// success or a hash-matched skip, `false` on upload failure).
     /// `record_geometry_pass` ANDs this into `use_indirect` so a failed
@@ -403,51 +478,6 @@ pub struct VulkanContext {
     /// GPU page-fault / TDR class, not a misrender. #2504 /
     /// D12-2026-08-07-02.
     indirect_upload_ok: bool,
-    /// Per-frame scratch for the skin-compute dispatch walker
-    /// (#1133 / PERF-D7-NEW-01). Pre-fix the skinned hot path
-    /// allocated 3 fresh containers per frame; on Prospector that's
-    /// ~9 reallocs × 34 NPCs × 60 fps ≈ 18 K reallocs/s. Same
-    /// `mem::take` → `clear()` → `mem::replace` pattern as the
-    /// instance / batch / indirect scratches above.
-    ///
-    /// #3045 / REN-D9-01 — `FxHashSet`, not the std default. #2923 converted
-    /// the rest of the skinning path and stopped one field short of this one:
-    /// `insert` runs once per skinned draw command per frame, which is the
-    /// per-frame per-entity keyspace SipHash-1-3 is the wrong default for.
-    /// Pinned by `pose_dirty_crosses_the_crate_boundary_without_siphash`.
-    skin_dispatch_seen_scratch: FxHashSet<byroredux_core::ecs::storage::EntityId>,
-    /// Sibling of `skin_dispatch_seen_scratch` — entity → SkinPushConstants
-    /// + buffer handles for the per-frame compute dispatch.
-    skin_dispatches_scratch: Vec<(
-        byroredux_core::ecs::storage::EntityId,
-        super::skin_compute::SkinPushConstants,
-        vk::Buffer,
-        u32,
-        u32,
-    )>,
-    /// Sibling of `skin_dispatches_scratch` — first-sight BLAS BUILD
-    /// queue for entities that don't yet have a SkinSlot or skinned
-    /// BLAS. Drained by the batched on-cmd builder each frame.
-    skin_first_sight_builds_scratch: Vec<(
-        byroredux_core::ecs::storage::EntityId,
-        vk::Buffer,
-        u32,
-        vk::Buffer,
-        u32,
-    )>,
-    /// Sibling of `skin_first_sight_builds_scratch` — entities whose
-    /// skinned BLAS was just BUILT (not refit) on `cmd` this frame
-    /// (D6-05 / #1812). The refit loop right below the build batch
-    /// skips these entirely: a full UPDATE against the identical
-    /// vertex data the BUILD consumed moments earlier in the same
-    /// command buffer is pure wasted work, not a correctness
-    /// requirement — `accel`'s BLAS entry is already complete after
-    /// the BUILD.
-    ///
-    /// #3045 SIBLING — `FxHashSet` for the same reason as
-    /// `skin_dispatch_seen_scratch` above: the refit loop probes it once per
-    /// skinned entity per frame. Same cluster, same keyspace, same miss.
-    skin_built_this_frame_scratch: FxHashSet<byroredux_core::ecs::storage::EntityId>,
 
     // ── Screenshot capture ──────────────────────────────────────────
     screenshot_requested: Arc<AtomicBool>,
@@ -1012,14 +1042,6 @@ pub struct VulkanContext {
     /// tiny bounded domain, so there is nothing for SipHash's HashDoS
     /// resistance to protect.
     blend_pipeline_cache: FxHashMap<(u8, u8, bool, bool), vk::Pipeline>,
-    /// Per-frame scratch — the set of distinct blend cache keys seen in
-    /// this frame's batch list. Used by the pre-pop walk
-    /// in `draw_frame` to skip the full per-batch `contains_key` sweep
-    /// when every seen key is already in `blend_pipeline_cache`. Cleared
-    /// at the top of the walk; capacity persists across frames for
-    /// amortized churn-free reuse. #1259 / PERF-D3-NEW-04.
-    /// #3061 — `FxHashSet`, the per-frame half of `blend_pipeline_cache`.
-    blend_seen_scratch: FxHashSet<(u8, u8, bool, bool)>,
     pipeline_layout: vk::PipelineLayout,
     /// Mesh handle for the fullscreen quad used by UI overlay.
     pub ui_quad_handle: Option<u32>,
@@ -1047,12 +1069,6 @@ pub struct VulkanContext {
     /// cell transition so a single DEVICE_LOCAL allocation is the correct
     /// shape.
     terrain_tiles_dirty: bool,
-    /// Persistent scratch buffer reused across frames to stage the live
-    /// high-water `GpuTerrainTile` prefix before upload. Same amortization
-    /// pattern as `gpu_instances_scratch`; fresh `Vec::collect()` every
-    /// dirty frame was 32 KB × MAX_FRAMES_IN_FLIGHT of heap churn per cell
-    /// transition. See #496 / #3664.
-    terrain_tile_scratch: Vec<scene_buffer::GpuTerrainTile>,
     render_pass: vk::RenderPass,
     swapchain_state: SwapchainState,
 

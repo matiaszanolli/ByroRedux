@@ -62,26 +62,26 @@ impl VulkanContext {
         rows.clear();
         rows.push(ScratchRow {
             name: "gpu_instances_scratch",
-            len: self.gpu_instances_scratch.len(),
-            capacity: self.gpu_instances_scratch.capacity(),
+            len: self.scratch.gpu_instances_scratch.len(),
+            capacity: self.scratch.gpu_instances_scratch.capacity(),
             elem_size_bytes: size_of::<scene_buffer::GpuInstance>(),
         });
         rows.push(ScratchRow {
             name: "frame_lights_scratch",
-            len: self.frame_lights_scratch.len(),
-            capacity: self.frame_lights_scratch.capacity(),
+            len: self.scratch.frame_lights_scratch.len(),
+            capacity: self.scratch.frame_lights_scratch.capacity(),
             elem_size_bytes: size_of::<scene_buffer::GpuLight>(),
         });
         rows.push(ScratchRow {
             name: "previous_models_scratch",
-            len: self.previous_models_scratch.len(),
-            capacity: self.previous_models_scratch.capacity(),
+            len: self.scratch.previous_models_scratch.len(),
+            capacity: self.scratch.previous_models_scratch.capacity(),
             elem_size_bytes: size_of::<scene_buffer::GpuPreviousModel>(),
         });
         rows.push(ScratchRow {
             name: "batches_scratch",
-            len: self.batches_scratch.len(),
-            capacity: self.batches_scratch.capacity(),
+            len: self.scratch.batches_scratch.len(),
+            capacity: self.scratch.batches_scratch.capacity(),
             elem_size_bytes: size_of::<draw::DrawBatch>(),
         });
         // #2486 / D5-01 — the two rigid-motion history maps are members of
@@ -94,7 +94,7 @@ impl VulkanContext {
             ("previous_rigid_models", &self.history.previous_rigid_models),
             (
                 "current_rigid_models_scratch",
-                &self.current_rigid_models_scratch,
+                &self.scratch.current_rigid_models_scratch,
             ),
         ] {
             rows.push(ScratchRow {
@@ -106,14 +106,14 @@ impl VulkanContext {
         }
         rows.push(ScratchRow {
             name: "indirect_draws_scratch",
-            len: self.indirect_draws_scratch.len(),
-            capacity: self.indirect_draws_scratch.capacity(),
+            len: self.scratch.indirect_draws_scratch.len(),
+            capacity: self.scratch.indirect_draws_scratch.capacity(),
             elem_size_bytes: size_of::<vk::DrawIndexedIndirectCommand>(),
         });
         rows.push(ScratchRow {
             name: "terrain_tile_scratch",
-            len: self.terrain_tile_scratch.len(),
-            capacity: self.terrain_tile_scratch.capacity(),
+            len: self.scratch.terrain_tile_scratch.len(),
+            capacity: self.scratch.terrain_tile_scratch.capacity(),
             elem_size_bytes: size_of::<scene_buffer::GpuTerrainTile>(),
         });
         // #1133 — skin-path scratches. The HashSet's heap footprint
@@ -121,14 +121,14 @@ impl VulkanContext {
         // its `len` against `capacity` for what we can see.
         rows.push(ScratchRow {
             name: "skin_dispatch_seen_scratch",
-            len: self.skin_dispatch_seen_scratch.len(),
-            capacity: self.skin_dispatch_seen_scratch.capacity(),
+            len: self.scratch.skin_dispatch_seen_scratch.len(),
+            capacity: self.scratch.skin_dispatch_seen_scratch.capacity(),
             elem_size_bytes: size_of::<byroredux_core::ecs::storage::EntityId>(),
         });
         rows.push(ScratchRow {
             name: "skin_dispatches_scratch",
-            len: self.skin_dispatches_scratch.len(),
-            capacity: self.skin_dispatches_scratch.capacity(),
+            len: self.scratch.skin_dispatches_scratch.len(),
+            capacity: self.scratch.skin_dispatches_scratch.capacity(),
             elem_size_bytes: size_of::<(
                 byroredux_core::ecs::storage::EntityId,
                 super::super::skin_compute::SkinPushConstants,
@@ -139,8 +139,8 @@ impl VulkanContext {
         });
         rows.push(ScratchRow {
             name: "skin_first_sight_builds_scratch",
-            len: self.skin_first_sight_builds_scratch.len(),
-            capacity: self.skin_first_sight_builds_scratch.capacity(),
+            len: self.scratch.skin_first_sight_builds_scratch.len(),
+            capacity: self.scratch.skin_first_sight_builds_scratch.capacity(),
             elem_size_bytes: size_of::<(
                 byroredux_core::ecs::storage::EntityId,
                 vk::Buffer,
@@ -151,8 +151,8 @@ impl VulkanContext {
         });
         rows.push(ScratchRow {
             name: "skin_built_this_frame_scratch",
-            len: self.skin_built_this_frame_scratch.len(),
-            capacity: self.skin_built_this_frame_scratch.capacity(),
+            len: self.scratch.skin_built_this_frame_scratch.len(),
+            capacity: self.scratch.skin_built_this_frame_scratch.capacity(),
             elem_size_bytes: size_of::<byroredux_core::ecs::storage::EntityId>(),
         });
         if let Some(accel) = &self.accel_manager {
@@ -204,8 +204,8 @@ impl VulkanContext {
         // len/capacity-only caveat as the other hash-container rows above.
         rows.push(ScratchRow {
             name: "blend_seen_scratch",
-            len: self.blend_seen_scratch.len(),
-            capacity: self.blend_seen_scratch.capacity(),
+            len: self.scratch.blend_seen_scratch.len(),
+            capacity: self.scratch.blend_seen_scratch.capacity(),
             elem_size_bytes: size_of::<(u8, u8, bool, bool)>(),
         });
         if let Some(water) = &self.water {

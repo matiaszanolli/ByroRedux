@@ -218,9 +218,9 @@ impl VulkanContext {
                     // skinned block (line ~911). Matches the pattern
                     // documented at `context/mod.rs::Per-frame scratch
                     // cluster`.
-                    let mut seen = std::mem::take(&mut self.skin_dispatch_seen_scratch);
+                    let mut seen = std::mem::take(&mut self.scratch.skin_dispatch_seen_scratch);
                     seen.clear();
-                    let mut dispatches = std::mem::take(&mut self.skin_dispatches_scratch);
+                    let mut dispatches = std::mem::take(&mut self.scratch.skin_dispatches_scratch);
                     dispatches.clear();
                     for dc in draw_commands.iter() {
                         if dc.bone_offset == 0 {
@@ -335,13 +335,13 @@ impl VulkanContext {
                     // #1133 — sibling scratch; same lifetime as `seen` /
                     // `dispatches`. Replaced back into self at end of block.
                     let mut first_sight_builds =
-                        std::mem::take(&mut self.skin_first_sight_builds_scratch);
+                        std::mem::take(&mut self.scratch.skin_first_sight_builds_scratch);
                     first_sight_builds.clear();
                     // D6-05 / #1812 — sibling scratch tracking entities
                     // whose BLAS gets a fresh BUILD this frame, so the
                     // refit loop below can skip the redundant UPDATE.
                     let mut built_this_frame =
-                        std::mem::take(&mut self.skin_built_this_frame_scratch);
+                        std::mem::take(&mut self.scratch.skin_built_this_frame_scratch);
                     built_this_frame.clear();
                     for &(entity_id, _push, idx_buffer, idx_count, vertex_count) in &dispatches {
                         let mut needs_slot = !self.skin_slots.contains_key(&entity_id);
@@ -838,10 +838,10 @@ impl VulkanContext {
                     // #1133 — return the skin-path scratches to `self`.
                     // Same shape as the gpu_instances / batches replace
                     // at the end of build_render_data → SSBO upload.
-                    self.skin_dispatch_seen_scratch = seen;
-                    self.skin_dispatches_scratch = dispatches;
-                    self.skin_first_sight_builds_scratch = first_sight_builds;
-                    self.skin_built_this_frame_scratch = built_this_frame;
+                    self.scratch.skin_dispatch_seen_scratch = seen;
+                    self.scratch.skin_dispatches_scratch = dispatches;
+                    self.scratch.skin_first_sight_builds_scratch = first_sight_builds;
+                    self.scratch.skin_built_this_frame_scratch = built_this_frame;
                 }
 
                 // #2494 — hoisted out of the `(global_vert_buf, bone_buffer)`
@@ -1288,7 +1288,9 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
         // The guard's body ends right after the scratch-cluster restore;
         // its closing brace must appear before the eviction drain starts.
         let guard_close_pos = src
-            .find("self.skin_built_this_frame_scratch = built_this_frame;\n                }")
+            .find(
+                "self.scratch.skin_built_this_frame_scratch = built_this_frame;\n                }",
+            )
             .expect(
                 "the (input_buffer, bone_buf) guard must close immediately after the \
                  scratch-cluster restore, with no eviction code still nested inside it (#2494)",

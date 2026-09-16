@@ -148,7 +148,7 @@ impl VulkanContext {
         let tlas_t0 = Instant::now();
         // #4193 — reuse the persistent scratch (#243); `draw_frame` hands it
         // back once TLAS and SSBO building have read it.
-        let mut instance_map = std::mem::take(&mut self.instance_map_scratch);
+        let mut instance_map = std::mem::take(&mut self.scratch.instance_map_scratch);
         super::super::acceleration::build_instance_map(
             &mut instance_map,
             draw_commands.len(),
