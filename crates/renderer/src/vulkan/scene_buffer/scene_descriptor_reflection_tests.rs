@@ -150,3 +150,37 @@ fn dropping_instance_binding_fails_with_diagnostic() {
         "diagnostic must name the offending binding (4): {msg}",
     );
 }
+
+/// #4298 — `shader-pipeline.md`'s Set-1 rows must list exactly the bindings
+/// `build_scene_descriptor_bindings` declares, with the same descriptor
+/// type. Binding 20 (the SKYAL cubemap) went undocumented for a release
+/// because the existing doc pins (#4019) check only the "Used by" cells;
+/// a `PARTIALLY_BOUND` binding missing from the table is exactly the one a
+/// reader rebuilding the scene set would forget to write.
+#[test]
+fn shader_pipeline_doc_lists_every_scene_set_binding() {
+    const DOC: &str = include_str!("../../../../../docs/engine/shader-pipeline.md");
+    let documented: Vec<(u32, String)> = DOC
+        .lines()
+        .filter_map(|line| line.strip_prefix("| 1 | "))
+        .filter_map(|rest| {
+            let (binding, rest) = rest.split_once(" | ")?;
+            let binding: u32 = binding.parse().ok()?;
+            let ty = rest.split('`').nth(1)?.to_string();
+            Some((binding, ty))
+        })
+        .collect();
+    let declared: Vec<(u32, String)> = build_scene_descriptor_bindings(true)
+        .iter()
+        .map(|b| {
+            let ty = format!("{:?}", b.descriptor_type);
+            (b.binding, ty.trim_end_matches("_KHR").to_string())
+        })
+        .collect();
+    assert_eq!(
+        documented, declared,
+        "shader-pipeline.md's Set-1 rows (left) no longer match the scene \
+         descriptor layout (right) — add or correct the row in the same \
+         change that touches `build_scene_descriptor_bindings` (#4298)"
+    );
+}

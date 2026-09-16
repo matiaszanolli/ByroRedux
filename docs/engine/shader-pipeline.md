@@ -115,6 +115,17 @@ it where that is not `draw_frame` itself.
                            triangle.frag fragment shader AND
                            volumetrics_inject (same per-frame buffers,
                            #977eb95a)
+5a sky_cube.comp        ─  SKYAL sky bake (`SkyCubePipeline::record_bake`, in
+   sky_prefilter.comp       `build_and_upload_instances`, only when the
+   sky_irradiance.comp      pipeline exists): bakes this slot's cubemap from
+                           the same parameters composite draws its background
+                           with, then GENERAL → SHADER_READ_ONLY_OPTIMAL,
+                           then the GGX prefilter mips and the SH irradiance
+                           projection. Owns its own layout transitions.
+                           Recorded before step 6 because the main pass
+                           samples it (Set 1 bindings 20/21); its
+                           `exteriorSkyTint.w` ready flag is what makes the
+                           no-bake case safe to skip.
 5b [Barrier]            ─  HOST / HOST_WRITE → VERTEX_SHADER |
                            FRAGMENT_SHADER | COMPUTE_SHADER | DRAW_INDIRECT /
                            SHADER_READ | SHADER_WRITE | UNIFORM_READ |
@@ -529,6 +540,8 @@ pipeline. Defined in
 | 1 | 17 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (previous frame) | triangle (Session-49 ReSTIR) |
 | 1 | 18 | `STORAGE_BUFFER` | Previous-frame rigid instance model matrices (rigid motion vectors). Entries align **index-for-index** with binding 4's current-frame `GpuInstance[]` after sorting/batching, so `gl_InstanceIndex` addresses both without depending on last frame's draw order | triangle (vertex stage) |
 | 1 | 19 | `STORAGE_BUFFER` (`coherent`) | `SelectedRayProbeBuffer` — the debug ray-probe readback for the currently-selected pixel: control (generation, state, pixel xy), ids (light index, mask, hit instance, flags), origin+tMin, direction+tMax, hit distance + averaged visibility | triangle (debug ray-probe path) |
+| 1 | 20 | `COMBINED_IMAGE_SAMPLER` | SKYAL baked sky cubemap (`samplerCube skyCube`, GGX-prefiltered mip chain), one per frame in flight, written by `write_sky_cube`. `PARTIALLY_BOUND` and never written when `SkyCubePipeline` fails to initialise, so every read goes through `exteriorSkyRadianceOr`, gated on `exteriorSkyTint.w` | triangle (incl. `raytrace.glsl` / `lighting.glsl`), water |
+| 1 | 21 | `STORAGE_BUFFER` | `SkyDiffuseBuffer` — the baked sky's 9 spherical-harmonic E/π coefficients (`sky_irradiance.comp`). Same optional ownership and `exteriorSkyTint.w` gate as binding 20, read through `exteriorSkyDiffuseOr` | triangle, groundcover_blade |
 | 2 | 0 | `STORAGE_IMAGE` (`R32_UINT`) | Water caustic accumulator | water.frag (atomic add) |
 | 2 | 1 | `STORAGE_BUFFER` (std430, growable) | Unsized `GpuWaterParams[]` table, 368 B per active water draw | water.vert, water.frag |
 
