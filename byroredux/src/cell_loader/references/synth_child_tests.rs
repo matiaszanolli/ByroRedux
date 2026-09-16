@@ -337,3 +337,138 @@ fn is_primary_synth_gates_every_identity_stamp_call_site() {
          synth_child) — a mismatch means some call site lost its gate",
     );
 }
+
+/// #4112 / #4331 — both logical-actor-stub paths spawned an identity and
+/// stopped there, so a stub actor's base SCRI/VMAD and the ACHR's own VMAD
+/// were dropped for as long as it stayed a stub. The fix pairs the two steps
+/// in `spawn_logical_quest_reference_with_scripts`, which is what this pins:
+/// the identity AND the script, from one call.
+///
+/// The fixture uses an ACTI base with a SCRI/SCPT rather than an NPC_: the
+/// helper is base-record-agnostic (it forwards `base_form_id` straight to
+/// `attach_script_for_refr`), and this is the smallest base record that can
+/// carry an attachable script. Driving either real caller needs a
+/// `VulkanContext` and game data, out of `cargo test` scope — the call sites
+/// themselves are pinned by source scans in `exterior.rs` and `script.rs`.
+#[test]
+fn logical_quest_reference_spawns_identity_and_attaches_scripts() {
+    use esm::records::{ActiRecord, ScriptRecord};
+
+    const BASE: u32 = 0x00BB_0001;
+    const SCRI: u32 = 0x00BB_0002;
+    const REFR: u32 = 0x00BB_0003;
+
+    fn spawn_marker(world: &mut World, entity: EntityId) {
+        use byroredux_scripting::papyrus_demo::RumbleOnActivate;
+        let Some(mut q) = world.query_mut::<RumbleOnActivate>() else {
+            return;
+        };
+        q.insert(entity, RumbleOnActivate::default());
+    }
+
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+    world.insert_resource(byroredux_core::form_id::FormIdPool::new());
+    let mut registry = byroredux_scripting::ScriptRegistry::new();
+    registry.register("StubActorScript", spawn_marker);
+    world.insert_resource(registry);
+
+    let mut index = esm::records::EsmIndex::default();
+    index.activators.insert(
+        BASE,
+        ActiRecord {
+            form_id: BASE,
+            editor_id: "StubActorBase".to_string(),
+            script_form_id: SCRI,
+            ..Default::default()
+        },
+    );
+    index.scripts.insert(
+        SCRI,
+        ScriptRecord {
+            form_id: SCRI,
+            editor_id: "StubActorScript".to_string(),
+            ..Default::default()
+        },
+    );
+
+    let placed = esm::cell::PlacedRef {
+        form_id: REFR,
+        base_form_id: BASE,
+        group_type: 0xFF,
+        position: [0.0; 3],
+        rotation: [0.0; 3],
+        scale: 1.0,
+        enable_parent: None,
+        teleport: None,
+        reputation_ref: None,
+        primitive: None,
+        linked_refs: Vec::new(),
+        location_ref_types: Vec::new(),
+        rooms: Vec::new(),
+        portals: Vec::new(),
+        radius_override: None,
+        alt_texture_ref: None,
+        land_texture_ref: None,
+        texture_slot_swaps: Vec::new(),
+        emissive_light_ref: None,
+        material_swap_ref: None,
+        ownership: None,
+        script_instance: None,
+        lock: None,
+        water_velocity: None,
+    };
+    let load_order =
+        crate::cell_loader::load_order::LoadOrder::all_regular(vec!["Test.esm".to_string()]);
+
+    let (entity, attached) = spawn_logical_quest_reference_with_scripts(
+        &mut world,
+        &placed,
+        &load_order,
+        &index,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+    );
+
+    assert!(
+        attached,
+        "the stub's base-record SCRI/SCPT must attach — dropping it is the \
+         whole of #4112 / #4331",
+    );
+    assert!(
+        world.has::<byroredux_scripting::papyrus_demo::RumbleOnActivate>(entity),
+        "the attached script must have run its spawn hook on the stub entity",
+    );
+    // The identity half must not have regressed while the attach was added:
+    // without a transform the stub drops out of every distance-ranked alias
+    // fill (#2664), silently and with no log line.
+    assert!(
+        world.has::<byroredux_core::ecs::GlobalTransform>(entity),
+        "the stub must still carry the transform that keeps it rankable",
+    );
+    assert!(
+        world.has::<byroredux_scripting::SceneAliasCandidate>(entity),
+        "the stub must still register as an alias candidate",
+    );
+
+    // Attach once per reference_form_id: a second stub for the same REFR
+    // would run that reference's behavior twice.
+    let (second, attached_again) = spawn_logical_quest_reference_with_scripts(
+        &mut world,
+        &placed,
+        &load_order,
+        &index,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+    );
+    assert!(
+        !attached_again,
+        "a second entity for the same reference must not attach the scripts again",
+    );
+    assert!(
+        !world.has::<byroredux_scripting::papyrus_demo::RumbleOnActivate>(second),
+        "the duplicate stub must carry no script instance of its own",
+    );
+}

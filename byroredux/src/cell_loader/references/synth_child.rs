@@ -111,6 +111,65 @@ pub(crate) fn spawn_logical_quest_reference(
     entity
 }
 
+/// [`spawn_logical_quest_reference`] plus the script attach its callers kept
+/// forgetting. Returns the new entity and whether anything attached.
+///
+/// #4112 / #4331 — there were two logical-actor-stub paths, both
+/// identity-only: the persistent-worldspace loop in `cell_loader::exterior`
+/// and `materialize_scene_actor_alias_stubs` in `asset_provider::script`.
+/// Neither called an `attach_*` function anywhere, so the base record's
+/// SCRI/VMAD and the placed ACHR's own VMAD were dropped for as long as the
+/// actor was stub-only — which, for an actor whose home cell never streams
+/// in, is its whole lifetime. Every `spawn_logical_quest_reference` caller in
+/// this file already attached; only the two outside it did not. Pairing the
+/// two calls in one function is what stops that from being per-call-site
+/// discipline, which is what failed twice.
+///
+/// **Attach once per `reference_form_id`.** A REFR that already has a
+/// candidate entity is skipped: two entities carrying the same reference's
+/// scripts would run its behavior twice. `stamp_quest_reference` has just
+/// registered *this* entity, so the check is for a second one.
+///
+/// Not closed by this: a stub created here, followed later by the home cell
+/// streaming in for real, still ends with scripts on the stub *and* on the
+/// real actor — the real-load path (`attach_quest_reference_script`) has no
+/// reciprocal guard, and nothing reconciles or despawns a superseded stub
+/// (`quest_alias.rs` only ranks stubs last). Closing that means stub/real
+/// reconciliation, which is #2664's half of this shape, not this one.
+pub(crate) fn spawn_logical_quest_reference_with_scripts(
+    world: &mut World,
+    placed_ref: &esm::cell::PlacedRef,
+    load_order: &LoadOrder,
+    record_index: &esm::records::EsmIndex,
+    position: Vec3,
+    rotation: Quat,
+    scale: f32,
+) -> (EntityId, bool) {
+    let entity =
+        spawn_logical_quest_reference(world, placed_ref, load_order, position, rotation, scale);
+
+    let already_claimed = world
+        .query::<byroredux_scripting::SceneAliasCandidate>()
+        .map(|query| {
+            query.iter().any(|(other, candidate)| {
+                other != entity && candidate.reference_form_id == placed_ref.form_id
+            })
+        })
+        .unwrap_or(false);
+    if already_claimed {
+        return (entity, false);
+    }
+
+    let attached = attach_script_for_refr(
+        world,
+        entity,
+        placed_ref.base_form_id,
+        record_index,
+        placed_ref.script_instance.as_ref(),
+    );
+    (entity, attached)
+}
+
 /// #3016 — policy for every spawn branch that calls this: **always call it,
 /// never gate the call itself on `is_primary_synth`.** `base_form_id` (i.e.
 /// `child_form_id`) is the leaf base record for *this* synthetic child, so

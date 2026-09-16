@@ -759,30 +759,41 @@ pub(crate) fn materialize_scene_actor_alias_stubs(
     missing.dedup_by_key(|placed| placed.form_id);
 
     let mut spawned = 0;
+    let mut scripted = 0;
     for placed in missing {
         if !existing.insert(placed.form_id) {
             continue;
         }
-        let entity = crate::cell_loader::references::spawn_logical_quest_reference(
-            world,
-            &placed,
-            load_order,
-            crate::cell_loader::position_zup_to_yup(placed.position),
-            crate::cell_loader::rotation_zup_to_yup_quat(placed.rotation),
-            placed.scale,
-        );
+        // #4331 (SCR-D7-2026-09-14-03) — this was the second identity-only
+        // stub path, and like the persistent-worldspace one (#4112) it never
+        // called an `attach_*` function, so these actors' base SCRI/VMAD and
+        // the ACHR's own VMAD were dropped while they were stub-only. Both now
+        // route through the one helper that cannot spawn without attaching.
+        let (entity, attached) =
+            crate::cell_loader::references::spawn_logical_quest_reference_with_scripts(
+                world,
+                &placed,
+                load_order,
+                index,
+                crate::cell_loader::position_zup_to_yup(placed.position),
+                crate::cell_loader::rotation_zup_to_yup_quat(placed.rotation),
+                placed.scale,
+            );
         log::debug!(
-            "Materialized remote scene actor entity={entity} ref=0x{:08X} base=0x{:08X} links={:?}",
+            "Materialized remote scene actor entity={entity} ref=0x{:08X} base=0x{:08X} scripts={attached} links={:?}",
             placed.form_id,
             placed.base_form_id,
             placed.linked_refs
         );
         world.insert(entity, byroredux_scripting::RemoteSceneActorStub);
         spawned += 1;
+        if attached {
+            scripted += 1;
+        }
     }
     if spawned > 0 {
         log::info!(
-            "Materialized {spawned} remote actor alias identities for scene 0x{scene_form_id:08X}"
+            "Materialized {spawned} remote actor alias identities ({scripted} with scripts) for scene 0x{scene_form_id:08X}"
         );
     }
     spawned
@@ -820,6 +831,34 @@ pub(crate) fn build_script_provider(args: &[String]) -> ScriptProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #4331 (SCR-D7-2026-09-14-03) — `materialize_scene_actor_alias_stubs`
+    /// was the second identity-only stub path, spawning a scene actor and
+    /// never attaching its scripts. Driving it needs a real `EsmIndex` with a
+    /// Skyrim QUST/SCEN pair and its home cells, out of `cargo test` scope, so
+    /// the wiring is pinned the way `exterior.rs` pins its twin; the helper's
+    /// own behavior is covered by
+    /// `logical_quest_reference_spawns_identity_and_attaches_scripts`.
+    #[test]
+    fn scene_actor_alias_stubs_spawn_through_the_script_attaching_helper() {
+        const SRC: &str = include_str!("script.rs");
+
+        assert!(
+            SRC.contains("references::spawn_logical_quest_reference_with_scripts("),
+            "the scene-actor alias stub must call the shared spawner that also \
+             attaches scripts (#4331)"
+        );
+        // `_with_scripts(` does not contain `reference(`, so the only occurrence
+        // of the identity-only spawner's call syntax in this file is the one in
+        // this assertion's own literal. A second is a real call site that
+        // skipped the attach.
+        assert_eq!(
+            SRC.matches("spawn_logical_quest_reference(").count(),
+            1,
+            "the identity-only spawner must not return to this path — it drops \
+             the base record's SCRI/VMAD and the ACHR's own VMAD (#4331)"
+        );
+    }
 
     #[test]
     fn populate_scene_runtime_installs_ambient_packages_without_scenes() {

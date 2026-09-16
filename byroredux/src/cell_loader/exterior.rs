@@ -229,6 +229,11 @@ pub(crate) struct PersistentCellApplyJob {
     reference_entity_count: Option<usize>,
     logical_stub_refs: Vec<byroredux_plugin::esm::cell::PlacedRef>,
     next_logical_stub: usize,
+    /// #4112 — how many of `logical_stub_refs` actually attached a script.
+    /// Surfaced in the summary line below so the fix is observable without a
+    /// game-data run: this loop previously produced no output naming the
+    /// decision at all, which is why the gap survived a full audit pass.
+    logical_stub_scripts: usize,
     local_actor_3d: usize,
     local_actor_count: usize,
 }
@@ -332,14 +337,24 @@ impl PersistentCellApplyJob {
             // `spawn_logical_quest_reference`'s docs). `placed.position` was
             // available the whole time. Same conversion as the REFR
             // placement path in `references::load_references_budgeted`.
-            super::references::spawn_logical_quest_reference(
+            //
+            // #4112 (SCR-D7-2026-09-11-01) — the identity half above was only
+            // half the job: this loop reached no `attach_*` function at all, so
+            // a persistent quest actor's own SCRI/VMAD was silently absent for
+            // as long as it was stub-only. The paired helper is now the only
+            // way to spawn one of these, so the two cannot drift apart again.
+            let (_, attached) = super::references::spawn_logical_quest_reference_with_scripts(
                 world,
                 placed,
                 &wctx.load_order,
+                &wctx.record_index,
                 super::transition::position_zup_to_yup(placed.position),
                 super::transition::rotation_zup_to_yup_quat(placed.rotation),
                 placed.scale,
             );
+            if attached {
+                self.logical_stub_scripts += 1;
+            }
             self.next_logical_stub += 1;
             budget.complete_unit();
         }
@@ -350,7 +365,7 @@ impl PersistentCellApplyJob {
         self.stamp_slice(world);
         flush_pending_cell_textures(ctx);
         log::info!(target: "engine::scene_persistent",
-            "Worldspace '{}' persistent CELL {:08X}: {} local refs -> {} entities; {}/{} local actors have 3D, {} logical-only actor identities ({} authored refs total)",
+            "Worldspace '{}' persistent CELL {:08X}: {} local refs -> {} entities; {}/{} local actors have 3D, {} logical-only actor identities ({} with scripts) ({} authored refs total)",
             wctx.worldspace_key,
             self.cell_form_id,
             self.local_refs.len(),
@@ -358,6 +373,7 @@ impl PersistentCellApplyJob {
             self.local_actor_3d,
             self.local_actor_count,
             self.logical_stub_refs.len(),
+            self.logical_stub_scripts,
             self.authored_ref_count,
         );
         PersistentCellApplyProgress::Complete
@@ -834,6 +850,7 @@ mod persistent_cell_stamp_tests {
             reference_entity_count: None,
             logical_stub_refs: Vec::new(),
             next_logical_stub: 0,
+            logical_stub_scripts: 0,
             local_actor_3d: 0,
             local_actor_count: 0,
         }
@@ -1157,6 +1174,7 @@ pub(crate) fn begin_worldspace_persistent_cell(
         reference_entity_count: None,
         logical_stub_refs: Vec::new(),
         next_logical_stub: 0,
+        logical_stub_scripts: 0,
         local_actor_3d: 0,
         local_actor_count: 0,
     })
@@ -1194,10 +1212,25 @@ mod logical_stub_source_pin_tests {
 
     #[test]
     fn logical_actor_stubs_spawn_through_the_shared_transform_bearing_helper() {
+        // #4112 — the spawner this pin named grew a paired variant that also
+        // attaches the reference's scripts, and the stub loop moved onto it.
+        // The plain identity-only spawner must NOT come back here: that is
+        // precisely the call this issue was about. (Naming it in prose rather
+        // than in backticked call syntax — the count below would see it.)
         assert!(
-            SRC.contains("references::spawn_logical_quest_reference("),
-            "the persistent-cell logical stub must call the shared spawner, not \
-             open-code the identity components"
+            SRC.contains("references::spawn_logical_quest_reference_with_scripts("),
+            "the persistent-cell logical stub must call the shared spawner that \
+             also attaches scripts (#4112), not open-code the identity components"
+        );
+        // `_with_scripts(` does not contain `reference(`, so the only occurrence
+        // of the identity-only spawner's call syntax in this file is the one in
+        // this assertion's own literal. A second is a real call site that
+        // skipped the attach.
+        assert_eq!(
+            SRC.matches("spawn_logical_quest_reference(").count(),
+            1,
+            "the identity-only spawner must not return to this path — it drops \
+             the base record's SCRI/VMAD and the ACHR's own VMAD (#4112)"
         );
         assert!(
             SRC.contains("transition::position_zup_to_yup(placed.position)"),
