@@ -322,7 +322,11 @@ impl App {
                     .retain(|command| ctx.mesh_registry.is_geometry_resident(command.mesh_handle));
             }
 
-            ctx.restore_missing_static_blas_for_draws(&self.draw_commands);
+            // #4180 — static-BLAS recovery no longer runs here. It was two
+            // fence-waited one-time submits per batch inside the render driver;
+            // it is now `App::step_static_blas_restore`, a between-frames step
+            // under the streaming deadline. It reads the `draw_commands` this
+            // frame leaves behind, after the residency filter above has run.
 
             world_resource_set::<DebugStats>(&self.world, |s| {
                 s.draw_command_count = self.draw_commands.len() as u32;

@@ -551,13 +551,15 @@ apart.
 ### Per-frame BLAS recovery
 
 `restore_missing_static_blas_for_draws` rebuilds static BLAS that LRU eviction
-reclaimed while their meshes were off-screen, and it is bounded twice
-(#3540):
+reclaimed while their meshes were off-screen. Since #4180 it runs between
+frames (`App::step_static_blas_restore`, after `step_streaming`) rather than
+inside the render driver, and it is bounded three times (#3540, #4180):
 
 | Bound | Constant / symbol | Value | What it stops |
 |---|---|---|---|
 | Fit projection | `predicates.rs::plan_static_blas_restore` | — | Declines the pass **entirely** when the visible set cannot fit the budget: restoring anything would only displace something else the same frame needs. This is the one code path that can silently leave RT geometry missing on an over-budget cell. |
 | Per-frame cap | `MAX_STATIC_BLAS_RESTORES_PER_FRAME` | 256 | Bounds how many rebuilds one frame may issue. Without it, Starfield's `citycydoniamainlevel` sat single-threaded on frame 0 for ~10 minutes with RSS oscillating 12 → 20.6 GB. |
+| Time bound | the caller's `deadline` (`step_streaming`'s, else `STREAMING_APPLY_BUDGET`) | 16 ms allowance, shared | Rebuilds in chunks of 1, 2, 4, … and stops between chunks once the deadline passes; the first chunk is always admitted. A count cap alone admitted ~100 ms stalls: restores measured ~0.2–0.5 ms per mesh on the FNV `grid-soak` (#4180). |
 
 Both are in `acceleration/constants.rs` / `acceleration/predicates.rs` and had
 no row here until #3998.

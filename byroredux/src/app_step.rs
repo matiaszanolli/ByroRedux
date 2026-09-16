@@ -224,6 +224,7 @@ impl App {
         // ran first, so removing a stale `pending` generation above cancels
         // and reclaims a partial cell before it can consume another slice.
         let streaming_deadline = Instant::now() + Self::STREAMING_APPLY_BUDGET;
+        self.frame_work_deadline = Some(streaming_deadline);
         let mut apply_budget = cell_loader::FrameTimeBudget::until(streaming_deadline);
         let apply_started = Instant::now();
         let full_detail_worked =
@@ -311,6 +312,35 @@ impl App {
                 );
             }
         }
+    }
+
+    /// Rebuild static BLAS that eviction removed but last frame's TLAS set
+    /// still needs (#4180).
+    ///
+    /// This used to run inside `render_one_frame`, ahead of `draw_frame`:
+    /// synchronous one-time submits with host fence-waits, bounded only by a
+    /// 256-mesh count. Measured on the FNV exterior `grid-soak` at ~0.2–0.5 ms
+    /// per mesh, so the render driver could stall for on the order of 100 ms.
+    /// It now runs here, between frames, and shares `step_streaming`'s
+    /// deadline rather than starting a fresh allowance — the renderer takes
+    /// one mesh first (guaranteed progress) and batches more only while time
+    /// remains. A frame with no streaming step (interiors) gets one
+    /// `STREAMING_APPLY_BUDGET`, the project's existing per-frame cooperative
+    /// allowance, instead of inventing a second number.
+    ///
+    /// Using *last* frame's draw set is deliberate: those are the handles the
+    /// next TLAS will be built from, give or take this frame's visibility
+    /// change, and a handle that newly became visible is picked up one frame
+    /// later — the same deferral the per-frame cap always implied.
+    pub(crate) fn step_static_blas_restore(&mut self) {
+        let deadline = self
+            .frame_work_deadline
+            .take()
+            .unwrap_or_else(|| Instant::now() + Self::STREAMING_APPLY_BUDGET);
+        let Some(ctx) = self.renderer.as_mut() else {
+            return;
+        };
+        ctx.restore_missing_static_blas_for_draws(&self.draw_commands, Some(deadline));
     }
 
     /// Drain any queued debug-UI load ops and dispatch them to the
@@ -1350,5 +1380,46 @@ mod bench_subject_distance_tests {
         let p = Vec3::new(5.0, 5.0, 5.0);
         let distance = centroid_subject_distance(p, p, p);
         assert!(distance > 0.0 && distance.is_finite(), "got {distance}");
+    }
+
+    /// #4180 — static-BLAS recovery was two fence-waited one-time submits per
+    /// batch inside `render_one_frame`. It must stay out of the render driver
+    /// and run as a between-frames step after `step_streaming`, whose
+    /// deadline it shares.
+    #[test]
+    fn static_blas_recovery_runs_between_frames_not_in_the_render_driver() {
+        let frame = include_str!("app_frame.rs");
+        let frame_production = frame
+            .split("\n#[cfg(test)]")
+            .next()
+            .expect("split always yields a first segment");
+        assert!(
+            !frame_production.contains("restore_missing_static_blas_for_draws("),
+            "the render driver must not rebuild static BLAS synchronously (#4180)"
+        );
+
+        let events = include_str!("app_events.rs");
+        let streaming = events
+            .find("self.step_streaming();")
+            .expect("about_to_wait must still run the streaming step");
+        let restore = events
+            .find("self.step_static_blas_restore();")
+            .expect("about_to_wait must run the static-BLAS recovery step (#4180)");
+        assert!(
+            streaming < restore,
+            "recovery must follow step_streaming: it shares that step's deadline, and a \
+             cell load's own builds should land before recovery decides what is missing"
+        );
+
+        // Production half only: this test's own literals live in this file.
+        let step = include_str!("app_step.rs")
+            .split("\n#[cfg(test)]")
+            .next()
+            .expect("split always yields a first segment");
+        assert!(
+            step.contains("self.frame_work_deadline = Some(streaming_deadline);")
+                && step.contains("ctx.restore_missing_static_blas_for_draws(&self.draw_commands, Some(deadline));"),
+            "the recovery step must be bounded by the streaming step's deadline (#4180)"
+        );
     }
 }

@@ -384,9 +384,38 @@ impl VulkanContext {
     /// `build_blas_batched` may evict internally to make room, so this ordering
     /// prevents recovery of one visible mesh from evicting another mesh needed
     /// by the same upcoming TLAS.
+    ///
+    /// # Where and how long (#4180)
+    ///
+    /// Each `build_blas_batched` call is two synchronous one-time submits with
+    /// a host fence-wait each, plus a `WAIT` compaction-size readback between
+    /// them. This used to run inside the render driver, ahead of
+    /// `draw_frame`, bounded only by a mesh count
+    /// ([`MAX_STATIC_BLAS_RESTORES_PER_FRAME`], 256). Measured on the FNV
+    /// exterior `grid-soak`, restores cost ~0.2–0.5 ms per mesh (27 meshes
+    /// took 12.9 ms), so that cap admitted stalls on the order of 100 ms.
+    ///
+    /// The caller now runs it as a between-frames step and passes a
+    /// `deadline`. Missing handles are rebuilt in chunks that start at one
+    /// mesh and double while the deadline has not passed: the first chunk is
+    /// always admitted, so progress is guaranteed, and it is the smallest
+    /// possible stall; later chunks batch more only while there is time.
+    /// Whatever is left is simply still missing next frame and is retried —
+    /// the same convergent behaviour the count cap already relied on, and
+    /// the same visible cost (those meshes are absent from RT, not raster,
+    /// for a few more frames). `None` means unbounded.
+    ///
+    /// Running between frames makes this a different submission from the
+    /// frame that builds the TLAS over these BLAS, exactly like
+    /// `step_streaming`'s cell-load builds; the unconditional
+    /// `AS_WRITE -> AS_READ` memory barrier emitted just before `build_tlas`
+    /// in `dispatch_skin_and_cluster` covers both.
+    ///
+    /// [`MAX_STATIC_BLAS_RESTORES_PER_FRAME`]: crate::vulkan::acceleration::MAX_STATIC_BLAS_RESTORES_PER_FRAME
     pub fn restore_missing_static_blas_for_draws(
         &mut self,
         draw_commands: &[super::DrawCommand],
+        deadline: Option<std::time::Instant>,
     ) -> usize {
         let Some(accel) = self.accel_manager.as_mut() else {
             return 0;
@@ -471,6 +500,14 @@ impl VulkanContext {
                         (Some(vertex), Some(index)) if mesh.rt_capable => {
                             (vertex.buffer, index.buffer, 0, 0)
                         }
+                        // #4180 — this pass now runs between frames rather
+                        // than straight after the render driver's own
+                        // residency filter, so it checks residency itself: a
+                        // global-buffer range appended since the last GPU
+                        // rebuild would index past the bound buffer's end.
+                        (None, None) if !self.mesh_registry.is_geometry_resident(handle) => {
+                            return None
+                        }
                         (None, None) => (
                             global_vertex_buffer?,
                             global_index_buffer?,
@@ -495,23 +532,44 @@ impl VulkanContext {
             return 0;
         }
         let allocator = self.allocator.as_ref().expect("allocator missing");
-        match accel.build_blas_batched(
-            &self.device,
-            allocator,
-            &self.graphics_queue,
-            self.transfer_pool,
-            Some(&self.transfer_fence),
-            &sources,
-        ) {
-            Ok(count) => {
-                log::debug!("Restored {count} missing static shadow BLAS before TLAS build");
-                count
+        let requested = sources.len();
+        // #4180 — the restore is synchronous, so its wall time is a stall on
+        // whatever thread runs it. Reported next to the count so a frame-time
+        // spike can be attributed from the log alone.
+        let started = std::time::Instant::now();
+        let mut restored = 0usize;
+        let mut next = 0usize;
+        let mut chunk = 1usize;
+        while next < sources.len() {
+            if next > 0 && deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                break;
             }
-            Err(e) => {
-                log::warn!("Pre-TLAS static BLAS recovery batch failed: {e}");
-                0
+            let end = (next + chunk).min(sources.len());
+            match accel.build_blas_batched(
+                &self.device,
+                allocator,
+                &self.graphics_queue,
+                self.transfer_pool,
+                Some(&self.transfer_fence),
+                &sources[next..end],
+            ) {
+                Ok(count) => restored += count,
+                Err(e) => {
+                    // Stop rather than retry this frame: the next frame starts
+                    // from whatever is still missing.
+                    log::warn!("Static BLAS recovery batch failed: {e}");
+                    break;
+                }
             }
+            next = end;
+            chunk *= 2;
         }
+        log::debug!(
+            "Restored {restored}/{requested} missing static shadow BLAS ({} deferred) in {:.2} ms",
+            requested - next,
+            started.elapsed().as_secs_f64() * 1e3,
+        );
+        restored
     }
 
     /// Register the fullscreen quad mesh for UI overlay rendering.
@@ -826,6 +884,45 @@ mod tests {
         assert!(
             body.contains("if restore_count == 0 {"),
             "a zero plan must skip the batch entirely rather than fall through"
+        );
+    }
+
+    /// #4180 — the restore is synchronous, so it must honour the caller's
+    /// deadline between chunks, always admit the first chunk (or a spent
+    /// deadline would starve recovery forever), and grow the chunk so a frame
+    /// with time left still batches. Pinned at source level: a real restore
+    /// needs a device.
+    #[test]
+    fn static_blas_recovery_honours_the_callers_deadline() {
+        let source = include_str!("resources.rs");
+        let production = &source[..source
+            .find("#[cfg(test)]\nmod tests")
+            .expect("resources.rs must retain its test module")];
+        let start = production
+            .find("pub fn restore_missing_static_blas_for_draws(")
+            .expect("pre-TLAS static BLAS recovery entry point must exist");
+        let body = &production[start..];
+        let body = &body[..body
+            .find("\n    /// Register the fullscreen quad")
+            .expect("static BLAS recovery must remain a bounded method")];
+
+        assert!(
+            body.contains("deadline: Option<std::time::Instant>,"),
+            "recovery must take the caller's work deadline (#4180)"
+        );
+        let check = body
+            .find("if next > 0 && deadline.is_some_and(")
+            .expect("the deadline must be checked between chunks, never before the first");
+        let build = body
+            .find("accel.build_blas_batched(")
+            .expect("missing static BLAS must still be rebuilt");
+        assert!(
+            check < build,
+            "the deadline check must gate each chunk before it is built"
+        );
+        assert!(
+            body.contains("&sources[next..end]") && body.contains("chunk *= 2;"),
+            "recovery must build in growing chunks, not one unbounded batch"
         );
     }
 

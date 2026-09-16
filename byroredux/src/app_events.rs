@@ -844,6 +844,12 @@ impl ApplicationHandler for App {
         // mode and when the player hasn't crossed a boundary.
         self.step_streaming();
 
+        // #4180 — static-BLAS recovery, moved out of the render driver. Must
+        // follow `step_streaming`: it shares that step's deadline, and a cell
+        // load's own batched builds should land before recovery decides what
+        // is still missing.
+        self.step_static_blas_restore();
+
         // Debug-UI load queue (Phase 2 of the debug-UI plan). Drains
         // the `PendingDebugLoadSlot` populated by the debug-server's
         // `LoadNif` / `LoadInteriorCell` / `LoadExteriorCell`

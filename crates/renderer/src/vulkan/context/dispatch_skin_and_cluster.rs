@@ -250,7 +250,8 @@ impl VulkanContext {
         // `build_tlas` with no AS dependency at all, while the static BLAS
         // it traverses were written by a *different* submission:
         // `step_streaming`'s `build_blas_batched`, or
-        // `restore_missing_static_blas_for_draws` earlier in this frame.
+        // `restore_missing_static_blas_for_draws`, which since #4180 also
+        // runs as a between-frames step rather than inside the render driver.
         //
         // Same cross-submission rule this crate already applies to the
         // shared AS scratch (#983 / #1140 / #1300, and #4177 for the static

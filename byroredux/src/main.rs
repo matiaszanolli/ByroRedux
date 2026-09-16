@@ -435,6 +435,11 @@ struct App {
     ui_dropped_host_calls_menu: Option<String>,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
     draw_commands: Vec<DrawCommand>,
+    /// #4180 — the cooperative work deadline `step_streaming` computed this
+    /// iteration, handed on to `step_static_blas_restore` so both between-
+    /// frames stages share one allowance instead of each starting a fresh
+    /// one. `None` when streaming did not run this iteration.
+    frame_work_deadline: Option<Instant>,
     /// Reusable per-frame water draw command buffer. Built alongside
     /// `draw_commands` from `WaterPlane` ECS entities; routed through
     /// the renderer's dedicated water pipeline.
@@ -838,6 +843,7 @@ impl App {
             ui_dropped_host_calls: 0,
             ui_dropped_host_calls_menu: None,
             draw_commands: Vec::new(),
+            frame_work_deadline: None,
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),
             gpu_fog_volumes: Vec::new(),

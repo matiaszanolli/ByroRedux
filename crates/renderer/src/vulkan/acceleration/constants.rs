@@ -163,6 +163,11 @@ pub(super) const STATIC_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
 /// still amortising a large legitimate recovery over frames instead of
 /// stalling one. Paired with `plan_static_blas_restore`, which is what
 /// decides whether the pass should run at all.
+///
+/// #4180 — a count is not a stall bound: restores measured ~0.2–0.5 ms per
+/// mesh, so 256 of them could hold a frame for on the order of 100 ms. The
+/// time bound is the caller's deadline, which the pass checks between
+/// geometrically growing chunks; this cap remains the outer limit.
 pub const MAX_STATIC_BLAS_RESTORES_PER_FRAME: usize = 256;
 
 /// #3998 — `docs/engine/memory-budget.md` presents itself as this file's

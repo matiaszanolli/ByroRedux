@@ -1124,7 +1124,11 @@ impl AccelerationManager {
         } else {
             0.0
         };
-        log::info!(
+        // #4198 sibling — this runs once per caller batch: once per placed
+        // reference during a cell load (hundreds of lines per cell) and once
+        // per recovery chunk. The per-cell total is the `Static BLAS:` line in
+        // the cell summary; this one is for drilling into a single batch.
+        log::debug!(
             "Batched BLAS build: {} meshes, compacted {:.1} KB → {:.1} KB ({:.0}% savings)",
             count,
             total_before as f64 / 1024.0,
