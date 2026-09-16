@@ -2090,62 +2090,145 @@ mod tests {
     /// canonical `Material` and stayed invisible to this guard for as long
     /// as each took to notice — the exact "a seventh spawner would recur
     /// otherwise" failure mode. Re-derived from the actual spawner set
-    /// instead: scans every root-level `cell_loader/*.rs` file (the
-    /// `spawn/`/`references/` subdirectories are a different, already-
-    /// covered path — `spawn/mesh_instance.rs` always attaches its
-    /// canonical `Material` via `translate_material`/`attach_mesh_water`
-    /// upstream of any `MeshHandle` insert) and requires every file that
-    /// inserts a `MeshHandle` to also call one of the two boundary
-    /// functions, `_tests.rs` siblings excluded (test-only mocks, not real
-    /// spawners). Adding a new spawner file with no boundary call now fails
-    /// this test on its own, without anyone remembering to extend a list.
+    /// instead, so adding a spawner with no boundary call fails this test on
+    /// its own, without anyone remembering to extend a list.
+    ///
+    /// #4302 (REN-2026-09-14-D6-03) — that re-derivation was still a
+    /// **non-recursive** `read_dir(cell_loader/)`, and its own `continue`
+    /// justified skipping `spawn/` and `references/` as "a different,
+    /// already-covered path". Covered by inspection, which is the thing this
+    /// test exists to replace: the Dimension 6 checklist tells auditors to
+    /// trust this guard instead of hand-verifying callers, so the two biggest
+    /// spawn paths in the tree — `spawn/mesh_instance.rs`, every REFR the
+    /// engine places, and `scene/nif_loader.rs`, every loose-NIF draw — were
+    /// outside the only thing standing behind that instruction. Both route
+    /// correctly today; neither was guarded.
+    ///
+    /// Now walks [`SPAWNER_ROOTS`] recursively. Two scan rules earn their
+    /// keep, and both were derived by running the scan rather than assumed:
+    ///
+    /// - It matches the **insert** idiom `, MeshHandle(`, not any mention.
+    ///   `render/water.rs` destructures a `MeshHandle` to re-emit a draw and
+    ///   would be a false positive under the looser match.
+    /// - It strips inline `#[cfg(test)] mod …` blocks, not just `_tests.rs`
+    ///   siblings. `npc_spawn/resumable.rs` builds mock `MeshHandle`s in its
+    ///   test module and is not a spawner at all; meanwhile `nif_loader.rs`
+    ///   carries production code *after* its test module and
+    ///   `terrain_lod.rs` a `#[cfg(test)]` helper *before* its own, so
+    ///   truncating at the first or last `#[cfg(test)]` silently drops a real
+    ///   spawner — re-creating this bug while looking fixed.
+    ///
+    /// Deliberately out of scope: `cornell.rs` and `scene.rs` spawn debug
+    /// primitives (the Cornell room, the demo cube/quad/triangles) with no
+    /// authored material of any kind. They are not draw populations from game
+    /// content, which is what the NIFAL boundary invariant is about. Widening
+    /// [`SPAWNER_ROOTS`] to the whole crate would pull them in and turn this
+    /// guard into a demand that debug scaffolding materialize like a REFR.
     #[test]
     fn every_exterior_spawner_inserts_a_boundary_material() {
-        let cell_loader_dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cell_loader");
+        let crate_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let boundary_fns = ["translate_texture_only_material(", "translate_material("];
 
         let mut checked_files: Vec<String> = Vec::new();
-        for entry in std::fs::read_dir(&cell_loader_dir)
-            .expect("cell_loader/ directory must exist next to material_translate.rs")
-        {
-            let path = entry.expect("readable dir entry").path();
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue; // subdirectories (spawn/, references/) and non-.rs files
+        for root in SPAWNER_ROOTS {
+            let dir = crate_src.join(root);
+            let mut pending = vec![dir.clone()];
+            while let Some(dir) = pending.pop() {
+                for entry in std::fs::read_dir(&dir)
+                    .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+                {
+                    let path = entry.expect("readable dir entry").path();
+                    if path.is_dir() {
+                        pending.push(path);
+                        continue;
+                    }
+                    if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                        continue;
+                    }
+                    let name = path
+                        .strip_prefix(&crate_src)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned();
+                    if name.ends_with("_tests.rs") {
+                        continue; // test-only siblings — mock MeshHandles, not spawners
+                    }
+                    let src = std::fs::read_to_string(&path)
+                        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+                    let production = strip_inline_test_modules(&src);
+                    if !production.contains(", MeshHandle(") {
+                        continue; // not a mesh spawner at all
+                    }
+                    assert!(
+                        boundary_fns.iter().any(|f| production.contains(f)),
+                        "{name}: spawned draws must get their canonical `Material` from the \
+                         translation boundary ({boundary_fns:?}). Without one they fall into \
+                         the render path's no-`Material` arm and shade against hardcoded \
+                         literals — a second materialization site outside the single source \
+                         of truth (#2444)."
+                    );
+                    checked_files.push(name);
+                }
             }
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .expect("utf-8 file name")
-                .to_string();
-            if name.ends_with("_tests.rs") {
-                continue; // test-only siblings — may build a mock MeshHandle, not a real spawner
-            }
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            if !src.contains("MeshHandle(") {
-                continue; // not a mesh spawner at all
-            }
-            assert!(
-                boundary_fns.iter().any(|f| src.contains(f)),
-                "{name}: exterior draws must get their canonical `Material` from the \
-                 translation boundary ({boundary_fns:?}). Without one they fall into the \
-                 render path's no-`Material` arm and shade against hardcoded literals — \
-                 a second materialization site outside the single source of truth (#2444)."
-            );
-            checked_files.push(name);
         }
+        checked_files.sort();
 
         // Sanity: the scan must not be silently matching nothing (a wrong
-        // path, a renamed extension check, …).
-        assert!(
-            checked_files.len() >= 6,
-            "the directory scan found only {} MeshHandle-spawning files in cell_loader/ \
-             ({checked_files:?}) — expected at least the 6 known spawners (terrain, \
-             terrain_lod, object_lod, placement_lod, terrain_lod_btr, water); the scan itself \
-             may be broken, not the spawners",
-            checked_files.len()
-        );
+        // path, a renamed extension check, a test-strip that ate the file).
+        // Named individually rather than counted, because #4302 was a scan
+        // that found a healthy-looking six while missing the two largest
+        // spawn paths in the tree — a bare count cannot tell those apart.
+        for required in [
+            "cell_loader/object_lod.rs",
+            "cell_loader/placement_lod.rs",
+            "cell_loader/spawn/mesh_instance.rs",
+            "cell_loader/terrain.rs",
+            "cell_loader/terrain_lod.rs",
+            "cell_loader/terrain_lod_btr.rs",
+            "cell_loader/water.rs",
+            "scene/nif_loader.rs",
+        ] {
+            assert!(
+                checked_files
+                    .iter()
+                    .any(|f| f.replace('\\', "/") == required),
+                "the scan did not reach {required} — it found {checked_files:?}. The scan \
+                 itself is broken, not the spawners; a guard that silently stops covering a \
+                 spawn path is exactly #4302."
+            );
+        }
+    }
+
+    /// Directories under `byroredux/src` that own mesh-spawning code, walked
+    /// recursively by [`every_exterior_spawner_inserts_a_boundary_material`].
+    ///
+    /// A list rather than the whole crate: see that test's doc for the two
+    /// debug-scene files a crate-wide walk would pull in.
+    const SPAWNER_ROOTS: [&str; 3] = ["cell_loader", "scene", "npc_spawn"];
+
+    /// Remove every top-level `#[cfg(test)] mod … { … }` block from `src`,
+    /// leaving the production half.
+    ///
+    /// The block ends at the first `}` in column 0 after it, which holds for
+    /// rustfmt-formatted code because a top-level item's closing brace is
+    /// unindented. Truncating at the first or last `#[cfg(test)]` instead
+    /// does not work on this tree — `nif_loader.rs` has production code after
+    /// its test module and `terrain_lod.rs` a `#[cfg(test)]` helper before
+    /// its own — and either mistake silently drops a real spawner from the
+    /// scan.
+    fn strip_inline_test_modules(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src;
+        while let Some(start) = rest.find("\n#[cfg(test)]\nmod ") {
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 1..];
+            match after.find("\n}\n") {
+                Some(end) => rest = &after[end + 3..],
+                None => return out,
+            }
+        }
+        out.push_str(rest);
+        out
     }
 
     /// #3465 — keep the two hand-written texture-role lists in the docs
