@@ -89,7 +89,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 
 ### Dimension 2: NIF v20.2.0.7 Parser — FO3 Block Subset
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/properties.rs`, `crates/nif/src/blocks/shader.rs`, `crates/nif/src/blocks/particle.rs`, `crates/nif/src/blocks/mod.rs` (dispatch), `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), `byroredux/src/systems/particle.rs` (`apply_emitter_params`)
+**Entry points**: `crates/nif/src/blocks/properties.rs`, `crates/nif/src/blocks/shader/` (`legacy`, `mod`), `crates/nif/src/blocks/particle.rs`, `crates/nif/src/blocks/mod.rs` (dispatch), `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), `byroredux/src/systems/particle.rs` (`apply_emitter_params`)
 **Checklist**:
 - `BSShaderPPLightingProperty` field completeness (refraction strength/period, parallax passes/scale, bump-map tiling) and `BSShaderNoLightingProperty` decode.
 - Stream-position audit: any block type that passes on FNV but trips on FO3-era authoring. The dispatch arm count is in `crates/nif/src/blocks/mod.rs` — a histogram shift from `nif_stats` flags a mis-dispatched block.

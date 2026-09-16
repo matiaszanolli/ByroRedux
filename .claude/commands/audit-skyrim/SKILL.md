@@ -74,7 +74,7 @@ benches refresh every `/session-close`.
   Pre-#838 routing of `BSLODTriShape` through BSTriShape over-read every Skyrim
   tree LOD. **Audit guard**: any proposal to "fold BSLODTriShape into BSTriShape"
   is a regression of #838.
-- **`BSLightingShaderProperty`** lives in `crates/nif/src/blocks/shader.rs`
+- **`BSLightingShaderProperty`** lives in `crates/nif/src/blocks/shader/lighting.rs`
   (NOT in `crates/nif/src/blocks/properties.rs`, where it was historically
   assumed). The shader-type-specific trailing data is the
   `ShaderTypeData` enum — **9 Rust variants** (`None`, `EnvironmentMap`,
@@ -84,7 +84,7 @@ benches refresh every `/session-close`.
   (most fall through to `None`). FO76 uses the distinct `BSShaderType155`
   numbering (`parse_shader_type_data_fo76`). There is no `GlowShader` variant —
   glow (type 2) reads `None` trailing data.
-- **`BSEffectShaderProperty`** — also in `crates/nif/src/blocks/shader.rs`: `soft_falloff_depth`,
+- **`BSEffectShaderProperty`** — in `crates/nif/src/blocks/shader/effect.rs`: `soft_falloff_depth`,
   `greyscale_texture`, `lighting_influence`, `env_map_min_lod`, falloff
   start/stop angle+opacity.
 - **`BsLagBoneController`** + **`BsProceduralLightningController`** (#837) — both
@@ -123,7 +123,7 @@ benches refresh every `/session-close`.
 
 ### Dimension 2: BSLightingShaderProperty / BSEffectShaderProperty Shader-Type Dispatch
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/shader.rs` (`BSLightingShaderProperty`, `BSEffectShaderProperty`, `ShaderTypeData`, `parse_shader_type_data` / `_fo4` / `_fo76`), `crates/nif/src/blocks/shader_tests/` (split by era, #2056 — `skyrim.rs` for this audit), `crates/nif/src/import/material/` (mod, walker, shader_data), `crates/renderer/shaders/triangle.frag`
+**Entry points**: `crates/nif/src/blocks/shader/lighting.rs` (`BSLightingShaderProperty`, `ShaderTypeData`, `parse_shader_type_data` / `_fo4` / `_fo76`), `crates/nif/src/blocks/shader/effect.rs` (`BSEffectShaderProperty`), `crates/nif/src/blocks/shader_tests/` (split by era, #2056 — `skyrim.rs` for this audit), `crates/nif/src/import/material/` (mod, walker, shader_data), `crates/renderer/shaders/triangle.frag`
 **Checklist**:
 - Every numeric Skyrim/FO4 shader type dispatches to the correct `ShaderTypeData` arm and reads the right trailing-field count (EnvironmentMap = env scale; SkinTint/HairTint = Color3; ParallaxOcc = max_passes + scale; MultiLayerParallax = inner-layer fields; SparkleSnow = 4 params; EyeEnvmap = eye cubemap + two reflection centers). Types with no trailing data (0/2/3/4/8–10/12–13/15/17–19) fall through to `None` — confirm none of those silently over-read.
 - FO76 (`BSShaderType155`, `parse_shader_type_data_fo76`) uses the *different* numeric mapping (type 4 = `Fo76SkinTint` Color4, type 5 = HairTint Color3) — guard the two enums don't cross-contaminate.

@@ -40,11 +40,11 @@ read those at audit time. Snapshot of the shape, not the numbers:
 - **CRC32-hashed shader flag arrays** (BSVER ≥ `FO4_CRC_FLAGS` = 132) —
   `BSLightingShaderProperty` / `BSEffectShaderProperty` store shader flags as
   arrays of CRC32 hashes (`sf1_crcs` / `sf2_crcs`) instead of bit masks. Parsed in
-  `parse_skyrim_shader_base` in `crates/nif/src/blocks/shader.rs`. SF2 array
+  `parse_skyrim_shader_base` in `crates/nif/src/blocks/shader/mod.rs`. SF2 array
   gated on BSVER ≥ `FO76_SF2_CRCS` = 152.
 - **BSVER == `FO76` (155) baseline** — `BSShaderType155` dispatch + the
   luminance / translucency / texture-array tail; this is where #1510 lived.
-- **BGSM / BGEM material references** — `is_material_reference` (`shader.rs`)
+- **BGSM / BGEM material references** — `is_material_reference` (`shader/mod.rs`)
   short-circuits when `Name` is a non-empty `.bgsm`/`.bgem` path and returns a
   material-reference stub; the real material is the external file, parsed by
   `crates/bgsm/` and folded in by `merge_external_material`
@@ -312,13 +312,14 @@ ROADMAP).
 
 ### Dimension 6: NIF Shader Blocks — BSVER 155+ (regression guard)
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/shader.rs` (`parse_skyrim_shader_base`,
-`BSLightingShaderProperty`, `BSEffectShaderProperty`), `docs/legacy/nif.xml`
+**Entry points**: `crates/nif/src/blocks/shader/mod.rs` (`parse_skyrim_shader_base`),
+`crates/nif/src/blocks/shader/lighting.rs` (`BSLightingShaderProperty`),
+`crates/nif/src/blocks/shader/effect.rs` (`BSEffectShaderProperty`), `docs/legacy/nif.xml`
 **Checklist**: CRC32 flag-array parsing for BSVER ≥ `FO4_CRC_FLAGS` (132) —
 `num_sf1` + per-element u32 CRC into `sf1_crcs`; SF2 array for BSVER ≥
 `FO76_SF2_CRCS` (152) into `sf2_crcs`. Is there a CRC32 hash → flag-name table,
 or are the hashes opaque? **#1510 regression guard** — `BSShaderType155` dispatch
-+ the luminance / translucency / texture-array tail in `shader.rs` previously
++ the luminance / translucency / texture-array tail in `shader/lighting.rs` previously
 over-read by 4 B, truncating all ~1036 Starfield full-body
 `BSLightingShaderProperty` blocks to `NiUnknown`; confirm the block-histogram
 NiUnknown count for these stays at 0. WetnessParams extended fields, refraction
@@ -398,7 +399,7 @@ not from `crates/nif/src/import/collision/shape.rs`.
 **Entry points**: `crates/bgsm/src/bgsm.rs` + `crates/bgsm/src/bgem.rs` (external
 parser), `byroredux/src/asset_provider/material/merge.rs` (`merge_external_material`),
 `byroredux/src/cell_loader.rs` (`pack_imported_material_flags`)
-**Checklist**: The material-reference stub from `shader.rs` resolves to the
+**Checklist**: The material-reference stub from `shader/mod.rs` resolves to the
 external file — confirm the BGEM variant (`bgem.rs`) is handled distinctly from
 BGSM (`bgsm.rs`): different texture-set conventions plus the BGEM `glass_enabled`
 flag. `merge_external_material` folds the parsed result into `ImportedMesh.material`

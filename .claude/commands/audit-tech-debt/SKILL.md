@@ -126,9 +126,10 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    history, for diff direction only: 12 files on 2026-09-05; 2 on 2026-09-11
    (`context/mod.rs` 2831, `compatibility/storage_util.rs` 2160); 3 on
    2026-09-14 under the string-aware counter (#4336), because
-   `crates/nif/src/blocks/shader.rs` — which had dipped under threshold on
+   *crates/nif/src/blocks/shader.rs* — which had dipped under threshold on
    2026-09-11 through incidental shrinkage, **not** a split — re-crossed on
-   2026-09-12 at 2058 production (#4339). A file that dips under by
+   2026-09-12 at 2058 production (#4339), then was split into
+   `crates/nif/src/blocks/shader/` by `eaa94b49d`. A file that dips under by
    shrinkage is still a live candidate; only an actual split removes one.
    Splits that did land and should not be re-proposed: the
    sandbox-runtime/ECS-event adapter → `byroredux/src/extensions/` (#3843,
