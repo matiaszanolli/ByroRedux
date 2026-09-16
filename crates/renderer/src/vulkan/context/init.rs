@@ -1687,16 +1687,18 @@ impl VulkanContext {
             light_atten_legacy: false,
             // Initialize to identity; first frame will overwrite with current
             // viewProj so motion vector is zero on the first frame.
-            prev_view_proj: [
-                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-            ],
-            prev_camera_position: [0.0; 3],
-            prev_render_origin: [0.0; 3],
-            prev_cam_forward: [0.0, 0.0, -1.0],
+            history: TemporalHistory {
+                prev_view_proj: [
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+                prev_camera_position: [0.0; 3],
+                prev_render_origin: [0.0; 3],
+                prev_cam_forward: [0.0, 0.0, -1.0],
+                previous_rigid_models: FxHashMap::default(),
+                suppress_rigid_history_next_build: false,
+            },
             gpu_instances_scratch: Vec::new(),
             frame_lights_scratch: Vec::new(),
-            previous_rigid_models: FxHashMap::default(),
-            suppress_rigid_history_next_build: false,
             prev_caustic_scene_key: 0,
             current_rigid_models_scratch: FxHashMap::default(),
             previous_models_scratch: Vec::new(),

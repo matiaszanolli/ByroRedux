@@ -245,18 +245,18 @@ impl VulkanContext {
         // Automatic camera-cut detection catches debug teleports and scripted
         // snaps that do not flow through the cell-transition reset hooks.
         // Signal derivation + rationale in `camera_frame_deltas`.
-        let previous_camera_position = self.prev_camera_position;
+        let previous_camera_position = self.history.prev_camera_position;
         let CameraFrameDeltas {
             camera_delta,
             cam_forward_dot,
             vp_max_abs_delta,
         } = camera_frame_deltas(
             camera_pos,
-            self.prev_camera_position,
+            self.history.prev_camera_position,
             active_dof.cam_forward,
-            self.prev_cam_forward,
+            self.history.prev_cam_forward,
             vp,
-            &self.prev_view_proj,
+            &self.history.prev_view_proj,
         );
         let camera_cut = is_camera_cut(self.frame_counter, camera_delta, cam_forward_dot);
         if camera_cut {
@@ -281,8 +281,8 @@ impl VulkanContext {
             *vp
         } else {
             origin_corrected_prev_view_proj(
-                &self.prev_view_proj,
-                self.prev_render_origin,
+                &self.history.prev_view_proj,
+                self.history.prev_render_origin,
                 [render_origin.x, render_origin.y, render_origin.z],
             )
         };
@@ -326,7 +326,7 @@ impl VulkanContext {
         // decorrelation, and BEFORE `prev_view_proj` is overwritten below.
         let camera_static = vp
             .iter()
-            .zip(self.prev_view_proj.iter())
+            .zip(self.history.prev_view_proj.iter())
             .all(|(a, b)| (a - b).abs() < 1.0e-6);
         let camera = scene_buffer::GpuCamera {
             view_proj: [
@@ -559,15 +559,15 @@ impl VulkanContext {
         // frame — actively arguing "no origin crossing happened" on
         // precisely the frames the ghosting investigation was looking at.
         let origin_delta = [
-            render_origin.x - self.prev_render_origin[0],
-            render_origin.y - self.prev_render_origin[1],
-            render_origin.z - self.prev_render_origin[2],
+            render_origin.x - self.history.prev_render_origin[0],
+            render_origin.y - self.history.prev_render_origin[1],
+            render_origin.z - self.history.prev_render_origin[2],
         ];
 
-        self.prev_view_proj = *vp;
-        self.prev_camera_position = camera_pos;
-        self.prev_render_origin = [render_origin.x, render_origin.y, render_origin.z];
-        self.prev_cam_forward = active_dof.cam_forward;
+        self.history.prev_view_proj = *vp;
+        self.history.prev_camera_position = camera_pos;
+        self.history.prev_render_origin = [render_origin.x, render_origin.y, render_origin.z];
+        self.history.prev_cam_forward = active_dof.cam_forward;
 
         // #1874 diagnostic — ghosted diagonal double-image investigation.
         // Cheap, stateless (uses only locals already computed above) trace

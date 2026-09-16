@@ -2227,7 +2227,10 @@ impl VulkanContext {
         // Object-transform history follows successful GPU submission, not
         // command recording or presentation. This mirrors TAA/SVGF history:
         // a failed submit cannot advance the source frame motion reprojects.
-        std::mem::swap(&mut self.previous_rigid_models, &mut current_rigid_models);
+        std::mem::swap(
+            &mut self.history.previous_rigid_models,
+            &mut current_rigid_models,
+        );
         current_rigid_models.clear();
         self.current_rigid_models_scratch = current_rigid_models;
         // #2486 / D5-01 — same shrink policy the two scratch Vecs get at the
@@ -2237,9 +2240,9 @@ impl VulkanContext {
         // peak stays resident through the walk back into a small interior.
         // `previous_rigid_models` post-swap holds this frame's entries, which
         // is the working set for both.
-        let working_rigid = self.previous_rigid_models.len();
+        let working_rigid = self.history.previous_rigid_models.len();
         super::super::acceleration::shrink_map_scratch_if_oversized(
-            &mut self.previous_rigid_models,
+            &mut self.history.previous_rigid_models,
             working_rigid,
             512,
         );

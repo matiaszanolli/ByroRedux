@@ -91,7 +91,7 @@ impl VulkanContext {
         // table's real footprint (no control bytes / load-factor slack);
         // it is a proportional signal, not an allocator-accurate figure.
         for (name, map) in [
-            ("previous_rigid_models", &self.previous_rigid_models),
+            ("previous_rigid_models", &self.history.previous_rigid_models),
             (
                 "current_rigid_models_scratch",
                 &self.current_rigid_models_scratch,

@@ -82,7 +82,6 @@ pub const SKIN_MAX_SLOTS: u32 = ((crate::vulkan::scene_buffer::MAX_TOTAL_BONES
     / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
     - 1) as u32;
 
-
 /// Parse the `BYROREDUX_RENDER_DEBUG` env var into a fragment-shader
 /// debug-bypass bitmask. Accepts plain decimal (`3`) or hex (`0x3`).
 /// Absent / invalid returns 0 — every bypass is off and the shader
@@ -184,6 +183,73 @@ fn couple_water_to_caustic_sink<T>(
 /// two `u32` atomics — non-finite RGB pixels and non-finite alpha pixels.
 const IMAGE_HEALTH_BUFFER_BYTES: vk::DeviceSize = 8;
 
+/// What last frame looked like: the matrices and per-draw transforms this
+/// frame reprojects against, plus the latch that survives the end-of-frame
+/// swap.
+///
+/// #3736 — the first of `VulkanContext`'s field groups to be extracted.
+/// This one carries no Vulkan handle at all, so unlike the swapchain / RT /
+/// post-chain groups it is provably irrelevant to `teardown.rs`'s
+/// destroy order — which is the invariant that issue is most careful
+/// about. Grouping it also makes the four `prev_*` fields visibly one
+/// unit: they are written together at the end of every frame and must
+/// stay consistent with each other.
+struct TemporalHistory {
+    /// Previous frame's view-projection matrix (column-major [f32; 16]).
+    /// Used to compute screen-space motion vectors in the vertex shader.
+    /// On the very first frame, equals the current frame's viewProj (no motion).
+    /// Camera-RELATIVE to `prev_render_origin` (#markarth-precision) — the
+    /// upload site right-multiplies by `translation(O₂ − O₁)` so the matrix
+    /// consumes current-origin-rebased positions (#1489 / REN2-04).
+    prev_view_proj: [f32; 16],
+    /// Absolute position paired with `prev_view_proj`, used to distinguish
+    /// ordinary camera motion from a teleport/cut that must flush history.
+    prev_camera_position: [f32; 3],
+    /// The render origin `prev_view_proj` was built against (last frame's
+    /// 4096-grid snap). Tracked so the uploaded previous-frame matrix can be
+    /// origin-corrected on grid-crossing frames instead of producing one
+    /// frame of full-screen garbage motion vectors (#1489 / REN2-04).
+    prev_render_origin: [f32; 3],
+    /// Previous frame's world-space camera forward vector (unit length).
+    /// Paired with `prev_camera_position` as the second `camera_cut` signal
+    /// (#2159): a real teleport/cut reorients the camera drastically in one
+    /// frame, unlike ordinary translation or mouselook. Replaces a raw
+    /// full-matrix `view_proj` delta, which misfired on both ordinary
+    /// locomotion speeds and every render-origin grid crossing.
+    prev_cam_forward: [f32; 3],
+    /// Previous rigid transforms keyed by stable draw/entity id. Updated only
+    /// after queue submission succeeds, matching temporal GPU history.
+    ///
+    /// #2174 / D2-03 — `FxHashMap`, not the std default. Both maps are probed
+    /// twice per rigid draw per frame (~29K probes on MedTek), which is the
+    /// exact shape the renderer already standardizes `rustc_hash` on
+    /// (`material.rs`'s material-dedup index, the skin-slot map). SipHash-1-3
+    /// buys collision resistance nobody needs for a `u32` draw id we generate
+    /// ourselves. Allocation behaviour is unrelated and already correct: the
+    /// maps are `mem::take`n, cleared, and swapped in `draw.rs`, so no
+    /// per-frame heap churn — hashing was the only remaining cost.
+    previous_rigid_models: FxHashMap<u32, [f32; 16]>,
+    /// #4007 — one-shot "the next instance build must not reuse rigid
+    /// transform history" latch, set by
+    /// [`Self::signal_temporal_discontinuity`] alongside the
+    /// `previous_rigid_models.clear()` it makes order-independent.
+    ///
+    /// The clear alone only works for callers that run BEFORE
+    /// `build_and_upload_instances` (streaming / save / debug-load /
+    /// app-step / resize, and the `camera_cut` site in
+    /// `assemble_camera_and_lights`). `draw_frame` ends with
+    /// `mem::swap(&mut self.history.previous_rigid_models, &mut current_rigid_models)`,
+    /// so a clear performed later in the same frame — `record_taa_pass`
+    /// and `record_upscale_pass` both signal from inside
+    /// `record_post_passes` — is discarded before the next frame's
+    /// `uses_rigid_motion_history` lookup ever reads it. This latch
+    /// survives that swap and is consumed by the next build, so the
+    /// documented contract ("the first frame after a discontinuity must
+    /// not encode object motion against transforms from the retired
+    /// scene/camera history") holds from either phase.
+    suppress_rigid_history_next_build: bool,
+}
+
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
@@ -279,28 +345,11 @@ pub struct VulkanContext {
     /// legacy on|off`; `BYROREDUX_RENDER_DEBUG=0x1000` does the same at
     /// launch.
     pub light_atten_legacy: bool,
-    /// Previous frame's view-projection matrix (column-major [f32; 16]).
-    /// Used to compute screen-space motion vectors in the vertex shader.
-    /// On the very first frame, equals the current frame's viewProj (no motion).
-    /// Camera-RELATIVE to `prev_render_origin` (#markarth-precision) — the
-    /// upload site right-multiplies by `translation(O₂ − O₁)` so the matrix
-    /// consumes current-origin-rebased positions (#1489 / REN2-04).
-    pub prev_view_proj: [f32; 16],
-    /// Absolute position paired with `prev_view_proj`, used to distinguish
-    /// ordinary camera motion from a teleport/cut that must flush history.
-    pub prev_camera_position: [f32; 3],
-    /// The render origin `prev_view_proj` was built against (last frame's
-    /// 4096-grid snap). Tracked so the uploaded previous-frame matrix can be
-    /// origin-corrected on grid-crossing frames instead of producing one
-    /// frame of full-screen garbage motion vectors (#1489 / REN2-04).
-    pub prev_render_origin: [f32; 3],
-    /// Previous frame's world-space camera forward vector (unit length).
-    /// Paired with `prev_camera_position` as the second `camera_cut` signal
-    /// (#2159): a real teleport/cut reorients the camera drastically in one
-    /// frame, unlike ordinary translation or mouselook. Replaces a raw
-    /// full-matrix `view_proj` delta, which misfired on both ordinary
-    /// locomotion speeds and every render-origin grid crossing.
-    pub prev_cam_forward: [f32; 3],
+    /// Previous-frame reprojection history (#3736). Grouped because every
+    /// field here answers the same question — "what did last frame look
+    /// like" — and because none of them owns a Vulkan handle, so this
+    /// grouping cannot perturb the reverse-order teardown.
+    history: TemporalHistory,
     // ── Per-frame scratch cluster ───────────────────────────────────────
     // The four `*_scratch` Vecs below (plus `terrain_tile_scratch` further
     // down in the struct definition) all follow the same amortization
@@ -321,37 +370,6 @@ pub struct VulkanContext {
     /// the current frame. The input slice belongs to the application, so the
     /// renderer needs one reusable merge buffer before cluster upload.
     frame_lights_scratch: Vec<scene_buffer::GpuLight>,
-    /// Previous rigid transforms keyed by stable draw/entity id. Updated only
-    /// after queue submission succeeds, matching temporal GPU history.
-    ///
-    /// #2174 / D2-03 — `FxHashMap`, not the std default. Both maps are probed
-    /// twice per rigid draw per frame (~29K probes on MedTek), which is the
-    /// exact shape the renderer already standardizes `rustc_hash` on
-    /// (`material.rs`'s material-dedup index, the skin-slot map). SipHash-1-3
-    /// buys collision resistance nobody needs for a `u32` draw id we generate
-    /// ourselves. Allocation behaviour is unrelated and already correct: the
-    /// maps are `mem::take`n, cleared, and swapped in `draw.rs`, so no
-    /// per-frame heap churn — hashing was the only remaining cost.
-    previous_rigid_models: FxHashMap<u32, [f32; 16]>,
-    /// #4007 — one-shot "the next instance build must not reuse rigid
-    /// transform history" latch, set by
-    /// [`Self::signal_temporal_discontinuity`] alongside the
-    /// `previous_rigid_models.clear()` it makes order-independent.
-    ///
-    /// The clear alone only works for callers that run BEFORE
-    /// `build_and_upload_instances` (streaming / save / debug-load /
-    /// app-step / resize, and the `camera_cut` site in
-    /// `assemble_camera_and_lights`). `draw_frame` ends with
-    /// `mem::swap(&mut self.previous_rigid_models, &mut current_rigid_models)`,
-    /// so a clear performed later in the same frame — `record_taa_pass`
-    /// and `record_upscale_pass` both signal from inside
-    /// `record_post_passes` — is discarded before the next frame's
-    /// `uses_rigid_motion_history` lookup ever reads it. This latch
-    /// survives that swap and is consumed by the next build, so the
-    /// documented contract ("the first frame after a discontinuity must
-    /// not encode object motion against transforms from the retired
-    /// scene/camera history") holds from either phase.
-    suppress_rigid_history_next_build: bool,
     /// Previous frame's caustic scene key — the light rig plus every
     /// caustic-source instance's placement, folded to a `u64` (#2468 /
     /// REN-D14-2026-08-07-01). The caustic accumulator's parked-camera
@@ -1238,10 +1256,9 @@ impl VulkanContext {
         // `clear()` drops the data; the latch makes the suppression survive
         // `draw_frame`'s end-of-frame swap, so this holds whether the caller
         // runs before `build_and_upload_instances` or after it (#4007).
-        self.previous_rigid_models.clear();
-        self.suppress_rigid_history_next_build = true;
+        self.history.previous_rigid_models.clear();
+        self.history.suppress_rigid_history_next_build = true;
     }
-
 
     // draw_frame is in draw.rs
     // register_ui_quad, swapchain_extent, log_memory_usage are in resources.rs

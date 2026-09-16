@@ -135,7 +135,8 @@ impl VulkanContext {
         // for exactly one build, then re-arms. Consumed here rather than
         // read-and-left-set so it cannot silently zero motion vectors for
         // the rest of the session.
-        let suppress_rigid_history = std::mem::take(&mut self.suppress_rigid_history_next_build);
+        let suppress_rigid_history =
+            std::mem::take(&mut self.history.suppress_rigid_history_next_build);
         let mut rigid_instance_moved = false;
         let mut caustic_scene_key = crate::vulkan::caustic::caustic_key_seed();
 
@@ -157,7 +158,8 @@ impl VulkanContext {
             let uses_rigid_history =
                 uses_rigid_motion_history(draw_cmd.bone_offset, draw_cmd.alpha_blend);
             let previous_source = if uses_rigid_history && !camera_cut && !suppress_rigid_history {
-                self.previous_rigid_models
+                self.history
+                    .previous_rigid_models
                     .get(&draw_cmd.entity_id)
                     .unwrap_or(m)
             } else {
@@ -1319,12 +1321,20 @@ mod rigid_history_suppression_tests {
         let module_start = full_src
             .find("mod rigid_history_suppression_tests")
             .expect("this test module must still exist under its own name");
-        let src = &full_src[..module_start];
+        // Whitespace-collapsed before matching: #3736 grouped the latch under
+        // `self.history`, which pushed this statement past the line limit and
+        // rustfmt broke it after the `=`. A line-oriented needle would have
+        // read as "the gate is gone" when only its formatting had changed.
+        let flat = full_src[..module_start]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src = flat.as_str();
 
         assert!(
             src.contains(
                 "let suppress_rigid_history = \
-                 std::mem::take(&mut self.suppress_rigid_history_next_build);"
+                 std::mem::take(&mut self.history.suppress_rigid_history_next_build);"
             ),
             "the latch must be CONSUMED (mem::take), not merely read — leaving it set \
              would zero rigid motion vectors for the rest of the session rather than \
@@ -1346,7 +1356,7 @@ mod rigid_history_suppression_tests {
     fn both_in_frame_limbs_stay_wired_to_their_order_independent_form() {
         let ctx = include_str!("mod.rs");
         assert!(
-            ctx.contains("self.suppress_rigid_history_next_build = true;"),
+            ctx.contains("self.history.suppress_rigid_history_next_build = true;"),
             "signal_temporal_discontinuity must raise the latch alongside \
              previous_rigid_models.clear() — the clear alone is undone by \
              draw_frame's end-of-frame swap for any caller inside the frame"
