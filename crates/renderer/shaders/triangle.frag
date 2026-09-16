@@ -195,6 +195,9 @@ void main() {
         || (legacyDebugMode
             && (dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES);
     bool viewMaterialRole = debugMode == RENDER_DEBUG_MATERIAL_ROLE;
+    // The water oracles are drawn by water.frag; everything else recedes.
+    bool viewWaterDebug = debugMode == RENDER_DEBUG_WATER_TERM
+        || debugMode == RENDER_DEBUG_WATER_NORMAL;
     bool viewRtLod = debugMode == RENDER_DEBUG_RT_LOD
         || (legacyDebugMode && (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD);
 
@@ -1758,6 +1761,11 @@ void main() {
                 ? vec3(1.00, 0.25, 0.05)
                 : vec3(0.45);
         outColor = vec4(lobeColor, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+        return;
+    } else if (viewWaterDebug) {
+        outColor = vec4(vec3(0.08), 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
         return;

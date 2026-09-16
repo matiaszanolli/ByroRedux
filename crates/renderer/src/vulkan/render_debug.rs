@@ -24,10 +24,12 @@ pub enum RenderDebugMode {
     RtLod = crate::shader_constants::RENDER_DEBUG_RT_LOD,
     VolumetricTerm = crate::shader_constants::RENDER_DEBUG_VOLUMETRIC_TERM,
     MaterialRole = crate::shader_constants::RENDER_DEBUG_MATERIAL_ROLE,
+    WaterTerm = crate::shader_constants::RENDER_DEBUG_WATER_TERM,
+    WaterNormal = crate::shader_constants::RENDER_DEBUG_WATER_NORMAL,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 10] = [
+    pub const USER_MODES: [Self; 12] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -38,6 +40,8 @@ impl RenderDebugMode {
         Self::RtLod,
         Self::VolumetricTerm,
         Self::MaterialRole,
+        Self::WaterTerm,
+        Self::WaterNormal,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -53,6 +57,8 @@ impl RenderDebugMode {
             Self::RtLod => "rt_lod",
             Self::VolumetricTerm => "volumetric_term",
             Self::MaterialRole => "material_role",
+            Self::WaterTerm => "water_term",
+            Self::WaterNormal => "water_normal",
         }
     }
 
@@ -92,6 +98,8 @@ impl FromStr for RenderDebugMode {
             "lod" | "rt_lod" => Ok(Self::RtLod),
             "volume" | "volumetric" | "volumetric_term" => Ok(Self::VolumetricTerm),
             "role" | "material_role" => Ok(Self::MaterialRole),
+            "water" | "water_term" => Ok(Self::WaterTerm),
+            "water_normal" => Ok(Self::WaterNormal),
             _ => Err(format!(
                 "unknown render debug mode '{value}' (expected {})",
                 Self::user_mode_names()

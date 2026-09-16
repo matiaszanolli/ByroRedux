@@ -1211,6 +1211,17 @@ void main() {
         : clamp(max(reflectedCoverage, refractionCoverage) + foamMask * 0.1, 0.0, 1.0);
 
     outColor = vec4(surfaceColor, alpha);
+    // WATAL oracles: opaque, so the blend cannot mix in what lies beneath.
+    if (renderDebug.x == RENDER_DEBUG_WATER_TERM) {
+        outColor = vec4(refrHit ? 0.0 : 1.0, foamMask, alpha, 1.0);
+        outRawIndirect.a = 1.0;
+        return;
+    }
+    if (renderDebug.x == RENDER_DEBUG_WATER_NORMAL) {
+        outColor = vec4(Nperturbed * 0.5 + 0.5, 1.0);
+        outRawIndirect.a = 1.0;
+        return;
+    }
     // #3977 — attachment 4's coverage blend reads this alpha as its
     // SRC_ALPHA, so the receiver's demodulated GI survives as
     // `(1 - alpha) * dst`. RGB stays zero: water adds no indirect of its

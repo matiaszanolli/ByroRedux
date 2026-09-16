@@ -345,7 +345,9 @@
 #define RENDER_DEBUG_RT_LOD 7u
 #define RENDER_DEBUG_VOLUMETRIC_TERM 8u
 #define RENDER_DEBUG_MATERIAL_ROLE 9u
-#define RENDER_DEBUG_MODE_MAX 9u
+#define RENDER_DEBUG_WATER_TERM 10u
+#define RENDER_DEBUG_WATER_NORMAL 11u
+#define RENDER_DEBUG_MODE_MAX 11u
 #define RENDER_DEBUG_LEGACY_FLAGS 4294967295u
 
 // Debug-viz bit flags (set via console for renderer bisects).
