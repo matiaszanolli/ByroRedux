@@ -797,6 +797,8 @@ pub(super) fn spawn_synth_child(
     }
     accum.packed_collision_fallbacks += spawn_stats.packed_collision_fallbacks;
     accum.unresolved_packed_collision += spawn_stats.unresolved_packed_collision;
+    accum.blas_requested += spawn_stats.blas_requested;
+    accum.blas_built += spawn_stats.blas_built;
     if is_primary_synth {
         stamp_quest_reference(world, placement_root, placed_ref, load_order);
         if let Some(current) = water_current_volume_from_ref(placed_ref, ref_pos, ref_scale) {

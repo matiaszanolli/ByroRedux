@@ -936,6 +936,11 @@ struct RefLoadAccum {
     /// placement and emitted once in the cell summary.
     packed_collision_fallbacks: u32,
     unresolved_packed_collision: u32,
+    /// #4198 — static-BLAS meshes submitted / admitted, summed over every
+    /// placement's per-REFR batch so the cell summary carries a real
+    /// per-cell figure.
+    blas_requested: u32,
+    blas_built: u32,
     /// #523 per-call NIF-cache hit/miss tallies, merged after the loop.
     this_call_hits: u64,
     this_call_misses: u64,
@@ -972,6 +977,8 @@ impl RefLoadAccum {
             containers_attached: 0,
             packed_collision_fallbacks: 0,
             unresolved_packed_collision: 0,
+            blas_requested: 0,
+            blas_built: 0,
             this_call_hits: 0,
             this_call_misses: 0,
             pending_new: HashMap::new(),

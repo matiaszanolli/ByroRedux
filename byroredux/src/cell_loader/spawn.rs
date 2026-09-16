@@ -43,6 +43,10 @@ pub(super) struct PlacementSpawnTimings {
     /// This placement authored opaque packed collision but had no safe render
     /// geometry from which to build a compatibility collider.
     pub unresolved_packed_collision: u32,
+    /// #4198 — this placement's static-BLAS batch: meshes submitted, and how
+    /// many of those the budget admitted. Summed per cell by the caller.
+    pub blas_requested: u32,
+    pub blas_built: u32,
 }
 
 /// #2355 / SF-D8-04 — before `PackedAabbProxy` existed, this function only
@@ -779,11 +783,20 @@ pub(super) fn spawn_placed_instances(
         }
     }
 
-    // Batched BLAS build: single GPU submission for all meshes in this cell.
+    // Batched BLAS build: one GPU submission for all of THIS placement's
+    // meshes. #4198 — the log used to say "Cell BLAS batch", but this runs
+    // once per placed reference, so a cell load printed hundreds of lines an
+    // operator read as per-cell totals. It is now labelled with its real
+    // scope, at `debug`, and the per-cell total is summed by the caller into
+    // the cell summary (`references/complete.rs`).
     let blas_started = Instant::now();
+    let blas_requested = blas_specs.len() as u32;
+    let mut blas_built = 0u32;
     if !blas_specs.is_empty() {
-        let built = ctx.build_blas_batched(&blas_specs);
-        log::info!("Cell BLAS batch: {built}/{} meshes", blas_specs.len());
+        blas_built = ctx.build_blas_batched(&blas_specs) as u32;
+        log::debug!(
+            "REFR BLAS batch (placement {placement_root}): {blas_built}/{blas_requested} meshes"
+        );
     }
     let blas_elapsed = blas_started.elapsed();
 
@@ -864,6 +877,8 @@ pub(super) fn spawn_placed_instances(
             unresolved_packed_collision: u32::from(
                 packed_collision_authored && !synthesized_collision_proxy,
             ),
+            blas_requested,
+            blas_built,
         },
     )
 }
@@ -1360,3 +1375,43 @@ use mesh_instance::{
 
 #[cfg(test)]
 mod synthesize_trimesh_tests;
+
+/// #4198 / PERF-D3-2026-09-11-03 — the static-BLAS batch in
+/// `spawn_placed_instances` runs once per placed reference. Its log line used
+/// to call itself a "Cell" batch at `info`, so a cell load printed hundreds of
+/// lines an operator read as per-cell totals — which is what hid
+/// PERF-D3-2026-09-11-01's reachability gap. Pinned at source level: driving a
+/// real batch needs a `VulkanContext`.
+#[cfg(test)]
+mod blas_batch_log_scope_tests {
+    #[test]
+    fn per_placement_blas_batch_is_not_reported_as_a_cell_total() {
+        let spawn = include_str!("spawn.rs");
+        // The call syntax, so this file's own prose about the old label
+        // cannot satisfy or trip the check.
+        assert!(
+            !spawn.contains(concat!("log::info!(\"Cell", " BLAS batch")),
+            "the per-placement BLAS batch must not be logged as a per-cell total (#4198)"
+        );
+        assert!(
+            spawn.contains("\"REFR BLAS batch (placement {placement_root}):"),
+            "the per-placement line must name its real scope (#4198)"
+        );
+
+        // And the real per-cell figure must reach the cell summary, summed
+        // from every placement rather than reported per batch.
+        let complete = include_str!("references/complete.rs");
+        assert!(
+            complete.contains(
+                "\"  Static BLAS: {}/{} meshes built across this cell's placement batches\""
+            ),
+            "the cell summary must carry the summed static-BLAS figure (#4198)"
+        );
+        let synth = include_str!("references/synth_child.rs");
+        assert!(
+            synth.contains("accum.blas_built += spawn_stats.blas_built;")
+                && synth.contains("accum.blas_requested += spawn_stats.blas_requested;"),
+            "every placement's batch must be summed into the cell accumulator (#4198)"
+        );
+    }
+}

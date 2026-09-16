@@ -58,6 +58,8 @@ pub(super) fn complete_reference_load(
         containers_attached,
         packed_collision_fallbacks,
         unresolved_packed_collision,
+        blas_requested,
+        blas_built,
         this_call_hits,
         this_call_misses,
         pending_new,
@@ -198,6 +200,17 @@ pub(super) fn complete_reference_load(
         log::info!(
             "  {} containers attached an Inventory component",
             containers_attached
+        );
+    }
+    if blas_requested > 0 {
+        // #4198 — the real per-cell BLAS figure. The per-placement batches
+        // log at `debug` only; this is the line to read for residency triage.
+        // A shortfall is the budget declining meshes (see the
+        // "Static BLAS batch declined" warning for which).
+        log::info!(
+            "  Static BLAS: {}/{} meshes built across this cell's placement batches",
+            blas_built,
+            blas_requested,
         );
     }
     if packed_collision_fallbacks > 0 || unresolved_packed_collision > 0 {
