@@ -234,6 +234,14 @@ pub struct TextureFlipEntry {
 pub struct AnimatedTextureFlip(pub Vec<TextureFlipEntry>);
 
 impl AnimatedTextureFlip {
+    /// Every bindless handle held by every flipbook, in every frame — the
+    /// exhaustive lifecycle walk for these textures. Each one was acquired
+    /// once at attach time, so an owner releasing the component must drop
+    /// each of them once (#4427).
+    pub fn all_handles(&self) -> impl Iterator<Item = u32> + '_ {
+        self.0.iter().flat_map(|e| e.handles.iter().copied())
+    }
+
     /// Every flipbook's currently-active `(role, bindless handle)`, skipping
     /// entries whose `current_index` is out of range for their `handles`.
     ///

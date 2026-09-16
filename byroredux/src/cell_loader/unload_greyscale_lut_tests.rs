@@ -146,3 +146,47 @@ fn unload_walk_collects_all_texture_handle_components() {
         "MaterialTextureHandles placeholder slot (handle 0) must never be dropped"
     );
 }
+
+/// #4427 — `attach_animation_sinks` acquires one registry reference per
+/// flipbook frame per placement and stores the handles only on
+/// `AnimatedTextureFlip`. The unload walk must release every frame of every
+/// entry (including frames that aren't currently active), or each cell load
+/// that places an Oblivion gate leaks its whole flipbook.
+#[test]
+fn unload_walk_collects_every_texture_flip_frame() {
+    use byroredux_core::ecs::{AnimatedTextureFlip, FlipTextureRole, TextureFlipEntry};
+
+    let mut world = World::new();
+    let fallback_tex: u32 = 999;
+
+    let gate = world.spawn();
+    world.insert(gate, TextureHandle(10));
+    world.insert(
+        gate,
+        AnimatedTextureFlip(vec![
+            TextureFlipEntry {
+                role: FlipTextureRole::BaseColor,
+                handles: vec![60, 61, 62],
+                handles_have_alpha: Vec::new(),
+                current_index: 1,
+            },
+            TextureFlipEntry {
+                role: FlipTextureRole::Dark,
+                handles: vec![70, fallback_tex, 0],
+                handles_have_alpha: Vec::new(),
+                current_index: 0,
+            },
+        ]),
+    );
+
+    let (_mesh, mut texture_drops, _terrain) =
+        collect_victim_gpu_handles(&world, &[gate], fallback_tex);
+    texture_drops.sort_unstable();
+
+    assert_eq!(
+        texture_drops,
+        vec![10, 60, 61, 62, 70],
+        "every flipbook frame must be dropped exactly once alongside the \
+         base TextureHandle; the fallback and placeholder frames are skipped"
+    );
+}

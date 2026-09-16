@@ -3,7 +3,7 @@
 use byroredux_core::ecs::components::{CellRoot, Children, Inventory, ItemInstanceId};
 use byroredux_core::ecs::resources::ItemInstancePool;
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{MeshHandle, TextureHandle, World};
+use byroredux_core::ecs::{AnimatedTextureFlip, MeshHandle, TextureHandle, World};
 use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -453,7 +453,8 @@ fn finish_unload_batch(world: &mut World, ctx: &mut VulkanContext) -> Duration {
 ///   buffers exactly when the last placement releases).
 /// - `texture_drops` — the base [`TextureHandle`], specialized water
 ///   [`NormalMapHandle`], and every secondary role in
-///   [`MaterialTextureHandles`]. Handle `0` and `fallback_tex` are skipped —
+///   [`MaterialTextureHandles`], and every frame of every
+///   [`AnimatedTextureFlip`] flipbook. Handle `0` and `fallback_tex` are skipped —
 ///   those are
 ///   the shared placeholder / neutral-fallback slots that are never
 ///   per-cell refcounted.
@@ -497,6 +498,7 @@ pub(crate) fn collect_victim_gpu_handles(
     let wnq = world.query::<WaterNoiseMapHandles>();
     let mtq = world.query::<MaterialTextureHandles>();
     let ttq = world.query::<TerrainTileSlot>();
+    let ftq = world.query::<AnimatedTextureFlip>();
     for &eid in victims {
         if let Some(mq) = &mq {
             if let Some(mh) = mq.get(eid) {
@@ -526,6 +528,15 @@ pub(crate) fn collect_victim_gpu_handles(
                 // Base color is released through TextureHandle above. Every
                 // secondary semantic role was independently acquired.
                 for &handle in maps.secondary_values() {
+                    push_tex_drop(handle, &mut texture_drops);
+                }
+            }
+        }
+        // #4427 — flipbook frames are acquired once per frame per placement
+        // by `attach_animation_sinks`, independently of the static roles.
+        if let Some(ftq) = &ftq {
+            if let Some(flip) = ftq.get(eid) {
+                for handle in flip.all_handles() {
                     push_tex_drop(handle, &mut texture_drops);
                 }
             }

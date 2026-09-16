@@ -600,8 +600,20 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `registry_completeness_tests.rs`'s `NOT_SAVED_BY_DESIGN` allowlist,
     // re-resolved by `attach_animation_sinks` on load, so no snapshot has
     // ever contained either shape.
+    //
+    // #4427 — refreshed WITHOUT a major bump, two NOT_SAVED_BY_DESIGN moves
+    // in one refresh. `AnimatedTextureFlip` gained an `all_handles` method
+    // (the #4301 case: inside the span this file-scoped guard sweeps, no
+    // field touched). And `7996edf61` had already left this guard red by
+    // inserting `WaterMaterial.normal_encoding` (plus the new
+    // `WaterNormalEncoding` enum) in `crates/core/src/ecs/components/water.rs`
+    // and retuning `GroundCoverSpecies::DEFAULT_TEMPERATE`: `WaterMaterial`
+    // is only carried by `WaterPlane`, and `WaterPlane` and the ground-cover
+    // types are all on `registry_completeness_tests.rs`'s
+    // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
+    // worldspace entry), so no snapshot has ever contained either shape.
     const BASELINE_MAJOR: u16 = 23;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xeca0_330c_0ced_6d53;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x1e0f_f052_124f_8604;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

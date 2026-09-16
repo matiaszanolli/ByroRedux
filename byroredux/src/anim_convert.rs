@@ -11,7 +11,7 @@ use byroredux_core::math::{Quat, Vec2, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_renderer::VulkanContext;
 use rustc_hash::FxHashMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::asset_provider::TextureProvider;
 
@@ -241,9 +241,24 @@ pub(crate) fn attach_animation_sinks(
     // principle carry more than one flip controller.
     let mut texture_flip: HashMap<EntityId, Vec<TextureFlipEntry>> = HashMap::new();
     if let (Some(ctx), Some(tex_provider)) = (ctx, tex_provider) {
+        // #4427 — each resolve below acquires a registry reference that only
+        // the unload walk over `AnimatedTextureFlip` releases.
+        // `insert_missing_sinks` discards the component for an entity that
+        // already carries one (#3243), so resolving frames for it would
+        // acquire references nothing owns. Skip those entities up front.
+        let already_flipping: HashSet<EntityId> = world
+            .query::<AnimatedTextureFlip>()
+            .map(|q| {
+                texture_flip_channels
+                    .iter()
+                    .filter_map(|(name, _)| names.get(name).copied())
+                    .filter(|&e| q.get(e).is_some())
+                    .collect()
+            })
+            .unwrap_or_default();
         for (name, channel) in texture_flip_channels {
             let Some(&e) = names.get(name) else { continue };
-            if channel.source_paths.is_empty() {
+            if channel.source_paths.is_empty() || already_flipping.contains(&e) {
                 continue;
             }
             let handles: Vec<u32> = channel
