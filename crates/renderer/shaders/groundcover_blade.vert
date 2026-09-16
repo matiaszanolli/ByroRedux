@@ -69,17 +69,11 @@ layout(std430, set = 2, binding = 8) readonly buffer GcFieldStateBuffer {
     vec4 gcFieldPrevious;
 };
 
-/// Exactly 128 bytes — Vulkan's guaranteed `maxPushConstantsSize` floor.
-/// Packed rather than laid out one-field-per-vec4 for that reason: this
-/// device allows 256, and a layout that only fits there is a portability bug
-/// that no test on this machine can see.
+/// 64 bytes, inside Vulkan's guaranteed 128-byte `maxPushConstantsSize`
+/// floor. Packed rather than laid out one-field-per-vec4 for that reason:
+/// this device allows 256, and a layout that only fits there is a portability
+/// bug that no test on this machine can see.
 layout(push_constant) uniform GcBladePush {
-    /// **Render-origin-RELATIVE**, exactly as `triangle.vert` uses it. The
-    /// renderer subtracts a cell-grid-snapped origin from world positions
-    /// before projecting (#1496 / #markarth-precision), so projecting an
-    /// absolute position with this matrix puts the geometry kilometres off
-    /// screen — silently, since nothing renders rather than rendering wrong.
-    mat4 viewProj;
     /// xyz = absolute camera position, w = pixels per world unit at one unit
     /// of depth (§6's projected-pixel widening key).
     vec4 cameraPixels;
@@ -179,13 +173,39 @@ layout(location = 14) out vec2 vCardUv;
 layout(location = 15) flat out uint vCard;
 layout(location = 16) out float vCardWeight;
 
-// The scene set already binds CameraUBO at set 1 / binding 1.  Only the two
-// leading matrices are declared here; the descriptor's full range is larger,
-// which Vulkan permits, and this avoids another clock or camera-history copy.
-layout(set = 1, binding = 1) uniform GcCameraMotionUBO {
+// The scene set already binds CameraUBO at set 1 / binding 1.  Only the
+// leading fields through `jitter` are declared here; the descriptor's full
+// range is larger, which Vulkan permits, and this avoids another clock or
+// camera-history copy.
+//
+// Blades project with this UBO's `viewProj`, not a push-constant copy (#4296):
+// it is the matrix the rest of the main pass projects with — DOF-effective,
+// **render-origin-RELATIVE** (#1496), un-jittered — and the one
+// `gcPrevViewProj` is the previous frame of, so motion vectors compare like
+// with like. Projecting an absolute position with it puts the geometry
+// kilometres off screen, silently.
+layout(set = 1, binding = 1) uniform GcCameraUBO {
     mat4 gcViewProj;
     mat4 gcPrevViewProj;
+    mat4 gcInvViewProj;
+    vec4 gcCameraPos;
+    vec4 gcSceneFlags;
+    vec4 gcScreen;
+    vec4 gcFog;
+    /// xy = the frame's sub-pixel TAA/FSR jitter in NDC.
+    vec4 gcJitter;
 };
+
+/// `gl_Position` from an un-jittered clip position. The projection jitter
+/// TAA supersamples with and FSR is told to remove has to land on the blades
+/// as on every other main-pass surface (`triangle.vert`, `water.vert`), or the
+/// largest thin-geometry population in an exterior frame reaches the
+/// reconstruction at a fixed sub-pixel offset while the terrain it stands on
+/// moves (#4296). `vCurrClipPos` stays un-jittered: motion is scene motion.
+vec4 gcJittered(vec4 clip) {
+    clip.xy += gcJitter.xy * clip.w;
+    return clip;
+}
 
 /// Split the 24-bit seed into independent [0,1) streams. Multiplying by
 /// distinct large odd constants and taking the high bits decorrelates them;
@@ -418,11 +438,11 @@ void main() {
         vBladeHeight = height;
         vBladeWidth = width;
         vCardUv = vec2(float(corner & 1u), t);
-        vCurrClipPos = pc.viewProj * vec4(vWorldPos - GC_RENDER_ORIGIN, 1.0);
+        vCurrClipPos = gcViewProj * vec4(vWorldPos - GC_RENDER_ORIGIN, 1.0);
         vPrevClipPos = gcPrevViewProj * vec4(
             mix(p0, mix(p0, prevP2, areaScale), t) + prevWidthAxis * (halfWidth * sideSign) - GC_RENDER_ORIGIN,
             1.0);
-        gl_Position = vCurrClipPos;
+        gl_Position = gcJittered(vCurrClipPos);
         return;
     }
 
@@ -435,8 +455,8 @@ void main() {
         vBladeT = 0.0;
         vBladeHeight = height;
         vBladeWidth = width;
-        gl_Position = pc.viewProj * vec4(base - GC_RENDER_ORIGIN, 1.0);
-        vCurrClipPos = gl_Position;
+        vCurrClipPos = gcViewProj * vec4(base - GC_RENDER_ORIGIN, 1.0);
+        gl_Position = gcJittered(vCurrClipPos);
         vPrevClipPos = gcPrevViewProj * vec4(base - GC_RENDER_ORIGIN, 1.0);
         gl_PointSize = clamp(64.0 / max(distance(base, GC_CAMERA_POS) * 0.02, 1.0), 1.0, 6.0);
         return;
@@ -528,8 +548,8 @@ void main() {
     vBladeWidth = width * (1.0 - t * t);
     // Absolute out to the fragment shader (lighting and the RT shadow ray
     // both want world space), render-origin-relative into the projection.
-    vCurrClipPos = pc.viewProj * vec4(vWorldPos - GC_RENDER_ORIGIN, 1.0);
+    vCurrClipPos = gcViewProj * vec4(vWorldPos - GC_RENDER_ORIGIN, 1.0);
     vPrevClipPos = gcPrevViewProj * vec4(
         prevPos + prevWidthAxis * (halfWidth * sideSign) - GC_RENDER_ORIGIN, 1.0);
-    gl_Position = vCurrClipPos;
+    gl_Position = gcJittered(vCurrClipPos);
 }

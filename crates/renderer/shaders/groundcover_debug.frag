@@ -22,6 +22,10 @@ layout(location = 4) flat in uint vSpecies;
 layout(location = 5) in float vColourJitter;
 
 layout(location = 0) out vec4 outColor;
+// Albedo is written (as black) rather than masked off in the pipeline: the
+// main pass leaves the terrain's albedo here, and composite would then add the
+// terrain's own `indirect * albedo` on top of an emissive point (#4295).
+layout(location = 5) out vec4 outAlbedo;
 layout(location = 6) out float outFsrReactive;
 layout(location = 7) out float outFsrTransparency;
 
@@ -41,6 +45,7 @@ void main() {
     // Emissive by design: the distribution has to be legible in shadow, and a
     // lit debug view would confound "sparse here" with "dark here".
     outColor = vec4(densityRamp(vDGround), 1.0);
+    outAlbedo = vec4(0.0);
     outFsrReactive = 1.0;
     outFsrTransparency = 1.0;
 }

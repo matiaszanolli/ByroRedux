@@ -133,8 +133,8 @@ pub struct GpuGroundCoverSpecies {
     /// Transmission colour RGB (§12.2) + sheen amount (§12.6). #4057.
     pub transmission_sheen: [f32; 4],
     /// Bindless palette-generated clump-card atlas (§6 Tier 2), in x. The
-    /// remaining lanes reserve the std430 vec4 and keep card sampling out of
-    /// the fixed 128-byte push block.
+    /// remaining lanes reserve the std430 vec4 and keep card sampling
+    /// per-species rather than in the per-draw push block.
     pub card_atlas: [u32; 4],
 }
 // SAFETY: 64 bytes of `f32` plus one fully initialised `uvec4`, no padding.
@@ -184,8 +184,7 @@ unsafe impl NoUninit for GpuGroundCoverDisturber {}
 /// `groundcover_interaction.comp` and `groundcover_blade.vert`.
 ///
 /// A buffer rather than a push constant because **both** the compute pass and
-/// the blade vertex shader read it, and the blade draw's push block is already
-/// at Vulkan's guaranteed 128-byte floor.
+/// the blade vertex shader read it, and a push block is per-pipeline.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
 pub struct GpuGroundCoverFieldState {
@@ -214,15 +213,18 @@ struct ScatterPush {
     species_count: u32,
 }
 
-/// Push constants for the blade / debug draw. Exactly 128 bytes — Vulkan's
-/// guaranteed `maxPushConstantsSize` floor, which is why the fields are packed
-/// rather than given a `vec4` each: this device allows 256, so a layout that
-/// only fits there is a portability bug no test on this machine can see.
+/// Push constants for the blade / debug draw. 64 bytes, inside Vulkan's
+/// guaranteed 128-byte `maxPushConstantsSize` floor, which is why the fields
+/// are packed rather than given a `vec4` each: this device allows 256, so a
+/// layout that only fits there is a portability bug no test on this machine
+/// can see.
+///
+/// There is no view-projection here: the blade vertex shader projects with
+/// the camera UBO's, the jitter-free DOF-effective matrix the rest of the
+/// main pass uses, and adds the frame's jitter itself (#4296).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct BladePush {
-    /// Render-origin-RELATIVE, as `triangle.vert` uses it (#1496).
-    view_proj: [f32; 16],
     /// xyz = absolute camera position, w = pixels per world unit at unit depth.
     camera_pixels: [f32; 4],
     /// xyz = render origin to subtract, w = seconds.
@@ -244,7 +246,6 @@ pub struct GroundCoverFrame<'a> {
     /// `GROUNDCOVER_SPECIES_TABLE_SIZE` indices into `species`, in proportion
     /// to climate weight (§7). Shorter input is padded with species 0.
     pub species_table: &'a [u32],
-    pub view_proj: [f32; 16],
     pub camera_pos: [f32; 3],
     /// Cell-grid-snapped render origin the projection expects to have been
     /// subtracted (#1496). Ground cover positions terrain vertices in absolute
@@ -1080,36 +1081,9 @@ impl GroundCoverPipeline {
                 .depth_test_enable(true)
                 .depth_write_enable(true)
                 .depth_compare_op(crate::vulkan::pipeline::default_depth_compare_op());
-            // Eight attachments to match the main pass. 0 (HDR colour), 2
-            // (motion), 5 (albedo), and 6/7 (the FSR masks) are written by
-            // the blade pipeline. The debug-point pipeline leaves motion
-            // masked because its diagnostic fragment shader does not write
-            // it. Normal / mesh-ID / raw-indirect remain masked: raw indirect
-            // is left holding the ground's GI on
-            // purpose, and albedo is written so composite's
-            // `indirect * albedo` lights the blade with it rather than
-            // re-adding the terrain's own reflectance on top of the blade.
-            let mut blend_attachments = [vk::PipelineColorBlendAttachmentState::default(); 8];
-            blend_attachments[0] = blend_attachments[0].color_write_mask(
-                vk::ColorComponentFlags::R
-                    | vk::ColorComponentFlags::G
-                    | vk::ColorComponentFlags::B
-                    | vk::ColorComponentFlags::A,
-            );
-            // `B10G11R11_UFLOAT` carries no alpha channel.
-            blend_attachments[5] = blend_attachments[5].color_write_mask(
-                vk::ColorComponentFlags::R
-                    | vk::ColorComponentFlags::G
-                    | vk::ColorComponentFlags::B,
-            );
-            if debug == 0 {
-                blend_attachments[2] = blend_attachments[2]
-                    .color_write_mask(vk::ColorComponentFlags::R | vk::ColorComponentFlags::G);
-            }
-            blend_attachments[6] =
-                blend_attachments[6].color_write_mask(vk::ColorComponentFlags::R);
-            blend_attachments[7] =
-                blend_attachments[7].color_write_mask(vk::ColorComponentFlags::R);
+            let blend_attachments = draw_color_write_masks(debug == 1).map(|mask| {
+                vk::PipelineColorBlendAttachmentState::default().color_write_mask(mask)
+            });
             let blend =
                 vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
             let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
@@ -1144,6 +1118,36 @@ impl GroundCoverPipeline {
         }
         Ok(())
     }
+}
+
+/// Per-attachment colour write masks for the blade (`debug_points == false`)
+/// or debug-point pipeline, in main-pass attachment order.
+///
+/// Eight attachments to match the main pass. 0 (HDR colour), 5 (albedo) and
+/// 6/7 (the FSR masks) are written by both pipelines; 2 (motion) only by the
+/// blade pipeline, whose diagnostic sibling has no motion output. Normal /
+/// mesh-ID / raw-indirect remain masked: raw indirect is left holding the
+/// ground's GI on purpose, and albedo is written so composite's
+/// `indirect * albedo` lights the blade with it rather than re-adding the
+/// terrain's own reflectance on top of the blade (the debug view writes black
+/// there, keeping its points purely emissive).
+///
+/// A masked-on attachment the fragment shader does not write receives
+/// undefined values (#4295, the #3977 class), so the set of non-empty masks
+/// must equal each shader's declared output locations — pinned by
+/// `draw_write_masks_match_each_fragment_shaders_outputs`.
+fn draw_color_write_masks(debug_points: bool) -> [vk::ColorComponentFlags; 8] {
+    use vk::ColorComponentFlags as C;
+    let mut masks = [C::empty(); 8];
+    masks[0] = C::R | C::G | C::B | C::A;
+    if !debug_points {
+        masks[2] = C::R | C::G;
+    }
+    // `B10G11R11_UFLOAT` carries no alpha channel.
+    masks[5] = C::R | C::G | C::B;
+    masks[6] = C::R;
+    masks[7] = C::R;
+    masks
 }
 
 fn shader_module(device: &ash::Device, spirv: &[u8], name: &str) -> Result<vk::ShaderModule> {
@@ -1253,7 +1257,6 @@ impl GroundCoverPipeline {
             .map(|s| s.size_range[1])
             .fold(0.0_f32, f32::max);
         self.frame_push = BladePush {
-            view_proj: input.view_proj,
             camera_pixels: [
                 input.camera_pos[0],
                 input.camera_pos[1],
@@ -1271,8 +1274,8 @@ impl GroundCoverPipeline {
                 input.gust_frequency,
                 input.time_seconds - input.delta_seconds.max(0.0),
                 species.len() as f32,
-                // Packed `(frame serial << 2) | lod tier`. It retains the
-                // portable 128-byte block and makes the blue-noise transition
+                // Packed `(frame serial << 2) | lod tier`. It keeps the push
+                // block compact and makes the blue-noise transition
                 // repeat under a replayed simulation clock. The shift is two
                 // bits, not one, because `GROUNDCOVER_INDIRECT_STREAMS` is 3:
                 // a one-bit tier field cannot encode the clump-card tier, and
@@ -2053,12 +2056,12 @@ mod tests {
         // Vulkan guarantees only 128 bytes of push constants. This device
         // allows 256, so a layout that overran the floor would work here and
         // fail on hardware nobody in this repo is testing on.
-        assert_eq!(std::mem::size_of::<BladePush>(), 128);
+        assert_eq!(std::mem::size_of::<BladePush>(), 64);
         assert!(std::mem::size_of::<ScatterPush>() <= 128);
         assert_eq!(
             std::mem::offset_of!(BladePush, gust_and_timing) + std::mem::size_of::<f32>(),
-            116,
-            "the previous wind-clock sample is push-constant byte 116; the \
+            52,
+            "the previous wind-clock sample is push-constant byte 52; the \
              GLSL `GcBladePush.gustAndCounts.y` motion contract must be kept \
              in lockstep (#4297)"
         );
@@ -2098,10 +2101,75 @@ mod tests {
             .expect("groundcover production module must precede tests")
             .0;
         assert!(
-            production.contains("blend_attachments[2]") && production.contains("if debug == 0"),
+            production.contains("masks[2] = C::R | C::G;")
+                && production.contains("if !debug_points {"),
             "the blade pipeline must enable RG motion writes while the debug \
              point pipeline keeps its unwritten attachment masked"
         );
+    }
+
+    /// #4296 — blades project with the camera UBO's view-projection and take
+    /// the frame's projection jitter on `gl_Position` only, like
+    /// `triangle.vert` and `water.vert`. The block must stay a prefix of
+    /// `GpuCamera` through `jitter` for `gcJitter` to read the right lane.
+    #[test]
+    fn blades_project_with_the_jittered_camera_ubo() {
+        use crate::vulkan::reflect::uniform_block_size_by_name;
+        use crate::vulkan::scene_buffer::GpuCamera;
+        let spv: &[u8] = include_bytes!("../../shaders/groundcover_blade.vert.spv");
+        let jitter_end = std::mem::offset_of!(GpuCamera, jitter) + 16;
+        assert_eq!(
+            uniform_block_size_by_name(spv, "GcCameraUBO").expect("reflect blade vert"),
+            Some(jitter_end as u32),
+            "GcCameraUBO must mirror GpuCamera up to and including `jitter`"
+        );
+
+        let vert = include_str!("../../shaders/groundcover_blade.vert");
+        assert!(
+            !vert.contains(concat!("pc.", "viewProj")),
+            "the push block no longer carries a view-projection; blades must \
+             use the UBO's DOF-effective matrix (#4296)"
+        );
+        assert!(vert.contains("clip.xy += gcJitter.xy * clip.w;"));
+        let positions: Vec<&str> = vert
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("gl_Position ="))
+            .collect();
+        assert_eq!(positions.len(), 3, "one gl_Position write per blade path");
+        assert!(
+            positions
+                .iter()
+                .all(|line| *line == "gl_Position = gcJittered(vCurrClipPos);"),
+            "every blade path must jitter its (un-jittered) motion clip position: \
+             {positions:?}"
+        );
+    }
+
+    /// #4295 — every attachment a ground-cover draw pipeline enables must be
+    /// a declared output of that pipeline's fragment shader, and vice versa.
+    /// The debug-point pipeline once shared the blade's albedo mask without
+    /// writing albedo, leaving attachment 5 undefined in the debug view.
+    #[test]
+    fn draw_write_masks_match_each_fragment_shaders_outputs() {
+        use crate::vulkan::reflect::reflect_output_locations;
+        for (debug_points, spv, name) in [
+            (false, BLADE_FRAG_SPV, "groundcover_blade.frag"),
+            (true, DEBUG_FRAG_SPV, "groundcover_debug.frag"),
+        ] {
+            let written: Vec<u32> = draw_color_write_masks(debug_points)
+                .iter()
+                .enumerate()
+                .filter(|(_, mask)| !mask.is_empty())
+                .map(|(location, _)| location as u32)
+                .collect();
+            let declared = reflect_output_locations(spv).expect("reflect fragment outputs");
+            assert_eq!(
+                written, declared,
+                "{name}: the pipeline enables writes on {written:?} but the shader \
+                 declares outputs at {declared:?} (#4295 / #3977)"
+            );
+        }
     }
 
     /// #4297 / Step 3 — every stochastic ground-cover seed is derived in the

@@ -737,7 +737,6 @@ fn collect_and_prepare_groundcover(
             chunks: gc.chunks,
             species: gc.species,
             species_table: gc.species_table,
-            view_proj: frame.view_proj,
             camera_pos: frame.camera_pos,
             render_origin: frame.render_origin,
             wind: [
@@ -770,7 +769,6 @@ fn collect_and_prepare_groundcover(
             chunks: gc.chunks,
             species: gc.species,
             species_table: gc.species_table,
-            view_proj: frame.view_proj,
             camera_pos: frame.camera_pos,
             render_origin: frame.render_origin,
             wind: [0.0, 0.0, 0.0, 0.0],
