@@ -322,17 +322,17 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and every optional
         // pipeline/resource used here is owned by this live context for `frame`.
         unsafe {
-            if let Some(ref wca) = self.water_caustic_accum {
+            if let Some(ref wca) = self.post.water_caustic_accum {
                 wca.barrier_post_render_pass(&self.device, cmd, frame);
             }
 
             if !self.svgf_failed {
-                // Captured before the &mut self.svgf borrow: the à-trous
+                // Captured before the &mut self.post.svgf borrow: the à-trous
                 // pass reads DBG_DISABLE_ATROUS out of the same render-debug
                 // bitmask the fragment shader sees (env-set; console legacy
                 // toggle is light-atten-only and not relevant here).
                 let svgf_dbg_flags = self.render_debug_flags;
-                if let Some(ref mut svgf) = self.svgf {
+                if let Some(ref mut svgf) = self.post.svgf {
                     // #674 temporal α state machine + UBO host write
                     // both ran BEFORE the bulk pre-render barrier
                     // above (#961 / REN-D10-NEW-04 fold). This call
@@ -383,7 +383,7 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and the live
         // caustic/TLAS resources are indexed by the current in-flight `frame`.
         unsafe {
-            let Some(ref mut caustic) = self.caustic else {
+            let Some(ref mut caustic) = self.post.caustic else {
                 return;
             };
             // Bind this frame's TLAS before dispatch — the AccelerationManager
@@ -517,7 +517,7 @@ impl VulkanContext {
         // cluster, TLAS, and timer resources belong to this live context/frame.
         unsafe {
             if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
-                if let Some(ref mut vol) = self.volumetrics {
+                if let Some(ref mut vol) = self.post.volumetrics {
                     let scatter_coef = fog_extinction_per_meter.max(0.0)
                         / super::super::volumetrics::WORLD_UNITS_PER_METER;
                     // #3685 — `ran` feeds the shared skip-clear latch
@@ -840,7 +840,7 @@ impl VulkanContext {
         // composite, and timer resources are live for the current `frame`.
         unsafe {
             if !self.taa_failed {
-                if let Some(ref mut taa) = self.taa {
+                if let Some(ref mut taa) = self.post.taa {
                     // #1194 — bracket the TAA compute dispatch.
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_taa_start(&self.device, cmd, frame);
@@ -933,7 +933,7 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and the SSAO
         // pipeline, descriptors, and timers are live for the current `frame`.
         unsafe {
-            if let Some(ref mut ssao) = self.ssao {
+            if let Some(ref mut ssao) = self.post.ssao {
                 let vp_arr = [
                     [vp[0], vp[1], vp[2], vp[3]],
                     [vp[4], vp[5], vp[6], vp[7]],
@@ -1003,7 +1003,7 @@ impl VulkanContext {
     /// `VulkanContext::new`'s bloom-init arm hard-fails with
     /// `anyhow::anyhow!(...)` if bloom init returns `None` (policy from
     /// #1081 — no fallback binding for bloomTex when bloom is absent), so
-    /// the engine never reaches `draw_frame` with `self.bloom == None`.
+    /// the engine never reaches `draw_frame` with `self.post.bloom == None`.
     /// The `Option` wrapper is kept because the resize-recreate path
     /// benefits from it as a temporary, but the runtime `None` branch is
     /// unreachable.
@@ -1031,8 +1031,8 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and bloom's input
         // view, pipeline resources, and timers are live for the current frame.
         unsafe {
-            if let Some(ref mut bloom) = self.bloom {
-                if let Some(ref composite) = self.composite {
+            if let Some(ref mut bloom) = self.post.bloom {
+                if let Some(ref composite) = self.post.composite {
                     let scene_image = composite.scene_image(frame);
                     let scene_view = composite.scene_view(frame);
                     if let Some(ref mut timers) = self.gpu_timers {
@@ -1073,7 +1073,7 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and the composite
         // pipeline plus per-frame bindless descriptors remain live here.
         unsafe {
-            if let Some(ref composite) = self.composite {
+            if let Some(ref composite) = self.post.composite {
                 let bindless_set = self.texture_registry.descriptor_set(frame);
                 if let Some(ref mut timers) = self.gpu_timers {
                     timers.cmd_composite_start(&self.device, cmd, frame);
@@ -1104,12 +1104,14 @@ impl VulkanContext {
         // descriptor, upscaler resource, and timer is live for `frame`.
         unsafe {
             let scene_color = self
+                .post
                 .composite
                 .as_ref()
                 .expect("composite must exist while recording")
                 .scene_image(frame);
             let (motion_vectors, reactive_mask, transparency_mask) = {
                 let gbuffer = self
+                    .post
                     .gbuffer
                     .as_ref()
                     .expect("G-buffer must exist while recording");
@@ -1119,7 +1121,7 @@ impl VulkanContext {
                     gbuffer.transparency_image(frame),
                 )
             };
-            let exposure_image = self.exposure.as_ref().map(|exposure| exposure.image());
+            let exposure_image = self.post.exposure.as_ref().map(|exposure| exposure.image());
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_upscale_start(&self.device, cmd, frame);
             }
@@ -1134,7 +1136,8 @@ impl VulkanContext {
                 self.render_debug_flags,
                 self.render_debug_mode.shader_value(),
             );
-            self.frame_upscaler
+            self.post
+                .frame_upscaler
                 .as_mut()
                 .expect("frame upscaler must exist while recording")
                 .record(
@@ -1164,6 +1167,7 @@ impl VulkanContext {
             // frame does not reproject against a half-pixel-shifted image;
             // later frames are chosen unjittered, so one frame covers it.
             let fsr_dispatch_failed_this_frame = self
+                .post
                 .frame_upscaler
                 .as_mut()
                 .expect("frame upscaler must exist while recording")
@@ -1199,7 +1203,7 @@ impl VulkanContext {
             // #2833 — when the resource is absent FSR is handed a null
             // exposure and the SDK substitutes 1.0, so the tone mapper must
             // use the same number or the two grade the frame differently.
-            let exposure = self.exposure.as_ref().map_or(
+            let exposure = self.post.exposure.as_ref().map_or(
                 super::super::exposure::NO_EXPOSURE_RESOURCE_FALLBACK,
                 |value| value.value(),
             );
@@ -1256,7 +1260,8 @@ impl VulkanContext {
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_presentation_start(&self.device, cmd, frame);
             }
-            self.presentation
+            self.post
+                .presentation
                 .as_ref()
                 .expect("presentation pipeline must exist while recording")
                 .dispatch(

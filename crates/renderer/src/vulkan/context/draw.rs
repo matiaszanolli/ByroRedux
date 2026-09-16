@@ -1643,7 +1643,7 @@ impl VulkanContext {
     /// Whether FSR is not merely the *selected* upscaler mode but is
     /// actually dispatching this frame (#2518).
     ///
-    /// `self.fsr_temporal.is_some()` answers a different question: it stays
+    /// `self.post.fsr_temporal.is_some()` answers a different question: it stays
     /// `Some` for the whole of `UpscalerMode::Fsr3(..)`, including when the
     /// FSR context never got created or `dispatch_failure` has latched. In
     /// those states the frame falls back to an unjittered native blit, so
@@ -1664,7 +1664,8 @@ impl VulkanContext {
     /// mid-frame), so evaluating the same predicate again in
     /// `record_upscale_pass` cannot disagree with this one.
     pub(super) fn is_fsr_dispatch_active(&self) -> bool {
-        self.frame_upscaler
+        self.post
+            .frame_upscaler
             .as_ref()
             .is_some_and(|upscaler| upscaler.is_fsr_dispatch_active())
             && !crate::shader_constants::render_debug_requires_raw_output(
@@ -2204,22 +2205,24 @@ impl VulkanContext {
         // during recording now and promoted here, on the one line that means
         // "this frame's commands are on the queue".
         self.promote_skin_frame_state(frame);
-        if let Some(ref mut svgf) = self.svgf {
+        if let Some(ref mut svgf) = self.post.svgf {
             svgf.mark_frame_completed();
         }
-        if let Some(ref mut taa) = self.taa {
+        if let Some(ref mut taa) = self.post.taa {
             taa.mark_frame_completed();
         }
-        if let Some(ref mut volumetrics) = self.volumetrics {
+        if let Some(ref mut volumetrics) = self.post.volumetrics {
             volumetrics.mark_frame_completed();
         }
         self.volumetric_time_seconds += frame_time_delta_ms.max(0.0) * 0.001;
         if self
+            .post
             .frame_upscaler
             .as_mut()
             .is_some_and(|upscaler| upscaler.take_submitted_dispatch())
         {
-            self.fsr_temporal
+            self.post
+                .fsr_temporal
                 .as_mut()
                 .expect("submitted FSR dispatch requires temporal state")
                 .mark_dispatch_completed(fsr_reset_delivered);
@@ -2378,7 +2381,7 @@ impl VulkanContext {
 }
 
 // #3632 — `VulkanContext::is_fsr_dispatch_active` needs a live Vulkan device
-// to exercise end-to-end (its inputs are `self.frame_upscaler` and the
+// to exercise end-to-end (its inputs are `self.post.frame_upscaler` and the
 // render-debug fields), so — matching this file's `composite_params_tests`
 // / this crate's `fsr_startup_failure_promotes_to_taa_tests` pattern — this
 // pins the fix at the source level: the raw-output predicate must be AND-ed

@@ -31,7 +31,7 @@ impl VulkanContext {
             });
         telemetry.gpu_ms = upscale_ms;
         telemetry.gpu_ms_active = upscale_active;
-        let Some(ref upscaler) = self.frame_upscaler else {
+        let Some(ref upscaler) = self.post.frame_upscaler else {
             telemetry.summary.clear();
             return;
         };

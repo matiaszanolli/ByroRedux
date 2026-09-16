@@ -145,10 +145,10 @@ impl VulkanContext {
         // stays here: its descriptor pool must outlive the
         // allocator-dependent per-slot teardown earlier in this
         // guard.
-        if let Some(ref mut sky_cube) = self.sky_cube {
+        if let Some(ref mut sky_cube) = self.post.sky_cube {
             sky_cube.destroy(&self.device, alloc);
         }
-        if let Some(ref mut ssao) = self.ssao {
+        if let Some(ref mut ssao) = self.post.ssao {
             ssao.destroy(&self.device, alloc);
         }
         // #2141 / #2142 — the 1×1 placeholders. Torn down here,
@@ -174,54 +174,54 @@ impl VulkanContext {
         // `Arc::try_unwrap` below — or its lingering allocator clone
         // trips the outstanding-reference leak guard (#665). `destroy`
         // is idempotent, so the field's own `Drop` later is a no-op.
-        if let Some(ref mut exposure) = self.exposure {
+        if let Some(ref mut exposure) = self.post.exposure {
             exposure.destroy();
         }
         // The output views must be retired after presentation
         // descriptors and before composed-scene inputs. The SDK
         // context half already ran in the allocator-independent block
         // above (#2158) — do not move it back down here.
-        if let Some(ref mut upscaler) = self.frame_upscaler {
+        if let Some(ref mut upscaler) = self.post.frame_upscaler {
             upscaler.destroy_allocations(&self.device, alloc);
         }
-        if let Some(ref mut composite) = self.composite {
+        if let Some(ref mut composite) = self.post.composite {
             composite.destroy(&self.device, alloc);
         }
         // SKYAL cloud density volumes — after BOTH pipelines that bind their
         // views: `sky_cube` (destroyed above) and `composite` (just here).
         // Allocator-backed, so before the `Arc::try_unwrap` below too.
-        self.cloud_noise.destroy(&self.device, alloc);
-        if let Some(ref mut caustic) = self.caustic {
+        self.post.cloud_noise.destroy(&self.device, alloc);
+        if let Some(ref mut caustic) = self.post.caustic {
             caustic.destroy(&self.device, alloc);
         }
-        if let Some(ref mut vol) = self.volumetrics {
+        if let Some(ref mut vol) = self.post.volumetrics {
             vol.destroy(&self.device, alloc);
         }
-        if let Some(ref mut b) = self.bloom {
+        if let Some(ref mut b) = self.post.bloom {
             b.destroy(&self.device, alloc);
         }
         // `self.water` teardown is hoisted above because WaterPipeline owns
         // the SharedAllocator clone needed to free its parameter SSBOs. Its
         // destroy must stay before the Arc::try_unwrap below; the per-FIF
         // accumulator images still use the context allocator here (#3140).
-        if let Some(ref mut wca) = self.water_caustic_accum {
+        if let Some(ref mut wca) = self.post.water_caustic_accum {
             // SAFETY: parent Drop runs after `device_wait_idle`
             // earlier in the teardown sequence; no in-flight
             // command buffer references the per-FIF accumulator
             // images. #1255 / Phase C of #1210.
             wca.destroy(&self.device, alloc);
         }
-        if let Some(ref mut svgf) = self.svgf {
+        if let Some(ref mut svgf) = self.post.svgf {
             svgf.destroy(&self.device, alloc);
         }
         // SAFETY: Drop runs after device_wait_idle; no in-flight
         // command references the reservoir buffers. (Already inside an
         // `unsafe` block, so no inner `unsafe` wrap needed.)
         self.reservoir_buffers.destroy(&self.device, alloc);
-        if let Some(ref mut taa) = self.taa {
+        if let Some(ref mut taa) = self.post.taa {
             taa.destroy(&self.device, alloc);
         }
-        if let Some(ref mut gbuffer) = self.gbuffer {
+        if let Some(ref mut gbuffer) = self.post.gbuffer {
             gbuffer.destroy(&self.device, alloc);
         }
     }
@@ -245,7 +245,7 @@ impl Drop for VulkanContext {
             if let Some(mut pass) = self.egui_pass.take() {
                 pass.destroy(&self.device);
             }
-            if let Some(mut presentation) = self.presentation.take() {
+            if let Some(mut presentation) = self.post.presentation.take() {
                 presentation.destroy(&self.device);
             }
 
@@ -304,7 +304,7 @@ impl Drop for VulkanContext {
             // the guard, run after this so the context has already let go of
             // them. Ordered after `presentation.destroy()` above, which is what
             // the guard-side comment required.
-            if let Some(ref mut upscaler) = self.frame_upscaler {
+            if let Some(ref mut upscaler) = self.post.frame_upscaler {
                 upscaler.destroy_device_objects();
             }
 

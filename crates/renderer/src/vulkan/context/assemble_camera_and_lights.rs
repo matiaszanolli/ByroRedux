@@ -86,7 +86,7 @@ impl VulkanContext {
         let mut frame_lights = std::mem::take(&mut self.scratch.frame_lights_scratch);
         frame_lights.clear();
         frame_lights.extend_from_slice(lights);
-        if let Some(ref mut volumetrics) = self.volumetrics {
+        if let Some(ref mut volumetrics) = self.post.volumetrics {
             if let Err(error) = volumetrics.append_combustion_surface_lights(
                 &self.device,
                 frame,
@@ -145,7 +145,7 @@ impl VulkanContext {
         let (jx, jy, fsr_jitter_pixel, fsr_reset_pending) = match self.renderer_config.upscaler {
             super::super::upscaling::UpscalerMode::Taa => {
                 let (jx, jy) = taa_jitter(
-                    self.taa.is_some(),
+                    self.post.taa.is_some(),
                     self.taa_failed,
                     self.frame_counter,
                     self.frame_extents.render.width as f32,
@@ -158,6 +158,7 @@ impl VulkanContext {
                     (0.0, 0.0, None, false)
                 } else {
                     let fsr = self
+                        .post
                         .fsr_temporal
                         .as_ref()
                         .expect("FSR mode must own temporal state");
@@ -449,7 +450,11 @@ impl VulkanContext {
                 // before the geometry pass whenever the pipeline exists, and
                 // its own pre-barrier discards from UNDEFINED, so there is no
                 // first-frame window where it is present but unbaked.
-                if self.sky_cube.is_some() { 1.0 } else { 0.0 },
+                if self.post.sky_cube.is_some() {
+                    1.0
+                } else {
+                    0.0
+                },
             ],
             // #1210 — sun direction + intensity, plumbed for water.frag's
             // caustic synthesis (shadow ray to sun → refract on miss).

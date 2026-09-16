@@ -82,7 +82,7 @@ impl VulkanContext {
         // skin/morph unload victim lists already rely on.
         if self.composite_needs_raw_hdr_rebind {
             self.composite_needs_raw_hdr_rebind = false;
-            if let Some(ref mut composite) = self.composite {
+            if let Some(ref mut composite) = self.post.composite {
                 composite.fall_back_to_raw_hdr(&self.device);
             }
         }
@@ -282,7 +282,7 @@ impl VulkanContext {
                 ib.buffer,
                 ib.size,
             );
-            if let Some(ref caustic) = self.caustic {
+            if let Some(ref caustic) = self.post.caustic {
                 caustic.write_geometry_buffers(
                     &self.device,
                     frame,

@@ -380,6 +380,85 @@ struct SwapchainTargets {
     depth_format: vk::Format,
 }
 
+/// The post-processing and presentation pipelines.
+///
+/// #3736 — `VulkanContext`'s fourth field group. Membership is by
+/// lifetime, not by topic: these are exactly the pipelines
+/// `teardown.rs` destroys in its post block, which is the grouping that
+/// makes that order locally checkable — the motivation the issue gives.
+/// The per-pass failure latches (`taa_failed`, `svgf_failed`,
+/// `caustic_cleared_on_skip`, …) are deliberately excluded: they are
+/// per-frame state that survives a pipeline rebuild, so bundling them
+/// here would group by label rather than by lifetime.
+///
+/// As with [`SwapchainTargets`], this is a path rename only: no destroy
+/// statement moves, so the reverse-order chain is unchanged.
+struct PostChain {
+    /// SKYAL sky-cubemap bake. `None` when it failed to initialise (VRAM
+    /// pressure); `GpuCamera::exterior_sky_tint`'s w lane carries that
+    /// state to the shaders, which fall back rather than sampling an
+    /// unwritten descriptor.
+    sky_cube: Option<super::sky_cube::SkyCubePipeline>,
+    ssao: Option<SsaoPipeline>,
+    /// FSR/presentation exposure producer — a persistent 1x1 `R32_SFLOAT`
+    /// texture holding the single fixed HDR exposure value. It is the source
+    /// of truth the FSR dispatch samples and the presentation tonemap reads,
+    /// so the two cannot drift into independent constants. `None` if
+    /// allocation failed; presentation falls back to
+    /// [`super::exposure::DEFAULT_EXPOSURE`].
+    exposure: Option<ExposureResource>,
+    /// Render-resolution scene → output-resolution HDR reconstruction.
+    /// In TAA mode (and if FSR initialization fails), this records the native
+    /// Vulkan bridge through the same explicit frame-graph seam.
+    frame_upscaler: Option<FrameUpscaler>,
+    composite: Option<CompositePipeline>,
+    /// SKYAL cloud density volumes, shared by the sky-cube bake and the
+    /// composite background. Not `Option`: composite is mandatory and its
+    /// descriptor set is not PARTIALLY_BOUND, and the volumes are 288 KiB,
+    /// so there is no degraded mode worth having. Resolution-independent,
+    /// so a resize never rebuilds it.
+    cloud_noise: super::cloud_noise::CloudNoiseVolumes,
+    /// Caustic scatter pass (#321) — per-frame refracted-light accumulator
+    /// sampled by the composite pass as a `usampler2D`. Created after SVGF
+    /// and before composite so composite's binding 5 can point at its
+    /// sampled views. Non-optional: the R32_UINT atomic storage image the
+    /// pass needs is universally supported on desktop GPUs.
+    caustic: Option<CausticPipeline>,
+    /// Procedural volumetric-lighting pipeline: render-resolution-derived
+    /// froxel V-buffer, temporal density history, TLAS/BLAS visibility, and
+    /// pre-integrated composite output. `None` only when initialization fails.
+    volumetrics: Option<VolumetricsPipeline>,
+    /// Bloom pyramid pipeline (M58, Tier 8). Reads the scene HDR
+    /// after TAA, produces a multi-scale blurred bright-content
+    /// texture that composite adds back to `combined` before the
+    /// ACES tone-map. `None` when the down/up image-pyramid
+    /// allocation fails; engine initialization fails in that case
+    /// because composite requires the bloom output view for binding 7
+    /// (see construction guard at `VulkanContext::new`). Unlike other
+    /// optional pipelines (water, ssao), bloom cannot be soft-skipped.
+    bloom: Option<BloomPipeline>,
+    /// Per-FIF R32_UINT accumulator for water-side caustic synthesis
+    /// (#1255 / Phase C of #1210). Cleared BEFORE the main render
+    /// pass each frame so `water.frag`'s `imageAtomicAdd` calls in
+    /// the main pass accumulate against zeros; composite samples it
+    /// alongside the existing `caustic.causticTex`. `None` when
+    /// image creation failed (degrades gracefully — water renders
+    /// without caustic contribution, same as pre-#1255 behaviour).
+    water_caustic_accum: Option<super::water_caustic::WaterCausticAccum>,
+    svgf: Option<SvgfPipeline>,
+    /// TAA resolve pass — reprojects + clamps history to produce the final
+    /// HDR image that composite samples. None when allocation fails; the
+    /// fallback path feeds raw HDR directly into composite.
+    taa: Option<TaaPipeline>,
+    gbuffer: Option<GBuffer>,
+    /// Output-resolution exposure/tone-map pass into the acquired swapchain
+    /// image. Kept separate from scene composition so FSR sees linear HDR.
+    presentation: Option<PresentationPipeline>,
+    /// FSR-authored jitter sequence and one-frame reset state. Present only
+    /// for the FSR path; TAA retains its independent legacy sequence.
+    fsr_temporal: Option<FsrTemporalState>,
+}
+
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
@@ -406,9 +485,9 @@ pub struct VulkanContext {
     /// Advanced only after a successful queue submit so failed/aborted frames
     /// cannot move density without producing the corresponding V-buffer.
     pub volumetric_time_seconds: f32,
-    /// FSR-authored jitter sequence and one-frame reset state. Present only
-    /// for the FSR path; TAA retains its independent legacy sequence.
-    pub fsr_temporal: Option<FsrTemporalState>,
+    /// The post-processing chain (#3736): every pipeline destroyed in
+    /// `teardown.rs`'s post block, in that order.
+    post: PostChain,
     /// Debug-only fragment-shader bypass flags piped through
     /// `GpuCamera.jitter[2]`. Read once from `BYROREDUX_RENDER_DEBUG`
     /// at construction; stays put for the process lifetime. Bits:
@@ -860,18 +939,6 @@ pub struct VulkanContext {
     /// to skip until the next dirty frame. See `draw_frame`'s bone_world
     /// upload section for the read side.
     pub clean_skin_frames: u32,
-    pub ssao: Option<SsaoPipeline>,
-    /// SKYAL sky-cubemap bake. `None` when it failed to initialise (VRAM
-    /// pressure); `GpuCamera::exterior_sky_tint`'s w lane carries that
-    /// state to the shaders, which fall back rather than sampling an
-    /// unwritten descriptor.
-    pub sky_cube: Option<super::sky_cube::SkyCubePipeline>,
-    /// SKYAL cloud density volumes, shared by the sky-cube bake and the
-    /// composite background. Not `Option`: composite is mandatory and its
-    /// descriptor set is not PARTIALLY_BOUND, and the volumes are 288 KiB,
-    /// so there is no degraded mode worth having. Resolution-independent,
-    /// so a resize never rebuilds it.
-    pub cloud_noise: super::cloud_noise::CloudNoiseVolumes,
     /// 1×1 white "AO = 1.0" stand-in for scene binding 7, and a 1×1
     /// storage sink for `WaterPipeline` set 2 (#2141 / #2142).
     ///
@@ -889,50 +956,10 @@ pub struct VulkanContext {
     /// in which case the affected bindings keep today's behaviour.
     pub placeholder_ao: Option<super::placeholder::PlaceholderImage>,
     pub placeholder_caustic_sink: Option<super::placeholder::PlaceholderImage>,
-    /// FSR/presentation exposure producer — a persistent 1x1 `R32_SFLOAT`
-    /// texture holding the single fixed HDR exposure value. It is the source
-    /// of truth the FSR dispatch samples and the presentation tonemap reads,
-    /// so the two cannot drift into independent constants. `None` if
-    /// allocation failed; presentation falls back to
-    /// [`super::exposure::DEFAULT_EXPOSURE`].
-    pub exposure: Option<ExposureResource>,
-    pub composite: Option<CompositePipeline>,
-    /// Render-resolution scene → output-resolution HDR reconstruction.
-    /// In TAA mode (and if FSR initialization fails), this records the native
-    /// Vulkan bridge through the same explicit frame-graph seam.
-    pub frame_upscaler: Option<FrameUpscaler>,
-    /// Output-resolution exposure/tone-map pass into the acquired swapchain
-    /// image. Kept separate from scene composition so FSR sees linear HDR.
-    pub presentation: Option<PresentationPipeline>,
-    pub gbuffer: Option<GBuffer>,
-    pub svgf: Option<SvgfPipeline>,
     /// ReSTIR-DI direct-shadow reservoir buffers (screen-sized, ping-pong
     /// per frame-in-flight). Read/written by `triangle.frag` via scene-set
     /// bindings 16/17 for temporal shadow-sample reuse. See `vulkan::restir`.
     pub reservoir_buffers: super::restir::ReservoirBuffers,
-    /// TAA resolve pass — reprojects + clamps history to produce the final
-    /// HDR image that composite samples. None when allocation fails; the
-    /// fallback path feeds raw HDR directly into composite.
-    pub taa: Option<TaaPipeline>,
-    /// Caustic scatter pass (#321) — per-frame refracted-light accumulator
-    /// sampled by the composite pass as a `usampler2D`. Created after SVGF
-    /// and before composite so composite's binding 5 can point at its
-    /// sampled views. Non-optional: the R32_UINT atomic storage image the
-    /// pass needs is universally supported on desktop GPUs.
-    pub caustic: Option<CausticPipeline>,
-    /// Procedural volumetric-lighting pipeline: render-resolution-derived
-    /// froxel V-buffer, temporal density history, TLAS/BLAS visibility, and
-    /// pre-integrated composite output. `None` only when initialization fails.
-    pub volumetrics: Option<VolumetricsPipeline>,
-    /// Bloom pyramid pipeline (M58, Tier 8). Reads the scene HDR
-    /// after TAA, produces a multi-scale blurred bright-content
-    /// texture that composite adds back to `combined` before the
-    /// ACES tone-map. `None` when the down/up image-pyramid
-    /// allocation fails; engine initialization fails in that case
-    /// because composite requires the bloom output view for binding 7
-    /// (see construction guard at `VulkanContext::new`). Unlike other
-    /// optional pipelines (water, ssao), bloom cannot be soft-skipped.
-    pub bloom: Option<BloomPipeline>,
     /// Water surface pipeline — renders `WaterPlane` entities as
     /// transparent draws inside the main render pass (subpass 0)
     /// after all opaque + alpha-blend triangles have submitted.
@@ -941,14 +968,6 @@ pub struct VulkanContext {
     /// rendering for the rest of the session (same robustness policy
     /// as every other optional pipeline in the renderer).
     pub water: Option<WaterPipeline>,
-    /// Per-FIF R32_UINT accumulator for water-side caustic synthesis
-    /// (#1255 / Phase C of #1210). Cleared BEFORE the main render
-    /// pass each frame so `water.frag`'s `imageAtomicAdd` calls in
-    /// the main pass accumulate against zeros; composite samples it
-    /// alongside the existing `caustic.causticTex`. `None` when
-    /// image creation failed (degrades gracefully — water renders
-    /// without caustic contribution, same as pre-#1255 behaviour).
-    pub water_caustic_accum: Option<super::water_caustic::WaterCausticAccum>,
     /// Permanent-failure latch for the TAA compute pass. Set on the
     /// first `taa.upload_params` error in a session, through
     /// `latch_taa_failure` (#3981) — `TaaPipeline::dispatch` records
@@ -1286,13 +1305,13 @@ impl VulkanContext {
     /// faded. See #801.
     pub fn signal_temporal_discontinuity(&mut self, frames: u32) {
         self.svgf_recovery_frames = self.svgf_recovery_frames.max(frames);
-        if let Some(ref mut taa) = self.taa {
+        if let Some(ref mut taa) = self.post.taa {
             taa.signal_history_reset();
         }
-        if let Some(ref mut fsr) = self.fsr_temporal {
+        if let Some(ref mut fsr) = self.post.fsr_temporal {
             fsr.signal_reset();
         }
-        if let Some(ref mut volumetrics) = self.volumetrics {
+        if let Some(ref mut volumetrics) = self.post.volumetrics {
             volumetrics.signal_history_reset();
         }
         // The first frame after a discontinuity must not encode object motion

@@ -22,7 +22,7 @@ use ash::vk;
 /// — G-buffer outputs plus the composite pass's HDR views. Threading these
 /// through a struct keeps each phase a `&mut self`-only method (mirroring the
 /// #1671 `recreate_swapchain` split) while avoiding re-deriving the same
-/// handles from `self.gbuffer` / `self.composite` in every phase that needs
+/// handles from `self.post.gbuffer` / `self.post.composite` in every phase that needs
 /// them.
 struct ScreenPassViews {
     raw_indirect_views: Vec<vk::ImageView>,
@@ -189,7 +189,7 @@ impl VulkanContext {
             ),
         };
         self.frame_extents = frame_extents;
-        self.fsr_temporal = fsr_temporal;
+        self.post.fsr_temporal = fsr_temporal;
 
         // Decide whether to rebuild the render pass + rasterization
         // pipelines. Both reference attachment formats only — extent
@@ -410,7 +410,7 @@ impl VulkanContext {
         // image view (VUID-VkDescriptorImageInfo-imageView-parameter), so we
         // must destroy and rebuild it. The scene descriptor set binding 7
         // (aoTexture) is also re-written to point at the new AO image.
-        if let Some(ref mut old_ssao) = self.ssao {
+        if let Some(ref mut old_ssao) = self.post.ssao {
             let allocator = self
                 .allocator
                 .as_ref()
@@ -420,7 +420,7 @@ impl VulkanContext {
             // `self.device`/`allocator` and not yet destroyed — has no in-flight
             // references and is safe to destroy.
             unsafe { old_ssao.destroy(&self.device, allocator) };
-            self.ssao = None;
+            self.post.ssao = None;
             // Re-use `self.pipeline_cache` for the rebuilt SSAO
             // pipeline. The cache survives the destroy + recreate
             // by design — `pipeline_cache` is the engine-wide
@@ -465,7 +465,7 @@ impl VulkanContext {
                             new_ssao.ao_sampler,
                         );
                     }
-                    self.ssao = Some(new_ssao);
+                    self.post.ssao = Some(new_ssao);
                 }
                 Err(e) => {
                     // #2141 / RL-D6-01 — the old SSAO pipeline (and its
@@ -534,7 +534,7 @@ impl VulkanContext {
     fn recreate_gbuffer_dependent_passes(&mut self) -> Result<ScreenPassViews> {
         // Recreate G-buffer images FIRST (they're referenced by composite
         // descriptor sets, which we'll rewrite during composite recreation).
-        if let Some(ref mut gbuffer) = self.gbuffer {
+        if let Some(ref mut gbuffer) = self.post.gbuffer {
             gbuffer.recreate_on_resize(
                 &self.device,
                 self.allocator
@@ -557,8 +557,8 @@ impl VulkanContext {
             }
         }
 
-        // Collect fresh G-buffer views before we borrow &mut self.svgf /
-        // self.composite. Motion and mesh_id are needed by SVGF.
+        // Collect fresh G-buffer views before we borrow &mut self.post.svgf /
+        // self.post.composite. Motion and mesh_id are needed by SVGF.
         let (
             raw_indirect_views,
             motion_views_in,
@@ -569,6 +569,7 @@ impl VulkanContext {
             transparency_views,
         ) = {
             let gbuffer_ref = self
+                .post
                 .gbuffer
                 .as_ref()
                 .expect("gbuffer must exist during resize");
@@ -594,7 +595,7 @@ impl VulkanContext {
         // `recreate_on_resize` (#1031) — the function is self-contained
         // so a new caller can't forget to walk the fresh history
         // images to GENERAL.
-        if let Some(ref mut svgf) = self.svgf {
+        if let Some(ref mut svgf) = self.post.svgf {
             svgf.recreate_on_resize(
                 crate::vulkan::GpuUploadCtx {
                     device: &self.device,
@@ -650,6 +651,7 @@ impl VulkanContext {
         // before composite (composite samples caustic's views).
         let normal_views_in: Vec<vk::ImageView> = {
             let gb = self
+                .post
                 .gbuffer
                 .as_ref()
                 .expect("gbuffer must exist during resize");
@@ -657,7 +659,7 @@ impl VulkanContext {
                 .map(|i| gb.normal_view(i))
                 .collect()
         };
-        if let Some(ref mut caustic) = self.caustic {
+        if let Some(ref mut caustic) = self.post.caustic {
             // `recreate_on_resize` walks the new slots to GENERAL
             // internally (#1031).
             caustic.recreate_on_resize(
@@ -684,7 +686,7 @@ impl VulkanContext {
         // resizes alongside the existing caustic image. SAFETY:
         // `recreate_swapchain` paid `device_wait_idle` earlier so
         // no in-flight command buffer references the old slots.
-        if let Some(ref mut wca) = self.water_caustic_accum {
+        if let Some(ref mut wca) = self.post.water_caustic_accum {
             let allocator = self
                 .allocator
                 .as_ref()
@@ -704,7 +706,7 @@ impl VulkanContext {
                         "Water-caustic accumulator resize failed: {e} — disabling for the rest of the session"
                     );
                     wca.destroy(&self.device, allocator);
-                    self.water_caustic_accum = None;
+                    self.post.water_caustic_accum = None;
                 } else if let Err(e) =
                     wca.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
                 {
@@ -715,7 +717,7 @@ impl VulkanContext {
                         "Water-caustic initialize_layouts after resize failed: {e} — disabling for the rest of the session"
                     );
                     wca.destroy(&self.device, allocator);
-                    self.water_caustic_accum = None;
+                    self.post.water_caustic_accum = None;
                 }
             }
         }
@@ -733,7 +735,7 @@ impl VulkanContext {
         // freed memory. Strictly worse than the AO case above: a write, not
         // a read.
         if let Some(w) = self.water.as_ref() {
-            let views: Option<Vec<vk::ImageView>> = match self.water_caustic_accum.as_ref() {
+            let views: Option<Vec<vk::ImageView>> = match self.post.water_caustic_accum.as_ref() {
                 Some(accum) => Some(
                     (0..MAX_FRAMES_IN_FLIGHT)
                         .map(|i| accum.storage_view(i))
@@ -776,7 +778,7 @@ impl VulkanContext {
         // composite needs SOME bloom view for binding 7, so a recreate
         // failure is fatal (matches `VulkanContext::new`'s `bloom_views`
         // arm in `context/init.rs`, which bails for the same reason).
-        if let Some(ref mut old_bloom) = self.bloom {
+        if let Some(ref mut old_bloom) = self.post.bloom {
             let allocator = self
                 .allocator
                 .as_ref()
@@ -786,7 +788,7 @@ impl VulkanContext {
             // `self.device`/`allocator` and not yet destroyed — has no in-flight
             // references and is safe to destroy.
             unsafe { old_bloom.destroy(&self.device, allocator) };
-            self.bloom = None;
+            self.post.bloom = None;
             match super::super::bloom::BloomPipeline::new(
                 &self.device,
                 allocator,
@@ -808,7 +810,7 @@ impl VulkanContext {
                     } {
                         log::warn!("Bloom layout re-init after resize failed: {e}");
                     }
-                    self.bloom = Some(new_bloom);
+                    self.post.bloom = Some(new_bloom);
                 }
                 Err(e) => {
                     return Err(anyhow::anyhow!(
@@ -824,10 +826,11 @@ impl VulkanContext {
         // The resize path is device-idle here; rebuild the whole pass to keep
         // images, per-FIF history descriptors, and dispatch dimensions atomic.
         let volumetrics_config = self
+            .post
             .volumetrics
             .as_ref()
             .map_or(self.renderer_config.volumetrics, |volume| volume.config());
-        if let Some(mut old_volumetrics) = self.volumetrics.take() {
+        if let Some(mut old_volumetrics) = self.post.volumetrics.take() {
             let allocator = self
                 .allocator
                 .as_ref()
@@ -865,7 +868,7 @@ impl VulkanContext {
             unsafe { new_volumetrics.destroy(&self.device, allocator) };
             return Err(error).context("initialize recreated froxel layouts");
         }
-        self.volumetrics = Some(new_volumetrics);
+        self.post.volumetrics = Some(new_volumetrics);
         // #3839 — the froxel grid just resized with the render extent, so the
         // BLAS residency budget has to move with it: the grid is the largest
         // resolution-scaled allocation in the engine, and a budget frozen at
@@ -880,6 +883,7 @@ impl VulkanContext {
         // the two field borrows do not overlap.
         let extents = self.frame_extents;
         let sdk_bytes = self
+            .post
             .frame_upscaler
             .as_ref()
             .map_or(0, |upscaler| upscaler.sdk_memory_bytes());
@@ -896,14 +900,14 @@ impl VulkanContext {
         // Choose the indirect source for composite: SVGF accumulated (in
         // GENERAL layout) if available, else raw G-buffer indirect.
         let (composite_indirect_views, indirect_is_general): (Vec<vk::ImageView>, bool) =
-            if let Some(ref s) = self.svgf {
+            if let Some(ref s) = self.post.svgf {
                 let n = MAX_FRAMES_IN_FLIGHT;
                 ((0..n).map(|i| s.indirect_view(i)).collect(), true)
             } else {
                 (views.raw_indirect_views.clone(), false)
             };
 
-        let caustic_views: Vec<vk::ImageView> = match self.caustic {
+        let caustic_views: Vec<vk::ImageView> = match self.post.caustic {
             Some(ref c) => (0..MAX_FRAMES_IN_FLIGHT)
                 .map(|i| c.sampled_view(i))
                 .collect(),
@@ -914,7 +918,7 @@ impl VulkanContext {
             }
         };
 
-        let bloom_views: Vec<vk::ImageView> = match self.bloom.as_ref() {
+        let bloom_views: Vec<vk::ImageView> = match self.post.bloom.as_ref() {
             Some(b) => b.output_views(),
             None => {
                 return Err(anyhow::anyhow!(
@@ -923,7 +927,7 @@ impl VulkanContext {
                 ));
             }
         };
-        let volumetric_views: Vec<vk::ImageView> = match self.volumetrics.as_ref() {
+        let volumetric_views: Vec<vk::ImageView> = match self.post.volumetrics.as_ref() {
             Some(v) => v.integrated_views(),
             None => {
                 return Err(anyhow::anyhow!(
@@ -939,7 +943,7 @@ impl VulkanContext {
         // #1257 / Phase E of #1210 — gather the resized water-caustic
         // sampled views. The RGB glass accumulator is a 2D array, so the
         // type-compatible fallback is the existing 1×1 R32_UINT 2D sink.
-        let water_caustic_views: Vec<vk::ImageView> = match self.water_caustic_accum.as_ref() {
+        let water_caustic_views: Vec<vk::ImageView> = match self.post.water_caustic_accum.as_ref() {
             Some(a) => (0..MAX_FRAMES_IN_FLIGHT)
                 .map(|i| a.sampled_view(i))
                 .collect(),
@@ -952,7 +956,7 @@ impl VulkanContext {
                 }
             },
         };
-        if let Some(ref mut composite) = self.composite {
+        if let Some(ref mut composite) = self.post.composite {
             composite.recreate_on_resize(
                 &self.device,
                 self.allocator
@@ -968,7 +972,7 @@ impl VulkanContext {
                 &bloom_views,
                 &views.reactive_views,
                 &views.transparency_views,
-                self.cloud_noise.views(),
+                self.post.cloud_noise.views(),
                 self.frame_extents,
             )?;
         }
@@ -1055,6 +1059,7 @@ impl VulkanContext {
         // Snapshot composite's HDR views (owned Vec) so subsequent &mut
         // borrows for TAA + composite don't conflict.
         views.hdr_views = self
+            .post
             .composite
             .as_ref()
             .expect("composite must exist during resize")
@@ -1064,7 +1069,7 @@ impl VulkanContext {
         // Recreate TAA history images + descriptor sets. The
         // post-recreate layout walk to GENERAL lives inside
         // `recreate_on_resize` (#1031).
-        if let Some(ref mut taa) = self.taa {
+        if let Some(ref mut taa) = self.post.taa {
             taa.recreate_on_resize(
                 crate::vulkan::GpuUploadCtx {
                     device: &self.device,
@@ -1086,7 +1091,7 @@ impl VulkanContext {
             )?;
         }
         // Rewire composite's HDR binding to TAA output (if TAA is active).
-        if let (Some(ref t), Some(ref mut c)) = (&self.taa, &mut self.composite) {
+        if let (Some(ref t), Some(ref mut c)) = (&self.post.taa, &mut self.post.composite) {
             let n = MAX_FRAMES_IN_FLIGHT;
             let taa_views: Vec<vk::ImageView> = (0..n).map(|i| t.output_view(i)).collect();
             c.rebind_hdr_views(&self.device, &taa_views, vk::ImageLayout::GENERAL);
@@ -1095,7 +1100,7 @@ impl VulkanContext {
         // Presentation descriptors reference the upscaler's output views, so
         // retire presentation before replacing those views. The resize entry
         // point paid device_wait_idle before reaching this method.
-        if let Some(mut presentation) = self.presentation.take() {
+        if let Some(mut presentation) = self.post.presentation.take() {
             // SAFETY: the resize entry point called device_wait_idle before
             // reaching this method, so `presentation` — created by
             // `self.device` and not yet destroyed — has no in-flight
@@ -1108,6 +1113,7 @@ impl VulkanContext {
             .expect("allocator missing during resize");
         let upscaled_views = {
             let upscaler = self
+                .post
                 .frame_upscaler
                 .as_mut()
                 .expect("frame upscaler must exist during resize");
@@ -1127,7 +1133,7 @@ impl VulkanContext {
         // outlive the recreate — the rebuilt pipeline rebinds the same ones.
         let health_handles: Vec<ash::vk::Buffer> =
             self.image_health_buffers.iter().map(|b| b.buffer).collect();
-        self.presentation = Some(
+        self.post.presentation = Some(
             super::super::presentation::PresentationPipeline::new(
                 &self.device,
                 self.pipeline_cache,
@@ -1195,7 +1201,7 @@ impl VulkanContext {
         // Main framebuffers bind the new HDR + G-buffer views + depth.
         // #3738 — these are the same handles `recreate_gbuffer_dependent_passes`
         // and `recreate_taa_and_presentation` already collected; reused via
-        // `views` instead of re-deriving them from `self.gbuffer` a second time.
+        // `views` instead of re-deriving them from `self.post.gbuffer` a second time.
         self.swapchain.framebuffers = create_main_framebuffers(
             &self.device,
             self.swapchain.render_pass,
@@ -1336,7 +1342,7 @@ impl VulkanContext {
         // reference is destroyed below.
         unsafe { self.device.device_wait_idle() }.context("wait idle before upscaler switch")?;
 
-        if let Some(mut taa) = self.taa.take() {
+        if let Some(mut taa) = self.post.taa.take() {
             let allocator = self
                 .allocator
                 .as_ref()
@@ -1347,7 +1353,7 @@ impl VulkanContext {
             unsafe { taa.destroy(&self.device, &allocator) };
             // Composite has been sampling TAA's output; hand it back to the
             // raw HDR attachment before that output disappears.
-            if let Some(ref mut composite) = self.composite {
+            if let Some(ref mut composite) = self.post.composite {
                 let raw_hdr_views = composite.hdr_views();
                 composite.rebind_hdr_views(
                     &self.device,
@@ -1418,6 +1424,7 @@ impl VulkanContext {
     /// renders without temporal anti-aliasing.
     fn build_taa_pipeline(&mut self) {
         let Some(hdr_views) = self
+            .post
             .composite
             .as_ref()
             .map(|composite| composite.hdr_views())
@@ -1425,7 +1432,7 @@ impl VulkanContext {
             log::warn!("composite missing — TAA left disabled after upscaler switch");
             return;
         };
-        let Some(gbuffer) = self.gbuffer.as_ref() else {
+        let Some(gbuffer) = self.post.gbuffer.as_ref() else {
             log::warn!("G-buffer missing — TAA left disabled after upscaler switch");
             return;
         };
@@ -1468,11 +1475,11 @@ impl VulkanContext {
             unsafe { taa.destroy(&self.device, &allocator) };
             return;
         }
-        if let Some(ref mut composite) = self.composite {
+        if let Some(ref mut composite) = self.post.composite {
             let taa_views: Vec<vk::ImageView> = (0..n).map(|i| taa.output_view(i)).collect();
             composite.rebind_hdr_views(&self.device, &taa_views, vk::ImageLayout::GENERAL);
         }
-        self.taa = Some(taa);
+        self.post.taa = Some(taa);
         self.taa_failed = false;
         // #4006 — composite was just re-pointed at the new TAA output views
         // above; a pending raw-HDR rebind from the old pipeline's failure

@@ -1648,24 +1648,27 @@ impl VulkanContext {
             bind_inverse_upload_warned: false,
             bind_inverse_upload_failure_count: 0,
             clean_skin_frames: 0,
-            ssao,
-            sky_cube,
-            cloud_noise,
+            post: PostChain {
+                sky_cube,
+                ssao,
+                exposure,
+                frame_upscaler,
+                composite,
+                cloud_noise,
+                caustic,
+                volumetrics,
+                bloom,
+                water_caustic_accum,
+                svgf,
+                taa,
+                gbuffer,
+                presentation,
+                fsr_temporal,
+            },
             placeholder_ao,
             placeholder_caustic_sink,
-            exposure,
-            composite,
-            frame_upscaler,
-            presentation,
-            gbuffer,
-            svgf,
             reservoir_buffers,
-            taa,
-            caustic,
-            volumetrics,
-            bloom,
             water,
-            water_caustic_accum,
             taa_failed: false,
             composite_needs_raw_hdr_rebind: false,
             svgf_failed: false,
@@ -1688,7 +1691,6 @@ impl VulkanContext {
             rt_flag_last_frame: false,
             tlas_build_succeeded_last_frame: false,
             volumetric_time_seconds: 0.0,
-            fsr_temporal,
             render_debug_flags: parse_render_debug_flags_env(),
             render_debug_mode: parse_render_debug_mode_env(),
             pending_selected_ray_probe: None,
@@ -1746,6 +1748,7 @@ impl VulkanContext {
         // trivially.
         if matches!(context.renderer_config.upscaler, UpscalerMode::Fsr3(_))
             && !context
+                .post
                 .frame_upscaler
                 .as_ref()
                 .is_some_and(FrameUpscaler::is_fsr_dispatch_active)

@@ -851,7 +851,7 @@ impl VulkanContext {
         // the render pass + SVGF / TAA / SSAO / Bloom, but the barrier
         // doesn't care when the consumer runs as long as it's been
         // emitted before the consumer.
-        // Built unconditionally, not inside the `self.composite` arm below:
+        // Built unconditionally, not inside the `self.post.composite` arm below:
         // the SKYAL sky-cubemap bake consumes the same value, and its ready
         // flag (`GpuCamera::exterior_sky_tint.w`) is derived from the
         // pipeline's presence. Leaving the bake gated on `composite` would
@@ -872,12 +872,14 @@ impl VulkanContext {
             render_debug_mode: self.render_debug_mode.shader_value(),
             frame_counter: self.frame_counter,
             volume_far_distance: self
+                .post
                 .volumetrics
                 .as_ref()
                 .map_or(super::super::volumetrics::DEFAULT_VOLUME_FAR, |volume| {
                     volume.far_distance_world()
                 }),
             froxel_slice_count: self
+                .post
                 .volumetrics
                 .as_ref()
                 .map_or(1.0, |volume| volume.extent().depth as f32),
@@ -885,9 +887,9 @@ impl VulkanContext {
             render_origin,
             inv_vp_arr,
             underwater,
-            water_caustic_active: self.water_caustic_accum.is_some(),
+            water_caustic_active: self.post.water_caustic_accum.is_some(),
         });
-        if let Some(ref mut composite) = self.composite {
+        if let Some(ref mut composite) = self.post.composite {
             if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                 log::warn!("composite upload_params failed: {e}");
             }
@@ -900,9 +902,9 @@ impl VulkanContext {
             // geometry pass, because `raytrace.glsl` samples it from the
             // fragment shader inside that pass; `record_bake` owns both
             // layout transitions.
-            // Read before the `&mut self.sky_cube` borrow below.
+            // Read before the `&mut self.post.sky_cube` borrow below.
             let bindless_set = self.texture_registry.descriptor_set(frame);
-            if let Some(ref mut sky_cube) = self.sky_cube {
+            if let Some(ref mut sky_cube) = self.post.sky_cube {
                 let sky_cube_params =
                     super::super::sky_cube::SkyCubeParams::from_composite(&composite_params);
                 if let Err(e) = sky_cube.upload_params(&self.device, frame, &sky_cube_params) {
@@ -931,7 +933,7 @@ impl VulkanContext {
         // (advanced at end-of-tick); it does NOT depend on anything
         // produced by the render pass below.
         if !self.svgf_failed {
-            if let Some(ref mut svgf) = self.svgf {
+            if let Some(ref mut svgf) = self.post.svgf {
                 // #3995 — `scene_static` is passed in so the recovery window
                 // can veto the progressive-accumulation drop.
                 // #4046 (REN-2026-09-06-D8-02) — ANDs in `caustic_scene_static`
@@ -985,6 +987,7 @@ impl VulkanContext {
             // The `taa` borrow ends at the `upload_params` call, which is
             // what lets the error arm take `&mut self` for the latch.
             let upload = self
+                .post
                 .taa
                 .as_mut()
                 .map(|taa| taa.upload_params(&self.device, frame));
@@ -1064,7 +1067,7 @@ impl VulkanContext {
         // Skipped when the accumulator failed init (None) — graceful
         // degrade matches the rest of the renderer's optional-pipeline
         // policy.
-        if let Some(ref wca) = self.water_caustic_accum {
+        if let Some(ref wca) = self.post.water_caustic_accum {
             // SAFETY: `cmd` is recording and outside the render pass; `wca` (water-caustic accumulator) and its per-frame buffer are live. The clear is recorded before the main pass that atomic-adds into it, and the post-pass barrier sequences those writes to the composite read.
             unsafe { wca.clear_pre_render_pass(&self.device, cmd, frame) };
         }
