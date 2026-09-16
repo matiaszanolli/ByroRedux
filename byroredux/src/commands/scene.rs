@@ -763,7 +763,10 @@ impl ConsoleCommand for MatSetCommand {
             fields: metalness|roughness|alpha|glossiness|emissive_mult|specular_strength|\
             env_map_scale|ior|subsurface|sheen|sheen_tint|anisotropic|\
             translucency_transmissive_scale|translucency_turbulence|\
-            glass_refraction_scale|glass_blur_scale|glass_blur_scale_factor (1 value), \
+            glass_refraction_scale|glass_blur_scale|glass_blur_scale_factor|\
+            lighting_effect_1|lighting_effect_2|subsurface_rolloff|rimlight_power|\
+            backlight_power|fresnel_power|grayscale_to_palette_scale|alpha_threshold|\
+            parallax_height_scale|parallax_max_passes (1 value), \
             color|diffuse_color|emissive_color|specular_color|translucency_subsurface_color|\
             glass_fresnel_color (3 values), \
             material_kind|material_flags (1 int)";
@@ -879,18 +882,55 @@ impl ConsoleCommand for MatSetCommand {
             "translucency_turbulence" | "translucency_turb" => {
                 set_scalar(&mut m.translucency_turbulence, &vals)
             }
-            // #4023 (REN-2026-09-06-D21-01) — the last four shader-consumed
-            // `GpuMaterial` scalars with no `mat.set` arm: `to_gpu_material`
-            // assigns all four verbatim and the shader reads them, but
-            // `cornell.rs`'s `glass()` constructor leaves them at
+            // #4023 (REN-2026-09-06-D21-01) — the glass optics group:
+            // `to_gpu_material` assigns all four verbatim and the shader reads
+            // them, but `cornell.rs`'s `glass()` constructor leaves them at
             // `Material::default()` with no console path to sweep them. Same
             // no-clamp treatment as `ior` above — these are authored blend
             // factors / a refractive scale with no single valid range the
             // console can enforce; `floats`'s finite check is the guard.
+            //
+            // #4023's comment here called these "the last four shader-consumed
+            // `GpuMaterial` scalars with no `mat.set` arm". That was wrong, and
+            // wrong the same way #2514's and #2823's framing had been: ten more
+            // `f32` lanes were still unreachable. They are all below now, and
+            // `every_shader_consumed_material_scalar_is_console_reachable`
+            // enumerates the struct rather than trusting a claim like that one,
+            // so the next lane is covered when it is declared.
             "glass_refraction_scale" => set_scalar(&mut m.glass_refraction_scale, &vals),
             "glass_blur_scale" => set_scalar(&mut m.glass_blur_scale, &vals),
             "glass_blur_scale_factor" => set_scalar(&mut m.glass_blur_scale_factor, &vals),
             "glass_fresnel_color" => set_vec3(&mut m.glass_fresnel_color, &vals),
+            // #4316 (REN-2026-09-14-D21-01) — the soft / rim / back lighting
+            // lobes. `MAT_FLAG_SOFT_LIGHTING`, `_RIM_LIGHTING` and
+            // `_BACK_LIGHTING` could already be set through `material_flags`,
+            // but the scalars those lobes read could not, and Cornell's
+            // constructors leave them at `Material::default()`. `lighting.glsl`
+            // takes the wrap width from `subsurfaceRolloff > 0 ?
+            // subsurfaceRolloff : lightingEffect1` and the rim exponent from
+            // `rimlightPower > 0 ? rimlightPower : lightingEffect2`, so with
+            // both lanes at 0 the lobes could be switched on but only in their
+            // degenerate "nothing authored" state. Unclamped: these are
+            // authored Skyrim+/FO4 shader-property values (see the
+            // `Material` field docs), and the shader, not the console, owns
+            // what each range means.
+            "lighting_effect_1" => set_scalar(&mut m.lighting_effect_1, &vals),
+            "lighting_effect_2" => set_scalar(&mut m.lighting_effect_2, &vals),
+            "subsurface_rolloff" => set_scalar(&mut m.subsurface_rolloff, &vals),
+            "rimlight_power" => set_scalar(&mut m.rimlight_power, &vals),
+            "backlight_power" => set_scalar(&mut m.backlight_power, &vals),
+            "fresnel_power" => set_scalar(&mut m.fresnel_power, &vals),
+            "grayscale_to_palette_scale" => set_scalar(&mut m.grayscale_to_palette_scale, &vals),
+            // #4316, beyond the seven that issue listed — the alpha-test
+            // threshold and the two parallax lanes are shader-consumed
+            // (`ray_hit.glsl` reads `alphaThreshold`, `parallaxHeightScale`
+            // and `parallaxMaxPasses`; `shadow_transport.glsl` reads the
+            // first) and were equally unreachable. `parallax_max_passes` is
+            // an iteration budget the shader itself clamps to [4, 12], so
+            // there is nothing for the console to enforce here either.
+            "alpha_threshold" => set_scalar(&mut m.alpha_threshold, &vals),
+            "parallax_height_scale" => set_scalar(&mut m.parallax_height_scale, &vals),
+            "parallax_max_passes" => set_scalar(&mut m.parallax_max_passes, &vals),
             "color" | "diffuse_color" | "diffuse" => set_vec3(&mut m.diffuse_color, &vals),
             "emissive_color" => set_vec3(&mut m.emissive_color, &vals),
             "specular_color" => set_vec3(&mut m.specular_color, &vals),
@@ -1058,6 +1098,118 @@ mod mat_set_tests {
         assert_eq!(m.sheen, 0.42);
         assert_eq!(m.sheen_tint, 0.42);
         assert_eq!(m.anisotropic, 0.42);
+    }
+
+    /// Regression for #4316 (REN-2026-09-14-D21-01): the soft / rim / back
+    /// lighting lobes were flag-reachable through `material_flags` but their
+    /// scalars were not, so the Cornell harness could switch the lobes on and
+    /// still only ever see their degenerate defaults.
+    #[test]
+    fn soft_and_rim_lighting_arms_write_their_material_fields() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
+
+        for field in [
+            "lighting_effect_1",
+            "lighting_effect_2",
+            "subsurface_rolloff",
+            "rimlight_power",
+            "backlight_power",
+            "fresnel_power",
+            "grayscale_to_palette_scale",
+            "alpha_threshold",
+            "parallax_height_scale",
+            "parallax_max_passes",
+        ] {
+            let out = MatSetCommand.execute(&world, &format!("{e} {field} 0.42"));
+            let joined = out.lines.join("\n");
+            assert!(
+                joined.contains(&format!("{field} = 0.4200")),
+                "field {field}: got {joined}"
+            );
+        }
+
+        let q = world.query::<Material>().unwrap();
+        let m = q.get(e).unwrap();
+        assert_eq!(m.lighting_effect_1, 0.42);
+        assert_eq!(m.lighting_effect_2, 0.42);
+        assert_eq!(m.subsurface_rolloff, 0.42);
+        assert_eq!(m.rimlight_power, 0.42);
+        assert_eq!(m.backlight_power, 0.42);
+        assert_eq!(m.fresnel_power, 0.42);
+        assert_eq!(m.grayscale_to_palette_scale, 0.42);
+        assert_eq!(m.alpha_threshold, 0.42);
+        assert_eq!(m.parallax_height_scale, 0.42);
+        assert_eq!(m.parallax_max_passes, 0.42);
+    }
+
+    /// #2514, #2823, #4023 and #4316 were the same gap found four times: a
+    /// group of `Material` scalars the shader reads that `mat.set` could not
+    /// author, so the Cornell harness could not sweep them. Each fix listed
+    /// the group it had just closed and asserted it was the last one; each
+    /// was wrong, because nothing enumerated the struct.
+    ///
+    /// This does enumerate it. The field list is read out of the `Material`
+    /// declaration itself, so a scalar added tomorrow is covered the day it is
+    /// declared rather than the next time someone audits the console. A new
+    /// field with no arm fails here with the name to add.
+    ///
+    /// Reachability is checked by running the command, not by scanning for an
+    /// arm: an arm that parses the name and writes the wrong slot still fails
+    /// the paired `*_write_their_material_fields` tests above, and an arm that
+    /// exists but is unreachable (shadowed by an earlier pattern) fails here.
+    #[test]
+    fn every_shader_consumed_material_scalar_is_console_reachable() {
+        // A compile error if the component moves — which is the loud failure,
+        // not a silent one.
+        const MATERIAL_SRC: &str =
+            include_str!("../../../crates/core/src/ecs/components/material.rs");
+
+        // `Material` is the only scalar-bearing type here and its declaration
+        // starts at column zero, so the block runs to the first column-zero
+        // `}` — the same slice `material.rs`'s own field-doc test takes.
+        let start = MATERIAL_SRC
+            .find("pub struct Material {")
+            .expect("the Material component must still be declared here");
+        let body = &MATERIAL_SRC[start..];
+        let end = body
+            .find("\n}\n")
+            .expect("the Material declaration must still close at column zero");
+
+        let fields: Vec<&str> = body[..end]
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("pub "))
+            .filter_map(|rest| rest.strip_suffix(": f32,"))
+            .collect();
+        // If the declaration is ever reshaped so this scan matches nothing,
+        // the test would pass vacuously. Pin that it found the bulk of them.
+        assert!(
+            fields.len() >= 20,
+            "the f32 scan found only {} fields — the Material declaration has been \
+             reshaped and this test is no longer reading it",
+            fields.len(),
+        );
+
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
+
+        let mut unreachable = Vec::new();
+        for field in &fields {
+            let out = MatSetCommand.execute(&world, &format!("{e} {field} 0.42"));
+            if out.lines.join("\n").contains("unknown field") {
+                unreachable.push(*field);
+            }
+        }
+        assert!(
+            unreachable.is_empty(),
+            "these shader-consumed `Material` scalars have no `mat.set` arm, so the \
+             Cornell harness cannot sweep them away from `Material::default()`: {}. \
+             Add an arm (and a `USAGE` entry) for each — see the #4316 block in \
+             `MatSetCommand::execute`.",
+            unreachable.join(", "),
+        );
     }
 
     /// Regression for #2823 (REN-D21-01): `MAT_FLAG_TRANSLUCENCY` was
