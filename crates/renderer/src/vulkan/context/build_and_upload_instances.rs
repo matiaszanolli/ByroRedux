@@ -13,7 +13,7 @@ use super::super::material::GpuMaterial;
 use super::super::pipeline::PipelineKey;
 use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
-    INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_NON_UNIFORM_SCALE,
+    INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_LOD_BLOCK, INSTANCE_FLAG_NON_UNIFORM_SCALE,
     INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT,
     INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT,
 };
@@ -290,6 +290,9 @@ impl VulkanContext {
                 // so it is not skippable off-frustum (#3978).
                 if draw_cmd.flat_shading {
                     f |= INSTANCE_FLAG_FLAT_SHADING;
+                }
+                if draw_cmd.is_lod {
+                    f |= INSTANCE_FLAG_LOD_BLOCK;
                 }
                 // Rasterizer-only bits from here down — skipped for draws
                 // that will not be rasterized (#1260, narrowed by #3978).

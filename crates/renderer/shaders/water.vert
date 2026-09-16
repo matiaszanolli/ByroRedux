@@ -152,7 +152,8 @@ struct WaterParams {
     // xy = authored mesh-water UV offset; z = flow-map index bit-cast;
     // w = authored flow-map scale.
     vec4 uv_offset;
-    // x = FO4+/Creation-2 WATR Depth Amount; yzw reserved.
+    // x = FO4+/Creation-2 WATR Depth Amount; y = WaterNormalEncoding
+    // (0 tangent normal, 1 offset noise); zw reserved.
     vec4 optical;
 };
 layout(std430, set = 2, binding = 1) readonly buffer WaterParamsBlock {

@@ -55,6 +55,8 @@ pub struct DrawCommand {
     /// fragment shader replaces the interpolated vertex normal with
     /// the per-face screen-space derivative. See #869.
     pub flat_shading: bool,
+    /// Distant LOD block; packed only for the terrain-LOD diagnostic view.
+    pub is_lod: bool,
     /// Decal geometry — renders on top of coplanar surfaces via depth bias.
     pub is_decal: bool,
     /// Content-class layer for the per-layer depth-bias ladder. Replaces

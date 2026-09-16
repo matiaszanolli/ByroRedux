@@ -125,7 +125,8 @@ struct WaterParams {
     // xy = authored mesh-water UV offset; z = flow-map index bit-cast;
     // w = authored flow-map scale.
     vec4 uv_offset;
-    // x = FO4+/Creation-2 WATR Depth Amount; yzw reserved. This is not a
+    // x = FO4+/Creation-2 WATR Depth Amount; y = WaterNormalEncoding
+    // (0 tangent normal, 1 offset noise); zw reserved. x is not a
     // substitute for the fog distances in shallow.a/deep.a.
     vec4 optical;
 };
@@ -262,7 +263,7 @@ float valueNoise(vec2 p) {
 // authored WATR (or one that round-trips the sentinel) reproduces
 // the pre-#2240 hardcoded chop exactly; other authored values scale
 // the perturbation strength / chop density proportionally.
-vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, vec2 uvOffset, vec2 scroll, float scale, float time, float ampScale, float freqScale) {
+vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, vec2 uvOffset, vec2 scroll, float scale, float time, float ampScale, float freqScale, bool offsetNoise) {
     if (normalMapIndex == 0xFFFFFFFFu) {
         // Procedural fallback — animated six-octave value-noise gradient.
         // The broad first octave carries the swell while the lighter higher
@@ -342,8 +343,16 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
     // plus a bounded fractional remainder.
     vec2 o = floor(originOffset * scale * freqScale);
     vec2 uv = uvBase * scale * freqScale - o + uvOffset + scroll * time;
-    vec3 n = texture(textures[nonuniformEXT(normalMapIndex)], uv).xyz;
-    n = normalize(n * 2.0 - 1.0);
+    vec3 n = texture(textures[nonuniformEXT(normalMapIndex)], uv).xyz * 2.0 - 1.0;
+    // `WaterNormalEncoding::OffsetNoise` (FO3/FNV): the texel is an offset
+    // on the surface up axis, not a unit normal — FNV's WATER000.pso builds
+    // `normalize(n * depthFactor + (0, 0, 1))`; at full depth that is
+    // `n + up`. Normalising the raw texel instead points a third of the
+    // Potomac texture below the surface.
+    if (offsetNoise) {
+        n.z += 1.0;
+    }
+    n = normalize(n);
     // Scale the tangent-space tilt by the authored amplitude, keep the
     // sign of the up component, renormalise (mirrors the procedural path).
     return normalize(vec3(n.xy * ampScale, n.z));
@@ -489,7 +498,8 @@ vec3 traceWaterRay(
 // bodies that ask for one. Same pair semantics the cell-lighting fog
 // already uses (`components.rs`: "evaluating `fog_near..fog_far`").
 //
-// The `exp(-2t)` shape itself is unchanged and still empirical.
+// The exponential shape is still empirical; it is normalised so the column
+// is fully the deep tint at the end of the ramp (see the body).
 vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist, bool cameraUnderwater) {
     bool hasUnderwaterRamp = push.scroll_c.w > push.scroll_c.z + 0.001;
     float fogNear = cameraUnderwater && hasUnderwaterRamp
@@ -505,7 +515,19 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist, bool cameraUnderwa
     float fogAmount = cameraUnderwater
         ? clamp(push.underwater.a, 0.0, 8.0)
         : 1.0;
-    float absorption = exp(-t * 2.0 * max(push.depth.y * fogAmount, 0.0));
+    // The authored refraction depth weight × fog amount scales how far into
+    // the ramp a given distance reaches; the ramp itself must SATURATE at
+    // its far end. Both Bethesda's near/far fog planes and OpenMW's
+    // visibility depth end in the pure water colour. The previous
+    // `exp(-2t)` stopped at 13.5 % transmission, so lakebeds stayed visible
+    // through any depth (FNV Lake Mead, FO3 Potomac), and a refraction ray
+    // that missed (treated as `fog_far`, below) jumped from that 13.5 % to
+    // the pure deep tint — a hard contour line on the surface. Normalising
+    // the same exponential keeps its early shape and ends at exactly zero.
+    float opticalT = clamp(t * max(push.depth.y * fogAmount, 0.0), 0.0, 1.0);
+    float absorption = (exp(-WATER_COLUMN_ABSORPTION_SHAPE * opticalT)
+            - exp(-WATER_COLUMN_ABSORPTION_SHAPE))
+        / (1.0 - exp(-WATER_COLUMN_ABSORPTION_SHAPE));
     vec3 authoredCoefficients = max(push.absorption.rgb, vec3(0.0));
     // Starfield's authored concentrations increase the optical density of
     // the corresponding water column without replacing its RGB palette.
@@ -757,8 +779,11 @@ void main() {
     // baked from `flow` on the CPU side, so we don't have to branch
     // here. Push constants carry the final scroll vectors.
     vec2 normalUvOffset = push.uv_offset.xy + flowOffset;
-    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, normalScrollA, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale);
-    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, normalScrollB, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale);
+    // `WaterNormalEncoding` rides `optical.y` (0 = unit tangent normal,
+    // 1 = FO3/FNV offset noise).
+    bool offsetNoise = push.optical.y > 0.5;
+    vec3 nA = sampleScrollingNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, normalScrollA, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
+    vec3 nB = sampleScrollingNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, normalScrollB, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
 
     // A distinct authored NAM4 layer contributes on every horizontal water
     // kind. Rapids uses the faster flow-biased path for whitewater; calm and
@@ -784,7 +809,8 @@ void main() {
             push.detail.x,
             time,
             ampScale * max(push.detail.w, 0.05) * max(push.depth.z, 0.0),
-            freqScale
+            freqScale,
+            offsetNoise
         );
         nMix = normalize(nA + nB + nC * thirdWeight);
     } else {
@@ -1008,6 +1034,9 @@ void main() {
     // there). Defaults to false for every path that skips ray tracing
     // entirely (waterfalls, lava, disabled-refraction materials).
     bool refrHit = false;
+    // True when a refraction ray was actually traced (RT live, no TIR),
+    // whether or not it hit — see the coverage term below.
+    bool refrTraced = false;
     // A negative refraction-magnitude lane is WATAL's compact canonical
     // "authored refractions disabled" sentinel for mesh water. Zero remains
     // the legacy/default fully perturbed-normal path.
@@ -1027,6 +1056,7 @@ void main() {
         // from the water side — refract returns zero and all energy goes to
         // the already-resolved reflection.
         if (length(Tdir) > 0.001) {
+            refrTraced = sceneFlags.x >= 0.5;
             // Refraction-miss: deep water tint is the right backdrop
             // (the downward ray escaped the BLAS — cliff edge / sparse
             // exterior — but conceptually it should land in the deep
@@ -1205,7 +1235,15 @@ void main() {
     // engine could NOT trace (TIR / miss / no RT — all leave `refrHit`
     // false), not compete with one it did. Union'd the same way as the
     // reflected term above so the result stays bounded and monotonic.
-    float refractionCoverage = refrHit ? 1.0 : 0.0;
+    //
+    // A traced ray that MISSES is not an untraceable refraction: it ran its
+    // whole `RT_REFRACTION_MAX_DIST` through water, `absorbWaterColumn`
+    // shaded it at `fog_far` (the saturated deep tint), and that colour is
+    // as final as a hit's. Gating on the hit alone let deep water fall back
+    // to the authored ~0.2 opacity, so the un-fogged lakebed raster showed
+    // straight through wherever the bed was more than ~1.4k BU down (FNV
+    // Lake Mead's "forest" under the surface).
+    float refractionCoverage = refrTraced ? 1.0 : 0.0;
     float alpha = baseAlpha <= 0.0
         ? 0.0
         : clamp(max(reflectedCoverage, refractionCoverage) + foamMask * 0.1, 0.0, 1.0);

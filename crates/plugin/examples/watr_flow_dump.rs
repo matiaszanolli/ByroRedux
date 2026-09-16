@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
     for w in records {
         let p = &w.params;
         println!(
-            "{:08X} {:<28} nam0={:?} nam1={:?} wind_dir={:.3} wind_speed={:.3} layer_dirs={:?} layer_speeds={:?} nam5={:?}",
+            "{:08X} {:<28} nam0={:?} nam1={:?} wind_dir={:.3} wind_speed={:.3} layer_dirs={:?} layer_speeds={:?} nam5={:?} texture={:?} noise={:?}",
             w.form_id,
             w.editor_id,
             w.linear_velocity,
@@ -37,6 +37,8 @@ fn main() -> anyhow::Result<()> {
             p.noise_wind_directions,
             p.noise_wind_speeds,
             w.flow_noise_texture_path,
+            w.texture_path,
+            w.noise_texture_paths,
         );
     }
     Ok(())

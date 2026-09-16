@@ -1175,6 +1175,15 @@ pub struct EsmCellIndex {
     /// terrain material back to TX00 diffuse-only. Oblivion ICON-authored
     /// LTEX records have no sibling TXST and therefore do not enter this map.
     pub landscape_texture_sets: HashMap<u32, TextureSet>,
+    /// Authored vegetation mapping: LTEX form ID → GRAS form ID.
+    ///
+    /// Skyrim and the Fallout-era formats store this on `LTEX.GNAM`.  The
+    /// reference is kept independently of the texture-set lookup because a
+    /// landscape layer can legitimately have an associated grass model while
+    /// its texture is unavailable (and conversely).  Consumers must remap the
+    /// LAND layer's LTEX form ID through this table before selecting an
+    /// authored ground-cover model.
+    pub landscape_grasses: HashMap<u32, u32>,
     /// Full decoded WRLD records, keyed by lowercased EDID. The
     /// `worldspace_climates` map below is preserved for back-compat
     /// with the cell loader's CLMT lookup; `worldspaces` is the

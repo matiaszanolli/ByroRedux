@@ -440,6 +440,15 @@ pub(crate) struct TerrainCoverInputs {
     /// would be an entire high-desert worldspace with no ground cover and
     /// nothing in the log to say why.
     pub(crate) water_y: f32,
+    /// Authored `GRAS` FormIDs associated with the same eight LAND splat
+    /// lanes as `layer_affinity`. `None` means the layer has no `LTEX.GNAM`
+    /// link (or is the executable's default land texture). The IDs stay on
+    /// the terrain entity because authored-model residency is a streaming
+    /// concern, not a parameter for the procedural density shader.
+    // Kept at the terrain/streaming boundary for the authored-card tier;
+    // procedural ground-cover intentionally does not consume these IDs.
+    #[allow(dead_code)]
+    pub(crate) authored_grass: [Option<u32>; 8],
 }
 impl Component for TerrainCoverInputs {
     type Storage = SparseSetStorage<Self>;

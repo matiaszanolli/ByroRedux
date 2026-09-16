@@ -58,6 +58,29 @@ pub const STARFIELD_WATER_CONCENTRATION_REFERENCE: f32 = 20.0;
 /// identically across gameplay and physics.
 pub const WATERLINE_HYSTERESIS: f32 = 4.0;
 
+/// How a water surface's authored normal/noise texture encodes its
+/// perturbation. A property of the shader family that consumes the texture,
+/// resolved once at the WATR parse boundary.
+///
+/// Measured on the shipped textures: Skyrim `DefaultWater.dds` and FO4's
+/// `DefaultWater`/`DefaultWaterTile`/`ChurningWaterTile` decode to unit
+/// vectors with +Z everywhere; FO3/FNV `WastelandWaterPotomac.dds` and
+/// `WaterFlowRippleNoise01.dds` decode to vectors of mean length 0.48 / 0.13
+/// with Z below zero on 29 % / 53 % of texels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+#[repr(u8)]
+pub enum WaterNormalEncoding {
+    /// A unit tangent-space normal map: `N = normalize(rgb * 2 - 1)`.
+    #[default]
+    TangentNormal = 0,
+    /// FO3/FNV noise map: the decoded `rgb * 2 - 1` is an offset on the
+    /// surface up axis, `N = normalize(n + (0, 0, 1))` — the FNV/FO3
+    /// `WATER000.pso` (shader package 019) decode at full depth. Read as a
+    /// unit normal it points below the surface on a third of the texels.
+    OffsetNoise = 1,
+}
+
 /// How the surface should move and shade. Drives shader path selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
@@ -131,6 +154,8 @@ impl WaterKind {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct WaterMaterial {
+    /// How [`Self::normal_map_index`] and the noise layers are decoded.
+    pub normal_encoding: WaterNormalEncoding,
     /// Authored `BSWaterShaderProperty.water_shader_flags` for mesh-bound
     /// water. Zero means the legacy property had no dedicated flag word and
     /// keeps the renderer's compatibility defaults. The nif.xml
@@ -342,6 +367,7 @@ impl Default for WaterMaterial {
         // and CDPR's `ww_lake_clean` material as documented in the
         // Ultra Plus mod cvar dump.
         Self {
+            normal_encoding: WaterNormalEncoding::TangentNormal,
             shader_flags: 0,
             shallow_color: [0.10, 0.32, 0.38],
             deep_color: [0.02, 0.06, 0.10],

@@ -962,6 +962,11 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define INSTANCE_FLAG_LOD_BLOCK {INSTANCE_FLAG_LOD_BLOCK}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define INSTANCE_TERRAIN_TILE_SHIFT {INSTANCE_TERRAIN_TILE_SHIFT}u"
     )
     .unwrap();
@@ -1105,6 +1110,11 @@ fn main() {
     writeln!(
         out,
         "#define STARFIELD_WATER_CONCENTRATION_REFERENCE {STARFIELD_WATER_CONCENTRATION_REFERENCE:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define WATER_COLUMN_ABSORPTION_SHAPE {WATER_COLUMN_ABSORPTION_SHAPE:?}"
     )
     .unwrap();
     writeln!(out).unwrap();

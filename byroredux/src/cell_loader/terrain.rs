@@ -58,6 +58,9 @@ pub(super) struct CellSplatLayers {
 }
 
 pub(super) struct CellSplatLayer {
+    /// Source LTEX FormID. Retained when its diffuse fails to resolve because
+    /// `LTEX.GNAM` vegetation belongs to layer identity, not texture upload.
+    pub ltex_form_id: Option<u32>,
     /// §3's `cover_affinity` for this layer, resolved from its `LTEX` name by
     /// the keyword table (#4054). A layer does not *enable* ground cover, it
     /// *weights* it — which is what makes the vegetation boundary stop
@@ -91,6 +94,8 @@ pub(super) fn build_cell_splat_layers(
     landscape_textures: &HashMap<u32, String>,
     landscape_texture_sets: &HashMap<u32, TextureSet>,
     land: &esm::cell::LandscapeData,
+    canonical_base_ltex: Option<u32>,
+    default_land: Option<DefaultLandTexture>,
 ) -> CellSplatLayers {
     use std::collections::hash_map::Entry;
 
@@ -139,6 +144,16 @@ pub(super) fn build_cell_splat_layers(
         .collect();
     sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
 
+    // A LAND cell has one mesh but four independently-authored BTXT bases.
+    // The material's base texture remains the canonical (first) BTXT; every
+    // other base becomes a low-priority splat layer, painted only in its own
+    // quadrant. This keeps the floor continuous when a cell crosses dirt,
+    // grass, rock, or snow instead of flattening all four quadrants to the
+    // first texture we happened to find. The edge is feathered by one LAND
+    // vertex (128 BU) so the authored quadrant boundary does not become a
+    // hard, camera-visible checkerboard seam.
+    let base_transitions = build_base_transition_layers(land, canonical_base_ltex);
+
     // Bethesda's authoring tool caps at 8 per UESP, but Skyrim
     // routinely ships cells with 9-12 layers and modded content
     // (TTW, Project Nevada, DLC merges) goes higher. The 8-cap is
@@ -152,60 +167,194 @@ pub(super) fn build_cell_splat_layers(
     // hit. Coverage-aware policy picks the 8 layers with the most
     // painted area across all quadrants, then re-sorts for
     // deterministic GPU ordering. #470.
-    if sorted.len() > 8 {
-        let drop_count = sorted.len() - 8;
+    // At most three non-canonical bases exist, leaving at least five lanes
+    // for actual ATXT/VTXT painting. Base transitions go first so later
+    // authored masks retain their intended visual precedence.
+    let authored_budget = 8 - base_transitions.len();
+    if sorted.len() > authored_budget {
+        let drop_count = sorted.len() - authored_budget;
         log::warn!(
-            "Terrain cell has {} splat layers, capping at 8 (dropping {} with smallest total coverage). #470",
+            "Terrain cell has {} authored splat layers plus {} BTXT transitions; capping authored layers at {} (dropping {} with smallest total coverage). #470",
             sorted.len(),
+            base_transitions.len(),
+            authored_budget,
             drop_count,
         );
-        select_top_8_by_coverage(&mut sorted);
+        select_top_by_coverage(&mut sorted, authored_budget);
     }
 
-    let mut layers = Vec::with_capacity(sorted.len());
-    for (ltex, _layer_key, per_quadrant_alpha) in sorted {
-        let diffuse_index = if let Some(tex_path) = landscape_textures.get(&ltex) {
-            resolve_texture(ctx, tex_provider, Some(tex_path.as_str()))
-        } else {
-            log::debug!(
-                "Terrain splat: LTEX {:08X} not in landscape_textures map; skipping layer",
-                ltex
-            );
-            0
-        };
-        // #4054 — the same name the diffuse resolved from also carries the
-        // vegetation signal. `layer_affinity` matches case-insensitively on
-        // substrings, so a texture path works as well as an editor ID (which
-        // is what Oblivion supplies here).
-        let cover_affinity = crate::groundcover_translate::layer_affinity(
-            landscape_textures
-                .get(&ltex)
-                .map(String::as_str)
-                .unwrap_or(""),
-        );
-        let texture_set = landscape_texture_sets.get(&ltex);
-        let normal_path = terrain_layer_normal_path(
-            tex_provider,
-            texture_set.and_then(|set| set.normal.as_deref()),
-            landscape_textures.get(&ltex).map(String::as_str),
-        );
-        let normal_index =
-            resolve_optional_terrain_texture(ctx, tex_provider, normal_path.as_deref());
-        let specular_index = resolve_optional_terrain_texture(
+    let mut layers = Vec::with_capacity(base_transitions.len() + sorted.len());
+    for (base_ltex, per_quadrant_alpha) in base_transitions {
+        layers.push(resolve_cell_splat_layer(
             ctx,
             tex_provider,
-            texture_set.and_then(|set| set.specular.as_deref()),
-        );
-        layers.push(CellSplatLayer {
-            cover_affinity,
-            diffuse_index,
-            normal_index,
-            specular_index,
+            landscape_textures,
+            landscape_texture_sets,
+            base_ltex,
+            default_land,
             per_quadrant_alpha,
-        });
+        ));
+    }
+    for (ltex, _layer_key, per_quadrant_alpha) in sorted {
+        layers.push(resolve_cell_splat_layer(
+            ctx,
+            tex_provider,
+            landscape_textures,
+            landscape_texture_sets,
+            Some(ltex),
+            default_land,
+            per_quadrant_alpha,
+        ));
     }
 
     CellSplatLayers { layers }
+}
+
+/// `None` is the executable's default LAND texture: both an absent BTXT and
+/// BTXT form ID zero mean that same built-in material.
+fn normalize_base_ltex(ltex: Option<u32>) -> Option<u32> {
+    match ltex {
+        Some(0) | None => None,
+        Some(ltex) => Some(ltex),
+    }
+}
+
+/// Make one 17×17 alpha grid for a non-canonical BTXT quadrant. Shared edges
+/// against a different base get half weight; interpolation then gives each
+/// side one LAND-vertex of overlap rather than a binary texture cut.
+pub(super) fn base_transition_alpha(q_idx: usize, bases: &[Option<u32>; 4]) -> Vec<f32> {
+    let mut alpha = vec![1.0; 17 * 17];
+    let base = bases[q_idx];
+    let (feather_top, feather_bottom, feather_left, feather_right) = match q_idx {
+        0 => (false, bases[2] != base, false, bases[1] != base),
+        1 => (false, bases[3] != base, bases[0] != base, false),
+        2 => (bases[0] != base, false, false, bases[3] != base),
+        3 => (bases[1] != base, false, bases[2] != base, false),
+        _ => unreachable!("LAND has exactly four quadrants"),
+    };
+    for row in 0..17 {
+        for col in 0..17 {
+            if (feather_top && row == 0)
+                || (feather_bottom && row == 16)
+                || (feather_left && col == 0)
+                || (feather_right && col == 16)
+            {
+                alpha[row * 17 + col] = 0.5;
+            }
+        }
+    }
+    alpha
+}
+
+/// Unique non-canonical BTXTs and the quadrants in which they replace the
+/// cell base. Deterministic `BTreeMap` ordering keeps vertex lane assignment
+/// stable across runs.
+fn build_base_transition_layers(
+    land: &esm::cell::LandscapeData,
+    canonical_base_ltex: Option<u32>,
+) -> Vec<(Option<u32>, PerQuadrantAlpha)> {
+    let mut bases = [None; 4];
+    let mut present = [false; 4];
+    for (q_idx, quadrant) in land.quadrants.iter().take(4).enumerate() {
+        bases[q_idx] = normalize_base_ltex(quadrant.base);
+        present[q_idx] = true;
+    }
+    base_transition_layers_for_bases(&bases, &present, normalize_base_ltex(canonical_base_ltex))
+}
+
+/// Pure base-transition planner, split from LAND traversal so its treatment
+/// of absent quadrants and deterministic lane order remains regression-testable
+/// without a parsed plugin record. Inputs are normalized base identities:
+/// `None` means the executable default land texture.
+pub(super) fn base_transition_layers_for_bases(
+    bases: &[Option<u32>; 4],
+    present: &[bool; 4],
+    canonical_base_ltex: Option<u32>,
+) -> Vec<(Option<u32>, PerQuadrantAlpha)> {
+    use std::collections::BTreeMap;
+
+    let mut transitions: BTreeMap<Option<u32>, PerQuadrantAlpha> = BTreeMap::new();
+    for (q_idx, &base_ltex) in bases.iter().enumerate() {
+        if !present[q_idx] || base_ltex == canonical_base_ltex {
+            continue;
+        }
+        let slots = transitions.entry(base_ltex).or_default();
+        slots[q_idx] = Some(base_transition_alpha(q_idx, bases));
+    }
+    transitions.into_iter().collect()
+}
+
+fn resolve_cell_splat_layer(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    landscape_textures: &HashMap<u32, String>,
+    landscape_texture_sets: &HashMap<u32, TextureSet>,
+    ltex: Option<u32>,
+    default_land: Option<DefaultLandTexture>,
+    per_quadrant_alpha: PerQuadrantAlpha,
+) -> CellSplatLayer {
+    let texture_path = ltex
+        .and_then(|id| landscape_textures.get(&id).map(String::as_str))
+        .or_else(|| {
+            ltex.is_none()
+                .then_some(default_land.map(|land| land.diffuse))
+                .flatten()
+        });
+    let diffuse_index = match texture_path {
+        Some(path) => resolve_texture(ctx, tex_provider, Some(path)),
+        None => {
+            if let Some(ltex) = ltex {
+                log::debug!(
+                    "Terrain splat: LTEX {ltex:08X} not in landscape_textures map; skipping layer"
+                );
+            }
+            0
+        }
+    };
+    let texture_set = ltex.and_then(|id| landscape_texture_sets.get(&id));
+    let normal_path = if let Some(default_land) = ltex.is_none().then_some(default_land).flatten() {
+        default_land.normal.map(str::to_string)
+    } else {
+        terrain_layer_normal_path(
+            tex_provider,
+            texture_set.and_then(|set| set.normal.as_deref()),
+            texture_path,
+        )
+    };
+    let specular_path = texture_set
+        .and_then(|set| set.specular.as_deref())
+        .or_else(|| {
+            ltex.is_none()
+                .then_some(default_land.and_then(|land| land.specular))
+                .flatten()
+        });
+    CellSplatLayer {
+        ltex_form_id: ltex,
+        cover_affinity: crate::groundcover_translate::layer_affinity(texture_path.unwrap_or("")),
+        diffuse_index,
+        normal_index: resolve_optional_terrain_texture(ctx, tex_provider, normal_path.as_deref()),
+        specular_index: resolve_optional_terrain_texture(ctx, tex_provider, specular_path),
+        per_quadrant_alpha,
+    }
+}
+
+/// Resolve the authored `LTEX.GNAM` association in GPU splat-lane order.
+///
+/// The terrain shader sees only the texture/weight lanes, while the future
+/// authored-card tier needs the originating vegetation form. Keeping this as
+/// a pure mapping makes that order explicit and testable without a Vulkan
+/// context or an on-disk archive.
+pub(super) fn authored_grass_for_splat_layers(
+    layers: &[CellSplatLayer],
+    landscape_grasses: &HashMap<u32, u32>,
+) -> [Option<u32>; 8] {
+    let mut out = [None; 8];
+    for (slot, layer) in out.iter_mut().zip(layers.iter()) {
+        *slot = layer
+            .ltex_form_id
+            .and_then(|ltex_id| landscape_grasses.get(&ltex_id).copied());
+    }
+    out
 }
 
 /// Optional LAND material roles use handle 0 when absent or unresolved. The
@@ -252,18 +401,18 @@ fn terrain_layer_normal_path(
         .or_else(|| diffuse.and_then(|d| derive_present_normal_map_path(tex_provider, d)))
 }
 
-/// In-place coverage-aware selection of the top 8 splat layers from
+/// In-place coverage-aware selection of the top `max_layers` splat layers from
 /// `sorted`. Computes total painted alpha across all quadrants per
-/// layer, keeps the 8 highest-coverage layers, then re-sorts those 8
+/// layer, keeps the highest-coverage layers, then re-sorts those survivors
 /// by `(layer, ltex_form_id)` so the GPU vertex-attribute layer-index
 /// ordering stays deterministic across runs.
 ///
 /// Pure function — no Vulkan, no allocator — so it's unit-testable
 /// without a real cell. #470.
 ///
-/// Precondition: `sorted.len() > 8` (called only when the cap is
+/// Precondition: `sorted.len() > max_layers` (called only when the cap is
 /// exceeded; the no-op case is gated at the call site).
-fn select_top_8_by_coverage(sorted: &mut Vec<(u32, u16, PerQuadrantAlpha)>) {
+fn select_top_by_coverage(sorted: &mut Vec<(u32, u16, PerQuadrantAlpha)>, max_layers: usize) {
     // Coverage = sum of alpha values across all painted quadrants.
     // f64 accumulator handles the worst case (4 quadrants × 17×17 =
     // 1156 floats × 1.0 = 1156.0) without precision drift even when
@@ -276,7 +425,7 @@ fn select_top_8_by_coverage(sorted: &mut Vec<(u32, u16, PerQuadrantAlpha)>) {
         // appear. Default to Equal on the impossible None branch.
         cb.partial_cmp(&ca).unwrap_or(std::cmp::Ordering::Equal)
     });
-    sorted.truncate(8);
+    sorted.truncate(max_layers);
     // Re-sort by (layer, ltex) so the shader's per-layer-index access
     // pattern stays consistent with the no-cap path — pre-fix every
     // caller assumed `(layer ascending, ltex ascending)` ordering.
@@ -509,6 +658,8 @@ pub(super) struct TerrainSpawnCtx<'a> {
     pub tex_provider: &'a TextureProvider,
     pub landscape_textures: &'a HashMap<u32, String>,
     pub landscape_texture_sets: &'a HashMap<u32, TextureSet>,
+    /// LTEX.GNAM associations keyed by the LAND layer's LTEX form ID.
+    pub landscape_grasses: &'a HashMap<u32, u32>,
     pub blas_specs: &'a mut Vec<(u32, u32, u32)>,
     /// Y-up water-plane height for this cell, or `None` when it has none.
     ///
@@ -589,6 +740,7 @@ pub(super) fn spawn_terrain_mesh(
         tex_provider,
         landscape_textures,
         landscape_texture_sets,
+        landscape_grasses,
         blas_specs,
         water_y,
         game,
@@ -610,6 +762,8 @@ pub(super) fn spawn_terrain_mesh(
         landscape_textures,
         landscape_texture_sets,
         land,
+        land.quadrants.iter().find_map(|q| q.base),
+        DefaultLandTexture::for_game(game),
     );
     // #1343 — `build_cell_splat_layers` acquired (refcounted) one texture per
     // splat layer above, but those handles only reach an unload-droppable
@@ -828,9 +982,10 @@ pub(super) fn spawn_terrain_mesh(
     // height. Unfilled affinity slots take the default rather than zero — an
     // unused layer must not read as a vegetation hole.
     let mut layer_affinity = [crate::groundcover_translate::DEFAULT_AFFINITY; 8];
-    for (slot, layer) in layer_affinity.iter_mut().zip(splat_layers.layers.iter()) {
-        *slot = layer.cover_affinity;
+    for (affinity, layer) in layer_affinity.iter_mut().zip(splat_layers.layers.iter()) {
+        *affinity = layer.cover_affinity;
     }
+    let authored_grass = authored_grass_for_splat_layers(&splat_layers.layers, landscape_grasses);
     let cover_water_y =
         water_y.unwrap_or(byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT);
     // #4057 — §12.5's canopy slab thickness for this tile: the resolved
@@ -949,6 +1104,7 @@ pub(super) fn spawn_terrain_mesh(
         crate::components::TerrainCoverInputs {
             layer_affinity,
             water_y: cover_water_y,
+            authored_grass,
         },
     );
     // #renderlayer — terrain LAND tiles ARE the architectural floor
@@ -1374,11 +1530,11 @@ mod tests {
                 0.0,
             ));
         }
-        // Sort matches the call-site state at entry to select_top_8_by_coverage.
+        // Sort matches the call-site state at entry to select_top_by_coverage.
         sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
         assert_eq!(sorted.len(), 12);
 
-        select_top_8_by_coverage(&mut sorted);
+        select_top_by_coverage(&mut sorted, 8);
 
         assert_eq!(sorted.len(), 8);
         // Every survivor should be a high-coverage layer (LTEX 0xC0..).
@@ -1415,7 +1571,7 @@ mod tests {
         sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
         assert_eq!(sorted.len(), 10);
 
-        select_top_8_by_coverage(&mut sorted);
+        select_top_by_coverage(&mut sorted, 8);
 
         assert_eq!(sorted.len(), 8);
         // All 4 dominant layers must survive.
@@ -1451,7 +1607,7 @@ mod tests {
         }
         sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
 
-        select_top_8_by_coverage(&mut sorted);
+        select_top_by_coverage(&mut sorted, 8);
 
         assert_eq!(sorted.len(), 8);
         // Verify sorted ascending by layer_field.

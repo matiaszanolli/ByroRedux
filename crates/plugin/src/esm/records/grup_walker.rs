@@ -592,8 +592,9 @@ mod tests {
             parse_modl_group(r, end, &mut statics)
         });
         check("parse_ltex_group", &any, &mut |r, end| {
-            let (mut ltex_to_txst, mut direct) = (HashMap::new(), HashMap::new());
-            parse_ltex_group(r, end, &mut ltex_to_txst, &mut direct)
+            let (mut ltex_to_txst, mut direct, mut grass) =
+                (HashMap::new(), HashMap::new(), HashMap::new());
+            parse_ltex_group(r, end, &mut ltex_to_txst, &mut direct, &mut grass)
         });
         check("parse_txst_group", &any, &mut |r, end| {
             let (mut textures, mut sets) = (HashMap::new(), HashMap::new());

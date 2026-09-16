@@ -4,7 +4,7 @@ use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use byroredux_core::ecs::components::water::{
-    DEFAULT_WATER_WAVE_AMPLITUDE, DEFAULT_WATER_WAVE_FREQUENCY,
+    WaterNormalEncoding, DEFAULT_WATER_WAVE_AMPLITUDE, DEFAULT_WATER_WAVE_FREQUENCY,
 };
 
 /// Water record — referenced by `CELL.XCWT` (water type form ID on a
@@ -113,6 +113,16 @@ pub struct WatrRecord {
     /// (#3200 — `legacy_damage`/`legacy_flags` are structurally zero/unset
     /// on vanilla FO3/FNV; this is the field that is actually authored).
     pub effect_form: u32,
+    /// Skyrim/FO4/FO76 `TNAM` — a `MATT` (material type) FormID, the
+    /// surface's impact/footstep material. Every non-Oblivion WATR that
+    /// authors TNAM (Skyrim 5, FO4 2, FO76 2) carries these four bytes, all
+    /// resolving to the same vanilla `MATT` record; it is not a texture path
+    /// (Oblivion's text TNAM is the diffuse texture, above). 0 when absent.
+    pub material_type_form: u32,
+    /// How this game's water shader decodes [`Self::texture_path`] and the
+    /// noise layers — FO3/FNV `NNAM` is an offset-noise map, every later
+    /// title authors unit normal maps. Set from `GameKind` at parse.
+    pub normal_encoding: WaterNormalEncoding,
     /// Raw DNAM bytes — preserved so a future per-game-precise
     /// decoder can re-parse without re-walking the ESM. ~252+ bytes
     /// on Skyrim, ~196 on FNV/FO3, ~102 on Oblivion. Empty when the
@@ -1315,6 +1325,11 @@ pub fn parse_watr(
     let mut out = WatrRecord {
         form_id,
         opacity: 0.75,
+        normal_encoding: if matches!(game, GameKind::Fallout3NV) {
+            WaterNormalEncoding::OffsetNoise
+        } else {
+            WaterNormalEncoding::TangentNormal
+        },
         ..Default::default()
     };
     // #2414 / TD2-117 — the universal named fields come from the
@@ -1361,7 +1376,11 @@ pub fn parse_watr(
             b"TNAM" if matches!(game, GameKind::Oblivion) => {
                 out.diffuse_texture_path = read_zstring(&sub.data)
             }
-            b"TNAM" => out.texture_path = read_zstring(&sub.data),
+            b"TNAM" if sub.data.len() == 4 => {
+                if let Ok(fid) = SubReader::new(&sub.data).u32() {
+                    out.material_type_form = remap_fid(fid, remap);
+                }
+            }
             b"NNAM" => out.texture_path = read_zstring(&sub.data),
             b"MNAM" if matches!(game, GameKind::Oblivion) => {
                 out.material_name = read_zstring(&sub.data)
@@ -1502,12 +1521,12 @@ mod tests {
     use crate::esm::records::test_support::sub;
 
     #[test]
-    fn parse_watr_picks_edid_full_tnam() {
+    fn parse_watr_picks_edid_full_nnam() {
         let subs = vec![
             sub(b"EDID", b"WaterFreshDefault\0"),
             sub(b"FULL", b"Fresh Water\0"),
             sub(b"ANAM", &[192]),
-            sub(b"TNAM", b"textures\\water\\fresh.dds\0"),
+            sub(b"NNAM", b"textures\\water\\fresh.dds\0"),
         ];
         let w = parse_watr(0x1234, &subs, GameKind::Skyrim, &None);
         assert_eq!(w.form_id, 0x1234);
@@ -1580,8 +1599,12 @@ mod tests {
         assert!(watr.raw_data.is_empty());
     }
 
+    /// NNAM is the water texture on FO3/FNV and Skyrim (Skyrim.esm ships
+    /// no text TNAM at all). Outside Oblivion a TNAM is a 4-byte `MATT`
+    /// link — decoding it as a string produced a garbage texture path
+    /// (`"\u{11}l\r"`) on Skyrim's puddle waters.
     #[test]
-    fn fnv_nnam_and_skyrim_tnam_remain_normal_texture_roles() {
+    fn nnam_is_the_texture_and_modern_tnam_is_a_material_type() {
         let fnv = parse_watr(
             1,
             &[sub(b"NNAM", b"textures\\water\\wasteland.dds\0")],
@@ -1590,12 +1613,22 @@ mod tests {
         );
         let skyrim = parse_watr(
             2,
-            &[sub(b"TNAM", b"textures\\water\\defaultwater.dds\0")],
+            &[
+                sub(b"TNAM", &0x000D_6C11u32.to_le_bytes()),
+                sub(b"NNAM", b"Data\\Textures\\Water\\DefaultWater.dds\0"),
+            ],
             GameKind::Skyrim,
             &None,
         );
         assert_eq!(fnv.texture_path, "textures\\water\\wasteland.dds");
-        assert_eq!(skyrim.texture_path, "textures\\water\\defaultwater.dds");
+        assert_eq!(
+            skyrim.texture_path,
+            "Data\\Textures\\Water\\DefaultWater.dds"
+        );
+        assert_eq!(skyrim.material_type_form, 0x000D_6C11);
+        assert_eq!(fnv.material_type_form, 0);
+        assert_eq!(fnv.normal_encoding, WaterNormalEncoding::OffsetNoise);
+        assert_eq!(skyrim.normal_encoding, WaterNormalEncoding::TangentNormal);
         assert!(fnv.diffuse_texture_path.is_empty());
         assert!(skyrim.diffuse_texture_path.is_empty());
     }
@@ -1861,7 +1894,12 @@ mod tests {
         }
 
         let a = parse_watr(0x1146, &[sub(b"DATA", &short)], GameKind::Fallout3NV, &None);
-        let b = parse_watr(0x1146, &[sub(b"DATA", &padded)], GameKind::Fallout3NV, &None);
+        let b = parse_watr(
+            0x1146,
+            &[sub(b"DATA", &padded)],
+            GameKind::Fallout3NV,
+            &None,
+        );
 
         // Named field by field rather than as a whole-struct compare: these
         // are exactly the fields the deleted tail wrote, so a failure points
@@ -1902,7 +1940,10 @@ mod tests {
             assert_eq!(got, base, "{label} moved when the dead tail was padded");
             assert_eq!(got, default, "{label} must stay at its default");
         }
-        assert_eq!(b.params.noise_amplitude_scales, a.params.noise_amplitude_scales);
+        assert_eq!(
+            b.params.noise_amplitude_scales,
+            a.params.noise_amplitude_scales
+        );
         assert_eq!(b.params.noise_amplitude_scales, d.noise_amplitude_scales);
         assert_eq!(b.params.depth_weights, a.params.depth_weights);
         assert_eq!(b.params.depth_weights, d.depth_weights);

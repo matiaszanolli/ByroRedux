@@ -162,8 +162,10 @@ pub struct GpuWaterParams {
     /// same trap as `VolumetricsParams.render_origin.w` (#1928) and
     /// `GpuCamera.render_origin.w` (#2164).
     pub uv_offset: [f32; 4],
-    /// x = FO4+/Creation-2 WATR `Depth Amount`; yzw reserved. This remains
-    /// separate from `shallow.a`/`deep.a`, which are actual fog distances.
+    /// x = FO4+/Creation-2 WATR `Depth Amount`; y = `WaterNormalEncoding`
+    /// (0 unit tangent normal, 1 FO3/FNV offset noise); zw reserved. `x`
+    /// remains separate from `shallow.a`/`deep.a`, which are actual fog
+    /// distances.
     pub optical: [f32; 4],
 }
 
@@ -1402,10 +1404,20 @@ mod tests {
             .find("bool refrHit = false;")
             .expect("refrHit must be hoisted to outer scope, defaulting false, so the alpha \
                      block below can read whether RT refraction actually resolved");
+        // A traced miss is as resolved as a hit (the column is shaded at
+        // `fog_far`), so coverage follows whether the ray was traced.
+        let traced_decl = src
+            .find("bool refrTraced = false;")
+            .expect("water.frag must track whether a refraction ray was traced");
+        assert!(
+            src.contains("refrTraced = sceneFlags.x >= 0.5;"),
+            "only a live-RT, non-TIR refraction counts as traced"
+        );
         let refraction_coverage = src
-            .find("float refractionCoverage = refrHit ? 1.0 : 0.0;")
+            .find("float refractionCoverage = refrTraced ? 1.0 : 0.0;")
             .expect("water.frag must gate a coverage term on whether the RT refraction \
                      resolved, not just on the authored ANAM/Fresnel terms");
+        assert!(traced_decl < refraction_coverage);
         assert!(
             refr_hit_decl < refraction_coverage,
             "refrHit must be declared before the alpha block reads it"
@@ -1475,6 +1487,7 @@ mod tests {
             no_sorter: false,
             wireframe: false,
             flat_shading: false,
+            is_lod: false,
             is_decal: false,
             render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
             bone_offset: 0,
@@ -1825,6 +1838,33 @@ mod absorption_ramp_tests {
         ((hit_dist - fog_near) / span).clamp(0.0, 1.0)
     }
 
+    /// Transmission along the ramp, as `absorbWaterColumn` computes it from
+    /// `t` and the authored depth weight × fog amount.
+    fn transmission(t: f32, weight: f32) -> f32 {
+        use crate::shader_constants::WATER_COLUMN_ABSORPTION_SHAPE as SHAPE;
+        let optical_t = (t * weight.max(0.0)).clamp(0.0, 1.0);
+        ((-SHAPE * optical_t).exp() - (-SHAPE).exp()) / (1.0 - (-SHAPE).exp())
+    }
+
+    /// The column is clear at the surface and fully the deep tint at the end
+    /// of the ramp — so a refraction miss (shaded at `fog_far`) and a hit at
+    /// or beyond `fog_far` produce the same colour. A zero weight is the
+    /// no-absorption sentinel.
+    #[test]
+    fn the_column_saturates_at_the_end_of_the_ramp() {
+        assert!((transmission(0.0, 1.0) - 1.0).abs() < 1e-6);
+        assert!(transmission(1.0, 1.0).abs() < 1e-6, "no floor at fog_far");
+        assert!(transmission(1.0, 2.0).abs() < 1e-6);
+        assert!(transmission(0.5, 1.0) > 0.0 && transmission(0.5, 1.0) < 1.0);
+        assert!(
+            transmission(0.25, 1.0) > transmission(0.5, 1.0),
+            "monotonic"
+        );
+        assert_eq!(transmission(1.0, 0.0), 1.0, "weight 0 absorbs nothing");
+        // The pre-fix curve kept 13.5 % of the bed at any depth.
+        assert!((-2.0f32).exp() > 0.13);
+    }
+
     /// The pre-#2785 curve: `fog_near` unread, `t = hitDist / fog_far`.
     fn legacy_t(hit_dist: f32, fog_far: f32) -> f32 {
         (hit_dist / fog_far.max(1.0)).clamp(0.0, 1.0)
@@ -1930,6 +1970,24 @@ mod absorption_ramp_tests {
             src.contains("#include \"include/caustic_kernel.glsl\"")
                 && src.contains("causticGauss5Weight(kx, ky)"),
             "water caustics must use the shared 5x5 Gaussian footprint"
+        );
+
+        // FO3/FNV noise maps are offsets on +Z, not unit normals; the
+        // encoding rides `optical.y` and every textured layer honours it.
+        assert!(
+            src.contains("bool offsetNoise = push.optical.y > 0.5;")
+                && src.contains("if (offsetNoise) {\n        n.z += 1.0;\n    }")
+                && src.matches("freqScale, offsetNoise)").count() == 2,
+            "water.frag must decode WaterNormalEncoding::OffsetNoise on every normal layer"
+        );
+
+        // The saturating transmission `transmission()` mirrors.
+        assert!(
+            src.contains(
+                "float opticalT = clamp(t * max(push.depth.y * fogAmount, 0.0), 0.0, 1.0);"
+            ) && src.contains("float absorption = (exp(-WATER_COLUMN_ABSORPTION_SHAPE * opticalT)"),
+            "absorbWaterColumn no longer computes the saturating transmission \
+             these tests mirror"
         );
 
         // #2785 — the ramp, not `hitDist / fog_far`.

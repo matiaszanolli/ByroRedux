@@ -161,6 +161,7 @@ pub(super) fn emit_particles(
                 // — billboards are screen-aligned quads). #869.
                 wireframe: false,
                 flat_shading: false,
+                is_lod: false,
                 is_decal: false,
                 // Particles ride emissive + alpha-blend with depth-write
                 // off — they never z-fight surfaces, so Architecture

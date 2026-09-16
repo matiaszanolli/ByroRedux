@@ -427,8 +427,9 @@ pub(crate) fn parse_ltex_group(
     end: usize,
     ltex_to_txst: &mut HashMap<u32, u32>,
     direct_paths: &mut HashMap<u32, String>,
+    ltex_to_grass: &mut HashMap<u32, u32>,
 ) -> Result<()> {
-    parse_ltex_group_inner(reader, end, ltex_to_txst, direct_paths, 0)
+    parse_ltex_group_inner(reader, end, ltex_to_txst, direct_paths, ltex_to_grass, 0)
 }
 
 fn parse_ltex_group_inner(
@@ -436,6 +437,7 @@ fn parse_ltex_group_inner(
     end: usize,
     ltex_to_txst: &mut HashMap<u32, u32>,
     direct_paths: &mut HashMap<u32, String>,
+    ltex_to_grass: &mut HashMap<u32, u32>,
     depth: u32,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
@@ -446,7 +448,14 @@ fn parse_ltex_group_inner(
             else {
                 continue;
             };
-            parse_ltex_group_inner(reader, sub_end, ltex_to_txst, direct_paths, depth + 1)?;
+            parse_ltex_group_inner(
+                reader,
+                sub_end,
+                ltex_to_txst,
+                direct_paths,
+                ltex_to_grass,
+                depth + 1,
+            )?;
             continue;
         }
 
@@ -468,6 +477,22 @@ fn parse_ltex_group_inner(
                             sub.data[3],
                         ]));
                         ltex_to_txst.insert(header.form_id, txst_id);
+                    }
+                    // FO3/FNV/Skyrim: GNAM → GRAS form ID.  As with TNAM,
+                    // the record header is already remapped but the reference
+                    // inside the payload must be mapped through this plugin's
+                    // master table before the ground-cover consumer can look
+                    // it up in `EsmIndex::grasses`.
+                    b"GNAM" if sub.data.len() >= 4 => {
+                        let grass_id = reader.remap_form_id(u32::from_le_bytes([
+                            sub.data[0],
+                            sub.data[1],
+                            sub.data[2],
+                            sub.data[3],
+                        ]));
+                        if grass_id != 0 {
+                            ltex_to_grass.insert(header.form_id, grass_id);
+                        }
                     }
                     // Oblivion: ICON → direct texture path.
                     b"ICON" => {

@@ -5,10 +5,14 @@
 //! Regression tests for #470 — LAND splat layer packing. Covers
 //! quantization, seam max-reconciliation, and absent-quadrant
 //! handling. Pure-Rust, no GPU.
-use super::terrain::{quadrant_samples_for_vertex, splat_weight_for_vertex, CellSplatLayer};
+use super::terrain::{
+    authored_grass_for_splat_layers, base_transition_alpha, base_transition_layers_for_bases,
+    quadrant_samples_for_vertex, splat_weight_for_vertex, CellSplatLayer,
+};
 
 fn mk_layer(per_quadrant_alpha: [Option<Vec<f32>>; 4]) -> CellSplatLayer {
     CellSplatLayer {
+        ltex_form_id: None,
         // #4054 — irrelevant to splat packing, which is what these pin.
         cover_affinity: crate::groundcover_translate::DEFAULT_AFFINITY,
         diffuse_index: 1,
@@ -16,6 +20,22 @@ fn mk_layer(per_quadrant_alpha: [Option<Vec<f32>>; 4]) -> CellSplatLayer {
         specular_index: 0,
         per_quadrant_alpha,
     }
+}
+
+#[test]
+fn authored_grass_binding_follows_the_packed_splat_lane_order() {
+    let alpha = [None, None, None, None];
+    let mut first = mk_layer(alpha.clone());
+    first.ltex_form_id = Some(0x10);
+    let mut second = mk_layer(alpha.clone());
+    second.ltex_form_id = Some(0x20);
+    let third = mk_layer(alpha);
+    let map = std::collections::HashMap::from([(0x10, 0xA0), (0x20, 0xB0)]);
+
+    assert_eq!(
+        authored_grass_for_splat_layers(&[first, second, third], &map),
+        [Some(0xA0), Some(0xB0), None, None, None, None, None, None]
+    );
 }
 
 #[test]
@@ -102,4 +122,57 @@ fn splat_absent_quadrant_yields_zero() {
             );
         }
     }
+}
+
+#[test]
+fn btxt_transition_feathers_only_against_a_different_neighbor() {
+    // SW and SE share a grass base, while NW is rock. The SW→NW edge gets
+    // the half-weight blend but the SW→SE edge remains solid grass.
+    let bases = [Some(0x10), Some(0x10), Some(0x20), Some(0x20)];
+    let sw = base_transition_alpha(0, &bases);
+    assert_eq!(
+        sw[8 * 17 + 8],
+        1.0,
+        "quadrant interior stays fully weighted"
+    );
+    assert_eq!(
+        sw[16 * 17 + 8],
+        0.5,
+        "different north neighbor is feathered"
+    );
+    assert_eq!(
+        sw[8 * 17 + 16],
+        1.0,
+        "same-base east neighbor is not feathered"
+    );
+}
+
+#[test]
+fn btxt_transition_plan_keeps_only_noncanonical_quadrant_bases() {
+    // Canonical SW/NW grass stays in the entity base material. SE's rock and
+    // NE's executable-default dirt become the two deterministic splat lanes.
+    let bases = [Some(0x10), Some(0x20), Some(0x10), None];
+    let transitions = base_transition_layers_for_bases(&bases, &[true; 4], Some(0x10));
+    assert_eq!(transitions.len(), 2);
+    // BTree order gives default (`None`) the first lane, then rock.
+    assert_eq!(transitions[0].0, None);
+    assert!(transitions[0].1[3].is_some());
+    assert!(transitions[0].1[..3].iter().all(Option::is_none));
+    assert_eq!(transitions[1].0, Some(0x20));
+    assert!(transitions[1].1[1].is_some());
+    assert!(transitions[1].1[0].is_none());
+    assert!(transitions[1].1[2].is_none());
+    assert!(transitions[1].1[3].is_none());
+}
+
+#[test]
+fn btxt_transition_plan_ignores_absent_land_quadrants() {
+    // A malformed partial LAND must not invent default-texture coverage for
+    // its missing quadrants.
+    let transitions = base_transition_layers_for_bases(
+        &[Some(0x10), None, None, None],
+        &[true, false, false, false],
+        Some(0x10),
+    );
+    assert!(transitions.is_empty());
 }

@@ -964,6 +964,7 @@ pub(super) fn collect_static_mesh_draws(
                     // `INSTANCE_FLAG_FLAT_SHADING` bit so the fragment
                     // shader uses the per-face derivative for normals.
                     flat_shading: mat.map(|m| m.flat_shading).unwrap_or(false),
+                    is_lod,
                     is_decal,
                     // #renderlayer — final per-entity layer (already
                     // computed above as `render_layer_for_entity`,

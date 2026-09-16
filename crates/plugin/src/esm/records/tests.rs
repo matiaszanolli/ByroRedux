@@ -272,6 +272,30 @@ fn extract_records_walks_one_group() {
     }
 }
 
+/// LTEX.GNAM is the authored bridge from a painted LAND layer to its GRAS
+/// record.  Keep the FormID remap at the parser boundary: carrying the raw
+/// master-local value here makes DLC terrain silently lose its vegetation.
+#[test]
+fn ltex_gnam_maps_landscape_layer_to_authored_grass() {
+    let ltex_id: u32 = 0x0000_1234;
+    let grass_id: u32 = 0x0000_5678;
+    let ltex = build_record(
+        b"LTEX",
+        ltex_id,
+        &[(b"GNAM", grass_id.to_le_bytes().to_vec())],
+    );
+    let group = wrap_group(b"LTEX", &ltex);
+    let mut esm = tes4_with_hedr(1.71); // Skyrim
+    esm.extend_from_slice(&group);
+
+    let index = parse_esm(&esm).expect("synthetic Skyrim LTEX parses");
+    assert_eq!(
+        index.cells.landscape_grasses.get(&ltex_id),
+        Some(&grass_id),
+        "LTEX.GNAM must survive as the layer's authored GRAS reference"
+    );
+}
+
 #[test]
 fn scen_group_dispatches_into_typed_scene_index() {
     let scene = build_record(

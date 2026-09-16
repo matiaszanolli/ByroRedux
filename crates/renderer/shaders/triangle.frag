@@ -744,6 +744,16 @@ void main() {
         outAlbedo = vec4(1.0);
         return;
     }
+    if (debugMode == RENDER_DEBUG_TERRAIN_LOD) {
+        bool lodBlock = (inst.flags & INSTANCE_FLAG_LOD_BLOCK) != 0u;
+        bool fullTerrain = (inst.flags & INSTANCE_FLAG_TERRAIN_SPLAT) != 0u;
+        vec3 colour = lodBlock ? vec3(0.10, 0.35, 1.0)
+            : fullTerrain ? vec3(0.10, 0.95, 0.25) : vec3(0.03);
+        outColor = vec4(colour, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+        return;
+    }
 
     // Debug normal-visualization exit. World-space N is fully resolved
     // here (post normal-map perturb), so this is the right place to

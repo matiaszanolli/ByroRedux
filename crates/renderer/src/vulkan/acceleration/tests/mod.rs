@@ -38,6 +38,7 @@ pub(super) fn make_draw_command(in_tlas: bool, is_water: bool) -> DrawCommand {
         no_sorter: false,
         wireframe: false,
         flat_shading: false,
+        is_lod: false,
         is_decal: false,
         render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
         bone_offset: 0,

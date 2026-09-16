@@ -524,6 +524,7 @@ fn resolve_water_colors(
     rec: &esm::records::misc::WatrRecord,
     mat: &mut WaterMaterial,
 ) {
+    mat.normal_encoding = rec.normal_encoding;
     mat.shallow_color = rec.params.shallow_color;
     mat.deep_color = rec.params.deep_color;
     mat.underwater_color = rec.params.underwater_color;
@@ -2272,6 +2273,8 @@ mod tests {
             linear_velocity: None,
             related_waters: [0; 3],
             effect_form: 0,
+            material_type_form: 0,
+            normal_encoding: Default::default(),
             params: WaterParams {
                 shallow_color: [1.0, 0.4, 0.1],
                 deep_color: [0.6, 0.1, 0.0],
@@ -2510,6 +2513,8 @@ mod tests {
             linear_velocity: None,
             related_waters: [0; 3],
             effect_form: 0,
+            material_type_form: 0,
+            normal_encoding: Default::default(),
             params,
             raw_dnam: Vec::new(),
             raw_data: Vec::new(),

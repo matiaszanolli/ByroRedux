@@ -196,13 +196,27 @@ impl GroundCoverSpecies {
     /// 4096 across and a human is ~128 tall — so a 6–14 unit blade is
     /// ankle-height, which is what vanilla grass reads as.
     pub const DEFAULT_TEMPERATE: Self = Self {
+        // The earlier 6–14 BU envelope made the fully populated near field
+        // read as isolated sprouts at player height. A temperate sward needs
+        // enough vertical and projected area for its four-ribbon tuft to
+        // The fallback stays deliberately short: isolated procedural ribbons
+        // must resolve as cover before the authored card LOD takes over.
         height_range: (6.0, 14.0),
         width_range: (0.7, 1.4),
         // Base is the sheath: paler and a touch warmer than the lamina. It is
-        // NOT a darkened tip — see the field's doc and §12.1.
-        colour_gradient: [[0.34, 0.44, 0.16], [0.42, 0.52, 0.22]],
-        transmission_colour: [0.48, 0.50, 0.10],
-        sheen: 0.45,
+        // NOT a darkened tip — see the field's doc and §12.1. Keep the
+        // fallback deliberately olive rather than the old saturated yellow
+        // green: Skyrim's many GRAS records do not yet supply their authored
+        // mesh tier, so this one procedural species is what the player sees
+        // across a whole temperate exterior. The previous hue read as bright
+        // green needles on dark moss/rock at normal play distance instead of
+        // vegetation growing out of the terrain.
+        colour_gradient: [[0.26, 0.34, 0.10], [0.34, 0.43, 0.15]],
+        // Preserve the warmer back-lit response, but prevent it from turning
+        // the untextured fallback into fluorescent lines under an overcast
+        // directional light.
+        transmission_colour: [0.36, 0.42, 0.08],
+        sheen: 0.32,
         bend_stiffness: 0.35,
         cover_affinity: 1.0,
         ground_coupling: 0.25,

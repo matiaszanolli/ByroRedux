@@ -2114,8 +2114,8 @@ mod tests {
             (GROUNDCOVER_MAX_CHUNKS as u64)
                 * (GROUNDCOVER_MAX_BLADES_PER_CHUNK as u64)
                 * std::mem::size_of::<GpuGroundCoverBlade>() as u64,
-            16 * 1024 * 1024,
-            "the blade buffer's documented 16 MB is derived from these two caps"
+            64 * 1024 * 1024,
+            "the blade buffer's documented 64 MB is derived from these two caps"
         );
     }
 

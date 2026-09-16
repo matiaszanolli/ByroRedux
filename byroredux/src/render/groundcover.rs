@@ -823,7 +823,7 @@ mod tests {
     /// within `GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS` horizontally, so
     /// its whole footprint lies within one more bound radius; footprints do
     /// not overlap, so that disc's area over one footprint bounds the count
-    /// (89 today). §11.2's 256-unit chunk sweep bounds at ~268, and fails here
+    /// (167 today). §11.2's 256-unit chunk sweep bounds at ~268, and fails here
     /// rather than silently dropping chunks at runtime.
     #[test]
     fn chunk_cap_covers_every_chunk_in_reach() {

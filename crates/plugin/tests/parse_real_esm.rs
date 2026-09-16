@@ -3799,6 +3799,39 @@ fn skyrim_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master() {
 /// field's bytes and lands `height_range` or `flags` far outside the ranges
 /// the corpus actually spans. `min_slope` is the sharpest of them — it is
 /// zero on all 168 vanilla records, so any drift at all makes it non-zero.
+/// `LTEX.GNAM` is the authored join from a LAND paint layer to the model
+/// record that grows on it. Neither side's standalone parser establishes that
+/// the pair agrees, so pin the relationship against the installed master.
+#[test]
+#[ignore = "needs installed Skyrim SE data"]
+fn skyrim_ltex_grass_links_resolve_to_real_gras_records() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim/LTEX.GNAM] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    let links = &index.cells.landscape_grasses;
+    assert!(
+        !links.is_empty(),
+        "Skyrim authored LTEX.GNAM grass links, but none were retained"
+    );
+    let resolved = links
+        .values()
+        .filter(|grass_id| index.grasses.contains_key(grass_id))
+        .count();
+    assert_eq!(
+        resolved,
+        links.len(),
+        "every retained LTEX.GNAM reference must resolve through EsmIndex::grasses"
+    );
+    eprintln!(
+        "[Skyrim/LTEX.GNAM] {} landscape layers map to {} GRAS records",
+        links.len(),
+        index.grasses.len()
+    );
+}
+
 #[test]
 #[ignore = "needs installed game data (checks every available master)"]
 fn installed_masters_decode_gras_dimensions_and_placement_fields() {

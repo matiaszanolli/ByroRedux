@@ -369,7 +369,12 @@ pub(super) fn reemit_water_planes(
             ],
             // x preserves FO4+/Creation-2 WATR `Depth Amount` independently
             // from the explicit fog ranges. Remaining lanes are reserved.
-            optical: [mat.depth_amount, 0.0, 0.0, 0.0],
+            optical: [
+                mat.depth_amount,
+                f32::from(mat.normal_encoding as u8),
+                0.0,
+                0.0,
+            ],
         };
         water_commands.push(WaterDrawCommand {
             mesh_handle: draw_commands[idx].mesh_handle,

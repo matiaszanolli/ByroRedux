@@ -278,8 +278,14 @@ pub const GROUNDCOVER_REGION_AMPLITUDE: f32 = 0.35;
 pub const CLOUD_REF_WIDTH: f32 = 512.0;
 pub const CLOUD_TILE_SCALE_LAYER_0: f32 = 0.15;
 
-pub const GROUNDCOVER_FADE_START: f32 = 1400.0;
-pub const GROUNDCOVER_DRAW_DISTANCE: f32 = 2000.0;
+// A 3,000-BU field still fits the existing 256 fixed GPU chunk slabs: its
+// conservative square residency needs 15×15 = 225 slots.  The old 2,000-BU
+// limit left a conspicuous bare belt between the blade field and the terrain
+// detail layer even though the arena had room for it.  Keep the fade's 70%
+// start ratio, so the added reach thins stochastically over the same relative
+// portion of the field instead of exchanging one hard horizon for another.
+pub const GROUNDCOVER_FADE_START: f32 = 2100.0;
+pub const GROUNDCOVER_DRAW_DISTANCE: f32 = 3000.0;
 
 /// Scatter dispatch shape. One workgroup per visible chunk, mirroring
 /// `cluster_cull.comp` (§4).
@@ -288,18 +294,14 @@ pub const GROUNDCOVER_SCATTER_WORKGROUP: u32 = 64;
 /// `GROUNDCOVER_SCATTER_WORKGROUP × this` — 4,096 over a 512-unit chunk, one
 /// candidate per 8 units (≈11 cm).
 ///
-/// Raised from 16 (1,024 per chunk) on 2026-09-13 because the sward was
-/// measured at ~9 blades/m² on Skyrim tundra (`2,-4`): 5,923 accepted points
-/// over ~2,570 m², ×4 blades per point. The limiter was not the cap but the
-/// density field accepting 12% of candidates, and the factors doing the
-/// thinning (layer affinity, clump floor and contrast) are uncited estimates
-/// that §11.3 has yet to calibrate. Scaling the candidate budget instead leaves
-/// the field's relative distribution — worn ground thinner than meadow —
-/// untouched while lifting absolute density toward the sourced references:
-/// Outerra's full detail (≈44 blades/m², "4 blades generated from a single
-/// point" over ~30 cm canopy data) and Ghost of Tsushima's ~83,000 blades
-/// drawn in view (GDC 2021, 1:45). See design §12.13.
-pub const GROUNDCOVER_CANDIDATES_PER_THREAD: u32 = 64;
+/// Raised from 64 (4,096 per chunk) on 2026-09-16 after the Skyrim exterior
+/// capture at `2,-4` still read as isolated sprouts: 15% acceptance yielded
+/// roughly 9 rendered blades/m². The limiter was not the cap, so scaling the
+/// candidate budget retains every terrain-aware relative term — worn ground
+/// stays thinner than meadow — while lifting the observed density to roughly
+/// 36 blades/m², close to Outerra's ≈44 blades/m² full-detail reference.
+/// See design §12.13.
+pub const GROUNDCOVER_CANDIDATES_PER_THREAD: u32 = 256;
 /// Fixed capacity of a chunk's blade slice.
 ///
 /// §4: **this can overflow, and the overflow policy is part of the design.** A
@@ -1090,6 +1092,7 @@ pub const INSTANCE_FLAG_TERRAIN_SPLAT: u32 = 1 << 3;
 pub const INSTANCE_RENDER_LAYER_SHIFT: u32 = 4;
 pub const INSTANCE_RENDER_LAYER_MASK: u32 = 0x3;
 pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
+pub const INSTANCE_FLAG_LOD_BLOCK: u32 = 1 << 9;
 // bit 8 — diffuse texture carries a genuine authored alpha channel
 // (BC2/BC3/BC7/RGBA). Set CPU-side from the cached `handle_has_alpha`
 // classification (`format_has_alpha`, which excludes BC1_RGBA). When
@@ -1209,6 +1212,10 @@ pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 =
     byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_FREQUENCY;
 pub const STARFIELD_WATER_CONCENTRATION_REFERENCE: f32 =
     byroredux_core::ecs::components::water::STARFIELD_WATER_CONCENTRATION_REFERENCE;
+// Exponent of `water.frag`'s `absorbWaterColumn` transmission curve,
+// normalised so the column reaches exactly the deep tint at the end of the
+// authored fog ramp. Empirical shape; the saturation is the contract.
+pub const WATER_COLUMN_ABSORPTION_SHAPE: f32 = 2.0;
 
 // Local fog-volume clustering (M55/Session 62). Lockstep with
 // `volumetrics_inject.comp`'s `sampleLocalMedium` and
@@ -1284,7 +1291,8 @@ pub const RENDER_DEBUG_MATERIAL_ROLE: u32 = 9;
 // so the water footprint reads unambiguously.
 pub const RENDER_DEBUG_WATER_TERM: u32 = 10;
 pub const RENDER_DEBUG_WATER_NORMAL: u32 = 11;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_WATER_NORMAL;
+pub const RENDER_DEBUG_TERRAIN_LOD: u32 = 12;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_TERRAIN_LOD;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -1303,6 +1311,7 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_MATERIAL_ROLE", RENDER_DEBUG_MATERIAL_ROLE),
     ("RENDER_DEBUG_WATER_TERM", RENDER_DEBUG_WATER_TERM),
     ("RENDER_DEBUG_WATER_NORMAL", RENDER_DEBUG_WATER_NORMAL),
+    ("RENDER_DEBUG_TERRAIN_LOD", RENDER_DEBUG_TERRAIN_LOD),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];

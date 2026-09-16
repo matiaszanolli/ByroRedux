@@ -328,6 +328,9 @@ pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
 /// Bit 8 is the first slot above the FLAT_SHADING bit (7) and below the
 /// terrain-tile-index window (bits 16..31), so it collides with nothing.
 pub const INSTANCE_FLAG_DIFFUSE_ALPHA: u32 = 1 << 8;
+/// Distant terrain/object/placement LOD block. Raster-only diagnostic state:
+/// `terrain_lod` colours this blue so handoffs can be inspected in-frame.
+pub const INSTANCE_FLAG_LOD_BLOCK: u32 = 1 << 9;
 
 /// Engine-synthesized material kinds for [`GpuMaterial::material_kind`]
 /// (moved off `GpuInstance` in R1 Phase 6, #785).
@@ -558,6 +561,7 @@ mod tests {
             ("PRESKINNED", INSTANCE_FLAG_PRESKINNED),
             ("FLAT_SHADING", INSTANCE_FLAG_FLAT_SHADING),
             ("DIFFUSE_ALPHA", INSTANCE_FLAG_DIFFUSE_ALPHA),
+            ("LOD_BLOCK", INSTANCE_FLAG_LOD_BLOCK),
         ];
         for (i, (a_name, a)) in flags.iter().enumerate() {
             // Each flag is a single bit.
