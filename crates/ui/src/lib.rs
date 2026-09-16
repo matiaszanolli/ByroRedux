@@ -6,6 +6,7 @@
 //! Note: UiManager is NOT an ECS Resource because Ruffle's Player is not Send+Sync.
 //! It lives in the main loop alongside VulkanContext.
 
+pub mod avm1_host;
 mod avm2_host;
 mod catalog;
 mod host;
@@ -23,7 +24,8 @@ pub use catalog::{
 };
 pub use host::{
     ScaleformHostBridge, ScaleformHostCall, ScaleformHostDispatch, ScaleformValue,
-    MAX_DISTINCT_HOST_METHOD_NAMES, MAX_QUEUED_CALLS,
+    ENGINE_NAME_PREFIX, MAX_DISTINCT_HOST_METHOD_NAMES, MAX_QUEUED_CALLS,
+    RESERVED_HOST_METHOD_NAMES,
 };
 pub use input::{
     UiImeEvent, UiInputEvent, UiKeyDescriptor, UiKeyLocation, UiLogicalKey, UiMouseButton,

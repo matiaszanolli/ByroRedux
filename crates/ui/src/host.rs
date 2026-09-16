@@ -49,7 +49,42 @@ pub const MAX_QUEUED_CALLS: usize = 1024;
 /// but is capped for the same reason `resource_errors` (#2720) caps a channel
 /// nothing currently drives hard: a cap that never engages costs nothing, and
 /// one that's needed and missing is a slow OOM.
+///
+/// **What engaging costs (#3434).** This is a memory bound that, unguarded,
+/// also becomes a functional one. `has_callback` is the sole gate on both
+/// [`crate::SwfPlayer::invoke_callback`] and the destroy hook in `Drop`, and
+/// the adapter registers `__byroBGSCodeObjReady` / `__byroBGSCodeObjDestroy`
+/// from an installer running out of the movie's own constructor — i.e. after
+/// arbitrary movie code has had its chance to run. A latched cap would drop
+/// those two *later* registrations and silently disable the readiness probe
+/// and the destruction acknowledgement. [`RESERVED_HOST_METHOD_NAMES`] exists
+/// so it cannot: engine-authored names get their own band and never compete
+/// with movie-chosen ones for this budget.
 pub const MAX_DISTINCT_HOST_METHOD_NAMES: usize = 1024;
+
+/// Prefix marking a name as engine-authored rather than movie-chosen.
+///
+/// Every identifier the host adapters inject carries it —
+/// `__byroBGSCodeObjReady`, `__byroBGSCodeObjDestroy`,
+/// `__byroBGSAdapterLoaded`, `__byro_fallout4_*`. It lives here rather than
+/// beside the Fallout 4 adapter's own constants because the reservation it
+/// drives is profile-agnostic: any future AVM1 adapter naming itself the same
+/// way inherits the guarantee without touching this module.
+pub const ENGINE_NAME_PREFIX: &str = "__byro";
+
+/// How many distinct [`ENGINE_NAME_PREFIX`] names one bounded set reserves
+/// *beyond* [`MAX_DISTINCT_HOST_METHOD_NAMES`] (#3434).
+///
+/// The reservation is a separate, much smaller budget rather than a blanket
+/// exemption, because the prefix is not a capability: movie content can call
+/// `addCallback("__byro" + i++, f)` just as easily as `addCallback("cb" + i++)`.
+/// An unbounded exemption would hand back exactly the heap growth the cap
+/// exists to stop, keyed off a string a hostile movie gets to choose. A
+/// bounded one cannot: the engine authors 9 such identifiers across every
+/// adapter in the tree, so a band of 32 leaves room to grow while holding the
+/// worst case to `MAX_DISTINCT_HOST_METHOD_NAMES + RESERVED_HOST_METHOD_NAMES`
+/// entries per set.
+pub const RESERVED_HOST_METHOD_NAMES: usize = 32;
 
 /// Value type shared between the engine and ActionScript.
 #[derive(Clone, Debug, PartialEq)]
@@ -198,11 +233,34 @@ impl BridgeState {
     /// known name never gets blocked once the set is full), and the first
     /// insert that would cross the cap logs once via `capped` and is dropped
     /// rather than growing the set further.
+    ///
+    /// Names carrying [`ENGINE_NAME_PREFIX`] draw on a separate
+    /// [`RESERVED_HOST_METHOD_NAMES`] band instead, so a movie that fills the
+    /// main budget before its own lifecycle installer runs cannot lock the
+    /// adapter's readiness and destroy callbacks out of `callbacks` (#3434).
+    /// Guarding here rather than at the five call sites is what makes the
+    /// guarantee hold for every bounded set at once — `callbacks` is the one
+    /// with a functional consumer today, but `known_methods` takes engine
+    /// registrations through the same door.
     fn insert_bounded(set: &mut BTreeSet<String>, capped: &mut bool, label: &str, value: String) {
         if set.contains(&value) {
             return;
         }
         if set.len() >= MAX_DISTINCT_HOST_METHOD_NAMES {
+            // Only walked once the movie-chosen budget is exhausted, and only
+            // for engine-prefixed names — at most `RESERVED_HOST_METHOD_NAMES`
+            // times over the bridge's life, so the hot path above stays a
+            // length compare.
+            if value.starts_with(ENGINE_NAME_PREFIX)
+                && set
+                    .iter()
+                    .filter(|name| name.starts_with(ENGINE_NAME_PREFIX))
+                    .count()
+                    < RESERVED_HOST_METHOD_NAMES
+            {
+                set.insert(value);
+                return;
+            }
             if !*capped {
                 *capped = true;
                 log::error!(

@@ -803,3 +803,84 @@ fn a_response_handler_may_re_enter_its_own_bridge() {
          here means the re-entrant borrow silently did nothing"
     );
 }
+
+/// #3434 — the cap is a *memory* bound, and unguarded it silently becomes a
+/// functional one. The adapter registers `__byroBGSCodeObjReady` and
+/// `__byroBGSCodeObjDestroy` from an installer that runs out of the movie's
+/// own constructor, so arbitrary movie code gets to run — and fill
+/// `callbacks` — first. `has_callback` is the sole gate on both
+/// `invoke_callback` and the destroy hook in `Drop`, so a latched cap would
+/// disable the readiness probe and the destruction acknowledgement with no
+/// symptom beyond a single log line about a diagnostic set.
+#[test]
+fn a_full_callback_set_still_admits_the_adapter_lifecycle_names() {
+    let mut set = std::collections::BTreeSet::new();
+    let mut capped = false;
+
+    // A hostile movie exhausts the movie-chosen budget before its own
+    // lifecycle installer has run.
+    for i in 0..crate::MAX_DISTINCT_HOST_METHOD_NAMES + 10 {
+        super::BridgeState::insert_bounded(&mut set, &mut capped, "callbacks", format!("cb{i}"));
+    }
+    assert_eq!(set.len(), crate::MAX_DISTINCT_HOST_METHOD_NAMES);
+    assert!(capped, "the movie-chosen budget must still latch");
+
+    for name in [
+        crate::avm2_host::READY_CALLBACK,
+        crate::avm2_host::DESTROY_CALLBACK,
+        crate::avm2_host::LOADED_CALLBACK,
+    ] {
+        super::BridgeState::insert_bounded(&mut set, &mut capped, "callbacks", name.to_string());
+        assert!(set.contains(name), "{name} must survive a latched cap");
+    }
+}
+
+/// #3434 — the reservation is a bounded band, not a blanket exemption. The
+/// prefix is a naming convention, not a capability: movie content can call
+/// `addCallback("__byro" + i++, f)` exactly as cheaply as `addCallback("cb" +
+/// i++)`, so an unbounded exemption would hand back the unbounded heap growth
+/// the cap exists to stop, keyed off a string the movie chooses.
+#[test]
+fn the_engine_name_reservation_is_itself_bounded() {
+    let mut set = std::collections::BTreeSet::new();
+    let mut capped = false;
+
+    for i in 0..crate::MAX_DISTINCT_HOST_METHOD_NAMES {
+        super::BridgeState::insert_bounded(&mut set, &mut capped, "callbacks", format!("cb{i}"));
+    }
+    for i in 0..crate::RESERVED_HOST_METHOD_NAMES + 10 {
+        super::BridgeState::insert_bounded(
+            &mut set,
+            &mut capped,
+            "callbacks",
+            format!("{}Spoofed{i}", crate::ENGINE_NAME_PREFIX),
+        );
+    }
+
+    assert_eq!(
+        set.len(),
+        crate::MAX_DISTINCT_HOST_METHOD_NAMES + crate::RESERVED_HOST_METHOD_NAMES,
+        "total residency must stay bounded by both budgets together"
+    );
+}
+
+/// #3434 — the reservation keys off a prefix the adapters have to keep
+/// carrying. Renaming one of these constants without the prefix would drop it
+/// out of the reserved band silently, and the symptom (a lifecycle callback
+/// lost only on movies that fill 1024 names first) is not one a normal test
+/// run would ever produce.
+#[test]
+fn every_engine_authored_callback_name_carries_the_reserved_prefix() {
+    for name in [
+        crate::avm2_host::READY_CALLBACK,
+        crate::avm2_host::DESTROY_CALLBACK,
+        crate::avm2_host::LOADED_CALLBACK,
+        crate::avm2_host::DESTROYED_EVENT,
+    ] {
+        assert!(
+            name.starts_with(crate::ENGINE_NAME_PREFIX),
+            "{name} must start with {}",
+            crate::ENGINE_NAME_PREFIX
+        );
+    }
+}
