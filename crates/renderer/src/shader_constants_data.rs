@@ -267,6 +267,17 @@ pub const GROUNDCOVER_REGION_AMPLITUDE: f32 = 0.35;
 /// accept/reject test may see.** Everything downstream reads `d_ground`; §3
 /// spells out why (a view-faded value makes the shadow under a meadow lighten
 /// as the camera retreats).
+// WTHR cloud layers (#4230). A cloud sprite's UV tile scale is derived on
+// the host as `baseline * CLOUD_REF_WIDTH / authored_width`, which makes its
+// *texel* frequency `baseline * CLOUD_REF_WIDTH` whatever the sprite's size.
+// `sky.glsl`'s analytic cloud mip was tuned against layer 0's baseline at the
+// reference width, so the shader needs both numbers to give the other three
+// layers the mip offset their finer decks call for. Both previously lived as
+// private constants in `byroredux/src/scene/world_setup.rs`, where the shader
+// could not see them.
+pub const CLOUD_REF_WIDTH: f32 = 512.0;
+pub const CLOUD_TILE_SCALE_LAYER_0: f32 = 0.15;
+
 pub const GROUNDCOVER_FADE_START: f32 = 1400.0;
 pub const GROUNDCOVER_DRAW_DISTANCE: f32 = 2000.0;
 

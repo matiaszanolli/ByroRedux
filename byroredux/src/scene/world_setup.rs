@@ -23,13 +23,15 @@ use crate::streaming_helpers::{
     consume_streaming_payload, reconcile_lod_rings, StreamingPayloadOutcome,
 };
 
-/// Reference cloud sprite width — Bethesda's typical authoring
-/// resolution. Per-layer baselines (`CLOUD_TILE_SCALE_*`) assume this
-/// width; an authored cloud DDS at any other resolution is rescaled
-/// inversely so a 1024² cloud tiles half as often as a 512² and a
-/// 256² tiles twice as often, preserving on-screen blob density across
-/// WTHR records that ship sharper or coarser cloud layers. See #529.
-const CLOUD_REF_WIDTH: f32 = 512.0;
+// Reference cloud sprite width — Bethesda's typical authoring
+// resolution. Per-layer baselines (`CLOUD_TILE_SCALE_*`) assume this
+// width; an authored cloud DDS at any other resolution is rescaled
+// inversely so a 1024² cloud tiles half as often as a 512² and a
+// 256² tiles twice as often, preserving on-screen blob density across
+// WTHR records that ship sharper or coarser cloud layers. See #529.
+// Defined in the renderer's shader-constant table since #4230, because
+// `sky.glsl` needs it too.
+use byroredux_renderer::shader_constants::CLOUD_REF_WIDTH;
 
 /// Build the initial [`GameTimeRes`], honoring the `BYRO_HOUR` env var for
 /// offline / cinematic renders. When `BYRO_HOUR` is set to a value in
@@ -67,10 +69,12 @@ fn bootstrap_game_hour(world: &World) -> f32 {
 /// Cloud layer tile-scale baselines for a 512² authored sprite. Higher
 /// indices = higher-altitude, finer-grained cloud decks. Pre-#529 these
 /// were inline literals at every WTHR layer site.
-pub(crate) const CLOUD_TILE_SCALE_LAYER_0: f32 = 0.15;
+// Shared with `sky.glsl`'s per-layer cloud mip offset (#4230), so it is
+// defined once in the renderer's shader-constant table.
+pub(crate) use byroredux_renderer::shader_constants::CLOUD_TILE_SCALE_LAYER_0;
 pub(crate) const CLOUD_TILE_SCALE_LAYER_1: f32 = 0.20;
-const CLOUD_TILE_SCALE_LAYER_2: f32 = 0.25;
-const CLOUD_TILE_SCALE_LAYER_3: f32 = 0.30;
+pub(crate) const CLOUD_TILE_SCALE_LAYER_2: f32 = 0.25;
+pub(crate) const CLOUD_TILE_SCALE_LAYER_3: f32 = 0.30;
 
 /// Derive a per-WTHR cloud tile scale from the authored DDS width.
 ///

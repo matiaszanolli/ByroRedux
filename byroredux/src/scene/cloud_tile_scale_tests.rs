@@ -21,7 +21,10 @@
 //! Pre-#529 the per-layer baseline was inlined as `0.15` / `0.20`
 //! / `0.25` / `0.30` and identical for every WTHR regardless of
 //! the sprite the artist authored.
-use super::{cloud_tile_scale_for_dds, CLOUD_TILE_SCALE_LAYER_0, CLOUD_TILE_SCALE_LAYER_1};
+use super::{
+    cloud_tile_scale_for_dds, CLOUD_TILE_SCALE_LAYER_0, CLOUD_TILE_SCALE_LAYER_1,
+    CLOUD_TILE_SCALE_LAYER_2, CLOUD_TILE_SCALE_LAYER_3,
+};
 
 /// Build a minimal DDS file with just enough of a header for
 /// `parse_dds` to read width / height / a recognised pixel format.
@@ -100,4 +103,84 @@ fn truncated_dds_falls_back_to_baseline() {
     let truncated = vec![0u8; 32];
     let s = cloud_tile_scale_for_dds(&truncated, CLOUD_TILE_SCALE_LAYER_0);
     assert!((s - CLOUD_TILE_SCALE_LAYER_0).abs() < 1e-6, "got {}", s);
+}
+
+/// Rust mirror of `sky.glsl`'s `cloud_layer_lod` offset (#4230): the mip
+/// offset a layer gets relative to the shared elevation term, for a sprite of
+/// `width` texels with the tile scale the host would derive for it.
+fn cloud_lod_offset(baseline: f32, width: u32) -> f32 {
+    let tile_scale = cloud_tile_scale_for_dds(&make_dds_header(width, width), baseline);
+    (tile_scale * width as f32
+        / (byroredux_renderer::shader_constants::CLOUD_TILE_SCALE_LAYER_0
+            * byroredux_renderer::shader_constants::CLOUD_REF_WIDTH))
+        .log2()
+}
+
+/// #4230 — layer 0 keeps the look the elevation term was tuned on, at any
+/// sprite resolution. That is the constraint the offset has to meet before it
+/// is allowed to change anything else.
+#[test]
+fn layer_zero_cloud_lod_is_unchanged_at_every_sprite_size() {
+    for width in [256, 512, 1024, 2048] {
+        let offset = cloud_lod_offset(CLOUD_TILE_SCALE_LAYER_0, width);
+        assert!(
+            offset.abs() < 1e-5,
+            "{width}^2 layer 0 moved by {offset} mips"
+        );
+    }
+}
+
+/// #4230 — the finer decks get the offset their frequency calls for, and it
+/// depends only on the deck, not on the sprite the artist authored.
+///
+/// The second half is why the offset keys off `tile_scale * width` rather than
+/// `tile_scale` alone, as the issue's suggested formula did: the host already
+/// divides `tile_scale` by the sprite width, so a raw-`tile_scale` offset
+/// would read a 1024^2 sprite as a coarser deck and sample it a mip *sharper*
+/// than an equally dense 512^2 one.
+#[test]
+fn finer_cloud_decks_get_a_resolution_independent_mip_offset() {
+    let expected = [
+        (CLOUD_TILE_SCALE_LAYER_1, (0.20f32 / 0.15).log2()),
+        (CLOUD_TILE_SCALE_LAYER_2, (0.25f32 / 0.15).log2()),
+        (CLOUD_TILE_SCALE_LAYER_3, 1.0),
+    ];
+    for (baseline, want) in expected {
+        for width in [256, 512, 1024] {
+            let got = cloud_lod_offset(baseline, width);
+            assert!(
+                (got - want).abs() < 1e-4,
+                "baseline {baseline} at {width}^2: offset {got}, expected {want}"
+            );
+        }
+    }
+    // The deepest deck is the "up to ~1 mip sharper" the issue measured.
+    assert!((cloud_lod_offset(CLOUD_TILE_SCALE_LAYER_3, 512) - 1.0).abs() < 1e-5);
+}
+
+/// #4230 — every cloud layer's sample goes through the per-layer LOD, and the
+/// shader's formula is the one the tests above mirror.
+#[test]
+fn every_cloud_layer_samples_with_its_own_lod() {
+    let sky = include_str!("../../../crates/renderer/shaders/include/sky.glsl");
+    for (idx, scale) in [
+        ("cloud_idx", "tile_scale"),
+        ("cloud_idx_1", "tile_scale_1"),
+        ("cloud_idx_2", "tile_scale_2"),
+        ("cloud_idx_3", "tile_scale_3"),
+    ] {
+        let call = format!("cloud_layer_lod(cloud_lod, {scale}, {idx})");
+        assert!(
+            sky.contains(&call),
+            "sky.glsl must sample layer `{idx}` via `{call}`"
+        );
+    }
+    assert!(
+        !sky.contains(", cloud_lod);"),
+        "a cloud layer still samples the shared layer-0 LOD directly"
+    );
+    assert!(
+        sky.contains("log2(tile_scale * width / (CLOUD_TILE_SCALE_LAYER_0 * CLOUD_REF_WIDTH))"),
+        "sky.glsl's per-layer offset no longer matches the formula these tests mirror"
+    );
 }

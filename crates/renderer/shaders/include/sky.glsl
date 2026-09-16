@@ -161,6 +161,31 @@ vec3 sky_atmospheric_inscatter(SkyDome dome, vec3 dir, float elevation) {
 // (`CloudNoiseVolumes`); they are parameters rather than bindings because
 // the two consumers bind them in different descriptor sets. `cloud_jitter`
 // is the cloud march's step offset — see `cloud_march`.
+
+// #4230 — the mip for one WTHR cloud layer, from the shared elevation term.
+//
+// A texture LOD is log2 of the footprint in the texture's own mip-0 texels,
+// and for a cloud layer that footprint scales with `tile_scale * width`, not
+// with `tile_scale` alone: the host derives `tile_scale` as
+// `baseline * CLOUD_REF_WIDTH / width` precisely so a 1024^2 sprite tiles half
+// as often as a 512^2 one. Offsetting by raw `tile_scale` would therefore
+// sample a high-resolution sprite one mip *sharper* than a reference one with
+// the same on-screen density — trading the aliasing this fixes for another.
+//
+// The offset is a whole log2, not halved like the elevation term. That 0.5 is
+// a softening of an approximate geometric slope (#730); this is an exact
+// frequency ratio at every elevation, and a layer twice as fine needs exactly
+// one more mip to be filtered like layer 0.
+//
+// Relative to layer 0's baseline at the reference width, so layer 0 — the
+// layer `base_lod` was tuned on — resolves to an offset of exactly zero at
+// any sprite resolution, and keeps its look.
+float cloud_layer_lod(float base_lod, float tile_scale, uint texture_index) {
+    float width = float(textureSize(textures[nonuniformEXT(texture_index)], 0).x);
+    return base_lod
+        + log2(tile_scale * width / (CLOUD_TILE_SCALE_LAYER_0 * CLOUD_REF_WIDTH));
+}
+
 vec3 sky_radiance(
     SkyDome dome,
     vec3 dir,
@@ -238,6 +263,17 @@ vec3 sky_radiance(
     // estimate, which would see a 100x–500x UV discontinuity across horizon-fade
     // quads and snap to mip-0 (per-texel aliasing visible in #730). SH-13.
     float cloud_lod = log2(1.0 / max(elevation, 0.05)) * 0.5;
+    // #4230 — that term models only the elevation stretch, and was tuned on
+    // layer 0. It was then reused verbatim by all four layers, although each
+    // multiplies its UV by its own `tile_scale`: layers 1-3 are finer decks
+    // (baselines 0.20 / 0.25 / 0.30 against layer 0's 0.15) and so sampled up
+    // to a whole mip sharper than their frequency warrants — aliasing toward
+    // the horizon. `cloud_layer_lod` adds each layer's own offset.
+    //
+    // The horizon fade (`smoothstep(0, 0.12, elevation)`) and the singularity
+    // floor (`max(elevation, 0.05)`) need no per-layer treatment: both bound
+    // the *projection*, which is the same geometry for every layer whatever
+    // its tile scale.
 
     float tile_scale = dome.cloud_params.z;
     if (tile_scale > 0.0 && elevation > 0.0) {
@@ -246,7 +282,8 @@ vec3 sky_radiance(
         // producing NaN UVs. 0.05 matches ~3° of remaining foreshortening.
         vec2 uv = dir.xz / max(elevation, 0.05) * tile_scale
                 + dome.cloud_params.xy;
-        vec4 cloud = textureLod(textures[nonuniformEXT(cloud_idx)], uv, cloud_lod);
+        vec4 cloud = textureLod(textures[nonuniformEXT(cloud_idx)], uv,
+            cloud_layer_lod(cloud_lod, tile_scale, cloud_idx));
         // Fade clouds out at the horizon so the projection singularity
         // doesn't produce an ugly stretched band right at elevation=0.
         float horizon_fade = smoothstep(0.0, 0.12, elevation);
@@ -265,7 +302,8 @@ vec3 sky_radiance(
         uint cloud_idx_1 = floatBitsToUint(dome.cloud_params_1.w);
         vec2 uv_1 = dir.xz / max(elevation, 0.05) * tile_scale_1
                   + dome.cloud_params_1.xy;
-        vec4 cloud_1 = textureLod(textures[nonuniformEXT(cloud_idx_1)], uv_1, cloud_lod);
+        vec4 cloud_1 = textureLod(textures[nonuniformEXT(cloud_idx_1)], uv_1,
+            cloud_layer_lod(cloud_lod, tile_scale_1, cloud_idx_1));
         float horizon_fade_1 = smoothstep(0.0, 0.12, elevation);
         vec4 tint_1 = dome.cloud_tint_1;
         cloud_1.rgb *= tint_1.rgb;
@@ -280,7 +318,8 @@ vec3 sky_radiance(
         uint cloud_idx_2 = floatBitsToUint(dome.cloud_params_2.w);
         vec2 uv_2 = dir.xz / max(elevation, 0.05) * tile_scale_2
                   + dome.cloud_params_2.xy;
-        vec4 cloud_2 = textureLod(textures[nonuniformEXT(cloud_idx_2)], uv_2, cloud_lod);
+        vec4 cloud_2 = textureLod(textures[nonuniformEXT(cloud_idx_2)], uv_2,
+            cloud_layer_lod(cloud_lod, tile_scale_2, cloud_idx_2));
         float horizon_fade_2 = smoothstep(0.0, 0.12, elevation);
         vec4 tint_2 = dome.cloud_tint_2;
         cloud_2.rgb *= tint_2.rgb;
@@ -295,7 +334,8 @@ vec3 sky_radiance(
         uint cloud_idx_3 = floatBitsToUint(dome.cloud_params_3.w);
         vec2 uv_3 = dir.xz / max(elevation, 0.05) * tile_scale_3
                   + dome.cloud_params_3.xy;
-        vec4 cloud_3 = textureLod(textures[nonuniformEXT(cloud_idx_3)], uv_3, cloud_lod);
+        vec4 cloud_3 = textureLod(textures[nonuniformEXT(cloud_idx_3)], uv_3,
+            cloud_layer_lod(cloud_lod, tile_scale_3, cloud_idx_3));
         float horizon_fade_3 = smoothstep(0.0, 0.12, elevation);
         vec4 tint_3 = dome.cloud_tint_3;
         cloud_3.rgb *= tint_3.rgb;

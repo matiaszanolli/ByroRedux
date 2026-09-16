@@ -713,7 +713,7 @@ pub(crate) use world_setup::{
 #[allow(unused_imports)]
 pub(crate) use world_setup::{
     cloud_tile_scale_for_dds, insert_procedural_fallback_resources, CLOUD_TILE_SCALE_LAYER_0,
-    CLOUD_TILE_SCALE_LAYER_1,
+    CLOUD_TILE_SCALE_LAYER_1, CLOUD_TILE_SCALE_LAYER_2, CLOUD_TILE_SCALE_LAYER_3,
 };
 
 /// Called once after the renderer is ready — uploads meshes and spawns entities.
