@@ -1,3 +1,19 @@
+# regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run)
+# Mode change, not a code change. capture.sh now pins `--bench-mode
+# renderer-static` (authored camera, dt=0). Every row below this header's
+# predecessors was captured with no --bench-mode, which the engine resolves to
+# `system-live` (free camera, wall-clock dt). The two modes place the camera
+# differently, so the frustum and the whole draw split differ. Same build:
+#   system-live      draws=3964/248b/16c raster=359
+#   renderer-static  draws=3969/196b/13c raster=256
+# The system-live capture reproduced the previous draw rows exactly, so the
+# draw-row move below is the camera, not a regression. The new `bench_mode`
+# row makes the mode part of the contract. skin_pool_* now come from the
+# bench: line's `skin=L/M+S` token, read at the measured frame. Draw-split
+# invariant holds: 196 <= 256 <= 3969, 13 <= 2 x 196.
+# skin_pool_live 299 -> 264 (advisory). The system-live capture of the same
+# build also read 264, so 299 was a stale row, not a mode effect.
+# entities_total 18969 is unchanged since the #4125 regen below.
 # regenerated: 2026-09-15 (#4125 — entities_total + tex_missing_all_slots; render-load rows re-confirmed exact)
 # RT-3/#4125 filed the -2.22% entities_total drop (19399 -> 18969) that the
 # 09-14 #4195 pass measured but deliberately left un-regenerated, being scoped
@@ -107,18 +123,19 @@
 # (always 1, could never fail — #3424); the real per-emitter dump measures
 # 0 directional / 685 point. Added light_count_point, corrected
 # light_count_directional.
+bench_mode	renderer-static
 entities_total	18969
 tex_missing_base_color	1
 tex_missing_all_slots	2
 mesh_cache_failed_count	0
 light_count_point	685
 light_count_directional	0
-skin_pool_live	299
+skin_pool_live	264
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	44.3
-bench_fps_avg	44.3
-bench_draws_cmds	3964
-bench_draws_raster_cmds	359
-bench_draws_batches	248
-bench_draws_gpu_calls	16
+bench_fps_p50	79.5
+bench_fps_avg	79.5
+bench_draws_cmds	3969
+bench_draws_raster_cmds	256
+bench_draws_batches	196
+bench_draws_gpu_calls	13

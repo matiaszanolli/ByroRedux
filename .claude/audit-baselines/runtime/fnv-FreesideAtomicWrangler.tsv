@@ -1,3 +1,18 @@
+# regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run)
+# Mode change, not a code change. capture.sh now pins `--bench-mode
+# renderer-static` (authored camera, dt=0). Every row below this header's
+# predecessors was captured with no --bench-mode, which the engine resolves to
+# `system-live` (free camera, wall-clock dt). The two modes place the camera
+# differently, so the frustum and the whole draw split differ. Same build:
+#   system-live      draws=2197/109b/26c raster=188
+#   renderer-static  draws=2204/167b/36c raster=283
+# The system-live capture reproduced the previous draw rows exactly, so the
+# draw-row move below is the camera, not a regression. The new `bench_mode`
+# row makes the mode part of the contract. skin_pool_* now come from the
+# bench: line's `skin=L/M+S` token, read at the measured frame. Draw-split
+# invariant holds: 167 <= 283 <= 2204, 36 <= 2 x 167.
+# entities_total 7342 -> 7414 (+0.98%, inside the band) and
+# tex_missing_all_slots 6 -> 1 (informational) are carried with this regen.
 # regenerated: 2026-09-03 (#3660 — measured raster-prefix command count; other rows held)
 # regenerated: 2026-08-26 (#3288 — see docs/audits/AUDIT_RUNTIME_2026-08-26.md)
 #
@@ -61,18 +76,19 @@
 #
 # bench_fps_* is advisory only under xvfb (RT-2 / #1701) — never gate on it.
 # entities_total: +/-2% tolerance metric, not exact (#1705 / RT-3).
-entities_total	7342
+bench_mode	renderer-static
+entities_total	7414
 tex_missing_base_color	1
-tex_missing_all_slots	6
+tex_missing_all_slots	1
 mesh_cache_failed_count	0
 light_count_point	30
 light_count_directional	0
 skin_pool_live	217
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	65.4
-bench_fps_avg	65.4
-bench_draws_cmds	2110
+bench_fps_p50	79.8
+bench_fps_avg	79.8
+bench_draws_cmds	2204
 bench_draws_raster_cmds	283
-bench_draws_batches	109
-bench_draws_gpu_calls	26
+bench_draws_batches	167
+bench_draws_gpu_calls	36

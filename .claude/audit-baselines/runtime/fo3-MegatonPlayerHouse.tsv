@@ -1,3 +1,21 @@
+# regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run; #4420 mesh-cache tightening)
+# Mode change, not a code change. capture.sh now pins `--bench-mode
+# renderer-static` (authored camera, dt=0). Every row below this header's
+# predecessors was captured with no --bench-mode, which the engine resolves to
+# `system-live` (free camera, wall-clock dt). The two modes place the camera
+# differently, so the frustum and the whole draw split differ. Same build:
+#   system-live      draws=1581/100b/11c raster=108
+#   renderer-static  draws=1579/114b/12c raster=123
+# The system-live capture reproduced the previous draw rows exactly, so the
+# draw-row move below is the camera, not a regression. The new `bench_mode`
+# row makes the mode part of the contract. skin_pool_* now come from the
+# bench: line's `skin=L/M+S` token, read at the measured frame. Draw-split
+# invariant holds: 114 <= 123 <= 1579, 12 <= 2 x 114.
+# #4420: mesh_cache_failed_count 3 -> 0. The old row let a return to three
+# failed parses pass the `<= baseline` gate silently, so it is tightened to
+# the measured value. `mesh.cache failed` prints "No failed NIF parses in
+# cache." Also carried: entities_total 3493 -> 3543 (+1.43%, inside the
+# band), tex_missing_all_slots 12 -> 0 (informational).
 # regenerated: 2026-09-03 (#3660 — measured raster-prefix command count; other rows held)
 # regenerated: 2026-08-27 (#3005 — partial: draw-split + entities only)
 # corrected:   2026-08-28 (#3407 — the draw-split rows below were wrong)
@@ -84,18 +102,19 @@
 #
 # bench_fps_* is advisory only under xvfb (RT-2 / #1701) — never gate on it.
 # entities_total: +/-2% tolerance metric, not exact (#1705 / RT-3).
-entities_total	3493
+bench_mode	renderer-static
+entities_total	3543
 tex_missing_base_color	0
-tex_missing_all_slots	12
-mesh_cache_failed_count	3
+tex_missing_all_slots	0
+mesh_cache_failed_count	0
 light_count_point	11
 light_count_directional	0
 skin_pool_live	7
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	62.7
-bench_fps_avg	62.7
-bench_draws_cmds	1581
+bench_fps_p50	74.7
+bench_fps_avg	74.7
+bench_draws_cmds	1579
 bench_draws_raster_cmds	123
-bench_draws_batches	100
-bench_draws_gpu_calls	11
+bench_draws_batches	114
+bench_draws_gpu_calls	12

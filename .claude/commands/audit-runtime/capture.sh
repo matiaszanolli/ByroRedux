@@ -26,6 +26,7 @@
 #
 # Usage:
 #   capture.sh --game <key> --cell <EDID> --out <dir> [--frames N]
+#     (always runs `--bench-mode renderer-static`; see BENCH_MODE)
 #   capture.sh --self-test
 #
 # `pgrep -x`, not `pgrep -f`: the `-f` form matches this script's own command
@@ -45,6 +46,17 @@ DEBUG_PORT="${BYRO_DEBUG_PORT:-9876}"
 # at frame N, the `stats` line once `byro-dbg` attaches), so streaming can move
 # them slightly; mis-attribution moves them by orders of magnitude.
 ENTITIES_TOLERANCE_PCT="${ENTITIES_TOLERANCE_PCT:-2}"
+
+# #4417 — the one bench mode every runtime baseline is captured in. Passed
+# explicitly, never inferred: with no `--bench-mode` the engine resolves
+# `system-live` (free camera, wall-clock dt), and with `BYROREDUX_FIXED_DT=0`
+# set it silently resolves `renderer-static` (authored camera). The two modes
+# place the camera differently, so the frustum — and with it the whole draw
+# split — differs (Oblivion GildedCarafe: 330/20b/2c raster 22 live vs
+# 330/78b/5c raster 132 static, same build). `bench.rs` names
+# `renderer-static` the regression-gate mode and `system-live` "never a
+# regression gate". Every baseline TSV records this value as `bench_mode`.
+BENCH_MODE="renderer-static"
 
 log() { printf 'capture: %s\n' "$*" >&2; }
 die() {
@@ -75,6 +87,13 @@ entities_from_bench() {
 bench_frame_max_from_log() {
     grep -E '^bench:' | grep --only-matching --max-count=1 -E 'frame_max_ms=[0-9.]+' |
         grep --only-matching -E '[0-9.]+' || true
+}
+
+# `mode=NAME` out of the engine log's `bench:` summary line — what the engine
+# actually resolved, checked against `BENCH_MODE` after the run.
+bench_mode_from_log() {
+    grep -E '^bench:' | grep --only-matching --max-count=1 -E 'mode=[a-z-]+' |
+        cut -d= -f2 || true
 }
 
 # Seconds to wait for each readiness gate. The measured cold first-frame
@@ -215,6 +234,15 @@ if [[ "${1:-}" == "--self-test" ]]; then
         11736.42
     expect "frame_max parse (absent)" "$(bench_frame_max_from_log <<<'bench-hold: holding')" ""
 
+    # #4417 — `mode=` is the first token; `gate=`/`dt=` must not be read as it.
+    expect "bench mode parse" \
+        "$(bench_mode_from_log <<<$'noise\nbench: mode=renderer-static gate=renderer dt=fixed-0 camera=static')" \
+        renderer-static
+    expect "bench mode parse (live)" \
+        "$(bench_mode_from_log <<<'bench: mode=system-live gate=none dt=wall-clock')" system-live
+    expect "bench mode parse (absent)" "$(bench_mode_from_log <<<'bench-hold: mode=x')" ""
+    expect "pinned bench mode" "${BENCH_MODE}" renderer-static
+
     # #4123 readiness gates. The field failure: `pong` at 1 s, then every
     # query timed out against a render thread still blocked on cell load.
     gate_dir="$(mktemp -d)"
@@ -329,6 +357,10 @@ DBG_BIN="./target/release/byro-dbg"
 [[ -x "${ENGINE_BIN}" ]] || die "${ENGINE_BIN} not built"
 [[ -x "${DBG_BIN}" ]] || die "${DBG_BIN} not built"
 mkdir -p "${OUT}"
+# The engine rejects `--bench-mode` alongside this variable; fail here with the
+# reason instead of in the engine log.
+[[ -z "${BYROREDUX_FIXED_DT+set}" ]] ||
+    die "unset BYROREDUX_FIXED_DT — the harness pins --bench-mode ${BENCH_MODE}, which owns dt (#4417)"
 
 label="${GAME}${CELL:+-${CELL}}"
 engine_log="${OUT}/${label}.engine.log"
@@ -350,7 +382,7 @@ fi
 log "launching ${label}"
 xvfb-run -a --server-args="-screen 0 1280x720x24" \
     "${ENGINE_BIN}" --game "${GAME}" ${CELL:+--cell "${CELL}"} \
-    --bench-frames "${FRAMES}" --bench-hold \
+    --bench-frames "${FRAMES}" --bench-mode "${BENCH_MODE}" --bench-hold \
     >"${engine_log}" 2>&1 &
 wrapper_pid=$!
 
@@ -423,5 +455,9 @@ if [[ "${status}" -ne 0 ]]; then
 run's entity count — discard this capture, it is reading a different engine \
 than the one just launched (#3560). Report: ${verdict}"
 fi
+
+ran_mode="$(bench_mode_from_log <"${engine_log}")"
+[[ "${ran_mode}" == "${BENCH_MODE}" ]] ||
+    die "engine ran bench mode '${ran_mode}', not '${BENCH_MODE}' — its draw split is not comparable to the baselines (#4417)"
 
 log "captured ${label}: ${telem}"

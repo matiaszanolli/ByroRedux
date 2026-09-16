@@ -1125,7 +1125,8 @@ impl ApplicationHandler for App {
                          camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
                          sim_time_s={:.6} entities={} meshes={} textures={} \
                          draws={}/{}b/{}c bench_draws_raster_cmds={} \
-                         lights={} tlas={} state_hash={:016x}",
+                         lights={} tlas={} state_hash={:016x} \
+                         skin={}/{}+{}",
                         bench_mode,
                         bench_mode.gate_label(),
                         bench_mode.dt_label(),
@@ -1195,6 +1196,17 @@ impl ApplicationHandler for App {
                         scene_state.lights,
                         scene_state.tlas_eligible,
                         scene_state.state_hash,
+                        // #4417 — appended last, same #3629 rule. The
+                        // once-a-second `engine::stats` line is gated on
+                        // `TotalTime` crossing a boundary, and
+                        // `renderer-static` freezes `dt`, so that line never
+                        // fires inside the bench window and a capture can
+                        // quit before `--bench-hold` produces one. Reading
+                        // the pool here ties the `skin_pool_*` baseline rows
+                        // to the measured frame like every other column.
+                        stats.skin_pool_live,
+                        stats.skin_pool_max,
+                        stats.skin_pool_overflow_attempts,
                     );
                     if let Some(line) = rt_integrity_line {
                         println!("{line}");

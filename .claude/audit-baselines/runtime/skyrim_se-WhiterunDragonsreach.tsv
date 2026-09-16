@@ -1,3 +1,36 @@
+# regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run; #4418 entities_total bisected)
+# Mode change, not a code change. capture.sh now pins `--bench-mode
+# renderer-static` (authored camera, dt=0). Every row below this header's
+# predecessors was captured with no --bench-mode, which the engine resolves to
+# `system-live` (free camera, wall-clock dt). The two modes place the camera
+# differently, so the frustum and the whole draw split differ. Same build:
+#   system-live      draws=2457/9b/2c raster=9
+#   renderer-static  draws=2458/13b/3c raster=14
+# The system-live capture reproduced the previous draw rows exactly, so the
+# draw-row move below is the camera, not a regression. The new `bench_mode`
+# row makes the mode part of the contract. skin_pool_* now come from the
+# bench: line's `skin=L/M+S` token, read at the measured frame. Draw-split
+# invariant holds: 13 <= 14 <= 2458, 3 <= 2 x 13.
+# #4418: entities_total 8126 -> 9461 and skin_pool_live 83 -> 133, the rows
+# #3553/#3554 held stale pending a bisect. Bisected with capture.sh on this
+# cell, 2026-09-16:
+#   2e5912f5 (the 08-09 regen commit)  entities=8279 skin=83  draws=2342/9b/2c
+#     -> 8126 is not reproducible at its own commit. Every other row matches,
+#        so the 153-entity gap (1.9%, inside the band) is the old capture's
+#        method, not code.
+#   235c787c (08-19)  8337 skin=92    ae7179a3 (08-25)  8411 skin=86
+#     -> +132 across two weeks of small creep (<1% per step), not bisected.
+#   fa71f1a2 (#3356)  8685 skin=108   parent 2db648ee: 8411 skin=86
+#     -> +274. OTFT INAM is one FormID array; 387 of 481 Skyrim outfits were
+#        truncated before it, so NPCs now wear their full outfits.
+#   969d81c8          9363 skin=133   e0d5ec18 (#3357 multi-ARMA resolve),
+#     attributed by AUDIT_RUNTIME_2026-08-27 RT-04 (#3411, gated 2026-08-28).
+#   HEAD 1bf1c44d     9461 skin=133   +98 (+1.0%) since, inside the band.
+# Both large steps are deliberate NPC-equip correctness fixes. Render load
+# stayed proportionate: bench_draws_cmds 2342 -> 2457 (+4.9%) in system-live.
+# #4420: mesh_cache_failed_count 9 -> 0 is tightened too, and
+# tex_missing_all_slots 10 -> 2 (the known `textures/\bnor` path plus
+# `cubemaps/ore_ebony_e.dds`) is carried.
 # regenerated: 2026-09-03 (#3660 — measured raster-prefix command count; other rows held)
 # regenerated: 2026-08-06 (RT-2 / #2216)
 # entities_total 6044 -> 8126 (+34.4%) and skin_pool_live 0 -> 83: both far
@@ -83,18 +116,19 @@
 # explained — regen only once that entity rise itself is bisected. Reading
 # entities_total=8126 or skin_pool_live=83 as "current" is wrong; the
 # 2026-08-30 sweep measured entities_total=9363 / skin_pool_live=133 here.
-entities_total	8126
+bench_mode	renderer-static
+entities_total	9461
 tex_missing_base_color	0
-tex_missing_all_slots	10
-mesh_cache_failed_count	9
+tex_missing_all_slots	2
+mesh_cache_failed_count	0
 light_count_point	28
 light_count_directional	0
-skin_pool_live	83
+skin_pool_live	133
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	161.9
-bench_fps_avg	161.9
-bench_draws_cmds	2342
+bench_fps_p50	110.9
+bench_fps_avg	110.9
+bench_draws_cmds	2458
 bench_draws_raster_cmds	14
-bench_draws_batches	9
-bench_draws_gpu_calls	2
+bench_draws_batches	13
+bench_draws_gpu_calls	3

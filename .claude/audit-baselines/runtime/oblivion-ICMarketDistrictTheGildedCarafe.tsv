@@ -1,3 +1,19 @@
+# regenerated: 2026-09-16 (#4417 — every row re-captured in ONE renderer-static run)
+# Mode change, not a code change. capture.sh now pins `--bench-mode
+# renderer-static` (authored camera, dt=0). Every row below this header's
+# predecessors was captured with no --bench-mode, which the engine resolves to
+# `system-live` (free camera, wall-clock dt). The two modes place the camera
+# differently, so the frustum and the whole draw split differ. Same build:
+#   system-live      draws=330/20b/2c raster=22
+#   renderer-static  draws=330/78b/5c raster=132
+# The system-live capture reproduced the previous draw rows exactly, so the
+# draw-row move below is the camera, not a regression. The new `bench_mode`
+# row makes the mode part of the contract. skin_pool_* now come from the
+# bench: line's `skin=L/M+S` token, read at the measured frame. Draw-split
+# invariant holds: 78 <= 132 <= 330, 5 <= 2 x 78.
+# light_count_point stays 8. It is the count of `kind=Point` rows: this cell
+# dumps `LightSource emitters: 10` = 8 point + 2 directional (#4419).
+# entities_total 745 is unchanged since the 2026-09-13 #4124 regen below.
 # regenerated: 2026-09-13 (#4124 / RT-2 — entities_total 705 -> 745 (+5.67%),
 # past the +/-2% band for the first time since the 2026-08-26 regen. The
 # render-load contract was already untouched at the time of filing:
@@ -72,6 +88,7 @@
 # entities_total: +/-2% tolerance metric, not exact (#1705 / RT-3).
 # skin_pool_live: advisory, not a hard gate — see skin_pool_max /
 # skin_pool_overflow_attempts instead (#3553 / RT-7).
+bench_mode	renderer-static
 entities_total	745
 tex_missing_base_color	0
 tex_missing_all_slots	0
@@ -81,9 +98,9 @@ light_count_directional	2
 skin_pool_live	4
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	269.7
-bench_fps_avg	269.7
+bench_fps_p50	109.0
+bench_fps_avg	109.0
 bench_draws_cmds	330
-bench_draws_raster_cmds	22
-bench_draws_batches	20
-bench_draws_gpu_calls	2
+bench_draws_raster_cmds	132
+bench_draws_batches	78
+bench_draws_gpu_calls	5

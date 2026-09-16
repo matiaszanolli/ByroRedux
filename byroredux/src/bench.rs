@@ -669,6 +669,44 @@ mod runtime_baseline_schema_tests {
         );
     }
 
+    /// #4417 — every baseline names the bench mode it was captured in, and it
+    /// is the mode the capture harness pins. The two free choices place the
+    /// camera differently, so a draw split captured in one mode cannot be
+    /// diffed against a baseline from the other; before this row existed the
+    /// harness inferred `system-live` while the skill recommended the env var
+    /// that selects `renderer-static`, and nothing noticed the mismatch.
+    #[test]
+    fn every_baseline_records_the_harness_bench_mode() {
+        let gate_mode = super::BenchMode::RendererStatic.to_string();
+        let harness =
+            std::fs::read_to_string(baseline_dir().join("../../commands/audit-runtime/capture.sh"))
+                .expect("read capture.sh");
+        assert!(
+            harness
+                .lines()
+                .any(|line| line == format!("BENCH_MODE=\"{gate_mode}\"")),
+            "capture.sh must pin BENCH_MODE=\"{gate_mode}\" — the mode bench.rs \
+             documents as the regression-gate contract",
+        );
+        assert!(
+            harness.contains("--bench-mode \"${BENCH_MODE}\""),
+            "capture.sh must pass the pinned mode to the engine, not let it infer one",
+        );
+        for entry in std::fs::read_dir(baseline_dir()).expect("baseline dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_none_or(|e| e != "tsv") {
+                continue;
+            }
+            let (_, rows) = parse(&path);
+            assert_eq!(
+                rows.get("bench_mode").map(String::as_str),
+                Some(gate_mode.as_str()),
+                "{}: bench_mode row must name the harness mode",
+                path.display(),
+            );
+        }
+    }
+
     /// A draw split must be internally coherent: the three-way
     /// `cmds >= batches >= gpu_calls` ordering is what the split MEANS
     /// (commands merge into batches, batches issue as GPU calls), so a

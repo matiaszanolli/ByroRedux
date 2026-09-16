@@ -22,7 +22,8 @@ reviewer needs to see "this metric moved because of THIS change."
 ## Schema
 
 ```
-# regenerated: 2026-09-02 (#3550/#3556 — RT-4/RT-10 metric-contract fixes)
+# regenerated: 2026-09-16 (#4417 — renderer-static capture)
+bench_mode	renderer-static
 entities_total	5885
 tex_missing_base_color	0
 tex_missing_all_slots	0
@@ -41,6 +42,19 @@ bench_draws_gpu_calls	9
 ```
 
 The key set above mirrors the committed TSVs exactly.
+
+- **`bench_mode`** (#4417) is the only non-numeric row. It names the
+  `--bench-mode` the capture ran under, and must equal `capture.sh`'s pinned
+  `BENCH_MODE` (`renderer-static`). The mode decides the camera, so it decides
+  the frustum and the whole draw split. A baseline from another mode can't be
+  compared at all. `every_baseline_records_the_harness_bench_mode`
+  (`byroredux/src/bench.rs`) enforces the match.
+- **`skin_pool_*`** are read from the `bench:` line's trailing `skin=L/M+S`
+  token (#4417), not from the once-per-second `engine::stats` line. That line
+  never fires inside a frozen-`dt` bench window.
+- **`light_count_point`** is the count of `kind=Point` rows in `light.dump`,
+  not its `LightSource emitters: N` total, which includes directional
+  emitters (#4419).
 
 - **`tex_missing_base_color` / `tex_missing_all_slots`** (#3550, RT-4) — split
   from the single old `tex_missing_unique_paths` row. `#3349` widened

@@ -34,6 +34,9 @@ no longer spell out archives per game.
 - `--cell <EDID>` loads an interior cell (omit to fall through to the profile's
   `[defaults].cell`, if any).
 - `--bench-frames N` runs N frames then prints the single `bench:` summary line.
+- `--bench-mode renderer-static` fixes `dt = 0` and holds the authored camera
+  still. `capture.sh` always passes it (#4417) — see *The bench mode is part
+  of the baseline* below.
 - `--bench-hold` keeps the engine alive after the bench window so `byro-dbg`
   can attach on port 9876 (prints a `bench-hold:` notice to stderr).
 
@@ -45,17 +48,17 @@ no longer spell out archives per game.
 
 Five runtime baselines are committed today (the original fnv/fo4 pair plus the
 fo3/oblivion/skyrim_se trio created in the 2026-06-14 `--game all` sweep).
-**Every figure below moved between 2026-08-09 and 2026-09-03** — read the TSVs,
-not this table, before calling a delta a regression; the table is oriented at
-the last sync (2026-09-05) and will drift again:
+This table deliberately carries **no metric values**. Every copy it used to
+hold went stale within weeks (#4419). Read the TSV: its `# regenerated:`
+headers record each value and why it moved.
 
 | Baseline TSV | Cell | Notes |
 |--------------|------|-------|
-| `.claude/audit-baselines/runtime/fnv-FreesideAtomicWrangler.tsv` | FNV `FreesideAtomicWrangler` | Primary FNV guard. **7 342 entities** as of the 2026-09-02 `#3554` (RT-8) regen — up from 7 174 (+2.34%, benign body-count creep re-verified against an unchanged `bench_draws_cmds`), which was itself the 2026-08-27 re-baseline (`104189a5`) down 22.6% from ~9 250 on a deliberate armor fix. `mesh_cache_failed_count=0`. Post-#1284 `SkinSlotPool` schema, `MAX_TOTAL_BONES=196608`. |
-| `.claude/audit-baselines/runtime/fo4-InstituteBioScience.tsv` | FO4 `InstituteBioScience` | Post-M49 precombine-CSG render + LOD fix. **19 399 entities** as of the 2026-09-02 `#3554` (RT-8) regen — up from 18 256 (+6.26%, re-verified benign: `bench_draws_cmds` moved only +1.3% over the same window), which was itself the 2026-08-22 regen (was 9 167 → 11 279 at the 2026-06-19 RT-4 / #1621 regen). `mesh_cache_failed_count=0`. Profile `sample_cells` lists this EDID. |
-| `.claude/audit-baselines/runtime/fo3-MegatonPlayerHouse.tsv` | FO3 `MegatonPlayerHouse` | Created 2026-06-14; re-baselined 2026-08-28 (#3407 corrected the draw count). **3 493 entities**, `mesh_cache_failed_count=3`. |
-| `.claude/audit-baselines/runtime/oblivion-ICMarketDistrictTheGildedCarafe.tsv` | Oblivion `ICMarketDistrictTheGildedCarafe` | Created 2026-06-14; refreshed 2026-08-26 (#3288, which held the other three). **705 entities**, `mesh_cache_failed_count=0` — still the cleanest path. |
-| `.claude/audit-baselines/runtime/skyrim_se-WhiterunDragonsreach.tsv` | Skyrim SE `WhiterunDragonsreach` | Created 2026-06-14, last regenerated 2026-08-09. **8 126 entities** (was ~6 044); `mesh_cache_failed_count=9` (was 11), still including the 2 corrupted control-char paths (see AUDIT_RUNTIME_2026-06-14 RT-3). |
+| `.claude/audit-baselines/runtime/fnv-FreesideAtomicWrangler.tsv` | FNV `FreesideAtomicWrangler` | Primary FNV guard; densest NPC interior (the #1284 `SkinSlotPool` cap case). |
+| `.claude/audit-baselines/runtime/fo4-InstituteBioScience.tsv` | FO4 `InstituteBioScience` | BGSM-heavy + precombine CSG (M49). Profile `sample_cells` lists this EDID. |
+| `.claude/audit-baselines/runtime/fo3-MegatonPlayerHouse.tsv` | FO3 `MegatonPlayerHouse` | Exterior-style architecture in an interior shell. |
+| `.claude/audit-baselines/runtime/oblivion-ICMarketDistrictTheGildedCarafe.tsv` | Oblivion `ICMarketDistrictTheGildedCarafe` | The smallest, cleanest cell, and the only one with directional emitters. |
+| `.claude/audit-baselines/runtime/skyrim_se-WhiterunDragonsreach.tsv` | Skyrim SE `WhiterunDragonsreach` | Per-entity hot-path stress; carries the 2 corrupted control-char texture paths (AUDIT_RUNTIME_2026-06-14 RT-3). |
 
 > The `.claude/audit-baselines/sf-esm/` dir holds Starfield **ESM resolve-rate**
 > baselines for the `--sf-smoke` harness (`byroredux/src/sf_smoke.rs`), NOT this
@@ -121,9 +124,30 @@ before spending a run on it, though.
 It writes the same two files this skill's Phase 3 parses
 (`<out>/<game>-<cell>.engine.log` and `.telem.txt`), and does everything the
 old inline recipe did: `xvfb-run -a --server-args="-screen 0 1280x720x24"`,
-`--bench-frames N --bench-hold`, a 90 s `byro-dbg` ping poll, then
+`--bench-frames N --bench-mode renderer-static --bench-hold`, a 90 s
+`byro-dbg` ping poll, then
 `stats` / `tex.missing` / `mesh.cache failed` / `light.dump` / `quit`, and it
 appends the run's `bench_frame_max_ms` to the telemetry file.
+
+**The bench mode is part of the baseline (#4417).** `renderer-static` and
+`system-live` place the camera differently: an authored pose versus wherever
+the live systems leave it. So they cull a different frustum, and the whole
+draw split changes with the mode, not with the code. Same build, Oblivion
+`ICMarketDistrictTheGildedCarafe`:
+
+| Mode | `camera_pos` | Draws | `bench_draws_raster_cmds` |
+|------|--------------|-------|---------------------------|
+| `system-live` | `209.8,546.2,-275.7` | `330/20b/2c` | 22 |
+| `renderer-static` | `271.3,464.8,-58.0` | `330/78b/5c` | 132 |
+
+`bench.rs` names `renderer-static` the regression-gate mode, so the harness
+pins it (`BENCH_MODE`), refuses to start with `BYROREDUX_FIXED_DT` set, and
+fails the capture if the `bench:` line reports any other `mode=`. Every TSV
+records the mode in a `bench_mode` row. Check that row before diffing
+anything else. The schema test
+`every_baseline_records_the_harness_bench_mode` (`byroredux/src/bench.rs`)
+keeps the TSVs, `capture.sh` and the enum label in agreement. Don't set
+`BYROREDUX_FIXED_DT` by hand for this audit.
 
 **Readiness is gated on the engine, not on `pong` (#4123).** The debug server
 answers `ping` as soon as it binds — 1–6 s into a launch — but cell load runs on
@@ -187,10 +211,13 @@ offset, do not run them concurrently.
 > `entities=`) are on the single `bench:` line printed at `--bench-frames` exit
 > (`byroredux/src/app_events.rs` ~line 1074, the `"bench: mode=…"` block — moved
 > out of *main.rs* by the #2731 split) — they land in the
-> `.engine.log`, NOT the `byro-dbg` stream. The `skin=L/M+S` line is emitted to
-> the `engine::stats` log target once per wall-second
-> (`byroredux/src/systems/debug.rs`, format `skin={}/{}+{}`), so grep the
-> `.engine.log` for the LAST `skin=`. There is no `bench-stats` command.
+> `.engine.log`, NOT the `byro-dbg` stream. The skin pool is the `bench:`
+> line's trailing `skin=L/M+S` token (#4417), read at the measured frame.
+> Don't use the once-per-second `engine::stats` `skin=` line
+> (`byroredux/src/systems/debug.rs`) for this. It fires only when `TotalTime`
+> crosses a second, a frozen `dt` never advances `TotalTime`, and so under
+> `renderer-static` it appears only after `--bench-hold` resumes live time,
+> sometimes not before the harness quits. There is no `bench-stats` command.
 
 ## Phase 3: Extract comparable metrics
 
@@ -201,15 +228,16 @@ cannot diff its own baseline:
 
 | Metric | Source | Direction |
 |--------|--------|-----------|
+| `bench_mode` | `bench:` `mode=` | exact match, **checked first**. On a mismatch, diff nothing else (#4417) |
 | `entities_total` | `bench:` `entities=` (or `stats` `Entities:`) | within ±2 % (tolerance — see note) |
 | `tex_missing_base_color` | `tex.missing` — count of `[slot=base_color]` lines | ≤ baseline (strict gate) |
 | `tex_missing_all_slots` | `tex.missing` summary line (`N unique missing textures:`) | **informational** — report Δ, never gating (see note) |
 | `mesh_cache_failed_count` | `mesh.cache failed` summary | ≤ baseline |
-| `light_count_point` | `light.dump` `LightSource emitters: N` | exact match |
+| `light_count_point` | `light.dump` — count of `kind=Point` rows in the emitter dump | exact match |
 | `light_count_directional` | `light.dump` — count of `kind=Directional` rows in the emitter dump | exact match |
-| `skin_pool_live` | `.engine.log` last `skin=L/M+S` (`L`) | **advisory** — report Δ, gate only via `skin_pool_max`/`skin_pool_overflow_attempts` below (see note) |
-| `skin_pool_max` | `.engine.log` last `skin=L/M+S` (`M`) | exact match |
-| `skin_pool_overflow_attempts` | `.engine.log` last `skin=L/M+S` (`S`) | `== 0` (exact) |
+| `skin_pool_live` | `bench:` `skin=L/M+S` (`L`) | **advisory** — report Δ, gate only via `skin_pool_max`/`skin_pool_overflow_attempts` below (see note) |
+| `skin_pool_max` | `bench:` `skin=L/M+S` (`M`) | exact match |
+| `skin_pool_overflow_attempts` | `bench:` `skin=L/M+S` (`S`) | `== 0` (exact) |
 | `bench_fps_p50` | `bench:` `wall_fps` | **advisory** — report Δ, never gating (see note) |
 | `bench_fps_avg` | `bench:` `wall_fps` | **advisory** — report Δ, never gating (see note) |
 | `bench_frame_p50_ms` | `bench:` `frame_p50_ms` | **advisory** — report Δ, never gating (see note) |
@@ -256,14 +284,18 @@ Quirks of these scalars (don't fabricate around them):
   `CellLightingRes` / `SkyParamsRes` / `GameTimeRes` **and**, since `5f970bae`
   (2026-08-15), a `LightSource emitters: N` tally followed by a per-emitter dump
   (kind, source, position, radiance, dimmer, range, attenuation, visibility,
-  flags). Parse `light_count_point` from that `N`, and derive
-  `light_count_directional` by counting `kind=Directional` rows — do **not**
+  flags). Derive `light_count_point` by counting `kind=Point` rows and
+  `light_count_directional` by counting `kind=Directional` rows. Do **not**
+  take `light_count_point` from `N`: the tally counts every emitter,
+  directional ones included. Oblivion's cell dumps `emitters: 10` = 8 point
+  + 2 directional, and its baseline stores 8 (#4419). Do **not**
   infer either from the mere presence of a `CellLightingRes` block, which is
   what made the old `light_count_directional` row a gate that could never fail
   (#3424). The metric has real dynamic range: measured 2026-08-27 at `969d81c8`
-  — `fnv` 30, `fo3` 11, `oblivion` 8, `skyrim_se` 28, `fo4` 685. All five
-  baselined cells are interiors and every one dumps
-  `directional_color = [0.000, 0.000, 0.000]`.
+  — `fnv` 30, `fo3` 11, `oblivion` 8, `skyrim_se` 28, `fo4` 685. The
+  `CellLightingRes` `directional_color` is a separate cell field and is not
+  zero on every interior: FNV's cell dumps `[0.224, 0.208, 0.133]`. It is
+  not an emitter and feeds neither row.
   **Baselines carry a `light_count_point` row as of the #3556 (RT-10) fix** —
   the values above are what got committed; a future `--regen` still overwrites
   them like any other row.
@@ -399,13 +431,15 @@ Compare `/tmp/audit/runtime/<game>-<cell>.current.tsv` against
 
 ## Notes
 
-- **Determinism**: TAA jitter is frame-counter-driven (Halton(2,3)), so
-  frame-240 telemetry is reproducible. `BYROREDUX_FIXED_DT=0`
-  (`byroredux/src/bench.rs`, the `BYROREDUX_FIXED_DT` env read — it lives with
-  the bench-mode parsing, not in *main.rs*; an explicit `--bench-mode` rejects
-  it) freezes the
-  wall-clock dt so animation / camera / spin don't advance — recommended when
-  capturing tolerance metrics.
+- **Determinism**: TAA jitter is frame-counter-driven (Halton(2,3)), and
+  `capture.sh` pins `--bench-mode renderer-static` (fixed `dt = 0`, authored
+  camera), so frame-240 telemetry is reproducible without any env var. Don't
+  export `BYROREDUX_FIXED_DT` for this audit. The legacy variable
+  (`resolve_bench_selection`, `byroredux/src/bench.rs`) silently selects a
+  mode, so the engine rejects it alongside an explicit `--bench-mode`, and
+  the harness refuses to start with it set. An earlier revision of this note
+  recommended it while the harness inferred `system-live`, and the two
+  resulting captures were diffed against each other (#4417).
 - **Per-game data**: resolved via the `--game` profile registry
   (`assets/debug_profiles.toml`). The separate `BYROREDUX_*_DATA` env vars in
   `crates/nif/tests/common/mod.rs` drive the *test* harnesses, not this skill.
