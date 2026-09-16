@@ -1645,12 +1645,11 @@ mod draw_command_tests {
 
     /// Lockstep contract for #781 / PERF-N4. `DrawCommand::material_hash`
     /// MUST produce the same u64 as `hash_gpu_material_fields(&cmd
-    /// .to_gpu_material())` for any DrawCommand. A drift between the
-    /// two field walks (e.g. adding a field to `to_gpu_material` but
-    /// forgetting it in `material_hash`) breaks dedup correctness:
-    /// distinct DrawCommands that build the same GpuMaterial would hash
-    /// differently and never collapse. Pin the invariant on a fully-
-    /// populated DrawCommand so every live field contributes.
+    /// .to_gpu_material())` for any DrawCommand, or DrawCommands that build
+    /// the same GpuMaterial would never collapse. Since #4201 the former is
+    /// defined as the latter, so this holds by construction; the test stays
+    /// so a future "skip building the struct" optimisation cannot quietly
+    /// reintroduce a second, divergent walk.
     #[test]
     fn material_hash_matches_gpu_material_field_hash() {
         let cmd = fully_populated_draw_command();

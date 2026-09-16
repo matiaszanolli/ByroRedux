@@ -508,184 +508,23 @@ impl DrawCommand {
         }
     }
 
-    /// Hash of the material-relevant DrawCommand fields, in lockstep
-    /// with [`super::super::material::hash_gpu_material_fields`]. Fed to
-    /// [`super::super::material::MaterialTable::intern_by_hash`] to skip the
-    /// `to_gpu_material` construction on the ~97% dedup-hit path.
-    /// See #781 / PERF-N4.
+    /// Hash of the material-relevant DrawCommand fields: exactly
+    /// [`super::super::material::hash_gpu_material_fields`] of
+    /// [`Self::to_gpu_material`]. Fed to
+    /// [`super::super::material::MaterialTable::intern_by_hash`] as the
+    /// dedup key. See #781 / PERF-N4.
     ///
-    /// **Lockstep contract**: this function MUST walk the same fields
-    /// `to_gpu_material` reads, in the same order, mapping the
-    /// `DrawCommand` source to the `GpuMaterial` destination 1:1. A
-    /// drift between this walk and `to_gpu_material` would silently
-    /// produce a hash that doesn't match `hash_gpu_material_fields(&cmd
-    /// .to_gpu_material())`, causing dedup misses (perf regression) or
-    /// — under collision in the index — silent miscoloring. The
-    /// pinning test
-    /// `material_hash_matches_gpu_material_field_hash` walks a fully-
-    /// populated DrawCommand through both sides and asserts the hashes
-    /// agree; debug builds also assert it inside `intern_by_hash`.
+    /// #4201 — this was a 150-line field walk kept in lockstep with the
+    /// `GpuMaterial` one by hand, written that way so the ~97% dedup-hit
+    /// path could skip building the struct. Building it turned out to be
+    /// the cheap part: it is plain memory writes, while the walk was ~107
+    /// dependent hash steps. Building and then hashing the bytes measured
+    /// 0.17 ms against the walk's 0.48 ms at 7,359 draws, and the lockstep
+    /// contract is now true by construction instead of by review. On the
+    /// ~3% miss path `intern_by_hash`'s factory builds the struct a second
+    /// time, which is the same cheap write.
     pub fn material_hash(&self) -> u64 {
-        use std::hash::Hasher;
-        let mut h = rustc_hash::FxHasher::default();
-        // PBR scalars + flags
-        h.write_u32(self.roughness.to_bits());
-        h.write_u32(self.metalness.to_bits());
-        h.write_u32(self.emissive_mult.to_bits());
-        // Must mirror the same OR composition as `to_gpu_material` so
-        // the byte-level material hash stays in lockstep (#781 contract).
-        let material_flags = {
-            let mut flags = self.effect_shader_flags;
-            if self.vertex_color_emissive {
-                flags |= super::super::material::material_flag::VERTEX_COLOR_EMISSIVE;
-            }
-            flags
-        };
-        h.write_u32(material_flags);
-        // Emissive RGB + specular_strength
-        h.write_u32(self.emissive_color[0].to_bits());
-        h.write_u32(self.emissive_color[1].to_bits());
-        h.write_u32(self.emissive_color[2].to_bits());
-        h.write_u32(self.specular_strength.to_bits());
-        // Specular RGB + alpha_threshold
-        h.write_u32(self.specular_color[0].to_bits());
-        h.write_u32(self.specular_color[1].to_bits());
-        h.write_u32(self.specular_color[2].to_bits());
-        h.write_u32(self.alpha_threshold.to_bits());
-        // Texture indices group A
-        // #3909 — `GpuMaterial.texture_index` is gone (it was written from
-        // `texture_handle`, hashed here, and sampled by no shader; the
-        // diffuse handle lives on `GpuInstance` by design). Dropping the
-        // write keeps this hash byte-equal with `hash_gpu_material_fields`,
-        // the contract `material_hash_matches_gpu_material_field_hash` pins,
-        // and stops materials that differ only in diffuse handle from
-        // splitting the table.
-        h.write_u32(self.normal_map_index);
-        h.write_u32(self.dark_map_index);
-        h.write_u32(self.glow_map_index);
-        // Texture indices group B
-        h.write_u32(self.detail_map_index);
-        h.write_u32(self.gloss_map_index);
-        h.write_u32(self.parallax_map_index);
-        h.write_u32(self.env_map_index);
-        // env_mask + alpha_test_func + material_kind + material_alpha
-        h.write_u32(self.env_mask_index);
-        h.write_u32(self.alpha_test_func);
-        h.write_u32(self.material_kind);
-        h.write_u32(self.material_alpha.to_bits());
-        // Parallax POM + UV offset
-        h.write_u32(self.parallax_height_scale.to_bits());
-        h.write_u32(self.parallax_max_passes.to_bits());
-        h.write_u32(self.uv_offset[0].to_bits());
-        h.write_u32(self.uv_offset[1].to_bits());
-        // UV scale + diffuse RG
-        h.write_u32(self.uv_scale[0].to_bits());
-        h.write_u32(self.uv_scale[1].to_bits());
-        h.write_u32(self.diffuse_color[0].to_bits());
-        h.write_u32(self.diffuse_color[1].to_bits());
-        // diffuse_b + ambient RGB
-        h.write_u32(self.diffuse_color[2].to_bits());
-        h.write_u32(self.ambient_color[0].to_bits());
-        h.write_u32(self.ambient_color[1].to_bits());
-        h.write_u32(self.ambient_color[2].to_bits());
-        // Skyrim+ skin tint A/R/G/B (note GpuMaterial layout puts A
-        // first within its vec4 for std430 packing — this walk
-        // preserves that order to stay byte-equal-safe).
-        h.write_u32(self.skin_tint_rgba[3].to_bits()); // A
-        h.write_u32(self.skin_tint_rgba[0].to_bits()); // R
-        h.write_u32(self.skin_tint_rgba[1].to_bits()); // G
-        h.write_u32(self.skin_tint_rgba[2].to_bits()); // B
-                                                       // hair tint RGB + multi_layer_envmap_strength
-        h.write_u32(self.hair_tint_rgb[0].to_bits());
-        h.write_u32(self.hair_tint_rgb[1].to_bits());
-        h.write_u32(self.hair_tint_rgb[2].to_bits());
-        h.write_u32(self.multi_layer_envmap_strength.to_bits());
-        // Eye left + eye_cubemap_scale
-        h.write_u32(self.eye_left_center[0].to_bits());
-        h.write_u32(self.eye_left_center[1].to_bits());
-        h.write_u32(self.eye_left_center[2].to_bits());
-        h.write_u32(self.eye_cubemap_scale.to_bits());
-        // Eye right + multi_layer_inner_thickness
-        h.write_u32(self.eye_right_center[0].to_bits());
-        h.write_u32(self.eye_right_center[1].to_bits());
-        h.write_u32(self.eye_right_center[2].to_bits());
-        h.write_u32(self.multi_layer_inner_thickness.to_bits());
-        // refraction + multi_layer_inner_scale UV + sparkle_r
-        h.write_u32(self.multi_layer_refraction_scale.to_bits());
-        h.write_u32(self.multi_layer_inner_scale[0].to_bits());
-        h.write_u32(self.multi_layer_inner_scale[1].to_bits());
-        h.write_u32(self.sparkle_rgba[0].to_bits()); // sparkle_r
-                                                     // sparkle GB + sparkle_intensity + falloff_start_angle
-        h.write_u32(self.sparkle_rgba[1].to_bits()); // sparkle_g
-        h.write_u32(self.sparkle_rgba[2].to_bits()); // sparkle_b
-        h.write_u32(self.sparkle_rgba[3].to_bits()); // intensity
-        h.write_u32(self.effect_falloff[0].to_bits()); // falloff_start_angle
-                                                       // falloff_stop + opacities + soft_falloff_depth
-        h.write_u32(self.effect_falloff[1].to_bits()); // falloff_stop_angle
-        h.write_u32(self.effect_falloff[2].to_bits()); // start_opacity
-        h.write_u32(self.effect_falloff[3].to_bits()); // stop_opacity
-        h.write_u32(self.effect_falloff[4].to_bits()); // soft_falloff_depth
-                                                       // greyscale LUT bindless handle (#890 Stage 2c)
-        h.write_u32(self.greyscale_lut_index);
-        // #1147 Phase 2b — BGSM v>=8 translucency suite. Must mirror
-        // the `to_gpu_material` field order so the hash stays
-        // byte-equal-safe (#781 contract; pinned by
-        // `material_hash_matches_gpu_material_field_hash`).
-        h.write_u32(self.translucency_subsurface_color[0].to_bits());
-        h.write_u32(self.translucency_subsurface_color[1].to_bits());
-        h.write_u32(self.translucency_subsurface_color[2].to_bits());
-        h.write_u32(self.translucency_transmissive_scale.to_bits());
-        h.write_u32(self.translucency_turbulence.to_bits());
-        // #1248 — per-material refractive index (offset 280). Trailing
-        // write mirrors `hash_gpu_material_fields` so the contract pinned
-        // by `material_hash_matches_gpu_material_field_hash` holds.
-        h.write_u32(self.ior.to_bits());
-        // #1249 — Disney diffuse lobe (offsets 284-292). Same lockstep
-        // requirement as ior above.
-        h.write_u32(self.subsurface.to_bits());
-        h.write_u32(self.sheen.to_bits());
-        h.write_u32(self.sheen_tint.to_bits());
-        // #1250 — anisotropic GGX strength (offset 296). Same lockstep.
-        h.write_u32(self.anisotropic.to_bits());
-        for texture_index in &self.supplemental_texture_indices[..12] {
-            h.write_u32(*texture_index);
-        }
-        // #2221 — animated shader color/float (offsets 348-360). Same
-        // lockstep requirement as every field above.
-        h.write_u32(self.shader_color[0].to_bits());
-        h.write_u32(self.shader_color[1].to_bits());
-        h.write_u32(self.shader_color[2].to_bits());
-        h.write_u32(self.shader_float.to_bits());
-        h.write_u32(self.glass_fresnel_color[0].to_bits());
-        h.write_u32(self.glass_fresnel_color[1].to_bits());
-        h.write_u32(self.glass_fresnel_color[2].to_bits());
-        h.write_u32(self.glass_refraction_scale.to_bits());
-        h.write_u32(self.glass_blur_scale.to_bits());
-        h.write_u32(self.glass_blur_scale_factor.to_bits());
-        h.write_u32(
-            self.supplemental_texture_indices
-                [super::super::material::supplemental_texture_slot::GLASS_ROUGHNESS_SCRATCH],
-        );
-        h.write_u32(
-            self.supplemental_texture_indices
-                [super::super::material::supplemental_texture_slot::GLASS_DIRT_OVERLAY],
-        );
-        h.write_u32(self.lighting_effect_1.to_bits());
-        h.write_u32(self.lighting_effect_2.to_bits());
-        h.write_u32(self.subsurface_rolloff.to_bits());
-        h.write_u32(self.rimlight_power.to_bits());
-        h.write_u32(self.backlight_power.to_bits());
-        h.write_u32(self.fresnel_power.to_bits());
-        h.write_u32(self.grayscale_to_palette_scale.to_bits());
-        h.write_u32(
-            self.supplemental_texture_indices
-                [super::super::material::supplemental_texture_slot::LIGHTING_MASK],
-        );
-        h.write_u32(
-            self.supplemental_texture_indices
-                [super::super::material::supplemental_texture_slot::BACK_LIGHTING],
-        );
-        h.finish()
+        super::super::material::hash_gpu_material_fields(&self.to_gpu_material())
     }
 }
 

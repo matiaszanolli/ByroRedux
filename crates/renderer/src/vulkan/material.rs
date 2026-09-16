@@ -769,10 +769,9 @@ pub mod material_flag {
 }
 
 impl GpuMaterial {
-    /// Byte view used by the byte-level `PartialEq`/`Eq` impls below —
-    /// `GpuMaterial` has no `Hash` impl; dedup is keyed on the
-    /// field-walking `hash_gpu_material_fields` instead (#781 moved the
-    /// index key off the struct itself). Safe because [`GpuMaterial`] is
+    /// Byte view shared by the byte-level `PartialEq`/`Eq` impls below and
+    /// by `hash_gpu_material_fields` (#4201), so the dedup key and the
+    /// equality it stands in for are defined over exactly the same bytes. Safe because [`GpuMaterial`] is
     /// `#[repr(C)]` + `Copy`, has no `Drop`, and all padding bytes are
     /// named fields the producer always initialises (so the byte
     /// representation is deterministic for any value reachable through
@@ -1041,166 +1040,40 @@ pub mod presets {
     }
 }
 
-/// Canonical material hash — FxHash (#1368) over the 108 live scalar
-/// fields of [`GpuMaterial`] in declaration order. Used by
-/// [`MaterialTable::intern_by_hash`] to dedup without hashing the full
-/// 432-byte struct.
+/// Canonical material hash: one FxHash bulk pass over every byte of
+/// [`GpuMaterial`]. Used by [`MaterialTable::intern_by_hash`] as the dedup key.
 ///
-/// **Lockstep contract** (#781 / PERF-N4): [`DrawCommand::material_hash`]
-/// walks the same field sequence, in the same order, against the
-/// `DrawCommand` source fields that `to_gpu_material` reads. Drift
-/// between the two walks is caught by
-/// `material_hash_matches_gpu_material_field_hash` in
-/// `vulkan::context::draw_command_tests`. Any new GpuMaterial field
-/// MUST be added to BOTH walks (and to the contract test).
+/// #4201 — this used to be a hand-written walk that fed each of the struct's
+/// scalar fields to `FxHasher::write_u32` in declaration order, mirrored
+/// line-for-line by [`DrawCommand::material_hash`]. Two problems:
 ///
-/// `greyscale_lut_index` (offset 256, #890 Stage 2c) is hashed at the
-/// end of the walk — distinct LUT handles must produce distinct hashes
-/// so palette-colour effect materials don't dedup across LUTs.
+///  * **Cost.** `write_u32` is a serial multiply chain, so ~107 fields meant
+///    ~107 dependent steps per draw per frame: 0.48 ms at MedTek's 7,359
+///    draws, measured in release. `FxHasher::write` compresses a byte slice
+///    16 bytes at a time on two independent streams, ~27 steps for these
+///    428 bytes, and building the struct first is plain memory writes. The
+///    two together measured 0.17 ms on the same workload.
+///  * **Coverage by discipline.** A field added to the struct but not to
+///    the walk silently collapsed two distinct materials onto one table slot
+///    in release builds (#3568), and the two walks had to be kept in lockstep
+///    by hand (#781). Hashing the bytes covers every field by construction,
+///    and it is the same equality the struct's own `PartialEq` already uses,
+///    so the hash and the debug collision check in `intern_by_hash` can no
+///    longer disagree about what "the same material" means.
+///
+/// Sound because `GpuMaterial` is `#[repr(C)]` with no padding: every field
+/// is a 4-byte `u32` or `f32` and `gpu_material_size_is_428_bytes` pins the
+/// total, so there are no uninitialised bytes to hash (see [`GpuMaterial::as_bytes`]).
+/// Float fields hash by bit pattern, exactly as the `to_bits()` walk did, so
+/// `-0.0`/`0.0` and distinct NaN payloads stay distinct.
+///
+/// The value is process-local and not stable across `rustc-hash` versions;
+/// nothing persists it. The bench `state_hash` folds it in, so a
+/// `renderer_anchor` A/B spanning this change reads as a scene change once.
 pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     use std::hash::Hasher;
     let mut h = rustc_hash::FxHasher::default();
-    // PBR scalars + flags
-    h.write_u32(mat.roughness.to_bits());
-    h.write_u32(mat.metalness.to_bits());
-    h.write_u32(mat.emissive_mult.to_bits());
-    h.write_u32(mat.material_flags);
-    // Emissive RGB + specular_strength
-    h.write_u32(mat.emissive_r.to_bits());
-    h.write_u32(mat.emissive_g.to_bits());
-    h.write_u32(mat.emissive_b.to_bits());
-    h.write_u32(mat.specular_strength.to_bits());
-    // Specular RGB + alpha_threshold
-    h.write_u32(mat.specular_r.to_bits());
-    h.write_u32(mat.specular_g.to_bits());
-    h.write_u32(mat.specular_b.to_bits());
-    h.write_u32(mat.alpha_threshold.to_bits());
-    // Texture indices group A. #3909 — `texture_index` is gone from the
-    // struct, so it is gone from the hash too; the two must stay byte-equal
-    // (`material_hash_matches_gpu_material_field_hash`).
-    h.write_u32(mat.normal_map_index);
-    h.write_u32(mat.dark_map_index);
-    h.write_u32(mat.glow_map_index);
-    // Texture indices group B
-    h.write_u32(mat.detail_map_index);
-    h.write_u32(mat.gloss_map_index);
-    h.write_u32(mat.parallax_map_index);
-    h.write_u32(mat.env_map_index);
-    // env_mask + alpha_test_func + material_kind + material_alpha
-    h.write_u32(mat.env_mask_index);
-    h.write_u32(mat.alpha_test_func);
-    h.write_u32(mat.material_kind);
-    h.write_u32(mat.material_alpha.to_bits());
-    // Parallax POM + UV offset
-    h.write_u32(mat.parallax_height_scale.to_bits());
-    h.write_u32(mat.parallax_max_passes.to_bits());
-    h.write_u32(mat.uv_offset_u.to_bits());
-    h.write_u32(mat.uv_offset_v.to_bits());
-    // UV scale + diffuse RG
-    h.write_u32(mat.uv_scale_u.to_bits());
-    h.write_u32(mat.uv_scale_v.to_bits());
-    h.write_u32(mat.diffuse_r.to_bits());
-    h.write_u32(mat.diffuse_g.to_bits());
-    // diffuse_b + ambient RGB
-    h.write_u32(mat.diffuse_b.to_bits());
-    h.write_u32(mat.ambient_r.to_bits());
-    h.write_u32(mat.ambient_g.to_bits());
-    h.write_u32(mat.ambient_b.to_bits());
-    // Skyrim+ skin tint A/R/G/B
-    h.write_u32(mat.skin_tint_a.to_bits());
-    h.write_u32(mat.skin_tint_r.to_bits());
-    h.write_u32(mat.skin_tint_g.to_bits());
-    h.write_u32(mat.skin_tint_b.to_bits());
-    // hair tint RGB + multi_layer_envmap_strength
-    h.write_u32(mat.hair_tint_r.to_bits());
-    h.write_u32(mat.hair_tint_g.to_bits());
-    h.write_u32(mat.hair_tint_b.to_bits());
-    h.write_u32(mat.multi_layer_envmap_strength.to_bits());
-    // Eye left + eye_cubemap_scale
-    h.write_u32(mat.eye_left_center_x.to_bits());
-    h.write_u32(mat.eye_left_center_y.to_bits());
-    h.write_u32(mat.eye_left_center_z.to_bits());
-    h.write_u32(mat.eye_cubemap_scale.to_bits());
-    // Eye right + multi_layer_inner_thickness
-    h.write_u32(mat.eye_right_center_x.to_bits());
-    h.write_u32(mat.eye_right_center_y.to_bits());
-    h.write_u32(mat.eye_right_center_z.to_bits());
-    h.write_u32(mat.multi_layer_inner_thickness.to_bits());
-    // refraction + multi_layer_inner_scale UV + sparkle_r
-    h.write_u32(mat.multi_layer_refraction_scale.to_bits());
-    h.write_u32(mat.multi_layer_inner_scale_u.to_bits());
-    h.write_u32(mat.multi_layer_inner_scale_v.to_bits());
-    h.write_u32(mat.sparkle_r.to_bits());
-    // sparkle GB + sparkle_intensity + falloff_start_angle
-    h.write_u32(mat.sparkle_g.to_bits());
-    h.write_u32(mat.sparkle_b.to_bits());
-    h.write_u32(mat.sparkle_intensity.to_bits());
-    h.write_u32(mat.falloff_start_angle.to_bits());
-    // falloff_stop + opacities + soft_falloff_depth
-    h.write_u32(mat.falloff_stop_angle.to_bits());
-    h.write_u32(mat.falloff_start_opacity.to_bits());
-    h.write_u32(mat.falloff_stop_opacity.to_bits());
-    h.write_u32(mat.soft_falloff_depth.to_bits());
-    // greyscale LUT bindless handle (#890 Stage 2c, offset 256)
-    h.write_u32(mat.greyscale_lut_index);
-    // #1147 Phase 2b — BGSM v>=8 translucency suite (offsets 260-280).
-    // Must match `DrawCommand::material_hash` walk order so the two
-    // hashes stay byte-equal-safe (pinned by
-    // `material_hash_matches_gpu_material_field_hash`).
-    h.write_u32(mat.translucency_subsurface_r.to_bits());
-    h.write_u32(mat.translucency_subsurface_g.to_bits());
-    h.write_u32(mat.translucency_subsurface_b.to_bits());
-    h.write_u32(mat.translucency_transmissive_scale.to_bits());
-    h.write_u32(mat.translucency_turbulence.to_bits());
-    // #1248 — per-material refractive index (offset 280). Must mirror
-    // the matching trailing write in `DrawCommand::material_hash` so
-    // the byte-equal-safe contract pinned by
-    // `material_hash_matches_gpu_material_field_hash` holds.
-    h.write_u32(mat.ior.to_bits());
-    // #1249 — Disney diffuse lobe (offsets 284-292). Same lockstep
-    // requirement as ior above.
-    h.write_u32(mat.subsurface.to_bits());
-    h.write_u32(mat.sheen.to_bits());
-    h.write_u32(mat.sheen_tint.to_bits());
-    // #1250 — anisotropic GGX strength (offset 296). Same lockstep.
-    h.write_u32(mat.anisotropic.to_bits());
-    h.write_u32(mat.tint_map_index);
-    h.write_u32(mat.inner_layer_map_index);
-    h.write_u32(mat.specular_map_index);
-    h.write_u32(mat.lighting_map_index);
-    h.write_u32(mat.flow_map_index);
-    h.write_u32(mat.wrinkle_map_index);
-    h.write_u32(mat.reflectance_map_index);
-    h.write_u32(mat.emittance_gradient_map_index);
-    h.write_u32(mat.decal_map_0_index);
-    h.write_u32(mat.decal_map_1_index);
-    h.write_u32(mat.decal_map_2_index);
-    h.write_u32(mat.decal_map_3_index);
-    // #2221 — animated shader color/float (offsets 348-360). Must
-    // mirror the matching trailing write in `DrawCommand::material_hash`
-    // so the byte-equal-safe contract pinned by
-    // `material_hash_matches_gpu_material_field_hash` holds.
-    h.write_u32(mat.shader_color_r.to_bits());
-    h.write_u32(mat.shader_color_g.to_bits());
-    h.write_u32(mat.shader_color_b.to_bits());
-    h.write_u32(mat.shader_float.to_bits());
-    h.write_u32(mat.glass_fresnel_r.to_bits());
-    h.write_u32(mat.glass_fresnel_g.to_bits());
-    h.write_u32(mat.glass_fresnel_b.to_bits());
-    h.write_u32(mat.glass_refraction_scale.to_bits());
-    h.write_u32(mat.glass_blur_scale.to_bits());
-    h.write_u32(mat.glass_blur_scale_factor.to_bits());
-    h.write_u32(mat.glass_roughness_scratch_map_index);
-    h.write_u32(mat.glass_dirt_overlay_map_index);
-    h.write_u32(mat.lighting_effect_1.to_bits());
-    h.write_u32(mat.lighting_effect_2.to_bits());
-    h.write_u32(mat.subsurface_rolloff.to_bits());
-    h.write_u32(mat.rimlight_power.to_bits());
-    h.write_u32(mat.backlight_power.to_bits());
-    h.write_u32(mat.fresnel_power.to_bits());
-    h.write_u32(mat.grayscale_to_palette_scale.to_bits());
-    h.write_u32(mat.lighting_mask_map_index);
-    h.write_u32(mat.back_lighting_map_index);
+    h.write(mat.as_bytes());
     h.finish()
 }
 
@@ -1377,7 +1250,7 @@ impl MaterialTable {
     /// hash in the message. In release we trust the hash; collisions
     /// (rare on FxHash's 64-bit output over `GpuMaterial`'s full scalar
     /// field set — see `size_of::<GpuMaterial>()`, currently pinned by
-    /// `gpu_material_size_is_432_bytes`, rather than restating a field
+    /// `gpu_material_size_is_428_bytes`, rather than restating a field
     /// count here that drifts on every struct growth, #1368/#2273)
     /// would silently alias to the first-seen material at that hash.
     pub fn intern_by_hash(
