@@ -531,7 +531,7 @@ impl VulkanContext {
             false, // UI quad doesn't need RT
             None,
         )?;
-        self.ui_quad_handle = Some(handle);
+        self.overlay.ui_quad_handle = Some(handle);
         log::info!("UI fullscreen quad registered (mesh handle {})", handle);
         Ok(())
     }

@@ -20,11 +20,12 @@ impl VulkanContext {
         // record and readback would otherwise read the new dimensions against
         // the old staging copy → wrong size / OOB (SYNC-01). Do not replace
         // this with `self.swapchain.state.extent`.
-        let Some((extent, captured_generation)) = self.screenshot_pending_readback.take() else {
+        let Some((extent, captured_generation)) = self.overlay.screenshot_pending_readback.take()
+        else {
             return;
         };
 
-        let Some((_, ref allocation, size)) = self.screenshot_staging else {
+        let Some((_, ref allocation, size)) = self.overlay.screenshot_staging else {
             return;
         };
 
@@ -63,7 +64,7 @@ impl VulkanContext {
             // because the handle is only used to name the memory object in a
             // `VkMappedMemoryRange` — it is neither freed, mapped, nor bound
             // through this call, and `allocation` is owned by
-            // `self.screenshot_staging` for the duration.
+            // `self.overlay.screenshot_staging` for the duration.
             let result = unsafe {
                 let range = vk::MappedMemoryRange::default()
                     .memory(allocation.memory())
@@ -112,11 +113,11 @@ impl VulkanContext {
         // whatever claimant next reads `result` (the same-owner reuse race
         // `owner` alone can't catch). Drop them; the latch is already
         // cleared by the `.take()` above.
-        if self.screenshot_generation.load(Ordering::Acquire) != captured_generation {
+        if self.overlay.screenshot_generation.load(Ordering::Acquire) != captured_generation {
             log::debug!(
                 "Screenshot readback discarded (gen {} != captured {}): \
                  capture was cancelled before readback completed",
-                self.screenshot_generation.load(Ordering::Acquire),
+                self.overlay.screenshot_generation.load(Ordering::Acquire),
                 captured_generation,
             );
             return;
@@ -133,6 +134,7 @@ impl VulkanContext {
         // from poison so a prior PNG-encode panic doesn't take out
         // every subsequent screenshot.
         *self
+            .overlay
             .screenshot_result
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(png_bytes);
@@ -164,7 +166,11 @@ impl VulkanContext {
         cmd: vk::CommandBuffer,
         swapchain_image: vk::Image,
     ) {
-        if !self.screenshot_requested.swap(false, Ordering::AcqRel) {
+        if !self
+            .overlay
+            .screenshot_requested
+            .swap(false, Ordering::AcqRel)
+        {
             return;
         }
 
@@ -176,7 +182,7 @@ impl VulkanContext {
         // Ensure staging buffer exists and is large enough.
         self.ensure_screenshot_staging(buffer_size);
 
-        let Some((staging_buffer, _, _)) = self.screenshot_staging.as_ref() else {
+        let Some((staging_buffer, _, _)) = self.overlay.screenshot_staging.as_ref() else {
             log::warn!("Screenshot staging buffer creation failed");
             return;
         };
@@ -258,14 +264,15 @@ impl VulkanContext {
         // stall), `screenshot_finish_readback` sees the mismatch and
         // discards the straggler instead of publishing it to a later
         // claimant.
-        let generation = self.screenshot_generation.load(Ordering::Acquire);
-        self.screenshot_pending_readback = Some((vk::Extent2D { width, height }, generation));
+        let generation = self.overlay.screenshot_generation.load(Ordering::Acquire);
+        self.overlay.screenshot_pending_readback =
+            Some((vk::Extent2D { width, height }, generation));
     }
 
     /// Ensure a host-visible staging buffer exists for screenshot readback.
     fn ensure_screenshot_staging(&mut self, required_size: vk::DeviceSize) {
         // Already large enough?
-        if let Some((_, _, existing_size)) = &self.screenshot_staging {
+        if let Some((_, _, existing_size)) = &self.overlay.screenshot_staging {
             if *existing_size >= required_size {
                 return;
             }
@@ -334,7 +341,7 @@ impl VulkanContext {
             }
         }
 
-        self.screenshot_staging = Some((buffer, allocation, required_size));
+        self.overlay.screenshot_staging = Some((buffer, allocation, required_size));
     }
 
     /// Free the screenshot staging buffer. The contract — why this is sound
@@ -344,7 +351,7 @@ impl VulkanContext {
     /// existed: `ensure_screenshot_staging`'s only caller is
     /// `screenshot_record_copy`, which runs during command-buffer recording.
     pub(super) fn destroy_screenshot_staging(&mut self) {
-        let staging = self.screenshot_staging.take();
+        let staging = self.overlay.screenshot_staging.take();
         super::helpers::destroy_staging_buffer(&self.device, self.allocator.as_ref(), staging);
     }
 }

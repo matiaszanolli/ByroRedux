@@ -588,7 +588,7 @@ impl VulkanContext {
         // included in the single flush. Avoids the need for a separate raw
         // pointer write + flush that was missing on non-coherent memory (#189).
         let ui_instance_idx =
-            if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.ui_quad_handle) {
+            if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.overlay.ui_quad_handle) {
                 let idx = gpu_instances.len();
                 let instance = GpuInstance {
                     texture_index: ui_tex,

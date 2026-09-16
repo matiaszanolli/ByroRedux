@@ -1217,24 +1217,23 @@ impl VulkanContext {
             // error-propagation-free, and
             // `record_post_passes_has_no_error_propagation_after_the_svgf_latch`
             // enforces that by scanning this file's text (#2146 / #917).
-            let overlay =
-                ui_instance_idx
-                    .zip(self.ui_quad_handle)
-                    .and_then(|(instance_index, ui_quad)| {
-                        self.mesh_registry.get(ui_quad).and_then(|mesh| {
-                            mesh.vertex_buffer
-                                .as_ref()
-                                .zip(mesh.index_buffer.as_ref())
-                                .map(|(vb, ib)| UiOverlayDraw {
-                                    texture_set: self.texture_registry.descriptor_set(frame),
-                                    scene_set: self.scene_buffers.descriptor_set(frame),
-                                    vertex_buffer: vb.buffer,
-                                    index_buffer: ib.buffer,
-                                    index_count: mesh.index_count,
-                                    instance_index,
-                                })
-                        })
-                    });
+            let overlay = ui_instance_idx.zip(self.overlay.ui_quad_handle).and_then(
+                |(instance_index, ui_quad)| {
+                    self.mesh_registry.get(ui_quad).and_then(|mesh| {
+                        mesh.vertex_buffer
+                            .as_ref()
+                            .zip(mesh.index_buffer.as_ref())
+                            .map(|(vb, ib)| UiOverlayDraw {
+                                texture_set: self.texture_registry.descriptor_set(frame),
+                                scene_set: self.scene_buffers.descriptor_set(frame),
+                                vertex_buffer: vb.buffer,
+                                index_buffer: ib.buffer,
+                                index_count: mesh.index_count,
+                                instance_index,
+                            })
+                    })
+                },
+            );
             if overlay.is_none() && ui_instance_idx.is_some() {
                 // Mirrors the warn-once the geometry pass carried for this
                 // case before the overlay moved (#2505 / D12-2026-08-07-03).

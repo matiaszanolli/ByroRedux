@@ -459,6 +459,65 @@ struct PostChain {
     fsr_temporal: Option<FsrTemporalState>,
 }
 
+/// The debug overlay and the two host-readback captures.
+///
+/// #3736 — `VulkanContext`'s fifth and last field group. Membership is
+/// the console-facing surface: the egui pass and its pending output, the
+/// UI quad handle, and the screenshot / depth-capture triples of
+/// request flag, result slot and staging buffer.
+///
+/// Two of these own device memory (`screenshot_staging`,
+/// `depth_capture_staging`), and `teardown.rs` frees them through
+/// `destroy_screenshot_staging` / `destroy_depth_capture_staging` rather
+/// than by naming the fields — which is why a "does teardown mention
+/// this field" check would have called them handle-free. The grouping is
+/// a path rename only, so both frees and the egui-pass destroy keep
+/// their positions in the reverse-order chain.
+struct OverlayResources {
+    screenshot_requested: Arc<AtomicBool>,
+    screenshot_result: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Monotonic capture generation, shared with `ScreenshotBridge` (#1603).
+    /// Captured into `screenshot_pending_readback` at record time; the
+    /// readback only publishes its PNG when this still matches, so a
+    /// capture cancelled mid-flight is not served to a later claimant.
+    screenshot_generation: Arc<AtomicU64>,
+    /// Staging buffer for screenshot readback (allocated on first capture).
+    screenshot_staging: Option<(vk::Buffer, vk_alloc::Allocation, vk::DeviceSize)>,
+    /// Extent + capture generation recorded at copy time; `Some` while the
+    /// staging buffer holds data waiting for the fence.  The extent is stored
+    /// here (not re-derived from the live swapchain) so a same-frame resize
+    /// cannot corrupt the readback dimensions (#1448); the generation gates
+    /// publication against an intervening `cancel()` (#1603).
+    screenshot_pending_readback: Option<(vk::Extent2D, u64)>,
+    /// Set by `DepthCaptureBridge::request`; consumed by the next frame's
+    /// `depth_capture_record_copy`. Single-consumer, so unlike the
+    /// screenshot bridge it carries no owner tag or generation — see
+    /// `depth_capture.rs`'s module doc.
+    depth_capture_requested: Arc<AtomicBool>,
+    depth_capture_result: Arc<Mutex<Option<byroredux_core::ecs::DepthCapture>>>,
+    /// Staging buffer for depth readback (allocated on first capture).
+    depth_capture_staging: Option<(vk::Buffer, vk_alloc::Allocation, vk::DeviceSize)>,
+    /// Render extent recorded at copy time; `Some` while the staging buffer
+    /// holds data waiting for the fence. Stored here rather than re-derived
+    /// so a same-frame resize cannot decode the new dimensions against the
+    /// old copy — the same REG-02 / #1448 invariant the screenshot path has.
+    depth_capture_pending_readback: Option<vk::Extent2D>,
+    /// Mesh handle for the fullscreen quad used by UI overlay.
+    ui_quad_handle: Option<u32>,
+    /// Debug-UI overlay pass (Phase 4 of the debug-UI plan). `None`
+    /// until [`Self::init_egui`] is called — the binary opts in at
+    /// boot after the window + allocator are live. Drawn into the
+    /// swapchain image immediately after composite + before the
+    /// screenshot copy.
+    egui_pass: Option<super::egui_pass::EguiPass>,
+    /// Per-frame egui handoff: `(context, output)` stashed by
+    /// [`Self::submit_egui_frame`] right before `draw_frame`,
+    /// consumed by `draw_frame` after composite. `None` on frames
+    /// where the overlay is hidden — the egui pass simply skips
+    /// for the frame.
+    egui_pending_output: Option<(egui::Context, egui::FullOutput)>,
+}
+
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
@@ -595,37 +654,11 @@ pub struct VulkanContext {
     indirect_upload_ok: bool,
 
     // ── Screenshot capture ──────────────────────────────────────────
-    screenshot_requested: Arc<AtomicBool>,
-    screenshot_result: Arc<Mutex<Option<Vec<u8>>>>,
-    /// Monotonic capture generation, shared with `ScreenshotBridge` (#1603).
-    /// Captured into `screenshot_pending_readback` at record time; the
-    /// readback only publishes its PNG when this still matches, so a
-    /// capture cancelled mid-flight is not served to a later claimant.
-    screenshot_generation: Arc<AtomicU64>,
-    /// Staging buffer for screenshot readback (allocated on first capture).
-    screenshot_staging: Option<(vk::Buffer, vk_alloc::Allocation, vk::DeviceSize)>,
-    /// Extent + capture generation recorded at copy time; `Some` while the
-    /// staging buffer holds data waiting for the fence.  The extent is stored
-    /// here (not re-derived from the live swapchain) so a same-frame resize
-    /// cannot corrupt the readback dimensions (#1448); the generation gates
-    /// publication against an intervening `cancel()` (#1603).
-    screenshot_pending_readback: Option<(vk::Extent2D, u64)>,
+    /// Overlay and capture state (#3736): the Scaleform/egui overlay and
+    /// the screenshot + depth-capture request/readback pairs.
+    overlay: OverlayResources,
 
     // ── Depth capture (#3308) ───────────────────────────────────────
-    /// Set by `DepthCaptureBridge::request`; consumed by the next frame's
-    /// `depth_capture_record_copy`. Single-consumer, so unlike the
-    /// screenshot bridge it carries no owner tag or generation — see
-    /// `depth_capture.rs`'s module doc.
-    depth_capture_requested: Arc<AtomicBool>,
-    depth_capture_result: Arc<Mutex<Option<byroredux_core::ecs::DepthCapture>>>,
-    /// Staging buffer for depth readback (allocated on first capture).
-    depth_capture_staging: Option<(vk::Buffer, vk_alloc::Allocation, vk::DeviceSize)>,
-    /// Render extent recorded at copy time; `Some` while the staging buffer
-    /// holds data waiting for the fence. Stored here rather than re-derived
-    /// so a same-frame resize cannot decode the new dimensions against the
-    /// old copy — the same REG-02 / #1448 invariant the screenshot path has.
-    depth_capture_pending_readback: Option<vk::Extent2D>,
-
     frame_sync: FrameSync,
     /// Per-frame image-health counter buffers (EX-05 / #2736).
     ///
@@ -1093,8 +1126,6 @@ pub struct VulkanContext {
     /// resistance to protect.
     blend_pipeline_cache: FxHashMap<(u8, u8, bool, bool), vk::Pipeline>,
     pipeline_layout: vk::PipelineLayout,
-    /// Mesh handle for the fullscreen quad used by UI overlay.
-    pub ui_quad_handle: Option<u32>,
     /// Mesh handle for the unit XY quad used by the CPU particle billboard
     /// path (#401). Emitter entities push one DrawCommand per live particle
     /// referencing this handle, with the per-particle position + size baked
@@ -1126,19 +1157,6 @@ pub struct VulkanContext {
     /// breach once per transition. Scoped to this context so a new device
     /// gets a fresh warning opportunity.
     pub(crate) memory_warning_once: Once,
-
-    /// Debug-UI overlay pass (Phase 4 of the debug-UI plan). `None`
-    /// until [`Self::init_egui`] is called — the binary opts in at
-    /// boot after the window + allocator are live. Drawn into the
-    /// swapchain image immediately after composite + before the
-    /// screenshot copy.
-    pub egui_pass: Option<super::egui_pass::EguiPass>,
-    /// Per-frame egui handoff: `(context, output)` stashed by
-    /// [`Self::submit_egui_frame`] right before `draw_frame`,
-    /// consumed by `draw_frame` after composite. `None` on frames
-    /// where the overlay is hidden — the egui pass simply skips
-    /// for the frame.
-    pub egui_pending_output: Option<(egui::Context, egui::FullOutput)>,
 
     /// Graphics queue, wrapped in a Mutex for Vulkan-required external
     /// synchronization (VUID-vkQueueSubmit-queue-00893). All queue
@@ -1266,9 +1284,9 @@ impl VulkanContext {
     /// Get a handle for requesting screenshots from outside the render loop.
     pub fn screenshot_handle(&self) -> ScreenshotHandle {
         ScreenshotHandle {
-            requested: Arc::clone(&self.screenshot_requested),
-            result: Arc::clone(&self.screenshot_result),
-            generation: Arc::clone(&self.screenshot_generation),
+            requested: Arc::clone(&self.overlay.screenshot_requested),
+            result: Arc::clone(&self.overlay.screenshot_result),
+            generation: Arc::clone(&self.overlay.screenshot_generation),
         }
     }
 
@@ -1276,8 +1294,8 @@ impl VulkanContext {
     /// loop (#3308). Feeds `byroredux_core::ecs::DepthCaptureBridge`.
     pub fn depth_capture_handle(&self) -> DepthCaptureHandle {
         DepthCaptureHandle {
-            requested: Arc::clone(&self.depth_capture_requested),
-            result: Arc::clone(&self.depth_capture_result),
+            requested: Arc::clone(&self.overlay.depth_capture_requested),
+            result: Arc::clone(&self.overlay.depth_capture_result),
             // #4003 — mirrors `depth_capture_record_copy`'s #3570 guard.
             // Kept as a `!=` against the one supported format rather than a
             // list of rejected ones, so widening the decode is a single
@@ -1334,7 +1352,7 @@ impl VulkanContext {
     /// the world. Idempotent — repeated calls reuse the existing
     /// pass instead of leaking GPU resources.
     pub fn init_egui(&mut self, in_flight_frames: usize) -> anyhow::Result<()> {
-        if self.egui_pass.is_some() {
+        if self.overlay.egui_pass.is_some() {
             return Ok(());
         }
         let allocator = self.allocator.clone().ok_or_else(|| {
@@ -1348,7 +1366,7 @@ impl VulkanContext {
             self.swapchain.state.extent,
             in_flight_frames,
         )?;
-        self.egui_pass = Some(pass);
+        self.overlay.egui_pass = Some(pass);
         Ok(())
     }
 
@@ -1367,9 +1385,9 @@ impl VulkanContext {
     /// `pixels_per_point` — the same semantics egui's own multi-frame
     /// integrations use.
     pub fn submit_egui_frame(&mut self, ctx: egui::Context, output: egui::FullOutput) {
-        if self.egui_pass.is_some() {
-            self.egui_pending_output = Some(merge_egui_pending_output(
-                self.egui_pending_output.take(),
+        if self.overlay.egui_pass.is_some() {
+            self.overlay.egui_pending_output = Some(merge_egui_pending_output(
+                self.overlay.egui_pending_output.take(),
                 ctx,
                 output,
             ));

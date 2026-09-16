@@ -242,7 +242,7 @@ impl Drop for VulkanContext {
             // here; its `Renderer` field's own Drop tears down the
             // pipeline + descriptor pool + per-frame buffer pools
             // when the `Option<EguiPass>` itself drops below.
-            if let Some(mut pass) = self.egui_pass.take() {
+            if let Some(mut pass) = self.overlay.egui_pass.take() {
                 pass.destroy(&self.device);
             }
             if let Some(mut presentation) = self.post.presentation.take() {

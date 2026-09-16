@@ -37,10 +37,10 @@ impl VulkanContext {
         // back the extent CAPTURED at record time, never the live one. A
         // same-frame resize between record and readback would otherwise
         // decode the new dimensions against the old copy.
-        let Some(extent) = self.depth_capture_pending_readback.take() else {
+        let Some(extent) = self.overlay.depth_capture_pending_readback.take() else {
             return;
         };
-        let Some((_, ref allocation, _)) = self.depth_capture_staging else {
+        let Some((_, ref allocation, _)) = self.overlay.depth_capture_staging else {
             return;
         };
 
@@ -61,7 +61,7 @@ impl VulkanContext {
             let (aligned_offset, aligned_size) =
                 super::super::buffer::aligned_flush_range(allocation.offset(), allocation.size());
             // SAFETY: `allocation` is live and owned by
-            // `self.depth_capture_staging` for this call. `aligned_flush_range`
+            // `self.overlay.depth_capture_staging` for this call. `aligned_flush_range`
             // widens outward to `NON_COHERENT_ATOM_SIZE`, staying inside the
             // parent `GpuAllocatorManaged` block; invalidating a superset only
             // discards possibly-stale host cache lines, publishing nothing.
@@ -105,6 +105,7 @@ impl VulkanContext {
         // #1174 sibling — recover from poison so one panicking consumer
         // doesn't take out every subsequent capture.
         *self
+            .overlay
             .depth_capture_result
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(DepthCapture {
@@ -131,7 +132,11 @@ impl VulkanContext {
     /// that layout before returning, so every later consumer in the frame
     /// sees what it expects whether or not a capture ran.
     pub(super) unsafe fn depth_capture_record_copy(&mut self, cmd: vk::CommandBuffer) {
-        if !self.depth_capture_requested.swap(false, Ordering::AcqRel) {
+        if !self
+            .overlay
+            .depth_capture_requested
+            .swap(false, Ordering::AcqRel)
+        {
             return;
         }
 
@@ -159,7 +164,7 @@ impl VulkanContext {
         let buffer_size =
             extent.width as vk::DeviceSize * extent.height as vk::DeviceSize * 4 /* D32_SFLOAT, checked above */;
         self.ensure_depth_capture_staging(buffer_size);
-        let Some((staging_buffer, _, _)) = self.depth_capture_staging.as_ref() else {
+        let Some((staging_buffer, _, _)) = self.overlay.depth_capture_staging.as_ref() else {
             log::warn!("Depth capture staging buffer creation failed");
             return;
         };
@@ -257,12 +262,12 @@ impl VulkanContext {
             );
         }
 
-        self.depth_capture_pending_readback = Some(extent);
+        self.overlay.depth_capture_pending_readback = Some(extent);
     }
 
     /// Ensure a host-visible staging buffer exists for depth readback.
     fn ensure_depth_capture_staging(&mut self, required_size: vk::DeviceSize) {
-        if let Some((_, _, existing)) = &self.depth_capture_staging {
+        if let Some((_, _, existing)) = &self.overlay.depth_capture_staging {
             if *existing >= required_size {
                 return;
             }
@@ -327,7 +332,7 @@ impl VulkanContext {
             }
         }
 
-        self.depth_capture_staging = Some((buffer, allocation, required_size));
+        self.overlay.depth_capture_staging = Some((buffer, allocation, required_size));
     }
 
     /// Free the depth-capture staging buffer. The contract — #3628's
@@ -335,7 +340,7 @@ impl VulkanContext {
     /// [`super::helpers::destroy_staging_buffer`], shared with the screenshot
     /// twin this path was copied from (#4039).
     pub(super) fn destroy_depth_capture_staging(&mut self) {
-        let staging = self.depth_capture_staging.take();
+        let staging = self.overlay.depth_capture_staging.take();
         super::helpers::destroy_staging_buffer(&self.device, self.allocator.as_ref(), staging);
     }
 }
@@ -361,7 +366,7 @@ mod depth_format_guard_tests {
                  depth format rather than silently misdecoding it (#3570)",
             );
         let pending_readback_pos = src
-            .find("self.depth_capture_pending_readback = Some(extent);")
+            .find("self.overlay.depth_capture_pending_readback = Some(extent);")
             .expect("depth_capture_record_copy must arm the pending readback");
 
         assert!(

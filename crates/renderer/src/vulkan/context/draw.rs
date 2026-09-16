@@ -2018,8 +2018,8 @@ impl VulkanContext {
             // the same command buffer. Skipped unless both
             // `init_egui` ran AND a frame was submitted via
             // `submit_egui_frame` this iteration.
-            if let Some(pass) = self.egui_pass.as_mut() {
-                if let Some((egui_ctx, output)) = self.egui_pending_output.take() {
+            if let Some(pass) = self.overlay.egui_pass.as_mut() {
+                if let Some((egui_ctx, output)) = self.overlay.egui_pending_output.take() {
                     // Pass the queue Mutex by reference: `dispatch` locks it
                     // only around the internal `set_textures` upload, not
                     // across tessellate + cmd_draw (which just record into

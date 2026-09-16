@@ -991,7 +991,7 @@ impl VulkanContext {
         // how `presentation` below is handled unconditionally — a
         // format change is rare enough that always paying the
         // teardown/rebuild cost there was never worth guarding.
-        if let Some(mut pass) = self.egui_pass.take() {
+        if let Some(mut pass) = self.overlay.egui_pass.take() {
             if pass.format() == self.swapchain.state.format.format {
                 // #2685 / SAFE-D10-01 — `EguiPass` has no `Drop`; its render
                 // pass and framebuffers are freed only by the explicit
@@ -1008,7 +1008,7 @@ impl VulkanContext {
                     &self.swapchain.state.image_views,
                     self.swapchain.state.extent,
                 ) {
-                    Ok(()) => self.egui_pass = Some(pass),
+                    Ok(()) => self.overlay.egui_pass = Some(pass),
                     Err(e) => {
                         // SAFETY: `device_wait_idle` at the top of
                         // `recreate_swapchain_core` guarantees no in-flight
@@ -1036,7 +1036,7 @@ impl VulkanContext {
                         self.swapchain.state.extent,
                         in_flight_frames,
                     ) {
-                        Ok(rebuilt) => self.egui_pass = Some(rebuilt),
+                        Ok(rebuilt) => self.overlay.egui_pass = Some(rebuilt),
                         Err(e) => log::warn!(
                             "egui overlay rebuild after swapchain format change \
                              failed: {e:#} — overlay disabled for this session"
@@ -1851,7 +1851,7 @@ mod tests {
     }
 
     /// #2685 / SAFE-D10-01 — the format-STABLE arm `take()`s the pass out of
-    /// `self.egui_pass` and then makes a fallible call. `EguiPass` has no
+    /// `self.overlay.egui_pass` and then makes a fallible call. `EguiPass` has no
     /// `Drop` impl, so a bare `?` there drops the taken pass without
     /// `destroy()` and strands its `vk::RenderPass` (plus any framebuffers
     /// already created) until process exit. Static source check — provoking a
@@ -1862,7 +1862,7 @@ mod tests {
         let src = production_src();
 
         let take_pos = src
-            .find("if let Some(mut pass) = self.egui_pass.take() {")
+            .find("if let Some(mut pass) = self.overlay.egui_pass.take() {")
             .expect("the egui resize block must still take the pass out of self");
         let recreate_pos = src[take_pos..]
             .find("pass.recreate_framebuffers(")
