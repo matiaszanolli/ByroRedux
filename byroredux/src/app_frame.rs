@@ -15,9 +15,9 @@
 
 use byroredux_core::ecs::components::groundcover::{GroundCoverDimmer, WindField};
 use byroredux_core::ecs::{DebugStats, DeltaTime, ScratchTelemetry};
+use byroredux_renderer::shader_constants::GROUNDCOVER_DETAIL_ATLAS_EDGE;
 use byroredux_renderer::vulkan::context::FrameInputs;
 use byroredux_renderer::vulkan::GpuUploadCtx;
-use byroredux_renderer::shader_constants::GROUNDCOVER_DETAIL_ATLAS_EDGE;
 use byroredux_renderer::ImageSpaceModifier;
 use byroredux_ui::{ScaleformHostDispatch, MAX_DISTINCT_HOST_METHOD_NAMES};
 use std::time::Instant;
@@ -58,15 +58,13 @@ fn publish_groundcover_detail_atlas(
         queue: &ctx.graphics_queue,
         command_pool: ctx.transfer_pool,
     };
-        let handle = match *atlas_state {
-            Some((handle, signature)) if signature == atlas.signature => handle,
-            Some((handle, _)) => match ctx.texture_registry.update_rgba(
-                upload_ctx,
-                handle,
-                edge,
-                height,
-                &atlas.pixels,
-            ) {
+    let handle = match *atlas_state {
+        Some((handle, signature)) if signature == atlas.signature => handle,
+        Some((handle, _)) => {
+            match ctx
+                .texture_registry
+                .update_rgba(upload_ctx, handle, edge, height, &atlas.pixels)
+            {
                 Ok(()) => {
                     *atlas_state = Some((handle, atlas.signature));
                     handle
@@ -75,23 +73,26 @@ fn publish_groundcover_detail_atlas(
                     log::warn!(target: "engine::groundcover", "failed to refresh Tier-3 detail atlas: {error:#}");
                     return;
                 }
-            },
-            None => match ctx.texture_registry.register_rgba(upload_ctx, edge, height, &atlas.pixels) {
-                Ok(handle) => {
-                    *atlas_state = Some((handle, atlas.signature));
-                    handle
-                }
-                Err(error) => {
-                    log::warn!(target: "engine::groundcover", "failed to create Tier-3 detail atlas: {error:#}");
-                    return;
-                }
-            },
-        };
+            }
+        }
+        None => match ctx
+            .texture_registry
+            .register_rgba(upload_ctx, edge, height, &atlas.pixels)
+        {
+            Ok(handle) => {
+                *atlas_state = Some((handle, atlas.signature));
+                handle
+            }
+            Err(error) => {
+                log::warn!(target: "engine::groundcover", "failed to create Tier-3 detail atlas: {error:#}");
+                return;
+            }
+        },
+    };
     ctx.set_groundcover_detail_atlas(handle, atlas.species_count);
 }
 
 impl App {
-
     /// Phase 14 — pulled out of the original `WindowEvent::RedrawRequested`
     /// arm so the game loop can call it directly from `about_to_wait`
     /// instead of routing through `request_redraw()` → wait for the
@@ -337,287 +338,38 @@ impl App {
             // `GpuInstance.vertex_offset`, which only the live `MeshRegistry`
             // can resolve, and #4052 settled that it must be resolved every
             // frame (the registry compacts).
-            if ctx.groundcover.is_some() && !self.groundcover_off {
-                let groundcover_dt = self
-                    .world
-                    .try_resource::<DeltaTime>()
-                    .map_or(0.0, |dt| dt.0);
-                let chunks_truncated = crate::render::groundcover::collect_groundcover_frame(
-                    &self.world,
-                    &ctx.mesh_registry,
-                    byroredux_core::math::Vec3::from_array(frame.camera_pos),
-                    byroredux_core::math::Vec3::from_array(frame.cam_forward),
-                    groundcover_dt,
-                    &mut self.groundcover_residency,
-                    &mut self.groundcover_cells,
-                    &mut self.groundcover_chunks,
-                );
-                if chunks_truncated != 0 {
-                    if !self.groundcover_truncation_logged {
-                        log::warn!(
-                            target: "engine::groundcover",
-                            "ground-cover cell table overflow: {chunks_truncated} resident chunks were not published; \
-                             this is a capacity fault, not normal residency-ring fill-in"
-                        );
-                        self.groundcover_truncation_logged = true;
-                    }
-                } else {
-                    self.groundcover_truncation_logged = false;
-                }
-                // #4057 — the per-weather grass dimmer, read live each frame
-                // from the slot `weather_system` writes it into. Absent (every
-                // non-Oblivion game, and any frame before weather resolves) is
-                // neutral, not zero.
-                let dimmer = self
-                    .world
-                    .try_resource::<GroundCoverDimmer>()
-                    .map(|d| *d)
-                    .unwrap_or(GroundCoverDimmer::NEUTRAL);
-                publish_groundcover_detail_atlas(
-                    &self.world,
-                    &mut self.groundcover_detail_atlas,
-                    ctx,
-                );
-                crate::render::groundcover::collect_groundcover_species(
-                    &self.world,
-                    dimmer,
-                    self.groundcover_detail_atlas.map_or(0, |(handle, _)| handle),
-                    &mut self.groundcover_species,
-                );
-                // §7 — built from the same palette, in the same order and
-                // truncation, so every entry names a species just collected.
-                crate::render::groundcover::collect_groundcover_species_table(
-                    &self.world,
-                    &mut self.groundcover_species_table,
-                );
-                // #4058 — §12.4's disturbers. Collected here rather than in
-                // `build_render_data` for the same reason the chunks are: this
-                // is where the frame's camera position is settled, and the
-                // list is culled and sorted against it.
-                crate::render::groundcover::collect_groundcover_disturbers(
-                    &self.world,
-                    byroredux_core::math::Vec3::from_array(frame.camera_pos),
-                    &mut self.groundcover_disturbers,
-                );
-                let frame_dt = self
-                    .world
-                    .try_resource::<DeltaTime>()
-                    .map_or(0.0, |dt| dt.0);
-                let wind = self
-                    .world
-                    .try_resource::<WindField>()
-                    .map(|w| *w)
-                    .unwrap_or(WindField::CALM);
-                let time_seconds = self
-                    .world
-                    .try_resource::<byroredux_core::ecs::TotalTime>()
-                    .map_or(0.0, |t| t.0);
-                // §6 keys blade widening to *projected pixel size*, not
-                // distance: a blade narrower than a pixel flickers rather than
-                // antialiasing, and thin high-contrast geometry is the case
-                // TAA handles worst. That makes the widening resolution- and
-                // FOV-dependent, so the factor has to come from the live
-                // projection — a constant would be correct at exactly one
-                // setting and shimmer at every other.
-                let (_, render_height) = ctx.swapchain_extent();
-                let pixels_per_unit_at_unit_depth =
-                    render_height as f32 * 0.5 / (frame.camera_fov_y * 0.5).tan().max(1.0e-4);
-                let input = byroredux_renderer::vulkan::groundcover::GroundCoverFrame {
-                    cells: &self.groundcover_cells,
-                    chunks: &self.groundcover_chunks,
-                    species: &self.groundcover_species,
-                    species_table: &self.groundcover_species_table,
-                    view_proj: frame.view_proj,
-                    camera_pos: frame.camera_pos,
-                    render_origin: frame.render_origin,
-                    wind: [
-                        wind.direction[0],
-                        wind.direction[1],
-                        wind.speed,
-                        wind.gust_amplitude,
-                    ],
-                    gust_frequency: wind.gust_frequency,
-                    time_seconds,
-                    pixels_per_unit_at_unit_depth,
+            collect_and_prepare_groundcover(
+                &self.world,
+                ctx,
+                &frame,
+                GroundCoverScratch {
+                    residency: &mut self.groundcover_residency,
+                    cells: &mut self.groundcover_cells,
+                    chunks: &mut self.groundcover_chunks,
+                    species: &mut self.groundcover_species,
+                    species_table: &mut self.groundcover_species_table,
+                    disturbers: &mut self.groundcover_disturbers,
+                    detail_atlas: &mut self.groundcover_detail_atlas,
+                    truncation_logged: &mut self.groundcover_truncation_logged,
                     debug_points: self.groundcover_debug_points,
-                    disturbers: &self.groundcover_disturbers,
-                    delta_seconds: frame_dt,
-                    chunks_truncated,
-                };
-                ctx.prepare_groundcover(&input);
-            } else if ctx.groundcover.is_some() {
-                // `--groundcover-off`. An empty chunk list is what `prepare`
-                // already treats as "nothing to scatter", so the off switch is
-                // the same code path an interior takes — no second branch in
-                // the renderer that could drift from the live one.
-                self.groundcover_cells.clear();
-                self.groundcover_chunks.clear();
-                self.groundcover_residency.clear();
-                self.groundcover_truncation_logged = false;
-                self.groundcover_species.clear();
-                let input = byroredux_renderer::vulkan::groundcover::GroundCoverFrame {
-                    cells: &self.groundcover_cells,
-                    chunks: &self.groundcover_chunks,
-                    species: &self.groundcover_species,
-                    species_table: &self.groundcover_species_table,
-                    view_proj: frame.view_proj,
-                    camera_pos: frame.camera_pos,
-                    render_origin: frame.render_origin,
-                    wind: [0.0, 0.0, 0.0, 0.0],
-                    gust_frequency: 0.0,
-                    time_seconds: 0.0,
-                    pixels_per_unit_at_unit_depth: 1.0,
-                    debug_points: false,
-                    // `--groundcover-off` also stops the interaction field, so
-                    // the off switch really is off — no compute dispatch, no
-                    // trail decaying behind a feature that is not drawing.
-                    disturbers: &[],
-                    delta_seconds: 0.0,
-                    chunks_truncated: 0,
-                };
-                ctx.prepare_groundcover(&input);
-            }
+                    off: self.groundcover_off,
+                },
+            );
 
             // Tick and render the UI overlay (Ruffle SWF player).
             let ui_t0 = Instant::now();
-            let mut ui_tex = None;
-            if let Some(ref mut ui) = self.ui_manager {
-                let dt = self
-                    .world
-                    .try_resource::<DeltaTime>()
-                    .map(|d| d.0 as f64)
-                    .unwrap_or(1.0 / 60.0);
-                let ui_w = ui.width;
-                let ui_h = ui.height;
-                ui.tick(dt);
-
-                // Consume what the menu asked of the host (#2714). The bridge
-                // is drain-based by design and had no consumer outside its own
-                // tests, so every ActionScript call was retained for the life
-                // of the menu. Draining here is what keeps the queue at its
-                // natural depth; `MAX_QUEUED_CALLS` is only the backstop for
-                // when this does not run.
-                //
-                // Acting on the calls is M48 work — routing them into quest /
-                // inventory / player state needs those systems' menu contracts
-                // to exist first. What the engine can honestly do today is
-                // consume them and say which ones it cannot answer, which
-                // turns the bridge's `unknown_methods()` set from a test-only
-                // observation into a live one.
-                let host_calls = ui.drain_host_calls();
-                // #2969 — `drain_calls`' own contract: a batch must be read
-                // together with the eviction counter, because it may not be
-                // contiguous. The bridge warns once at the producer when it
-                // first evicts, but that says "a call was lost", not "the
-                // batch you are about to act on has a hole in it" — and the
-                // moment this loop routes calls into quest / inventory /
-                // player state, that hole is a lost state transition with no
-                // signal. Latched, so the warning tracks increases rather
-                // than repeating every frame for the life of the menu.
-                let dropped = ui.dropped_host_calls();
-                // #3772 — `host_call_gap_for_menu` resets the latch
-                // EXPLICITLY on a menu swap (effective latch 0 whenever
-                // `ui.menu_name` differs from what it was last latched
-                // against) rather than relying on `host_call_gap`'s
-                // decrease guard to infer one. A swap landing on a frame
-                // where the new bridge has already evicted N < the old
-                // latch would otherwise read as "un-dropped" (the same
-                // shape as same-bridge un-dropping, which cannot happen)
-                // and silently absorb the new menu's first N drops.
-                if let Some(lost) = crate::host_call_gap_for_menu(
-                    self.ui_dropped_host_calls,
-                    self.ui_dropped_host_calls_menu.as_deref(),
-                    &ui.menu_name,
-                    dropped,
-                ) {
-                    log::warn!(
-                        "Scaleform menu '{}' lost {lost} host call(s) to the \
-                         {}-entry bridge cap since the last drain ({dropped} \
-                         total for this menu) — the {} call(s) drained this \
-                         frame are not a contiguous record of what the menu \
-                         asked for",
-                        ui.menu_name,
-                        byroredux_ui::MAX_QUEUED_CALLS,
-                        host_calls.len(),
-                    );
-                }
-                self.ui_dropped_host_calls = dropped;
-                self.ui_dropped_host_calls_menu = Some(ui.menu_name.clone());
-
-                for call in host_calls {
-                    log::debug!(
-                        "Scaleform host call #{} {} -> {} ({:?}, {} arg(s))",
-                        call.sequence,
-                        call.transport_method,
-                        call.method,
-                        call.dispatch,
-                        call.arguments.len(),
-                    );
-                    // #2964 — bounded the same way the bridge's own
-                    // movie-keyed diagnostic sets are: menu/method strings are
-                    // chosen by untrusted ActionScript content, so this set
-                    // needs the same cap `host.rs::MAX_DISTINCT_HOST_METHOD_NAMES`
-                    // gives `unknown_methods`/`unanswered_methods` upstream,
-                    // or a menu calling a distinct unimplemented name every
-                    // frame would grow this HashSet without limit.
-                    let diagnostic_key = host_method_diagnostic_key(&ui.menu_name, &call.method);
-                    if matches!(
-                        call.dispatch,
-                        ScaleformHostDispatch::Unknown | ScaleformHostDispatch::MissingResponse
-                    ) && !self.ui_reported_host_methods.contains(&diagnostic_key)
-                    {
-                        if self.ui_reported_host_methods.len() >= MAX_DISTINCT_HOST_METHOD_NAMES {
-                            if !self.ui_reported_host_methods_capped {
-                                self.ui_reported_host_methods_capped = true;
-                                log::error!(
-                                    "Scaleform unimplemented-host-method diagnostic hit the \
-                                     {MAX_DISTINCT_HOST_METHOD_NAMES}-entry cap; further \
-                                     distinct methods are neither recorded nor logged"
-                                );
-                            }
-                        } else {
-                            self.ui_reported_host_methods.insert(diagnostic_key);
-                            log::warn!(
-                                "Scaleform menu '{}' called host method '{}' ({:?}) — \
-                                 no engine handler is registered, so the menu received Null",
-                                ui.menu_name,
-                                call.method,
-                                call.dispatch,
-                            );
-                        }
-                    }
-                }
-
-                // #2972 — three-state, so "hidden" and "unchanged" no longer
-                // share one `None`. Leaving `ui_tex` at `None` is what stops
-                // `draw_frame` emitting the UI quad; previously a hidden
-                // overlay fell into the `Unchanged` arm and kept compositing
-                // its last uploaded frame over the world indefinitely.
-                match ui.render() {
-                    byroredux_ui::UiFrame::Fresh(pixels) => {
-                        if let Some(handle) = self.ui_texture_handle {
-                            let allocator = ctx.allocator.as_ref().unwrap();
-                            let upload_ctx = GpuUploadCtx {
-                                device: &ctx.device,
-                                allocator,
-                                queue: &ctx.graphics_queue,
-                                command_pool: ctx.transfer_pool,
-                            };
-                            if let Err(e) = ctx
-                                .texture_registry
-                                .update_rgba(upload_ctx, handle, ui_w, ui_h, pixels)
-                            {
-                                log::error!("UI texture update failed: {e:#}");
-                            }
-                            ui_tex = Some(handle);
-                        }
-                    }
-                    byroredux_ui::UiFrame::Unchanged => {
-                        ui_tex = self.ui_texture_handle;
-                    }
-                    byroredux_ui::UiFrame::Hidden => {}
-                }
-            }
+            let ui_tex = tick_ui_overlay(
+                &self.world,
+                ctx,
+                &mut self.ui_manager,
+                UiOverlayState {
+                    texture_handle: self.ui_texture_handle,
+                    dropped_host_calls: &mut self.ui_dropped_host_calls,
+                    dropped_host_calls_menu: &mut self.ui_dropped_host_calls_menu,
+                    reported_host_methods: &mut self.ui_reported_host_methods,
+                    reported_host_methods_capped: &mut self.ui_reported_host_methods_capped,
+                },
+            );
             if is_benching {
                 self.bench_ui_ns += ui_t0.elapsed().as_nanos() as u64;
             }
@@ -633,42 +385,8 @@ impl App {
             };
             let render_t0 = Instant::now();
             let mut frame_timings = Some(byroredux_renderer::FrameTimings::default());
-            let pending = self.skin_slot_pool.drain_pending(
-                byroredux_renderer::vulkan::scene_buffer::MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME,
-            );
-            // #1791 / D6-01 — mirror of `pending_with_data`'s (slot, entity)
-            // pairs, kept alive so a `draw_frame` early return (see the
-            // `skin_dispatch_ran` check below) can requeue exactly what was
-            // about to be uploaded. Deliberately NOT the raw `pending` drain:
-            // an entry filtered out here (its `SkinnedMesh` is already gone)
-            // must stay dropped, not come back through the requeue path.
-            let mut pending_for_requeue: Vec<(u32, byroredux_core::ecs::EntityId)> =
-                Vec::with_capacity(pending.len());
-            let pending_with_data: Vec<(u32, Vec<[[f32; 4]; 4]>)> = pending
-                .into_iter()
-                .filter_map(|(slot, entity)| {
-                    self.world
-                        .get::<byroredux_core::ecs::SkinnedMesh>(entity)
-                        .map(|skin| {
-                            let mut padded: Vec<[[f32; 4]; 4]> = skin
-                                .bind_inverses
-                                .iter()
-                                .map(|m| m.to_cols_array_2d())
-                                .collect();
-                            padded.resize(
-                                byroredux_core::ecs::components::MAX_BONES_PER_MESH,
-                                [
-                                    [1.0, 0.0, 0.0, 0.0],
-                                    [0.0, 1.0, 0.0, 0.0],
-                                    [0.0, 0.0, 1.0, 0.0],
-                                    [0.0, 0.0, 0.0, 1.0],
-                                ],
-                            );
-                            pending_for_requeue.push((slot, entity));
-                            (slot, padded)
-                        })
-                })
-                .collect();
+            let (pending_with_data, mut pending_for_requeue) =
+                drain_skin_slot_uploads(&self.world, &mut self.skin_slot_pool);
             // Phase 15 — close pre-draw bracket, open draw-call.
             rof_pre_draw_ns = rof_pre_t0.elapsed().as_nanos() as u64;
             let rof_draw_call_t0 = Instant::now();
@@ -683,51 +401,7 @@ impl App {
                 camera_far: frame.camera_far,
                 camera_fov_y: frame.camera_fov_y,
             };
-            // Apply deferred named debug-view / bounded-ray requests at the
-            // frame boundary, then harvest any fence-lagged result from the
-            // prior frame slot. Console execution never reaches into the
-            // Vulkan context directly.
-            let (pending_debug_mode, pending_probe_pixel) = self
-                .world
-                .try_resource_mut::<crate::components::RenderDebugControl>()
-                .map_or((None, None), |mut control| {
-                    (
-                        control.pending_mode.take(),
-                        control.pending_probe_pixel.take(),
-                    )
-                });
-            if let Some(mode) = pending_debug_mode {
-                ctx.set_render_debug_mode(mode);
-            }
-            let probe_request_result = pending_probe_pixel.map(|pixel| {
-                ctx.request_selected_ray_probe(pixel)
-                    .map(|generation| (pixel, generation))
-            });
-            let completed_probe = ctx.take_selected_ray_probe_result();
-            if let Some(mut control) = self
-                .world
-                .try_resource_mut::<crate::components::RenderDebugControl>()
-            {
-                control.active_mode = ctx.render_debug_mode();
-                if let Some(result) = probe_request_result {
-                    match result {
-                        Ok((_pixel, generation)) => {
-                            control.pending_probe_generation = Some(generation);
-                            control.last_error = None;
-                        }
-                        Err(error) => {
-                            control.pending_probe_generation = None;
-                            control.last_error = Some(error);
-                        }
-                    }
-                }
-                if let Some(probe) = completed_probe {
-                    if control.pending_probe_generation == Some(probe.generation) {
-                        control.pending_probe_generation = None;
-                    }
-                    control.last_probe = Some(probe);
-                }
-            }
+            apply_pending_debug_requests(&self.world, ctx);
             // REND-#1451 — push live point/spot attenuation tuning
             // (LightTuning resource, mutated by the `light.atten`
             // console command) into the renderer so the controlled
@@ -947,6 +621,437 @@ impl App {
         cpu_t.rof_pre_draw_ms = rof_pre_draw_ns as f32 * NS_TO_MS;
         cpu_t.rof_draw_call_ms = rof_draw_call_ns as f32 * NS_TO_MS;
         cpu_t.rof_post_draw_ms = rof_post_draw_ns as f32 * NS_TO_MS;
+    }
+}
+
+/// The ground-cover scratch `render_one_frame` lends to
+/// [`collect_and_prepare_groundcover`], as disjoint borrows of `App`'s own
+/// fields.
+///
+/// #4342 — a bundle rather than ten parameters: the collection runs inside
+/// `if let Some(ref mut ctx) = self.renderer`, so the helper cannot take
+/// `&mut self`, and ten separate `&mut` arguments would exceed the
+/// argument-count lint. Regrouping these onto `App` itself is #3736's
+/// subject, not this one's.
+struct GroundCoverScratch<'a> {
+    residency: &'a mut crate::render::groundcover::GroundCoverResidency,
+    cells: &'a mut Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverCell>,
+    chunks: &'a mut Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverChunk>,
+    species: &'a mut Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverSpecies>,
+    species_table: &'a mut Vec<u32>,
+    disturbers: &'a mut Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverDisturber>,
+    detail_atlas: &'a mut Option<(u32, u64)>,
+    truncation_logged: &'a mut bool,
+    debug_points: bool,
+    off: bool,
+}
+
+/// EXAL ground cover (#4054/#4055): collect this frame's chunks, species,
+/// disturbers and wind, then hand the scatter its input.
+///
+/// Extracted from `render_one_frame` under #4342. Kept in this file because
+/// five `include_str!("app_frame.rs")` scans — plus two more in
+/// `crates/ui` — read the frame driver's source; moving it would leave them
+/// scanning a file the code had left.
+fn collect_and_prepare_groundcover(
+    world: &byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
+    frame: &crate::render::RenderFrameView,
+    gc: GroundCoverScratch<'_>,
+) {
+    if ctx.groundcover.is_some() && !gc.off {
+        let groundcover_dt = world.try_resource::<DeltaTime>().map_or(0.0, |dt| dt.0);
+        let chunks_truncated = crate::render::groundcover::collect_groundcover_frame(
+            world,
+            &ctx.mesh_registry,
+            byroredux_core::math::Vec3::from_array(frame.camera_pos),
+            byroredux_core::math::Vec3::from_array(frame.cam_forward),
+            groundcover_dt,
+            gc.residency,
+            gc.cells,
+            gc.chunks,
+        );
+        if chunks_truncated != 0 {
+            if !*gc.truncation_logged {
+                log::warn!(
+                    target: "engine::groundcover",
+                    "ground-cover cell table overflow: {chunks_truncated} resident chunks were not published; \
+                     this is a capacity fault, not normal residency-ring fill-in"
+                );
+                *gc.truncation_logged = true;
+            }
+        } else {
+            *gc.truncation_logged = false;
+        }
+        // #4057 — the per-weather grass dimmer, read live each frame
+        // from the slot `weather_system` writes it into. Absent (every
+        // non-Oblivion game, and any frame before weather resolves) is
+        // neutral, not zero.
+        let dimmer = world
+            .try_resource::<GroundCoverDimmer>()
+            .map(|d| *d)
+            .unwrap_or(GroundCoverDimmer::NEUTRAL);
+        publish_groundcover_detail_atlas(world, gc.detail_atlas, ctx);
+        crate::render::groundcover::collect_groundcover_species(
+            world,
+            dimmer,
+            (*gc.detail_atlas).map_or(0, |(handle, _)| handle),
+            gc.species,
+        );
+        // §7 — built from the same palette, in the same order and
+        // truncation, so every entry names a species just collected.
+        crate::render::groundcover::collect_groundcover_species_table(world, gc.species_table);
+        // #4058 — §12.4's disturbers. Collected here rather than in
+        // `build_render_data` for the same reason the chunks are: this
+        // is where the frame's camera position is settled, and the
+        // list is culled and sorted against it.
+        crate::render::groundcover::collect_groundcover_disturbers(
+            world,
+            byroredux_core::math::Vec3::from_array(frame.camera_pos),
+            gc.disturbers,
+        );
+        let frame_dt = world.try_resource::<DeltaTime>().map_or(0.0, |dt| dt.0);
+        let wind = world
+            .try_resource::<WindField>()
+            .map(|w| *w)
+            .unwrap_or(WindField::CALM);
+        let time_seconds = world
+            .try_resource::<byroredux_core::ecs::TotalTime>()
+            .map_or(0.0, |t| t.0);
+        // §6 keys blade widening to *projected pixel size*, not
+        // distance: a blade narrower than a pixel flickers rather than
+        // antialiasing, and thin high-contrast geometry is the case
+        // TAA handles worst. That makes the widening resolution- and
+        // FOV-dependent, so the factor has to come from the live
+        // projection — a constant would be correct at exactly one
+        // setting and shimmer at every other.
+        let (_, render_height) = ctx.swapchain_extent();
+        let pixels_per_unit_at_unit_depth =
+            render_height as f32 * 0.5 / (frame.camera_fov_y * 0.5).tan().max(1.0e-4);
+        let input = byroredux_renderer::vulkan::groundcover::GroundCoverFrame {
+            cells: gc.cells,
+            chunks: gc.chunks,
+            species: gc.species,
+            species_table: gc.species_table,
+            view_proj: frame.view_proj,
+            camera_pos: frame.camera_pos,
+            render_origin: frame.render_origin,
+            wind: [
+                wind.direction[0],
+                wind.direction[1],
+                wind.speed,
+                wind.gust_amplitude,
+            ],
+            gust_frequency: wind.gust_frequency,
+            time_seconds,
+            pixels_per_unit_at_unit_depth,
+            debug_points: gc.debug_points,
+            disturbers: gc.disturbers,
+            delta_seconds: frame_dt,
+            chunks_truncated,
+        };
+        ctx.prepare_groundcover(&input);
+    } else if ctx.groundcover.is_some() {
+        // `--groundcover-off`. An empty chunk list is what `prepare`
+        // already treats as "nothing to scatter", so the off switch is
+        // the same code path an interior takes — no second branch in
+        // the renderer that could drift from the live one.
+        gc.cells.clear();
+        gc.chunks.clear();
+        gc.residency.clear();
+        *gc.truncation_logged = false;
+        gc.species.clear();
+        let input = byroredux_renderer::vulkan::groundcover::GroundCoverFrame {
+            cells: gc.cells,
+            chunks: gc.chunks,
+            species: gc.species,
+            species_table: gc.species_table,
+            view_proj: frame.view_proj,
+            camera_pos: frame.camera_pos,
+            render_origin: frame.render_origin,
+            wind: [0.0, 0.0, 0.0, 0.0],
+            gust_frequency: 0.0,
+            time_seconds: 0.0,
+            pixels_per_unit_at_unit_depth: 1.0,
+            debug_points: false,
+            // `--groundcover-off` also stops the interaction field, so
+            // the off switch really is off — no compute dispatch, no
+            // trail decaying behind a feature that is not drawing.
+            disturbers: &[],
+            delta_seconds: 0.0,
+            chunks_truncated: 0,
+        };
+        ctx.prepare_groundcover(&input);
+    }
+}
+
+/// The Scaleform overlay's latches and diagnostic sets, as disjoint borrows
+/// of `App`'s fields. `texture_handle` is by value — it is `Option<u32>`,
+/// and the overlay only reads it.
+struct UiOverlayState<'a> {
+    texture_handle: Option<u32>,
+    dropped_host_calls: &'a mut u64,
+    dropped_host_calls_menu: &'a mut Option<String>,
+    reported_host_methods: &'a mut std::collections::HashSet<(String, String)>,
+    reported_host_methods_capped: &'a mut bool,
+}
+
+/// Tick the Ruffle overlay, drain what the menu asked of the host, and
+/// upload the frame it produced. Returns the texture handle `draw_frame`
+/// should composite, or `None` when the overlay is hidden — which is what
+/// stops the UI quad being emitted at all (#2972).
+fn tick_ui_overlay(
+    world: &byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
+    ui_manager: &mut Option<byroredux_ui::UiManager>,
+    ui_state: UiOverlayState<'_>,
+) -> Option<u32> {
+    let mut ui_tex = None;
+    if let Some(ui) = ui_manager.as_mut() {
+        let dt = world
+            .try_resource::<DeltaTime>()
+            .map(|d| d.0 as f64)
+            .unwrap_or(1.0 / 60.0);
+        let ui_w = ui.width;
+        let ui_h = ui.height;
+        ui.tick(dt);
+
+        // Consume what the menu asked of the host (#2714). The bridge
+        // is drain-based by design and had no consumer outside its own
+        // tests, so every ActionScript call was retained for the life
+        // of the menu. Draining here is what keeps the queue at its
+        // natural depth; `MAX_QUEUED_CALLS` is only the backstop for
+        // when this does not run.
+        //
+        // Acting on the calls is M48 work — routing them into quest /
+        // inventory / player state needs those systems' menu contracts
+        // to exist first. What the engine can honestly do today is
+        // consume them and say which ones it cannot answer, which
+        // turns the bridge's `unknown_methods()` set from a test-only
+        // observation into a live one.
+        let host_calls = ui.drain_host_calls();
+        // #2969 — `drain_calls`' own contract: a batch must be read
+        // together with the eviction counter, because it may not be
+        // contiguous. The bridge warns once at the producer when it
+        // first evicts, but that says "a call was lost", not "the
+        // batch you are about to act on has a hole in it" — and the
+        // moment this loop routes calls into quest / inventory /
+        // player state, that hole is a lost state transition with no
+        // signal. Latched, so the warning tracks increases rather
+        // than repeating every frame for the life of the menu.
+        let dropped = ui.dropped_host_calls();
+        // #3772 — `host_call_gap_for_menu` resets the latch
+        // EXPLICITLY on a menu swap (effective latch 0 whenever
+        // `ui.menu_name` differs from what it was last latched
+        // against) rather than relying on `host_call_gap`'s
+        // decrease guard to infer one. A swap landing on a frame
+        // where the new bridge has already evicted N < the old
+        // latch would otherwise read as "un-dropped" (the same
+        // shape as same-bridge un-dropping, which cannot happen)
+        // and silently absorb the new menu's first N drops.
+        if let Some(lost) = crate::host_call_gap_for_menu(
+            *ui_state.dropped_host_calls,
+            ui_state.dropped_host_calls_menu.as_deref(),
+            &ui.menu_name,
+            dropped,
+        ) {
+            log::warn!(
+                "Scaleform menu '{}' lost {lost} host call(s) to the \
+                 {}-entry bridge cap since the last drain ({dropped} \
+                 total for this menu) — the {} call(s) drained this \
+                 frame are not a contiguous record of what the menu \
+                 asked for",
+                ui.menu_name,
+                byroredux_ui::MAX_QUEUED_CALLS,
+                host_calls.len(),
+            );
+        }
+        *ui_state.dropped_host_calls = dropped;
+        *ui_state.dropped_host_calls_menu = Some(ui.menu_name.clone());
+
+        for call in host_calls {
+            log::debug!(
+                "Scaleform host call #{} {} -> {} ({:?}, {} arg(s))",
+                call.sequence,
+                call.transport_method,
+                call.method,
+                call.dispatch,
+                call.arguments.len(),
+            );
+            // #2964 — bounded the same way the bridge's own
+            // movie-keyed diagnostic sets are: menu/method strings are
+            // chosen by untrusted ActionScript content, so this set
+            // needs the same cap `host.rs::MAX_DISTINCT_HOST_METHOD_NAMES`
+            // gives `unknown_methods`/`unanswered_methods` upstream,
+            // or a menu calling a distinct unimplemented name every
+            // frame would grow this HashSet without limit.
+            let diagnostic_key = host_method_diagnostic_key(&ui.menu_name, &call.method);
+            if matches!(
+                call.dispatch,
+                ScaleformHostDispatch::Unknown | ScaleformHostDispatch::MissingResponse
+            ) && !ui_state.reported_host_methods.contains(&diagnostic_key)
+            {
+                if ui_state.reported_host_methods.len() >= MAX_DISTINCT_HOST_METHOD_NAMES {
+                    if !*ui_state.reported_host_methods_capped {
+                        *ui_state.reported_host_methods_capped = true;
+                        log::error!(
+                            "Scaleform unimplemented-host-method diagnostic hit the \
+                             {MAX_DISTINCT_HOST_METHOD_NAMES}-entry cap; further \
+                             distinct methods are neither recorded nor logged"
+                        );
+                    }
+                } else {
+                    ui_state.reported_host_methods.insert(diagnostic_key);
+                    log::warn!(
+                        "Scaleform menu '{}' called host method '{}' ({:?}) — \
+                         no engine handler is registered, so the menu received Null",
+                        ui.menu_name,
+                        call.method,
+                        call.dispatch,
+                    );
+                }
+            }
+        }
+
+        // #2972 — three-state, so "hidden" and "unchanged" no longer
+        // share one `None`. Leaving `ui_tex` at `None` is what stops
+        // `draw_frame` emitting the UI quad; previously a hidden
+        // overlay fell into the `Unchanged` arm and kept compositing
+        // its last uploaded frame over the world indefinitely.
+        match ui.render() {
+            byroredux_ui::UiFrame::Fresh(pixels) => {
+                if let Some(handle) = ui_state.texture_handle {
+                    let allocator = ctx.allocator.as_ref().unwrap();
+                    let upload_ctx = GpuUploadCtx {
+                        device: &ctx.device,
+                        allocator,
+                        queue: &ctx.graphics_queue,
+                        command_pool: ctx.transfer_pool,
+                    };
+                    if let Err(e) = ctx
+                        .texture_registry
+                        .update_rgba(upload_ctx, handle, ui_w, ui_h, pixels)
+                    {
+                        log::error!("UI texture update failed: {e:#}");
+                    }
+                    ui_tex = Some(handle);
+                }
+            }
+            byroredux_ui::UiFrame::Unchanged => {
+                ui_tex = ui_state.texture_handle;
+            }
+            byroredux_ui::UiFrame::Hidden => {}
+        }
+    }
+    ui_tex
+}
+
+/// Drain the skin-slot pool's first-sight `bind_inverses` uploads.
+///
+/// Returns `(uploads, requeue_mirror)`: the padded palettes for
+/// `draw_frame`, and the `(slot, entity)` pairs kept alive so an early
+/// return can requeue exactly what was about to be uploaded (#1791/D6-01).
+/// An entry filtered out here — its `SkinnedMesh` is already gone — must
+/// stay dropped, which is why the mirror is not the raw drain.
+/// The padded bind-inverse palettes `draw_frame` uploads this frame, keyed
+/// by skin slot.
+type BindInversePalettes = Vec<(u32, Vec<[[f32; 4]; 4]>)>;
+
+/// The `(slot, entity)` mirror kept alive so a `draw_frame` early return can
+/// requeue exactly what was about to be uploaded (#1791 / D6-01).
+type PendingSkinRequeue = Vec<(u32, byroredux_core::ecs::EntityId)>;
+
+fn drain_skin_slot_uploads(
+    world: &byroredux_core::ecs::World,
+    pool: &mut byroredux_core::ecs::resources::SkinSlotPool,
+) -> (BindInversePalettes, PendingSkinRequeue) {
+    let pending = pool.drain_pending(
+        byroredux_renderer::vulkan::scene_buffer::MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME,
+    );
+    // #1791 / D6-01 — mirror of `pending_with_data`'s (slot, entity)
+    // pairs, kept alive so a `draw_frame` early return (see the
+    // `skin_dispatch_ran` check below) can requeue exactly what was
+    // about to be uploaded. Deliberately NOT the raw `pending` drain:
+    // an entry filtered out here (its `SkinnedMesh` is already gone)
+    // must stay dropped, not come back through the requeue path.
+    let mut pending_for_requeue: Vec<(u32, byroredux_core::ecs::EntityId)> =
+        Vec::with_capacity(pending.len());
+    let pending_with_data: Vec<(u32, Vec<[[f32; 4]; 4]>)> = pending
+        .into_iter()
+        .filter_map(|(slot, entity)| {
+            world
+                .get::<byroredux_core::ecs::SkinnedMesh>(entity)
+                .map(|skin| {
+                    let mut padded: Vec<[[f32; 4]; 4]> = skin
+                        .bind_inverses
+                        .iter()
+                        .map(|m| m.to_cols_array_2d())
+                        .collect();
+                    padded.resize(
+                        byroredux_core::ecs::components::MAX_BONES_PER_MESH,
+                        [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ],
+                    );
+                    pending_for_requeue.push((slot, entity));
+                    (slot, padded)
+                })
+        })
+        .collect();
+    (pending_with_data, pending_for_requeue)
+}
+
+/// Apply the frame-boundary debug-view / bounded-ray requests the console
+/// deferred, then harvest any fence-lagged probe result from the prior
+/// frame slot. Console execution never reaches into the Vulkan context
+/// directly.
+fn apply_pending_debug_requests(
+    world: &byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
+) {
+    // Apply deferred named debug-view / bounded-ray requests at the
+    // frame boundary, then harvest any fence-lagged result from the
+    // prior frame slot. Console execution never reaches into the
+    // Vulkan context directly.
+    let (pending_debug_mode, pending_probe_pixel) = world
+        .try_resource_mut::<crate::components::RenderDebugControl>()
+        .map_or((None, None), |mut control| {
+            (
+                control.pending_mode.take(),
+                control.pending_probe_pixel.take(),
+            )
+        });
+    if let Some(mode) = pending_debug_mode {
+        ctx.set_render_debug_mode(mode);
+    }
+    let probe_request_result = pending_probe_pixel.map(|pixel| {
+        ctx.request_selected_ray_probe(pixel)
+            .map(|generation| (pixel, generation))
+    });
+    let completed_probe = ctx.take_selected_ray_probe_result();
+    if let Some(mut control) = world.try_resource_mut::<crate::components::RenderDebugControl>() {
+        control.active_mode = ctx.render_debug_mode();
+        if let Some(result) = probe_request_result {
+            match result {
+                Ok((_pixel, generation)) => {
+                    control.pending_probe_generation = Some(generation);
+                    control.last_error = None;
+                }
+                Err(error) => {
+                    control.pending_probe_generation = None;
+                    control.last_error = Some(error);
+                }
+            }
+        }
+        if let Some(probe) = completed_probe {
+            if control.pending_probe_generation == Some(probe.generation) {
+                control.pending_probe_generation = None;
+            }
+            control.last_probe = Some(probe);
+        }
     }
 }
 
