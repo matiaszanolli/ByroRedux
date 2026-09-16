@@ -552,6 +552,10 @@ impl VulkanContext {
         self.recreate_bloom_and_volumetrics()?;
         self.recreate_composite_and_egui(&views)?;
         self.recreate_taa_and_presentation(&mut views)?;
+        // #4111 — last, because it is the only phase ordering that sees every
+        // input at its post-resize value: `recreate_taa_and_presentation` is
+        // what refreshes the upscaler's SDK memory figure for the new extent.
+        self.recompute_blas_budget_for_current_state();
         self.finalize_screen_pass_state(&views)
     }
 
@@ -896,19 +900,57 @@ impl VulkanContext {
             return Err(error).context("initialize recreated froxel layouts");
         }
         self.post.volumetrics = Some(new_volumetrics);
-        // #3839 — the froxel grid just resized with the render extent, so the
-        // BLAS residency budget has to move with it: the grid is the largest
-        // resolution-scaled allocation in the engine, and a budget frozen at
-        // its construction-time value would keep evicting against VRAM that
-        // this pass has since claimed. Pure arithmetic over a cached heap size
-        // (no device probe, no allocation, no Vulkan object touched), so it is
-        // safe at this point in the resize.
-        // #3988 — both extents, plus the FSR SDK's own reservation. The
-        // upscaler's outputs live at the OUTPUT extent and the SDK memory is
-        // allocated outside `gpu-allocator` entirely, so neither was visible to
-        // a render-extent-only signature. Read before the `as_mut` borrow so
-        // the two field borrows do not overlap.
+        // #3839 / #3988 — the budget recompute this pass used to end with has
+        // moved to `recompute_blas_budget_for_current_state`, called at the end
+        // of `recreate_screen_passes`. See that method for why it cannot run
+        // here.
+        Ok(())
+    }
+
+    /// Re-derive the BLAS residency budget against the state the resize just
+    /// produced. Called at the end of [`Self::recreate_screen_passes`], which
+    /// is what `recompute_blas_budget`'s own doc asks for ("at the end of every
+    /// swapchain recreate").
+    ///
+    /// #3839 established that the budget has to move with the render extent:
+    /// the froxel grid is the largest resolution-scaled allocation in the
+    /// engine and roughly quadruples when the window doubles in each axis, so a
+    /// budget frozen at its construction-time value keeps evicting against VRAM
+    /// that pass has since claimed. #3988 added the FSR SDK's own reservation,
+    /// which is allocated outside `gpu-allocator` and is invisible to everyone
+    /// else.
+    ///
+    /// #4111 — this used to run at the end of `recreate_bloom_and_volumetrics`,
+    /// which is phase 2 of 4. It therefore paired the already-updated
+    /// `frame_extents` with `sdk_memory_bytes()` read off the *pre-resize*
+    /// upscaler, because `recreate_taa_and_presentation` — the phase that
+    /// invokes [`FrameUpscaler::recreate`] and so refreshes that figure for the
+    /// new extent — is phase 4. Nothing re-derived the budget afterwards, so the
+    /// mismatch persisted until the next resize, which repeated it against the
+    /// next extent. `set_upscaler_mode` reuses this path, so a runtime upscaler
+    /// switch had the same one-cycle lag.
+    ///
+    /// `init.rs` had the same bug shape and fixed it with an explicit two-phase
+    /// call (`0` before the upscaler exists, the real figure straight after).
+    /// The resize path needs only the second phase: every input already exists
+    /// by the time this runs.
+    ///
+    /// Pure arithmetic over a cached heap size — no device probe, no
+    /// allocation, no Vulkan object touched — so its placement is free to be
+    /// chosen for correctness.
+    fn recompute_blas_budget_for_current_state(&mut self) {
+        // Re-derived rather than threaded down from
+        // `recreate_bloom_and_volumetrics`: the pass has been rebuilt by now,
+        // and it is rebuilt *from* this same config, so reading it back off the
+        // live pass is the value that pass actually holds.
+        let volumetrics_config = self
+            .post
+            .volumetrics
+            .as_ref()
+            .map_or(self.renderer_config.volumetrics, |volume| volume.config());
         let extents = self.frame_extents;
+        // Read before the `as_mut` borrow so the two field borrows do not
+        // overlap.
         let sdk_bytes = self
             .post
             .frame_upscaler
@@ -917,7 +959,6 @@ impl VulkanContext {
         if let Some(accel) = self.accel_manager.as_mut() {
             accel.recompute_blas_budget(extents, volumetrics_config, sdk_bytes);
         }
-        Ok(())
     }
 
     /// Phase 3 of #3738 — the composite pipeline's raw + composed HDR images
@@ -1988,6 +2029,68 @@ mod tests {
             !arm.contains("self.groundcover = None"),
             "dropping the pipeline object leaks everything it owns — it has no `Drop`, \
              and `record_draw` already skips on the null pipeline a failed rebuild leaves"
+        );
+    }
+
+    /// #4111 / REN-2026-09-11-D23-01 — the resize path's BLAS budget recompute
+    /// must run *after* the upscaler has been recreated for the new extent.
+    ///
+    /// `recompute_blas_budget` takes the FSR SDK's memory footprint (#3988),
+    /// which only becomes correct for an extent once
+    /// `recreate_taa_and_presentation` has called `frame_upscaler.recreate(..)`.
+    /// The recompute used to sit at the end of `recreate_bloom_and_volumetrics`
+    /// — phase 2 of 4 — so it paired the new `frame_extents` with the *old*
+    /// upscaler's figure, and nothing re-derived it afterwards. Same
+    /// byte-offset ordering shape as the #654 test above, which is what this
+    /// crate can pin without a live device.
+    #[test]
+    fn blas_budget_is_recomputed_after_the_upscaler_catches_up() {
+        let src = production_src();
+
+        let phases_pos = src
+            .find("fn recreate_screen_passes(")
+            .expect("recreate_screen_passes must still drive the resize phases");
+        let phases = &src[phases_pos..];
+        // The phase list is the function body; stop at its first sibling item
+        // so a later mention of these calls cannot satisfy the ordering.
+        let phases_end = phases
+            .find("\n    /// Phase 1 of #3738")
+            .expect("recreate_screen_passes' following sibling must still be phase 1");
+        let phases = &phases[..phases_end];
+
+        let taa_pos = phases
+            .find("self.recreate_taa_and_presentation(")
+            .expect("the upscaler recreate phase must still be called here");
+        let budget_pos = phases
+            .find("self.recompute_blas_budget_for_current_state()")
+            .expect(
+                "the resize path must re-derive the BLAS budget — without it the budget \
+                 keeps a one-cycle lag against the extent (#4111)",
+            );
+
+        assert!(
+            taa_pos < budget_pos,
+            "the BLAS budget recompute must come AFTER recreate_taa_and_presentation: \
+             that is the phase which calls frame_upscaler.recreate(..) and so refreshes \
+             sdk_memory_bytes() for the new extent. Recomputing before it pairs the new \
+             frame_extents with the pre-resize upscaler's footprint (#4111)."
+        );
+
+        // And it must not have been left behind in the volumetrics phase, which
+        // is where the stale pairing lived.
+        let bloom_pos = src
+            .find("fn recreate_bloom_and_volumetrics(")
+            .expect("the volumetrics phase must still exist");
+        let bloom_body_end = src[bloom_pos..]
+            .find("\n    /// Re-derive the BLAS residency budget")
+            .expect("the budget method must still follow the volumetrics phase");
+        // The call syntax, not the bare name: the phase's own comment points at
+        // `recompute_blas_budget_for_current_state`, which shares the prefix
+        // but never the open paren straight after `budget`.
+        assert!(
+            !src[bloom_pos..bloom_pos + bloom_body_end].contains("recompute_blas_budget("),
+            "the budget recompute must not return to recreate_bloom_and_volumetrics — \
+             that phase runs before the upscaler is recreated (#4111)"
         );
     }
 }
