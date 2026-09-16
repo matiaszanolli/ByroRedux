@@ -402,7 +402,10 @@ mod pending_destroy_static_bytes_stays_balanced_tests {
 /// surface while keeping the telemetry working — still fails here.
 #[cfg(test)]
 mod blas_residency_telemetry_tests {
-    const CONTEXT_MOD_RS: &str = include_str!("../../context/mod.rs");
+    // #4217 — `fill_rt_integrity_stats` moved to `context/telemetry.rs`
+    // with the other four `fill_*` accessors. The scan follows it: the
+    // consumer end is what this gate is about, not which file it sits in.
+    const CONTEXT_MOD_RS: &str = include_str!("../../context/telemetry.rs");
 
     #[test]
     fn every_blas_residency_accessor_reaches_the_rt_integrity_snapshot() {

@@ -1108,7 +1108,10 @@ fn intern_overflow_persists_across_clear() {
 /// remembers to extend a list.
 #[cfg(test)]
 mod supplemental_projection_pin {
-    const CONTEXT_MOD_RS: &str = include_str!("context/mod.rs");
+    // #4217 — `DrawCommand` and its impl moved to `context/types.rs`.
+    // Both needles this scan slices between (`to_gpu_material` and
+    // `material_hash`'s doc) travelled together, so only the path moved.
+    const CONTEXT_MOD_RS: &str = include_str!("context/types.rs");
 
     /// The `GpuMaterial` field a supplemental slot must be projected onto.
     /// `DECAL_2` → `decal_map_2_index` is the one irregular shape; everything
