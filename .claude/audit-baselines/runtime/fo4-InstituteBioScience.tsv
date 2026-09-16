@@ -1,3 +1,29 @@
+# regenerated: 2026-09-15 (#4125 — entities_total + tex_missing_all_slots; render-load rows re-confirmed exact)
+# RT-3/#4125 filed the -2.22% entities_total drop (19399 -> 18969) that the
+# 09-14 #4195 pass measured but deliberately left un-regenerated, being scoped
+# to the draw split. Re-captured independently at 00b75ed0 via
+# `.claude/commands/audit-runtime/capture.sh --game fo4 --cell InstituteBioScience`:
+# entities=18969 again, with the harness's own stats-vs-bench cross-check
+# agreeing exactly (stats=18969 bench=18969 delta=0). Two independent runs on
+# different HEADs reading the same number is what makes this a settled level
+# rather than drift in progress, which is the condition #4125 said to
+# regenerate on.
+#
+# Nothing else moved. The whole render-load contract came back bit-identical to
+# the rows below: bench_draws_cmds 3964, bench_draws_raster_cmds 359,
+# bench_draws_batches 248, bench_draws_gpu_calls 16, light_count_point 685,
+# tex_missing_base_color 1, mesh_cache_failed_count 0. A "content failed to
+# spawn" regression would have dropped cmds alongside entities; holding every
+# draw row exact across a 430-entity fall is the opposite signature, and is the
+# evidence this regen rests on. The 430 are non-rendering bodies.
+#
+# `tex_missing_all_slots` 16 -> 2 is also regenerated, and is NOT part of the
+# above: it is a 14-path *improvement* in the informational row, measured off
+# the same capture (`tex.missing` reports 2 unique paths, both `temp_v1_*`).
+# Its cause was not investigated here — it is explicitly non-gating per
+# `audit-runtime/SKILL.md` and has no baseline lineage to diff against, so the
+# row is brought up to the measured value rather than left stale at a number
+# no current run produces.
 # regenerated: 2026-09-14 (#4195 — all four bench_draws_* rows from ONE capture; other rows held)
 # The 09-03 #3660 partial regen measured bench_draws_raster_cmds=256 but held
 # bench_draws_batches=296 from the 08-22 #3006 capture, leaving batches >
@@ -81,9 +107,9 @@
 # (always 1, could never fail — #3424); the real per-emitter dump measures
 # 0 directional / 685 point. Added light_count_point, corrected
 # light_count_directional.
-entities_total	19399
+entities_total	18969
 tex_missing_base_color	1
-tex_missing_all_slots	16
+tex_missing_all_slots	2
 mesh_cache_failed_count	0
 light_count_point	685
 light_count_directional	0
