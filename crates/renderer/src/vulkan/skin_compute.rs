@@ -351,6 +351,15 @@ pub struct SkinDispatchBuffers {
     pub bone_buffer_size: vk::DeviceSize,
 }
 
+/// Proof that [`SkinComputePipeline::bind`] has run on the command buffer
+/// about to receive [`SkinComputePipeline::dispatch`] calls (#4205).
+///
+/// Zero-sized; it carries only the borrow of the pipeline, so a batch cannot
+/// outlive the pipeline it was bound against.
+pub struct SkinPipelineBound<'a> {
+    _pipeline: std::marker::PhantomData<&'a SkinComputePipeline>,
+}
+
 pub struct SkinComputePipeline {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -644,6 +653,35 @@ impl SkinComputePipeline {
         slot.destroy(device, allocator);
     }
 
+    /// Bind the skinning pipeline at the COMPUTE bind point, once for a whole
+    /// batch of [`Self::dispatch`] calls (#4205).
+    ///
+    /// The pipeline handle is immutable for the renderer's lifetime, so the
+    /// per-entity bind `dispatch` used to open with was one redundant command
+    /// per dirty skinned entity per frame. Descriptor set and push constants
+    /// genuinely vary per slot and stay in `dispatch`.
+    ///
+    /// The returned token is what `dispatch` requires. Hoisting a bind out of
+    /// a callee is exactly the change that lets a caller forget it, and the
+    /// failure would be silent — the skin pass records immediately after the
+    /// bone-palette dispatch, so an unbound `dispatch` would run against
+    /// *that* compute pipeline with this pipeline's descriptor set. Requiring
+    /// the token makes the ordering a type error instead.
+    ///
+    /// # Safety
+    /// `cmd` must be a recording command buffer, and no other compute
+    /// pipeline may be bound on it while the token is in use.
+    pub unsafe fn bind(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+    ) -> SkinPipelineBound<'_> {
+        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+        SkinPipelineBound {
+            _pipeline: std::marker::PhantomData,
+        }
+    }
+
     /// Record a dispatch into `cmd` that pre-skins this slot's
     /// vertices. Must be called between the bone-palette upload for
     /// `frame_index` and any consumer of the output buffer (Phase 2:
@@ -666,8 +704,10 @@ impl SkinComputePipeline {
     /// `cmd` must be a recording command buffer. `input_buffer` must
     /// stay alive for the lifetime of this dispatch (typically the
     /// global vertex SSBO held by `MeshRegistry`).
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn dispatch(
         &self,
+        _bound: &SkinPipelineBound<'_>,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         slot: &mut SkinSlot,
@@ -721,7 +761,8 @@ impl SkinComputePipeline {
                 .set(self.descriptor_writes_this_frame.get() + 1);
         }
 
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+        // The pipeline itself was bound once for the batch — see `bind` and
+        // the `_bound` token (#4205).
         device.cmd_bind_descriptor_sets(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
@@ -790,16 +831,92 @@ impl SkinComputePipeline {
     }
 }
 
-/// Push-constant payload for [`SkinPaletteComputePipeline::dispatch`] —
-/// matches `skin_palette.comp::PushConstants`. 4 bytes (1 × u32). The
-/// dispatch covers `ceil(bone_count / 64)` workgroups; the shader
-/// early-returns for any tail-slot past `bone_count` so the dense
-/// MAX_TOTAL_BONES output buffer is dispatch-safe in one shot.
+/// Push-constant payload for one palette-range dispatch — matches
+/// `skin_palette.comp::PushConstants`. 8 bytes (2 × u32).
+///
+/// The range is absolute mat4 indices, `[bone_base, bone_end)`. A dispatch
+/// covers `ceil((bone_end - bone_base) / 64)` workgroups and the shader
+/// early-returns past `bone_end`, so a range never writes outside itself.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SkinPalettePushConstants {
-    /// Number of populated palette slots this frame.
-    pub bone_count: u32,
+    /// First palette slot (mat4 index) this dispatch writes.
+    pub bone_base: u32,
+    /// One past the last palette slot this dispatch writes.
+    pub bone_end: u32,
+}
+
+impl SkinPalettePushConstants {
+    fn workgroups(self) -> u32 {
+        self.bone_end
+            .saturating_sub(self.bone_base)
+            .div_ceil(WORKGROUP_SIZE)
+    }
+}
+
+/// Plan the palette dispatches for one frame (#4204).
+///
+/// The palette for a frame-in-flight slot is `bone_world[frame] ×
+/// bind_inverses`, so a palette entry is stale exactly when one of those two
+/// inputs changed since it was last computed *for that frame slot*. #3665
+/// already tracks the first half per slot and per frame-in-flight — the
+/// staging copy walks `dirty_bone_ranges`, the list of slot strides not yet
+/// present in `bone_world[frame]` — and the dense dispatch threw that away,
+/// recomputing the whole high-water range whenever anything at all moved. One
+/// twitching NPC re-armed a ~97.5 K-slot recompute for every resident skinned
+/// entity: population-scaled work on a population-independent change.
+///
+/// Returns the ranges to dispatch, as absolute mat4 index runs:
+///
+/// - Every input range, clamped to `dense_bones` and merged where adjacent or
+///   overlapping, so a block of neighbouring dirty slots is one dispatch.
+/// - Or the single dense `[0, dense_bones)` range, when the runs would cover
+///   at least as many slots as it does. There is nothing to save then, and
+///   one dispatch is the cheaper recording.
+///
+/// No threshold constant decides between them, because none is needed: the
+/// sparse plan is chosen only when it does strictly less GPU work, and its
+/// recording cost is one push + one dispatch per *run*, bounded by the dirty
+/// entity count — the same order of per-entity command recording the skin
+/// vertex pass right after it already does for exactly those entities.
+///
+/// Empty input yields an empty plan: nothing changed, so nothing is stale.
+pub fn plan_palette_dispatch(
+    dirty_bone_ranges: impl IntoIterator<Item = (u32, u32)>,
+    dense_bones: u32,
+) -> Vec<SkinPalettePushConstants> {
+    let mut ranges: Vec<(u32, u32)> = dirty_bone_ranges
+        .into_iter()
+        .map(|(base, end)| (base.min(dense_bones), end.min(dense_bones)))
+        .filter(|(base, end)| base < end)
+        .collect();
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    ranges.sort_unstable();
+
+    let mut runs: Vec<SkinPalettePushConstants> = Vec::with_capacity(ranges.len());
+    for (base, end) in ranges {
+        match runs.last_mut() {
+            Some(run) if base <= run.bone_end => run.bone_end = run.bone_end.max(end),
+            _ => runs.push(SkinPalettePushConstants {
+                bone_base: base,
+                bone_end: end,
+            }),
+        }
+    }
+
+    let covered: u64 = runs
+        .iter()
+        .map(|run| u64::from(run.bone_end - run.bone_base))
+        .sum();
+    if covered >= u64::from(dense_bones) {
+        return vec![SkinPalettePushConstants {
+            bone_base: 0,
+            bone_end: dense_bones,
+        }];
+    }
+    runs
 }
 
 const SKIN_PALETTE_PUSH_CONSTANTS_SIZE: u32 =
@@ -1026,8 +1143,11 @@ impl SkinPaletteComputePipeline {
         cmd: vk::CommandBuffer,
         frame_index: usize,
         buffers: PaletteDispatchBuffers,
-        push: SkinPalettePushConstants,
+        ranges: &[SkinPalettePushConstants],
     ) {
+        if ranges.is_empty() {
+            return;
+        }
         let PaletteDispatchBuffers {
             bone_world_buffer,
             bone_world_buffer_size,
@@ -1071,6 +1191,9 @@ impl SkinPaletteComputePipeline {
                 .set(self.descriptor_writes_this_frame.get() + 1);
         }
 
+        // Pipeline and set are bound once for the whole batch; only the range
+        // varies per dispatch. Rebinding per range is the redundancy #4205
+        // removed from the skin vertex pass, not repeated here.
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
             cmd,
@@ -1080,22 +1203,23 @@ impl SkinPaletteComputePipeline {
             &[descriptor_set],
             &[],
         );
-        // SAFETY: `SkinPalettePushConstants` is `repr(C)` with one u32
-        // field, 4 bytes, no interior padding. Push-constant size pinned
-        // by `skin_palette_push_constants_size_is_4_bytes` test.
-        let bytes = std::slice::from_raw_parts(
-            (&push as *const SkinPalettePushConstants) as *const u8,
-            SKIN_PALETTE_PUSH_CONSTANTS_SIZE as usize,
-        );
-        device.cmd_push_constants(
-            cmd,
-            self.pipeline_layout,
-            vk::ShaderStageFlags::COMPUTE,
-            0,
-            bytes,
-        );
-        let groups = push.bone_count.div_ceil(WORKGROUP_SIZE);
-        device.cmd_dispatch(cmd, groups, 1, 1);
+        for push in ranges {
+            // SAFETY: `SkinPalettePushConstants` is `repr(C)` with two u32
+            // fields, 8 bytes, no interior padding. Push-constant size pinned
+            // by `skin_palette_push_constants_size_is_8_bytes`.
+            let bytes = std::slice::from_raw_parts(
+                (push as *const SkinPalettePushConstants) as *const u8,
+                SKIN_PALETTE_PUSH_CONSTANTS_SIZE as usize,
+            );
+            device.cmd_push_constants(
+                cmd,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytes,
+            );
+            device.cmd_dispatch(cmd, push.workgroups(), 1, 1);
+        }
     }
 
     /// #1197 / PERF-DIM7-03 — descriptor-writes-this-frame for the
@@ -1601,19 +1725,96 @@ mod tests {
     // ── M29.5 — SkinPaletteComputePipeline pins ────────────────────
 
     /// Push-constant payload size must match the shader-side
-    /// `PushConstants` block. One u32 (bone_count), 4 bytes. Catches
-    /// the common drift case of adding a field without updating both
-    /// Rust + GLSL sides.
+    /// `PushConstants` block. Two u32s (bone_base, bone_end), 8 bytes, since
+    /// #4204. Catches the common drift case of adding a field without
+    /// updating both Rust + GLSL sides.
     #[test]
-    fn skin_palette_push_constants_size_is_4_bytes() {
-        assert_eq!(SKIN_PALETTE_PUSH_CONSTANTS_SIZE, 4);
-        assert_eq!(std::mem::size_of::<SkinPalettePushConstants>(), 4);
+    fn skin_palette_push_constants_size_is_8_bytes() {
+        assert_eq!(SKIN_PALETTE_PUSH_CONSTANTS_SIZE, 8);
+        assert_eq!(std::mem::size_of::<SkinPalettePushConstants>(), 8);
+        let shader = include_str!("../../shaders/skin_palette.comp");
+        assert!(
+            shader.contains("uint bone_base;\n    uint bone_end;"),
+            "skin_palette.comp's PushConstants must declare bone_base then bone_end, \
+             in the order `SkinPalettePushConstants` lays them out"
+        );
+    }
+
+    fn range(base: u32, end: u32) -> SkinPalettePushConstants {
+        SkinPalettePushConstants {
+            bone_base: base,
+            bone_end: end,
+        }
+    }
+
+    /// #4204 — one moving actor recomputes its own palette slots, not the
+    /// whole population's. This is the case the issue measured: a single
+    /// dirty slot among ~677 re-armed a ~97.5 K-slot dense recompute.
+    #[test]
+    fn a_single_dirty_slot_dispatches_only_its_own_range() {
+        let stride = crate::shader_constants::MAX_BONES_PER_MESH;
+        let dense = 677 * stride;
+        let slot = 300 * stride;
+        assert_eq!(
+            plan_palette_dispatch([(slot, slot + stride)], dense),
+            vec![range(slot, slot + stride)]
+        );
+    }
+
+    /// Nothing changed, nothing is stale — no dispatch at all. The dense path
+    /// only got this through the all-idle `skip_skin_gpu_refresh` latch, which
+    /// one twitching NPC anywhere defeated.
+    #[test]
+    fn no_dirty_slots_plans_no_dispatch() {
+        assert!(plan_palette_dispatch(std::iter::empty(), 1024).is_empty());
+    }
+
+    /// Neighbouring slots merge into one dispatch, and input order does not
+    /// matter — the staging list is in slot order, but the bind-inverse
+    /// first-sight slots are appended after it.
+    #[test]
+    fn adjacent_and_overlapping_ranges_merge_into_runs() {
+        let plan = plan_palette_dispatch(
+            [(128, 192), (0, 64), (64, 128), (300, 310), (305, 320)],
+            4096,
+        );
+        assert_eq!(plan, vec![range(0, 192), range(300, 320)]);
+    }
+
+    /// When the runs would cover the whole high-water range there is nothing
+    /// to save, and one dense dispatch is cheaper to record than many.
+    #[test]
+    fn full_coverage_falls_back_to_the_dense_range() {
+        assert_eq!(
+            plan_palette_dispatch([(0, 64), (64, 128)], 128),
+            vec![range(0, 128)]
+        );
+    }
+
+    /// A range past the high-water mark is clamped to it; one entirely past it
+    /// is dropped. The shader would early-return on those slots anyway, but a
+    /// plan that dispatches workgroups for nothing is the waste this fixes.
+    #[test]
+    fn ranges_are_clamped_to_the_high_water_mark() {
+        assert_eq!(
+            plan_palette_dispatch([(90, 140), (500, 600)], 128),
+            vec![range(90, 128)]
+        );
+    }
+
+    /// Workgroup math is over the range width, not its absolute end — a run at
+    /// the top of the buffer must not dispatch from slot 0.
+    #[test]
+    fn workgroups_count_only_the_range_width() {
+        assert_eq!(range(6400, 6464).workgroups(), 1);
+        assert_eq!(range(6400, 6465).workgroups(), 2);
+        assert_eq!(range(10, 10).workgroups(), 0);
     }
 
     /// Both compute shaders must source `local_size_x` from the generated
     /// `SKIN_WORKGROUP_SIZE` define, since the dispatch group-count math
     /// (`vertex_count.div_ceil(WORKGROUP_SIZE)` at the vertex path,
-    /// `bone_count.div_ceil(WORKGROUP_SIZE)` at the palette path) assumes
+    /// `SkinPalettePushConstants::workgroups` at the palette path) assumes
     /// it. Post-#1758 the value lives in one place
     /// (`shader_constants_data.rs`): the Rust-side `WORKGROUP_SIZE` here
     /// re-exports it, build.rs emits the matching `#define`, and both
@@ -1770,12 +1971,55 @@ mod device_address_caching_tests {
              `skin_slot_backs_mesh` filter, not precede it"
         );
     }
-}
+    /// #4205 — the skinning pipeline is bound once per batch, not once per
+    /// entity.
+    ///
+    /// The type-level half is `SkinPipelineBound`: `dispatch` cannot be called
+    /// without a token only `bind` produces. This pins the other half, which
+    /// the compiler cannot see — that `dispatch` stopped binding the pipeline
+    /// itself. Without it, re-adding the bind inside `dispatch` would compile,
+    /// pass every test, and quietly restore one redundant command per dirty
+    /// skinned entity per frame.
+    #[test]
+    fn slot_dispatch_does_not_rebind_the_pipeline_per_entity() {
+        let src = include_str!("skin_compute.rs");
+        let production = &src[..src.find("mod tests {").expect("test module")];
+        let slot_impl = production
+            .split("impl SkinComputePipeline {")
+            .nth(1)
+            .expect("SkinComputePipeline impl")
+            .split("\nimpl ")
+            .next()
+            .expect("impl body");
+        let dispatch_body = slot_impl
+            .split("pub unsafe fn dispatch(")
+            .nth(1)
+            .expect("SkinComputePipeline::dispatch")
+            .split("\n    }\n")
+            .next()
+            .expect("dispatch body");
+        assert!(
+            !dispatch_body.contains("cmd_bind_pipeline"),
+            "SkinComputePipeline::dispatch must not bind the pipeline — the caller binds \
+             once per batch through `bind` (#4205)"
+        );
+        let bind_body = slot_impl
+            .split("pub unsafe fn bind(")
+            .nth(1)
+            .expect("SkinComputePipeline::bind must exist")
+            .split("\n    }\n")
+            .next()
+            .expect("bind body");
+        assert!(
+            bind_body
+                .contains("cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline)"),
+            "SkinComputePipeline::bind must bind the skinning pipeline at the COMPUTE point"
+        );
 
-// Shader drift-detection tests moved to shader_constants::tests after #1038
-// folded all shared constants into the build.rs codegen path. The canonical
-// checks are now:
-//   shader_constants::tests::affected_shaders_include_constants_header
-//   shader_constants::tests::generated_header_contains_all_defines
-//   shader_constants::tests::vertex_stride_matches_vertex_struct
-//   shader_constants::tests::max_bones_per_mesh_matches_core
+        let caller = include_str!("context/skinned_blas_refit.rs");
+        assert!(
+            caller.contains(".get_or_insert_with(|| skin_pipeline.bind(&self.device, cmd))"),
+            "the dispatch loop must bind lazily, once, before its first dispatch (#4205)"
+        );
+    }
+}

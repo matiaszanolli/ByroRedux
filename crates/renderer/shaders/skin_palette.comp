@@ -28,10 +28,9 @@
 // `palette_matches_nifly_skin_to_bone_semantics_with_non_identity_global`
 // test (#771 / LC-D3-NEW-01) for the CPU-side numeric ground truth.
 //
-// Dispatch shape: ceil(bone_count / 64) workgroups × 64 invocations.
-// Each invocation handles one palette slot. Slots past `bone_count`
-// early-return so the dense MAX_TOTAL_BONES-wide output buffer can be
-// dispatched in one shot without touching unused tail slots.
+// Dispatch shape: ceil((bone_end - bone_base) / 64) workgroups × 64
+// invocations, one palette slot each, offset by `bone_base`. Slots at or past
+// `bone_end` early-return, so a range never touches a slot outside it.
 
 layout(local_size_x = SKIN_WORKGROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 
@@ -63,16 +62,19 @@ layout(std430, set = 0, binding = 2) writeonly buffer PaletteBuffer {
 };
 
 layout(push_constant) uniform PushConstants {
-    // Total number of populated palette slots this frame.
-    // ceil(bone_count / 64) workgroups dispatched; the tail-guard at
-    // the top of main() short-circuits the unused invocations in the
-    // last workgroup.
-    uint bone_count;
+    // #4204 — the palette range this dispatch covers, as absolute mat4
+    // indices: [bone_base, bone_end). The host issues one dispatch per run of
+    // palette slots whose inputs changed, and one dense [0, high-water)
+    // dispatch when that would not save work.
+    // ceil((bone_end - bone_base) / 64) workgroups are dispatched; the
+    // tail-guard below short-circuits the unused invocations in the last one.
+    uint bone_base;
+    uint bone_end;
 };
 
 void main() {
-    uint slot = gl_GlobalInvocationID.x;
-    if (slot >= bone_count) {
+    uint slot = bone_base + gl_GlobalInvocationID.x;
+    if (slot >= bone_end) {
         return;
     }
     palette[slot] = boneWorld[slot] * bindInverses[slot];

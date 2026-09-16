@@ -499,6 +499,10 @@ impl VulkanContext {
                         }
                         // SAFETY: `cmd` is recording; `skin_pipeline`, each `slot`'s descriptors, and the global vertex / bone input buffers are live for this frame. Each `dispatch` binds the compute pipeline + slot set at the COMPUTE bind point; the loop records sequentially with no concurrent use of `cmd`.
                         unsafe {
+                            // #4205 — one pipeline bind for the whole batch,
+                            // taken lazily so a frame whose every entity hits
+                            // the skip gate below records no bind at all.
+                            let mut bound = None;
                             for &(entity_id, push, _, _, _) in &dispatches {
                                 let Some(slot) = self.skin_slots.get_mut(&entity_id) else {
                                     continue;
@@ -526,7 +530,10 @@ impl VulkanContext {
                                     self.last_skin_coverage_frame.dispatches_skipped += 1;
                                     continue;
                                 }
+                                let bound = bound
+                                    .get_or_insert_with(|| skin_pipeline.bind(&self.device, cmd));
                                 skin_pipeline.dispatch(
+                                    bound,
                                     &self.device,
                                     cmd,
                                     slot,

@@ -631,6 +631,48 @@ impl super::buffers::SceneBuffers {
     /// Full dense bone-world span required by `skin_palette.comp` for this
     /// frame. This remains high-water-sized even when the transfer itself is
     /// sparse, because the current compute shader dispatch is dense.
+    /// #4204 — palette slots (as absolute mat4 index ranges) whose
+    /// `bone_world` input this frame's staging copy refreshes for
+    /// `frame_index`, i.e. exactly the palette entries that are stale in that
+    /// frame-in-flight slot's palette buffer.
+    ///
+    /// Read from `bone_world_copy_regions`, which #3665 already builds per
+    /// slot and per frame-in-flight. Reusing it is what makes a narrowed
+    /// palette dispatch correct rather than merely cheaper: a slot copied into
+    /// frame slot A last frame is still pending for frame slot B, so it stays
+    /// in B's list until B's palette is recomputed too.
+    pub fn palette_dirty_bone_ranges(
+        &self,
+        frame_index: usize,
+    ) -> impl Iterator<Item = (u32, u32)> + '_ {
+        let mat4_size = std::mem::size_of::<[[f32; 4]; 4]>() as vk::DeviceSize;
+        self.bone_world_copy_regions[frame_index]
+            .iter()
+            .map(move |region| {
+                let base = (region.dst_offset / mat4_size) as u32;
+                (base, base + (region.size / mat4_size) as u32)
+            })
+    }
+
+    /// #4204 — re-arm whole palette slots whose *bind-inverse* input changed.
+    ///
+    /// The palette is `bone_world × bind_inverses`, and `bind_inverses` is a
+    /// single persistent buffer whose first-sight uploads are capped per frame
+    /// — so a slot's bind-inverse can land frames after its pose was copied
+    /// and its palette computed. The dense dispatch healed that for free by
+    /// recomputing everything every frame. A narrowed one does not, so the
+    /// slot is marked dirty in the same per-frame-in-flight state the pose
+    /// path uses, and both frame slots recompute it against the new data.
+    ///
+    /// Takes palette *slot* indices (not mat4 offsets).
+    pub fn mark_palette_slots_dirty(&mut self, slots: &[u32]) {
+        for &slot in slots {
+            if let Some(state) = self.bone_world_slot_states.get_mut(slot as usize) {
+                mark_bone_world_slot_dirty(state);
+            }
+        }
+    }
+
     pub fn bone_world_dispatch_bytes(&self, frame_index: usize) -> vk::DeviceSize {
         self.bone_world_dispatch_bytes[frame_index]
     }

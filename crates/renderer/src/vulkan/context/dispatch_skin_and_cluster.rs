@@ -74,8 +74,8 @@ impl VulkanContext {
         // covers the device-local copies, their transfer barriers, and the
         // palette compute dispatch below.
         let mut skin_palette_timer_started = false;
-        let bone_world_copy_recorded = !skip_skin_gpu_refresh
-            && self.scene_buffers.bone_input_upload_bytes(frame) > 0;
+        let bone_world_copy_recorded =
+            !skip_skin_gpu_refresh && self.scene_buffers.bone_input_upload_bytes(frame) > 0;
         if bone_world_copy_recorded {
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_skin_palette_start(&self.device, cmd, frame);
@@ -128,6 +128,11 @@ impl VulkanContext {
         } else {
             0
         };
+        let pending_slots: Vec<u32> = bind_inverse_pending_uploads
+            .iter()
+            .take(pending_capped)
+            .map(|(s, _)| *s)
+            .collect();
         if pending_capped > 0 {
             if !skin_palette_timer_started {
                 if let Some(ref mut timers) = self.gpu_timers {
@@ -135,17 +140,17 @@ impl VulkanContext {
                     skin_palette_timer_started = true;
                 }
             }
-            let pending_slots: Vec<u32> = bind_inverse_pending_uploads
-                .iter()
-                .take(pending_capped)
-                .map(|(s, _)| *s)
-                .collect();
             self.scene_buffers.record_pending_bind_inverse_copies(
                 &self.device,
                 cmd,
                 &pending_slots,
                 pending_capped,
             );
+            // #4204 — a bind-inverse that lands now changes the palette of a
+            // slot whose pose may already have been copied and computed. The
+            // dense dispatch hid that by recomputing everything; the narrowed
+            // one must be told, for this frame slot *and* the other one.
+            self.scene_buffers.mark_palette_slots_dirty(&pending_slots);
         }
 
         // M29.5/M29.6 — dispatch the palette-build compute pass.
@@ -165,15 +170,33 @@ impl VulkanContext {
             // frame 0), so any raster sampling at `bone_offset = 0`
             // either reads identity (post-warm) or garbage that
             // never gets shaded (no entity points there).
-            let bone_count = (bone_dispatch_bytes as usize
-                / std::mem::size_of::<[[f32; 4]; 4]>())
-                as u32;
+            let bone_count =
+                (bone_dispatch_bytes as usize / std::mem::size_of::<[[f32; 4]; 4]>()) as u32;
+            // #4204 — dispatch only the palette slots whose inputs changed
+            // for THIS frame slot: the bone-world strides the staging copy
+            // just refreshed, plus the slots whose bind-inverse landed above.
+            // The dense `[0, bone_count)` range is what this used to run
+            // whenever anything moved, which made the pass scale with the
+            // skinned population instead of with how much of it moved.
+            // `plan_palette_dispatch` still picks the dense range when the
+            // dirty set would cover it anyway.
+            let stride = crate::shader_constants::MAX_BONES_PER_MESH;
+            let palette_plan = super::super::skin_compute::plan_palette_dispatch(
+                self.scene_buffers.palette_dirty_bone_ranges(frame).chain(
+                    pending_slots
+                        .iter()
+                        .map(|&slot| (slot * stride, (slot + 1) * stride)),
+                ),
+                bone_count,
+            );
             // D6-04 / #1811 — also skip once `skip_skin_gpu_refresh` is
             // true: the palette buffer already holds the correct output
-            // for today's (unchanged) bone_world + bind_inverses, so a
-            // full-range recompute would just rewrite identical data.
+            // for today's (unchanged) bone_world + bind_inverses, so any
+            // recompute would just rewrite identical data. An empty plan is
+            // the same statement reached per slot rather than per frame.
             if bone_count > 0
                 && !skip_skin_gpu_refresh
+                && !palette_plan.is_empty()
                 && (bone_world_copy_recorded || pending_capped > 0)
             {
                 if !skin_palette_timer_started {
@@ -201,7 +224,7 @@ impl VulkanContext {
                             palette_buffer: palette_buf,
                             palette_buffer_size: palette_size,
                         },
-                        super::super::skin_compute::SkinPalettePushConstants { bone_count },
+                        &palette_plan,
                     );
                     // COMPUTE_SHADER_WRITE → SHADER_READ barrier on the
                     // palette buffer covers both downstream consumers:
@@ -560,15 +583,13 @@ mod bind_inverse_upload_failure_latch_tests {
         let warn_pos = src
             .find("Failed to upload pending bind_inverses: {e}")
             .expect(
-                "dispatch_skin_and_cluster must warn on upload_pending_bind_inverses failure (#3569)",
-            );
-        let latch_pos = src
-            .find("self.bind_inverse_upload_failed = true;")
-            .expect(
-                "the upload_pending_bind_inverses failure arm must set \
+            "dispatch_skin_and_cluster must warn on upload_pending_bind_inverses failure (#3569)",
+        );
+        let latch_pos = src.find("self.bind_inverse_upload_failed = true;").expect(
+            "the upload_pending_bind_inverses failure arm must set \
                  bind_inverse_upload_failed = true, or the requeue signal \
                  is silently lost (#3569)",
-            );
+        );
 
         assert!(
             warn_pos < latch_pos,
@@ -694,6 +715,56 @@ mod pre_tlas_acceleration_barrier_tests {
             gate_at < barrier_at && gate_at > src.find("self.record_skinned_blas_refit(").unwrap(),
             "the frame-scope barrier belongs after the refit call and before the \
              TLAS build, outside the skinned path"
+        );
+    }
+}
+
+#[cfg(test)]
+mod palette_dirty_plan_tests {
+    /// #4204 — the palette pass dispatches the dirty plan, not the dense
+    /// high-water range, and it re-arms slots whose bind-inverse landed late.
+    ///
+    /// The first half is the perf fix. The second is what keeps it correct:
+    /// `bind_inverses` first-sight uploads are capped per frame, so a slot's
+    /// bind-inverse can arrive after its pose was already copied and its
+    /// palette computed. The dense dispatch healed that by recomputing
+    /// everything every frame; a narrowed one leaves that slot wrong in one or
+    /// both frame-in-flight palettes unless the slot is marked dirty again.
+    /// Dropping the re-arm would pass every other test and render a skinned
+    /// mesh against a stale or zero bind pose — collapsed or exploded
+    /// geometry, and only on frames where the upload cap bit.
+    #[test]
+    fn palette_dispatch_uses_the_dirty_plan_and_rearms_late_bind_inverses() {
+        let src = include_str!("dispatch_skin_and_cluster.rs");
+        let production = &src[..src.find("#[cfg(test)]").expect("test modules")];
+        assert!(
+            production.contains("plan_palette_dispatch("),
+            "the palette dispatch must be planned from the dirty ranges (#4204)"
+        );
+        assert!(
+            production.contains("&palette_plan,"),
+            "the palette dispatch must receive the plan, not a dense bone count (#4204)"
+        );
+        assert!(
+            !production.contains("SkinPalettePushConstants { bone_count }"),
+            "a dense `bone_count` push constant is the pre-#4204 full-range dispatch"
+        );
+        let upload = production
+            .find("record_pending_bind_inverse_copies(")
+            .expect("bind-inverse upload site");
+        let rearm = production
+            .find("mark_palette_slots_dirty(&pending_slots)")
+            .expect("late bind-inverse slots must be re-armed for both frame slots (#4204)");
+        assert!(
+            upload < rearm,
+            "the re-arm belongs with the upload it compensates for"
+        );
+        // Whitespace-insensitive: rustfmt reflows this call depending on line
+        // length, and the pin is about the data flow, not the layout.
+        let compact: String = production.split_whitespace().collect();
+        assert!(
+            compact.contains(".chain(pending_slots.iter().map("),
+            "this frame's palette plan must include the slots whose bind-inverse just landed"
         );
     }
 }
