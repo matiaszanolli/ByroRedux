@@ -204,6 +204,40 @@ float cloud_density(
     );
 }
 
+// Altitude of `position` above the planet surface, in the same radial
+// convention `cloud_shell_distance` bounds the march with. The viewer sits at
+// the surface, so the planet centre is `CLOUD_PLANET_RADIUS` below the origin
+// and the altitude is `|position + R*y| - R`.
+//
+// Evaluating that literally would subtract two numbers near 6.371e6, where a
+// float32 ulp is ~0.76 m, so it is rearranged to divide instead: with
+// `|p + R*y|^2 = R^2 + 2*R*p.y + |p|^2`, the difference of squares gives
+// `(2*R*p.y + |p|^2) / (|p + R*y| + R)`. The denominator is ~2R and never
+// approaches zero, so no cancellation survives.
+//
+// Flat `position.y` is NOT this quantity. It agrees only near the zenith: at
+// elevation 0.05 the bottom shell is crossed 28.7 km out, where the flat
+// height reads 1436 m against the true 1500 m, and the top shell reads 4395 m
+// against 5000 m — so the density profile would span [0, 0.83] of a gradient
+// that is zero at 0, truncating the layer from both ends (#4313).
+float cloud_altitude(vec3 position) {
+    float numerator =
+        2.0 * CLOUD_PLANET_RADIUS * position.y + dot(position, position);
+    float radius = sqrt(CLOUD_PLANET_RADIUS * CLOUD_PLANET_RADIUS + numerator);
+    return numerator / (radius + CLOUD_PLANET_RADIUS);
+}
+
+// `cloud_altitude` mapped onto the layer, which is what the density gradient
+// and the noise erosion ramp are parameterised by.
+float cloud_height_fraction(vec3 position) {
+    return clamp(
+        (cloud_altitude(position) - CLOUD_LAYER_BOTTOM)
+            / (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM),
+        0.0,
+        1.0
+    );
+}
+
 // Distance along `dir` from a viewer `height` metres above the planet
 // surface to a shell of radius `planet + shell`. Returns a negative value
 // when the ray never reaches it.
@@ -323,11 +357,7 @@ vec4 cloud_march(
             break;
         }
         vec3 position = dir * t;
-        float height_fraction = clamp(
-            (position.y - CLOUD_LAYER_BOTTOM) / (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM),
-            0.0,
-            1.0
-        );
+        float height_fraction = cloud_height_fraction(position);
 
         if (!full_mode) {
             float base_shape =
@@ -380,7 +410,7 @@ vec4 cloud_march(
         // flicker.
         float light_first = mean_free_path;
         float light_far = max(
-            cloud_shell_distance(sun_dir, max(position.y, 0.0), CLOUD_LAYER_TOP),
+            cloud_shell_distance(sun_dir, max(cloud_altitude(position), 0.0), CLOUD_LAYER_TOP),
             light_first
         );
         float light_ratio = pow(light_far / light_first, 1.0 / float(CLOUD_LIGHT_STEPS - 1));
@@ -389,11 +419,7 @@ vec4 cloud_march(
         float light_distance = light_first * pow(light_ratio, jitter - 0.5);
         for (int j = 0; j < CLOUD_LIGHT_STEPS; ++j) {
             vec3 light_pos = position + sun_dir * light_distance;
-            float lh = clamp(
-                (light_pos.y - CLOUD_LAYER_BOTTOM) / (CLOUD_LAYER_TOP - CLOUD_LAYER_BOTTOM),
-                0.0,
-                1.0
-            );
+            float lh = cloud_height_fraction(light_pos);
             // Each sample stands for the segment back to the previous one.
             light_optical_depth +=
                 cloud_density(

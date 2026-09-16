@@ -1002,7 +1002,7 @@ mod tests {
                 "first light sample one mean free path out",
             ),
             (
-                "cloud_shell_distance(sun_dir, max(position.y, 0.0), CLOUD_LAYER_TOP)",
+                "cloud_shell_distance(sun_dir, max(cloud_altitude(position), 0.0), CLOUD_LAYER_TOP)",
                 "last light sample at the shell top along the sun direction",
             ),
             (
@@ -1026,6 +1026,75 @@ mod tests {
         assert!(
             !clouds.contains("float light_step ="),
             "the evenly spaced light march must not return — it aliased",
+        );
+    }
+
+    /// The march is bounded by `cloud_shell_distance`, which is radial (a
+    /// sphere of radius `R + h`), so every height fed back into the density
+    /// profile has to be radial too. Flat `position.y` is a different
+    /// quantity, and the two only agree near the zenith (#4313).
+    ///
+    /// The second half re-derives the disagreement from the shell solver
+    /// itself rather than asserting remembered numbers: if the layer or planet
+    /// constants are ever retuned, this recomputes what the flat convention
+    /// would have cost instead of silently passing.
+    #[test]
+    fn the_cloud_density_profile_uses_radial_altitude() {
+        // The same values the GLSL `#define`s carry — `shader_constants.rs`
+        // generates those from these and asserts they match.
+        use crate::shader_constants::{CLOUD_LAYER_BOTTOM, CLOUD_LAYER_TOP, CLOUD_PLANET_RADIUS};
+
+        let clouds = include_str!("../../shaders/include/clouds.glsl");
+        for (term, why) in [
+            (
+                "float height_fraction = cloud_height_fraction(position);",
+                "the view march's density profile",
+            ),
+            (
+                "float lh = cloud_height_fraction(light_pos);",
+                "the light march's density profile",
+            ),
+            (
+                "max(cloud_altitude(position), 0.0)",
+                "the light march's shell-top distance",
+            ),
+        ] {
+            assert!(
+                clouds.contains(term),
+                "{why} must use the radial altitude the march is bounded by (`{term}`)",
+            );
+        }
+        assert!(
+            !clouds.contains("(position.y - CLOUD_LAYER_BOTTOM)")
+                && !clouds.contains("(light_pos.y - CLOUD_LAYER_BOTTOM)"),
+            "the flat-plane height fraction must not return — it compresses the \
+             cloud's vertical profile toward the horizon (#4313)",
+        );
+
+        // `cloud_shell_distance` for a viewer on the surface, mirrored from
+        // the GLSL: t = -R*dy + sqrt((R*dy)^2 + 2*R*shell + shell^2).
+        let shell_distance = |dir_y: f64, shell: f64| {
+            let r = CLOUD_PLANET_RADIUS as f64;
+            let b = r * dir_y;
+            (b * b + 2.0 * r * shell + shell * shell).sqrt() - b
+        };
+        let bottom = CLOUD_LAYER_BOTTOM as f64;
+        let top = CLOUD_LAYER_TOP as f64;
+
+        // At 0.05 elevation the fade is still ~0.15, so this band is visible.
+        let dir_y = 0.05;
+        let flat_at_bottom = shell_distance(dir_y, bottom) * dir_y;
+        let flat_at_top = shell_distance(dir_y, top) * dir_y;
+        assert!(
+            flat_at_bottom < bottom - 50.0,
+            "premise changed: the flat height at the bottom crossing ({flat_at_bottom:.0} m) \
+             is no longer meaningfully below the {bottom} m shell",
+        );
+        let flat_fraction = (flat_at_top - bottom) / (top - bottom);
+        assert!(
+            flat_fraction < 0.9,
+            "premise changed: the flat convention now spans {flat_fraction:.2} of the \
+             layer at the top crossing, so it would no longer truncate the profile",
         );
     }
 
