@@ -312,7 +312,9 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     // interior by design (#1199 / #2226: an interior must never read a
     // stale exterior sky), which is right for every consumer except the
     // window-portal escape below, where the ray genuinely left the cell.
-    // Read ONLY there; widening it anywhere else re-opens #2226.
+    // `.xyz` is read ONLY there; widening it anywhere else re-opens #2226.
+    // `.w` is the sky-cubemap ready flag every `skyCube` read checks — a
+    // live lane, not padding (#4299).
     vec4 exteriorSkyTint; // xyz = live exterior zenith colour, w = sky-cubemap
                           // ready flag (1.0 once `sky_cube.comp` has baked into
                           // set 1 / binding 20 this frame; 0.0 if the bake is

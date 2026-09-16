@@ -567,8 +567,12 @@ pub struct GpuCamera {
     /// named mutually-exclusive views do not consume or reinterpret the
     /// orthogonal legacy feature-ablation bitmask.
     pub render_debug: [u32; 4],
-    /// xyz = the **exterior** TOD/weather zenith colour in linear RGB; w
-    /// reserved (0).
+    /// xyz = the **exterior** TOD/weather zenith colour in linear RGB;
+    /// w = sky-cubemap ready flag — 1.0 when the `SkyCubePipeline` exists,
+    /// else 0.0 — and it gates every `skyCube` read: set 1 / binding 20 is
+    /// `PARTIALLY_BOUND` and never written when the bake fails to
+    /// initialise, so an ungated read samples undefined data. **Not a free
+    /// slot** (#4299).
     ///
     /// #3323 — deliberately NOT the same lane as [`Self::sky_tint`].
     /// `build_sky_params` returns `SkyParams::default()` on any interior

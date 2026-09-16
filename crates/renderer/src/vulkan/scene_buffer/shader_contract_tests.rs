@@ -4985,6 +4985,30 @@ fn shader_pipeline_doc_does_not_advertise_live_lanes_as_free() {
          does: {render_debug}"
     );
 
+    // `GpuCamera.exterior_sky_tint.w` — the sky-cubemap ready flag written in
+    // `context/assemble_camera_and_lights.rs` and checked before every
+    // `skyCube` read (#4299).
+    let sky_tint = DOC
+        .lines()
+        .find(|line| line.contains("| `exterior_sky_tint` |"))
+        .expect("shader-pipeline.md must still document GpuCamera.exterior_sky_tint");
+    assert!(
+        !sky_tint.contains("w reserved"),
+        "exterior_sky_tint.w is not reserved — it is the sky-cubemap ready \
+         flag (#4299): {sky_tint}"
+    );
+    assert!(
+        sky_tint.contains("sky-cubemap ready flag") && sky_tint.contains("Not a free slot"),
+        "the exterior_sky_tint row must name the ready flag and carry the \
+         \"not a free slot\" warning: {sky_tint}"
+    );
+    let writer = include_str!("../context/assemble_camera_and_lights.rs");
+    assert!(
+        writer.contains("if self.post.sky_cube.is_some() {"),
+        "the ready flag the doc row describes must still be derived from the \
+         sky-cube pipeline's existence"
+    );
+
     // `material_flags` bit 10 — `material_flag::BGSM_AUTHORED`, host-side only.
     let bit10 = DOC
         .lines()
