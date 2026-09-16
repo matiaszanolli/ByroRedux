@@ -980,6 +980,18 @@ pub(super) fn load_or_create_pipeline_cache(
 
 /// Save pipeline cache data to disk. Best-effort — logs warnings on failure.
 pub(super) fn save_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache) {
+    save_pipeline_cache_impl(device, cache, false);
+}
+
+/// Mid-session variant of [`save_pipeline_cache`]: skips the write when the
+/// file on disk already holds a blob of the same size. A process that
+/// creates pipelines the driver cache already had (every warm run) leaves
+/// the blob unchanged, so this only writes when a compile actually grew it.
+pub(super) fn save_pipeline_cache_if_grown(device: &ash::Device, cache: vk::PipelineCache) {
+    save_pipeline_cache_impl(device, cache, true);
+}
+
+fn save_pipeline_cache_impl(device: &ash::Device, cache: vk::PipelineCache, skip_same_size: bool) {
     // SAFETY: get_pipeline_cache_data returns a Vec<u8> copy of the cache.
     // The cache handle is valid (not yet destroyed).
     let data = unsafe {
@@ -993,6 +1005,10 @@ pub(super) fn save_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache
     };
 
     let path = pipeline_cache_path();
+    if skip_same_size && std::fs::metadata(&path).is_ok_and(|meta| meta.len() == data.len() as u64)
+    {
+        return;
+    }
     if let Err(e) = std::fs::write(&path, &data) {
         log::error!("Failed to save pipeline cache to {}: {}", path.display(), e);
     } else {

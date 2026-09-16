@@ -858,16 +858,33 @@ impl VulkanContext {
                 .filter(|key| !self.blend_pipeline_cache.contains_key(key))
                 .copied()
                 .collect();
+            let mut created = 0usize;
             for (src, dst, wireframe, preserve_opaque_gbuffer) in missing {
-                if let Err(e) =
-                    self.get_or_create_blend_pipeline(src, dst, wireframe, preserve_opaque_gbuffer)
-                {
-                    log::error!(
+                match self.get_or_create_blend_pipeline(
+                    src,
+                    dst,
+                    wireframe,
+                    preserve_opaque_gbuffer,
+                ) {
+                    Ok(_) => created += 1,
+                    Err(e) => log::error!(
                         "Failed to create blend pipeline (src={src}, dst={dst}, \
                          preserve_opaque_gbuffer={preserve_opaque_gbuffer}): {e}; \
                          draws using this combo will fall back to opaque pipeline"
-                    );
+                    ),
                 }
+            }
+            // A blend variant is compiled from the full triangle.frag the
+            // first time its combo becomes visible; against a cold driver
+            // cache (any triangle.frag rebuild) that is seconds per variant.
+            // Teardown is the only other save point, and a process that is
+            // killed never reaches it — so every such run paid the whole
+            // compile again (26 s single frames in the water smoke). Persist
+            // now: this frame is already the hitch. A warm run creates the
+            // same variants but leaves the driver blob unchanged, so the
+            // write is skipped then.
+            if created > 0 {
+                super::helpers::save_pipeline_cache_if_grown(&self.device, self.pipeline_cache);
             }
         }
 
