@@ -496,9 +496,67 @@ fn resolve_inherited_record<'a>(
     flag: u16,
     depth: u32,
 ) -> &'a crate::esm::records::actor::NpcRecord {
+    walk_inherited_records(npc, actor_level, index, flag, depth, &mut |_| {})
+}
+
+/// Resolve one *field* across the same `TPLT` chain, taking the deepest
+/// record that actually authors it (#4086).
+///
+/// The terminal-record walk behind [`resolve_inherited_stats`] and friends
+/// returns the chain's *end*, because that is the record a whole category
+/// (inventory, factions, AI packages) comes from.
+/// A field with an "absent" sentinel is different: `Use Stats` means "take
+/// stats from my template", so the template outranks the shell — but when the
+/// template does not author the field either, the next-nearest record that
+/// does is the answer, not the shell four hops away. Sampling only the two
+/// endpoints skipped every intermediate, and with [`TPLT_MAX_DEPTH`] at 6
+/// that is up to four records.
+///
+/// `authored` returns `Some` only for a record that genuinely carries the
+/// field, so the sentinel test lives with the field's own definition rather
+/// than being re-stated here. Records are visited shell-first and the last
+/// `Some` wins, which is what makes "deepest authored value" the rule.
+///
+/// Vanilla content is unaffected: the walker's own doc records that vanilla
+/// template chains are flat (one hop), and for a
+/// one-hop chain the endpoints *are* the whole chain. The gap this closes is
+/// mod content that chains a per-faction wrapper — the case `TPLT_MAX_DEPTH`
+/// exists to accommodate.
+pub fn resolve_inherited_field<'a, T>(
+    npc: &'a crate::esm::records::actor::NpcRecord,
+    actor_level: i16,
+    index: &'a EsmIndex,
+    flag: u16,
+    authored: impl Fn(&'a crate::esm::records::actor::NpcRecord) -> Option<T>,
+) -> Option<T> {
+    let mut deepest = None;
+    walk_inherited_records(npc, actor_level, index, flag, 0, &mut |record| {
+        if let Some(value) = authored(record) {
+            deepest = Some(value);
+        }
+    });
+    deepest
+}
+
+/// The walk itself: visits `npc`, then each record the chain resolves
+/// through, and returns the terminal.
+///
+/// Split out of `resolve_inherited_record` for #4086 so the per-field
+/// resolver sees the intermediates without a second copy of the `LVLN`/`LVLC`
+/// pick and the depth cap — the two would drift, and the shape of this bug is
+/// exactly what drift here produces.
+fn walk_inherited_records<'a>(
+    npc: &'a crate::esm::records::actor::NpcRecord,
+    actor_level: i16,
+    index: &'a EsmIndex,
+    flag: u16,
+    depth: u32,
+    visit: &mut impl FnMut(&'a crate::esm::records::actor::NpcRecord),
+) -> &'a crate::esm::records::actor::NpcRecord {
+    visit(npc);
     if depth >= TPLT_MAX_DEPTH {
         log::debug!(
-            "resolve_inherited_record: TPLT recursion cap ({}) hit at NPC \
+            "walk_inherited_records: TPLT recursion cap ({}) hit at NPC \
              {:08X} ({}) resolving flag {:#06x} — leaving subtree unresolved",
             TPLT_MAX_DEPTH,
             npc.form_id,
@@ -513,7 +571,7 @@ fn resolve_inherited_record<'a>(
     // Direct NPC_ template — recurse so a Lvl* → Lvl* → leaf chain
     // resolves at the bottom.
     if let Some(base) = index.npcs.get(&npc.template_form_id) {
-        return resolve_inherited_record(base, actor_level, index, flag, depth + 1);
+        return walk_inherited_records(base, actor_level, index, flag, depth + 1, visit);
     }
     // #3390 — `CREA.TPLT` points at `[CREA, LVLC]`, never at `NPC_`
     // (xEdit `wbDefinitionsFNV.pas`, and 0/815 FNV + 0/399 FO3 templated
@@ -525,7 +583,7 @@ fn resolve_inherited_record<'a>(
     // FormIDs are unique across record classes, so consulting both maps is
     // unambiguous.
     if let Some(base) = index.creatures.get(&npc.template_form_id) {
-        return resolve_inherited_record(base, actor_level, index, flag, depth + 1);
+        return walk_inherited_records(base, actor_level, index, flag, depth + 1, visit);
     }
     // LVLN template — pick the highest-level eligible variant whose
     // form ID resolves to an NPC_, then recurse into IT. Vanilla
@@ -554,7 +612,7 @@ fn resolve_inherited_record<'a>(
                 .get(&pick.form_id)
                 .or_else(|| index.creatures.get(&pick.form_id))
             {
-                return resolve_inherited_record(base, actor_level, index, flag, depth + 1);
+                return walk_inherited_records(base, actor_level, index, flag, depth + 1, visit);
             }
         }
     }

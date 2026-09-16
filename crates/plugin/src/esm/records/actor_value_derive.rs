@@ -165,8 +165,10 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 /// fields and `Use Traits` (`0x0001`) for race, gated by independently-set
 /// bits and walked by [`crate::equip::resolve_inherited_traits`]. Each arm is
 /// handed the record whose fields it reads. An *absent* field on the resolved
-/// record falls back to the shell rather than erasing the shell's own value
-/// (#3481) — see [`baked_or_shell`].
+/// record falls back down the chain rather than erasing a value some other
+/// record on it authored (#3481, then #4086 for the intermediates a
+/// two-endpoint comparison skipped) — see
+/// [`crate::equip::resolve_inherited_field`].
 ///
 /// Empty for every other game (Oblivion), a Skyrim NPC whose race has no
 /// usable pool values, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
@@ -214,7 +216,7 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
         index.character_rules.npc_stat_model()
     };
     match model {
-        NpcStatModel::Stored => derive_stored_actor_values(npc, stats, index),
+        NpcStatModel::Stored => derive_stored_actor_values(npc, level, index),
         NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(stats, traits, index),
         NpcStatModel::ClassAutoCalc { health } => {
             derive_autocalc_actor_values(stats, index, index.character_rules, health)
@@ -302,7 +304,7 @@ fn derive_skyrim_actor_values(
 /// `PRPS` slice is `memcpy`'d, the ≤2 baked stats pushed.
 fn derive_stored_actor_values(
     shell: &NpcRecord,
-    stats: &NpcRecord,
+    actor_level: i16,
     index: &EsmIndex,
 ) -> Vec<(u32, f32)> {
     // #3481 — template precedence is only correct for a field the template
@@ -314,23 +316,52 @@ fn derive_stored_actor_values(
     // resolved record unconditionally cost 54 vanilla FO4 actors their own
     // authored Health — and `stamp_actor_values` only inserts `ActorVitals`
     // when the Health key is present, so those actors spawned undamageable.
-    let props = if stats.actor_value_props.is_empty() {
-        &shell.actor_value_props
-    } else {
-        &stats.actor_value_props
+    //
+    // #4086 — and the fallback has to consult the whole chain, not its two
+    // ends. `resolve_inherited_record` returns the *terminal*, so an
+    // intermediate `NPC_` that authors Health while the terminal leaves it at
+    // the sentinel was invisible: the value fell all the way back to the
+    // shell, which is very likely `0` as well, reproducing the exact
+    // undamageable-actor symptom #3481 was filed for. Each field now asks for
+    // the deepest record that authors it.
+    //
+    // What "authors it" means per field: `0` on a baked `DNAM` stat means
+    // *absent*, not zero — no live FO4 actor has 0 base Health or 0 base
+    // Action Points, which is what makes the sentinel unambiguous and lets
+    // `NpcRecord` skip an `Option` discriminant. An empty `PRPS` says the same
+    // thing for the property array.
+    let inherited = |authored: fn(&NpcRecord) -> bool, pick: fn(&NpcRecord) -> u16| {
+        crate::equip::resolve_inherited_field(
+            shell,
+            actor_level,
+            index,
+            crate::equip::TEMPLATE_FLAG_USE_STATS,
+            |record| authored(record).then(|| pick(record)),
+        )
+        .unwrap_or(0)
     };
+    let props = crate::equip::resolve_inherited_field(
+        shell,
+        actor_level,
+        index,
+        crate::equip::TEMPLATE_FLAG_USE_STATS,
+        |record| {
+            (!record.actor_value_props.is_empty()).then_some(record.actor_value_props.as_slice())
+        },
+    )
+    .unwrap_or(&[]);
     let mut out = Vec::with_capacity(props.len() + 2);
     out.extend_from_slice(props);
     for (avif_editor_id, baked) in [
         (
             "Health",
-            baked_or_shell(stats.calculated_health, shell.calculated_health),
+            inherited(|r| r.calculated_health > 0, |r| r.calculated_health),
         ),
         (
             "ActionPoints",
-            baked_or_shell(
-                stats.calculated_action_points,
-                shell.calculated_action_points,
+            inherited(
+                |r| r.calculated_action_points > 0,
+                |r| r.calculated_action_points,
             ),
         ),
     ] {
@@ -341,22 +372,6 @@ fn derive_stored_actor_values(
         }
     }
     out
-}
-
-/// Resolve one baked `DNAM` stat across `TPLT` inheritance (#3481).
-///
-/// `0` means *absent*, not zero — no live FO4 actor has 0 base Health or 0
-/// base Action Points, which is what makes the sentinel unambiguous and lets
-/// `NpcRecord` skip an `Option` discriminant. So the "Use Stats" record wins
-/// when it authors the field, and an unauthored one defers to the shell
-/// rather than erasing it.
-#[inline]
-fn baked_or_shell(resolved: u16, shell: u16) -> u16 {
-    if resolved > 0 {
-        resolved
-    } else {
-        shell
-    }
 }
 
 /// FNV / FO3 auto-calc: SPECIAL = the NPC's class base attributes, skills

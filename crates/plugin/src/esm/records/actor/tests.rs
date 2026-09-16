@@ -1894,3 +1894,107 @@ fn parse_real_fnv_creatures_derive_actor_values() {
     assert_eq!(health_of(by_edid("VCrDeathclawTier1TypeA")), Some(250.0));
     assert_eq!(health_of(by_edid("VCrTier1RadroachMed")), Some(12.0));
 }
+
+/// #4086 — the `TPLT` absent-sentinel fallback must consult the whole chain,
+/// not just its two ends.
+///
+/// Shell → wrapper → terminal, all with `Use Stats`. Only the *wrapper*
+/// authors Health. `resolve_inherited_record` returns the terminal, so a
+/// two-endpoint fallback compared terminal (sentinel) against shell
+/// (sentinel), found nothing, and emitted no Health key at all —
+/// `stamp_actor_values` only inserts `ActorVitals` when the Health key is
+/// present, so the actor spawned undamageable and unkillable, which is the
+/// exact symptom #3481 was filed for.
+///
+/// `TPLT_MAX_DEPTH` is 6, so up to four records can sit in the blind spot.
+/// Vanilla FO4 chains are flat (one hop), where the endpoints *are* the whole
+/// chain — this is the mod-content case the depth cap exists to accommodate.
+#[test]
+fn an_intermediate_templates_authored_health_survives_the_chain() {
+    use crate::esm::records::EsmIndex;
+
+    let health_avif = 0x0000_00AA;
+    let npc = |form_id: u32, template: u32, health: u16| NpcRecord {
+        form_id,
+        editor_id: format!("Npc{form_id:X}"),
+        template_form_id: template,
+        template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS,
+        calculated_health: health,
+        ..Default::default()
+    };
+
+    let mut index = EsmIndex {
+        character_rules: byroredux_core::character::CharacterRulesProfile::FALLOUT4,
+        ..Default::default()
+    };
+    index.actor_values.insert(
+        health_avif,
+        crate::esm::records::AvifRecord {
+            form_id: health_avif,
+            editor_id: "Health".to_string(),
+            ..Default::default()
+        },
+    );
+    // 1 → 2 → 3. Only the intermediate authors Health; the terminal of the
+    // walk leaves it at the `0` absent sentinel, as does the shell.
+    index.npcs.insert(1, npc(1, 2, 0));
+    index.npcs.insert(2, npc(2, 3, 350));
+    index.npcs.insert(3, npc(3, 0, 0));
+
+    let shell = index.npcs.get(&1).unwrap();
+    let derived = crate::esm::records::derive_npc_actor_values(shell, &index);
+    assert_eq!(
+        derived
+            .iter()
+            .find(|(key, _)| *key == health_avif)
+            .map(|(_, value)| *value),
+        Some(350.0),
+        "the only record that authors Health must supply it: {derived:?}",
+    );
+}
+
+/// #4086 sibling — the terminal still outranks an intermediate that also
+/// authors the field. "Use Stats" means *take stats from my template*, so
+/// depth is precedence, and making the walk visit intermediates must not
+/// quietly invert that for the one-hop shape vanilla actually ships.
+#[test]
+fn the_deepest_authored_stat_still_wins_over_shallower_ones() {
+    use crate::esm::records::EsmIndex;
+
+    let health_avif = 0x0000_00AA;
+    let npc = |form_id: u32, template: u32, health: u16| NpcRecord {
+        form_id,
+        editor_id: format!("Npc{form_id:X}"),
+        template_form_id: template,
+        template_flags: crate::equip::TEMPLATE_FLAG_USE_STATS,
+        calculated_health: health,
+        ..Default::default()
+    };
+
+    let mut index = EsmIndex {
+        character_rules: byroredux_core::character::CharacterRulesProfile::FALLOUT4,
+        ..Default::default()
+    };
+    index.actor_values.insert(
+        health_avif,
+        crate::esm::records::AvifRecord {
+            form_id: health_avif,
+            editor_id: "Health".to_string(),
+            ..Default::default()
+        },
+    );
+    index.npcs.insert(1, npc(1, 2, 10));
+    index.npcs.insert(2, npc(2, 3, 20));
+    index.npcs.insert(3, npc(3, 0, 30));
+
+    let shell = index.npcs.get(&1).unwrap();
+    let derived = crate::esm::records::derive_npc_actor_values(shell, &index);
+    assert_eq!(
+        derived
+            .iter()
+            .find(|(key, _)| *key == health_avif)
+            .map(|(_, value)| *value),
+        Some(30.0),
+        "the terminal authors Health, so it wins: {derived:?}",
+    );
+}
