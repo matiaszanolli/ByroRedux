@@ -94,7 +94,7 @@ impl VulkanContext {
         // D32_SFLOAT: one f32 per sample, tightly packed by the copy region.
         // #3570 / D10-01 — sound only because `depth_capture_record_copy`
         // refuses to set `depth_capture_pending_readback` (and thus reach
-        // here) unless `self.depth_format == D32_SFLOAT`. Do not lift that
+        // here) unless `self.swapchain.depth_format == D32_SFLOAT`. Do not lift that
         // guard without also widening this decode.
         let samples: Vec<f32> = slice[..expected]
             .chunks_exact(4)
@@ -126,7 +126,7 @@ impl VulkanContext {
     /// # Safety
     ///
     /// `cmd` must be recording and outside any render pass, and
-    /// `self.depth_image` must be in `DEPTH_STENCIL_READ_ONLY_OPTIMAL` — the
+    /// `self.swapchain.depth_image` must be in `DEPTH_STENCIL_READ_ONLY_OPTIMAL` — the
     /// state `copy_depth_to_history` leaves it in. This function restores
     /// that layout before returning, so every later consumer in the frame
     /// sees what it expects whether or not a capture ran.
@@ -145,12 +145,12 @@ impl VulkanContext {
         // tool exists to give #3308 trustworthy before/after evidence, and
         // a wrong-but-confident capture is worse than none. (Zero impact on
         // the dev RTX 4070 Ti, which selects D32_SFLOAT.)
-        if self.depth_format != vk::Format::D32_SFLOAT {
+        if self.swapchain.depth_format != vk::Format::D32_SFLOAT {
             log::warn!(
                 "Depth capture unsupported on this device: selected depth \
                  format is {:?}, not D32_SFLOAT — refusing rather than \
                  misdecoding the readback (#3570)",
-                self.depth_format
+                self.swapchain.depth_format
             );
             return;
         }
@@ -188,7 +188,7 @@ impl VulkanContext {
             .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(self.depth_image)
+            .image(self.swapchain.depth_image)
             .subresource_range(range);
         let restore = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::TRANSFER_READ)
@@ -197,7 +197,7 @@ impl VulkanContext {
             .new_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(self.depth_image)
+            .image(self.swapchain.depth_image)
             .subresource_range(range);
 
         let region = vk::BufferImageCopy::default()
@@ -239,7 +239,7 @@ impl VulkanContext {
             );
             self.device.cmd_copy_image_to_buffer(
                 cmd,
-                self.depth_image,
+                self.swapchain.depth_image,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 staging_buffer,
                 &[region],
@@ -355,7 +355,7 @@ mod depth_format_guard_tests {
         let src = include_str!("depth_capture.rs");
 
         let format_check_pos = src
-            .find("if self.depth_format != vk::Format::D32_SFLOAT {")
+            .find("if self.swapchain.depth_format != vk::Format::D32_SFLOAT {")
             .expect(
                 "depth_capture_record_copy must refuse a non-D32_SFLOAT \
                  depth format rather than silently misdecoding it (#3570)",

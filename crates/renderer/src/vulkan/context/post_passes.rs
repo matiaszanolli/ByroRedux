@@ -98,7 +98,7 @@ impl VulkanContext {
             .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(self.depth_image)
+            .image(self.swapchain.depth_image)
             .subresource_range(range);
         let hist_to_dst = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_READ)
@@ -107,7 +107,7 @@ impl VulkanContext {
             .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(self.depth_history_image)
+            .image(self.swapchain.depth_history_image)
             .subresource_range(range);
 
         let layers = vk::ImageSubresourceLayers {
@@ -132,7 +132,7 @@ impl VulkanContext {
             .new_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(self.depth_image)
+            .image(self.swapchain.depth_image)
             .subresource_range(range);
         let hist_to_read = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
@@ -141,7 +141,7 @@ impl VulkanContext {
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(self.depth_history_image)
+            .image(self.swapchain.depth_history_image)
             .subresource_range(range);
 
         // SAFETY: `cmd` is recording and outside any render pass (caller contract); `depth_image` / `depth_history_image` are live, same-extent D32_SFLOAT images. The barriers correctly bracket the READ_ONLY->TRANSFER_SRC / SHADER_READ->TRANSFER_DST transitions around the copy and restore both layouts; no other access to these images is recorded between the barriers.
@@ -164,9 +164,9 @@ impl VulkanContext {
             );
             self.device.cmd_copy_image(
                 cmd,
-                self.depth_image,
+                self.swapchain.depth_image,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                self.depth_history_image,
+                self.swapchain.depth_history_image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[copy],
             );
@@ -1143,8 +1143,8 @@ impl VulkanContext {
                     frame,
                     UpscaleDispatchInputs {
                         scene_color,
-                        depth: self.depth_image,
-                        depth_format: self.depth_format,
+                        depth: self.swapchain.depth_image,
+                        depth_format: self.swapchain.depth_format,
                         motion_vectors,
                         exposure: exposure_image,
                         reactive: reactive_mask,

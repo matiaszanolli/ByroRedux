@@ -19,7 +19,7 @@ impl VulkanContext {
         // `swapchain_state.extent`. A same-frame swapchain resize between
         // record and readback would otherwise read the new dimensions against
         // the old staging copy → wrong size / OOB (SYNC-01). Do not replace
-        // this with `self.swapchain_state.extent`.
+        // this with `self.swapchain.state.extent`.
         let Some((extent, captured_generation)) = self.screenshot_pending_readback.take() else {
             return;
         };
@@ -168,8 +168,8 @@ impl VulkanContext {
             return;
         }
 
-        let width = self.swapchain_state.extent.width;
-        let height = self.swapchain_state.extent.height;
+        let width = self.swapchain.state.extent.width;
+        let height = self.swapchain.state.extent.height;
         let pixel_size: vk::DeviceSize = 4; // B8G8R8A8
         let buffer_size = width as vk::DeviceSize * height as vk::DeviceSize * pixel_size;
 

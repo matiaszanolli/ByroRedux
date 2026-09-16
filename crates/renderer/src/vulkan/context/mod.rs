@@ -352,6 +352,34 @@ struct ScratchBuffers {
     terrain_tile_scratch: Vec<scene_buffer::GpuTerrainTile>,
 }
 
+/// Render targets whose lifetime is the swapchain: the swapchain itself,
+/// the main framebuffers, the render pass, and the depth + depth-history
+/// images with their allocations and sampler.
+///
+/// #3736 — `VulkanContext`'s third field group, and the first that owns
+/// device objects. The grouping is deliberately a *path* rename only: no
+/// destroy statement moves, so `teardown.rs`'s documented reverse order
+/// (framebuffers → depth → depth history → render pass → swapchain) is
+/// exactly the sequence it was before.
+///
+/// These are precisely the fields `recreate_swapchain` reassigns, which
+/// is what makes them a unit: a resize replaces all of them at once.
+/// Named `SwapchainTargets` because `init.rs` already has a local
+/// `SwapchainResources` helper for swapchain *creation*.
+struct SwapchainTargets {
+    state: SwapchainState,
+    framebuffers: Vec<vk::Framebuffer>,
+    render_pass: vk::RenderPass,
+    depth_image: vk::Image,
+    depth_image_view: vk::ImageView,
+    depth_allocation: Option<vk_alloc::Allocation>,
+    depth_history_image: vk::Image,
+    depth_history_view: vk::ImageView,
+    depth_history_allocation: Option<vk_alloc::Allocation>,
+    depth_history_sampler: vk::Sampler,
+    depth_format: vk::Format,
+}
+
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
@@ -558,7 +586,9 @@ pub struct VulkanContext {
     /// create/destroy overhead during cell load (#302). Mutex serializes
     /// concurrent callers — only one reset+wait cycle at a time.
     pub transfer_fence: Arc<Mutex<vk::Fence>>,
-    framebuffers: Vec<vk::Framebuffer>,
+    /// Swapchain-lifetime render targets (#3736): everything
+    /// `recreate_swapchain` rebuilds together.
+    swapchain: SwapchainTargets,
     // Single VkImage shared across all frames-in-flight (NOT per-frame
     // like the G-buffer / TAA / SVGF / caustic / SSAO attachments).
     // Safe at MAX_FRAMES_IN_FLIGHT == 2 because the double-fence wait
@@ -566,16 +596,9 @@ pub struct VulkanContext {
     // frames; bumping MAX_FRAMES_IN_FLIGHT requires per-frame depth or
     // an extended fence wait. The const_assert at sync.rs:8 enforces
     // the contract at workspace-build time. See #870.
-    depth_image_view: vk::ImageView,
-    depth_image: vk::Image,
-    depth_allocation: Option<vk_alloc::Allocation>,
     // Soft-particle depth fade — sampleable copy of last frame's opaque
     // depth, bound to triangle.frag set 1 binding 15. See the creation
     // comment in `new()` and the per-frame copy in `draw.rs`.
-    depth_history_image: vk::Image,
-    depth_history_view: vk::ImageView,
-    depth_history_allocation: Option<vk_alloc::Allocation>,
-    depth_history_sampler: vk::Sampler,
     pub mesh_registry: MeshRegistry,
     pub texture_registry: TextureRegistry,
     pub scene_buffers: scene_buffer::SceneBuffers,
@@ -1077,8 +1100,6 @@ pub struct VulkanContext {
     /// cell transition so a single DEVICE_LOCAL allocation is the correct
     /// shape.
     terrain_tiles_dirty: bool,
-    render_pass: vk::RenderPass,
-    swapchain_state: SwapchainState,
 
     pub allocator: Option<SharedAllocator>,
     /// One-shot latch for the allocator's high-memory warning. Sampling is
@@ -1114,7 +1135,6 @@ pub struct VulkanContext {
     pub device: ash::Device,
     pub device_caps: device::DeviceCapabilities,
     pub physical_device: vk::PhysicalDevice,
-    depth_format: vk::Format,
 
     surface: vk::SurfaceKHR,
     surface_loader: ash::khr::surface::Instance,
@@ -1210,7 +1230,7 @@ impl VulkanContext {
         let pipe = pipeline::create_blend_pipeline(
             pipeline::BlendPipelineCtx {
                 device: &self.device,
-                render_pass: self.render_pass,
+                render_pass: self.swapchain.render_pass,
                 extent: self.frame_extents.render,
                 pipeline_cache: self.pipeline_cache,
                 pipeline_layout: self.pipeline_layout,
@@ -1244,8 +1264,8 @@ impl VulkanContext {
             // list of rejected ones, so widening the decode is a single
             // edit in two places that fail loudly together rather than a
             // denylist that silently stops matching.
-            unsupported_format: (self.depth_format != vk::Format::D32_SFLOAT)
-                .then(|| format!("{:?}", self.depth_format)),
+            unsupported_format: (self.swapchain.depth_format != vk::Format::D32_SFLOAT)
+                .then(|| format!("{:?}", self.swapchain.depth_format)),
         }
     }
 
@@ -1304,9 +1324,9 @@ impl VulkanContext {
         let pass = super::egui_pass::EguiPass::new(
             self.device.clone(),
             allocator,
-            self.swapchain_state.format.format,
-            &self.swapchain_state.image_views,
-            self.swapchain_state.extent,
+            self.swapchain.state.format.format,
+            &self.swapchain.state.image_views,
+            self.swapchain.state.extent,
             in_flight_frames,
         )?;
         self.egui_pass = Some(pass);

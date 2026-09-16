@@ -167,8 +167,8 @@ impl VulkanContext {
         let acquire_t0 = Instant::now();
         // SAFETY: swapchain + loader are live; `image_available[frame]` is an unsignaled binary semaphore (its prior signal was consumed by last cycle's submit wait on this slot) so acquiring into it is legal. The OUT_OF_DATE arm bails before the semaphore is depended on.
         let (image_index, suboptimal) = unsafe {
-            match self.swapchain_state.swapchain_loader.acquire_next_image(
-                self.swapchain_state.swapchain,
+            match self.swapchain.state.swapchain_loader.acquire_next_image(
+                self.swapchain.state.swapchain,
                 u64::MAX,
                 self.frame_sync.image_available[frame],
                 vk::Fence::null(),

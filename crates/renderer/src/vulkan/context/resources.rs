@@ -147,10 +147,7 @@ impl VulkanContext {
             .values()
             .filter_map(Weak::upgrade)
             .map(|delta| delta.byte_size());
-        let weight_bytes = self
-            .morph_slots
-            .values()
-            .map(|slot| slot.weight_bytes());
+        let weight_bytes = self.morph_slots.values().map(|slot| slot.weight_bytes());
         (
             self.morph_slots.len() as u32,
             morph_memory_bytes(delta_bytes, weight_bytes),
@@ -570,8 +567,8 @@ impl VulkanContext {
     /// Get the current swapchain extent (viewport dimensions).
     pub fn swapchain_extent(&self) -> (u32, u32) {
         (
-            self.swapchain_state.extent.width,
-            self.swapchain_state.extent.height,
+            self.swapchain.state.extent.width,
+            self.swapchain.state.extent.height,
         )
     }
 

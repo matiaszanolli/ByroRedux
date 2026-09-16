@@ -1749,7 +1749,7 @@ impl VulkanContext {
         // (not `Ok(true)`) avoids a recreate-retry loop when the
         // underlying surface is still invalid — recovery rides the
         // next `Resized` / focus event instead.
-        if self.framebuffers.is_empty() {
+        if self.swapchain.framebuffers.is_empty() {
             return Ok(false);
         }
 
@@ -1779,8 +1779,8 @@ impl VulkanContext {
         // Each frame slot has its own HDR color image, so no read-after-write
         // hazard across overlapping frames.
         let render_pass_begin = vk::RenderPassBeginInfo::default()
-            .render_pass(self.render_pass)
-            .framebuffer(self.framebuffers[frame])
+            .render_pass(self.swapchain.render_pass)
+            .framebuffer(self.swapchain.framebuffers[frame])
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: self.frame_extents.render,
@@ -2043,7 +2043,7 @@ impl VulkanContext {
             // Screenshot capture: copy swapchain image to staging buffer
             // if requested. Must happen after composite (image has content)
             // and before end_command_buffer (still recording).
-            let swapchain_image = self.swapchain_state.images[img];
+            let swapchain_image = self.swapchain.state.images[img];
             self.screenshot_record_copy(cmd, swapchain_image);
 
             if let Err(e) = self
@@ -2253,7 +2253,7 @@ impl VulkanContext {
         );
 
         // Present.
-        let swapchains = [self.swapchain_state.swapchain];
+        let swapchains = [self.swapchain.state.swapchain];
         let image_indices = [img as u32];
         let present_info = vk::PresentInfoKHR::default()
             .wait_semaphores(&signal_semaphores)
@@ -2267,7 +2267,8 @@ impl VulkanContext {
                 .lock()
                 .expect("present queue lock poisoned");
             match self
-                .swapchain_state
+                .swapchain
+                .state
                 .swapchain_loader
                 .queue_present(*pq, &present_info)
             {
@@ -2943,7 +2944,7 @@ mod is_caustic_source_tests {
 }
 
 /// Regression for #1211 / REN-SAFETY. `draw_frame` must early-return
-/// when `self.framebuffers` is empty (the state left behind when
+/// when `self.swapchain.framebuffers` is empty (the state left behind when
 /// `recreate_swapchain` fails partway). Without the guard the first
 /// indexing access at the `RenderPassBeginInfo::framebuffer(...)` site
 /// panics with `index out of bounds`, taking the process down on
@@ -2964,7 +2965,7 @@ mod framebuffers_empty_guard_tests {
 
         // The guard text — must be present somewhere in the file.
         let guard_pos = src
-            .find("if self.framebuffers.is_empty() {")
+            .find("if self.swapchain.framebuffers.is_empty() {")
             .expect("draw_frame must guard on empty framebuffers (#1211)");
 
         // The fence-wait + acquire happen inside `draw_frame` and
@@ -3087,7 +3088,7 @@ mod skin_dispatch_ran_ordering_tests {
             .find("self.skin_state_submitted = false;")
             .expect("draw_frame must reset skin_state_submitted (#3991)");
         let fb_guard = src
-            .find("if self.framebuffers.is_empty() {")
+            .find("if self.swapchain.framebuffers.is_empty() {")
             .expect("draw_frame must guard on empty framebuffers (#1211)");
         assert!(record_reset < fb_guard && submit_reset < fb_guard);
         // And the flag is only ever SET from the record-time latch, inside the
@@ -3108,7 +3109,7 @@ mod skin_dispatch_ran_ordering_tests {
             .find("self.skin_dispatch_ran = false;")
             .expect("draw_frame must reset skin_dispatch_ran to false (#1796)");
         let fb_guard_pos = src
-            .find("if self.framebuffers.is_empty() {")
+            .find("if self.swapchain.framebuffers.is_empty() {")
             .expect("draw_frame must guard on empty framebuffers (#1211)");
         // #3991 — the second stale needle. The `ERROR_OUT_OF_DATE_KHR` match
         // moved into `sync_and_acquire_frame` when #3282 split `draw_frame`
@@ -3177,7 +3178,7 @@ mod bind_inverse_upload_failed_reset_tests {
             .find("self.bind_inverse_upload_failed = false;")
             .expect("draw_frame must reset bind_inverse_upload_failed to false (#3569)");
         let fb_guard_pos = src
-            .find("if self.framebuffers.is_empty() {")
+            .find("if self.swapchain.framebuffers.is_empty() {")
             .expect("draw_frame must guard on empty framebuffers (#1211)");
 
         assert!(

@@ -88,7 +88,7 @@ impl VulkanContext {
         // changes (HDR toggle, monitor swap, etc.). Pre-#576 every
         // resize destroyed and rebuilt them unconditionally — drag-
         // resize stalled on pipeline recompilation. See PIPE-2.
-        let old_swapchain_format = self.swapchain_state.format;
+        let old_swapchain_format = self.swapchain.state.format;
 
         // Destroy old framebuffers, depth resources, swapchain views.
         // Handles are nulled after destruction so that if a later creation
@@ -103,16 +103,16 @@ impl VulkanContext {
             // are no longer referenced by any in-flight command buffer and can be
             // destroyed. Each handle is nulled by the helper so a later Drop is a
             // no-op on VK_NULL_HANDLE.
-            destroy_main_framebuffers(&self.device, &mut self.framebuffers);
+            destroy_main_framebuffers(&self.device, &mut self.swapchain.framebuffers);
 
             destroy_depth_resources(
                 &self.device,
                 self.allocator
                     .as_ref()
                     .expect("allocator missing during resize"),
-                &mut self.depth_image_view,
-                &mut self.depth_image,
-                &mut self.depth_allocation,
+                &mut self.swapchain.depth_image_view,
+                &mut self.swapchain.depth_image,
+                &mut self.swapchain.depth_allocation,
             );
 
             // Soft-particle depth-history image follows the depth buffer's
@@ -123,9 +123,9 @@ impl VulkanContext {
                 self.allocator
                     .as_ref()
                     .expect("allocator missing during resize"),
-                &mut self.depth_history_view,
-                &mut self.depth_history_image,
-                &mut self.depth_history_allocation,
+                &mut self.swapchain.depth_history_view,
+                &mut self.swapchain.depth_history_image,
+                &mut self.swapchain.depth_history_allocation,
             );
 
             // NOTE: pipeline + render pass destruction is deferred
@@ -144,19 +144,19 @@ impl VulkanContext {
         // expected state" warnings on the handoff.
         //
         // Take ownership of the old views before the assignment at
-        // line ~80 overwrites `self.swapchain_state` — once the
-        // assignment runs, `self.swapchain_state.image_views` points
+        // line ~80 overwrites `self.swapchain.state` — once the
+        // assignment runs, `self.swapchain.state.image_views` points
         // at the new (just-created) views and would destroy the
         // wrong set. `mem::take` leaves a default-empty Vec in place
         // so the old struct is in a valid state through the
         // create_swapchain call (and the assignment immediately
         // replaces it anyway).
         let old_image_views: Vec<vk::ImageView> =
-            std::mem::take(&mut self.swapchain_state.image_views);
+            std::mem::take(&mut self.swapchain.state.image_views);
 
-        let old_swapchain = self.swapchain_state.swapchain;
+        let old_swapchain = self.swapchain.state.swapchain;
 
-        self.swapchain_state = swapchain::create_swapchain(
+        self.swapchain.state = swapchain::create_swapchain(
             swapchain::SwapchainSurfaceCtx {
                 instance: &self.instance,
                 device: &self.device,
@@ -177,7 +177,7 @@ impl VulkanContext {
                 .max_image_dimension2_d
         };
         let frame_extents = super::super::upscaling::FrameExtentSet::for_output(
-            self.swapchain_state.extent,
+            self.swapchain.state.extent,
             self.renderer_config.upscaler,
             max_image_dimension_2d,
         )?;
@@ -198,11 +198,11 @@ impl VulkanContext {
         // The main render pass attachments are HDR_FORMAT,
         // NORMAL_FORMAT, MOTION_FORMAT, MESH_ID_FORMAT,
         // RAW_INDIRECT_FORMAT, ALBEDO_FORMAT (compile-time consts) +
-        // self.depth_format (stable across the device's lifetime).
+        // self.swapchain.depth_format (stable across the device's lifetime).
         // None of those depend on the swapchain surface format, so a
         // format-stable resize can keep every pipeline handle. See
         // PIPE-2 / #576.
-        let format_changed = self.swapchain_state.format != old_swapchain_format;
+        let format_changed = self.swapchain.state.format != old_swapchain_format;
         if format_changed {
             unsafe {
                 // SAFETY: the device is idle (device_wait_idle at entry), so the
@@ -224,8 +224,9 @@ impl VulkanContext {
                     &mut self.blend_pipeline_cache,
                 );
 
-                self.device.destroy_render_pass(self.render_pass, None);
-                self.render_pass = vk::RenderPass::null();
+                self.device
+                    .destroy_render_pass(self.swapchain.render_pass, None);
+                self.swapchain.render_pass = vk::RenderPass::null();
             }
         }
 
@@ -256,7 +257,8 @@ impl VulkanContext {
                 // already active, so the retired `old_swapchain` (non-null per the
                 // guard) has no remaining references and can be destroyed by the
                 // loader that created it.
-                self.swapchain_state
+                self.swapchain
+                    .state
                     .swapchain_loader
                     .destroy_swapchain(old_swapchain, None);
             }
@@ -266,16 +268,16 @@ impl VulkanContext {
             &self.device,
             self.allocator.as_ref().expect("allocator missing"),
             self.frame_extents.render,
-            self.depth_format,
+            self.swapchain.depth_format,
             // TRANSFER_SRC: soft-particle depth-history copy source (#1583).
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
                 | vk::ImageUsageFlags::SAMPLED
                 | vk::ImageUsageFlags::TRANSFER_SRC,
             "depth_buffer",
         )?;
-        self.depth_image = depth_image;
-        self.depth_image_view = depth_image_view;
-        self.depth_allocation = Some(depth_allocation);
+        self.swapchain.depth_image = depth_image;
+        self.swapchain.depth_image_view = depth_image_view;
+        self.swapchain.depth_allocation = Some(depth_allocation);
 
         // Re-create the soft-particle depth-history image at the new extent
         // and re-prime its layout (UNDEFINED → far-clear → SHADER_READ_ONLY).
@@ -286,25 +288,25 @@ impl VulkanContext {
                 &self.device,
                 self.allocator.as_ref().expect("allocator missing"),
                 self.frame_extents.render,
-                self.depth_format,
+                self.swapchain.depth_format,
                 vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
                 "depth_history",
             )?;
-        self.depth_history_image = depth_history_image;
-        self.depth_history_view = depth_history_view;
-        self.depth_history_allocation = Some(depth_history_allocation);
+        self.swapchain.depth_history_image = depth_history_image;
+        self.swapchain.depth_history_view = depth_history_view;
+        self.swapchain.depth_history_allocation = Some(depth_history_allocation);
         init_depth_history_layout(
             &self.device,
             &self.graphics_queue,
             self.command_pool,
-            self.depth_history_image,
+            self.swapchain.depth_history_image,
         )?;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
             self.scene_buffers.write_depth_history(
                 &self.device,
                 f,
-                self.depth_history_view,
-                self.depth_history_sampler,
+                self.swapchain.depth_history_view,
+                self.swapchain.depth_history_sampler,
             );
         }
 
@@ -320,7 +322,7 @@ impl VulkanContext {
             // + albedo + fsr_reactive + fsr_transparency) + depth. (The
             // ReSTIR reservoir attachment this used to name was removed
             // under #1583.)
-            self.render_pass = create_render_pass(
+            self.swapchain.render_pass = create_render_pass(
                 &self.device,
                 GBufferFormats {
                     color_format: HDR_FORMAT,
@@ -330,7 +332,7 @@ impl VulkanContext {
                     raw_indirect_format: RAW_INDIRECT_FORMAT,
                     albedo_format: ALBEDO_FORMAT,
                     fsr_mask_format: FSR_MASK_FORMAT,
-                    depth_format: self.depth_format,
+                    depth_format: self.swapchain.depth_format,
                 },
             )?;
 
@@ -338,7 +340,7 @@ impl VulkanContext {
             // existing layout.
             let pipelines = pipeline::recreate_triangle_pipelines(
                 &self.device,
-                self.render_pass,
+                self.swapchain.render_pass,
                 self.frame_extents.render,
                 self.pipeline_cache,
                 self.pipeline_layout,
@@ -367,7 +369,7 @@ impl VulkanContext {
                 self.allocator
                     .as_ref()
                     .expect("allocator missing during water pipeline recreate"),
-                self.render_pass,
+                self.swapchain.render_pass,
                 self.pipeline_cache,
                 self.texture_registry.descriptor_set_layout,
                 self.scene_buffers.descriptor_set_layout,
@@ -399,7 +401,7 @@ impl VulkanContext {
             );
         self.texture_registry.recreate_descriptor_sets(
             &self.device,
-            self.swapchain_state.images.len() as u32,
+            self.swapchain.state.images.len() as u32,
             material_mip_bias,
         )?;
 
@@ -435,7 +437,7 @@ impl VulkanContext {
                 &self.device,
                 allocator,
                 self.pipeline_cache,
-                self.depth_image_view,
+                self.swapchain.depth_image_view,
                 self.frame_extents.render.width,
                 self.frame_extents.render.height,
             ) {
@@ -609,7 +611,7 @@ impl VulkanContext {
                     mesh_id_views: &mesh_id_views_in,
                     normal_views: &normal_views_in,
                     albedo_views: &albedo_views,
-                    depth_view: self.depth_image_view,
+                    depth_view: self.swapchain.depth_image_view,
                 },
                 self.frame_extents.render.width,
                 self.frame_extents.render.height,
@@ -665,7 +667,7 @@ impl VulkanContext {
                     .expect("allocator missing during resize"),
                 &self.graphics_queue,
                 self.transfer_pool,
-                self.depth_image_view,
+                self.swapchain.depth_image_view,
                 &normal_views_in,
                 &mesh_id_views_in,
                 self.scene_buffers.light_buffers(),
@@ -959,7 +961,7 @@ impl VulkanContext {
                 &composite_indirect_views,
                 indirect_is_general,
                 &views.albedo_views,
-                self.depth_image_view,
+                self.swapchain.depth_image_view,
                 &caustic_views,
                 &water_caustic_views,
                 &volumetric_views,
@@ -986,7 +988,7 @@ impl VulkanContext {
         // format change is rare enough that always paying the
         // teardown/rebuild cost there was never worth guarding.
         if let Some(mut pass) = self.egui_pass.take() {
-            if pass.format() == self.swapchain_state.format.format {
+            if pass.format() == self.swapchain.state.format.format {
                 // #2685 / SAFE-D10-01 — `EguiPass` has no `Drop`; its render
                 // pass and framebuffers are freed only by the explicit
                 // `destroy`. `?`-ing straight through here dropped the *taken*
@@ -999,8 +1001,8 @@ impl VulkanContext {
                 // #2475 did not cover this.
                 match pass.recreate_framebuffers(
                     &self.device,
-                    &self.swapchain_state.image_views,
-                    self.swapchain_state.extent,
+                    &self.swapchain.state.image_views,
+                    self.swapchain.state.extent,
                 ) {
                     Ok(()) => self.egui_pass = Some(pass),
                     Err(e) => {
@@ -1025,9 +1027,9 @@ impl VulkanContext {
                     Some(allocator) => match super::super::egui_pass::EguiPass::new(
                         self.device.clone(),
                         allocator,
-                        self.swapchain_state.format.format,
-                        &self.swapchain_state.image_views,
-                        self.swapchain_state.extent,
+                        self.swapchain.state.format.format,
+                        &self.swapchain.state.image_views,
+                        self.swapchain.state.extent,
                         in_flight_frames,
                     ) {
                         Ok(rebuilt) => self.egui_pass = Some(rebuilt),
@@ -1130,8 +1132,8 @@ impl VulkanContext {
                 &self.device,
                 self.pipeline_cache,
                 super::super::presentation::PresentationTargets {
-                    swapchain_format: self.swapchain_state.format.format,
-                    swapchain_views: &self.swapchain_state.image_views,
+                    swapchain_format: self.swapchain.state.format.format,
+                    swapchain_views: &self.swapchain.state.image_views,
                     upscaled_views: &upscaled_views,
                     health_buffers: &health_handles,
                     extent: self.frame_extents.output,
@@ -1178,7 +1180,7 @@ impl VulkanContext {
         // `destroy_main_framebuffers` above) and the #1211 sentinel
         // elsewhere reads `framebuffers.is_empty()` as "resize still in
         // progress / failed". If a fallible fence recreate here errors
-        // out, this function returns before touching `self.framebuffers`,
+        // out, this function returns before touching `self.swapchain.framebuffers`,
         // so it's still empty and the sentinel correctly reports a
         // failed-and-recoverable resize instead of looking complete.
         unsafe {
@@ -1187,16 +1189,16 @@ impl VulkanContext {
             // no longer in use by any in-flight submission and can be destroyed and
             // recreated against `self.device` (which is live).
             self.frame_sync
-                .recreate_for_swapchain(&self.device, self.swapchain_state.images.len())?;
+                .recreate_for_swapchain(&self.device, self.swapchain.state.images.len())?;
         }
 
         // Main framebuffers bind the new HDR + G-buffer views + depth.
         // #3738 — these are the same handles `recreate_gbuffer_dependent_passes`
         // and `recreate_taa_and_presentation` already collected; reused via
         // `views` instead of re-deriving them from `self.gbuffer` a second time.
-        self.framebuffers = create_main_framebuffers(
+        self.swapchain.framebuffers = create_main_framebuffers(
             &self.device,
-            self.render_pass,
+            self.swapchain.render_pass,
             GBufferViews {
                 hdr_views: &views.hdr_views,
                 normal_views: &views.normal_views,
@@ -1207,7 +1209,7 @@ impl VulkanContext {
                 reactive_views: &views.reactive_views,
                 transparency_views: &views.transparency_views,
             },
-            self.depth_image_view,
+            self.swapchain.depth_image_view,
             self.frame_extents.render,
         )?;
 
@@ -1502,7 +1504,7 @@ mod tests {
         //   3. The `for &view in &old_image_views` destroy loop (#654 site).
         //   4. The `destroy_swapchain(old_swapchain` call (old parent gone).
         let take_pos = src
-            .find("std::mem::take(&mut self.swapchain_state.image_views)")
+            .find("std::mem::take(&mut self.swapchain.state.image_views)")
             .expect("must capture old image_views via mem::take (#654)");
         let create_pos = src
             .find("swapchain::create_swapchain(")
@@ -1519,7 +1521,7 @@ mod tests {
         assert!(
             take_pos < create_pos,
             "old_image_views must be captured via mem::take BEFORE \
-             create_swapchain overwrites self.swapchain_state (#654)"
+             create_swapchain overwrites self.swapchain.state (#654)"
         );
         // create_swapchain precedes the views-destroy loop — strict
         // validation requires the old swapchain still have its child
@@ -1808,7 +1810,7 @@ mod tests {
         let src = production_src();
 
         let format_check_pos = src
-            .find("pass.format() == self.swapchain_state.format.format")
+            .find("pass.format() == self.swapchain.state.format.format")
             .expect(
                 "the egui resize path must compare the pass's own build format \
                  against the live swapchain format before choosing the cheap \

@@ -15,7 +15,7 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //   * the SSAO sampler,
 //   * the SVGF depth read,
 //   * FSR (#2485) — `context/post_passes.rs::record_upscale_pass`
-//     passes `depth: self.depth_image` into `UpscaleDispatchInputs`
+//     passes `depth: self.swapchain.depth_image` into `UpscaleDispatchInputs`
 //     with no frame index, so `frame_upscaler.rs` reads the same
 //     single image,
 //   * `copy_depth_to_history`'s transfer read.

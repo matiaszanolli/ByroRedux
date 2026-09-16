@@ -265,7 +265,7 @@ impl Drop for VulkanContext {
             // defence-in-depth — alongside
             // `egui_pass.destroy()` above — runs them on EVERY Drop path,
             // and still before the `VkDevice` is destroyed at the bottom.
-            // The pipelines reference `self.render_pass`, destroyed far
+            // The pipelines reference `self.swapchain.render_pass`, destroyed far
             // below, so pipeline-before-render-pass ordering is preserved.
             //
             // NOTE: `skin_compute`'s pipeline destroy is deliberately NOT
@@ -325,7 +325,7 @@ impl Drop for VulkanContext {
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);
             self.device.destroy_command_pool(self.command_pool, None);
-            destroy_main_framebuffers(&self.device, &mut self.framebuffers);
+            destroy_main_framebuffers(&self.device, &mut self.swapchain.framebuffers);
             // Destroy texture registry, scene buffers, and acceleration structures.
             // Allocator-owned subsystems (#2406) — NOT reverse-creation order,
             // see `destroy_allocator_owned_resources`'s doc.
@@ -345,20 +345,20 @@ impl Drop for VulkanContext {
                 destroy_depth_resources(
                     &self.device,
                     allocator,
-                    &mut self.depth_image_view,
-                    &mut self.depth_image,
-                    &mut self.depth_allocation,
+                    &mut self.swapchain.depth_image_view,
+                    &mut self.swapchain.depth_image,
+                    &mut self.swapchain.depth_allocation,
                 );
                 // Soft-particle depth-history image + its sampler.
                 self.device
-                    .destroy_sampler(self.depth_history_sampler, None);
-                self.depth_history_sampler = vk::Sampler::null();
+                    .destroy_sampler(self.swapchain.depth_history_sampler, None);
+                self.swapchain.depth_history_sampler = vk::Sampler::null();
                 destroy_depth_resources(
                     &self.device,
                     allocator,
-                    &mut self.depth_history_view,
-                    &mut self.depth_history_image,
-                    &mut self.depth_history_allocation,
+                    &mut self.swapchain.depth_history_view,
+                    &mut self.swapchain.depth_history_image,
+                    &mut self.swapchain.depth_history_allocation,
                 );
             }
 
@@ -405,8 +405,9 @@ impl Drop for VulkanContext {
             save_pipeline_cache(&self.device, self.pipeline_cache);
             self.device
                 .destroy_pipeline_cache(self.pipeline_cache, None);
-            self.device.destroy_render_pass(self.render_pass, None);
-            self.swapchain_state.destroy(&self.device);
+            self.device
+                .destroy_render_pass(self.swapchain.render_pass, None);
+            self.swapchain.state.destroy(&self.device);
             // Drop the allocator before destroying the device.
             // take() extracts from Option, then try_unwrap gets the inner
             // Mutex if we hold the last Arc, then into_inner gives us the
