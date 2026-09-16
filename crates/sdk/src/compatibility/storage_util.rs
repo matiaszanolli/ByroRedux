@@ -415,6 +415,182 @@ fn papyrus_storage_util_declaration_with_result(
     }
 }
 
+/// `(route, function ID, Papyrus function, the one parameter that follows
+/// object+key, result type)` for every exact-key scalar `StorageUtil` verb.
+///
+/// #4218 — this was 22 near-identical `papyrus_storage_util_declaration`
+/// calls spanning 210 lines of `papyrus_storage_util_declarations`. The rows
+/// are spelled out rather than derived from a type × verb cross product,
+/// because the surface is not one: `Adjust` exists for Int and Float only.
+/// Generating it would have invented `AdjustStringValue` and
+/// `AdjustFormValue` routes PapyrusUtil has never had — the count assertion
+/// in `compatibility::tests` is what would have caught that, and only
+/// because it pins an exact number.
+type StorageUtilScalarDeclaration = (
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<(&'static str, ScriptValueType)>,
+    ScriptValueType,
+);
+
+const STORAGE_UTIL_SCALAR_DECLARATIONS: &[StorageUtilScalarDeclaration] = &[
+    (
+        PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
+        "storage-util-get-int-value",
+        "GetIntValue",
+        Some(("missing", ScriptValueType::Integer)),
+        ScriptValueType::Integer,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
+        "storage-util-pluck-int-value",
+        "PluckIntValue",
+        Some(("missing", ScriptValueType::Integer)),
+        ScriptValueType::Integer,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
+        "storage-util-has-int-value",
+        "HasIntValue",
+        None,
+        ScriptValueType::Boolean,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
+        "storage-util-set-int-value",
+        "SetIntValue",
+        Some(("value", ScriptValueType::Integer)),
+        ScriptValueType::Integer,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
+        "storage-util-unset-int-value",
+        "UnsetIntValue",
+        None,
+        ScriptValueType::Boolean,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
+        "storage-util-adjust-int-value",
+        "AdjustIntValue",
+        Some(("amount", ScriptValueType::Integer)),
+        ScriptValueType::Integer,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
+        "storage-util-get-float-value",
+        "GetFloatValue",
+        Some(("missing", ScriptValueType::Float)),
+        ScriptValueType::Float,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
+        "storage-util-pluck-float-value",
+        "PluckFloatValue",
+        Some(("missing", ScriptValueType::Float)),
+        ScriptValueType::Float,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
+        "storage-util-has-float-value",
+        "HasFloatValue",
+        None,
+        ScriptValueType::Boolean,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
+        "storage-util-set-float-value",
+        "SetFloatValue",
+        Some(("value", ScriptValueType::Float)),
+        ScriptValueType::Float,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
+        "storage-util-unset-float-value",
+        "UnsetFloatValue",
+        None,
+        ScriptValueType::Boolean,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
+        "storage-util-adjust-float-value",
+        "AdjustFloatValue",
+        Some(("amount", ScriptValueType::Float)),
+        ScriptValueType::Float,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
+        "storage-util-get-string-value",
+        "GetStringValue",
+        Some(("missing", ScriptValueType::String)),
+        ScriptValueType::String,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
+        "storage-util-pluck-string-value",
+        "PluckStringValue",
+        Some(("missing", ScriptValueType::String)),
+        ScriptValueType::String,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
+        "storage-util-has-string-value",
+        "HasStringValue",
+        None,
+        ScriptValueType::Boolean,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
+        "storage-util-set-string-value",
+        "SetStringValue",
+        Some(("value", ScriptValueType::String)),
+        ScriptValueType::String,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
+        "storage-util-unset-string-value",
+        "UnsetStringValue",
+        None,
+        ScriptValueType::Boolean,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
+        "storage-util-get-form-value",
+        "GetFormValue",
+        Some(("missing", ScriptValueType::Form)),
+        ScriptValueType::Form,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
+        "storage-util-pluck-form-value",
+        "PluckFormValue",
+        Some(("missing", ScriptValueType::Form)),
+        ScriptValueType::Form,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
+        "storage-util-has-form-value",
+        "HasFormValue",
+        None,
+        ScriptValueType::Boolean,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
+        "storage-util-set-form-value",
+        "SetFormValue",
+        Some(("value", ScriptValueType::Form)),
+        ScriptValueType::Form,
+    ),
+    (
+        PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
+        "storage-util-unset-form-value",
+        "UnsetFormValue",
+        None,
+        ScriptValueType::Boolean,
+    ),
+];
+
 /// Exact global scalar `StorageUtil` calls backed by principal-private engine
 /// storage. The object key accepts only `None`; the host rejects every Form.
 pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclaration> {
@@ -426,218 +602,16 @@ pub fn papyrus_storage_util_declarations() -> Vec<EnginePapyrusFunctionDeclarati
         // enforce the exact legacy arity independently.
         ("key", ScriptValueType::String, true),
     ];
-    let mut declarations = vec![
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_GET_INT_VALUE_ROUTE,
-            "storage-util-get-int-value",
-            "GetIntValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("missing", ScriptValueType::Integer, true),
-            ],
-            ScriptValueType::Integer,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_PLUCK_INT_VALUE_ROUTE,
-            "storage-util-pluck-int-value",
-            "PluckIntValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("missing", ScriptValueType::Integer, true),
-            ],
-            ScriptValueType::Integer,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_HAS_INT_VALUE_ROUTE,
-            "storage-util-has-int-value",
-            "HasIntValue",
-            &object_and_key,
-            ScriptValueType::Boolean,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_SET_INT_VALUE_ROUTE,
-            "storage-util-set-int-value",
-            "SetIntValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("value", ScriptValueType::Integer, true),
-            ],
-            ScriptValueType::Integer,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_UNSET_INT_VALUE_ROUTE,
-            "storage-util-unset-int-value",
-            "UnsetIntValue",
-            &object_and_key,
-            ScriptValueType::Boolean,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_ADJUST_INT_VALUE_ROUTE,
-            "storage-util-adjust-int-value",
-            "AdjustIntValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("amount", ScriptValueType::Integer, true),
-            ],
-            ScriptValueType::Integer,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_GET_FLOAT_VALUE_ROUTE,
-            "storage-util-get-float-value",
-            "GetFloatValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("missing", ScriptValueType::Float, true),
-            ],
-            ScriptValueType::Float,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_PLUCK_FLOAT_VALUE_ROUTE,
-            "storage-util-pluck-float-value",
-            "PluckFloatValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("missing", ScriptValueType::Float, true),
-            ],
-            ScriptValueType::Float,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_HAS_FLOAT_VALUE_ROUTE,
-            "storage-util-has-float-value",
-            "HasFloatValue",
-            &object_and_key,
-            ScriptValueType::Boolean,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_SET_FLOAT_VALUE_ROUTE,
-            "storage-util-set-float-value",
-            "SetFloatValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("value", ScriptValueType::Float, true),
-            ],
-            ScriptValueType::Float,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_UNSET_FLOAT_VALUE_ROUTE,
-            "storage-util-unset-float-value",
-            "UnsetFloatValue",
-            &object_and_key,
-            ScriptValueType::Boolean,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_ADJUST_FLOAT_VALUE_ROUTE,
-            "storage-util-adjust-float-value",
-            "AdjustFloatValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("amount", ScriptValueType::Float, true),
-            ],
-            ScriptValueType::Float,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_GET_STRING_VALUE_ROUTE,
-            "storage-util-get-string-value",
-            "GetStringValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("missing", ScriptValueType::String, true),
-            ],
-            ScriptValueType::String,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_PLUCK_STRING_VALUE_ROUTE,
-            "storage-util-pluck-string-value",
-            "PluckStringValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("missing", ScriptValueType::String, true),
-            ],
-            ScriptValueType::String,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_HAS_STRING_VALUE_ROUTE,
-            "storage-util-has-string-value",
-            "HasStringValue",
-            &object_and_key,
-            ScriptValueType::Boolean,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_SET_STRING_VALUE_ROUTE,
-            "storage-util-set-string-value",
-            "SetStringValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("value", ScriptValueType::String, true),
-            ],
-            ScriptValueType::String,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_UNSET_STRING_VALUE_ROUTE,
-            "storage-util-unset-string-value",
-            "UnsetStringValue",
-            &object_and_key,
-            ScriptValueType::Boolean,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_GET_FORM_VALUE_ROUTE,
-            "storage-util-get-form-value",
-            "GetFormValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("missing", ScriptValueType::Form, true),
-            ],
-            ScriptValueType::Form,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_PLUCK_FORM_VALUE_ROUTE,
-            "storage-util-pluck-form-value",
-            "PluckFormValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("missing", ScriptValueType::Form, true),
-            ],
-            ScriptValueType::Form,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_HAS_FORM_VALUE_ROUTE,
-            "storage-util-has-form-value",
-            "HasFormValue",
-            &object_and_key,
-            ScriptValueType::Boolean,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_SET_FORM_VALUE_ROUTE,
-            "storage-util-set-form-value",
-            "SetFormValue",
-            &[
-                object_and_key[0],
-                object_and_key[1],
-                ("value", ScriptValueType::Form, true),
-            ],
-            ScriptValueType::Form,
-        ),
-        papyrus_storage_util_declaration(
-            PAPYRUS_STORAGE_UTIL_UNSET_FORM_VALUE_ROUTE,
-            "storage-util-unset-form-value",
-            "UnsetFormValue",
-            &object_and_key,
-            ScriptValueType::Boolean,
-        ),
-    ];
+    let mut declarations: Vec<EnginePapyrusFunctionDeclaration> = STORAGE_UTIL_SCALAR_DECLARATIONS
+        .iter()
+        .map(|(route, id, function, extra, result)| {
+            let mut parameters = vec![object_and_key[0], object_and_key[1]];
+            if let Some((name, value_type)) = *extra {
+                parameters.push((name, value_type, true));
+            }
+            papyrus_storage_util_declaration(route, id, function, &parameters, *result)
+        })
+        .collect();
     declarations.extend(papyrus_storage_util_list_declarations(&object_and_key));
     declarations.extend([
         papyrus_storage_util_declaration(
@@ -1626,191 +1600,259 @@ pub fn adapt_storage_util_global_prefix(
     Ok(StorageUtilPrefixAdaptation { result, commands })
 }
 
-/// Adapt one exact global `StorageUtil` list call to bounded principal storage.
-pub fn adapt_storage_util_global_list(
-    key_name: &str,
-    kind: StorageUtilListKind,
-    call: StorageUtilListCall,
-    current: Option<&PrincipalStorageValue>,
-    max_entries: usize,
-) -> Result<StorageUtilListAdaptation, StorageUtilAdapterError> {
-    const PAPYRUS_UTIL_LIST_RESIZE_LIMIT: usize = 500;
+/// PapyrusUtil caps a single `Resize` at 500 entries regardless of the
+/// engine's own list ceiling. Hoisted out of `adapt_storage_util_global_list`
+/// under #4218 so the extracted `resize` verb can still see it.
+const PAPYRUS_UTIL_LIST_RESIZE_LIMIT: usize = 500;
 
-    let kind_name = match kind {
-        StorageUtilListKind::Int => "int",
-        StorageUtilListKind::Float => "float",
-        StorageUtilListKind::String => "string",
-        StorageUtilListKind::Form => "form",
-    };
-    let key = StorageKey::new(format!(
-        "storageutil.list.{kind_name}:{}",
-        key_name.to_ascii_lowercase()
-    ))?;
-    let values = decode_storage_util_list(kind, current)?;
-    let mut commands = Vec::with_capacity(1);
-    let result = match call {
-        StorageUtilListCall::Add {
-            value,
-            allow_duplicate,
-        } => {
-            let encoded = encode_storage_util_list_value(kind, &value)?;
-            if values.len() >= max_entries || (!allow_duplicate && values.contains(&value)) {
+/// One list verb's working set: the decoded list plus the context every
+/// verb needs to answer with.
+///
+/// #4218 — `adapt_storage_util_global_list` was a 384-line, 21-arm match
+/// whose arms each carry genuinely distinct logic, so this is a "one
+/// function per verb" case rather than a lookup table. The arms are now
+/// methods here, behind a thin dispatcher.
+///
+/// `values` is owned rather than borrowed because `ToArray` returns the
+/// decoded list itself; a borrow would force a clone on the one verb whose
+/// whole job is handing the list back. Each verb consumes `self`, which is
+/// sound because the match arms are mutually exclusive.
+///
+/// `stored` is deliberately not named `current`: it is the *raw stored
+/// value* — whether the key exists at all, which `Sort` and `Resize` check
+/// before emitting a write — whereas `Adjust` has a local `current` meaning
+/// the list element being adjusted. Conflating those two names corrupted
+/// the first attempt at this extraction.
+struct ListOp<'a> {
+    kind: StorageUtilListKind,
+    key: &'a StorageKey,
+    values: Vec<StorageUtilListValue>,
+    stored: Option<&'a PrincipalStorageValue>,
+    max_entries: usize,
+}
+
+impl ListOp<'_> {
+    fn add(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+        value: StorageUtilListValue,
+        allow_duplicate: bool,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            let encoded = encode_storage_util_list_value(self.kind, &value)?;
+            if self.values.len() >= self.max_entries
+                || (!allow_duplicate && self.values.contains(&value))
+            {
                 StorageUtilListResult::Int(-1)
             } else {
-                let index = i32::try_from(values.len())
+                let index = i32::try_from(self.values.len())
                     .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?;
                 commands.push(PrincipalStorageCommand::ArrayPush {
-                    key: key.clone(),
+                    key: self.key.clone(),
                     value: encoded,
                 });
                 StorageUtilListResult::Int(index)
             }
-        }
-        StorageUtilListCall::Get { index } => {
+        })
+    }
+
+    fn get(self, index: i32) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
             let value = usize::try_from(index)
                 .ok()
-                .and_then(|index| values.get(index))
+                .and_then(|index| self.values.get(index))
                 .cloned()
-                .unwrap_or_else(|| default_storage_util_list_value(kind));
+                .unwrap_or_else(|| default_storage_util_list_value(self.kind));
             StorageUtilListResult::Value(value)
-        }
-        StorageUtilListCall::Set { index, value } => {
-            let encoded = encode_storage_util_list_value(kind, &value)?;
+        })
+    }
+
+    fn set(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+        index: i32,
+        value: StorageUtilListValue,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            let encoded = encode_storage_util_list_value(self.kind, &value)?;
             let Some((index, previous)) = usize::try_from(index)
                 .ok()
-                .and_then(|index| values.get(index).cloned().map(|value| (index, value)))
+                .and_then(|index| self.values.get(index).cloned().map(|value| (index, value)))
             else {
-                return Ok(StorageUtilListAdaptation {
-                    key,
-                    result: StorageUtilListResult::Value(default_storage_util_list_value(kind)),
-                    commands,
-                });
+                return Ok(StorageUtilListResult::Value(
+                    default_storage_util_list_value(self.kind),
+                ));
             };
             commands.push(PrincipalStorageCommand::ArraySet {
-                key: key.clone(),
+                key: self.key.clone(),
                 index: u32::try_from(index)
                     .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
                 value: encoded,
             });
             StorageUtilListResult::Value(previous)
-        }
-        StorageUtilListCall::Pluck { index, missing } => {
-            encode_storage_util_list_value(kind, &missing)?;
+        })
+    }
+
+    fn pluck(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+        index: i32,
+        missing: StorageUtilListValue,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            encode_storage_util_list_value(self.kind, &missing)?;
             let Some((index, value)) = usize::try_from(index)
                 .ok()
-                .and_then(|index| values.get(index).cloned().map(|value| (index, value)))
+                .and_then(|index| self.values.get(index).cloned().map(|value| (index, value)))
             else {
-                return Ok(StorageUtilListAdaptation {
-                    key,
-                    result: StorageUtilListResult::Value(missing),
-                    commands,
-                });
+                return Ok(StorageUtilListResult::Value(missing));
             };
             commands.push(PrincipalStorageCommand::ArrayRemove {
-                key: key.clone(),
+                key: self.key.clone(),
                 index: u32::try_from(index)
                     .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
             });
             StorageUtilListResult::Value(value)
-        }
-        StorageUtilListCall::Shift => {
-            let value = values
+        })
+    }
+
+    fn shift(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            let value = self
+                .values
                 .first()
                 .cloned()
-                .unwrap_or_else(|| default_storage_util_list_value(kind));
-            if !values.is_empty() {
+                .unwrap_or_else(|| default_storage_util_list_value(self.kind));
+            if !self.values.is_empty() {
                 commands.push(PrincipalStorageCommand::ArrayRemove {
-                    key: key.clone(),
+                    key: self.key.clone(),
                     index: 0,
                 });
             }
             StorageUtilListResult::Value(value)
-        }
-        StorageUtilListCall::Pop => {
-            let Some((index, value)) = values
+        })
+    }
+
+    fn pop(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            let Some((index, value)) = self
+                .values
                 .len()
                 .checked_sub(1)
-                .map(|index| (index, values[index].clone()))
+                .map(|index| (index, self.values[index].clone()))
             else {
-                return Ok(StorageUtilListAdaptation {
-                    key,
-                    result: StorageUtilListResult::Value(default_storage_util_list_value(kind)),
-                    commands,
-                });
+                return Ok(StorageUtilListResult::Value(
+                    default_storage_util_list_value(self.kind),
+                ));
             };
             commands.push(PrincipalStorageCommand::ArrayRemove {
-                key: key.clone(),
+                key: self.key.clone(),
                 index: u32::try_from(index)
                     .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
             });
             StorageUtilListResult::Value(value)
-        }
-        StorageUtilListCall::Random { selector } => {
-            let value = if values.is_empty() {
-                default_storage_util_list_value(kind)
+        })
+    }
+
+    fn random(self, selector: u64) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            let value = if self.values.is_empty() {
+                default_storage_util_list_value(self.kind)
             } else {
-                let index = (selector % values.len() as u64) as usize;
-                values[index].clone()
+                let index = (selector % self.values.len() as u64) as usize;
+                self.values[index].clone()
             };
             StorageUtilListResult::Value(value)
-        }
-        StorageUtilListCall::Count => StorageUtilListResult::Int(
-            i32::try_from(values.len()).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
-        ),
-        StorageUtilListCall::Clear => {
-            let count = i32::try_from(values.len())
+        })
+    }
+
+    fn count(self) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            StorageUtilListResult::Int(
+                i32::try_from(self.values.len())
+                    .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
+            )
+        })
+    }
+
+    fn clear(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            let count = i32::try_from(self.values.len())
                 .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?;
-            commands.push(PrincipalStorageCommand::Delete { key: key.clone() });
+            commands.push(PrincipalStorageCommand::Delete {
+                key: self.key.clone(),
+            });
             StorageUtilListResult::Int(count)
-        }
-        StorageUtilListCall::RemoveAt { index } => {
+        })
+    }
+
+    fn remove_at(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+        index: i32,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
             let Some(index) = usize::try_from(index)
                 .ok()
-                .filter(|index| *index < values.len())
+                .filter(|index| *index < self.values.len())
             else {
-                return Ok(StorageUtilListAdaptation {
-                    key,
-                    result: StorageUtilListResult::Bool(false),
-                    commands,
-                });
+                return Ok(StorageUtilListResult::Bool(false));
             };
             commands.push(PrincipalStorageCommand::ArrayRemove {
-                key: key.clone(),
+                key: self.key.clone(),
                 index: u32::try_from(index)
                     .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
             });
             StorageUtilListResult::Bool(true)
-        }
-        StorageUtilListCall::Insert { index, value } => {
+        })
+    }
+
+    fn insert(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+        index: i32,
+        value: StorageUtilListValue,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
             let Some(index) = usize::try_from(index)
                 .ok()
-                .filter(|index| *index <= values.len())
+                .filter(|index| *index <= self.values.len())
             else {
-                return Ok(StorageUtilListAdaptation {
-                    key,
-                    result: StorageUtilListResult::Bool(false),
-                    commands,
-                });
+                return Ok(StorageUtilListResult::Bool(false));
             };
-            encode_storage_util_list_value(kind, &value)?;
-            if values.len() >= max_entries {
+            encode_storage_util_list_value(self.kind, &value)?;
+            if self.values.len() >= self.max_entries {
                 StorageUtilListResult::Bool(false)
             } else {
-                let mut replacement = values.clone();
+                let mut replacement = self.values.clone();
                 replacement.insert(index, value);
                 commands.push(PrincipalStorageCommand::ArrayReplace {
-                    key: key.clone(),
-                    values: encode_storage_util_list_values(kind, &replacement)?,
+                    key: self.key.clone(),
+                    values: encode_storage_util_list_values(self.kind, &replacement)?,
                 });
                 StorageUtilListResult::Bool(true)
             }
-        }
-        StorageUtilListCall::Remove {
-            value,
-            all_instances,
-        } => {
-            encode_storage_util_list_value(kind, &value)?;
-            let mut replacement = values.clone();
+        })
+    }
+
+    fn remove(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+        value: StorageUtilListValue,
+        all_instances: bool,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            encode_storage_util_list_value(self.kind, &value)?;
+            let mut replacement = self.values.clone();
             let removed = if all_instances {
                 let previous_len = replacement.len();
                 replacement.retain(|candidate| candidate != &value);
@@ -1824,35 +1866,49 @@ pub fn adapt_storage_util_global_list(
             };
             if removed > 0 {
                 commands.push(PrincipalStorageCommand::ArrayReplace {
-                    key: key.clone(),
-                    values: encode_storage_util_list_values(kind, &replacement)?,
+                    key: self.key.clone(),
+                    values: encode_storage_util_list_values(self.kind, &replacement)?,
                 });
             }
             StorageUtilListResult::Int(
                 i32::try_from(removed).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
             )
-        }
-        StorageUtilListCall::CountValue { value, exclude } => {
-            encode_storage_util_list_value(kind, &value)?;
-            let count = values
+        })
+    }
+
+    fn count_value(
+        self,
+        value: StorageUtilListValue,
+        exclude: bool,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            encode_storage_util_list_value(self.kind, &value)?;
+            let count = self
+                .values
                 .iter()
                 .filter(|candidate| (*candidate == &value) != exclude)
                 .count();
             StorageUtilListResult::Int(
                 i32::try_from(count).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
             )
-        }
-        StorageUtilListCall::Adjust { index, amount } => {
-            encode_storage_util_list_value(kind, &amount)?;
+        })
+    }
+
+    fn adjust(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+        index: i32,
+        amount: StorageUtilListValue,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            encode_storage_util_list_value(self.kind, &amount)?;
             let Some((index, current)) = usize::try_from(index)
                 .ok()
-                .and_then(|index| values.get(index).cloned().map(|value| (index, value)))
+                .and_then(|index| self.values.get(index).cloned().map(|value| (index, value)))
             else {
-                return Ok(StorageUtilListAdaptation {
-                    key,
-                    result: StorageUtilListResult::Value(default_storage_util_list_value(kind)),
-                    commands,
-                });
+                return Ok(StorageUtilListResult::Value(
+                    default_storage_util_list_value(self.kind),
+                ));
             };
             let next = match (current, amount) {
                 (StorageUtilListValue::Int(current), StorageUtilListValue::Int(amount)) => {
@@ -1870,16 +1926,22 @@ pub fn adapt_storage_util_global_list(
                 _ => return Err(StorageUtilAdapterError::TypeMismatch),
             };
             commands.push(PrincipalStorageCommand::ArraySet {
-                key: key.clone(),
+                key: self.key.clone(),
                 index: u32::try_from(index)
                     .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?,
-                value: encode_storage_util_list_value(kind, &next)?,
+                value: encode_storage_util_list_value(self.kind, &next)?,
             });
             StorageUtilListResult::Value(next)
-        }
-        StorageUtilListCall::Sort => {
-            let mut replacement = values.clone();
-            match kind {
+        })
+    }
+
+    fn sort(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            let mut replacement = self.values.clone();
+            match self.kind {
                 StorageUtilListKind::Int => replacement.sort_by(|left, right| {
                     let (StorageUtilListValue::Int(left), StorageUtilListValue::Int(right)) =
                         (left, right)
@@ -1921,89 +1983,187 @@ pub fn adapt_storage_util_global_list(
                     }
                 }),
             }
-            if current.is_some() {
+            if self.stored.is_some() {
                 commands.push(PrincipalStorageCommand::ArrayReplace {
-                    key: key.clone(),
-                    values: encode_storage_util_list_values(kind, &replacement)?,
+                    key: self.key.clone(),
+                    values: encode_storage_util_list_values(self.kind, &replacement)?,
                 });
             }
             StorageUtilListResult::None
-        }
-        StorageUtilListCall::Resize { to_length, filler } => {
-            encode_storage_util_list_value(kind, &filler)?;
+        })
+    }
+
+    fn resize(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+        to_length: i32,
+        filler: StorageUtilListValue,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            encode_storage_util_list_value(self.kind, &filler)?;
             let Some(target) = usize::try_from(to_length).ok().filter(|target| {
-                *target <= PAPYRUS_UTIL_LIST_RESIZE_LIMIT && *target <= max_entries
+                *target <= PAPYRUS_UTIL_LIST_RESIZE_LIMIT && *target <= self.max_entries
             }) else {
-                return Ok(StorageUtilListAdaptation {
-                    key,
-                    result: StorageUtilListResult::Int(0),
-                    commands,
-                });
+                return Ok(StorageUtilListResult::Int(0));
             };
             let delta = i64::try_from(target)
-                .and_then(|target| i64::try_from(values.len()).map(|length| target - length))
+                .and_then(|target| i64::try_from(self.values.len()).map(|length| target - length))
                 .map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?;
             let delta =
                 i32::try_from(delta).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)?;
-            if target != values.len() {
+            if target != self.values.len() {
                 if target == 0 {
-                    if current.is_some() {
-                        commands.push(PrincipalStorageCommand::Delete { key: key.clone() });
+                    if self.stored.is_some() {
+                        commands.push(PrincipalStorageCommand::Delete {
+                            key: self.key.clone(),
+                        });
                     }
                 } else {
-                    let mut replacement = values.clone();
+                    let mut replacement = self.values.clone();
                     replacement.resize(target, filler);
                     commands.push(PrincipalStorageCommand::ArrayReplace {
-                        key: key.clone(),
-                        values: encode_storage_util_list_values(kind, &replacement)?,
+                        key: self.key.clone(),
+                        values: encode_storage_util_list_values(self.kind, &replacement)?,
                     });
                 }
             }
             StorageUtilListResult::Int(delta)
-        }
-        StorageUtilListCall::Copy {
-            values: replacement,
-        } => {
-            if replacement.len() > max_entries {
+        })
+    }
+
+    fn copy(
+        self,
+        commands: &mut Vec<PrincipalStorageCommand>,
+        replacement: Vec<StorageUtilListValue>,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            if replacement.len() > self.max_entries {
                 StorageUtilListResult::Bool(false)
             } else {
                 commands.push(PrincipalStorageCommand::ArrayReplace {
-                    key: key.clone(),
-                    values: encode_storage_util_list_values(kind, &replacement)?,
+                    key: self.key.clone(),
+                    values: encode_storage_util_list_values(self.kind, &replacement)?,
                 });
                 StorageUtilListResult::Bool(true)
             }
-        }
-        StorageUtilListCall::Slice {
-            values: mut replacement,
-            start_index,
-        } => {
-            encode_storage_util_list_values(kind, &replacement)?;
+        })
+    }
+
+    fn slice(
+        self,
+        mut replacement: Vec<StorageUtilListValue>,
+        start_index: i32,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            encode_storage_util_list_values(self.kind, &replacement)?;
             if let Ok(start) = usize::try_from(start_index) {
                 for (offset, target) in replacement.iter_mut().enumerate() {
-                    let Some(source) = values.get(start.saturating_add(offset)) else {
+                    let Some(source) = self.values.get(start.saturating_add(offset)) else {
                         break;
                     };
                     *target = source.clone();
                 }
             }
             StorageUtilListResult::Array(replacement)
-        }
-        StorageUtilListCall::ToArray => StorageUtilListResult::Array(values),
-        StorageUtilListCall::Find { value } => {
-            encode_storage_util_list_value(kind, &value)?;
-            let index = values
+        })
+    }
+
+    /// Consumes `self`: the decoded list is handed back as-is, which is
+    /// the one verb where borrowing would force a clone.
+    fn into_array(self) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok(StorageUtilListResult::Array(self.values))
+    }
+
+    fn find(
+        self,
+        value: StorageUtilListValue,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            encode_storage_util_list_value(self.kind, &value)?;
+            let index = self
+                .values
                 .iter()
                 .position(|candidate| candidate == &value)
                 .map_or(Ok(-1), |index| {
                     i32::try_from(index).map_err(|_| StorageUtilAdapterError::IntegerOutOfRange)
                 })?;
             StorageUtilListResult::Int(index)
+        })
+    }
+
+    fn has(
+        self,
+        value: StorageUtilListValue,
+    ) -> Result<StorageUtilListResult, StorageUtilAdapterError> {
+        Ok({
+            encode_storage_util_list_value(self.kind, &value)?;
+            StorageUtilListResult::Bool(self.values.contains(&value))
+        })
+    }
+}
+
+/// Adapt one exact global `StorageUtil` list call to bounded principal storage.
+pub fn adapt_storage_util_global_list(
+    key_name: &str,
+    kind: StorageUtilListKind,
+    call: StorageUtilListCall,
+    current: Option<&PrincipalStorageValue>,
+    max_entries: usize,
+) -> Result<StorageUtilListAdaptation, StorageUtilAdapterError> {
+    let kind_name = match kind {
+        StorageUtilListKind::Int => "int",
+        StorageUtilListKind::Float => "float",
+        StorageUtilListKind::String => "string",
+        StorageUtilListKind::Form => "form",
+    };
+    let key = StorageKey::new(format!(
+        "storageutil.list.{kind_name}:{}",
+        key_name.to_ascii_lowercase()
+    ))?;
+    let values = decode_storage_util_list(kind, current)?;
+    let mut commands = Vec::with_capacity(1);
+    let op = ListOp {
+        kind,
+        key: &key,
+        values,
+        stored: current,
+        max_entries,
+    };
+    let result = match call {
+        StorageUtilListCall::Add {
+            value,
+            allow_duplicate,
+        } => op.add(&mut commands, value, allow_duplicate)?,
+        StorageUtilListCall::Get { index } => op.get(index)?,
+        StorageUtilListCall::Set { index, value } => op.set(&mut commands, index, value)?,
+        StorageUtilListCall::Pluck { index, missing } => op.pluck(&mut commands, index, missing)?,
+        StorageUtilListCall::Shift => op.shift(&mut commands)?,
+        StorageUtilListCall::Pop => op.pop(&mut commands)?,
+        StorageUtilListCall::Random { selector } => op.random(selector)?,
+        StorageUtilListCall::Count => op.count()?,
+        StorageUtilListCall::Clear => op.clear(&mut commands)?,
+        StorageUtilListCall::RemoveAt { index } => op.remove_at(&mut commands, index)?,
+        StorageUtilListCall::Insert { index, value } => op.insert(&mut commands, index, value)?,
+        StorageUtilListCall::Remove {
+            value,
+            all_instances,
+        } => op.remove(&mut commands, value, all_instances)?,
+        StorageUtilListCall::CountValue { value, exclude } => op.count_value(value, exclude)?,
+        StorageUtilListCall::Adjust { index, amount } => op.adjust(&mut commands, index, amount)?,
+        StorageUtilListCall::Sort => op.sort(&mut commands)?,
+        StorageUtilListCall::Resize { to_length, filler } => {
+            op.resize(&mut commands, to_length, filler)?
         }
-        StorageUtilListCall::Has { value } => {
-            encode_storage_util_list_value(kind, &value)?;
-            StorageUtilListResult::Bool(values.contains(&value))
-        }
+        StorageUtilListCall::Copy {
+            values: replacement,
+        } => op.copy(&mut commands, replacement)?,
+        StorageUtilListCall::Slice {
+            values: replacement,
+            start_index,
+        } => op.slice(replacement, start_index)?,
+        StorageUtilListCall::ToArray => op.into_array()?,
+        StorageUtilListCall::Find { value } => op.find(value)?,
+        StorageUtilListCall::Has { value } => op.has(value)?,
     };
     Ok(StorageUtilListAdaptation {
         key,
