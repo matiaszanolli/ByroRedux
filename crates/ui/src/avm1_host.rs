@@ -38,7 +38,11 @@
 //!    `DefineFunction2` carry their body as `actions: &[u8]`, not inline in
 //!    the enclosing stream, and essentially every host call lives inside a
 //!    method. Walking only the top level of each tag finds **1** call site in
-//!    the whole 46-movie corpus; recursing finds the real population.
+//!    the whole corpus; recursing finds the real population.
+//!    (`installed_skyrim_host_calls_are_all_cataloged` reports the corpus
+//!    size — 53 movies of `Skyrim - Interface.bsa`, 35 of them calling the
+//!    host. An earlier revision of this doc said 46; the sweep is the
+//!    authority and there is no second number to keep in step.)
 //! 2. **String literals are constant-pool indices.** `ActionConstantPool`
 //!    sets the pool for the block, and a nested body inherits the pool in
 //!    force where it was defined, so the pool has to descend with the walk.

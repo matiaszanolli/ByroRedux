@@ -303,20 +303,23 @@ fn installed_skyrim_host_calls_are_all_cataloged() {
         found.unresolved,
     );
 
-    // #2966's Fallout 4 sweep asserts `uncataloged.is_empty()` because that
-    // catalog was *regenerated from its own sweep*. This one cannot yet:
-    // regenerating needs each entry's kind (command vs request), and the
-    // rule that decides it — SkyUI's "entries with a fourth callback
-    // argument are requests" — does not transfer, because every vanilla call
-    // site passes exactly two arguments. Classifying 68 entries by guess is
-    // the kind of invented rule this measurement exists to replace, so the
-    // gap is asserted *stable* rather than empty: the sweep gates on the
-    // corpus not drifting, and names what regeneration still needs.
-    assert_eq!(
-        uncataloged.len(),
-        68,
+    // #3103 — this now asserts the same completeness #2966's Fallout 4 sweep
+    // does, because the catalog has been regenerated from this sweep's own
+    // result. The 68 entries it used to be short are merged in.
+    //
+    // The blocker this assertion used to record still stands on its own terms:
+    // SkyUI's "a fourth callback argument means request" rule does not
+    // transfer, since every vanilla call site passes exactly two arguments. So
+    // those 68 did not become `Measured` — they carry `HeuristicNamePrefix`
+    // provenance and the same prefix rule Fallout 4's sweep additions use, and
+    // `catalog.rs`'s own doc records why a guess is admissible for `kind`
+    // specifically (it selects a diagnostic bucket, never a queued call or a
+    // returned value). `skyrim_catalog_provenance_split_matches_the_3103_sweep`
+    // pins the 74/68 split so neither half drifts.
+    assert!(
+        uncataloged.is_empty(),
         "the shipped Skyrim menus call {} host methods absent from \
-         SKYRIM_SKYUI_METHODS (was 68 when measured): {uncataloged:?}",
+         SKYRIM_SKYUI_METHODS: {uncataloged:?}",
         uncataloged.len(),
     );
     assert!(

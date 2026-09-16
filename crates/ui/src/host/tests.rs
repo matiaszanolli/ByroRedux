@@ -284,19 +284,23 @@ fn an_uncataloged_call_with_no_respond_callback_keeps_its_leading_argument() {
 #[test]
 fn skyrim_catalog_is_pinned_sorted_and_profile_specific() {
     let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::SkyrimAvm1);
-    assert_eq!(catalog.len(), 74);
+    // #3103 — 74 SkyUI-sourced entries plus the 68 the corpus sweep measured.
+    assert_eq!(catalog.len(), 142);
     assert!(catalog.contains("PlaySound"));
     assert_eq!(
         catalog.find("RequestPlayerInfo").unwrap().kind,
         ScaleformHostMethodKind::Request
     );
+    // 12 from SkyUI's fourth-argument rule, plus the 2 of the sweep's 68 that
+    // the name-prefix heuristic classifies as queries. The split by provenance
+    // is pinned in `catalog.rs`'s own tests.
     assert_eq!(
         catalog
             .methods()
             .iter()
             .filter(|method| method.kind == ScaleformHostMethodKind::Request)
             .count(),
-        12
+        14
     );
     assert!(catalog
         .methods()
@@ -339,11 +343,17 @@ fn catalog_names_are_well_formed_actionscript_identifiers() {
     for profile in [ScaleformProfile::SkyrimAvm1, ScaleformProfile::Fallout4Avm2] {
         for method in ScaleformHostCatalog::for_profile(profile).methods() {
             let name = method.name;
+            // #3103 — `_` is admitted alongside alphanumerics. It is a legal
+            // ActionScript identifier character, and the Skyrim sweep measured
+            // `ResetControlsToDefaults_Ounce` straight out of shipped bytecode,
+            // so "plain Camel/camelCase" was too strong a claim about real
+            // method names. It stays a *closed* set: no space, dot, paren or
+            // any other character a collapse artifact would drag in.
             assert!(
                 name.starts_with(|first: char| first.is_ascii_alphabetic())
                     && name
                         .chars()
-                        .all(|character| character.is_ascii_alphanumeric()),
+                        .all(|character| character.is_ascii_alphanumeric() || character == '_'),
                 "{profile:?} catalog entry {name:?} is not a plain ActionScript identifier"
             );
             // #2966 — bare `.contains(keyword)` also flagged `ReturnFromDLC`
@@ -361,8 +371,22 @@ fn catalog_names_are_well_formed_actionscript_identifiers() {
             for keyword in ["function", "var", "return", "const", "class"] {
                 for (start, _) in lowercased.match_indices(keyword) {
                     let end = start + keyword.len();
-                    let boundary_before = start == 0 || chars[start - 1].is_ascii_uppercase();
-                    let boundary_after = end == chars.len() || chars[end].is_ascii_uppercase();
+                    // #3103 — an occurrence that itself straddles a camelCase
+                    // boundary is two adjacent words that happen to spell the
+                    // keyword across the seam, not a keyword. The Skyrim sweep
+                    // measured `ActivateJoyConStrapInstruction`, where "const"
+                    // spans `Con` + `St`. A collapsed keyword is always a
+                    // contiguous lowercase run, so an interior capital is
+                    // positive proof this is not one.
+                    if chars[start + 1..end].iter().any(char::is_ascii_uppercase) {
+                        continue;
+                    }
+                    // `_` separates words as explicitly as a capital does, so
+                    // it bounds a keyword the same way (#3103).
+                    let is_boundary =
+                        |character: char| character.is_ascii_uppercase() || character == '_';
+                    let boundary_before = start == 0 || is_boundary(chars[start - 1]);
+                    let boundary_after = end == chars.len() || is_boundary(chars[end]);
                     assert!(
                         boundary_before && boundary_after,
                         "{profile:?} catalog entry {name:?} embeds the ActionScript keyword \
