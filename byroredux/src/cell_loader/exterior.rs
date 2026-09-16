@@ -1893,6 +1893,7 @@ impl ExteriorCellApplyJob {
                     landscape_texture_sets: &index.landscape_texture_sets,
                     blas_specs: &mut *blas_sink,
                     water_y: cell_water_y,
+                    game: wctx.record_index.game,
                 },
                 gx,
                 gy,

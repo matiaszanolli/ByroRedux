@@ -26,7 +26,9 @@ use byroredux_renderer::vulkan::scene_buffer::GpuTerrainTile;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
-use crate::asset_provider::{resolve_linear_texture, resolve_texture, TextureProvider};
+use crate::asset_provider::{
+    derive_present_normal_map_path, resolve_linear_texture, resolve_texture, TextureProvider,
+};
 use crate::components::{MaterialTextureHandles, TerrainTileSlot};
 use byroredux_nif::import::MaterialTextureSet;
 
@@ -182,11 +184,13 @@ pub(super) fn build_cell_splat_layers(
                 .unwrap_or(""),
         );
         let texture_set = landscape_texture_sets.get(&ltex);
-        let normal_index = resolve_optional_terrain_texture(
-            ctx,
+        let normal_path = terrain_layer_normal_path(
             tex_provider,
             texture_set.and_then(|set| set.normal.as_deref()),
+            landscape_textures.get(&ltex).map(String::as_str),
         );
+        let normal_index =
+            resolve_optional_terrain_texture(ctx, tex_provider, normal_path.as_deref());
         let specular_index = resolve_optional_terrain_texture(
             ctx,
             tex_provider,
@@ -230,6 +234,22 @@ fn resolve_optional_terrain_texture(
     } else {
         handle
     }
+}
+
+/// A terrain layer's tangent-space normal: the texture set's authored TX01,
+/// else the diffuse's present `_n` sibling. Oblivion's LTEX carries only a
+/// diffuse `ICON` and ships every layer normal under that convention
+/// (`terrainwetsand02_n.dds` beside `terrainwetsand02.dds`); the sibling is
+/// only used when an archive actually holds it (#3551), so games that author
+/// normals explicitly are unaffected.
+fn terrain_layer_normal_path(
+    tex_provider: &TextureProvider,
+    authored: Option<&str>,
+    diffuse: Option<&str>,
+) -> Option<String> {
+    authored
+        .map(str::to_string)
+        .or_else(|| diffuse.and_then(|d| derive_present_normal_map_path(tex_provider, d)))
 }
 
 /// In-place coverage-aware selection of the top 8 splat layers from
@@ -498,6 +518,63 @@ pub(super) struct TerrainSpawnCtx<'a> {
     /// affinity table, rather than a second component written from a second
     /// place that could disagree about which cell it belongs to.
     pub water_y: Option<f32>,
+    /// Selects the engine's built-in default land texture
+    /// ([`DefaultLandTexture::for_game`]) for BTXT-less / BTXT-0 quadrants.
+    pub game: esm::reader::GameKind,
+}
+
+/// The texture a game's engine paints where LAND authors no base texture
+/// (no BTXT, or BTXT form 0). It is not in any plugin: each executable
+/// hardcodes it, so this is the one per-game terrain fact that has to live
+/// in code. Read from the shipped executables' string tables:
+///
+/// | Game | Executable string(s) | Archive |
+/// |---|---|---|
+/// | Oblivion | `Default.DDS` via `%s\Landscape\%s` | Textures - Compressed |
+/// | FO3 / FNV | `DirtWasteland01.dds`, `_N` | Textures / Textures2 |
+/// | Skyrim | `Dirt02.dds`, `Dirt02_N.dds` (`sDefaultLandDiffuseTexture`) | Textures5 |
+/// | FO4 | `Ground\CommonwealthDefault01_d/_n/_s.dds` | Textures1 |
+///
+/// FO76 and Starfield ship no LAND records, so they have no entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct DefaultLandTexture {
+    pub diffuse: &'static str,
+    pub normal: Option<&'static str>,
+    pub specular: Option<&'static str>,
+}
+
+impl DefaultLandTexture {
+    pub(super) fn for_game(game: esm::reader::GameKind) -> Option<Self> {
+        use esm::reader::GameKind;
+        let (diffuse, normal, specular) = match game {
+            GameKind::Oblivion => (
+                "textures\\landscape\\default.dds",
+                Some("textures\\landscape\\default_n.dds"),
+                None,
+            ),
+            GameKind::Fallout3NV => (
+                "textures\\landscape\\dirtwasteland01.dds",
+                Some("textures\\landscape\\dirtwasteland01_n.dds"),
+                None,
+            ),
+            GameKind::Skyrim => (
+                "textures\\landscape\\dirt02.dds",
+                Some("textures\\landscape\\dirt02_n.dds"),
+                None,
+            ),
+            GameKind::Fallout4 => (
+                "textures\\landscape\\ground\\commonwealthdefault01_d.dds",
+                Some("textures\\landscape\\ground\\commonwealthdefault01_n.dds"),
+                Some("textures\\landscape\\ground\\commonwealthdefault01_s.dds"),
+            ),
+            GameKind::Fallout76 | GameKind::Starfield => return None,
+        };
+        Some(Self {
+            diffuse,
+            normal,
+            specular,
+        })
+    }
 }
 
 pub(super) fn spawn_terrain_mesh(
@@ -514,6 +591,7 @@ pub(super) fn spawn_terrain_mesh(
         landscape_texture_sets,
         blas_specs,
         water_y,
+        game,
     } = spawn;
     // #4052 — both promoted to `byroredux_core::math::coord` so the
     // ground-cover scatter shader reads the same numbers through
@@ -694,13 +772,14 @@ pub(super) fn spawn_terrain_mesh(
     // own quadrants and the ATXT splat layers paint the rest. See #470
     // (D7 follow-up).
     let base_ltex = land.quadrants.iter().find_map(|q| q.base);
+    let default_land = DefaultLandTexture::for_game(game);
+    let uses_default_land = matches!(base_ltex, Some(0) | None);
     // #2444 (MAT-D3-02) — the path is retained, not just the handle: it is
     // the classifier input for this tile's canonical `Material` below, so
     // landscape shades by the same rules as the statics standing on it.
-    const DEFAULT_LAND_TEXTURE: &str = "textures\\landscape\\dirt02.dds";
     let base_texture_path: Option<&str> = match base_ltex {
-        // BTXT with form ID 0 = "default dirt" per UESP.
-        Some(0) | None => Some(DEFAULT_LAND_TEXTURE),
+        // BTXT with form ID 0 = the engine's built-in default land texture.
+        Some(0) | None => default_land.map(|d| d.diffuse),
         Some(ltex_id) => match landscape_textures.get(&ltex_id) {
             Some(path) => Some(path.as_str()),
             None => {
@@ -719,16 +798,25 @@ pub(super) fn spawn_terrain_mesh(
         None => 0,
     };
     let base_texture_set = base_ltex.and_then(|id| landscape_texture_sets.get(&id));
-    let base_normal_index = resolve_optional_terrain_texture(
-        ctx,
-        tex_provider,
-        base_texture_set.and_then(|set| set.normal.as_deref()),
-    );
-    let base_specular_index = resolve_optional_terrain_texture(
-        ctx,
-        tex_provider,
-        base_texture_set.and_then(|set| set.specular.as_deref()),
-    );
+    let (base_normal_path, base_specular_path) = if uses_default_land {
+        (
+            default_land.and_then(|d| d.normal).map(str::to_string),
+            default_land.and_then(|d| d.specular),
+        )
+    } else {
+        (
+            terrain_layer_normal_path(
+                tex_provider,
+                base_texture_set.and_then(|set| set.normal.as_deref()),
+                base_texture_path,
+            ),
+            base_texture_set.and_then(|set| set.specular.as_deref()),
+        )
+    };
+    let base_normal_index =
+        resolve_optional_terrain_texture(ctx, tex_provider, base_normal_path.as_deref());
+    let base_specular_index =
+        resolve_optional_terrain_texture(ctx, tex_provider, base_specular_path);
 
     // Allocate a terrain tile slot only when the cell actually has splat
     // layers. BTXT-only cells skip this and render with the pre-#470
@@ -920,6 +1008,207 @@ pub(super) fn spawn_terrain_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every Oblivion LTEX must resolve to a texture that ships. Oblivion's
+    /// `ICON` is relative to the landscape folder; before that was applied at
+    /// the parse boundary every Oblivion terrain layer missed its archive
+    /// key and rendered the fallback checkerboard.
+    ///
+    /// ```sh
+    /// cargo test -p byroredux --bin byroredux \
+    ///     oblivion_ltex_paths_exist_in_vanilla_archives -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs vanilla Oblivion data on disk"]
+    fn oblivion_ltex_paths_exist_in_vanilla_archives() {
+        use byroredux_bsa::BsaArchive;
+        use std::path::PathBuf;
+
+        let dir = std::env::var("BYROREDUX_OBLIVION_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data")
+            });
+        let esm_path = dir.join("Oblivion.esm");
+        let archives = [
+            dir.join("Oblivion - Textures - Compressed.bsa"),
+            dir.join("DLCShiveringIsles - Textures.bsa"),
+        ];
+        if !esm_path.is_file() || !archives.iter().all(|a| a.is_file()) {
+            eprintln!("skipping: Oblivion data not found under {}", dir.display());
+            return;
+        }
+        let archives: Vec<BsaArchive> = archives
+            .iter()
+            .map(|a| BsaArchive::open(a).expect("open bsa"))
+            .collect();
+        let bytes = std::fs::read(&esm_path).expect("read Oblivion.esm");
+        let index = esm::records::parse_esm(&bytes).expect("parse Oblivion.esm");
+        let paths = &index.cells.landscape_textures;
+        assert!(!paths.is_empty(), "Oblivion.esm yielded no LTEX paths");
+        // Authored by vanilla LTEX records but shipped in no archive under
+        // any landscape path (a basename search finds only the unrelated
+        // `textures\rocks\chrock01.dds`) — data defects, not resolution bugs.
+        const UNSHIPPED: [&str; 3] = [
+            "landscape\\terrainanvilgrass01.dds",
+            "landscape\\chrock01.dds",
+            "landscape\\oblivion\\terrainhdoblivionevilsymbol01.dds",
+        ];
+        let mut missing: Vec<String> = paths
+            .values()
+            .filter(|path| {
+                let key = format!("textures\\{path}");
+                !archives.iter().any(|a| a.contains(&key))
+            })
+            .map(|path| path.to_ascii_lowercase())
+            .collect();
+        missing.sort();
+        let mut expected: Vec<String> = UNSHIPPED.iter().map(|p| p.to_string()).collect();
+        expected.sort();
+        assert_eq!(
+            missing,
+            expected,
+            "Oblivion LTEX paths missing from every vanilla archive changed (of {})",
+            paths.len()
+        );
+        eprintln!(
+            "verified {} Oblivion LTEX paths ({} known unshipped)",
+            paths.len(),
+            UNSHIPPED.len()
+        );
+    }
+
+    /// Every LAND-carrying game gets a default land texture; the two games
+    /// that ship no LAND records get none rather than a borrowed one.
+    #[test]
+    fn default_land_texture_covers_every_land_game() {
+        use esm::reader::GameKind;
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+        ] {
+            let tex = DefaultLandTexture::for_game(game)
+                .unwrap_or_else(|| panic!("{game:?} has LAND but no default texture"));
+            for path in [Some(tex.diffuse), tex.normal, tex.specular]
+                .into_iter()
+                .flatten()
+            {
+                assert!(
+                    path.starts_with("textures\\landscape\\") && path.ends_with(".dds"),
+                    "{game:?}: {path} is not a textures\\landscape DDS key"
+                );
+            }
+        }
+        assert_eq!(DefaultLandTexture::for_game(GameKind::Fallout76), None);
+        assert_eq!(DefaultLandTexture::for_game(GameKind::Starfield), None);
+    }
+
+    /// Each default land texture must exist, by exact key, in its game's
+    /// vanilla texture archives. The pre-fix constant
+    /// (`textures\\landscape\\dirt02.dds` for every game) exists only in
+    /// Skyrim, so every other game's BTXT-less terrain — including whole
+    /// lake and sea beds — rendered the fallback checkerboard. A
+    /// source-only test cannot know whether an archive key is real.
+    ///
+    /// Gated on game data; each game is skipped when its archives are not on
+    /// disk. Run with:
+    /// ```sh
+    /// cargo test -p byroredux --bin byroredux \
+    ///     default_land_textures_exist_in_vanilla_archives -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs vanilla game texture archives on disk"]
+    fn default_land_textures_exist_in_vanilla_archives() {
+        use byroredux_bsa::{Ba2Archive, BsaArchive};
+        use esm::reader::GameKind;
+        use std::path::PathBuf;
+
+        const STEAM: &str = "/mnt/data/SteamLibrary/steamapps/common";
+        let games: [(GameKind, &str, &str, &[&str]); 5] = [
+            (
+                GameKind::Oblivion,
+                "BYROREDUX_OBLIVION_DATA",
+                "Oblivion/Data",
+                &["Oblivion - Textures - Compressed.bsa"],
+            ),
+            (
+                GameKind::Fallout3NV,
+                "BYROREDUX_FO3_DATA",
+                "Fallout 3 goty/Data",
+                &["Fallout - Textures.bsa"],
+            ),
+            (
+                GameKind::Fallout3NV,
+                "BYROREDUX_FNV_DATA",
+                "Fallout New Vegas/Data",
+                &["Fallout - Textures.bsa", "Fallout - Textures2.bsa"],
+            ),
+            (
+                GameKind::Skyrim,
+                "BYROREDUX_SKYRIMSE_DATA",
+                "Skyrim Special Edition/Data",
+                &[
+                    "Skyrim - Textures0.bsa",
+                    "Skyrim - Textures1.bsa",
+                    "Skyrim - Textures2.bsa",
+                    "Skyrim - Textures3.bsa",
+                    "Skyrim - Textures4.bsa",
+                    "Skyrim - Textures5.bsa",
+                    "Skyrim - Textures6.bsa",
+                    "Skyrim - Textures7.bsa",
+                    "Skyrim - Textures8.bsa",
+                ],
+            ),
+            (
+                GameKind::Fallout4,
+                "BYROREDUX_FO4_DATA",
+                "Fallout 4/Data",
+                &["Fallout4 - Textures1.ba2"],
+            ),
+        ];
+
+        let mut checked = 0usize;
+        for (game, env_var, default_dir, archives) in games {
+            let dir = std::env::var(env_var)
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(STEAM).join(default_dir));
+            let paths: Vec<PathBuf> = archives.iter().map(|a| dir.join(a)).collect();
+            if !paths.iter().all(|p| p.is_file()) {
+                eprintln!(
+                    "skipping {env_var}: archives not found under {}",
+                    dir.display()
+                );
+                continue;
+            }
+            let mut lookups: Vec<Box<dyn Fn(&str) -> bool>> = Vec::new();
+            for path in &paths {
+                if path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("ba2"))
+                {
+                    let archive = Ba2Archive::open(path).expect("open ba2");
+                    lookups.push(Box::new(move |key| archive.contains(key)));
+                } else {
+                    let archive = BsaArchive::open(path).expect("open bsa");
+                    lookups.push(Box::new(move |key| archive.contains(key)));
+                }
+            }
+            let tex = DefaultLandTexture::for_game(game).expect("LAND game");
+            for key in [Some(tex.diffuse), tex.normal, tex.specular]
+                .into_iter()
+                .flatten()
+            {
+                assert!(
+                    lookups.iter().any(|contains| contains(key)),
+                    "{env_var}: default land texture {key} is not in {archives:?}"
+                );
+                checked += 1;
+            }
+        }
+        eprintln!("verified {checked} default land texture keys against real archives");
+    }
 
     /// #1343 / D3-02 — on a `spawn_terrain_mesh` early return (no allocator /
     /// mesh-upload failure) the acquired splat-layer textures must be

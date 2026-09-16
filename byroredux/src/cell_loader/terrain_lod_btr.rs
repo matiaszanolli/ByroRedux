@@ -213,6 +213,7 @@ pub(crate) fn spawn_btr_block(
     qx: i32,
     qy: i32,
     hole_mask: u16,
+    game: byroredux_plugin::esm::reader::GameKind,
 ) -> Option<LodBlock> {
     let path = btr_archive_path(worldspace_key, level, qx, qy);
     let bytes = tex_provider.extract_mesh(&path)?;
@@ -303,18 +304,19 @@ pub(crate) fn spawn_btr_block(
         return None;
     }
 
-    // Per-quad diffuse. A missing texture falls back to the same dirt base the
-    // synth path uses (still reads as ground), never the magenta checker.
+    // Per-quad diffuse. A missing texture falls back to the game's built-in
+    // default land texture (still reads as ground), never the magenta checker.
     let diffuse = btr_diffuse_path(worldspace_key, level, qx, qy);
     let tex_handle = resolve_texture(ctx, tex_provider, Some(diffuse.as_str()));
     // The path the canonical `Material` classifies against (#3336) — whichever
     // of the two actually resolved, mirroring `terrain_lod.rs`.
     let mut base_texture_path = Some(diffuse.clone());
-    let tex_handle = if tex_handle == ctx.texture_registry.fallback() {
-        base_texture_path = Some("textures\\landscape\\dirt02.dds".to_string());
-        resolve_texture(ctx, tex_provider, Some("textures\\landscape\\dirt02.dds"))
-    } else {
-        tex_handle
+    let tex_handle = match super::terrain::DefaultLandTexture::for_game(game) {
+        Some(default_land) if tex_handle == ctx.texture_registry.fallback() => {
+            base_texture_path = Some(default_land.diffuse.to_string());
+            resolve_texture(ctx, tex_provider, Some(default_land.diffuse))
+        }
+        _ => tex_handle,
     };
 
     // Per-quad tangent-space normal map (#2371). Absent for FO4 (which bakes

@@ -483,6 +483,7 @@ pub(crate) fn stream_lod_blocks(
                 qx,
                 qy,
                 mask,
+                game,
             )
         } else {
             None

@@ -401,6 +401,23 @@ fn parse_modl_group_inner(
     Ok(())
 }
 
+/// Oblivion's LTEX `ICON` is relative to the landscape texture folder, not
+/// to `textures\`: `TerrainWetSand02_Dark.dds`, `Mania\ManiaWetSand01.dds`.
+/// The engine formats it as `%s\Landscape\%s` (`Oblivion.exe` string table)
+/// and every vanilla value ships there — `textures\landscape\…` in
+/// `Oblivion - Textures - Compressed.bsa`, `textures\landscape\mania\…` in
+/// the Shivering Isles archive. Returned relative to the `textures\` root
+/// like every other record-authored texture path; a value already rooted at
+/// either folder is kept as authored.
+pub(crate) fn ltex_icon_texture_path(icon: &str) -> String {
+    let lower = icon.to_ascii_lowercase().replace('/', "\\");
+    if lower.starts_with("landscape\\") || lower.starts_with("textures\\") {
+        icon.to_string()
+    } else {
+        format!("landscape\\{icon}")
+    }
+}
+
 /// Parse LTEX (Landscape Texture) records.
 ///
 /// FO3/FNV: LTEX has a TNAM sub-record pointing to a TXST form ID.
@@ -456,7 +473,7 @@ fn parse_ltex_group_inner(
                     b"ICON" => {
                         let path = read_zstring(&sub.data);
                         if !path.is_empty() {
-                            direct_paths.insert(header.form_id, path);
+                            direct_paths.insert(header.form_id, ltex_icon_texture_path(&path));
                         }
                     }
                     _ => {}
@@ -1140,5 +1157,32 @@ mod starfield_armo_modl_tests {
         // inventory definition, so it must simply decline the StaticObject
         // without logging the generic #1620 corrupt-path warning.
         assert!(build_static_object_from_subs(0x42, b"ARMO", false, &subs, &None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod ltex_icon_tests {
+    use super::ltex_icon_texture_path;
+
+    /// Bare and subfoldered Oblivion icons resolve under the landscape
+    /// folder; values already rooted there (or at `textures\`) are kept.
+    #[test]
+    fn ltex_icon_resolves_under_the_landscape_folder() {
+        assert_eq!(
+            ltex_icon_texture_path("TerrainWetSand02_Dark.dds"),
+            "landscape\\TerrainWetSand02_Dark.dds"
+        );
+        assert_eq!(
+            ltex_icon_texture_path("Mania\\ManiaWetSand01.dds"),
+            "landscape\\Mania\\ManiaWetSand01.dds"
+        );
+        assert_eq!(
+            ltex_icon_texture_path("Landscape\\Dirt01.dds"),
+            "Landscape\\Dirt01.dds"
+        );
+        assert_eq!(
+            ltex_icon_texture_path("textures/landscape/dirt01.dds"),
+            "textures/landscape/dirt01.dds"
+        );
     }
 }
