@@ -61,6 +61,9 @@ struct Entry {
     /// happened to come first, silently mis-keying the entire remap. See
     /// #1845 / SAVE-02.
     is_form_id: bool,
+    /// Complete-state columns must emit [] when empty so absence can be
+    /// distinguished from an entirely missing/older snapshot column.
+    replace_missing: bool,
 }
 
 /// Registry of every component/resource type that participates in a save.
@@ -87,6 +90,25 @@ impl SaveRegistry {
     /// save format ships (renaming it strands every existing save's
     /// column for that type). It is independent of the Rust type name.
     pub fn register_component<T>(&mut self, name: &'static str) -> &mut Self
+    where
+        T: Component + Serialize + DeserializeOwned,
+    {
+        self.register_component_impl::<T>(name, false)
+    }
+
+    /// Register a complete-state column whose saved absence is authoritative
+    /// during live overlay. Only FormID-matched entities are affected; an
+    /// unmatched entity and an entirely missing snapshot column are untouched.
+    /// Use only when absence really means "no component", not "re-derive from
+    /// freshly loaded assets". Ordinary registration remains additive-only.
+    pub fn register_replacing_component<T>(&mut self, name: &'static str) -> &mut Self
+    where
+        T: Component + Serialize + DeserializeOwned,
+    {
+        self.register_component_impl::<T>(name, true)
+    }
+
+    fn register_component_impl<T>(&mut self, name: &'static str, replace_missing: bool) -> &mut Self
     where
         T: Component + Serialize + DeserializeOwned,
     {
@@ -146,11 +168,23 @@ impl SaveRegistry {
                         .filter_map(|(old, comp)| remap.get(&old).map(|&live| (live, comp)))
                         .collect();
                     let n = remapped.len();
+                    if replace_missing {
+                        // Decode the whole column before mutation. Remove only
+                        // matched entities without a row in this saved column.
+                        let present: std::collections::HashSet<_> =
+                            remapped.iter().map(|(entity, _)| *entity).collect();
+                        for &live in remap.values() {
+                            if !present.contains(&live) {
+                                let _ = world.remove::<T>(live);
+                            }
+                        }
+                    }
                     world.insert_batch::<T, _>(remapped);
                     Ok(n)
                 },
             )),
             is_form_id: false,
+            replace_missing,
         });
         self
     }
@@ -197,6 +231,7 @@ impl SaveRegistry {
             // form — `apply_deltas` restores them wholesale via `load`.
             apply: None,
             is_form_id: false,
+            replace_missing: false,
         });
         self
     }
@@ -290,6 +325,7 @@ impl SaveRegistry {
             // cell already carries its own FormIdComponents).
             apply: None,
             is_form_id: true,
+            replace_missing: false,
         });
         self
     }
@@ -303,13 +339,16 @@ impl SaveRegistry {
     /// changed shape. A versioned migrator chain is the follow-up for
     /// graceful intra-type evolution.
     pub fn schema_fingerprint(&self) -> u64 {
-        // FNV-1a over the column keys, tagged by kind so a component and
-        // a resource sharing a name still produce distinct fingerprints.
+        // FNV-1a over column keys and opt-in replacement policies, tagged by
+        // kind so a component/resource sharing a name remain distinct.
         let mut h = FnvHasher::new();
         for e in &self.components {
             h.write(b"C");
             h.write(e.name.as_bytes());
             h.write(b"\0");
+            if e.replace_missing {
+                h.write(b"replace_absence\0");
+            }
         }
         for e in &self.resources {
             h.write(b"R");
@@ -323,6 +362,12 @@ impl SaveRegistry {
         &self,
     ) -> impl Iterator<Item = (&'static str, &SaveFn, &LoadFn)> {
         self.components.iter().map(|e| (e.name, &e.save, &e.load))
+    }
+
+    pub(crate) fn component_keeps_empty(&self, name: &str) -> bool {
+        self.components
+            .iter()
+            .any(|entry| entry.name == name && entry.replace_missing)
     }
 
     /// Names of every registered component column, in registration order.
@@ -409,6 +454,67 @@ impl Hasher for FnvHasher {
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::Transform;
+
+    #[test]
+    fn replacing_column_preserves_unmatched_entities_and_decodes_before_removal() {
+        let mut registry = SaveRegistry::new();
+        registry.register_replacing_component::<Transform>("Transform");
+        let mut world = World::new();
+        let matched = world.spawn();
+        let unrelated = world.spawn();
+        world.insert(matched, Transform::default());
+        world.insert(unrelated, Transform::default());
+        let remap = HashMap::from([(9, matched)]);
+        let apply = registry.component_apply("Transform").unwrap();
+        assert!(apply(&mut world, serde_json::json!([[9, "invalid"]]), &remap).is_err());
+        assert!(world.get::<Transform>(matched).is_some());
+        assert!(world.get::<Transform>(unrelated).is_some());
+        assert_eq!(apply(&mut world, serde_json::json!([]), &remap).unwrap(), 0);
+        assert!(world.get::<Transform>(matched).is_none());
+        assert!(world.get::<Transform>(unrelated).is_some());
+    }
+
+    #[test]
+    fn empty_replacing_column_is_saved_but_missing_column_is_not_a_tombstone() {
+        let mut registry = SaveRegistry::new();
+        registry.register_replacing_component::<Transform>("Transform");
+        let empty = World::new();
+        let mut snapshot = crate::save_world(&empty, &registry).unwrap();
+        assert_eq!(snapshot.components["Transform"], serde_json::json!([]));
+        let mut live = World::new();
+        let entity = live.spawn();
+        live.insert(entity, Transform::default());
+        let remap = HashMap::from([(0, entity)]);
+        snapshot.components.remove("Transform");
+        crate::apply_deltas(&mut live, &registry, &snapshot, &remap, &["Transform"]).unwrap();
+        assert!(live.get::<Transform>(entity).is_some());
+    }
+
+    #[test]
+    fn normal_registration_remains_additive_and_policy_affects_fingerprint() {
+        let mut additive = SaveRegistry::new();
+        additive.register_component::<Transform>("Transform");
+        let mut replacing = SaveRegistry::new();
+        replacing.register_replacing_component::<Transform>("Transform");
+        assert_ne!(
+            additive.schema_fingerprint(),
+            replacing.schema_fingerprint()
+        );
+        let mut world = World::new();
+        assert!(!crate::save_world(&world, &additive)
+            .unwrap()
+            .components
+            .contains_key("Transform"));
+        let entity = world.spawn();
+        world.insert(entity, Transform::default());
+        additive.component_apply("Transform").unwrap()(
+            &mut world,
+            serde_json::json!([]),
+            &HashMap::from([(0, entity)]),
+        )
+        .unwrap();
+        assert!(world.get::<Transform>(entity).is_some());
+    }
 
     /// Regression for #1845 / SAVE-02: `form_id_column()` must resolve
     /// the column registered via `register_form_id_component`, keyed off

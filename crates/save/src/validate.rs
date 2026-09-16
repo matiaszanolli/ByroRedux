@@ -915,9 +915,8 @@ mod tests {
     /// `Perks` component. Unlike `CharacterLevel.xp`, an ESM-authored NPC's
     /// `Perks` is routinely non-empty (`npc_spawn.rs` stamps it verbatim
     /// from `PRKR`), so there is no "non-empty = runtime mutation happened"
-    /// signal the way `xp != 0` is for `CharacterLevel` — `Perks` is exempt
-    /// from the save registry because it has no production mutator at all,
-    /// not because a guard like this one polices it. This pins that
+    /// signal the way `xp != 0` is for `CharacterLevel`. Perks is now saved
+    /// by the binary registry; populated ranks are valid save state. This pins that
     /// distinction: a future "for symmetry, also flag non-empty Perks"
     /// change (the literal reading of one of #3491's two suggested fixes,
     /// rejected for this reason) would break this test immediately instead

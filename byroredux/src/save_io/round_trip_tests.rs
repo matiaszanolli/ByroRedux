@@ -45,6 +45,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         // Keys are global-space FormIDs (stable across reload); values are
         // plain f32s. No FixedString / EntityId / session handle → delta-safe.
         "ActorValues",
+        // Perks: Vec<PerkRank { perk_form_id: u32, rank: u8 }>.
+        "Perks",
         // EquippedWeapon: u32 inventory index + u32 base FormID + f32
         // damage. Dead: empty marker. Neither carries session identity.
         "EquippedWeapon",
@@ -1443,24 +1445,14 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
     // still unregistered, so the exemption fails loudly rather than
     // silently discarding progress.
     //
-    // #3491 — Perks holds for a DIFFERENT reason, and `validate_
-    // progression_state` does not guard it (it inspects `CharacterLevel`
-    // only — grep confirms zero `Perks` references anywhere in
-    // `crates/save`). Unlike XP, an ESM-authored NPC's `Perks` is routinely
-    // non-empty, so "flag any non-empty Perks" isn't a valid guard the way
-    // "flag xp != 0" is — there is no known-safe baseline value to compare
-    // against. The exemption instead rests on there being no production
-    // mutator at all: `npc_spawn.rs` stamps `Perks` verbatim from `PRKR`
-    // and nothing else ever calls `Perks::set_rank`/`try_set_rank` outside
-    // `#[cfg(test)]`. Register it — no loud-failure guard needed first — the
-    // moment an `AddPerk`-style effect or a perk-selection UI lands
-    // (`docs/engine/charal.md`, #3004/#2986).
+    // Perks is now persisted, including authoritative absence on live reload.
+    // Its ranks select conditional consumable effects and must not come from
+    // the outgoing session when loading an earlier player state.
     const REDERIVED_NOT_SAVED: &[&str] = &[
         "CreatureAttack",
         "FactionRanks",
         "CharacterLevel",
         "Background",
-        "Perks",
         // M42.9 — rebuilt from NPC_.PKID plus the restored clock/CTDA
         // state on the first ambient-package tick after a cell reload.
         "AmbientPackageRuntime",

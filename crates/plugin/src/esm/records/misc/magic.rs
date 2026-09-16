@@ -614,6 +614,8 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 /// decoded to enable effect application across games.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MgefRecord {
+    /// Game-local vital AV index eligible for immediate restoration, not a FormID.
+    pub instant_restoration_av: Option<u32>,
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
@@ -642,6 +644,7 @@ pub struct MgefRecord {
 impl Default for MgefRecord {
     fn default() -> Self {
         Self {
+            instant_restoration_av: None,
             form_id: 0,
             editor_id: String::new(),
             full_name: String::new(),
@@ -656,6 +659,71 @@ impl Default for MgefRecord {
             effect_shader_id: 0,
         }
     }
+}
+
+pub fn parse_mgef_for_game(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: crate::esm::reader::GameKind,
+    remap: &Option<FormIdRemap>,
+) -> MgefRecord {
+    let mut out = parse_mgef(form_id, subs, remap);
+    use crate::esm::reader::GameKind;
+    if !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV)
+        || subs
+            .iter()
+            .any(|s| matches!(&s.sub_type, b"VMAD" | b"CTDA" | b"ESCE"))
+    {
+        return out;
+    }
+    if let Some(data) = subs
+        .iter()
+        .rev()
+        .find(|s| &s.sub_type == b"DATA")
+        .map(|s| &s.data)
+    {
+        // FO3/FNV share archetype/AV offsets with TES5 but have a 72-byte
+        // DATA payload and different flags. Skill/attribute-scaled effects
+        // require runtime magnitude evaluation, not a constant restoration.
+        if game == GameKind::Fallout3NV {
+            if data.len() == 72 {
+                let read =
+                    |offset| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                let av = read(68);
+                if read(0) & (1 | 2 | 4 | 0x100 | 0x80000 | 0x100000) == 0
+                    && read(0) & 0x10 != 0
+                    && read(64) == 0
+                    && read(20) & 0xffff == 0
+                    && matches!(av, 12 | 16)
+                {
+                    out.instant_restoration_av = Some(av);
+                }
+            }
+            return out;
+        }
+        // TES5 xEdit MGEF DATA: archetype@64, primary AV@68,
+        // casting type@80, delivery@84. Exclude hostile, recover,
+        // detrimental and no-magnitude flags (temporary fortify isn't heal).
+        if data.len() >= 152 {
+            let read = |offset| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+            let av = read(68);
+            if read(0) & (1 | 2 | 4 | 0x400) == 0
+                && read(64) == 0
+                && read(80) == 1
+                && read(84) == 0
+                && read(20) & 0xffff == 0
+                // Linked abilities, image-space effects, and perks require
+                // additional runtime consumers; don't silently omit them.
+                && read(128) == 0
+                && read(132) == 0
+                && read(136) == 0
+                && (24..=26).contains(&av)
+            {
+                out.instant_restoration_av = Some(av);
+            }
+        }
+    }
+    out
 }
 
 pub fn parse_mgef(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> MgefRecord {

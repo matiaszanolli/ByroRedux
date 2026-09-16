@@ -79,11 +79,13 @@ pub struct InventoryItemView {
     pub weight: f32,
     pub equipped: bool,
     pub equippable: bool,
+    pub consumable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InventoryAction {
     ToggleEquip { index: u32 },
+    Consume { index: u32, form_id: u32 },
 }
 
 /// Draw the small gameplay HUD layer shared with the debug renderer.
@@ -542,7 +544,17 @@ fn draw_inventory_page(
                 ui.end_row();
             });
         columns[1].add_space(24.0);
-        if item.equippable {
+        if item.consumable {
+            if columns[1]
+                .add_sized([220.0, 42.0], egui::Button::new("Use"))
+                .clicked()
+            {
+                outputs.inventory_actions.push(InventoryAction::Consume {
+                    index: item.index,
+                    form_id: item.form_id,
+                });
+            }
+        } else if item.equippable {
             let label = if item.equipped { "Unequip" } else { "Equip" };
             if columns[1]
                 .add_sized(
@@ -556,11 +568,22 @@ fn draw_inventory_page(
                     .push(InventoryAction::ToggleEquip { index: item.index });
             }
         } else {
-            columns[1].add_enabled(false, egui::Button::new("Equip unavailable"));
+            columns[1].add_enabled(
+                false,
+                egui::Button::new(if item.category == "Aid" {
+                    "Use unavailable"
+                } else {
+                    "Equip unavailable"
+                }),
+            );
             columns[1].label(
-                RichText::new("This item type has no runtime equipment contract yet.")
-                    .small()
-                    .color(Color32::GRAY),
+                RichText::new(if item.category == "Aid" {
+                    "This item's effects are not fully supported yet."
+                } else {
+                    "This item type has no runtime equipment contract yet."
+                })
+                .small()
+                .color(Color32::GRAY),
             );
         }
     });
@@ -1449,7 +1472,10 @@ mod tests {
         ctx.begin_pass(egui::RawInput::default());
         draw_player_message(&ctx, "Unlocked with key\nTook 9 items");
         let output = ctx.end_pass();
-        assert!(!output.shapes.is_empty(), "gameplay feedback must produce renderable geometry");
+        assert!(
+            !output.shapes.is_empty(),
+            "gameplay feedback must produce renderable geometry"
+        );
     }
 
     #[test]
@@ -1523,6 +1549,7 @@ mod tests {
                     weight: 30.0,
                     equipped: true,
                     equippable: true,
+                    consumable: false,
                 }],
             }),
             ..Default::default()
@@ -1542,6 +1569,82 @@ mod tests {
     }
 
     #[test]
+    fn restorative_use_button_emits_identity_checked_action() {
+        let ctx = Context::default();
+        let snapshot = PanelSnapshot {
+            inventory: Some(InventorySnapshot {
+                total_weight: 0.5,
+                items: vec![InventoryItemView {
+                    index: 7,
+                    form_id: 0x3EADD,
+                    name: "Healing Potion".into(),
+                    category: "Aid",
+                    details: "Restores Health".into(),
+                    count: 2,
+                    value: 20,
+                    weight: 0.5,
+                    equipped: false,
+                    equippable: false,
+                    consumable: true,
+                }],
+            }),
+            ..Default::default()
+        };
+        let mut state = GameMenuState {
+            visible: true,
+            page: GameMenuPage::Inventory,
+            ..Default::default()
+        };
+        let mut outputs = PanelOutputs::default();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        // egui sizes a newly opened window before painting its contents.
+        let _ = ctx.end_pass();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let frame = ctx.end_pass();
+        let pos = frame
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    if text.galley.text() == "Use" {
+                        return Some(text.pos + text.galley.size() * 0.5);
+                    }
+                }
+                None
+            })
+            .expect("Use button must be visible");
+        ctx.begin_pass(egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        });
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let _ = ctx.end_pass();
+        assert_eq!(
+            outputs.inventory_actions,
+            vec![InventoryAction::Consume {
+                index: 7,
+                form_id: 0x3EADD
+            }]
+        );
+    }
+
+    #[test]
     fn inventory_category_filter_selects_a_visible_item() {
         let ctx = Context::default();
         ctx.begin_pass(egui::RawInput::default());
@@ -1556,6 +1659,7 @@ mod tests {
             weight: 1.0,
             equipped: false,
             equippable: false,
+            consumable: false,
         };
         let snapshot = PanelSnapshot {
             inventory: Some(InventorySnapshot {

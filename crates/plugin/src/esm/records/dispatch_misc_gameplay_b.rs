@@ -32,7 +32,7 @@ pub(super) fn dispatch_misc_gameplay_b_group(
         })?,
         // #3715 — DATA carries an embedded light-effect FormID.
         b"MGEF" => extract_records(reader, end, b"MGEF", &mut |fid, subs| {
-            let rec = parse_mgef(fid, subs, &remap);
+            let rec = parse_mgef_for_game(fid, subs, game, &remap);
             // #969 / OBL-D3-NEW-05 — Oblivion's SPEL/ENCH/ALCH/INGR
             // EFID values are the 4-char effect code (raw bytes),
             // NOT a u32 FormID like every other Bethesda game. Build

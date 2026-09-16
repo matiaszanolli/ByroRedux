@@ -460,6 +460,162 @@ world-light preservation, plugin override/remapping, and native metadata.
 All **71** mod-runtime tests pass, including Light's WIT category conversion.
 Live equipped-light behavior remains unverified and unimplemented.
 
+#### Alchemy apparatus inventory metadata (2026-09-16)
+
+APPA now enters the item catalog alongside its existing apparatus and world-model
+indexes. The Oblivion parser decodes its packed 13-byte DATA (type, value,
+weight, floating quality); Skyrim's distinct DATA and integer QUAL tier are
+decoded separately, following xEdit's
+[TES4](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES4.pas) and
+[TES5](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES5.pas)
+definitions. Other game families retain the existing name/model index without
+guessing an apparatus payload layout. Truncated fields remain absent/default.
+Native inventory and SDK/WIT now expose the Apparatus category; crafting is
+explicitly unavailable, and apparatus is not treated as wearable equipment.
+
+The installed Oblivion master probe recovered the remaining **165** apparatus
+stack occurrences: all **7,947** measured leveled-container stack occurrences
+now have catalog entries. Skyrim remains at **8,922**, also with zero missing
+entries. This is catalog coverage at levels 1, 10, and 50, not proof that all
+item data or actions are correct. Alchemy effects, crafting, and live gameplay
+validation remain separate work. The plugin suite passes **989** tests with
+27 ignored, including packed-layout, truncation, remapping, world-model, and
+legacy-index preservation regressions.
+Native inventory tests pass **18** (one ignored), and all **72** mod-runtime
+tests pass, including Apparatus's WIT category conversion.
+
+#### Native restorative consumables (2026-09-16)
+
+The native inventory now offers **Use** for supported immediate Skyrim and
+Fallout 3 restoratives. ALCH EFID/EFIT chains retain remapped effect identities and authored
+magnitudes; the per-game MGEF reader identifies beneficial vital-value modifiers
+using [xEdit's TES5 layouts](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES5.pas).
+Resolution uses the existing canonical actor-value lookup, including Skyrim's
+`AVHealth` / `AVMagicka` / `AVStamina` spelling. Every effect must resolve before
+an item becomes usable; unsupported mixed potions cannot be partly applied.
+
+Use validates the player, selected stack identity/count, equipment state, live
+instance handle (when present), and all affected actor values before changing
+anything. It restores damage through
+`ActorValues::restore`, decrements one item, keeps zero-count slots to preserve
+equipment indices, releases the last instance payload, and posts HUD feedback.
+The changes live in the existing persisted ActorValues and Inventory components;
+the effect catalog is rebuilt from plugin records, not serialized.
+
+The installed Skyrim SE master yields **84** supported immediate restorative
+ingestibles (90 structurally immediate chains, six with unsupported effects).
+A real-master headless test runs `RestoreHealth01` (`0003EADD`) through the native
+action: Health **40 → 65**, potion count **1 → 0**. Synthetic tests cover repeated
+use, no overhealing, stale selection, dead players, missing effect targets,
+equipment-index stability, last-instance cleanup, and rejection of poison,
+scripts, conditions, timed/area effects, and malformed payloads. A headless egui
+pointer test clicks the actual Use button and checks its identity-bearing action.
+Verification: **993** plugin tests, **21** native inventory tests (lock-order
+checking enabled), **12** debug-UI tests, and **64** existing save-I/O tests
+passed. The real-master healing test was run explicitly and passed separately.
+
+Consumable persistence now has synthetic and installed-master disk round-trip
+tests. They save before use, after one use, and after depletion, then load those
+slots backward, forward, and repeatedly into the same reconstructed world using
+the production resource restoration, FormID remapping, and mutable-delta helpers.
+Assertions cover health and stack counts together, unchanged equipment indices,
+colliding item-instance handles, final-instance cleanup, no replayed use feedback,
+and further consumption after loading. **66** save-I/O tests passed with lock-order
+checking enabled, including the explicitly enabled installed-Skyrim test. This
+is headless disk/overlay verification; it does not execute the Vulkan cell-reload
+or full pending-load orchestration path.
+
+A subsequent preflight regression reproduced consumption through a freed
+instance handle. Consumption now rejects missing pools and freed handles before
+changing health, count, or feedback; tests cover both final-item and multi-item
+stacks and verify that rejection leaves arena slot reuse intact. The full engine
+binary suite passed with lock-order checking: **2,184 passed, 29 ignored**.
+
+The FO3/FNV path now decodes 20-byte integer-magnitude EFITs, self delivery,
+72-byte MGEF DATA, and game-local Health/ActionPoints AV indices according to
+[xEdit's FO3](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsFO3.pas)
+and [FNV layouts](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsFNV.pas).
+ENIT's three padding bytes are ignored (shipping records contain `CD CD CD`),
+not interpreted as Skyrim poison flags. Counter-effect padding is also ignored.
+Skill/attribute-scaled MGEFs remain unsupported; EFIT's redundant AV cache does
+not override the MGEF target. Synthetic tests cover these distinctions and
+reject truncated/cross-game payloads, non-self delivery, addiction, timed/area
+effects, scripts, and conditions.
+
+Installed-master probes identify **five** immediate FO3 restoratives (apple,
+carrot, pear, potato, purified water), from seven immediate ALCH chains; FNV has
+**zero** supported restoratives from one immediate chain. Both games' Stimpaks
+contain CTDA branches, and FNV additionally contains timed healing: neither is
+flattened or enabled by this change. The FO3 `WaterPurified` (`000151A3`) test
+uses the native action, real disk save/load commands, and live-overlay helpers:
+Health **40 → 60 → 80**, stack **2 → 1 → 0**, with backward/forward/repeated loads.
+All three consumable disk/overlay tests (synthetic, Skyrim, FO3) passed with
+lock-order checking; the plugin suite passed **994 tests, 27 ignored**.
+
+The next ingestion step retains `Aid::authored_effects` separately from the
+executable immediate subset. Each effect keeps its duration/area, FO3/FNV
+delivery and cached AV, remapped condition FormIDs/global comparands, OR ordering,
+string parameters, and original condition flag bytes. Malformed or orphaned
+conditions invalidate the chain rather than being dropped. Parsing this metadata
+does **not** enable conditional consumption. Installed-master tests verify FO3
+Stimpak's two perk-gated branches (30/36) and FNV's four branches (5/6 over six
+seconds and 30/36 immediately). The installed FO3 `RestoreHealthStimpak` MGEF also
+uses archetype **34**, not the supported value-modifier archetype **0**; condition
+evaluation alone is therefore insufficient to enable it. The plugin suite now
+passes **996 tests, 28 ignored**, with the installed FO3/FNV chain test explicitly
+enabled and passing separately.
+
+Conditional immediate restoration is now connected to native consumption for
+the checked `HasPerk` subset (Skyrim function 448; FO3/FNV 449). A separate plan
+compiler checks every branch before execution: self/target context, literal
+comparands, recognized flags/comparators, supported instantaneous MGEFs, and a
+script/poison/addiction-free item header. Unknown functions are not delegated to
+the general evaluator's zero fallback, which would make `unknown == 0` succeed.
+Known condition lists use the existing OR/AND evaluator at the time of each use;
+the caster and target both refer to the consuming player. A native test verifies
+that gaining a perk selects the other branch without reinstalling the catalog,
+and that all-false conditions change neither health nor inventory. Unsupported
+branches cannot be hidden behind a false condition. The plugin suite passed
+**997 tests**, and native inventory tests passed **23 tests** with lock-order
+checking. This does not implement Stimpak archetype 34 or timed healing.
+
+The installed FO3 master supplies one newly executable conditional item:
+`BloodPack` (`00034051`), one unconditional health point plus 19 gated on perk
+`00003131`. An explicit real-master native test verifies **40 → 41** without the
+perk, then **41 → 61** after granting it in the same world/catalog, consuming one
+item per use. Its no-perk path also passes the repeated disk/load-overlay test.
+FO3 now exposes five unconditional restoratives plus this conditional one;
+Skyrim remains at 84 unconditional/zero conditional, FNV at zero/zero. The full
+engine binary suite passed **2,185 tests** before the additional ignored
+real-BloodPack test, and both real-FO3 tests passed explicitly with lock-order
+checking. No live Vulkan smoke was performed.
+
+Perk ownership now participates in save/load rather than being treated as
+spawn-only metadata. `Perks` and nested `PerkRank` serialize stable perk FormIDs
+and ranks. Its opt-in replacing column restores populated/empty rows and clears
+a saved absence on FormID-matched entities, including the persistent player;
+unmatched entities remain untouched. Other component registrations stay additive.
+An empty replacing column is retained in the snapshot, whereas an entirely
+missing column is not interpreted as a removal. Typed decoding precedes any
+replacement, and the overlay policy participates in the registry fingerprint.
+**Compatibility:** adding this column changes the save schema fingerprint;
+older snapshots are rejected, not migrated or silently default-filled.
+
+A regression first reproduced loss of a saved rank. It now passes populated,
+empty, and absent ownership loads backward/forward into the same live world.
+The real BloodPack disk/overlay test checks both the 1-point and 20-point paths,
+deliberately installing the opposite outgoing perk state before every load.
+Verification: **55 save-library tests** and **68 save-I/O tests**, including
+explicit installed-master tests, passed; save-I/O ran with lock-order checking.
+This remains a headless overlay check, not the Vulkan cell-reload smoke.
+
+This is not a general magic system: the remaining games' consumption, timed effects,
+poison application, addiction, scripted effects, other condition functions, linked abilities,
+image-space effects, perks, dynamic magnitude modifiers, audio/VFX, and item-use
+script event delivery remain unimplemented. Unsupported items stay unavailable
+without losing a stack. Live Vulkan gameplay and the consumption-specific full
+save/reload smoke remain pending.
+
 ### P4 — Authored objective and dialogue loop
 
 Goal: a small piece of shipping content can be followed and completed.

@@ -613,10 +613,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
     const BASELINE_MAJOR: u16 = 23;
-    // PersistentReferenceStates adds a new resource and its nested stored
-    // inventory shapes, without changing an existing serialized type. The
-    // registry fingerprint already rejects saves lacking this resource.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa12f_201f_ec0a_7f73;
+    // Perks/PerkRank are newly saved types, not shape changes to an existing
+    // saved column. The registry fingerprint rejects older saves without
+    // Perks and includes its new authoritative-absence overlay policy.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x55e2_862a_af77_d52d;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

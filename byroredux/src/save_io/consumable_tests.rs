@@ -1,0 +1,372 @@
+//! Disk save/load commands followed by the production live-overlay helpers.
+//! GPU cell reload is simulated by rebuilding entities in a different order.
+use super::*;
+use byroredux_core::ecs::components::{
+    ActorValues, ActorVitals, EquipmentSlots, FormIdComponent, Inventory, InventoryIndex, ItemStack,
+};
+use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+use byroredux_core::string::StringPool;
+use byroredux_plugin::esm::records::EsmIndex;
+
+fn player(world: &mut World) -> byroredux_core::ecs::EntityId {
+    let id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+        plugin: PluginId::from_filename("ConsumableFixture.esm"),
+        local: LocalFormId(0x14),
+    });
+    let entity = world.spawn();
+    world.insert(entity, FormIdComponent(id));
+    world.insert_resource(crate::systems::PlayerEntity(Some(entity)));
+    entity
+}
+
+fn world(index: &EsmIndex, directory: PathBuf) -> World {
+    let mut world = World::new();
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(StringPool::new());
+    world.insert_resource(build_save_registry());
+    world.insert_resource(SaveState::new(directory, 4));
+    world.insert_resource(PendingSaveLoadSlot::default());
+    world.insert_resource(crate::extensions::SessionEventQueue::default());
+    world.insert_resource(crate::notifications::PlayerNotifications::default());
+    world.insert_resource(crate::cell_loader::CurrentCellContext {
+        cell_editor_id: "ConsumableFixtureCell".into(),
+        esm_path: "ConsumableFixture.esm".into(),
+        masters: vec![],
+    });
+    crate::inventory::install_catalog(&mut world, index);
+    world
+}
+
+#[test]
+fn ranked_empty_and_absent_perks_replace_live_state_on_disk_load() {
+    use byroredux_core::character::Perks;
+    let directory = tempfile::tempdir().unwrap();
+    let index = EsmIndex::default();
+    let mut source = world(&index, directory.path().to_owned());
+    let saved_player = player(&mut source);
+    let mut owned = Perks::default();
+    owned.set_rank(77, 2);
+    for slot in 0..3 {
+        match slot {
+            0 => {
+                source.insert(saved_player, owned.clone());
+            }
+            1 => {
+                source.insert(saved_player, Perks::default());
+            }
+            _ => {
+                source.remove::<Perks>(saved_player);
+            }
+        }
+        let output = SaveCommand.execute(&source, &slot.to_string());
+        assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+    }
+    let mut live = world(&index, directory.path().to_owned());
+    let unrelated = live.spawn();
+    live.insert(unrelated, owned.clone());
+    let live_player = player(&mut live);
+    let mut outgoing = Perks::default();
+    outgoing.set_rank(999, 1);
+    live.insert(live_player, outgoing);
+    for slot in [0, 1, 0, 2, 0, 2] {
+        let output = LoadCommand.execute(&live, &slot.to_string());
+        assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+        let snapshot = live
+            .resource_mut::<PendingSaveLoadSlot>()
+            .snapshot
+            .take()
+            .unwrap();
+        let registry = build_save_registry();
+        byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
+        byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+        let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
+        assert_eq!(remap.get(&saved_player), Some(&live_player));
+        byroredux_save::apply_deltas(
+            &mut live,
+            &registry,
+            &snapshot,
+            &remap,
+            MUTABLE_DELTA_COLUMNS,
+        )
+        .unwrap();
+        let loaded = live.get::<Perks>(live_player);
+        assert_eq!(
+            loaded.as_ref().map_or(0, |p| p.rank(77)),
+            if slot == 0 { 2 } else { 0 }
+        );
+        assert_eq!(loaded.as_ref().map_or(0, |p| p.rank(999)), 0);
+        assert_eq!(loaded.is_some(), slot != 2);
+        assert_eq!(live.get::<Perks>(unrelated).unwrap().rank(77), 2);
+    }
+}
+
+fn disk_round_trip(index: &EsmIndex, potion: u32, restoration: f32) {
+    disk_round_trip_with_perk(index, potion, restoration, None);
+}
+
+fn disk_round_trip_with_perk(index: &EsmIndex, potion: u32, restoration: f32, perk: Option<u32>) {
+    use byroredux_core::character::Perks;
+    let directory = tempfile::tempdir().unwrap();
+    let health = index.health_actor_value_key().expect("health mapping");
+    let mut source = world(index, directory.path().to_owned());
+    let saved_player = player(&mut source);
+    if let Some(perk) = perk {
+        let mut owned = Perks::default();
+        owned.set_rank(perk, 1);
+        source.insert(saved_player, owned);
+    }
+    let mut pool = ItemInstancePool::new();
+    let potion_instance = pool.allocate(ItemInstance::default());
+    let equipment_instance = pool.allocate(ItemInstance::default());
+    source.insert_resource(pool);
+    source.insert(
+        saved_player,
+        Inventory {
+            items: vec![
+                ItemStack {
+                    base_form_id: potion,
+                    count: 2,
+                    instance: Some(potion_instance),
+                },
+                ItemStack {
+                    base_form_id: 0x1234,
+                    count: 1,
+                    instance: Some(equipment_instance),
+                },
+            ],
+        },
+    );
+    let mut equipment = EquipmentSlots::new();
+    equipment.equip(1 << 4, InventoryIndex(1));
+    source.insert(saved_player, equipment);
+    source.insert(saved_player, ActorVitals { health });
+    let mut values = ActorValues::from_pairs([(health, 100.0)]);
+    values.apply_damage(health, 60.0);
+    source.insert(saved_player, values);
+
+    for slot in 0..3 {
+        if slot > 0 {
+            assert_eq!(
+                crate::inventory::apply_action(
+                    &mut source,
+                    byroredux_debug_ui::InventoryAction::Consume {
+                        index: 0,
+                        form_id: potion
+                    }
+                ),
+                crate::inventory::MutationResult::Consumed
+            );
+        }
+        let output = SaveCommand.execute(&source, &slot.to_string());
+        assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+        assert!(output
+            .lines
+            .iter()
+            .any(|line| line.contains(&format!("saved slot {slot}"))));
+    }
+    assert_eq!(source.resource::<ItemInstancePool>().live_count(), 1);
+
+    let mut live = world(index, directory.path().to_owned());
+    {
+        live.spawn();
+        live.spawn();
+        live.spawn();
+        let live_player = player(&mut live);
+        assert_ne!(live_player, saved_player);
+        // Deliberately poison live state; every loaded value must replace it.
+        live.insert(live_player, ActorValues::from_pairs([(health, 999.0)]));
+        live.insert(live_player, ActorVitals { health });
+        live.insert(
+            live_player,
+            Inventory {
+                items: vec![ItemStack::new(potion, 99)],
+            },
+        );
+        live.insert(live_player, EquipmentSlots::new());
+        let mut live_pool = ItemInstancePool::new();
+        let stale = live_pool.allocate(ItemInstance::default());
+        assert_eq!(stale, potion_instance, "force arena-handle collision");
+        live.insert_resource(live_pool);
+    }
+
+    // Reuse the same world across backward, forward, and repeated loads. Each
+    // overlay must replace the state left by the preceding load and use action.
+    for slot in [2, 0, 1, 2, 2] {
+        let live_player = live.resource::<crate::systems::PlayerEntity>().0.unwrap();
+        // Opposite outgoing ownership must not select the wrong effect after
+        // load. 0x3131 controls the real FO3 BloodPack's 19-point bonus.
+        let mut outgoing = Perks::default();
+        if perk.is_none() {
+            outgoing.set_rank(0x3131, 1);
+        }
+        live.insert(live_player, outgoing);
+        let output = LoadCommand.execute(&live, &slot.to_string());
+        assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+        let snapshot = live
+            .resource_mut::<PendingSaveLoadSlot>()
+            .snapshot
+            .take()
+            .expect("disk load queued");
+        let registry = build_save_registry();
+        byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
+        byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+        let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
+        assert_eq!(remap.get(&saved_player), Some(&live_player));
+        byroredux_save::apply_deltas(
+            &mut live,
+            &registry,
+            &snapshot,
+            &remap,
+            MUTABLE_DELTA_COLUMNS,
+        )
+        .unwrap();
+        assert_eq!(
+            live.get::<Perks>(live_player)
+                .as_ref()
+                .map_or(0, |p| p.rank(perk.unwrap_or(0x3131))),
+            u8::from(perk.is_some())
+        );
+        let inventory = live.get::<Inventory>(live_player).unwrap();
+        assert_eq!(inventory.items.len(), 2);
+        assert_eq!(inventory.items[0].count, 2 - slot);
+        assert_eq!(
+            inventory.items[0].instance,
+            if slot == 2 {
+                None
+            } else {
+                Some(potion_instance)
+            }
+        );
+        assert_eq!(inventory.items[1].instance, Some(equipment_instance));
+        drop(inventory);
+        assert_eq!(
+            live.get::<ActorValues>(live_player)
+                .unwrap()
+                .current(health),
+            40.0 + slot as f32 * restoration
+        );
+        assert_eq!(
+            live.get::<EquipmentSlots>(live_player).unwrap().at(4),
+            Some(InventoryIndex(1))
+        );
+        assert_eq!(
+            live.resource::<ItemInstancePool>().live_count(),
+            if slot == 2 { 1 } else { 2 }
+        );
+        assert_eq!(
+            live.resource::<ItemInstancePool>()
+                .get(potion_instance)
+                .is_some(),
+            slot != 2
+        );
+        assert!(live
+            .resource::<ItemInstancePool>()
+            .get(equipment_instance)
+            .is_some());
+        // Loading itself must not re-emit the transient consumption message.
+        assert!(crate::notifications::drain(&live).is_empty());
+        let result = crate::inventory::apply_action(
+            &mut live,
+            byroredux_debug_ui::InventoryAction::Consume {
+                index: 0,
+                form_id: potion,
+            },
+        );
+        assert_eq!(
+            result,
+            if slot == 2 {
+                crate::inventory::MutationResult::Unavailable
+            } else {
+                crate::inventory::MutationResult::Consumed
+            }
+        );
+        let consumed = slot != 2;
+        assert_eq!(
+            live.get::<Inventory>(live_player).unwrap().items[0].count,
+            2 - slot - u32::from(consumed)
+        );
+        assert_eq!(
+            live.get::<ActorValues>(live_player)
+                .unwrap()
+                .current(health),
+            40.0 + (slot + u32::from(consumed)) as f32 * restoration
+        );
+        assert_eq!(
+            crate::notifications::drain(&live).len(),
+            usize::from(consumed)
+        );
+    }
+}
+
+#[test]
+fn consumable_health_inventory_and_arena_survive_disk_load_overlay() {
+    use byroredux_plugin::esm::reader::GameKind;
+    use byroredux_plugin::esm::records::{
+        AvifRecord, ItemKind, ItemRecord, MagicEffectItem, MgefRecord,
+    };
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
+    index.actor_values.insert(
+        1000,
+        AvifRecord {
+            form_id: 1000,
+            editor_id: "AVHealth".into(),
+            ..Default::default()
+        },
+    );
+    index.magic_effects.insert(
+        20,
+        MgefRecord {
+            instant_restoration_av: Some(24),
+            ..Default::default()
+        },
+    );
+    index.items.insert(
+        10,
+        ItemRecord {
+            form_id: 10,
+            common: Default::default(),
+            kind: ItemKind::Aid {
+                magic_effects: vec![20],
+                addiction_chance: 0.0,
+                authored_effects: None,
+                simple_consumption_header: true,
+                immediate_effects: Some(vec![MagicEffectItem {
+                    effect_form_id: 20,
+                    magnitude: 25.0,
+                    ..Default::default()
+                }]),
+            },
+        },
+    );
+    disk_round_trip(&index, 10, 25.0);
+}
+
+#[test]
+#[ignore = "requires installed Skyrim SE master"]
+fn real_skyrim_potion_survives_disk_load_overlay() {
+    let path = "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim.esm";
+    let index =
+        byroredux_plugin::esm::parse_esm(&std::fs::read(path).expect("Skyrim master required"))
+            .unwrap();
+    disk_round_trip(&index, 0x3EADD, 25.0);
+}
+
+#[test]
+#[ignore = "requires installed Fallout 3 master"]
+fn real_fallout3_water_survives_disk_load_overlay() {
+    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
+    let index =
+        byroredux_plugin::esm::parse_esm(&std::fs::read(path).expect("Fallout 3 master required"))
+            .unwrap();
+    assert_eq!(index.items[&0x151A3].common.editor_id, "WaterPurified");
+    // Conditional Stimpak effects must not be flattened into one restoration.
+    assert!(byroredux_plugin::consumables::instant_restorations(&index, 0x15169).is_none());
+    disk_round_trip(&index, 0x151A3, 20.0);
+    // BloodPack without its perk restores only the unconditional point.
+    disk_round_trip(&index, 0x34051, 1.0);
+    disk_round_trip_with_perk(&index, 0x34051, 20.0, Some(0x3131));
+}

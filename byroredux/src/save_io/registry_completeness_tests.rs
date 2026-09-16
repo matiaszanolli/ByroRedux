@@ -197,7 +197,6 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CharacterRuleset", "immutable game-profile rules, idempotently constructed on first cell load (byroredux/src/cell_loader/references/mod.rs), not at boot"),
         ("MeleeDamageConfig", "immutable Fallout combat tuning, idempotently constructed alongside CharacterRuleset on first cell load, not at boot; absent on games authoring no MeleeDamage AVIF (#3092)"),
         ("CharacterLevel", "known progression gap guarded by validate_progression_state: saves are refused once non-default XP/level state exists (#2947)"),
-        ("Perks", "stamped verbatim from NPC_.PRKR at spawn with no production mutator anywhere (npc_spawn.rs only; nothing calls set_rank/try_set_rank outside #[cfg(test)]) — NOT guarded by validate_progression_state, which inspects only CharacterLevel; register it the moment an AddPerk-style effect or perk-selection UI lands (#3491, corrects the #2947 cross-reference this reason previously shared with CharacterLevel)"),
         ("Background", "derived character-creation metadata with no live production mutator; re-created with the actor"),
         ("FactionReputation", "forward-latent: no production insertion or mutation site exists yet"),
         ("PoolRegenAccumulator", "fractional fixed-step carry only; canonical pool values live in saved ActorValues and carry is safely re-seeded"),

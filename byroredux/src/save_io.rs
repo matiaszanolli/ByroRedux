@@ -97,6 +97,9 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // global-space AVIF FormID (u32, stable across reload) with four `f32`
     // composition layers — no FixedString / EntityId / session handle.
     "ActorValues",
+    // Ranked perk FormIDs (u32) and ranks (u8) are session-stable. Its
+    // replacing registration also clears a saved absence on the live player.
+    "Perks",
     // Combat state is session-stable: the weapon points into the saved
     // Inventory by u32 index and Dead is a zero-field lifecycle marker.
     "EquippedWeapon",
@@ -380,6 +383,7 @@ pub fn build_save_registry() -> SaveRegistry {
         // reverted every edited/permanent/temporary/damage layer to the
         // re-derived spawn base. Also a MUTABLE_DELTA_COLUMN (delta-safe).
         .register_component::<ActorValues>("ActorValues")
+        .register_replacing_component::<byroredux_core::character::Perks>("Perks")
         // #3027 (SAVE-D1-2026-08-16-02) — registered (so a hand load of an
         // older save still resolves the column), but deliberately absent
         // from `MUTABLE_DELTA_COLUMNS` below: despite the name/field
@@ -391,7 +395,7 @@ pub fn build_save_registry() -> SaveRegistry {
         // column) using this FormID as the lookup key, not through this
         // struct. Mid-session health changes already survive a reload via
         // that path; this is write-once/re-derivable, the same shape as
-        // `CharacterLevel`/`Perks` below, just not listed in
+        // `CharacterLevel` below, just not listed in
         // `REDERIVED_NOT_SAVED` because it's plain-registered (not the
         // save-omitted case that allowlist tracks).
         .register_component::<ActorVitals>("ActorVitals")
@@ -1824,6 +1828,8 @@ pub fn execute_pending_save_loads(
 // `scene_buffer/*_tests.rs`). Contents moved verbatim.
 #[cfg(test)]
 mod command_queue_tests;
+#[cfg(test)]
+mod consumable_tests;
 #[cfg(test)]
 mod live_reload_tests;
 #[cfg(test)]

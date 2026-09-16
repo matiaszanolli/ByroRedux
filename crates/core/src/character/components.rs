@@ -30,6 +30,7 @@ impl Component for CharacterLevel {
 /// `u32` FormID's alignment — unavoidable without bit-packing, and not worth
 /// it for the handful of perks an actor holds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct PerkRank {
     pub perk_form_id: u32,
     pub rank: u8,
@@ -40,6 +41,7 @@ pub struct PerkRank {
 /// the occasional "owns perk X?" check is a linear scan over the few perks an
 /// actor holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Perks {
     pub entries: Vec<PerkRank>,
 }

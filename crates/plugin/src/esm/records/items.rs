@@ -13,6 +13,9 @@ use super::common::{remap_fid, CommonItemFields};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
+mod consumable;
+pub use consumable::ConsumableEffect;
+
 /// FNV `WEAP.VATS` — the per-weapon VATS inputs FO3/FO4 do not author here.
 ///
 /// #3324 — `ap_cost` used to be pinned to `0.0` for every FO3/FNV weapon
@@ -105,6 +108,15 @@ pub enum ItemKind {
     Aid {
         magic_effects: Vec<u32>,
         addiction_chance: f32,
+        /// Complete unconditional, immediate effects (Skyrim / FO3 / FNV).
+        /// None means consumption is unsupported, not an empty potion.
+        immediate_effects: Option<Vec<super::misc::MagicEffectItem>>,
+        /// Authored effect-local conditions, durations, and delivery, including
+        /// chains not yet executable. None means malformed/unsupported layout.
+        authored_effects: Option<Vec<ConsumableEffect>>,
+        /// Header permits simple consumption: no attached script, poison,
+        /// addiction or withdrawal. Effect capability must still be checked.
+        simple_consumption_header: bool,
     },
     /// KEYM: key — same as MISC but the engine treats it specially.
     Key,
@@ -939,8 +951,89 @@ pub fn parse_alch(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         kind: ItemKind::Aid {
             magic_effects,
             addiction_chance,
+            immediate_effects: None,
+            authored_effects: None,
+            simple_consumption_header: false,
         },
     }
+}
+
+/// Game-specific consumption data, separate from the legacy display-only parser.
+pub fn parse_alch_for_game(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> ItemRecord {
+    let mut item = parse_alch(form_id, subs, remap);
+    let authored = consumable::parse_effects(subs, game, remap);
+    let immediate = authored
+        .as_ref()
+        .filter(|effects| {
+            effects.iter().all(|entry| {
+                entry.conditions.is_empty()
+                    && entry.delivery.is_none_or(|delivery| delivery == 0)
+                    && entry.effect.magnitude > 0.0
+                    && entry.effect.area == 0
+                    && entry.effect.duration == 0
+            })
+        })
+        .map(|effects| {
+            effects
+                .iter()
+                .map(|entry| entry.effect.clone())
+                .collect::<Vec<_>>()
+        });
+    if let ItemKind::Aid {
+        authored_effects, ..
+    } = &mut item.kind
+    {
+        *authored_effects = authored;
+    }
+    if !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV)
+        || subs
+            .iter()
+            .any(|s| matches!(&s.sub_type, b"VMAD" | b"SCRI"))
+    {
+        return item;
+    }
+    let mut valid_header = false;
+    for sub in subs {
+        match &sub.sub_type {
+            b"ENIT" => {
+                if sub.data.len() < 20 {
+                    return item;
+                }
+                let mut r = SubReader::new(&sub.data);
+                r.skip_or_eof(4);
+                let flags = r.u32_or_default();
+                let addiction = r.u32_or_default();
+                let chance = r.f32_or_default();
+                // Fallout's flags are one byte plus three padding bytes (often
+                // 0xCD in shipping records), not Skyrim's 32-bit poison flags.
+                if (game == GameKind::Skyrim && flags & 0x20000 != 0)
+                    || addiction != 0
+                    || chance != 0.0
+                {
+                    return item;
+                }
+                valid_header = true;
+            }
+            _ => {}
+        }
+    }
+    if valid_header {
+        if let ItemKind::Aid {
+            immediate_effects,
+            simple_consumption_header,
+            ..
+        } = &mut item.kind
+        {
+            *immediate_effects = immediate;
+            *simple_consumption_header = true;
+        }
+    }
+    item
 }
 
 pub fn parse_ingr(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ItemRecord {

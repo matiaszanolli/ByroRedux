@@ -23,8 +23,8 @@ use crate::SaveError;
 ///
 /// Walks every registered component column and saved resource, dumps the
 /// `StringPool` in symbol order, and records `next_entity`. Empty
-/// component columns and absent resources are omitted to keep the file
-/// bounded by *live* state.
+/// additive component columns and absent resources are omitted. Replacing
+/// columns retain [] to express authoritative absence during live overlay.
 pub fn save_world(world: &World, registry: &SaveRegistry) -> Result<Snapshot, SaveError> {
     let strings = world
         .try_resource::<StringPool>()
@@ -36,10 +36,11 @@ pub fn save_world(world: &World, registry: &SaveRegistry) -> Result<Snapshot, Sa
         let value = save(world)?;
         // Skip empty columns — most registered types have no entities in
         // any given cell, and a `[]` per type bloats the file pointlessly.
-        if value
-            .as_array()
-            .map(|a| !a.is_empty())
-            .unwrap_or(!value.is_null())
+        if registry.component_keeps_empty(name)
+            || value
+                .as_array()
+                .map(|a| !a.is_empty())
+                .unwrap_or(!value.is_null())
         {
             components.insert(name.to_string(), value);
         }
@@ -342,8 +343,10 @@ pub fn build_form_id_remap(
 /// absent from the snapshot are skipped. Returns the total rows applied across
 /// columns.
 ///
-/// This overlay is **additive-only** — it can update or insert a row via
-/// `ApplyFn`, never remove one. Runtime removals that are consequences of a
+/// Ordinary registrations are **additive-only**. Explicit
+/// [`SaveRegistry::register_replacing_component`] registrations also remove
+/// the component from matched entities lacking a row in a present saved column.
+/// Runtime removals that are consequences of a
 /// persisted fact must therefore be rebuilt by the binary after this call.
 /// Death uses that model: `Dead` is overlaid here, then the shared combat
 /// reconciler removes respawned AI/animation state and reactivates ragdoll

@@ -24,6 +24,7 @@
 //! per-record modules whenever a non-obvious decode lands.
 
 pub mod datastore;
+pub mod consumables;
 pub mod equip;
 pub mod esm;
 pub mod extension;

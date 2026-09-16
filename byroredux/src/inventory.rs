@@ -72,6 +72,9 @@ pub(crate) struct InventoryItemDefinition {
 /// Process-local item lookup rebuilt whenever the plugin index is installed.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InventoryCatalog {
+    restorations: FxHashMap<u32, Vec<(u32, f32)>>,
+    conditional_restorations:
+        FxHashMap<u32, Vec<byroredux_plugin::consumables::ConditionalRestoration>>,
     entries: FxHashMap<u32, InventoryItemDefinition>,
     containers: rustc_hash::FxHashSet<u32>,
 }
@@ -123,6 +126,22 @@ impl Resource for PlayerInventoryTemplate {}
 /// Rebuild item presentation metadata and the base player's starting loadout
 /// from the resolved plugin index.
 pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
+    let restorations: FxHashMap<_, _> = index
+        .items
+        .keys()
+        .filter_map(|&id| {
+            byroredux_plugin::consumables::instant_restorations(index, id)
+                .map(|effects| (id, effects))
+        })
+        .collect();
+    let conditional_restorations: FxHashMap<_, _> = index
+        .items
+        .keys()
+        .filter_map(|&id| {
+            byroredux_plugin::consumables::conditional_restorations(index, id)
+                .map(|effects| (id, effects))
+        })
+        .collect();
     let entries = index
         .items
         .iter()
@@ -136,7 +155,16 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
             } else {
                 format!("Item {form_id:08X}")
             };
-            let (category, details, equip_target) = describe_kind(&item.kind);
+            let (category, mut details, equip_target) = describe_kind(&item.kind);
+            if matches!(item.kind, ItemKind::Aid { .. }) {
+                details = if restorations.contains_key(&form_id) {
+                    "Restores vital resources immediately".to_owned()
+                } else if conditional_restorations.contains_key(&form_id) {
+                    "Restores vital resources when its conditions are met".to_owned()
+                } else {
+                    "Consumable (effects unavailable)".to_owned()
+                };
+            }
             let (weapon_damage, weapon_reach, weapon_speed) = match &item.kind {
                 ItemKind::Weapon {
                     damage,
@@ -163,6 +191,8 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
         })
         .collect();
     world.insert_resource(InventoryCatalog {
+        restorations,
+        conditional_restorations,
         entries,
         containers: index.containers.keys().copied().collect(),
     });
@@ -532,6 +562,12 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
                 .as_ref()
                 .is_some_and(|slots| slots.is_equipped(InventoryIndex(index))),
             equippable: definition.is_some_and(|definition| definition.equip_target.is_some()),
+            consumable: catalog.as_ref().is_some_and(|catalog| {
+                catalog.restorations.contains_key(&stack.base_form_id)
+                    || catalog
+                        .conditional_restorations
+                        .contains_key(&stack.base_form_id)
+            }),
         });
     }
     items.sort_by(|left, right| {
@@ -549,17 +585,122 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MutationResult {
+    Consumed,
     Equipped,
     Unequipped,
     Unavailable,
 }
 
-/// Apply a native-menu equipment action to the canonical player components.
+/// Consume a fully supported item. Validate everything before mutation and
+/// leave a zero-count slot so equipment and UI indices never shift.
+fn consume_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
+    use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead};
+    use byroredux_core::ecs::resources::ItemInstancePool;
+    let Some(player) = world.try_resource::<PlayerEntity>().and_then(|r| r.0) else {
+        return MutationResult::Unavailable;
+    };
+    if world.get::<Dead>(player).is_some() {
+        return MutationResult::Unavailable;
+    }
+    let Some(stack) = world
+        .get::<Inventory>(player)
+        .and_then(|r| r.items.get(index as usize).copied())
+        .filter(|s| s.base_form_id == form_id && s.count > 0)
+    else {
+        return MutationResult::Unavailable;
+    };
+    if world
+        .get::<EquipmentSlots>(player)
+        .is_some_and(|r| r.is_equipped(InventoryIndex(index)))
+    {
+        return MutationResult::Unavailable;
+    }
+    let Some((effects, conditional, name)) =
+        world.try_resource::<InventoryCatalog>().and_then(|r| {
+            Some((
+                r.restorations.get(&form_id).cloned().unwrap_or_default(),
+                r.conditional_restorations
+                    .get(&form_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                r.entries.get(&form_id)?.name.clone(),
+            ))
+        })
+    else {
+        return MutationResult::Unavailable;
+    };
+    // Drop the catalog guard before the evaluator acquires component locks.
+    // Re-evaluate at use time: acquiring a perk must not require a cell reload.
+    let mut effects = effects;
+    let mut context = byroredux_scripting::condition::ConditionContext::for_subject(player);
+    context.target = Some(player); // ingestible target and caster are the user
+    for branch in conditional {
+        if byroredux_scripting::condition::evaluate(&branch.conditions, world, &context) {
+            effects.push((branch.actor_value, branch.magnitude));
+        }
+    }
+    let Some(health) = world.get::<ActorVitals>(player).map(|r| r.health) else {
+        return MutationResult::Unavailable;
+    };
+    let Some(values) = world.get::<ActorValues>(player) else {
+        return MutationResult::Unavailable;
+    };
+    if !values.current(health).is_finite()
+        || values.current(health) <= 0.0
+        || effects.is_empty()
+        || effects.iter().any(|(av, amount)| {
+            !amount.is_finite()
+                || *amount <= 0.0
+                || values
+                    .get(*av)
+                    .is_none_or(|v| !v.current().is_finite() || !v.damage.is_finite())
+        })
+    {
+        return MutationResult::Unavailable;
+    }
+    drop(values);
+    if stack.instance.is_some_and(|instance| {
+        world
+            .try_resource::<ItemInstancePool>()
+            .is_none_or(|pool| pool.get(instance).is_none())
+    }) {
+        return MutationResult::Unavailable;
+    }
+    // Exclusive World access prevents the preflighted components changing.
+    {
+        let values = world.get_mut::<ActorValues>(player).unwrap();
+        for (av, amount) in effects {
+            values.restore(av, amount);
+        }
+    }
+    let released = {
+        let inventory = world.get_mut::<Inventory>(player).unwrap();
+        let stack = &mut inventory.items[index as usize];
+        stack.count -= 1;
+        if stack.count == 0 {
+            stack.instance.take()
+        } else {
+            None
+        }
+    };
+    if let Some(instance) = released {
+        world.resource_mut::<ItemInstancePool>().release(instance);
+    }
+    crate::notifications::push(world, format!("Used {name}"));
+    MutationResult::Consumed
+}
+
+/// Apply a native-menu action to the canonical player components.
 pub(crate) fn apply_action(
     world: &mut World,
     action: byroredux_debug_ui::InventoryAction,
 ) -> MutationResult {
-    let byroredux_debug_ui::InventoryAction::ToggleEquip { index } = action;
+    if let byroredux_debug_ui::InventoryAction::Consume { index, form_id } = action {
+        return consume_item(world, index, form_id);
+    }
+    let byroredux_debug_ui::InventoryAction::ToggleEquip { index } = action else {
+        unreachable!()
+    };
     let Some(player) = world
         .try_resource::<PlayerEntity>()
         .and_then(|player| player.0)
@@ -724,6 +865,372 @@ fn reconcile_equipped_weapon(
 mod tests {
     use super::*;
 
+    fn restorative_fixture() -> (World, byroredux_core::ecs::EntityId) {
+        use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead};
+        let (mut world, player) = fixture();
+        world.register::<ActorValues>();
+        world.register::<ActorVitals>();
+        world.register::<Dead>();
+        let mut values = ActorValues::from_pairs([(1000, 100.0)]);
+        values.apply_damage(1000, 60.0);
+        world.insert(player, values);
+        world.insert(player, ActorVitals { health: 1000 });
+        world.get_mut::<Inventory>(player).unwrap().items[1].count = 2;
+        world
+            .resource_mut::<InventoryCatalog>()
+            .restorations
+            .insert(0x5678, vec![(1000, 25.0)]);
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+        (world, player)
+    }
+
+    #[test]
+    fn conditional_consumption_observes_perks_at_use_time() {
+        use byroredux_core::character::Perks;
+        use byroredux_core::ecs::components::ActorValues;
+        use byroredux_plugin::esm::reader::SubRecord;
+        use byroredux_plugin::esm::records::{parse_alch_for_game, AvifRecord, MgefRecord};
+        let (mut world, player) = restorative_fixture();
+        let mut index = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
+        index.actor_values.insert(
+            1000,
+            AvifRecord {
+                form_id: 1000,
+                editor_id: "AVHealth".into(),
+                ..Default::default()
+            },
+        );
+        index.magic_effects.insert(
+            20,
+            MgefRecord {
+                instant_restoration_av: Some(24),
+                ..Default::default()
+            },
+        );
+        let mut subs = vec![SubRecord {
+            sub_type: *b"ENIT",
+            data: vec![0; 20],
+        }];
+        for (magnitude, comparand) in [(10f32, 0f32), (30.0, 1.0)] {
+            let mut condition = vec![0; 32];
+            condition[4..8].copy_from_slice(&comparand.to_le_bytes());
+            condition[8..10].copy_from_slice(&448u16.to_le_bytes());
+            condition[12..16].copy_from_slice(&77u32.to_le_bytes());
+            condition[20..24].copy_from_slice(&1u32.to_le_bytes()); // target is consumer
+            subs.extend([
+                SubRecord {
+                    sub_type: *b"EFID",
+                    data: 20u32.to_le_bytes().to_vec(),
+                },
+                SubRecord {
+                    sub_type: *b"EFIT",
+                    data: [magnitude.to_le_bytes(), [0; 4], [0; 4]].concat(),
+                },
+                SubRecord {
+                    sub_type: *b"CTDA",
+                    data: condition,
+                },
+            ]);
+        }
+        index.items.insert(
+            0x5678,
+            parse_alch_for_game(0x5678, &subs, index.game, &None),
+        );
+        install_catalog(&mut world, &index);
+        let action = byroredux_debug_ui::InventoryAction::Consume {
+            index: 1,
+            form_id: 0x5678,
+        };
+        assert!(
+            snapshot(&world)
+                .unwrap()
+                .items
+                .iter()
+                .find(|i| i.index == 1)
+                .unwrap()
+                .consumable
+        );
+        assert_eq!(apply_action(&mut world, action), MutationResult::Consumed);
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(1000),
+            50.0
+        );
+        let mut perks = Perks::default();
+        perks.set_rank(77, 1);
+        world.insert(player, perks);
+        // Same catalog; runtime ownership selects the other branch.
+        assert_eq!(apply_action(&mut world, action), MutationResult::Consumed);
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(1000),
+            80.0
+        );
+        assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 0);
+        assert_eq!(crate::notifications::drain(&world).len(), 2);
+
+        // All-false conditions leave both inventory and health unchanged.
+        world.get_mut::<Inventory>(player).unwrap().items[1].count = 1;
+        world
+            .resource_mut::<InventoryCatalog>()
+            .conditional_restorations
+            .get_mut(&0x5678)
+            .unwrap()
+            .truncate(1);
+        assert_eq!(
+            apply_action(&mut world, action),
+            MutationResult::Unavailable
+        );
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(1000),
+            80.0
+        );
+        assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 1);
+        assert!(crate::notifications::drain(&world).is_empty());
+    }
+
+    #[test]
+    fn consuming_restores_damage_decrements_once_and_keeps_equipment_indices() {
+        use byroredux_core::ecs::components::ActorValues;
+        let (mut world, player) = restorative_fixture();
+        world
+            .get_mut::<EquipmentSlots>(player)
+            .unwrap()
+            .equip_weapon(InventoryIndex(2));
+        assert!(
+            snapshot(&world)
+                .unwrap()
+                .items
+                .iter()
+                .find(|i| i.index == 1)
+                .unwrap()
+                .consumable
+        );
+        let action = byroredux_debug_ui::InventoryAction::Consume {
+            index: 1,
+            form_id: 0x5678,
+        };
+        for health in [65.0, 90.0] {
+            assert_eq!(apply_action(&mut world, action), MutationResult::Consumed);
+            assert_eq!(
+                world.get::<ActorValues>(player).unwrap().current(1000),
+                health
+            );
+        }
+        assert_eq!(
+            apply_action(&mut world, action),
+            MutationResult::Unavailable
+        );
+        assert_eq!(world.get::<Inventory>(player).unwrap().items.len(), 3);
+        assert_eq!(
+            world.get::<EquipmentSlots>(player).unwrap().weapon,
+            Some(InventoryIndex(2))
+        );
+        assert_eq!(crate::notifications::drain(&world).len(), 2);
+    }
+
+    #[test]
+    fn unavailable_consumption_never_changes_health_or_count() {
+        use byroredux_core::ecs::components::{ActorValues, Dead};
+        for variant in 0..5 {
+            let (mut world, player) = restorative_fixture();
+            let mut form_id = 0x5678;
+            match variant {
+                0 => form_id = 0x1234, // stale UI identity
+                1 => {
+                    world.insert(player, Dead);
+                }
+                2 => {
+                    world
+                        .resource_mut::<InventoryCatalog>()
+                        .restorations
+                        .clear();
+                }
+                3 => {
+                    world
+                        .resource_mut::<InventoryCatalog>()
+                        .restorations
+                        .get_mut(&form_id)
+                        .unwrap()
+                        .push((9999, 10.0));
+                }
+                _ => {
+                    world
+                        .get_mut::<EquipmentSlots>(player)
+                        .unwrap()
+                        .equip_weapon(InventoryIndex(1));
+                }
+            }
+            assert_eq!(
+                apply_action(
+                    &mut world,
+                    byroredux_debug_ui::InventoryAction::Consume { index: 1, form_id }
+                ),
+                MutationResult::Unavailable
+            );
+            assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 2);
+            assert_eq!(
+                world.get::<ActorValues>(player).unwrap().current(1000),
+                40.0
+            );
+            assert!(crate::notifications::drain(&world).is_empty());
+        }
+    }
+
+    #[test]
+    fn consuming_invalid_instance_is_atomic() {
+        use byroredux_core::ecs::components::ActorValues;
+        use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+        for missing_pool in [false, true] {
+            for count in [1, 2] {
+                let (mut world, player) = restorative_fixture();
+                let mut pool = ItemInstancePool::new();
+                let id = pool.allocate(ItemInstance::default());
+                pool.release(id).unwrap();
+                if !missing_pool {
+                    world.insert_resource(pool);
+                }
+                {
+                    let inventory = world.get_mut::<Inventory>(player).unwrap();
+                    inventory.items[1].count = count;
+                    inventory.items[1].instance = Some(id);
+                }
+                assert_eq!(
+                    apply_action(
+                        &mut world,
+                        byroredux_debug_ui::InventoryAction::Consume {
+                            index: 1,
+                            form_id: 0x5678,
+                        },
+                    ),
+                    MutationResult::Unavailable,
+                    "missing_pool={missing_pool}, count={count}"
+                );
+                let inventory = world.get::<Inventory>(player).unwrap();
+                assert_eq!(inventory.items[1].count, count);
+                assert_eq!(inventory.items[1].instance, Some(id));
+                drop(inventory);
+                assert_eq!(
+                    world.get::<ActorValues>(player).unwrap().current(1000),
+                    40.0
+                );
+                assert!(crate::notifications::drain(&world).is_empty());
+                if !missing_pool {
+                    let mut pool = world.resource_mut::<ItemInstancePool>();
+                    assert_eq!(pool.live_count(), 0);
+                    assert_eq!(pool.allocate(ItemInstance::default()), id);
+                    assert_ne!(pool.allocate(ItemInstance::default()), id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn consuming_final_instance_releases_pool_and_never_overheals() {
+        use byroredux_core::ecs::components::ActorValues;
+        use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+        let (mut world, player) = restorative_fixture();
+        let mut pool = ItemInstancePool::new();
+        let id = pool.allocate(ItemInstance::default());
+        world.insert_resource(pool);
+        {
+            let inventory = world.get_mut::<Inventory>(player).unwrap();
+            inventory.items[1].count = 1;
+            inventory.items[1].instance = Some(id);
+        }
+        world
+            .resource_mut::<InventoryCatalog>()
+            .restorations
+            .insert(0x5678, vec![(1000, 9999.0)]);
+        assert_eq!(
+            apply_action(
+                &mut world,
+                byroredux_debug_ui::InventoryAction::Consume {
+                    index: 1,
+                    form_id: 0x5678
+                }
+            ),
+            MutationResult::Consumed
+        );
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(1000),
+            100.0
+        );
+        assert_eq!(world.resource::<ItemInstancePool>().live_count(), 0);
+        assert!(world.get::<Inventory>(player).unwrap().items[1]
+            .instance
+            .is_none());
+    }
+
+    #[test]
+    #[ignore = "requires installed Skyrim SE master"]
+    fn real_skyrim_healing_potion_runs_through_native_action() {
+        use byroredux_core::ecs::components::ActorValues;
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim.esm";
+        let index =
+            byroredux_plugin::esm::parse_esm(&std::fs::read(path).expect("Skyrim master required"))
+                .unwrap();
+        let (mut world, player) = restorative_fixture();
+        install_catalog(&mut world, &index);
+        world.get_mut::<Inventory>(player).unwrap().items[1] = ItemStack::new(0x3EADD, 1);
+        assert_eq!(
+            apply_action(
+                &mut world,
+                byroredux_debug_ui::InventoryAction::Consume {
+                    index: 1,
+                    form_id: 0x3EADD
+                }
+            ),
+            MutationResult::Consumed
+        );
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(1000),
+            65.0
+        );
+        assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 0);
+    }
+
+    #[test]
+    #[ignore = "requires installed Fallout 3 master"]
+    fn real_fallout3_bloodpack_selects_live_perk_bonus() {
+        use byroredux_core::character::Perks;
+        use byroredux_core::ecs::components::{ActorValues, ActorVitals};
+        let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
+        let index = byroredux_plugin::esm::parse_esm(
+            &std::fs::read(path).expect("Fallout 3 master required"),
+        )
+        .unwrap();
+        assert_eq!(index.items[&0x34051].common.editor_id, "BloodPack");
+        let health = index.health_actor_value_key().unwrap();
+        let (mut world, player) = restorative_fixture();
+        install_catalog(&mut world, &index);
+        world.get_mut::<Inventory>(player).unwrap().items[1] = ItemStack::new(0x34051, 2);
+        let mut values = ActorValues::from_pairs([(health, 100.0)]);
+        values.apply_damage(health, 60.0);
+        world.insert(player, values);
+        world.insert(player, ActorVitals { health });
+        let action = byroredux_debug_ui::InventoryAction::Consume {
+            index: 1,
+            form_id: 0x34051,
+        };
+        assert_eq!(apply_action(&mut world, action), MutationResult::Consumed);
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(health),
+            41.0
+        );
+        let mut perks = Perks::default();
+        perks.set_rank(0x3131, 1);
+        world.insert(player, perks);
+        assert_eq!(apply_action(&mut world, action), MutationResult::Consumed);
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(health),
+            61.0
+        );
+        assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 0);
+        assert_eq!(crate::notifications::drain(&world).len(), 2);
+    }
+
     fn fixture() -> (World, byroredux_core::ecs::EntityId) {
         let mut world = World::new();
         world.register::<Inventory>();
@@ -739,6 +1246,8 @@ mod tests {
         world.insert(player, EquipmentSlots::new());
         world.insert_resource(PlayerEntity(Some(player)));
         world.insert_resource(InventoryCatalog {
+            restorations: Default::default(),
+            conditional_restorations: Default::default(),
             containers: Default::default(),
             entries: FxHashMap::from_iter([
                 (
