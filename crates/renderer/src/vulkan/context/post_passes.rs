@@ -218,9 +218,10 @@ impl VulkanContext {
         frame: usize,
         img: usize,
         // #2468 — camera parked AND the scene unchanged. The caustic
-        // accumulator's EMA is the only consumer down here; SVGF and TAA
-        // reject stale history per pixel and keep the camera-only flag,
-        // which they read at their own upload sites in `draw.rs`.
+        // accumulator's EMA is the only consumer down here. SVGF consumes
+        // the same flag, through `next_svgf_temporal_alpha`, at its param
+        // upload in `build_and_upload_instances.rs` (#4046); TAA takes no
+        // static flag at all.
         caustic_history_valid: bool,
         camera_pos: [f32; 3],
         render_origin: byroredux_core::math::Vec3,

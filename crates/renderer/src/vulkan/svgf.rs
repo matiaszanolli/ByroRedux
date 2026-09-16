@@ -306,8 +306,11 @@ pub struct SvgfTemporalParams {
     /// xy = screen size (pixels), zw = 1/screen size.
     pub screen: [f32; 4],
     /// x = α color blend, y = α moments blend, z = first_frame flag
-    /// (1.0 = reset history), w = camera_static flag (1.0 = drop the alpha
-    /// floor and converge via the 1/N running average).
+    /// (1.0 = reset history), w = progressive-accumulation flag (1.0 = drop
+    /// the alpha floor and converge via the 1/N running average): camera
+    /// parked AND light rig / scene unchanged, with no recovery window open
+    /// — [`SvgfTemporalDecision::progressive_accumulation`], not the bare
+    /// camera-static flag (#3995, #4046).
     pub params: [f32; 4],
 }
 
@@ -1124,7 +1127,7 @@ impl SvgfPipeline {
         frame: usize,
         alpha_color: f32,
         alpha_moments: f32,
-        camera_static: bool,
+        progressive_accumulation: bool,
     ) -> Result<()> {
         // #648 / RP-2 — force a full history reset for the first
         // `MAX_FRAMES_IN_FLIGHT` frames after creation or
@@ -1154,17 +1157,18 @@ impl SvgfPipeline {
             // turn) gives a coarse-grained recovery the per-pixel
             // weights complement. See #674 / DEN-4.
             //
-            // params.w = progressive-accumulation flag. When the camera is
-            // static (view-proj unchanged frame-to-frame) the temporal pass
-            // drops the alpha floor and converges via the pure 1/N running
-            // average (Monte-Carlo accumulation) for a clean ground-truth
-            // parked-camera image; it reverts to the floored EMA the moment
-            // the camera moves.
+            // params.w = progressive-accumulation flag. While the camera is
+            // parked AND the light rig / scene is unchanged, with no
+            // recovery window open (`next_svgf_temporal_alpha`), the temporal
+            // pass drops the alpha floor and converges via the pure 1/N
+            // running average (Monte-Carlo accumulation) for a clean
+            // ground-truth image; it reverts to the floored EMA the frame
+            // any of those stops holding.
             params: [
                 alpha_color,
                 alpha_moments,
                 first_frame,
-                if camera_static { 1.0 } else { 0.0 },
+                if progressive_accumulation { 1.0 } else { 0.0 },
             ],
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))
@@ -1721,10 +1725,52 @@ mod tests {
         );
     }
 
+    /// #4305 — `params.w` is the progressive-accumulation decision, not the
+    /// camera-static flag. #4046 renamed only `next_svgf_temporal_alpha`'s
+    /// parameter; every downstream description kept the camera-only meaning.
+    #[test]
+    fn params_w_is_documented_as_the_progressive_accumulation_decision() {
+        let bare = concat!("camera", "_static");
+        let module = include_str!("svgf.rs");
+        let production = module.split_once("#[cfg(test)]").expect("tests follow").0;
+        let upload = production
+            .split_once("pub unsafe fn upload_params(")
+            .expect("upload_params")
+            .1;
+        let upload = &upload[..upload.find("\n    }\n").expect("fn end")];
+        assert!(upload.contains("progressive_accumulation: bool"));
+        assert!(
+            !upload.contains(bare),
+            "upload_params must not describe params.w as {bare}"
+        );
+
+        let shader = include_str!("../../shaders/svgf_temporal.comp");
+        assert!(!shader.contains(&format!("w = {bare}")));
+        assert!(!shader.contains(&format!("params.w = {}", concat!("camera", "-static"))));
+        assert!(
+            !shader.contains("converges slowly"),
+            "#4046 removed the parked lighting lag"
+        );
+
+        let post = include_str!("context/post_passes.rs");
+        let doc = post
+            .split_once("fn record_post_passes(")
+            .expect("record_post_passes")
+            .1
+            .split_once("caustic_history_valid: bool")
+            .expect("parameter")
+            .0;
+        assert!(doc.contains("build_and_upload_instances.rs") && !doc.contains("draw.rs"));
+
+        // ...and the call site really does pass the decision.
+        let caller = include_str!("context/build_and_upload_instances.rs");
+        assert!(caller.contains("decision.progressive_accumulation,"));
+    }
+
     /// #3995 — a live recovery window must win over the camera-static
     /// progressive-accumulation drop.
     ///
-    /// The four α tests above all pass `camera_static = false`, and every one
+    /// The four α tests above all pass `scene_static = false`, and every one
     /// of them passed while the shader was throwing the returned α away: the
     /// floor select is `params.w > 0.5 ? 0.0 : params.x`, so a parked camera
     /// discarded the recovery α entirely and fell back to
@@ -1735,7 +1781,7 @@ mod tests {
     /// Testing the interaction rather than either half is the point: neither
     /// value was individually wrong.
     #[test]
-    fn a_live_recovery_window_outranks_the_camera_static_drop() {
+    fn a_live_recovery_window_outranks_the_progressive_accumulation_drop() {
         // Parked camera, window open: the α must survive, which means the
         // progressive-accumulation flag must be off.
         let d = next_svgf_temporal_alpha(5, true);
