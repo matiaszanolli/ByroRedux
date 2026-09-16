@@ -62,6 +62,16 @@
 //!   `table_offset` onward) is high-entropy, evidently bit-packed data —
 //!   still uncracked. No occlusion-volume or CPU coarse-cull consumer
 //!   exists yet either way. See EX-14/15 item C3 (#3810, split from #2369).
+//!
+//!   2026-09-15 adds the one thing a cull consumer needs before the
+//!   payload: **which cell a previs file is for, and what it covers.**
+//!   Every file was resolved to a real `CELL` in its own plugin, and an
+//!   exterior file's AABB is exactly the owning cell's 3×3 neighbourhood on
+//!   the 4 096-unit grid (1 095/1 095, centre cell equal to `XCLC`), while
+//!   interiors are a content bound (318/318).
+//!   `UvdHeader::exterior_cell_grid` returns that coordinate from the file
+//!   alone. A coarse cull can therefore already reject a whole previs set by
+//!   cell distance without decoding a single visibility bit.
 
 use byroredux_bsa::CsgArchive;
 use byroredux_core::ecs::components::{PrecombinedMesh, RenderLayer};

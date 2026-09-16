@@ -76,11 +76,54 @@
 //! stream, a research problem of comparable shape to the Havok
 //! `hknpCompressedMeshShapeData` blocker in #3809.
 //!
-//! Also still open: cross-referencing `bounds` against the owning CELL's
-//! own extents from a parsed `Fallout4.esm`. The disproof of tile
-//! quantisation above means the box is a tight content bound rather than a
-//! grid-aligned cell volume, which makes that comparison more informative
-//! than it would have been, not less.
+//! `bounds` **is** the owning cell's neighbourhood (2026-09-15, #3810).
+//! Every one of the 1 413 files was resolved to a real `CELL` record in its
+//! own plugin (`Fallout4.esm` plus the three DLC masters), reading `DATA`'s
+//! interior bit and `XCLC`'s grid coordinate, and the box splits cleanly on
+//! that bit:
+//!
+//! - **Exterior cells, 1 095/1 095.** `bounds` on X and Y is exactly a 3×3
+//!   block of 4 096-unit exterior cells — both corners whole multiples of
+//!   4 096, both extents exactly `3 * 4096` — and the block's **centre cell
+//!   is the owning CELL's own `XCLC`**, with zero mismatches. Previs for a
+//!   cell therefore covers that cell plus its eight neighbours, which is the
+//!   footprint a PVS needs to answer "what is visible from anywhere the
+//!   player can stand in this cell".
+//! - **Interior cells, 318/318.** Never a grid-aligned block — the tight
+//!   content bound the earlier pass described.
+//!
+//! This **corrects** the earlier reading that the box is "a tight content
+//! bound rather than a grid-aligned cell volume": that holds for interiors
+//! only. It also explains the rejected tile-quantisation relation above —
+//! its 715/1 413 is essentially the exterior subset, and the relation was
+//! tested against the wrong unit (512, the tile, rather than 4 096, the
+//! cell) and across all six components including the vertical, which is a
+//! genuine content extent on both cell kinds.
+//!
+//! Index 2 is the vertical axis (Gamebryo Z-up, unconverted) and is a
+//! content extent on exteriors too — only X and Y are grid-quantised.
+//!
+//! [`UvdHeader::exterior_cell_grid`] exposes this, so a consumer can key
+//! previs to a cell coordinate from the file alone, without a parsed ESM.
+//!
+//! **Narrowed, not determined** — the `0x2C..0xB0` section directory. Read
+//! as a count at `0x40` shared by sections starting at `0x44`, `0x48`,
+//! `0x50` and `0xA0`, each padded up to a 16-byte boundary, three strides
+//! fall out:
+//!
+//! - `align16(0x50 +  4 * count) == 0xA0` — 1 410/1 413.
+//! - `align16(0x44 + 24 * count) == 0x48` — 979/1 413.
+//! - `align16(0x48 + 32 * count) == 0x50` — 979/1 413, the same 979 files.
+//!
+//! Two independent strides agreeing on the same 979 files is what makes
+//! this more than arithmetic coincidence, but 434 files do not fit, and 167
+//! of those miss by a *constant* `(-680, +400)` — a second layout variant
+//! rather than noise. That variant does not track the archive a file came
+//! from (both groups appear in `Fallout4 - MeshesExtra.ba2` and in
+//! `DLCCoast`), so whatever selects it is in the content, not the bake.
+//! Deliberately not encoded below: a relation that fails on a third of the
+//! corpus is a lead, not a layout. `examples/probe_uvd_corpus.rs` re-runs
+//! all of these figures.
 
 use std::io;
 
@@ -138,6 +181,53 @@ pub struct UvdHeader {
     /// `0xB0..0x100`, byte-identical across the whole corpus (a build
     /// tool/version string, not per-cell content).
     pub debug_string: String,
+}
+
+/// Side of one Fallout 4 exterior cell, in game units. An exterior `.uvd`'s
+/// bounds are a whole number of these on X and Y.
+pub const EXTERIOR_CELL_UNITS: f32 = 4096.0;
+
+/// Cells per side of the block an exterior `.uvd`'s bounds span — the owning
+/// cell plus its eight neighbours, confirmed on all 1 095 exterior files.
+pub const PREVIS_BLOCK_CELLS: i32 = 3;
+
+impl UvdHeader {
+    /// The grid coordinate of the cell this previs belongs to, recovered from
+    /// [`Self::bounds_min`] alone, or `None` for an interior cell.
+    ///
+    /// Exterior `.uvd` bounds are a 3×3 block of 4 096-unit cells whose centre
+    /// is the owning `CELL`'s `XCLC`; an interior's are a content bound with
+    /// no grid relation at all. Returning `Option` rather than a bare
+    /// coordinate is what keeps a caller from reading a meaningless grid
+    /// position off an interior — the two cases are indistinguishable by eye
+    /// in the raw floats but exactly distinguishable by this test, which is
+    /// why the shape check and the coordinate are one call.
+    ///
+    /// Verified against every `CELL` in `Fallout4.esm` and the three DLC
+    /// masters: 1 095/1 095 exteriors agree with `XCLC`, 318/318 interiors
+    /// are rejected. See the module doc.
+    pub fn exterior_cell_grid(&self) -> Option<(i32, i32)> {
+        let span = PREVIS_BLOCK_CELLS as f32 * EXTERIOR_CELL_UNITS;
+        let mut grid = [0i32; 2];
+        for (axis, slot) in grid.iter_mut().enumerate() {
+            let (min, max) = (self.bounds_min[axis], self.bounds_max[axis]);
+            // `%` on a non-finite float yields NaN, and NaN fails every
+            // comparison — including the `!= 0.0` below, which would then
+            // read as "aligned". The finiteness check has to be explicit.
+            if !min.is_finite() || !max.is_finite() {
+                return None;
+            }
+            if min % EXTERIOR_CELL_UNITS != 0.0 || max - min != span {
+                return None;
+            }
+            // One cell in from the block's corner. `floor`, not `as i32`,
+            // because the Commonwealth's grid runs negative and `as` would
+            // truncate toward zero — landing a cell out on every cell west
+            // or south of the origin.
+            *slot = (min / EXTERIOR_CELL_UNITS).floor() as i32 + PREVIS_BLOCK_CELLS / 2;
+        }
+        Some((grid[0], grid[1]))
+    }
 }
 
 /// Parse a `.uvd` file's outer envelope. Returns `Err` on magic
@@ -199,7 +289,8 @@ pub fn parse_uvd_header(data: &[u8]) -> io::Result<UvdHeader> {
     // clippy::neg_cmp_op_on_partial_ord (#4090) — equivalent (a NaN on
     // either side must reject, same as the negated form), reads as the
     // deliberate degenerate-bounds guard it is instead of a double-negative.
-    if (0..3).any(|i| bounds_min[i].is_nan() || bounds_max[i].is_nan() || bounds_min[i] >= bounds_max[i])
+    if (0..3)
+        .any(|i| bounds_min[i].is_nan() || bounds_max[i].is_nan() || bounds_min[i] >= bounds_max[i])
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -264,6 +355,58 @@ mod tests {
     /// field from its actual bytes.
     fn real_smallest_sample() -> Vec<u8> {
         build_synthetic_uvd([1024.0, 1536.0, 0.0], [2560.0, 2560.0, 1024.0], 336, 1)
+    }
+
+    /// #3810 — an exterior file's bounds recover the owning cell's `XCLC`.
+    ///
+    /// The numbers are a real corpus file's: the previs for the cell at grid
+    /// `(3, 3)` spans `8192..20480` on both axes, i.e. cells 2 through 4,
+    /// centred on 3. Recovering `(3, 3)` from that is the whole relation — it
+    /// held on 1 095/1 095 exterior files against a parsed `Fallout4.esm`
+    /// plus the three DLC masters.
+    #[test]
+    fn exterior_bounds_recover_the_owning_cell_grid() {
+        let blob = build_synthetic_uvd(
+            [8192.0, 8192.0, -1664.0],
+            [20480.0, 20480.0, 8192.0],
+            336,
+            1,
+        );
+        let hdr = parse_uvd_header(&blob).expect("parse");
+        assert_eq!(hdr.exterior_cell_grid(), Some((3, 3)));
+        // Negative coordinates are the common case in the Commonwealth, and a
+        // plain `as i32` cast truncates toward zero — this case is what makes
+        // the `floor` in the accessor load-bearing rather than decorative.
+        let blob = build_synthetic_uvd(
+            [-16384.0, -4096.0, -1024.0],
+            [-4096.0, 8192.0, 8192.0],
+            336,
+            1,
+        );
+        let hdr = parse_uvd_header(&blob).expect("parse");
+        assert_eq!(hdr.exterior_cell_grid(), Some((-3, 0)));
+    }
+
+    /// An interior's bounds are a content box with no grid meaning, and the
+    /// two kinds are indistinguishable by eye in the raw floats. Reading a
+    /// coordinate off one would key previs to a cell on the other side of the
+    /// map, so the shape check has to reject rather than round.
+    #[test]
+    fn interior_bounds_have_no_cell_grid() {
+        // Grid-aligned corner, wrong span — an interior that happens to start
+        // on a cell boundary must still be rejected.
+        let blob = build_synthetic_uvd([4096.0, 4096.0, 0.0], [8192.0, 8192.0, 512.0], 336, 1);
+        assert_eq!(parse_uvd_header(&blob).unwrap().exterior_cell_grid(), None);
+        // Right span, unaligned corner.
+        let blob = build_synthetic_uvd([1000.0, 1000.0, 0.0], [13288.0, 13288.0, 512.0], 336, 1);
+        assert_eq!(parse_uvd_header(&blob).unwrap().exterior_cell_grid(), None);
+        // The real smallest-file sample is an interior.
+        assert_eq!(
+            parse_uvd_header(&real_smallest_sample())
+                .unwrap()
+                .exterior_cell_grid(),
+            None
+        );
     }
 
     #[test]
