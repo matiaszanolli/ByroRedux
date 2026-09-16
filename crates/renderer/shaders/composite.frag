@@ -88,12 +88,15 @@ layout(set = 0, binding = 5) uniform usampler2DArray causticTex; // RGB in three
 // M55 Phase 4: volumetric froxel volume (RGBA16F).
 //   rgb = inscatter radiance (HDR linear, pre-tone-map)
 //   a   = extinction coefficient (1 / m)
-// Sampled per-fragment with a 32-step ray-march for the in-scatter +
-// transmittance modulation applied to `combined` before ACES.
+// Read per fragment by `sampleVolumetricColumn`: a depth-weighted 2×2
+// bilateral column tap with one linear blend between the bracketing Z
+// slices (the integration pass has already marched each column), and the
+// in-scatter + transmittance applied to `combined`. This shader's output is
+// linear HDR; tone mapping happens later, in `presentation.frag` (#4306).
 layout(set = 0, binding = 6) uniform sampler3D volumetricFroxel;
-// M58: bloom output mip 0 (B10G11R11_UFLOAT, half-screen). Sampled
-// at full screen resolution with bilinear hardware filtering;
-// added to `combined` before ACES per Frostbite §8.
+// M58: bloom output mip 0 (B10G11R11_UFLOAT, half-screen). Declared but
+// UNUSED here since #2796: `bloom_apply.comp` adds bloom to this pass's
+// output after it runs (see the M58 note at the end of `main`).
 layout(set = 0, binding = 7) uniform sampler2D bloomTex;
 // #1257 / Phase E of #1210 — water-side caustic accumulator (R32_UINT,
 // NEAREST sampler per the existing integer-format-sampling rule
@@ -508,7 +511,7 @@ void main() {
             + direct
             + skyIndirect * skyAlbedo;
     } else {
-        // Geometry pixel: combine direct + (indirect × albedo) and tone map.
+        // Geometry pixel: combine direct + (indirect × albedo) + caustics.
         // The shader wrote lighting-only indirect (no local albedo) so
         // SVGF operates on a texture-free signal; multiply here to
         // re-apply surface color. See #268.
@@ -575,7 +578,7 @@ void main() {
     float fogTransmittance = 1.0;
     vec4 sampledVolume = vec4(0.0, 0.0, 0.0, 1.0);
 
-    // M55 Phase 3 — volumetric modulation via single sampler3D tap.
+    // M55 Phase 3 — volumetric modulation via `sampleVolumetricColumn`.
     // The volumetric pipeline pre-integrates `(∫inscatter, T_cum)`
     // along the view ray per froxel column in a compute pass; here
     // we just look up the value at the fragment's depth slice and

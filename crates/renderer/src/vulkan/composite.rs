@@ -1813,3 +1813,40 @@ mod composite_params_layout_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod composite_frag_doc_tests {
+    /// #4306 — composite.frag's binding comments once described a 32-step
+    /// froxel march, a pre-ACES bloom add and a tone map. None of the three
+    /// happens here: the froxel read is `sampleVolumetricColumn`, bloom is
+    /// added afterwards by `bloom_apply.comp`, and tone mapping lives in
+    /// `presentation.frag`. Pin both the prose and the facts behind it.
+    #[test]
+    fn composite_frag_comments_match_what_the_shader_does() {
+        let shader = include_str!("../../shaders/composite.frag");
+        for stale in ["32-step", "before ACES", "and tone map"] {
+            assert!(
+                !shader.contains(stale),
+                "stale composite.frag claim {stale:?}"
+            );
+        }
+        let code: String = shader
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            code.contains("sampleVolumetricColumn("),
+            "the froxel read must still go through the column tap"
+        );
+        assert!(
+            !code.contains("(bloomTex"),
+            "binding 7 is documented as declared-but-unused (#2796)"
+        );
+        assert!(
+            !code.contains("aces("),
+            "tone mapping is documented as presentation.frag's job"
+        );
+        assert!(include_str!("../../shaders/presentation.frag").contains("vec3 aces(vec3 x)"));
+    }
+}
