@@ -22,16 +22,17 @@
 #             Every phase captures a PNG and gates the live clock, environment,
 #             pre-tonemap finite counter, and canonical water ownership without
 #             restarting the world or resetting its resources.
-#   water     fixed real-data waterline poses for Skyrim and FNV. Captures one
-#             frame above and one below the same authored surface, then gates
-#             WATR provenance, canonical volume membership, current provenance,
+#   water     fixed real-data waterline poses per profile. Captures one
+#             frame above and one below the same authored surface (plus the
+#             ungated `water_term` / `water_normal` oracle views at the surface
+#             pose), then gates WATR provenance, canonical volume membership, current provenance,
 #             image health, and a material above/below visual delta (EX-13/W0).
 #
 # Usage:
 #   docs/smoke-tests/m-exteriors.sh [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle|water]
 #
-# `water` currently supports `fnv`, `skyrim`, or `all` (the two frozen W0
-# fixtures); `all water` intentionally means those two profiles.
+# Every profile has a frozen `water` fixture (FNV/Skyrim since W0; FO3,
+# Oblivion and FO4 since W2).
 #
 # Useful overrides:
 #   BYROREDUX_SMOKE_FRAMES=10
@@ -150,7 +151,7 @@ run_profile () {
     local debug_log="$profile_dir/debug.log"
     local screenshot="$profile_dir/frame.png"
     local command_file="$profile_dir/command.txt"
-    local water_surface_pos="" water_submerged_pos="" water_look=""
+    local water_surface_pos="" water_submerged_pos="" water_look="" water_under_look=""
     local water_source="" water_requires_flow=0
     if [[ "$MODE" == water ]]; then
         case "$label" in
@@ -164,18 +165,57 @@ run_profile () {
                 water_source="0x001009CA"
                 ;;
             skyrim)
-                # BleakfallsBarrowPath: authored RiverWater tile, surface Y=-250.
-                water_surface_pos="14976 -100 42000"
-                water_submerged_pos="14976 -400 42000"
+                # White River below Riverwood, authored RiverWaterFlowNE tile at
+                # (5,-10), surface Y=-250. The former (3,-11) pose was frozen
+                # while the LAND wet mask was mirrored north-south (09432157a);
+                # that column is dry rock. Every pose below is chosen with
+                # `water_fixture_probe` (plugin example): the whole 3x3 LAND
+                # neighbourhood sits at least this far below the surface.
+                water_surface_pos="22016 -50 40576"
+                water_submerged_pos="22016 -380 40576"
                 water_look="0 -15"
                 water_source="0x000E717C"
                 water_requires_flow=1
+                ;;
+            fo3)
+                # Potomac at Wasteland (10,-9): explicit XCLW 10500, WATR
+                # inherited from the WRLD (NAM2), open water >= 644 deep.
+                water_surface_pos="44416 10700 34432"
+                water_submerged_pos="44416 10250 34432"
+                water_look="45 -12"
+                # Underwater fog far is 700 BU: a downward view is uniformly
+                # fogged, so look up through Snell's window instead (steeper
+                # than ~41 degrees; shallower rays totally internally reflect
+                # the riverbed back).
+                water_under_look="45 70"
+                water_source="0x00030009"
+                ;;
+            oblivion)
+                # Tamriel (13,7): NAM2-only worldspace, sea level Z=0 by the
+                # Oblivion GameVariant, open water >= 1352 deep.
+                water_surface_pos="54400 200 -32384"
+                water_submerged_pos="54400 -300 -32384"
+                water_look="45 -12"
+                water_source="0x00000018"
+                ;;
+            fo4)
+                # Commonwealth (-4,11): explicit CELL XCWT ExtLakeWater, surface
+                # Y=750, open water >= 590 deep.
+                water_surface_pos="-12416 950 -46592"
+                water_submerged_pos="-12416 500 -46592"
+                water_look="45 -12"
+                # ExtLakeWater authors underwater fog -6400..1700: nearly
+                # opaque from the eye outward, so look up through Snell's
+                # window at the sky instead.
+                water_under_look="45 70"
+                water_source="0x000C8633"
                 ;;
             *)
                 echo "exterior-smoke[$label]: HARD FAIL - no frozen water fixture for this profile"
                 return 1
                 ;;
         esac
+        : "${water_under_look:=$water_look}"
     fi
     local bench_args=(--bench-frames "$BENCH_FRAMES" --bench-hold --screenshot "$screenshot" --upscaler taa)
     if [[ "$MODE" == boundary ]]; then
@@ -265,7 +305,13 @@ input.look $water_look
 water.dump
 r.health
 screenshot $profile_dir/water-surface.png
+render.debug water_term
+screenshot $profile_dir/water-term.png
+render.debug water_normal
+screenshot $profile_dir/water-normal.png
+render.debug final
 cam.pos $water_submerged_pos
+input.look $water_under_look
 water.dump
 r.health
 screenshot $profile_dir/water-underwater.png
@@ -757,8 +803,13 @@ fo3_run () {
     profile_ready fo3 "$esm" "$meshes" "$textures" || return 0
     # MegatonWorld (0,0) is a valid empty dummy CELL. (-1,-7) is the
     # populated MegatonPlaza foreground and is intentionally the smoke gate.
-    run_profile fo3 "$FO3_DATA" MegatonWorld -1,-7 2000 700 \
-        --esm "$esm" --grid -1,-7 --radius 1 --wrld MegatonWorld \
+    local world="MegatonWorld" grid="-1,-7"
+    if [[ "$MODE" == water ]]; then
+        world="Wasteland"
+        grid="10,-9"
+    fi
+    run_profile fo3 "$FO3_DATA" "$world" "$grid" 2000 700 \
+        --esm "$esm" --grid "$grid" --radius 1 --wrld "$world" \
         --bsa "$meshes" --textures-bsa "$textures"
 }
 
@@ -767,8 +818,12 @@ oblivion_run () {
     local meshes="$OBLIVION_DATA/Oblivion - Meshes.bsa"
     local textures="$OBLIVION_DATA/Oblivion - Textures - Compressed.bsa"
     profile_ready oblivion "$esm" "$meshes" "$textures" || return 0
-    run_profile oblivion "$OBLIVION_DATA" Tamriel 0,0 3500 1300 \
-        --esm "$esm" --grid 0,0 --radius 1 --wrld Tamriel \
+    local grid="0,0"
+    if [[ "$MODE" == water ]]; then
+        grid="13,7"
+    fi
+    run_profile oblivion "$OBLIVION_DATA" Tamriel "$grid" 3500 1300 \
+        --esm "$esm" --grid "$grid" --radius 1 --wrld Tamriel \
         --bsa "$meshes" --textures-bsa "$textures"
 }
 
@@ -786,10 +841,13 @@ skyrim_run () {
     profile_ready skyrim "${required[@]}" || return 0
 
     local grid="2,-4"
-    if [[ "$MODE" == cycle || "$MODE" == water ]]; then
+    if [[ "$MODE" == cycle ]]; then
         # BleakfallsBarrowPath: the established WATAL water-adjacent streaming
         # fixture. Static/population baselines retain their historical grid.
         grid="2,-10"
+    elif [[ "$MODE" == water ]]; then
+        # Riverwood / White River, shared with the W1 traversal fixture.
+        grid="4,-11"
     fi
     local args=(--esm "$esm" --grid "$grid" --radius 1 --wrld Tamriel)
     args+=(--bsa "$SKYRIM_DATA/Skyrim - Meshes0.bsa")
@@ -815,7 +873,11 @@ fo4_run () {
     done
     profile_ready fo4 "${required[@]}" || return 0
 
-    local args=(--esm "$esm" --grid 0,0 --radius 1 --wrld Commonwealth)
+    local grid="0,0"
+    if [[ "$MODE" == water ]]; then
+        grid="-4,11"
+    fi
+    local args=(--esm "$esm" --grid "$grid" --radius 1 --wrld Commonwealth)
     args+=(--bsa "$FO4_DATA/Fallout4 - Meshes.ba2")
     args+=(--bsa "$FO4_DATA/Fallout4 - MeshesExtra.ba2")
     for archive in "$FO4_DATA"/Fallout4\ -\ Textures{1..9}.ba2; do
@@ -823,7 +885,7 @@ fo4_run () {
     done
     args+=(--textures-bsa "$FO4_DATA/Fallout4 - TexturesPatch.ba2")
     args+=(--materials-ba2 "$FO4_DATA/Fallout4 - Materials.ba2")
-    run_profile fo4 "$FO4_DATA" Commonwealth 0,0 30000 12000 "${args[@]}"
+    run_profile fo4 "$FO4_DATA" Commonwealth "$grid" 30000 12000 "${args[@]}"
 }
 
 total_rc=0
@@ -839,14 +901,10 @@ case "$GAME" in
     fo4)       run_selected fo4_run ;;
     all)
         run_selected fnv_run
-        if [[ "$MODE" != water ]]; then
-            run_selected fo3_run
-            run_selected oblivion_run
-        fi
+        run_selected fo3_run
+        run_selected oblivion_run
         run_selected skyrim_run
-        if [[ "$MODE" != water ]]; then
-            run_selected fo4_run
-        fi
+        run_selected fo4_run
         ;;
     *)
         echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle|water]"
