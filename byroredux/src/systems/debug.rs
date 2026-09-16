@@ -74,7 +74,8 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
     format!(
         "main_render={} depth_history_copy={} tlas={} svgf={} composite={} cluster_cull={} \
          ssao={} bloom={} caustic={} volumetrics={} skin={} blas_refit={} \
-         taa={} skin_palette={} upscale={} presentation={} sky_cube={}",
+         taa={} skin_palette={} upscale={} presentation={} sky_cube={} \
+         groundcover_scatter={}",
         ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
         ms(
             cov.gpu_depth_history_copy_ms,
@@ -95,6 +96,10 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
         ms(cov.gpu_upscale_ms, cov.gpu_upscale_active),
         ms(cov.gpu_presentation_ms, cov.gpu_presentation_active),
         ms(cov.gpu_sky_cube_ms, cov.gpu_sky_cube_active),
+        ms(
+            cov.gpu_groundcover_scatter_ms,
+            cov.gpu_groundcover_scatter_active,
+        ),
     )
 }
 

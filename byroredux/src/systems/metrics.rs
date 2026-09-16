@@ -211,6 +211,13 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
             "sky_cube".to_string(),
             gpu_bracket_ms(cov.gpu_sky_cube_ms, cov.gpu_sky_cube_active),
         );
+        gpu_pass_ms.insert(
+            "groundcover_scatter".to_string(),
+            gpu_bracket_ms(
+                cov.gpu_groundcover_scatter_ms,
+                cov.gpu_groundcover_scatter_active,
+            ),
+        );
     }
 
     let mut cpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();

@@ -479,7 +479,7 @@ impl VulkanContext {
                 .accel_manager
                 .as_ref()
                 .and_then(|accel| accel.tlas_handle(frame));
-            gc.record_scatter(&self.device, cmd, frame, tlas);
+            gc.record_scatter(&self.device, cmd, frame, tlas, self.gpu_timers.as_mut());
         }
 
         self.record_groundcover_bench(cmd, frame);

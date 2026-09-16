@@ -2,10 +2,11 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, `QUERIES_PER_FRAME` (36) TIMESTAMP queries
-//! each — 18 start/end brackets, bumped from 32/16 by #4052's
-//! ground-cover-bench bracket (#4210) and again from 34/17 by the SKYAL
-//! sky-cubemap bake:
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` (38) TIMESTAMP queries
+//! each — 19 start/end brackets, bumped from 32/16 by #4052's
+//! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
+//! sky-cubemap bake, and again from 36/18 by the production ground-cover
+//! scatter (#4315):
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -45,6 +46,8 @@
 //! | 33   | ground-cover §11.1 sampling bench — end              |
 //! | 34   | SKYAL sky-cubemap bake (sky + cloud march) — start   |
 //! | 35   | SKYAL sky-cubemap bake (sky + cloud march) — end     |
+//! | 36   | ground-cover interaction + scatter — start           |
+//! | 37   | ground-cover interaction + scatter — end             |
 //!
 //! The original four brackets (skin dispatch / skin palette / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
@@ -95,8 +98,8 @@ use ash::vk;
 
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 
-/// One TIMESTAMP query per bracket endpoint × eighteen brackets.
-const QUERIES_PER_FRAME: u32 = 36;
+/// One TIMESTAMP query per bracket endpoint × nineteen brackets.
+const QUERIES_PER_FRAME: u32 = 38;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -142,6 +145,15 @@ const Q_GROUNDCOVER_BENCH_END: u32 = 33;
 /// time-slice the bake) is made from a number rather than a guess.
 const Q_SKY_CUBE_START: u32 = 34;
 const Q_SKY_CUBE_END: u32 = 35;
+/// #4315 — the *production* EXAL ground-cover compute half: §12.4's
+/// interaction dispatch, the three counter clears and the scatter dispatch,
+/// which traces a ray query per candidate against the TLAS. Distinct from
+/// `Q_GROUNDCOVER_BENCH_*` above, which only exists under
+/// `--bench-groundcover-sampling` and measures a different thing. The blade
+/// draw is already inside `main_render`; this covers the compute that feeds
+/// it, which ran in no bracket at all.
+const Q_GROUNDCOVER_SCATTER_START: u32 = 36;
+const Q_GROUNDCOVER_SCATTER_END: u32 = 37;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -234,6 +246,14 @@ pub struct GpuTimerSnapshot {
     /// of all six faces, each evaluating the analytic sky and marching the
     /// volumetric cloud layer. Inactive when the bake failed to initialise.
     pub sky_cube_ms: f32,
+    /// EXAL ground-cover interaction + scatter compute (#4315). The §12.4
+    /// field update, the counter clears and the scatter dispatch, whose cost
+    /// is data-dependent: one TLAS ray query per candidate. Inactive on any
+    /// frame with no resident ground-cover chunks — i.e. every interior — and
+    /// on a frame whose TLAS handle is missing, which is the same gate
+    /// `record_scatter` skips on. Unlike `groundcover_bench_ms` this is
+    /// production work that runs on every exterior frame.
+    pub groundcover_scatter_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2278 / PERF-D9-01) ───────
     //
@@ -262,6 +282,7 @@ pub struct GpuTimerSnapshot {
     pub depth_history_copy_active: bool,
     pub groundcover_bench_active: bool,
     pub sky_cube_active: bool,
+    pub groundcover_scatter_active: bool,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
@@ -305,6 +326,8 @@ const BIT_DEPTH_HISTORY_COPY: u32 = 0x8000;
 /// #4052. The first bracket past the old `u16`'s width.
 const BIT_GROUNDCOVER_BENCH: u32 = 0x0001_0000;
 const BIT_SKY_CUBE: u32 = 0x0002_0000;
+/// #4315 — the production ground-cover scatter.
+const BIT_GROUNDCOVER_SCATTER: u32 = 0x0004_0000;
 
 /// Build a [`GpuTimerSnapshot`] from a raw batched TIMESTAMP read.
 /// Pulled out of [`GpuPerFrameTimers::read_and_reset`] as a pure
@@ -396,6 +419,10 @@ fn snapshot_from_bits(
     snap.sky_cube_active = bits & BIT_SKY_CUBE != 0;
     if snap.sky_cube_active {
         snap.sky_cube_ms = bracket_ms(Q_SKY_CUBE_START);
+    }
+    snap.groundcover_scatter_active = bits & BIT_GROUNDCOVER_SCATTER != 0;
+    if snap.groundcover_scatter_active {
+        snap.groundcover_scatter_ms = bracket_ms(Q_GROUNDCOVER_SCATTER_START);
     }
     snap
 }
@@ -1159,6 +1186,45 @@ impl GpuPerFrameTimers {
         self.active_bits[frame] |= BIT_SKY_CUBE;
     }
 
+    pub fn cmd_groundcover_scatter_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_GROUNDCOVER_SCATTER_START,
+            );
+        }
+    }
+
+    /// Write the ground-cover scatter END timestamp. `BOTTOM_OF_PIPE` for the
+    /// same reason the sky-cube bake uses it: the scatter's trailing barrier —
+    /// the one publishing the blade buffer and indirect list to the draw, and
+    /// the counters to the readback copy — is part of this bracket's cost.
+    pub fn cmd_groundcover_scatter_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                Q_GROUNDCOVER_SCATTER_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_GROUNDCOVER_SCATTER;
+    }
+
     /// Destroy every query pool. Caller must wait for queue idle
     /// before calling (matches the rest of VulkanContext's Drop
     /// ordering — query pools share the destroy-before-device
@@ -1281,6 +1347,40 @@ mod tests {
         assert!(snap.sky_cube_active);
         assert_eq!(snap.sky_cube_ms, 2_500.0 * 0.2);
         assert!(!snap.groundcover_bench_active);
+    }
+
+    /// Regression for #4315 / REN-2026-09-14-D20-01 — the production
+    /// ground-cover compute (§12.4 interaction + counter clears + the
+    /// TLAS-ray-query scatter) ran in no bracket at all, so a density or LOD
+    /// regression there surfaced only as unexplained frame time.
+    ///
+    /// The `groundcover_bench` assertions are the point of this test as much
+    /// as the scatter ones: the two brackets measure different things — the
+    /// bench exists only under `--bench-groundcover-sampling`, the scatter
+    /// runs on every exterior frame — and their adjacent slots and near-
+    /// identical names make conflating them the easy mistake.
+    #[test]
+    fn groundcover_scatter_bracket_is_distinct_from_the_sampling_bench() {
+        let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_GROUNDCOVER_SCATTER_START as usize] = 1_000;
+        ticks[Q_GROUNDCOVER_SCATTER_END as usize] = 4_000;
+        ticks[Q_GROUNDCOVER_BENCH_START as usize] = 10;
+        ticks[Q_GROUNDCOVER_BENCH_END as usize] = 99_999;
+
+        let snap = snapshot_from_bits(BIT_GROUNDCOVER_SCATTER, &ticks, 0.5);
+        assert!(snap.groundcover_scatter_active);
+        assert_eq!(snap.groundcover_scatter_ms, 3_000.0 * 0.5);
+        // The bench's ticks are populated but its bit is not set: a normal
+        // run's state. It must read inactive and zero, not pick up the
+        // scatter's reading or its own stale ticks.
+        assert!(!snap.groundcover_bench_active);
+        assert_eq!(snap.groundcover_bench_ms, 0.0);
+
+        // And the converse, so neither bit can be wired to the other's slot.
+        let snap = snapshot_from_bits(BIT_GROUNDCOVER_BENCH, &ticks, 0.5);
+        assert!(snap.groundcover_bench_active);
+        assert!(!snap.groundcover_scatter_active);
+        assert_eq!(snap.groundcover_scatter_ms, 0.0);
     }
 
     /// Regression for #4210 / PERF-D9-2026-09-11-03 — the module doc's

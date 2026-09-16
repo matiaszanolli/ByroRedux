@@ -1068,6 +1068,8 @@ impl ApplicationHandler for App {
                                     s.gpu_depth_history_copy_ms,
                                     // SKYAL — appended last, same #3629 rule.
                                     s.gpu_sky_cube_ms,
+                                    // #4315 — appended last, same rule.
+                                    s.gpu_groundcover_scatter_ms,
                                 ],
                                 [
                                     s.gpu_skin_dispatch_active,
@@ -1087,10 +1089,11 @@ impl ApplicationHandler for App {
                                     s.gpu_skin_palette_active,
                                     s.gpu_depth_history_copy_active,
                                     s.gpu_sky_cube_active,
+                                    s.gpu_groundcover_scatter_active,
                                 ],
                             )
                         })
-                        .unwrap_or(([0.0; 17], [false; 17]));
+                        .unwrap_or(([0.0; 18], [false; 18]));
                     let gpu_inactive = bench_gpu_inactive_token(gpu_active);
                     let rt_integrity_line = self
                         .world
@@ -1110,7 +1113,8 @@ impl ApplicationHandler for App {
                          gpu_volumetrics={:.3} gpu_cluster_cull={:.3} \
                          gpu_presentation={:.3} gpu_tlas_build={:.3} \
                          gpu_caustic_splat={:.3} gpu_skin_palette={:.3} \
-                         gpu_depth_history_copy={:.3} gpu_sky_cube={:.3}] gpu_inactive={} \
+                         gpu_depth_history_copy={:.3} gpu_sky_cube={:.3} \
+                         gpu_groundcover_scatter={:.3}] gpu_inactive={} \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
                          sim_time_s={:.6} entities={} meshes={} textures={} \
@@ -1157,6 +1161,7 @@ impl ApplicationHandler for App {
                         gpu[14],
                         gpu[15],
                         gpu[16],
+                        gpu[17],
                         gpu_inactive,
                         systems_ms,
                         ticks_per_frame,

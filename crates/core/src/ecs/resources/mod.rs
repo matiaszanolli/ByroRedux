@@ -741,6 +741,12 @@ pub struct SkinCoverageStats {
     /// every texel of all six faces). Inactive when the bake failed to
     /// initialise and the ray-traced sky fell back to the flat blend.
     pub gpu_sky_cube_ms: f32,
+    /// EXAL ground-cover interaction + scatter compute (#4315) — the §12.4
+    /// field update, the counter clears and the TLAS-ray-query scatter that
+    /// feeds the blade draw. Inactive on interiors and on any frame with no
+    /// resident ground-cover chunks. The blade draw itself is inside
+    /// `gpu_main_render_ms`, not here.
+    pub gpu_groundcover_scatter_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2513 / REN-D20-NEW-03) ───
     //
@@ -768,6 +774,7 @@ pub struct SkinCoverageStats {
     pub gpu_presentation_active: bool,
     pub gpu_depth_history_copy_active: bool,
     pub gpu_sky_cube_active: bool,
+    pub gpu_groundcover_scatter_active: bool,
 }
 
 /// CPU-side per-frame wall-clock breakdown — populated by the

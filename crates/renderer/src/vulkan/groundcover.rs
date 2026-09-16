@@ -1426,12 +1426,21 @@ impl GroundCoverPipeline {
 
     /// Record the scatter dispatch. Must be OUTSIDE a render pass and before
     /// the main geometry pass that draws the result.
+    /// `timers` brackets the whole compute half — interaction dispatch,
+    /// counter clears, scatter dispatch and the trailing publish barrier
+    /// (#4315). Passed in rather than bracketed at the call site because both
+    /// early returns below are real skips: an interior frame has no chunks,
+    /// and a frame without a TLAS handle abandons the dispatch. Bracketing
+    /// outside would mark those frames active with a ~0 ms reading, which is
+    /// exactly the "ran and took no time" / "did not run" confusion the
+    /// `_active` flags exist to prevent.
     pub fn record_scatter(
         &mut self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
         tlas: Option<vk::AccelerationStructureKHR>,
+        mut timers: Option<&mut super::gpu_timers::GpuPerFrameTimers>,
     ) {
         if self.frame_chunk_count == 0 {
             return;
@@ -1458,6 +1467,9 @@ impl GroundCoverPipeline {
         // call; only slot `frame`'s set is touched and its fence has been
         // waited, and the set is not yet bound in `cmd`.
         unsafe { device.update_descriptor_sets(&[write], &[]) };
+        if let Some(timers) = timers.as_deref_mut() {
+            timers.cmd_groundcover_scatter_start(device, cmd, frame);
+        }
         self.record_interaction(device, cmd, frame);
         let counters = self.counter_buffer.as_ref().expect("created in new()");
         // SAFETY: `cmd` is recording; every handle below is live and owned by
@@ -1588,6 +1600,9 @@ impl GroundCoverPipeline {
                 self.counter_readback[frame].buffer,
                 &[vk::BufferCopy::default().size(counters.size)],
             );
+        }
+        if let Some(timers) = timers {
+            timers.cmd_groundcover_scatter_end(device, cmd, frame);
         }
         self.pending_chunks[frame] = self.frame_active_chunk_count;
         self.pending_chunk_slots[frame] = self.frame_chunk_count;

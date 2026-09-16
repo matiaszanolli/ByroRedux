@@ -270,6 +270,7 @@ impl VulkanContext {
             stats.gpu_presentation_ms = snap.presentation_ms;
             stats.gpu_depth_history_copy_ms = snap.depth_history_copy_ms;
             stats.gpu_sky_cube_ms = snap.sky_cube_ms;
+            stats.gpu_groundcover_scatter_ms = snap.groundcover_scatter_ms;
             // #2513 / REN-D20-NEW-03 — copy the "did this bracket actually
             // run" flags too, closing the gap #2278 opened at the producer
             // but nothing downstream ever read.
@@ -290,6 +291,7 @@ impl VulkanContext {
             stats.gpu_presentation_active = snap.presentation_active;
             stats.gpu_depth_history_copy_active = snap.depth_history_copy_active;
             stats.gpu_sky_cube_active = snap.sky_cube_active;
+            stats.gpu_groundcover_scatter_active = snap.groundcover_scatter_active;
         } else {
             stats.gpu_skin_dispatch_ms = 0.0;
             stats.gpu_skin_palette_ms = 0.0;
@@ -308,6 +310,7 @@ impl VulkanContext {
             stats.gpu_presentation_ms = 0.0;
             stats.gpu_depth_history_copy_ms = 0.0;
             stats.gpu_sky_cube_ms = 0.0;
+            stats.gpu_groundcover_scatter_ms = 0.0;
             // No `GpuPerFrameTimers` at all (driver lacks timestamp
             // support) — every bracket is inactive, not just zero.
             stats.gpu_skin_dispatch_active = false;
@@ -327,6 +330,7 @@ impl VulkanContext {
             stats.gpu_presentation_active = false;
             stats.gpu_depth_history_copy_active = false;
             stats.gpu_sky_cube_active = false;
+            stats.gpu_groundcover_scatter_active = false;
         }
         stats.slots_active = self.skin_slots.len() as u32;
         stats.slot_pool_capacity = if self.skin_compute.is_some() {
