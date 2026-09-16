@@ -1371,7 +1371,7 @@ fn spawn_initial_camera(
     // same quaternion but leaving the scalars at their `0` default would
     // still snap on the first frame, just to a different wrong pose.
     let (cam_yaw, cam_pitch) = yaw_pitch_from_forward(forward);
-    let cam_rotation = Quat::from_rotation_y(cam_yaw) * Quat::from_rotation_x(cam_pitch);
+    let cam_rotation = crate::systems::camera_look_rotation(cam_yaw, cam_pitch);
     if let Some(mut input) = world.try_resource_mut::<InputState>() {
         input.yaw = cam_yaw;
         input.pitch = cam_pitch;

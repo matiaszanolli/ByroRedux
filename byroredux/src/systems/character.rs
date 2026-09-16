@@ -674,7 +674,7 @@ pub(crate) fn camera_follow_system(world: &World, dt: f32) {
     };
 
     let cam_pos = Vec3::new(body_pos.x, smooth_cam_y, body_pos.z);
-    let cam_rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+    let cam_rot = super::camera_look_rotation(yaw, pitch);
 
     // Write both Transform and GlobalTransform. The camera is a root
     // entity (no Parent), so for it the two are identical — and
@@ -1226,7 +1226,7 @@ pub(crate) fn swim_motion(yaw: f32, pitch: f32, move_dir: Vec3, speed: f32, dt: 
     let dir = move_dir.normalize();
     // The same composition `camera_follow_system` builds, so "forward" is the
     // direction the player is actually looking.
-    let forward = (Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch)) * -Vec3::Z;
+    let forward = super::camera_look_rotation(yaw, pitch) * -Vec3::Z;
     let right = Quat::from_rotation_y(yaw) * Vec3::X;
     (forward * dir.z + right * dir.x) * speed * dt
 }

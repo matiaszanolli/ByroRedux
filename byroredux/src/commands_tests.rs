@@ -137,9 +137,32 @@ fn input_look_updates_the_gameplay_accumulator_without_moving_the_camera() {
     assert!((input.yaw.to_degrees() + 45.0).abs() < 0.01);
     assert!((input.pitch.to_degrees() - 89.0).abs() < 0.01);
     drop(input);
+    let transform = *world.get::<Transform>(camera).unwrap();
+    assert_eq!(transform.translation, Vec3::new(1.0, 2.0, 3.0));
+    // Fly mode (the default): the headless fly camera never consumes the
+    // accumulator, so the command poses the camera itself.
+    let forward = transform.rotation * -Vec3::Z;
+    let want = forward_from((-45.0f32).to_radians(), 89.0f32.to_radians());
+    assert!((forward - want).length() < 1e-4, "{forward:?} != {want:?}");
+}
+
+#[test]
+fn input_look_leaves_the_camera_to_the_character_rig() {
+    use crate::components::InputState;
+    use crate::systems::PlayerMode;
+
+    let mut world = World::new();
+    world.insert_resource(InputState::default());
+    world.insert_resource(PlayerMode::Character);
+    let camera = world.spawn();
+    world.insert(camera, Transform::IDENTITY);
+    world.insert_resource(ActiveCamera(camera));
+
+    InputLookCommand.execute(&world, "90 -30");
     assert_eq!(
-        world.get::<Transform>(camera).unwrap().translation,
-        Vec3::new(1.0, 2.0, 3.0)
+        world.get::<Transform>(camera).unwrap().rotation,
+        Quat::IDENTITY,
+        "camera_follow_system owns the character camera"
     );
 }
 

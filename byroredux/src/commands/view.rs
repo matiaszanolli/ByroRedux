@@ -353,7 +353,7 @@ impl ConsoleCommand for CombatApproachCommand {
         let camera_pos = body_pos + Vec3::Y * controller.eye_height;
         let aim_pos = target_pos + Vec3::Y * controller.eye_height * 1.15;
         let (yaw, pitch) = look_at_yaw_pitch(camera_pos, aim_pos);
-        let camera_rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+        let camera_rotation = crate::systems::camera_look_rotation(yaw, pitch);
 
         {
             let Some(mut transforms) = world.query_mut::<Transform>() else {
@@ -441,7 +441,13 @@ impl ConsoleCommand for InputHoldCommand {
 /// accumulator used by both mouse look and character movement alignment.
 ///
 /// This is a deterministic smoke-test frontend for the normal `InputState`
-/// boundary. It never writes camera or character transforms directly.
+/// boundary. In character mode that is the whole job: `camera_follow_system`
+/// derives the camera from the accumulator every tick. The fly camera only
+/// consumes it while the mouse is captured, which a headless bench never is,
+/// so in fly mode the active camera's rotation is written here as well —
+/// the same pose `fly_camera_system` would produce, as `cam.tp` does. Without
+/// it every fly-mode `input.look` in the water smoke was inert and each
+/// capture kept the startup orientation. Translation is never touched.
 pub(crate) struct InputLookCommand;
 impl ConsoleCommand for InputLookCommand {
     fn name(&self) -> &str {
@@ -474,10 +480,23 @@ impl ConsoleCommand for InputLookCommand {
         };
         input.yaw = yaw_degrees.to_radians();
         input.pitch = pitch_degrees.clamp(-89.0, 89.0).to_radians();
+        let (yaw, pitch) = (input.yaw, input.pitch);
+        drop(input);
+        let fly_mode = world
+            .try_resource::<crate::systems::PlayerMode>()
+            .is_none_or(|mode| *mode != crate::systems::PlayerMode::Character);
+        if fly_mode {
+            let camera = world.try_resource::<ActiveCamera>().map(|active| active.0);
+            if let (Some(camera), Some(mut tq)) = (camera, world.query_mut::<Transform>()) {
+                if let Some(transform) = tq.get_mut(camera) {
+                    transform.rotation = crate::systems::camera_look_rotation(yaw, pitch);
+                }
+            }
+        }
         CommandOutput::line(format!(
             "input.look: yaw={:.1}° pitch={:.1}°",
-            input.yaw.to_degrees(),
-            input.pitch.to_degrees(),
+            yaw.to_degrees(),
+            pitch.to_degrees(),
         ))
     }
 }
@@ -1115,7 +1134,7 @@ impl ConsoleCommand for CamTpCommand {
         // of the target's own orientation.
         let camera_pos = target_pos + Vec3::new(0.0, 50.0, 200.0);
         let (yaw, pitch) = look_at_yaw_pitch(camera_pos, target_pos);
-        let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+        let rotation = crate::systems::camera_look_rotation(yaw, pitch);
         // Apply Transform mutation under its own scope so the input-
         // state mutation doesn't hold two write guards simultaneously.
         {

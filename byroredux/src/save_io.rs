@@ -646,7 +646,6 @@ pub fn capture_player_pose(world: &World) {
 /// (e.g. a `--fly` reload), so the look direction is at least honoured.
 pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
     use byroredux_core::ecs::{GlobalTransform, Transform};
-    use byroredux_core::math::Quat;
 
     if let Some(mut input) = world.try_resource_mut::<crate::components::InputState>() {
         input.yaw = pose.yaw;
@@ -721,7 +720,7 @@ pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
 
     // FlyCam, or Character-saved with no live body: drop the camera at the
     // saved spot with a yaw/pitch-derived rotation.
-    let rot = Quat::from_rotation_y(pose.yaw) * Quat::from_rotation_x(pose.pitch);
+    let rot = crate::systems::camera_look_rotation(pose.yaw, pose.pitch);
     crate::cell_loader::reposition_camera(world, pos, rot);
 }
 

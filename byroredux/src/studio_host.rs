@@ -943,7 +943,7 @@ fn aim_camera(world: &mut World, position: Vec3, target: Vec3) {
         return;
     }
     let (yaw, pitch) = crate::scene::yaw_pitch_from_forward(forward);
-    let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+    let rotation = crate::systems::camera_look_rotation(yaw, pitch);
     if let Some(mut input) = world.try_resource_mut::<crate::components::InputState>() {
         input.yaw = yaw;
         input.pitch = pitch;

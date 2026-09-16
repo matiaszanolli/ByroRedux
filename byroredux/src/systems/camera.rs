@@ -7,6 +7,14 @@ use crate::components::InputState;
 use crate::interaction::{ActionState, InputAction};
 use crate::systems::character::PlayerMode;
 
+/// The camera orientation for a gameplay look accumulator, shared by the fly
+/// camera, the character camera, and every command or restore path that
+/// poses either: `forward = rotation * -Z`, yaw about +Y applied after pitch
+/// about +X (positive pitch looks up).
+pub(crate) fn camera_look_rotation(yaw: f32, pitch: f32) -> Quat {
+    Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch)
+}
+
 /// Fly camera system: WASD + mouse look. Updates the active camera's Transform.
 ///
 /// Early-returns when `PlayerMode == Character` so the M28.5 character
@@ -78,7 +86,7 @@ pub(crate) fn fly_camera_system(world: &World, dt: f32) {
     drop(actions);
 
     // Build rotation from yaw/pitch.
-    let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+    let rotation = camera_look_rotation(yaw, pitch);
 
     // Compute desired world-space move vector (yaw-only, so Y stays level).
     let move_world = if move_dir != Vec3::ZERO {
