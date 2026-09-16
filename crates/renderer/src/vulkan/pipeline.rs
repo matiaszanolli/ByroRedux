@@ -714,9 +714,20 @@ fn blend_gbuffer_attachments(
 ///   Vulkan evaluates a colour-flavoured factor's alpha component in the
 ///   alpha equation, so exotic authored factors stay well-defined.
 ///
-/// The lane has no other consumer: `taa.comp` forwards HDR alpha
-/// untouched and `composite.frag` forwards it to the swapchain, which
-/// ignores it (#676 / DEN-6, DEN-11).
+/// #4309 — this doc used to claim "the lane has no other consumer:
+/// `taa.comp` forwards HDR alpha untouched and `composite.frag` forwards it
+/// to the swapchain, which ignores it". It has a consumer, and composite does
+/// not write the swapchain.
+///
+/// `composite.frag`'s sky arm reads this lane as transparent coverage —
+/// `coverage = clamp(direct4.a, 0, 1)`, then `sky_radiance(...) * (1.0 -
+/// coverage)` (#2466) — and writes the offscreen HDR scene image, not the
+/// swapchain, which presentation owns since #3426. `taa.comp`'s pass-through
+/// is therefore what that arm reads under `--upscaler taa`, the FSR fallback
+/// (#2480) included, and is pinned by `taa.rs`'s
+/// `every_output_store_forwards_the_coverage_lane`. A blend state that got
+/// these factors wrong would show up as sky bleeding through geometry, not as
+/// an ignored bit (#676 / DEN-6, DEN-11).
 pub(crate) fn coverage_alpha_factors(
     dst_factor: vk::BlendFactor,
 ) -> (vk::BlendFactor, vk::BlendFactor) {
@@ -1122,7 +1133,10 @@ mod tests {
         assert_eq!(a.color_write_mask, vk::ColorComponentFlags::RGBA);
         assert_eq!(a.blend_enable, vk::TRUE);
         assert_eq!(a.src_color_blend_factor, vk::BlendFactor::SRC_ALPHA);
-        assert_eq!(a.dst_color_blend_factor, vk::BlendFactor::ONE_MINUS_SRC_ALPHA);
+        assert_eq!(
+            a.dst_color_blend_factor,
+            vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+        );
         assert_eq!(a.color_blend_op, vk::BlendOp::ADD);
         assert_eq!(a.src_alpha_blend_factor, vk::BlendFactor::ONE);
         assert_eq!(a.dst_alpha_blend_factor, vk::BlendFactor::ZERO);

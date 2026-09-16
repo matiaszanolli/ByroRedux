@@ -1160,4 +1160,52 @@ mod tests {
             );
         }
     }
+    /// #4309 — every `imageStore(uOutput, …)` must forward the HDR coverage
+    /// lane, not a literal alpha.
+    ///
+    /// `composite.frag`'s sky arm reads `coverage = clamp(direct4.a, 0, 1)`
+    /// and weights `sky_radiance(...) * (1.0 - coverage)` (#2466), and under
+    /// `--upscaler taa` — the automatic FSR fallback (#2480) included —
+    /// composite binding 0 is this shader's output. So the pass-through is a
+    /// live contract, and `vec4(rgb, 1.0)` at any of the three stores makes
+    /// every clear-depth pixel report full coverage and replaces the sky with
+    /// black.
+    ///
+    /// That edit looked safe for as long as the shader's own comment called
+    /// the lane "harmless today" and `coverage_alpha_factors`'s rustdoc said
+    /// it "has no other consumer". Both are corrected; this is the part a
+    /// comment cannot do. There is no unit test that can render the sky, but
+    /// there is one that can insist the alpha argument is a variable.
+    #[test]
+    fn every_output_store_forwards_the_coverage_lane() {
+        let src = include_str!("../../shaders/taa.comp");
+        let stores: Vec<&str> = src
+            .match_indices("imageStore(uOutput,")
+            .map(|(at, _)| {
+                let tail = &src[at..];
+                &tail[..tail.find(");").expect("unterminated imageStore") + 2]
+            })
+            .collect();
+        assert_eq!(
+            stores.len(),
+            3,
+            "taa.comp should have three uOutput stores (early-out, history-reject, resolve); \
+             found {}: {stores:#?}",
+            stores.len(),
+        );
+        for store in &stores {
+            let alpha = store
+                .rsplit_once(',')
+                .expect("imageStore has arguments")
+                .1
+                .trim_end_matches(&[')', ';'][..])
+                .trim();
+            assert_eq!(
+                alpha, "currA",
+                "this store writes alpha `{alpha}` instead of forwarding `currA`: {store}. \
+                 composite's sky arm reads that lane as transparent coverage, so a literal \
+                 here blacks out the sky under --upscaler taa (#4309)."
+            );
+        }
+    }
 }
