@@ -547,92 +547,81 @@ impl GroundCoverPipeline {
     }
 
     fn create_buffers(&mut self, device: &ash::Device, allocator: &SharedAllocator) -> Result<()> {
-        let chunk_bytes = (GROUNDCOVER_MAX_CHUNKS as usize
-            * std::mem::size_of::<GpuGroundCoverChunk>())
-            as vk::DeviceSize;
-        let cell_bytes =
-            (MAX_GROUNDCOVER_CELLS * std::mem::size_of::<GpuGroundCoverCell>()) as vk::DeviceSize;
-        let species_bytes = (MAX_GROUNDCOVER_SPECIES * std::mem::size_of::<GpuGroundCoverSpecies>())
-            as vk::DeviceSize;
+        let bytes = GroundCoverBufferBytes::new();
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             self.chunk_buffers.push(GpuBuffer::create_host_visible(
                 device,
                 allocator,
-                chunk_bytes,
+                bytes.chunks,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
             self.cell_buffers.push(GpuBuffer::create_host_visible(
                 device,
                 allocator,
-                cell_bytes,
+                bytes.cells,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
             self.species_buffers.push(GpuBuffer::create_host_visible(
                 device,
                 allocator,
-                species_bytes,
+                bytes.species,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
             self.species_table_buffers
                 .push(GpuBuffer::create_host_visible(
                     device,
                     allocator,
-                    (GROUNDCOVER_SPECIES_TABLE_SIZE as vk::DeviceSize) * 4,
+                    bytes.species_table,
                     vk::BufferUsageFlags::STORAGE_BUFFER,
                 )?);
             self.counter_readback.push(GpuBuffer::create_host_readback(
                 device,
                 allocator,
-                (COUNTER_SLOTS * 4) as vk::DeviceSize,
+                bytes.counters,
                 vk::BufferUsageFlags::TRANSFER_DST,
             )?);
             self.field_state_buffers
                 .push(GpuBuffer::create_host_visible(
                     device,
                     allocator,
-                    std::mem::size_of::<GpuGroundCoverFieldState>() as vk::DeviceSize,
+                    bytes.field_state,
                     vk::BufferUsageFlags::STORAGE_BUFFER,
                 )?);
             self.disturber_buffers.push(GpuBuffer::create_host_visible(
                 device,
                 allocator,
-                (GROUNDCOVER_INTERACTION_MAX_DISTURBERS as vk::DeviceSize)
-                    * std::mem::size_of::<GpuGroundCoverDisturber>() as vk::DeviceSize,
+                bytes.disturbers,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
         }
         // §12.4's field: two halves, one `uint` (packHalf2x16 XZ) per texel.
-        // 256² × 4 B × 2 = 512 KB device-local, against the 4 GB budget. Not
-        // per-frame-in-flight: the field is *state*, and a per-slot copy would
-        // give a 2-frame pipeline two independent trails that alternate.
+        // Not per-frame-in-flight: the field is *state*, and a per-slot copy
+        // would give a 2-frame pipeline two independent trails that alternate.
         self.field_buffer = Some(GpuBuffer::create_device_local_uninit(
             device,
             allocator,
-            INTERACTION_TEXEL_COUNT * 2 * 4,
+            bytes.field,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
         )?);
-        // One `GpuGroundCoverBlade` per slot × the cap — the stride comes from
-        // the Rust mirror, never a literal (#4335). See the module docs on why
-        // the cap is sized for a chunk-size sweep rather than today's visible set.
-        let blade_bytes = (GROUNDCOVER_MAX_CHUNKS as u64)
-            * (GROUNDCOVER_MAX_BLADES_PER_CHUNK as u64)
-            * std::mem::size_of::<GpuGroundCoverBlade>() as u64;
+        // One `GpuGroundCoverBlade` per slot × the cap. See the module docs on
+        // why the cap is sized for a chunk-size sweep rather than today's
+        // visible set.
         self.blade_buffer = Some(GpuBuffer::create_device_local_uninit(
             device,
             allocator,
-            blade_bytes,
+            bytes.blades,
             vk::BufferUsageFlags::STORAGE_BUFFER,
         )?);
         self.indirect_buffer = Some(GpuBuffer::create_device_local_uninit(
             device,
             allocator,
-            (GROUNDCOVER_MAX_CHUNKS as u64) * 16 * GROUNDCOVER_INDIRECT_STREAMS,
+            bytes.indirect,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER,
         )?);
         self.counter_buffer = Some(GpuBuffer::create_device_local_uninit(
             device,
             allocator,
-            (COUNTER_SLOTS * 4) as vk::DeviceSize,
+            bytes.counters,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::TRANSFER_SRC,
@@ -734,6 +723,69 @@ impl GroundCoverPipeline {
         };
         Ok(())
     }
+}
+
+/// Requested size of every buffer `GroundCoverPipeline::create_buffers`
+/// allocates, in bytes. The allocation code reads its sizes from here, so
+/// [`groundcover_resident_bytes`] — the figure `memory-budget.md` ledgers —
+/// cannot drift from what is actually allocated (#4300).
+struct GroundCoverBufferBytes {
+    // Per frame in flight, host-visible.
+    chunks: u64,
+    cells: u64,
+    species: u64,
+    species_table: u64,
+    field_state: u64,
+    disturbers: u64,
+    /// Per-slot host readback; the device-local counter buffer is the same
+    /// size.
+    counters: u64,
+    // Shared, device-local.
+    field: u64,
+    blades: u64,
+    indirect: u64,
+}
+
+impl GroundCoverBufferBytes {
+    const fn new() -> Self {
+        Self {
+            chunks: GROUNDCOVER_MAX_CHUNKS as u64
+                * std::mem::size_of::<GpuGroundCoverChunk>() as u64,
+            cells: (MAX_GROUNDCOVER_CELLS * std::mem::size_of::<GpuGroundCoverCell>()) as u64,
+            species: (MAX_GROUNDCOVER_SPECIES * std::mem::size_of::<GpuGroundCoverSpecies>())
+                as u64,
+            species_table: GROUNDCOVER_SPECIES_TABLE_SIZE as u64 * 4,
+            field_state: std::mem::size_of::<GpuGroundCoverFieldState>() as u64,
+            disturbers: GROUNDCOVER_INTERACTION_MAX_DISTURBERS as u64
+                * std::mem::size_of::<GpuGroundCoverDisturber>() as u64,
+            counters: (COUNTER_SLOTS * 4) as u64,
+            // 256² texels × one `uint` × two halves.
+            field: INTERACTION_TEXEL_COUNT * 2 * 4,
+            // The stride comes from the Rust mirror, never a literal (#4335).
+            blades: GROUNDCOVER_MAX_CHUNKS as u64
+                * GROUNDCOVER_MAX_BLADES_PER_CHUNK as u64
+                * std::mem::size_of::<GpuGroundCoverBlade>() as u64,
+            // `sizeof(VkDrawIndirectCommand)` per chunk per stream.
+            indirect: GROUNDCOVER_MAX_CHUNKS as u64 * 16 * GROUNDCOVER_INDIRECT_STREAMS,
+        }
+    }
+}
+
+/// Every buffer EXAL ground cover allocates, in bytes: the per-slot
+/// host-visible set × `MAX_FRAMES_IN_FLIGHT` plus the shared device-local
+/// field, blade arena, indirect and counter buffers. Allocated on every RT
+/// device at renderer init, whether or not the scene has ground cover.
+/// Ledgered in `docs/engine/memory-budget.md` (#4300).
+pub const fn groundcover_resident_bytes() -> u64 {
+    let b = GroundCoverBufferBytes::new();
+    let per_slot = b.chunks
+        + b.cells
+        + b.species
+        + b.species_table
+        + b.field_state
+        + b.disturbers
+        + b.counters;
+    MAX_FRAMES_IN_FLIGHT as u64 * per_slot + b.field + b.blades + b.indirect + b.counters
 }
 
 /// One ground-cover descriptor-set layout and the shaders that must agree
@@ -2867,5 +2919,57 @@ mod tests {
              (#4293); without it sync validation reports two WRITE_AFTER_WRITE hazards per \
              scatter frame"
         );
+    }
+}
+#[cfg(test)]
+mod memory_budget_ledger_tests {
+    /// `1234567` → `"1,234,567"`.
+    fn grouped(n: u64) -> String {
+        let digits = n.to_string();
+        let mut out = String::new();
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    /// #4300 — the three fixed-size owners SKYAL and EXAL added were absent
+    /// from `memory-budget.md`, and the one size helper that claimed to feed
+    /// the page had no caller. The page now states each owner's exact
+    /// resident bytes; this holds those figures to the functions the
+    /// allocation code shares.
+    #[test]
+    fn memory_budget_ledgers_the_sky_and_ground_cover_owners() {
+        let doc = include_str!("../../../../docs/engine/memory-budget.md");
+        let section = doc
+            .split_once("## Sky and Ground Cover (fixed-size)")
+            .expect("memory-budget.md must keep its SKYAL / EXAL section")
+            .1;
+        let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+        for (owner, bytes) in [
+            ("EXAL ground cover", super::groundcover_resident_bytes()),
+            (
+                "SKYAL sky bake",
+                crate::vulkan::sky_cube::sky_bake_resident_bytes(),
+            ),
+            (
+                "SKYAL cloud noise",
+                crate::vulkan::cloud_noise::cloud_noise_bytes(),
+            ),
+        ] {
+            let row = section
+                .lines()
+                .find(|line| line.starts_with(&format!("| {owner} |")))
+                .unwrap_or_else(|| panic!("no `{owner}` row in the SKYAL / EXAL ledger"));
+            assert!(
+                row.contains(&format!("**{} B**", grouped(bytes))),
+                "memory-budget.md states a stale size for {owner}; the code allocates \
+                 {} B: {row}",
+                grouped(bytes)
+            );
+        }
     }
 }

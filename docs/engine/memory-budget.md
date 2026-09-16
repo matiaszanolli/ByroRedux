@@ -794,6 +794,22 @@ resident because `TextureRegistry::update_rgba` recreates the image rather
 than updating it in place, so an animating HUD cycles a fresh full-viewport
 `VkImage` every frame (#3429).
 
+## Sky and Ground Cover (fixed-size)
+
+Resolution-independent resources the SKYAL sky and EXAL ground-cover
+layers allocate at renderer init. Each figure is the exact requested size,
+computed by the function named in the row — the same numbers the
+allocation code uses — and held to this table by
+`memory_budget_ledgers_the_sky_and_ground_cover_owners` (#4300).
+
+| Owner | Function | Resident | What it is |
+|---|---|---|---|
+| EXAL ground cover | `groundcover::groundcover_resident_bytes` | **17,359,236 B** (16.6 MiB) | Allocated on every RT device whether or not the scene has ground cover. 16,777,216 B of it is the device-local blade arena (`GROUNDCOVER_MAX_CHUNKS` 256 × `GROUNDCOVER_MAX_BLADES_PER_CHUNK` 4 096 × 16 B `GpuGroundCoverBlade`), sized for a chunk-size sweep rather than today's visible set; 524,288 B the §12.4 interaction field (256² × 4 B × 2 halves); 12,288 B the indirect buffer (256 chunks × 16 B × 3 LOD streams); 1,132 B the counters. The per-slot host-visible chunk / cell / species / table / field-state / disturber buffers and counter readback add 22,156 B × 2 FIF |
+| SKYAL sky bake | `sky_cube::sky_bake_resident_bytes` | **2,098,048 B** (2.0 MiB) | Per FIF slot: the RGBA16F 128² cubemap with its full GGX mip chain (`sky_cube_bytes_per_frame`, 1,048,560 B), the 144 B SH irradiance buffer (Set 1 binding 21) and the param UBO. Absent when `SkyCubePipeline` fails to initialise |
+| SKYAL cloud noise | `cloud_noise::cloud_noise_bytes` | **294,912 B** (288 KiB) | The shared 64³ + 32³ R8 density volumes (`CloudNoiseVolumes`), one pair, not per FIF. `VolumetricsPipeline` still uploads its own copy of the same texels, counted in its section |
+
+About 19.8 MB together, flat across resolutions.
+
 ### Not yet ledgered
 
 A grep of this page for the owning subsystem name is the cheapest way to
@@ -820,7 +836,7 @@ authoritative rather than re-derived.
 | G-buffer (7 attachments per [`gbuffer.rs`](../../crates/renderer/src/vulkan/gbuffer.rs)'s own table — normal/motion/mesh_id/raw_indirect/albedo at 4 B/px + FSR reactive/transparency masks at 1 B/px = 22 B/px, × 2 FIF; the separate HDR colour, depth and depth-history attachments are counted in their own row below, not here) | ~91 MB (1080p) | ~365 MB (4K) |
 | Composite HDR pair + depth / depth-history (40 B/px, #3993) | ~83 MB (1080p) | ~332 MB (4K) |
 | Cluster light-index buffers (fixed size, 2 FIF, #3993) | ~14 MB | ~14 MB |
-| Scene SSBOs | ~223 MB | ~223 MB |
+| Scene SSBOs (see [Scene Buffers](#scene-buffers-per-frame-ssbos--ubos); instance pair at starting capacity, peak = grown to `MAX_INSTANCES`) | ~155 MB | ~243 MB |
 | ReSTIR reservoirs (2 FIF) | ~133 MB (1080p) | ~531 MB (4K) |
 | SVGF history + à-trous pair (2 FIF) | ~83 MB (1080p) | ~332 MB (4K) |
 | TAA history (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
@@ -831,12 +847,13 @@ authoritative rather than re-derived.
 | FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K). Both this row and the SDK's own working memory are now billed to the BLAS residency reservation (#3988); the SDK figure is still allocated outside `gpu-allocator` and so does not appear in `ctx.memory` |
 | Vertex / index pools | ~208 MB | ~1.66 GB cap |
 | Global geometry SSBO rebuild (#3298) | — (idle) | +2× projected, ≤ ~512 MB, + up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
+| Sky bake + cloud noise + ground cover (fixed size, see [Sky and Ground Cover](#sky-and-ground-cover-fixed-size)) | ~20 MB | ~20 MB |
 | Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~42 MB + a second logical device |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.91 GB** | **~4.07 GB at native 4K** — #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section |
+| **Estimated total** | **~1.86 GB** | **~4.11 GB at native 4K** — #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section |
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all

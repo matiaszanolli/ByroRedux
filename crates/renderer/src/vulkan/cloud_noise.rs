@@ -39,6 +39,15 @@ pub struct CloudNoiseViews {
     pub sampler: vk::Sampler,
 }
 
+/// VRAM the two R8 volumes hold, in bytes: `BASE_NOISE_SIZE³ +
+/// DETAIL_NOISE_SIZE³`, one byte per texel, no mips. Not per frame in flight
+/// — one shared pair. Ledgered in `docs/engine/memory-budget.md` (#4300).
+pub const fn cloud_noise_bytes() -> u64 {
+    let base = BASE_NOISE_SIZE as u64;
+    let detail = DETAIL_NOISE_SIZE as u64;
+    base * base * base + detail * detail * detail
+}
+
 pub struct CloudNoiseVolumes {
     base: Option<GpuImage>,
     detail: Option<GpuImage>,
@@ -96,6 +105,7 @@ impl CloudNoiseVolumes {
                         height: size,
                         depth: size,
                     },
+                    // One byte per texel — `cloud_noise_bytes` assumes it.
                     vk::Format::R8_UNORM,
                     vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
                 ),

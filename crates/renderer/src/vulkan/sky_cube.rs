@@ -132,11 +132,23 @@ impl SkyCubeParams {
     }
 }
 
+/// Every allocation the SKYAL sky bake owns, in bytes, across all
+/// `MAX_FRAMES_IN_FLIGHT` slots: the mipped cubemap, the SH irradiance
+/// buffer and the param UBO per slot. The prefilter pass allocates only
+/// views. Ledgered in `docs/engine/memory-budget.md` (#4300); zero when the
+/// pipeline fails to initialise, since every one of these is owned by it.
+pub const fn sky_bake_resident_bytes() -> u64 {
+    let per_slot = sky_cube_bytes_per_frame()
+        + irradiance::SH_BYTES
+        + std::mem::size_of::<SkyCubeParams>() as u64;
+    super::sync::MAX_FRAMES_IN_FLIGHT as u64 * per_slot
+}
+
 /// VRAM the sky cubemap holds, per frame in flight, in bytes.
 ///
-/// Sum of all mip texels × six faces × eight bytes. Exposed so the memory budget can
-/// account for it the way `SSAO_BYTES_PER_PIXEL` does — this one is not
-/// render-extent-scaled, so it is a flat number rather than per-pixel.
+/// Sum of all mip texels × six faces × eight bytes. Not render-extent-scaled,
+/// so it is a flat number rather than per-pixel; [`sky_bake_resident_bytes`]
+/// folds it into the figure `docs/engine/memory-budget.md` ledgers.
 pub const fn sky_cube_bytes_per_frame() -> u64 {
     let mut size = SKY_CUBE_FACE_SIZE as u64;
     let mut texels = 0;
