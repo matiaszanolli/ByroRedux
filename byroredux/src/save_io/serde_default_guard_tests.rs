@@ -592,8 +592,16 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // invented names decodes into the same values —
     // `set_in_chargen_renames_still_decode_v23_keys` round-trips both carriers
     // through the old keys to prove it. No field was retyped or reordered.
+    //
+    // #4301 — refreshed WITHOUT a major bump, the #3251 / #3901 case again:
+    // `TextureFlipEntry` gained `handles_have_alpha: Vec<bool>` (and
+    // `AnimatedTextureFlip` an `active_has_alpha` method, inside the span
+    // this file-scoped guard sweeps). `AnimatedTextureFlip` is on
+    // `registry_completeness_tests.rs`'s `NOT_SAVED_BY_DESIGN` allowlist,
+    // re-resolved by `attach_animation_sinks` on load, so no snapshot has
+    // ever contained either shape.
     const BASELINE_MAJOR: u16 = 23;
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2323_9a4f_1066_c2f1;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xeca0_330c_0ced_6d53;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

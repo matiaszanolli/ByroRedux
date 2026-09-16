@@ -214,6 +214,13 @@ pub struct TextureFlipEntry {
     /// The material texture role this flipbook replaces.
     pub role: FlipTextureRole,
     pub handles: Vec<u32>,
+    /// Whether each of `handles` carries an alpha channel, resolved at the
+    /// same attach-time lookup. The draw path has no texture registry, and
+    /// a flipped `Normal` frame gates the alpha-as-gloss and
+    /// alpha-as-height reads on its *own* format, not the spawn-time
+    /// normal map's (#4301). Parallel to `handles`; a shorter vector reads
+    /// as "unknown" for the missing frames.
+    pub handles_have_alpha: Vec<bool>,
     pub current_index: usize,
 }
 
@@ -245,6 +252,16 @@ impl AnimatedTextureFlip {
             .filter_map(|e| e.handles.get(e.current_index).map(|&h| (e.role, h)))
     }
 
+    /// Whether the currently-active frame for `role` carries alpha, or
+    /// `None` when there is no active frame for it or its alpha presence was
+    /// not recorded (#4301). Callers keep their spawn-time answer on `None`.
+    pub fn active_has_alpha(&self, role: FlipTextureRole) -> Option<bool> {
+        self.0
+            .iter()
+            .filter(|e| e.role == role && e.current_index < e.handles.len())
+            .find_map(|e| e.handles_have_alpha.get(e.current_index).copied())
+    }
+
     /// The currently-active bindless handle for `role`, or `None` if this
     /// entity has no flipbook on that role (or its index is out of range —
     /// see [`Self::active_handles`]).
@@ -268,6 +285,7 @@ mod tests {
         let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
             role: FlipTextureRole::BaseColor,
             handles: vec![10, 11, 12],
+            handles_have_alpha: Vec::new(),
             current_index: 1,
         }]);
         assert_eq!(flip.handle_for_role(FlipTextureRole::BaseColor), Some(11));
@@ -278,6 +296,7 @@ mod tests {
         let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
             role: FlipTextureRole::BaseColor,
             handles: vec![10],
+            handles_have_alpha: Vec::new(),
             current_index: 0,
         }]);
         assert_eq!(flip.handle_for_role(FlipTextureRole::Height), None);
@@ -291,6 +310,7 @@ mod tests {
         let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
             role: FlipTextureRole::BaseColor,
             handles: vec![10, 11],
+            handles_have_alpha: Vec::new(),
             current_index: 5,
         }]);
         assert_eq!(
@@ -307,8 +327,43 @@ mod tests {
         let flip = AnimatedTextureFlip(vec![TextureFlipEntry {
             role: FlipTextureRole::BaseColor,
             handles: Vec::new(),
+            handles_have_alpha: Vec::new(),
             current_index: 0,
         }]);
         assert_eq!(flip.handle_for_role(FlipTextureRole::BaseColor), None);
+    }
+
+    /// #4301 — alpha presence follows `current_index`, and an unrecorded or
+    /// out-of-range frame reads as `None` so the caller decides.
+    #[test]
+    fn active_has_alpha_follows_the_current_frame() {
+        let entry = |current_index, handles_have_alpha| TextureFlipEntry {
+            role: FlipTextureRole::Normal,
+            handles: vec![5, 6],
+            handles_have_alpha,
+            current_index,
+        };
+        let flip = |e| AnimatedTextureFlip(vec![e]);
+        assert_eq!(
+            flip(entry(0, vec![true, false])).active_has_alpha(FlipTextureRole::Normal),
+            Some(true)
+        );
+        assert_eq!(
+            flip(entry(1, vec![true, false])).active_has_alpha(FlipTextureRole::Normal),
+            Some(false)
+        );
+        assert_eq!(
+            flip(entry(1, vec![true])).active_has_alpha(FlipTextureRole::Normal),
+            None
+        );
+        assert_eq!(
+            flip(entry(2, vec![true, true, true])).active_has_alpha(FlipTextureRole::Normal),
+            None,
+            "an out-of-range frame has no handle, so no alpha answer either"
+        );
+        assert_eq!(
+            flip(entry(0, vec![true, false])).active_has_alpha(FlipTextureRole::Height),
+            None
+        );
     }
 }

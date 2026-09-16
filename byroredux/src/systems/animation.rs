@@ -1452,6 +1452,7 @@ mod texture_flip_dispatch_tests {
             AnimatedTextureFlip(vec![TextureFlipEntry {
                 role: FlipTextureRole::BaseColor,
                 handles: vec![10, 20, 30],
+                handles_have_alpha: Vec::new(),
                 current_index: 0,
             }]),
         );
@@ -1477,6 +1478,7 @@ mod texture_flip_dispatch_tests {
             AnimatedTextureFlip(vec![TextureFlipEntry {
                 role: FlipTextureRole::BaseColor,
                 handles: vec![10, 20],
+                handles_have_alpha: Vec::new(),
                 current_index: 0,
             }]),
         );

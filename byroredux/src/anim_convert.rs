@@ -251,10 +251,18 @@ pub(crate) fn attach_animation_sinks(
                 .iter()
                 .map(|path| crate::asset_provider::resolve_texture(ctx, tex_provider, Some(path)))
                 .collect();
+            // #4301 — record each frame's alpha presence with its handle:
+            // the draw path gates alpha-channel reads on it and has no
+            // registry to ask.
+            let handles_have_alpha = handles
+                .iter()
+                .map(|&handle| handle != 0 && ctx.texture_registry.handle_has_alpha(handle))
+                .collect();
             let current_index = sample_texture_flip_index(channel, 0.0);
             texture_flip.entry(e).or_default().push(TextureFlipEntry {
                 role: channel.role,
                 handles,
+                handles_have_alpha,
                 current_index,
             });
         }
@@ -869,6 +877,7 @@ mod sink_attachment_tests {
         let first_clip_entry = AnimatedTextureFlip(vec![TextureFlipEntry {
             role: FlipTextureRole::BaseColor,
             handles: vec![1, 2],
+            handles_have_alpha: Vec::new(),
             current_index: 0,
         }]);
         insert_missing_sinks(&mut world, vec![(entity, first_clip_entry)]);
@@ -877,6 +886,7 @@ mod sink_attachment_tests {
         let second_clip_entry = AnimatedTextureFlip(vec![TextureFlipEntry {
             role: FlipTextureRole::Dark,
             handles: vec![3, 4],
+            handles_have_alpha: Vec::new(),
             current_index: 0,
         }]);
         insert_missing_sinks(&mut world, vec![(entity, second_clip_entry)]);

@@ -145,10 +145,22 @@ pub(super) fn tlas_exclusion(
 /// #3901 — write every active non-base flipbook frame into the draw's
 /// texture indices. Base color is handled by the caller: it replaces
 /// `TextureHandle`, which is not part of this set.
+///
+/// #4301 — returns whether the normal map now bound carries alpha. The
+/// spawn-time `normal_has_alpha` describes the spawn-time normal map; once a
+/// `Normal` flip replaces it, the gloss-in-alpha rebind and the
+/// height-in-alpha bit have to be gated on the active frame's own format,
+/// or a BC1/BC5 frame is read as having a constant alpha of 1.0 (#3562).
+/// Likewise, when the material carries its height in the normal map's alpha
+/// (`parallax_height_in_alpha`, #3530), the height slot is that normal
+/// map's handle, so it follows a `Normal` flip unless a `Height` flip binds
+/// it explicitly.
 fn apply_texture_flip_roles(
     flip: &AnimatedTextureFlip,
     textures: &mut byroredux_nif::import::MaterialTextureSet<u32>,
-) {
+    spawn_normal_has_alpha: bool,
+    parallax_height_in_alpha: bool,
+) -> bool {
     use byroredux_core::ecs::FlipTextureRole;
     for (role, handle) in flip.active_handles() {
         let slot = match role {
@@ -165,6 +177,21 @@ fn apply_texture_flip_roles(
             },
         };
         *slot = handle;
+    }
+    let normal_flip = flip.handle_for_role(FlipTextureRole::Normal);
+    if parallax_height_in_alpha && flip.handle_for_role(FlipTextureRole::Height).is_none() {
+        if let Some(normal) = normal_flip {
+            textures.height = normal;
+        }
+    }
+    match normal_flip {
+        // A flipped frame whose alpha presence was not recorded is treated
+        // as alpha-less: reading a missing channel is the #3562 failure,
+        // skipping a present one only loses the gloss/height detail.
+        Some(_) => flip
+            .active_has_alpha(FlipTextureRole::Normal)
+            .unwrap_or(false),
+        None => spawn_normal_has_alpha,
     }
 }
 
@@ -464,13 +491,19 @@ pub(super) fn collect_static_mesh_draws(
                 // #3901 — a flipbook on any non-base role replaces that
                 // role's spawn-time handle, the way the base-color flip
                 // replaces `TextureHandle` above.
-                if let Some(flip) = texture_flip {
-                    apply_texture_flip_roles(flip, &mut texture_indices);
-                }
-                let normal_map_index = texture_indices.normal;
-                let normal_has_alpha = material_texture_handles
+                let spawn_normal_has_alpha = material_texture_handles
                     .map(|handles| handles.normal_has_alpha)
                     .unwrap_or(false);
+                let normal_has_alpha = match texture_flip {
+                    Some(flip) => apply_texture_flip_roles(
+                        flip,
+                        &mut texture_indices,
+                        spawn_normal_has_alpha,
+                        mat.is_some_and(|material| material.parallax_height_in_alpha),
+                    ),
+                    None => spawn_normal_has_alpha,
+                };
+                let normal_map_index = texture_indices.normal;
                 let dark_map_index = texture_indices.dark;
                 let glow_map_index = texture_indices.emissive;
                 let detail_map_index = texture_indices.detail;
@@ -1731,6 +1764,7 @@ mod tests {
             AnimatedTextureFlip(vec![TextureFlipEntry {
                 role: byroredux_core::ecs::FlipTextureRole::BaseColor,
                 handles: vec![10, 20, 30],
+                handles_have_alpha: Vec::new(),
                 current_index: 1,
             }]),
         );
@@ -1772,6 +1806,7 @@ mod tests {
             AnimatedTextureFlip(vec![TextureFlipEntry {
                 role: FlipTextureRole::Emissive,
                 handles: vec![40, 44],
+                handles_have_alpha: Vec::new(),
                 current_index: 1,
             }]),
         );
@@ -1795,6 +1830,78 @@ mod tests {
             draw_commands[0].texture_handle, 1,
             "an emissive flip must not touch the base-color handle"
         );
+    }
+
+    /// #4301 — a `Normal` flip gates the alpha-channel reads on the active
+    /// frame's own format, not the spawn-time normal map's, and a height
+    /// carried in the normal's alpha follows the flipped normal.
+    #[test]
+    fn a_normal_flip_uses_the_active_frames_alpha_presence() {
+        use byroredux_core::ecs::{FlipTextureRole, TextureFlipEntry};
+        use byroredux_nif::import::MaterialTextureSet;
+
+        let flip_at = |current_index| {
+            AnimatedTextureFlip(vec![TextureFlipEntry {
+                role: FlipTextureRole::Normal,
+                handles: vec![50, 51],
+                handles_have_alpha: vec![true, false],
+                current_index,
+            }])
+        };
+        let spawn = || MaterialTextureSet::<u32> {
+            normal: 9,
+            height: 9,
+            ..Default::default()
+        };
+
+        // Spawn normal had alpha; the active BC5-like frame does not.
+        let mut textures = spawn();
+        assert!(!apply_texture_flip_roles(
+            &flip_at(1),
+            &mut textures,
+            true,
+            true
+        ));
+        assert_eq!((textures.normal, textures.height), (51, 51));
+
+        // And the reverse: an alpha-less spawn map, an alpha-carrying frame.
+        let mut textures = spawn();
+        assert!(apply_texture_flip_roles(
+            &flip_at(0),
+            &mut textures,
+            false,
+            true
+        ));
+        assert_eq!((textures.normal, textures.height), (50, 50));
+
+        // Height stays put when it is a real height texture.
+        let mut textures = spawn();
+        apply_texture_flip_roles(&flip_at(0), &mut textures, false, false);
+        assert_eq!(textures.height, 9);
+
+        // Unrecorded alpha presence is treated as alpha-less.
+        let mut unknown = flip_at(0);
+        unknown.0[0].handles_have_alpha.clear();
+        assert!(!apply_texture_flip_roles(
+            &unknown,
+            &mut spawn(),
+            true,
+            false
+        ));
+
+        // No Normal flip: the spawn-time answer stands.
+        let emissive = AnimatedTextureFlip(vec![TextureFlipEntry {
+            role: FlipTextureRole::Emissive,
+            handles: vec![40],
+            handles_have_alpha: vec![false],
+            current_index: 0,
+        }]);
+        assert!(apply_texture_flip_roles(
+            &emissive,
+            &mut spawn(),
+            true,
+            true
+        ));
     }
 
     /// No `AnimatedTextureFlip` on the entity: the spawn-time
