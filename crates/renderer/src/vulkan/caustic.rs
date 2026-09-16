@@ -271,7 +271,8 @@ impl CausticPipeline {
         camera_buffers: &[GpuBuffer],
         camera_buffer_size: vk::DeviceSize,
         instance_buffers: &[GpuBuffer],
-        instance_buffer_size: vk::DeviceSize,
+        // #4199 — one size per slot: instance buffers grow independently.
+        instance_buffer_sizes: &[vk::DeviceSize],
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -287,7 +288,7 @@ impl CausticPipeline {
             camera_buffers,
             camera_buffer_size,
             instance_buffers,
-            instance_buffer_size,
+            instance_buffer_sizes,
             width,
             height,
         );
@@ -310,7 +311,8 @@ impl CausticPipeline {
         camera_buffers: &[GpuBuffer],
         camera_buffer_size: vk::DeviceSize,
         instance_buffers: &[GpuBuffer],
-        instance_buffer_size: vk::DeviceSize,
+        // #4199 — one size per slot: instance buffers grow independently.
+        instance_buffer_sizes: &[vk::DeviceSize],
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -319,6 +321,7 @@ impl CausticPipeline {
         debug_assert_eq!(light_buffers.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(camera_buffers.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(instance_buffers.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(instance_buffer_sizes.len(), MAX_FRAMES_IN_FLIGHT);
 
         let mut partial = Self {
             pipeline: vk::Pipeline::null(),
@@ -552,7 +555,7 @@ impl CausticPipeline {
             camera_buffers,
             camera_buffer_size,
             instance_buffers,
-            instance_buffer_size,
+            instance_buffer_sizes,
         );
 
         // #2679 / PERF-D3-03 — attributing telemetry, same mechanism #1814
@@ -609,7 +612,8 @@ impl CausticPipeline {
         camera_buffers: &[GpuBuffer],
         camera_buffer_size: vk::DeviceSize,
         instance_buffers: &[GpuBuffer],
-        instance_buffer_size: vk::DeviceSize,
+        // #4199 — one size per slot: instance buffers grow independently.
+        instance_buffer_sizes: &[vk::DeviceSize],
     ) {
         let param_size = std::mem::size_of::<CausticParams>() as vk::DeviceSize;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
@@ -638,7 +642,7 @@ impl CausticPipeline {
             let instance_info = [vk::DescriptorBufferInfo {
                 buffer: instance_buffers[f].buffer,
                 offset: 0,
-                range: instance_buffer_size,
+                range: instance_buffer_sizes[f],
             }];
             let caustic_info = [vk::DescriptorImageInfo::default()
                 .image_view(self.slots[f].view)
@@ -665,6 +669,34 @@ impl CausticPipeline {
             // G-buffer / scene resources (live for this call's duration).
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
+    }
+
+    /// Point `frame`'s binding 5 at a replacement instance buffer (#4199).
+    ///
+    /// `SceneBuffers::ensure_instance_capacity` swaps a slot's instance SSBO
+    /// when a frame needs more room; this set names that buffer too, so it
+    /// has to follow. Same timing contract as the grow itself: called after
+    /// `frame`'s fence wait and before anything is recorded for it, so the
+    /// only command buffer that bound `descriptor_sets[frame]` has completed.
+    /// The other slot's set is not touched.
+    pub fn rebind_instance_buffer(
+        &self,
+        device: &ash::Device,
+        frame: usize,
+        instance_buffer: vk::Buffer,
+        instance_buffer_size: vk::DeviceSize,
+    ) {
+        let instance_info = [vk::DescriptorBufferInfo {
+            buffer: instance_buffer,
+            offset: 0,
+            range: instance_buffer_size,
+        }];
+        let write = write_storage_buffer(self.descriptor_sets[frame], 5, &instance_info);
+        // SAFETY: `device` is live and `descriptor_sets[frame]` is a live set
+        // this pipeline allocated. Per the contract above no pending command
+        // buffer has it bound. `instance_info` borrows a live buffer handle
+        // for the duration of the call.
+        unsafe { device.update_descriptor_sets(&[write], &[]) };
     }
 
     /// Point committed-hit reconstruction at the current global geometry.
@@ -1072,7 +1104,8 @@ impl CausticPipeline {
         camera_buffers: &[GpuBuffer],
         camera_buffer_size: vk::DeviceSize,
         instance_buffers: &[GpuBuffer],
-        instance_buffer_size: vk::DeviceSize,
+        // #4199 — one size per slot: instance buffers grow independently.
+        instance_buffer_sizes: &[vk::DeviceSize],
         width: u32,
         height: u32,
     ) -> Result<()> {
@@ -1116,7 +1149,7 @@ impl CausticPipeline {
             camera_buffers,
             camera_buffer_size,
             instance_buffers,
-            instance_buffer_size,
+            instance_buffer_sizes,
         );
 
         // #1031 — walk fresh slot images from UNDEFINED to GENERAL.

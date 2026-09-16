@@ -248,6 +248,8 @@ impl VulkanContext {
             if let Some(ref mut accel) = self.accel_manager {
                 accel.tick_deferred_destroy(&self.device, alloc);
             }
+            self.scene_buffers
+                .tick_retired_instance_buffers(&self.device, alloc);
         }
 
         // Re-point the RT-shading global-geometry descriptor (bindings 8/9)

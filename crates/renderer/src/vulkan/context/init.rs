@@ -1225,7 +1225,7 @@ impl VulkanContext {
             scene_buffers.camera_buffers(),
             scene_buffers.camera_buffer_size(),
             scene_buffers.instance_buffers(),
-            scene_buffers.instance_buffer_size(),
+            &scene_buffers.instance_buffer_sizes(),
             render_extent.width,
             render_extent.height,
         ) {

@@ -117,10 +117,11 @@ pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 1366;
 /// follow-up format flip just like the pre-#992 `R16_UINT` → `R32_UINT`
 /// step.
 ///
-/// `262144 × sizeof(GpuInstance) = 262144 × 160 B = 41.9 MB / frame
-/// × 2 frames-in-flight = 83.9 MB` total (#2219 grew `GpuInstance` from
-/// 112 B to 128 B; #3231 grew it again from 128 B to 160 B for GPU
-/// morph-target blending) — within the 6 GB RT-minimum VRAM budget.
+/// This is the ceiling, not the allocation. At full size the instance SSBO
+/// pair would be `262144 × (160 B + 64 B) × 2 frames-in-flight = 117.5 MB`
+/// (#2219 grew `GpuInstance` from 112 B to 128 B; #3231 to 160 B). Since
+/// #4199 the buffers start at [`INITIAL_INSTANCE_CAPACITY`] and grow toward
+/// this per slot — see [`grown_instance_capacity`].
 ///
 /// **History**:
 ///  - 8192 (original sizing for pre-M41 cells).
@@ -139,6 +140,61 @@ pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 1366;
 ///    draw, Diamond City — ~50K REFRs) saturated the R16 ceiling
 ///    and silently wrap-collapsed.
 pub const MAX_INSTANCES: usize = 0x40000;
+
+/// Starting capacity of each frame-in-flight's instance and previous-model
+/// SSBO (#4199).
+///
+/// Both used to be allocated at [`MAX_INSTANCES`] up front — 117.5 MB for the
+/// pair across both slots, roughly half of every scene buffer combined —
+/// for a ceiling sized with ~5× headroom over the densest city cells.
+/// Measured workloads sit far below it: MedTek (FO4) renders ~13.5 K
+/// instances. 64 K (65 536) covers every measured interior and exterior
+/// without growing, at 29.4 MB for the pair across both slots
+/// (`65536 × (160 + 64) B × 2`), and it is the working capacity #4199 itself
+/// proposed. Measured on MedTek: GPU memory allocated fell by exactly the
+/// computed 88.1 MB (84.0 MiB). A denser scene (Starfield's `citycydoniamainlevel` has
+/// ~95 K static draws, #3540) grows past it through
+/// [`grown_instance_capacity`] rather than truncating.
+pub const INITIAL_INSTANCE_CAPACITY: usize = 0x10000;
+
+// #4199 — the starting capacity must be a real saving under the ceiling, and
+// both must be powers of two so doubling from one lands exactly on the other.
+// Checked at compile time: a retune that breaks either fails the build.
+const _: () = assert!(
+    INITIAL_INSTANCE_CAPACITY.is_power_of_two()
+        && MAX_INSTANCES.is_power_of_two()
+        && INITIAL_INSTANCE_CAPACITY < MAX_INSTANCES,
+    "INITIAL_INSTANCE_CAPACITY must be a power of two below MAX_INSTANCES"
+);
+
+/// Capacity a slot's instance buffers must have to hold `needed` instances,
+/// given that they currently hold `current` (#4199).
+///
+/// Returns `current` unchanged when it already suffices, so the caller can
+/// compare to decide whether to reallocate. Otherwise doubles until `needed`
+/// fits: geometric growth means a scene that ramps up (a streaming exterior)
+/// reallocates `O(log n)` times rather than once per new high-water mark.
+/// Never exceeds [`MAX_INSTANCES`]; a request past it is clamped there, and
+/// the upload path's existing overflow warning reports the dropped tail.
+pub const fn grown_instance_capacity(current: usize, needed: usize) -> usize {
+    let needed = if needed > MAX_INSTANCES {
+        MAX_INSTANCES
+    } else {
+        needed
+    };
+    if needed <= current {
+        return current;
+    }
+    let mut capacity = if current == 0 { 1 } else { current };
+    while capacity < needed {
+        capacity *= 2;
+    }
+    if capacity > MAX_INSTANCES {
+        MAX_INSTANCES
+    } else {
+        capacity
+    }
+}
 /// Compile-time guard: `instance_custom_index` in the TLAS instance struct
 /// is a 24-bit field (`Packed24_8`).  If `MAX_INSTANCES` is ever bumped past
 /// 2^24 the TLAS build will silently truncate SSBO indices and corrupt every
@@ -393,6 +449,45 @@ pub fn snap_render_origin(camera_pos: byroredux_core::math::Vec3) -> byroredux_c
 
 #[cfg(test)]
 mod tests {
+    /// #4199 — the growth policy the per-slot reallocation relies on.
+    #[test]
+    fn instance_capacity_grows_geometrically_and_stops_at_the_ceiling() {
+        use super::{grown_instance_capacity, INITIAL_INSTANCE_CAPACITY, MAX_INSTANCES};
+
+        // Fits: unchanged, which is how the caller knows not to reallocate.
+        assert_eq!(
+            grown_instance_capacity(INITIAL_INSTANCE_CAPACITY, 0),
+            INITIAL_INSTANCE_CAPACITY
+        );
+        assert_eq!(
+            grown_instance_capacity(INITIAL_INSTANCE_CAPACITY, INITIAL_INSTANCE_CAPACITY),
+            INITIAL_INSTANCE_CAPACITY
+        );
+        // One past: exactly one doubling.
+        assert_eq!(
+            grown_instance_capacity(INITIAL_INSTANCE_CAPACITY, INITIAL_INSTANCE_CAPACITY + 1),
+            INITIAL_INSTANCE_CAPACITY * 2
+        );
+        // Starfield Cydonia's ~95 K static draws: two doublings from 64 K.
+        assert_eq!(
+            grown_instance_capacity(INITIAL_INSTANCE_CAPACITY, 95_000),
+            0x20000
+        );
+        // Past the ceiling: clamped, never larger than MAX_INSTANCES.
+        assert_eq!(
+            grown_instance_capacity(0x20000, MAX_INSTANCES + 1),
+            MAX_INSTANCES
+        );
+        assert_eq!(
+            grown_instance_capacity(MAX_INSTANCES, usize::MAX),
+            MAX_INSTANCES
+        );
+        // Never shrinks.
+        assert_eq!(grown_instance_capacity(MAX_INSTANCES, 1), MAX_INSTANCES);
+        // Degenerate zero start still makes progress.
+        assert_eq!(grown_instance_capacity(0, 3), 4);
+    }
+
     use super::*;
 
     /// #1494 / REN2-09 — the render-origin snap is the exterior cell edge

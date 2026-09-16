@@ -383,6 +383,9 @@ impl super::buffers::SceneBuffers {
             buf.destroy(device, allocator);
         }
         self.previous_model_buffers.clear();
+        // #4199 — buffers a grow replaced but whose countdown had not run out.
+        self.retired_instance_buffers
+            .drain(|mut buffer| buffer.destroy(device, allocator));
         for buf in &mut self.material_buffers {
             buf.destroy(device, allocator);
         }

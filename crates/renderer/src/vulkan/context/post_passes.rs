@@ -561,7 +561,7 @@ impl VulkanContext {
                         ) {
                             (Some(vertex_buffer), Some(index_buffer)) => Some((
                                 self.scene_buffers.instance_buffers()[frame].buffer,
-                                self.scene_buffers.instance_buffer_size(),
+                                self.scene_buffers.instance_buffer_size(frame),
                                 vertex_buffer.buffer,
                                 vertex_buffer.size,
                                 index_buffer.buffer,

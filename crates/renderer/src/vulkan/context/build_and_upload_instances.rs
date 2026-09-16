@@ -667,6 +667,33 @@ impl VulkanContext {
                 );
             });
         }
+        // #4199 — the instance SSBOs start at a working capacity and grow per
+        // slot. This is after `sync_and_acquire_frame`'s fence wait and before
+        // anything is recorded for `frame`, which is the window the grow needs
+        // (see `ensure_instance_capacity`). A failed grow leaves the slot as
+        // it was and the upload below clamps to it.
+        if let Some(allocator) = self.allocator.as_ref() {
+            match self.scene_buffers.ensure_instance_capacity(
+                &self.device,
+                allocator,
+                frame,
+                gpu_instances.len(),
+            ) {
+                Ok(true) => {
+                    if let Some(caustic) = self.post.caustic.as_ref() {
+                        caustic.rebind_instance_buffer(
+                            &self.device,
+                            frame,
+                            self.scene_buffers.instance_buffers()[frame].buffer,
+                            self.scene_buffers.instance_buffer_size(frame),
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => log::warn!("Failed to grow instance SSBOs: {e:#}"),
+            }
+        }
+
         // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {
             debug_assert_eq!(gpu_instances.len(), previous_models.len());
@@ -1432,5 +1459,69 @@ mod svgf_scene_static_signal_tests {
              regressing this drops GI convergence back to lagging a light-rig change \
              by up to the ~4s 1/(histAge+1) time constant (#4046)"
         );
+    }
+}
+
+/// #4199 / PERF-D4-2026-09-11-01 — the instance and previous-model SSBOs
+/// start at `INITIAL_INSTANCE_CAPACITY` instead of `MAX_INSTANCES`, so every
+/// frame has to grow its slot before it uploads, and a grow has to reach every
+/// descriptor that names the replaced buffer. A real grow needs a device
+/// (verified on-device by forcing a 1 024-entry start on MedTek: both slots
+/// grew to 16 384, validation output unchanged, image within run noise), so
+/// the wiring is pinned at source level.
+#[cfg(test)]
+mod instance_capacity_growth_pin {
+    fn production(src: &'static str) -> &'static str {
+        src.split("\n#[cfg(test)]")
+            .next()
+            .expect("split always yields a first segment")
+    }
+
+    #[test]
+    fn instance_buffers_grow_before_upload_and_rebind_the_caustic_set() {
+        let src = production(include_str!("build_and_upload_instances.rs"));
+        let grow = src
+            .find(".ensure_instance_capacity(")
+            .expect("the frame must grow its instance SSBOs before uploading (#4199)");
+        let upload = src
+            .find(".upload_instances(&self.device, frame, &gpu_instances)")
+            .expect("instances must still be uploaded");
+        assert!(
+            grow < upload,
+            "the grow must precede the upload, or the upload clamps to the old capacity"
+        );
+        let arm = &src[grow..upload];
+        assert!(
+            arm.contains("Ok(true) =>") && arm.contains(".rebind_instance_buffer("),
+            "a grow must rebind the caustic pipeline's set, which also names the buffer"
+        );
+    }
+
+    #[test]
+    fn scene_buffers_start_at_the_working_capacity() {
+        // Other files carry no copy of these literals, so they are scanned whole;
+        // only this file needs its test half cut off.
+        let buffers = include_str!("../scene_buffer/buffers.rs");
+        assert!(
+            buffers.contains("instance_bytes(INITIAL_INSTANCE_CAPACITY)")
+                && buffers.contains("previous_model_bytes(INITIAL_INSTANCE_CAPACITY)"),
+            "the instance SSBO pair must be allocated at the working capacity (#4199)"
+        );
+        assert!(
+            !buffers.contains("size_of::<GpuInstance>() * MAX_INSTANCES"),
+            "the instance SSBO must not return to an eager MAX_INSTANCES allocation (#4199)"
+        );
+
+        let upload = include_str!("../scene_buffer/upload.rs");
+        assert!(
+            upload.contains("let capacity = self.instance_capacity[frame_index];"),
+            "uploads must clamp to the slot's capacity, not MAX_INSTANCES (#4199)"
+        );
+
+        // The retired buffers must be ticked each frame and drained at teardown.
+        let acquire = include_str!("sync_and_acquire_frame.rs");
+        assert!(acquire.contains(".tick_retired_instance_buffers(&self.device, alloc);"));
+        let descriptors = include_str!("../scene_buffer/descriptors.rs");
+        assert!(descriptors.contains("self.retired_instance_buffers\n            .drain("));
     }
 }

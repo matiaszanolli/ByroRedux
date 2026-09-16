@@ -15,7 +15,7 @@ use super::descriptors::{
     hash_previous_model_slice,
 };
 use super::*;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ash::vk;
 
 const BONE_WORLD_SLOT_PENDING: u8 = 0x80;
@@ -718,11 +718,17 @@ impl super::buffers::SceneBuffers {
         frame_index: usize,
         instances: &[GpuInstance],
     ) -> Result<()> {
-        let count = instances.len().min(MAX_INSTANCES);
-        if instances.len() > MAX_INSTANCES {
+        // #4199 — clamp to what this slot holds, not to `MAX_INSTANCES`: the
+        // buffer starts smaller and `ensure_instance_capacity` grows it first.
+        // The two agree unless that grow failed, in which case the tail is
+        // dropped here instead of written past the allocation.
+        let capacity = self.instance_capacity[frame_index];
+        let count = instances.len().min(capacity);
+        if instances.len() > capacity {
             log::warn!(
-                "Instance SSBO overflow: {} instances submitted, capped at {} — excess draws silently dropped. #279 P2-12",
+                "Instance SSBO overflow: {} instances submitted, capped at {} (ceiling {}) — excess draws silently dropped. #279 P2-12",
                 instances.len(),
+                capacity,
                 MAX_INSTANCES,
             );
         }
@@ -759,8 +765,7 @@ impl super::buffers::SceneBuffers {
         // three `u64`s that the comment could not. It also narrows its own
         // non-coherent flush to the written prefix, so the `flush_range(0,
         // byte_size)` this replaced is preserved rather than widened (#301 /
-        // #1587). `instance_buffers` are sized for MAX_INSTANCES and `count`
-        // is clamped above.
+        // #1587). `count` is clamped above to this slot's capacity (#4199).
         self.instance_buffers[frame_index].write_mapped(device, &instances[..count])?;
         self.last_uploaded_instance_hash[frame_index] = Some(hash);
         Ok(())
@@ -775,11 +780,14 @@ impl super::buffers::SceneBuffers {
         frame_index: usize,
         models: &[GpuPreviousModel],
     ) -> Result<()> {
-        let count = models.len().min(MAX_INSTANCES);
-        if models.len() > MAX_INSTANCES {
+        // #4199 — same per-slot clamp as `upload_instances`.
+        let capacity = self.instance_capacity[frame_index];
+        let count = models.len().min(capacity);
+        if models.len() > capacity {
             log::warn!(
-                "Previous-model SSBO overflow: {} transforms submitted, capped at {}",
+                "Previous-model SSBO overflow: {} transforms submitted, capped at {} (ceiling {})",
                 models.len(),
+                capacity,
                 MAX_INSTANCES,
             );
         }
@@ -796,7 +804,8 @@ impl super::buffers::SceneBuffers {
         let mapped = buf.mapped_slice_mut()?;
         let byte_size = std::mem::size_of::<GpuPreviousModel>() * count;
         // SAFETY: `GpuPreviousModel` is a tightly packed nested f32 array;
-        // the destination is sized for MAX_INSTANCES and count is clamped.
+        // the destination holds `instance_capacity[frame_index]` entries and
+        // `count` is clamped to that (#4199).
         unsafe {
             std::ptr::copy_nonoverlapping(
                 models.as_ptr().cast::<u8>(),
@@ -1102,9 +1111,127 @@ impl super::buffers::SceneBuffers {
         std::mem::size_of::<GpuCamera>() as vk::DeviceSize
     }
 
-    /// Instance buffer size in bytes.
-    pub fn instance_buffer_size(&self) -> vk::DeviceSize {
-        (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize
+    /// Byte size of `frame_index`'s instance buffer. Per slot since #4199:
+    /// the two slots grow independently.
+    pub fn instance_buffer_size(&self, frame_index: usize) -> vk::DeviceSize {
+        super::buffers::instance_bytes(self.instance_capacity[frame_index])
+    }
+
+    /// [`Self::instance_buffer_size`] for every slot, for callers that write
+    /// descriptors for all of them at once.
+    pub fn instance_buffer_sizes(&self) -> [vk::DeviceSize; MAX_FRAMES_IN_FLIGHT] {
+        std::array::from_fn(|frame| self.instance_buffer_size(frame))
+    }
+
+    /// Grow `frame_index`'s instance and previous-model SSBOs so they hold at
+    /// least `needed` instances (#4199). Returns `Ok(true)` when the slot's
+    /// buffers were replaced — the caller must then rebind any descriptor
+    /// outside this struct that names them (the caustic pipeline's set).
+    ///
+    /// **Must be called after this slot's fence wait and before anything is
+    /// recorded for it**, which is where `build_and_upload_instances` runs.
+    /// That is what makes the swap sound: the only command buffer that ever
+    /// bound this slot's buffers — through this slot's own descriptor set —
+    /// has completed, and the other slot has its own buffers and set, so it
+    /// is untouched even while in flight. The scene set is rewritten
+    /// immediately, the same way `write_tlas` rewrites its binding per slot.
+    /// The replaced buffers are retired through the deferred-destroy
+    /// countdown rather than freed here.
+    ///
+    /// On allocation failure the slot keeps its current buffers and capacity,
+    /// and the upload clamps to it: the overflow tail is dropped with the
+    /// existing warning rather than written out of bounds.
+    pub fn ensure_instance_capacity(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        frame_index: usize,
+        needed: usize,
+    ) -> Result<bool> {
+        let current = self.instance_capacity[frame_index];
+        let target = grown_instance_capacity(current, needed);
+        if target == current {
+            return Ok(false);
+        }
+
+        let instance_size = super::buffers::instance_bytes(target);
+        let previous_size = super::buffers::previous_model_bytes(target);
+        let mut instances = GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            instance_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )
+        .context("grow instance SSBO")?;
+        let previous = match GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            previous_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        ) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                // Nothing has been swapped yet; the new instance buffer was
+                // never bound anywhere, so it can go straight away.
+                instances.destroy(device, allocator);
+                return Err(error).context("grow previous-model SSBO");
+            }
+        };
+
+        let set = self.descriptor_sets[frame_index];
+        let instance_info = [vk::DescriptorBufferInfo {
+            buffer: instances.buffer,
+            offset: 0,
+            range: instance_size,
+        }];
+        let previous_info = [vk::DescriptorBufferInfo {
+            buffer: previous.buffer,
+            offset: 0,
+            range: previous_size,
+        }];
+        // Bindings 4 and 18 are where `create_scene_descriptors` writes these
+        // two buffers.
+        let writes = [
+            super::super::descriptors::write_storage_buffer(set, 4, &instance_info),
+            super::super::descriptors::write_storage_buffer(set, 18, &previous_info),
+        ];
+        // SAFETY: `device` is live and `set` is this slot's device-allocated
+        // scene set. Per this function's contract the only command buffer that
+        // bound `set` has completed, so updating it is permitted. Both infos
+        // borrow buffers created above, which outlive the call.
+        unsafe { device.update_descriptor_sets(&writes, &[]) };
+
+        let old_instances = std::mem::replace(&mut self.instance_buffers[frame_index], instances);
+        let old_previous =
+            std::mem::replace(&mut self.previous_model_buffers[frame_index], previous);
+        self.retired_instance_buffers
+            .push(old_instances, crate::deferred_destroy::DEFAULT_COUNTDOWN);
+        self.retired_instance_buffers
+            .push(old_previous, crate::deferred_destroy::DEFAULT_COUNTDOWN);
+        self.instance_capacity[frame_index] = target;
+        // The new buffers hold nothing yet, so a hash match must not skip the
+        // first write into them.
+        self.last_uploaded_instance_hash[frame_index] = None;
+        self.last_uploaded_previous_model_hash[frame_index] = None;
+
+        log::info!(
+            "Instance SSBOs for frame slot {frame_index} grown {current} -> {target} entries \
+             ({:.1} MB for the pair) to hold {needed} instances",
+            (instance_size + previous_size) as f64 / (1024.0 * 1024.0),
+        );
+        Ok(true)
+    }
+
+    /// Free instance buffers retired by a grow once their countdown expires.
+    /// Called once per frame after the fence wait, beside the other
+    /// deferred-destroy ticks (#4199).
+    pub fn tick_retired_instance_buffers(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) {
+        self.retired_instance_buffers
+            .tick(|mut buffer| buffer.destroy(device, allocator));
     }
 
     /// Get the descriptor set for the current frame-in-flight.

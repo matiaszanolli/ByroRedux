@@ -89,8 +89,8 @@ Constants in [`scene_buffer/constants.rs`](../../crates/renderer/src/vulkan/scen
 | Buffer | Constant | Entries | Entry size | Per-frame | × 2 FIF |
 |---|---|---|---|---|---|
 | Light SSBO | `MAX_LIGHTS` = 1023 (`RESERVOIR_LIGHT_MASK`, #8e7582ed — not 512, that's `MAX_LIGHTS_PER_CLUSTER`) | 1023 | 64 B | 64 KB | **128 KB** |
-| Instance SSBO | `MAX_INSTANCES` = 262 144 | 262 144 | 160 B (#3231) | 41.9 MB | **83.9 MB** |
-| Previous-model SSBO (`33d9a468`) | `MAX_INSTANCES` = 262 144 | 262 144 | 64 B (`mat4`) | 16.8 MB | **33.6 MB** |
+| Instance SSBO ² | `INITIAL_INSTANCE_CAPACITY` = 65 536, grows to `MAX_INSTANCES` = 262 144 | 65 536 | 160 B (#3231) | 10.5 MB | **21.0 MB** (≤ 83.9 MB) |
+| Previous-model SSBO (`33d9a468`) ² | same | 65 536 | 64 B (`mat4`) | 4.2 MB | **8.4 MB** (≤ 33.6 MB) |
 | Indirect draw SSBO | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
 | Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 432 B | 6.75 MB | **13.5 MB** |
 | Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 160 B (`GpuTerrainTile`: 3× `[u32; 8]` texture indices + #4057's two `[f32; 4]` cover-affinity rows, `cell_origin_xz`, `water_y`, `canopy_height`, and #4056's ground-cover detail-atlas `uvec4`; pinned by `gpu_terrain_tile_is_160_bytes`) | — | **~160 KB** (single shared buffer, NOT FIF-doubled) |
@@ -106,7 +106,20 @@ scratch (`1 366 × MAX_BONES_PER_MESH(144) × 64 B ≈ 12.6 MB`, M29.6). Total
 [`scene_buffer/buffers.rs`](../../crates/renderer/src/vulkan/scene_buffer/buffers.rs)
 `allocate_scene_render_buffers`.
 
-**Total resident scene buffers:** ≈ **225 MB** across all copies.
+² Allocated at `INITIAL_INSTANCE_CAPACITY` since #4199, not at
+`MAX_INSTANCES`. The eager ceiling-sized pair was 117.5 MB — about half of
+every scene buffer combined — for a limit sized with ~5× headroom over the
+densest city cells, while measured scenes stay far below it (MedTek renders
+~13.5 K instances). `SceneBuffers::ensure_instance_capacity` doubles a single
+slot's pair, capped at `MAX_INSTANCES`, when a frame needs more: it runs after
+that slot's fence wait, rewrites the slot's scene-set bindings 4 and 18 (and
+the caustic set's binding 5), and retires the old pair through the
+deferred-destroy countdown. The parenthesised figures are the ceiling a grown
+slot pair can reach. Measured on MedTek, GPU memory allocated fell by the
+computed 88.1 MB (84.0 MiB).
+
+**Total resident scene buffers:** ≈ **137 MB** across all copies at the
+starting capacity (≈ 225 MB if both instance pairs grow to the ceiling).
 
 Exceeding `MAX_INSTANCES` logs a one-shot `warn!` and clamps to
 `MAX_INSTANCES` (#956/#992) — it is no longer a `debug_assert`. Exceeding

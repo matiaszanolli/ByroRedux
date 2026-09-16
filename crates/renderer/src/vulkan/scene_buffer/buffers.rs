@@ -131,6 +131,16 @@ pub struct SceneBuffers {
     /// [`Self::instance_buffers`]. A separate buffer preserves the compact
     /// instance ABI used by fragment and ray-query paths.
     pub(super) previous_model_buffers: Vec<GpuBuffer>,
+    /// #4199 — how many instances each slot's instance / previous-model pair
+    /// can currently hold. Starts at `INITIAL_INSTANCE_CAPACITY` and grows per
+    /// slot in `ensure_instance_capacity`, so the two slots may differ for the
+    /// frame between one growing and the other catching up.
+    pub(super) instance_capacity: [usize; MAX_FRAMES_IN_FLIGHT],
+    /// #4199 — instance / previous-model buffers replaced by a grow. The
+    /// slot's own command buffer has finished when a grow runs, but the
+    /// countdown keeps the free on the same footing as every other retired
+    /// GPU buffer in the renderer rather than reasoning about it per site.
+    pub(super) retired_instance_buffers: crate::deferred_destroy::DeferredDestroyQueue<GpuBuffer>,
     /// One UBO per frame-in-flight holding the per-TOD-interpolated
     /// 6-axis directional ambient cube (`GpuDalcCube`). Sourced from
     /// Skyrim WTHR.DALC; the cube's `flags.x` gates the consumer so
@@ -496,6 +506,16 @@ struct SceneRenderBuffers {
     selected_ray_probe_buffers: Vec<GpuBuffer>,
 }
 
+/// Byte size of an instance SSBO holding `capacity` entries.
+pub(super) fn instance_bytes(capacity: usize) -> vk::DeviceSize {
+    (std::mem::size_of::<GpuInstance>() * capacity) as vk::DeviceSize
+}
+
+/// Byte size of a previous-model SSBO holding `capacity` entries.
+pub(super) fn previous_model_bytes(capacity: usize) -> vk::DeviceSize {
+    (std::mem::size_of::<GpuPreviousModel>() * capacity) as vk::DeviceSize
+}
+
 /// Allocate all Vulkan buffers needed by the scene render pipeline.
 ///
 /// Creates per-frame-in-flight SSBO/UBO buffers (lights, camera, bones,
@@ -515,9 +535,10 @@ fn allocate_scene_render_buffers(
     // Bone palette: 4 × vec4 (mat4) per slot, std430 layout.
     let bone_buf_size = (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize;
     // Instance SSBO: per-instance model matrix + texture index + bone offset.
-    let instance_buf_size = (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize;
-    let previous_model_buf_size =
-        (std::mem::size_of::<GpuPreviousModel>() * MAX_INSTANCES) as vk::DeviceSize;
+    // #4199 — allocated at the working capacity, not `MAX_INSTANCES`; a slot
+    // grows in `SceneBuffers::ensure_instance_capacity` when a frame needs more.
+    let instance_buf_size = instance_bytes(INITIAL_INSTANCE_CAPACITY);
+    let previous_model_buf_size = previous_model_bytes(INITIAL_INSTANCE_CAPACITY);
     // Material SSBO: deduplicated `GpuMaterial` table (R1 Phase 4).
     let material_buf_size = (std::mem::size_of::<super::super::material::GpuMaterial>()
         * MAX_MATERIALS) as vk::DeviceSize;
@@ -1010,6 +1031,8 @@ impl SceneBuffers {
             bone_world_slot_states,
             instance_buffers: bufs.instance_buffers,
             previous_model_buffers: bufs.previous_model_buffers,
+            instance_capacity: [INITIAL_INSTANCE_CAPACITY; MAX_FRAMES_IN_FLIGHT],
+            retired_instance_buffers: crate::deferred_destroy::DeferredDestroyQueue::new(),
             dalc_buffers: bufs.dalc_buffers,
             material_buffers: bufs.material_buffers,
             indirect_buffers: bufs.indirect_buffers,
