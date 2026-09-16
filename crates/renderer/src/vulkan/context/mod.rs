@@ -255,9 +255,17 @@ struct TemporalHistory {
 /// #3736 — `VulkanContext`'s second field group. Each of these is
 /// `mem::take`n, filled, drained and put back every frame so its
 /// allocation survives; that shared lifecycle is what makes them a unit,
-/// and `fill_scratch_telemetry` already reported them as one. Like
-/// [`TemporalHistory`], none holds a device object, so this grouping is
-/// provably irrelevant to `teardown.rs`'s reverse-order destroy chain.
+/// and `fill_scratch_telemetry` already reported them as one.
+///
+/// Two of them — `skin_dispatches_scratch` and
+/// `skin_first_sight_builds_scratch` — do carry `vk::Buffer` values, so
+/// this group is not handle-free in the way [`TemporalHistory`] is. They
+/// are *borrowed* handles: the push sites copy `mesh.index_buffer.buffer`
+/// (owned by `MeshRegistry`) and `slot.output_buffer.buffer` (owned by the
+/// `SkinSlot`), so nothing here allocates or frees a device object and
+/// `teardown.rs`'s reverse-order destroy chain is still untouched. The
+/// commit that introduced this struct claimed outright that no field owns
+/// a handle, which overstated it.
 struct ScratchBuffers {
     /// Per-frame scratch buffer for the GPU instance SSBO payload. Held on
     /// the context so that capacity amortizes across frames instead of
