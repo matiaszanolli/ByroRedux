@@ -33,24 +33,31 @@ use crate::components::{
 };
 use crate::helpers::add_child;
 
-/// Legacy `BSLightingShaderType::SkinTint` value used by Skyrim/FO4 and by
-/// the renderer's skin-material branch. FO76's alternate value is normalized
-/// to this constant by the NIF material importer.
-const MATERIAL_KIND_SKIN_TINT: u32 = 5;
+/// Canonical `BSLightingShaderType::FaceTint` — the numbering
+/// `Material.material_kind` carries after `canonical_shader_type` (FO76 /
+/// Starfield's `BSShaderType155` FaceTint 3 is normalized to this value).
+const MATERIAL_KIND_FACE_TINT: u32 = 4;
 
-/// Apply a per-NPC FaceGen tint texture only to the actual skin surface.
+/// Apply a per-NPC FaceGen tint texture only to the FaceGen head shape.
 ///
 /// A FaceGeom NIF contains several independently-authored meshes (head,
-/// mouth, brows, eyes, hairline, and hair). The generated FaceTint DDS is the
-/// diffuse replacement for the SkinTint head mesh only; applying it to every
-/// submesh replaces the eyes/hair/mouth textures with pieces of the face atlas
-/// and produces the layered "mush" visible at close range.
+/// mouth, brows, eyes, hairline, hair, and overlays). The generated FaceTint
+/// DDS is the diffuse replacement for the FaceTint head mesh only; applying it
+/// to any other submesh replaces that mesh's texture with pieces of the face
+/// atlas and produces the layered "mush" visible at close range.
+///
+/// #4421 — keyed on FaceTint, not SkinTint (5). Measured over the vanilla
+/// FaceGeom corpus (2026-09-16): every Skyrim head is kind 4 (`malehead.dds`,
+/// `femalehead.dds`, …) and its kind-5 shapes are overlays with their own
+/// textures (facial gashes, Argonian hair, Orc tusks); FO4's 1,077 heads are
+/// kind 4 as well, and its kind-5 shapes are neck/body skin
+/// (`basemalebody_d.dds`, `femalebody_d.dds`, …).
 fn select_facegen_diffuse(
     authored: Option<String>,
     diffuse_override: Option<&str>,
     material_kind: u32,
 ) -> Option<String> {
-    if material_kind == MATERIAL_KIND_SKIN_TINT {
+    if material_kind == MATERIAL_KIND_FACE_TINT {
         diffuse_override.map(str::to_owned).or(authored)
     } else {
         authored
@@ -684,7 +691,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
 #[cfg(test)]
 mod tests {
     use super::{
-        loose_asset_path, parse_import_and_merge, select_facegen_diffuse, MATERIAL_KIND_SKIN_TINT,
+        loose_asset_path, parse_import_and_merge, select_facegen_diffuse, MATERIAL_KIND_FACE_TINT,
     };
     use crate::asset_provider::TextureProvider;
     use byroredux_core::animation::AnimationClipRegistry;
@@ -751,9 +758,32 @@ mod tests {
     }
 
     #[test]
-    fn facegen_diffuse_override_targets_only_skin_tint_head() {
+    fn facegen_diffuse_override_targets_only_face_tint_head() {
+        // #4421 — measured vanilla FaceGeom shapes. The kind-5 cases are the
+        // overlays (Skyrim) and neck/body skin (FO4) the pre-fix SkinTint gate
+        // painted with the face atlas, while every head (kind 4) kept its
+        // generic race texture.
         let cases = [
-            (MATERIAL_KIND_SKIN_TINT, "head.dds", FACE_TINT),
+            (
+                MATERIAL_KIND_FACE_TINT,
+                r"textures\actors\character\male\malehead.dds",
+                FACE_TINT,
+            ),
+            (
+                5,
+                r"actors\character\male\facedetails\faceleftsidegash04.dds",
+                r"actors\character\male\facedetails\faceleftsidegash04.dds",
+            ),
+            (
+                5,
+                r"textures\actors\character\orcmale\orctusks.dds",
+                r"textures\actors\character\orcmale\orctusks.dds",
+            ),
+            (
+                5,
+                r"textures\actors\character\basehumanmale\basemalebody_d.dds",
+                r"textures\actors\character\basehumanmale\basemalebody_d.dds",
+            ),
             (0, "mouth.dds", "mouth.dds"),
             (6, "brows-or-hair.dds", "brows-or-hair.dds"),
             (16, "eyes.dds", "eyes.dds"),
@@ -764,24 +794,24 @@ mod tests {
                 select_facegen_diffuse(Some(authored.to_owned()), Some(FACE_TINT), material_kind,)
                     .as_deref(),
                 Some(expected),
-                "material kind {material_kind}",
+                "material kind {material_kind}, authored {authored}",
             );
         }
     }
 
     #[test]
-    fn skin_tint_keeps_authored_diffuse_without_override() {
+    fn face_tint_keeps_authored_diffuse_without_override() {
         assert_eq!(
-            select_facegen_diffuse(Some("head.dds".to_owned()), None, MATERIAL_KIND_SKIN_TINT,)
+            select_facegen_diffuse(Some("head.dds".to_owned()), None, MATERIAL_KIND_FACE_TINT,)
                 .as_deref(),
             Some("head.dds"),
         );
     }
 
     #[test]
-    fn skin_tint_override_can_supply_missing_authored_diffuse() {
+    fn face_tint_override_can_supply_missing_authored_diffuse() {
         assert_eq!(
-            select_facegen_diffuse(None, Some(FACE_TINT), MATERIAL_KIND_SKIN_TINT).as_deref(),
+            select_facegen_diffuse(None, Some(FACE_TINT), MATERIAL_KIND_FACE_TINT).as_deref(),
             Some(FACE_TINT),
         );
     }
@@ -1081,8 +1111,8 @@ fn spawn_nif_mesh(
         }
     }
 
-    // #2095 / SKY-D3-NEW-03 — the per-call pre-baked FaceGen tint
-    // replaces only the SkinTint head diffuse. A FaceGeom NIF also
+    // #2095 / SKY-D3-NEW-03 / #4421 — the per-call pre-baked FaceGen
+    // tint replaces only the FaceTint head diffuse. A FaceGeom NIF also
     // contains mouth, brows, eyes, hairline, and hair meshes with their
     // own authored textures; overriding those is what produced the
     // close-range layered face "mush". Applied after normal-map
