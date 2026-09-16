@@ -1192,6 +1192,137 @@ fn bgem_merge_forwards_both_palette_bits_when_both_authored() {
     );
 }
 
+/// Inline FO4 `BSEffectShaderProperty` fixture for #4425: the NIF already
+/// filled `effect_shader` (palette bits + an env-map scale the BGEM does not
+/// author) and won the `greyscale_lut` role from its own greyscale texture.
+fn inline_effect_mesh_with_nif_palette(
+    pool: &mut byroredux_core::string::StringPool,
+    path: &str,
+) -> byroredux_nif::import::ImportedMesh {
+    let mut mesh = imported_mesh_with_material_path(pool, path);
+    mesh.material.textures.greyscale_lut = Some(pool.intern("textures\\nif_effect_lut.dds"));
+    mesh.material.effect_shader = Some(byroredux_nif::import::BsEffectShaderData {
+        effect_palette_color: true,
+        effect_palette_alpha: true,
+        env_map_scale: 0.5,
+        ..Default::default()
+    });
+    mesh
+}
+
+/// Regression for #4425 (FO4-D2-2026-09-16-01): the BGEM merge used to
+/// rebuild `effect_shader` from `Default`, erasing the NIF's SLSF1 palette
+/// bits — the only place an effect shader carries them — and then skipped its
+/// own palette capture because the NIF had already filled the LUT. 362 vanilla
+/// FO4 effect shapes (e.g. `bldglasschunk07.nif` → `glasstile01.bgem`) packed
+/// no palette flag despite a bound LUT. The merge must keep the NIF payload,
+/// overwrite only the BGEM-authored fields, and still pack the remap.
+#[test]
+fn bgem_merge_keeps_nif_effect_palette_bits_and_packs_the_remap() {
+    use byroredux_renderer::vulkan::material::material_flag::{
+        EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR,
+    };
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/glasstile_palette.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            grayscale_texture: "textures\\effects\\gradients\\bgem_lut.dds".into(),
+            base: byroredux_bgsm::BaseMaterial {
+                grayscale_to_palette_color: true,
+                ..Default::default()
+            },
+            falloff_start_angle: 0.25,
+            soft_enabled: true,
+            soft_depth: 8.0,
+            ..Default::default()
+        },
+    );
+    let mut mesh = inline_effect_mesh_with_nif_palette(&mut pool, path);
+    let nif_lut = mesh.material.textures.greyscale_lut;
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    let effect = mesh.material.effect_shader.as_ref().expect("effect payload kept");
+    assert!(effect.effect_palette_color && effect.effect_palette_alpha);
+    assert_eq!(effect.env_map_scale, 0.5, "NIF-only fields must survive the merge");
+    assert_eq!(effect.falloff_start_angle, 0.25, "BGEM-authored fields still win");
+    assert!(effect.effect_soft);
+    assert_eq!(effect.soft_falloff_depth, 8.0);
+    assert_eq!(
+        mesh.material.textures.greyscale_lut, nif_lut,
+        "texture precedence is unchanged — the NIF's LUT still wins the role"
+    );
+    assert!(
+        mesh.material.bgsm_greyscale_lut_enabled && mesh.material.bgsm_greyscale_lut_color,
+        "the BGEM's own enable bit must not be skipped when the NIF filled the LUT"
+    );
+
+    let flags = crate::cell_loader::pack_effect_shader_flags(mesh.material.effect_shader.as_ref())
+        | crate::cell_loader::pack_imported_material_flags(&mesh.material);
+    assert_ne!(flags & EFFECT_PALETTE_COLOR, 0);
+    assert_ne!(flags & EFFECT_PALETTE_ALPHA, 0);
+}
+
+/// #4425 — the other half: a NIF-filled LUT with NO NIF palette bits must
+/// still pick up the BGEM's authored alpha remap (the mirror of the BGSM
+/// arm's #3898 `nif_supplied_greyscale_lut` branch).
+#[test]
+fn bgem_palette_bits_survive_a_nif_supplied_greyscale_lut() {
+    use byroredux_renderer::vulkan::material::material_flag::{
+        EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR,
+    };
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/mist_palette_alpha.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            grayscale_texture: "textures\\effects\\gradients\\bgem_lut.dds".into(),
+            grayscale_to_palette_alpha: true,
+            ..Default::default()
+        },
+    );
+    let mut mesh = inline_effect_mesh_with_nif_palette(&mut pool, path);
+    if let Some(effect) = mesh.material.effect_shader.as_mut() {
+        effect.effect_palette_color = false;
+        effect.effect_palette_alpha = false;
+    }
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    let flags = crate::cell_loader::pack_effect_shader_flags(mesh.material.effect_shader.as_ref())
+        | crate::cell_loader::pack_imported_material_flags(&mesh.material);
+    assert_ne!(flags & EFFECT_PALETTE_ALPHA, 0);
+    assert_eq!(flags & EFFECT_PALETTE_COLOR, 0, "only the alpha variant was authored");
+}
+
+/// A BGEM with no NIF effect payload still starts from the identity payload.
+#[test]
+fn bgem_merge_without_nif_effect_payload_builds_one() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/no_nif_payload.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            soft_enabled: true,
+            soft_depth: 4.0,
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    assert!(mesh.material.effect_shader.is_none());
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+
+    let effect = mesh.material.effect_shader.as_ref().expect("payload built");
+    assert!(effect.effect_soft);
+    assert_eq!(effect.soft_falloff_depth, 4.0);
+    assert!(!effect.effect_palette_color && !effect.effect_palette_alpha);
+}
+
 /// Regression for #2643 (SF-D9-2026-08-07-04), real merge path: a BGEM
 /// authoring `envmap_texture`/`envmap_mask_texture` but leaving the
 /// version-appropriate `env_mapping_enabled()` bit off must NOT fill

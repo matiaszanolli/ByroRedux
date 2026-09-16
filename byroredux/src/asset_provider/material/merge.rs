@@ -1023,8 +1023,19 @@ fn merge_bgem_arm(
     // Forward it to the same common greyscale_lut role BGSM uses — both
     // resolve through MaterialTextureHandles and the
     // `EFFECT_PALETTE_COLOR` flag.
-    if material.textures.greyscale_lut.is_none() && !bgem.grayscale_texture.is_empty() {
-        material.textures.greyscale_lut = Some(pool.intern(&bgem.grayscale_texture));
+    //
+    // #4425 — mirror of the BGSM arm's #3898 / #4286 handling. On an inline
+    // FO4 `BSEffectShaderProperty` the NIF has already won the
+    // `greyscale_lut` slot from its own greyscale texture, so the BGEM's
+    // authored enable bits must still be ORed in rather than skipped; and in
+    // both branches the bits are ORed, never assigned, so neither source can
+    // silently disable a remap the other asked for. The texture precedence is
+    // unchanged — first non-empty wins.
+    if !bgem.grayscale_texture.is_empty() {
+        if material.textures.greyscale_lut.is_none() {
+            material.textures.greyscale_lut = Some(pool.intern(&bgem.grayscale_texture));
+            *touched = true;
+        }
         // #1580 / #2643 — BGEM's own alpha-variant bool and the shared
         // color bit are independent authoring (the format permits
         // setting both at once), so track them as two separate flags
@@ -1034,17 +1045,16 @@ fn merge_bgem_arm(
         // Previously `bgsm_greyscale_lut_is_alpha` alone decided
         // COLOR-vs-ALPHA, which silently dropped the color variant
         // whenever a BGEM authored both bits.
-        material.bgsm_greyscale_lut_is_alpha = bgem.grayscale_to_palette_alpha;
-        material.bgsm_greyscale_lut_color = bgem.base.grayscale_to_palette_color;
+        material.bgsm_greyscale_lut_is_alpha |= bgem.grayscale_to_palette_alpha;
+        material.bgsm_greyscale_lut_color |= bgem.base.grayscale_to_palette_color;
         // #2108 (SF-D9-01) — either enable bit (the shared
         // `grayscale_to_palette_color`, or BGEM's alpha-variant
         // `grayscale_to_palette_alpha`) turns the remap on; which of
         // COLOR/ALPHA the packer sets is decided separately, above, by
         // `bgsm_greyscale_lut_color` / `bgsm_greyscale_lut_is_alpha`.
         // The texture slot being filled is not itself an enable signal.
-        material.bgsm_greyscale_lut_enabled =
+        material.bgsm_greyscale_lut_enabled |=
             bgem.base.grayscale_to_palette_color || bgem.grayscale_to_palette_alpha;
-        *touched = true;
     }
     // #2643 (SF-D9-2026-08-07-04) — gate the envmap texture fill on
     // the authored `env_mapping_enabled()` bit, the version-aware
@@ -1198,17 +1208,24 @@ fn merge_bgem_arm(
     // (`soft = true` in the authored file) rendered with no depth feather
     // and stacked to an opaque white-out (HalluciGen labs). `lighting_influence`
     // is authored 0..1 in BGEM but carried 0..255 on the shared payload.
-    material.effect_shader = Some(byroredux_nif::import::BsEffectShaderData {
-        falloff_start_angle: bgem.falloff_start_angle,
-        falloff_stop_angle: bgem.falloff_stop_angle,
-        falloff_start_opacity: bgem.falloff_start_opacity,
-        falloff_stop_opacity: bgem.falloff_stop_opacity,
-        soft_falloff_depth: bgem.soft_depth,
-        effect_soft: bgem.soft_enabled,
-        effect_lit: bgem.effect_lighting_enabled,
-        lighting_influence: (bgem.lighting_influence.clamp(0.0, 1.0) * 255.0).round() as u8,
-        ..Default::default()
-    });
+    //
+    // #4425 — update the NIF's payload in place rather than replacing it.
+    // A wholesale `..Default::default()` rebuild erased every field the BGEM
+    // does not re-author, most visibly the NIF's SLSF1 palette bits
+    // (`effect_palette_color` / `_alpha`) — which live only here for effect
+    // shaders — so 362 vanilla FO4 effect shapes with a bound LUT lost their
+    // remap. The identity payload is the base only when the NIF had none.
+    let effect = material
+        .effect_shader
+        .get_or_insert_with(byroredux_nif::import::BsEffectShaderData::default);
+    effect.falloff_start_angle = bgem.falloff_start_angle;
+    effect.falloff_stop_angle = bgem.falloff_stop_angle;
+    effect.falloff_start_opacity = bgem.falloff_start_opacity;
+    effect.falloff_stop_opacity = bgem.falloff_stop_opacity;
+    effect.soft_falloff_depth = bgem.soft_depth;
+    effect.effect_soft = bgem.soft_enabled;
+    effect.effect_lit = bgem.effect_lighting_enabled;
+    effect.lighting_influence = (bgem.lighting_influence.clamp(0.0, 1.0) * 255.0).round() as u8;
     *touched = true;
 
     None
