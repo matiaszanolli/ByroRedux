@@ -843,6 +843,72 @@ impl GroundCoverPipeline {
         Ok(())
     }
 
+    /// Rebuild the render-pass-dependent graphics pipelines against
+    /// `render_pass` (#4307).
+    ///
+    /// `recreate_swapchain_core` rebuilds the main render pass on a surface-
+    /// format change and recreated the triangle and water pipelines against
+    /// it, but not these — they kept pointing at the destroyed pass. It is not
+    /// a spec violation while the new pass stays compatible with the old one,
+    /// and today it does, since every main-pass attachment format is a
+    /// compile-time constant plus a device-stable depth format. It stops being
+    /// true the moment one of those attachments is derived from the swapchain
+    /// surface format, and the failure then is
+    /// VUID-vkCmdDraw-renderPass-02684 on a code path — an HDR toggle or a
+    /// display change mid-session — that no test exercises.
+    ///
+    /// Only the two graphics pipelines are rebuilt. The water pipeline's
+    /// equivalent path drops and recreates the whole object, which is right
+    /// for it; here that would also throw away the blade arena, the chunk
+    /// residency and the §12.4 displacement field — megabytes of state with no
+    /// render-pass dependency — and make a window resize restart the sward.
+    ///
+    /// # Safety contract
+    ///
+    /// The caller must have idled the device: the two pipelines being
+    /// destroyed must have no in-flight command buffer referencing them.
+    pub fn recreate_draw_pipelines(
+        &mut self,
+        device: &ash::Device,
+        pipeline_cache: vk::PipelineCache,
+        render_pass: vk::RenderPass,
+    ) -> Result<()> {
+        // SAFETY: the caller idled the device (see the contract above), so
+        // these two pipelines — created by `device` and not yet destroyed —
+        // have no in-flight references. They are nulled immediately so a
+        // later `destroy` or an early return cannot double-free them.
+        unsafe {
+            for pipeline in [&mut self.blade_pipeline, &mut self.debug_pipeline] {
+                if *pipeline != vk::Pipeline::null() {
+                    device.destroy_pipeline(*pipeline, None);
+                    *pipeline = vk::Pipeline::null();
+                }
+            }
+        }
+
+        let entry = std::ffi::CString::new("main").expect("static literal");
+        let vert = shader_module(device, BLADE_VERT_SPV, "groundcover_blade.vert")?;
+        let blade_frag = shader_module(device, BLADE_FRAG_SPV, "groundcover_blade.frag")?;
+        let debug_frag = shader_module(device, DEBUG_FRAG_SPV, "groundcover_debug.frag")?;
+        let result = self.build_draw_pipelines(
+            device,
+            pipeline_cache,
+            render_pass,
+            &entry,
+            vert,
+            blade_frag,
+            debug_frag,
+        );
+        // SAFETY: pipeline creation has completed, so the modules are no
+        // longer referenced; they are owned here and destroyed exactly once.
+        unsafe {
+            for module in [vert, blade_frag, debug_frag] {
+                device.destroy_shader_module(module, None);
+            }
+        }
+        result
+    }
+
     fn create_pipelines(
         &mut self,
         device: &ash::Device,
@@ -930,6 +996,35 @@ impl GroundCoverPipeline {
                 .context("create ground-cover scatter pipeline")?[0]
         };
 
+        self.build_draw_pipelines(
+            device,
+            pipeline_cache,
+            render_pass,
+            entry,
+            vert,
+            blade_frag,
+            debug_frag,
+        )
+    }
+
+    /// Build the two render-pass-dependent graphics pipelines.
+    ///
+    /// Split out of `build_pipelines` for #4307: these are the only two
+    /// objects here bound to a render pass, so a surface-format change has to
+    /// rebuild exactly them — not the scatter/interaction compute pipelines,
+    /// and not the blade arena or the §12.4 displacement field, which are
+    /// several megabytes of residency with no dependency on the pass at all.
+    #[allow(clippy::too_many_arguments)]
+    fn build_draw_pipelines(
+        &mut self,
+        device: &ash::Device,
+        pipeline_cache: vk::PipelineCache,
+        render_pass: vk::RenderPass,
+        entry: &std::ffi::CStr,
+        vert: vk::ShaderModule,
+        blade_frag: vk::ShaderModule,
+        debug_frag: vk::ShaderModule,
+    ) -> Result<()> {
         // `GC_DEBUG_POINTS` — specialization constant 0 in the shared vertex
         // shader. One shader, two pipelines: the debug view renders points at
         // exactly the positions the blades will occupy, so it cannot drift
@@ -1582,6 +1677,14 @@ impl GroundCoverPipeline {
         } else {
             self.blade_pipeline
         };
+        // #4307 — a failed `recreate_draw_pipelines` leaves these null rather
+        // than dangling, and the ground cover stops drawing until the next
+        // successful rebuild. The object itself stays alive so its arena,
+        // field images and descriptor pool are still torn down by `destroy`;
+        // dropping it here to signal the failure would leak every one of them.
+        if pipeline == vk::Pipeline::null() {
+            return;
+        }
         // SAFETY: `cmd` is recording inside the render pass this pipeline was
         // created against; the descriptor sets and the indirect buffer are
         // live, and the scatter's trailing barrier has made its writes visible

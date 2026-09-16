@@ -380,6 +380,33 @@ impl VulkanContext {
                     None
                 }
             };
+
+            // #4307 — ground cover draws into this same main pass and was the
+            // one main-pass pipeline set this block did not rebuild, so its
+            // two graphics pipelines kept pointing at the render pass
+            // destroyed above. Harmless only while the new pass stays
+            // compatible with the old one; the day a main-pass attachment
+            // format is derived from the swapchain surface format it becomes
+            // VUID-vkCmdDraw-renderPass-02684, on a path no test exercises.
+            //
+            // Unlike water, only the pipelines are rebuilt: dropping the whole
+            // object would also discard the blade arena, chunk residency and
+            // the displacement field, none of which depend on the render pass.
+            // Failure is absorbed the same way water's is — one warning, and
+            // the ground cover stops drawing rather than the resize failing.
+            // The object is deliberately kept: it has no `Drop`, so replacing
+            // it with `None` here would leak the blade arena, the field images
+            // and the descriptor pool. `record_draw` skips on the null
+            // pipeline the failed rebuild leaves behind.
+            if let Some(groundcover) = self.groundcover.as_mut() {
+                if let Err(e) = groundcover.recreate_draw_pipelines(
+                    &self.device,
+                    self.pipeline_cache,
+                    self.swapchain.render_pass,
+                ) {
+                    log::warn!("Ground-cover pipeline recreate after resize failed: {e}");
+                }
+            }
         }
 
         Ok(())
@@ -1888,6 +1915,79 @@ mod tests {
         assert!(
             src[recreate_pos..destroy_pos].contains("Err(e) =>"),
             "the destroy must live on the recreate_framebuffers Err arm (#2685)"
+        );
+    }
+    /// #4307 — every main-pass pipeline set must be rebuilt inside the
+    /// `format_changed` block, not just the ones someone remembered.
+    ///
+    /// The block destroys the main render pass and builds a new one. Anything
+    /// still holding the old handle is only safe while the two passes stay
+    /// render-pass-*compatible*, which they are today because every main-pass
+    /// attachment format is a compile-time constant plus a device-stable
+    /// depth format. That is a property of the current attachment list, not a
+    /// guarantee: derive one attachment from the swapchain surface format and
+    /// the stale pipelines become VUID-vkCmdDraw-renderPass-02684 on a path —
+    /// an HDR toggle, a monitor change — that no test drives and no validation
+    /// run in CI would reach.
+    ///
+    /// Ground cover was the set that got missed. Naming each one here means
+    /// the next main-pass pipeline added has to be named too.
+    #[test]
+    fn a_surface_format_change_rebuilds_every_main_pass_pipeline() {
+        let src = production_src();
+        let block = src
+            .split("let format_changed =")
+            .nth(1)
+            .expect("the format-change gate must still exist");
+
+        for (what, needle) in [
+            (
+                "the main render pass",
+                "self.swapchain.render_pass = create_render_pass(",
+            ),
+            (
+                "the triangle pipelines",
+                "pipeline::recreate_triangle_pipelines(",
+            ),
+            ("the water pipeline", "WaterPipeline::new("),
+            (
+                "the ground-cover pipelines",
+                "groundcover.recreate_draw_pipelines(",
+            ),
+        ] {
+            assert!(
+                block.contains(needle),
+                "a surface-format change must rebuild {what} against the new render pass \
+                 — `{needle}` is missing from the `format_changed` block (#4307)",
+            );
+        }
+    }
+
+    /// #4307 — the ground-cover failure arm must not drop the pipeline object.
+    ///
+    /// `GroundCoverPipeline` has no `Drop`; its blade arena, displacement-field
+    /// images and descriptor pool are released only by the explicit `destroy`.
+    /// Setting the slot to `None` to signal a failed rebuild — the obvious move,
+    /// and what the water arm's shape suggests — would leak all of it on a code
+    /// path that only fires when something has already gone wrong.
+    #[test]
+    fn a_failed_ground_cover_rebuild_keeps_the_object_for_teardown() {
+        let src = production_src();
+        let arm = src
+            .split("groundcover.recreate_draw_pipelines(")
+            .nth(1)
+            .expect("the ground-cover rebuild must still exist")
+            .split("\n        }")
+            .next()
+            .expect("split always yields a first segment");
+        assert!(
+            arm.contains("log::warn!"),
+            "a failed ground-cover rebuild must report itself"
+        );
+        assert!(
+            !arm.contains("self.groundcover = None"),
+            "dropping the pipeline object leaks everything it owns — it has no `Drop`, \
+             and `record_draw` already skips on the null pipeline a failed rebuild leaves"
         );
     }
 }
