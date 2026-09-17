@@ -24,9 +24,9 @@
 // (see the note in `animate_lights_system`). Re-enabling it means adding
 // back the `Transform` write pass and its import.
 use byroredux_core::ecs::{
-    EntityId, LightFlicker, LightKind, LightSource, World, LIGHT_FLAG_FLICKER,
-    LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW, LIGHT_FLAG_SHADOW_MASK,
-    LIGHT_FLAG_SPOT,
+    EntityId, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
+    LIGHT_FLAG_SHADOW_MASK, LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL, LIGHT_FLAG_SPOT, LightFlicker,
+    LightKind, LightSource, World,
 };
 use byroredux_plugin::esm::reader::GameKind;
 
@@ -157,13 +157,19 @@ pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32)
 ///
 /// The animation sibling stays at `0`, and the asymmetry is the documented
 /// one: an unverified bit must not create motion, but it may cast a shadow.
-pub(crate) fn canonical_light_shadow_flags(_game: GameKind, source_flags: u32) -> u32 {
-    // `_game` is retained deliberately. This is a per-game boundary
-    // canonicalizer whose animation sibling still branches, and #2250's whole
-    // shape is that a verified divergence gets an arm here without churning
-    // every call site. Unused today because every game now shares the
-    // permissive mask.
-    source_flags & LIGHT_FLAG_SHADOW_MASK
+pub(crate) fn canonical_light_shadow_flags(game: GameKind, source_flags: u32) -> u32 {
+    let authored = source_flags & LIGHT_FLAG_SHADOW_MASK;
+    // Fallout 3 / New Vegas' shipped interiors use zero projection bits for
+    // ordinary room lights. Prospector's Saloon has 24 placed LIGH records,
+    // all with zero projection bits; treating zero as an unshadowed fallback
+    // removes static-prop shadows from the entire cell. The RT renderer uses
+    // an omnidirectional query instead, matching the visual role of those
+    // local sources while retaining authored projection choices when present.
+    if game == GameKind::Fallout3NV && authored == 0 {
+        LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL
+    } else {
+        authored
+    }
 }
 
 /// The geometry half of a canonical [`LightSource`] derived from an ESM
@@ -619,7 +625,7 @@ mod tests {
     #[test]
     fn pulse_is_sine_of_phase() {
         let f = flicker(LIGHT_FLAG_PULSE, 0.4, 1.0); // amplitude 0.4, period 1 s
-                                                     // total_time 0 → phase 0 → sin(0) = 0 → unit.
+        // total_time 0 → phase 0 → sin(0) = 0 → unit.
         assert!((flicker_intensity(1, &f, 0.0) - 1.0).abs() < 1e-6);
         // total_time = period/4 → phase 0.25 → sin(TAU·0.25) = 1
         // → 1 + 1·0.4·0.5 = 1.2.
@@ -798,6 +804,22 @@ mod tests {
             LIGHT_FLAG_SHADOW_SPOTLIGHT
                 | LIGHT_FLAG_SHADOW_HEMISPHERE
                 | LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+        );
+    }
+
+    #[test]
+    fn fallout3nv_zero_projection_lights_get_omnidirectional_rt_visibility() {
+        use byroredux_core::ecs::{LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL, LIGHT_FLAG_SHADOW_SPOTLIGHT};
+        assert_eq!(
+            canonical_light_shadow_flags(GameKind::Fallout3NV, 0),
+            LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+            "FO3/FNV room lights commonly author no legacy projection bit; \
+             leaving them at zero makes the scene's RT shadows disappear"
+        );
+        assert_eq!(
+            canonical_light_shadow_flags(GameKind::Fallout3NV, LIGHT_FLAG_SHADOW_SPOTLIGHT),
+            LIGHT_FLAG_SHADOW_SPOTLIGHT,
+            "an authored projection technique must remain authoritative"
         );
     }
 

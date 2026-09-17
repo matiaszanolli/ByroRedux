@@ -304,6 +304,14 @@ fn device_preference_key(
     (type_priority, device_local_bytes)
 }
 
+/// A CPU Vulkan implementation can expose the extensions required by our
+/// shaders, but it cannot execute the renderer's RT-heavy frame within a
+/// playable memory or latency budget. Integrated GPUs remain supported: their
+/// DEVICE_LOCAL heap is system memory, but their work is hardware accelerated.
+fn is_hardware_render_device(device_type: vk::PhysicalDeviceType) -> bool {
+    device_type != vk::PhysicalDeviceType::CPU
+}
+
 struct PhysicalDeviceCandidate {
     device: vk::PhysicalDevice,
     indices: QueueFamilyIndices,
@@ -335,14 +343,25 @@ pub fn pick_physical_device(
 
     let mut selected: Option<PhysicalDeviceCandidate> = None;
     for &device in &devices {
+        let properties = unsafe {
+            // SAFETY: `instance` is live and `device` was enumerated from it
+            // above; the query writes only into the returned properties struct.
+            instance.get_physical_device_properties(device)
+        };
+        if !is_hardware_render_device(properties.device_type) {
+            // SAFETY: device_name is a fixed-size [c_char; 256] array
+            // null-terminated by the Vulkan driver. The pointer remains valid
+            // while `properties` is in scope.
+            let name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) };
+            log::warn!(
+                "Rejecting Vulkan CPU device {:?}: software ray tracing would consume system RAM and is not playable",
+                name,
+            );
+            continue;
+        }
         if let Some((indices, caps)) =
             is_device_suitable(instance, surface_loader, surface, device)?
         {
-            let properties = unsafe {
-                // SAFETY: `instance` is live and `device` was enumerated from it
-                // above; the query writes only into the returned properties struct.
-                instance.get_physical_device_properties(device)
-            };
             let device_local_bytes = total_device_local_bytes(instance, device);
             let preference = device_preference_key(properties.device_type, device_local_bytes);
             // SAFETY: device_name is a fixed-size [c_char; 256] array
@@ -382,7 +401,8 @@ pub fn pick_physical_device(
              VK_KHR_acceleration_structure + VK_KHR_deferred_host_operations — the \
              committed shader set declares RayQueryKHR and \
              PhysicalStorageBufferAddresses, so RT is mandatory, not optional. \
-             RTX 20-series / RDNA2 / Arc or newer required)"
+             RTX 20-series / RDNA2 / Arc or newer required; software Vulkan CPU \
+             devices are intentionally rejected)"
         );
     };
 
@@ -936,7 +956,10 @@ pub fn create_logical_device(
 
 #[cfg(test)]
 mod caps_tests {
-    use super::{device_preference_key, supports_committed_shader_int64, DeviceCapabilities};
+    use super::{
+        DeviceCapabilities, device_preference_key, is_hardware_render_device,
+        supports_committed_shader_int64,
+    };
     use ash::vk;
 
     #[test]
@@ -963,6 +986,14 @@ mod caps_tests {
         );
         assert!(key(vk::PhysicalDeviceType::VIRTUAL_GPU) > key(vk::PhysicalDeviceType::OTHER));
         assert!(key(vk::PhysicalDeviceType::OTHER) > key(vk::PhysicalDeviceType::CPU));
+    }
+
+    #[test]
+    fn software_cpu_device_is_rejected_but_integrated_gpu_is_allowed() {
+        assert!(!is_hardware_render_device(vk::PhysicalDeviceType::CPU));
+        assert!(is_hardware_render_device(
+            vk::PhysicalDeviceType::INTEGRATED_GPU
+        ));
     }
 
     /// The checked-in shader modules declare `OpCapability Int64` because

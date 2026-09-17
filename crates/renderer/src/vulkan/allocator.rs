@@ -308,7 +308,7 @@ fn warn_once_if_over_threshold(
     }
 }
 
-/// Log current GPU memory allocation statistics.
+/// Log current Vulkan allocator statistics.
 ///
 /// Queries the gpu_allocator report for total allocated/reserved bytes.
 /// Logs at INFO if usage is normal, WARN if allocated exceeds 80% of
@@ -331,7 +331,7 @@ pub fn log_memory_usage(
     let num_blocks = report.blocks.len();
 
     log::info!(
-        "GPU memory: {:.1} MB allocated / {:.1} MB reserved ({} allocations, {} blocks)",
+        "Vulkan allocations: {:.1} MB allocated / {:.1} MB reserved ({} allocations, {} blocks)",
         allocated_mb,
         reserved_mb,
         num_allocs,
@@ -343,11 +343,13 @@ pub fn log_memory_usage(
         report.total_allocated_bytes,
         threshold,
         warning_once,
-        || log::warn!(
-            "GPU memory usage high: {:.1} MB allocated (threshold: {} MB ≈ 80% of smallest DEVICE_LOCAL heap)",
-            allocated_mb,
-            threshold / (1024 * 1024)
-        ),
+        || {
+            log::warn!(
+                "Vulkan allocation usage high: {:.1} MB allocated (threshold: {} MB ≈ 80% of smallest DEVICE_LOCAL heap)",
+                allocated_mb,
+                threshold / (1024 * 1024)
+            )
+        },
     );
 }
 

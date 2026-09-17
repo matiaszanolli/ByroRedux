@@ -639,7 +639,7 @@ impl VulkanContext {
         )
     }
 
-    /// Log current GPU memory allocation statistics. Threshold for the
+    /// Log current Vulkan allocator statistics. Threshold for the
     /// "high usage" WARN scales with the physical device's smallest
     /// DEVICE_LOCAL heap — see #505.
     pub fn log_memory_usage(&self) {

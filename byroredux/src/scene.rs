@@ -1828,7 +1828,7 @@ fn spawn_player_body(
             );
         }
     }
-    log::info!("GPU allocation report after initial global-geometry build:");
+    log::info!("Vulkan allocation report after initial global-geometry build:");
     ctx.log_memory_usage();
 
     let total_entities = world.next_entity_id();

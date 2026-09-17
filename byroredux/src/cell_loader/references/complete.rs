@@ -397,7 +397,7 @@ pub(super) fn complete_reference_load(
     // allocations for this interior. Keep the allocator report at this
     // boundary: a first-frame failure otherwise makes it impossible to tell
     // whether pressure originated during loading or in frame setup.
-    log::info!("  GPU allocation report after loading '{label}':");
+    log::info!("  Vulkan allocation report after loading '{label}':");
     ctx.log_memory_usage();
 
     ReferenceLoadProgress::Complete(RefLoadResult {

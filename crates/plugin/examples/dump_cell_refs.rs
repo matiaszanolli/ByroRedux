@@ -113,6 +113,36 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    let light_refs = cell
+        .references
+        .iter()
+        .filter_map(|reference| {
+            let base = index.cells.statics.get(&reference.base_form_id)?;
+            let light = base.light_data.as_ref()?;
+            Some((reference, base, light))
+        })
+        .collect::<Vec<_>>();
+    if !light_refs.is_empty() {
+        println!("\n{} placed LIGH references:", light_refs.len());
+        for (reference, base, light) in light_refs {
+            println!(
+                "  REFR {:08X} base={:08X} {} pos=({:+.0}, {:+.0}, {:+.0}) \\
+                 radius={:.0} color=({:.2}, {:.2}, {:.2}) flags={:#010X}",
+                reference.form_id,
+                reference.base_form_id,
+                base.editor_id,
+                reference.position[0],
+                reference.position[1],
+                reference.position[2],
+                light.radius,
+                light.color[0],
+                light.color[1],
+                light.color[2],
+                light.flags,
+            );
+        }
+    }
+
     if !sky_candidates.is_empty() {
         println!(
             "\n{} sky/window/glass candidate references:",
