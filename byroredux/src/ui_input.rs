@@ -66,6 +66,26 @@ pub(crate) fn release_world_input(world: &World) -> bool {
     was_captured
 }
 
+/// Raw device events are not addressed to a window. A stale capture flag must
+/// never let another application's mouse movement rotate the gameplay camera.
+pub(crate) fn apply_mouse_look(
+    input: &mut InputState,
+    delta: (f64, f64),
+    window_focused: bool,
+) {
+    if !window_focused || !input.mouse_captured {
+        return;
+    }
+    let sensitivity = input.look_sensitivity;
+    input.yaw -= delta.0 as f32 * sensitivity;
+    let vertical_sign = if input.invert_look_y { 1.0 } else { -1.0 };
+    input.pitch += delta.1 as f32 * sensitivity * vertical_sign;
+    input.pitch = input.pitch.clamp(
+        -std::f32::consts::FRAC_PI_2 + 0.01,
+        std::f32::consts::FRAC_PI_2 - 0.01,
+    );
+}
+
 /// Translate and dispatch one winit event.
 ///
 /// The result identifies window input that belongs to a focused menu and
@@ -478,13 +498,63 @@ mod tests {
         let mut world = World::new();
         let mut input = InputState::default();
         input.keys_held.extend([KeyCode::KeyW, KeyCode::KeyE]);
+        input.mouse_buttons_held.insert(MouseButton::Left);
         input.mouse_captured = true;
         world.insert_resource(input);
 
         assert!(release_world_input(&world));
         let input = world.resource::<InputState>();
         assert!(input.keys_held.is_empty());
+        assert!(input.mouse_buttons_held.is_empty());
         assert!(!input.mouse_captured);
+    }
+
+    #[test]
+    fn mouse_look_requires_both_window_focus_and_capture() {
+        for (focused, captured) in [(false, false), (false, true), (true, false)] {
+            let mut input = InputState {
+                yaw: 0.5,
+                pitch: 0.25,
+                mouse_captured: captured,
+                ..Default::default()
+            };
+            apply_mouse_look(&mut input, (100.0, -50.0), focused);
+            assert_eq!((input.yaw, input.pitch), (0.5, 0.25));
+        }
+    }
+
+    #[test]
+    fn focused_mouse_look_preserves_sensitivity_inversion_and_pitch_limit() {
+        let mut input = InputState {
+            mouse_captured: true,
+            look_sensitivity: 0.01,
+            ..Default::default()
+        };
+        apply_mouse_look(&mut input, (10.0, 20.0), true);
+        assert!((input.yaw + 0.1).abs() < 1e-6);
+        assert!((input.pitch + 0.2).abs() < 1e-6);
+        input.invert_look_y = true;
+        apply_mouse_look(&mut input, (0.0, 20.0), true);
+        assert!(input.pitch.abs() < 1e-6);
+        apply_mouse_look(&mut input, (0.0, 10000.0), true);
+        assert_eq!(input.pitch, std::f32::consts::FRAC_PI_2 - 0.01);
+    }
+
+    #[test]
+    fn focus_release_does_not_recapture_or_rotate_on_return() {
+        let mut world = World::new();
+        world.insert_resource(InputState {
+            mouse_captured: true,
+            yaw: 0.5,
+            pitch: 0.25,
+            ..Default::default()
+        });
+        assert!(release_world_input(&world));
+        assert!(!release_world_input(&world));
+        let mut input = world.resource_mut::<InputState>();
+        apply_mouse_look(&mut input, (100.0, 100.0), true);
+        assert_eq!((input.yaw, input.pitch), (0.5, 0.25));
+        assert!(!input.mouse_captured, "refocus requires an explicit capture");
     }
 
     #[test]

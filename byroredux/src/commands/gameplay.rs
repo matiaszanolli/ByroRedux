@@ -12,7 +12,7 @@ impl ConsoleCommand for HardcoreCommand {
         "hardcore"
     }
     fn description(&self) -> &str {
-        "Inspect/select New Vegas Hardcore effect branches: hardcore [on|off] (needs simulation not yet implemented)"
+        "Inspect/select New Vegas Hardcore effect branches: hardcore [on|off] (hunger/thirst/sleep pending)"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let requested = match args.trim() {

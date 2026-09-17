@@ -68,6 +68,15 @@ grep -Fq 'input.press: queued action=Activate binding=E' \
 grep -Fq 'input.press: queued action=Activate binding=E' \
     "$ROOT_DIR/docs/smoke-tests/p1-character-traversal.sh" \
     || fail "P1 no longer asserts the stable Activate/binding token"
+# The CLI deliberately accepts space-separated values only. An equals sign
+# silently exercises default startup placement instead of the fixture pose
+# when the smoke's log filter hides the parser warning.
+grep -Fq -- '--camera-pos "$P1_CAMERA_POS"' \
+    "$ROOT_DIR/docs/smoke-tests/p1-character-traversal.sh" \
+    || fail "P1 no longer passes its camera position using supported CLI syntax"
+grep -Fq -- '--camera-forward "$P1_CAMERA_FORWARD"' \
+    "$ROOT_DIR/docs/smoke-tests/p1-character-traversal.sh" \
+    || fail "P1 no longer passes its camera direction using supported CLI syntax"
 grep -Fq 'input.press: queued action=Attack binding=R' \
     "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
     || fail "P2 no longer asserts the stable Attack/binding token"
@@ -118,8 +127,8 @@ done
 SKYRIM_FIXTURE="$ROOT_DIR/docs/smoke-tests/fixtures/skyrim_se.env"
 grep -Fq 'NPC ref=000383F7 base=000E9895' "$SKYRIM_FIXTURE" \
     || fail "the Skyrim fixture no longer pins the grounded reference/base pair"
-grep -Fq '0001CB64:DraugrBattleAxe:damage=18' "$SKYRIM_FIXTURE" \
-    || fail "the Skyrim fixture no longer pins the Draugr Battleaxe leaf"
+grep -Fq '0002C672:DraugrWarAxe:damage=9' "$SKYRIM_FIXTURE" \
+    || fail "the Skyrim fixture no longer pins the reachable Draugr War Axe leaf"
 grep -Fq '000236A5:DraugrGreatsword:damage=17' "$SKYRIM_FIXTURE" \
     || fail "the Skyrim fixture no longer pins the Draugr Greatsword leaf"
 

@@ -258,8 +258,8 @@ env BYRO_DEBUG_PORT="$PORT" \
     "${SMOKE_ENGINE_ARGS[@]}" \
     --cell "$P1_CELL" \
     --player \
-    --camera-pos="$P1_CAMERA_POS" \
-    --camera-forward="$P1_CAMERA_FORWARD" \
+    --camera-pos "$P1_CAMERA_POS" \
+    --camera-forward "$P1_CAMERA_FORWARD" \
     --radius 1 \
     --bench-frames "$BENCH_FRAMES" \
     --bench-hold \

@@ -48,10 +48,9 @@ pub fn effective_args() -> Vec<String> {
 /// no diagnostic anywhere. Two things it actually cost: the W1 water fixture's
 /// first two derivation runs (the engine kept spawning at the grid's default
 /// pose while the operator read coordinates off a pose that never applied),
-/// and `p1-character-traversal.sh`, which passes
-/// `--camera-pos="$P1_CAMERA_POS"` and has therefore been running with an
-/// inert fixture value — harmless there only because its spawn comes from the
-/// door ladder rather than the camera.
+/// and `p1-character-traversal.sh`, which used to pass
+/// `--camera-pos="$P1_CAMERA_POS"` and exercised an unrelated default door
+/// instead of its authored fixture pose. P1 now uses the supported spelling.
 ///
 /// Accepting `=` would silently change the behaviour of every existing caller
 /// that has been passing it (P1 included), so this reports instead of

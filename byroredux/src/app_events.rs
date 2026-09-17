@@ -237,6 +237,12 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        // Focus loss must release gameplay state even if a native/Scaleform
+        // menu consumes the event below. Key-up events may go to another
+        // application after Alt-Tab; retaining those keys makes movement stick.
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.release_world_input_for_ui();
+        }
         // A finite named benchmark owns the measured world state. Matrix runs
         // repeatedly create focus-stealing windows; accepting a coincident E
         // press here can activate a door and turn an interior benchmark into
@@ -513,17 +519,11 @@ impl ApplicationHandler for App {
                 return;
             }
             let mut input = self.world.resource_mut::<InputState>();
-            if input.mouse_captured {
-                let sensitivity = input.look_sensitivity;
-                input.yaw -= delta.0 as f32 * sensitivity;
-                let vertical_sign = if input.invert_look_y { 1.0 } else { -1.0 };
-                input.pitch += delta.1 as f32 * sensitivity * vertical_sign;
-                // Clamp pitch to avoid flipping.
-                input.pitch = input.pitch.clamp(
-                    -std::f32::consts::FRAC_PI_2 + 0.01,
-                    std::f32::consts::FRAC_PI_2 - 0.01,
-                );
-            }
+            crate::ui_input::apply_mouse_look(
+                &mut input,
+                delta,
+                self.window.as_ref().is_some_and(|window| window.has_focus()),
+            );
         }
     }
 

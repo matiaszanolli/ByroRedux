@@ -1012,6 +1012,29 @@ impl PhysicsWorld {
             })
     }
 
+    /// Test the final capsule placement, not just the supporting floor.
+    /// Downward casts with `stop_at_penetration=false` can find floor while
+    /// already inside a door. Use the same solid-world filter as floor probes
+    /// (including kinematic architecture, excluding sensors and actor bones).
+    /// The query pipeline must be current, as for the floor probes.
+    pub fn capsule_overlaps_solid(
+        &self,
+        center: byroredux_core::math::Vec3,
+        half_height: f32,
+        radius: f32,
+        excluded_body: Option<RigidBodyHandle>,
+    ) -> bool {
+        let shape = SharedShape::capsule_y(half_height.max(1e-3), radius.max(1e-3));
+        let pos = Isometry::translation(center.x, center.y, center.z);
+        let mut filter = solid_probe_filter();
+        if let Some(body) = excluded_body {
+            filter = filter.exclude_rigid_body(body);
+        }
+        self.query_pipeline
+            .intersection_with_shape(&self.bodies, &self.colliders, &pos, shape.as_ref(), filter)
+            .is_some()
+    }
+
     /// Diagnostic — compute the AABB of all static colliders in the
     /// world, plus the count. Returns `None` when there are no static
     /// colliders. Used by the M28.5 controller's one-shot "collider
@@ -1353,6 +1376,47 @@ mod tests {
         );
 
         assert_eq!(hit, Some(1.0));
+    }
+
+    #[test]
+    fn capsule_clearance_rejects_door_overlap_and_can_exclude_self() {
+        let mut w = PhysicsWorld::new();
+        insert_slab(&mut w, Vec3::ZERO, false);
+        let door = w
+            .bodies
+            .insert(RigidBodyBuilder::kinematic_position_based().build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(2.0, 100.0, 20.0).build(),
+            door,
+            &mut w.bodies,
+        );
+        w.update_query_pipeline();
+        let center = Vec3::new(0.0, 20.0, 0.0);
+        assert!(w.capsule_overlaps_solid(center, 10.0, 5.0, None));
+        assert!(!w.capsule_overlaps_solid(center, 10.0, 5.0, Some(door)));
+        assert!(!w.capsule_overlaps_solid(Vec3::new(30.0, 20.0, 0.0), 10.0, 5.0, None));
+    }
+
+    #[test]
+    fn capsule_clearance_ignores_sensors_and_live_actor_bones() {
+        let mut w = PhysicsWorld::new();
+        let body = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(20.0, 100.0, 20.0)
+                .sensor(true)
+                .build(),
+            body,
+            &mut w.bodies,
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(20.0, 100.0, 20.0)
+                .collision_groups(InteractionGroups::new(ACTOR_BONE_GROUP, Group::ALL))
+                .build(),
+            body,
+            &mut w.bodies,
+        );
+        w.update_query_pipeline();
+        assert!(!w.capsule_overlaps_solid(Vec3::ZERO, 10.0, 5.0, None));
     }
 
     #[test]
@@ -1998,7 +2062,11 @@ mod tests {
             w.step(PHYSICS_DT);
         }
         while w.step(PHYSICS_DT) > 0 {}
-        assert_eq!(w.active_island_counts().0, 0, "fixture precondition: settled");
+        assert_eq!(
+            w.active_island_counts().0,
+            0,
+            "fixture precondition: settled"
+        );
         assert!(!w.pending_wake(), "fixture precondition: nothing pending");
 
         assert!(w.add_force(h, up, false), "no-wake force still applies");

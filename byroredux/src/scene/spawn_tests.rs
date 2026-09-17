@@ -5,6 +5,155 @@ use super::{
 use crate::systems::PlayerMode;
 use byroredux_core::math::Vec3;
 
+fn spawn_collision_world() -> byroredux_core::ecs::World {
+    use byroredux_core::ecs::components::{CollisionShape, RigidBodyData};
+    use byroredux_core::ecs::{GlobalTransform, Transform, World};
+    let mut world = World::new();
+    world.insert_resource(byroredux_physics::PhysicsWorld::new());
+    world.register::<byroredux_physics::RapierHandles>();
+    // A broad floor and a door panel intersecting the threshold capsule.
+    for (center, half_extents) in [
+        (Vec3::new(0.0, -1.0, 0.0), Vec3::new(300.0, 1.0, 300.0)),
+        (Vec3::new(0.0, 90.0, 0.0), Vec3::new(4.0, 90.0, 55.0)),
+    ] {
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(center));
+        world.insert(
+            entity,
+            GlobalTransform::new(center, byroredux_core::math::Quat::IDENTITY, 1.0),
+        );
+        world.insert(entity, CollisionShape::Cuboid { half_extents });
+        world.insert(entity, RigidBodyData::STATIC);
+    }
+    byroredux_physics::register_newcomers_and_refresh_queries(&mut world);
+    world
+}
+
+#[test]
+fn door_threshold_floor_does_not_certify_an_overlapping_capsule() {
+    let world = spawn_collision_world();
+    let cc = byroredux_physics::CharacterController::HUMAN;
+    assert!(
+        world
+            .resource::<byroredux_physics::PhysicsWorld>()
+            .cast_capsule_down_onto_walkable_surface(
+                Vec3::Y * super::floor_probe_lift(cc),
+                cc.half_height,
+                cc.radius,
+                super::FLOOR_PROBE_CLEARANCE_BU + super::FLOOR_PROBE_REACH_BELOW_DOOR_BU,
+                super::min_walkable_normal_y(cc),
+                None,
+            )
+            .is_some(),
+        "the downward cast alone incorrectly certifies this occupied column"
+    );
+    assert_eq!(
+        super::probe_walkable_floor_near(&world, 0.0, 0.0, 0.0, cc, None),
+        None
+    );
+    let (floor, x, z, _) =
+        super::clear_spawn_near_door(&world, Vec3::ZERO, Some(Vec3::X), cc, None)
+            .expect("a clear floor exists beside the door");
+    assert!(floor.abs() < 0.01);
+    assert!(x.abs() > cc.radius + 4.0);
+    let center_y = super::character_spawn_center_y(&world, floor, cc);
+    assert!(!world
+        .resource::<byroredux_physics::PhysicsWorld>()
+        .capsule_overlaps_solid(Vec3::new(x, center_y, z), cc.half_height, cc.radius, None,));
+}
+
+#[test]
+fn nearby_door_search_does_not_cross_into_unready_exterior_cell() {
+    let world = spawn_collision_world();
+    let cc = byroredux_physics::CharacterController::HUMAN;
+    let (_, x, z, _) =
+        super::clear_spawn_near_door(&world, Vec3::ZERO, Some(Vec3::NEG_X), cc, Some((0, 0)))
+            .expect("there is a clear candidate on the foreground side of the boundary");
+    assert_eq!(crate::streaming::world_pos_to_grid(x, z), (0, 0));
+    assert!(
+        super::clear_spawn_near_door(&world, Vec3::ZERO, Some(Vec3::X), cc, Some((10, 10)))
+            .is_none()
+    );
+}
+
+fn add_spawn_door(world: &mut byroredux_core::ecs::World) {
+    let door = world.spawn();
+    world.insert(door, byroredux_core::ecs::Transform::IDENTITY);
+    world.insert(
+        door,
+        crate::components::DoorTeleport {
+            destination_form_id: 42,
+            position_zup: [0.0; 3],
+            rotation_zup: [0.0; 3],
+        },
+    );
+}
+
+#[test]
+fn explicit_camera_column_wins_over_an_unrelated_door() {
+    let mut world = spawn_collision_world();
+    add_spawn_door(&mut world);
+    let cc = byroredux_physics::CharacterController::HUMAN;
+    let eye = Vec3::new(150.0, 120.0, 100.0);
+    let explicit = super::plan_character_spawn(&world, eye, cc, None, true);
+    assert!(explicit.ground_probe.is_walkable());
+    assert_eq!((explicit.body_pos.x, explicit.body_pos.z), (eye.x, eye.z));
+    assert!((explicit.body_pos.y - super::character_spawn_center_y(&world, 0.0, cc)).abs() < 0.01);
+    let automatic = super::plan_character_spawn(&world, eye, cc, None, false);
+    assert!(automatic.ground_probe.is_walkable());
+    assert_ne!(
+        automatic.body_pos, explicit.body_pos,
+        "default placement retains the door ladder"
+    );
+}
+
+#[test]
+fn unsupported_explicit_column_is_not_replaced_by_a_door() {
+    let mut world = spawn_collision_world();
+    add_spawn_door(&mut world);
+    let cc = byroredux_physics::CharacterController::HUMAN;
+    let eye = Vec3::new(1000.0, 120.0, 1000.0);
+    let plan = super::plan_character_spawn(&world, eye, cc, None, true);
+    assert!(!plan.ground_probe.is_walkable());
+    assert_eq!(plan.body_pos, eye - Vec3::Y * cc.eye_height);
+    assert_eq!(
+        select_initial_player_mode(
+            false,
+            false,
+            false,
+            true,
+            true,
+            plan.ground_probe.is_walkable()
+        ),
+        PlayerMode::FlyCam
+    );
+}
+
+#[test]
+fn explicit_column_uses_local_floor_instead_of_roof() {
+    use byroredux_core::ecs::components::{CollisionShape, RigidBodyData};
+    let mut world = spawn_collision_world();
+    let roof = world.spawn();
+    let pos = Vec3::new(150.0, 250.0, 100.0);
+    world.insert(roof, byroredux_core::ecs::Transform::from_translation(pos));
+    world.insert(
+        roof,
+        byroredux_core::ecs::GlobalTransform::new(pos, byroredux_core::math::Quat::IDENTITY, 1.0),
+    );
+    world.insert(
+        roof,
+        CollisionShape::Cuboid {
+            half_extents: Vec3::new(70.0, 2.0, 70.0),
+        },
+    );
+    world.insert(roof, RigidBodyData::STATIC);
+    byroredux_physics::register_newcomers_and_refresh_queries(&mut world);
+    let cc = byroredux_physics::CharacterController::HUMAN;
+    let plan = super::plan_character_spawn(&world, Vec3::new(150.0, 120.0, 100.0), cc, None, true);
+    assert!(plan.ground_probe.is_walkable());
+    assert!((plan.body_pos.y - super::character_spawn_center_y(&world, 0.0, cc)).abs() < 0.01);
+}
+
 #[test]
 fn exterior_spawn_skips_persistent_door_in_neighboring_cell() {
     // Regression: interactive `(3,-19)` bootstrap has only that tile's

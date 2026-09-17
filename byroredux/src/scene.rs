@@ -242,6 +242,7 @@ pub(crate) fn probe_walkable_floor_near(
             .and_then(|handles| handles.get(entity).map(|h| h.body))
     });
     let probe_lift = floor_probe_lift(cc);
+    let center_offset = character_spawn_center_y(world, 0.0, cc);
     let pw = world.resource::<byroredux_physics::PhysicsWorld>();
     pw.cast_capsule_down_onto_walkable_surface(
         Vec3::new(x, reference_y + probe_lift, z),
@@ -251,6 +252,42 @@ pub(crate) fn probe_walkable_floor_near(
         min_walkable_normal_y(cc),
         excluded_body,
     )
+    .filter(|surface_y| {
+        !pw.capsule_overlaps_solid(
+            Vec3::new(x, surface_y + center_offset, z),
+            cc.half_height,
+            cc.radius,
+            excluded_body,
+        )
+    })
+}
+
+/// A door pivot is not necessarily free space. Search a small, deterministic
+/// ring near that pivot when the usual inward and threshold columns fail.
+/// Every candidate must have both walkable support and room for the capsule.
+fn clear_spawn_near_door(
+    world: &World,
+    door: Vec3,
+    inward: Option<Vec3>,
+    cc: byroredux_physics::CharacterController,
+    foreground: Option<(i32, i32)>,
+) -> Option<(f32, f32, f32, &'static str)> {
+    let direction = inward.unwrap_or(Vec3::X);
+    for radius in [64.0, 128.0] {
+        for step in 0..8 {
+            let angle = step as f32 * std::f32::consts::FRAC_PI_4;
+            let (sin, cos) = angle.sin_cos();
+            let x = door.x + radius * (direction.x * cos - direction.z * sin);
+            let z = door.z + radius * (direction.x * sin + direction.z * cos);
+            if foreground.is_some_and(|grid| crate::streaming::world_pos_to_grid(x, z) != grid) {
+                continue;
+            }
+            if let Some(y) = probe_walkable_floor_near(world, x, z, door.y, cc, None) {
+                return Some((y, x, z, "clear nearby door column"));
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn character_spawn_center_y(
@@ -540,7 +577,54 @@ fn plan_character_spawn(
     cam_pos: Vec3,
     controller: byroredux_physics::CharacterController,
     exterior_foreground: Option<(i32, i32)>,
+    explicit_camera_position: bool,
 ) -> CharacterSpawnPlan {
+    if explicit_camera_position {
+        // --camera-pos is an eye position. Keep its column instead of letting
+        // an unrelated first door replace it; search near the expected feet,
+        // not from the top of the cell where a roof can win.
+        let reference_y =
+            cam_pos.y - controller.eye_height - character_spawn_center_y(world, 0.0, controller);
+        let aabb = world
+            .resource::<byroredux_physics::PhysicsWorld>()
+            .static_colliders_aabb();
+        let floor =
+            probe_walkable_floor_near(world, cam_pos.x, cam_pos.z, reference_y, controller, None);
+        let (body_pos, ground_probe) = if let Some(surface_y) = floor {
+            let spawn_y = character_spawn_center_y(world, surface_y, controller);
+            (
+                Vec3::new(cam_pos.x, spawn_y, cam_pos.z),
+                GroundProbe::Grounded {
+                    x: cam_pos.x,
+                    z: cam_pos.z,
+                    surface_y,
+                    spawn_y,
+                    collider_count: aabb.map_or(0, |(_, _, count)| count),
+                },
+            )
+        } else {
+            // Automatic mode selection will refuse an unsupported column.
+            // Explicit --player still forces a capsule, but at the requested
+            // eye position, never silently at a different door or on the roof.
+            let probe = aabb.map_or(GroundProbe::NoColliders, |(_, _, collider_count)| {
+                GroundProbe::NoFloorBeneath {
+                    x: cam_pos.x,
+                    z: cam_pos.z,
+                    searched_bu: FLOOR_PROBE_CLEARANCE_BU + FLOOR_PROBE_REACH_BELOW_DOOR_BU,
+                    collider_count,
+                }
+            });
+            (cam_pos - Vec3::Y * controller.eye_height, probe)
+        };
+        log::info!(
+            "Character spawn uses explicit camera column: body=({:.1}, {:.1}, {:.1}), supported={}",
+            body_pos.x,
+            body_pos.y,
+            body_pos.z,
+            ground_probe.is_walkable()
+        );
+        return CharacterSpawnPlan::new(body_pos, controller, ground_probe);
+    }
     let door_spawn = {
         let doors = world.query::<crate::components::DoorTeleport>();
         let transforms = world.query::<Transform>();
@@ -582,23 +666,40 @@ fn plan_character_spawn(
                 )
             })
             .flatten();
-        let wide_floor_y = if near_door_floor_y.is_none() && door_xz_floor_y.is_none() {
-            aabb.and_then(|(min, max, _)| {
-                let probe_lift = floor_probe_lift(controller);
-                world
-                    .resource::<byroredux_physics::PhysicsWorld>()
-                    .cast_capsule_down_onto_walkable_surface(
-                        Vec3::new(nudged_x, max[1] + probe_lift, nudged_z),
-                        controller.half_height,
-                        controller.radius,
-                        (max[1] - min[1]).max(1.0) + probe_lift + 100.0,
-                        min_walkable_normal_y(controller),
-                        None,
-                    )
-            })
+        let nearby_floor = if near_door_floor_y.is_none() && door_xz_floor_y.is_none() {
+            clear_spawn_near_door(world, door_pos, inward_xz, controller, exterior_foreground)
         } else {
             None
         };
+        let wide_floor_y =
+            if near_door_floor_y.is_none() && door_xz_floor_y.is_none() && nearby_floor.is_none() {
+                aabb.and_then(|(min, max, _)| {
+                    let probe_lift = floor_probe_lift(controller);
+                    world
+                        .resource::<byroredux_physics::PhysicsWorld>()
+                        .cast_capsule_down_onto_walkable_surface(
+                            Vec3::new(nudged_x, max[1] + probe_lift, nudged_z),
+                            controller.half_height,
+                            controller.radius,
+                            (max[1] - min[1]).max(1.0) + probe_lift + 100.0,
+                            min_walkable_normal_y(controller),
+                            None,
+                        )
+                })
+                .filter(|surface_y| {
+                    let center_y = character_spawn_center_y(world, *surface_y, controller);
+                    !world
+                        .resource::<byroredux_physics::PhysicsWorld>()
+                        .capsule_overlaps_solid(
+                            Vec3::new(nudged_x, center_y, nudged_z),
+                            controller.half_height,
+                            controller.radius,
+                            None,
+                        )
+                })
+            } else {
+                None
+            };
 
         let resolved = near_door_floor_y
             .map(|surface_y| (surface_y, nudged_x, nudged_z, "nudged XZ near door height"))
@@ -612,6 +713,7 @@ fn plan_character_spawn(
                     )
                 })
             })
+            .or(nearby_floor)
             .or_else(|| {
                 wide_floor_y.map(|surface_y| {
                     (
@@ -747,6 +849,7 @@ pub(crate) fn setup_scene(
         content.foreground_ready_for_character,
         content.diagnostic_scene,
         cam_pos,
+        camera_pos_override.is_some(),
     );
     spawn_player_body(world, ctx, cam_pos, forward, spawn_plan, player_mode);
     launch_archive_menu(ctx, ui_manager, ui_texture_handle, &args);
@@ -1425,6 +1528,7 @@ fn select_and_spawn_player_mode(
     foreground_ready_for_character: bool,
     diagnostic_scene: bool,
     cam_pos: Vec3,
+    explicit_camera_position: bool,
 ) -> (Option<CharacterSpawnPlan>, crate::systems::PlayerMode) {
     // M28.5 — Player rig selection. Character mode requires actual
     // content in the world (cell loaded successfully OR loose NIF
@@ -1465,7 +1569,13 @@ fn select_and_spawn_player_mode(
         let exterior_foreground = streaming_slot
             .as_ref()
             .and_then(|state| state.last_player_grid);
-        let plan = plan_character_spawn(world, cam_pos, character_controller, exterior_foreground);
+        let plan = plan_character_spawn(
+            world,
+            cam_pos,
+            character_controller,
+            exterior_foreground,
+            explicit_camera_position,
+        );
         // Greppable telemetry line for the smoke matrix — EX-04 asks for the
         // static-collider count and the probe result to be captured.
         log::info!("{}", plan.ground_probe.telemetry_line());

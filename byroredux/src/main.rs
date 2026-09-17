@@ -1006,10 +1006,11 @@ impl App {
 
     /// Return mouse look to gameplay after a native modal closes.
     fn capture_world_input(&mut self) {
-        if self
-            .ui_manager
-            .as_ref()
-            .is_some_and(UiManager::has_input_focus)
+        if !self.window.as_ref().is_some_and(Window::has_focus)
+            || self
+                .ui_manager
+                .as_ref()
+                .is_some_and(UiManager::has_input_focus)
         {
             self.release_world_input_for_ui();
             return;

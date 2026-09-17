@@ -95,6 +95,128 @@ the route. Door transitions now honor an explicit `--radius`, allowing the gate
 to retain a radius-1 exterior ring. Gamepad physical sources remain open, so P1
 as a whole is not closed yet.
 
+#### Live-environment recheck (2026-09-16)
+
+The absence of `/dev/dri` inside the coding sandbox is **not** evidence that
+this host cannot run the engine. An approved outside-sandbox `vulkaninfo
+--summary` identified the RTX 4070 Ti (NVIDIA 580.178.04), working display
+access, and the validation layer. After rebuilding both release binaries from
+the current worktree (HEAD `2e2f40b23` plus local changes), the existing P1
+gate ran under `xvfb-run -a`, with isolated debug port 19876.
+
+FNV remains **FAIL**: startup, Character mode, grounding, the door prompt,
+and the 120-frame forward input countdown all completed, but walking did not
+leave the door's interaction volume. The initial bench eye position was
+`(536.001, 3575.700, -472.000)`; after the hold the body was
+`(547.02, 3523.70, -507.53)`, grounded, with door entity 792 still selected
+at distance zero. Failure artifacts are retained locally at
+`/tmp/byro-p1-traversal.ozRSGf`. This run does not prove the historical
+fall-through-floor arm fixed or still present: it stopped before that arm.
+
+The fixture camera was not applied. P1 passes `--camera-pos=...` and
+`--camera-forward=...`, while `parse_string_arg` intentionally accepts only
+space-separated values. Its warning is hidden by this gate's log filter.
+Independently, `plan_character_spawn` prefers the first eligible door and a
+64-BU nudge toward the aggregate static-collider AABB centre over the camera
+column. Thus correcting argument spelling alone does not establish valid
+character placement. The next movement fix must verify actual capsule
+placement and clearance, then rerun the unchanged walk/transition assertions;
+these observations are not a reason to weaken the gate.
+
+The Skyrim SE control also **FAILS**, later in the route: interior walk-away
+and return, the outbound XTEL transition, and both exterior boundary crossings
+`(6,-2) -> (6,-3) -> (6,-2)` passed. All intermediate return-road waypoints
+completed, but the final reverse-door approach exhausted twenty 30-frame
+backward holds at `z=7356.99`, short of the required `z>=7670`, while remaining
+grounded. Artifacts: `/tmp/byro-p1-traversal.GpvgyI`. This supersedes the older
+green P1 result for the current worktree; the cause of that final obstruction
+is not yet isolated (collision versus fixture trajectory/overshoot or input
+drift). In particular, an intermediate blocked sample still had yaw/pitch
+`0/0`, but the final retained status had `69.8/8.7` despite `run_hold` reseeding
+look before each segment; the virtual display does not by itself prove input
+isolation. Both
+smoke processes exited with status 1 and cleaned up their engine processes;
+neither was abandoned on an observation timeout. No panic/VUID/error-pattern
+matches appeared in their retained logs, but these were release runs, not the
+required validation-enabled debug run or 30-minute soak.
+
+The follow-up input audit found and fixed a separate focus-lifecycle defect:
+`WindowEvent::Focused(false)` now releases held keys/buttons, debug input,
+and cursor capture before any native or Scaleform menu can consume the event.
+Raw device mouse motion now requires both actual window focus and gameplay
+capture, and closing a menu cannot recapture an unfocused window. Refocusing
+alone does not recapture the cursor; a gameplay click does. Tests cover the
+focus/capture combinations, idempotent release, held mouse-button cleanup,
+and unchanged sensitivity, inversion, and pitch clamping. All **2,193 engine
+tests passed** with lock-order checking (34 ignored). This fixes the Alt-Tab
+input contract; it has not yet been verified with live OS focus changes and
+does not establish the cause or resolution of either traversal failure.
+
+The FNV collision follow-up reproduced a concrete startup defect: after its
+inward probe failed, the door fallback accepted floor at `y=3455.7` directly
+under the door pivot `(536,3460,-472)`. A downward cast with penetration
+continuation could find that floor despite the final capsule intersecting the
+door panel. Floor support alone was not a valid spawn certificate.
+
+Door-local floor probes now also check final capsule clearance with the same
+solid-world query filters, including kinematic architecture and excluding
+sensors/live actor bones and the caller's excluded player body. If both normal
+columns fail, startup tries eight directions at 64 and 128 BU, retaining the
+collision-ready exterior-cell boundary. The wide door-column fallback also
+checks clearance. Tests reproduce the occupied-column floor hit, reject it,
+find a clear nearby candidate, retain self-exclusion/filter behavior, and
+reject candidates outside the foreground cell. **2,195 engine tests** passed
+with lock-order checking (34 ignored); **170 physics tests** passed.
+
+The rebuilt live FNV probe selected `(472.29,3523.70,-465.90)` instead of the
+door pivot. After the same 120-frame forward hold, the capsule reached
+`(444.83,3539.20,-595.77)`, grounded, and `interaction.status` reported
+`target=none prompt=none`. Startup/bench logs are retained at
+`/tmp/byro-spawn-check.HFXOUI`; the pre-fix comparison is at
+`/tmp/byro-spawn-diagnosis.8CZV3E`. This verifies escape from the original
+blocked spawn, not the complete cross-cell route or a general safe-spawn proof.
+
+The unchanged full FNV P1 gate subsequently passed walk-away, grounded return,
+prompt recovery, and bound activation. Its selected first door (entity 792,
+source collider form `00108BD6`) actually leads to WastelandNV `(-17,1)` at
+Z-up `(-67452,4900,8352)`, and that transition completed. The fixture instead
+expects exit `0010618E` to `(-17,0)`. This exposes the previously noted ignored
+fixture pose/first-door selection mismatch after the movement obstruction was
+removed. Do not change the expected grid to paper over it: the intended route
+must first select its authored door, then pass its original boundary/return
+assertions. This run's artifacts are `/tmp/byro-p1-traversal.0RNNYp`.
+
+Explicit startup poses now take precedence: in Character mode,
+`--camera-pos x,y,z` supplies the eye position and fixes the capsule's XZ
+column. A bounded capsule probe near the expected feet finds clear walkable
+floor, rather than choosing the first door or raycasting onto the roof.
+An unsupported requested column fails the automatic Character-mode gate;
+`--player` still explicitly forces the capsule at that requested eye position.
+Default startup without a position override retains the door-search ladder.
+Three regression tests cover competing doors, an unsupported column, and a
+roof above the intended floor; the full engine suite passed **2,198 tests**
+with lock-order checking (34 ignored).
+
+P1 now passes camera arguments in the CLI's supported space-separated form.
+The live FNV rerun passes interior walking/return and reaches the intended
+WastelandNV `(-17,0)` exit. It then fails the outbound exterior leg: twenty
+30-frame forward holds leave the grounded player at
+`(-67762.86,8451.60,-3593.49)`, yaw/pitch `0/0`, short of `z<=-4150`.
+Artifacts: `/tmp/byro-p1-traversal.wC6ts4`. The fixture's straight exterior
+line was derived from grid arithmetic, not a measured walk around authored
+obstacles; collision and route geometry now need inspection at this position.
+The wrapper exited 5 after its own temporary-directory cleanup warning;
+the smoke reported the traversal failure, and port 19876 was verified free.
+
+`scripts/check-playable-smoke-contracts.sh` now pins the supported P1 argument
+spelling and passes. Its stale Battleaxe assertion was also updated to the
+fixture's already-existing War Axe leaf after rerunning the installed Skyrim
+master's `probe_combat_fixture`: `000236A5` (Greatsword, 17 damage) and
+`0002C672` (War Axe, 9 damage) are emitted; the selected reference `000383F7`
+still has base `000E9895`, Health 50, and the Greatsword. No gameplay gate or
+destination assertion was relaxed. Skyrim traversal, full FNV traversal, the
+debug-validation run, and the 30-minute soak remain unclosed.
+
 ### Water focus — playable traversal + EX-13 visual closure
 
 **Active next push (2026-08-10).** Water temporarily leads the queue by explicit
@@ -426,8 +548,9 @@ randomized loot fidelity or scroll casting. Plugin tests pass **982**, with
 27 ignored; native inventory tests pass **16**, with one real-data test ignored.
 New tests cover full dispatch, model retention, load-order remapping, truncated
 payloads, and the native/SDK category. All **70** mod-runtime tests pass,
-including Scroll's WIT metadata conversion. Live gameplay verification is pending:
-this environment has no `/dev/dri` Vulkan device.
+including Scroll's WIT metadata conversion. Live gameplay verification was not
+performed in that run. The missing `/dev/dri` observation was sandbox-local;
+the live-environment recheck below establishes GPU access outside the sandbox.
 
 #### Carryable light inventory metadata (2026-09-16)
 
@@ -652,9 +775,48 @@ game/equip-category-specific stacking and replacement remain to be verified
 and implemented. These are headless native-action/overlay checks, not a live
 Vulkan consumption or door-transition smoke.
 
+Stimpak (`00015169`) now has a native consumption path in both FO3 and FNV.
+The FO3/FNV Value and Parts archetype expands into Health plus the seven
+canonical body-condition AVIFs. Those actor values are seeded at 100 for
+populated FO3/FNV actors and share the existing saved damage/restoration layers;
+no duplicate limb-health store was introduced. Missing mappings or runtime
+values reject consumption before any inventory or health mutation. The mapping
+and archetype follow the GECK [Stats List](https://geckwiki.com/index.php/Stats_List)
+and [Base Effect](https://geckwiki.com/index.php/Base_Effect) descriptions.
+
+ENIT's Medicine flag is now retained. Medicine-flagged restorative plans use
+the live composed Medicine skill, clamped to its 0–100 range, and authored
+`fMagicMedicineSkillBase`/`fMagicMedicineSkillMult` (documented defaults 1/2).
+The magnitude multiplier is `base + multiplier * Medicine / 100`, per
+[Ingestible Settings](https://geckwiki.com/index.php?title=Ingestible_Settings).
+Timed doses snapshot their resolved rate at use time. This also scales FNV's
+Bitter Drink, which its master flags as Medicine; the earlier 2/second figure
+is its unscaled base, not its effect at a nonzero Medicine skill.
+
+FNV's authored `IsHardcore` (586) conditions now select the saved
+`HardcoreMode` resource. `hardcore on|off` changes that flag through the normal
+console, and `hardcore` reports it. **This does not yet implement Hardcore
+hunger, thirst, sleep, ammo weight, or companion-death rules.** Normal Stimpaks
+restore health and limbs immediately; the authored Hardcore branch restores
+health alone over six seconds. Fast Metabolism selects the authored 36 vs 30
+immediate points, or 6 vs 5 points/second, before Medicine scaling. At Medicine
+50, real-master tests verify 60/72 health and limb restoration in normal mode,
+and the same health total over time with no limb healing in Hardcore mode.
+Save tests cover both perk branches, mode restoration over the opposite live
+flag, inventory/pool state, limb damage, and midpoint timed effects. Adding the
+mode resource changes the schema fingerprint; prior snapshots are rejected.
+
+Verification: **2,190 engine tests** passed (34 ignored), **71 save-I/O tests**
+passed with installed masters and lock-order checking, the two explicit
+real-Stimpak tests passed, and **999 plugin unit tests** plus **473 scripting
+unit tests** passed. FNV now has three eligible restoration plans (Stimpak, Blood
+Pack, Bitter Drink). This is still headless gameplay/overlay evidence; targeted
+limb selection, combat limb damage/cripple penalties, Survival scaling,
+ingestible stacking parity, and live Vulkan verification remain open.
+
 This is not a general magic system: the remaining games' consumption, other timed effects,
 poison application, addiction, scripted effects, other condition functions, linked abilities,
-image-space effects, perks, dynamic magnitude modifiers, audio/VFX, and item-use
+image-space effects, other perk/magnitude modifiers, audio/VFX, and item-use
 script event delivery remain unimplemented. Unsupported items stay unavailable
 without losing a stack. Live Vulkan gameplay and the consumption-specific full
 save/reload smoke remain pending.

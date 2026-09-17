@@ -20,6 +20,9 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 [ROADMAP Project Stats](ROADMAP.md#project-stats) (refreshed per
 `/session-close`).*
 
+![Prospector Saloon exterior with procedural clouds (Fallout: New Vegas)](docs/screenshots/prospector-saloon-exterior.png)
+*Outside Prospector Saloon in Goodsprings, Fallout: New Vegas — procedural clouds fill the sky.*
+
 ## At a glance
 
 | | |

@@ -975,13 +975,36 @@ mod tests {
         use byroredux_core::ecs::components::ActorValues;
         use byroredux_plugin::consumables::MedicineScaling;
         let (mut world, player) = restorative_fixture();
-        let scale = Some(MedicineScaling { actor_value: 2000, base: 1.0, multiplier: 2.0 });
-        world.resource_mut::<InventoryCatalog>().restorations.get_mut(&0x5678).unwrap()[0].medicine = scale;
-        let action = byroredux_debug_ui::InventoryAction::Consume { index: 1, form_id: 0x5678 };
+        let scale = Some(MedicineScaling {
+            actor_value: 2000,
+            base: 1.0,
+            multiplier: 2.0,
+        });
+        world
+            .resource_mut::<InventoryCatalog>()
+            .restorations
+            .get_mut(&0x5678)
+            .unwrap()[0]
+            .medicine = scale;
+        let action = byroredux_debug_ui::InventoryAction::Consume {
+            index: 1,
+            form_id: 0x5678,
+        };
         for bad in [None, Some(f32::NAN), Some(f32::INFINITY)] {
-            if let Some(value) = bad { world.get_mut::<ActorValues>(player).unwrap().set_base(2000, value); }
-            assert_eq!(apply_action(&mut world, action), MutationResult::Unavailable);
-            assert_eq!(world.get::<ActorValues>(player).unwrap().current(1000), 40.0);
+            if let Some(value) = bad {
+                world
+                    .get_mut::<ActorValues>(player)
+                    .unwrap()
+                    .set_base(2000, value);
+            }
+            assert_eq!(
+                apply_action(&mut world, action),
+                MutationResult::Unavailable
+            );
+            assert_eq!(
+                world.get::<ActorValues>(player).unwrap().current(1000),
+                40.0
+            );
             assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 2);
         }
         let values = world.get_mut::<ActorValues>(player).unwrap();
@@ -990,14 +1013,34 @@ mod tests {
         values.apply_damage(3000, 80.0);
         let mut limb = restoration(3000, 25.0);
         limb.medicine = scale;
-        world.resource_mut::<InventoryCatalog>().restorations.get_mut(&0x5678).unwrap().push(limb);
+        world
+            .resource_mut::<InventoryCatalog>()
+            .restorations
+            .get_mut(&0x5678)
+            .unwrap()
+            .push(limb);
         assert_eq!(apply_action(&mut world, action), MutationResult::Consumed);
-        assert_eq!(world.get::<ActorValues>(player).unwrap().current(1000), 90.0);
-        assert_eq!(world.get::<ActorValues>(player).unwrap().current(3000), 70.0);
-        world.get_mut::<ActorValues>(player).unwrap().mod_permanent(2000, 50.0);
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(1000),
+            90.0
+        );
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(3000),
+            70.0
+        );
+        world
+            .get_mut::<ActorValues>(player)
+            .unwrap()
+            .mod_permanent(2000, 50.0);
         assert_eq!(apply_action(&mut world, action), MutationResult::Consumed);
-        assert_eq!(world.get::<ActorValues>(player).unwrap().current(1000), 100.0);
-        assert_eq!(world.get::<ActorValues>(player).unwrap().current(3000), 100.0);
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(1000),
+            100.0
+        );
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(3000),
+            100.0
+        );
         assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 0);
     }
 
