@@ -12,23 +12,28 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-09-15 (session close — tests **7959**, +95 vs
-Session 84's 7864; Rust `src/` LOC **~580 128**, +9 254; total `.rs` LOC
-**~623 786**, +9 686; source files **1093** (1010 outside `tests/`),
-+11/+11; workspace members unchanged at **33**; open issue dirs **4351**,
-+123. Session 85 fixed Skyrim exterior water placement: the Riverwood moiré
-came from three separate bugs (a particle/water id collision, a north/south
-mirrored shoreline mask, and a wrong water SSBO slot). Mesh water now takes
-its depth from the authored Havok phantom, and REFR `XWCU` currents replace
-the misread CELL velocity ([`docs/engine/watal.md`](docs/engine/watal.md)).
-EXAL ground cover landed Phase 3's tier-3 terrain detail floor and LOD
-tiers 1–2 (#4056; visual acceptance pending). SKYAL added GGX-prefiltered
-reflection mips and SH sky irradiance. Skyrim LE (2011) gained a game
-profile and 32-bit Havok packfile support. The 2026-09-14 renderer,
-scripting and tech-debt audits closed a 45-issue fix tail, including FO4
-precombines now drawing all three disjoint LOD bands (#4234). The
-bench-of-record at `4c9a5b36` is now 189 commits stale; **R6a-stale-22**
-below carries the unmeasured per-frame additions.
+**Last verified**: 2026-09-17 (session close — tests **8166, 0 failing**,
++207 vs Session 85's 7959; Rust `src/` LOC **~597 198**, +17 070; total
+`.rs` LOC **~641 030**, +17 244; source files **1122** (1039 outside
+`tests/`), +29/+29; workspace members unchanged at **33**; open issue dirs
+**4381**, +30. Session 86 split `VulkanContext` into five cohesive
+sub-structs (reprojection history, per-frame scratch buffers,
+swapchain-lifetime render targets, the post-processing chain, overlay/capture
+state) after months of flat growth, then built out gameplay persistence:
+`PersistentReferenceStates` captures inventory/equipment/actor state across
+cell teardown and respawn, `NpcLootAppearance` defers corpse appearance
+restoration until fully looted, Fallout 76 leveled loot expands through
+LVLO/LVLV/LVIV, and `PlayerNotifications` replaces the debug-only
+`SaveLoadNotifications` HUD channel. Consumable effects (`ConsumableEffect`,
+`TimedRestorations`) and New Vegas `HardcoreMode` landed. The close ritual's
+ground-truth pass caught `cargo test --workspace` red at HEAD for the first
+time since Session 77's under-reporting bug — two structural guards, both
+traced to the same commit (`3ce970a5a`): an undeclared `GlobalTransform`
+write on `player_controller_system`, and a save-shape-fingerprint
+false-positive from a tuple-struct `impl`-block sweep. Both fixed and
+verified in `ac1d44f5` (full suite green). The bench-of-record at `4c9a5b36`
+is now 277 commits stale; **R6a-stale-22** below carries the unmeasured
+per-frame additions.
 
 **Current state in one paragraph.** The FSR 3.1 integration plan is complete
 through phase 7: FSR 3.1.4 Quality is the engine default, all four presets
@@ -1513,17 +1518,17 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-09-15 (session close, HEAD `071dfa30`). Every
+Ground-truth as of 2026-09-17 (session close, HEAD `ac1d44f5`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~580 128                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~623 786                 |
-| Source files (`.rs`, excl. `target/`)   | 1093 total · 1010 outside `tests/` dirs (+11 / +11 this session) |
+| Rust source lines (`src/` dirs)         | ~597 198                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~641 030                 |
+| Source files (`.rs`, excl. `target/`)   | 1122 total · 1039 outside `tests/` dirs (+29 / +29 this session) |
 | Workspace members                       | 33 (count the `[workspace] members` block only — an unscoped `grep -c '^\s*"' Cargo.toml` returns 38, picking up quoted lines elsewhere in the file; 28 crates + `byroredux` binary + 4 tools: `byro-detect`, `byro-launcher`, `byro-dbg`, `texture-upscale`; `tools/nifskope` exists on disk but is not a workspace member) |
-| Tests                                   | **7959 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-15; 195 ignored). Clean full-workspace run, including doc-tests. Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905). |
-| Open issue directories                  | 4351 (`.claude/issues/`)     |
+| Tests                                   | **8166 passing, 0 failing** (`cargo test --workspace --no-fail-fast`, 2026-09-17; 216 ignored). Clean full-workspace run, including doc-tests — but not clean throughout the session: the ground-truth pass caught two structural guards red at HEAD (an undeclared `GlobalTransform` access, a save-shape-fingerprint false-positive), both traced to `3ce970a5a` and fixed in `ac1d44f5`. Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw this first-hand: 1836 vs the true 6905). |
+| Open issue directories                  | 4381 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **604 787** across seven games (2026-08-29, #3369 + #3466 took this from 184 886 by widening the gates to every mesh-bearing archive each game ships; Oblivion re-measured 2026-09-07 under #3925 to include its eight DLC archives). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 424 · FO4 235 082 · FO76 168 208 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on Oblivion / FO3 / FNV / Skyrim SE / FO4; Starfield 99.98% aggregate; **FO76 98.18%** — the 2026-08-29 corpus widening (#3466) exposed a 3 056-NIF truncation tail in its two `GeneratedMeshes` archives that no gate had ever opened. Recoverable 100% on all seven. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
