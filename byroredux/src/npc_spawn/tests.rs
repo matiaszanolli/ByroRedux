@@ -413,6 +413,116 @@ fn skeleton_path_per_game() {
     );
 }
 
+#[test]
+fn race_skeleton_selection_preserves_gender_and_authored_missing_paths() {
+    let mut index = EsmIndex::default();
+    index.races.insert(
+        0xD53,
+        RaceRecord {
+            skeleton_models: [
+                r"Actors\Draugr\Skeleton.nif".into(),
+                r"meshes\Actors\Draugr\SkeletonF.nif".into(),
+            ],
+            ..Default::default()
+        },
+    );
+    let mut npc = NpcRecord {
+        race_form_id: 0xD53,
+        ..Default::default()
+    };
+    assert_eq!(
+        npc_skeleton_path(GameKind::Skyrim, &npc, &index).as_deref(),
+        Some(r"meshes\Actors\Draugr\Skeleton.nif")
+    );
+    npc.acbs_flags = 1;
+    assert_eq!(
+        npc_skeleton_path(GameKind::Skyrim, &npc, &index).as_deref(),
+        Some(r"meshes\Actors\Draugr\SkeletonF.nif")
+    );
+    // Do not silently replace an authored but unavailable creature rig with
+    // the human rig; the spawn stage reports missing archive assets.
+    index.races.get_mut(&0xD53).unwrap().skeleton_models[1] = "missing.nif".into();
+    assert_eq!(
+        npc_skeleton_path(GameKind::Skyrim, &npc, &index).as_deref(),
+        Some(r"meshes\missing.nif")
+    );
+    index.races.get_mut(&0xD53).unwrap().skeleton_models[1].clear();
+    assert_eq!(
+        npc_skeleton_path(GameKind::Skyrim, &npc, &index).as_deref(),
+        humanoid_skeleton_path(GameKind::Skyrim)
+    );
+    npc.race_form_id = 0;
+    assert_eq!(
+        npc_skeleton_path(GameKind::Fallout3NV, &npc, &index).as_deref(),
+        humanoid_skeleton_path(GameKind::Fallout3NV)
+    );
+}
+
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn nested_draugr_template_resolves_traits_on_real_skyrim_data() {
+    let Some(data) = skyrim_data_dir() else {
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse Skyrim.esm");
+    let shell = index
+        .npcs
+        .get(&0x4A04E)
+        .expect("LvlDraugrAmbushMelee2HMale");
+    let traits = byroredux_plugin::equip::resolve_inherited_traits(shell, 1, &index);
+    assert_ne!(
+        traits.form_id, shell.form_id,
+        "nested LVLN must resolve beyond the placeholder"
+    );
+    assert_eq!(
+        traits.race_form_id, 0xD53,
+        "DraugrRace, not the shell's placeholder race"
+    );
+    assert_eq!(
+        npc_skeleton_path(GameKind::Skyrim, traits, &index).as_deref(),
+        Some(r"meshes\Actors\Draugr\Character Assets\Skeleton.nif")
+    );
+}
+
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn race_skeletons_match_authored_paths_on_real_skyrim_data() {
+    let Some(data) = skyrim_data_dir() else {
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse Skyrim.esm");
+    let race = index.races.get(&0xD53).expect("DraugrRace");
+    assert_eq!(
+        race.skeleton_models,
+        [
+            r"Actors\Draugr\Character Assets\Skeleton.nif",
+            r"Actors\Draugr\Character Assets\SkeletonF.nif",
+        ]
+    );
+    let npc = index.npcs.get(&0xE9895).expect("P2 Draugr");
+    let traits =
+        byroredux_plugin::equip::resolve_inherited_traits(npc, effective_actor_level(npc), &index);
+    assert_eq!(
+        npc_skeleton_path(GameKind::Skyrim, traits, &index).as_deref(),
+        Some(r"meshes\Actors\Draugr\Character Assets\Skeleton.nif")
+    );
+    let provider = crate::asset_provider::build_texture_provider(&[
+        "byroredux".into(),
+        "--bsa".into(),
+        data.join("Skyrim - Meshes0.bsa")
+            .to_string_lossy()
+            .into_owned(),
+    ]);
+    for path in &race.skeleton_models {
+        let bytes = provider
+            .extract_mesh(path)
+            .expect("authored Draugr skeleton in archive");
+        assert!(!bytes.is_empty());
+    }
+}
+
 /// Regression test for #793: kf-era humanoids must surface
 /// `lefthand.nif` and `righthand.nif` alongside `upperbody.nif`.
 /// Pre-fix the resolver returned a single path and every NPC
@@ -986,6 +1096,7 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),
+        skeleton_models: Default::default(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1227,6 +1338,7 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),
+        skeleton_models: Default::default(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1278,6 +1390,7 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         .unwrap();
     assert_eq!(skin.hidden_biped_mask, TORSO_BIT);
     assert_eq!(skin.hidden_biped_mask & HANDS_BIT, 0);
+    assert_eq!(state.restore_skin_paths, vec![r"actors\character\skin.nif"]);
 }
 
 /// #3408 (SKY-2026-08-27b-D3-01) — a creature race whose default skin
@@ -1301,6 +1414,7 @@ fn prebaked_equip_state_keeps_zero_mask_race_skin() {
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),
+        skeleton_models: Default::default(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1374,6 +1488,7 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),
+        skeleton_models: Default::default(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1425,6 +1540,8 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
             .any(|armor| armor.form_id == SKIN),
         "a skin with a real mask, fully covered by gear, is still displaced"
     );
+    assert_eq!(state.restore_skin_paths, vec![r"actors\character\skin.nif"],
+        "fully suppressed body must still have a restoration recipe");
 }
 
 /// #3409 (SKY-2026-08-27b-D3-02) — the pre-baked FaceGen head's own
@@ -1446,6 +1563,7 @@ fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),
+        skeleton_models: Default::default(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1564,6 +1682,7 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),
+        skeleton_models: Default::default(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),

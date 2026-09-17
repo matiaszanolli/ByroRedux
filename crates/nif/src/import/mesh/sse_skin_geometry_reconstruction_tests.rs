@@ -100,9 +100,8 @@ fn empty_inline_bs_tri_shape_with_populated_skin_partition_reconstructs() {
         bone_refs: Vec::new(),
     };
 
-    // Single partition with vertex_map = identity and one
-    // triangle. The importer remaps partition-local indices
-    // (0, 1, 2) through vertex_map to global indices (0, 1, 2).
+    // Single partition with an identity vertex_map and one triangle;
+    // SSE triangle indices already address the global vertex buffer.
     let partition = SkinPartitionEntry {
         num_vertices: 3,
         num_triangles: 1,
@@ -267,7 +266,7 @@ fn dynamic_external_positions_reconstruct_without_vf_vertex() {
 /// those sources instead of rejecting the packed weights as positionless.
 #[test]
 fn dynamic_skin_payload_decodes_without_vf_vertex() {
-    // Skin-only packed layout: 4 half-float weights + 4 u8 local
+    // Skin-only packed layout: 4 half-float weights + 4 u8 skin-global
     // indices = 12 bytes. VF_SKINNED (0x040) is set; VF_VERTEX is clear.
     let vertex_size: u32 = 12;
     let vertex_desc: u64 = (0x040u64 << 44) | 0x3;
@@ -276,7 +275,7 @@ fn dynamic_skin_payload_decodes_without_vf_vertex() {
     raw_bytes.extend_from_slice(&0x3400u16.to_le_bytes()); // 0.25
     raw_bytes.extend_from_slice(&0x0000u16.to_le_bytes());
     raw_bytes.extend_from_slice(&0x0000u16.to_le_bytes());
-    raw_bytes.extend_from_slice(&[2, 1, 0, 0]);
+    raw_bytes.extend_from_slice(&[3, 1, 0, 0]);
 
     let shape = BsTriShape {
         av: NiAVObjectData {
@@ -325,8 +324,8 @@ fn dynamic_skin_payload_decodes_without_vf_vertex() {
         partitions: vec![SkinPartitionEntry {
             num_vertices: 1,
             num_triangles: 0,
-            // FaceGen-style non-identity palette. This also confirms
-            // the #2577 prerequisite remains active on the restored data.
+            // FaceGen-style non-identity palette: the packed channel
+            // must not be remapped through this table a second time.
             bones: vec![0, 1, 3, 4, 5, 6],
             num_weights_per_vertex: 4,
             vertex_map: vec![0],
@@ -347,16 +346,16 @@ fn dynamic_skin_payload_decodes_without_vf_vertex() {
     scene.blocks.push(Box::new(skin_partition));
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
-    let (weights, local_indices) = decode_sse_skin_payload(&scene, shape_ref)
+    let (weights, global_indices) = decode_sse_skin_payload(&scene, shape_ref)
         .expect("dynamic skin-only SSE buffer must retain its weights");
     assert_eq!(weights.len(), 1);
     assert!((weights[0][0] - 0.75).abs() < 1e-3);
     assert!((weights[0][1] - 0.25).abs() < 1e-3);
-    assert_eq!(local_indices, vec![[2, 1, 0, 0]]);
+    assert_eq!(global_indices, vec![[3, 1, 0, 0]]);
     assert_eq!(
-        remap_bs_tri_shape_bone_indices(&scene, shape_ref, &local_indices),
+        widen_packed_bone_indices(&global_indices),
         vec![[3, 1, 0, 0]],
-        "restored local slots must still resolve through the partition palette"
+        "restored packed global slots must not be remapped"
     );
 }
 
@@ -619,7 +618,7 @@ fn sse_global_buffer_skin_payload_reaches_imported_skin() {
         skin_partition_ref: BlockRef(2),
         skeleton_root_ref: BlockRef::NULL,
         // 8 bones in the global skin list — enough that the highest
-        // partition-local index (7) is in range and the test can
+        // packed global index (7) is in range and the test can
         // distinguish slots.
         bone_refs: vec![
             BlockRef::NULL,
@@ -635,8 +634,8 @@ fn sse_global_buffer_skin_payload_reaches_imported_skin() {
     let partition = SkinPartitionEntry {
         num_vertices: 2,
         num_triangles: 0,
-        // Single-partition shape with all 8 bones in palette →
-        // remap is identity (palette[i] = i).
+        // This identity palette made the old extra-remap bug invisible.
+        // Non-identity palettes are covered by the sibling tests.
         bones: (0u16..8).collect(),
         num_weights_per_vertex: 4,
         vertex_map: vec![0, 1],

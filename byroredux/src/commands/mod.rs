@@ -140,6 +140,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MatSetCommand);
     registry.register(RagdollCommand);
     registry.register(ragdoll_status::RagdollStatusCommand);
+    registry.register(ragdoll_status::NpcAppearanceCommand);
     registry.register(PhysCensusCommand);
     registry.register(PhysStatsCommand);
     registry.register(StudioGamesCommand);

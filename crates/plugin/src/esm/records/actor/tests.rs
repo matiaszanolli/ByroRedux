@@ -7,6 +7,41 @@ use super::*;
 use crate::esm::records::test_support::sub;
 
 #[test]
+fn skyrim_race_preserves_gendered_skeletons_separately_from_body_models() {
+    let subs = vec![
+        sub(b"ANAM", b"unscoped.nif\0"),
+        sub(b"MNAM", b""),
+        sub(b"ANAM", b"Actors\\Draugr\\Character Assets\\Skeleton.nif\0"),
+        sub(b"FNAM", b""),
+        sub(b"ANAM", b"Actors\\Draugr\\Character Assets\\SkeletonF.nif\0"),
+        sub(b"NAM1", b""),
+        sub(b"MNAM", b""),
+        sub(b"MODL", b"body.egt\0"),
+        sub(b"ANAM", b"not-a-skeleton.nif\0"),
+        sub(b"NAM3", b""),
+        sub(b"MODL", b"DraugrProject.hkx\0"),
+    ];
+    let race = parse_race(0xD53, &subs, GameKind::Skyrim, &None);
+    assert_eq!(
+        race.skeleton_models,
+        [
+            r"Actors\Draugr\Character Assets\Skeleton.nif",
+            r"Actors\Draugr\Character Assets\SkeletonF.nif",
+        ]
+    );
+    assert_eq!(race.body_models, ["body.egt", "DraugrProject.hkx"]);
+    for game in [
+        GameKind::Oblivion,
+        GameKind::Fallout3NV,
+        GameKind::Fallout4,
+        GameKind::Fallout76,
+        GameKind::Starfield,
+    ] {
+        assert_eq!(parse_race(1, &subs, game, &None).skeleton_models, ["", ""]);
+    }
+}
+
+#[test]
 fn npc_extracts_race_class_factions_inventory() {
     let mut acbs = Vec::new();
     acbs.extend_from_slice(&0x100u32.to_le_bytes()); // flags

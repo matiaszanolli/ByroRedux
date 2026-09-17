@@ -55,8 +55,8 @@ use byroredux_plugin::equip::Gender;
 /// - **Skyrim** (LE/SE) ships the unified
 ///   `meshes\actors\character\character assets\skeleton.nif` — note
 ///   the **space** in `character assets`. The `skeletonbeast.nif`
-///   sibling is the Argonian/Khajiit variant; not handled here yet
-///   (creature-race spawning is Phase 3+).
+///   sibling is the Argonian/Khajiit variant. This table is only the
+///   fallback; `npc_skeleton_path` prefers Skyrim's authored RACE ANAM.
 /// - **FO4 / FO76** ship the same shape but renamed the folder to
 ///   `characterassets` (no space). Pre-fix this function returned the
 ///   Skyrim-shaped path for FO4/FO76 too, so every NPC in every FO4
@@ -338,6 +338,25 @@ pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {
         }
         GameKind::Starfield => Some(r"meshes\actors\human\characterassets\skeleton.nif"),
     }
+}
+
+/// Prefer the race's gender-specific skeleton over the game's humanoid
+/// convention. The caller supplies the resolved traits record, so templated
+/// creatures and female actors select the same race/gender as their skin.
+fn npc_skeleton_path(game: GameKind, traits: &NpcRecord, index: &EsmIndex) -> Option<String> {
+    let gender = match Gender::from_acbs_flags(traits.acbs_flags) {
+        Gender::Male => 0,
+        Gender::Female => 1,
+    };
+    if let Some(path) = index
+        .races
+        .get(&traits.race_form_id)
+        .map(|race| &race.skeleton_models[gender])
+        .filter(|path| !path.is_empty())
+    {
+        return Some(normalize_mesh_path(path).into_owned());
+    }
+    humanoid_skeleton_path(game).map(str::to_owned)
 }
 
 /// Split a creature's `CREA` MODL into `(skeleton path, directory prefix)`,

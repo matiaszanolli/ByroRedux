@@ -85,6 +85,20 @@ fn next_actor(world: &World) -> Option<EntityId> {
         .find(|&actor| fully_looted(world, actor) && world.get::<CellRoot>(actor).is_some())
 }
 
+pub(crate) fn status(world: &World, actor: EntityId) -> String {
+    let eligible = fully_looted(world, actor);
+    let cell = world.get::<CellRoot>(actor).map(|cell| cell.0);
+    let Some(a) = world.get::<NpcLootAppearance>(actor) else {
+        return format!(
+            "npc.appearance: actor={actor} recipe=none eligible={eligible} cell={cell:?}"
+        );
+    };
+    format!("npc.appearance: actor={actor} eligible={eligible} cell={cell:?} bones={} parts={}/{} original_roots={} staged_roots={} finished={} failed={} next={:?}",
+        a.skeleton.len(), a.next_part, a.parts.len(), a.original_roots.len(),
+        a.staged_roots.len(), a.finished, a.failed,
+        a.parts.get(a.next_part).map(|part| part.path.as_str()))
+}
+
 fn set_hidden(world: &mut World, root: EntityId, hidden: bool) {
     let mut pending = vec![root];
     let mut seen = HashSet::new();
@@ -147,6 +161,28 @@ impl LootAppearanceLoader {
             )
         };
         let Some(part) = part else {
+            // NIF imports queue DDS data; the frame renderer does not drain
+            // it. This loader owns its batch just like the cell/loose loaders.
+            if ctx.texture_registry.pending_dds_upload_count() != 0 {
+                let Some(allocator) = ctx.allocator.as_ref() else {
+                    world.get_mut::<NpcLootAppearance>(actor).unwrap().failed = true;
+                    log::warn!(
+                        "npc.loot-appearance: no texture allocator; retaining outfit actor={actor}"
+                    );
+                    return;
+                };
+                if let Err(error) = ctx.texture_registry.flush_pending_uploads(
+                    &ctx.device,
+                    allocator,
+                    &ctx.graphics_queue,
+                    ctx.transfer_pool,
+                    &ctx.transfer_fence,
+                ) {
+                    world.get_mut::<NpcLootAppearance>(actor).unwrap().failed = true;
+                    log::warn!("npc.loot-appearance: texture upload failed; retaining outfit actor={actor}: {error:#}");
+                    return;
+                }
+            }
             if !ctx.mesh_registry.is_geometry_dirty()
                 && ctx.texture_registry.pending_dds_upload_count() == 0
             {
@@ -161,6 +197,7 @@ impl LootAppearanceLoader {
         };
         if skeleton.is_empty() {
             world.get_mut::<NpcLootAppearance>(actor).unwrap().failed = true;
+            log::warn!("npc.loot-appearance: missing skeleton map; retaining outfit actor={actor}");
             return;
         }
         let args = crate::cli_args::effective_args();

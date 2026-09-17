@@ -70,9 +70,8 @@ const VF_EYE_DATA: u16 = 0x100;
 /// The global buffer holds every mesh vertex in the same packed format
 /// `BsTriShape::parse` decodes inline (positions + uvs + normals +
 /// colors + skin data + eye data, gated by `vertex_attrs`). Each
-/// partition's `vertex_map` translates partition-local 0..N-1 indices
-/// into global-buffer indices; partition triangles concatenate (after
-/// remap) into the final index list.
+/// partition's triangle indices already address this global buffer and
+/// concatenate directly into the final index list.
 pub fn try_reconstruct_sse_geometry(
     scene: &NifScene,
     shape: &BsTriShape,
@@ -128,8 +127,8 @@ pub fn try_reconstruct_sse_geometry(
     // The #725 drop policy is kept, retargeted at the real bound — the
     // decoded buffer's vertex count. The corpus says it never fires here
     // (`raw_oob_global=0`); it remains the guard for a truncated NIF.
-    // `remap_bs_tri_shape_bone_indices` keeps its `vertex_map` reads: that
-    // one uses the map correctly, as a global -> partition-local inverse.
+    // Packed skin indices are also global (into the skin's bone list),
+    // independently of the partition-local bone_indices channel.
     let vertex_count = decoded.positions.len();
     let index_count = partition
         .partitions
@@ -198,9 +197,7 @@ pub struct DecodedPackedBuffer {
     /// from packed half-floats. See #638.
     pub(super) bone_weights: Vec<[f32; 4]>,
     /// Per-vertex bone indices when the buffer carries `VF_SKINNED`.
-    /// Partition-local — the caller must remap through
-    /// `NiSkinPartition.partitions[i].bones` to get global skin
-    /// list indices. See #638 / #613.
+    /// Already skin-global; do not remap through partition bone palettes.
     pub(super) bone_indices: Vec<[u8; 4]>,
     /// Per-vertex tangent (Y-up xyz + bitangent sign) when the buffer
     /// carries `VF_TANGENTS`. Empty otherwise. The xyz components are

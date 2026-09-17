@@ -2,15 +2,10 @@
 //!
 //! Same qualified path preserved (`bs_tri_shape_partition_remap_tests::FOO`).
 
-//! Regression coverage for #613 / SK-D1-01 — `BsTriShape` inline
-//! `bone_indices` (`[u8; 4]` per vertex) are partition-LOCAL
-//! indices into each `NiSkinPartition.partitions[i].bones` palette,
-//! not global indices into the skin's bone list. The importer
-//! must walk the partition table and remap before exposing the
-//! values to downstream consumers, otherwise multi-partition
-//! shapes (Skyrim Argonian/Khajiit body + worn armour, modded
-//! 256+ bone skins) silently alias every vertex past partition 0
-//! to the wrong bones.
+//! Packed indices are skin-global, unlike the separate partition-local
+//! channel. Earlier #613/#2577 fixtures asserted the opposite and masked
+//! the extra-remap bug. Installed-data cross-checks live in
+//! `sse_skin_index_space_tests` and compare the two independent channels.
 use super::*;
 use crate::blocks::node::NiNode;
 use crate::blocks::skin::{NiSkinData, NiSkinInstance, NiSkinPartition};
@@ -30,16 +25,9 @@ fn empty_net() -> NiObjectNETData {
     }
 }
 
-/// Build a 2-vertex skinned BsTriShape whose inline bone_indices
-/// are partition-local. The skin instance points at a SkinPartition
-/// with two partitions whose `bones` palettes pick distinct global
-/// bones — so a `[0, 0, 0, 0]` partition-local index resolves to
-/// **different** global indices depending on which partition the
-/// vertex belongs to. Pre-#613 the importer cloned the partition-
-/// local indices verbatim and both vertices ended up "bound to
-/// bone 0 globally" — wrong.
+/// Non-identity partition palettes must not transform packed global IDs.
 #[test]
-fn multi_partition_remap_picks_correct_global_per_vertex() {
+fn multi_partition_shape_preserves_packed_global_bone_indices() {
     // Bone refs used by the skin (4 NiNode blocks at indices 5..9).
     let bone_node = || -> Box<dyn crate::blocks::NiObject> {
         Box::new(NiNode {
@@ -91,12 +79,10 @@ fn multi_partition_remap_picks_correct_global_per_vertex() {
         normals: Vec::new(),
         vertex_colors: Vec::new(),
         triangles: Vec::new(),
-        // Vertex 0 → partition 0; per-vertex partition-local
-        // bone slots are [0, 1, 0, 1] — exercises BOTH palette
-        // entries so the remap is observable.
-        // Vertex 1 → partition 1, same shape.
+        // Global IDs for two different subsets. Applying either palette
+        // again would alias or zero these valid indices.
         bone_weights: vec![[0.4, 0.3, 0.2, 0.1], [0.4, 0.3, 0.2, 0.1]],
-        bone_indices: vec![[0, 1, 0, 1], [0, 1, 0, 1]],
+        bone_indices: vec![[2, 3, 2, 3], [1, 3, 1, 3]],
         tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
@@ -188,36 +174,25 @@ fn multi_partition_remap_picks_correct_global_per_vertex() {
     assert_eq!(
         skin.vertex_bone_indices.len(),
         2,
-        "both vertices must remap"
+        "both vertices must retain their packed influences"
     );
-    // Vertex 0: partition 0's palette is [2, 3]. Local slots
-    // [0, 1, 0, 1] remap to globals [2, 3, 2, 3].
+    // Packed IDs already include partition 0's global bone identities.
     assert_eq!(
         skin.vertex_bone_indices[0],
         [2, 3, 2, 3],
-        "vertex 0 partition-local [0,1,0,1] must remap via [2,3]"
+        "vertex 0 must not remap global IDs through [2,3] again"
     );
-    // Vertex 1: partition 1's palette is [1, 3]. Local slots
-    // [0, 1, 0, 1] remap to globals [1, 3, 1, 3]. Pre-#613 the
-    // partition-local indices were cloned verbatim and widened —
-    // vertex 1 would have come back as [0, 1, 0, 1] (aliasing to
-    // global bones 0 and 1) instead of the intended [1, 3, 1, 3].
+    // Vertex 1 likewise keeps its own global subset.
     assert_eq!(
         skin.vertex_bone_indices[1],
         [1, 3, 1, 3],
-        "vertex 1 partition-local [0,1,0,1] must remap via [1,3] \
-             (pre-#613 aliased to bones 0 and 1 because it cloned the \
-             partition-local indices verbatim)"
+        "vertex 1 must not remap global IDs through [1,3] again"
     );
 }
 
-/// Regression for #2577 / SK-D1-02: a single partition can still use
-/// a non-identity subset of the global bone list. This mirrors the
-/// palette shape in `facegeom\\skyrim.esm\\00067667.nif`, where local
-/// slot 2 means global bone 3. The old partition-count shortcut widened
-/// slot 2 directly and bound the vertex to the wrong bone.
+/// A single non-identity palette also must not remap packed global IDs.
 #[test]
-fn single_partition_shape_remaps_non_identity_palette() {
+fn single_partition_shape_preserves_global_index_with_non_identity_palette() {
     let bone_node = || -> Box<dyn crate::blocks::NiObject> {
         Box::new(NiNode {
             av: NiAVObjectData {
@@ -262,7 +237,7 @@ fn single_partition_shape_remaps_non_identity_palette() {
         vertex_colors: Vec::new(),
         triangles: Vec::new(),
         bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
-        bone_indices: vec![[2, 0, 0, 0]],
+        bone_indices: vec![[3, 0, 0, 0]],
         tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
@@ -325,16 +300,13 @@ fn single_partition_shape_remaps_non_identity_palette() {
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
     let skin = extract_skin_bs_tri_shape(&scene, shape_ref, &[]).unwrap();
-    // Local slot 2 resolves through [0, 1, 3, 4, 5, 6].
+    // Packed global ID 3 stays 3, not palette[3] == 4.
     assert_eq!(skin.vertex_bone_indices[0], [3u16, 0, 0, 0]);
 }
 
-/// When the linked NiSkinPartition is missing entirely (synthetic
-/// or mod malformation), the importer falls back to identity
-/// widening rather than failing or aliasing. Locks the defensive
-/// fallback path.
+/// Packed influences do not require a partition table at all.
 #[test]
-fn missing_skin_partition_falls_back_to_identity_widen() {
+fn missing_skin_partition_preserves_packed_indices() {
     let bone_node = || -> Box<dyn crate::blocks::NiObject> {
         Box::new(NiNode {
             av: NiAVObjectData {
@@ -379,7 +351,7 @@ fn missing_skin_partition_falls_back_to_identity_widen() {
         vertex_colors: Vec::new(),
         triangles: Vec::new(),
         bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
-        bone_indices: vec![[7, 0, 0, 0]],
+        bone_indices: vec![[3, 0, 0, 0]],
         tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
@@ -417,6 +389,5 @@ fn missing_skin_partition_falls_back_to_identity_widen() {
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
     let skin = extract_skin_bs_tri_shape(&scene, shape_ref, &[]).unwrap();
-    // No partition table to remap through — identity widen [7] → [7u16].
-    assert_eq!(skin.vertex_bone_indices[0], [7u16, 0, 0, 0]);
+    assert_eq!(skin.vertex_bone_indices[0], [3u16, 0, 0, 0]);
 }

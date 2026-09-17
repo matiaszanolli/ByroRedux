@@ -73,4 +73,6 @@ mod skin_tests;
 #[cfg(test)]
 mod sse_skin_geometry_reconstruction_tests;
 #[cfg(test)]
+mod sse_skin_index_space_tests;
+#[cfg(test)]
 mod tangent_convention_tests;

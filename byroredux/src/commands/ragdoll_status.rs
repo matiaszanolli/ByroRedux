@@ -5,6 +5,24 @@ use byroredux_physics::{PhysicsWorld, Ragdoll};
 
 pub(crate) struct RagdollStatusCommand;
 
+pub(crate) struct NpcAppearanceCommand;
+impl ConsoleCommand for NpcAppearanceCommand {
+    fn name(&self) -> &str {
+        "npc.appearance"
+    }
+    fn description(&self) -> &str {
+        "Inspect corpse appearance restoration (npc.appearance <actor_id>)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        match args.trim().parse::<EntityId>() {
+            Ok(actor) => {
+                CommandOutput::line(crate::npc_spawn::loot_appearance::status(world, actor))
+            }
+            Err(_) => CommandOutput::line("usage: npc.appearance <actor_id>"),
+        }
+    }
+}
+
 impl ConsoleCommand for RagdollStatusCommand {
     fn name(&self) -> &str {
         "ragdoll.status"

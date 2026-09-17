@@ -550,8 +550,8 @@ resolved FormID, intrinsic race-skin classification, and import-time hidden
 partition mask on each successfully loaded armor root in both runtime and
 prebaked NPC spawn paths. Multiple ARMA roots can share one inventory row;
 ordinary body/head/skeleton attachments are not marked as equipment. This is
-spawn-derived metadata, not serialized entity IDs. It does **not** remove looted
-meshes yet: covered body meshes may never have been loaded, and suppressed skin
+spawn-derived metadata, not serialized entity IDs. This metadata alone did not
+remove looted meshes: covered body meshes may never have been loaded, and suppressed skin
 partitions require rebuilding. Reconciliation must also run after save overlays,
 not only in response to unequip events.
 Validation: 75 NPC-spawn tests passed (7 ignored), including attachment ownership
@@ -567,12 +567,121 @@ transfers, no skin unequip event is emitted, and real equipment indices stay
 valid. An explicitly authored CNTO copy of the same FormID remains an ordinary
 item, so this is not a global skin-FormID blacklist. Existing saves containing
 old synthetic skin stacks are not rewritten: they cannot be distinguished from
-explicit inventory copies by FormID alone. Visible body restoration remains open.
+explicit inventory copies by FormID alone. Body-restoration progress follows below.
 Validation: all 75 NPC-spawn tests pass with lock-order checking, all 2,217 engine
 tests pass (34 ignored), and all four `on_real_skyrim_data` tests pass with
 `BYROREDUX_REQUIRE_GAME_DATA=1` (outfits, multi-addon body coverage, zero-mask
 creature skins, and helmet FaceGen masks). These are resolution/logic checks,
 not a rendered corpse-equipment-removal smoke.
+
+**Corpse appearance restoration (2026-09-17 UTC):** the current take-all path
+now reconciles fully empty, unequipped dead actors after scheduler/save/cell
+work. Spawn retains recipes for suppressed runtime body parts, partially or
+fully displaced race-skin addons, and masked FaceGen (including its tint).
+Restoration reuses the live skeleton and ragdoll, imports at most one NIF per
+frame, flushes its queued DDS uploads, and waits for geometry residency before
+revealing replacements and hiding worn gear. Missing/failed body imports retain
+the original outfit. New entities receive the actor's cell ownership; hidden
+old meshes remain bounded to that actor and are released by normal cell unload.
+Derived recipes/visibility are rebuilt after saves, not serialized as entity IDs.
+`npc.appearance <actor_id>` reports progress, failure, and eligibility.
+
+Live checks caught two integration errors not established by the initial unit
+tests: DDS uploads needed an explicit drain, and staged hidden meshes needed to
+defer skin-slot allocation/first-use uploads until they actually produce a draw.
+The latter produced an invisible replacement body until fixed. A palette test
+now checks that staging consumes no first-use upload and revealing queues one;
+render tests check that animation visibility cannot reveal hidden outfit parts.
+The final engine suite passed **2,223 tests** (34 ignored), the NPC suite passed
+79 with lock-order checking, and all four required-data Skyrim resolution tests
+passed. Temporary CPU-bounds probes were removed.
+
+Artifacts are under `/tmp/byro-loot-visual.xgjzMl/`, using copies of the prior
+saves and isolated port 19876. FNV's `fnv-skin-deferred.png` and
+`fnv-live-loot.png` show the outfit replaced by the underwear/body after both
+post-loot save restoration and normal E activation. The original 18 ragdoll
+bodies remained live/finite (max distance about 59–63 BU); slot 5 saved the
+restored appearance successfully. A fresh final-build process loaded that new
+slot and reproduced the visible body (`fnv-fresh-save5.png`, 18 live/finite
+bodies, max distance 60.167 BU). Existing dismemberment-cap/lighting artifacts
+are still visible; this is not a visual-polish closeout. No selective-loot or re-equipping claim is
+made: this reconciler currently handles complete corpse take-all only.
+
+Skyrim's retained Draugr save completed reconciliation with its intrinsic
+zero-mask skin retained (no replacement parts needed), two wearable roots
+hidden, and 18 live/finite bodies. Saves succeeded. **Its visual gate remains
+open:** `skyrim-restored.png` shows distorted geometry; an unlooted reload had
+an invisible corpse at the actual ray-selected body (`skyrim-unlooted.png`),
+which remained invisible after looting (`skyrim-live-loot.png`). Logical state
+and finite physics do not establish correct skinning. Humanoid Skyrim body/
+FaceGen restoration, other titles, and appearance-specific cell-eviction checks
+also remain unverified.
+
+**Skyrim race skeleton correction (2026-09-17 UTC):** the distorted-corpse
+investigation found that the prebaked spawner always loaded the human rig.
+Installed `Skyrim.esm` RACE `DraugrRace` (`00000D53`) instead authors male
+`Actors\Draugr\Character Assets\Skeleton.nif` and female `SkeletonF.nif`
+in gendered ANAM fields; the parser previously discarded them. The parser
+now retains those paths separately from body/behavior MODL entries, gated
+to Skyrim's verified layout. Prebaked assembly selects the resolved
+Use-Traits race and gender, including the gender used for equipment. The
+humanoid convention remains a fallback for absent paths, not for missing
+authored assets. Other games' race skeleton layouts are not claimed here.
+
+Validation: 1,009 plugin unit tests passed (28 ignored), 2,225 engine tests
+passed (35 ignored), and 81 NPC tests passed with lock-order checks. Five
+required-data Skyrim tests passed, including ANAM path decoding, the frozen
+P2 actor's selected skeleton, and archive extraction of both Draugr rigs.
+The complete Skyrim P2 combat/death/save/fresh-process-reload gate passed
+with 20 bounded, finite ragdoll samples; artifacts are retained at
+`/tmp/byro-p2-melee-core.5UgJx8/`.
+
+The isolated visual run used copied saves at
+`/tmp/byro-race-skeleton.qDzk5y/`. Target ref `000383F7`, actor 35003,
+now has 93 named skeleton bones rather than the human rig's 99. Its 18
+ragdoll bodies remained live/finite (settled maximum distance 112.900 BU).
+At camera `(6684.44,-2442.96,8672.09)`, yaw -142/pitch -65, interaction
+selected the actual corpse at 114.20 BU; E take-all completed appearance
+reconciliation. **At this stage the visual defect was not fixed:** `selected-before.png`
+and `selected-after.png` still show severe stretched geometry, including
+before looting. A live `skin.dump 35162` showed all 61 body palette entries
+mapped into the external Draugr skeleton, so the next investigation must
+check vertex/weight/bind-pose reconstruction and physics-to-skin transforms,
+not treat correct skeleton selection or finite physics as visual proof.
+
+**Skyrim SE packed skin-index correction (2026-09-17 UTC):** the next
+investigation found a second, independent bug. Packed BSTriShape/global-buffer
+bone IDs already index the skin's bone list; only the separate per-partition
+bone-index arrays need expansion through `partition.bones`. The #613/#2577
+importer applied that expansion to the packed channel again. Its synthetic
+tests asserted the same incorrect assumption. nifly's `OptimizeFor`,
+`GetShapeBoneWeights`, and `UpdateSkinPartitions` provide the independent
+[reader/writer reference](https://github.com/ousnius/nifly/blob/master/src/NifFile.cpp).
+
+A required-data regression compares both channels in installed meshes before
+checking imported influences. Before the fix, the packed data agreed with
+partition expansion but the importer changed 4,893 of 11,669 weighted lanes
+in Draugr male, human body, and hand meshes. After removing the extra remap,
+an expanded sample including female Draugr and dynamic FaceGen checked 19,606
+lanes with zero disagreement. Inline, single/multiple-partition, and dynamic
+buffer fixtures now pin the correct global-ID contract. All 1,327 NIF unit
+tests and 2,225 engine tests passed (1 and 35 ignored respectively); the new
+installed-data test also passed explicitly with required data enabled.
+The final-build Skyrim P2 combat/death/save/fresh-process-reload gate passed
+again, including 20 bounded finite corpse samples; retained artifacts:
+`/tmp/byro-p2-melee-core.9NQXyh/`.
+
+Live GPU evidence is retained at `/tmp/byro-sse-skin.S5rAvt/`, using copied
+saves and isolated port 19876. `selected-before.png` and `after-loot.png`
+show a coherent Draugr body, replacing the stretched triangles in the
+previous run. The same ref `000383F7` / actor 35003 was selected at 112.71 BU;
+E take-all completed reconciliation, kept the intrinsic skin, and hid the
+two wearable roots. Its 18 bodies stayed live/finite. New slot 4 was loaded
+in a fresh process: `fresh-reload.png` again shows the coherent, looted body,
+with reconciliation complete and all 18 bodies finite (maximum distance
+116.406 BU, speed zero). The ragdoll settles anew on reload; this is not
+exact physical-pose persistence. This closes the demonstrated Draugr
+stretching defect, not all actor appearance/animation or per-game visual gates.
 
 **Real-ragdoll loot targeting fix (2026-09-17 UTC):** a live FNV check found
 that the above physical-targeting test used a stand-in collider with

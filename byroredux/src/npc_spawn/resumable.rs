@@ -114,6 +114,7 @@ struct PrebakedNpcState {
     placement_root: EntityId,
     skel_root: Option<EntityId>,
     skel_map: SkeletonMap,
+    skeleton_path: Option<String>,
     facegen_path: Option<String>,
     tint_path: Option<String>,
     armor: Vec<PrebakedArmor>,
@@ -306,7 +307,6 @@ impl NpcSpawnJob {
                     world,
                     ctx,
                     &self.npc,
-                    self.game,
                     tex_provider,
                     mat_provider.as_deref_mut(),
                     index,
@@ -1186,11 +1186,12 @@ fn prepare_prebaked_state(
     index: &EsmIndex,
 ) -> PrebakedNpcState {
     let placement_root = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
-    let gender = Gender::from_acbs_flags(npc.acbs_flags);
     // #4092 (D5-01) — same resolution as the runtime-FaceGen path.
-    let race_form_id =
-        byroredux_plugin::equip::resolve_inherited_traits(npc, effective_actor_level(npc), index)
-            .race_form_id;
+    let traits =
+        byroredux_plugin::equip::resolve_inherited_traits(npc, effective_actor_level(npc), index);
+    let race_form_id = traits.race_form_id;
+    let gender = Gender::from_acbs_flags(traits.acbs_flags);
+    let skeleton_path = npc_skeleton_path(game, traits, index);
     let equip = build_npc_equip_state(npc, race_form_id, index, game, gender);
     let facegen_hidden_mask = equip.facegen_hidden_mask;
     let mut appearance = NpcLootAppearance::default();
@@ -1227,6 +1228,7 @@ fn prepare_prebaked_state(
     }
 
     PrebakedNpcState {
+        skeleton_path,
         appearance,
         placement_root,
         skel_root: None,
@@ -1246,14 +1248,13 @@ fn advance_prebaked_unit(
     world: &mut World,
     ctx: &mut VulkanContext,
     npc: &NpcRecord,
-    game: GameKind,
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
     index: &EsmIndex,
 ) -> UnitOutcome {
     match state.phase {
         PrebakedPhase::Skeleton => {
-            let Some(skel_path) = humanoid_skeleton_path(game) else {
+            let Some(skel_path) = state.skeleton_path.as_deref() else {
                 return UnitOutcome::Complete(None);
             };
             let Some(data) = tex_provider.extract_mesh(skel_path) else {
@@ -1498,6 +1499,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn prebaked_skeleton_uses_inherited_race_and_gender() {
+        let mut index = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
+        index.races.insert(
+            2,
+            RaceRecord {
+                skeleton_models: ["male.nif".into(), "female.nif".into()],
+                ..Default::default()
+            },
+        );
+        index.npcs.insert(
+            3,
+            NpcRecord {
+                form_id: 3,
+                race_form_id: 2,
+                acbs_flags: 1,
+                ..Default::default()
+            },
+        );
+        let shell = NpcRecord {
+            form_id: 4,
+            race_form_id: 99,
+            acbs_flags: 0,
+            template_form_id: 3,
+            template_flags: byroredux_plugin::equip::TEMPLATE_FLAG_USE_TRAITS,
+            ..Default::default()
+        };
+        let mut world = World::new();
+        let state = prepare_prebaked_state(
+            &mut world,
+            &shell,
+            GameKind::Skyrim,
+            "Skyrim.esm",
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            &index,
+        );
+        assert_eq!(state.skeleton_path.as_deref(), Some(r"meshes\female.nif"));
+    }
+
+    #[test]
     fn equipment_parts_keep_shared_item_ownership_without_tagging_body() {
         let mut world = World::new();
         let actor = world.spawn();
@@ -1716,6 +1761,7 @@ mod tests {
         let mut world = World::new();
         let placement_root = world.spawn();
         let mut state = PrebakedNpcState {
+            skeleton_path: humanoid_skeleton_path(GameKind::Skyrim).map(str::to_owned),
             appearance: NpcLootAppearance::default(),
             placement_root,
             skel_root: Some(world.spawn()),

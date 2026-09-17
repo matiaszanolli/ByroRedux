@@ -373,11 +373,10 @@ pub const TEMPLATE_FLAG_USE_INVENTORY: u16 = 0x0100;
 
 /// Maximum TPLT recursion depth for [`resolve_inherited_record`] and its
 /// public wrappers ([`resolve_inherited_inventory`],
-/// [`resolve_inherited_stats`], [`resolve_inherited_traits`]). Vanilla
-/// template chains are flat (Lvl* template → base NPC, one hop) but mod
-/// content occasionally chains a per-faction wrapper on top; 6 is
-/// conservative headroom and breaks any cycle. Same justification as
-/// [`LVLI_MAX_DEPTH`].
+/// [`resolve_inherited_stats`], [`resolve_inherited_traits`]). Counts both
+/// NPC/CREA template edges and nested LVLN/LVLC selections. Vanilla Skyrim
+/// already uses nested actor lists; mod chains and cycles need the same
+/// shared bound rather than a fresh budget at each record type.
 pub const TPLT_MAX_DEPTH: u32 = 6;
 
 /// Resolve the effective inventory list for an NPC, honouring
@@ -517,11 +516,8 @@ fn resolve_inherited_record<'a>(
 /// than being re-stated here. Records are visited shell-first and the last
 /// `Some` wins, which is what makes "deepest authored value" the rule.
 ///
-/// Vanilla content is unaffected: the walker's own doc records that vanilla
-/// template chains are flat (one hop), and for a
-/// one-hop chain the endpoints *are* the whole chain. The gap this closes is
-/// mod content that chains a per-faction wrapper — the case `TPLT_MAX_DEPTH`
-/// exists to accommodate.
+/// For a one-hop chain the endpoints are the whole chain. Longer chains
+/// can traverse nested actor lists as well as intermediate NPC templates.
 pub fn resolve_inherited_field<'a, T>(
     npc: &'a crate::esm::records::actor::NpcRecord,
     actor_level: i16,
@@ -568,57 +564,43 @@ fn walk_inherited_records<'a>(
     if npc.template_flags & flag == 0 || npc.template_form_id == 0 {
         return npc;
     }
-    // Direct NPC_ template — recurse so a Lvl* → Lvl* → leaf chain
-    // resolves at the bottom.
-    if let Some(base) = index.npcs.get(&npc.template_form_id) {
-        return walk_inherited_records(base, actor_level, index, flag, depth + 1, visit);
-    }
-    // #3390 — `CREA.TPLT` points at `[CREA, LVLC]`, never at `NPC_`
-    // (xEdit `wbDefinitionsFNV.pas`, and 0/815 FNV + 0/399 FO3 templated
-    // creatures resolve to an `NPC_`). Creatures live in their own index
-    // map, so before this arm the walker matched nothing for them and
-    // every templated creature resolved to its own shell — 815 of 1578 on
-    // FNV and 399 of 533 on FO3, i.e. most of both bestiaries deriving the
-    // generic spawn-shell stat block instead of their authored one.
-    // FormIDs are unique across record classes, so consulting both maps is
-    // unambiguous.
-    if let Some(base) = index.creatures.get(&npc.template_form_id) {
-        return walk_inherited_records(base, actor_level, index, flag, depth + 1, visit);
-    }
-    // LVLN template — pick the highest-level eligible variant whose
-    // form ID resolves to an NPC_, then recurse into IT. Vanilla
-    // LVLN entries point at NPC_ records directly (no LVLI-style
-    // multi-pick on the leveled-NPC path), but the same level-gate
-    // applies.
-    // LVLN (NPC_) or LVLC (CREA, #3390) — 429 of FNV's 815 templated
-    // creatures and 130 of FO3's 399 route through LVLC.
-    let leveled = index
-        .leveled_npcs
-        .get(&npc.template_form_id)
-        .or_else(|| index.leveled_creatures.get(&npc.template_form_id));
-    if let Some(lvln) = leveled {
-        let mut eligible: Vec<&_> = lvln
+    // NPC_/CREA templates may route through nested LVLN/LVLC lists, not
+    // just one list. Skyrim's LvlDraugrAmbushMelee2HMale, for example,
+    // follows 0001E772 -> 00023C07 -> a real Draugr NPC. Stopping at the
+    // second list incorrectly used its shell's placeholder FoxRace.
+    // Count list edges against the same budget as NPC edges so list-only
+    // and mixed NPC/list cycles cannot reset the recursion limit.
+    let mut target = npc.template_form_id;
+    for target_depth in (depth + 1)..=TPLT_MAX_DEPTH {
+        if let Some(base) = index
+            .npcs
+            .get(&target)
+            .or_else(|| index.creatures.get(&target))
+        {
+            return walk_inherited_records(base, actor_level, index, flag, target_depth, visit);
+        }
+        let Some(list) = index
+            .leveled_npcs
+            .get(&target)
+            .or_else(|| index.leveled_creatures.get(&target))
+        else {
+            return npc;
+        };
+        // Preserve the existing deterministic highest-eligible policy;
+        // max_by_key, like the former stable sort + last, takes the last
+        // authored entry on a level tie. Random/ChanceNone selection is
+        // a separate unresolved policy, not changed by this traversal fix.
+        let Some(pick) = list
             .entries
             .iter()
-            .filter(|e| e.level as i32 <= actor_level as i32)
-            .collect();
-        // Determinism — same "highest level ≤ actor_level" rule
-        // expand_leveled_form_id uses for LVLI. Sort then take last
-        // so ties break on insertion order (stable).
-        eligible.sort_by_key(|e| e.level);
-        if let Some(pick) = eligible.last() {
-            if let Some(base) = index
-                .npcs
-                .get(&pick.form_id)
-                .or_else(|| index.creatures.get(&pick.form_id))
-            {
-                return walk_inherited_records(base, actor_level, index, flag, depth + 1, visit);
-            }
-        }
+            .filter(|e| i32::from(e.level) <= i32::from(actor_level))
+            .max_by_key(|e| e.level)
+        else {
+            return npc;
+        };
+        target = pick.form_id;
     }
-    // TPLT pointed at something neither indexed nor an LVLN —
-    // ambiguous mod content or missing master. Fall back to the
-    // NPC's own record rather than crashing.
+    // Exhausted the shared NPC/list budget; retain the last real record.
     npc
 }
 
@@ -836,6 +818,10 @@ pub fn expand_leveled_loot(
     }
     walk(form_id, count, level, index, out, &mut Vec::new());
 }
+
+#[cfg(test)]
+#[path = "equip_template_tests.rs"]
+mod template_tests;
 
 #[cfg(test)]
 mod tests {

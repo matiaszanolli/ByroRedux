@@ -80,6 +80,7 @@ pub(super) fn build_skinned_palettes(
 ) {
     let gt_q = world.query::<GlobalTransform>();
     let skin_q = world.query::<SkinnedMesh>();
+    let appearance_hidden = world.query::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>();
     let (Some(gt_q), Some(skin_q)) = (gt_q, skin_q) else {
         return;
     };
@@ -91,6 +92,15 @@ pub(super) fn build_skinned_palettes(
     let mut total_dropouts: u32 = 0;
     let mut sample_entity: Option<(EntityId, u32, u32)> = None; // (entity, dropouts, bone_count)
     for (entity, skin) in skin_q.iter() {
+        // Staged replacement parts must retain their first-use palette
+        // upload until they have a draw. Superseded outfits no longer need
+        // a palette slot either; ordinary pool aging reclaims those slots.
+        if appearance_hidden
+            .as_ref()
+            .is_some_and(|q| q.get(entity).is_some())
+        {
+            continue;
+        }
         let Some(slot) = pool.allocate(entity, frame_count) else {
             // Pool full — entity rendered in bind pose this frame
             // (skin_offsets stays unset; static_meshes draw loop

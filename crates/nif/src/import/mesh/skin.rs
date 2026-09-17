@@ -184,13 +184,10 @@ pub fn extract_skin_bs_tri_shape(
 
     // Per-vertex weights come from the BSTriShape vertex buffer
     // (VF_SKINNED) — already decoded at parse time (#177). The
-    // bone-INDEX side needs a partition-aware remap before it's
-    // safe for downstream consumers — see #613 / SK-D1-01: the
-    // inline `[u8; 4]` indices are partition-LOCAL (indices into
-    // each `NiSkinPartition.partitions[i].bones` palette), not
-    // global indices into the skin's bone list. The legacy clone
-    // pre-#613 silently aliased every vertex past partition 0
-    // when shapes split into > 1 partition.
+    // packed bone indices already address the skin's global bone list.
+    // Only the separate NiSkinPartition.bone_indices channel is local
+    // to a partition palette. Remapping the packed channel a second time
+    // (#613/#2577) corrupts influences; see widen_packed_bone_indices.
     // #638 — Skyrim SE NPC bodies (and any BSTriShape whose `data_size
     // == 0`) ship per-vertex skin data only in the partition's
     // `SseSkinGlobalBuffer`, not on the inline arrays. Pre-fix
@@ -201,19 +198,13 @@ pub fn extract_skin_bs_tri_shape(
     // when the inline arrays are empty.
     let (mut vertex_bone_weights, mut vertex_bone_indices) = if shape.bone_weights.is_empty() {
         match decode_sse_skin_payload(scene, shape) {
-            Some((weights, raw_indices)) => {
-                let remapped = remap_bs_tri_shape_bone_indices(scene, shape, &raw_indices);
-                (weights, remapped)
-            }
-            None => (
-                Vec::new(),
-                remap_bs_tri_shape_bone_indices(scene, shape, &shape.bone_indices),
-            ),
+            Some((weights, raw_indices)) => (weights, widen_packed_bone_indices(&raw_indices)),
+            None => (Vec::new(), widen_packed_bone_indices(&shape.bone_indices)),
         }
     } else {
         (
             shape.bone_weights.clone(),
-            remap_bs_tri_shape_bone_indices(scene, shape, &shape.bone_indices),
+            widen_packed_bone_indices(&shape.bone_indices),
         )
     };
     // #2467 / REN-D9-NEW-01 — the packed-half path is pure pass-through
@@ -244,16 +235,6 @@ pub fn extract_skin_bs_tri_shape(
         } else {
             (&[] as &[_], BlockRef::NULL, BlockRef::NULL, Vec::new())
         };
-    // #613 defensive: if the global skin bone list exceeds u16 range,
-    // remap below truncates. Vanilla Bethesda content stays well under
-    // this; warn if seen so the gap surfaces in test runs.
-    if bone_refs_slice.len() > u16::MAX as usize {
-        log::warn!(
-            "BsTriShape skin has {} bones — exceeds u16 remap range; \
-             indices past 65535 will truncate (see #613)",
-            bone_refs_slice.len()
-        );
-    }
     if !bone_refs_slice.is_empty() {
         let data = scene.get_as::<NiSkinData>(data_ref.index()?)?;
         if data.bones.len() != bone_refs_slice.len() {
@@ -556,114 +537,32 @@ pub fn extract_skin_bs_geometry(
     })
 }
 
-/// Remap a `BsTriShape`'s inline `[u8; 4]` partition-local bone
-/// indices to global `[u16; 4]` indices into the linked skin's bone
-/// list. See #613 / SK-D1-01.
+/// Packed BSTriShape / SSE global-buffer indices already address the
+/// NiSkinInstance bone list. Widen without applying a partition palette.
+/// NiSkinPartition's *separate* bone_indices array is partition-local.
 ///
-/// The wire format stores per-vertex bone indices as u8s indexing
-/// into whichever `NiSkinPartition.partitions[i].bones` palette the
-/// vertex belongs to — the partition splitter rebuilds a small bone
-/// palette per partition so each vertex's 4 bones can fit in 1 byte
-/// each. To recover the global bone list index we:
-///
-/// 1. Resolve `shape.skin_ref` → `NiSkinInstance` (or
-///    `BsDismemberSkinInstance`) → `skin_partition_ref` →
-///    `NiSkinPartition`.
-/// 2. Build an inverse `vertex_map` lookup (global vertex idx →
-///    partition idx) from each partition's `vertex_map`.
-/// 3. For each vertex, find its partition's `bones` palette and
-///    replace each u8 partition-local index with the global u16.
-///
-/// When the partition table is missing or the inverse map is
-/// incomplete (synthetic / mod content), fall back to widening the
-/// raw u8 to u16. Even a single partition must still consult its
-/// palette: vanilla SSE FaceGen meshes can use a non-identity subset
-/// of the global bone list (#2577).
-pub fn remap_bs_tri_shape_bone_indices(
-    scene: &NifScene,
-    shape: &BsTriShape,
-    bone_indices: &[[u8; 4]],
-) -> Vec<[u16; 4]> {
-    if bone_indices.is_empty() {
-        return Vec::new();
-    }
-
-    // Identity widen — the safe fallback used when no partition
-    // table is available or a vertex is absent from every map.
-    let widen = |slot: u8| slot as u16;
-    let identity_remap = || -> Vec<[u16; 4]> {
-        bone_indices
-            .iter()
-            .map(|idx| [widen(idx[0]), widen(idx[1]), widen(idx[2]), widen(idx[3])])
-            .collect()
-    };
-
-    let Some(skin_idx) = shape.skin_ref.index() else {
-        return identity_remap();
-    };
-    let partition_ref = if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
-        inst.skin_partition_ref
-    } else if let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) {
-        inst.base.skin_partition_ref
-    } else {
-        return identity_remap();
-    };
-    let Some(partition_idx) = partition_ref.index() else {
-        return identity_remap();
-    };
-    let Some(partition) = scene.get_as::<crate::blocks::skin::NiSkinPartition>(partition_idx)
-    else {
-        return identity_remap();
-    };
-    // Build inverse map: global_vertex_idx → (partition_idx). Each
-    // partition's `vertex_map[local_i] = global_v` describes which
-    // BsTriShape vertex slot the partition-local position points at.
-    // Multi-partition shapes split vertices across partitions; the
-    // first vertex_map entry that mentions a global index wins (no
-    // vanilla content overlaps partitions on the same vertex).
-    let mut vertex_to_partition: Vec<Option<u32>> = vec![None; bone_indices.len()];
-    for (p_idx, part) in partition.partitions.iter().enumerate() {
-        for &gv in &part.vertex_map {
-            let gv = gv as usize;
-            if gv < vertex_to_partition.len() && vertex_to_partition[gv].is_none() {
-                vertex_to_partition[gv] = Some(p_idx as u32);
-            }
-        }
-    }
-
+/// nifly NifFile::OptimizeFor converts local partition indices into global
+/// vertex.weightBones; UpdateSkinPartitions copies that packed channel to
+/// skinPart->vertData unchanged while building local indices separately.
+/// https://github.com/ousnius/nifly/blob/master/src/NifFile.cpp
+/// Installed SSE Draugr/body/hand data independently confirms agreement
+/// between raw packed indices and expanded partition indices. The former
+/// #613/#2577 remap changed 4,893 of 11,669 weighted lanes in that sample.
+pub fn widen_packed_bone_indices(bone_indices: &[[u8; 4]]) -> Vec<[u16; 4]> {
     bone_indices
         .iter()
-        .enumerate()
-        .map(|(v, idx)| {
-            let part = vertex_to_partition[v].and_then(|p| partition.partitions.get(p as usize));
-            match part {
-                Some(p) => [
-                    remap_one(idx[0], &p.bones),
-                    remap_one(idx[1], &p.bones),
-                    remap_one(idx[2], &p.bones),
-                    remap_one(idx[3], &p.bones),
-                ],
-                // Vertex outside every partition's vertex_map — rare
-                // edge case (truncated NIF, mod malformation). Widen
-                // with zero so the renderer falls back to bind pose
-                // for that vertex rather than reading garbage.
-                None => [widen(idx[0]), widen(idx[1]), widen(idx[2]), widen(idx[3])],
-            }
-        })
+        .map(|indices| indices.map(u16::from))
         .collect()
 }
 
 /// Resolve `shape.skin_ref` → `NiSkinPartition` → `SseSkinGlobalBuffer`
 /// and decode the per-vertex skin payload (4 × half-float weights +
-/// 4 × u8 partition-local bone indices). Returns `None` when the
+/// 4 × u8 skin-global bone indices). Returns `None` when the
 /// shape doesn't go through the global-buffer path or the buffer is
 /// missing / malformed.
 ///
-/// Caller (`extract_skin_bs_tri_shape`) feeds the indices through
-/// `remap_bs_tri_shape_bone_indices` for the partition-local → global
-/// remap. The weights are pass-through — they're already partition-
-/// agnostic. See #638.
-/// Decoded SSE skin payload: per-vertex `(weights, partition-local bone
+/// The caller widens the packed indices without partition remapping.
+/// Decoded SSE skin payload: per-vertex `(weights, skin-global bone
 /// indices)`, returned by [`decode_sse_skin_payload`].
 pub type SseSkinPayload = (Vec<[f32; 4]>, Vec<[u8; 4]>);
 
@@ -690,16 +589,6 @@ pub fn decode_sse_skin_payload(scene: &NifScene, shape: &BsTriShape) -> Option<S
         return None;
     }
     Some((decoded.bone_weights, decoded.bone_indices))
-}
-
-/// Resolve one partition-local u8 bone index against a partition's
-/// `bones` palette (a `Vec<u16>` of global skin bone list indices).
-/// Returns 0 (root bone) when the local index is out of range — the
-/// renderer's bind-pose fallback is the same behaviour the partition
-/// splitter would emit for an unused slot.
-#[inline]
-pub fn remap_one(local_idx: u8, palette: &[u16]) -> u16 {
-    palette.get(local_idx as usize).copied().unwrap_or(0)
 }
 
 /// Build `ImportedBone`s from a NiSkinInstance bone list and NiSkinData

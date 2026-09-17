@@ -23,6 +23,30 @@ fn make_skinned_world(num_meshes: usize) -> World {
     world
 }
 
+#[test]
+fn staged_body_gets_its_first_skin_upload_only_when_revealed() {
+    use crate::npc_spawn::loot_appearance::NpcAppearanceHidden;
+    let mut world = make_skinned_world(1);
+    let mesh = world
+        .query::<SkinnedMesh>()
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap()
+        .0;
+    world.insert(mesh, NpcAppearanceHidden);
+    let mut pool = byroredux_core::ecs::resources::SkinSlotPool::new(4);
+    let mut bones = Vec::new();
+    let mut offsets = rustc_hash::FxHashMap::default();
+    super::skinned::build_skinned_palettes(&world, 1, &mut bones, &mut offsets, &mut pool);
+    assert!(offsets.is_empty());
+    assert!(pool.drain_pending(8).is_empty());
+    world.remove::<NpcAppearanceHidden>(mesh);
+    super::skinned::build_skinned_palettes(&world, 2, &mut bones, &mut offsets, &mut pool);
+    assert!(offsets.contains_key(&mesh));
+    assert_eq!(pool.drain_pending(8).len(), 1);
+}
+
 fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, rustc_hash::FxHashMap<EntityId, u32>) {
     let mut draw_commands = Vec::new();
     let mut gpu_lights = Vec::new();

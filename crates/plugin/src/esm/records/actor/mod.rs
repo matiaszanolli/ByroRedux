@@ -505,6 +505,10 @@ pub struct RaceRecord {
     pub skill_bonuses: Vec<(u8, i8)>,
     /// Body part model paths (head, body, hand, foot).
     pub body_models: Vec<String>,
+    /// Skyrim RACE ANAM skeleton paths, indexed male then female. These
+    /// belong to the opening MNAM/FNAM section, not the later MODL body
+    /// or behavior-project sections. Empty means no authored path.
+    pub skeleton_models: [String; 2],
     /// `INDX` + `MODL` head-part pairs from the RACE **head** section
     /// (the run opened by `NAM0` and closed by `NAM1`). Each entry is
     /// `(head_part_index, mesh_path, gender_section)`; the index is
@@ -1455,6 +1459,7 @@ pub fn parse_race(
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),
+        skeleton_models: Default::default(),
         head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
@@ -1500,6 +1505,7 @@ pub fn parse_race(
     let mut pending_indx: Option<u32> = None;
     let mut gender_section: Option<u8> = None;
     let mut in_head_section = true;
+    let mut in_skeleton_section = true;
 
     for sub in subs {
         match &sub.sub_type {
@@ -1666,11 +1672,20 @@ pub fn parse_race(
             b"FNAM" => {
                 gender_section = Some(1); // Female
             }
+            b"ANAM" if game == GameKind::Skyrim && in_skeleton_section => {
+                if let Some(gender) = gender_section {
+                    record.skeleton_models[gender as usize] = read_zstring(&sub.data);
+                }
+            }
+            b"NAM3" => {
+                in_skeleton_section = false;
+            }
             // Head-data marker: opens the INDX/MODL run whose indices
             // are head-part roles. Oblivion authors it with no gender
             // markers at all (one shared run of 0..8); FO3 / FNV split
             // it MNAM / FNAM. #3419.
             b"NAM0" => {
+                in_skeleton_section = false;
                 in_head_section = true;
                 gender_section = None;
                 pending_indx = None;
@@ -1680,6 +1695,7 @@ pub fn parse_race(
             // hands / `.egt`), so nothing past here belongs in
             // `head_parts`. #3419.
             b"NAM1" => {
+                in_skeleton_section = false;
                 in_head_section = false;
                 gender_section = None;
                 pending_indx = None;
