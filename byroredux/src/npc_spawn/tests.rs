@@ -970,7 +970,7 @@ fn unified_equip_state_covers_fallout_runtime_body_and_preserves_count() {
 /// (covering the non-overlapping Torso+Hands bits) and the feet
 /// armor both survive into `armor_to_spawn`.
 #[test]
-fn prebaked_equip_state_falls_back_to_race_skin_for_uncovered_slots() {
+fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
     const RACE: u32 = 0x0100_0020;
     const SKIN: u32 = 0x0100_0021;
     const SKIN_ARMA: u32 = 0x0100_0022;
@@ -1045,14 +1045,14 @@ fn prebaked_equip_state_falls_back_to_race_skin_for_uncovered_slots() {
         state
             .armor_to_spawn
             .iter()
-            .any(|a| a.model_path == r"actors\character\skin.nif"),
+            .any(|a| a.model_path == r"actors\character\skin.nif" && a.intrinsic_skin),
         "race skin must fall back to cover the torso/hands OTFT/CNTO left uncovered"
     );
     assert!(
         state
             .armor_to_spawn
             .iter()
-            .any(|a| a.model_path == r"armor\boots\boots.nif"),
+            .any(|a| a.model_path == r"armor\boots\boots.nif" && !a.intrinsic_skin),
         "the actually-equipped feet armor must still spawn"
     );
     assert_eq!(
@@ -1064,6 +1064,78 @@ fn prebaked_equip_state_falls_back_to_race_skin_for_uncovered_slots() {
             .hidden_biped_mask,
         0,
         "gear outside the skin's authored slots must not hide skin partitions"
+    );
+    assert_eq!(state.inventory.len(), 1, "only boots belong in inventory");
+    assert_eq!(state.inventory.items[0].base_form_id, FEET);
+    assert_eq!(state.equipment_slots.occupants[7], Some(InventoryIndex(0)));
+    assert!(state.equipment_slots.occupants[2].is_none());
+    assert!(state.equipment_slots.occupants[4].is_none());
+    assert!(state.armor_to_spawn.iter().all(|part| {
+        if part.intrinsic_skin {
+            part.inv_idx.is_none()
+        } else {
+            part.inv_idx == Some(InventoryIndex(0))
+        }
+    }));
+
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+    let player = world.spawn();
+    let corpse = world.spawn();
+    world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+    world.insert(player, Inventory::new());
+    world.insert(corpse, state.inventory);
+    world.insert(corpse, state.equipment_slots);
+    world.insert(corpse, Dead);
+    world.insert(
+        corpse,
+        byroredux_scripting::ActivateEvent { activator: player },
+    );
+    crate::inventory::container_loot_system(&world, 0.0);
+    crate::inventory::container_loot_system(&world, 0.0);
+    let loot = world.get::<Inventory>(player).unwrap();
+    assert_eq!(loot.len(), 1);
+    assert_eq!(loot.items[0].base_form_id, FEET);
+    assert!(world.get::<Inventory>(corpse).unwrap().is_empty());
+    assert_eq!(
+        world
+            .get::<byroredux_scripting::EquipmentEventBatch>(corpse)
+            .unwrap()
+            .0,
+        vec![byroredux_scripting::EquipmentChange {
+            item_form_id: FEET,
+            equipped: false,
+        }]
+    );
+
+    // Do not blacklist the skin FormID: an explicitly authored inventory
+    // copy is a real item, independent of the intrinsic RACE.WNAM layer.
+    npc.inventory
+        .push(byroredux_plugin::esm::records::NpcInventoryEntry {
+            item_form_id: SKIN,
+            count: 1,
+        });
+    let explicit = build_npc_equip_state(&npc, RACE, &index, GameKind::Skyrim, Gender::Male);
+    assert_eq!(explicit.inventory.len(), 2);
+    assert_eq!(explicit.inventory.items[1].base_form_id, SKIN);
+    assert!(explicit.armor_to_spawn.iter().any(|part| {
+        part.form_id == SKIN && !part.intrinsic_skin && part.inv_idx == Some(InventoryIndex(1))
+    }));
+
+    const WEAPON: u32 = 0x0100_0026;
+    npc.inventory.pop();
+    npc.inventory
+        .push(byroredux_plugin::esm::records::NpcInventoryEntry {
+            item_form_id: WEAPON,
+            count: 1,
+        });
+    index.items.insert(WEAPON, weapon_item(WEAPON, 18));
+    let armed = build_npc_equip_state(&npc, RACE, &index, GameKind::Skyrim, Gender::Male);
+    let weapon = armed.equipped_weapon.unwrap();
+    assert_eq!(weapon.inventory_index, InventoryIndex(1));
+    assert_eq!(
+        armed.inventory.get(weapon.inventory_index).unwrap().base_form_id,
+        WEAPON
     );
 }
 
@@ -1272,6 +1344,12 @@ fn prebaked_equip_state_keeps_zero_mask_race_skin() {
          filter has no opinion about it — it must not be dropped (#3408)"
     );
     assert_eq!(state.armor_to_spawn[0].form_id, SKIN);
+    assert!(
+        state.inventory.is_empty(),
+        "zero-mask creature skin is not loot"
+    );
+    assert_eq!(state.equipment_slots.equipped_indices().count(), 0);
+    assert!(state.armor_to_spawn[0].inv_idx.is_none());
     assert_eq!(
         state.armor_to_spawn[0].hidden_biped_mask, 0,
         "nothing can displace a mask that claims no region"

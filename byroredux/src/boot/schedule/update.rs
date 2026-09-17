@@ -116,6 +116,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads::<byroredux_core::ecs::components::Dead>()
             .reads::<byroredux_physics::ActorColliderOwner>()
+            .reads::<byroredux_physics::Ragdoll>()
             .reads_resource::<crate::inventory::InventoryCatalog>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
             .reads::<byroredux_core::ecs::components::Inventory>()

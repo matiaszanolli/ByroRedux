@@ -7,6 +7,7 @@
 //! work unit while preserving the synchronous public spawn functions through
 //! an unlimited-budget driver.
 
+use super::loot_appearance::{NpcLootAppearance, RestorePart};
 use super::*;
 use crate::cell_loader::FrameTimeBudget;
 use byroredux_plugin::esm::records::actor::head_part;
@@ -55,6 +56,7 @@ enum NpcSpawnState {
 }
 
 struct RuntimeNpcState {
+    appearance: NpcLootAppearance,
     placement_root: EntityId,
     skel_root: Option<EntityId>,
     skel_map: SkeletonMap,
@@ -104,9 +106,11 @@ struct RuntimeArmor {
     resolved_fid: u32,
     source_fid: u32,
     hidden_biped_mask: u32,
+    ownership: NpcEquipmentPart,
 }
 
 struct PrebakedNpcState {
+    appearance: NpcLootAppearance,
     placement_root: EntityId,
     skel_root: Option<EntityId>,
     skel_map: SkeletonMap,
@@ -142,6 +146,7 @@ struct PrebakedArmor {
     form_id: u32,
     model_path: String,
     hidden_biped_mask: u32,
+    ownership: NpcEquipmentPart,
 }
 
 enum UnitOutcome {
@@ -438,6 +443,12 @@ fn prepare_runtime_state(
         byroredux_plugin::equip::resolve_inherited_traits(npc, effective_actor_level(npc), index)
             .race_form_id;
     let equip = build_npc_equip_state(npc, race_form_id, index, game, gender);
+    let mut appearance = NpcLootAppearance::default();
+    appearance.parts = equip
+        .restore_skin_paths
+        .iter()
+        .map(|path| RestorePart::body(path))
+        .collect();
     // FO3/FNV RACE DATA bit 2 is the authored Child flag. Oblivion reuses
     // that bit for BeastRace, so the game gate is part of the translation.
     let is_child = matches!(game, GameKind::Fallout3NV)
@@ -453,6 +464,7 @@ fn prepare_runtime_state(
             };
             let keep = !covered;
             if !keep {
+                appearance.parts.push(RestorePart::body(path));
                 log::info!(
                     "NPC {:08X} ({}): equipped armor covers body mask {body_piece_mask:#06X} — skipping {}",
                     npc.form_id,
@@ -552,6 +564,13 @@ fn prepare_runtime_state(
         .armor_to_spawn
         .into_iter()
         .map(|armor| RuntimeArmor {
+            ownership: NpcEquipmentPart {
+                actor: placement_root,
+                inventory_index: armor.inv_idx,
+                form_id: armor.form_id,
+                intrinsic_skin: armor.intrinsic_skin,
+                hidden_biped_mask: armor.hidden_biped_mask,
+            },
             model_path: armor.model_path.to_owned(),
             resolved_fid: armor.form_id,
             source_fid: armor.source_form_id,
@@ -560,6 +579,7 @@ fn prepare_runtime_state(
         .collect();
 
     RuntimeNpcState {
+        appearance,
         placement_root,
         skel_root: None,
         skel_map: HashMap::new(),
@@ -630,6 +650,13 @@ fn prepare_creature_state(
         .armor_to_spawn
         .into_iter()
         .map(|armor| RuntimeArmor {
+            ownership: NpcEquipmentPart {
+                actor: placement_root,
+                inventory_index: armor.inv_idx,
+                form_id: armor.form_id,
+                intrinsic_skin: armor.intrinsic_skin,
+                hidden_biped_mask: armor.hidden_biped_mask,
+            },
             model_path: armor.model_path.to_owned(),
             resolved_fid: armor.form_id,
             source_fid: armor.source_form_id,
@@ -639,6 +666,7 @@ fn prepare_creature_state(
 
     let _ = world;
     RuntimeNpcState {
+        appearance: NpcLootAppearance::default(),
         placement_root,
         skel_root: None,
         skel_map: HashMap::new(),
@@ -911,7 +939,10 @@ fn advance_runtime_unit(
                         pre_spawn,
                     );
                     if let Some(root) = root {
-                        parent_part(world, state.placement_root, root);
+                        parent_equipment_part(world, root, armor.ownership);
+                        if !armor.ownership.intrinsic_skin || armor.hidden_biped_mask != 0 {
+                            state.appearance.original_roots.push(root);
+                        }
                         state.equipped_armor_count += 1;
                     }
                 }
@@ -1009,6 +1040,12 @@ fn advance_runtime_unit(
             // assigns the placed ACHR identity. npc.form_id is only the shared
             // base record and cannot identify a particular actor's snapshot.
             tag_descendants_as_actor(world, state.placement_root);
+            super::loot_appearance::install(
+                world,
+                state.placement_root,
+                std::mem::take(&mut state.appearance),
+                &state.skel_map,
+            );
             UnitOutcome::Complete(Some(state.placement_root))
         }
     }
@@ -1156,10 +1193,23 @@ fn prepare_prebaked_state(
             .race_form_id;
     let equip = build_npc_equip_state(npc, race_form_id, index, game, gender);
     let facegen_hidden_mask = equip.facegen_hidden_mask;
+    let mut appearance = NpcLootAppearance::default();
+    appearance.parts = equip
+        .restore_skin_paths
+        .iter()
+        .map(|path| RestorePart::body(path))
+        .collect();
     let armor = equip
         .armor_to_spawn
         .into_iter()
         .map(|armor| PrebakedArmor {
+            ownership: NpcEquipmentPart {
+                actor: placement_root,
+                inventory_index: armor.inv_idx,
+                form_id: armor.form_id,
+                intrinsic_skin: armor.intrinsic_skin,
+                hidden_biped_mask: armor.hidden_biped_mask,
+            },
             form_id: armor.form_id,
             model_path: armor.model_path.to_owned(),
             hidden_biped_mask: armor.hidden_biped_mask,
@@ -1177,6 +1227,7 @@ fn prepare_prebaked_state(
     }
 
     PrebakedNpcState {
+        appearance,
         placement_root,
         skel_root: None,
         skel_map: HashMap::new(),
@@ -1281,6 +1332,13 @@ fn advance_prebaked_unit(
             );
             if let Some(root) = root {
                 parent_part(world, state.placement_root, root);
+                if hidden_biped_mask != 0 {
+                    state.appearance.original_roots.push(root);
+                    state.appearance.parts.push(RestorePart {
+                        path: facegen_path.to_owned(),
+                        tint: tint_path.map(str::to_owned),
+                    });
+                }
             }
             state.phase = PrebakedPhase::Armor(0);
             UnitOutcome::Continue
@@ -1312,7 +1370,10 @@ fn advance_prebaked_unit(
                         pre_spawn,
                     );
                     if let Some(root) = root {
-                        parent_part(world, state.placement_root, root);
+                        parent_equipment_part(world, root, armor.ownership);
+                        if !armor.ownership.intrinsic_skin || armor.hidden_biped_mask != 0 {
+                            state.appearance.original_roots.push(root);
+                        }
                         state.equipped_armor_count += 1;
                     }
                 }
@@ -1356,6 +1417,12 @@ fn advance_prebaked_unit(
             // The caller restores eviction state after stamping the placed
             // ACHR identity, shared with the runtime-mesh spawn path above.
             tag_descendants_as_actor(world, state.placement_root);
+            super::loot_appearance::install(
+                world,
+                state.placement_root,
+                std::mem::take(&mut state.appearance),
+                &state.skel_map,
+            );
             UnitOutcome::Complete(Some(state.placement_root))
         }
     }
@@ -1406,7 +1473,12 @@ fn spawn_placement_root(
     placement_root
 }
 
-fn parent_part(world: &mut World, placement_root: EntityId, part_root: EntityId) {
+fn parent_equipment_part(world: &mut World, part_root: EntityId, ownership: NpcEquipmentPart) {
+    parent_part(world, ownership.actor, part_root);
+    world.insert(part_root, ownership);
+}
+
+pub(super) fn parent_part(world: &mut World, placement_root: EntityId, part_root: EntityId) {
     world.insert(part_root, Parent(placement_root));
     add_child(world, placement_root, part_root);
     // A yielded actor can render for several frames before finalization.
@@ -1424,6 +1496,44 @@ fn parent_part(world: &mut World, placement_root: EntityId, part_root: EntityId)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equipment_parts_keep_shared_item_ownership_without_tagging_body() {
+        let mut world = World::new();
+        let actor = world.spawn();
+        let body = world.spawn();
+        parent_part(&mut world, actor, body);
+        let gear = NpcEquipmentPart {
+            actor,
+            inventory_index: Some(InventoryIndex(3)),
+            form_id: 0x1234,
+            intrinsic_skin: false,
+            hidden_biped_mask: 0,
+        };
+        let torso = world.spawn();
+        let hands = world.spawn();
+        parent_equipment_part(&mut world, torso, gear);
+        parent_equipment_part(&mut world, hands, gear);
+        let skin = world.spawn();
+        let skin_owner = NpcEquipmentPart {
+            inventory_index: None,
+            form_id: 0x5678,
+            intrinsic_skin: true,
+            hidden_biped_mask: 4,
+            ..gear
+        };
+        parent_equipment_part(&mut world, skin, skin_owner);
+        let ownership = world.query::<NpcEquipmentPart>().unwrap();
+        assert_eq!(ownership.get(torso), Some(&gear));
+        assert_eq!(ownership.get(hands), Some(&gear));
+        assert_eq!(ownership.get(skin), Some(&skin_owner));
+        assert!(ownership.get(body).is_none());
+        assert!(ownership.get(actor).is_none());
+        let parents = world.query::<Parent>().unwrap();
+        for part in [body, torso, hands, skin] {
+            assert_eq!(parents.get(part).unwrap().0, actor);
+        }
+    }
 
     /// The `CaucasianOldAged` (`000987DF`) head section, as parsed from
     /// `FalloutNV.esm`: every role authored twice, once per gender.
@@ -1606,6 +1716,7 @@ mod tests {
         let mut world = World::new();
         let placement_root = world.spawn();
         let mut state = PrebakedNpcState {
+            appearance: NpcLootAppearance::default(),
             placement_root,
             skel_root: Some(world.spawn()),
             skel_map: HashMap::new(),

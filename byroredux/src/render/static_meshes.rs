@@ -297,6 +297,7 @@ pub(super) fn collect_static_mesh_draws(
     let two_sided_q = world.query::<TwoSided>();
     let no_sorter_q = world.query::<NoSorter>();
     let vis_q = world.query::<AnimatedVisibility>();
+    let appearance_hidden = world.query::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>();
     let mat_q = world.query::<Material>();
     // #525 — `AnimatedUvTransform` overrides the static
     // `Material::uv_offset` / `uv_scale` when an entity has an active
@@ -389,7 +390,7 @@ pub(super) fn collect_static_mesh_draws(
                 .and_then(|q| q.get(entity))
                 .map(|v| v.0)
                 .unwrap_or(true);
-            if !visible {
+            if !visible || appearance_hidden.as_ref().is_some_and(|q| q.get(entity).is_some()) {
                 continue;
             }
 

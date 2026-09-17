@@ -26,6 +26,7 @@ pub(crate) mod ai_package;
 pub(crate) use ai_package::ambient_ai_package_system;
 use ai_package::apply_ai_package_behavior;
 mod resumable;
+pub(crate) mod loot_appearance;
 pub(crate) use resumable::{NpcSpawnJob, NpcSpawnProgress};
 
 use crate::anim_convert::convert_nif_clip;
@@ -755,20 +756,40 @@ struct ResolvedArmor<'a> {
     /// hook uses it to remove matching dismember partitions while preserving
     /// still-uncovered body regions from the same NIF.
     hidden_biped_mask: u32,
-    /// Inventory row this armor mesh resolves from. Cross-checked
+    /// Inventory row this armor mesh resolves from, or None for intrinsic
+    /// race skin (which is not an inventory item). Cross-checked
     /// against `EquipmentSlots.occupants` after the equip loop
     /// finishes (#2094 / SKY-D3-NEW-02) — an entry whose index no
     /// longer occupies any of the biped bits it was equipped into
     /// was displaced by a later overlapping entry (multi-pick LVLI,
     /// mod CNTO overlapping a default OTFT slot) and must not spawn
     /// a mesh alongside the winner.
-    inv_idx: InventoryIndex,
+    inv_idx: Option<InventoryIndex>,
+    intrinsic_skin: bool,
     /// The ARMO's own authored `BOD2`/`BODT` biped mask, as handed to
     /// `EquipmentSlots::equip`. **Zero is meaningful**: such a record
     /// claims no biped region at all, so it never enters `occupants` and
     /// the #2094 occupancy filter has no opinion about it — see the
     /// retain at the end of [`build_npc_equip_state`] and #3408.
     authored_biped_mask: u32,
+}
+
+/// Spawn-derived ownership of an armor NIF root. Multiple ARMA meshes may
+/// belong to one inventory row. Race skin is a body layer, not removable gear.
+/// Rebuilt on spawn, never serialized with process-local entity IDs. Consumers
+/// must reconcile inventory changes before using the row index after a load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NpcEquipmentPart {
+    pub actor: EntityId,
+    pub inventory_index: Option<InventoryIndex>,
+    pub form_id: u32,
+    pub intrinsic_skin: bool,
+    /// Partitions removed at import time; restoring them requires a rebuild.
+    pub hidden_biped_mask: u32,
+}
+
+impl byroredux_core::ecs::Component for NpcEquipmentPart {
+    type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
 }
 
 /// Equip pipeline state built purely from `&NpcRecord` + `&EsmIndex`
@@ -785,6 +806,9 @@ struct NpcEquipState<'a> {
     equipment_slots: EquipmentSlots,
     equipped_weapon: Option<EquippedWeapon>,
     armor_to_spawn: Vec<ResolvedArmor<'a>>,
+    /// Unmasked skin sources needed when worn gear is removed, including
+    /// skins whose entire mesh is suppressed by the initial outfit.
+    restore_skin_paths: Vec<&'a str>,
     /// Biped bits the pre-baked FaceGen head must suppress, in the same
     /// `hide_skin_partitions` format as [`ResolvedArmor::hidden_biped_mask`].
     ///
@@ -849,7 +873,7 @@ fn build_npc_equip_state<'a>(
     let mut equipment_slots = EquipmentSlots::new();
     let mut equipped_weapon: Option<EquippedWeapon> = None;
     let mut armor_to_spawn: Vec<ResolvedArmor<'a>> = Vec::new();
-    let mut race_skin_slots: Option<(InventoryIndex, u32)> = None;
+    let mut race_skin_mask: Option<u32> = None;
     // #2955 — same gate as `stamp_character_components`: a PC-level-multiplier
     // record's `level` is not a level, and `expand_leveled_form_id` filters
     // `entry.level <= actor_level` then takes the highest eligible tier, so the
@@ -858,29 +882,24 @@ fn build_npc_equip_state<'a>(
     let mut expanded: Vec<ExpandedEquip> = Vec::new();
     let mut resolved_buf = Vec::new();
 
-    // #2093 / SKY-D3-NEW-01 — race default skin (`RACE.WNAM`), equipped
-    // FIRST so it's the lowest-priority layer: any OTFT/CNTO armor
-    // resolved below that claims an overlapping biped bit displaces it
-    // in `equipment_slots` (the #2094 post-loop filter then drops the
-    // skin's mesh for exactly the bits it lost, keeping it for any bit
-    // no other gear covers). Without this, an NPC whose OTFT/CNTO
+    // #2093 / SKY-D3-NEW-01 — race default skin (`RACE.WNAM`) is the
+    // lowest-priority body layer, not a lootable inventory item. OTFT/CNTO
+    // armor masks its covered regions after equipment resolution; no
+    // synthetic stack or equipment occupant is needed. Without this layer,
+    // an NPC whose OTFT/CNTO
     // doesn't cover a biped region has zero mesh source there — the
     // prebaked path's FaceGeom NIF is head-only (Bethesda FaceGen
     // convention), not "head and body in one mesh."
     if let Some(race) = index.races.get(&race_form_id) {
         if let Some(skin_fid) = race.default_skin {
-            let stack = ItemStack::new(skin_fid, 1);
-            let inv_idx = inventory.push(stack);
             if let Some(item) = index.items.get(&skin_fid) {
                 if let ItemKind::Armor { biped_flags, .. } = item.kind {
-                    equipment_slots.equip(biped_flags, inv_idx);
-                    race_skin_slots = Some((inv_idx, biped_flags));
+                    race_skin_mask = Some(biped_flags);
                     // #3357 — the race skin is the multi-ARMA case: its
                     // BOD2 covers Head|Body|Hands|Feet and three separate
                     // addons (torso / hands / feet) serve any given race.
-                    // One `ResolvedArmor` per mesh, all sharing `inv_idx`
-                    // so the displacement mask and the #2094 retain treat
-                    // them as one equipped item.
+                    // One `ResolvedArmor` per mesh, all marked intrinsic,
+                    // so every addon receives the same displacement mask.
                     for model_path in byroredux_plugin::equip::resolve_armor_meshes(
                         item,
                         gender,
@@ -893,7 +912,8 @@ fn build_npc_equip_state<'a>(
                             source_form_id: skin_fid,
                             model_path,
                             hidden_biped_mask: 0,
-                            inv_idx,
+                            inv_idx: None,
+                            intrinsic_skin: true,
                             authored_biped_mask: biped_flags,
                         });
                     }
@@ -1009,7 +1029,8 @@ fn build_npc_equip_state<'a>(
                 source_form_id: expanded.source_form_id,
                 model_path,
                 hidden_biped_mask: 0,
-                inv_idx,
+                inv_idx: Some(inv_idx),
+                intrinsic_skin: false,
                 authored_biped_mask: biped_flags,
             });
         }
@@ -1019,7 +1040,7 @@ fn build_npc_equip_state<'a>(
     // only some of those bits, keep the skin mesh but tell the importer which
     // dismember partitions to suppress. Bits outside the skin ARMO's authored
     // mask are irrelevant even if some other item occupies them.
-    if let Some((skin_inv_idx, skin_biped_flags)) = race_skin_slots {
+    if let Some(skin_biped_flags) = race_skin_mask {
         let displaced_mask =
             equipment_slots
                 .occupants
@@ -1027,23 +1048,20 @@ fn build_npc_equip_state<'a>(
                 .enumerate()
                 .fold(0u32, |mask, (bit, occupant)| {
                     let bit_mask = 1u32 << bit;
-                    if skin_biped_flags & bit_mask != 0
-                        && occupant.is_some()
-                        && *occupant != Some(skin_inv_idx)
-                    {
+                    if skin_biped_flags & bit_mask != 0 && occupant.is_some() {
                         mask | bit_mask
                     } else {
                         mask
                     }
                 });
-        // #3357 — `filter`, not `find`: the skin now contributes one
+        // #3357 — `filter`, not `find`: the skin contributes one
         // `ResolvedArmor` per ARMA mesh (torso / hands / feet), and every
         // one of them needs the displacement mask. With `find`, only the
         // first got it and the rest rendered through gear that should
         // have hidden them.
         for skin in armor_to_spawn
             .iter_mut()
-            .filter(|armor| armor.inv_idx == skin_inv_idx)
+            .filter(|armor| armor.intrinsic_skin)
         {
             skin.hidden_biped_mask = displaced_mask;
         }
@@ -1071,8 +1089,17 @@ fn build_npc_equip_state<'a>(
     // the Draugr hair/beard parts. 7 of 99 races point `WNAM` at one, and
     // 351 of 5,118 NPC_ records sit on those races (314 of them Draugr).
     // Every one lost its body mesh here; 170 ended with no mesh source at all.
+    let restore_skin_paths = armor_to_spawn
+        .iter()
+        .filter(|armor| armor.intrinsic_skin && armor.hidden_biped_mask != 0)
+        .map(|armor| armor.model_path)
+        .collect();
     armor_to_spawn.retain(|armor| {
-        armor.authored_biped_mask == 0 || equipment_slots.occupants.contains(&Some(armor.inv_idx))
+        armor.authored_biped_mask == 0
+            || match armor.inv_idx {
+                Some(idx) => equipment_slots.occupants.contains(&Some(idx)),
+                None => armor.authored_biped_mask & !armor.hidden_biped_mask != 0,
+            }
     });
 
     // #3409 / SKY-2026-08-27b-D3-02 — the pre-baked FaceGen head's own
@@ -1083,12 +1110,12 @@ fn build_npc_equip_state<'a>(
     // above answers for the race skin, with the whole biped range in scope
     // instead of the skin's authored mask.
     //
-    // Excluding the race skin's own index is load-bearing, not tidiness:
+    // Keeping race skin out of equipment occupants is load-bearing:
     // `SkinNaked` authors bit 0 (Head), and 47 of Skyrim's 99 races point
     // `WNAM` at a skin that does. Folding those in would hide partition 130
     // on every one of them — i.e. delete the face of most humanoid NPCs.
-    // With the exclusion, bit 0 stays with the skin until an armour actually
-    // displaces it, which is exactly what a closed helm does:
+    // Bit 0 only suppresses the face when actual armor claims it,
+    // which is exactly what a closed helm does:
     //
     //   Dwarven / Daedric / Nord Plate / Guard "FullReach"  bits 0,1,12,13
     //     → hides 130 (face + beard), 131 (hair), 143 (ears); the helm ships
@@ -1106,14 +1133,13 @@ fn build_npc_equip_state<'a>(
     // mapping the data doesn't author — and it would be wrong for the
     // deliberate `HairLine*` sub-meshes, which Bethesda authors to show
     // *because* a helmet is worn. Left for a HDPT-type-aware follow-up.
-    let skin_inv_idx = race_skin_slots.map(|(idx, _)| idx);
     let facegen_hidden_mask =
         equipment_slots
             .occupants
             .iter()
             .enumerate()
             .fold(0u32, |mask, (bit, occupant)| match occupant {
-                Some(idx) if Some(*idx) != skin_inv_idx => mask | (1u32 << bit),
+                Some(_) => mask | (1u32 << bit),
                 _ => mask,
             });
 
@@ -1122,6 +1148,7 @@ fn build_npc_equip_state<'a>(
         equipment_slots,
         equipped_weapon,
         armor_to_spawn,
+        restore_skin_paths,
         facegen_hidden_mask,
     }
 }

@@ -643,6 +643,7 @@ struct App {
     /// cancelled by a replacement transition/shutdown (#3671).
     interior_transition: Option<cell_loader::InteriorCellApply>,
     loading_screen: loading_screen::LoadingScreen,
+    loot_appearance_loader: npc_spawn::loot_appearance::LootAppearanceLoader,
     /// Debug server lifecycle owner (#855 / C6-NEW-02). Holding the
     /// handle keeps the TCP listener thread alive; the natural App::Drop
     /// fires the handle's Drop, which sets the shutdown flag and joins
@@ -907,6 +908,7 @@ impl App {
             streaming: None,
             interior_transition: None,
             loading_screen: loading_screen::LoadingScreen::default(),
+            loot_appearance_loader: Default::default(),
             #[cfg(feature = "debug-server")]
             debug_server,
             debug_ui: None,

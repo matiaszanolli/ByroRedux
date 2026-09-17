@@ -898,6 +898,17 @@ impl ApplicationHandler for App {
         // No-op when the slot is `None` — the common per-frame case.
         self.step_cell_transition();
 
+        // Persistent-cell apply owns a cross-frame entity-range cursor;
+        // don't let it claim appearance entities belonging to another cell.
+        if self.interior_transition.is_none()
+            && !self.loading_screen.active()
+            && self.streaming.as_ref().is_none_or(|stream| stream.persistent_apply.is_none())
+        {
+            if let Some(ctx) = self.renderer.as_mut() {
+                self.loot_appearance_loader.step(&mut self.world, ctx);
+            }
+        }
+
         // Update window title with stats (throttled: every 16 frames ≈ 4×/sec at 60fps).
         let config_debug = self.world.resource::<EngineConfig>().debug_logging;
         if config_debug {

@@ -82,6 +82,33 @@ fn non_fx_entity_draws_exactly_once_with_single_transform_lookup() {
 }
 
 #[test]
+fn staged_or_superseded_npc_parts_stay_hidden_even_when_animation_says_visible() {
+    use crate::npc_spawn::loot_appearance::NpcAppearanceHidden;
+    use byroredux_core::ecs::AnimatedVisibility;
+    let mut world = world_with_mesh(false);
+    let mesh = world
+        .query::<MeshHandle>()
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap()
+        .0;
+    world.insert(mesh, AnimatedVisibility(true));
+    world.insert(mesh, NpcAppearanceHidden);
+    assert!(
+        run_build(&world).is_empty(),
+        "no raster or TLAS draw for hidden gear"
+    );
+    world.remove::<NpcAppearanceHidden>(mesh);
+    assert_eq!(run_build(&world).len(), 1);
+    world.insert(mesh, AnimatedVisibility(false));
+    assert!(
+        run_build(&world).is_empty(),
+        "appearance must not override animation hiding"
+    );
+}
+
+#[test]
 fn authored_decal_is_alpha_composited_without_depth_or_tlas_occlusion() {
     let mut world = world_with_mesh(false);
     let mesh_entity = {

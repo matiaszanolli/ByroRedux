@@ -921,7 +921,22 @@ fn corpse_collider_actors(
         .unwrap_or_default();
     let mut collider_entities: rustc_hash::FxHashSet<_> = world
         .query::<byroredux_physics::RapierHandles>()
-        .map(|handles| handles.iter().map(|(entity, _)| entity).collect())
+        .map(|handles| {
+            // Query just the candidate owners instead of copying every
+            // collider in the scene on each interaction frame.
+            let mut entities: rustc_hash::FxHashSet<_> = owners
+                .iter()
+                .filter(|(body, _)| handles.get(*body).is_some())
+                .map(|(body, _)| *body)
+                .collect();
+            entities.extend(
+                candidates
+                    .keys()
+                    .filter(|entity| handles.get(**entity).is_some())
+                    .copied(),
+            );
+            entities
+        })
         .unwrap_or_default();
     // Active ragdolls replace their kinematic RapierHandles rows. Their
     // dynamic bodies are owned by the articulation, not physics_sync.

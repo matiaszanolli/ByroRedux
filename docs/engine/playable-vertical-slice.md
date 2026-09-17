@@ -545,6 +545,103 @@ transfer; it also covers obstruction, equipment events, and post-overlay logical
 equipment reconciliation. Visible armor meshes are still spawn-time attachments:
 stripping/rebuilding corpse visuals and a full live save/reload smoke remain open.
 
+Armor attachment groundwork now preserves actor ownership, inventory row,
+resolved FormID, intrinsic race-skin classification, and import-time hidden
+partition mask on each successfully loaded armor root in both runtime and
+prebaked NPC spawn paths. Multiple ARMA roots can share one inventory row;
+ordinary body/head/skeleton attachments are not marked as equipment. This is
+spawn-derived metadata, not serialized entity IDs. It does **not** remove looted
+meshes yet: covered body meshes may never have been loaded, and suppressed skin
+partitions require rebuilding. Reconciliation must also run after save overlays,
+not only in response to unequip events.
+Validation: 75 NPC-spawn tests passed (7 ignored), including attachment ownership
+and skin/gear classification; the full engine suite passed 2,217 tests
+(34 ignored). No live visual-removal claim is made by this metadata change.
+
+Race skin now resolves as an intrinsic body layer without a synthetic inventory
+stack or equipment occupant. Actual armor still suppresses its covered regions,
+including partial coverage and fully displaced skins; zero-mask creature bodies
+remain renderable. Armor-root ownership uses no inventory index for intrinsic
+skin. The spawn-to-corpse-loot regression checks that only actual inventory gear
+transfers, no skin unequip event is emitted, and real equipment indices stay
+valid. An explicitly authored CNTO copy of the same FormID remains an ordinary
+item, so this is not a global skin-FormID blacklist. Existing saves containing
+old synthetic skin stacks are not rewritten: they cannot be distinguished from
+explicit inventory copies by FormID alone. Visible body restoration remains open.
+Validation: all 75 NPC-spawn tests pass with lock-order checking, all 2,217 engine
+tests pass (34 ignored), and all four `on_real_skyrim_data` tests pass with
+`BYROREDUX_REQUIRE_GAME_DATA=1` (outfits, multi-addon body coverage, zero-mask
+creature skins, and helmet FaceGen masks). These are resolution/logic checks,
+not a rendered corpse-equipment-removal smoke.
+
+**Real-ragdoll loot targeting fix (2026-09-17 UTC):** a live FNV check found
+that the above physical-targeting test used a stand-in collider with
+`RapierHandles`. Actual ragdoll activation removes that row and stores dynamic
+body handles in `Ragdoll`; the interaction ray therefore hit a corpse but
+could not resolve its owner. Candidate suppression and both ray-hit/occlusion
+lookups now include active ragdoll bodies. The lethal-combat loot regression
+now activates a real ragdoll and asserts removal of its old handles; it failed
+before the fix. The wall test also uses real activation, preventing the old
+placement bound from bypassing an obstruction. All 24 interaction tests pass
+with `BYRO_LOCK_ORDER_CHECK=1`, and all 2,216 engine tests pass (34 ignored).
+
+Live FNV validation used a copy of the retained P2 save under
+`/tmp/byro-loot-restore.X3g1dd/`, leaving the original untouched. From the saved
+character position, `input.look 18.82 -42.86` selected GSTrudy's fallen body
+at 127.09 BU and displayed `[E] Take all`. `input.press activate` transferred
+her four rows (one base 979403, three base 584962; count 1 each): player rows
+and item count rose from 2 to 6, her inventory became empty, and her equipment
+slots cleared. Slot 8 validated and a fresh process loaded it successfully:
+the same four rows remained in the player inventory alongside the original
+two, the corpse stayed empty/dead, and another Activate press added nothing.
+All 18 physical bodies remained present/finite. This verifies same-cell FNV
+loot/save/process-restart behavior, not Skyrim loot, cross-cell continuity,
+theft semantics, or visible removal of spawn-time armor meshes.
+
+**FNV unloaded-reference live validation (2026-09-17 UTC):** starting from
+the looted slot 8 above, a setup-only `cam.pos 45 3576 741` plus
+`input.look -172.36 0` placed the grounded character at the verified saloon
+door. Both exits/entries used the normal `[E] Open` target and
+`input.press activate`, not direct cell-load commands. On the first
+saloon -> exterior -> saloon round trip, GSTrudy respawned as entity 15598
+but remained empty, unequipped, and `GetDead = 1`; all 18 physical bodies
+were present/finite, maximum distance 65.581 BU. Player inventory stayed
+at six rows/items and two occupied equipment indices.
+
+Slot 7 was written **outside while the saloon was unloaded**. A fresh process
+loaded that exterior save (nine streamed cells, 2,738 deltas applied across
+2,634 matched FormIDs, zero resident dead actors), then returned through the
+normal door. `mesh.info` confirmed the new entity 12451 was still placed
+reference `0x104C6D`. It restored empty inventory/equipment, death state,
+and 18 finite ragdoll bodies (maximum distance 53.020 BU); the player retained
+all six items. This checks the persisted unloaded-reference store rather than
+only resident save columns. Both return arrivals were grounded. Save copies,
+runner, and logs are retained in `/tmp/byro-loot-restore.X3g1dd/` (slots 7/8,
+`loot-cell-roundtrip.stderr`, `engine.stderr`). No implementation change was
+needed for this persistence path. These are manual debug-input-driven FNV
+checks, not yet an automated P3 gate or cross-game/reset/restock proof.
+
+**Skyrim SE corpse-loot live validation (2026-09-17 UTC):** copied the
+retained P2 corpse save into `/tmp/byro-skyrim-loot.Q4p1Kf/saves`, confirming
+the target by placed reference `0x0383F7` rather than the duplicated NPC name.
+The restored target (entity 36761) had four inventory rows and weapon index 3;
+its 18-body ragdoll was finite and at rest. Normal forward input moved the
+grounded player closer, then `input.look 84 -38` selected the fallen body at
+164.99 BU with `[E] Take all`. Activate transferred all four rows (base IDs
+93923, 244868, 244866, 145061; one each): player rows 23 -> 27, total items
+207 -> 211. The player's six occupied equipment indices and equipped weapon
+`0x00013790` at inventory index 5 remained unchanged. Corpse inventory and
+weapon slot cleared and its prompt disappeared.
+
+Slot 8 validated, and a fresh process restored all four transferred rows,
+empty corpse inventory/equipment, and `GetDead = 1`. All 18 bodies were
+present/finite with zero reported linear speed; another Activate press did
+not duplicate items. Runner, copied pre-loot save, post-loot save, and logs
+remain in `/tmp/byro-skyrim-loot.Q4p1Kf/`. No Skyrim-specific code change was
+needed. Together with the FNV checks this verifies same-cell take-all/save/
+process-restart behavior in both reference titles; Skyrim cell eviction,
+visible equipment removal, selective looting, and other games remain open.
+
 **Loot save-overlay validation (2026-09-16):** a headless regression now captures
 both pre-loot and post-loot worlds, encodes/decodes the real save format, restores
 resources, remaps stable FormIDs onto different entity IDs, applies the production
