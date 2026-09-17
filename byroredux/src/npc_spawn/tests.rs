@@ -33,7 +33,9 @@ fn shape_less_skeleton_gets_one_torso_fallback_collider() {
     let fallback = keyframe_live_ragdoll_bones(&mut world, actor, &Default::default())
         .expect("shape-less skeleton needs a fallback body");
 
-    let owners = world.query::<byroredux_physics::ActorColliderOwner>().unwrap();
+    let owners = world
+        .query::<byroredux_physics::ActorColliderOwner>()
+        .unwrap();
     let owned_fallback = owners
         .iter()
         .find_map(|(entity, owner)| (owner.0 == actor).then_some(entity))
@@ -51,7 +53,12 @@ fn shape_less_skeleton_gets_one_torso_fallback_collider() {
         "the collider's local torso offset must compose under the actor root"
     );
     assert_eq!(
-        world.query::<Transform>().unwrap().get(fallback).unwrap().translation,
+        world
+            .query::<Transform>()
+            .unwrap()
+            .get(fallback)
+            .unwrap()
+            .translation,
         Vec3::new(0.0, 52.0, 0.0),
     );
     assert!(matches!(
@@ -62,7 +69,12 @@ fn shape_less_skeleton_gets_one_torso_fallback_collider() {
         })
     ));
     assert_eq!(
-        world.query::<RigidBodyData>().unwrap().get(fallback).unwrap().motion_type,
+        world
+            .query::<RigidBodyData>()
+            .unwrap()
+            .get(fallback)
+            .unwrap()
+            .motion_type,
         MotionType::Keyframed,
     );
 
@@ -470,10 +482,12 @@ fn skeleton_path_per_game() {
         humanoid_skeleton_path(GameKind::Fallout76),
         Some(r"meshes\actors\character\characterassets\skeleton.nif"),
     );
-    // Starfield humanoids live under `\human\`, not `\character\`.
+    // Starfield humanoids live under `\human\`, not `\character\`. Its
+    // runtime rig must be the face-bone variant: the sibling `skeleton.nif`
+    // omits every `faceBone_*` joint used by FaceGen pieces.
     assert_eq!(
         humanoid_skeleton_path(GameKind::Starfield),
-        Some(r"meshes\actors\human\characterassets\skeleton.nif"),
+        Some(r"meshes\actors\human\characterassets\skeleton_facebones.nif"),
     );
 }
 
@@ -842,7 +856,13 @@ fn prebaked_equip_state_selects_one_highest_damage_weapon() {
     index.items.insert(BATTLEAXE, weapon_item(BATTLEAXE, 18));
     index.items.insert(GREATSWORD, weapon_item(GREATSWORD, 17));
 
-    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(
+        &npc,
+        npc.race_form_id,
+        &index,
+        GameKind::Skyrim,
+        Gender::Male,
+    );
     let equipped = state.equipped_weapon.expect("one weapon must be equipped");
     assert_eq!(equipped.base_form_id, BATTLEAXE);
     assert_eq!(equipped.damage, 18.0);
@@ -887,7 +907,13 @@ fn prebaked_equip_state_inherits_templated_inventory() {
     index.npcs.insert(BASE, base);
     index.items.insert(GEAR, misc_item(GEAR));
 
-    let state = build_npc_equip_state(&templated, templated.race_form_id, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(
+        &templated,
+        templated.race_form_id,
+        &index,
+        GameKind::Skyrim,
+        Gender::Male,
+    );
 
     assert_eq!(
         state.inventory.len(),
@@ -929,7 +955,13 @@ fn prebaked_equip_state_uses_own_inventory_without_template() {
     };
     index.items.insert(GEAR, misc_item(GEAR));
 
-    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(
+        &npc,
+        npc.race_form_id,
+        &index,
+        GameKind::Skyrim,
+        Gender::Male,
+    );
     assert_eq!(
         state
             .inventory
@@ -1121,7 +1153,13 @@ fn unified_equip_state_covers_fallout_runtime_body_and_preserves_count() {
         legacy_armor_item(ARMOR, UPPER_BODY, r"armor\vaultsuit.nif"),
     );
 
-    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Fallout3NV, Gender::Female);
+    let state = build_npc_equip_state(
+        &npc,
+        npc.race_form_id,
+        &index,
+        GameKind::Fallout3NV,
+        Gender::Female,
+    );
 
     assert!(state.main_body_covered(GameKind::Fallout3NV));
     assert_eq!(state.armor_to_spawn.len(), 1);
@@ -1204,7 +1242,13 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
         .armor_addons
         .insert(FEET_ARMA, arma(FEET_ARMA, r"armor\boots\boots.nif"));
 
-    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(
+        &npc,
+        npc.race_form_id,
+        &index,
+        GameKind::Skyrim,
+        Gender::Male,
+    );
 
     assert_eq!(
         state.armor_to_spawn.len(),
@@ -1309,7 +1353,11 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
     let weapon = armed.equipped_weapon.unwrap();
     assert_eq!(weapon.inventory_index, InventoryIndex(1));
     assert_eq!(
-        armed.inventory.get(weapon.inventory_index).unwrap().base_form_id,
+        armed
+            .inventory
+            .get(weapon.inventory_index)
+            .unwrap()
+            .base_form_id,
         WEAPON
     );
 }
@@ -1359,9 +1407,10 @@ fn prebaked_equip_state_uses_the_passed_race_form_id_not_the_shells_own() {
     index
         .items
         .insert(SKIN, skyrim_armor_item(SKIN, TORSO_HANDS, vec![SKIN_ARMA]));
-    index
-        .armor_addons
-        .insert(SKIN_ARMA, arma(SKIN_ARMA, r"actors\character\resolved_skin.nif"));
+    index.armor_addons.insert(
+        SKIN_ARMA,
+        arma(SKIN_ARMA, r"actors\character\resolved_skin.nif"),
+    );
 
     // Pass the RESOLVED race, not `npc.race_form_id` — exactly what
     // every production call site now does via `resolve_inherited_traits`.
@@ -1445,7 +1494,13 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         .armor_addons
         .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
 
-    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(
+        &npc,
+        npc.race_form_id,
+        &index,
+        GameKind::Skyrim,
+        Gender::Male,
+    );
     assert_eq!(state.armor_to_spawn.len(), 2);
     let skin = state
         .armor_to_spawn
@@ -1514,7 +1569,13 @@ fn prebaked_equip_state_keeps_zero_mask_race_skin() {
         arma(SKIN_ARMA, r"actors\draugr\character assets\draugr.nif"),
     );
 
-    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(
+        &npc,
+        npc.race_form_id,
+        &index,
+        GameKind::Skyrim,
+        Gender::Male,
+    );
     assert_eq!(
         state.armor_to_spawn.len(),
         1,
@@ -1596,7 +1657,13 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
         .armor_addons
         .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
 
-    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(
+        &npc,
+        npc.race_form_id,
+        &index,
+        GameKind::Skyrim,
+        Gender::Male,
+    );
     assert!(
         !state
             .armor_to_spawn
@@ -1604,8 +1671,11 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
             .any(|armor| armor.form_id == SKIN),
         "a skin with a real mask, fully covered by gear, is still displaced"
     );
-    assert_eq!(state.restore_skin_paths, vec![r"actors\character\skin.nif"],
-        "fully suppressed body must still have a restoration recipe");
+    assert_eq!(
+        state.restore_skin_paths,
+        vec![r"actors\character\skin.nif"],
+        "fully suppressed body must still have a restoration recipe"
+    );
 }
 
 /// #3409 (SKY-2026-08-27b-D3-02) — the pre-baked FaceGen head's own
@@ -1673,7 +1743,14 @@ fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
         .armor_addons
         .insert(HELM_ARMA, arma(HELM_ARMA, r"armor\iron\helmet.nif"));
 
-    build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male).facegen_hidden_mask
+    build_npc_equip_state(
+        &npc,
+        npc.race_form_id,
+        &index,
+        GameKind::Skyrim,
+        Gender::Male,
+    )
+    .facegen_hidden_mask
 }
 
 /// The race skin's OWN bits must never reach the head's mask. `SkinNaked`
@@ -1790,7 +1867,13 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
         .armor_addons
         .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
 
-    let state = build_npc_equip_state(&npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
+    let state = build_npc_equip_state(
+        &npc,
+        npc.race_form_id,
+        &index,
+        GameKind::Skyrim,
+        Gender::Male,
+    );
 
     assert_eq!(
         state.armor_to_spawn.len(),
@@ -2360,7 +2443,13 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
             .npcs
             .get(&form_id)
             .unwrap_or_else(|| panic!("{name} ({form_id:08X}) must be present in Skyrim.esm"));
-        let state = build_npc_equip_state(npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
+        let state = build_npc_equip_state(
+            npc,
+            npc.race_form_id,
+            &index,
+            GameKind::Skyrim,
+            Gender::Male,
+        );
         assert!(
             !state.armor_to_spawn.is_empty(),
             "{name} ({form_id:08X}) resolved no mesh at all — its race skin \
@@ -2386,7 +2475,13 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
             continue;
         };
         zero_mask_race_npcs += 1;
-        let state = build_npc_equip_state(npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male);
+        let state = build_npc_equip_state(
+            npc,
+            npc.race_form_id,
+            &index,
+            GameKind::Skyrim,
+            Gender::Male,
+        );
         if state
             .armor_to_spawn
             .iter()
@@ -2438,8 +2533,14 @@ fn helmeted_npcs_get_a_facegen_hide_mask_on_real_skyrim_data() {
     let mut closed_helm = 0usize;
     let mut open_helm = 0usize;
     for npc in index.npcs.values() {
-        let mask =
-            build_npc_equip_state(npc, npc.race_form_id, &index, GameKind::Skyrim, Gender::Male).facegen_hidden_mask;
+        let mask = build_npc_equip_state(
+            npc,
+            npc.race_form_id,
+            &index,
+            GameKind::Skyrim,
+            Gender::Male,
+        )
+        .facegen_hidden_mask;
         if mask & HEAD_FAMILY == 0 {
             continue;
         }

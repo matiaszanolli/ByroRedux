@@ -25,8 +25,8 @@ use byroredux_renderer::VulkanContext;
 pub(crate) mod ai_package;
 pub(crate) use ai_package::ambient_ai_package_system;
 use ai_package::apply_ai_package_behavior;
-mod resumable;
 pub(crate) mod loot_appearance;
+mod resumable;
 pub(crate) use resumable::{NpcSpawnJob, NpcSpawnProgress};
 
 use crate::anim_convert::convert_nif_clip;
@@ -79,7 +79,12 @@ use byroredux_plugin::equip::Gender;
 /// for `Use Stats`/`Use Traits`: a templated shell with `Use Factions` set
 /// and its own (typically empty) `FACT` list previously never inherited
 /// the template's membership.
-fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, npc: &NpcRecord, index: &EsmIndex) {
+fn stamp_faction_ranks(
+    world: &mut World,
+    placement_root: EntityId,
+    npc: &NpcRecord,
+    index: &EsmIndex,
+) {
     let shell_level = effective_actor_level(npc);
     let factions_npc = byroredux_plugin::equip::resolve_inherited_factions(npc, shell_level, index);
     if factions_npc.factions.is_empty() {
@@ -153,7 +158,12 @@ fn stamp_actor_values(
 /// shell here let one entity get its SPECIAL/Health from the template and
 /// its attack damage from the shell — the fifth instance of this exact
 /// defect class (#2956, #3381, #3382, #3480 were the first four).
-fn stamp_creature_attack(world: &mut World, placement_root: EntityId, npc: &NpcRecord, index: &EsmIndex) {
+fn stamp_creature_attack(
+    world: &mut World,
+    placement_root: EntityId,
+    npc: &NpcRecord,
+    index: &EsmIndex,
+) {
     let shell_level = effective_actor_level(npc);
     let stats_npc = byroredux_plugin::equip::resolve_inherited_stats(npc, shell_level, index);
     let Some(stats) = stats_npc.creature_stats else {
@@ -419,7 +429,12 @@ pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {
         GameKind::Fallout4 | GameKind::Fallout76 => {
             Some(r"meshes\actors\character\characterassets\skeleton.nif")
         }
-        GameKind::Starfield => Some(r"meshes\actors\human\characterassets\skeleton.nif"),
+        // Starfield splits the human rig into a body-only `skeleton.nif`
+        // and a complete `skeleton_facebones.nif`. NPC FaceGen heads, hair,
+        // teeth, lashes, and brows skin to `faceBone_*` joints that only the
+        // latter contains. The body bones are shared, so the complete rig is
+        // the canonical runtime skeleton for every humanoid actor.
+        GameKind::Starfield => Some(r"meshes\actors\human\characterassets\skeleton_facebones.nif"),
     }
 }
 
@@ -1119,13 +1134,9 @@ fn build_npc_equip_state<'a>(
 
         // #3357 — 166 of 2,762 Skyrim ARMOs serve one race with more than
         // one ARMA; each contributes its own mesh.
-        for model_path in byroredux_plugin::equip::resolve_armor_meshes(
-            item,
-            gender,
-            race_form_id,
-            index,
-            game,
-        ) {
+        for model_path in
+            byroredux_plugin::equip::resolve_armor_meshes(item, gender, race_form_id, index, game)
+        {
             armor_to_spawn.push(ResolvedArmor {
                 form_id,
                 source_form_id: expanded.source_form_id,

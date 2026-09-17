@@ -501,7 +501,8 @@ command buffer still references.
 |---|---|---|
 | `MIN_TLAS_INSTANCE_RESERVE` | 8 192 instances | Never shrink the TLAS instance buffer below this |
 | `WORKING_SET_FLOOR` | 8 192 instances | Post-shrink TLAS capacity floor |
-| `MIN_BLAS_BUDGET_BYTES` | 256 MB | Minimum BLAS-budget floor ((BLAS allocation heap − screen-scaled pass reservation) / 3, capped below — #3839) |
+| `MIN_BLAS_BUDGET_BYTES` | 256 MB | BLAS-budget floor after `(compatible allocation heap − screen-scaled pass reservation) / 3` |
+| `MAX_BLAS_BUDGET_BYTES` | 1 GiB | BLAS-budget ceiling; prevents DEVICE_LOCAL system-memory heaps from authorizing multi-GiB process residency |
 
 ### Build flags (split post #1196)
 
@@ -631,16 +632,18 @@ tech debt — not yet implemented.
 |---|---|---|
 | `MAX_MESH_SLOTS` | 16 777 216 (1 << 24) | handle-table slots only (not VRAM) |
 | `VERTEX_POOL_SOFT_CAP` | 4 M vertices | ~416 MB (104 B/vertex) |
-| `VERTEX_POOL_HARD_CAP` | 16 M vertices | ~1.66 GB |
+| `VERTEX_POOL_HARD_CAP` | 4 M vertices | ~416 MB (same as the admission threshold) |
 | `INDEX_POOL_SOFT_CAP` | 16 M indices | ~64 MB (4 B/index) |
-| `INDEX_POOL_HARD_CAP` | 64 M indices | ~256 MB |
+| `INDEX_POOL_HARD_CAP` | 16 M indices | ~64 MB (same as the admission threshold) |
 
 The vertex stride is 104 B (20 × f32 + 4 × u32 + 8 × u8 — position,
 colour (widened `vec3`→`vec4`, `cd2b5fe4`), normal, UV, bone
 indices/weights, splat channels, tangent); test-pinned
 (`assert_eq!(size_of::<Vertex>(), 104)`, `crates/renderer/src/vertex.rs`).
-Soft caps emit a `warn!`; hard caps return an error.
-`check_pool_growth()` is called at every upload.
+The historic soft thresholds are now strict admission caps: hard caps return
+an error and the loader skips subsequent meshes. This bounds the global
+source geometry before duplicate mesh uploads and BLAS allocations can turn
+it into a host-memory OOM. `check_pool_growth()` is called at every upload.
 
 **Registry overflow guard** (`667d1a28`): `NifImportRegistry` now defaults
 to a 2 048-entry LRU cap (configurable via `BYRO_NIF_CACHE_MAX=N`; `=0`
@@ -855,14 +858,16 @@ authoritative rather than re-derived.
 | Pipeline cache blob | < 10 MB | — |
 | **Estimated total** | **~1.86 GB** | **~4.11 GB at native 4K** — #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section |
 
-The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
-they are design targets. The RTX 4070 Ti (12 GB) has headroom for all
-known scene sizes. The renderer samples the allocator at startup and after
-completed streaming, debug-load, and interior-cell transactions. A warning
-fires when total allocated bytes exceed 80% of the smallest DEVICE_LOCAL
-heap (`(heap / 5) * 4`, with a 2 GB fallback when no DEVICE_LOCAL heap is
-reported); the warning is latched once per renderer context, while each
-sample still records the INFO allocation report.
+The 6 GB RT-minimum and 4 GB whole-renderer target remain design targets.
+Static BLAS residency is separately enforced at 1 GiB, so a Vulkan driver
+that exposes system RAM as DEVICE_LOCAL cannot authorize multi-GiB BLAS
+allocation and provoke the Linux OOM killer. The RTX 4070 Ti (12 GB) still
+has headroom for all known scene sizes. The renderer samples the allocator at
+startup and after completed streaming, debug-load, and interior-cell
+transactions. A warning fires when total allocated bytes exceed 80% of the
+smallest DEVICE_LOCAL heap (`(heap / 5) * 4`, with a 2 GB fallback when no
+DEVICE_LOCAL heap is reported); the warning is latched once per renderer
+context, while each sample still records the INFO allocation report.
 
 ---
 

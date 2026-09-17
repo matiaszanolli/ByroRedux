@@ -73,6 +73,15 @@ struct RuntimeNpcState {
     body_paths: Vec<String>,
     head_path: Option<String>,
     hair_path: Option<String>,
+    /// Per-NPC HCLR colour in the renderer's normalized RGB convention.
+    /// Classic hair textures are palettes rather than a final actor colour.
+    hair_tint: Option<[f32; 3]>,
+    /// Fallout 3 / New Vegas loose hair meshes are authored at the actor
+    /// origin and need the shared head-bone translation. Oblivion uses the
+    /// same FaceGen record fields but its hair NIFs already carry their own
+    /// actor-space placement; mounting those below `Bip01 Head` applies the
+    /// head's rotated basis a second time.
+    hair_uses_head_bone_mount: bool,
     brow_path: Option<String>,
     eye_paths: Vec<String>,
     /// Mouth / teeth / tongue (and, on Oblivion, ears) — the head
@@ -512,6 +521,9 @@ fn prepare_runtime_state(
         .and_then(|form_id| index.hair.get(&form_id))
         .map(|hair| hair.model_path.clone())
         .filter(|path| !path.is_empty());
+    let hair_tint = recipe
+        .and_then(|recipe| recipe.hair_color_rgb)
+        .map(|color| color.map(|channel| channel as f32 / 255.0));
     let brow_path = recipe
         .and_then(|recipe| recipe.eyebrow_form_id)
         .and_then(|form_id| index.head_parts.get(&form_id))
@@ -588,6 +600,8 @@ fn prepare_runtime_state(
         body_paths,
         head_path,
         hair_path,
+        hair_tint,
+        hair_uses_head_bone_mount: hair_uses_head_bone_mount(game),
         brow_path,
         eye_paths,
         head_sub_paths,
@@ -675,6 +689,8 @@ fn prepare_creature_state(
         body_paths,
         head_path: None,
         hair_path: None,
+        hair_tint: None,
+        hair_uses_head_bone_mount: false,
         brow_path: None,
         eye_paths: Vec::new(),
         head_sub_paths: Vec::new(),
@@ -806,6 +822,18 @@ fn advance_runtime_unit(
         RuntimePhase::Hair => {
             if state.skel_root.is_some() {
                 if let Some(path) = state.hair_path.as_deref() {
+                    let tint = state.hair_tint;
+                    let mut apply_hair_tint = |scene: &mut byroredux_nif::import::ImportedScene| {
+                        if let Some(tint) = tint {
+                            for mesh in &mut scene.meshes {
+                                for (channel, tint_channel) in
+                                    mesh.material.diffuse_color.iter_mut().zip(tint)
+                                {
+                                    *channel *= tint_channel;
+                                }
+                            }
+                        }
+                    };
                     spawn_shared_skeleton_part(
                         state,
                         world,
@@ -815,7 +843,7 @@ fn advance_runtime_unit(
                         "hair",
                         tex_provider,
                         mat_provider,
-                        None,
+                        tint.is_some().then_some(&mut apply_hair_tint),
                     );
                 }
             }
@@ -1186,20 +1214,23 @@ fn spawn_shared_skeleton_part(
     );
     if let Some(root) = root {
         // Fallout 3 / New Vegas hair NIFs are ordinary, unskinned meshes.
-        // Their vertices are authored around the head, but their sole
-        // `Scene Root` node is at actor-local origin. Parent it to the shared
-        // head bone rather than the placement root, otherwise the hair
-        // correctly follows the actor in X/Z while rendering at height zero.
-        // Body and head NIFs remain placement-root children: their skin
-        // palettes already resolve against the shared skeleton and would be
-        // transformed twice if mounted below a bone.
-        let mount = if label == "hair" {
+        // Their vertices are authored around the head but their sole Scene
+        // Root sits at actor-local origin, so only that format mounts beneath
+        // the shared head bone. Oblivion hair has its own actor-space root
+        // transform; applying the head's rotated basis again turns it 90°.
+        // Body and head NIFs remain placement-root children because their
+        // skin palettes already resolve against the shared skeleton.
+        let mount = if label == "hair" && state.hair_uses_head_bone_mount {
             shared_hair_mount(&state.skel_map).unwrap_or(state.placement_root)
         } else {
             state.placement_root
         };
         parent_part(world, mount, root);
     }
+}
+
+fn hair_uses_head_bone_mount(game: GameKind) -> bool {
+    matches!(game, GameKind::Fallout3NV)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1534,11 +1565,16 @@ mod tests {
     fn shared_hair_mount_resolves_classic_head_case_insensitively() {
         let mut world = World::new();
         let head = world.spawn();
-        let skeleton = std::collections::HashMap::from([(
-            std::sync::Arc::<str>::from("bIp01 hEaD"),
-            head,
-        )]);
+        let skeleton =
+            std::collections::HashMap::from([(std::sync::Arc::<str>::from("bIp01 hEaD"), head)]);
         assert_eq!(shared_hair_mount(&skeleton), Some(head));
+    }
+
+    #[test]
+    fn only_fallout_runtime_hair_uses_the_shared_head_bone_basis() {
+        assert!(hair_uses_head_bone_mount(GameKind::Fallout3NV));
+        assert!(!hair_uses_head_bone_mount(GameKind::Oblivion));
+        assert!(!hair_uses_head_bone_mount(GameKind::Skyrim));
     }
 
     #[test]

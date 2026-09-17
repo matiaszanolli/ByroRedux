@@ -54,12 +54,23 @@ pub(super) const MIN_TLAS_INSTANCE_RESERVE: u32 = 8192;
 pub(super) const WORKING_SET_FLOOR: u32 = MIN_TLAS_INSTANCE_RESERVE;
 
 /// Minimum BLAS-budget floor. Computed budget is
-/// `(device_local - screen_scaled_reservation) / 3` capped no lower
-/// than this (the reservation term is #3839) — keeps the 90% eviction trigger
-/// meaningful even on small-VRAM devices where `total / 3` would be
-/// a small absolute number. 256 MB matches the typical cell BLAS
-/// footprint. See `blas_budget_for_heap`.
+/// `(device_local - screen_scaled_reservation) / 3`, clamped to this floor
+/// and [`MAX_BLAS_BUDGET_BYTES`] (the reservation term is #3839). The floor
+/// keeps the 90% eviction trigger meaningful even on small-VRAM devices where
+/// `total / 3` would be a small absolute number. 256 MB matches the typical
+/// cell BLAS footprint. See `blas_budget_for_heap`.
 pub(super) const MIN_BLAS_BUDGET_BYTES: vk::DeviceSize = 256 * 1024 * 1024;
+
+/// Maximum static-BLAS residency budget.
+///
+/// Some Vulkan implementations expose system RAM as a large DEVICE_LOCAL
+/// heap. Deriving one third of that heap would allow a dense cell to retain
+/// many gigabytes of BLAS allocations in the process address space, where the
+/// Linux OOM killer can terminate the game before eviction has a chance to
+/// help. One GiB covers the documented heavy-scene target while ensuring the
+/// renderer degrades ray effects by evicting BLAS entries instead of exhausting
+/// host memory. See `blas_budget_for_heap`.
+pub(super) const MAX_BLAS_BUDGET_BYTES: vk::DeviceSize = 1024 * 1024 * 1024;
 
 /// REFIT-count threshold beyond which a skinned BLAS is dropped and
 /// rebuilt to reset the BVH bounds. 600 frames ≈ 10 s @ 60 FPS —

@@ -463,25 +463,13 @@ fn shadow_mask_bucket_selection_is_pinned() {
 /// missing creature shadows ruled out the mask system partly on the strength
 /// of "`shadow_mask_for_instance()` maps `RenderLayer::Actor` →
 /// `VISIBILITY_LAYER_DYNAMIC_ACTOR`". That mapping is **conditional**:
-/// `alpha_blend` and the two effect material kinds are tested BEFORE
-/// `render_layer`, so an actor draw carrying any of them lands in
-/// `VISIBILITY_LAYER_EFFECT` — which is deliberately NOT part of
-/// `VISIBILITY_MASK_ALL_OPAQUE`, the mask the sun's shadow ray culls
-/// against. Such a draw casts no ground-contact shadow, which is exactly
-/// the reported symptom.
-///
-/// This does not prove it is the cause — whether a given FO4 creature's
-/// draws actually carry `alpha_blend` needs the live scene, and an actor
-/// composed of an opaque body plus a blended fur sub-mesh would still cast
-/// a body shadow. It removes the mask system from the "ruled out" column,
-/// which is where the investigation had put it.
-///
-/// The behaviour itself is deliberate (#2224 / #2227: blended proxies must
-/// not become structural occluders) and is NOT changed here. This pins the
-/// precedence so the interaction stays visible to the next reader.
+/// A mask is assigned per draw, not per texel. Ordinary blended actor meshes
+/// (hair, lashes, and clothing) remain in the dynamic-actor bucket so they
+/// retain character/contact shadows. Glass and material-kind effects remain
+/// outside the opaque mask.
 #[test]
-fn an_alpha_blended_actor_lands_outside_the_opaque_shadow_mask() {
-    use crate::shader_constants::{VISIBILITY_LAYER_DYNAMIC_ACTOR, VISIBILITY_LAYER_EFFECT};
+fn ordinary_alpha_blended_actor_keeps_the_opaque_shadow_mask() {
+    use crate::shader_constants::VISIBILITY_LAYER_DYNAMIC_ACTOR;
     use crate::vulkan::scene_buffer::{MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION};
     use byroredux_core::ecs::components::RenderLayer;
     use byroredux_core::lighting::VisibilityMask;
@@ -497,17 +485,16 @@ fn an_alpha_blended_actor_lands_outside_the_opaque_shadow_mask() {
         "an opaque actor is inside the sun's shadow-ray cull mask"
     );
 
-    // Same actor, alpha-blended: `render_layer` is never consulted.
+    // Ordinary blended actor meshes must not lose their contact shadow.
     let blended_actor = shadow_mask_for_instance(0, RenderLayer::Actor, true, 0.0);
     assert_eq!(
-        blended_actor,
-        VISIBILITY_LAYER_EFFECT as u8,
-        "alpha_blend is tested ahead of render_layer, so a blended actor is an          effect proxy, not a dynamic actor"
+        blended_actor, VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
+        "ordinary alpha-blended actor meshes keep the dynamic-actor bucket"
     );
     assert_eq!(
         VisibilityMask::ALL_OPAQUE.bits() & blended_actor,
-        0,
-        "#3305: an alpha-blended actor is invisible to every shadow ray culling on          ALL_OPAQUE — including the exterior sun's — so it casts no ground-contact          shadow. The mask system was listed as 'ruled out' on the assumption that          RenderLayer::Actor always selects DYNAMIC_ACTOR; it does not."
+        VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
+        "ordinary alpha-blended actor meshes remain visible to opaque shadow rays"
     );
 
     // The two effect material kinds take the same precedence, so an actor
@@ -741,11 +728,20 @@ fn divert_cause_matches_the_mask_it_explains() {
     ];
     let mut saw_each = [false; 4];
 
+    // Alpha remains a diversion for non-actor proxy geometry. The actor
+    // sweep below intentionally does not reach this arm because ordinary
+    // blended character meshes now retain the dynamic-actor shadow bucket.
+    assert_eq!(
+        mask_divert_cause(0, RenderLayer::Architecture, true, 0.0),
+        Some(MaskDivertCause::AlphaBlend)
+    );
+    saw_each[1] = true;
+
     for kind in kinds {
         for alpha_blend in [false, true] {
             for scale in [0.0f32, 1.0] {
                 let mask = shadow_mask_for_instance(kind, RenderLayer::Actor, alpha_blend, scale);
-                let cause = mask_divert_cause(kind, alpha_blend, scale);
+                let cause = mask_divert_cause(kind, RenderLayer::Actor, alpha_blend, scale);
 
                 match cause {
                     None => assert_eq!(
@@ -817,7 +813,8 @@ fn every_actor_instance_is_either_bucketed_or_diverted_exactly_once() {
                 let bucketed =
                     shadow_mask_for_instance(kind, RenderLayer::Actor, alpha_blend, scale)
                         == VISIBILITY_LAYER_DYNAMIC_ACTOR as u8;
-                let diverted = mask_divert_cause(kind, alpha_blend, scale).is_some();
+                let diverted =
+                    mask_divert_cause(kind, RenderLayer::Actor, alpha_blend, scale).is_some();
                 assert!(
                     bucketed ^ diverted,
                     "exactly one of bucketed/diverted must hold                      (kind={kind} alpha_blend={alpha_blend} scale={scale}):                      bucketed={bucketed} diverted={diverted}"

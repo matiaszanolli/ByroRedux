@@ -223,7 +223,9 @@ pub struct AccelerationManager {
     pub(super) static_blas_bytes: vk::DeviceSize,
     /// Maximum BLAS memory budget in bytes. Eviction triggers when exceeded.
     /// `(probed DEVICE_LOCAL heap − screen-scaled pass reservation) / 3`,
-    /// floored at `MIN_BLAS_BUDGET_BYTES` (256 MB).
+    /// clamped from `MIN_BLAS_BUDGET_BYTES` (256 MB) through
+    /// `MAX_BLAS_BUDGET_BYTES` (1 GiB). The ceiling is required because some
+    /// Vulkan implementations report system RAM as DEVICE_LOCAL.
     ///
     /// **Not** fixed at construction. The reservation scales with the render
     /// extent, so [`Self::recompute_blas_budget`] re-derives this from the

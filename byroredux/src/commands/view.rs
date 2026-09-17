@@ -37,7 +37,89 @@ impl ConsoleCommand for InteractionStatusCommand {
                 ));
                 lines.push(format!("  prompt=[E] {}", target.kind.verb()));
             }
-            None => lines.push("  target=none prompt=none".to_string()),
+            None => {
+                lines.push("  target=none prompt=none".to_string());
+                // A target-free status is otherwise opaque: it cannot tell
+                // whether the cell supplied no teleport doors or whether a
+                // camera/transform/bound disagreement missed an existing
+                // door. Keep this bounded diagnostic in the command that
+                // owns the smoke preflight rather than relying on a special
+                // debug-only component registration.
+                let ray = crate::interaction::camera_ray(world);
+                lines.push(match ray {
+                    Some((origin, direction)) => {
+                        format!("  camera_ray origin={origin:?} direction={direction:?}")
+                    }
+                    None => "  camera_ray=none".to_string(),
+                });
+                if let Some((origin, direction)) = ray {
+                    let excluded = world
+                        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
+                        .map(|player| player.0)
+                        .and_then(|entity| {
+                            world
+                                .get::<byroredux_physics::RapierHandles>(entity)
+                                .map(|handles| handles.body)
+                        });
+                    for (label, distance) in [("candidate", 35.0), ("reach", 192.0)] {
+                        let hit = world
+                            .try_resource::<byroredux_physics::PhysicsWorld>()
+                            .and_then(|physics| {
+                                physics.cast_ray(origin, direction, distance, excluded)
+                            });
+                        lines.push(match hit {
+                            Some(ref hit) => format!(
+                                "  physics_ray_{label} hit={hit:?} owner={:?}",
+                                crate::interaction::ray_hit_entity(world, hit)
+                            ),
+                            None => format!("  physics_ray_{label}=none"),
+                        });
+                    }
+                }
+                if let Some(doors) = world.query::<DoorTeleport>() {
+                    let transforms = world.query::<Transform>();
+                    let globals = world.query::<GlobalTransform>();
+                    let bounds = world.query::<WorldBound>();
+                    let forms = world.query::<FormIdComponent>();
+                    let mut count = 0usize;
+                    for (entity, _) in doors.iter() {
+                        count += 1;
+                        if count > 8 {
+                            continue;
+                        }
+                        let position = globals
+                            .as_ref()
+                            .and_then(|query| query.get(entity))
+                            .map(|transform| transform.translation)
+                            .or_else(|| {
+                                transforms
+                                    .as_ref()
+                                    .and_then(|query| query.get(entity))
+                                    .map(|transform| transform.translation)
+                            });
+                        let bound = bounds.as_ref().and_then(|query| query.get(entity));
+                        let hit_distance = match (ray, bound.copied()) {
+                            (Some((origin, direction)), Some(bound)) => {
+                                crate::interaction::ray_sphere_distance(origin, direction, bound)
+                            }
+                            _ => None,
+                        };
+                        let form = forms
+                            .as_ref()
+                            .and_then(|query| query.get(entity))
+                            .map(|form| format!("{:?}", form.0))
+                            .unwrap_or_else(|| "none".to_string());
+                        let physics_source = world
+                            .get::<byroredux_core::ecs::components::PhysicsSourceForm>(entity)
+                            .map(|form| format!("{:?}", form.0))
+                            .unwrap_or_else(|| "none".to_string());
+                        lines.push(format!(
+                            "  door entity={entity} form={form} source={physics_source} pos={position:?} bound={bound:?} ray_hit={hit_distance:?}"
+                        ));
+                    }
+                    lines.push(format!("  doors={count}"));
+                }
+            }
         }
         lines.push(format!("  activations={}", trace.activation_count));
         if let Some(last) = trace.last {

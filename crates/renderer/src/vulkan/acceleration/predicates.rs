@@ -6,8 +6,9 @@
 //! decisions live next to their tests.
 
 use super::constants::{
-    BLAS_REBUILD_SLACK_BYTES, MIN_BLAS_BUDGET_BYTES, SKINNED_BLAS_REFIT_JITTER,
-    SKINNED_BLAS_REFIT_THRESHOLD, TLAS_REBUILD_SLACK_BYTES, TLAS_SCRATCH_SLACK_BYTES,
+    BLAS_REBUILD_SLACK_BYTES, MAX_BLAS_BUDGET_BYTES, MIN_BLAS_BUDGET_BYTES,
+    SKINNED_BLAS_REFIT_JITTER, SKINNED_BLAS_REFIT_THRESHOLD, TLAS_REBUILD_SLACK_BYTES,
+    TLAS_SCRATCH_SLACK_BYTES,
 };
 use crate::vulkan::bloom::BLOOM_BYTES_PER_PIXEL_X1024;
 use crate::vulkan::caustic::{CAUSTIC_BYTES_PER_PIXEL, WATER_BYTES_PER_PIXEL};
@@ -886,9 +887,12 @@ pub(super) fn screen_scaled_reservation_bytes(
 }
 
 /// The static-BLAS residency budget: one third of the DEVICE_LOCAL heap that
-/// is left after [`screen_scaled_reservation_bytes`], floored at
-/// [`MIN_BLAS_BUDGET_BYTES`]. Pure so the unit test can pin the math without a
-/// live Vulkan device.
+/// is left after [`screen_scaled_reservation_bytes`], clamped between
+/// [`MIN_BLAS_BUDGET_BYTES`] and `MAX_BLAS_BUDGET_BYTES`. The upper bound is
+/// essential when a Vulkan implementation reports system RAM as DEVICE_LOCAL:
+/// it prevents the BLAS cache from turning that host-memory total into an OOM
+/// allowance. Pure so the unit test can pin the math without a live Vulkan
+/// device.
 ///
 /// #3839 — `reserved_bytes` used to be absent, and the `/3` was the entire
 /// model of "leave room for everything else". That model was written when
@@ -903,7 +907,8 @@ pub(super) fn blas_budget_for_heap(
     heap_bytes: vk::DeviceSize,
     reserved_bytes: vk::DeviceSize,
 ) -> vk::DeviceSize {
-    (heap_bytes.saturating_sub(reserved_bytes) / 3).max(MIN_BLAS_BUDGET_BYTES)
+    (heap_bytes.saturating_sub(reserved_bytes) / 3)
+        .clamp(MIN_BLAS_BUDGET_BYTES, MAX_BLAS_BUDGET_BYTES)
 }
 
 /// Measure the DEVICE_LOCAL heap that will actually back a BLAS result buffer.
@@ -981,10 +986,19 @@ pub(super) fn shadow_mask_for_instance(
             && multi_layer_refraction_scale > 0.0);
     if is_refractive_glass {
         crate::shader_constants::VISIBILITY_LAYER_GLASS as u8
-    } else if alpha_blend
-        || material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_EFFECT_SHADER
+    } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_EFFECT_SHADER
         || material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION
     {
+        crate::shader_constants::VISIBILITY_LAYER_EFFECT as u8
+    // Character meshes frequently carry a blended hair, lashes, or clothing
+    // submesh alongside their opaque body. A mask is per draw rather than per
+    // texel, so classifying every blended actor draw as an effect removed the
+    // actor entirely from opaque shadow rays. Preserve the actor bucket for
+    // ordinary blended materials; real glass and effect kinds were handled
+    // above and remain non-opaque.
+    } else if render_layer == byroredux_core::ecs::components::RenderLayer::Actor {
+        crate::shader_constants::VISIBILITY_LAYER_DYNAMIC_ACTOR as u8
+    } else if alpha_blend {
         crate::shader_constants::VISIBILITY_LAYER_EFFECT as u8
     } else {
         use byroredux_core::ecs::components::RenderLayer;
@@ -1005,10 +1019,11 @@ pub(super) fn shadow_mask_for_instance(
 /// Why `shadow_mask_for_instance` routed an instance away from the bucket
 /// its [`RenderLayer`] alone would have chosen (#3305).
 ///
-/// The mask function tests refractive glass, then the effect family, and
-/// only then the render layer — so these are ordered, mutually exclusive
-/// causes, not independent flags. Returning the *first* match is what makes
-/// the census counters partition rather than double-count.
+/// The mask function tests refractive glass, then the effect family, then
+/// preserves ordinary actor meshes, and finally diverts non-actor alpha
+/// blends. These are ordered, mutually exclusive causes, not independent
+/// flags. Returning the first match is what makes the census counters
+/// partition rather than double-count.
 ///
 /// `None` means the render layer decided, which for `RenderLayer::Actor` is
 /// `VISIBILITY_LAYER_DYNAMIC_ACTOR` — inside `ALL_OPAQUE`, so the instance
@@ -1031,6 +1046,7 @@ pub(super) enum MaskDivertCause {
 /// duplication cannot drift into a lie.
 pub(super) fn mask_divert_cause(
     material_kind: u32,
+    render_layer: byroredux_core::ecs::components::RenderLayer,
     alpha_blend: bool,
     multi_layer_refraction_scale: f32,
 ) -> Option<MaskDivertCause> {
@@ -1039,7 +1055,7 @@ pub(super) fn mask_divert_cause(
             && multi_layer_refraction_scale > 0.0);
     if is_refractive_glass {
         Some(MaskDivertCause::RefractiveGlass)
-    } else if alpha_blend {
+    } else if alpha_blend && render_layer != byroredux_core::ecs::components::RenderLayer::Actor {
         Some(MaskDivertCause::AlphaBlend)
     } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_EFFECT_SHADER {
         Some(MaskDivertCause::EffectShader)

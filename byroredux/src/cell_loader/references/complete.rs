@@ -393,6 +393,13 @@ pub(super) fn complete_reference_load(
     // to the fallback), and the next draw must see real images.
     flush_pending_cell_textures(ctx);
 
+    // The reference walk has now committed all mesh, BLAS, and texture
+    // allocations for this interior. Keep the allocator report at this
+    // boundary: a first-frame failure otherwise makes it impossible to tell
+    // whether pressure originated during loading or in frame setup.
+    log::info!("  GPU allocation report after loading '{label}':");
+    ctx.log_memory_usage();
+
     ReferenceLoadProgress::Complete(RefLoadResult {
         entity_count,
         center,

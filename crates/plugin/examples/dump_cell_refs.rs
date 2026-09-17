@@ -85,6 +85,34 @@ fn main() -> anyhow::Result<()> {
         unknown
     );
 
+    let npc_refs = cell
+        .references
+        .iter()
+        .filter_map(|reference| {
+            let npc = index.npcs.get(&reference.base_form_id)?;
+            let hair = npc
+                .runtime_facegen
+                .as_ref()
+                .and_then(|face| face.hair_form_id)
+                .and_then(|form_id| index.hair.get(&form_id))
+                .map(|hair| hair.model_path.as_str());
+            Some((reference, npc, hair))
+        })
+        .collect::<Vec<_>>();
+    if !npc_refs.is_empty() {
+        println!("\n{} NPC references:", npc_refs.len());
+        for (reference, npc, hair) in npc_refs {
+            let hair_color = npc
+                .runtime_facegen
+                .as_ref()
+                .and_then(|face| face.hair_color_rgb);
+            println!(
+                "  REFR {:08X} base={:08X} npc={} hair={hair:?} hclr={hair_color:?}",
+                reference.form_id, reference.base_form_id, npc.editor_id,
+            );
+        }
+    }
+
     if !sky_candidates.is_empty() {
         println!(
             "\n{} sky/window/glass candidate references:",

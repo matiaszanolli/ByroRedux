@@ -24,6 +24,7 @@
 //! Usage:
 //!   cargo run -p byroredux-plugin --example probe_slice_fixture -- \
 //!     <ESM> <CELL_EDID> [CELL_EDID ...]
+//!     <ESM> --first-unlocked-exterior
 
 use byroredux_plugin::esm::cell::CellRef;
 
@@ -33,10 +34,6 @@ use byroredux_plugin::esm::cell::CellRef;
 /// the fixture has margin against the door's own collision radius.
 const INTERACTION_REACH_BU: f32 = 192.0;
 const CAMERA_STANDOFF_BU: f32 = INTERACTION_REACH_BU * 0.75;
-
-/// Eye height above the authored door origin. Door REFR positions sit at the
-/// threshold (floor level); an eye-level camera is what the runtime pose is.
-const CAMERA_EYE_BU: f32 = 120.0;
 
 fn normalize(v: [f32; 3]) -> [f32; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -58,6 +55,33 @@ fn main() -> anyhow::Result<()> {
 
     let bytes = std::fs::read(&esm_path)?;
     let index = byroredux_plugin::esm::parse_esm(&bytes)?;
+
+    let cell_ids = if cell_ids.as_slice() == ["--first-unlocked-exterior"] {
+        let cell = index
+            .cells
+            .cells
+            .values()
+            .filter(|cell| {
+                cell.references.iter().any(|placed| {
+                    placed.lock.is_none()
+                        && placed.teleport.is_some_and(|teleport| {
+                            matches!(
+                                index.cells.cell_for_refr_form_id(teleport.destination),
+                                Some(CellRef::Exterior { .. })
+                            )
+                        })
+                })
+            })
+            .min_by_key(|cell| cell.editor_id.to_ascii_lowercase())
+            .ok_or_else(|| anyhow::anyhow!("no unlocked exterior teleport door found"))?;
+        println!(
+            "Selected first alphabetic interior with an unlocked exterior door: {}",
+            cell.editor_id
+        );
+        vec![cell.editor_id.clone()]
+    } else {
+        cell_ids
+    };
 
     for cell_id in cell_ids {
         let Some(cell) = index.cells.cells.get(&cell_id.to_ascii_lowercase()) else {
@@ -95,6 +119,15 @@ fn main() -> anyhow::Result<()> {
             let Some(teleport) = placed.teleport else {
                 continue;
             };
+            let lock = placed.lock.map_or_else(
+                || "unlocked".to_string(),
+                |lock| {
+                    format!(
+                        "locked(level={}, key={:?}, flags={:#04x})",
+                        lock.lock_level, lock.key_form_id, lock.flags
+                    )
+                },
+            );
             let destination = index
                 .cells
                 .cell_for_refr_form_id(teleport.destination)
@@ -111,26 +144,26 @@ fn main() -> anyhow::Result<()> {
             let inward = normalize([
                 centroid[0] - placed.position[0],
                 centroid[1] - placed.position[1],
-                0.0,
+                centroid[2] - placed.position[2],
             ]);
             let camera = [
                 placed.position[0] + inward[0] * CAMERA_STANDOFF_BU,
                 placed.position[1] + inward[1] * CAMERA_STANDOFF_BU,
-                placed.position[2] + CAMERA_EYE_BU,
+                placed.position[2] + inward[2] * CAMERA_STANDOFF_BU,
             ];
-            // Look back at the door panel from the standoff pose. The aim
-            // point sits at the same eye height as the camera, so the
-            // interaction ray travels horizontally into the panel rather
-            // than down at the threshold's floor-level origin.
+            // Look back at the actual REFR origin in all three axes. A
+            // fixed eye-height offset makes the old horizontal ray pass over
+            // doors whose WorldBound is centered at their threshold origin,
+            // which makes the emitted pose fail the interaction gate.
             let forward = normalize([
                 placed.position[0] - camera[0],
                 placed.position[1] - camera[1],
-                0.0,
+                placed.position[2] - camera[2],
             ]);
 
             println!(
                 "  DOOR ref={:08X} base={:08X} pos=({:.1},{:.1},{:.1}) dest_ref={:08X} \
-                 arrive=({:.1},{:.1},{:.1}) dest={}",
+                arrive=({:.1},{:.1},{:.1}) lock={} dest={}",
                 placed.form_id,
                 placed.base_form_id,
                 placed.position[0],
@@ -140,6 +173,7 @@ fn main() -> anyhow::Result<()> {
                 teleport.position[0],
                 teleport.position[1],
                 teleport.position[2],
+                lock,
                 destination
             );
             // The CLI's `--camera-pos` / `--camera-forward` are renderer

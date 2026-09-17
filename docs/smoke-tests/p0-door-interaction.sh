@@ -106,6 +106,16 @@ require_in "$preflight_log" "$P0_TARGET_KIND" "camera-forward target is a real X
 require_in "$preflight_log" "$P0_PROMPT" "native interaction prompt is present"
 require_in "$preflight_log" "activations=0" "fixture starts without a stale activation edge"
 
+# A failed preflight cannot recover from an injected E press: there is no
+# target to activate. Exit before the transition wait so the useful live
+# `interaction.status` evidence is retained instead of spending the entire
+# timeout on an impossible transition.
+if (( hard_fail != 0 )); then
+    echo "-- preflight debug output ---------------------------------------"
+    cat "$preflight_log" 2>/dev/null || true
+    exit "$hard_fail"
+fi
+
 BYRO_DEBUG_PORT="$PORT" cargo run --release --quiet -p byro-dbg <<'EOF' >"$press_log" 2>&1 || true
 input.press activate
 .quit

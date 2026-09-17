@@ -1107,21 +1107,25 @@ fn ensure_tlas_state_consumes_the_shrink_request_past_the_commit_point() {
 /// DEVICE_LOCAL heap (which is commonly an AMD BAR aperture).
 #[test]
 fn blas_budget_derives_from_the_compatible_allocation_heap() {
-    use super::super::constants::MIN_BLAS_BUDGET_BYTES;
+    use super::super::constants::{MAX_BLAS_BUDGET_BYTES, MIN_BLAS_BUDGET_BYTES};
     use crate::vulkan::device::device_local_heap_bytes_for_memory_type_bits;
 
-    // Reservation-free math is unchanged (#3839 added the second argument;
-    // zero reproduces the historical `VRAM / 3`).
-    // 12 GB single-heap desktop part → 4 GB, the figure the
-    // `blas_budget_bytes` field doc quotes.
+    // Reservation-free math is clamped at the documented host-memory safety
+    // ceiling. Zero reproduces the historical `VRAM / 3` below that ceiling.
+    // 12 GB single-heap desktop part would derive 4 GB, but must cap at 1 GB.
     assert_eq!(
         blas_budget_for_heap(12 * 1024 * 1024 * 1024, 0),
-        4 * 1024 * 1024 * 1024
+        MAX_BLAS_BUDGET_BYTES
     );
-    // 6 GB RT-minimum target → 2 GB, likewise.
+    // 6 GB RT-minimum target would derive 2 GB, likewise capped.
     assert_eq!(
         blas_budget_for_heap(6 * 1024 * 1024 * 1024, 0),
-        2 * 1024 * 1024 * 1024
+        MAX_BLAS_BUDGET_BYTES
+    );
+    // A 3 GB compatible heap lands exactly on the ceiling without clamping.
+    assert_eq!(
+        blas_budget_for_heap(3 * 1024 * 1024 * 1024, 0),
+        MAX_BLAS_BUDGET_BYTES
     );
     // Floor holds for tiny and degenerate (no DEVICE_LOCAL heap → 0) heaps.
     assert_eq!(blas_budget_for_heap(0, 0), MIN_BLAS_BUDGET_BYTES);
@@ -1372,11 +1376,12 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
          4K {reserved_uhd} B"
     );
 
-    // A 6 GB RT-minimum card: the reservation has to come off the top, so the
-    // budget is strictly smaller than the old whole-heap `VRAM / 3`.
-    let six_gb = 6 * 1024 * 1024 * 1024u64;
-    let old_model = blas_budget_for_heap(six_gb, 0);
-    let with_reservation = blas_budget_for_heap(six_gb, reserved_hd);
+    // A 3 GB compatible heap is below the ceiling: the reservation has to
+    // come off the top, so the budget is strictly smaller than the historical
+    // whole-heap `VRAM / 3` calculation.
+    let three_gb = 3 * 1024 * 1024 * 1024u64;
+    let old_model = blas_budget_for_heap(three_gb, 0);
+    let with_reservation = blas_budget_for_heap(three_gb, reserved_hd);
     assert!(
         with_reservation < old_model,
         "reserving {reserved_hd} B must shrink the budget below the old \
@@ -1386,7 +1391,7 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
     // A resolution change alone must move the budget — the half of #3839 that
     // a construction-time-only derivation could never do.
     assert!(
-        blas_budget_for_heap(six_gb, reserved_uhd) < with_reservation,
+        blas_budget_for_heap(three_gb, reserved_uhd) < with_reservation,
         "4K must leave less for BLAS than 1080p on the same heap"
     );
 

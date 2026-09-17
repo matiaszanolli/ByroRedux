@@ -17,21 +17,22 @@ use std::sync::Once;
 /// resident scene's geometry; a broken cell-unload path leaks placements and
 /// grows the pool unbounded.
 ///
-/// Soft cap (~416 MB at `Vertex` = 104 B) fires a one-shot
-/// `warn!` so a regression in cell unload becomes visible without crashing
-/// the engine. Hard cap (~1.6 GB) returns `Err` from `upload_scene_mesh` so
-/// the caller can skip the placement and continue, rather than letting the
-/// allocator OOM-panic mid-frame.
+/// The 4 M-vertex / 16 M-index residency ceiling (~480 MB total source
+/// geometry) returns `Err` from `upload_scene_mesh` so the caller can skip a
+/// placement and continue. It is deliberately the same as the historical soft
+/// threshold: each scene mesh also has upload and ray-tracing allocations, so
+/// allowing the previous 1.9 GB global-pool ceiling could multiply into
+/// enough process memory for Linux to invoke the OOM killer.
 ///
 /// See REN-D2-005 / #1016. Mirrors the `MAX_INDIRECT_DRAWS` defence-in-depth
 /// cap at `scene_buffer.rs:1326+` — these are not perf knobs, they are
 /// safety guards against unbounded-growth bugs.
 pub const VERTEX_POOL_SOFT_CAP: usize = 4_000_000;
-pub const VERTEX_POOL_HARD_CAP: usize = 16_000_000;
+pub const VERTEX_POOL_HARD_CAP: usize = VERTEX_POOL_SOFT_CAP;
 /// Index pool caps — typical mesh ratio is ~3 indices per vertex, so the
 /// caps here track the vertex caps proportionally.
 pub const INDEX_POOL_SOFT_CAP: usize = 16_000_000;
-pub const INDEX_POOL_HARD_CAP: usize = 64_000_000;
+pub const INDEX_POOL_HARD_CAP: usize = INDEX_POOL_SOFT_CAP;
 
 /// Large global-geometry rebuilds cannot safely keep two prior SSBO
 /// generations alive while allocating the replacement on mid-range GPUs.
@@ -257,6 +258,12 @@ pub struct MeshRegistry {
     /// Set when `upload_scene_mesh` is called after the initial SSBO
     /// build — signals the frame loop to call `rebuild_geometry_ssbo`.
     geometry_dirty: bool,
+    /// Latched after a scene upload reaches the global geometry admission
+    /// limit. Cell loading consults this before decoding further fresh meshes,
+    /// avoiding a failure/retry/log loop for every remaining placement. A
+    /// subsequent compaction reopens admission when cell unload has reclaimed
+    /// sufficient space.
+    scene_geometry_admission_closed: bool,
     /// Set when a *scene* mesh is dropped, leaving its span stranded inside
     /// `pending_vertices`/`pending_indices`; cleared once
     /// `compact_pending_geometry` has squeezed those spans out.
@@ -373,6 +380,7 @@ impl MeshRegistry {
             global_index_buffer: None,
             geometry_generation: 0,
             geometry_dirty: false,
+            scene_geometry_admission_closed: false,
             geometry_has_holes: false,
             ssbo_vertex_count: 0,
             ssbo_index_count: 0,
@@ -576,6 +584,12 @@ impl MeshRegistry {
         vertices: &[Vertex],
         indices: &[u32],
     ) -> Result<(u32, u32)> {
+        if self.scene_geometry_admission_closed {
+            bail!(
+                "scene geometry admission is closed after reaching the resident pool limit"
+            );
+        }
+
         // Record offsets before appending.
         let v_offset = self.pending_vertices.len() as u32;
         let i_offset = self.pending_indices.len() as u32;
@@ -586,20 +600,32 @@ impl MeshRegistry {
         // a regression in that path before the allocator OOMs.
         let new_v_len = self.pending_vertices.len() + vertices.len();
         let new_i_len = self.pending_indices.len() + indices.len();
-        let v_warn = check_pool_growth(
+        let v_warn = match check_pool_growth(
             self.pending_vertices.len(),
             new_v_len,
             VERTEX_POOL_SOFT_CAP,
             VERTEX_POOL_HARD_CAP,
             "vertex",
-        )?;
-        let i_warn = check_pool_growth(
+        ) {
+            Ok(warn) => warn,
+            Err(error) => {
+                self.scene_geometry_admission_closed = true;
+                return Err(error);
+            }
+        };
+        let i_warn = match check_pool_growth(
             self.pending_indices.len(),
             new_i_len,
             INDEX_POOL_SOFT_CAP,
             INDEX_POOL_HARD_CAP,
             "index",
-        )?;
+        ) {
+            Ok(warn) => warn,
+            Err(error) => {
+                self.scene_geometry_admission_closed = true;
+                return Err(error);
+            }
+        };
         if v_warn {
             VERTEX_POOL_SOFT_WARNED.call_once(|| {
                 log::warn!(
@@ -637,6 +663,13 @@ impl MeshRegistry {
         }
 
         Ok((v_offset, i_offset))
+    }
+
+    /// Whether fresh scene meshes may still be decoded and uploaded.
+    /// Cached meshes remain usable after admission closes, and a later
+    /// cell-unload compaction can reopen the gate.
+    pub fn scene_geometry_admission_open(&self) -> bool {
+        !self.scene_geometry_admission_closed
     }
 
     pub fn upload_scene_mesh(
@@ -1525,15 +1558,15 @@ mod pool_growth_cap_tests {
 
     #[test]
     fn shipping_caps_have_sane_relative_sizing() {
-        // The hard caps must be strictly greater than the soft caps,
-        // and both must fit in usize comfortably (defence against a
-        // future edit accidentally setting hard < soft).
+        // The hard caps must not be below the warning thresholds. They are
+        // intentionally equal today: the former warning-only allowance let
+        // per-mesh and BLAS duplicates escalate into a host-memory OOM.
         const {
-            assert!(VERTEX_POOL_HARD_CAP > VERTEX_POOL_SOFT_CAP);
-            assert!(INDEX_POOL_HARD_CAP > INDEX_POOL_SOFT_CAP);
+            assert!(VERTEX_POOL_HARD_CAP >= VERTEX_POOL_SOFT_CAP);
+            assert!(INDEX_POOL_HARD_CAP >= INDEX_POOL_SOFT_CAP);
         }
-        // At Vertex = 104 B, hard cap 16M = 1.66 GB. At u32 indices,
-        // hard cap 64M = 256 MB. Sanity-check: vertex cap is the bigger
+        // At Vertex = 104 B, hard cap 4M = 416 MB. At u32 indices,
+        // hard cap 16M = 64 MB. Sanity-check: vertex cap is the bigger
         // memory commitment of the two.
         let vertex_bytes = VERTEX_POOL_HARD_CAP * std::mem::size_of::<Vertex>();
         let index_bytes = INDEX_POOL_HARD_CAP * 4;
@@ -1543,6 +1576,18 @@ mod pool_growth_cap_tests {
             vertex_bytes,
             index_bytes,
         );
+    }
+
+    #[test]
+    fn closed_scene_geometry_admission_rejects_further_uploads() {
+        let mut registry = MeshRegistry::new();
+        registry.scene_geometry_admission_closed = true;
+        assert!(!registry.scene_geometry_admission_open());
+        assert!(registry
+            .accumulate_global_geometry(&[], &[])
+            .expect_err("closed admission must reject before accepting geometry")
+            .to_string()
+            .contains("admission is closed"));
     }
 
     /// #3443 — the size gate must be consulted **before** the duplicate

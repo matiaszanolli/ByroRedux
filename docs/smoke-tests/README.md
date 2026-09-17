@@ -91,13 +91,17 @@ This table is historical. Current traversal/combat rechecks, including
 intermittent failures, are recorded in
 [the playable-slice plan](../engine/playable-vertical-slice.md).
 
-**Current P2 recheck (2026-09-17):** the historical FNV and Skyrim P2 rows
-below are superseded. The complete melee → save → fresh-process reload route
-now passes for FNV (`/tmp/byro-p2-melee-core.ZeBhtU`), Skyrim SE
+**Current P1/P2 recheck (2026-09-17):** the historical FNV P1/P2 rows below
+are superseded. FNV P1 now passes the complete Prospector Saloon round trip:
+character-floor settle, normal movement away from and back to the door, both
+door activations, two streamed exterior boundary crossings, and the return
+interior settle. The complete melee → save → fresh-process reload route also
+passes for FNV (`/tmp/byro-p2-melee-core.ZeBhtU`), Skyrim SE
 (`/tmp/byro-p2-melee-core.HjBBbh`), and Fallout 3
-(`/tmp/byro-p2-melee-core.kHZjTh`). Each run retained the target death marker,
-inventory/equipment, a restored 18-body ragdoll, and twenty finite/bounded
-post-restart samples. P0/P1/W1 retain their independently measured status.
+(`/tmp/byro-p2-melee-core.kHZjTh`). Each P2 run retained the target death
+marker, inventory/equipment, a restored 18-body ragdoll, and twenty
+finite/bounded post-restart samples. P0 and W1 retain their independently
+measured status.
 
 FNV is the project's reference title and had no playable-slice gate at all
 before #3039. The gates are landed **honestly red** where the engine is red —
@@ -106,8 +110,8 @@ they were not weakened to pass:
 | Gate | FNV result | What it found |
 |------|-----------|---------------|
 | P0 door interaction | **PASS** | `[E] Open` prompt → KeyE → one `ActivateEvent` → `wastelandnv (-17,0)`, 3056 entities |
-| P1 character traversal | **FAIL** | The interior spawn lands the capsule *inside* the first door's collider (`distance=0.00`); 120 frames of `forward` move it ~40 units, `backward` ~42, and a `right` strafe drops it through the floor (`y 3523 → -8191`, `vertical_velocity=-2000`). The character controller cannot traverse the FNV bench-of-record interior. |
-| P2 melee core | **FAIL** | `combat.approach <target>` places the capsule but the swing is a camera ray, so in this crowded cell it lands on a bystander (`last_target=927`, GSSettlerCM) instead of the fixture's reference (entity `1088`, GSTrudy). The zero-damage blocked-swing arm itself is correct. |
+| P1 character traversal | **PASS** | Current live recheck: floor-stable interior movement, both XTEL doors, two exterior boundary crossings, and return to the interior all completed through normal KCC input. |
+| P2 melee core | **PASS** | Superseded by the current melee → save → fresh-process reload route above. |
 
 Skyrim was re-run on the same commit as a refactor control: **P0 and P1 pass
 end to end** (P1 including all ten fixture-driven route legs). **Skyrim P2 is

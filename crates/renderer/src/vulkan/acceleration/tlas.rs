@@ -671,6 +671,7 @@ impl AccelerationManager {
                 census.actor_layer_total += 1;
                 match mask_divert_cause(
                     draw_cmd.material_kind,
+                    draw_cmd.render_layer,
                     draw_cmd.alpha_blend,
                     draw_cmd.multi_layer_refraction_scale,
                 ) {

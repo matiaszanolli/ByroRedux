@@ -655,6 +655,12 @@ pub(super) fn prepare_mesh_uploads(
             };
             continue;
         }
+        if !ctx.mesh_registry.scene_geometry_admission_open() {
+            // The registry has already reached its bounded resident geometry
+            // allowance. Keep cache hits above usable, but do not decode,
+            // batch, and fail every remaining fresh mesh in this cell.
+            continue;
+        }
 
         let material = paths[sub_mesh_index].material(mesh);
         let for_rt = ctx.device_caps.ray_query_supported
@@ -708,6 +714,15 @@ pub(super) fn prepare_mesh_uploads(
             }
         }
         Err(batch_error) => {
+            if !ctx.mesh_registry.scene_geometry_admission_open() {
+                log::warn!(
+                    "Scene geometry admission limit reached while uploading {} submeshes: \
+                     {batch_error:#}; skipping remaining uncached geometry for this cell",
+                    fresh.len(),
+                );
+                resolve_shared_geometry(ctx, pc, &shared, &mut prepared);
+                return prepared;
+            }
             // Preserve the scalar path as a compatibility fallback. A single
             // malformed/empty submesh must not suppress every valid sibling
             // just because they shared a proposed transfer transaction.

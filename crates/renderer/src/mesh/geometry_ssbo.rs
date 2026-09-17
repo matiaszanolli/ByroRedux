@@ -208,6 +208,10 @@ impl MeshRegistry {
 
         self.pending_vertices = new_vertices;
         self.pending_indices = new_indices;
+        // A cell unload may have taken the pools back below the strict
+        // admission limit. Let the next streaming transaction fill reclaimed
+        // space instead of carrying a previous scene's saturation forever.
+        self.scene_geometry_admission_closed = false;
         // Pools are hole-free again until the next scene-mesh drop.
         self.geometry_has_holes = false;
 

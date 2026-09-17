@@ -980,7 +980,10 @@ fn ray_hit_actor(world: &World, origin: Vec3, direction: Vec3) -> Option<(Entity
     Some((actor, hit.distance))
 }
 
-fn ray_hit_entity(world: &World, hit: &byroredux_physics::PhysicsRayHit) -> Option<EntityId> {
+pub(crate) fn ray_hit_entity(
+    world: &World,
+    hit: &byroredux_physics::PhysicsRayHit,
+) -> Option<EntityId> {
     let body = hit.body?;
     let ordinary = world
         .query::<byroredux_physics::RapierHandles>()
@@ -1273,7 +1276,10 @@ fn interaction_bound(world: &World, entity: EntityId) -> Option<WorldBound> {
         })
 }
 
-fn ray_sphere_distance(origin: Vec3, direction: Vec3, bound: WorldBound) -> Option<f32> {
+/// Return the first forward intersection of a normalized camera ray with an
+/// interaction bound. Kept crate-visible so the console can report the exact
+/// selection inputs used by [`select_interaction_target`].
+pub(crate) fn ray_sphere_distance(origin: Vec3, direction: Vec3, bound: WorldBound) -> Option<f32> {
     let from_center = origin - bound.center;
     let projection = from_center.dot(direction);
     let discriminant =
