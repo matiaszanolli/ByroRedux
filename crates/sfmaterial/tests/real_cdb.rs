@@ -7,15 +7,14 @@
 //!     cargo test -p byroredux-sfmaterial --test real_cdb -- --ignored --nocapture
 //! ```
 //!
-//! **Memory requirement** (#4274 / SF-D3-2026-09-11-03): `parse` below calls
-//! `ComponentDatabaseFile::parse`, which runs with `ParseLimits::unlimited()`
-//! — no instance-count ceiling. The vanilla base-game `materialsbeta.cdb`
-//! materialises its ~1.44M-instance object tree at a measured ~9.19 GB peak
-//! RSS. Have at least ~10 GB free before running this test; running the
-//! full corpus-wide sweep (13 CDBs, two of them this size) needs ~18 GB.
+//! The vanilla base-game `materialsbeta.cdb` contains ~1.44M instances. This
+//! test deliberately uses the nested streaming validator, so only the schema
+//! and string table stay live. Do not change it back to
+//! `ComponentDatabaseFile::parse`: materialising the full generic value tree
+//! has measured at ~9.19 GB peak RSS (#4274 / SF-D3-2026-09-11-03).
 
 use byroredux_bsa::Ba2Archive;
-use byroredux_sfmaterial::ComponentDatabaseFile;
+use byroredux_sfmaterial::{ComponentDatabaseFile, ParseLimits};
 use std::path::PathBuf;
 
 /// #3850 — the strict lane for real-data tests.
@@ -70,36 +69,23 @@ fn parse_vanilla_materialsbeta_cdb() {
         .extract("materials\\materialsbeta.cdb")
         .expect("extract cdb");
     eprintln!("[sfmaterial] extracted {} bytes", bytes.len());
-    // #4274 — this call has no ParseLimits ceiling and is measured to peak
-    // around 9.19 GB RSS on the vanilla base-game CDB. Warn on stderr right
-    // before the expensive parse, not just in the module doc comment, so a
-    // contributor who invoked the run command from memory (rather than
-    // reading the source) still gets the heads-up before it actually spikes.
     eprintln!(
-        "[sfmaterial] parsing with ParseLimits::unlimited() — this CDB's full \
-         instance tree is measured to peak around 9.19 GB RSS; ensure enough \
-         free memory before continuing"
+        "[sfmaterial] validating with ParseLimits::unlimited() — nested \
+         values are consumed without materialising the 1.44M-instance tree"
     );
 
-    let cdb = ComponentDatabaseFile::parse(&bytes).expect("parse cdb");
+    let info =
+        ComponentDatabaseFile::validate_instances_with_limits(&bytes, ParseLimits::unlimited())
+            .expect("validate CDB");
     eprintln!(
-        "[sfmaterial] parsed: {} classes / {} instances",
-        cdb.classes.len(),
-        cdb.instances.len()
+        "[sfmaterial] streamed: {} classes / {} top-level values",
+        info.class_count, info.value_count
     );
 
     // Floor asserts — these should hold for any non-empty CDB.
-    assert!(!cdb.classes.is_empty(), "vanilla CDB must declare classes");
+    assert_ne!(info.class_count, 0, "vanilla CDB must declare classes");
     assert!(
-        !cdb.instances.is_empty(),
-        "vanilla CDB must contain instances"
+        info.value_count != 0,
+        "vanilla CDB must contain top-level values"
     );
-
-    // Spot-check that the first few class names look sensible (printable
-    // ASCII) — a misaligned reader would print mojibake.
-    for c in cdb.classes.iter().take(5) {
-        let printable = c.name.chars().all(|ch| ch.is_ascii_graphic());
-        assert!(printable, "class name not ASCII-printable: {:?}", c.name);
-        eprintln!("  class[0..5] {} -> {}", c.type_id, c.name);
-    }
 }

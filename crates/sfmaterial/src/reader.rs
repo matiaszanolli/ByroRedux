@@ -38,72 +38,13 @@ impl ComponentDatabaseFile {
     /// production presence path uses [`Self::probe_header`] and never needs
     /// this tree at all. #3055.
     pub fn parse_with_limits(bytes: &[u8], limits: ParseLimits) -> Result<Self> {
-        let mut p = Parser::new(bytes);
-        p.parse_header()?;
-        let chunks = p.index_chunks()?;
-
-        let object_chunks = chunks
-            .iter()
-            .filter(|chunk| {
-                matches!(
-                    chunk.kind,
-                    ChunkType::Objt | ChunkType::User | ChunkType::Diff | ChunkType::Usrd
-                )
-            })
-            .count();
-        if object_chunks > limits.max_instances {
-            return Err(Error::ParseBudgetExceeded {
-                requested: object_chunks,
-                limit: limits.max_instances,
-            });
-        }
-
-        let mut state = State {
-            bytes,
-            chunks,
-            classes: Vec::new(),
-            class_by_name_offset: HashMap::new(),
-            strings: StringTable::new(Vec::new()),
-        };
-
-        // String table is the first chunk after BETH.
-        let strt_bytes = state.consume_chunk(ChunkType::Strt)?;
-        state.strings = StringTable::new(strt_bytes.to_vec());
-
-        // TYPE chunk: a single u32 type count, followed by N CLAS chunks.
-        let type_chunk = state.consume_chunk(ChunkType::Type)?;
-        if type_chunk.len() != 4 {
-            return Err(Error::BadTypeChunkSize {
-                got: type_chunk.len(),
-            });
-        }
-        let type_count = read_u32_le(type_chunk, 0)?;
-
-        for class_index in 0..type_count as usize {
-            let class = parse_class(&mut state, class_index)?;
-            let idx = state.classes.len();
-            insert_class_name_offset(&mut state.class_by_name_offset, &state.classes, &class, idx)?;
-            state.classes.push(class);
-        }
+        let mut state = parse_schema(bytes, limits)?;
 
         // Remaining chunks are object/list/map instances. Each one
         // dispatches by its declared chunk type.
         let mut instances = Vec::new();
         while !state.chunks.is_empty() {
-            let kind = state.peek_kind()?;
-            let value = match kind {
-                ChunkType::Objt | ChunkType::User | ChunkType::Diff | ChunkType::Usrd => {
-                    consume_object(&mut state)?
-                }
-                ChunkType::Mapc => consume_map(&mut state, /* is_diff = */ false)?,
-                ChunkType::List => consume_list(&mut state, /* is_diff = */ false)?,
-                _ => {
-                    return Err(Error::WrongChunkType {
-                        wanted: ChunkType::Objt,
-                        got: kind,
-                    });
-                }
-            };
+            let value = consume_top_level_value(&mut state)?;
             instances.push(value);
         }
 
@@ -112,6 +53,53 @@ impl ComponentDatabaseFile {
             class_by_name_offset: state.class_by_name_offset,
             instances,
             strings: state.strings,
+        })
+    }
+
+    /// Visit top-level CDB values in on-disk order without retaining values
+    /// from earlier top-level chunks. This is useful when each top-level
+    /// chunk is independently sized. For a fully bounded corpus walk use
+    /// [`Self::validate_instances_with_limits`]: a single `LIST` or `MAPC`
+    /// can itself contain a very large value tree. Intended for Starfield CDB
+    /// Phase 2's selective material indexing.
+    pub fn visit_instances_with_limits(
+        bytes: &[u8],
+        limits: ParseLimits,
+        mut visitor: impl FnMut(&Value),
+    ) -> Result<CdbVisitInfo> {
+        let mut state = parse_schema(bytes, limits)?;
+        let class_count = state.classes.len();
+        let mut value_count = 0usize;
+        while !state.chunks.is_empty() {
+            let value = consume_top_level_value(&mut state)?;
+            visitor(&value);
+            value_count += 1;
+        }
+        Ok(CdbVisitInfo {
+            class_count,
+            value_count,
+        })
+    }
+
+    /// Decode and validate every instance without materialising any dynamic
+    /// [`Value`] tree. The schema and string table remain resident, while
+    /// objects, lists, maps, and strings are consumed directly from the CDB
+    /// byte stream. This is suitable for vanilla `materialsbeta.cdb`, whose
+    /// full generic value tree has measured at ~9.19 GiB RSS (#4274).
+    pub fn validate_instances_with_limits(
+        bytes: &[u8],
+        limits: ParseLimits,
+    ) -> Result<CdbVisitInfo> {
+        let mut state = parse_schema(bytes, limits)?;
+        let class_count = state.classes.len();
+        let mut value_count = 0usize;
+        while !state.chunks.is_empty() {
+            skip_top_level_value(&mut state)?;
+            value_count += 1;
+        }
+        Ok(CdbVisitInfo {
+            class_count,
+            value_count,
         })
     }
 
@@ -174,6 +162,91 @@ impl ParseLimits {
 pub struct CdbHeaderInfo {
     /// Number of chunks declared in the index (excludes the BETH marker).
     pub chunk_count: usize,
+}
+
+/// Summary returned by [`ComponentDatabaseFile::visit_instances_with_limits`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CdbVisitInfo {
+    /// Number of class schemas decoded before instance visitation.
+    pub class_count: usize,
+    /// Number of top-level values delivered to the visitor.
+    pub value_count: usize,
+}
+
+fn parse_schema(bytes: &[u8], limits: ParseLimits) -> Result<State<'_>> {
+    let mut p = Parser::new(bytes);
+    p.parse_header()?;
+    let chunks = p.index_chunks()?;
+    let object_chunks = chunks
+        .iter()
+        .filter(|chunk| {
+            matches!(
+                chunk.kind,
+                ChunkType::Objt | ChunkType::User | ChunkType::Diff | ChunkType::Usrd
+            )
+        })
+        .count();
+    if object_chunks > limits.max_instances {
+        return Err(Error::ParseBudgetExceeded {
+            requested: object_chunks,
+            limit: limits.max_instances,
+        });
+    }
+
+    let mut state = State {
+        bytes,
+        chunks,
+        classes: Vec::new(),
+        class_by_name_offset: HashMap::new(),
+        strings: StringTable::new(Vec::new()),
+    };
+    let strt_bytes = state.consume_chunk(ChunkType::Strt)?;
+    state.strings = StringTable::new(strt_bytes.to_vec());
+    let type_chunk = state.consume_chunk(ChunkType::Type)?;
+    if type_chunk.len() != 4 {
+        return Err(Error::BadTypeChunkSize {
+            got: type_chunk.len(),
+        });
+    }
+    let type_count = read_u32_le(type_chunk, 0)?;
+    for class_index in 0..type_count as usize {
+        let class = parse_class(&mut state, class_index)?;
+        let idx = state.classes.len();
+        insert_class_name_offset(&mut state.class_by_name_offset, &state.classes, &class, idx)?;
+        state.classes.push(class);
+    }
+    Ok(state)
+}
+
+fn consume_top_level_value(state: &mut State<'_>) -> Result<Value> {
+    let kind = state.peek_kind()?;
+    match kind {
+        ChunkType::Objt | ChunkType::User | ChunkType::Diff | ChunkType::Usrd => {
+            consume_object(state)
+        }
+        ChunkType::Mapc => consume_map(state, /* is_diff = */ false),
+        ChunkType::List => consume_list(state, /* is_diff = */ false),
+        _ => Err(Error::WrongChunkType {
+            wanted: ChunkType::Objt,
+            got: kind,
+        }),
+    }
+}
+
+/// Consume the same CDB structure as `consume_top_level_value` but retain no
+/// dynamic values. Kept separate from the materialising reader so its memory
+/// bound is evident at the call site and future selective visitors can build
+/// only the objects they need.
+fn skip_top_level_value(state: &mut State<'_>) -> Result<()> {
+    match state.peek_kind()? {
+        ChunkType::Objt | ChunkType::User | ChunkType::Diff | ChunkType::Usrd => skip_object(state),
+        ChunkType::Mapc => skip_map(state, false),
+        ChunkType::List => skip_list(state, false),
+        kind => Err(Error::WrongChunkType {
+            wanted: ChunkType::Objt,
+            got: kind,
+        }),
+    }
 }
 
 // ── parser internals ─────────────────────────────────────────────────
@@ -475,7 +548,7 @@ fn consume_object(state: &mut State) -> Result<Value> {
             return Err(Error::WrongChunkType {
                 wanted: ChunkType::Objt,
                 got: kind,
-            })
+            });
         }
     };
     let payload = state.consume_chunk(kind)?;
@@ -573,6 +646,201 @@ fn consume_map(state: &mut State, is_diff: bool) -> Result<Value> {
         return Err(Error::ObjectTrailingBytes { leftover });
     }
     Ok(Value::Map(pairs))
+}
+
+fn skip_object(state: &mut State) -> Result<()> {
+    let kind = state.peek_kind()?;
+    let (is_cast, is_diff) = match kind {
+        ChunkType::Objt => (false, false),
+        ChunkType::User => (true, false),
+        ChunkType::Diff => (false, true),
+        ChunkType::Usrd => (true, true),
+        _ => {
+            return Err(Error::WrongChunkType {
+                wanted: ChunkType::Objt,
+                got: kind,
+            });
+        }
+    };
+    let payload = state.consume_chunk(kind)?;
+    let mut cur = Cursor::new(payload);
+    if is_cast {
+        let _target_ref = TypeReference::new(cur.read_i32()?);
+    }
+    let type_ref = TypeReference::new(cur.read_i32()?);
+    skip_value(state, type_ref, &mut cur, is_diff)?;
+    if is_cast {
+        let _unknown = cur.read_u32()?;
+    }
+    let leftover = payload.len() - cur.pos;
+    if leftover != 0 {
+        return Err(Error::ObjectTrailingBytes { leftover });
+    }
+    Ok(())
+}
+
+fn skip_list(state: &mut State, is_diff: bool) -> Result<()> {
+    let payload = state.consume_chunk(ChunkType::List)?;
+    let mut cur = Cursor::new(payload);
+    let elem_ref = TypeReference::new(cur.read_i32()?);
+    let count = checked_container_count(cur.read_i32()?, payload.len(), "LIST element")?;
+    for _ in 0..count {
+        skip_value(state, elem_ref, &mut cur, is_diff)?;
+    }
+    let leftover = payload.len() - cur.pos;
+    if leftover != 0 {
+        return Err(Error::ObjectTrailingBytes { leftover });
+    }
+    Ok(())
+}
+
+fn skip_map(state: &mut State, is_diff: bool) -> Result<()> {
+    let payload = state.consume_chunk(ChunkType::Mapc)?;
+    let mut cur = Cursor::new(payload);
+    let key_ref = TypeReference::new(cur.read_i32()?);
+    let val_ref = TypeReference::new(cur.read_i32()?);
+    let count = checked_container_count(cur.read_i32()?, payload.len(), "MAPC pair")?;
+    for _ in 0..count {
+        skip_value(state, key_ref, &mut cur, is_diff)?;
+        skip_value(state, val_ref, &mut cur, is_diff)?;
+    }
+    let leftover = payload.len() - cur.pos;
+    if leftover != 0 {
+        return Err(Error::ObjectTrailingBytes { leftover });
+    }
+    Ok(())
+}
+
+fn checked_container_count(
+    raw_count: i32,
+    payload_len: usize,
+    what: &'static str,
+) -> Result<usize> {
+    usize::try_from(raw_count)
+        .map_err(|_| Error::NegativeCount {
+            what,
+            raw: raw_count,
+        })
+        .map(|count| count.min(payload_len))
+}
+
+fn skip_value(
+    state: &mut State,
+    type_ref: TypeReference,
+    cur: &mut Cursor<'_>,
+    is_diff: bool,
+) -> Result<()> {
+    if type_ref.is_builtin() {
+        return skip_primitive(state, type_ref.as_builtin()?, cur, is_diff);
+    }
+    skip_user_class(state, type_ref, cur, is_diff)
+}
+
+fn skip_user_class(
+    state: &mut State,
+    type_ref: TypeReference,
+    cur: &mut Cursor<'_>,
+    is_diff: bool,
+) -> Result<()> {
+    let field_layout = state.class_for(type_ref)?.fields.clone();
+    let mut chunk_fields = Vec::new();
+    if !is_diff {
+        for field in &field_layout {
+            if state.is_chunk_type(field.type_ref) {
+                chunk_fields.push(field.type_ref);
+            } else {
+                skip_value(state, field.type_ref, cur, is_diff)?;
+            }
+        }
+    } else {
+        loop {
+            let idx = cur.read_u16()?;
+            if idx == 0xFFFF {
+                break;
+            }
+            let field = field_layout
+                .get(idx as usize)
+                .ok_or(Error::DiffFieldOutOfRange {
+                    idx,
+                    count: field_layout.len(),
+                })?;
+            if state.is_chunk_type(field.type_ref) {
+                chunk_fields.push(field.type_ref);
+            } else {
+                skip_value(state, field.type_ref, cur, is_diff)?;
+            }
+        }
+    }
+    for type_ref in chunk_fields {
+        skip_chunk_value(state, type_ref, is_diff)?;
+    }
+    Ok(())
+}
+
+fn skip_chunk_value(state: &mut State, type_ref: TypeReference, is_diff: bool) -> Result<()> {
+    if type_ref.is_builtin() {
+        match type_ref.as_builtin()? {
+            BuiltinType::List => skip_list(state, is_diff),
+            BuiltinType::Map => skip_map(state, is_diff),
+            _ => Err(Error::UnsupportedBuiltin {
+                raw: type_ref.id as u32,
+            }),
+        }
+    } else {
+        skip_object(state)
+    }
+}
+
+fn skip_primitive(
+    state: &mut State,
+    bt: BuiltinType,
+    cur: &mut Cursor<'_>,
+    is_diff: bool,
+) -> Result<()> {
+    match bt {
+        BuiltinType::Null => Ok(()),
+        BuiltinType::String => {
+            let len = cur.read_u16()? as usize;
+            let _bytes = cur.read_bytes(len)?;
+            Ok(())
+        }
+        BuiltinType::List | BuiltinType::Map => Err(Error::UnsupportedBuiltin { raw: bt as u32 }),
+        BuiltinType::Ref => skip_primitive_ref(state, cur, is_diff),
+        BuiltinType::Int8 | BuiltinType::UInt8 | BuiltinType::Bool => {
+            let _ = cur.read_u8()?;
+            Ok(())
+        }
+        BuiltinType::Int16 | BuiltinType::UInt16 => {
+            let _ = cur.read_u16()?;
+            Ok(())
+        }
+        BuiltinType::Int32 | BuiltinType::UInt32 | BuiltinType::Float => {
+            let _ = cur.read_u32()?;
+            Ok(())
+        }
+        BuiltinType::Int64 | BuiltinType::UInt64 | BuiltinType::Double => {
+            let _ = cur.read_u64()?;
+            Ok(())
+        }
+    }
+}
+
+fn skip_primitive_ref(state: &mut State, cur: &mut Cursor<'_>, is_diff: bool) -> Result<()> {
+    let type_ref = TypeReference::new(cur.read_i32()?);
+    if type_ref.is_builtin() {
+        // Mirrors `read_primitive`: list/map references resolve to the
+        // null sentinel rather than a side chunk.
+        return match type_ref.as_builtin()? {
+            BuiltinType::List | BuiltinType::Map => Ok(()),
+            bt => skip_primitive(state, bt, cur, is_diff),
+        };
+    }
+    let is_user = state.class_for(type_ref)?.flags.is_user();
+    if is_user {
+        skip_object(state)
+    } else {
+        skip_user_class(state, type_ref, cur, is_diff)
+    }
 }
 
 fn read_value(
@@ -888,11 +1156,21 @@ mod tests {
         let mut fields: BTreeMap<String, Value> = BTreeMap::new();
         insert_field(&mut fields, "TestClass", "first".to_string(), Value::I32(1))
             .expect("first insert of a fresh field name must succeed");
-        insert_field(&mut fields, "TestClass", "second".to_string(), Value::I32(2))
-            .expect("a distinct field name must not collide with the first");
+        insert_field(
+            &mut fields,
+            "TestClass",
+            "second".to_string(),
+            Value::I32(2),
+        )
+        .expect("a distinct field name must not collide with the first");
 
-        let err = insert_field(&mut fields, "TestClass", "first".to_string(), Value::I32(99))
-            .expect_err("re-declaring an already-present field name must fail");
+        let err = insert_field(
+            &mut fields,
+            "TestClass",
+            "first".to_string(),
+            Value::I32(99),
+        )
+        .expect_err("re-declaring an already-present field name must fail");
         match err {
             Error::DuplicateFieldName {
                 class_name,
@@ -911,7 +1189,11 @@ mod tests {
             Some(Value::I32(1)) => {}
             other => panic!("expected the original Value::I32(1) untouched, got {other:?}"),
         }
-        assert_eq!(fields.len(), 2, "the rejected insert must not add a new entry");
+        assert_eq!(
+            fields.len(),
+            2,
+            "the rejected insert must not add a new entry"
+        );
     }
 
     /// #4272 (SF-D3-2026-09-11-01) — `insert_class_name_offset` must
@@ -975,7 +1257,11 @@ mod tests {
         // The pre-existing mapping must survive untouched — no partial
         // overwrite on the rejected insert.
         assert_eq!(class_by_name_offset.get(&42), Some(&0));
-        assert_eq!(class_by_name_offset.len(), 2, "the rejected insert must not add a new entry");
+        assert_eq!(
+            class_by_name_offset.len(),
+            2,
+            "the rejected insert must not add a new entry"
+        );
     }
 
     fn field(name: &str, offset: u16, size: u16) -> Field {
@@ -992,7 +1278,12 @@ mod tests {
     /// order must report ordered.
     #[test]
     fn fields_are_offset_ordered_true_for_common_shape() {
-        let fields = vec![field("r", 0, 1), field("g", 1, 1), field("b", 2, 1), field("a", 3, 1)];
+        let fields = vec![
+            field("r", 0, 1),
+            field("g", 1, 1),
+            field("b", 2, 1),
+            field("a", 3, 1),
+        ];
         assert!(fields_are_offset_ordered(&fields));
     }
 
@@ -1003,7 +1294,12 @@ mod tests {
     /// occurrence too.
     #[test]
     fn fields_are_offset_ordered_false_for_xmcolor_shape() {
-        let fields = vec![field("r", 2, 1), field("g", 1, 1), field("b", 0, 1), field("a", 3, 1)];
+        let fields = vec![
+            field("r", 2, 1),
+            field("g", 1, 1),
+            field("b", 0, 1),
+            field("a", 3, 1),
+        ];
         assert!(!fields_are_offset_ordered(&fields));
     }
 
@@ -1284,6 +1580,53 @@ mod tests {
         let parsed = ComponentDatabaseFile::parse(&cdb).expect("valid-flag CDB parses");
         assert_eq!(parsed.classes.len(), 1);
         assert_eq!(parsed.classes[0].name, "TestClass");
+    }
+
+    #[test]
+    fn streaming_visitor_delivers_and_drops_each_top_level_value() {
+        let mut cdb = synthetic_cdb_with_class_flags(ClassFlags::IS_STRUCT);
+        // Add one zero-field object referring to TestClass at STRT offset 0.
+        cdb[12..16].copy_from_slice(&5u32.to_le_bytes()); // BETH + 4 chunks
+        cdb.extend_from_slice(&(ChunkType::Objt as u32).to_le_bytes());
+        cdb.extend_from_slice(&4u32.to_le_bytes());
+        cdb.extend_from_slice(&0i32.to_le_bytes());
+
+        let mut class_names = Vec::new();
+        let info = ComponentDatabaseFile::visit_instances_with_limits(
+            &cdb,
+            ParseLimits::unlimited(),
+            |value| match value {
+                Value::Object(object) => class_names.push(object.class_name.clone()),
+                other => panic!("expected object value, got {other:?}"),
+            },
+        )
+        .expect("streaming visitor must decode the same valid CDB object");
+
+        assert_eq!(info.class_count, 1);
+        assert_eq!(info.value_count, 1);
+        assert_eq!(class_names, ["TestClass"]);
+    }
+
+    #[test]
+    fn validation_walks_a_nested_list_without_materialising_it() {
+        let mut cdb = synthetic_cdb_with_class_flags(ClassFlags::IS_STRUCT);
+        // Add a top-level LIST<bool> with two values. Unlike the generic
+        // reader, the validator must consume its nested values without
+        // building `Value::List` (the real CDB has one very large shape).
+        cdb[12..16].copy_from_slice(&5u32.to_le_bytes()); // BETH + 4 chunks
+        let mut list = Vec::new();
+        list.extend_from_slice(&(BuiltinType::Bool as u32 as i32).to_le_bytes());
+        list.extend_from_slice(&2i32.to_le_bytes());
+        list.extend_from_slice(&[1, 0]);
+        cdb.extend_from_slice(&(ChunkType::List as u32).to_le_bytes());
+        cdb.extend_from_slice(&(list.len() as u32).to_le_bytes());
+        cdb.extend_from_slice(&list);
+
+        let info =
+            ComponentDatabaseFile::validate_instances_with_limits(&cdb, ParseLimits::unlimited())
+                .expect("validator must consume nested list values");
+        assert_eq!(info.class_count, 1);
+        assert_eq!(info.value_count, 1);
     }
 
     /// Regression: #2614 / SF-D3-01 — a hostile on-disk `chunkCount`
