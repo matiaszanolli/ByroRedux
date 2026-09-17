@@ -181,6 +181,7 @@ launch_held_engine() {
 
 launch_held_engine "$engine_stderr"
 echo "smoke[p2-melee-core]: PASS -- engine reached held interactive state"
+debug_commands "phys.stats" "$LOG_DIR/physics.initial" || fail "initial physics diagnostics unavailable"
 
 debug_commands "entities Inventory" "$inventory_log" \
     || fail "could not list NPC inventory roots"
@@ -320,6 +321,15 @@ fi
 
 echo "smoke[p2-melee-core]: PASS -- $P2_TARGET_HEALTH Health -> $expected_hits bound attacks at $loadout_damage damage -> Dead -> ragdoll"
 
+# Distinguish an already-invalid live corpse from a restore-only regression.
+# The full post-restart sampling below remains mandatory as well.
+debug_commands "ragdoll.status $target" "$LOG_DIR/corpse.before-save" \
+    || fail "could not inspect corpse physics before saving"
+grep -Fq 'complete=true finite=true' "$LOG_DIR/corpse.before-save" \
+    || fail "live ragdoll has missing bodies or non-finite physics before saving"
+debug_commands "phys.stats
+phys.census" "$LOG_DIR/physics.before-save" || fail "pre-save physics diagnostics unavailable"
+
 # ── Gate 5 (#3009) — inventory/equipment survives save -> exit -> reload ────
 #
 # `playable-vertical-slice.md` gate 5 requires inventory/equipment state to
@@ -375,6 +385,8 @@ done
 grep -Fq "startup --load" "$reloaded_stderr" \
     || echo "smoke[p2-melee-core]: NOTE -- startup --load produced no log line at RUST_LOG=${BYROREDUX_SMOKE_LOG:-error}"
 echo "smoke[p2-melee-core]: PASS -- engine relaunched from slot $P2_SAVE_SLOT"
+debug_commands "phys.stats
+phys.census" "$LOG_DIR/physics.restored" || fail "restored physics diagnostics unavailable"
 
 # The startup load is queued and applied between frames, so poll rather than
 # sampling once.

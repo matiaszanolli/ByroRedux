@@ -9,9 +9,73 @@
 
 use super::*;
 use byroredux_core::ecs::components::{
-    ActorValues, ActorVitals, Dead, EscortBehavior, FollowBehavior, GuardBehavior, PatrolBehavior,
-    SandboxBehavior, TravelBehavior, WanderBehavior,
+    collision::CollisionShape, ActorValues, ActorVitals, Children, Dead, EscortBehavior,
+    FollowBehavior, GlobalTransform, GuardBehavior, MotionType, Parent, PatrolBehavior,
+    RigidBodyData, SandboxBehavior, Transform, TravelBehavior, WanderBehavior,
 };
+
+#[test]
+fn shape_less_skeleton_gets_one_torso_fallback_collider() {
+    let mut world = World::new();
+    world.register::<Transform>();
+    world.register::<GlobalTransform>();
+    world.register::<Children>();
+    world.register::<Parent>();
+    world.register::<CollisionShape>();
+    world.register::<RigidBodyData>();
+    world.register::<byroredux_physics::ActorBoneCollider>();
+    world.register::<byroredux_physics::ActorColliderOwner>();
+    world.register::<crate::ragdoll::RagdollTemplate>();
+
+    let actor = world.spawn();
+    world.insert(actor, Transform::IDENTITY);
+    world.insert(actor, GlobalTransform::IDENTITY);
+    let fallback = keyframe_live_ragdoll_bones(&mut world, actor, &Default::default())
+        .expect("shape-less skeleton needs a fallback body");
+
+    let owners = world.query::<byroredux_physics::ActorColliderOwner>().unwrap();
+    let owned_fallback = owners
+        .iter()
+        .find_map(|(entity, owner)| (owner.0 == actor).then_some(entity))
+        .expect("shape-less actor needs a targetable fallback collider");
+    drop(owners);
+    assert_eq!(owned_fallback, fallback);
+    assert_ne!(fallback, actor);
+    assert!(world
+        .query::<byroredux_physics::ActorBoneCollider>()
+        .unwrap()
+        .contains(fallback));
+    assert_eq!(
+        world.query::<Parent>().unwrap().get(fallback).unwrap().0,
+        actor,
+        "the collider's local torso offset must compose under the actor root"
+    );
+    assert_eq!(
+        world.query::<Transform>().unwrap().get(fallback).unwrap().translation,
+        Vec3::new(0.0, 52.0, 0.0),
+    );
+    assert!(matches!(
+        world.query::<CollisionShape>().unwrap().get(fallback),
+        Some(CollisionShape::Capsule {
+            half_height: 32.0,
+            radius: 20.0,
+        })
+    ));
+    assert_eq!(
+        world.query::<RigidBodyData>().unwrap().get(fallback).unwrap().motion_type,
+        MotionType::Keyframed,
+    );
+
+    let skeleton = world.spawn();
+    world.insert(skeleton, Transform::IDENTITY);
+    world.insert(skeleton, GlobalTransform::IDENTITY);
+    install_fallback_ragdoll_template(&mut world, skeleton, fallback);
+    let templates = world.query::<crate::ragdoll::RagdollTemplate>().unwrap();
+    let template = templates.get(skeleton).unwrap();
+    assert_eq!(template.bodies.len(), 1);
+    assert_eq!(template.bodies[0].bone, fallback);
+    assert!(template.constraints.is_empty());
+}
 
 #[test]
 fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {

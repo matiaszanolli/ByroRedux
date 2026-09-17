@@ -683,6 +683,37 @@ with reconciliation complete and all 18 bodies finite (maximum distance
 exact physical-pose persistence. This closes the demonstrated Draugr
 stretching defect, not all actor appearance/animation or per-game visual gates.
 
+**Nested actor-template lists (2026-09-17 UTC):** Skyrim's
+`LvlDraugrAmbushMelee2HMale` (`0004A04E`) inherits traits through two LVLN
+records (`0001E772` → `00023C07`). The resolver previously stopped at the
+second list and retained the shell's placeholder FoxRace, producing canine
+meshes. Shared inheritance traversal now follows nested LVLN/LVLC entries
+with one bounded budget across lists and NPC/CREA records. Category flags,
+intermediate authored fields, and fallback on missing targets remain intact.
+The existing deterministic highest-eligible-level / last-authored-tie policy
+is preserved; randomized selection and chance-none parity remain open.
+
+The installed-data regression failed before the fix and now resolves
+DraugrRace and its authored skeleton. Five new synthetic tests cover shared
+categories, level/tie selection, missing targets, cycles, and intermediate
+fields. All 1,014 plugin tests and 2,225 engine tests passed (28 and 36
+ignored), plus all six explicit installed-Skyrim tests. A fresh isolated GPU
+run at `/tmp/byro-nested-actors.w5M2Gv/` confirmed actor 1428 / ref `000E9986`
+now owns body mesh 1587 through parent chain `1587 → 1523 → 1428`, using
+`textures\\actors\\draugr\\draugr.dds` and a 61-entry skin palette instead of
+the canine mesh. This verifies runtime asset selection, not a new visual
+animation or combat gate.
+
+The rebuilt engine subsequently passed the complete P2 combat/death/save/
+fresh-process-reload gate in both reference games. Skyrim SE took seven
+8-point attacks against the 50-health fixture; FNV took thirty against its
+240-health fixture. Both restored the killed reference's death state and
+the player's inventory/equipment, then passed all 20 finite, bounded corpse
+physics samples. Artifacts: `/tmp/byro-p2-melee-core.uPmyhc/` (Skyrim SE)
+and `/tmp/byro-p2-melee-core.bz2D3D/` (FNV). These gates protect the shared
+resolver changes against reference-route regressions; they do not exercise
+every leveled actor, randomized selection, or the remaining games.
+
 **Real-ragdoll loot targeting fix (2026-09-17 UTC):** a live FNV check found
 that the above physical-targeting test used a stand-in collider with
 `RapierHandles`. Actual ragdoll activation removes that row and stores dynamic
@@ -1211,6 +1242,132 @@ validation. Logs and snapshots are retained in `/tmp/byro-p5-save-restart.gPuzHI
 FNV passed again with the final ordered loading-lifecycle assertion in
 `/tmp/byro-p5-save-restart.RXMPkN`; shell syntax and missing-data/SKIP contract
 checks also passed for both fixtures.
+
+**Fallout 3 persistence baseline (2026-09-17 UTC):** added `fo3.env`, derived
+from installed `Fallout3.esm` CELL `MegatonMoriartysSaloon` (`00003A35`, 458
+references), using the interior standoff at door `00003A5F`. The isolated
+P5 run passed movement through bound input, grounded save/exit/fresh-process
+restoration within one unit, and a subsequent valid save. In the initial run,
+the body moved from `(1110.00,-64.01,-2.00)` to
+`(1008.76,-64.01,62.52)` and restored at `(1008.77,-64.01,62.52)`.
+The final run also required the ordered original loading-cover lifecycle:
+LSCR `0002186A` / `Interface\\Loading\\loading_junktown.dds` presents before
+teardown, then dismisses after restoration and a destination frame. Artifacts:
+`/tmp/byro-p5-save-restart.BShlzZ/` (initial pose measurements:
+`/tmp/byro-p5-save-restart.eKPloZ/`). This is lifecycle/log evidence, not a
+new screenshot review. FO3 initially declared only this measured gate;
+unmeasured door, traversal, and swimming routes still fail configuration
+instead of implying coverage. Missing data still exits 77 on supported gates.
+Shell syntax and the expanded three-title smoke-contract checks pass.
+
+**Fallout 3 combat/restart failure (2026-09-17 UTC):** added a reproducible
+P2 route using installed-data `MegatonMoriartysCustomer01`, reference
+`00041709`, base `00041704`, health 180, with the authored lead-pipe inventory
+leaf `00004337`. The normal bound-input attack path killed it in 23 attacks
+at 8 damage, with floor support and an 18-body ragdoll. Inventory/equipment
+and the same reference's death marker survived a fresh-process reload, but
+the restored corpse failed `finite=true` despite all 18 bodies being present.
+The gate remains **FAIL**, not covered as passing. Artifacts:
+`/tmp/byro-p2-melee-core.D8Y2eq/` and repeat
+`/tmp/byro-p2-melee-core.FG5ofA/`. The repeat added a mandatory pre-save
+physics check, which passed before the restored sample failed. This narrows
+the next investigation to restored ragdoll initialization/stepping, without
+claiming that the first live sample proves long-term live stability. No
+physics fix or relaxed assertion was applied.
+
+**FO3 isolation follow-up:** debug-only `ragdoll seed` logging now records
+body pose, scale, and mass at activation. A third full failure is retained at
+`/tmp/byro-p2-melee-core.bNdMK1/`: every restored seed is finite, scale 1,
+with authored masses approximately 1–9. The restored bind pose differs from
+the animated live-death pose. Two explicit installed-data tests now import
+the shipped humanoid skeleton and run its complete 18-body articulation for
+600 steps at yaw 0 and -90 degrees, first in free fall and then on a single
+flat floor at Y=-128. Both tests pass; the floor case also stays within 512
+units of the placement. All 26 ordinary ragdoll-filtered tests pass. The
+explicit tests require the archive (absence fails rather than silently
+passing) and ship no game assets. These are isolation controls, **not a
+reproduction or fix**: the full saloon's colliders, actors, and restore timing
+remain absent, so the actual P2 gate stays FAIL and needs scene-level contact
+and lifecycle investigation next.
+
+The next controls added the saloon's 328 collision nodes from the static-object
+index, and then 90 keyframed bone colliders for its five other direct NPC
+placements. Both controls use the target's exact master-record position,
+rotation, and scale, plus a second orientation offset by -90 degrees. All
+four installed tests pass in both debug and release, checking 600 steps per
+orientation and the 512-unit bound for supported-floor cases. This does not
+reproduce full runtime assembly: item/container collider paths, animated
+followers, the player capsule, and save overlays are still absent. The full
+reload failure remains open. The next useful comparison is the actual live
+physics world before/after the save overlay against these finite controls;
+do not attribute it to the skeleton or globally raise solver iterations on
+this evidence alone.
+
+Actual-world diagnostics in `/tmp/byro-p2-melee-core.XSKCgo/` show the same
+424 total bodies and 208 static colliders before and after restart; death
+changes kinematic bodies from 124 to 106 in both sessions. P2 now retains
+`phys.stats` at startup and `phys.stats`/`phys.census` around save/restart.
+A copied-save replay at `/tmp/byro-fo3-ragdoll-trace.4B5g6J/` uses optional
+trace-level root-body logging: the restored root starts finite at
+`(1049.374,-63.520,-332.549)`, then jumps to approximately
+`(2.108e12,-1.892e11,-3.318e11)` on the next observed simulation frame.
+This is an immediate blow-up, not demonstrated gradual settling drift.
+Temporary logging found no >100-unit pushes through `push_kinematic`; that
+logging was removed, and it does not rule out the separately queued player
+motion or smaller collider displacements. A fifth headless control warms,
+empties, and repopulates the same physics world before activating the ragdoll;
+it also passes both orientations for 600 steps. At this investigation point,
+full runtime save restoration still failed; neither stable body counts nor this
+limited world-reuse control proved the lifecycle correct.
+
+**FO3 restored-ragdoll recovery (2026-09-17 UTC):** the copied-save replay
+showed the first bad solve was a finite-but-impossible displacement, not only
+a NaN: the root could jump from `(1049.374,-63.520,-332.549)` to trillions of
+BU in one physics substep. `PhysicsWorld` now snapshots every live dynamic
+body before each substep (new ragdolls are not yet present in Rapier's active
+islands on their first solve), rejects non-finite or >2,048-BU substep movement,
+restores the prior pose, and detaches the affected multibody articulation via
+Rapier's supported API. This is a contained recovery path, not an assertion
+relaxation: it preserves ordinary solver behavior unless a solve is already
+invalid. The untouched copied save logs one recovery, then finite corpse
+motion without recurrence. The full FO3 P2 gate passed in
+`/tmp/byro-p2-melee-core.kHZjTh/`: all 23 real 8-damage attacks, save,
+fresh-process reload, inventory/equipment, death marker, and 20 post-restart
+finite/within-512-BU ragdoll samples passed. Physics unit coverage includes
+both NaN and finite impossible-jump recovery.
+
+The final P2 recheck also passed on the existing reference fixtures: FNV
+(`/tmp/byro-p2-melee-core.ZeBhtU/`) and Skyrim SE
+(`/tmp/byro-p2-melee-core.HjBBbh/`) each completed their real bound-input
+melee kill, isolated save, fresh-process reload, inventory/equipment and death
+marker restoration, and the same twenty finite/within-512-BU corpse samples.
+Together with the FO3 result above, this verifies the measured combat/restart
+route on all three installed legacy-title fixtures; it does not establish the
+unmeasured door, traversal, water, quest, or soak routes for every game.
+
+**Fallout 4 P0/P2 routes (2026-09-17 UTC):** `fo4.env` now freezes the
+installed vanilla `MedTekResearch01` exterior door `000456BA`, whose probe
+derived Y-up standoff selects the authored Commonwealth destination `(5,13)`.
+The real-data P0 smoke passed in 17.6 seconds: native `[E] Open`, one normal
+`KeyE` binding edge, one canonical `ActivateEvent`, the deferred transition,
+and 39,533 loaded source entities. The same fixture's P2 run
+(`/tmp/byro-p2-melee-core.UIuOUa/`) passed its blocked-hit arms, all 23
+grounded 8-damage attacks against `LvlFeralGhoul` reference `00084CEC` / base
+`00075337`, death, slot save, fresh-process reload, and twenty finite,
+within-512-BU restored-corpse samples. This ghoul skeleton provides no authored
+bone bodies, so spawning creates one torso-height keyframed capsule and a
+matching one-body fallback ragdoll template; death replaces that keyframed body
+with one dynamic physical body. This proves targeting, combat, death, and
+persistence without misrepresenting it as authored multi-bone FO4 ragdoll
+fidelity. FO4 character traversal, water, quest, and soak routes remain
+explicitly unmeasured configuration errors rather than inferred coverage.
+
+**Fallout 3 P0 door route (2026-09-17 UTC):** `fo3.env` now freezes the
+installed `MegatonMoriartysSaloon` door `00003A5F`. The probe-derived Y-up
+standoff reached the authored `MegatonWorld (-1,-7)` destination through the
+normal `[E] Open` prompt, one `KeyE` binding edge, one `ActivateEvent`, and the
+deferred transition. The real-data P0 smoke passed with 2,635 source entities;
+P1 traversal remains explicitly unmeasured.
 
 This closes only the pose/process-restart baseline, **not P5**: the native
 F5/F9 event path, inventory/equipment/quest/world-state assertions, graceful

@@ -25,7 +25,12 @@ matrix below on a runner carrying both `byroredux-rt` and
 ```bash
 docs/smoke-tests/p0-door-interaction.sh          # Skyrim SE (default)
 docs/smoke-tests/p0-door-interaction.sh fnv      # Fallout: New Vegas
+docs/smoke-tests/p0-door-interaction.sh fo3      # Fallout 3: Moriarty's Saloon exit
 docs/smoke-tests/p5-save-restart.sh fnv          # isolated save/process restart
+docs/smoke-tests/p5-save-restart.sh fo3          # Fallout 3: Moriarty's Saloon
+docs/smoke-tests/p2-melee-core.sh fo3            # Fallout 3: Moriarty's Saloon corpse save/restart
+docs/smoke-tests/p0-door-interaction.sh fo4      # Fallout 4: Med-Tek Research exit
+docs/smoke-tests/p2-melee-core.sh fo4            # Fallout 4: Med-Tek feral-ghoul corpse save/restart
 ```
 
 Every game-specific value — data dir, archives, cell, camera pose, destination
@@ -34,21 +39,37 @@ in `fixtures/<game>.env`. Adding a title costs one fixture file, not four
 script copies. An unknown game exits `2` with a diagnostic, never `77`, so a
 misconfigured runner can't look like "data absent".
 
+New fixtures may explicitly list `FIXTURE_GATES` while their other routes are
+still unmeasured. Calling an undeclared gate then fails with exit `2`, before
+checking data; it is neither a pass nor a missing-data skip. Fallout 3 currently
+declares `p0-door-interaction`, `p5-save-restart`, and `p2-melee-core`; Fallout 4
+declares the measured `p0-door-interaction` and `p2-melee-core` routes. The FO3
+combat gate now passes its combat, save, fresh-process reload, and 20-sample
+restored-ragdoll checks.
+FO4 P2 has the same gameplay and persistence coverage using an explicitly
+one-body fallback corpse for the Med-Tek ghoul; it does not claim authored
+multi-bone ragdoll fidelity.
+Older fixtures without this list retain their
+existing gate behavior. Contract checks cover both supported missing-data
+paths and explicit rejection of unmeasured routes.
+
 `p5-save-restart.sh` is a persistence **baseline**, not P5 closure. It builds
 the current release binaries, uses an isolated temporary save directory and
 port (default 19876), moves the character through bound input, saves, stops
 the process, restarts with `--load 1`, and requires the saved body pose within
 one unit on each axis, grounding, and a successful subsequent save. At least
 10 horizontal units of movement must precede the save so default startup
-placement cannot masquerade as restoration. FNV additionally waits for the
-original loading cover to dismiss. Logs/saves are retained under the printed
+placement cannot masquerade as restoration. FNV and FO3 additionally require
+the original loading cover to present before teardown and dismiss after
+restore and a destination frame. Logs/saves are retained under the printed
 `/tmp/byro-p5-save-restart.*` directory on success and failure. This does not
 prove F5/F9 OS-event delivery, inventory/quest persistence, clean Vulkan debug
 validation, graceful shutdown, or the 30-minute soak; process termination
 here deliberately uses SIGTERM after the save command reports completion.
 
-A fixture may also decline a gate. `w1-water-traversal.sh` SKIPs (77) any title
-whose fixture declares no `W1_*` route, and declares per profile what its water
+A fixture may also decline a gate. For fixtures without an explicit gate
+restriction, `w1-water-traversal.sh` SKIPs (77) any title whose fixture declares
+no `W1_*` route, and declares per profile what its water
 can physically gate (`W1_HEAD_SUBMERSION`, `W1_BOUNDARY_PHASE`). That is
 deliberate: Skyrim's frozen W0 water body has no capsule-traversable shore (the
 measurements, and the KCC wedge that blocks the one bank that does exist, are
@@ -69,6 +90,14 @@ cargo run -p byroredux-plugin --example probe_combat_fixture -- <ESM> <CELL>
 This table is historical. Current traversal/combat rechecks, including
 intermittent failures, are recorded in
 [the playable-slice plan](../engine/playable-vertical-slice.md).
+
+**Current P2 recheck (2026-09-17):** the historical FNV and Skyrim P2 rows
+below are superseded. The complete melee → save → fresh-process reload route
+now passes for FNV (`/tmp/byro-p2-melee-core.ZeBhtU`), Skyrim SE
+(`/tmp/byro-p2-melee-core.HjBBbh`), and Fallout 3
+(`/tmp/byro-p2-melee-core.kHZjTh`). Each run retained the target death marker,
+inventory/equipment, a restored 18-body ragdoll, and twenty finite/bounded
+post-restart samples. P0/P1/W1 retain their independently measured status.
 
 FNV is the project's reference title and had no playable-slice gate at all
 before #3039. The gates are landed **honestly red** where the engine is red —
@@ -151,9 +180,9 @@ Inventory` returned nothing.
 | Script | Milestone | Verifies |
 |--------|-----------|----------|
 | [`../../scripts/material-provider-matrix.sh`](../../scripts/material-provider-matrix.sh) | RT recovery R5.5 provider baseline | Runs three cold processes for Oblivion, FNV, Skyrim SE, FO4, and Starfield; keeps one loaded world per run while capturing direct/lobe/role views; retains sampled 26-role `mat.dump`, `tex.missing`, manifests and SHA-256 provenance; requires inline-NIF sources on legacy titles, a present BGSM/BGEM fill on FO4, and a real CDB `.mat` reference on Starfield; gates measured pixel-domain repeatability after per-mode settling. Invoke under Xvfb as documented in the script header. |
-| [`p0-door-interaction.sh`](p0-door-interaction.sh) | Playable slice P0 close-out | Game-parameterised (#3039). On Skyrim: loads the Bannered Mare at a deterministic camera pose, selects the authored XTEL exit, observes the native `[E] Open` prompt, injects one physical `KeyE` pulse through `ActionBindings`/`ActionState`, and requires exactly one canonical `ActivateEvent` plus a completed deferred transition to `WhiterunWorld (6,-2)`. The 2026-08-10 close-out run passed with 5,183 source-cell entities. |
+| [`p0-door-interaction.sh`](p0-door-interaction.sh) | Playable slice P0 close-out | Game-parameterised (#3039). On Skyrim: loads the Bannered Mare at a deterministic camera pose, selects the authored XTEL exit, observes the native `[E] Open` prompt, injects one physical `KeyE` pulse through `ActionBindings`/`ActionState`, and requires exactly one canonical `ActivateEvent` plus a completed deferred transition to `WhiterunWorld (6,-2)`. The 2026-08-10 close-out run passed with 5,183 source-cell entities. Fallout 3 now passes Moriarty's Saloon → MegatonWorld (2026-09-17): 2,635 source entities, one `KeyE` edge, and the authored `(-1,-7)` exterior arrival. Fallout 4 also passes its measured Med-Tek Research → Commonwealth route: 39,533 source entities, one `KeyE` edge, and the authored `(5,13)` exterior arrival. |
 | [`p1-character-traversal.sh`](p1-character-traversal.sh) | Playable slice P1 traversal gate | Game-parameterised (#3039); the exterior route is a fixture array. On Skyrim: spawns the real character capsule in the Bannered Mare, walks away and back through binding-aware held input, activates both sides of the XTEL door, crosses `WhiterunWorld (6,-2) → (6,-3) → (6,-2)` through the Rapier KCC, and requires grounded control after the round trip. It uses a radius-1 exterior ring and deterministic `InputState` yaw; no camera/body teleport participates in the route. |
-| [`p2-melee-core.sh`](p2-melee-core.sh) | Playable slice P2 combat-core checkpoint | Game-parameterised (#3039). On Skyrim: preflights CELL `000371DE`, grounded reference/base `000383F7`/`000E9895`, and the two Draugr weapon leaves the deterministic LVLI expansion really reaches (#3417); uses setup-only `combat.approach` to place the real character capsule on nearby authored collision; then requires `grounded=true` for every bound attack needed to reduce 50 Health to zero. Damage is derived from live `inventory.status` (authored `EquippedWeapon` or the documented unarmed fallback), not pinned to a literal. The gate also proves `settings.status` is live before requiring one `Dead` transition and the existing 18-body ragdoll. Closes with vertical-slice gate 5 (#3009): saves a slot, verifies it decodes with an `Inventory` column, terminates the engine, relaunches the identical invocation with `--load`, and requires the id-free half of `inventory.status` plus the equipped-weapon line to come back unchanged. Saves are redirected to the harness temp dir via `BYROREDUX_SAVE_DIR`, so the operator's own ring is untouched. |
+| [`p2-melee-core.sh`](p2-melee-core.sh) | Playable slice P2 combat-core checkpoint | Game-parameterised (#3039). On Skyrim: preflights CELL `000371DE`, grounded reference/base `000383F7`/`000E9895`, and the two Draugr weapon leaves the deterministic LVLI expansion really reaches (#3417); uses setup-only `combat.approach` to place the real character capsule on nearby authored collision; then requires `grounded=true` for every bound attack needed to reduce 50 Health to zero. Damage is derived from live `inventory.status` (authored `EquippedWeapon` or the documented unarmed fallback), not pinned to a literal. The gate also proves `settings.status` is live before requiring one `Dead` transition and the existing 18-body ragdoll. FO4 likewise passes Med-Tek's 180-Health feral-ghoul route, with a deliberately one-body fallback corpse because that skeleton has no authored bone bodies. Closes with vertical-slice gate 5 (#3009): saves a slot, verifies it decodes with an `Inventory` column, terminates the engine, relaunches the identical invocation with `--load`, and requires the id-free half of `inventory.status` plus the equipped-weapon line to come back unchanged. Saves are redirected to the harness temp dir via `BYROREDUX_SAVE_DIR`, so the operator's own ring is untouched. |
 | [`w1-water-traversal.sh`](w1-water-traversal.sh) | WATAL W1 — real-character water traversal | Game-parameterised. Walks the real `CharacterController` capsule shore → swim → dive → surface → shore → water-adjacent cell boundary through `ActionBindings` → `ActionState` → the Rapier KCC, with no teleport in any route leg (`input.look` writes the same yaw/pitch accumulator mouse look owns, and while swimming pitch is a *movement* input — the dive control, per OpenMW `movementsolver.cpp:161-165`). Gates the swimming/grounded exclusion, the player's canonical `WaterContact` reaching `water.contacts`, the "don't swim up into the air" surface clamp under 240 frames of held upward swim, a water exit that starts from rest, support retained across the streaming boundary, and a bounded camera-waterline transition count (the anti-strobe check). Fixtures declare what their water can gate: FNV Lake Mead is the deep profile (head submersion + camera waterline); `skyrim_se` declares no route and is SKIPped, with the measured reason in its fixture. |
 | [`m-exteriors.sh`](m-exteriors.sh) | Exterior readiness EX-01 / EX-05 / EX-06 / EX-07 / EX-09 / EX-10 / EX-11 / EX-13 / EX-17 | Cross-game matrix for FNV WastelandNV, FO3 MegatonWorld, Oblivion/Skyrim Tamriel, and FO4 Commonwealth. `static` mode gates populated exterior captures; `boundary` mode drives the deterministic three-cell `grid-cross` path and additionally requires every full-detail and LOD handoff to settle without supersession, plus a `lod.coverage` gate (#2371, VWD follow-up): zero resident-quad overlaps, zero LOD-vs-full-detail overlaps, zero LOD-vs-VWD-REFR overlaps (the EXAL §5.2 culling rule, checked live), and zero terrain/object LOD keys that churned (left residency and later returned) across the traversal; and a `terrain.seams` gate (#2371 item 7): zero disagreeing shared-edge LAND height/normal vertices between adjacent resident cells — authored terrain shares byte-identical heightmap payloads at a seam, so any disagreement is a real authoring/merge defect, checked live, zero tolerance by design. `cycle` mode keeps one live world resident while driving sunrise/noon/night, capturing and image-gating every phase and requiring finite environment/pre-tonemap state plus nonzero canonical water at all three samples; Skyrim uses the established water-adjacent BleakfallsBarrowPath `(2,-10)` fixture in this mode. `water` mode freezes W0's two real-data profiles—Skyrim `(2,-10)` RiverWater and FNV Lake Mead `(19,13)`—at paired above/below-surface poses; it requires the intended WATR source, a camera-containing canonical volume, Skyrim's authored nonzero flow, two healthy finite captures, and a material pixel delta across the waterline. `all water` intentionally runs only those two frozen profiles. Debug artifacts include `water.dump` and `water.contacts` so plane/material/volume coverage and solver contact can be correlated with each retained image; render-only distant LOD water is reported as `lod-render-only` rather than an interaction-volume failure; leaked `#INT_MIN#`/FLT_MAX no-water sentinels are hard failures. Image health is gated at both ends: `r.health` for non-finite pixels after the scene is rendered (#2736) and `env.health` for the lighting/sky values that feed it (#2368), the latter retained per profile as `env-health.log`. |
 | `cargo run --release -p byroredux-scripting --example mq101_conformance` | MQ101 intro vertical-slice preflight | Production ESM/BSA/PEX paths recover the `MQ101` quest plus its typed `SCEN` timelines, aliases, phases, dialogue/package/timer actions, stage/scene-fragment bindings, attached properties, critical intro scripts, cart HKX files, and localized FUZ dialogue. Hard checks verify every scene actor, phase range, DIAL/PACK reference, SCEN-bound PEX asset, and construction of the live `SceneRegistry`/`ScenePlayer` shape. Also reports the exact share of bound quest fragments the current effect lowerer understands. This does not need Vulkan; it proves data ingress and orchestration-plan construction, not actor-alias spawning or dialogue/package execution. Pass a data-directory argument or set `BYROREDUX_SKYRIM_DATA` to override the default install path. |

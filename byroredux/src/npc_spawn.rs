@@ -307,9 +307,10 @@ fn keyframe_live_ragdoll_bones(
     world: &mut World,
     actor_root: EntityId,
     skel_map: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
-) {
+) -> Option<EntityId> {
     use byroredux_core::ecs::components::collision::CollisionShape;
 
+    let mut has_gameplay_collider = false;
     for &bone in skel_map.values() {
         if let Some(body) = world.get_mut::<RigidBodyData>(bone) {
             if body.motion_type == MotionType::Dynamic {
@@ -323,10 +324,92 @@ fn keyframe_live_ragdoll_bones(
             .query::<CollisionShape>()
             .is_some_and(|q| q.contains(bone));
         if has_shape {
+            has_gameplay_collider = true;
             world.insert(bone, byroredux_physics::ActorBoneCollider);
             world.insert(bone, byroredux_physics::ActorColliderOwner(actor_root));
         }
     }
+
+    if !has_gameplay_collider {
+        Some(install_fallback_actor_collider(world, actor_root))
+    } else {
+        None
+    }
+}
+
+/// Give an otherwise shape-less live actor one conservative, targetable body.
+///
+/// FO4's shipped skeletons can contain no bhk bone bodies at all.  Their
+/// placement roots still have `ActorVitals`, but physical combat only resolves
+/// a ray through a registered collider; without this child every swing misses.
+/// The fallback is deliberately a child rather than a shape on the root: the
+/// placement root is at the actor's feet while the target volume is centred at
+/// torso height.  It joins the actor-bone query group so floor and clearance
+/// probes ignore it, exactly as they ignore authored live-actor bone shapes.
+fn install_fallback_actor_collider(world: &mut World, actor_root: EntityId) -> EntityId {
+    use byroredux_core::ecs::components::collision::CollisionShape;
+
+    let collider = world.spawn();
+    world.insert(
+        collider,
+        Transform::new(Vec3::new(0.0, 52.0, 0.0), Quat::IDENTITY, 1.0),
+    );
+    world.insert(collider, GlobalTransform::IDENTITY);
+    world.insert(
+        collider,
+        CollisionShape::Capsule {
+            half_height: 32.0,
+            radius: 20.0,
+        },
+    );
+    world.insert(
+        collider,
+        RigidBodyData {
+            motion_type: MotionType::Keyframed,
+            ..Default::default()
+        },
+    );
+    world.insert(collider, byroredux_physics::ActorBoneCollider);
+    world.insert(collider, byroredux_physics::ActorColliderOwner(actor_root));
+    world.insert(collider, Parent(actor_root));
+    add_child(world, actor_root, collider);
+    collider
+}
+
+/// Install the one-body corpse template associated with a fallback collider.
+///
+/// This is intentionally separate from collider installation: a shape-less
+/// actor can still be targeted while alive even if its skeleton failed to
+/// import. A real skeleton root is required before the normal death path can
+/// own a `RagdollTemplate` and the existing ragdoll/status/save machinery can
+/// treat the body as a corpse.
+pub(crate) fn install_fallback_ragdoll_template(
+    world: &mut World,
+    skeleton_root: EntityId,
+    fallback_body: EntityId,
+) {
+    use byroredux_core::ecs::components::collision::CollisionShape;
+
+    world.insert(
+        skeleton_root,
+        crate::ragdoll::RagdollTemplate {
+            bodies: vec![crate::ragdoll::RagdollTemplateBody {
+                bone: fallback_body,
+                local_translation: Vec3::ZERO,
+                local_rotation: Quat::IDENTITY,
+                shape: CollisionShape::Capsule {
+                    half_height: 32.0,
+                    radius: 20.0,
+                },
+                mass: 70.0,
+                linear_damping: 0.35,
+                angular_damping: 1.0,
+                friction: 0.8,
+                restitution: 0.0,
+            }],
+            constraints: Vec::new(),
+        },
+    );
 }
 
 pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {

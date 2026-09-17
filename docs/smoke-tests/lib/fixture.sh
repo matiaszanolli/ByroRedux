@@ -56,8 +56,22 @@ smoke_load_fixture() {
         echo "  available: $(cd "$SMOKE_FIXTURE_DIR" && ls *.env | sed 's/\.env$//' | tr '\n' ' ')" >&2
         exit 2
     fi
+    # Older complete fixtures predate explicit per-gate coverage. New titles
+    # can declare a partial measured route without inventing other fixtures.
+    unset FIXTURE_GATES
     # shellcheck source=/dev/null
     source "$fixture"
+
+    if declare -p FIXTURE_GATES &>/dev/null; then
+        local supported=0 gate
+        for gate in "${FIXTURE_GATES[@]}"; do
+            [[ "$gate" == "$SMOKE_GATE" ]] && supported=1
+        done
+        if (( supported == 0 )); then
+            echo "smoke[$SMOKE_GATE]: FAIL -- fixture '$SMOKE_GAME' has no measured route for this gate" >&2
+            exit 2
+        fi
+    fi
 
     # Per-game data directory: the fixture names its override variable
     # (BYROREDUX_SKYRIM_DATA, BYROREDUX_FNV_DATA, …) and its canonical

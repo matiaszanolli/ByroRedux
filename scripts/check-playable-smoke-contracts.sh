@@ -24,12 +24,30 @@ echo "playable-smoke-contracts: fixtures = ${GAMES[*]}"
 for name in p0-door-interaction p1-character-traversal p2-melee-core p5-save-restart w1-water-traversal; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     for game in "${GAMES[@]}"; do
+        unset FIXTURE_GATES
+        source "$ROOT_DIR/docs/smoke-tests/fixtures/$game.env"
+        supported=1
+        if declare -p FIXTURE_GATES &>/dev/null; then
+            supported=0
+            for gate in "${FIXTURE_GATES[@]}"; do
+                [[ "$gate" == "$name" ]] && supported=1
+            done
+        fi
         set +e
         output="$(BYROREDUX_SKYRIM_DATA="$MISSING_DATA" \
             BYROREDUX_FNV_DATA="$MISSING_DATA" \
+            BYROREDUX_FO3_DATA="$MISSING_DATA" \
             BYROREDUX_FO4_DATA="$MISSING_DATA" "$smoke" "$game" 2>&1)"
         status=$?
         set -e
+        if (( supported == 0 )); then
+            [[ $status -eq 2 ]] \
+                || fail "$name[$game] unmeasured route exited $status instead of configuration error=2"
+            grep -Fq 'has no measured route for this gate' <<<"$output" \
+                || fail "$name[$game] did not explain its unmeasured route"
+            echo "playable-smoke-contracts: PASS -- $name[$game] rejects unmeasured routes explicitly"
+            continue
+        fi
         [[ $status -eq 77 ]] \
             || fail "$name[$game] missing-data path exited $status instead of SKIP=77"
         grep -Fq "smoke[$name]: SKIP -- missing" <<<"$output" \
@@ -92,6 +110,9 @@ grep -Fq '"cooldown_ready=true"' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
     || fail "P2 no longer waits for exact cooldown readiness"
 grep -Fq 'ragdoll.status $restored_target' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
     || fail "P2 no longer samples restored corpse physics"
+grep -Fq 'live ragdoll has missing bodies or non-finite physics before saving' \
+    "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
+    || fail "P2 no longer distinguishes live corpse corruption from restore corruption"
 grep -Fq 'complete=true finite=true' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
     || fail "P2 no longer rejects incomplete or non-finite corpse physics"
 
@@ -118,7 +139,7 @@ for fixture in "$ROOT_DIR"/docs/smoke-tests/fixtures/*.env; do
     # and must state explicitly whether its water can submerge a head rather
     # than leaving the script to infer it.
     if ! grep -q '^W1_WATER_SOURCE=' "$fixture"; then
-        echo "playable-smoke-contracts: PASS -- $game declares no W1 route (gate SKIPs it)"
+        echo "playable-smoke-contracts: PASS -- $game declares no W1 route (not counted as coverage)"
         continue
     fi
     w1_profiles=$(( w1_profiles + 1 ))

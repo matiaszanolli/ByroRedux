@@ -55,6 +55,15 @@ pub const BU_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER
 /// of leaving the playable volume. See the kill-plane in
 /// [`PhysicsWorld::step`].
 pub const KILL_PLANE_Y: f32 = -25_000.0;
+/// Largest plausible dynamic-body movement in one fixed 60 Hz substep.
+///
+/// This is a *delta*, never an absolute coordinate: exterior worlds may be
+/// far from the origin, while an object moving 2,048 BU (about 29 m) in
+/// 1/60th second is already far beyond ordinary character, ragdoll, debris,
+/// or projectile motion. It is a backstop for finite solver explosions — a
+/// NaN check alone cannot catch a body launched billions of BU by one bad
+/// contact.
+const MAX_DYNAMIC_SUBSTEP_DISPLACEMENT: f32 = 2_048.0;
 
 /// Collision-group bit reserved for a **live actor's keyframed ragdoll-bone**
 /// colliders (#2873).
@@ -183,6 +192,64 @@ pub struct PhysicsWorld {
     /// defers this O(all colliders) work until after the physics step so a
     /// streaming frame does not rebuild the BVH twice (#2864).
     colliders_dirty: bool,
+}
+
+/// A dynamic body's state immediately before one Rapier substep.
+///
+/// A malformed contact must never turn a valid saved scene into a permanent
+/// broken island. Keeping this snapshot at the physics boundary lets us retain
+/// the last known-good pose if Rapier returns non-finite values or a physically
+/// impossible contact/constraint jump. It is intentionally per-substep: a
+/// long catch-up frame must not roll a body back farther than the one solve
+/// that corrupted it.
+#[derive(Clone)]
+struct DynamicBodySnapshot {
+    handle: RigidBodyHandle,
+    position: Isometry<Real>,
+}
+
+fn body_state_is_finite(body: &RigidBody) -> bool {
+    body.translation().iter().all(|v| v.is_finite())
+        && body.rotation().coords.iter().all(|v| v.is_finite())
+        && body.linvel().iter().all(|v| v.is_finite())
+        && body.angvel().iter().all(|v| v.is_finite())
+}
+
+fn body_needs_recovery(body: &RigidBody, snapshot: &DynamicBodySnapshot) -> bool {
+    !body_state_is_finite(body)
+        || (body.translation() - snapshot.position.translation.vector).norm()
+            > MAX_DYNAMIC_SUBSTEP_DISPLACEMENT
+}
+
+fn restore_invalid_dynamic_bodies(
+    bodies: &mut RigidBodySet,
+    multibody_joints: &mut MultibodyJointSet,
+    snapshots: impl IntoIterator<Item = DynamicBodySnapshot>,
+) -> usize {
+    let mut restored = 0;
+    let mut invalid_articulation_member = None;
+    for snapshot in snapshots {
+        let Some(body) = bodies.get_mut(snapshot.handle) else {
+            continue;
+        };
+        if !body_needs_recovery(body, &snapshot) {
+            continue;
+        }
+        body.set_position(snapshot.position, false);
+        // Multibody links must remain dynamic in Rapier. Sleep the damaged
+        // island rather than changing its motion type, which would turn a
+        // recoverable solver error into a structural multibody panic.
+        body.sleep();
+        invalid_articulation_member.get_or_insert(snapshot.handle);
+        restored += 1;
+    }
+    if let Some(handle) = invalid_articulation_member {
+        // Detach a broken articulation through Rapier's supported API. This
+        // keeps the restored bodies as sleeping dynamics instead of letting
+        // the next contact solve re-enter the known-bad constraint graph.
+        multibody_joints.remove_multibody_articulations(handle, false);
+    }
+    restored
 }
 
 impl PhysicsWorld {
@@ -595,6 +662,20 @@ impl PhysicsWorld {
 
         let mut steps = 0u32;
         while self.accumulator >= PHYSICS_DT && steps < MAX_SUBSTEPS {
+            // Newly activated ragdolls are absent from Rapier's active
+            // islands until *after* their first pipeline step. Snapshot all
+            // dynamics so their first solve is recoverable too.
+            let snapshots: Vec<_> =
+                self.bodies
+                    .iter()
+                    .filter_map(|(handle, body)| {
+                        (body.body_type() == RigidBodyType::Dynamic && body_state_is_finite(body))
+                            .then(|| DynamicBodySnapshot {
+                                handle,
+                                position: *body.position(),
+                            })
+                    })
+                    .collect();
             self.pipeline.step(
                 &self.gravity,
                 &self.integration_parameters,
@@ -621,6 +702,22 @@ impl PhysicsWorld {
                 &(),
             );
             self.accumulator -= PHYSICS_DT;
+            let restored = restore_invalid_dynamic_bodies(
+                &mut self.bodies,
+                &mut self.multibody_joints,
+                snapshots,
+            );
+            if restored > 0 {
+                log::error!(
+                    "physics: restored {restored} dynamic body/bodies after an invalid solve; \
+                     affected bodies were put to sleep at their prior pose"
+                );
+                // Do not spend further catch-up substeps on the same
+                // freshly-invalidated contact island this frame.
+                self.accumulator = 0.0;
+                steps += 1;
+                break;
+            }
             steps += 1;
             // Budget check AFTER the step so at least one substep always
             // runs (a slow frame must still advance the sim). When physics
@@ -1829,6 +1926,61 @@ mod tests {
             // And the world must still be steppable afterwards.
             assert_eq!(w.step(PHYSICS_DT), 1, "recovers on the next good frame");
         }
+    }
+
+    #[test]
+    fn invalid_dynamic_body_reverts_to_its_last_valid_substep_pose() {
+        let mut bodies = RigidBodySet::new();
+        let handle = bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(12.0, 34.0, 56.0))
+                .linvel(Vector::new(7.0, 8.0, 9.0))
+                .angvel(Vector::new(1.0, 2.0, 3.0))
+                .build(),
+        );
+        let body = &bodies[handle];
+        let snapshot = DynamicBodySnapshot {
+            handle,
+            position: *body.position(),
+        };
+
+        bodies
+            .get_mut(handle)
+            .unwrap()
+            .set_linvel(Vector::new(f32::NAN, 0.0, 0.0), false);
+        assert!(!body_state_is_finite(&bodies[handle]));
+
+        assert_eq!(
+            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot]),
+            1
+        );
+        let body = &bodies[handle];
+        assert!(body_state_is_finite(body));
+        assert_eq!(body.translation(), &Vector::new(12.0, 34.0, 56.0));
+        assert_eq!(body.linvel(), &Vector::zeros());
+        assert_eq!(body.angvel(), &Vector::zeros());
+        assert!(body.is_sleeping());
+    }
+
+    #[test]
+    fn finite_but_impossible_dynamic_jump_reverts_to_its_last_valid_pose() {
+        let mut bodies = RigidBodySet::new();
+        let handle = bodies.insert(RigidBodyBuilder::dynamic().build());
+        let snapshot = DynamicBodySnapshot {
+            handle,
+            position: *bodies[handle].position(),
+        };
+        bodies.get_mut(handle).unwrap().set_translation(
+            Vector::new(MAX_DYNAMIC_SUBSTEP_DISPLACEMENT + 1.0, 0.0, 0.0),
+            false,
+        );
+
+        assert_eq!(
+            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot]),
+            1
+        );
+        assert_eq!(bodies[handle].translation(), &Vector::zeros());
+        assert!(bodies[handle].is_sleeping());
     }
 
     /// A falling dynamic body is awake, so the fast path must NOT skip it —

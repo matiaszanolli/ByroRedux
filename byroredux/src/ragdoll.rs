@@ -328,6 +328,12 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
             // World seed = bone global ∘ body-local offset.
             let translation = gt.translation + gt.rotation * (b.local_translation * gt.scale);
             let rotation = gt.rotation * b.local_rotation;
+            log::debug!(
+                "ragdoll seed: actor={actor} bone={} position={translation:?} rotation={rotation:?} scale={} mass={}",
+                b.bone,
+                gt.scale,
+                b.mass,
+            );
             bodies.push(RagdollBodySpec {
                 entity: b.bone,
                 translation,
@@ -406,6 +412,7 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
         build_ragdoll(&mut pw, &spec, &cfg)
     };
     let n = ragdoll.bodies.len();
+    log::debug!("ragdoll handles: actor={actor} bodies={:?} colliders={:?}", ragdoll.bodies, ragdoll.buoyancy.iter().map(|b| b.collider).collect::<Vec<_>>());
 
     // 3. Tag the actor.
     world
@@ -542,6 +549,17 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     let mut live_body_positions: Vec<Vec3> = Vec::new();
     let mut mesh_walk_queue: VecDeque<EntityId> = VecDeque::new();
     for (actor, ragdoll) in rq.iter() {
+        if log::log_enabled!(log::Level::Trace) {
+            if let Some((bone, handle, _)) = ragdoll.bodies.first() {
+                if let Some(body) = pw.bodies.get(*handle) {
+                    log::trace!(
+                        "ragdoll step: actor={actor} root_bone={bone} position={:?} velocity={:?}",
+                        body.translation(),
+                        body.linvel(),
+                    );
+                }
+            }
+        }
         // The seed (activate_ragdoll) composed the body world pose as
         // body = bone ∘ body-local: `body_t = bone_t + bone_r * (local_t *
         // scale)`, `body_r = bone_r * local_r`. Invert that here so the
@@ -700,6 +718,10 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ragdoll_installed_tests.rs"]
+mod installed_tests;
 
 #[cfg(test)]
 mod tests {

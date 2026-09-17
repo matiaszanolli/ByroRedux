@@ -732,9 +732,13 @@ fn advance_runtime_unit(
                 None,
                 None,
             );
-            keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map);
+            let fallback_collider =
+                keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map);
             if let Some(root) = skel_root {
                 parent_part(world, state.placement_root, root);
+                if let Some(fallback) = fallback_collider {
+                    super::install_fallback_ragdoll_template(world, root, fallback);
+                }
             } else {
                 log::debug!(
                     "NPC {:08X}: skeleton '{}' produced no root entity",
@@ -1277,9 +1281,13 @@ fn advance_prebaked_unit(
                 None,
                 None,
             );
-            keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map);
+            let fallback_collider =
+                keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map);
             if let Some(root) = skel_root {
                 parent_part(world, state.placement_root, root);
+                if let Some(collider) = fallback_collider {
+                    super::install_fallback_ragdoll_template(world, root, collider);
+                }
             }
             state.skel_root = skel_root;
             state.skel_map = skel_map;
