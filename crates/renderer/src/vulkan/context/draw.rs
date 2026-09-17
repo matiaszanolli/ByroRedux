@@ -975,6 +975,50 @@ pub(super) fn build_composite_params(
     }
 }
 
+/// Whether the scene contains a radiating local source worth scattering from
+/// the clear-interior dust medium.  Directional lights are excluded: exterior
+/// sky haze remains wholly authored by weather/CELL fog, while point and spot
+/// sources cover candles, bulbs, torches and similar placed fixtures.
+fn has_radiating_local_emitter(lights: &[super::super::scene_buffer::GpuLight]) -> bool {
+    lights.iter().any(|light| {
+        light.color_type[3] < 1.5
+            && light.color_type[..3]
+                .iter()
+                .any(|channel| channel.is_finite() && *channel > 0.0)
+    })
+}
+
+#[cfg(test)]
+mod interior_dust_emitter_tests {
+    use super::*;
+    use crate::vulkan::scene_buffer::GpuLight;
+
+    #[test]
+    fn only_radiating_point_or_spot_lights_enable_clear_interior_dust() {
+        let directional = GpuLight {
+            color_type: [2.0, 2.0, 2.0, 2.0],
+            ..Default::default()
+        };
+        let dark_point = GpuLight {
+            color_type: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        let candle = GpuLight {
+            color_type: [0.9, 0.6, 0.3, 0.0],
+            ..Default::default()
+        };
+        let bulb = GpuLight {
+            color_type: [0.8, 0.9, 1.0, 1.0],
+            ..Default::default()
+        };
+
+        assert!(!has_radiating_local_emitter(&[directional]));
+        assert!(!has_radiating_local_emitter(&[dark_point]));
+        assert!(has_radiating_local_emitter(&[directional, candle]));
+        assert!(has_radiating_local_emitter(&[bulb]));
+    }
+}
+
 #[cfg(test)]
 mod composite_params_tests {
     use super::{build_composite_params, CompositeParamsInputs, SkyParams};
@@ -1837,6 +1881,10 @@ impl VulkanContext {
         );
 
         let lights = frame_lights.as_slice();
+        // Capture this before returning the scratch Vec below: post passes
+        // run after geometry recording, when `frame_lights` has deliberately
+        // been handed back to its persistent allocation.
+        let local_emitters_present = has_radiating_local_emitter(lights);
         let BuildInstancesOutput {
             gpu_instances,
             previous_models,
@@ -1996,6 +2044,7 @@ impl VulkanContext {
                 fog_color,
                 fog_far,
                 fog_extinction_per_meter,
+                local_emitters_present,
                 fog_single_scatter_albedo,
                 fog_coverage,
                 fog_scale_height_meters,

@@ -30,6 +30,12 @@ struct VolumetricsPassInputs<'a> {
     fog_color: [f32; 3],
     fog_far: f32,
     fog_extinction_per_meter: f32,
+    /// Clear interiors normally author no participating medium, but a room
+    /// with real local emitters still contains enough dust for their shafts
+    /// to be visible.  This is deliberately an input rather than a content
+    /// name heuristic: every candle, bulb, torch, and authored point/spot
+    /// light follows the same physical path.
+    local_emitters_present: bool,
     fog_single_scatter_albedo: f32,
     /// #3956 — authored FO4/FO76 altitude profile, or the engine default the
     /// EXAL boundary substituted.
@@ -235,6 +241,7 @@ impl VulkanContext {
         fog_color: [f32; 3],
         fog_far: f32,
         fog_extinction_per_meter: f32,
+        local_emitters_present: bool,
         fog_single_scatter_albedo: f32,
         fog_scale_height_meters: f32,
         fog_coverage: f32,
@@ -264,6 +271,7 @@ impl VulkanContext {
                 fog_color,
                 fog_far,
                 fog_extinction_per_meter,
+                local_emitters_present,
                 fog_single_scatter_albedo,
                 fog_scale_height_meters,
                 fog_coverage,
@@ -506,6 +514,7 @@ impl VulkanContext {
             fog_color,
             fog_far,
             fog_extinction_per_meter,
+            local_emitters_present,
             fog_single_scatter_albedo,
             fog_scale_height_meters,
             fog_coverage,
@@ -519,7 +528,22 @@ impl VulkanContext {
         unsafe {
             if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
                 if let Some(ref mut vol) = self.post.volumetrics {
-                    let scatter_coef = fog_extinction_per_meter.max(0.0)
+                    // In a clear interior the legacy CELL data commonly has
+                    // no fog ramp at all.  A small neutral dust coefficient
+                    // lets existing, authored local emitters scatter through
+                    // the froxel grid; without a medium even a perfectly
+                    // shadowed candle cannot produce a visible light shaft.
+                    // It is below normal gameplay fog density, so it does
+                    // not turn the room into haze or alter exterior weather.
+                    const INTERIOR_DUST_EXTINCTION_PER_METER: f32 = 0.006;
+                    let effective_extinction_per_meter = if !sky_params.is_exterior
+                        && local_emitters_present
+                    {
+                        fog_extinction_per_meter.max(INTERIOR_DUST_EXTINCTION_PER_METER)
+                    } else {
+                        fog_extinction_per_meter.max(0.0)
+                    };
+                    let scatter_coef = effective_extinction_per_meter
                         / super::super::volumetrics::WORLD_UNITS_PER_METER;
                     // #3685 — `ran` feeds the shared skip-clear latch
                     // (`skip_clear_decision`, same shape as the caustic

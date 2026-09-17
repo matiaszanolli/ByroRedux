@@ -1140,6 +1140,17 @@ fn spawn_runtime_head(
     }
 }
 
+/// Resolve the shared humanoid head node used by the classic runtime-hair
+/// assets. `Bip01 Head` is the vanilla FO3/FNV spelling; the alternate name
+/// keeps the mount compatible with later Creation skeleton conventions.
+fn shared_hair_mount(
+    skeleton: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+) -> Option<EntityId> {
+    ["Bip01 Head", "NPC Head [Head]"]
+        .into_iter()
+        .find_map(|name| crate::name_lookup::get_case_insensitive(skeleton, name).copied())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_shared_skeleton_part(
     state: &RuntimeNpcState,
@@ -1174,7 +1185,20 @@ fn spawn_shared_skeleton_part(
         pre_spawn,
     );
     if let Some(root) = root {
-        parent_part(world, state.placement_root, root);
+        // Fallout 3 / New Vegas hair NIFs are ordinary, unskinned meshes.
+        // Their vertices are authored around the head, but their sole
+        // `Scene Root` node is at actor-local origin. Parent it to the shared
+        // head bone rather than the placement root, otherwise the hair
+        // correctly follows the actor in X/Z while rendering at height zero.
+        // Body and head NIFs remain placement-root children: their skin
+        // palettes already resolve against the shared skeleton and would be
+        // transformed twice if mounted below a bone.
+        let mount = if label == "hair" {
+            shared_hair_mount(&state.skel_map).unwrap_or(state.placement_root)
+        } else {
+            state.placement_root
+        };
+        parent_part(world, mount, root);
     }
 }
 
@@ -1505,6 +1529,17 @@ pub(super) fn parent_part(world: &mut World, placement_root: EntityId, part_root
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_hair_mount_resolves_classic_head_case_insensitively() {
+        let mut world = World::new();
+        let head = world.spawn();
+        let skeleton = std::collections::HashMap::from([(
+            std::sync::Arc::<str>::from("bIp01 hEaD"),
+            head,
+        )]);
+        assert_eq!(shared_hair_mount(&skeleton), Some(head));
+    }
 
     #[test]
     fn prebaked_skeleton_uses_inherited_race_and_gender() {

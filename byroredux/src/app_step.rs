@@ -709,6 +709,21 @@ impl App {
                 transform.rotation = rotation;
             }
         }
+        // `restore_bench_camera_pose` runs after the scheduler's transform
+        // propagation.  Rendering reads the local Transform on this path,
+        // but interaction, picking, and the debug camera commands read the
+        // GlobalTransform.  Updating only the former therefore rendered the
+        // requested benchmark pose while activation raycasts still used the
+        // previous frame's camera direction — most visibly on smoke fixtures
+        // whose authored exit lies behind that stale ray.
+        if let Some(mut globals) = self
+            .world
+            .query_mut::<byroredux_core::ecs::GlobalTransform>()
+        {
+            if let Some(global) = globals.get_mut(active) {
+                *global = byroredux_core::ecs::GlobalTransform::new(pose.position, rotation, 1.0);
+            }
+        }
     }
 
     /// Reapply the already-selected pose after the scheduler's character

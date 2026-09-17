@@ -156,11 +156,17 @@ impl VisibilityMask {
     }
 
     /// Compatibility mapping performed once by a legacy importer.
+    ///
+    /// Legacy lights without an authored projection bit are still real local
+    /// emitters. They need structure for room occlusion and dynamic actors for
+    /// visible contact shadows; static props, foliage, glass, and effects stay
+    /// outside that conservative fallback until the source explicitly requests
+    /// a full-scene projection.
     pub const fn for_legacy_projection(casts_full_scene_shadows: bool) -> Self {
         if casts_full_scene_shadows {
             Self::FULL
         } else {
-            Self::ARCHITECTURE
+            Self(Self::ARCHITECTURE.0 | Self::DYNAMIC_ACTOR.0)
         }
     }
 }
@@ -438,7 +444,8 @@ mod tests {
             1.0,
             VisibilityMask::for_legacy_projection(false),
         );
-        assert_eq!(fill.visibility, VisibilityMask::ARCHITECTURE);
+        assert!(fill.visibility.contains(VisibilityMask::ARCHITECTURE));
+        assert!(fill.visibility.contains(VisibilityMask::DYNAMIC_ACTOR));
         assert!(!fill.visibility.contains(VisibilityMask::STATIC_PROP));
 
         let shadowed = Emitter {

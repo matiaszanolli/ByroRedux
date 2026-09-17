@@ -679,11 +679,11 @@ mod gi_light_priority_tests {
         );
     }
 
-    /// Legacy fill lights still need structural occlusion so they cannot leak
-    /// through walls, but only explicitly shadow-projecting sources may trace
-    /// clutter and actors. Dense interiors contain many broad fill proxies;
-    /// promoting them all to full-scene visibility produces stable comb-like
-    /// projections through railings that no amount of extra sampling fixes.
+    /// Legacy fill lights need structural occlusion and dynamic-actor contact
+    /// shadows, while static clutter remains outside their conservative mask.
+    /// Dense interiors contain many broad fill proxies; promoting them all to
+    /// full-scene visibility produces stable comb-like projections through
+    /// railings that no amount of extra sampling fixes.
     #[test]
     fn collect_lights_preserves_authored_local_shadow_classification() {
         let mut world = World::new();
@@ -715,7 +715,7 @@ mod gi_light_priority_tests {
             .expect("fixture light with a legacy projection bit");
         assert_eq!(
             no_projection_bit.params[2],
-            VisibilityMask::ARCHITECTURE.bits() as f32
+            (VisibilityMask::ARCHITECTURE | VisibilityMask::DYNAMIC_ACTOR).bits() as f32
         );
         assert_eq!(no_projection_bit.params[3], 0.0);
         assert_eq!(

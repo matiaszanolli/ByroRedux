@@ -1,6 +1,6 @@
 //! Fly camera — WASD + mouse look against the active camera.
 
-use byroredux_core::ecs::{ActiveCamera, Transform, World};
+use byroredux_core::ecs::{ActiveCamera, GlobalTransform, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 
 use crate::components::InputState;
@@ -126,5 +126,64 @@ pub(crate) fn fly_camera_system(world: &World, dt: f32) {
                 transform.translation += move_world * speed;
             }
         }
+    }
+
+    // The fly-camera system runs after the normal transform-propagation
+    // phase.  Its local Transform therefore cannot wait until next frame to
+    // reach GlobalTransform: interaction, picking, audio, and the debug
+    // camera commands all consume the global pose in this same frame.  The
+    // active fly camera is a root entity, so its global pose is exactly its
+    // local TRS.
+    let local_pose = world
+        .query::<Transform>()
+        .and_then(|transforms| transforms.get(cam_entity).copied());
+    if let (Some(local), Some(mut globals)) = (local_pose, world.query_mut::<GlobalTransform>()) {
+        if let Some(global) = globals.get_mut(cam_entity) {
+            *global = GlobalTransform::new(local.translation, local.rotation, local.scale);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::ecs::{ActiveCamera, GlobalTransform, Transform, World};
+
+    #[test]
+    fn fly_camera_publishes_its_current_pose_to_global_transform() {
+        let mut world = World::new();
+        let camera = world.spawn();
+        world.insert(
+            camera,
+            Transform::from_translation(Vec3::new(10.0, 20.0, 30.0)),
+        );
+        // Deliberately stale, reproducing the post-propagation benchmark
+        // camera state that made a rendered door differ from its interaction
+        // raycast.
+        world.insert(
+            camera,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
+        world.insert_resource(ActiveCamera(camera));
+        world.insert_resource(PlayerMode::FlyCam);
+        world.insert_resource(ActionState::default());
+        world.insert_resource(InputState {
+            mouse_captured: true,
+            yaw: std::f32::consts::FRAC_PI_2,
+            pitch: 0.0,
+            ..Default::default()
+        });
+
+        fly_camera_system(&world, 1.0 / 60.0);
+
+        let local = world.query::<Transform>().unwrap().get(camera).copied().unwrap();
+        let global = world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(camera)
+            .copied()
+            .unwrap();
+        assert_eq!(global.translation, local.translation);
+        assert_eq!(global.rotation, local.rotation);
     }
 }
