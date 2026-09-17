@@ -21,7 +21,7 @@ mapfile -t GAMES < <(cd "$ROOT_DIR/docs/smoke-tests/fixtures" && ls ./*.env | se
     || fail "expected at least the skyrim_se and fnv fixtures, found ${#GAMES[@]}"
 echo "playable-smoke-contracts: fixtures = ${GAMES[*]}"
 
-for name in p0-door-interaction p1-character-traversal p2-melee-core w1-water-traversal; do
+for name in p0-door-interaction p1-character-traversal p2-melee-core p5-save-restart w1-water-traversal; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     for game in "${GAMES[@]}"; do
         set +e
@@ -84,6 +84,16 @@ grep -Fq '"grounded=true"' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
     || fail "P2 no longer gates floor support"
 grep -Fq 'inventory.status' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
     || fail "P2 no longer derives damage from the live loadout"
+grep -Fq 'save load: restored player pose' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
+    || fail "P2 no longer waits for a completed save restore"
+grep -Fq 'cond $restored_target GetDead' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
+    || fail "P2 no longer checks death persistence on the remapped reference"
+grep -Fq '"cooldown_ready=true"' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
+    || fail "P2 no longer waits for exact cooldown readiness"
+grep -Fq 'ragdoll.status $restored_target' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
+    || fail "P2 no longer samples restored corpse physics"
+grep -Fq 'complete=true finite=true' "$ROOT_DIR/docs/smoke-tests/p2-melee-core.sh" \
+    || fail "P2 no longer rejects incomplete or non-finite corpse physics"
 
 # WATAL W1 — the water gate's whole value is the four transitions it pins. A
 # gate that only proved "the player got wet" would pass on the pre-W1 engine,

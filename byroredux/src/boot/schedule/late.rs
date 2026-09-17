@@ -196,7 +196,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::EquipmentSlots>()
             .writes::<byroredux_core::ecs::components::EquippedWeapon>()
             .writes_resource::<crate::combat::PendingDeathReconciliations>()
-            .reads::<byroredux_core::ecs::components::Dead>(),
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .writes::<byroredux_core::animation::AnimationPlayer>()
+            .writes::<byroredux_core::animation::AnimationStack>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

@@ -445,15 +445,19 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
                 pw.remove_body(h.body);
             }
         }
-        if let Some(mut rbq) = world.query_mut::<RigidBodyData>() {
-            for (bone, _) in &bone_handles {
-                rbq.remove(*bone);
-            }
-        }
         if let Some(mut hq) = world.query_mut::<RapierHandles>() {
             for (bone, _) in &bone_handles {
                 hq.remove(*bone);
             }
+        }
+    }
+    // A restored corpse can activate before physics_sync has registered
+    // any followers. Remove their spawn recipes even when no handles exist;
+    // otherwise the next sync creates kinematic bodies overlapping the new
+    // dynamic ragdoll and feeds both representations into the solver.
+    if let Some(mut rbq) = world.query_mut::<RigidBodyData>() {
+        for body in &spec.bodies {
+            rbq.remove(body.entity);
         }
     }
 
@@ -1446,6 +1450,15 @@ mod tests {
     /// is what stops `collect_newcomers` recreating the follower).
     #[test]
     fn activation_tears_down_keyframed_bone_bodies() {
+        assert_activation_replaces_keyframed_bones(true);
+    }
+
+    #[test]
+    fn activation_before_first_physics_sync_prevents_duplicate_followers() {
+        assert_activation_replaces_keyframed_bones(false);
+    }
+
+    fn assert_activation_replaces_keyframed_bones(register_followers_first: bool) {
         use byroredux_core::ecs::components::MotionType;
         use byroredux_physics::physics_sync_system;
 
@@ -1484,18 +1497,20 @@ mod tests {
             bones.push(e);
         }
         // Phase 1 of the sim registers the keyframed follower bodies.
-        physics_sync_system(&world, PHYSICS_DT);
-        for &b in &bones {
-            assert!(
-                world.query::<RapierHandles>().unwrap().get(b).is_some(),
-                "each bone must register a kinematic follower body before activation",
+        if register_followers_first {
+            physics_sync_system(&world, PHYSICS_DT);
+            for &b in &bones {
+                assert!(
+                    world.query::<RapierHandles>().unwrap().get(b).is_some(),
+                    "each bone must register a kinematic follower body before activation",
+                );
+            }
+            assert_eq!(
+                world.resource::<PhysicsWorld>().body_count(),
+                3,
+                "3 keyframed follower bodies registered before activation",
             );
         }
-        assert_eq!(
-            world.resource::<PhysicsWorld>().body_count(),
-            3,
-            "3 keyframed follower bodies registered before activation",
-        );
 
         let template = RagdollTemplate {
             bodies: bones

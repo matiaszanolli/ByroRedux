@@ -178,6 +178,16 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         }
     }
     if !attack_ready {
+        if attack_pressed {
+            let cooldown = aggressor.and_then(|actor| {
+                world
+                    .query::<MeleeState>()
+                    .and_then(|q| q.get(actor).map(|state| state.cooldown_remaining))
+            });
+            log::debug!(
+                "combat.input: attack edge rejected player={aggressor:?} character={in_character_mode} cooldown={cooldown:?} dt={dt}"
+            );
+        }
         // Deliberately NOT `record_miss`: every miss reason below describes a
         // swing that happened and failed to connect. A press outside
         // character mode (or during cooldown) is not a swing at all, so
@@ -537,6 +547,11 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     // reason: a corpse needs neither.
     remove_component::<crate::components::AmbientPackageRuntime>(world, actor);
     remove_component::<byroredux_scripting::EvaluatePackageRequest>(world, actor);
+    // NPC playback can be owned by the placed actor, with root_entity
+    // targeting the skeleton. Removing only the skeleton's player leaves
+    // that controller sampling over the corpse every frame.
+    remove_component::<AnimationPlayer>(world, actor);
+    remove_component::<byroredux_core::animation::AnimationStack>(world, actor);
     let Some(skeleton_root) = world
         .get::<HavokAnimationTarget>(actor)
         .map(|target| target.skeleton_root)
@@ -544,6 +559,7 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
         return "; no ragdoll target".to_owned();
     };
     remove_component::<AnimationPlayer>(world, skeleton_root);
+    remove_component::<byroredux_core::animation::AnimationStack>(world, skeleton_root);
     match crate::ragdoll::activate_ragdoll(world, skeleton_root) {
         Ok(body_count) => format!("; ragdoll activated ({body_count} bodies)"),
         Err(error) => format!("; ragdoll unavailable: {error}"),
@@ -570,6 +586,14 @@ pub(crate) fn reconcile_dead_actor_runtime_state(world: &World) -> usize {
         .query::<Dead>()
         .map(|dead| dead.iter().map(|(entity, _)| entity).collect())
         .unwrap_or_default();
+    if !actors.is_empty() {
+        // Save deltas just changed local placements, and fresh NIF bones
+        // may still carry model-space globals. Seed physics only after the
+        // full hierarchy reflects those placements. Once built, a dynamic
+        // ragdoll owns its pose; a later ordinary propagation cannot repair
+        // a body accidentally created at the world origin.
+        byroredux_core::ecs::make_transform_propagation_system()(world, 0.0);
+    }
     for actor in actors.iter().copied() {
         reconcile_dead_actor(world, actor);
     }
@@ -1073,6 +1097,7 @@ mod tests {
         world.register::<FollowState>();
         world.register::<AmbientPackageRuntime>();
         world.register::<EvaluatePackageRequest>();
+        world.register::<AnimationPlayer>();
         let actor = world.spawn();
         world.insert(actor, Dead);
         world.insert(
@@ -1103,6 +1128,7 @@ mod tests {
             },
         );
         world.insert(actor, EvaluatePackageRequest);
+        world.insert(actor, AnimationPlayer::new(0));
 
         assert_eq!(reconcile_dead_actor_runtime_state(&world), 1);
         assert!(world.get::<FollowBehavior>(actor).is_none());
@@ -1119,6 +1145,95 @@ mod tests {
             "a corpse must not retain a pending package re-evaluation request"
         );
         assert!(world.get::<Dead>(actor).is_some());
+        assert!(world.get::<AnimationPlayer>(actor).is_none());
+    }
+
+    #[test]
+    fn restored_corpse_seeds_physics_from_saved_placement_not_stale_globals() {
+        use crate::ragdoll::{RagdollActive, RagdollTemplate, RagdollTemplateBody};
+        use byroredux_core::ecs::{Children, GlobalTransform, Parent, Transform};
+        use byroredux_core::math::{Quat, Vec3};
+        use byroredux_physics::{PhysicsWorld, Ragdoll};
+
+        let mut world = World::new();
+        world.register::<Dead>();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<Parent>();
+        world.register::<Children>();
+        world.register::<HavokAnimationTarget>();
+        world.register::<RagdollTemplate>();
+        world.register::<Ragdoll>();
+        world.register::<RagdollActive>();
+        world.insert_resource(PhysicsWorld::new());
+        world.register::<AnimationPlayer>();
+        world.register::<byroredux_core::animation::AnimationStack>();
+        let actor = world.spawn();
+        let skeleton = world.spawn();
+        for owner in [actor, skeleton] {
+            let mut player = AnimationPlayer::new(0);
+            player.root_entity = Some(skeleton);
+            world.insert(owner, player);
+            let mut stack = byroredux_core::animation::AnimationStack::new();
+            stack.root_entity = Some(skeleton);
+            stack.play(0, 0.0);
+            world.insert(owner, stack);
+        }
+        let placement = Transform::new(
+            Vec3::new(1200.0, 300.0, -700.0),
+            Quat::from_rotation_y(0.7),
+            1.5,
+        );
+        let local = Vec3::new(10.0, 50.0, 0.0);
+        world.insert(actor, placement);
+        world.insert(actor, Dead);
+        world.insert(actor, Children(vec![skeleton]));
+        world.insert(
+            actor,
+            HavokAnimationTarget {
+                skeleton_root: skeleton,
+                consumed_idle_serial: 0,
+            },
+        );
+        world.insert(skeleton, Parent(actor));
+        world.insert(skeleton, Transform::new(local, Quat::IDENTITY, 1.0));
+        // A freshly rebuilt hierarchy / just-applied save delta has not
+        // reached PostUpdate propagation yet.
+        world.insert(actor, GlobalTransform::IDENTITY);
+        world.insert(skeleton, GlobalTransform::IDENTITY);
+        world.insert(
+            skeleton,
+            RagdollTemplate {
+                bodies: vec![RagdollTemplateBody {
+                    bone: skeleton,
+                    local_translation: Vec3::ZERO,
+                    local_rotation: Quat::IDENTITY,
+                    shape: byroredux_core::ecs::components::CollisionShape::Ball { radius: 5.0 },
+                    mass: 1.0,
+                    linear_damping: 0.05,
+                    angular_damping: 0.05,
+                    friction: 0.5,
+                    restitution: 0.0,
+                }],
+                constraints: vec![],
+            },
+        );
+        assert_eq!(reconcile_dead_actor_runtime_state(&world), 1);
+        let handle = world.get::<Ragdoll>(skeleton).unwrap().bodies[0].1;
+        for owner in [actor, skeleton] {
+            assert!(world.get::<AnimationPlayer>(owner).is_none());
+            assert!(world
+                .get::<byroredux_core::animation::AnimationStack>(owner)
+                .is_none());
+        }
+        let physics = world.resource::<PhysicsWorld>();
+        let (position, rotation) = byroredux_physics::ragdoll::body_pose(&physics, handle).unwrap();
+        let expected = placement.translation + placement.rotation * (local * placement.scale);
+        assert!(
+            (position - expected).length() < 0.001,
+            "{position:?} != {expected:?}"
+        );
+        assert!(rotation.abs_diff_eq(placement.rotation, 0.0001));
     }
 
     // ── attack edge is gated on PlayerMode::Character (#3033) ───────────

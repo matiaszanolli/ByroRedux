@@ -781,13 +781,39 @@ impl App {
             .world
             .try_resource::<crate::save_io::PendingSaveLoadSlot>()
             .is_some_and(|slot| slot.snapshot.is_some());
-        if save_load_pending && (self.interior_transition.is_some() || self.loading_screen.active()) {
+        if !save_load_pending {
+            // A cancelled queue must not leave an unconsumable cover. A
+            // completed drain, however, still owns its destination frame.
+            if self.loading_screen.owns_save()
+                && (self.loading_screen.waiting_for_presentation()
+                    || self.loading_screen.take_presented_save())
+            {
+                self.loading_screen.cancel();
+            }
+            return;
+        }
+        if self.interior_transition.is_some()
+            || (self.loading_screen.active() && !self.loading_screen.owns_save())
+        {
             return;
         }
         let Some(ctx) = self.renderer.as_mut() else {
             return;
         };
+        if self.loading_screen.owns_save() {
+            if !self.loading_screen.take_presented_save() {
+                return;
+            }
+        } else if self.loading_screen.begin_save(&self.world, ctx) {
+            // Keep the snapshot in its last-writer-wins slot until the
+            // cover really presents. No destructive load work this tick.
+            self.release_world_input_for_ui();
+            return;
+        }
         crate::save_io::execute_pending_save_loads(&mut self.world, ctx, &mut self.streaming);
+        // The synchronous drain has returned, including any early failure.
+        // Show the resulting/current world before releasing input again.
+        self.loading_screen.destination_ready();
     }
 
     /// Drain player save/load input after `Scheduler::run` has joined all
@@ -869,7 +895,7 @@ impl App {
     ///   caching means that ownership needs to move to `App` instead, so
     ///   teardown no longer implies "provider goes away."
     pub(crate) fn step_cell_transition(&mut self) {
-        if self.loading_screen.waiting_for_presentation() {
+        if self.loading_screen.waiting_for_presentation() || self.loading_screen.owns_save() {
             return;
         }
         let Some(ctx) = self.renderer.as_mut() else {

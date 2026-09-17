@@ -18,6 +18,13 @@ enum Phase {
     DestinationReady,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+enum Owner {
+    #[default]
+    Door,
+    Save,
+}
+
 struct Artwork {
     key: String,
     texture: u32,
@@ -27,6 +34,7 @@ struct Artwork {
 #[derive(Default)]
 pub(crate) struct LoadingScreen {
     phase: Phase,
+    owner: Owner,
     pending: Option<PendingCellTransition>,
     // One retained original image, reused on repeated transitions. This
     // avoids allocating a new non-reusable bindless slot at every door.
@@ -81,16 +89,49 @@ impl LoadingScreen {
         ctx: &mut VulkanContext,
         pending: PendingCellTransition,
     ) -> Result<(), PendingCellTransition> {
+        if !self.begin_artwork(world, ctx, Owner::Door) {
+            return Err(pending);
+        }
+        self.pending = Some(pending);
+        Ok(())
+    }
+
+    pub(crate) fn begin_save(
+        &mut self,
+        world: &byroredux_core::ecs::World,
+        ctx: &mut VulkanContext,
+    ) -> bool {
+        self.begin_artwork(world, ctx, Owner::Save)
+    }
+
+    pub(crate) fn owns_save(&self) -> bool {
+        self.active() && self.owner == Owner::Save
+    }
+
+    pub(crate) fn take_presented_save(&mut self) -> bool {
+        if self.owner != Owner::Save || self.phase != Phase::Presented {
+            return false;
+        }
+        self.phase = Phase::Loading;
+        true
+    }
+
+    fn begin_artwork(
+        &mut self,
+        world: &byroredux_core::ecs::World,
+        ctx: &mut VulkanContext,
+        owner: Owner,
+    ) -> bool {
         // Own an Arc, not an ECS read guard, across archive I/O and GPU work.
         // In particular do not nest InputState access under the index lock.
         let Some(index) = world
             .try_resource::<LoadedCellIndex>()
             .map(|loaded| std::sync::Arc::clone(&loaded.0))
         else {
-            return Err(pending);
+            return false;
         };
         let Some(screen) = unconditional_artwork(&index) else {
-            return Err(pending);
+            return false;
         };
         let args = crate::cli_args::effective_args();
         // CLI archive/load-order identity is included because identical
@@ -100,10 +141,10 @@ impl LoadingScreen {
             let provider = crate::asset_provider::build_texture_provider(&args);
             let Some(bytes) = provider.extract(&screen.icon) else {
                 log::warn!("loading.screen: missing original artwork {}", screen.icon);
-                return Err(pending);
+                return false;
             };
             let Some(allocator) = ctx.allocator.as_ref() else {
-                return Err(pending);
+                return false;
             };
             let upload = GpuUploadCtx {
                 device: &ctx.device,
@@ -120,7 +161,7 @@ impl LoadingScreen {
                 Ok(texture) => texture,
                 Err(error) => {
                     log::warn!("loading.screen: artwork upload failed: {error:#}");
-                    return Err(pending);
+                    return false;
                 }
             };
             if let Some(old) = self.artwork.take() {
@@ -135,20 +176,21 @@ impl LoadingScreen {
             art.tip.clone_from(&screen.description);
         }
         log::info!(
-            "loading.screen: begin LSCR={:08X} art={}",
+            "loading.screen: begin LSCR={:08X} art={} owner={owner:?}",
             screen.form_id,
             screen.icon
         );
         self.restore_capture = world
             .try_resource::<crate::components::InputState>()
             .is_some_and(|input| input.mouse_captured);
-        self.pending = Some(pending);
+        self.pending = None;
+        self.owner = owner;
         self.phase = Phase::AwaitingPresentation;
-        Ok(())
+        true
     }
 
     pub(crate) fn take_presented_transition(&mut self) -> Option<PendingCellTransition> {
-        if self.phase != Phase::Presented {
+        if self.owner != Owner::Door || self.phase != Phase::Presented {
             return None;
         }
         self.phase = Phase::Loading;
@@ -234,6 +276,42 @@ mod tests {
         screen.destination_ready();
         screen.frame_presented(true);
         assert!(!screen.active());
+    }
+
+    #[test]
+    fn save_cover_has_a_separate_once_only_presentation_gate() {
+        let mut screen = LoadingScreen {
+            phase: Phase::AwaitingPresentation,
+            owner: Owner::Save,
+            ..Default::default()
+        };
+        assert!(screen.owns_save());
+        assert!(!screen.take_presented_save());
+        screen.frame_presented(false);
+        assert!(screen.take_presented_transition().is_none());
+        assert_eq!(screen.phase, Phase::Presented);
+        assert!(screen.take_presented_save());
+        assert!(!screen.take_presented_save());
+        screen.frame_presented(true);
+        assert!(screen.owns_save());
+        // Either successful synchronous drain or early failure returns to
+        // a world frame; neither may strand input behind the loading cover.
+        screen.destination_ready();
+        screen.frame_presented(false);
+        assert!(screen.owns_save());
+        screen.frame_presented(true);
+        assert!(!screen.owns_save());
+    }
+
+    #[test]
+    fn save_drain_cannot_consume_a_door_cover() {
+        let mut screen = LoadingScreen {
+            phase: Phase::Presented,
+            ..Default::default()
+        };
+        assert!(!screen.owns_save());
+        assert!(!screen.take_presented_save());
+        assert_eq!(screen.phase, Phase::Presented);
     }
 
     #[test]

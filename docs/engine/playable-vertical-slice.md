@@ -367,6 +367,128 @@ end at bone bodies without canonical placement-root ownership; the ragdoll
 template lives on the skeleton root; and `HitEvent` has cleanup but no
 production producer or damage consumer.
 
+**Live recheck (2026-09-16):** the current Skyrim gate passed the blocked
+swing and seven 8-damage hits against the 50-Health Draugr, but initially
+crashed during process-restart restore in Rapier's multi-SAP broad phase
+(`proxy.aabb.maxs ≈ 2.68e11`; retained save/logs:
+`/tmp/byro-p2-melee-core.7n1lJf`). Corpse reconciliation can activate a ragdoll
+before the fresh bones have their first physics sync. Activation removed
+kinematic `RigidBodyData` only from bones already carrying `RapierHandles`,
+so the next sync created overlapping follower bodies alongside the dynamic
+ragdoll. Activation now removes every ragdolled bone's follower recipe,
+including not-yet-registered bones. The regression failed before the change;
+17 ragdoll tests and all 2,207 engine tests then passed (34 ignored).
+
+The retained crash save subsequently ran 120 benchmark frames and exited 0.
+The full Skyrim P2 rerun also passed (exit 0), including the original combat,
+floor, ragdoll and loadout gates and a new explicit check that the same killed
+FormID remains `GetDead = 1` after restart. The gate now waits for the save
+drain before comparing restored state, so unchanged default inventory cannot
+masquerade as a successful load. This does not close animation/audio polish,
+live loot mutation, corpse-pose fidelity, debug validation, or P2 as a whole.
+
+The FNV recheck remains **FAIL**, now at a different point than the historical
+bystander hit: the blocked swing and 19 damaging hits reached the intended
+GSTrudy reference (`entity 1136`, Health 240 -> 88), with floor support intact.
+The twentieth damaging swing was acknowledged by `input.press attack` after
+`combat.approach` reported `physics_synced=true`, but `combat.status` stayed
+at `attacks=20 hits=20 kills=0 cooldown=0.000 blocking=false` (including the
+initial blocked hit) until the 90-second gate timeout. The engine remained
+responsive and the player grounded. Artifacts:
+`/tmp/byro-p2-melee-core.8tjgKv`. No forced hit or retry was substituted;
+the input/action-consumption failure still needs diagnosis. The later
+read-only attempt to inspect player death state arrived after cleanup and
+connected to nothing, so it supplies no evidence about the cause.
+
+Two diagnostic FNV reruns then **passed the full P2 gate** (exit 0): one
+blocked hit, 30 damaging hits at 8 damage, GSTrudy death/ragdoll, save/process
+restart, restored loadout, and `GetDead = 1` on the same placed FormID. Artifacts
+are `/tmp/byro-p2-melee-core.8b2Tgs` and `/tmp/byro-p2-melee-core.GyvZhv`.
+The second uses the new exact `cooldown_ready` status instead of treating
+three-decimal `cooldown=0.000` as proof of readiness. Two regression tests
+pin sub-millisecond cooldown and missing-state behavior; all 2,209 engine
+tests passed (34 ignored). Queued/refreshed/cancelled key-pulse and rejected
+combat-edge debug logs now distinguish the failure boundaries, and smoke
+failure cleanup captures bounded read-only state before terminating.
+Neither run reproduced the missing edge, so its original cause remains
+**unproven**; the readiness correction and green reruns are not evidence that
+the intermittent input failure is conclusively fixed.
+
+Follow-up corpse inspection exposes a separate **blocking physics failure**
+that P2's death/loadout assertions do not cover. Saved local placements were
+applied before fresh global transforms reached the bones; a regression
+initially seeded a restored body's physics pose at the origin instead of its
+saved placement. Restore reconciliation now propagates the hierarchy before
+activation. It also removes actor-owned and skeleton-owned animation players
+and stacks, with matching scheduler declarations and regression assertions.
+The 23 combat tests pass, but these are not proof of live corpse stability.
+The retained FNV save from `/tmp/byro-p2-melee-core.GyvZhv/saves` still fails:
+an isolated release restore on 2026-09-17 UTC panicked in Rapier multi-SAP
+with body bounds around 1e11. Logs are retained in
+`/tmp/byro-corpse-placement.WzTUOw/restore-panic.stderr`. Earlier inspection found
+million-unit bone coordinates despite correct actor-root placement. The
+animation cleanup therefore does **not** resolve the articulation instability;
+corpse pose fidelity and stable post-restore physics remain unverified.
+
+Isolation on the same retained FNV save narrows this to ragdoll contact
+simulation, independently of the saloon scene and ECS update loop. Rebuilding
+the exact activation spec in a fresh `PhysicsWorld` with zero gravity and no
+scene colliders survived 600 fixed 1/60-second ticks, although maximum bone
+displacement grew to 412 units by tick 540 (not a stability pass). Replaying
+with normal gravity and only one static cuboid floor, top at Y=3456, instead
+jumped to **69,650,440 units of displacement at tick 75**. No other actors,
+animation sampling, save overlay, or per-frame ECS writeback ran in this
+isolated replay. This rules out needing saloon mesh contacts or ongoing
+animation as the trigger, but does not yet distinguish imported joint data,
+mass/inertia, or multibody solver behavior. Temporary activation instrumentation
+was removed; its source and the two logs remain under
+`/tmp/byro-corpse-placement.WzTUOw/` as `flat-floor-probe.rs`,
+`isolation-zero-gravity.stderr`, and `isolation-flat-floor.stderr`.
+
+The next isolated comparison kept the full authored articulation but raised
+solver iterations from 4 to 16: all 600 ticks remained bounded, with maximum
+displacement settling near 120 units. Diagnostic alternatives (removing joint
+limits, replacing authored masses with equal masses, or replacing shapes with
+balls) also avoided divergence, but were not adopted because they discard
+authored behavior. `build_ragdoll` now requests 12 **additional body-local
+solver iterations**, applying the extra work to interacting ragdoll islands
+without raising the world's default budget or altering masses/limits/shapes.
+A unit test pins that scope and preservation contract; all 171 physics tests
+and 2,210 engine tests passed (34 engine tests ignored).
+
+Two fresh release FNV restores with this change kept the inspected pelvis and
+thigh near the saved corpse: pelvis approximately `(-328.3, 3469.0, 172.1)`,
+thigh `(-324.3, 3467.3, 177.6)`, `GetDead = 1`. Repeated inspection in the first
+run remained bounded; the viewed `solver-budget-corpse.png` shows a fallen
+corpse. Logs, diagnostic variant source, and screenshot are retained beside
+the earlier artifacts (`isolation-variants.stderr`, `variant-probe.rs`,
+`solver-budget-first.stderr`, `solver-budget-repeat.stderr`). Temporary probes
+were removed from runtime code. This resolves the observed FNV divergence in
+these runs, not exact saved bone-pose restoration, long-soak stability,
+all-game ragdoll behavior, or performance under many simultaneous corpses.
+The retained Skyrim SE crash save also completed a 120-frame release replay
+with this change (exit 0, one reconciled dead actor, restored player pose).
+That is a crash-regression check, not a visual or bone-coordinate stability
+check for Skyrim; the benchmark reported about 51 ms in systems per frame,
+without a matched pre-change run to attribute the cost.
+
+P2 now checks the missing property directly: the read-only
+`ragdoll.status <actor_id>` command resolves the actor's skeleton and samples
+every Rapier body, reporting completeness, finite poses/velocities, maximum
+distance from actor placement, and maximum linear speed. Six unit tests cover
+normal placement-relative measurement, missing/empty bodies, million-unit
+finite displacement, non-finite placement, and bad arguments. The smoke gate
+requires twenty consecutive complete/finite samples over at least ten seconds,
+all within each humanoid fixture's 512-unit bound; it never retries an invalid
+sample into success. Both FNV and Skyrim SE **passed the strengthened full
+combat/save/process-restart gate**. FNV artifacts are retained at
+`/tmp/byro-p2-melee-core.i8yLRN`: 18/18 live bodies throughout, maximum measured
+distance 81.906 BU initially, settling near 58.6 BU. Skyrim's passing run used
+normal automatic artifact cleanup. All 2,216 engine tests passed (34 ignored),
+as did shell syntax and smoke-contract checks. This is a bounded short-window
+physics regression gate, not proof of exact saved poses, sleeping, collision
+fidelity, or long-term stability.
+
 ### P3 — Inventory and native game UI
 
 Goal: the player can understand and change game state without diagnostics.
@@ -868,6 +990,25 @@ Goal: a small piece of shipping content can be followed and completed.
 ### P5 — Persistence and session hardening
 
 Goal: the complete slice survives ordinary play behavior.
+
+**Process-restart baseline (2026-09-16):**
+[`p5-save-restart.sh`](../smoke-tests/p5-save-restart.sh) passed on FNV and
+Skyrim SE using isolated saves and debug port 19876. Each run requires actual
+bound-input displacement from startup, writes a validated save, terminates
+the engine process, launches a fresh process with `--load 1`, checks the
+restored grounded body against the saved pose, and saves again. FNV's original
+loading cover presents before restore and dismisses afterward; Skyrim uses
+the existing no-artwork fallback. The embedded NIF animation-player hierarchy
+fix removed the previously observed save-validation blocker without weakening
+validation. Logs and snapshots are retained in `/tmp/byro-p5-save-restart.gPuzHI`
+(FNV) and `/tmp/byro-p5-save-restart.4M7liQ` (Skyrim SE).
+FNV passed again with the final ordered loading-lifecycle assertion in
+`/tmp/byro-p5-save-restart.RXMPkN`; shell syntax and missing-data/SKIP contract
+checks also passed for both fixtures.
+
+This closes only the pose/process-restart baseline, **not P5**: the native
+F5/F9 event path, inventory/equipment/quest/world-state assertions, graceful
+quit, debug Vulkan validation, and the 30-minute soak still need live gates.
 
 - Extend change-form save coverage only for mutable state introduced by
   P0–P4; keep caches, bindings, targeting, GPU handles, and transient events

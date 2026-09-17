@@ -440,7 +440,7 @@ This:
 
 ### Original-game loading screens during scene transitions
 
-Requested 2026-09-16; **legacy door-transition artwork/tips implemented;
+Requested 2026-09-16; **legacy door/save-load artwork/tips implemented;
 full original menu integration remains incomplete**. Display the active game's
 own loading presentation while changing scenes, using installed game assets
 rather than shipping copies or substituting an unrelated generic screen.
@@ -478,12 +478,17 @@ asset rendering, or transition lifecycle correctness.
 The first live presentation backend is `byroredux/src/loading_screen.rs`.
 For legacy games it retains one valid, unconditional LSCR image from the
 active texture archives and its original tip. A loading frame must actually
-present before the queued door transition can tear down the scene. The
+present before a queued door transition or live save load can tear down the scene. The
 cover remains through a destination frame with resident geometry and drained
 texture uploads. Gameplay input is cleared, simulation dt is zero while
 the debug drain continues, existing menus are preserved, and capture resumes
 only if it was held before loading and no focus-loss event intervened.
 Unsupported/missing artwork falls back to the existing transition path.
+Save covers have a separate presentation gate: the snapshot stays in the
+last-writer-wins queue until presentation, and door drains cannot consume
+that gate. Save loads defer until an active door transition finishes. Queue
+cancellation releases the cover; a synchronous load failure returns through
+the same final-frame dismissal path rather than leaving input captured.
 
 Live FNV captures at `/tmp/byro-loading-screen.N5ngpN/loading-fixed.png` and
 `after-loading.png` show original magazine artwork (`LSCR 0002186A`) and its
@@ -497,9 +502,34 @@ for both loading-screen lifecycles (begin -> presented -> transition applied
 return. Ordinary streaming crossings did not produce loading covers. The
 smoke-contract checker and shell syntax checks also passed.
 
+The save-cover extension passed all 2,204 engine unit tests (34 ignored),
+including separate door/save ownership and once-only presentation tests.
+The first live FNV attempt in `/tmp/byro-save-cover.X3PEI6/` could not reach a
+successful save reload: existing hierarchy validation refused to write the
+saloon snapshot (9 inconsistent parent/child links), then the exterior
+snapshot (19). Validation was not bypassed. Door presentation/dismissal still
+worked in that run.
+
+The follow-up traced the failing links to embedded NIF animation players:
+the loader inserted `Children` ownership for unload cleanup but omitted the
+reciprocal `Parent`. `spawn_embedded_animation_player` now installs both
+edges and retains authored playback phase/root targeting. Two regression
+tests cover rooted/rootless ownership, including the real save validator;
+all **2,206 engine tests passed** (34 ignored). With validation unchanged,
+two consecutive saloon save/reload cycles succeeded, each applying 531 deltas
+across 462 matched FormIDs and restoring the grounded character at
+`(45.00, 3524.02, 741.00)`. `engine-fixed.stderr` records both ordered save
+cover lifecycles; `save-loading.png` shows the original artwork/tip and
+`after-save-load.png` shows the restored door prompt with no cover. These
+are release-mode FNV checks, not cross-game or long-soak proof. A subsequent
+exterior save/reload also completed: 2,738 deltas across 2,634 matched
+FormIDs, nine resident cells, and the same ordered cover lifecycle. The
+exterior save no longer reports the 19 hierarchy errors. Failed-drain
+recovery remains a live-verification gap.
+
 This backend does **not** yet execute `loading_menu.xml`, reproduce its
-NIF animation/fonts, rotate/contextually select screens, cover initial boot
-or save loading, or render Skyrim+ loading models. Only FNV has live artwork
+NIF animation/fonts, rotate/contextually select screens, cover initial boot,
+or render Skyrim+ loading models. Only FNV has live artwork
 verification; Oblivion/FO3 share the code path but still need installed-data
 visual checks. The existing synchronous preparation can still stall the
 event loop while the static cover remains visible. These are remaining

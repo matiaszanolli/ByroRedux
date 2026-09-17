@@ -41,6 +41,7 @@ mod env_health;
 mod gameplay;
 mod physics;
 mod quest;
+mod ragdoll_status;
 mod scene;
 // #3445 — widened to `pub(crate)` so `studio_host::snapshot` (outside
 // `commands`) can reuse `resolve_entity_name`'s canonical `Name ->
@@ -138,6 +139,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MatDumpCommand);
     registry.register(MatSetCommand);
     registry.register(RagdollCommand);
+    registry.register(ragdoll_status::RagdollStatusCommand);
     registry.register(PhysCensusCommand);
     registry.register(PhysStatsCommand);
     registry.register(StudioGamesCommand);

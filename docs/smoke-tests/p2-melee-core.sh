@@ -19,7 +19,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
 smoke_load_fixture p2-melee-core "$@"
 smoke_require_fixture_fields \
     P2_CELL P2_PROBE_CELL_LINE P2_PROBE_NPC_LINE P2_TARGET_NAME \
-    P2_TARGET_REFR_LINE P2_TARGET_HEALTH P2_BENCH_FRAMES
+    P2_TARGET_REFR_LINE P2_TARGET_HEALTH P2_BENCH_FRAMES P2_RAGDOLL_MAX_DISTANCE
 
 ROOT_DIR="$SMOKE_ROOT_DIR"
 ENGINE_BIN="$ROOT_DIR/target/release/byroredux"
@@ -30,7 +30,7 @@ TIMEOUT="${BYROREDUX_SMOKE_TIMEOUT:-360}"
 
 LOG_DIR="$(mktemp -d /tmp/byro-p2-melee-core.XXXXXX)"
 engine_pid=""
-keep_artifacts=0
+keep_artifacts="${BYROREDUX_SMOKE_KEEP_ARTIFACTS:-0}"
 cleanup() {
     if [[ -n "$engine_pid" ]]; then
         kill -TERM "$engine_pid" 2>/dev/null || true
@@ -38,6 +38,8 @@ cleanup() {
     fi
     if (( keep_artifacts == 0 )); then
         rm -rf "$LOG_DIR"
+    else
+        echo "smoke[p2-melee-core]: artifacts retained at $LOG_DIR"
     fi
 }
 trap cleanup EXIT INT TERM
@@ -48,6 +50,18 @@ trap cleanup EXIT INT TERM
 current_stderr="$LOG_DIR/engine.stderr"
 fail() {
     keep_artifacts=1
+    if [[ -n "$engine_pid" ]] && kill -0 "$engine_pid" 2>/dev/null; then
+        local player_id
+        player_id="$(grep -oE 'player=[0-9]+' "$LOG_DIR/player.status" 2>/dev/null | head -1 | cut -d= -f2 || true)"
+        timeout 5 env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" \
+            >"$LOG_DIR/failure-state.log" 2>&1 <<EOF || true
+player.status
+combat.status
+interaction.status
+cond ${player_id:-0} GetDead
+.quit
+EOF
+    fi
     echo "smoke[p2-melee-core]: FAIL -- $*"
     echo "smoke[p2-melee-core]: artifacts retained at $LOG_DIR"
     tail -60 "$current_stderr" 2>/dev/null || true
@@ -142,7 +156,7 @@ launch_held_engine() {
     local stderr_log="$1"
     shift
     current_stderr="$stderr_log"
-    env BYRO_DEBUG_PORT="$PORT" RUST_LOG="${BYROREDUX_SMOKE_LOG:-error}" \
+    env BYRO_DEBUG_PORT="$PORT" RUST_LOG="${BYROREDUX_SMOKE_LOG:-error},byroredux::save_io=info" \
         BYROREDUX_SAVE_DIR="$save_dir" \
         "$ENGINE_BIN" \
         "${SMOKE_ENGINE_ARGS[@]}" \
@@ -219,7 +233,7 @@ grep -Fq "damage=0.0" "$status_log" \
     || fail "a blocked hit must deal zero damage"
 grep -Fq "health_before=$P2_TARGET_HEALTH health_after=$P2_TARGET_HEALTH" "$status_log" \
     || fail "a blocked hit must not change the target's Health"
-wait_for_pattern "combat.status" "cooldown=0.000" "$status_log" "blocked swing cooldown elapsed"
+wait_for_pattern "combat.status" "cooldown_ready=true" "$status_log" "blocked swing cooldown elapsed"
 # There is no console command to release a hold early — wait for the 40-frame
 # budget to lapse on its own so the real damage sequence below swings
 # unblocked. Without this, a still-active hold silently blocks swing 1 too
@@ -286,7 +300,7 @@ input.press attack" "$command_log" || fail "could not queue swing $hit"
     grep -Fq "health_after=$expected_after" "$status_log" \
         || fail "swing $hit produced the wrong Health result"
     previous_health="$expected_after"
-    wait_for_pattern "combat.status" "cooldown=0.000" "$status_log" "swing $hit cooldown elapsed"
+    wait_for_pattern "combat.status" "cooldown_ready=true" "$status_log" "swing $hit cooldown elapsed"
 done
 
 total_hits=$((expected_hits + blocked_swing_count))
@@ -349,6 +363,15 @@ wait "$engine_pid" 2>/dev/null || true
 engine_pid=""
 
 launch_held_engine "$reloaded_stderr" --load "$P2_SAVE_SLOT"
+# A default starting inventory can match the snapshot without any restore.
+# Require the drain to finish before resolving fresh entity ids or comparing
+# state; the saved death marker below must also survive, not just defaults.
+deadline=$(( $(date +%s) + TIMEOUT ))
+until grep -Fq 'save load: restored player pose' "$reloaded_stderr"; do
+    kill -0 "$engine_pid" 2>/dev/null || fail "engine exited during save restore"
+    (( $(date +%s) < deadline )) || fail "save restore did not complete"
+    sleep 0.25
+done
 grep -Fq "startup --load" "$reloaded_stderr" \
     || echo "smoke[p2-melee-core]: NOTE -- startup --load produced no log line at RUST_LOG=${BYROREDUX_SMOKE_LOG:-error}"
 echo "smoke[p2-melee-core]: PASS -- engine relaunched from slot $P2_SAVE_SLOT"
@@ -360,5 +383,43 @@ wait_for_pattern "inventory.status" "$loadout_before" "$inventory_reloaded_log" 
 grep -Fq "$weapon_before" "$inventory_reloaded_log" \
     || fail "the equipped weapon did not survive save -> exit -> reload (was '$weapon_before')"
 echo "smoke[p2-melee-core]: PASS -- gate 5: $loadout_before + equipped weapon restored in a fresh process"
+
+debug_commands "entities Inventory" "$inventory_log" || fail "could not resolve restored actors"
+mapfile -t candidates < <(
+    sed -nE "s/^ *Entity ([0-9]+) \"$P2_TARGET_NAME\".*/\1/p" "$inventory_log"
+)
+restored_target=""
+for candidate in "${candidates[@]}"; do
+    debug_commands "mesh.info $candidate" "$mesh_log" || continue
+    if grep -Fq "$P2_TARGET_REFR_LINE" "$mesh_log"; then
+        restored_target="$candidate"
+        break
+    fi
+done
+[[ -n "$restored_target" ]] || fail "killed reference absent after restore"
+wait_for_pattern "cond $restored_target GetDead" "on entity $restored_target = 1" \
+    "$LOG_DIR/death.restored" "the same killed FormID remains dead after process restart"
+
+# A death marker alone previously passed while the restored bones flew to
+# millions of units. Sample every physical body, not an un-driven root bone,
+# over ten seconds. Fail on any bad sample; never retry until it looks healthy.
+for sample in $(seq 1 20); do
+    corpse_log="$LOG_DIR/corpse.restored.$sample"
+    debug_commands "ragdoll.status $restored_target" "$corpse_log" \
+        || fail "could not inspect restored corpse physics"
+    grep -Fq 'complete=true finite=true' "$corpse_log" \
+        || fail "restored ragdoll has missing bodies or non-finite physics"
+    if [[ -n "${P2_RAGDOLL_BODIES:-}" ]]; then
+        grep -Fq "bodies=$P2_RAGDOLL_BODIES live=$P2_RAGDOLL_BODIES " "$corpse_log" \
+            || fail "restored ragdoll body count changed"
+    fi
+    distance="$(sed -nE 's/.*max_distance=([0-9]+[.][0-9]+).*/\1/p' "$corpse_log")"
+    [[ -n "$distance" ]] || fail "corpse distance metric absent"
+    awk -v distance="$distance" -v bound="$P2_RAGDOLL_MAX_DISTANCE" \
+        'BEGIN { exit !(distance >= 0 && distance <= bound) }' \
+        || fail "restored corpse exceeded fixture distance bound ($distance > $P2_RAGDOLL_MAX_DISTANCE)"
+    sleep 0.5
+done
+echo "smoke[p2-melee-core]: PASS -- restored corpse bodies stayed finite and within $P2_RAGDOLL_MAX_DISTANCE units over 20 samples"
 
 echo "smoke[p2-melee-core]: PASS"

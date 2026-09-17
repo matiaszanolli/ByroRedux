@@ -109,10 +109,11 @@ impl ConsoleCommand for CombatStatusCommand {
                     .get(player)
                     .copied()
             });
+        let cooldown_ready = melee.is_some_and(|melee| melee.cooldown_remaining <= 0.0);
         let melee = melee.unwrap_or_default();
         let mut lines = vec!["Combat status:".to_string()];
         lines.push(format!(
-            "  cooldown={:.3} blocking={} attacks={} hits={} kills={}",
+            "  cooldown={:.3} blocking={} attacks={} hits={} kills={} cooldown_ready={cooldown_ready}",
             melee.cooldown_remaining,
             melee.blocking,
             state.attacks_started,
@@ -139,6 +140,41 @@ impl ConsoleCommand for CombatStatusCommand {
             lines.push("  last_target=none".to_owned());
         }
         CommandOutput::lines(lines)
+    }
+}
+
+#[cfg(test)]
+mod combat_status_tests {
+    use super::*;
+
+    #[test]
+    fn rounded_zero_is_not_reported_as_cooldown_ready() {
+        let mut world = World::new();
+        world.register::<crate::combat::MeleeState>();
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(
+            player,
+            crate::combat::MeleeState {
+                cooldown_remaining: 0.0004,
+                ..Default::default()
+            },
+        );
+        let output = CombatStatusCommand.execute(&world, "").lines.join("\n");
+        assert!(output.contains("cooldown=0.000"));
+        assert!(output.contains("cooldown_ready=false"));
+        world.insert(player, crate::combat::MeleeState::default());
+        let output = CombatStatusCommand.execute(&world, "").lines.join("\n");
+        assert!(output.contains("cooldown_ready=true"));
+    }
+
+    #[test]
+    fn missing_player_melee_state_is_not_ready() {
+        let output = CombatStatusCommand
+            .execute(&World::new(), "")
+            .lines
+            .join("\n");
+        assert!(output.contains("cooldown_ready=false"));
     }
 }
 

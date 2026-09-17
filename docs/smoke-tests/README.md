@@ -17,13 +17,15 @@ matrix below on a runner carrying both `byroredux-rt` and
 
 ## Playable-slice gates are game-parameterised (#3039)
 
-`p0-door-interaction.sh`, `p1-character-traversal.sh`, `p2-melee-core.sh` and
+`p0-door-interaction.sh`, `p1-character-traversal.sh`, `p2-melee-core.sh`,
+`p5-save-restart.sh` and
 `w1-water-traversal.sh` take the title as their first argument (or
 `BYROREDUX_SMOKE_GAME`), defaulting to `skyrim_se`:
 
 ```bash
 docs/smoke-tests/p0-door-interaction.sh          # Skyrim SE (default)
 docs/smoke-tests/p0-door-interaction.sh fnv      # Fallout: New Vegas
+docs/smoke-tests/p5-save-restart.sh fnv          # isolated save/process restart
 ```
 
 Every game-specific value — data dir, archives, cell, camera pose, destination
@@ -31,6 +33,19 @@ tokens, the exterior route, the frozen melee reference, the water route — live
 in `fixtures/<game>.env`. Adding a title costs one fixture file, not four
 script copies. An unknown game exits `2` with a diagnostic, never `77`, so a
 misconfigured runner can't look like "data absent".
+
+`p5-save-restart.sh` is a persistence **baseline**, not P5 closure. It builds
+the current release binaries, uses an isolated temporary save directory and
+port (default 19876), moves the character through bound input, saves, stops
+the process, restarts with `--load 1`, and requires the saved body pose within
+one unit on each axis, grounding, and a successful subsequent save. At least
+10 horizontal units of movement must precede the save so default startup
+placement cannot masquerade as restoration. FNV additionally waits for the
+original loading cover to dismiss. Logs/saves are retained under the printed
+`/tmp/byro-p5-save-restart.*` directory on success and failure. This does not
+prove F5/F9 OS-event delivery, inventory/quest persistence, clean Vulkan debug
+validation, graceful shutdown, or the 30-minute soak; process termination
+here deliberately uses SIGTERM after the save command reports completion.
 
 A fixture may also decline a gate. `w1-water-traversal.sh` SKIPs (77) any title
 whose fixture declares no `W1_*` route, and declares per profile what its water
@@ -50,6 +65,10 @@ cargo run -p byroredux-plugin --example probe_combat_fixture -- <ESM> <CELL>
 ```
 
 ### FNV status (measured 2026-08-27, `cc666a48`)
+
+This table is historical. Current traversal/combat rechecks, including
+intermittent failures, are recorded in
+[the playable-slice plan](../engine/playable-vertical-slice.md).
 
 FNV is the project's reference title and had no playable-slice gate at all
 before #3039. The gates are landed **honestly red** where the engine is red —
@@ -75,6 +94,21 @@ Note the FNV probe also shows `derive_npc_actor_values` returning 21 values
 with real Health (GSTrudy 240.0, GSSettlerCM 220.0), and live combat applying
 `220.0 → 212.0`. #2986's premise (FO3/FNV actors get no `ActorValues`) does not
 reproduce at this commit — re-verify it before working from it.
+
+For intermittent P2 input failures, set `BYROREDUX_SMOKE_KEEP_ARTIFACTS=1`
+and `BYROREDUX_SMOKE_LOG=error,byroredux::interaction=debug,byroredux::combat=debug`.
+The logs distinguish queued/cancelled/refreshed synthetic key pulses from
+combat edges rejected by mode or cooldown. Failed runs make a bounded,
+read-only attempt to capture player/combat/interaction/death state before
+cleanup. The gate uses exact `cooldown_ready=true`, not the rounded
+`cooldown=0.000` display, and never retries a missing attack automatically.
+
+After restart, P2 samples `ragdoll.status <restored_actor>` twenty times over
+at least ten wall-clock seconds. Every sample must contain all expected
+physical bodies, finite poses/velocities, and a maximum distance from actor
+placement within the fixture's 512-unit bound. This catches the previous
+million-unit corpse explosion that `GetDead = 1` alone missed. It is not an
+exact-pose comparison or a long soak. Logs are `corpse.restored.<sample>`.
 
 ## Procedure shape
 

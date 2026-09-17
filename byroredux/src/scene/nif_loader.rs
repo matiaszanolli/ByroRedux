@@ -487,8 +487,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     };
 
     // Phases 1 + 2 — the node hierarchy and its parent links (#3858).
-    let (node_entities, node_by_name, rest_pose_by_name) =
-        spawn_nif_nodes(world, imported, is_spt);
+    let (node_entities, node_by_name, rest_pose_by_name) = spawn_nif_nodes(world, imported, is_spt);
 
     // Phase 2.5 — particle emitters (#3858).
     spawn_nif_particle_emitters(world, ctx, imported, tex_provider, &node_entities);
@@ -645,24 +644,14 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             }
         }
 
-        let player_entity = world.spawn();
         // #3345 — start at the clip's authored phase offset.
         let phase = world
             .resource::<AnimationClipRegistry>()
             .get(clip_handle)
             .map(|c| c.phase)
             .unwrap_or(0.0);
-        let mut player = AnimationPlayer::new(clip_handle).with_phase(phase);
-        if let Some(root) = root {
-            player.root_entity = Some(root);
-            // #3764 (SAFE-2026-08-30-D8-01) — parent the player entity into
-            // the NIF's own subtree so cell unload's despawn walk reaches it.
-            // Pre-fix this entity had no `Parent` link at all and outlived
-            // every cell that spawned it — a second, entity-level leak on
-            // the same path as the clip-registration one above.
-            add_child(world, root, player_entity);
-        }
-        world.insert(player_entity, player);
+        let player = AnimationPlayer::new(clip_handle).with_phase(phase);
+        spawn_embedded_animation_player(world, player, root);
         log::info!(
             "Embedded animation clip registered from '{}' ({:.2}s, {} float + {} color + {} bool channels) → handle {}",
             label,
@@ -686,6 +675,85 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         root,
         node_by_name,
     )
+}
+
+/// Keep animation ownership in the same bidirectional hierarchy as NIF
+/// geometry. A Children-only edge reaches the unload walk but violates the
+/// save contract (and used to prevent saving every scene with these clips).
+fn spawn_embedded_animation_player(
+    world: &mut World,
+    mut player: AnimationPlayer,
+    root: Option<EntityId>,
+) -> EntityId {
+    let entity = world.spawn();
+    player.root_entity = root;
+    if let Some(root) = root {
+        world.insert(entity, Parent(root));
+        add_child(world, root, entity);
+    }
+    world.insert(entity, player);
+    entity
+}
+
+#[cfg(test)]
+mod embedded_player_hierarchy_tests {
+    use super::*;
+    use byroredux_core::ecs::Children;
+
+    #[test]
+    fn embedded_players_have_reciprocal_ownership_and_pass_save_validation() {
+        let mut world = World::new();
+        world.register::<Parent>();
+        world.register::<Children>();
+        world.register::<AnimationPlayer>();
+        let root = world.spawn();
+        let first = spawn_embedded_animation_player(
+            &mut world,
+            AnimationPlayer::new(0).with_phase(0.25),
+            Some(root),
+        );
+        let second =
+            spawn_embedded_animation_player(&mut world, AnimationPlayer::new(0), Some(root));
+        assert_eq!(world.query::<Parent>().unwrap().get(first).unwrap().0, root);
+        assert_eq!(
+            world.query::<Parent>().unwrap().get(second).unwrap().0,
+            root
+        );
+        assert_eq!(
+            world.query::<Children>().unwrap().get(root).unwrap().0,
+            vec![first, second]
+        );
+        let players = world.query::<AnimationPlayer>().unwrap();
+        let player = players.get(first).unwrap();
+        assert_eq!(player.root_entity, Some(root));
+        assert_eq!(player.local_time, 0.25);
+        drop(players);
+        // No registry is installed in this ownership-only fixture. Clip
+        // registration remains the loader's responsibility; validate the
+        // same hierarchy checks that refused real FNV saves.
+        let issues = byroredux_save::validate::validate_world(&world);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn rootless_embedded_player_does_not_invent_a_parent() {
+        let mut world = World::new();
+        world.register::<Parent>();
+        world.register::<Children>();
+        world.register::<AnimationPlayer>();
+        let entity = spawn_embedded_animation_player(&mut world, AnimationPlayer::new(0), None);
+        assert!(world.query::<Parent>().unwrap().get(entity).is_none());
+        assert!(world.query::<Children>().unwrap().get(entity).is_none());
+        assert_eq!(
+            world
+                .query::<AnimationPlayer>()
+                .unwrap()
+                .get(entity)
+                .unwrap()
+                .root_entity,
+            None
+        );
+    }
 }
 
 #[cfg(test)]

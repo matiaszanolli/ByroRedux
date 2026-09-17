@@ -587,6 +587,7 @@ pub(crate) fn queue_debug_action_press(world: &World, action_name: &str) -> Resu
         .try_resource_mut::<InjectedKeyPulse>()
         .ok_or_else(|| "InjectedKeyPulse resource is not installed".to_string())?;
     pulse.key = Some(key);
+    log::debug!("input.pulse: queued {key:?} for {}", action.label());
     // Machine-readable tokens are part of the playable-slice smoke contract.
     // Keep the prose-free `action=... binding=...` shape stable so a harmless
     // wording change cannot silently make the P0/P1/P2 gates unusable again.
@@ -650,6 +651,9 @@ fn debug_action(name: &str) -> Option<InputAction> {
 /// Cancel all synthetic physical input when a modal frontend takes focus.
 pub(crate) fn clear_debug_input(world: &World) {
     if let Some(mut pulse) = world.try_resource_mut::<InjectedKeyPulse>() {
+        if let Some(key) = pulse.key {
+            log::debug!("input.pulse: cancelled {key:?} by input focus transfer");
+        }
         pulse.key = None;
     }
     if let Some(mut hold) = world.try_resource_mut::<InjectedKeyHold>() {
@@ -831,6 +835,13 @@ pub(crate) fn refresh_action_state(world: &World) {
         return;
     };
     state.refresh(next_held);
+    if let Some(key) = injected_key {
+        log::debug!(
+            "input.pulse: refreshed {key:?} held={:#06x} pressed={:#06x}",
+            state.held,
+            state.pressed,
+        );
+    }
 }
 
 fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
@@ -908,19 +919,27 @@ fn corpse_collider_actors(
                 .collect()
         })
         .unwrap_or_default();
-    let Some(handles) = world.query::<byroredux_physics::RapierHandles>() else {
-        return Default::default();
-    };
+    let mut collider_entities: rustc_hash::FxHashSet<_> = world
+        .query::<byroredux_physics::RapierHandles>()
+        .map(|handles| handles.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    // Active ragdolls replace their kinematic RapierHandles rows. Their
+    // dynamic bodies are owned by the articulation, not physics_sync.
+    if let Some(ragdolls) = world.query::<byroredux_physics::Ragdoll>() {
+        for (_, ragdoll) in ragdolls.iter() {
+            collider_entities.extend(ragdoll.bodies.iter().map(|(bone, _, _)| *bone));
+        }
+    }
     let mut actors: rustc_hash::FxHashSet<_> = owners
         .into_iter()
-        .filter(|(body, _)| handles.get(*body).is_some())
+        .filter(|(body, _)| collider_entities.contains(body))
         .map(|(_, actor)| actor)
         .collect();
     actors.extend(
         candidates
             .iter()
             .filter(|(entity, kind)| {
-                **kind == InteractionKind::Corpse && handles.get(**entity).is_some()
+                **kind == InteractionKind::Corpse && collider_entities.contains(*entity)
             })
             .map(|(entity, _)| *entity),
     );
@@ -939,15 +958,34 @@ fn ray_hit_actor(world: &World, origin: Vec3, direction: Vec3) -> Option<(Entity
     let hit = world
         .try_resource::<byroredux_physics::PhysicsWorld>()?
         .cast_ray(origin, direction, INTERACTION_REACH_BU, excluded)?;
-    let body = hit.body?;
-    let collider = world
-        .query::<byroredux_physics::RapierHandles>()?
-        .iter()
-        .find_map(|(entity, handles)| (handles.body == body).then_some(entity))?;
+    let collider = ray_hit_entity(world, &hit)?;
     let actor = world
         .get::<byroredux_physics::ActorColliderOwner>(collider)
         .map_or(collider, |owner| owner.0);
     Some((actor, hit.distance))
+}
+
+fn ray_hit_entity(world: &World, hit: &byroredux_physics::PhysicsRayHit) -> Option<EntityId> {
+    let body = hit.body?;
+    let ordinary = world
+        .query::<byroredux_physics::RapierHandles>()
+        .and_then(|handles| {
+            handles
+                .iter()
+                .find_map(|(entity, handles)| (handles.body == body).then_some(entity))
+        });
+    ordinary.or_else(|| {
+        world
+            .query::<byroredux_physics::Ragdoll>()
+            .and_then(|ragdolls| {
+                ragdolls.iter().find_map(|(_, ragdoll)| {
+                    ragdoll
+                        .bodies
+                        .iter()
+                        .find_map(|(bone, handle, _)| (*handle == body).then_some(*bone))
+                })
+            })
+    })
 }
 
 fn target_has_line_of_sight(
@@ -988,17 +1026,7 @@ fn target_has_line_of_sight(
     let Some(hit) = hit else {
         return true;
     };
-    let Some(hit_body) = hit.body else {
-        return false;
-    };
-    let Some(hit_owner) = world
-        .query::<byroredux_physics::RapierHandles>()
-        .and_then(|handles| {
-            handles
-                .iter()
-                .find_map(|(entity, handles)| (handles.body == hit_body).then_some(entity))
-        })
-    else {
+    let Some(hit_owner) = ray_hit_entity(world, &hit) else {
         return false;
     };
 
@@ -1646,6 +1674,7 @@ mod tests {
         // A separate ragdoll body can move completely off the actor-root bound.
         let body = spawn_static_collider(&mut world, Vec3::new(0.0, 0.0, -80.0), None);
         world.insert(body, byroredux_physics::ActorColliderOwner(actor));
+        prepare_test_ragdoll(&mut world, actor, body);
         byroredux_physics::physics_sync_system(&world, 0.0);
         assert!(
             select_interaction_target(&world).is_none(),
@@ -1666,6 +1695,13 @@ mod tests {
         );
         crate::combat::combat_damage_system(&world, 0.0);
         assert!(world.get::<Dead>(actor).is_some());
+        assert!(world.get::<byroredux_physics::Ragdoll>(body).is_some());
+        assert!(world
+            .get::<byroredux_physics::RapierHandles>(body)
+            .is_none());
+        world
+            .resource_mut::<byroredux_physics::PhysicsWorld>()
+            .update_query_pipeline();
         world
             .resource_mut::<InputState>()
             .keys_held
@@ -1704,6 +1740,11 @@ mod tests {
         world.insert(body, byroredux_physics::ActorColliderOwner(actor));
         spawn_static_collider(&mut world, Vec3::new(0.0, 0.0, -40.0), None);
         byroredux_physics::physics_sync_system(&world, 0.0);
+        prepare_test_ragdoll(&mut world, actor, body);
+        crate::ragdoll::activate_ragdoll(&world, body).unwrap();
+        world
+            .resource_mut::<byroredux_physics::PhysicsWorld>()
+            .update_query_pipeline();
         assert!(select_interaction_target(&world).is_none());
     }
 
@@ -2026,6 +2067,38 @@ mod tests {
             camera,
         ));
         camera
+    }
+
+    fn prepare_test_ragdoll(world: &mut World, actor: EntityId, bone: EntityId) {
+        use crate::ragdoll::{RagdollActive, RagdollTemplate, RagdollTemplateBody};
+        world.register::<crate::components::HavokAnimationTarget>();
+        world.register::<RagdollTemplate>();
+        world.register::<RagdollActive>();
+        world.register::<byroredux_physics::Ragdoll>();
+        world.insert(
+            actor,
+            crate::components::HavokAnimationTarget {
+                skeleton_root: bone,
+                consumed_idle_serial: 0,
+            },
+        );
+        world.insert(
+            bone,
+            RagdollTemplate {
+                bodies: vec![RagdollTemplateBody {
+                    bone,
+                    local_translation: Vec3::ZERO,
+                    local_rotation: Quat::IDENTITY,
+                    shape: CollisionShape::Ball { radius: 5.0 },
+                    mass: 1.0,
+                    linear_damping: 0.0,
+                    angular_damping: 0.0,
+                    friction: 0.5,
+                    restitution: 0.0,
+                }],
+                constraints: vec![],
+            },
+        );
     }
 
     fn spawn_static_collider(

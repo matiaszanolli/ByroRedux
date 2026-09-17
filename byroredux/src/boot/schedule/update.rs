@@ -221,7 +221,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<crate::components::HavokAnimationTarget>()
             .writes::<byroredux_core::ecs::components::ActorValues>()
             .writes::<byroredux_core::ecs::components::Dead>()
-            .writes::<byroredux_core::animation::AnimationPlayer>(),
+            .writes::<byroredux_core::animation::AnimationPlayer>()
+            .writes::<byroredux_core::animation::AnimationStack>(),
     );
     // #2654 — quest fragments queue their `<Ref>.Activate()` targets rather
     // than inserting `ActivateEvent` directly, because

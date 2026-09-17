@@ -277,6 +277,13 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
             b.angular_damping.max(0.0) + cfg.ragdoll_extra_angular_damping.max(0.0);
         let body = RigidBodyBuilder::dynamic()
             .position(iso_from_trs(b.translation, b.rotation))
+            // Authored humanoid mass ratios, joint limits, and simultaneous
+            // floor contacts need more than the default four iterations:
+            // the FNV restore fixture diverged on a single flat floor at
+            // tick 75. Sixteen iterations kept the unchanged articulation
+            // bounded. Scope the extra work to ragdoll contact/joint islands
+            // rather than increasing the budget for the whole world.
+            .additional_solver_iterations(12)
             .linear_damping(effective_linear_damping)
             // "less floppy than Havok" lever — extra angular damping on top
             // of the authored value (inert at the 0.0 default). See
@@ -816,6 +823,44 @@ mod tests {
                     "ragdoll limb must carry the same skin register_newcomers applies"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn ragdoll_solver_budget_is_local_and_preserves_authored_mass_and_limits() {
+        let mut pw = PhysicsWorld::new();
+        let global_iterations = pw.integration_parameters.num_solver_iterations;
+        let unrelated = pw.bodies.insert(RigidBodyBuilder::dynamic().build());
+        let mut heavy = ball_body(1, 0.0, 100.0);
+        heavy.mass = 40.0;
+        let spec = RagdollSpec {
+            bodies: vec![heavy, ball_body(2, 50.0, 100.0)],
+            constraints: vec![loose_ragdoll(0, 1)],
+        };
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        assert_eq!(
+            pw.integration_parameters.num_solver_iterations,
+            global_iterations
+        );
+        assert_eq!(pw.bodies[unrelated].additional_solver_iterations(), 0);
+        for (i, (_, handle, _)) in rag.bodies.iter().enumerate() {
+            let body = &pw.bodies[*handle];
+            assert_eq!(body.additional_solver_iterations(), 12);
+            let mass: f32 = body
+                .colliders()
+                .iter()
+                .map(|h| pw.colliders[*h].mass())
+                .sum();
+            assert!((mass - spec.bodies[i].mass).abs() < 0.001);
+        }
+        let (mb, link) = pw.multibody_joints.get(rag.joints[0]).unwrap();
+        let actual = &mb.link(link).unwrap().joint.data;
+        let expected = build_joint(&spec.constraints[0].joint, false);
+        assert_eq!(actual.limit_axes, expected.limit_axes);
+        for axis in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ] {
+            let actual = actual.limits(axis).unwrap();
+            let expected = expected.limits(axis).unwrap();
+            assert_eq!([actual.min, actual.max], [expected.min, expected.max]);
         }
     }
 
