@@ -1,6 +1,8 @@
 //! `Stage::Early` registrations (#3855, split from `boot.rs`).
 
-use byroredux_core::ecs::{Access, ActiveCamera, Scheduler, Stage, TotalTime, Transform};
+use byroredux_core::ecs::{
+    Access, ActiveCamera, GlobalTransform, Scheduler, Stage, TotalTime, Transform,
+};
 
 use crate::components::InputState;
 use crate::interaction::{ActionBindings, ActionState, InjectedKeyHold, InjectedKeyPulse};
@@ -59,7 +61,13 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::ActorValues>()
             .writes::<byroredux_core::ecs::components::Dead>()
             .reads::<Transform>()
-            .writes::<Transform>(),
+            .writes::<Transform>()
+            // `fly_camera_system` publishes its pose to `GlobalTransform`
+            // immediately (see systems/camera.rs) instead of waiting for
+            // next frame's propagation pass, since same-frame consumers
+            // (interaction, picking, audio, debug camera commands) read
+            // the global pose before propagation runs again.
+            .writes::<GlobalTransform>(),
     );
     // #3111 — weather writes WindField while the player controller samples it
     // for water waves. Keep weather in the same stage but serialize it after

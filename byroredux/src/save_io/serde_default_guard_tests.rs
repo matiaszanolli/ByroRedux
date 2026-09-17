@@ -616,7 +616,19 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // HardcoreMode is a newly saved resource, not a shape change to an
     // existing column. The registry fingerprint rejects earlier snapshots
     // so their missing mode flag cannot retain an outgoing live selection.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xfab2_629a_f945_56e2;
+    //
+    // `3ce970a5a` — refreshed WITHOUT a major bump. `VisibilityMask` is a
+    // tuple struct (`struct VisibilityMask(u8)`), so this file-scoped
+    // guard's brace-matching falls through the struct's own `;` terminator
+    // onto the following `impl VisibilityMask` block and sweeps its method
+    // bodies in too (the same mechanism that picks up `AnimatedTextureFlip`'s
+    // method additions above). `for_legacy_projection`'s no-full-scene-shadow
+    // arm now returns `ARCHITECTURE | DYNAMIC_ACTOR` instead of bare
+    // `ARCHITECTURE`, so legacy local emitters cast dynamic-actor contact
+    // shadows. `VisibilityMask`'s own shape is still a plain `u8` newtype —
+    // no field was added, removed, or retyped — so a save's serialized
+    // bytes for this type are unchanged.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xf99d_4226_ce83_8b62;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,
