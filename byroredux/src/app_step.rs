@@ -358,7 +358,7 @@ impl App {
             .world
             .try_resource::<byroredux_core::ecs::debug_load::PendingDebugLoadSlot>()
             .is_some_and(|slot| !slot.0.is_empty());
-        if debug_load_pending && self.interior_transition.is_some() {
+        if debug_load_pending && (self.interior_transition.is_some() || self.loading_screen.active()) {
             return;
         }
         let Some(ctx) = self.renderer.as_mut() else {
@@ -392,6 +392,7 @@ impl App {
     /// choke point so future transition sources cannot accidentally drop a
     /// live cursor without running its cleanup path.
     pub(crate) fn cancel_interior_cell_apply(&mut self) {
+        self.loading_screen.cancel();
         let Some(apply) = self.interior_transition.take() else {
             return;
         };
@@ -780,7 +781,7 @@ impl App {
             .world
             .try_resource::<crate::save_io::PendingSaveLoadSlot>()
             .is_some_and(|slot| slot.snapshot.is_some());
-        if save_load_pending && self.interior_transition.is_some() {
+        if save_load_pending && (self.interior_transition.is_some() || self.loading_screen.active()) {
             return;
         }
         let Some(ctx) = self.renderer.as_mut() else {
@@ -799,7 +800,7 @@ impl App {
         // (which advances the job) runs later in the same tick.
         self.world
             .insert_resource(cell_loader::CellTransitionInFlight(
-                self.interior_transition.is_some(),
+                self.interior_transition.is_some() || self.loading_screen.active(),
             ));
         for (action, output) in crate::save_io::execute_pending_player_save_actions(&self.world) {
             crate::surface_save_load_output(self.debug_ui.as_mut(), action.context(), output);
@@ -868,10 +869,16 @@ impl App {
     ///   caching means that ownership needs to move to `App` instead, so
     ///   teardown no longer implies "provider goes away."
     pub(crate) fn step_cell_transition(&mut self) {
+        if self.loading_screen.waiting_for_presentation() {
+            return;
+        }
         let Some(ctx) = self.renderer.as_mut() else {
             return;
         };
-        let pending = if self.interior_transition.is_some() {
+        let pending = if let Some(presented) = self.loading_screen.take_presented_transition() {
+            // A newer request wins even while the cover frame was pending.
+            cell_loader::take_pending_transition(&self.world).unwrap_or(presented)
+        } else if self.interior_transition.is_some() {
             match cell_loader::take_pending_transition(&self.world) {
                 Some(replacement) => {
                     // A newer transition supersedes the unfinished one.
@@ -899,6 +906,7 @@ impl App {
                             dest_label,
                             cam_pos,
                         } => {
+                            self.loading_screen.destination_ready();
                             log::info!(
                                 "Cell transition applied: → {} at world ({:.1}, {:.1}, {:.1})",
                                 dest_label,
@@ -926,6 +934,20 @@ impl App {
             pending
         };
 
+        let pending = if !self.loading_screen.active() {
+            match self.loading_screen.begin(&self.world, ctx, pending) {
+                Ok(()) => {
+                    self.release_world_input_for_ui();
+                    return;
+                }
+                // Missing/unsupported original assets cannot block a door.
+                Err(pending) => pending,
+            }
+        } else {
+            pending
+        };
+
+        self.loading_screen.loading_started();
         let dest_label = cell_loader::log_transition_header(&pending);
         let args: Vec<String> = crate::cli_args::effective_args();
 
@@ -970,6 +992,7 @@ impl App {
                 ) {
                     Ok(apply) => self.interior_transition = Some(apply),
                     Err(e) => {
+                        self.loading_screen.cancel();
                         log::error!("Cell transition to {} FAILED: {}", dest_label, e);
                     }
                 }
@@ -1099,6 +1122,8 @@ impl App {
                         // here). See `ground_character_body_at`.
                         crate::systems::ground_character_body_at(&self.world, dest_pos);
 
+                        self.loading_screen.destination_ready();
+
                         log::info!(
                             "Cell transition applied: → {} at world ({:.1}, {:.1}, {:.1})",
                             dest_label,
@@ -1109,6 +1134,7 @@ impl App {
                         ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
                     }
                     Err(e) => {
+                        self.loading_screen.cancel();
                         log::error!(
                             "Cell transition to {} FAILED at exterior context build: {:#}",
                             dest_label,

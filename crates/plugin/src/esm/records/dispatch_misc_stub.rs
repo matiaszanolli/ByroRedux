@@ -5,8 +5,8 @@
 //! Oblivion-unique base records (BSGN/CLOT/APPA/SGST/SLGM — the last four
 //! dual-target for `cells.statics`). SOUN graduated to a dedicated
 //! `parse_soun` (FNAM sound-path decode, EX-16 item 1 / #2372) and GRAS to
-//! `parse_gras` (EXAL ground-cover Phase 5 / #3807); the other 29 stay on
-//! the minimal-stub path.
+//! `parse_gras` (EXAL ground-cover Phase 5 / #3807). LSCR now retains
+//! game-authored presentation and selection data through `parse_lscr`.
 //! APPA now dispatches through `dispatch_items`, retaining its legacy map
 //! while decoding inventory economics and apparatus quality per game.
 
@@ -18,6 +18,7 @@ pub(super) fn dispatch_misc_stub_group(
     label: &[u8; 4],
     reader: &mut EsmReader,
     end: usize,
+    game: GameKind,
     statics: &mut HashMap<u32, StaticObject>,
     index: &mut EsmIndex,
 ) -> Result<()> {
@@ -127,11 +128,18 @@ pub(super) fn dispatch_misc_stub_group(
                 .imagespace_modifiers
                 .insert(fid, parse_imad(fid, subs));
         })?,
-        b"LSCR" => extract_records(reader, end, b"LSCR", &mut |fid, subs| {
-            index
-                .load_screens
-                .insert(fid, parse_minimal_esm_record(fid, subs));
-        })?,
+        b"LSCR" => {
+            super::grup_walker::extract_records_with_flags(
+                reader,
+                end,
+                b"LSCR",
+                &mut |fid, flags, subs| {
+                    index
+                        .load_screens
+                        .insert(fid, parse_lscr(fid, flags, subs, game, &remap));
+                },
+            )?;
+        }
         b"LSCT" => extract_records(reader, end, b"LSCT", &mut |fid, subs| {
             index
                 .load_screen_types

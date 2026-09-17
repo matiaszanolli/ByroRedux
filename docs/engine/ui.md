@@ -1,8 +1,9 @@
 # UI System — Scaleform / SWF via Ruffle
 
-Bethesda's Creation Engine uses Scaleform GFx (Adobe Flash / SWF) for
-every menu — main menu, pause menu, HUD, container UI, dialogue boxes,
-even the Pip-Boy interface in Fallout. Skyrim ships ~34 SWF menus;
+Skyrim and Fallout 4 use Scaleform GFx (Adobe Flash / SWF) for menus
+including the HUD, dialogue, and Fallout 4's Pip-Boy. This is not the
+menu format used by every supported game: Fallout: New Vegas uses legacy
+XML tiles and NIF assets for its loading menu. Skyrim ships ~34 SWF menus;
 Fallout 4 ships even more.
 
 ByroRedux integrates [**Ruffle**](https://github.com/ruffle-rs/ruffle)
@@ -436,6 +437,93 @@ This:
 > `_global.gfx` stub work below.
 
 ## What's not yet wired up
+
+### Original-game loading screens during scene transitions
+
+Requested 2026-09-16; **legacy door-transition artwork/tips implemented;
+full original menu integration remains incomplete**. Display the active game's
+own loading presentation while changing scenes, using installed game assets
+rather than shipping copies or substituting an unrelated generic screen.
+
+Installed FNV evidence: `Fallout - Misc.bsa` contains
+`menus\loading_menu.xml` (22,111 bytes). It declares a `LoadingMenu` with
+image slides, tip text, `Interface\Loading\loading_text_bar.dds`, and
+`Interface\Loading\LoadingAnim01.NIF`. `FalloutNV.esm` record
+`GoodspringsLoadScreen01` (`0011317C`) supplies `ICON`
+`interface\loading\loading_billboard09.dds`, a `DESC` tip, and an `LNAM`
+location restriction. `LSCR` previously used `MinimalEsmRecord`,
+discarding these fields; `UiManager` still only plays SWF. Loading the XML through
+Ruffle is therefore not a viable integration.
+
+`records/load_screen.rs` now decodes the legacy image/location records and
+Skyrim/FO4/Starfield model presentation fields, using the
+[xEdit record definitions](https://github.com/TES5Edit/TES5Edit/tree/dev-4.1.6/Core)
+and installed FNV/Skyrim data. It preserves record flags, localized tips,
+remapped references, conditions, camera paths, and authored transforms.
+Malformed known fields are recorded explicitly so a future selector can
+reject them instead of treating a broken restriction as unrestricted.
+The existing load-order merge/deletion machinery owns the typed LSCR map.
+FO76-specific presentation fields remain unimplemented; selection and
+presentation consumers must not infer support from a nonempty map alone.
+
+The installed-data probe (`cargo run -p byroredux-plugin --example
+probe_load_screens -- <plugin.esm> [editor-id substring]`) decoded all **208
+FNV** and **298 Skyrim SE** records with zero malformed fields. It loads
+loose companion string tables only and reports unresolved tips explicitly;
+the Skyrim probe retained lstring placeholders, not verified translated
+text. The actual runtime uses the existing archive-backed string-table
+loader. These results establish data decoding, not screen selection,
+asset rendering, or transition lifecycle correctness.
+
+The first live presentation backend is `byroredux/src/loading_screen.rs`.
+For legacy games it retains one valid, unconditional LSCR image from the
+active texture archives and its original tip. A loading frame must actually
+present before the queued door transition can tear down the scene. The
+cover remains through a destination frame with resident geometry and drained
+texture uploads. Gameplay input is cleared, simulation dt is zero while
+the debug drain continues, existing menus are preserved, and capture resumes
+only if it was held before loading and no focus-loss event intervened.
+Unsupported/missing artwork falls back to the existing transition path.
+
+Live FNV captures at `/tmp/byro-loading-screen.N5ngpN/loading-fixed.png` and
+`after-loading.png` show original magazine artwork (`LSCR 0002186A`) and its
+Barter tip, followed by the exterior scene with the capsule grounded. This
+also exposed and fixed the shared UI quad's inverted vertical UV mapping
+under the positive-height presentation viewport. Unit suites passed:
+2,202 engine, 1,083 renderer, and 13 debug-UI tests (ignored tests excluded).
+The full FNV P1 round trip subsequently exited 0 with added ordered assertions
+for both loading-screen lifecycles (begin -> presented -> transition applied
+-> dismissed), two streaming crossings, exactly two activations, and grounded
+return. Ordinary streaming crossings did not produce loading covers. The
+smoke-contract checker and shell syntax checks also passed.
+
+This backend does **not** yet execute `loading_menu.xml`, reproduce its
+NIF animation/fonts, rotate/contextually select screens, cover initial boot
+or save loading, or render Skyrim+ loading models. Only FNV has live artwork
+verification; Oblivion/FO3 share the code path but still need installed-data
+visual checks. The existing synchronous preparation can still stall the
+event loop while the static cover remains visible. These are remaining
+requirements, not reasons to declare all-game loading UI complete.
+
+Implementation requirements:
+
+- Decode each game's loading-screen records and selection constraints;
+  preserve localization and load-order overrides. Do not show location-bound
+  tips indiscriminately.
+- Resolve the original assets through the active game's archive providers.
+  Legacy XML/NIF presentation and Creation-era SWF/model presentation need
+  their corresponding backends, not a single assumed SWF filename.
+- Present a loading frame before scene teardown or synchronous preparation,
+  keep it responsive during budgeted loading, and dismiss only when the
+  destination's geometry and player collision are ready. Cover initial scene
+  loading, door transitions, and save loads; ordinary seamless background
+  streaming should remain unobstructed.
+- Own input during loading without replacing or losing the previous menu;
+  unwind on failure, cancellation, supersession, and resize. Missing assets
+  must not prevent entering the game.
+- Verify real captures during loading and after dismissal, failure recovery,
+  and the existing grounded door/traversal gates. A standalone menu launch
+  or parser test does not prove transition integration.
 
 The M20 milestone (Phase 1) is the **infrastructure**: load a SWF, render
 it offscreen, upload to Vulkan, draw on top. The full Bethesda menu pack

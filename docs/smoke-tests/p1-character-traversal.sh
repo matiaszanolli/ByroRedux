@@ -253,7 +253,7 @@ echo "================================================================"
 
 cd "$ROOT_DIR"
 env BYRO_DEBUG_PORT="$PORT" \
-    RUST_LOG="error,byroredux::interaction=info,byroredux::cell_loader::transition=info,byroredux::app_step=info" \
+    RUST_LOG="error,byroredux::interaction=info,byroredux::cell_loader::transition=info,byroredux::app_step=info,byroredux::loading_screen=info" \
     "$ENGINE_BIN" \
     "${SMOKE_ENGINE_ARGS[@]}" \
     --cell "$P1_CELL" \
@@ -285,7 +285,7 @@ grep -Fq "input.press: queued action=Activate binding=E" "$command_log" \
     || fail "interior door activation bypassed the action binding"
 wait_for_engine_log "$P1_OUTBOUND_LOG" "interior-to-exterior transition completed"
 wait_for_debug_pattern "player.status" "$P1_ARRIVAL_GRID" "$status_log" "exterior arrival grid is correct"
-grep -Fq "grounded=true" "$status_log" || fail "exterior arrival was not grounded"
+wait_for_debug_pattern "player.status" "grounded=true" "$status_log" "exterior arrival settled after loading"
 
 # Freeze yaw through the same InputState accumulator mouse look owns, then
 # traverse authored collision. Every leg is a normal KCC step through held
@@ -311,6 +311,19 @@ crossings="$(grep -Fc "Player crossed cell boundary" "$engine_stderr" || true)"
 (( crossings >= P1_MIN_CROSSINGS )) \
     || fail "streaming telemetry reported only $crossings boundary crossings"
 echo "smoke[p1-character-traversal]: PASS -- streaming observed $crossings boundary crossings"
+
+if [[ "${P1_EXPECT_LOADING_SCREEN:-0}" == 1 ]]; then
+    # Every door must present original artwork before its apply and dismiss
+    # after a coherent destination frame; normal boundary walks add no cover.
+    awk '
+        /loading.screen: begin/ { if (state != 0) exit 1; state=1; count++ }
+        /loading.screen: presented before scene teardown/ { if (state != 1) exit 1; state=2 }
+        /Cell transition applied:/ { if (state != 2) exit 1; state=3 }
+        /loading.screen: dismissed after destination frame/ { if (state != 3) exit 1; state=0 }
+        END { if (state != 0 || count != 2) exit 1 }
+    ' "$engine_stderr" || fail "original loading-screen lifecycle did not bracket both doors"
+    echo "smoke[p1-character-traversal]: PASS -- both original loading screens presented and dismissed"
+fi
 
 bench_line="$(grep '^bench:' "$engine_stdout" | tail -1 || true)"
 [[ -n "$bench_line" ]] || fail "bench summary missing"

@@ -24,6 +24,8 @@ use crate::PanelState;
 /// is name-only.
 #[derive(Default, Clone)]
 pub struct PanelSnapshot {
+    /// Original game's LSCR tip while its loading artwork is composited.
+    pub loading_tip: Option<String>,
     /// Native in-world HUD prompt. Unlike the debug panels, this remains
     /// visible when the F3 operator overlay is closed.
     ///
@@ -132,6 +134,19 @@ pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
                     );
                 });
         });
+}
+
+pub fn draw_loading_tip(ctx: &Context, tip: &str) {
+    // No Area fade or first-frame sizing pass: even a one-frame loading
+    // presentation must show the tip at full opacity.
+    let rect = ctx.content_rect();
+    let painter = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("game_loading_tip")));
+    let text = painter.layout(tip.to_owned(), egui::FontId::proportional(22.0),
+        Color32::WHITE, (rect.width() - 96.0).max(1.0));
+    let size = text.size() + egui::vec2(48.0, 32.0);
+    let position = egui::pos2(rect.center().x - size.x * 0.5, rect.bottom() - size.y - 35.0);
+    painter.rect_filled(egui::Rect::from_min_size(position, size), 0.0, Color32::from_black_alpha(235));
+    painter.galley(position + egui::vec2(24.0, 16.0), text, Color32::WHITE);
 }
 
 pub fn draw_player_message(ctx: &Context, message: &str) {
@@ -1465,6 +1480,14 @@ fn ratio(used: u64, total: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_loading_tip_draws_without_debug_panels() {
+        let ctx = Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_loading_tip(&ctx, "An original game loading tip");
+        assert!(!ctx.end_pass().shapes.is_empty());
+    }
 
     #[test]
     fn gameplay_feedback_draws_without_debug_panels() {

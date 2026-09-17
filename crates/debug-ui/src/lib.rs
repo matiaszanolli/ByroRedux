@@ -299,6 +299,7 @@ impl DebugUiState {
             && !self.game_menu.visible
             && snapshot.interaction_prompt.is_none()
             && !snapshot.show_crosshair
+            && snapshot.loading_tip.is_none()
             && self.player_message.is_none()
         {
             // #2831 — still drain. `on_window_event` is forwarded for EVERY
@@ -326,17 +327,21 @@ impl DebugUiState {
         // sugar fighting the borrow.
         self.egui_ctx.begin_pass(raw_input);
         let mut outputs = PanelOutputs::default();
-        if !self.game_menu.visible {
-            panels::draw_hud(&self.egui_ctx, snapshot);
-        }
-        if let Some((message, _)) = &self.player_message {
-            panels::draw_player_message(&self.egui_ctx, message);
-        }
-        if self.visible {
-            panels::draw(&self.egui_ctx, snapshot, &mut self.panels, &mut outputs);
-        }
-        if self.game_menu.visible {
-            panels::draw_game_menu(&self.egui_ctx, snapshot, &mut self.game_menu, &mut outputs);
+        if let Some(tip) = snapshot.loading_tip.as_deref() {
+            panels::draw_loading_tip(&self.egui_ctx, tip);
+        } else {
+            if !self.game_menu.visible {
+                panels::draw_hud(&self.egui_ctx, snapshot);
+            }
+            if let Some((message, _)) = &self.player_message {
+                panels::draw_player_message(&self.egui_ctx, message);
+            }
+            if self.visible {
+                panels::draw(&self.egui_ctx, snapshot, &mut self.panels, &mut outputs);
+            }
+            if self.game_menu.visible {
+                panels::draw_game_menu(&self.egui_ctx, snapshot, &mut self.game_menu, &mut outputs);
+            }
         }
         let output = self.egui_ctx.end_pass();
         // Hand the platform output back to egui-winit so OS-level

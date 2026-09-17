@@ -236,6 +236,32 @@ fn wrap_sub_group(label: [u8; 4], group_type: u32, content: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn loading_screen_dispatch_preserves_flags_remap_override_and_deletion() {
+    let plugin = |tip: &str, flags: u32| {
+        let mut record = build_record(b"LSCR", 0x0000_0123, &[
+            (b"EDID", b"Screen\0".to_vec()),
+            (b"ICON", b"interface\\loading\\screen.dds\0".to_vec()),
+            (b"DESC", format!("{tip}\0").into_bytes()),
+            (b"WMI1", 0x0000_0456u32.to_le_bytes().to_vec()),
+        ]);
+        record[8..12].copy_from_slice(&flags.to_le_bytes());
+        let mut data = build_record(b"TES4", 0, &[]);
+        data.extend_from_slice(&wrap_group(b"LSCR", &record));
+        parse_esm_with_load_order(&data, Some(FormIdRemap::regular(3, vec![]))).unwrap()
+    };
+    let mut index = plugin("First", 0x400);
+    let screen = &index.load_screens[&0x0300_0123];
+    assert_eq!(screen.flags, 0x400);
+    assert_eq!(screen.screen_type, 0x0300_0456);
+    assert_eq!(screen.description, "First");
+    assert_eq!(screen.icon, "interface\\loading\\screen.dds");
+    index.merge_from(plugin("Replacement", 0));
+    assert_eq!(index.load_screens[&0x0300_0123].description, "Replacement");
+    index.merge_from(plugin("Deleted", 0x20));
+    assert!(index.load_screens.is_empty());
+}
+
+#[test]
 fn extract_records_walks_one_group() {
     let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
     subs.push((b"EDID", b"TestWeap\0".to_vec()));

@@ -13,6 +13,7 @@ mod anim_convert;
 mod app_events;
 mod app_frame;
 mod app_step;
+mod loading_screen;
 mod asset_provider;
 mod bench;
 mod bench_camera;
@@ -641,6 +642,7 @@ struct App {
     /// alive across frames until the REFR/NPC phase completes or is
     /// cancelled by a replacement transition/shutdown (#3671).
     interior_transition: Option<cell_loader::InteriorCellApply>,
+    loading_screen: loading_screen::LoadingScreen,
     /// Debug server lifecycle owner (#855 / C6-NEW-02). Holding the
     /// handle keeps the TCP listener thread alive; the natural App::Drop
     /// fires the handle's Drop, which sets the shutdown flag and joins
@@ -904,6 +906,7 @@ impl App {
             screenshot_deadline_frames: 0,
             streaming: None,
             interior_transition: None,
+            loading_screen: loading_screen::LoadingScreen::default(),
             #[cfg(feature = "debug-server")]
             debug_server,
             debug_ui: None,
@@ -1006,7 +1009,8 @@ impl App {
 
     /// Return mouse look to gameplay after a native modal closes.
     fn capture_world_input(&mut self) {
-        if !self.window.as_ref().is_some_and(Window::has_focus)
+        if self.loading_screen.active()
+            || !self.window.as_ref().is_some_and(Window::has_focus)
             || self
                 .ui_manager
                 .as_ref()
@@ -1124,6 +1128,7 @@ fn build_debug_ui_snapshot(
         .unwrap_or_default();
 
     byroredux_debug_ui::PanelSnapshot {
+        loading_tip: None,
         interaction_prompt: build_interaction_prompt(world),
         show_crosshair: setting_bool(world, byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID, true),
         show_prompts: setting_bool(world, byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID, true),

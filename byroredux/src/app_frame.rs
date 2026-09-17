@@ -176,6 +176,11 @@ impl App {
             snapshot.show_crosshair = false;
         }
         self.debug_ui_refresh_entities = false;
+        snapshot.loading_tip = self.loading_screen.tip().map(str::to_owned);
+        if snapshot.loading_tip.is_some() {
+            snapshot.show_crosshair = false;
+            snapshot.interaction_prompt = None;
+        }
 
         let player_messages = crate::notifications::drain(&self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
@@ -354,18 +359,22 @@ impl App {
 
             // Tick and render the UI overlay (Ruffle SWF player).
             let ui_t0 = Instant::now();
-            let ui_tex = tick_ui_overlay(
-                &self.world,
-                ctx,
-                &mut self.ui_manager,
-                UiOverlayState {
-                    texture_handle: self.ui_texture_handle,
-                    dropped_host_calls: &mut self.ui_dropped_host_calls,
-                    dropped_host_calls_menu: &mut self.ui_dropped_host_calls_menu,
-                    reported_host_methods: &mut self.ui_reported_host_methods,
-                    reported_host_methods_capped: &mut self.ui_reported_host_methods_capped,
-                },
-            );
+            let ui_tex = if self.loading_screen.active() {
+                self.loading_screen.texture()
+            } else {
+                tick_ui_overlay(
+                    &self.world,
+                    ctx,
+                    &mut self.ui_manager,
+                    UiOverlayState {
+                        texture_handle: self.ui_texture_handle,
+                        dropped_host_calls: &mut self.ui_dropped_host_calls,
+                        dropped_host_calls_menu: &mut self.ui_dropped_host_calls_menu,
+                        reported_host_methods: &mut self.ui_reported_host_methods,
+                        reported_host_methods_capped: &mut self.ui_reported_host_methods_capped,
+                    },
+                )
+            };
             if is_benching {
                 self.bench_ui_ns += ui_t0.elapsed().as_nanos() as u64;
             }
@@ -444,6 +453,7 @@ impl App {
                 .map_or_else(ImageSpaceModifier::default, |state| {
                     state.image_space_modifier_frame
                 });
+            let frame_before_draw = ctx.frame_counter;
             let draw_result = ctx.draw_frame(FrameInputs {
                 clear_color,
                 view_proj: &frame.view_proj,
@@ -533,6 +543,12 @@ impl App {
             }
             match draw_result {
                 Ok(needs_recreate) => {
+                    if !needs_recreate && ctx.frame_counter != frame_before_draw {
+                        self.loading_screen.frame_presented(
+                            !ctx.mesh_registry.is_geometry_dirty()
+                                && ctx.texture_registry.pending_dds_upload_count() == 0,
+                        );
+                    }
                     let last_draw_stats = ctx.last_draw_call_stats;
                     world_resource_set::<DebugStats>(&self.world, |s| {
                         s.batch_count = last_draw_stats.batch_count;

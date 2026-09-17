@@ -15,7 +15,8 @@ use super::{
     EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
     HdptRecord,
     IdleRecord, ImadRecord, ImgsRecord, ImodRecord, IpctRecord, IpdsRecord, ItemRecord,
-    LeveledList, LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord, NaviRecord, NavmRecord,
+    LeveledList, LgtmRecord, LoadScreenRecord, MesgRecord, MgefRecord, MinimalEsmRecord,
+    NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
     RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SounRecord, SpelRecord, TermRecord,
     TreeRecord, WatrRecord, WeatherRecord,
@@ -392,7 +393,7 @@ pub struct EsmIndex {
     /// Papyrus cinematics and CELL.XCIM transitions.
     pub imagespace_modifiers: HashMap<u32, ImadRecord>,
     /// `LSCR` load screen.
-    pub load_screens: HashMap<u32, MinimalEsmRecord>,
+    pub load_screens: HashMap<u32, LoadScreenRecord>,
     /// `LSCT` load screen type.
     pub load_screen_types: HashMap<u32, MinimalEsmRecord>,
     /// `PWAT` placeable water.

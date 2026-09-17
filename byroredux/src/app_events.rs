@@ -241,7 +241,15 @@ impl ApplicationHandler for App {
         // menu consumes the event below. Key-up events may go to another
         // application after Alt-Tab; retaining those keys makes movement stick.
         if matches!(event, WindowEvent::Focused(false)) {
+            self.loading_screen.focus_lost();
             self.release_world_input_for_ui();
+        }
+        if self.loading_screen.active()
+            && matches!(&event, WindowEvent::KeyboardInput { .. }
+                | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch(_) | WindowEvent::Ime(_))
+        {
+            return;
         }
         // A finite named benchmark owns the measured world state. Matrix runs
         // repeatedly create focus-stealing windows; accepting a coincident E
@@ -506,7 +514,7 @@ impl ApplicationHandler for App {
                 .debug_ui
                 .as_ref()
                 .is_some_and(byroredux_debug_ui::DebugUiState::captures_gameplay_input);
-            if ui_focused || native_ui_focused {
+            if ui_focused || native_ui_focused || self.loading_screen.active() {
                 self.release_world_input_for_ui();
                 return;
             }
@@ -528,6 +536,9 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.loading_screen.take_restore_capture() {
+            self.capture_world_input();
+        }
         // Keep the engine-owned UI compatibility snapshot current before the
         // scheduler runs provider callbacks. The manager is main-thread-only,
         // so this small projection is the bridge into the sandbox host.
@@ -548,7 +559,8 @@ impl ApplicationHandler for App {
             .debug_ui
             .as_ref()
             .is_some_and(byroredux_debug_ui::DebugUiState::captures_gameplay_input);
-        if native_ui_focused
+        if self.loading_screen.active()
+            || native_ui_focused
             || self
                 .ui_manager
                 .as_ref()
@@ -564,7 +576,11 @@ impl ApplicationHandler for App {
         // Outside a finite bench, retain BYROREDUX_FIXED_DT as a diagnostic
         // override for tools that do not emit benchmark conclusions.
         let wall_dt = now.duration_since(self.last_frame).as_secs_f32();
-        let dt = if crate::bench::harness_active(self.bench_summary_printed) {
+        let dt = if self.loading_screen.active() {
+            // Continue the scheduler's debug drain while holding simulation
+            // time still; gameplay input is cleared above on every load tick.
+            0.0
+        } else if crate::bench::harness_active(self.bench_summary_printed) {
             self.bench_mode.map_or_else(
                 || {
                     // Preserve the environment override for non-benchmark

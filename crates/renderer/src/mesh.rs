@@ -1397,12 +1397,14 @@ pub fn uv_sphere(
 }
 
 /// Lightweight fullscreen quad for UI overlay — position + UV only (20 B/vertex).
+/// The presentation pass uses a positive-height Vulkan viewport: NDC y=-1
+/// is the top row. Both DDS assets and Ruffle captures are top-row-first.
 pub fn fullscreen_quad_ui_vertices() -> (Vec<UiVertex>, Vec<u32>) {
     let vertices = vec![
-        UiVertex::new([-1.0, -1.0, 0.0], [0.0, 1.0]),
-        UiVertex::new([1.0, -1.0, 0.0], [1.0, 1.0]),
-        UiVertex::new([1.0, 1.0, 0.0], [1.0, 0.0]),
-        UiVertex::new([-1.0, 1.0, 0.0], [0.0, 0.0]),
+        UiVertex::new([-1.0, -1.0, 0.0], [0.0, 0.0]),
+        UiVertex::new([1.0, -1.0, 0.0], [1.0, 0.0]),
+        UiVertex::new([1.0, 1.0, 0.0], [1.0, 1.0]),
+        UiVertex::new([-1.0, 1.0, 0.0], [0.0, 1.0]),
     ];
     let indices = vec![0, 1, 2, 2, 3, 0];
     (vertices, indices)
@@ -1411,6 +1413,18 @@ pub fn fullscreen_quad_ui_vertices() -> (Vec<UiVertex>, Vec<u32>) {
 #[cfg(test)]
 mod primitive_winding_tests {
     use super::*;
+
+    #[test]
+    fn ui_quad_matches_top_left_images_in_positive_height_vulkan_viewport() {
+        let (vertices, indices) = fullscreen_quad_ui_vertices();
+        assert_eq!(indices, [0, 1, 2, 2, 3, 0]);
+        for vertex in vertices {
+            assert_eq!(vertex.uv, [
+                (vertex.position[0] + 1.0) * 0.5,
+                (vertex.position[1] + 1.0) * 0.5,
+            ]);
+        }
+    }
 
     /// Every triangle's winding-derived normal must point the same way as
     /// its authored vertex normals. RT hit shading and front-face tests use

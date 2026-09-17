@@ -427,6 +427,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                     &label,
                     &mut reader,
                     end,
+                    game,
                     &mut statics,
                     &mut index,
                 )?;

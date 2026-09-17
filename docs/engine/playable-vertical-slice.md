@@ -217,6 +217,37 @@ still has base `000E9895`, Health 50, and the Greatsword. No gameplay gate or
 destination assertion was relaxed. Skyrim traversal, full FNV traversal, the
 debug-validation run, and the 30-minute soak remain unclosed.
 
+The subsequent FNV road-route recheck **passes the full P1 gate**. Live
+inspection confirmed the arithmetic northward leg walked into the saloon
+and neighboring buildings. The fixture now backs into the road, walks west
+across `(-17,0) -> (-18,0)`, returns across the same boundary, and approaches
+the same authored saloon entrance. No collision bypass or movement teleport
+was added. The fresh automated run reached outbound `x=-69908.54`, inbound
+`x=-67907.29`, entrance alignment `x=-67747.62`, and final approach
+`z=-3457.17`; grounded checks, both bound door activations, correct interior
+return, exactly two activations, and two streaming crossings all passed.
+The command was `BYRO_DEBUG_PORT=19876 BYROREDUX_SMOKE_TIMEOUT=90 xvfb-run -a
+bash docs/smoke-tests/p1-character-traversal.sh fnv`, exiting 0 with 3,149
+source-cell entities. The smoke-contract checker also passed. This supersedes
+the FNV P1 failures above, but is a release traversal check, not evidence of
+debug-validation, long-soak, quest/dialogue, or all-game playability closure.
+
+The immediate Skyrim SE control rerun also **passed the full P1 gate** with
+the unchanged Skyrim route: both streaming crossings, final reverse-door
+approach (`z=7797.21`), bound return activation, and grounded interior return.
+The same command with `skyrim_se` exited 0 and reported 5,857 source-cell
+entities. This supersedes the earlier failed Skyrim route observation, but
+does not isolate which prior correction resolved it or prove repeatability
+under different frame timing. Both P1 results remain release-only evidence.
+
+The FNV gate passed again after adding original LSCR artwork/tips around
+door transitions. It now also asserts that each loading screen presents
+before scene teardown and dismisses after a ready destination frame; both
+ordered lifecycles, the original walking route, two streaming crossings,
+and grounded interior return passed (exit 0). Visual captures and remaining
+cross-game/startup/save-loading work are tracked in
+[UI loading-screen integration](ui.md#original-game-loading-screens-during-scene-transitions).
+
 ### Water focus — playable traversal + EX-13 visual closure
 
 **Active next push (2026-08-10).** Water temporarily leads the queue by explicit

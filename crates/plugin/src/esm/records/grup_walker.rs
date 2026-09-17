@@ -79,6 +79,16 @@ pub(super) fn extract_records(
     expected_type: &[u8; 4],
     f: &mut dyn FnMut(u32, &[SubRecord]),
 ) -> Result<()> {
+    extract_records_with_flags(reader, end, expected_type, &mut |id, _, subs| f(id, subs))
+}
+
+/// As `extract_records`, retaining record-header presentation flags.
+pub(super) fn extract_records_with_flags(
+    reader: &mut EsmReader,
+    end: usize,
+    expected_type: &[u8; 4],
+    f: &mut dyn FnMut(u32, u32, &[SubRecord]),
+) -> Result<()> {
     extract_records_inner(reader, end, expected_type, f, 0)
 }
 
@@ -86,7 +96,7 @@ fn extract_records_inner(
     reader: &mut EsmReader,
     end: usize,
     expected_type: &[u8; 4],
-    f: &mut dyn FnMut(u32, &[SubRecord]),
+    f: &mut dyn FnMut(u32, u32, &[SubRecord]),
     depth: u32,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
@@ -103,7 +113,7 @@ fn extract_records_inner(
         let header = reader.read_record_header()?;
         if &header.record_type == expected_type {
             let subs = reader.read_sub_records(&header)?;
-            f(header.form_id, &subs);
+            f(header.form_id, header.flags, &subs);
         } else {
             reader.skip_record(&header);
         }

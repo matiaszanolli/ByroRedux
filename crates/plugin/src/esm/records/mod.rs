@@ -22,6 +22,7 @@ pub mod global;
 pub mod gras;
 pub mod items;
 pub mod list_record;
+pub mod load_screen;
 pub mod misc;
 pub mod movs;
 pub mod mswp;
@@ -41,6 +42,7 @@ pub mod tree;
 pub mod weather;
 
 pub use list_record::{parse_flst, FlstRecord};
+pub use load_screen::{parse_lscr, LoadScreenLocation, LoadScreenRecord};
 pub use movs::{parse_movs, MovableStaticRecord};
 pub use mswp::{parse_mswp, MaterialSwapEntry, MaterialSwapRecord};
 pub use outfit::{parse_otft, OtftRecord};
