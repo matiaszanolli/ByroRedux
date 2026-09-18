@@ -612,7 +612,15 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 23;
+    const BASELINE_MAJOR: u16 = 24;
+    // #4422 — refreshed WITH a major bump (v23 -> v24). `Material` gained
+    // the required field `detail_neutral` (the encoded-space
+    // detail-combine neutral declared at the NIFAL boundary — FaceTint
+    // 65/255 vs the classic MODULATE2X 128/255), changing the registered
+    // `Material` column's serialized shape exactly like v19's
+    // `parallax_height_scale`/`parallax_max_passes` and v21's
+    // `specular_authored` did. `sanitize_finite` covers the new field, so
+    // a poisoned value cannot survive a restore.
     // HardcoreMode is a newly saved resource, not a shape change to an
     // existing column. The registry fingerprint rejects earlier snapshots
     // so their missing mode flag cannot retain an outgoing live selection.
@@ -628,7 +636,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // shadows. `VisibilityMask`'s own shape is still a plain `u8` newtype —
     // no field was added, removed, or retyped — so a save's serialized
     // bytes for this type are unchanged.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xf99d_4226_ce83_8b62;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5001_1656_c9cf_b2c5;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

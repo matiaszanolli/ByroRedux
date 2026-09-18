@@ -70,6 +70,21 @@ pub const DEFAULT_GLASS_REFRACTION_SCALE: f32 = 0.05;
 /// See [`DEFAULT_GLASS_REFRACTION_SCALE`].
 pub const DEFAULT_GLASS_BLUR_SCALE: f32 = 0.4;
 
+/// #4422 — the classic `NiTexturingProperty` MODULATE2X detail-combine
+/// neutral: an encoded-space sample of 128/255 divides to a 1.0 albedo
+/// multiplier. The default for every producer that did not stamp a more
+/// specific neutral.
+pub const DETAIL_NEUTRAL_MODULATE2X: f32 = 128.0 / 255.0;
+/// #4422 — the Skyrim FaceGen FaceTint detail-combine neutral. Vanilla's
+/// no-detail texture (`blankdetailmap.dds`) is a uniform (65, 64, 65)/255 —
+/// half the MODULATE2X neutral — and every authored complexion map clusters
+/// around the same value, so the FaceTint head shader centres its combine
+/// there. Dividing by the classic 128/255 instead is what darkened every
+/// vanilla Skyrim NPC face to ≈11% albedo.
+pub const DETAIL_NEUTRAL_FACE_TINT: f32 = 65.0 / 255.0;
+/// The `Material::default` detail-combine neutral — the classic convention.
+pub const DEFAULT_DETAIL_NEUTRAL: f32 = DETAIL_NEUTRAL_MODULATE2X;
+
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Material {
@@ -151,6 +166,16 @@ pub struct Material {
     /// high-frequency variation layer used by Oblivion terrain and
     /// some clothing. See #214.
     pub detail_map: Option<String>,
+    /// #4422 — the encoded-space detail-combine neutral: the sample value
+    /// that leaves albedo unchanged (`albedo *= detailSample / neutral`
+    /// in the shader, with the detail texture bound as a raw UNORM view so
+    /// the modulation runs in the encoded space the combine was authored
+    /// in). Declared at the NIFAL boundary by the producer route —
+    /// `128/255` for the classic `NiTexturingProperty` MODULATE2X
+    /// convention, `65/255` for the Skyrim FaceGen FaceTint route whose
+    /// vanilla blank detail texture centres the combine at half the
+    /// classic neutral. See `slot_role::detail_neutral_for`.
+    pub detail_neutral: f32,
     /// Gloss texture — `NiTexturingProperty` slot 3. Per Gamebryo 2.3
     /// `HandleGlossMap(... pkGlossiness)` this feeds the
     /// **glossiness / shininess** (Phong exponent) channel — the
@@ -659,6 +684,7 @@ impl Default for Material {
             material_path: None,
             glow_map: None,
             detail_map: None,
+            detail_neutral: DEFAULT_DETAIL_NEUTRAL,
             gloss_map: None,
             dark_map: None,
             // AmbientDiffuse — the Gamebryo default, matches pre-#214
@@ -1446,6 +1472,10 @@ impl Material {
         // #3073 — added alongside the resolve-once canonical fields.
         fix_scalar!(parallax_height_scale);
         fix_scalar!(parallax_max_passes);
+        // #4422 — the shader divides by this (`max(detailNeutral, 1e-4)`
+        // guards only a zero, not a NaN), so a poisoned neutral must be
+        // reset to the producer default before it reaches the GPU.
+        fix_scalar!(detail_neutral);
 
         // #3731 (NIFAL-2026-08-30-D1-01) — the two indirect float carriers
         // `fix_scalar!`/`fix_vec!` cannot reach (they only see directly

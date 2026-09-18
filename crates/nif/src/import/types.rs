@@ -609,6 +609,12 @@ pub struct ImportedMaterial {
     /// Per-role source retained for cold-path diagnostics. A role with no
     /// path is still treated as absent downstream regardless of this value.
     pub texture_sources: MaterialTextureSet<ImportedTextureSource>,
+    /// #4422 — the encoded-space sample value the detail combine treats as
+    /// a no-op, declared by the producer route that resolved the Detail
+    /// role (`slot_role::detail_neutral_for`). Forwarded to the canonical
+    /// `Material` and from there to `GpuMaterial.detailNeutral`; the shader
+    /// divides by it and carries no per-game branch.
+    pub detail_neutral: f32,
     pub material_path: Option<FixedString>,
     pub has_alpha: bool,
     pub src_blend_mode: u8,
@@ -784,6 +790,7 @@ impl Default for ImportedMaterial {
             is_water_shader: false,
             textures: MaterialTextureSet::default(),
             texture_sources: MaterialTextureSet::default(),
+            detail_neutral: byroredux_core::ecs::components::material::DETAIL_NEUTRAL_MODULATE2X,
             material_path: None,
             has_alpha: false,
             src_blend_mode: 6,

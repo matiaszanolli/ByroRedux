@@ -102,7 +102,7 @@ use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet};
 /// fire-refraction proxy instead stores the authored heat-haze distortion
 /// strength there; the material kind makes the two meanings unambiguous
 /// without adding another field to the hot GPU material record. That
-/// record's size is pinned by `gpu_material_size_is_428_bytes`
+/// record's size is pinned by `gpu_material_size_is_432_bytes`
 /// (`crates/renderer/src/vulkan/material.rs`) — cited rather than restated
 /// here because the literal has already drifted once: this doc said
 /// "348-byte" through the 348 → 364 → 396 → 432 → 428 B size chain, and #3240's
@@ -606,6 +606,9 @@ pub(crate) fn translate_material(
         material_path,
         glow_map: textures.emissive,
         detail_map: textures.detail,
+        // #4422 — producer-declared detail-combine neutral, forwarded
+        // verbatim; the shader divides by it.
+        detail_neutral: source.detail_neutral,
         gloss_map: textures.smooth_spec,
         dark_map: textures.dark,
         vertex_color_mode: source.vertex_color_mode,
@@ -2608,6 +2611,9 @@ mod canonical_completeness_harness {
             // default.
             specular_authored: true,
             specular_strength: 2.5,
+            // #4422 — a non-default neutral so the forwarding pin below
+            // cannot false-pass against `Material::default`.
+            detail_neutral: 65.0 / 255.0,
             diffuse_color: [0.77, 0.88, 0.99],
             ambient_color: [0.12, 0.34, 0.56],
             glossiness: 62.0,
@@ -2794,6 +2800,10 @@ mod canonical_completeness_harness {
             material.detail_map.as_deref(),
             Some("Textures/Test/detail.dds")
         );
+        // #4422 — the producer-declared detail-combine neutral forwards
+        // verbatim (fixture value differs from the `Material::default`
+        // MODULATE2X neutral on purpose).
+        assert!((material.detail_neutral - 65.0f32 / 255.0).abs() < 1e-6);
         assert_eq!(
             material.gloss_map.as_deref(),
             Some("Textures/Test/gloss.dds")

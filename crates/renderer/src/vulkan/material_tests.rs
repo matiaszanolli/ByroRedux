@@ -56,12 +56,14 @@ use super::*;
 ///   scalars and two dedicated overlay-map handles, then 396 → 432 for
 ///   seven Bethesda lighting-response scalars and two translated mask
 ///   handles, then 432 → 428 when #3909 dropped the unsampled
-///   `texture_index`. Test name includes
+///   `texture_index`, then 428 → 432 under #4422 (+4 B for
+///   `detail_neutral`, the producer-declared detail-combine neutral).
+///   Test name includes
 ///   the size so a future size
 ///   shift updates it in lockstep with the assertion.
 #[test]
-fn gpu_material_size_is_428_bytes() {
-    assert_eq!(std::mem::size_of::<GpuMaterial>(), 428);
+fn gpu_material_size_is_432_bytes() {
+    assert_eq!(std::mem::size_of::<GpuMaterial>(), 432);
 }
 
 /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,
@@ -307,7 +309,7 @@ mod supplemental_lane_guard {
 /// Regression guard for `GpuMaterial` GLSL field names —
 /// REN-D14-NEW-02 (audit 2026-05-09). The offset pin
 /// (`gpu_material_field_offsets_match_shader_contract`) and the
-/// size pin (`gpu_material_size_is_428_bytes`) catch byte-level
+/// size pin (`gpu_material_size_is_432_bytes`) catch byte-level
 /// drift, but neither catches a GLSL-side field rename: the
 /// shader still reads from the same offset, the value still
 /// arrives in the right register, but the field's MEANING in
@@ -460,7 +462,7 @@ fn gpu_material_glsl_field_names_pinned() {
 }
 
 /// Regression guard for the GpuMaterial Shader Struct Sync (#806).
-/// The size pin (`gpu_material_size_is_428_bytes`) catches additions
+/// The size pin (`gpu_material_size_is_432_bytes`) catches additions
 /// or removals; this catches reorderings within the record that the
 /// size pin alone would miss — e.g. swapping
 /// `normal_map_index` and `dark_map_index` within vec4 #4 would
@@ -1601,7 +1603,8 @@ mod gpu_material_size_claims {
                 "back_lighting_map_index: u32,",
             ),
             ("docs/engine/shader-pipeline.md", "### `GpuMaterial` — "),
-            ("docs/engine/shader-pipeline.md", "map indices → total **"),
+            // #4422 moved the total onto the detail_neutral row (now last).
+            ("docs/engine/shader-pipeline.md", "detail-combine neutral → total **"),
             (
                 "docs/engine/memory-budget.md",
                 "| Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | ",

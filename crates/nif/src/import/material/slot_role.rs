@@ -285,6 +285,44 @@ pub fn slot_to_colocated_role(context: TextureSlotContext, slot: u32) -> Option<
     }
 }
 
+/// #4422 — the detail-combine neutral for the classic `NiTexturingProperty`
+/// MODULATE2X route: an encoded-space sample of 128/255 leaves the surface
+/// unchanged (`sample / neutral = 1.0`), reproducing the DX9 fixed-function
+/// `D3DTOP_MODULATE2X` blend the slot was authored against. Canonical value
+/// lives on the core `Material`; re-exported here so the producer route and
+/// the GPU-side constant share one home.
+pub const DETAIL_NEUTRAL_MODULATE2X: f32 =
+    byroredux_core::ecs::components::material::DETAIL_NEUTRAL_MODULATE2X;
+
+/// #4422 — the detail-combine neutral for the Skyrim FaceGen FaceTint route.
+/// Vanilla's own no-detail texture (`textures\actors\character\male\
+/// blankdetailmap.dds`, plus the Argonian/Khajiit copies) is a uniform
+/// (65, 64, 65)/255 — HALF the classic MODULATE2X neutral — so the head
+/// shader's combine is centred on 0.25 encoded, not 0.5. Every authored
+/// complexion map clusters around the same value (shape-weighted encoded
+/// luma: 3140 of 3149 detail textures in [0.2, 0.3)). Producers of the
+/// Detail role on FaceTint heads must declare this neutral so the shader's
+/// `albedo *= detailSample / detailNeutral` divides to 1.0 on the vanilla
+/// blank map instead of the ≈0.106 multiplier the old `×2`-on-sRGB combine
+/// produced.
+pub const DETAIL_NEUTRAL_FACE_TINT: f32 =
+    byroredux_core::ecs::components::material::DETAIL_NEUTRAL_FACE_TINT;
+
+/// The encoded-space detail-combine neutral this material's Detail role was
+/// resolved under. One canonical parameter, two producer values: the shader
+/// divides by whatever the NIFAL boundary declares and carries no per-game
+/// or per-shader-type branch of its own.
+pub fn detail_neutral_for(context: TextureSlotContext) -> f32 {
+    if matches!(
+        (context.layout, context.shader_type),
+        (TextureSlotLayout::Skyrim, bs_lighting::FACE_TINT)
+    ) {
+        DETAIL_NEUTRAL_FACE_TINT
+    } else {
+        DETAIL_NEUTRAL_MODULATE2X
+    }
+}
+
 /// #3900 (SF-2026-09-05-D8-01) — **Starfield shares FO76's slot vocabulary
 /// here, matching [`canonical_shader_type`].**
 ///
@@ -478,6 +516,50 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
 mod tests {
     use super::bs_lighting;
     use super::*;
+
+    /// #4422 — the detail-combine neutral is declared by the producer
+    /// route, at the NIFAL boundary, and the two live values are pinned to
+    /// the evidence: 65/255 is the measured vanilla `blankdetailmap.dds`
+    /// texel (uniform (65, 64, 65) across 65 536 texels), 128/255 is the
+    /// classic MODULATE2X neutral. The shader divides the raw-view sample
+    /// by whatever this returns, so a FaceTint head carrying the vanilla
+    /// blank map multiplies its albedo by exactly 1.0 — the contract the
+    /// audit issue asked to pin CPU-side.
+    #[test]
+    fn detail_neutral_follows_the_producer_route() {
+        // FaceTint slot 3 → Detail: the FaceGen combine neutral.
+        assert_eq!(
+            detail_neutral_for(skyrim(bs_lighting::FACE_TINT, false, false)),
+            DETAIL_NEUTRAL_FACE_TINT
+        );
+        // 65/255 IS the measured vanilla neutral: `sample / neutral` at
+        // the authored blank texel is 1.0 (allow f32 epsilon).
+        let sample = 65.0f32 / 255.0;
+        assert!(
+            (sample / DETAIL_NEUTRAL_FACE_TINT - 1.0).abs() < 1e-6,
+            "vanilla blank detail texel must divide to an albedo multiplier of 1.0"
+        );
+
+        // Every other producer keeps the classic MODULATE2X neutral —
+        // including non-tint Skyrim types and every other layout.
+        assert_eq!(
+            detail_neutral_for(skyrim(0, false, false)),
+            DETAIL_NEUTRAL_MODULATE2X
+        );
+        let fo4 = TextureSlotContext {
+            layout: TextureSlotLayout::Fallout4,
+            shader_type: bs_lighting::FACE_TINT,
+            glow_map: false,
+            model_space_normals: false,
+            soft_lighting: false,
+            rim_lighting: false,
+            back_lighting: false,
+        };
+        assert_eq!(detail_neutral_for(fo4), DETAIL_NEUTRAL_MODULATE2X);
+        // And the constants themselves are the documented ratios.
+        assert_eq!(DETAIL_NEUTRAL_FACE_TINT, 65.0 / 255.0);
+        assert_eq!(DETAIL_NEUTRAL_MODULATE2X, 128.0 / 255.0);
+    }
 
     fn skyrim(shader_type: u32, glow_map: bool, model_space_normals: bool) -> TextureSlotContext {
         TextureSlotContext {

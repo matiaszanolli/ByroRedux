@@ -133,7 +133,7 @@ Source: `crates/renderer/src/vulkan/`
   into a deduped per-frame `MaterialTable` SSBO indexed by
   `material_id: u32`. `GpuInstance` shrank to 112 bytes at R1 (160 bytes
   today — 128 B as of #2219, then 160 B as of #3231's morph-target fields);
-  `GpuMaterial` was 300 bytes at R1 (428 bytes today,
+  `GpuMaterial` was 300 bytes at R1 (432 bytes today,
   since `1d94eb24`'s cross-game texture-role unification). See
   [Material table](#material-table-r1).
 - **Disney BSDF** (#1248–#1257, 2026-05): IOR-derived Fresnel F0, Burley +
@@ -537,7 +537,7 @@ alpha state, Skyrim+ shader-variant payloads, BSEffect falloff, BGSM UV
 transform, NiMaterialProperty diffuse/ambient — was duplicated onto every
 per-instance struct, so a cell that places one material 10–30 times carried
 the same ~35 fields that many times. R1 factored them into a deduped
-**`GpuMaterial`** (300 bytes at R1, 428 bytes today — see
+**`GpuMaterial`** (300 bytes at R1, 432 bytes today — see
 [`shader-pipeline.md`](shader-pipeline.md) for the current field layout)
 and a per-frame **`MaterialTable`** SSBO
 (binding 13, `MAX_MATERIALS = 16384`). `GpuInstance` (160 bytes as of

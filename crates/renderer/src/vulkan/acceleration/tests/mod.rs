@@ -46,6 +46,7 @@ pub(super) fn make_draw_command(in_tlas: bool, is_water: bool) -> DrawCommand {
         dark_map_index: 0,
         glow_map_index: 0,
         detail_map_index: 0,
+        detail_neutral: 0.5,
         gloss_map_index: 0,
         parallax_map_index: 0,
         parallax_height_scale: 0.0,

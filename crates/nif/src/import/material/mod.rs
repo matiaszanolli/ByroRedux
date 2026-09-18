@@ -411,6 +411,15 @@ pub(super) struct MaterialInfo {
     /// the base texture at higher frequency; used for terrain detail
     /// variation and clothing micro-texture.
     pub detail_map: Option<FixedString>,
+    /// #4422 — the encoded-space sample value that leaves the surface
+    /// unchanged under the detail combine (`albedo *= sample / neutral`).
+    /// Defaults to [`super::slot_role::DETAIL_NEUTRAL_MODULATE2X`] (the
+    /// classic NiTexturingProperty MODULATE2X convention); the FaceTint
+    /// route in `dedicated_shader` stamps
+    /// [`super::slot_role::DETAIL_NEUTRAL_FACE_TINT`] when it routes a
+    /// complexion map into this field, because vanilla's own blank detail
+    /// texture centres that combine at 65/255, not 128/255.
+    pub detail_neutral: f32,
     /// Specular-mask / gloss texture (NiTexturingProperty slot 3).
     /// Per-texel specular strength; enables armor highlights masked
     /// by leather/fabric regions.
@@ -1179,6 +1188,7 @@ impl Default for MaterialInfo {
             normal_map: None,
             glow_map: None,
             detail_map: None,
+            detail_neutral: slot_role::DETAIL_NEUTRAL_MODULATE2X,
             gloss_map: None,
             specular_map: None,
             dark_map: None,
@@ -1505,6 +1515,9 @@ impl MaterialInfo {
             water_shader_flags: self.water_shader_flags,
             is_water_shader: self.is_water_shader,
             material_path: self.material_path,
+            // #4422 — producer-declared detail-combine neutral (FaceTint
+            // route vs the classic MODULATE2X default).
+            detail_neutral: self.detail_neutral,
             has_alpha,
             src_blend_mode: self.src_blend_mode,
             dst_blend_mode: self.dst_blend_mode,

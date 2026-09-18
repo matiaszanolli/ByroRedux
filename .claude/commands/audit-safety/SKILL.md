@@ -258,7 +258,7 @@ guard below.
 
 ### 6. R1 Material Table Layout Soundness
 
-- **`GpuMaterial` size is pinned at 428 B** by `gpu_material_size_is_428_bytes`
+- **`GpuMaterial` size is pinned at 432 B** by `gpu_material_size_is_432_bytes`
   (`crates/renderer/src/vulkan/material.rs`) — the test name now matches the
   asserted size (history: 272 → 260 after #804 dropped `avg_albedo`, → 280
   under #1147 (+20 B, `translucency_subsurface_r/g/b` + `…_transmissive_scale`

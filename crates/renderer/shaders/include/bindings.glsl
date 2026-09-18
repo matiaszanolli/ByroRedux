@@ -97,7 +97,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 
 // ── R1 Phase 4: deduplicated material table ─────────────────────────
 //
-// Mirrors the Rust `GpuMaterial` (428 B std430) defined
+// Mirrors the Rust `GpuMaterial` (432 B std430) defined
 // in `crates/renderer/src/vulkan/material.rs`. Indexed by
 // `GpuInstance.materialId`. Phase 4 migrates one field (`roughness`)
 // off the per-instance copy onto this path; Phases 5–6 do the rest
@@ -105,13 +105,11 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 //
 // **Shader Struct Sync**: any field added here must be added in
 // lockstep to the Rust `GpuMaterial` struct + the matching
-// `intern`/encoding sites; the size of this struct (428 B) is pinned by
-// `gpu_material_size_is_428_bytes` on the Rust side.
+// `intern`/encoding sites; the size of this struct (432 B) is pinned by
+// `gpu_material_size_is_432_bytes` on the Rust side.
 //
-// (#3909 shrank it 432 -> 428 by removing the unsampled `textureIndex` lane.
-// The 396 B / `gpu_material_size_is_396_bytes` this comment carried before
-// was stale by 36 B and named a test that does not exist — the defect #3846
-// tracks; corrected here rather than left to compound.)
+// (#3909 shrank it 432 -> 428 by removing the unsampled `textureIndex` lane;
+// #4422 then appended `detailNeutral`, 428 -> 432.)
 struct GpuMaterial {
     // PBR scalars (vec4 #1)
     float roughness;
@@ -250,6 +248,13 @@ struct GpuMaterial {
     float grayscaleToPaletteScale;
     uint lightingMaskMapIndex;
     uint backLightingMapIndex;
+    // #4422 — producer-declared detail-combine neutral (offset 428).
+    // The detail sample is bound as a raw UNORM view and divided by
+    // this, in the encoded space the combine was authored in:
+    // FaceTint declares 65/255 (vanilla's own blank detail texture),
+    // everything else the classic MODULATE2X 128/255. Declared by the
+    // NIFAL boundary; this struct carries no per-game branch.
+    float detailNeutral;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {

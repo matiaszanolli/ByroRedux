@@ -378,7 +378,7 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 | 8 | `INSTANCE_FLAG_DIFFUSE_ALPHA` | BC1 diffuse texture carries alpha (guards `NiAlphaProperty`-less alpha test) |
 | 16–31 | terrain tile index | `(flags >> 16) & 0xFFFF` (when bit 3 set) |
 
-### `GpuMaterial` — 428 bytes, SSBO (Set 1, Binding 13)
+### `GpuMaterial` — 432 bytes, SSBO (Set 1, Binding 13)
 
 Indexed by `GpuInstance.material_id`. Deduplicated per frame: identical
 material params share one entry. Up to `MAX_MATERIALS` = 16 384 entries.
@@ -425,7 +425,8 @@ Selected fields (full layout in
 | 344–356 | animated shader sinks | Animated shader colour RGB + scalar; captured pending named-controller dispatch |
 | 360–388 | BGEM glass optics | Fresnel tint RGB, refraction deviation, blur scale/factor, scratch-roughness and dirt-overlay indices |
 | 392–416 | authored lighting response | lighting-effect pair, subsurface rolloff, rim/back powers, Fresnel power, greyscale-to-palette scale |
-| 420–424 | lighting texture roles | soft/rim lighting mask and back-lighting map indices → total **428** |
+| 420–424 | lighting texture roles | soft/rim lighting mask and back-lighting map indices |
+| 428 | `detail_neutral` | #4422 producer-declared detail-combine neutral → total **432** |
 
 The twelve entries at 300–344 are the original source-agnostic supplemental
 texture roles introduced with `MaterialTextureSet<T>`. Three of them
@@ -501,7 +502,7 @@ ReSTIR invalid-selection sentinel and is never occupied by a real light.
 | `MAX_LIGHTS` | 1023 | Per-frame point/spot/directional lights; packed index 1023 remains invalid |
 | `MAX_LIGHTS_PER_CLUSTER` | 512 | Candidate indices retained by each 16×9×24 cluster; overflow/high-water/drop telemetry is fence-lagged |
 | `MAX_INSTANCES` | 262 144 | One indirect draw command per instance worst-case |
-| `MAX_MATERIALS` | 16 384 | 428 B each; deduplicated per frame |
+| `MAX_MATERIALS` | 16 384 | 432 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 366 | First-sight bind-inverse upload cap |
 | `MAX_TERRAIN_TILES` | 1 024 | 32 B each |

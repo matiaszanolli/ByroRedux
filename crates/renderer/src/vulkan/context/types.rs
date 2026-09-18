@@ -82,6 +82,11 @@ pub struct DrawCommand {
     /// slot 2). Sampled at 2× UV scale and modulated into the base
     /// albedo. 0 = no detail map. See #399.
     pub detail_map_index: u32,
+    /// #4422 — the encoded-space detail-combine neutral declared by the
+    /// producer route (canonical `Material.detail_neutral`). Forwarded to
+    /// `GpuMaterial.detailNeutral`; the shader divides the (raw-view)
+    /// detail sample by it.
+    pub detail_neutral: f32,
     /// Bindless texture index for the gloss map
     /// (NiTexturingProperty slot 3). Per Gamebryo 2.3
     /// `HandleGlossMap(... pkGlossiness)` the .r channel feeds the
@@ -390,6 +395,7 @@ impl DrawCommand {
             dark_map_index: self.dark_map_index,
             glow_map_index: self.glow_map_index,
             detail_map_index: self.detail_map_index,
+            detail_neutral: self.detail_neutral,
             gloss_map_index: self.gloss_map_index,
             parallax_map_index: self.parallax_map_index,
             env_map_index: self.env_map_index,

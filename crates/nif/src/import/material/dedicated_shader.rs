@@ -264,6 +264,14 @@ fn apply_bs_lighting_shader(
                     };
                     if dest.is_none() {
                         *dest = intern_texture_path(pool, raw);
+                        // #4422 — the combine neutral rides the same
+                        // first-wins rule: only the route that actually
+                        // resolved the Detail role declares its neutral
+                        // (FaceTint's 65/255 blank-map convention vs the
+                        // classic MODULATE2X 128/255).
+                        if let TextureRole::Detail = role {
+                            info.detail_neutral = slot_role::detail_neutral_for(context);
+                        }
                     }
 
                     // #3458 — Skyrim slot 2 is multiplexed, so one texture can

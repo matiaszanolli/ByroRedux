@@ -759,7 +759,12 @@ fn map_secondary_texture_handles(
         base_color: base_handle,
         normal: slot(&textures.normal, linear),
         emissive: slot(&textures.emissive, srgb),
-        detail: slot(&textures.detail, srgb),
+        // #4422 — the detail combine divides by the producer-declared
+        // neutral in ENCODED space, so the view must be raw UNORM (no
+        // sRGB linearisation at sample time). The old Srgb binding made
+        // the shader's neutral point a linear 0.5 (encoded ≈188/255) and
+        // darkened every FaceTint head to ≈11% albedo.
+        detail: slot(&textures.detail, linear),
         smooth_spec: slot(&textures.smooth_spec, linear),
         dark: slot(&textures.dark, srgb),
         height: slot(&textures.height, linear),
@@ -964,6 +969,9 @@ mod tests {
             "specular",
             "lighting_mask",
             "glass_roughness_scratch",
+            // #4422 — the detail combine divides by the declared neutral in
+            // encoded space, so the view must be raw UNORM (was Srgb).
+            "detail",
         ] {
             assert!(seen.iter().any(|(path, cubemap, color_space)| path == role
                 && !cubemap
@@ -971,7 +979,8 @@ mod tests {
         }
         for role in [
             "emissive",
-            "detail",
+            // #4422 — detail is a raw-space numeric combine input now, not a
+            // colour sample: it moved to the Linear assertions above.
             "dark",
             "back_lighting",
             "glass_dirt_overlay",

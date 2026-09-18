@@ -35,7 +35,7 @@ re-implement or revert them.
 | R2 TLAS | Missing TLAS instances split into skinned/rigid/SSBO causes; `patch_camera_rt_flag`; off-frustum occluders retained; AS publication and shrink synchronization fixed by `c25f61e6` | Persist counters beyond rate-limited logs; cluster overflow telemetry; four-scene runtime integrity captures |
 | R3 transport | Wächter-Binder-style `offsetRayOrigin`; shared material-aware shadow transport; structured correctness views and bounded selected-ray probe | Closed: measured five-scene RT-LOD sweep plus repeated and one-million-unit Cornell visibility/probe gates |
 | R4 oracle | Redistributable Cornell scene; L0-L5 manifest and CPU contracts; hardware-gated L0-L5 captures; manual RT-CI workflow with retained logs/images/manifests | Dispatch the first self-hosted workflow run and retain its published artifact as the CI baseline |
-| R5 materials | Generated flags; semantic role walk; FO3/FNV permutation; per-role NIF/BGSM/BGEM provenance; lobe and role views; 428-byte shader contract; three-run provider matrix across five games | Decode Starfield CDB `.mat` fields (the matrix currently proves reference/presence and explicit unsupported roles), then close remaining exact overlay-source gaps |
+| R5 materials | Generated flags; semantic role walk; FO3/FNV permutation; per-role NIF/BGSM/BGEM provenance; lobe and role views; 432-byte shader contract; three-run provider matrix across five games | Decode Starfield CDB `.mat` fields (the matrix currently proves reference/presence and explicit unsupported roles), then close remaining exact overlay-source gaps |
 | R6 contracts | `lighting-from-cells.md` describes directional and ambient as separate controls | Reconcile renderer/shader/material docs with live code and pin critical GPU-layout claims |
 
 The old `28155b79` benchmark and its issue #2367 are historical evidence, not
@@ -112,7 +112,7 @@ carried forward.
   provenance, and SHA-256 manifests for 30 days. The first remote dispatch is
   the remaining operational step; the same artifact path is locally proven.
 - **R5 canonical roles, authored response, and provider breadth baseline complete.**
-  The 428-byte `GpuMaterial` carries BGEM glass optics plus soft/rim/back,
+  The 432-byte `GpuMaterial` carries BGEM glass optics plus soft/rim/back,
   Fresnel, palette, lighting-mask and back-lighting inputs through upload,
   hashing, GLSL layout and shading. Soft/rim/back terms share the selected
   light's visibility; glass uses authored refraction/blur/scratch/dirt inputs.
@@ -638,7 +638,7 @@ At minimum reconcile:
 - cluster and reservoir flow;
 - current TLAS consumers and cull masks;
 - origin/tMin and RT LOD policy;
-- generated material flags and the 428-byte `GpuMaterial` layout;
+- generated material flags and the 432-byte `GpuMaterial` layout;
 - canonical texture roles and FO3/FNV TXST permutation;
 - water and volumetric consumers already live at HEAD.
 

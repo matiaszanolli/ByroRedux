@@ -27,6 +27,7 @@ fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
         dark_map_index: 0,
         glow_map_index: 0,
         detail_map_index: 0,
+        detail_neutral: 0.5,
         gloss_map_index: 0,
         parallax_map_index: 0,
         parallax_height_scale: 0.0,

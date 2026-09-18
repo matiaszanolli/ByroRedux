@@ -1549,6 +1549,7 @@ mod draw_command_tests {
             dark_map_index: 12,
             glow_map_index: 13,
             detail_map_index: 14,
+            detail_neutral: 0.5,
             gloss_map_index: 15,
             parallax_map_index: 16,
             parallax_height_scale: 0.07,

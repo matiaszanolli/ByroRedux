@@ -110,7 +110,7 @@ removed the shader's hidden zero-light synthetic sun: L0 is black, L1 is the
 expected constant directional response, and L2 is a white visibility field
 with the blocker plus its predicted hard shadow in black. L3/L4 add a
 volumetric non-leakage gate; L5 adds categorical material populations. The
-canonical 428-byte `GpuMaterial` now also consumes BGEM glass optics and
+canonical 432-byte `GpuMaterial` now also consumes BGEM glass optics and
 source-normalized soft/rim/back/Fresnel/palette inputs. On 2026-09-03 the full
 ignored hardware suite passed serially on the RTX 4070 Ti (five tests covering
 L0-L5, forced BLAS pressure, repeated visibility, and the million-unit

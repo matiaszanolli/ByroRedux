@@ -455,7 +455,8 @@ bool rayHitHasCoverage(
 //   3. tintMap     (Skyrim/FO4 tint family)
 //   4. innerLayer  (MultiLayerParallax second surface, gated on that kind)
 //   5. dark        (Oblivion/Gamebryo baked-shadow lightmap, multiplicative)
-//   6. detail      (2x-UV high-frequency modulation, centered on 1.0)
+//   6. detail      (2x-UV high-frequency modulation, divided by the
+//      producer-declared encoded neutral — #4422)
 //
 // The COVERAGE half of the decal composite (texColor.a via
 // `rayHitHasCoverage`) was already fixed by #3986 — this closes the
@@ -522,10 +523,13 @@ vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod) {
         rgb *= darkSample;
     }
 
+    // #4422 — same producer-declared neutral as the primary path: raw
+    // UNORM view, divide by `detailNeutral`. Kept in lockstep with
+    // triangle.frag's combine (see the note there).
     if (mat.detailMapIndex != 0u) {
         vec3 detailSample = textureLod(
             textures[nonuniformEXT(mat.detailMapIndex)], uv * 2.0, lod).rgb;
-        rgb *= detailSample * 2.0;
+        rgb *= detailSample / max(mat.detailNeutral, 1e-4);
     }
 
     return max(rgb, vec3(0.0));

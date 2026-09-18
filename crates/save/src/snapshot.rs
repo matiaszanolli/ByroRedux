@@ -198,7 +198,16 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// mechanism here — it would mask a real intra-type change — so a pre-v23
 /// save (missing those keys entirely) is rejected by the version check
 /// rather than silently misdecoded or defaulted.
-pub const FORMAT_MAJOR: u16 = 23;
+///
+/// v23 -> v24 (#4422): `Material` gained the required field
+/// `detail_neutral` — the encoded-space detail-combine neutral declared at
+/// the NIFAL boundary (FaceTint 65/255 vs the classic MODULATE2X 128/255).
+/// Same shape of change as v19/v21 on this same column: the pre-v24 value
+/// would always be the MODULATE2X default, but the blanket rule takes the
+/// bump rather than `#[serde(default)]`-masking it, so a pre-v24 save is
+/// rejected by the version check instead of decoded with a field its
+/// writer never produced.
+pub const FORMAT_MAJOR: u16 = 24;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

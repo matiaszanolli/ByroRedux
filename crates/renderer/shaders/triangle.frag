@@ -1409,14 +1409,20 @@ void main() {
     // #399 — NiTexturingProperty slot 2 detail overlay. Sampled at
     // 2× UV scale (Gamebryo convention — high-frequency variation at
     // half the wavelength of the base diffuse) and modulated into the
-    // albedo. Center the modulation around 1.0 so a 0.5 grey detail
-    // sample is a no-op rather than halving the surface brightness.
+    // albedo. #4422 — the detail texture is bound as a raw UNORM view
+    // and the combine divides by the producer-declared neutral
+    // (`detailNeutral`), so the modulation runs in the encoded space
+    // the source engine ran it in: the classic MODULATE2X route is
+    // neutral at 128/255, and the Skyrim FaceTint route is neutral at
+    // 65/255 (vanilla's own blank detail texture). The old
+    // `×2`-on-an-sRGB-view combine linearised the sample first and
+    // darkened every FaceGeom head to ≈11% albedo.
     if (mat.detailMapIndex != 0u && (dbgFlags & DBG_BYPASS_DETAIL) == 0u) {
         vec3 detailSample = texture(
             textures[nonuniformEXT(mat.detailMapIndex)],
             sampleUV * 2.0
         ).rgb;
-        albedo *= detailSample * 2.0;
+        albedo *= detailSample / max(mat.detailNeutral, 1e-4);
     }
 
     // #704 / O4-06 — NiTexturingProperty slot 3 gloss map. Per the

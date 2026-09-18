@@ -977,6 +977,11 @@ pub(super) fn collect_static_mesh_draws(
                     dark_map_index,
                     glow_map_index,
                     detail_map_index,
+                    // #4422 — forward the producer-declared detail-combine
+                    // neutral from the canonical Material.
+                    detail_neutral: mat
+                        .map(|m| m.detail_neutral)
+                        .unwrap_or(byroredux_core::ecs::components::material::DEFAULT_DETAIL_NEUTRAL),
                     gloss_map_index,
                     parallax_map_index,
                     parallax_height_scale,

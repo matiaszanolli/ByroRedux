@@ -766,7 +766,7 @@ impl ConsoleCommand for MatSetCommand {
             glass_refraction_scale|glass_blur_scale|glass_blur_scale_factor|\
             lighting_effect_1|lighting_effect_2|subsurface_rolloff|rimlight_power|\
             backlight_power|fresnel_power|grayscale_to_palette_scale|alpha_threshold|\
-            parallax_height_scale|parallax_max_passes (1 value), \
+            parallax_height_scale|parallax_max_passes|detail_neutral (1 value), \
             color|diffuse_color|emissive_color|specular_color|translucency_subsurface_color|\
             glass_fresnel_color (3 values), \
             material_kind|material_flags (1 int)";
@@ -931,6 +931,9 @@ impl ConsoleCommand for MatSetCommand {
             "alpha_threshold" => set_scalar(&mut m.alpha_threshold, &vals),
             "parallax_height_scale" => set_scalar(&mut m.parallax_height_scale, &vals),
             "parallax_max_passes" => set_scalar(&mut m.parallax_max_passes, &vals),
+            // #4422 — the encoded-space detail-combine neutral (FaceTint
+            // 65/255 vs MODULATE2X 128/255).
+            "detail_neutral" => set_scalar(&mut m.detail_neutral, &vals),
             "color" | "diffuse_color" | "diffuse" => set_vec3(&mut m.diffuse_color, &vals),
             "emissive_color" => set_vec3(&mut m.emissive_color, &vals),
             "specular_color" => set_vec3(&mut m.specular_color, &vals),

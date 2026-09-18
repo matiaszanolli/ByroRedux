@@ -172,6 +172,7 @@ pub(super) fn emit_particles(
                 dark_map_index: 0,
                 glow_map_index: 0,
                 detail_map_index: 0,
+                detail_neutral: byroredux_core::ecs::components::material::DEFAULT_DETAIL_NEUTRAL,
                 gloss_map_index: 0,
                 parallax_map_index: 0,
                 parallax_height_scale: 0.04,

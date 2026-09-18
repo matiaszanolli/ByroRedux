@@ -2350,7 +2350,7 @@ fn hash_gpu_material_fields_covers_every_gpu_material_field() {
     for offset in 0..size {
         let mut probe = base;
         // SAFETY: `GpuMaterial` is `#[repr(C)]` with no padding (every field
-        // is a 4-byte u32/f32; `gpu_material_size_is_428_bytes` pins the
+        // is a 4-byte u32/f32; `gpu_material_size_is_432_bytes` pins the
         // total), so every byte is a valid part of some u32/f32 and any bit
         // pattern written there is a valid value of that field. `offset` is
         // bounded by `size_of::<GpuMaterial>()`.
