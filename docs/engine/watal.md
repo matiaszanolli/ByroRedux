@@ -602,10 +602,13 @@ existing components. Four genuinely new types fill gaps where no ECS role exists
 
 ### 5.1 Promote onto `WaterMaterial` (render gaps; sentinel for older games)
 
-`sun_power` + `spec_hardness`/`spec_brightness` (A7, currently skipped) ·
-`scatter_color`/`scatter_amount`/`scatter_extinction` (A8 sunlight sub-surface
-glow) · `wave_amplitude`/`wave_frequency` (A11, including Skyrim's displacement
-force override) · authored three-layer noise UV and amplitude scales ·
+`sun_power` (A7 — landed; the Skyrim tail folds Specular Brightness /
+Sun-Sparkle Magnitude / Sun-Specular Magnitude into the canonical scalar and
+Sparkle Power into the sun exponent) · `scatter_color`/`scatter_amount`/
+`scatter_extinction` (A8 sunlight sub-surface glow — landed, per the §2
+component inventory and the §7 Phase-3 list) ·
+`wave_amplitude`/`wave_frequency` (A11, including Skyrim's displacement
+force override — landed) · authored three-layer noise UV and amplitude scales ·
 authored reflection/specular/refraction controls ·
 `normal_octaves: u8`
 (A1, allow ≥4-6 to match Skyrim chop; sentinel 2 = today's `scroll_a/b`) ·
@@ -717,14 +720,20 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
    drift, calm-water quiescence); the remaining open real-data gate is the
    dynamic-body contact/current one.
 
-4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH — OPEN.** The indexed per-frame
-   water UBO, authored noise layers, bounded sunlight scattering, and the
-   kinematic swim core, bounded breath/drowning damage, and the OpenMW-style
-   swimlevel threshold (shallow wading stays terrestrial) are live;
-   `SplashEvent`/`RippleEvent` → particle +
-   audio is live, as is bounded ripple normal injection (A10); underwater god-rays via the M55
-   volumetrics gated on `WaterContact`; replace the EDID `WaterKind` heuristic with
-   data-driven classification. Each sub-item independently shippable.
+4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH — OPEN (two items left).**
+   The indexed per-frame water UBO, authored noise layers, bounded sunlight
+   scattering, the kinematic swim core, bounded breath/drowning damage, the
+   OpenMW-style swimlevel threshold, `SplashEvent`/`RippleEvent` → particle +
+   audio, bounded ripple normal injection (A10), and the data-driven
+   `WaterKind` classification (W3.18 audit, 2026-09-18: authored `NAM0`
+   linear velocity and `NAM5` flow noise drive Rapids/River, `material_name`
+   drives Lava, and the EDID name is only the fallback signal in
+   `classify_water_kind_and_flow` — the "replace the heuristic" item is
+   done) are all live. Remaining: underwater god-rays via the M55
+   volumetrics gated on `WaterContact`, and the §2 remainder (residual
+   unnamed Skyrim DNAM tail bytes — xEdit dev-4.1.6 marks every still-
+   unread offset unnamed, so nothing meaningful is left to decode there).
+   Each sub-item independently shippable.
 
 ---
 
