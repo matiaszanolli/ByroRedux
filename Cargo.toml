@@ -19,6 +19,7 @@ members = [
     "crates/bsa",
     "crates/bgsm",
     "crates/sfmaterial",
+    "crates/menuxml",
     "crates/ui",
     "crates/papyrus",
     "crates/pex",
@@ -60,6 +61,7 @@ byroredux-spt = { path = "crates/spt" }
 byroredux-bsa = { path = "crates/bsa" }
 byroredux-bgsm = { path = "crates/bgsm" }
 byroredux-sfmaterial = { path = "crates/sfmaterial" }
+byroredux-menuxml = { path = "crates/menuxml" }
 byroredux-physics = { path = "crates/physics" }
 byroredux-cxx-bridge = { path = "crates/cxx-bridge" }
 byroredux-ui = { path = "crates/ui" }

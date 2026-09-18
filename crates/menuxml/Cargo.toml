@@ -1,0 +1,16 @@
+[package]
+name = "byroredux-menuxml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Vanilla-corpus integration test: opens the real `Oblivion - Misc.bsa`
+# / `Oblivion - Textures - Compressed.bsa` when
+# `BYROREDUX_OBLIVION_DATA` is set (the smoke-test fixture convention).
+byroredux-bsa = { workspace = true }
+env_logger = { workspace = true }

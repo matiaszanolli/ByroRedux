@@ -850,6 +850,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "byroredux-menuxml"
+version = "0.1.0"
+dependencies = [
+ "byroredux-bsa",
+ "env_logger",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "byroredux-mod-runtime"
 version = "0.1.0"
 dependencies = [
