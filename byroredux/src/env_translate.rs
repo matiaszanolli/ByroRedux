@@ -1120,6 +1120,13 @@ pub(crate) fn translate_sky(
 /// Convert Bethesda WTHR classification flags into the procedural medium's
 /// occupancy control. Precipitation takes priority when records combine flags;
 /// unclassified legacy weather retains the historical neutral coverage.
+///
+/// Provenance (W3.14 census, `weather_coverage_census`): the constants are
+/// a documented engine choice, not a translation of authored data — the
+/// 2D engines' cloud coverage emerged from texture alpha × JNAM layer
+/// multipliers, which do not reduce to a scalar (census: 32/84 Skyrim
+/// weathers author no JNAM; authored records average max-layer alpha 0.99
+/// regardless of classification). See skyal.md §2 for the full note.
 fn fog_coverage_from_weather(classification: u8) -> f32 {
     use byroredux_plugin::esm::records::weather::{
         WTHR_CLOUDY, WTHR_PLEASANT, WTHR_RAINY, WTHR_SNOW,

@@ -257,10 +257,20 @@ Still open:
 * **Cloud type** (stratus / cumulus / cumulonimbus). The mapping from WTHR
   classification flags is undetermined and must be measured. A single
   cumulus-band profile is used for every weather.
-* **Coverage mapping provenance.** Coverage is `SkyDome::weather_aurora.z`,
+* ~~**Coverage mapping provenance.**~~ **Documented as an engine choice
+  (W3.14 census, 2026-09-18).** Coverage is `SkyDome::weather_aurora.z`,
   derived in `env_translate::fog_coverage_from_weather` as a fixed
-  0.86 / 0.80 / 0.70 / 0.40 / 0.55 per classification flag. That mapping
-  is pre-existing and uncited.
+  0.86 / 0.80 / 0.70 / 0.40 / 0.55 per classification flag. The census
+  (`crates/plugin/examples/weather_coverage_census.rs`) established that
+  no authored scalar exists to derive it from: the 2D engines' coverage
+  emerged from the cloud textures' own alpha channels multiplied by the
+  JNAM per-layer brightness multipliers, which do not reduce to a scalar
+  (32 of 84 `Skyrim.esm` weathers author no JNAM at all; the 16 authored
+  `pleasant` records average a max-layer alpha of 0.99 — the one weak
+  directional signal is their layer-0 mean of 0.78 vs 1.0 elsewhere).
+  Retuning the constants against that signal would be a guess; the
+  mapping stands as a defensible engine value like `SUN_SOUTH_TILT`,
+  with the texture-alpha provenance recorded here as its citation.
 * **Noise shape frequencies** (`0.00008` / `0.0009` per metre) predate the
   sourced pass and are not yet justified.
 
