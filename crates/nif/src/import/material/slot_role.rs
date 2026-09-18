@@ -63,6 +63,13 @@ pub enum TextureRole {
     InnerLayer,
     /// Standalone specular intensity/colour, on model-space-normal materials.
     Specular,
+    /// #4424 — the FO4 smoothness/spec-strength map (`_s.dds`, BC5): the
+    /// same resource BGSM names `smooth_spec_texture`. Slot 7 and the BGSM
+    /// field are two sources for one file, so both route here and
+    /// first-wins dedupes them; the previous `Specular` routing multiplied
+    /// a two-channel BC5 texture into the specular RGB colour (zeroing its
+    /// blue channel on 45,974 measured shapes).
+    SmoothSpec,
     /// Skyrim soft/rim-light mask from texture-set slot 2.
     LightingMask,
     /// Skyrim back-light map from texture-set slot 7.
@@ -503,9 +510,18 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
                 }
             }
         }
-        // FO4 slot 7 is authored specular whether or not the almost-never-set
-        // Model_Space_Normals flag is present (#2998).
-        (TextureSlotLayout::Fallout4, 7) => Some(TextureRole::Specular),
+        // #4424 — FO4 slot 7 holds the smoothness/spec-strength map: the
+        // SAME file the property's BGSM names as `smooth_spec_texture`
+        // (45,974 of 46,382 measured slot-7+BGSM shapes agree on the file
+        // after normalisation; all but one of the corpus's sampled `_s.dds`
+        // are BC5). Routing it to the smooth-spec role makes the two
+        // sources agree and lets first-wins dedupe them. The old
+        // `Specular` routing (#2998) fed the same two-channel texture to
+        // the specular-COLOUR multiply, forcing `specColor.b = 0` and
+        // tinting every direct highlight warm. The channel-layout question
+        // for the gloss sampler itself remains open (#4424's "Open
+        // question") — the gloss path is NOT touched here.
+        (TextureSlotLayout::Fallout4, 7) => Some(TextureRole::SmoothSpec),
         (TextureSlotLayout::Fallout76 | TextureSlotLayout::Starfield, 7) => None,
 
         (_, _) => None,
@@ -867,8 +883,8 @@ mod tests {
         );
         assert_eq!(
             slot_to_role(context, 7),
-            Some(TextureRole::Specular),
-            "FO4 slot 7 must not depend on Model_Space_Normals (#2998)"
+            Some(TextureRole::SmoothSpec),
+            "FO4 slot 7 is the BGSM smooth_spec file itself, and must not              depend on Model_Space_Normals (#2998 evidence, #4424 rerouting)"
         );
     }
 

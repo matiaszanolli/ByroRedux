@@ -258,6 +258,10 @@ fn apply_bs_lighting_shader(
                         TextureRole::EnvironmentMask => &mut info.env_mask,
                         TextureRole::InnerLayer => &mut info.inner_layer_map,
                         TextureRole::Specular => &mut info.specular_map,
+                        // #4424 — FO4 slot 7 = the BGSM `smooth_spec_texture`
+                        // file; `info.gloss_map` is the carrier that
+                        // `texture_set` publishes as the smooth-spec role.
+                        TextureRole::SmoothSpec => &mut info.gloss_map,
                         TextureRole::LightingMask => &mut info.lighting_mask_map,
                         TextureRole::BackLighting => &mut info.back_lighting_map,
                         TextureRole::Wrinkle => &mut info.wrinkle_map,

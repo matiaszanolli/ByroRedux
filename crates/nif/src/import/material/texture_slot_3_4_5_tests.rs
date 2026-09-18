@@ -1339,7 +1339,7 @@ fn skyrim_non_tint_slot_2_without_glow_flag_is_not_emissive() {
 }
 
 #[test]
-fn fo4_slot_3_is_greyscale_lut_and_slot_7_is_specular_without_msn() {
+fn fo4_slot_3_is_greyscale_lut_and_slot_7_is_smooth_spec_without_msn() {
     let blocks: Vec<Box<dyn NiObject>> = vec![
         Box::new(lighting_shader_with_type_and_texset(0, 1)),
         Box::new(full_8_slot_tex_set("fo4")),
@@ -1358,10 +1358,19 @@ fn fo4_slot_3_is_greyscale_lut_and_slot_7_is_specular_without_msn() {
         info.parallax_map.is_none(),
         "FO4 palette gradient must not enter the POM height lane (#2997)"
     );
-    assert_path(&pool, info.specular_map, "fo4_7.dds");
+    // #4424 — slot 7 names the same `_s.dds` file the BGSM merge calls
+    // `smooth_spec_texture`, so it lands in the smooth-spec carrier
+    // (`info.gloss_map` → `MaterialTextureSet::smooth_spec`) instead of the
+    // specular-colour lane, which multiplied a two-channel BC5 texture into
+    // an RGB colour (zeroing its blue on every BC5 fragment).
+    assert_path(&pool, info.gloss_map, "fo4_7.dds");
+    assert!(
+        info.specular_map.is_none(),
+        "FO4 slot 7 must not reach the specular-colour lane (#4424)"
+    );
     assert!(
         !info.model_space_normals,
-        "fixture must prove FO4 specular no longer depends on MSN (#2998)"
+        "fixture must prove FO4 slot 7 routing no longer depends on MSN (#2998)"
     );
 }
 

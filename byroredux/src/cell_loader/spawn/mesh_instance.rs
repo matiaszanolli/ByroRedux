@@ -380,8 +380,16 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
             // BGSM authors smoothness/specular-strength separately from its
             // standalone specular-colour map (#3234). Neither is a raw TXST
             // slot here, so preserve the canonical role directly.
+            // #4424 — FO4 slot 7 routes to SmoothSpec (it names the same
+            // `_s.dds` file BGSM calls `smooth_spec_texture`), so a TXST
+            // override sitting in the overlay's raw slot-7 field lands in
+            // the smooth-spec lane on FO4 shapes. Skyrim keeps its own
+            // slot-7 readings (BackLighting / MSN specular) below.
             (textures.smooth_spec, sources.smooth_spec) = resolve_effective(
-                ov.and_then(|o| o.smooth_spec),
+                ov.and_then(|o| {
+                    o.smooth_spec
+                        .or_else(|| pick(7, o.specular, TextureRole::SmoothSpec))
+                }),
                 material.textures.smooth_spec,
                 sources.smooth_spec,
             );
@@ -400,9 +408,10 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                 material.textures.inner_layer,
                 sources.inner_layer,
             );
-            // Specular comes from Skyrim/FO4 slot 7 or FO76 slot 6. The table
-            // chooses the source; the overlay field names remain raw-slot
-            // names, so both candidates must be offered here (#2998/#3085).
+            // Specular comes from Skyrim MSN slot 7 or FO76 slot 6. FO4 slot
+            // 7 is the smooth-spec role since #4424, so its pick moved to
+            // the smooth-spec resolve above. The overlay field names remain
+            // raw-slot names; the table chooses the source (#2998/#3085).
             let specular_override = ov.and_then(|o| {
                 o.external_specular
                     .or_else(|| pick(6, o.inner, TextureRole::Specular))
@@ -1642,11 +1651,16 @@ mod tests {
             Some(r"textures\fo4\palette_lgrad.dds")
         );
         assert!(resolved[0].textures.height.is_none());
+        // #4424 — FO4 slot 7 is the smooth-spec role (the same `_s.dds`
+        // file BGSM names `smooth_spec_texture`), so the raw slot-7
+        // override lands in `smooth_spec`, and the specular-colour lane
+        // stays empty.
         assert_eq!(
-            resolved[0].textures.specular.as_deref(),
+            resolved[0].textures.smooth_spec.as_deref(),
             Some(r"textures\fo4\surface_s.dds"),
-            "FO4 slot 7 must route without the MSN flag (#2998)"
+            "FO4 slot 7 must reach the smooth-spec lane without the MSN flag (#2998/#4424)"
         );
+        assert!(resolved[0].textures.specular.is_none());
     }
 
     /// #3187 — an XTXR slot-5 swap on an FO4 tint-family shape (FaceTint /
