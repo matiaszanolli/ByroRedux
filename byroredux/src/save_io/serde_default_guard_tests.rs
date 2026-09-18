@@ -636,7 +636,15 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // shadows. `VisibilityMask`'s own shape is still a plain `u8` newtype —
     // no field was added, removed, or retyped — so a save's serialized
     // bytes for this type are unchanged.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5001_1656_c9cf_b2c5;
+    // W2.10 (light & shadow campaign) — refreshed WITHOUT a major bump,
+    // the #3ce970a5a false-positive class again: `VisibilityMask` is a
+    // tuple struct, so the file-scoped guard's brace-matching sweeps the
+    // whole `impl VisibilityMask` block into the fingerprint, and W2.10's
+    // new `for_legacy_local_light` policy method (a doc-table + a const
+    // fn delegating to `for_legacy_projection`) moved the scan span. The
+    // type's serialized shape is still a plain `u8` newtype — no field
+    // added, removed, or retyped — so no snapshot decodes differently.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0666_f922_7959_3339;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

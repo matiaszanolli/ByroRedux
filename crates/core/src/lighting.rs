@@ -169,6 +169,35 @@ impl VisibilityMask {
             Self(Self::ARCHITECTURE.0 | Self::DYNAMIC_ACTOR.0)
         }
     }
+
+    /// W2.10 (light & shadow correctness campaign) — THE shadow-visibility
+    /// policy for legacy local emitters, stated as a decision table instead
+    /// of an inline bool. Every legacy producer routes through this via
+    /// [`crate::ecs::components::LightSource::from_legacy_world_units`]:
+    ///
+    /// | source class | shadow_flags in | mask out |
+    /// |---|---|---|
+    /// | NIF-direct `NiLight` (in-mesh flame/fixture) | `SHADOW_OMNIDIRECTIONAL` (set by the spawn boundary) | `FULL` — authored surface intent |
+    /// | ESM LIGH, authored projection bit (SPOTLIGHT / HEMISPHERE / OMNIDIRECTIONAL) | that bit | `FULL` — authored intent |
+    /// | ESM LIGH, FO3/FNV zero-authoring | `SHADOW_OMNIDIRECTIONAL` (`canonical_light_shadow_flags` correction) | `FULL` |
+    /// | ESM LIGH, Starfield Light Type 1 (Shadow Spotlight) | `SHADOW_SPOTLIGHT` | `FULL` |
+    /// | ESM LIGH, Starfield Light Type 2 (NonShadow Spotlight) | `0` | conservative — the source engine traces no spot shadows from it |
+    /// | ESM LIGH, no authored projection (the common room light) | `0` | conservative: `ARCHITECTURE \| DYNAMIC_ACTOR` |
+    ///
+    /// The conservative row is deliberate (see
+    /// [`Self::for_legacy_projection`]): unflagged room lights get room
+    /// occlusion + actor contact shadows, while static props, foliage,
+    /// glass and effects stay untraced. **Open, device-gated question**
+    /// (light & shadow campaign W2.10): whether that row should also
+    /// include `STATIC_PROP` so furniture/props cast contact shadows from
+    /// unflagged room lights. Flipping it blind risks the "comb-like
+    /// projections" artifacts the conservative choice prevents; the flip
+    /// is gated on Cornell L2/L5 oracle captures plus a real-content A/B
+    /// (Prospector / Bannered Mare). Until then this table is the single
+    /// home of the policy; any change happens HERE, not in a producer.
+    pub const fn for_legacy_local_light(shadow_flags: u32) -> Self {
+        Self::for_legacy_projection(shadow_flags != 0)
+    }
 }
 
 impl BitOr for VisibilityMask {
@@ -354,6 +383,47 @@ fn sanitize_direction(direction: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// W2.10 — the [`VisibilityMask::for_legacy_local_light`] decision
+    /// table, pinned flag-class by flag-class so any policy change is a
+    /// deliberate edit to the table (and its doc), never a silent
+    /// producer-side drift.
+    #[test]
+    fn legacy_local_light_shadow_policy_table() {
+        use crate::ecs::components::light::{
+            LIGHT_FLAG_SHADOW_HEMISPHERE, LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+            LIGHT_FLAG_SHADOW_SPOTLIGHT,
+        };
+        // Every authored projection class -> FULL.
+        for flags in [
+            LIGHT_FLAG_SHADOW_SPOTLIGHT,
+            LIGHT_FLAG_SHADOW_HEMISPHERE,
+            LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+        ] {
+            assert_eq!(
+                VisibilityMask::for_legacy_local_light(flags),
+                VisibilityMask::FULL,
+                "flags {flags:#06x} are authored projection intent"
+            );
+        }
+        // No authored projection -> the conservative fallback.
+        assert_eq!(
+            VisibilityMask::for_legacy_local_light(0),
+            VisibilityMask::for_legacy_projection(false)
+        );
+        let conservative = VisibilityMask::for_legacy_local_light(0);
+        assert!(conservative.contains(VisibilityMask::ARCHITECTURE));
+        assert!(conservative.contains(VisibilityMask::DYNAMIC_ACTOR));
+        // Static props stay OUT of the conservative row — the device-gated
+        // open question documented on the fn must not drift silently.
+        assert!(
+            !conservative.contains(VisibilityMask::STATIC_PROP),
+            "adding STATIC_PROP to the unflagged fallback is the W2.10 \
+             device-gated decision (Cornell L2/L5 oracle + real-content \
+             A/B); do not flip it here blind"
+        );
+    }
+
 
     #[test]
     fn bethesda_scale_round_trips_through_metres() {

@@ -70,7 +70,10 @@ impl LightSource {
         outer_angle: f32,
         shadow_flags: u32,
     ) -> Self {
-        let visibility = VisibilityMask::for_legacy_projection(shadow_flags != 0);
+        // W2.10 — the shadow-visibility policy lives in
+        // `VisibilityMask::for_legacy_local_light` (the named decision
+        // table); this constructor is one of its two routing sites.
+        let visibility = VisibilityMask::for_legacy_local_light(shadow_flags);
         Self {
             emitter: Emitter::from_legacy_world_units(
                 radius,
