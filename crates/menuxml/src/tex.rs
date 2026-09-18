@@ -151,28 +151,20 @@ fn bc1_colors(
     };
     let a = expand(c0);
     let b = expand(c1);
+    // Interpolate in u16 — the endpoint sums reach 3×255 and a premature
+    // `as u8` wraps before the divide (a real bug this module shipped
+    // with on first pass: 651 → 139 → 46 instead of 217).
+    let mix = |wa: u16, wb: u16| -> [u8; 3] {
+        [
+            ((a[0] as u16 * wa + b[0] as u16 * wb) / (wa + wb)) as u8,
+            ((a[1] as u16 * wa + b[1] as u16 * wb) / (wa + wb)) as u8,
+            ((a[2] as u16 * wa + b[2] as u16 * wb) / (wa + wb)) as u8,
+        ]
+    };
     let (c2, c3) = if c0 > c1 {
-        (
-            [
-                (a[0] as u16 * 2 + b[0] as u16) as u8 / 3,
-                (a[1] as u16 * 2 + b[1] as u16) as u8 / 3,
-                (a[2] as u16 * 2 + b[2] as u16) as u8 / 3,
-            ],
-            [
-                (a[0] as u16 + b[0] as u16 * 2) as u8 / 3,
-                (a[1] as u16 + b[1] as u16 * 2) as u8 / 3,
-                (a[2] as u16 + b[2] as u16 * 2) as u8 / 3,
-            ],
-        )
+        (mix(2, 1), mix(1, 2))
     } else {
-        (
-            [
-                (a[0] as u16 + b[0] as u16) as u8 / 2,
-                (a[1] as u16 + b[1] as u16) as u8 / 2,
-                (a[2] as u16 + b[2] as u16) as u8 / 2,
-            ],
-            [0, 0, 0],
-        )
+        (mix(1, 1), [0, 0, 0])
     };
     for i in 0..16u32 {
         let x = px + i % 4;

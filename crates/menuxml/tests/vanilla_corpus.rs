@@ -160,7 +160,9 @@ fn vanilla_hud_renders() {
         (0..px.len() / 4)
             .filter(|i| {
                 let o = i * 4;
-                px[o] > 120 && px[o + 1] < 90 && px[o + 2] < 90 && px[o + 3] > 0
+                // Health fill decodes to ~(222, 93, 82) — match on red
+                // dominance, not a tight green/blue bound.
+                px[o] > 150 && px[o + 1] < 130 && px[o + 2] < 130 && px[o] > px[o + 1] + 40
             })
             .count()
     };
@@ -199,10 +201,17 @@ fn dump_png(name: &str, width: u32, height: u32, rgba: &[u8]) {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/menuxml");
     let _ = std::fs::create_dir_all(&dir);
-    // Reuse the workspace `image` dependency via dev-dependency feature
-    // is not enabled for png; encode manually as a raw PPM-style dump is
-    // not viewable enough — write a minimal uncompressed PNG by hand.
-    if let Err(e) = write_png(&dir.join(name), width, height, rgba) {
+    // Composite over opaque black — the frame carries straight alpha and
+    // viewers/analytics render un-composited transparent PNGs as flat gray.
+    let mut opaque = rgba.to_vec();
+    for px in opaque.chunks_exact_mut(4) {
+        let a = px[3] as u32;
+        px[0] = ((px[0] as u32 * a) / 255) as u8;
+        px[1] = ((px[1] as u32 * a) / 255) as u8;
+        px[2] = ((px[2] as u32 * a) / 255) as u8;
+        px[3] = 255;
+    }
+    if let Err(e) = write_png(&dir.join(name), width, height, &opaque) {
         eprintln!("png dump failed: {e}");
     }
 }

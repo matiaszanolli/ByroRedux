@@ -824,6 +824,7 @@ pub(crate) fn setup_scene(
     ctx: &mut VulkanContext,
     ui_manager: &mut Option<UiManager>,
     ui_texture_handle: &mut Option<u32>,
+    hud: &mut Option<crate::hud::OblivionHud>,
     camera_pos_override: Option<(f32, f32, f32)>,
     camera_forward_override: Option<(f32, f32, f32)>,
     streaming_slot: &mut Option<WorldStreamingState>,
@@ -853,6 +854,13 @@ pub(crate) fn setup_scene(
     );
     spawn_player_body(world, ctx, cam_pos, forward, spawn_plan, player_mode);
     launch_archive_menu(ctx, ui_manager, ui_texture_handle, &args);
+    // M48.4 — `--hud` launches the Oblivion MenuXml HUD after (and
+    // independently of) any Scaleform menu; the frame tick prefers the
+    // HUD when both somehow load.
+    *hud = crate::hud::launch_hud(ctx, world, &args);
+    if hud.is_some() {
+        *ui_texture_handle = Some(hud.as_ref().unwrap().texture_handle);
+    }
 }
 
 /// What [`load_scene_content`] settled about the scene, for the phases that

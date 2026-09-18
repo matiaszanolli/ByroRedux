@@ -357,10 +357,30 @@ impl App {
                 },
             );
 
-            // Tick and render the UI overlay (Ruffle SWF player).
+            // Tick and render the UI overlay. The Oblivion MenuXml HUD
+            // (M48.4) owns the overlay when live; otherwise this is the
+            // Ruffle SWF player.
             let ui_t0 = Instant::now();
             let ui_tex = if self.loading_screen.active() {
                 self.loading_screen.texture()
+            } else if self.hud.is_some() {
+                // Read the control resource before mutably borrowing the
+                // HUD renderer (disjoint-field borrows, but the resource
+                // read is cheap and keeps the tick function parameter-clean).
+                let control = self
+                    .world
+                    .try_resource::<crate::hud::HudControl>()
+                    .map(|control| *control)
+                    .unwrap_or_default();
+                let hud = self.hud.as_mut().expect("is_some checked above");
+                tick_hud_overlay(
+                    hud,
+                    &self.world,
+                    ctx,
+                    frame.cam_forward,
+                    self.ui_texture_handle,
+                    &control,
+                )
             } else {
                 tick_ui_overlay(
                     &self.world,
@@ -804,6 +824,40 @@ struct UiOverlayState<'a> {
     dropped_host_calls_menu: &'a mut Option<String>,
     reported_host_methods: &'a mut std::collections::HashSet<(String, String)>,
     reported_host_methods_capped: &'a mut bool,
+}
+
+/// Tick the Oblivion MenuXml HUD: push engine state into the menu's
+/// trait overrides, rasterize, and upload through the same overlay
+/// texture the Scaleform path uses. `None` (hidden) stops the UI quad —
+/// the same contract as [`tick_ui_overlay`]'s `UiFrame::Hidden` arm.
+fn tick_hud_overlay(
+    hud: &mut crate::hud::OblivionHud,
+    world: &byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
+    cam_forward: [f32; 3],
+    texture_handle: Option<u32>,
+    control: &crate::hud::HudControl,
+) -> Option<u32> {
+    if !control.visible {
+        return None;
+    }
+    let (w, h) = hud.frame_size();
+    let Some(pixels) = hud.render(world, cam_forward, control) else {
+        // Unchanged — keep compositing the previously uploaded frame.
+        return texture_handle;
+    };
+    let handle = texture_handle?;
+    let allocator = ctx.allocator.as_ref().unwrap();
+    let upload_ctx = GpuUploadCtx {
+        device: &ctx.device,
+        allocator,
+        queue: &ctx.graphics_queue,
+        command_pool: ctx.transfer_pool,
+    };
+    if let Err(e) = ctx.texture_registry.update_rgba(upload_ctx, handle, w, h, pixels) {
+        log::error!("HUD texture update failed: {e:#}");
+    }
+    Some(handle)
 }
 
 /// Tick the Ruffle overlay, drain what the menu asked of the host, and

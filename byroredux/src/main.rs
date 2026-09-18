@@ -34,6 +34,7 @@ mod helpers;
 mod interaction;
 mod inventory;
 mod notifications;
+mod hud;
 mod list_cells;
 mod material_translate;
 mod name_lookup;
@@ -401,6 +402,11 @@ struct App {
     scheduler: Scheduler,
     last_frame: Instant,
     ui_manager: Option<UiManager>,
+    /// Oblivion MenuXml HUD (M48.4 legacy-UI track). Mutually exclusive
+    /// with the Scaleform overlay in practice: `--hud` is the Oblivion
+    /// route, `--menu` the Skyrim+/FO4 one, and the frame tick prefers
+    /// whichever is live.
+    hud: Option<hud::OblivionHud>,
     /// Window-system state used to translate events into Scaleform space.
     ui_input_state: ui_input::UiInputState,
     /// Texture handle for the UI overlay (registered in the texture registry).
@@ -840,6 +846,7 @@ impl App {
             scheduler,
             last_frame: Instant::now(),
             ui_manager: None,
+            hud: None,
             ui_input_state: ui_input::UiInputState::default(),
             ui_texture_handle: None,
             ui_reported_host_methods: std::collections::HashSet::new(),
@@ -941,6 +948,7 @@ impl App {
             ctx,
             &mut self.ui_manager,
             &mut self.ui_texture_handle,
+            &mut self.hud,
             self.camera_pos_override,
             self.camera_forward_override,
             &mut self.streaming,

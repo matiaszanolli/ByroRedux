@@ -394,10 +394,13 @@ fn truthy_4(b: bool) -> Scalar {
 /// authoring (Gamebryo's TiMenuItem defaults).
 pub fn default_trait_value(name: &str) -> Scalar {
     match name {
-        // Booleans default true (&true; == 2).
-        "visible" | "locus" | "clips" | "clipwindow" | "target" => Scalar::Num(2.0),
+        // `visible` alone defaults true. `locus`, `clips`, `clipwindow`
+        // and `target` all default FALSE — vanilla authors them
+        // explicitly wherever they matter, and defaulting any of them
+        // true makes every tile a clip origin/window (the bug that
+        // zeroed the status-ribbon clip rects on first render).
+        "visible" => Scalar::Num(2.0),
         "alpha" | "red" | "green" | "blue" => Scalar::Num(255.0),
-        // Colors default to white; alpha fully opaque.
         _ => Scalar::Num(0.0),
     }
 }
