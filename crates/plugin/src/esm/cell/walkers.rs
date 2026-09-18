@@ -554,6 +554,29 @@ fn parse_cell_group_inner(
                             let fog_clip = (sub.data.len() >= 36).then(|| r.f32_or_default());
                             let fog_power = (sub.data.len() >= 40).then(|| r.f32_or_default());
 
+                            // W2.12 (light & shadow campaign) — the
+                            // ambient-cube arm is now GAME-validated, not
+                            // merely length-gated: it fires only for games
+                            // whose canonical XCLL sets contain >=92-byte
+                            // shapes (Skyrim 92 / FO4 92,128,136 / FO76
+                            // 136,160 — all share the same 40..91 body).
+                            // Previously a non-canonical 92+ XCLL on
+                            // Oblivion or FO3/FNV (cross-game plugin
+                            // injection, corrupt authoring) silently read
+                            // its tail as a 6-face ambient cube; the
+                            // sanity warn fired but the parse proceeded.
+                            // Now the tail stays unparsed (base +
+                            // per-field 32/36/40 reads only) and the
+                            // existing warn is the operator signal.
+                            // Starfield keeps its dedicated >=108 arm
+                            // above regardless.
+                            let ambient_cube_layout = sub.data.len() >= 92
+                                && matches!(
+                                    game,
+                                    GameKind::Skyrim
+                                        | GameKind::Fallout4
+                                        | GameKind::Fallout76
+                                );
                             let (
                                 directional_ambient,
                                 specular_color,
@@ -564,7 +587,7 @@ fn parse_cell_group_inner(
                                 lf_begin,
                                 lf_end,
                                 inheritance_flags,
-                            ) = if sub.data.len() >= 92 {
+                            ) = if ambient_cube_layout {
                                 // 6 × RGBA ambient cube (#367) — alpha pad
                                 // discarded. Specular's 4th byte IS used as
                                 // an alpha (handled below).

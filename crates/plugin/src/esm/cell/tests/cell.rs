@@ -1171,6 +1171,79 @@ fn parse_cell_fnv_xcll_decodes_colors_as_rgba() {
 }
 
 #[test]
+fn parse_cell_non_canonical_92plus_xcll_on_pre_skyrim_games_stays_out_of_the_ambient_cube() {
+    // W2.12 (light & shadow campaign) — the >=92 ambient-cube arm is
+    // game-validated: it must fire only for games whose canonical XCLL
+    // sets contain >=92 shapes (Skyrim/FO4/FO76). A non-canonical 92+
+    // XCLL arriving on FO3/FNV or Oblivion (cross-game plugin injection,
+    // corrupt authoring) previously misread its tail as a 6-face ambient
+    // cube + specular + fresnel; now the tail stays unparsed and the
+    // sanity warn is the signal. The shared 28-byte prefix and the
+    // length-gated 32/36/40 fields still parse, so the base lighting is
+    // intact either way.
+    for (game, variant, edid) in [
+        (
+            crate::esm::reader::GameKind::Fallout3NV,
+            super::super::super::reader::EsmVariant::Tes5Plus,
+            "BadFnvCell\0",
+        ),
+        // The reader variant stays Tes5Plus for both — same shape as
+        // parse_oblivion_xcll, which passes GameKind separately.
+        (
+            crate::esm::reader::GameKind::Oblivion,
+            super::super::super::reader::EsmVariant::Tes5Plus,
+            "BadObCell\0",
+        ),
+    ] {
+        // A Skyrim-shaped 92-byte body: distinct ambient-cube bytes so a
+        // misread cannot hide.
+        let mut xcll = vec![0u8; 92];
+        xcll[0..3].copy_from_slice(&[30, 41, 77]); // FNV-saloon ambient
+        for face in 0u8..6 {
+            let off = 40 + face as usize * 4;
+            xcll[off..off + 3].copy_from_slice(&[face * 10 + 10, face * 10 + 11, face * 10 + 12]);
+        }
+
+        let mut sub_data = Vec::new();
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid.as_bytes());
+        sub_data.extend_from_slice(b"DATA");
+        sub_data.extend_from_slice(&1u16.to_le_bytes());
+        sub_data.push(0x01);
+        sub_data.extend_from_slice(b"XCLL");
+        sub_data.extend_from_slice(&(xcll.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(&xcll);
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"CELL");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0xDEADu32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&sub_data);
+
+        let mut reader = super::super::super::reader::EsmReader::with_variant(&buf, variant);
+        let end = buf.len();
+        let mut cells = HashMap::new();
+        parse_cell_group(&mut reader, end, &mut cells, game).unwrap();
+
+        let cell = cells.get(&edid[..edid.len() - 1].to_ascii_lowercase())
+            .expect("interior CELL present");
+        let lit = cell.lighting.as_ref().expect("XCLL populated");
+        assert!(
+            lit.directional_ambient.is_none(),
+            "{game:?}: a 92+ XCLL must not read the ambient cube on a game \
+             whose canonical set has no such shape"
+        );
+        assert!(lit.specular_color.is_none(), "{game:?}: specular tail unparsed");
+        assert!(lit.fresnel_power.is_none(), "{game:?}: fresnel tail unparsed");
+        // Base fields intact.
+        assert!((lit.ambient[0] - 30.0 / 255.0).abs() < 1e-6, "{game:?}: ambient R");
+    }
+}
+
+#[test]
 fn parse_cell_fnv_xcll_extracts_40byte_tail_and_skips_skyrim_fields() {
     // The 40-byte FNV XCLL carries `directional_fade`, `fog_clip`,
     // and `fog_power` in the 28..40 tail per nif.xml + UESP. Pre-#379

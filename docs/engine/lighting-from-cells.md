@@ -172,7 +172,17 @@ Consumption status (Session 42):
   key.
 - `fog_far_color`, `fog_max`, `light_fade_begin` / `_end`,
   and `specular_alpha` → parsed and carried but not yet consumed by a
-  shader.
+  shader. **PARKED (2026-09-18, light & shadow campaign W2.12):** these
+  are the Skyrim XCLL tail's legacy-renderer knobs (the distance fog
+  colour ramp, its cap, the specular attenuation fade range, and a
+  specular alpha the engine never separated). ByroRedux's RT lighting
+  resolves all four from data the renderer already owns — the SVGF/GI
+  transport handles distance falloff, `GpuLight` carries per-light
+  attenuation, and specular alpha has no RT analog — so a consumer would
+  re-derive what the canonical path already computes. They stay parsed
+  and carried (`light.dump` shows them) for parity diagnostics; wire one
+  only if a concrete visual defect traces to its absence, and record it
+  here when that happens.
 
 ### `DalcCubeYup` + `GpuDalcCube` — WTHR.DALC and interior XCLL cubes
 
