@@ -1374,9 +1374,18 @@ void main() {
     // — banner cloth, painted wood, tinted glass.
     albedo *= vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB);
 
-    if (mat.tintMapIndex != 0u) {
+    // #4423 — the tint role's vanilla producer is the Skin Tint shader's
+    // `*_sk.dds` map, documented (Beyond Skyrim, NetImmerse Format/Texture
+    // Slots) as a light-diffusion (subsurface) input — not an albedo
+    // multiplier — and shipped BC1, so a bare `.a` sample reads the format
+    // default 1.0. The weighted mix therefore fires ONLY when the CPU-side
+    // packer saw an alpha-bearing tint texture (TINT_ALPHA_WEIGHT_BIT); an
+    // alpha-less tint stays inert until a real subsurface consumer exists
+    // (M56).
+    if ((mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT) != 0u
+        && (mat.tintMapIndex & TINT_ALPHA_WEIGHT_BIT) != 0u) {
         vec4 tintSample = texture(
-            textures[nonuniformEXT(mat.tintMapIndex)],
+            textures[nonuniformEXT(mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT)],
             sampleUV
         );
         albedo = mix(albedo, albedo * tintSample.rgb, tintSample.a);
@@ -1799,7 +1808,7 @@ void main() {
                 ? vec3(1.00, 0.42, 0.05)
             : (mat.envMapIndex != 0u || mat.envMaskIndex != 0u)
                 ? vec3(0.05, 0.85, 1.00)
-            : (mat.tintMapIndex != 0u)
+            : ((mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT) != 0u)
                 ? vec3(1.00, 0.20, 0.65)
                 : vec3(0.45);
         outColor = vec4(roleColor, 1.0);

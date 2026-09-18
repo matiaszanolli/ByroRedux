@@ -3476,7 +3476,11 @@ fn bindless_index_bits_are_masked_at_every_textures_subscript() {
     // Generated from `shader_constants_data.rs`, not hand-copied — a value
     // flip changes both sides in lockstep.
     let constants = include_str!("../../../shaders/include/shader_constants.glsl");
-    for bit in ["PARALLAX_ALPHA_HEIGHT_BIT", "NORMAL_ALPHA_SPEC_BIT"] {
+    for bit in [
+        "PARALLAX_ALPHA_HEIGHT_BIT",
+        "NORMAL_ALPHA_SPEC_BIT",
+        "TINT_ALPHA_WEIGHT_BIT",
+    ] {
         assert!(
             constants.contains(&format!("#define {bit}")),
             "{bit} must be `#define`d in shader_constants.glsl"
@@ -3489,6 +3493,7 @@ fn bindless_index_bits_are_masked_at_every_textures_subscript() {
     const GUARDED: &[(&str, &str)] = &[
         ("parallaxMapIndex", "PARALLAX_ALPHA_HEIGHT_BIT"),
         ("glossMapIndex", "NORMAL_ALPHA_SPEC_BIT"),
+        ("tintMapIndex", "TINT_ALPHA_WEIGHT_BIT"),
     ];
 
     let shader_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
@@ -3562,7 +3567,9 @@ fn material_role_debug_view_is_semantic_and_format_agnostic() {
         // selector, so every reader masks it off before testing the index.
         "(mat.parallaxMapIndex & ~PARALLAX_ALPHA_HEIGHT_BIT) != 0u",
         "mat.envMapIndex != 0u || mat.envMaskIndex != 0u",
-        "mat.tintMapIndex != 0u",
+        // #4423 — `tintMapIndex` bit 31 is the alpha-weight channel selector,
+        // so the role reader masks it off before testing the index.
+        "(mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT) != 0u",
     ] {
         assert!(frag.contains(needle), "material-role view lost `{needle}`");
     }

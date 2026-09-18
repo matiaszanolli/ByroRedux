@@ -1148,11 +1148,18 @@ pub(super) fn spawn_mesh_instance(
         && ctx
             .texture_registry
             .handle_has_alpha(texture_handles.normal);
+    // #4423 — the tint multiply may only fire on an alpha-bearing tint
+    // texture; see `MaterialTextureHandles::tint_has_alpha`.
+    let tint_has_alpha = texture_handles.tint != 0
+        && ctx
+            .texture_registry
+            .handle_has_alpha(texture_handles.tint);
     world.insert(
         entity,
         MaterialTextureHandles {
             textures: texture_handles,
             normal_has_alpha,
+            tint_has_alpha,
             parallax_height_scale: canonical_parallax_height_scale,
             parallax_max_passes: canonical_parallax_max_passes,
         },

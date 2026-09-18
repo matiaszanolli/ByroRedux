@@ -927,6 +927,17 @@ pub(super) fn collect_static_mesh_draws(
                 // no failing test. Index assignment makes the two orders
                 // the same source of truth.
                 use byroredux_renderer::vulkan::material::supplemental_texture_slot as slot;
+                // #4423 — the tint multiply is gated on a REAL alpha channel:
+                // vanilla's `*_sk.dds` maps are BC1, so every sampled `.a`
+                // would read 1.0 and the weighted mix would run at full force
+                // on a subsurface input that was never an albedo multiplier.
+                // The high bit tells the shader the weight is authored data;
+                // an alpha-less tint stays inert (the bit gate, not the
+                // index, decides whether the shader samples the role). Applied
+                // on the role value itself, like the flipbook replacement.
+                if material_texture_handles.is_some_and(|h| h.tint_has_alpha) {
+                    texture_indices.tint |= crate::material_translate::TINT_ALPHA_WEIGHT_BIT;
+                }
                 let mut supplemental_texture_indices = [0u32; slot::COUNT];
                 supplemental_texture_indices[slot::TINT] = texture_indices.tint;
                 supplemental_texture_indices[slot::INNER_LAYER] = texture_indices.inner_layer;

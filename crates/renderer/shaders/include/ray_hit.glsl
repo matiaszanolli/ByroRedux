@@ -494,9 +494,13 @@ vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod) {
 
     rgb *= vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB);
 
-    if (mat.tintMapIndex != 0u) {
+    // #4423 — same TINT_ALPHA_WEIGHT_BIT gate as the primary path (see
+    // triangle.frag): an alpha-less tint texture carries no authored weight
+    // and must not multiply the secondary-ray albedo either.
+    if ((mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT) != 0u
+        && (mat.tintMapIndex & TINT_ALPHA_WEIGHT_BIT) != 0u) {
         vec4 tintSample = textureLod(
-            textures[nonuniformEXT(mat.tintMapIndex)], uv, lod);
+            textures[nonuniformEXT(mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT)], uv, lod);
         rgb = mix(rgb, rgb * tintSample.rgb, tintSample.a);
     }
 

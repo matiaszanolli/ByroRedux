@@ -1397,6 +1397,8 @@ mod frustum_tests;
 #[cfg(test)]
 mod parallax_alpha_gate_tests;
 #[cfg(test)]
+mod tint_alpha_gate_tests;
+#[cfg(test)]
 mod render_origin_shared_tests;
 #[cfg(test)]
 mod skin_offsets_hasher_tests;

@@ -1190,6 +1190,21 @@ pub const NORMAL_ALPHA_SPEC_BIT: u32 = 0x8000_0000;
 // `parallaxDisplaceUV` masks it off for the index and samples `.a`.
 pub const PARALLAX_ALPHA_HEIGHT_BIT: u32 = 0x8000_0000;
 
+// High bit OR'd into `GpuMaterial.tintMapIndex` to tell the fragment shader
+// "the tint texture carries a usable ALPHA channel" — i.e. the
+// `mix(albedo, albedo * tint.rgb, tint.a)` weight is authored data, not the
+// sampler's format default. #4423 — the tint role's only vanilla producer is
+// the Skin Tint shader's `*_sk.dds` map, which the Beyond Skyrim
+// documentation defines as a light-diffusion (subsurface) input, and which
+// ships BC1 (alpha-less: every sampled `.a` is 1.0). Multiplying its dark
+// red RGB into albedo at full weight collapsed every Skyrim head, body and
+// hands to 1/5–1/200 of their diffuse. The block therefore fires only when
+// this bit says the alpha weight is real; alpha-less tint maps stay inert
+// until the subsurface consumer (M56) exists. Set per-draw CPU-side in
+// `byroredux::render::static_meshes` from the registry's `has_alpha` for the
+// bound tint handle; the shader masks it off for the index.
+pub const TINT_ALPHA_WEIGHT_BIT: u32 = 0x8000_0000;
+
 // Water motion-kind enum (WATR-driven, mapped per-WATR record).
 // Lockstep with `water.frag` and `byroredux/src/cell_loader/water.rs`.
 pub const WATER_CALM: u32 = byroredux_core::ecs::components::water::WaterKind::Calm as u32;

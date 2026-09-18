@@ -857,6 +857,8 @@ fn spawn_lod_block(
                     ..Default::default()
                 },
                 normal_has_alpha: false,
+                // #4423 — synthetic paths bind no tint texture; see the field doc.
+                tint_has_alpha: false,
                 parallax_height_scale: 0.04,
                 parallax_max_passes: 4.0,
             },

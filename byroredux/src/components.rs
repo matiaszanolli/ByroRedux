@@ -295,6 +295,14 @@ pub(crate) struct MaterialTextureHandles {
     pub(crate) textures: byroredux_nif::import::MaterialTextureSet<u32>,
     /// Whether the normal DDS carries authored alpha (legacy gloss channel).
     pub(crate) normal_has_alpha: bool,
+    /// #4423 — whether the tint DDS carries authored alpha. The tint role's
+    /// vanilla producer is the Skin Tint shader's `*_sk.dds` map — a
+    /// light-diffusion (subsurface) input that ships BC1, so every sampled
+    /// `.a` would read 1.0 and the weighted tint multiply would run at full
+    /// force on textures that cannot express a weight. Only an
+    /// alpha-bearing tint may drive the shader's `mix(albedo, albedo *
+    /// tint.rgb, tint.a)` block.
+    pub(crate) tint_has_alpha: bool,
     /// POM height scale (default 0.04). See #453.
     pub(crate) parallax_height_scale: f32,
     /// POM ray-march sample budget (default 4.0). See #453.

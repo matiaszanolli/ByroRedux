@@ -18,6 +18,8 @@ fn material_handles(textures: MaterialTextureSet<u32>) -> MaterialTextureHandles
     MaterialTextureHandles {
         textures,
         normal_has_alpha: false,
+        // #4423 — fixture binds no tint texture.
+        tint_has_alpha: false,
         parallax_height_scale: 0.04,
         parallax_max_passes: 4.0,
     }

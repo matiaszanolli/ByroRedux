@@ -97,6 +97,8 @@ fn world_with_alpha_height_material(normal_has_alpha: bool) -> World {
         MaterialTextureHandles {
             textures,
             normal_has_alpha,
+            // #4423 — fixture binds no tint texture.
+            tint_has_alpha: false,
             parallax_height_scale: 0.04,
             parallax_max_passes: 4.0,
         },

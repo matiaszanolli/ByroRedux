@@ -949,6 +949,13 @@ pub(crate) fn translate_texture_only_material(texture_path: Option<String>) -> M
 pub(crate) const NORMAL_ALPHA_SPEC_BIT: u32 =
     byroredux_renderer::shader_constants::NORMAL_ALPHA_SPEC_BIT;
 
+/// Same re-export discipline as [`NORMAL_ALPHA_SPEC_BIT`] above (#4423): the
+/// high bit OR'd into `GpuMaterial.tintMapIndex` when the bound tint texture
+/// carries a real alpha channel. Set in `render/static_meshes`; the shaders
+/// mask it off for the bindless index.
+pub(crate) const TINT_ALPHA_WEIGHT_BIT: u32 =
+    byroredux_renderer::shader_constants::TINT_ALPHA_WEIGHT_BIT;
+
 /// High bit OR'd into `GpuMaterial.parallaxMapIndex` to tell the shader the
 /// height values live in the bound texture's **alpha** channel (#3530).
 ///
@@ -3178,6 +3185,8 @@ mod canonical_completeness_harness {
                     ..MaterialTextureSet::default()
                 },
                 normal_has_alpha: false, // no authored alpha channel — the overwrite arm
+                // #4423 — this fixture exercises the normal-alpha route; no tint.
+                tint_has_alpha: false,
                 parallax_height_scale: 0.04,
                 parallax_max_passes: 4.0,
             },

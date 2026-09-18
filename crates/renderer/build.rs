@@ -1089,6 +1089,18 @@ fn main() {
 
     writeln!(
         out,
+        "// Tint-alpha-weight marker bit (OR'd into `GpuMaterial.tintMapIndex`)."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define TINT_ALPHA_WEIGHT_BIT {TINT_ALPHA_WEIGHT_BIT}u"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(
+        out,
         "// Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`)."
     )
     .unwrap();

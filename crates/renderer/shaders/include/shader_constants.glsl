@@ -310,6 +310,9 @@
 // Alpha-channel-height marker bit (OR'd into `GpuMaterial.parallaxMapIndex`).
 #define PARALLAX_ALPHA_HEIGHT_BIT 2147483648u
 
+// Tint-alpha-weight marker bit (OR'd into `GpuMaterial.tintMapIndex`).
+#define TINT_ALPHA_WEIGHT_BIT 2147483648u
+
 // Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`).
 #define WATER_CALM 0u
 #define WATER_RIVER 1u

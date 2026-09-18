@@ -457,6 +457,24 @@ without a full behavior-graph interpreter.
 
 ### Shader flags / texture sets / effect shaders — **converged (surveyed 2026-06-02)**
 
+**Skin-tint (`_sk`) consumer — parked pending M56 (#4423, 2026-09-18).** The
+tint role's only vanilla producer is the Skin Tint shader's `*_sk.dds` map
+(slot 2 under the Skin Tint type). Documented semantics (Beyond Skyrim,
+*NetImmerse Format/Texture Slots*): the effect "simulates the diffusion of
+light inside a translucent medium" — a subsurface input, not an albedo
+multiplier. The audit's full BC1 decode (#4423) confirmed the multiply reading
+cannot be right: all nine vanilla `_sk` paths are DXT1 with zero alpha-0
+texels (sampled `.a` = 1.0 everywhere) and dark red RGB, so the weighted
+`mix(albedo, albedo * tint.rgb, tint.a)` consumer added in `1d94eb246` was
+collapsing Skyrim head/body/hand skin to between 1/5 and 1/200 of its diffuse
+per channel. The role now binds only through `TINT_ALPHA_WEIGHT_BIT`, set
+when the registry reports the bound tint DDS actually carries an alpha
+channel; vanilla's alpha-less `_sk` maps stay inert until the subsurface
+consumer (M56, Tier 8) exists. FO4/FO76 tint-family slot-2 content was NOT
+measured by the audit — if its textures carry alpha, the weighted path
+applies unchanged; if not, it is inert the same way.
+
+
 The "GameVariant trait" the early docs called aspirational is realised *as the
 correct shape*, not as a trait: per-game flag vocabularies live as namespaced
 constants in one file (`shader_flags.rs` — `fo3nv_f1`, `skyrim_slsf1`, `fo4_slsf1`,

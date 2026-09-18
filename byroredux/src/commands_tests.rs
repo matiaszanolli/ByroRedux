@@ -843,6 +843,8 @@ fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
         MaterialTextureHandles {
             textures: handles,
             normal_has_alpha: true,
+            // #4423 — synthetic paths bind no tint texture; see the field doc.
+            tint_has_alpha: false,
             parallax_height_scale: 0.04,
             parallax_max_passes: 4.0,
         },
