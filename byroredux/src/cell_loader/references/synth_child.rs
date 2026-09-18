@@ -395,7 +395,7 @@ pub(super) fn spawn_synth_child(
                     geometry.kind,
                     geometry.direction,
                     geometry.outer_angle,
-                    crate::systems::canonical_light_shadow_flags(game, ld.flags),
+                    crate::systems::canonical_light_shadow_flags(game, ld.flags, ld.starfield_light_type),
                 ),
             );
             let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
@@ -501,7 +501,7 @@ pub(super) fn spawn_synth_child(
                     geometry.kind,
                     geometry.direction,
                     geometry.outer_angle,
-                    crate::systems::canonical_light_shadow_flags(game, ld.flags),
+                    crate::systems::canonical_light_shadow_flags(game, ld.flags, ld.starfield_light_type),
                 ),
             );
             let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
@@ -775,7 +775,7 @@ pub(super) fn spawn_synth_child(
             .unwrap_or(0),
         stat.light_data
             .as_ref()
-            .map(|ld| crate::systems::canonical_light_shadow_flags(game, ld.flags))
+            .map(|ld| crate::systems::canonical_light_shadow_flags(game, ld.flags, ld.starfield_light_type))
             .unwrap_or(0),
         light_geometry.kind,
         light_geometry.direction,

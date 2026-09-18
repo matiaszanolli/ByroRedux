@@ -751,6 +751,17 @@ pub struct LightData {
     /// records; that trailer isn't needed for circuit lookup and is
     /// captured as `None` rather than over-reading.
     pub xpwr_form_id: Option<u32>,
+    /// #4433's evidence predecessor — Starfield `DAT2+56` "Light Type"
+    /// enum (`wbDefinitionsSF1.pas`, dev-4.1.6: `0 = Omnidirectional`,
+    /// `1 = Shadow Spotlight`, `2 = NonShadow Spotlight`). Starfield moved
+    /// the light-shape choice out of the u16 flags (whose bit 9 is
+    /// "Focus Spotlight Beam", NOT a spot-shape bit) into this dedicated
+    /// byte, so this field — not `flags & LIGHT_FLAG_SPOT` — is the
+    /// Starfield spot-shape authority. `0` on every non-Starfield record
+    /// (the `DATA` arm never sets it), which is also the enum's
+    /// Omnidirectional value, so the field can ride through generically
+    /// and only the Starfield arm of `translate_light` consults it.
+    pub starfield_light_type: u8,
 }
 
 /// FO4/Skyrim TXST decal-data sub-record (`DODT`). Fixed 36-byte

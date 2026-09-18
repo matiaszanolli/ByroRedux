@@ -199,6 +199,7 @@ pub(crate) fn build_static_object_from_subs(
                     movement_amplitude,
                     fov_degrees,
                     xpwr_form_id: None,
+                    starfield_light_type: 0,
                 });
             }
             // Starfield LIGH light data (#1567). Starfield LIGH records
@@ -225,8 +226,14 @@ pub(crate) fn build_static_object_from_subs(
             //        while the u16 at +14 is zero in EVERY record — a
             //        populated 16-bit field with two unused bytes after it,
             //        which is also why the u16 read below is right and a u32
-            //        read would not be. The bit legend remains unevidenced;
-            //        see `canonical_light_shadow_flags` for what that costs.
+            //        read would not be. The legend is now published (xEdit
+            //        `wbDefinitionsSF1.pas`, dev-4.1.6): 0x0002 Can be Carried, 0x0010
+            //        Off by Default, 0x0020 Disable Specular, 0x0040 Disable Distance
+            //        Attenuation, 0x0080 Is Direct Spotlight, 0x0100 Use PBR Value,
+            //        0x0200 Focus Spotlight Beam, 0x1000 Externally Controlled — NO
+            //        shape/shadow bits, which is why the spot shape keys off the
+            //        DAT2+56 Light Type enum decoded below and a 0x200 spot gate
+            //        would have been wrong.
             //   {16} Float      Falloff Exponent
             //   {20} Float      FOV (#2439 / NIFAL-D2-01 — same relative
             //                   position as the Skyrim/FO4 DATA arm above)
@@ -283,6 +290,18 @@ pub(crate) fn build_static_object_from_subs(
                 } else {
                     0.0
                 };
+                // #4424's evidence pass — Starfield moves the light-SHAPE
+                // choice into a dedicated enum byte at DAT2+56
+                // (`wbDefinitionsSF1.pas`, dev-4.1.6: 0 = Omnidirectional,
+                // 1 = Shadow Spotlight, 2 = NonShadow Spotlight). The u16
+                // flags at +12 carry no shadow/shape bits at all under the
+                // now-published legend — bit 9 is "Focus Spotlight Beam",
+                // which is why gating spots on it would have been wrong.
+                let starfield_light_type = if sub.data.len() >= 57 {
+                    sub.data[56]
+                } else {
+                    0
+                };
                 light_data = Some(LightData {
                     radius,
                     color: [r, g, b],
@@ -293,6 +312,7 @@ pub(crate) fn build_static_object_from_subs(
                     movement_amplitude,
                     fov_degrees,
                     xpwr_form_id: None,
+                    starfield_light_type,
                 });
             }
             b"XPWR" if is_ligh && sub.data.len() >= 4 => {
