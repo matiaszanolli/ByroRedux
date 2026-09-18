@@ -462,6 +462,14 @@ pub(crate) fn populate_scene_runtime(
     log::info!("Installed {equip_item_count} armor biped-slot definitions for scripted EquipItem");
     let start_game_quests =
         byroredux_scripting::install_start_game_quests(world, index.quests.values().cloned());
+    // M47.3 — ObScript quest scripts (Oblivion/FO3/FNV): resolve each
+    // quest's `script_ref` to its parsed SCPT once per load order so the
+    // 5 s GameMode tick can execute it against live quest state.
+    byroredux_scripting::obscript_quests::install_quest_scripts(
+        world,
+        &index.quests,
+        &index.scripts,
+    );
     let mut engine_start_quests = 0usize;
     if index.game == byroredux_plugin::esm::reader::GameKind::Skyrim {
         // Skyrim.exe treats MQ101 (Unbound) as the canonical new-game root

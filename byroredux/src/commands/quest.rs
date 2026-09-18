@@ -230,6 +230,73 @@ fn apply_control_effect(
     Ok(advances.len())
 }
 
+/// M47.3 — ObScript quest-script observability: the recent side-effect ring
+/// (SetStage/Start/StopQuest/Message from compiled legacy scripts) plus
+/// per-quest execution counters, so a live session can prove a quest's
+/// bytecode is actually driving state. Optional FormID filter.
+pub(crate) struct QuestEffectsCommand;
+
+impl ConsoleCommand for QuestEffectsCommand {
+    fn name(&self) -> &str {
+        "quest.effects"
+    }
+
+    fn description(&self) -> &str {
+        "Show recent ObScript quest-script effects + tick counters (usage: quest.effects [formid])"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let filter = if args.trim().is_empty() {
+            None
+        } else {
+            match parse_console_u32(args.trim()) {
+                Some(form) => Some(QuestFormId(form)),
+                None => {
+                    return CommandOutput::error(format!("bad quest FormID `{}`", args.trim()))
+                }
+            }
+        };
+        let Some(effects) = world.try_resource::<byroredux_scripting::obscript_quests::ObScriptEffectLog>()
+        else {
+            return CommandOutput::line("no ObScript quest scripts installed");
+        };
+        let timers = world.try_resource::<byroredux_scripting::obscript_quests::ObScriptQuestTimers>();
+        let mut lines = Vec::new();
+        let entries: Vec<_> = effects
+            .entries
+            .iter()
+            .filter(|(quest, _)| filter.is_none_or(|f| quest == &format!("{:08X}", f.0)))
+            .collect();
+        lines.push(format!("ObScript effects ({} recent):", entries.len()));
+        for (quest, effect) in entries.iter().rev().take(24).rev() {
+            lines.push(format!("  {quest}: {effect}"));
+        }
+        if let Some(timers) = timers {
+            let mut runs: Vec<_> = timers
+                .runs
+                .iter()
+                .filter(|(quest, _)| {
+                    filter.is_none_or(|f| format!("{:08X}", f.0) == format!("{:08X}", *quest))
+                })
+                .collect();
+            runs.sort_unstable_by_key(|(quest, _)| *quest);
+            lines.push(format!("script ticks: {} quest(s)", runs.len()));
+            for (quest, count) in runs.iter().take(20) {
+                let unknown: u32 = timers
+                    .unknown_commands
+                    .get(quest)
+                    .map(|m| m.values().sum())
+                    .unwrap_or(0);
+                lines.push(format!("  {quest:08X}: {count} GameMode runs, {unknown} unknown-command hits"));
+            }
+        }
+        if entries.is_empty() {
+            lines.push("  (no script effects recorded yet — start a scripted quest)".into());
+        }
+        CommandOutput { lines }
+    }
+}
+
 pub(crate) struct QuestShowCommand;
 
 impl ConsoleCommand for QuestShowCommand {

@@ -285,6 +285,15 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // the SCEN package system drains the transient marker. Time-driven checks
     // are bounded to one pass per in-game minute inside the system.
     scheduler.add_exclusive(Stage::Update, crate::npc_spawn::ambient_ai_package_system);
+    // M47.3 — legacy ObScript quest scripts (Oblivion/FO3/FNV): run each
+    // running quest's GameMode block on the vanilla 5 s cadence. Exclusive
+    // beside `ambient_ai_package_system`: it drives `QuestStageState`
+    // through the same stage events the Papyrus fragment path emits, and
+    // the timer maps must stay race-free.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::obscript_quests::obscript_quest_tick_system,
+    );
     // PACK actions resolve their Skyrim PKCU template/data inputs, move actors
     // toward authored invisible-marker coordinates for Travel-family leaves,
     // and queue Done completions for scene playback's next tick.

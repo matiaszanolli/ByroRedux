@@ -193,6 +193,7 @@ layouts); see the gaps table below.
 | Conditional per-log transitions (complete / fail / next-quest) | ✓ |
 | Papyrus quest effects — `Start`/`Stop`/`Complete`/`Reset`/`SetActive`/`FailAllObjectives` | ✓ |
 | QUST VMAD stage→fragment dispatch from vanilla `.pex` | ✓ M47.2 |
+| **Legacy ObScript quest scripts (Oblivion/FO3/FNV) — compiled SCDA execution** | ✓ M47.3 (2026-09-18): each running quest's `GameMode` bytecode executes on the vanilla 5 s cadence, encodings/command ids derived from vanilla `Oblivion.esm`; verified live — 120 auto-started quests ticked and script-driven `SetStage`s advanced them (MS23 → stage 90). Object-script blocks + actor-state functions pending |
 | Save-persistent quest progress | ✓ M45 |
 | Alias fill — direct / unique / condition / XLRT / external / near / closest / force-into (loaded refs) | ✓ |
 | Alias reservations + quest-lifetime semantics | ✓ |

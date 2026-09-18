@@ -77,6 +77,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(SetAvCommand);
     registry.register(ModAvCommand);
     registry.register(QuestShowCommand);
+    registry.register(QuestEffectsCommand);
     registry.register(QuestAliasesCommand);
     registry.register(SceneShowCommand);
     registry.register(QuestStartCommand);
