@@ -1428,6 +1428,17 @@ pub(crate) struct WeatherDataRes {
     /// the sward's tint follows a `WTHR` change instead of freezing at the
     /// weather that happened to be active when the worldspace was entered.
     pub(crate) grass_dimmer: f32,
+    /// Oblivion `HNAM` "Sunlight Dimmer" — the HDR block's
+    /// directional-sunlight multiplier, translated once at the EXAL
+    /// boundary and multiplied into the sampled `SKY_SUNLIGHT` colour in
+    /// `weather_system` so an authored dim/bright sun reaches
+    /// `CellLightingRes.directional_color`. Parsed since #537 but never
+    /// consumed — every Oblivion exterior rendered at the palette's own
+    /// sun colour regardless of the worldspace's HDR dimmer. `1.0` for
+    /// every game that does not ship `HNAM`, and when the cross-fade
+    /// blends two weathers this fades with the palette like
+    /// [`Self::grass_dimmer`] does.
+    pub(crate) sunlight_dimmer: f32,
 }
 impl Resource for WeatherDataRes {}
 

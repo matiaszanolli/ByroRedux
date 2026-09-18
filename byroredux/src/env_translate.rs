@@ -1366,6 +1366,13 @@ pub(crate) fn translate_weather(
         grass_dimmer: wthr.oblivion_hdr.map_or(1.0, |hdr| {
             GroundCoverDimmer::from_authored(hdr.grass_dimmer).0
         }),
+        // #sunlight-dimmer — same HNAM block, directional-sunlight half.
+        // A short/degenerate HNAM decodes 0.0 fields; clamp the negative
+        // side (an upside-down sign is never authored) and let 0 read as
+        // authored black sun, same trust-the-data rule as grass above.
+        sunlight_dimmer: wthr
+            .oblivion_hdr
+            .map_or(1.0, |hdr| hdr.sunlight_dimmer.max(0.0)),
     }
 }
 
@@ -1511,6 +1518,7 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
         cloud_layer_alphas: [[1.0; 4]; 4],
         weather: WeatherSkyState::default(),
         grass_dimmer: 1.0,
+        sunlight_dimmer: 1.0,
     }
 }
 
@@ -3360,6 +3368,33 @@ mod tests {
             "translate_exterior_cell_lighting is the day snapshot; its height \
              profile must match fog_media[0] or the two paths disagree"
         );
+    }
+
+    /// The HNAM "Sunlight Dimmer" rides the EXAL boundary into
+    /// `WeatherDataRes` (default 1.0 with no HDR block), so an authored
+    /// Oblivion dim reaches `weather_system`'s sunlight sample instead of
+    /// being dropped — the field was parsed since #537 but never consumed.
+    #[test]
+    fn sunlight_dimmer_translates_from_the_hnam_block() {
+        use byroredux_plugin::esm::records::weather::{OblivionHdrLighting, WeatherRecord};
+        let w = WeatherRecord {
+            oblivion_hdr: Some(OblivionHdrLighting {
+                sunlight_dimmer: 0.5,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let wd = translate_weather(&w, None);
+        assert!(
+            (wd.sunlight_dimmer - 0.5).abs() < 1e-6,
+            "an authored HNAM dim must translate verbatim, got {}",
+            wd.sunlight_dimmer
+        );
+
+        // No HDR block — every non-Oblivion game, and Oblivion weathers
+        // without HNAM — keeps the neutral multiplier.
+        let plain = WeatherRecord::default();
+        assert_eq!(translate_weather(&plain, None).sunlight_dimmer, 1.0);
     }
 
     /// #3956 — the no-authored-data fallback. Every non-FO4/FO76 game, and the

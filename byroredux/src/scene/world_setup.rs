@@ -1327,6 +1327,8 @@ mod tests {
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),
             grass_dimmer: 1.0,
+            // #sunlight-dimmer — fixtures exercise no HNAM dimming.
+            sunlight_dimmer: 1.0,
         }
     }
 

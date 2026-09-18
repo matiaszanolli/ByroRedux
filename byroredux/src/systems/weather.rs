@@ -795,8 +795,17 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // Find which two keys we're between and compute blend factor.
     let (slot_a, slot_b, t) = pick_tod_pair(&keys, hour);
 
-    let (zenith, horizon, lower, sun_col, ambient, sunlight, fog_col) =
+    let (zenith, horizon, lower, sun_col, ambient, mut sunlight, fog_col) =
         sample_wthr_colors(&wd.sky_colors, slot_a, slot_b, t);
+    // HNAM "Sunlight Dimmer" (Oblivion HDR block) — the worldspace's
+    // directional-sunlight multiplier, translated onto WeatherDataRes at
+    // the EXAL boundary. Applied to the sampled palette colour so the
+    // cross-fade below blends dimmed values on both sides uniformly.
+    sunlight = [
+        sunlight[0] * wd.sunlight_dimmer,
+        sunlight[1] * wd.sunlight_dimmer,
+        sunlight[2] * wd.sunlight_dimmer,
+    ];
     let weather_source = sample_weather_sky(&wd, slot_a, slot_b, t);
     let cloud_velocities_source = wd.cloud_layer_velocities;
     let cloud_velocities_authored_source = wd.cloud_layer_velocities_authored;
@@ -2049,6 +2058,7 @@ mod interior_gate_tests {
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),
             grass_dimmer: 1.0,
+            sunlight_dimmer: 1.0,
         });
 
         world
@@ -2297,6 +2307,7 @@ mod seeded_at_wrong_tod_resample_tests {
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),
             grass_dimmer: 1.0,
+            sunlight_dimmer: 1.0,
         });
 
         // The buggy seed: direction already correct (below-horizon
@@ -2405,6 +2416,7 @@ mod dalc_cube_crossfade_tests {
             cloud_layer_alphas: [[1.0; 4]; 4],
             weather: crate::components::WeatherSkyState::default(),
             grass_dimmer: 1.0,
+            sunlight_dimmer: 1.0,
         }
     }
 
