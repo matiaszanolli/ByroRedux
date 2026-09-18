@@ -633,6 +633,7 @@ pub fn load_cell_with_masters(
     // interior unload cannot despawn a running cross-cell scene.
     crate::asset_provider::populate_scene_runtime(world, &index);
     crate::asset_provider::populate_havok_idle_runtime(world, &index, tex_provider);
+    crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
 
     // Capture the cell's editor_id BEFORE the `index.cells` move below
     // — `cell` borrows from `index.cells.cells`, so the borrow has to
@@ -1011,6 +1012,7 @@ impl InteriorCellApplyJob {
         stamp_cell_root_range(world, cell_root, navmesh_first, world.next_entity_id());
         crate::asset_provider::populate_scene_runtime(world, &index);
         crate::asset_provider::populate_havok_idle_runtime(world, &index, tex_provider);
+        crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
 
         let cell_name = cell.editor_id.clone();
         let entity_count = result.entity_count;

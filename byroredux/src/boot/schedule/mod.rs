@@ -244,6 +244,82 @@ mod fragment_activation_order_tests {
 }
 
 #[cfg(test)]
+mod ambient_locomotion_default_on_tests {
+    //! M42.10 — ambient AI locomotion (sandbox seat + the six procedures +
+    //! walk-cycle playback) is registered unconditionally with a single
+    //! `BYRO_NO_AI_LOCOMOTION` kill-switch. The seven per-procedure opt-in
+    //! variables (`BYRO_SANDBOX_SIT` / `BYRO_WANDER` / `BYRO_TRAVEL` /
+    //! `BYRO_FOLLOW` / `BYRO_ESCORT` / `BYRO_GUARD` / `BYRO_PATROL`) are
+    //! gone: a stale reference would silently reintroduce a partial gate,
+    //! and dropping the kill-switch itself would leave no escape hatch when
+    //! a content regression needs isolating from AI motion. Walk playback
+    //! must also register *after* the six movers — it classifies motion
+    //! from this frame's final position.
+
+    const BOOT_SRC: &str = crate::boot::SOURCES;
+
+    #[test]
+    fn locomotion_registers_behind_the_single_kill_switch() {
+        let setup = BOOT_SRC
+            .split("mod ambient_locomotion_default_on_tests")
+            .next()
+            .expect("split always yields a first segment");
+
+        assert!(
+            setup.contains("std::env::var_os(\"BYRO_NO_AI_LOCOMOTION\")"),
+            "the BYRO_NO_AI_LOCOMOTION kill-switch is missing from \
+             boot/schedule/post_update.rs — ambient locomotion would have \
+             no off switch"
+        );
+        for stale_gate in [
+            "BYRO_SANDBOX_SIT",
+            "BYRO_WANDER",
+            "BYRO_TRAVEL",
+            "BYRO_FOLLOW",
+            "BYRO_ESCORT",
+            "BYRO_GUARD",
+            "BYRO_PATROL",
+        ] {
+            assert!(
+                !setup.contains(stale_gate),
+                "{stale_gate} is still read in boot/schedule/ — M42.10 replaced \
+                 the per-procedure opt-in gates with the single BYRO_NO_AI_LOCOMOTION \
+                 kill-switch; a leftover gate re-splits the rollout"
+            );
+        }
+    }
+
+    #[test]
+    fn walk_animation_registers_after_all_six_movers() {
+        let setup = BOOT_SRC
+            .split("mod ambient_locomotion_default_on_tests")
+            .next()
+            .expect("split always yields a first segment");
+
+        let walk_anim = setup
+            .rfind("crate::systems::make_npc_walk_animation_system()")
+            .expect("npc_walk_animation_system is no longer registered in boot/schedule/");
+        for mover in [
+            "crate::systems::make_wander_system()",
+            "crate::systems::make_travel_system()",
+            "crate::systems::make_follow_system()",
+            "crate::systems::make_escort_system()",
+            "crate::systems::make_guard_system()",
+            "crate::systems::make_patrol_system()",
+        ] {
+            let at = setup
+                .rfind(mover)
+                .unwrap_or_else(|| panic!("{mover} is no longer registered in boot/schedule/"));
+            assert!(
+                at < walk_anim,
+                "{mover} must register before npc_walk_animation_system — the \
+                 walk classifier reads this frame's post-locomotion position"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod scheduler_timings_gate_tests {
     //! PERF-D1-01 / #2166 — the per-system wall-time tracker is armed by
     //! the *presence* of `SchedulerSystemTimings` in the world. Inserting

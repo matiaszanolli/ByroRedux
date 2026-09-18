@@ -1,7 +1,10 @@
 //! Wander procedure (M42.3) — the first non-Sandbox AI-package runtime and
-//! the first NPC locomotion primitive in the engine. **Registered only
-//! when `BYRO_WANDER` is set** (see `boot/schedule/post_update.rs`), mirroring the
-//! `BYRO_SANDBOX_SIT` opt-in gate for `sandbox_seat_system`.
+//! the first NPC locomotion primitive in the engine. **Live by default
+//! since M42.10** (kill-switch: `BYRO_NO_AI_LOCOMOTION=1`), alongside the
+//! other five locomotion procedures; the per-tick move is physics-backed
+//! through the KCC (`locomotion::step_toward_detailed`), and the walk
+//! itself is animated by `npc_walk_animation_system` swapping in the
+//! game's walk clip while the actor moves.
 //!
 //! For each [`WanderBehavior`] actor, walk toward a randomly picked point
 //! within `wander_radius` of the actor's own spawn position, pause for a few
@@ -43,12 +46,13 @@
 //!   2026-07-14 investigation into `NearReference` resolution found only
 //!   ~12% of vanilla packages resolve to anything spawnable; the same
 //!   reasoning applies here without needing a second investigation).
-//! - **No animation.** `AnimationPlayer` is untouched while an actor
-//!   walks — Transform moves, pose doesn't. A real `walkforward.kf`-class
-//!   path has never been verified against a game archive in this
-//!   codebase; verifying one is deferred to a later on-device polish pass
-//!   (the same class of visual debt Sandbox v0 accepted for legacy marker
-//!   over-match).
+//! - **Walk cycle animated, locomotion engine-driven (M42.10).** While the
+//!   actor moves, `npc_walk_animation_system` swaps its `AnimationPlayer`
+//!   to the game's authored walk clip; the movement itself stays the
+//!   fixed-speed `LOCOMOTION_WALK_SPEED` XZ step rather than the clip's
+//!   root-motion delta, so feet can slide slightly where the authored
+//!   stride disagrees with 100 u/s. Consuming `RootMotionDelta` as the
+//!   movement source is the deferred polish pass.
 //! - **Package re-evaluation is per in-game minute, not per frame.**
 //!   `WanderBehavior` is installed at spawn (`npc_spawn/ai_package.rs`) and
 //!   thereafter maintained by `ambient_ai_package_system` (M42.9 / #2652),
@@ -59,15 +63,19 @@
 //!   What is *not* re-evaluated mid-package is this system's own state
 //!   (target point, phase), which persists while the same package keeps
 //!   winning.
-//! - **Ground-snapped, not physically simulated.** Y is corrected each
-//!   tick via a downward raycast against static colliders
-//!   (`PhysicsWorld::cast_ray_down`, the same mechanism `scene.rs` uses for
-//!   camera placement), not through the physics simulation itself — an
-//!   actor can't be pushed, blocked, or fall.
+//! - **Blocked legs re-pick, they don't grind (M42.10).** With the KCC
+//!   behind every step, a straight-line fallback aimed into architecture
+//!   now *hits* it. When the collide-and-slide result stays under
+//!   [`LOCOMOTION_BLOCKED_FRACTION`] of the requested move for
+//!   [`LOCOMOTION_STUCK_REPICK_SECS`] continuously, the walker re-picks a
+//!   fresh deterministic target instead of pressing into the wall
+//!   forever. Travel/Follow/Escort/Guard keep their authored semantics
+//!   and may press against an obstacle until their own state machine
+//!   resolves the leg.
 
-use super::locomotion::{pop_reached_waypoint, step_toward};
+use super::locomotion::{advance_stuck_repick, pop_reached_waypoint, step_toward_detailed};
 use super::navmesh_path::resolve_cached_waypoints;
-use crate::components::{NavPath, NavmeshTile};
+use crate::components::{NavPath, NavmeshTile, WalkStuckTimer};
 use byroredux_core::ecs::components::{Transform, WanderBehavior, WanderPhase, WanderState};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -178,6 +186,7 @@ pub(crate) fn step_oscillating_wander(
     form_id: u32,
     mut state: OscillateWalk,
     waypoint_override: Option<Vec3>,
+    stuck_secs: &mut f32,
 ) -> (Vec3, Option<Quat>, OscillateWalk) {
     match state.phase {
         WanderPhase::Paused { remaining } => {
@@ -198,7 +207,18 @@ pub(crate) fn step_oscillating_wander(
             // real terrain on sloped ground).
             let step_point = waypoint_override.unwrap_or(state.target);
             let step_xz = Vec3::new(step_point.x, current.y, step_point.z);
-            let (new_pos, rotation) = step_toward(current, current_rotation, step_xz, dt, physics);
+            let (new_pos, rotation, blocked) =
+                step_toward_detailed(current, current_rotation, step_xz, dt, physics);
+
+            // M42.10 — a leg that grinds against a wall (straight-line
+            // fallback aimed into architecture, or a hash-picked target
+            // inside a collider) re-picks instead of pressing forever.
+            // The stuck timer rides the runtime-only `WalkStuckTimer`
+            // component, not the save-shaped `WanderState`.
+            if advance_stuck_repick(stuck_secs, blocked, dt) {
+                state.pick_count = state.pick_count.wrapping_add(1);
+                state.target = pick_wander_target(state.home, radius, form_id, state.pick_count);
+            }
 
             let horiz_delta =
                 Vec3::new(new_pos.x - state.target.x, 0.0, new_pos.z - state.target.z);
@@ -223,6 +243,9 @@ struct WanderDecision {
     source_rotation: Quat,
     radius: f32,
     form_id: u32,
+    /// `WalkStuckTimer.secs` snapshot (M42.10) — `0.0` when the component
+    /// is absent. Mutated by the movement pass, written back in Pass 2.
+    stuck_secs: f32,
     waypoint_override: Option<Vec3>,
     effective_goal: Vec3,
     waypoints: VecDeque<Vec3>,
@@ -276,6 +299,7 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
         let state_q = world.query::<WanderState>();
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
+        let stuck_q = world.query::<WalkStuckTimer>();
         for (entity, behavior) in behavior_q.iter() {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
@@ -294,6 +318,11 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                         pick_count: 0,
                     }
                 });
+            let stuck_secs = stuck_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|t| t.secs)
+                .unwrap_or(0.0);
 
             // EX-16 item 3 Phase 4: only bother resolving a path while
             // actually walking this leg — mirrors `guard_system`'s same
@@ -320,6 +349,7 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                 source_rotation: transform.rotation,
                 radius,
                 form_id: behavior.form_id,
+                stuck_secs,
                 waypoint_override,
                 effective_goal,
                 waypoints,
@@ -354,6 +384,7 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                     pick_count: d.state.pick_count,
                 },
                 d.waypoint_override,
+                &mut d.stuck_secs,
             );
             if !d.waypoints.is_empty() {
                 pop_reached_waypoint(new_pos, &mut d.waypoints);
@@ -402,6 +433,18 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                 None => {
                     nq.remove(d.entity);
                 }
+            }
+        }
+    }
+    // M42.10 — the stuck timer is runtime scratch: insert while it holds a
+    // nonzero value, remove once cleared, so the sparse storage doesn't
+    // accumulate zero-timers for every actor that ever brushed a corner.
+    if let Some(mut sq) = world.query_mut::<WalkStuckTimer>() {
+        for d in &scratch.decisions {
+            if d.stuck_secs > 0.0 {
+                sq.insert(d.entity, WalkStuckTimer { secs: d.stuck_secs });
+            } else {
+                sq.remove(d.entity);
             }
         }
     }

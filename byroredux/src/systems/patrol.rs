@@ -1,9 +1,9 @@
 //! Patrol procedure (M42.8) — the sixth AI-package runtime, and the first
 //! that runs no algorithm of its own: it calls
 //! `wander_system`'s shared oscillating-walk core
-//! (`super::wander::step_oscillating_wander`) directly. **Registered only
-//! when `BYRO_PATROL` is set** (see `boot/schedule/post_update.rs`), mirroring
-//! `BYRO_GUARD`/`BYRO_ESCORT`/`BYRO_FOLLOW`/`BYRO_TRAVEL`/`BYRO_WANDER`.
+//! (`super::wander::step_oscillating_wander`) directly. **Live by default
+//! since M42.10** (kill-switch: `BYRO_NO_AI_LOCOMOTION=1`), alongside the
+//! other five locomotion procedures.
 //!
 //! Real Bethesda Patrol packages walk a route defined by linked
 //! patrol-idle markers — data this codebase decodes nowhere (it lives
@@ -37,6 +37,7 @@
 use super::locomotion::pop_reached_waypoint;
 use super::navmesh_path::resolve_cached_waypoints;
 use super::wander::{step_oscillating_wander, OscillateWalk};
+use crate::components::WalkStuckTimer;
 use crate::components::{NavPath, NavmeshTile};
 use byroredux_core::ecs::components::{PatrolBehavior, PatrolState, Transform, WanderPhase};
 use byroredux_core::ecs::{EntityId, World};
@@ -57,6 +58,9 @@ struct PatrolDecision {
     source_rotation: Quat,
     radius: f32,
     form_id: u32,
+    /// `WalkStuckTimer.secs` snapshot (M42.10) — `0.0` when the component
+    /// is absent. Mutated by the movement pass, written back in Pass 2.
+    stuck_secs: f32,
     waypoint_override: Option<Vec3>,
     effective_goal: Vec3,
     waypoints: VecDeque<Vec3>,
@@ -105,6 +109,7 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
         let state_q = world.query::<PatrolState>();
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
+        let stuck_q = world.query::<WalkStuckTimer>();
         for (entity, behavior) in behavior_q.iter() {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
@@ -128,6 +133,11 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                         pick_count: 0,
                     }
                 });
+            let stuck_secs = stuck_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|t| t.secs)
+                .unwrap_or(0.0);
 
             // EX-16 item 3 Phase 4: mirrors `wander_system_inner` exactly
             // (same shared primitive, same caching shape) — only resolve
@@ -153,6 +163,7 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                 source_rotation: transform.rotation,
                 radius,
                 form_id: behavior.form_id,
+                stuck_secs,
                 waypoint_override,
                 effective_goal,
                 waypoints,
@@ -187,6 +198,7 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                     pick_count: d.state.pick_count,
                 },
                 d.waypoint_override,
+                &mut d.stuck_secs,
             );
             if !d.waypoints.is_empty() {
                 pop_reached_waypoint(new_pos, &mut d.waypoints);
@@ -232,6 +244,17 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                 None => {
                     nq.remove(d.entity);
                 }
+            }
+        }
+    }
+    // M42.10 — mirrors `wander_system_inner`'s stuck-timer write-back:
+    // insert while nonzero, remove once cleared.
+    if let Some(mut sq) = world.query_mut::<WalkStuckTimer>() {
+        for d in &scratch.decisions {
+            if d.stuck_secs > 0.0 {
+                sq.insert(d.entity, WalkStuckTimer { secs: d.stuck_secs });
+            } else {
+                sq.remove(d.entity);
             }
         }
     }

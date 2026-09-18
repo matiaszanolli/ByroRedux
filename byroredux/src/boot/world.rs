@@ -285,6 +285,15 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::components::SeatReservations::default());
     world.insert_resource(crate::components::SandboxSitClip::default());
 
+    // M42.10 — pre-register the walk-playback storages + the per-cell
+    // Skyrim walk-clip resource (populated at cell load where the archive
+    // provider lives), so `npc_walk_animation_system`'s `query_mut::<
+    // WalkAnimation>()` writes and the spawn-finalize resource read
+    // resolve even before the first walking actor spawns.
+    world.register::<crate::components::WalkAnimation>();
+    world.register::<crate::components::WalkStuckTimer>();
+    world.insert_resource(crate::components::SkyrimWalkClip::default());
+
     // M42.3 — pre-register the Wander marker + runtime-state storages so
     // `wander_system`'s `query::<WanderBehavior>()` skip-scan and
     // `query_mut::<WanderState>().insert(...)` resolve even before the
@@ -416,12 +425,14 @@ mod ai_storage_registration_tests {
     const BOOT_SRC: &str = crate::boot::SOURCES;
 
     /// Components written via `query_mut` by
-    /// `systems/{sandbox,wander,travel,follow,escort,guard,patrol}.rs`,
+    /// `systems/{sandbox,wander,travel,follow,escort,guard,patrol,walk_anim}.rs`,
     /// excluding the engine-wide ones (`Transform`, `GlobalTransform`,
     /// `AnimationPlayer`) that other subsystems already register.
     const AI_WRITE_STORAGES: &[&str] = &[
         "Seated",
         "WanderState",
+        "WalkAnimation",
+        "WalkStuckTimer",
         "TravelState",
         "Traveled",
         "FollowState",

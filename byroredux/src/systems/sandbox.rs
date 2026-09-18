@@ -1,6 +1,9 @@
 //! Sandbox seat procedure (M42) — seats sandboxing actors in nearby free
-//! furniture. **Registered only when `BYRO_SANDBOX_SIT` is set** (see
-//! `boot/schedule/post_update.rs`); gated off by default pending live confirmation of Phase A.
+//! furniture. **Live by default since M42.10** (kill-switch:
+//! `BYRO_NO_AI_LOCOMOTION=1`; registered from
+//! `boot/schedule/post_update.rs`), the seat placement + clip-swap
+//! pipeline having been verified live on FNV/FO3 content (see the M42.1
+//! mechanism below for the one cross-game caveat that remains).
 //!
 //! For each [`SandboxBehavior`] actor not yet [`Seated`], find the nearest
 //! unreserved [`Furniture`] with a sit marker within a radius, reserve it,

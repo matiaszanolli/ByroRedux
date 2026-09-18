@@ -518,6 +518,7 @@ mod sources_ordering_tests {
         "fragment_activation_order_tests",
         "scheduler_timings_gate_tests",
         "system_access_declaration_tests",
+        "ambient_locomotion_default_on_tests",
     ];
 
     /// #4088 — every `#[cfg(test)] mod` in `schedule/mod.rs` (the file

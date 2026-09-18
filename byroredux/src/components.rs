@@ -1868,6 +1868,82 @@ impl Component for HavokAnimationTarget {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// M42.10 — one animation snapshot's worth of `AnimationPlayer` state,
+/// captured when the walk-clip system takes playback over from whatever
+/// the actor was playing (the spawn idle, a sandbox park, a previous
+/// restore) and written back verbatim when the actor stops moving. A
+/// `None` capture means "there was no player before the walk" — the
+/// Skyrim+ shape, where ambient actors only gain an `AnimationPlayer`
+/// when an idle request plays — and stopping removes the player again
+/// rather than restoring a state that never existed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WalkAnimSnapshot {
+    pub(crate) clip_handle: u32,
+    pub(crate) local_time: f32,
+    pub(crate) prev_time: f32,
+    pub(crate) speed: f32,
+    pub(crate) playing: bool,
+}
+
+/// M42.10 — per-actor walk-clip playback state, inserted at NPC spawn when
+/// an authored walk cycle resolved for the game (KF locomotion clips on
+/// Oblivion/FO3/FNV, a decoded HKX walk on Skyrim). Consumed by
+/// `npc_walk_animation_system`, which watches the actor's per-tick XZ
+/// displacement and swaps `AnimationPlayer` between the captured pose and
+/// the walk clip while a locomotion procedure (or combat chase) is moving
+/// the actor.
+///
+/// Deliberately **not** save state: the component re-derives from
+/// `(walk_handle, spawn position)` on respawn, and `walking`/`last_pos`/
+/// `captured` are per-frame transient — same posture as `NavPath`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WalkAnimation {
+    pub(crate) walk_handle: u32,
+    /// True while the walk clip is installed in the actor's
+    /// `AnimationPlayer` (or while the player we inserted for it exists).
+    pub(crate) walking: bool,
+    /// XZ position observed last tick — the motion detector's baseline.
+    pub(crate) last_pos: Vec3,
+    /// The playback state taken over when `walking` became true.
+    pub(crate) captured: Option<WalkAnimSnapshot>,
+    /// M42.10 hysteresis — how long the actor has been continuously above
+    /// the take threshold (`walking == false`) or below the release
+    /// threshold (`walking == true`). Collision slides against furniture
+    /// produce single near-zero ticks mid-walk; without the dwell windows
+    /// the clip take/restores every crossing and visibly stutters (seen
+    /// live on Camp McCarran Travel walkers, 2026-09-18).
+    pub(crate) transition_secs: f32,
+}
+
+impl Component for WalkAnimation {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// M42.10 — how long an oscillating walker (Wander/Patrol) has been
+/// continuously blocked by a collision this leg. Runtime-only scratch:
+/// `WanderState`/`PatrolState` are save-shaped and must not grow a field
+/// for a value that is meaningless across a save boundary (a reloaded
+/// actor re-walks into the same obstacle and re-accumulates from zero —
+/// deterministic, since the blocker is architecture, not RNG).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct WalkStuckTimer {
+    pub(crate) secs: f32,
+}
+
+impl Component for WalkStuckTimer {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// M42.10 — the decoded Skyrim humanoid walk cycle
+/// (`meshes\actors\character\animations\1hm_walkforward.hkx`), resolved
+/// once per cell load beside the cart IDLE installation and read at NPC
+/// spawn finalize (which has no archive provider). `None` for non-Skyrim
+/// games, when the animations archive is absent, or when decode fails —
+/// those actors simply spawn without a walk clip.
+#[derive(Default)]
+pub(crate) struct SkyrimWalkClip(pub(crate) Option<u32>);
+impl Resource for SkyrimWalkClip {}
+
 /// Process-lifetime IDLE FormID → decoded animation handle mapping.
 ///
 /// Clips live in `AnimationClipRegistry`; this small companion preserves the

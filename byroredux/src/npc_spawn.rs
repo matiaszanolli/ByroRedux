@@ -740,6 +740,65 @@ pub fn load_idle_pool(
         .collect()
 }
 
+/// Archive path of the humanoid **walk-forward** cycle the NPC plays while
+/// an AI package (or combat chase) is moving it (M42.10 — loaded into
+/// `WalkAnimation` and swapped in by `npc_walk_animation_system`).
+///
+/// Like [`humanoid_default_idle_kf_path`], the path is verified against the
+/// named archives, not guessed:
+///
+/// - **FNV / FO3** ship the unarmed move-type walk as
+///   `meshes\characters\_male\locomotion\male\mtforward.kf` (BSA scan
+///   2026-09-18, both `Fallout - Meshes.bsa` archives). The `female\` and
+///   `child\` siblings exist and are the obvious gender split, but like the
+///   idle pool this loader collapses variation to one clip for v0 — the
+///   registry is path-keyed, so per-gender handles slot in without
+///   changing any call shape.
+/// - **Oblivion** has no `locomotion\` directory at all (BSA scan
+///   2026-09-18: zero hits). Its closest verified forward walk is the
+///   hand-to-hand stance cycle `meshes\characters\_male\handtohandforward.kf`
+///   — weapon-stance-authored, so an unarmed civilian walks with slightly
+///   posed arms. That is the accepted trade-off against no walk animation
+///   at all, the same class of call `sandbox_sit_enter_kf_path` documents
+///   for its own single-clip Phase A.
+///
+/// Returns `None` for Skyrim+ (Havok `.hkx` track — see
+/// `asset_provider::populate_skyrim_walk_clip`) or when a game variant
+/// ships no verified clip.
+pub fn humanoid_walk_kf_path(game: GameKind) -> Option<&'static str> {
+    match game {
+        GameKind::Fallout3NV => Some(r"meshes\characters\_male\locomotion\male\mtforward.kf"),
+        GameKind::Oblivion => Some(r"meshes\characters\_male\handtohandforward.kf"),
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => None,
+    }
+}
+
+/// A creature's own walk-forward clip, beside its skeleton (#2567
+/// convention — the MODL directory *is* the creature's asset namespace,
+/// and vanilla Oblivion creature directories ship `forward.kf` next to
+/// `idle.kf`). A creature whose directory lacks one simply gets no walk
+/// animation, which matches the idle path's fallback posture.
+pub fn creature_walk_kf_path(dir: &str) -> String {
+    format!("{dir}forward.kf")
+}
+
+/// Load the shared per-cell humanoid walk clip (M42.10) — path-keyed
+/// memoised through [`load_kf_clip_by_path`], so re-entry across cell
+/// loads is a registry hit. Returns `None` for Havok-animation games
+/// (Skyrim+/FO4+, which resolve their walk through
+/// `SkyrimWalkClip` instead) or when the KF isn't archived.
+pub fn load_walk_clip(
+    world: &mut World,
+    tex_provider: &TextureProvider,
+    game: GameKind,
+) -> Option<u32> {
+    if !game.has_kf_animations() {
+        return None;
+    }
+    let kf_path = humanoid_walk_kf_path(game)?;
+    load_kf_clip_by_path(world, tex_provider, kf_path)
+}
+
 /// Build a sidecar path next to the given head NIF, swapping the
 /// `.nif` extension for the requested `extension` (e.g. `"egm"`,
 /// `"egt"`, `"tri"`). FaceGen co-locates all four sidecars in the

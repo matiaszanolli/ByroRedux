@@ -27,6 +27,7 @@ mod patrol;
 pub(crate) mod restoration;
 mod sandbox;
 mod travel;
+mod walk_anim;
 mod wander;
 mod water;
 // `pub(crate)` so the EXAL bootstrap (`scene::world_setup`) can seed the
@@ -52,6 +53,7 @@ pub(crate) use particle::*;
 pub(crate) use patrol::*;
 pub(crate) use sandbox::*;
 pub(crate) use travel::*;
+pub(crate) use walk_anim::*;
 pub(crate) use wander::*;
 pub(crate) use water::*;
 pub(crate) use weather::*;

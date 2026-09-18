@@ -481,6 +481,10 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     remove_component::<GuardState>(world, actor);
     remove_component::<PatrolBehavior>(world, actor);
     remove_component::<PatrolState>(world, actor);
+    // M42.10 — the oscillating walkers' blocked-timer scratch belongs to
+    // the behavior runtime, not the actor: a package handover must not
+    // carry a half-accumulated stuck timer into the next procedure.
+    remove_component::<crate::components::WalkStuckTimer>(world, actor);
     // #3255 — six of the seven M42 procedures (wander/travel/follow/
     // escort/guard/patrol) write NavPath as their shared per-actor pathing
     // cache. This list must cover every per-actor pathing/runtime

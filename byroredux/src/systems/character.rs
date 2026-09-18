@@ -464,6 +464,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         step_min_width: controller.step_min_width,
         snap_to_ground: controller.snap_to_ground,
         exclude_collider: collider_handle,
+        filter_groups: None,
         kcc_offset_bu: kcc_offset,
     });
     drop(pw);

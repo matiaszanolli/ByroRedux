@@ -70,6 +70,11 @@ struct RuntimeNpcState {
     /// skeleton shares no bone names with the humanoid rig, so the pooled
     /// clip drives nothing (#2567).
     idle_kf_path: Option<String>,
+    /// M42.10 — the creature's own walk-forward clip, beside its skeleton
+    /// (same per-directory convention as `idle_kf_path`). `None` for
+    /// humanoids, which resolve the shared per-cell clip by path at
+    /// finalize.
+    walk_kf_path: Option<String>,
     body_paths: Vec<String>,
     head_path: Option<String>,
     hair_path: Option<String>,
@@ -597,6 +602,7 @@ fn prepare_runtime_state(
         skel_map: HashMap::new(),
         skeleton_path: humanoid_skeleton_path(game).unwrap_or_default().to_owned(),
         idle_kf_path: None,
+        walk_kf_path: None,
         body_paths,
         head_path,
         hair_path,
@@ -651,6 +657,7 @@ fn prepare_creature_state(
         );
     }
     let idle_kf_path = (!dir.is_empty()).then(|| creature_idle_kf_path(&dir));
+    let walk_kf_path = (!dir.is_empty()).then(|| creature_walk_kf_path(&dir));
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
     // #4092 (D5-01) — same resolution as the humanoid path; a no-op for
@@ -686,6 +693,7 @@ fn prepare_creature_state(
         skel_map: HashMap::new(),
         skeleton_path,
         idle_kf_path,
+        walk_kf_path,
         body_paths,
         head_path: None,
         hair_path: None,
@@ -1066,6 +1074,39 @@ fn advance_runtime_unit(
                     player.speed = speed;
                     world.insert(state.placement_root, player);
                 }
+            }
+            // M42.10 — resolve the walk clip: creatures use their own
+            // directory clip, KF-game humanoids the shared per-cell clip
+            // (`load_references` already registered it — a path lookup, no
+            // I/O), and Skyrim+ the decoded HKX walk staged into
+            // `SkyrimWalkClip` by `populate_skyrim_walk_clip`. Playback is
+            // left to `npc_walk_animation_system`, which swaps it in only
+            // while the actor is actually moving.
+            let walk_handle = if let Some(path) = state.walk_kf_path.as_deref() {
+                load_kf_clip_by_path(world, tex_provider, path)
+            } else if index.game.has_kf_animations() {
+                crate::npc_spawn::humanoid_walk_kf_path(index.game)
+                    .and_then(|path| world.resource::<AnimationClipRegistry>().get_by_path(path))
+            } else {
+                world
+                    .try_resource::<crate::components::SkyrimWalkClip>()
+                    .and_then(|r| r.0)
+            };
+            if let Some(handle) = walk_handle {
+                let last_pos = world
+                    .query::<Transform>()
+                    .and_then(|q| q.get(state.placement_root).map(|t| t.translation))
+                    .unwrap_or_default();
+                world.insert(
+                    state.placement_root,
+                    crate::components::WalkAnimation {
+                        walk_handle: handle,
+                        walking: false,
+                        last_pos,
+                        captured: None,
+                        transition_secs: 0.0,
+                    },
+                );
             }
             apply_ai_package_behavior(world, state.placement_root, npc, index);
             // Eviction state restores in stamp_quest_reference after the caller
@@ -1476,6 +1517,27 @@ fn advance_prebaked_unit(
                         consumed_idle_serial: 0,
                     },
                 );
+                // M42.10 — prebaked-path actors (Skyrim+) resolve the same
+                // decoded HKX walk clip the runtime path uses.
+                if let Some(handle) = world
+                    .try_resource::<crate::components::SkyrimWalkClip>()
+                    .and_then(|r| r.0)
+                {
+                    let last_pos = world
+                        .query::<Transform>()
+                        .and_then(|q| q.get(state.placement_root).map(|t| t.translation))
+                        .unwrap_or_default();
+                    world.insert(
+                        state.placement_root,
+                        crate::components::WalkAnimation {
+                            walk_handle: handle,
+                            walking: false,
+                            last_pos,
+                            captured: None,
+                            transition_secs: 0.0,
+                        },
+                    );
+                }
             }
             apply_ai_package_behavior(world, state.placement_root, npc, index);
             // The caller restores eviction state after stamping the placed

@@ -1,8 +1,8 @@
 //! Escort procedure (M42.6) — the fourth AI-package runtime to drive NPC
 //! locomotion, reusing `wander_system`/`travel_system`/`follow_system`'s
 //! straight-line walk primitive via `super::locomotion::step_toward`.
-//! **Registered only when `BYRO_ESCORT` is set** (see `boot/schedule/post_update.rs`), mirroring
-//! `BYRO_FOLLOW`/`BYRO_TRAVEL`/`BYRO_WANDER`/`BYRO_SANDBOX_SIT`.
+//! **Live by default since M42.10** (kill-switch:
+//! `BYRO_NO_AI_LOCOMOTION=1`; see `boot/schedule/post_update.rs`).
 //!
 //! Escort is the first M42 procedure that needs no new sub-record decode
 //! work — it combines two pieces already parsed for prior procedures:

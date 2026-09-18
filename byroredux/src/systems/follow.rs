@@ -1,8 +1,8 @@
 //! Follow procedure (M42.5) — the third AI-package runtime to drive NPC
 //! locomotion, reusing `wander_system`/`travel_system`'s straight-line
 //! walk primitive via `super::locomotion::step_toward`. **Registered only
-//! when `BYRO_FOLLOW` is set** (see `boot/schedule/post_update.rs`), mirroring
-//! `BYRO_TRAVEL`/`BYRO_WANDER`/`BYRO_SANDBOX_SIT`.
+//! M42.10 made this live by default (kill-switch:
+//! `BYRO_NO_AI_LOCOMOTION=1`; see `boot/schedule/post_update.rs`).
 //!
 //! Unlike Travel (resolve/pick a destination once, walk there, stop for
 //! good), Follow tracks a **live** target every tick: once

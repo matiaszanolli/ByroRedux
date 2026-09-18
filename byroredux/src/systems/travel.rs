@@ -1,7 +1,8 @@
 //! Travel procedure (M42.4) — the second AI-package runtime to drive NPC
 //! locomotion, reusing `wander_system`'s straight-line walk primitive via
-//! `super::locomotion::step_toward`. **Registered only when `BYRO_TRAVEL`
-//! is set** (see `boot/schedule/post_update.rs`), mirroring `BYRO_WANDER`/`BYRO_SANDBOX_SIT`.
+//! `super::locomotion::step_toward`. **Live by default since M42.10**
+//! (kill-switch: `BYRO_NO_AI_LOCOMOTION=1`; see
+//! `boot/schedule/post_update.rs`).
 //!
 //! Unlike Wander (walk to a random point, pause, repeat forever), Travel
 //! walks **once** to a destination and stops — [`Traveled`] is a terminal

@@ -98,6 +98,18 @@ fn ground_probe_groups() -> rapier3d::prelude::InteractionGroups {
     InteractionGroups::new(Group::ALL, Group::ALL & !ACTOR_BONE_GROUP)
 }
 
+/// M42.10 — the interaction-group mask a *walking actor's* KCC sweep must
+/// use: collide with the whole world (fixed **and** dynamic — an NPC should
+/// be blocked by walls and shove clutter) except its own keyframed ragdoll
+/// bones, which all carry [`ACTOR_BONE_GROUP`] and can't be excluded
+/// individually (#2873's multi-body self-hit problem, KCC edition). Passed
+/// as [`CharacterMoveParams::filter_groups`] by NPC locomotion; identical
+/// to the ground-probe mask because "the actor's own bones are not the
+/// world" is the same statement in both query shapes.
+pub fn actor_move_interaction_groups() -> rapier3d::prelude::InteractionGroups {
+    ground_probe_groups()
+}
+
 /// The filter every *solid-world* probe must use: fixed geometry only, actor
 /// bones masked out, and **sensors excluded**.
 ///
@@ -847,6 +859,16 @@ pub struct CharacterMoveParams {
     /// shapecast — pass the character's own collider here so the
     /// KCC doesn't self-hit.
     pub exclude_collider: Option<rapier3d::prelude::ColliderHandle>,
+    /// Optional interaction-group mask for the shapecast. `None` keeps the
+    /// default (collide with everything not excluded otherwise). M42.10 —
+    /// NPC locomotion passes [`ground_probe_groups`] here so a walking
+    /// actor's KCC sweep skips its *own* keyframed ragdoll bones: like the
+    /// `cast_ray_down` self-hit problem (#2873), each bone is a separate
+    /// body, so a single `exclude_collider` can never cover them — they
+    /// all carry [`ACTOR_BONE_GROUP`] and are masked wholesale instead.
+    /// Unlike `solid_probe_filter`, dynamics stay included on purpose: a
+    /// walking NPC must collide-and-slide against movable clutter.
+    pub filter_groups: Option<rapier3d::prelude::InteractionGroups>,
     /// `KinematicCharacterController.offset` distance in BU. Sourced
     /// from `ContactConfig::kcc_offset_bu` by the controller system;
     /// surfaced as a param so `move_character` stays pure (no resource
@@ -1321,6 +1343,10 @@ impl PhysicsWorld {
         // off the player — for the character controller that change was a
         // no-op, which is the exact bug #2549 was filed to fix.
         let base = QueryFilter::default().exclude_sensors();
+        let base = match params.filter_groups {
+            Some(groups) => base.groups(groups),
+            None => base,
+        };
         let filter = if let Some(exclude) = params.exclude_collider {
             base.exclude_collider(exclude)
         } else {
@@ -2405,6 +2431,7 @@ mod tests {
             step_min_width: 8.0,
             snap_to_ground: 0.0,
             exclude_collider: None,
+            filter_groups: None,
             kcc_offset_bu: 2.0,
         })
         .translation
@@ -2443,6 +2470,79 @@ mod tests {
             "capsule moved {through} of a desired -60 through a SENSOR wall — \
              the KCC filter is not excluding sensors, so a non-collidable \
              Havok body is still an invisible wall (#3116)"
+        );
+    }
+
+    /// M42.10 — a walking NPC's KCC sweep must skip its *own* keyframed
+    /// ragdoll bones. Each bone is a separate `KinematicPositionBased` body
+    /// carrying `ACTOR_BONE_GROUP` membership, so `exclude_collider` (one
+    /// handle) can never cover them — the group mask
+    /// (`filter_groups: Some(actor_move_interaction_groups())`) is the
+    /// multi-body analogue of the `cast_ray_down` self-hit fix (#2873).
+    /// With the mask the bone wall is pass-through (a bone in the path must
+    /// not stop the actor's own walk); without it the same wall blocks,
+    /// proving the fixture and the mask are both load-bearing.
+    #[test]
+    fn kcc_filter_groups_mask_actor_bone_colliders() {
+        fn insert_actor_bone_wall(w: &mut PhysicsWorld) {
+            use rapier3d::prelude::*;
+            let body = w.bodies.insert(
+                RigidBodyBuilder::kinematic_position_based()
+                    .position(iso_from_trs(Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY))
+                    .build(),
+            );
+            w.colliders.insert_with_parent(
+                ColliderBuilder::cuboid(50.0, 20.0, 2.0)
+                    .collision_groups(
+                        InteractionGroups::new(crate::ACTOR_BONE_GROUP, Group::ALL),
+                    )
+                    .build(),
+                body,
+                &mut w.bodies,
+            );
+        }
+
+        fn walk(w: &PhysicsWorld, filter_groups: Option<rapier3d::prelude::InteractionGroups>) -> f32 {
+            w.move_character(CharacterMoveParams {
+                capsule_half_height: 30.0,
+                capsule_radius: 15.0,
+                position: Vec3::new(0.0, 0.0, 40.0),
+                desired_translation: Vec3::new(0.0, 0.0, -60.0),
+                dt: 1.0 / 60.0,
+                max_slope_climb_deg: 50.0,
+                step_height: 32.0,
+                step_min_width: 8.0,
+                snap_to_ground: 0.0,
+                exclude_collider: None,
+                filter_groups,
+                kcc_offset_bu: 2.0,
+            })
+            .translation
+            .z
+        }
+
+        let mut masked = PhysicsWorld::new();
+        insert_actor_bone_wall(&mut masked);
+        masked.update_query_pipeline();
+        let through = walk(&masked, Some(actor_move_interaction_groups()));
+
+        let mut unmasked = PhysicsWorld::new();
+        insert_actor_bone_wall(&mut unmasked);
+        unmasked.update_query_pipeline();
+        let blocked = walk(&unmasked, None);
+
+        // Non-vacuity: without the mask the bone wall must actually stop
+        // the capsule, otherwise the masked assertion proves nothing.
+        assert!(
+            blocked > -60.0 * 0.5,
+            "the actor-bone wall did not block an unmasked sweep (moved \
+             {blocked} of -60) — fixture is wrong"
+        );
+        assert!(
+            (through - (-60.0)).abs() < 1.0,
+            "capsule moved {through} of a desired -60 through its own \
+             ACTOR_BONE_GROUP bone with the group mask applied — an NPC \
+             would be stopped by its own ragdoll bones (M42.10)"
         );
     }
 
@@ -2905,6 +3005,7 @@ mod audit_2026_08_13_regressions {
                             step_min_width: 8.0,
                             snap_to_ground: step_height,
                             exclude_collider: None,
+                            filter_groups: None,
                             kcc_offset_bu: kcc_offset,
                         });
                         pos += res.translation;

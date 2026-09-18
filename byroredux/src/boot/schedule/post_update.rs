@@ -55,106 +55,80 @@ pub(super) fn register_post_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::GlobalTransform>()
             .writes::<byroredux_core::ecs::components::ParticleEmitter>(),
     );
-    // M42 — sandbox seat procedure. GATED OFF by default (opt in with
-    // `BYRO_SANDBOX_SIT=1`). The seat placement + clip-swap pipeline is fully
-    // verified (live bone inspection: actors land on the correct furniture
-    // marker and the sit clip *is* applied — L-thigh matches the authored
-    // folded pose). M42.1 fixed the earlier float bug (the generic
-    // `dynamicidle_*` sit loops carry no pelvis/root channel) by holding the
-    // FNV/FO3 sit-**enter** transition clip's final frame instead, which does
-    // lower `Bip01`/`NonAccum` onto the seat; see `systems::sandbox` module
-    // docs for the full mechanism. The rest of the M42 foundation (Sandbox
-    // package tagging, `Furniture` markers, `Seated`, resources) stays live
-    // regardless. Runs after transform propagation, same exclusive lane as
-    // the systems above.
-    if std::env::var_os("BYRO_SANDBOX_SIT").is_some() {
-        log::info!(
-            "BYRO_SANDBOX_SIT set — enabling sandbox seat-snap \
-             (grounded sit-enter pose on FNV/FO3; see systems::sandbox docs for other games)"
-        );
+    // M42.10 — ambient AI locomotion is **live by default**. The seven
+    // systems below sat behind per-procedure opt-in env gates from M42.1
+    // through M42.9 while each procedure's pipeline was being verified in
+    // isolation (the ambient_locomotion_default_on_tests pin guards
+    // against their reintroduction);
+    // with the walk cycle animated (`npc_walk_animation_system`) and the
+    // per-tick move physics-backed (KCC collide-and-slide in
+    // `locomotion::step_toward_detailed`), the gates' reason — "don't ship
+    // an unverified behavior to every cell" — no longer applies, and
+    // NPCs loaded from real cells now walk their authored packages
+    // without operator flags.
+    //
+    // `BYRO_NO_AI_LOCOMOTION=1` is the single kill-switch (a debugging
+    // aid for isolating renderer/perf work from AI motion, and an escape
+    // hatch if a cell turns up a content regression), replacing the seven
+    // opt-in variables — which are no longer read.
+    //
+    // All eight run in the same exclusive PostUpdate lane, after transform
+    // propagation (NPC placement roots are propagation roots — no
+    // `Parent` — so `Transform` == world position for them). The two
+    // invariants that make the order below safe:
+    //
+    // 1. The six procedure systems never touch the same actor as
+    //    `sandbox_seat_system` (a single winning `PackRecord` per NPC
+    //    installs exactly one behavior component), so their relative
+    //    order among themselves is free.
+    // 2. `npc_walk_animation_system` must be registered **last**: it
+    //    classifies an actor as moving/stationary from this frame's final
+    //    position, so it has to observe the post-locomotion transform,
+    //    and its take/restore protocol assumes every mover has already
+    //    written for the tick (a swap decided on a pre-move position
+    //    would flicker at leg boundaries).
+    let locomotion_enabled = std::env::var_os("BYRO_NO_AI_LOCOMOTION").is_none();
+    if locomotion_enabled {
+        // M42.1 — sandbox seat-snap. The seat placement + clip-swap
+        // pipeline is fully verified (live bone inspection: actors land on
+        // the correct furniture marker and the sit clip *is* applied —
+        // L-thigh matches the authored folded pose). M42.1 fixed the
+        // earlier float bug (the generic `dynamicidle_*` sit loops carry
+        // no pelvis/root channel) by holding the FNV/FO3 sit-**enter**
+        // transition clip's final frame instead, which does lower
+        // `Bip01`/`NonAccum` onto the seat; see `systems::sandbox` module
+        // docs for the full mechanism. The rest of the M42 foundation
+        // (Sandbox package tagging, `Furniture` markers, `Seated`,
+        // resources) runs regardless.
         scheduler.add_exclusive(
             Stage::PostUpdate,
             crate::systems::make_sandbox_seat_system(),
         );
-    }
-    // M42.3 — Wander locomotion. GATED OFF by default (opt in with
-    // `BYRO_WANDER=1`), mirroring `BYRO_SANDBOX_SIT` above. Straight-line
-    // walk-to-point, no pathing/NAVM, no animation-clip swap — see
-    // `systems::wander` module docs for the full v0-scope list. Same
-    // exclusive PostUpdate lane, after transform propagation, as
-    // `sandbox_seat_system`; the two never touch the same actor (an NPC's
-    // active package is a single winning `PackRecord`, so `SandboxBehavior`
-    // and `WanderBehavior` are mutually exclusive), so their relative
-    // order doesn't matter.
-    if std::env::var_os("BYRO_WANDER").is_some() {
-        log::info!("BYRO_WANDER set — enabling NPC wander locomotion (M42.3 v0)");
+        // M42.3 — Wander: straight-line walk-to-point, walk-to-pause
+        // oscillation. See `systems::wander` module docs.
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_wander_system());
-    }
-    // M42.4 — Travel locomotion. GATED OFF by default (opt in with
-    // `BYRO_TRAVEL=1`), mirroring `BYRO_WANDER`/`BYRO_SANDBOX_SIT` above.
-    // Shares `wander_system`'s straight-line walk primitive via
-    // `systems::locomotion::step_toward`, but walks once to a destination
-    // and stops (terminal `Traveled` marker) instead of repeating — see
-    // `systems::travel` module docs for the resolution/fallback mechanism
-    // and the full v0-scope list. Same exclusive PostUpdate lane, after
-    // transform propagation; Sandbox/Wander/Travel never touch the same
-    // actor (a single winning `PackRecord` per NPC), so relative order
-    // among the three doesn't matter.
-    if std::env::var_os("BYRO_TRAVEL").is_some() {
-        log::info!("BYRO_TRAVEL set — enabling NPC travel locomotion (M42.4 v0)");
+        // M42.4 — Travel: walk once to a destination, terminal `Traveled`.
+        // See `systems::travel` module docs.
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_travel_system());
-    }
-    // M42.5 — Follow locomotion. GATED OFF by default (opt in with
-    // `BYRO_FOLLOW=1`), mirroring `BYRO_TRAVEL`/`BYRO_WANDER` above.
-    // Shares the same `step_toward` locomotion primitive, but tracks a
-    // *live* target's position every tick instead of a frozen destination
-    // (Travel) or a hash-picked point (Wander) — see `systems::follow`
-    // module docs for the PTDT target-resolution mechanism and the full
-    // v0-scope list. Same exclusive PostUpdate lane, after transform
-    // propagation; Sandbox/Wander/Travel/Follow never touch the same
-    // actor (a single winning `PackRecord` per NPC), so relative order
-    // among the four doesn't matter.
-    if std::env::var_os("BYRO_FOLLOW").is_some() {
-        log::info!("BYRO_FOLLOW set — enabling NPC follow locomotion (M42.5 v0)");
+        // M42.5 — Follow: live-target stand-off tracking, terminal-less.
+        // See `systems::follow` module docs.
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_follow_system());
-    }
-    // M42.6 — Escort locomotion. GATED OFF by default (opt in with
-    // `BYRO_ESCORT=1`), mirroring `BYRO_FOLLOW`/`BYRO_TRAVEL`/`BYRO_WANDER`
-    // above. Shares the same `step_toward` locomotion primitive across two
-    // phases — collect a live PTDT target (like Follow), then lead it to a
-    // frozen PLDT destination and stop (like Travel, terminal `Escorted`
-    // marker) — see `systems::escort` module docs for the full mechanism
-    // and v0-scope list. Same exclusive PostUpdate lane, after transform
-    // propagation; Sandbox/Wander/Travel/Follow/Escort never touch the
-    // same actor (a single winning `PackRecord` per NPC), so relative
-    // order among the five doesn't matter.
-    if std::env::var_os("BYRO_ESCORT").is_some() {
-        log::info!("BYRO_ESCORT set — enabling NPC escort locomotion (M42.6 v0)");
+        // M42.6 — Escort: collect a live target, then lead it to a frozen
+        // destination, terminal `Escorted`. See `systems::escort` docs.
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_escort_system());
-    }
-    // M42.7 — Guard locomotion. GATED OFF by default (opt in with
-    // `BYRO_GUARD=1`), mirroring `BYRO_ESCORT`/`BYRO_FOLLOW`/`BYRO_TRAVEL`/
-    // `BYRO_WANDER` above. Shares `travel_system`'s `NearReference`-resolve
-    // primitive (#2561) but diverges on fallback (home, not a random pick)
-    // and never reaches a terminal state — holds the anchor indefinitely,
-    // returning if displaced beyond its radius — see `systems::guard`
-    // module docs. Same exclusive PostUpdate lane, after transform
-    // propagation; Sandbox/Wander/Travel/Follow/Escort/Guard never touch
-    // the same actor (a single winning `PackRecord` per NPC), so relative
-    // order among the six doesn't matter.
-    if std::env::var_os("BYRO_GUARD").is_some() {
-        log::info!("BYRO_GUARD set — enabling NPC guard locomotion (M42.7 v0)");
+        // M42.7 — Guard: hold an anchor + leash, never terminal. See
+        // `systems::guard` module docs.
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_guard_system());
-    }
-    // M42.8 — Patrol locomotion. GATED OFF by default (opt in with
-    // `BYRO_PATROL=1`), mirroring the gates above. v0 Patrol is Wander's
-    // exact random-point-in-radius algorithm under a different procedure
-    // tag — no patrol-route data is decoded anywhere in this codebase, so
-    // there is nothing to differentiate it on yet; see `systems::patrol`
-    // module docs. Same exclusive PostUpdate lane.
-    if std::env::var_os("BYRO_PATROL").is_some() {
-        log::info!("BYRO_PATROL set — enabling NPC patrol locomotion (M42.8 v0, aliases Wander's algorithm)");
+        // M42.8 — Patrol: shares Wander's oscillating algorithm (no
+        // patrol-route data is decoded anywhere yet — see
+        // `systems::patrol` module docs).
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_patrol_system());
+        // M42.10 — walk-cycle playback. See `systems::walk_anim` module
+        // docs for the take/restore/yield/abandon protocol.
+        scheduler.add_exclusive(
+            Stage::PostUpdate,
+            crate::systems::make_npc_walk_animation_system(),
+        );
     }
     // PostUpdate ordering contract (#1375 invariant pin, revised by #3652):
     //   1. transform_propagation — BFS GlobalTransform composition

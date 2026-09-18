@@ -417,6 +417,15 @@ pub(super) fn load_references_budgeted(
             Vec::new()
         };
 
+        // M42.10 — warm the registry with the shared humanoid walk clip so
+        // each spawn job's finalize path lookup
+        // (`humanoid_walk_kf_path` → `AnimationClipRegistry::get_by_path`)
+        // hits. Path-keyed memoised like the idle pool; a `None` here (not
+        // archived) simply means NPCs spawn without a walk cycle.
+        if game.has_kf_animations() {
+            crate::npc_spawn::load_walk_clip(world, tex_provider, game);
+        }
+
         // M42.1 — resolve the sit-enter clip (handle, duration) once per cell
         // (archive provider available here; `sandbox_seat_system` has none) into
         // the `SandboxSitClip` resource. `None` for Skyrim+/Havok games → those

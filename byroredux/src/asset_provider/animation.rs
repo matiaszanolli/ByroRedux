@@ -17,6 +17,15 @@ use std::collections::HashSet;
 
 const SKELETON_PATH: &str = r"meshes\actors\character\character assets\skeleton.hkx";
 const ANIMATION_ROOT: &str = r"meshes\actors\character\animations";
+/// M42.10 — the humanoid walk cycle `npc_walk_animation_system` swaps in
+/// while a locomotion package moves an actor. Vanilla SSE ships no
+/// weapon-sheathed locomotion as a standalone clip (that lives inside the
+/// behavior project, which this engine deliberately doesn't execute), so
+/// the one-hand stance cycle is the closest verified humanoid walk: legs
+/// are stance-neutral, arms hold a loose sword pose. BSA scan 2026-09-18
+/// (`Skyrim - Animations.bsa`): present; the plain `walkforward.hkx`
+/// stems are creature-only (chicken, bear, canine, …).
+const SKYRIM_WALK_PATH: &str = r"meshes\actors\character\animations\1hm_walkforward.hkx";
 
 /// Decode and register the Skyrim cart IDLE family used by MQ101 startup.
 ///
@@ -136,8 +145,85 @@ pub(crate) fn populate_havok_idle_runtime(
     installed
 }
 
-fn idle_animation_candidates(event: &str) -> Vec<String> {
-    let event = event.trim_matches('\0').trim();
+/// M42.10 — decode the humanoid walk cycle into the `SkyrimWalkClip`
+/// resource, once per cell load where the archive provider is in hand
+/// (same shape as [`populate_havok_idle_runtime`], which the caller runs
+/// beside this). The clip loops; its `NPC COM [COM ]` trajectory is bound
+/// as the accumulation root so the per-cycle forward drift becomes a
+/// `RootMotionDelta` (which ambient locomotion currently discards — it
+/// moves the actor root itself at `LOCOMOTION_WALK_SPEED`) instead of
+/// lurching the skeleton forward and snapping back every loop.
+///
+/// Idempotent: a registry hit for [`SKYRIM_WALK_PATH`] short-circuits the
+/// decode. Returns the installed handle, or `None` when the game isn't
+/// Skyrim, the archives are absent, or decode fails (diagnostics at
+/// `warn` — a missing walk clip is a silent capability downgrade, not a
+/// cell-load failure).
+pub(crate) fn populate_skyrim_walk_clip(world: &mut World, index: &EsmIndex, provider: &TextureProvider) -> Option<u32> {
+    if index.game != GameKind::Skyrim {
+        return None;
+    }
+    let cached = world.resource::<AnimationClipRegistry>().get_by_path(SKYRIM_WALK_PATH);
+    if let Some(handle) = cached {
+        world.insert_resource(crate::components::SkyrimWalkClip(Some(handle)));
+        return Some(handle);
+    }
+    let skeleton_bytes = provider.extract_mesh(SKELETON_PATH)?;
+    let skeleton = match byroredux_hkx::decode_skeleton(&skeleton_bytes) {
+        Ok(skeleton) => skeleton,
+        Err(error) => {
+            log::warn!("Skyrim walk clip: failed to decode skeleton HKX: {error}");
+            return None;
+        }
+    };
+    let Some(anim_bytes) = provider.extract_mesh(SKYRIM_WALK_PATH) else {
+        log::warn!(
+            "Skyrim walk clip: '{SKYRIM_WALK_PATH}' is missing; add Skyrim - Animations.bsa"
+        );
+        return None;
+    };
+    let animation = match byroredux_hkx::decode_spline_animation(&anim_bytes) {
+        Ok(animation) => animation,
+        Err(error) => {
+            log::warn!("Skyrim walk clip: HKX '{SKYRIM_WALK_PATH}' is not usable: {error}");
+            return None;
+        }
+    };
+    let handle = {
+        let clip = {
+            let mut pool = world.resource_mut::<StringPool>();
+            let mut clip = convert_hkx_clip(
+                SKYRIM_WALK_PATH,
+                // Not an `idlecart*` event → no synthesized completion
+                // events, `CycleType::Loop`, and the accum-root lookup
+                // below is what binds COM (the cart idles do it through
+                // their exit-event branch instead).
+                "walkforward",
+                &skeleton,
+                &animation,
+                &mut pool,
+            );
+            if let Some(com) = skeleton
+                .bones
+                .iter()
+                .find(|bone| bone.name.eq_ignore_ascii_case("NPC COM [COM ]"))
+            {
+                clip.accum_root_name = Some(pool.intern(&com.name));
+            }
+            clip
+        };
+        world
+            .resource_mut::<AnimationClipRegistry>()
+            .get_or_insert_by_path(SKYRIM_WALK_PATH.to_owned(), || clip)
+    };
+    log::info!(
+        "Skyrim walk clip installed from '{SKYRIM_WALK_PATH}' → handle {handle}"
+    );
+    world.insert_resource(crate::components::SkyrimWalkClip(Some(handle)));
+    Some(handle)
+}
+
+fn idle_animation_candidates(event: &str) -> Vec<String> {    let event = event.trim_matches('\0').trim();
     let stem = event
         .get(..4)
         .filter(|prefix| prefix.eq_ignore_ascii_case("idle"))
