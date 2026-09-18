@@ -69,6 +69,29 @@ what's planned.
 > (`active_package_is_*` is a different, unrelated thing: the seven
 > per-procedure wrapper selectors #2031 made redundant — see §4.)
 
+> **Update (M42.10/M42.11, 2026-09-18).** The per-procedure opt-in gates
+> described throughout this document (and in every "opt-in via `BYRO_*`"
+> note below) are **gone**: sandbox seat and the six locomotion
+> procedures register unconditionally in the exclusive PostUpdate lane
+> behind a single `BYRO_NO_AI_LOCOMOTION=1` kill-switch, and walking
+> NPCs are now the default observable behavior in any cell whose
+> residents carry walk-class packages. Three pieces landed together:
+> authored **walk cycles** (per-game archive-verified clips — FNV/FO3
+> `mtforward.kf` male/female/child, Oblivion `handtohandforward.kf`,
+> creature `<dir>forward.kf`, Skyrim `1hm_walkforward.hkx` via the HKX
+> path with COM bound as accum root) swapped in per actor by
+> `npc_walk_animation_system` while the actor displaces; **physics-
+> backed steps** (`locomotion::step_toward` drives the XZ move through
+> Rapier's KCC with `filter_groups` masking the actor's own bone
+> colliders, autostep, 64 BU ground snap, and a drop-clamped airborne
+> fallback); and **authored stride speed** (M42.11: each actor's
+> `WalkSpeed` derives from its clip's accumulation-root travel instead
+> of a fixed 100 u/s). Wander/Patrol re-pick a deterministic target
+> after 2.5 s of continuous blocking instead of grinding into
+> architecture. Verified live on FNV `CampMcTermInt01`: monorail Travel
+> troopers walked 316/203 units in 30 s while the player walked grounded
+> under byro-dbg input control in the same session.
+
 ## 1. Spawn trigger: NPC_ vs. static
 
 `cell_loader::references::load_references` (`byroredux/src/cell_loader/references/mod.rs:92`)
@@ -184,8 +207,9 @@ package's authored `PLDT.radius` when present. (The per-procedure
 `active_package_is_sandbox` / `active_sandbox_location` selectors this
 section used to describe were replaced by that single resolve in #2031
 and are dead code tracked as #3042.) At runtime,
-`sandbox_seat_system` (`byroredux/src/systems/sandbox.rs`) — **opt-in
-only**, registered when `BYRO_SANDBOX_SIT` is set (`byroredux/src/boot/schedule/post_update.rs`) —
+`sandbox_seat_system` (`byroredux/src/systems/sandbox.rs`) — **live by
+default since M42.10** (`BYRO_NO_AI_LOCOMOTION=1` opts out;
+`byroredux/src/boot/schedule/post_update.rs`) —
 finds the nearest unreserved `Furniture` sit marker within radius,
 snaps the placement-root `Transform` onto it, and swaps
 `AnimationPlayer` onto a sit-**enter** clip.
@@ -231,8 +255,8 @@ section used to describe were replaced by that single resolve in #2031
 and are dead code tracked as #3042; `npc_spawn.rs` itself was split
 into `npc_spawn/`.
 
-`wander_system` (`byroredux/src/systems/wander.rs`, opt-in via
-`BYRO_WANDER=1`, same gating convention as `BYRO_SANDBOX_SIT`) drives a
+`wander_system` (`byroredux/src/systems/wander.rs`, live by default
+since M42.10, previously opt-in via `BYRO_WANDER=1`) drives a
 `WanderState` (home / target / phase / pick_count) per actor: walk
 toward `target` via `Vec3::move_towards`, NAVM-routed within the actor's
 own resident tile (`navmesh_path`, Phase 3, landed 2026-08-23) and
@@ -275,8 +299,8 @@ Travel differs from Wander in what it's *for*: Wander repeats
 indefinitely and only needs a search center, so "actor's own spawn
 position" is a legitimate v0 approximation; Travel walks **once** to a
 destination and stops, so a real destination actually matters. To that
-end, `travel_system` (`byroredux/src/systems/travel.rs`, opt-in via
-`BYRO_TRAVEL=1`, same gating convention as `BYRO_WANDER`) is the first
+end, `travel_system` (`byroredux/src/systems/travel.rs`, live by
+default since M42.10, previously opt-in via `BYRO_TRAVEL=1`) is the first
 procedure to attempt resolving a PLDT target to a **live entity's
 position** rather than only ever falling back to the actor's own spot:
 on its own first tick per actor (i.e. *after* the whole cell has
@@ -341,8 +365,9 @@ selectors this section used to describe were replaced by that resolve
 in #2031 and are dead code tracked as #3042 — capturing PTDT's target
 FormID (only for `SpecificReference`/`ObjectId`) and its
 `count_or_distance` field (interpreted here as a stand-off distance).
-`follow_system` (`byroredux/src/systems/follow.rs`, opt-in via
-`BYRO_FOLLOW=1`) resolves the target FormID to a live `EntityId` exactly
+`follow_system` (`byroredux/src/systems/follow.rs`, live by default
+since M42.10, previously opt-in via `BYRO_FOLLOW=1`) resolves the
+target FormID to a live `EntityId` exactly
 once, lazily, on its own first tick per actor — via the same
 `resolve_entity_by_global_form_id` Travel uses — but then, unlike
 `TravelState`'s frozen destination, **re-reads that entity's
@@ -377,8 +402,9 @@ section used to describe were replaced by that resolve in #2031 and
 are dead code tracked as #3042 — reusing the same
 `game_hour`/`condition_met` closure.
 
-`escort_system` (`byroredux/src/systems/escort.rs`, opt-in via
-`BYRO_ESCORT=1`) runs a two-phase state machine per actor:
+`escort_system` (`byroredux/src/systems/escort.rs`, live by default
+since M42.10, previously opt-in via `BYRO_ESCORT=1`) runs a two-phase
+state machine per actor:
 
 1. **Collect** — resolve the PTDT target once (exactly like
    `follow_system`), then re-read its live `GlobalTransform` every tick
@@ -425,8 +451,9 @@ selectors this section used to describe were replaced by that resolve
 in #2031 and are dead code tracked as #3042 — reusing the same
 `game_hour`/`condition_met` closure.
 
-`guard_system` (`byroredux/src/systems/guard.rs`, opt-in via
-`BYRO_GUARD=1`) resolves an anchor point exactly once, on first sight:
+`guard_system` (`byroredux/src/systems/guard.rs`, live by default
+since M42.10, previously opt-in via `BYRO_GUARD=1`) resolves an anchor
+point exactly once, on first sight:
 a `NearReference`-type PLDT FormID first (via
 `resolve_entity_by_global_form_id`, the same call Travel/Escort make),
 falling back — **deliberately not** to Travel's random-pick-within-radius
@@ -467,7 +494,8 @@ machine under a new name, `wander_system`'s core was extracted into a
 shared, ECS-component-agnostic function —
 `step_oscillating_wander` (`byroredux/src/systems/wander.rs`) — that
 both `wander_system` and `patrol_system`
-(`byroredux/src/systems/patrol.rs`, opt-in via `BYRO_PATROL=1`) call.
+(`byroredux/src/systems/patrol.rs`, live by default since M42.10,
+previously opt-in via `BYRO_PATROL=1`) call.
 The two systems differ only in which component types they read/write
 (`PatrolBehavior`/`PatrolState` vs `WanderBehavior`/`WanderState`, kept
 separate so Patrol and Wander actors stay independently
@@ -498,15 +526,20 @@ animation-clip swap).
   this codebase yet, not just a missing procedure dispatch.
 - **No general AI tick, but package selection does tick.**
   `byroredux/src/systems/` still has no `ai.rs` / `behavior.rs` /
-  `npc.rs`. The seven *locomotion* systems — `sandbox_seat_system`,
-  `wander_system`, `travel_system`, `follow_system`, `escort_system`,
-  `guard_system`, `patrol_system` — are still all opt-in, requiring
-  `BYRO_SANDBOX_SIT=1` / `BYRO_WANDER=1` / `BYRO_TRAVEL=1` /
-  `BYRO_FOLLOW=1` / `BYRO_ESCORT=1` / `BYRO_GUARD=1` / `BYRO_PATROL=1`
-  respectively. `ambient_ai_package_system` is the exception and runs in
-  the default configuration (`byroredux/src/boot/schedule/update.rs`, `Stage::Update`, exclusive), so
-  packages are selected and behavior components maintained even when no
-  locomotion system is enabled to act on them.
+  `npc.rs`. Superseded 2026-09-18 by M42.10: the seven *locomotion*
+  systems used to be per-procedure opt-in, but now register
+  unconditionally in the exclusive PostUpdate lane behind the single
+  `BYRO_NO_AI_LOCOMOTION=1` kill-switch (see the header update note),
+  and `ambient_ai_package_system` keeps selecting and maintaining
+  behavior components once per in-game minute exactly as before. What
+  is still *not* general: locomotion is straight-line within one
+  resident NAVM tile (see the pathing bullet), movement steps at each
+  actor's authored stride speed (M42.11 `WalkSpeed`) but does not
+  consume the walk clips' `RootMotionDelta` as the movement source, so
+  feet can slide slightly where authored stride disagrees with the
+  measured displacement; and walk *animation* covers KF games plus the
+  Skyrim humanoid path only — FO4+/FO76/Starfield actors still slide
+  through their walk legs (no standalone walk HKX in vanilla archives).
 - **Selection re-runs once per in-game minute, not per frame.**
   Superseded 2026 by M42.9 / #2652: `ambient_ai_package_system`
   (`npc_spawn/ai_package.rs`, registered *unconditionally* at

@@ -163,7 +163,8 @@ worth recording:
 - **No new flag needed either.** Every `AmbientBehavior` variant already
   attaches unconditionally at spawn; only the *consuming* system
   (`sandbox_seat_system`) is opt-in, gated by the pre-existing
-  `BYRO_SANDBOX_SIT` in `byroredux/src/boot/schedule/post_update.rs`. Attaching `SandboxBehavior` to more
+  `BYRO_NO_AI_LOCOMOTION` in `byroredux/src/boot/schedule/post_update.rs` (M42.10 made the
+  procedure live by default). Attaching `SandboxBehavior` to more
   actors doesn't need a new gate — the existing one already controls
   whether anything acts on it.
 
@@ -238,7 +239,7 @@ real `Skyrim.esm` found:
 `0x017723` (editor_id literally `"Patrol"`) has exactly one procedure —
 `["Patrol"]`, alone, at the root, no ambiguity — and 701 ambient PKID
 edges reference it in real `Skyrim.esm`. `patrol_system`
-(`byroredux/src/systems/patrol.rs`, M42.8, `BYRO_PATROL`) already exists,
+(`byroredux/src/systems/patrol.rs`, M42.8, live by default since M42.10) already exists,
 already has zero content/animation dependency (confirmed by reading it,
 not assumed from the Sandbox precedent this time), and already reuses
 `wander_system`'s locomotion core — exactly Sandbox's "resolve a scalar,

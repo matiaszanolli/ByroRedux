@@ -173,7 +173,10 @@ decisions. Session narratives live in **[HISTORY.md](HISTORY.md)**.
 ## Run
 
 ```bash
-# FNV interior with full lighting (Textures2.bsa picked up automatically — see note below)
+# FNV interior with full lighting (Textures2.bsa picked up automatically — see note below).
+# NPCs carrying walk-class AI packages (Wander/Travel/Follow/Escort/Guard/Patrol) walk their
+# routes by default — animated, physics-backed (Rapier KCC), at each actor's authored stride
+# speed (M42.10/M42.11). Set BYRO_NO_AI_LOCOMOTION=1 to freeze ambient locomotion.
 cargo run --release -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior \
              --bsa "Fallout - Meshes.bsa" \
              --textures-bsa "Fallout - Textures.bsa"

@@ -196,7 +196,7 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 | `[~]` | Root motion | — | `split_root_motion` exists; not driving locomotion |
 | `[~]` | Text-key / anim-note events | `BSAnimNote` | Collected with IK hints; consumers thin |
 | `[~]` | Inventory & equip slots | — | `Inventory` + `EquipmentSlots` + `ItemInstancePool` ship; no equip *gameplay* |
-| `[~]` | Furniture / idle markers | Sit/sleep markers | `sandbox_seat_system` v0 behind `BYRO_SANDBOX_SIT`; sit-enter transition missing so actors float |
+| `[~]` | Furniture / idle markers | Sit/sleep markers | `sandbox_seat_system` live by default (M42.10; `BYRO_NO_AI_LOCOMOTION=1` opts out); grounded sit-enter pose on FNV/FO3 since M42.1; sleep/lean markers not disambiguated |
 | `[ ]` | **Havok `.hkx` animation decode** | The actual animation format for Skyrim+ | NPCs stand in bind pose — single biggest visible gap |
 | `[ ]` | Behavior graphs (`.hkb`) | Skyrim+ behavior system | |
 | `[ ]` | IK — foot placement / look-at | — | |

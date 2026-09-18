@@ -87,15 +87,18 @@ Havok `.hkx` loader for FO4's packfile layout (M41.x, Tier 5) — the
 32-bit packfiles and Special Edition's 64-bit ones).
 
 AI / behavior is `~` (M42, Tier 7) — 7 of ~17 `PACK` procedures have a
-runtime, each opt-in behind its own `BYRO_*` env flag: Sandbox
-(`BYRO_SANDBOX_SIT`), Wander (`BYRO_WANDER`), Travel (`BYRO_TRAVEL`), Follow
-(`BYRO_FOLLOW`), Escort (`BYRO_ESCORT`), Guard (`BYRO_GUARD`), and Patrol
-(`BYRO_PATROL`, aliases Wander's algorithm — no patrol-route data is decoded
-anywhere in this codebase). v0 scope limits apply across all seven: package
-selection (schedule + priority + CTDA conditions) runs at spawn and is
-re-evaluated once per in-game minute by `ambient_ai_package_system`
-(M42.9 / #2652) — not per frame — and none swap animation clips for
-locomotion. Their shared walk-to-point step routes through NAVM A*
+runtime, and since M42.10 (2026-09-18) they run **by default** (single
+kill-switch: `BYRO_NO_AI_LOCOMOTION=1`): Sandbox, Wander, Travel, Follow,
+Escort, Guard, and Patrol (aliases Wander's algorithm — no patrol-route
+data is decoded anywhere in this codebase). Walking NPCs are animated
+(authored per-body-class walk clips — KF games plus the Skyrim humanoid
+HKX path; FO4+ still slides) and their steps are physics-backed through
+Rapier's kinematic character controller, at each actor's authored stride
+speed (M42.11). v0 scope limits still apply: package selection (schedule
++ priority + CTDA conditions) runs at spawn and is re-evaluated once per
+in-game minute by `ambient_ai_package_system` (M42.9 / #2652) — not per
+frame — and movement remains straight-line within a single resident NAVM
+tile. Their shared walk-to-point step routes through NAVM A*
 (`byroredux/src/systems/navmesh_path.rs`, #2372). The remaining 10
 procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/
 CastMagic/Dialogue/UseWeapon) are parse-only — each blocked on a subsystem
