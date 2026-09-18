@@ -296,6 +296,26 @@ pub(crate) fn translate_light(
     }
 }
 
+/// Resolve the LIGH `falloff_exponent` sentinel (`0.0`, the "field absent"
+/// encoding documented on [`byroredux_plugin::esm::cell::LightData::
+/// falloff_exponent`]) to the per-layout default the doc contract names:
+/// `1.0` on the Skyrim+ 48-byte layout, `2.0` on the pre-Skyrim 32-byte one
+/// (FO3/FNV's common quadratic `k ≈ 2`; Oblivion's LIGH shares that
+/// generation). An authored positive value passes through verbatim. Lives
+/// beside its `canonical_light_*` siblings so the per-game knowledge enters
+/// once, at the ESM-light boundary, instead of one shared fallback reaching
+/// every game (`lighting.rs`'s own `1.0` remains as the inert last-resort
+/// net for non-ESM producers).
+pub(crate) fn canonical_light_falloff_exponent(game: GameKind, source: f32) -> f32 {
+    if source.is_finite() && source > 0.0 {
+        return source;
+    }
+    match game {
+        GameKind::Oblivion | GameKind::Fallout3NV => 2.0,
+        _ => 1.0,
+    }
+}
+
 /// Damping multiplier applied to the raw `intensity_amplitude`
 /// before composing the final modulation. Skyrim authors candles
 /// at `intensity_amplitude = 0.25` (±25% around the authored
@@ -620,6 +640,33 @@ mod tests {
         let omni =
             canonical_light_shadow_flags(GameKind::Starfield, LIGHT_FLAG_SHADOW_MASK, 0);
         assert_eq!(omni, LIGHT_FLAG_SHADOW_MASK);
+    }
+
+    /// The falloff sentinel resolves per layout generation: pre-Skyrim
+    /// (`Oblivion` / `Fallout3NV`) defaults to the quadratic `k = 2` the
+    /// shared doc contract names, Skyrim+ to `k = 1`; an authored value
+    /// always wins. A shared 1.0 fallback reaching pre-Skyrim content was
+    /// the mismatch (`light_anim.rs`'s own sibling doc called this out).
+    #[test]
+    fn falloff_exponent_sentinel_resolves_per_layout_generation() {
+        use byroredux_plugin::esm::reader::GameKind;
+        assert_eq!(
+            canonical_light_falloff_exponent(GameKind::Fallout3NV, 0.0),
+            2.0
+        );
+        assert_eq!(canonical_light_falloff_exponent(GameKind::Oblivion, 0.0), 2.0);
+        assert_eq!(canonical_light_falloff_exponent(GameKind::Skyrim, 0.0), 1.0);
+        assert_eq!(canonical_light_falloff_exponent(GameKind::Starfield, 0.0), 1.0);
+        // Authored values pass through on every game.
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Starfield,
+        ] {
+            assert_eq!(canonical_light_falloff_exponent(game, 2.5), 2.5);
+        }
     }
 
     fn flicker(flags: u32, amplitude: f32, period: f32) -> LightFlicker {
