@@ -206,6 +206,26 @@ from the code.
 
 ### Lights — **converged**
 
+
+**`NiAmbientLight` — parked by census (2026-09-18, light & shadow campaign W2.9).**
+The subtree-scoped ambient semantic (brighten `affected_nodes` only,
+unshadowed) has a zero live vanilla population: `ambient_light_census`
+over four games reports Oblivion+SI 17/9,470 files · FNV 8/14,881 ·
+Skyrim SE 0/18,862 · FO4 0/34,995, every instance black
+(luma < 1/255), none with `affected_node_names`, none with a radius. The
+spawn gate's colour-sum predicate (`is_spawnable_nif_light`) already
+drops them, so no vanilla cell spawns a phantom light. Two consequences
+pinned by `black_ambient_lights_stay_dropped_census_pinned`: (1) the
+gate must stay colour-based, or each black placeholder becomes a
+4096-unit omni point; (2) a non-black `NiAmbientLight` (modded content
+only) spawns as the documented 4096-omni approximation —
+`LightKind::Ambient` packs to GPU type 0.0 (point) with
+`light_radius_or_default`'s attenuation-free fallback — which is a
+deliberate approximation, not the Gamebryo semantic. Affected-node
+scoping and per-node ambient accumulation stay parked until a real
+consumer (or mod content that actually ships lit ambient nodes) demands
+them; `affected_node_names` remains resolved at import for that future.
+
 `ImportedLight` resolves to a `LightKind` enum (ambient / directional / point /
 spot) with a derived effective radius; the renderer never inspects the source block
 type. `LightKind` itself now lives on the canonical `LightSource` component

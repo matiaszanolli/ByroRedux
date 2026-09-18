@@ -130,6 +130,41 @@ fn spawn_nif_lights_skips_zero_color_placeholder() {
 /// Pure-zero RGB → not spawnable. The audit's exact case: an
 /// authored-off `NiPointLight` placeholder.
 #[test]
+/// W2.9 census pin (light & shadow correctness campaign, 2026-09-18) —
+/// the `NiAmbientLight` redesign decision, grounded by
+/// `cargo run --release -p byroredux-nif --example ambient_light_census`:
+///   Oblivion+SI 17/9,470 files · FNV 8/14,881 · Skyrim SE 0/18,862 ·
+///   FO4 0/34,995 — every instance BLACK (luma < 1/255), none with
+///   `affected_node_names`, none with a radius.
+/// So Gamebryo's subtree-scoped ambient semantic has a zero live vanilla
+/// population, uniformly authored-off. The colour-sum gate below is what
+/// keeps them dropped; that must stay true, or every one of those 25
+/// black placeholder nodes would spawn as a 4096-unit omnidirectional
+/// point (`light_radius_or_default`'s attenuation-free fallback with
+/// `LightKind::Ambient` packing to GPU type 0.0 = point) — a
+/// population-wide phantom light source. Non-black ambient lights
+/// (modded content only, zero vanilla instances) keep the documented
+/// 4096-omni approximation until a real consumer exists; see
+/// docs/engine/nifal.md's Lights leak-table entry.
+#[test]
+fn black_ambient_lights_stay_dropped_census_pinned() {
+    use byroredux_core::ecs::components::light::LightKind as CoreLightKind;
+    let mut ambient = light_with_color([0.0, 0.0, 0.0]);
+    ambient.kind = LightKind::Ambient;
+    assert_eq!(ambient.kind, CoreLightKind::Ambient);
+    assert!(
+        !is_spawnable_nif_light(&ambient),
+        "the census shows vanilla ambient lights are uniformly black; the \
+         colour-sum gate must keep them unspawned or each becomes a phantom \
+         4096-unit omni point"
+    );
+    // And the gate is colour-based, not kind-based: a non-black ambient
+    // (modded content) still spawns — the documented approximation.
+    let mut lit = ambient;
+    lit.color = [0.2, 0.2, 0.2];
+    assert!(is_spawnable_nif_light(&lit));
+}
+
 fn zero_color_light_is_not_spawnable() {
     let placeholder = light_with_color([0.0, 0.0, 0.0]);
     assert!(!is_spawnable_nif_light(&placeholder));
