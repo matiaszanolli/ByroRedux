@@ -92,8 +92,15 @@ impl super::buffers::SceneBuffers {
             count.min(u32::MAX as usize) as u32,
         );
         if lights.len() > MAX_LIGHTS {
+            // The excess tail is NOT arbitrary: `collect_lights` sorts the
+            // point-light suffix by descending `gi_priority_score`
+            // (directional pinned at index 0) before this clamp, so the
+            // dropped lights are the lowest-scoring ones by the
+            // intensity×radius influence proxy. What the clamp cannot do is
+            // be proximity-aware — the score is scene-static, not
+            // camera-relative (#1808's ask; the sort landed in #1800).
             log::warn!(
-                "Light SSBO overflow: {} lights submitted, capped at {} — excess lights silently dropped in storage-iteration order (no proximity priority). PERF-D4-NEW-02 / #1808",
+                "Light SSBO overflow: {} lights submitted, capped at {} — the dropped tail is the lowest gi_priority_score (intensity×radius) after collect_lights' priority sort; the clamp is not proximity-aware. PERF-D4-NEW-02 / #1808, ordering per #1800",
                 lights.len(),
                 MAX_LIGHTS,
             );

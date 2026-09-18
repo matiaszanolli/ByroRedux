@@ -33,6 +33,23 @@ fn upload_lights_warns_on_overflow_like_upload_instances() {
          (PERF-D4-NEW-02 / #1808) — mirroring upload_instances's \
          `instances.len() > MAX_INSTANCES` guard"
     );
+    // The warn must describe the real drop policy. collect_lights sorts
+    // the point-light suffix by descending gi_priority_score (#1800)
+    // before this clamp, so the dropped tail is the lowest-priority one —
+    // the old "storage-iteration order / no proximity priority" wording
+    // described the pre-sort code and sent operators reading ECS
+    // iteration order for a cause that no longer exists (W2.11, light &
+    // shadow campaign).
+    assert!(
+        lights_fn_body.contains("lowest gi_priority_score"),
+        "the overflow warn must state that the dropped tail is the lowest \
+         gi_priority_score after collect_lights' priority sort"
+    );
+    assert!(
+        !lights_fn_body.contains("storage-iteration order"),
+        "the stale storage-order wording is back — the truncation is \
+         priority-ordered, not storage-ordered"
+    );
     let warn_idx = lights_fn_body
         .find("log::warn!")
         .expect("upload_lights must emit a log::warn! on overflow (PERF-D4-NEW-02 / #1808)");
