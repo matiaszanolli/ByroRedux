@@ -34,6 +34,10 @@ struct ScreenPassViews {
     transparency_views: Vec<vk::ImageView>,
     /// Populated by `recreate_taa_and_presentation`; empty before it runs.
     hdr_views: Vec<vk::ImageView>,
+    /// #3572 — composite's post-composite scene views, the TAA resolve
+    /// input. Populated by `recreate_taa_and_presentation` alongside
+    /// `hdr_views` (which stays dedicated to the main framebuffers).
+    scene_views: Vec<vk::ImageView>,
 }
 
 impl VulkanContext {
@@ -794,6 +798,7 @@ impl VulkanContext {
             reactive_views,
             transparency_views,
             hdr_views: Vec::new(),
+            scene_views: Vec::new(),
         })
     }
 
@@ -1133,6 +1138,14 @@ impl VulkanContext {
             .expect("composite must exist during resize")
             .hdr_views()
             .clone();
+        // #3572 — and the post-composite scene views, the TAA resolve input.
+        views.scene_views = self
+            .post
+            .composite
+            .as_ref()
+            .expect("composite must exist during resize")
+            .scene_views()
+            .clone();
 
         // Recreate TAA history images + descriptor sets. The
         // post-recreate layout walk to GENERAL lives inside
@@ -1149,7 +1162,7 @@ impl VulkanContext {
                     command_pool: self.transfer_pool,
                 },
                 crate::vulkan::taa::TaaInputViews {
-                    hdr_views: &views.hdr_views,
+                    src_color_views: &views.scene_views,
                     motion_views: &views.motion_views,
                     mesh_id_views: &views.mesh_id_views,
                     normal_views: &views.normal_views,
@@ -1158,13 +1171,6 @@ impl VulkanContext {
                 self.frame_extents.render.height,
             )?;
         }
-        // Rewire composite's HDR binding to TAA output (if TAA is active).
-        if let (Some(ref t), Some(ref mut c)) = (&self.post.taa, &mut self.post.composite) {
-            let n = MAX_FRAMES_IN_FLIGHT;
-            let taa_views: Vec<vk::ImageView> = (0..n).map(|i| t.output_view(i)).collect();
-            c.rebind_hdr_views(&self.device, &taa_views, vk::ImageLayout::GENERAL);
-        }
-
         // Presentation descriptors reference the upscaler's output views, so
         // retire presentation before replacing those views. The resize entry
         // point paid device_wait_idle before reaching this method.
@@ -1227,12 +1233,6 @@ impl VulkanContext {
         // just been recreated so any previous lost-device state is no
         // longer authoritative. See #479.
         self.taa_failed = false;
-        // #4006 — and the deferred rebind that latch schedules. Every pass
-        // has just been recreated and `build_taa_pipeline` re-pointed
-        // composite at the fresh TAA output views; letting a pending
-        // raw-HDR rebind survive would undo that on the next frame and drop
-        // a working TAA back to the fallback with nothing to explain it.
-        self.composite_needs_raw_hdr_rebind = false;
         self.svgf_failed = false;
         self.caustic_failed = false;
         // #2507 — fresh slot images post-resize; a stale latch would skip
@@ -1419,16 +1419,9 @@ impl VulkanContext {
             // SAFETY: the device is idle, so no submitted command buffer can
             // still reference the TAA history images or descriptor sets.
             unsafe { taa.destroy(&self.device, &allocator) };
-            // Composite has been sampling TAA's output; hand it back to the
-            // raw HDR attachment before that output disappears.
-            if let Some(ref mut composite) = self.post.composite {
-                let raw_hdr_views = composite.hdr_views();
-                composite.rebind_hdr_views(
-                    &self.device,
-                    &raw_hdr_views,
-                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                );
-            }
+            // #3572 — composite samples the raw HDR attachment directly, so
+            // destroying TAA's output requires no descriptor hand-back (the
+            // pre-move rebind here is gone with the composite-side tap).
         }
 
         // Every history the old path accumulated describes a different render
@@ -1484,18 +1477,19 @@ impl VulkanContext {
         Ok(())
     }
 
-    /// Build the TAA pipeline for the current render extent and point
-    /// composite at its output. Mirrors the construction block in
-    /// `VulkanContext::new`, which cannot be shared because that one runs
-    /// before `self` exists. A failure here is non-fatal in exactly the same
-    /// way it is at startup: composite keeps sampling raw HDR and the frame
-    /// renders without temporal anti-aliasing.
+    /// Build the TAA pipeline for the current render extent. Mirrors the
+    /// construction block in `VulkanContext::new`, which cannot be shared
+    /// because that one runs before `self` exists. A failure here is
+    /// non-fatal in exactly the same way it is at startup: the frame
+    /// renders without temporal anti-aliasing. #3572 — composite samples
+    /// the raw HDR attachment directly and TAA's output feeds the upscale
+    /// tap, so there is no composite-side rebind to perform.
     fn build_taa_pipeline(&mut self) {
-        let Some(hdr_views) = self
+        let Some(scene_views) = self
             .post
             .composite
             .as_ref()
-            .map(|composite| composite.hdr_views())
+            .map(|composite| composite.scene_views())
         else {
             log::warn!("composite missing — TAA left disabled after upscaler switch");
             return;
@@ -1504,10 +1498,12 @@ impl VulkanContext {
             log::warn!("G-buffer missing — TAA left disabled after upscaler switch");
             return;
         };
-        let n = MAX_FRAMES_IN_FLIGHT;
-        let motion_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer.motion_view(i)).collect();
-        let mesh_id_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer.mesh_id_view(i)).collect();
-        let normal_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer.normal_view(i)).collect();
+        let motion_views: Vec<vk::ImageView> =
+            (0..MAX_FRAMES_IN_FLIGHT).map(|i| gbuffer.motion_view(i)).collect();
+        let mesh_id_views: Vec<vk::ImageView> =
+            (0..MAX_FRAMES_IN_FLIGHT).map(|i| gbuffer.mesh_id_view(i)).collect();
+        let normal_views: Vec<vk::ImageView> =
+            (0..MAX_FRAMES_IN_FLIGHT).map(|i| gbuffer.normal_view(i)).collect();
         let allocator = self
             .allocator
             .as_ref()
@@ -1519,7 +1515,7 @@ impl VulkanContext {
             &allocator,
             self.pipeline_cache,
             super::super::taa::TaaInputViews {
-                hdr_views: &hdr_views,
+                src_color_views: &scene_views,
                 motion_views: &motion_views,
                 mesh_id_views: &mesh_id_views,
                 normal_views: &normal_views,
@@ -1543,16 +1539,8 @@ impl VulkanContext {
             unsafe { taa.destroy(&self.device, &allocator) };
             return;
         }
-        if let Some(ref mut composite) = self.post.composite {
-            let taa_views: Vec<vk::ImageView> = (0..n).map(|i| taa.output_view(i)).collect();
-            composite.rebind_hdr_views(&self.device, &taa_views, vk::ImageLayout::GENERAL);
-        }
         self.post.taa = Some(taa);
         self.taa_failed = false;
-        // #4006 — composite was just re-pointed at the new TAA output views
-        // above; a pending raw-HDR rebind from the old pipeline's failure
-        // would silently undo that on the next frame.
-        self.composite_needs_raw_hdr_rebind = false;
     }
 }
 

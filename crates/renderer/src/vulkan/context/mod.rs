@@ -1040,10 +1040,6 @@ pub struct VulkanContext {
     /// introducing one. A `device_wait_idle` would also work — this fires at
     /// most once per session — but costs a stall for no benefit.
     ///
-    /// Dead today: per #3981 the `taa.dispatch` error arm that sets it is
-    /// unreachable. Fixed ahead of that issue precisely so making the arm
-    /// live does not silently open the descriptor hazard.
-    pub composite_needs_raw_hdr_rebind: bool,
     /// Same latch for SVGF, and set from the same place — the first
     /// `svgf.upload_params` error, `SvgfPipeline::dispatch` being
     /// infallible for the same reason (#3981). Composite keeps

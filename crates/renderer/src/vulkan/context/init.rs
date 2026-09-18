@@ -1350,7 +1350,7 @@ impl VulkanContext {
                 }
             },
         };
-        let mut composite = match CompositePipeline::new(
+        let composite = match CompositePipeline::new(
             &device,
             &gpu_allocator,
             pipeline_cache,
@@ -1382,18 +1382,30 @@ impl VulkanContext {
             .hdr_views()
             .clone();
 
-        // 14d. TAA resolve pass — needs the composite's HDR views (created
-        // above) as its "current HDR" input, plus per-FIF motion, mesh_id,
-        // and normal for surface-valid history reprojection.
-        // If creation succeeds, composite's HDR descriptor is rewired to
-        // sample TAA's output; otherwise we keep the raw HDR path.
+        // 14d. TAA resolve pass — #3572: the resolve input is composite's
+        // POST-composite SCENE views (the same fully-assembled image FSR
+        // resolves), so sky / denoised indirect / volumetrics / caustics /
+        // bloom are inside the resolved image on both jitter phases.
+        // Composite keeps sampling the raw HDR attachment directly; TAA's
+        // output feeds the upscale/presentation tap instead. Plus per-FIF
+        // motion, mesh_id, and normal for surface-valid history
+        // reprojection.
         let mut taa = if renderer_config.upscaler == UpscalerMode::Taa {
+            let n_frames = sync::MAX_FRAMES_IN_FLIGHT;
+            let scene_views: Vec<vk::ImageView> = (0..n_frames)
+                .map(|i| {
+                    composite
+                        .as_ref()
+                        .expect("composite must exist after construction")
+                        .scene_view(i)
+                })
+                .collect();
             match TaaPipeline::new(
                 &device,
                 &gpu_allocator,
                 pipeline_cache,
                 super::super::taa::TaaInputViews {
-                    hdr_views: &hdr_views_owned,
+                    src_color_views: &scene_views,
                     motion_views: &motion_views_seed,
                     mesh_id_views: &mesh_id_views_seed,
                     normal_views: &normal_views_seed,
@@ -1433,14 +1445,6 @@ impl VulkanContext {
                 }
             }
         }
-        // Swap composite's HDR binding to TAA output so scene composition
-        // samples the anti-aliased image. When TAA is disabled composite keeps
-        // its original raw-HDR descriptors.
-        if let (Some(t), Some(ref mut c)) = (taa.as_ref(), composite.as_mut()) {
-            let taa_views: Vec<vk::ImageView> = (0..n_frames).map(|i| t.output_view(i)).collect();
-            c.rebind_hdr_views(&device, &taa_views, vk::ImageLayout::GENERAL);
-        }
-
         let frame_upscaler = FrameUpscaler::new(
             &vk_instance,
             &device,
@@ -1681,7 +1685,6 @@ impl VulkanContext {
             reservoir_buffers,
             water,
             taa_failed: false,
-            composite_needs_raw_hdr_rebind: false,
             svgf_failed: false,
             svgf_recovery_frames: 0,
             caustic_failed: false,

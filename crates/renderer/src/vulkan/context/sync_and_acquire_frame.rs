@@ -80,13 +80,6 @@ impl VulkanContext {
         // `in_flight` array, not just this slot, so every prior submission
         // has retired — the same premise the deferred-destroy tick and the
         // skin/morph unload victim lists already rely on.
-        if self.composite_needs_raw_hdr_rebind {
-            self.composite_needs_raw_hdr_rebind = false;
-            if let Some(ref mut composite) = self.post.composite {
-                composite.fall_back_to_raw_hdr(&self.device);
-            }
-        }
-
         self.flush_pending_morph_weights()?;
 
         // EX-05 / #2736 — harvest this slot's image-health counters from the

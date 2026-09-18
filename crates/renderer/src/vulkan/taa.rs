@@ -169,8 +169,11 @@ pub struct TaaPipeline {
 /// path.
 #[derive(Clone, Copy)]
 pub struct TaaInputViews<'a> {
-    /// HDR color views (the TAA resolve input).
-    pub hdr_views: &'a [vk::ImageView],
+    /// Color views (the TAA resolve input). #3572 — these are composite's
+    /// POST-composite scene views (the same image FSR resolves), not the
+    /// raw HDR attachment: sky, denoised indirect, volumetrics, caustics
+    /// and bloom are now inside the resolved image on both jitter phases.
+    pub src_color_views: &'a [vk::ImageView],
     /// Motion-vector views (reprojection).
     pub motion_views: &'a [vk::ImageView],
     /// Mesh-ID views (disocclusion test).
@@ -188,7 +191,7 @@ impl TaaPipeline {
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        debug_assert_eq!(views.hdr_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.src_color_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(views.motion_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(views.mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(views.normal_views.len(), MAX_FRAMES_IN_FLIGHT);
@@ -209,7 +212,7 @@ impl TaaPipeline {
         height: u32,
     ) -> Result<Self> {
         let TaaInputViews {
-            hdr_views,
+            src_color_views,
             motion_views,
             mesh_id_views,
             normal_views,
@@ -415,7 +418,7 @@ impl TaaPipeline {
                 .context("TAA descriptor sets")
         });
 
-        partial.write_descriptor_sets(device, hdr_views, motion_views, mesh_id_views, normal_views);
+        partial.write_descriptor_sets(device, src_color_views, motion_views, mesh_id_views, normal_views);
 
         log::info!("TAA pipeline created: {}x{}", width, height);
         Ok(partial)
@@ -439,7 +442,13 @@ impl TaaPipeline {
                 width,
                 height,
                 HISTORY_FORMAT,
-                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+                // #3572 — TRANSFER_SRC: the history slot doubles as the
+                // upscale tap's blit source (the native-blit path in
+                // record_native_blit). Sync-validated: without it the blit
+                // violates VUID-vkCmdBlitImage-srcImage-00219.
+                vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_SRC,
             ),
         )
     }
@@ -447,7 +456,7 @@ impl TaaPipeline {
     fn write_descriptor_sets(
         &self,
         device: &ash::Device,
-        hdr_views: &[vk::ImageView],
+        src_color_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
         normal_views: &[vk::ImageView],
@@ -481,7 +490,7 @@ impl TaaPipeline {
 
             let curr_hdr = [vk::DescriptorImageInfo::default()
                 .sampler(self.linear_sampler)
-                .image_view(hdr_views[f])
+                .image_view(src_color_views[f])
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let motion = [vk::DescriptorImageInfo::default()
                 .sampler(self.point_sampler)
@@ -536,9 +545,18 @@ impl TaaPipeline {
         }
     }
 
-    /// View for this frame's resolved TAA output (= composite's input).
+    /// View for this frame's resolved TAA output. #3572 — the consumer is
+    /// now the upscale/presentation tap (the native blit's source), NOT
+    /// composite: composite samples the raw HDR attachment directly.
     pub fn output_view(&self, frame: usize) -> vk::ImageView {
         self.history[frame].view
+    }
+
+    /// Image for this frame's resolved TAA output — the upscale tap's
+    /// source (#3572). Stays in `GENERAL` (the history slot's permanent
+    /// layout); the blit barriers GENERAL → TRANSFER_SRC → GENERAL.
+    pub fn output_image(&self, frame: usize) -> vk::Image {
+        self.history[frame].image
     }
 
     /// Force the next [`MAX_FRAMES_IN_FLIGHT`] frames to skip the
@@ -631,9 +649,11 @@ impl TaaPipeline {
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))
     }
 
-    /// Dispatch TAA. Must run after the main render pass (so HDR / motion /
-    /// mesh_id are in SHADER_READ_ONLY_OPTIMAL) and before composite
-    /// (which samples `output_view(frame)` in GENERAL).
+    /// Dispatch TAA. #3572 — runs after composite + bloom (sampling the
+    /// fully composited scene in `SHADER_READ_ONLY_OPTIMAL`, the same tap
+    /// FSR resolves) and before the upscale/presentation tap, which blits
+    /// `output_image(frame)` (in `GENERAL`) to the swapchain path. Motion /
+    /// mesh_id still come from the main render pass's G-buffer.
     ///
     /// [`Self::upload_params`] must have been called this frame BEFORE the
     /// pre-render-pass bulk barrier so the UBO write is covered by that
@@ -763,7 +783,7 @@ impl TaaPipeline {
             command_pool,
         } = ctx;
         let TaaInputViews {
-            hdr_views,
+            src_color_views,
             motion_views,
             mesh_id_views,
             normal_views,
@@ -806,7 +826,7 @@ impl TaaPipeline {
             return result;
         }
 
-        self.write_descriptor_sets(device, hdr_views, motion_views, mesh_id_views, normal_views);
+        self.write_descriptor_sets(device, src_color_views, motion_views, mesh_id_views, normal_views);
 
         // #1031 — walk fresh history images from UNDEFINED to GENERAL.
         // SAFETY: fenced-resize contract — no concurrent reader on

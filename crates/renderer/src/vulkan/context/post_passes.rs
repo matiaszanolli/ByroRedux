@@ -281,7 +281,6 @@ impl VulkanContext {
                 fog_volumes,
             },
         );
-        self.record_taa_pass(cmd, frame);
         self.record_ssao_pass(cmd, frame, vp, inv_vp_arr, camera_pos, render_origin);
         self.record_composite_pass(cmd, frame);
         // #2796 / REN-D16-01 — bloom now runs AFTER composite, reading and
@@ -289,6 +288,14 @@ impl VulkanContext {
         // direct) instead of the pre-composite raw HDR that never
         // contained sky/GI/caustics. See `record_bloom_pass`'s doc.
         self.record_bloom_pass(cmd, frame);
+        // #3572 — TAA now resolves the SAME fully-composited, post-bloom
+        // scene image FSR consumes, so sky / denoised indirect /
+        // volumetrics / caustics / bloom are inside the resolved image on
+        // both jitter phases (the raw-HDR tap resolved direct lighting
+        // only, and everything composite added was never seen by the
+        // filter). Composite reads the raw HDR attachment directly; TAA's
+        // output feeds the upscale/presentation tap below.
+        self.record_taa_pass(cmd, frame);
         self.record_upscale_pass(cmd, frame, fsr_frame);
         self.record_presentation_pass(
             cmd,
@@ -861,6 +868,18 @@ impl VulkanContext {
     /// between the main render pass end and `end_command_buffer`, at the
     /// fixed position `record_post_passes` calls it from.
     fn record_taa_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        // Raw-output policy (W3.16): correctness views bypass temporal
+        // reconstruction entirely. Pre-move TAA ran unconditionally and its
+        // output only ever reached composite's direct term; post-move it
+        // filters the FINAL image, so letting it run under a raw debug view
+        // would temporally smooth the very categorical values the oracle
+        // gates assert on. Same gate shape as record_bloom_pass's.
+        if crate::shader_constants::render_debug_requires_raw_output(
+            self.render_debug_flags,
+            self.render_debug_mode.shader_value(),
+        ) {
+            return;
+        }
         // SAFETY: `cmd` is recording outside a render pass, and the TAA,
         // composite, and timer resources are live for the current `frame`.
         unsafe {
@@ -907,17 +926,10 @@ impl VulkanContext {
              of the session: {error}"
         );
         self.taa_failed = true;
-        // #4006 — schedule the raw-HDR fallback; do not perform it here. The
-        // rebind it triggers rewrites composite's descriptor set for EVERY
-        // frame slot, and the other slot's command buffer may still be
-        // pending — an UpdateDescriptorSets-None-03047 violation, with no
-        // UPDATE_AFTER_BIND / UPDATE_UNUSED_WHILE_PENDING exemption on
-        // composite's layout. `sync_and_acquire_frame` performs it after the
-        // all-slots fence wait (#3442) instead. (The scanner below asserts
-        // this function names no such call, so the symbol is deliberately not
-        // spelled here.)
-        self.composite_needs_raw_hdr_rebind = true;
-        // #3605 (REN-2026-08-30-D13-02) — this frame's geometry pass already
+        // #3572 — composite samples the raw HDR attachment directly (no
+        // TAA-output rebind exists to undo), so the #4006 deferred-rebind
+        // latch this arm used to schedule is retired with the composite-side
+        // tap. #3605 (REN-2026-08-30-D13-02) — this frame's geometry pass already
         // rendered with the Halton jitter offset (chosen at the top of
         // `draw_frame`, before the upload failed), and the raw-HDR fallback
         // above blits that image through with nothing to resolve it. Mirrors
@@ -1128,12 +1140,36 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and every image,
         // descriptor, upscaler resource, and timer is live for `frame`.
         unsafe {
-            let scene_color = self
-                .post
-                .composite
-                .as_ref()
-                .expect("composite must exist while recording")
-                .scene_image(frame);
+            // #3572 — in TAA mode the blit source is TAA's resolved output
+            // (history slot, GENERAL layout), not the scene image; FSR mode
+            // and the raw/native-blit fallback keep the scene image. The
+            // raw-output gate mirrors record_taa_pass: under a raw view the
+            // resolve never ran, so its output must not be consumed.
+            let taa_resolved = !self.taa_failed
+                && self.post.taa.is_some()
+                && !crate::shader_constants::render_debug_requires_raw_output(
+                    self.render_debug_flags,
+                    self.render_debug_mode.shader_value(),
+                );
+            let (scene_color, source_layout) = if taa_resolved {
+                (
+                    self.post
+                        .taa
+                        .as_ref()
+                        .expect("taa exists per taa_resolved")
+                        .output_image(frame),
+                    vk::ImageLayout::GENERAL,
+                )
+            } else {
+                (
+                    self.post
+                        .composite
+                        .as_ref()
+                        .expect("composite must exist while recording")
+                        .scene_image(frame),
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                )
+            };
             let (motion_vectors, reactive_mask, transparency_mask) = {
                 let gbuffer = self
                     .post
@@ -1171,6 +1207,7 @@ impl VulkanContext {
                     frame,
                     UpscaleDispatchInputs {
                         scene_color,
+                        scene_color_layout: source_layout,
                         depth: self.swapchain.depth_image,
                         depth_format: self.swapchain.depth_format,
                         motion_vectors,
@@ -1396,10 +1433,12 @@ mod tests {
         let fn_start = src
             .find("fn record_volumetrics_pass(")
             .expect("record_volumetrics_pass must still exist");
+        // #3572 — record_taa_pass moved below bloom; the next fn after
+        // volumetrics is now record_taa_pass's successor in source order.
         let fn_end = src[fn_start..]
             .find("\n    fn record_taa_pass(")
             .map(|rel| fn_start + rel)
-            .expect("record_taa_pass must still follow record_volumetrics_pass");
+            .expect("record_taa_pass must still exist after record_volumetrics_pass in source order");
         let body = &src[fn_start..fn_end];
 
         assert!(
@@ -1589,111 +1628,92 @@ mod tests {
         &src[start..end]
     }
 
-    /// #4006 (REN-2026-09-06-D12-03) — the TAA permanent-failure fallback
-    /// must not rewrite composite's descriptor sets from inside command-buffer
-    /// recording.
-    ///
-    /// `fall_back_to_raw_hdr` delegates to `rebind_hdr_views`, which issues
-    /// `update_descriptor_sets` for **every** `MAX_FRAMES_IN_FLIGHT` slot.
-    /// Called from `record_taa_pass`, only `in_flight[frame]` has been
-    /// waited: the other slot's command buffer — which bound
-    /// `composite.descriptor_sets[1 - frame]` in its own
-    /// `CompositePipeline::dispatch` — may still be pending, and updating a
-    /// descriptor set read by pending work violates
-    /// VUID-vkUpdateDescriptorSets-None-03047. Composite's set layout is
-    /// created with a plain `DescriptorSetLayoutCreateInfo` — no
-    /// `UPDATE_AFTER_BIND_BIT`, no `UPDATE_UNUSED_WHILE_PENDING_BIT` — so
-    /// neither exemption applies.
-    ///
-    /// A live test would need a Vulkan device and a driver failure to
-    /// provoke, so nothing here is observable from `cargo test`. (Until
-    /// #3981 the path was not merely untestable but unreachable — the
-    /// actions lived on a `dispatch`-error arm no producer could populate.)
-    /// The invariant is a *call
-    /// site*, though, which a source scan can hold exactly — same shape as
-    /// the sibling scanners in this module and `depth_capture.rs`'s
-    /// `capture_ordering_tests`.
+    /// #3572 (W3.16) — the #4006 deferred-rebind mechanism is RETIRED.
+    /// Composite samples the raw HDR attachment directly, so there is no
+    /// TAA-output descriptor for a TAA failure to hand back; the latch
+    /// field, its sync-side consumer, and `fall_back_to_raw_hdr` are gone.
+    /// This scan holds the retirement: the failure path must not grow a
+    /// descriptor rewrite back, and the retired symbols must not return.
     #[test]
-    fn the_taa_failure_fallback_defers_its_descriptor_rebind_past_the_fence_wait() {
+    fn the_retired_taa_failure_descriptor_rebind_stays_retired() {
+        let full_src = include_str!("post_passes.rs");
+        let test_mod_start = full_src
+            .find("#[cfg(test)]")
+            .expect("this file has at least one #[cfg(test)] module");
+        let src = &full_src[..test_mod_start];
+        let body = taa_failure_body(src);
+
+        assert!(
+            !body.contains("fall_back_to_raw_hdr")
+                && !body.contains("rebind_hdr_views")
+                && !body.contains("update_descriptor_sets"),
+            "the TAA failure path runs during frame build — it must never \
+             rewrite any pipeline's descriptor sets there (VUID-\
+             vkUpdateDescriptorSets-None-03047); the raw-HDR fallback the \
+             #4006 latch scheduled no longer exists because composite \
+             samples the raw HDR attachment directly (#3572)"
+        );
+        assert!(
+            !src.contains("composite_needs_raw_hdr_rebind"),
+            "the #4006 latch field is retired (#3572) — composite has no \
+             TAA-output binding to fall back from; do not resurrect the \
+             symbol without reinstating a composite-side TAA tap"
+        );
+        let composite_src = include_str!("../composite.rs");
+        assert!(
+            !composite_src.contains("fall_back_to_raw_hdr"),
+            "fall_back_to_raw_hdr is retired with the composite-side TAA tap \
+             (#3572); its only caller was the retired #4006 consumer"
+        );
+    }
+
+    /// #3572 (W3.16) — the TAA resolve must consume the SAME post-composite,
+    /// post-bloom scene image FSR resolves: composite → bloom → TAA →
+    /// upscale. Pin the record_post_passes ordering statically (matching
+    /// this module's scanner convention), plus the two invariants that make
+    /// the move sound: the raw-output gate on the TAA dispatch, and the
+    /// upscale input switching to TAA's output only when the resolve ran.
+    #[test]
+    fn taa_resolves_the_post_bloom_scene_tap() {
         let full_src = include_str!("post_passes.rs");
         let test_mod_start = full_src
             .find("#[cfg(test)]")
             .expect("this file has at least one #[cfg(test)] module");
         let src = &full_src[..test_mod_start];
 
-        let body = taa_failure_body(src);
+        let fn_start = src
+            .find("pub(super) fn record_post_passes(")
+            .expect("record_post_passes must exist");
+        let body = &src[fn_start..];
+        let composite = body.find("self.record_composite_pass(cmd, frame);").expect("composite call");
+        let bloom = body.find("self.record_bloom_pass(cmd, frame);").expect("bloom call");
+        let taa = body.find("self.record_taa_pass(cmd, frame);").expect("taa call");
+        let upscale = body.find("self.record_upscale_pass(cmd, frame, fsr_frame);").expect("upscale call");
+        assert!(
+            composite < bloom && bloom < taa && taa < upscale,
+            "the frame tail must order composite -> bloom -> TAA -> upscale: \
+             TAA resolves the same post-bloom scene tap FSR consumes (#3572)"
+        );
+        assert!(
+            !body[..taa].contains("self.record_taa_pass(cmd, frame);"),
+            "TAA must appear exactly once in the tail — a pre-composite \
+             dispatch would resolve the raw direct-only attachment again"
+        );
 
+        let taa_fn_start = src
+            .find("fn record_taa_pass(")
+            .expect("record_taa_pass must exist");
+        let taa_body = &src[taa_fn_start..];
         assert!(
-            !body.contains("fall_back_to_raw_hdr"),
-            "the TAA failure path runs during frame build, before and during \
-             command-buffer recording, so it must NOT call \
-             fall_back_to_raw_hdr — that rewrites composite's \
-             descriptor set for every frame slot, including one whose command \
-             buffer may still be pending (VUID-vkUpdateDescriptorSets-None-\
-             03047, no update-after-bind exemption on composite's layout). \
-             Latch composite_needs_raw_hdr_rebind instead. (#4006)"
+            taa_body.contains("render_debug_requires_raw_output("),
+            "the TAA dispatch must respect the shared raw-output policy — \
+             post-move it filters the final image and would temporally \
+             smooth raw correctness views otherwise"
         );
         assert!(
-            body.contains("self.composite_needs_raw_hdr_rebind = true;"),
-            "the TAA failure arm must still schedule the raw-HDR fallback — \
-             without it composite keeps sampling whatever TAA last wrote and \
-             the picture freezes, which is the #479 failure this recovery \
-             exists for"
-        );
-
-        // The deferred half: performed after the all-slots fence wait, which
-        // is what proves both descriptor sets have retired (#3442).
-        let sync_src = include_str!("sync_and_acquire_frame.rs");
-        let wait_pos = sync_src
-            .find(".wait_for_fences(")
-            .expect("sync_and_acquire_frame must wait for the in-flight fences (#282)");
-        let rebind_pos = sync_src
-            .find("composite.fall_back_to_raw_hdr(&self.device);")
-            .expect(
-                "sync_and_acquire_frame must perform the deferred raw-HDR rebind \
-             record_taa_pass schedules — otherwise the latch is set and \
-             nothing ever acts on it (#4006)",
-            );
-        assert!(
-            wait_pos < rebind_pos,
-            "the deferred rebind must run AFTER wait_for_fences — before it, \
-             the other frame slot's descriptor set is exactly as pending as \
-             it was in record_taa_pass, and deferring bought nothing (#4006)"
-        );
-        assert!(
-            sync_src.contains("&self.frame_sync.in_flight"),
-            "the deferred rebind's soundness rests on waiting the WHOLE \
-             in_flight array rather than this frame's slot (#3442) — if that \
-             wait narrows, both descriptor sets are no longer proven retired \
-             at the rebind point (#4006)"
-        );
-    }
-
-    /// #4006 — every site that clears `taa_failed` must clear the pending
-    /// rebind with it.
-    ///
-    /// A resize rebuilds the TAA pipeline and re-points composite at the
-    /// fresh TAA output views (`build_taa_pipeline`, under
-    /// `device_wait_idle`). If a rebind latched by the *old* pipeline's
-    /// failure survived that, the next frame would silently undo the resize's
-    /// own rebind and drop a working TAA back to the raw-HDR fallback, with
-    /// `taa_failed` reading `false` and nothing to explain the picture.
-    #[test]
-    fn clearing_the_taa_latch_also_clears_the_pending_rebind() {
-        let src = include_str!("resize.rs");
-        let clears = src.matches("self.taa_failed = false;").count();
-        let rebind_clears = src
-            .matches("self.composite_needs_raw_hdr_rebind = false;")
-            .count();
-        assert!(
-            clears > 0,
-            "resize.rs must still reset the TAA permanent-failure latch (#479)"
-        );
-        assert_eq!(
-            rebind_clears, clears,
-            "resize.rs clears taa_failed {clears} time(s) but the pending \
-             raw-HDR rebind {rebind_clears} time(s) — a survivor would undo \
-             the resize's own composite rebind on the next frame (#4006)"
+            src.contains("scene_color_layout: source_layout,"),
+            "the upscale dispatch must carry the blit source's layout — the \
+             TAA output slot arrives in GENERAL and must be restored to it"
         );
     }
 

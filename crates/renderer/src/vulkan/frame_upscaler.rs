@@ -98,6 +98,12 @@ pub struct FsrFrameParameters {
 #[derive(Debug, Clone, Copy)]
 pub struct UpscaleDispatchInputs {
     pub scene_color: vk::Image,
+    /// The layout `scene_color` arrives in — `SHADER_READ_ONLY_OPTIMAL`
+    /// for the composited scene image, `GENERAL` for the TAA output slot
+    /// (#3572). The native-blit branches source-barrier from exactly this
+    /// layout and restore it afterwards (the TAA slot doubles as next
+    /// frame's history sample, so its GENERAL must survive the blit).
+    pub scene_color_layout: vk::ImageLayout,
     pub depth: vk::Image,
     pub depth_format: vk::Format,
     pub motion_vectors: vk::Image,
@@ -459,6 +465,7 @@ impl FrameUpscaler {
                     cmd,
                     frame,
                     inputs.scene_color,
+                    inputs.scene_color_layout,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 )
             };
@@ -492,6 +499,7 @@ impl FrameUpscaler {
                     cmd,
                     frame,
                     inputs.scene_color,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 );
             }
@@ -624,6 +632,7 @@ impl FrameUpscaler {
                     frame,
                     inputs.scene_color,
                     vk::ImageLayout::GENERAL,
+                    vk::ImageLayout::GENERAL,
                 );
             }
             return;
@@ -695,16 +704,33 @@ impl FrameUpscaler {
         cmd: vk::CommandBuffer,
         frame: usize,
         scene_color: vk::Image,
+        source_layout: vk::ImageLayout,
         output_layout: vk::ImageLayout,
     ) {
         let range = color_subresource_single_mip();
         let output = self.outputs[frame].image;
         let output_src_access = blit_output_src_access(output_layout);
+        // #3572 — the source is now either the composited scene image
+        // (`SHADER_READ_ONLY_OPTIMAL`, the FSR tap) or the TAA output slot
+        // (`GENERAL`, the history image's permanent layout — it is BOTH
+        // this frame's output and next frame's `prev_history` sample, so
+        // the after-barrier must restore exactly the layout it arrived in).
+        let (src_access, restore_layout) = if source_layout == vk::ImageLayout::GENERAL {
+            (
+                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                vk::ImageLayout::GENERAL,
+            )
+        } else {
+            (
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::SHADER_READ,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            )
+        };
         let before = [
             vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .src_access_mask(src_access)
                 .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .old_layout(source_layout)
                 .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                 .image(scene_color)
                 .subresource_range(range),
@@ -774,9 +800,9 @@ impl FrameUpscaler {
         let after = [
             vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_READ)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
                 .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(restore_layout)
                 .image(scene_color)
                 .subresource_range(range),
             vk::ImageMemoryBarrier::default()
@@ -804,11 +830,15 @@ impl FrameUpscaler {
 
     /// # Safety
     ///
-    /// `cmd` must be recording outside a render pass. `inputs.scene_color`,
-    /// `inputs.motion_vectors`, `inputs.reactive`, and `inputs.transparency`
-    /// must each be in `SHADER_READ_ONLY_OPTIMAL` (their producing render
-    /// pass's output layout — this barrier is execution-only for the four,
-    /// no layout change). `inputs.depth` must be in
+    /// `cmd` must be recording outside a render pass. `inputs.motion_vectors`,
+    /// `inputs.reactive`, and `inputs.transparency` must each be in
+    /// `SHADER_READ_ONLY_OPTIMAL` (their producing render pass's output
+    /// layout — this barrier is execution-only for the three, no layout
+    /// change). `inputs.scene_color` must be in
+    /// `inputs.scene_color_layout` — `SHADER_READ_ONLY_OPTIMAL` for the
+    /// composited scene image, `GENERAL` for the TAA output slot (#3572);
+    /// the native-blit branches transition it and restore exactly that
+    /// layout. `inputs.depth` must be in
     /// `DEPTH_STENCIL_READ_ONLY_OPTIMAL`. `self.outputs[frame].image` must
     /// be in `SHADER_READ_ONLY_OPTIMAL` (this frame slot's steady-state
     /// layout from the prior blit/dispatch). All named images must remain
