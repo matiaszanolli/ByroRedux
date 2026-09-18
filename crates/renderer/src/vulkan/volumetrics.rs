@@ -694,6 +694,18 @@ const COMBUSTION_LIGHT_RANGE_EXTENSION: f32 = 2.0;
 /// Keep this separate from the volumetric emission so fire visibility and
 /// surface illumination can be tuned independently.
 const COMBUSTION_SURFACE_LIGHT_BOOST: f32 = 4.0;
+
+/// W2.13 (light & shadow campaign) — the restored oversized-reach canary.
+/// The deleted `fire_lights.rs` canary gated a CPU-derived light; this one
+/// guards the transported-field reduction. Vanilla torch LIGHs author a
+/// ~512 BU radius; the derived reach is physics-computed
+/// (`sqrt(luma / cutoff)` clamped to [`COMBUSTION_LIGHT_MAX_RANGE_METERS`],
+/// times [`COMBUSTION_LIGHT_RANGE_EXTENSION`]), so an appended surface
+/// light whose CULL radius exceeds 2× a vanilla torch is exactly the
+/// "fires without a companion LIGH blowing out the room" failure the
+/// ROADMAP's owed visual A/B exists to catch. Max possible:
+/// 64 m × 2 × 70 BU/m = 8 960 BU, so the threshold is reachable.
+const COMBUSTION_REACH_CANARY_CULL_RADIUS_BU: f32 = 1024.0;
 /// A nuclear cloud deliberately creates more luminous bins than an oil
 /// fireball. Keep each derived point-light contribution bounded while the
 /// source is alive; the broad volume still lights the room through multiple
@@ -942,7 +954,7 @@ pub struct VolumetricsPipeline {
     /// Counts plus strongest-centroid quarter-metre cell. Including position
     /// makes debug telemetry report real plume motion even when the number of
     /// occupied reduction bins stays constant.
-    last_combustion_light_topology: Option<[i32; 7]>,
+    last_combustion_light_topology: Option<[i32; 8]>,
     /// Reused CPU staging state for cluster construction.
     fog_volume_upload: Box<GpuFogVolumeUpload>,
     fog_cluster_entries: Box<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>,
@@ -1466,6 +1478,18 @@ impl VolumetricsPipeline {
                 ]
             })
             .unwrap_or([0.0; 3]);
+        // W2.13 canary — max cull radius among the APPENDED lights (the
+        // suppressed/appended split matters: a suppressed centroid never
+        // reaches the scene). Folded into the topology tuple so a
+        // transition to/from oversized re-logs, and surfaced at WARN while
+        // oversized: this line is what the device A/B greps.
+        let max_appended_cull_radius_bu = self.combustion_light_candidates
+            [..append_count]
+            .iter()
+            .map(|(_, light)| light.position_radius[3])
+            .fold(0.0f32, f32::max);
+        let reach_oversized =
+            max_appended_cull_radius_bu > COMBUSTION_REACH_CANARY_CULL_RADIUS_BU;
         let topology = [
             occupied_bins as i32,
             decoded_candidates,
@@ -1474,18 +1498,33 @@ impl VolumetricsPipeline {
             (strongest_centroid_metres[0] * 4.0).round() as i32,
             (strongest_centroid_metres[1] * 4.0).round() as i32,
             (strongest_centroid_metres[2] * 4.0).round() as i32,
+            reach_oversized as i32,
         ];
         if self.last_combustion_light_topology != Some(topology) {
-            log::debug!(
-                "combustion light reduction: occupied_bins={occupied_bins} \
-                 decoded_candidates={decoded_candidates} \
-                 suppressed_candidates={suppressed_candidates} appended_lights={append_count} \
-                 weight_quanta={weight_quanta} radiance_quanta={radiance_quanta} \
-                 strongest_centroid_m={:.2},{:.2},{:.2}",
-                strongest_centroid_metres[0],
-                strongest_centroid_metres[1],
-                strongest_centroid_metres[2],
-            );
+            if reach_oversized {
+                log::warn!(
+                    "combustion light reduction (OVERSIZED REACH — \
+                     verify against vanilla torch scale on device): \
+                     occupied_bins={occupied_bins} \
+                     decoded_candidates={decoded_candidates} \
+                     suppressed_candidates={suppressed_candidates} \
+                     appended_lights={append_count} \
+                     max_cull_radius_bu={max_appended_cull_radius_bu:.0} \
+                     (canary threshold {} BU, vanilla torch ~512 BU)",
+                    COMBUSTION_REACH_CANARY_CULL_RADIUS_BU,
+                );
+            } else {
+                log::debug!(
+                    "combustion light reduction: occupied_bins={occupied_bins} \
+                     decoded_candidates={decoded_candidates} \
+                     suppressed_candidates={suppressed_candidates} appended_lights={append_count} \
+                     weight_quanta={weight_quanta} radiance_quanta={radiance_quanta} \
+                     strongest_centroid_m={:.2},{:.2},{:.2}",
+                    strongest_centroid_metres[0],
+                    strongest_centroid_metres[1],
+                    strongest_centroid_metres[2],
+                );
+            }
             self.last_combustion_light_topology = Some(topology);
         }
         Ok(append_count)
@@ -1797,6 +1836,31 @@ impl VolumetricsPipeline {
 #[cfg(test)]
 mod unit_tests {
     use super::*;
+
+    /// W2.13 — the restored oversized-reach canary must be REACHABLE: the
+    /// maximum physics-derived cull radius (MAX_RANGE clamp × extension ×
+    /// BU/m) has to sit strictly above the canary threshold, or the warn
+    /// is dead code that can never fire. And the threshold itself must
+    /// sit above the vanilla torch scale it references (~512 BU), so a
+    /// normal derived flame cannot trip it.
+    #[test]
+    fn reach_canary_threshold_sits_between_vanilla_torch_scale_and_max_derived_reach() {
+        let max_derived_cull_radius_bu = COMBUSTION_LIGHT_MAX_RANGE_METERS
+            * COMBUSTION_LIGHT_RANGE_EXTENSION
+            * WORLD_UNITS_PER_METER;
+        assert!(
+            max_derived_cull_radius_bu > COMBUSTION_REACH_CANARY_CULL_RADIUS_BU,
+            "max derived cull radius {max_derived_cull_radius_bu} BU must \
+             exceed the canary threshold {} BU or the canary is dead code",
+            COMBUSTION_REACH_CANARY_CULL_RADIUS_BU
+        );
+        assert!(
+            COMBUSTION_REACH_CANARY_CULL_RADIUS_BU > 512.0,
+            "the canary threshold must exceed the ~512 BU vanilla torch \
+             scale or ordinary derived flames trip it constantly"
+        );
+    }
+
 
     #[test]
     fn physical_volume_reach_and_extinction_are_converted_to_world_units() {
