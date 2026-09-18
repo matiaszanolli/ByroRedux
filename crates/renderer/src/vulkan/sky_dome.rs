@@ -190,6 +190,47 @@ mod tests {
         }
     }
 
+    /// W3.15 (light & shadow campaign) — the SH sky-ambient fallback is
+    /// deliberately unoccluded (nine SH coefficients cannot carry local
+    /// visibility), so the occlusion duty lives on the CONSUMERS. Pin both
+    /// diffuse sites' gates: the primary fragment ambient must keep
+    /// multiplying by `combinedAO`, and the blade ambient by the §12.1
+    /// `skyVisibility` term. The `exteriorSkyRadianceOr` miss sites have no
+    /// gate BY DESIGN (an escaped ray genuinely sees sky) — if a new
+    /// DIFFUSE consumer of `exteriorSkyDiffuseOr` appears, it must gate on
+    /// an occlusion term or extend this pin.
+    #[test]
+    fn sky_visibility_pin() {
+        let triangle = include_str!("../../shaders/triangle.frag");
+        let blades = include_str!("../../shaders/groundcover_blade.frag");
+        let bindings = include_str!("../../shaders/include/bindings.glsl");
+        assert!(
+            bindings.contains("vec3 exteriorSkyDiffuseOr(vec3 normal, vec3 fallback)"),
+            "the SH diffuse accessor signature moved — re-check the consumers below"
+        );
+        let gate = "exteriorSkyDiffuseOr(N, vec3(0.0)) * primaryDiffuseWeight;";
+        let pos = triangle
+            .find(gate)
+            .expect("triangle.frag's SH diffuse consumer moved");
+        let tail = &triangle[pos..pos + 220];
+        assert!(
+            tail.contains("* combinedAO"),
+            "triangle.frag's SH sky-diffuse ambient must stay multiplied by \
+             combinedAO — the SH fallback is unoccluded by construction and \
+             enclosed exterior geometry reads unoccluded sky without this \
+             gate (skyal.md §Diffuse exterior illumination, W3.15)"
+        );
+        let bpos = blades
+            .find("exteriorSkyDiffuseOr(N, sceneFlags.yzw)")
+            .expect("groundcover_blade.frag's SH ambient consumer moved");
+        let btail = &blades[bpos..bpos + 120];
+        assert!(
+            btail.contains("skyVisibility"),
+            "the blade SH ambient must stay gated by §12.1's skyVisibility — \
+             without it a dense sward's base glows with unoccluded sky"
+        );
+    }
+
     /// `sky.glsl` owns the set-1 bindless array (it is the only thing in
     /// either consumer that samples it). Two declarations of one binding in
     /// the same stage is a compile error, so a consumer that re-declares it

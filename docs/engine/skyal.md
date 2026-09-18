@@ -347,9 +347,18 @@ exterior surface it replaces the old hand-authored ambient fallback; while the
 path tracer is active it cross-fades only the untraced share, avoiding a second
 copy of sky energy. This makes cloud cover and authored sky colour affect
 terrain and geometry even when the indirect-ray budget fades out. The fallback
-remains deliberately unoccluded, so enclosed exterior-adjacent geometry still
-needs the existing traced/AO terms rather than treating SH as local bounce
-lighting.
+itself is unoccluded — nine SH coefficients carry no local-visibility data —
+and that is fine because every consumer applies its own occlusion term
+(W3.15 consumer verification, 2026-09-18): `triangle.frag`'s primary
+diffuse ambient multiplies the SH result by `combinedAO`, and
+`groundcover_blade.frag`'s ambient is gated by §12.1's dedicated
+`skyVisibility` canopy-occlusion term. The remaining
+`exteriorSkyRadianceOr` sites (reflection/path-escape misses in
+`raytrace.glsl`, `lighting.glsl`, `water.frag`, `triangle.frag`) are
+escaped-ray sites by construction — a traced ray that reaches the sky
+genuinely sees it, so occlusion is structurally inapplicable there. The
+`sky_visibility_pin` source test holds both diffuse gates so neither can
+silently regress.
 
 Verification uses the actual projection shader in the isolated Vulkan test.
 A constant HDR cube must reconstruct exactly at three normals; a bright +X
