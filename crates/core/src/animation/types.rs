@@ -310,3 +310,131 @@ mod fx_hash_guard_tests {
         );
     }
 }
+
+impl AnimationClip {
+    /// M42.11 — the accumulation root's mean horizontal speed across one
+    /// loop, in world units/second, from the *authored* keys. `None` when
+    /// the clip has no accum root, its channel has fewer than two
+    /// translation keys, or the duration is non-positive.
+    ///
+    /// For a `Loop` cycle the accum root's horizontal samples run
+    /// start→destination across one period — the wrap back to the first
+    /// key is the engine's root-motion discontinuity (see
+    /// `sampled_root_motion_delta`), not authored motion — so the speed is
+    /// the straight-line start→end displacement divided by the duration.
+    /// Consumers should sanity-clamp the result: a clip whose COM barely
+    /// moves (in-place idle authored with an accum channel) must fall back
+    /// to the engine's default locomotion speed rather than drive actors
+    /// at ~0 u/s.
+    pub fn authored_horizontal_speed(&self) -> Option<f32> {
+        let accum = self.accum_root_name.as_ref()?;
+        let channel = self.channels.get(accum)?;
+        if channel.translation_keys.len() < 2 {
+            return None;
+        }
+        let first = channel.translation_keys.first()?;
+        let last = channel.translation_keys.last()?;
+        if self.duration <= 0.0 {
+            return None;
+        }
+        let delta = last.value - first.value;
+        let horizontal = Vec3::new(delta.x, 0.0, delta.z).length();
+        Some(horizontal / self.duration)
+    }
+}
+
+#[cfg(test)]
+mod authored_speed_tests {
+    use super::*;
+    use crate::string::StringPool;
+    use rustc_hash::FxHashMap;
+
+    fn clip_with_accum(
+        pool: &mut StringPool,
+        keys: &[(f32, [f32; 3])],
+        duration: f32,
+    ) -> AnimationClip {
+        let mut channels = FxHashMap::default();
+        channels.insert(
+            pool.intern("Bip01"),
+            TransformChannel {
+                translation_keys: keys
+                    .iter()
+                    .map(|(time, v)| TranslationKey {
+                        time: *time,
+                        value: Vec3::from_array(*v),
+                        forward: Vec3::ZERO,
+                        backward: Vec3::ZERO,
+                        tbc: None,
+                    })
+                    .collect(),
+                translation_type: KeyType::Linear,
+                rotation_keys: Vec::new(),
+                rotation_type: KeyType::Linear,
+                scale_keys: Vec::new(),
+                scale_type: KeyType::Linear,
+                priority: 0,
+            },
+        );
+        AnimationClip {
+            name: "test".into(),
+            duration,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: Some(pool.intern("Bip01")),
+            channels,
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn speed_is_horizontal_displacement_over_duration() {
+        let mut pool = StringPool::new();
+        // 116 units of forward travel (Y-up: the stride is on X/Z) over a
+        // 1.2 s loop → ~96.7 u/s, FNV's mtforward.kf shape.
+        let clip = clip_with_accum(
+            &mut pool,
+            &[(0.0, [0.0, 67.0, 0.0]), (1.2, [116.0, 67.0, 0.0])],
+            1.2,
+        );
+        let speed = clip.authored_horizontal_speed().unwrap();
+        assert!((speed - 96.666).abs() < 0.1, "{speed}");
+        // Vertical travel is animation, not stride — must not count.
+        let clip = clip_with_accum(
+            &mut pool,
+            &[(0.0, [0.0, 0.0, 0.0]), (1.0, [0.0, 90.0, 0.0])],
+            1.0,
+        );
+        let speed = clip.authored_horizontal_speed().unwrap();
+        assert!(speed < 1e-4, "vertical-only COM motion must read as ~0: {speed}");
+    }
+
+    #[test]
+    fn no_accum_root_or_degenerate_keys_yield_none() {
+        let mut pool = StringPool::new();
+
+        // No accum root bound → the clip drives no root motion at all.
+        let mut clip = clip_with_accum(&mut pool, &[(0.0, [0.0; 3]), (1.0, [5.0; 3])], 1.0);
+        clip.accum_root_name = None;
+        assert!(clip.authored_horizontal_speed().is_none());
+
+        // Accum root present but the channel names a different node.
+        let mut clip = clip_with_accum(&mut pool, &[(0.0, [0.0; 3]), (1.0, [5.0; 3])], 1.0);
+        clip.accum_root_name = Some(pool.intern("Nonexistent"));
+        assert!(clip.authored_horizontal_speed().is_none());
+
+        // Single key = no measurable displacement window.
+        let clip = clip_with_accum(&mut pool, &[(0.0, [0.0; 3])], 1.0);
+        assert!(clip.authored_horizontal_speed().is_none());
+
+        // Non-positive duration guards the division.
+        let clip = clip_with_accum(&mut pool, &[(0.0, [0.0; 3]), (0.0, [5.0; 3])], 0.0);
+        assert!(clip.authored_horizontal_speed().is_none());
+    }
+}

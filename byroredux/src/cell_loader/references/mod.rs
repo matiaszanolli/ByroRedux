@@ -423,7 +423,7 @@ pub(super) fn load_references_budgeted(
         // hits. Path-keyed memoised like the idle pool; a `None` here (not
         // archived) simply means NPCs spawn without a walk cycle.
         if game.has_kf_animations() {
-            crate::npc_spawn::load_walk_clip(world, tex_provider, game);
+            crate::npc_spawn::load_walk_clips(world, tex_provider, game);
         }
 
         // M42.1 — resolve the sit-enter clip (handle, duration) once per cell

@@ -1919,6 +1919,19 @@ impl Component for WalkAnimation {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// M42.11 — an actor's authored locomotion speed (world units/second),
+/// derived once at spawn from its walk clip's accumulation-root travel
+/// (`AnimationClip::authored_horizontal_speed`, sanity-clamped) and read
+/// by the six locomotion procedures + combat chase so the step length
+/// matches the animated stride instead of a fixed 100 u/s. Actors without
+/// a walk clip carry none and keep the engine default.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WalkSpeed(pub(crate) f32);
+
+impl Component for WalkSpeed {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// M42.10 — how long an oscillating walker (Wander/Patrol) has been
 /// continuously blocked by a collision this leg. Runtime-only scratch:
 /// `WanderState`/`PatrolState` are save-shaped and must not grow a field

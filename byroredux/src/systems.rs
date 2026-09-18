@@ -48,6 +48,7 @@ pub(crate) use escort::*;
 pub(crate) use follow::*;
 pub(crate) use guard::*;
 pub(crate) use light_anim::*;
+pub(crate) use locomotion::*;
 pub(crate) use metrics::*;
 pub(crate) use particle::*;
 pub(crate) use patrol::*;

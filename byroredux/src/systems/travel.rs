@@ -65,7 +65,7 @@
 //!   that would be Follow's job (a different, unimplemented procedure).
 //! - **Ground-snapped, not physically simulated**, same as Wander.
 
-use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON};
+use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON, LOCOMOTION_WALK_SPEED};
 use super::navmesh_path::resolve_cached_waypoints;
 use super::wander::pick_wander_target;
 use crate::components::{NavPath, NavmeshTile};
@@ -143,6 +143,9 @@ struct TravelPending {
     /// tile path found," which falls back to walking straight at
     /// `destination`, unchanged from pre-pathing behavior.
     waypoints: VecDeque<Vec3>,
+    /// Authored stride speed (M42.11 `WalkSpeed`), engine default when
+    /// absent.
+    speed: f32,
 }
 
 /// One actor's computed movement/state update for this tick, applied in
@@ -205,6 +208,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
         let state_q = world.query::<TravelState>();
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
+        let walk_speed_q = world.query::<crate::components::WalkSpeed>();
 
         for (entity, behavior) in behavior_q.iter() {
             if traveled_q.as_ref().is_some_and(|q| q.contains(entity)) {
@@ -246,12 +250,18 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                 residency_generation,
             );
 
+            let speed = walk_speed_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|s| s.0)
+                .unwrap_or(LOCOMOTION_WALK_SPEED);
             scratch.pending.push(TravelPending {
                 entity,
                 current,
                 rotation: transform.rotation,
                 destination,
                 waypoints,
+                speed,
             });
         }
     }
@@ -284,6 +294,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                 p.waypoints,
                 p.destination,
                 dt,
+                p.speed,
                 physics.as_deref(),
             );
 

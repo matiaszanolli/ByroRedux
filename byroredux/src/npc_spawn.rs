@@ -740,20 +740,19 @@ pub fn load_idle_pool(
         .collect()
 }
 
-/// Archive path of the humanoid **walk-forward** cycle the NPC plays while
-/// an AI package (or combat chase) is moving it (M42.10 — loaded into
-/// `WalkAnimation` and swapped in by `npc_walk_animation_system`).
+/// Archive paths of the humanoid **walk-forward** cycles for a game, for
+/// warm-up (`load_walk_clips`): every variant the game ships, so a spawn
+/// job's finalize lookup by `(game, gender, is_child)` never pays BSA
+/// extract + parse on the spawn path. Order is irrelevant — the registry
+/// is path-keyed.
 ///
-/// Like [`humanoid_default_idle_kf_path`], the path is verified against the
-/// named archives, not guessed:
+/// Like [`humanoid_default_idle_kf_path`], the paths are verified against
+/// the named archives, not guessed (BSA scans 2026-09-18):
 ///
-/// - **FNV / FO3** ship the unarmed move-type walk as
-///   `meshes\characters\_male\locomotion\male\mtforward.kf` (BSA scan
-///   2026-09-18, both `Fallout - Meshes.bsa` archives). The `female\` and
-///   `child\` siblings exist and are the obvious gender split, but like the
-///   idle pool this loader collapses variation to one clip for v0 — the
-///   registry is path-keyed, so per-gender handles slot in without
-///   changing any call shape.
+/// - **FNV / FO3** ship the unarmed move-type walk split by body class:
+///   `locomotion\male\mtforward.kf`, `locomotion\female\mtforward.kf`,
+///   and `locomotion\child\mtforward.kf` under `meshes\characters\_male\`
+///   (verified present in both games' `Fallout - Meshes.bsa`).
 /// - **Oblivion** has no `locomotion\` directory at all (BSA scan
 ///   2026-09-18: zero hits). Its closest verified forward walk is the
 ///   hand-to-hand stance cycle `meshes\characters\_male\handtohandforward.kf`
@@ -761,13 +760,45 @@ pub fn load_idle_pool(
 ///   posed arms. That is the accepted trade-off against no walk animation
 ///   at all, the same class of call `sandbox_sit_enter_kf_path` documents
 ///   for its own single-clip Phase A.
-///
-/// Returns `None` for Skyrim+ (Havok `.hkx` track — see
-/// `asset_provider::populate_skyrim_walk_clip`) or when a game variant
-/// ships no verified clip.
-pub fn humanoid_walk_kf_path(game: GameKind) -> Option<&'static str> {
+pub fn humanoid_walk_kf_paths(game: GameKind) -> &'static [&'static str] {
     match game {
-        GameKind::Fallout3NV => Some(r"meshes\characters\_male\locomotion\male\mtforward.kf"),
+        GameKind::Fallout3NV => &[
+            r"meshes\characters\_male\locomotion\male\mtforward.kf",
+            r"meshes\characters\_male\locomotion\female\mtforward.kf",
+            r"meshes\characters\_male\locomotion\child\mtforward.kf",
+        ],
+        GameKind::Oblivion => &[r"meshes\characters\_male\handtohandforward.kf"],
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => &[],
+    }
+}
+
+/// The humanoid walk-forward clip for one actor's `(game, gender,
+/// is_child)` — the walk `npc_walk_animation_system` swaps in while an AI
+/// package (or combat chase) moves the actor. `None` for Skyrim+ (Havok
+/// `.hkx` track — see `asset_provider::populate_skyrim_walk_clip`). A
+/// variant whose file turns out not to be archived still yields `Some`
+/// here and `None` from the registry lookup — the actor simply spawns
+/// without a walk clip, matching the idle path's graceful fallback.
+pub fn humanoid_walk_kf_path(
+    game: GameKind,
+    gender: Gender,
+    is_child: bool,
+) -> Option<&'static str> {
+    match game {
+        GameKind::Fallout3NV => {
+            if is_child {
+                Some(r"meshes\characters\_male\locomotion\child\mtforward.kf")
+            } else {
+                match gender {
+                    Gender::Female => {
+                        Some(r"meshes\characters\_male\locomotion\female\mtforward.kf")
+                    }
+                    Gender::Male => {
+                        Some(r"meshes\characters\_male\locomotion\male\mtforward.kf")
+                    }
+                }
+            }
+        }
         GameKind::Oblivion => Some(r"meshes\characters\_male\handtohandforward.kf"),
         GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => None,
     }
@@ -782,21 +813,42 @@ pub fn creature_walk_kf_path(dir: &str) -> String {
     format!("{dir}forward.kf")
 }
 
-/// Load the shared per-cell humanoid walk clip (M42.10) — path-keyed
-/// memoised through [`load_kf_clip_by_path`], so re-entry across cell
-/// loads is a registry hit. Returns `None` for Havok-animation games
-/// (Skyrim+/FO4+, which resolve their walk through
-/// `SkyrimWalkClip` instead) or when the KF isn't archived.
-pub fn load_walk_clip(
-    world: &mut World,
-    tex_provider: &TextureProvider,
-    game: GameKind,
-) -> Option<u32> {
+/// Warm the registry with every humanoid walk variant the game ships
+/// (M42.10, per-gender since M42.11) so each spawn job's finalize path
+/// lookup never pays BSA extract + parse on the spawn path. Path-keyed
+/// memoised through [`load_kf_clip_by_path`]; a variant that isn't
+/// archived logs at debug and is skipped. No-op for Havok-animation games
+/// (Skyrim+/FO4+, which resolve their walk through `SkyrimWalkClip`).
+pub fn load_walk_clips(world: &mut World, tex_provider: &TextureProvider, game: GameKind) {
     if !game.has_kf_animations() {
-        return None;
+        return;
     }
-    let kf_path = humanoid_walk_kf_path(game)?;
-    load_kf_clip_by_path(world, tex_provider, kf_path)
+    for kf_path in humanoid_walk_kf_paths(game) {
+        if load_kf_clip_by_path(world, tex_provider, kf_path).is_none() {
+            log::debug!("walk clip '{kf_path}' not archived — skipped");
+        }
+    }
+}
+
+/// Sanity bounds for an authored walk stride (world units/second). FNV's
+/// humanoid `mtforward.kf` measures ~97 u/s of accum-root travel per
+/// 1.2 s loop; a clip outside `[30, 250]` is either an in-place cycle
+/// wearing an accum channel or a mis-derived root — either way the engine
+/// default is the safer speed than trusting the measurement.
+const WALK_SPEED_MIN: f32 = 30.0;
+const WALK_SPEED_MAX: f32 = 250.0;
+
+/// Derive an actor's [`crate::components::WalkSpeed`] from its walk clip's
+/// accumulation-root travel (M42.11), falling back to the engine default
+/// when the clip has no measurable stride. Reads the registry only — the
+/// clip was registered moments earlier on this path.
+pub(crate) fn walk_speed_for(world: &World, walk_handle: u32) -> f32 {
+    world
+        .resource::<AnimationClipRegistry>()
+        .get(walk_handle)
+        .and_then(|clip| clip.authored_horizontal_speed())
+        .filter(|speed| (WALK_SPEED_MIN..=WALK_SPEED_MAX).contains(speed))
+        .unwrap_or(crate::systems::LOCOMOTION_WALK_SPEED)
 }
 
 /// Build a sidecar path next to the given head NIF, swapping the

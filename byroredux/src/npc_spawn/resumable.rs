@@ -75,6 +75,11 @@ struct RuntimeNpcState {
     /// humanoids, which resolve the shared per-cell clip by path at
     /// finalize.
     walk_kf_path: Option<String>,
+    /// M42.11 — body class for the gendered humanoid walk-clip lookup at
+    /// finalize (`humanoid_walk_kf_path`). Creatures carry their resolved
+    /// ACBS gender (unused by the per-directory creature path).
+    gender: Gender,
+    is_child: bool,
     body_paths: Vec<String>,
     head_path: Option<String>,
     hair_path: Option<String>,
@@ -600,6 +605,8 @@ fn prepare_runtime_state(
         placement_root,
         skel_root: None,
         skel_map: HashMap::new(),
+        gender,
+        is_child,
         skeleton_path: humanoid_skeleton_path(game).unwrap_or_default().to_owned(),
         idle_kf_path: None,
         walk_kf_path: None,
@@ -694,6 +701,10 @@ fn prepare_creature_state(
         skeleton_path,
         idle_kf_path,
         walk_kf_path,
+        gender,
+        // Creatures have no child race split (the FO3/FNV RACE flag gate is
+        // humanoid-only; `is_child` is computed against the resolved race).
+        is_child: false,
         body_paths,
         head_path: None,
         hair_path: None,
@@ -1075,17 +1086,19 @@ fn advance_runtime_unit(
                     world.insert(state.placement_root, player);
                 }
             }
-            // M42.10 — resolve the walk clip: creatures use their own
-            // directory clip, KF-game humanoids the shared per-cell clip
-            // (`load_references` already registered it — a path lookup, no
-            // I/O), and Skyrim+ the decoded HKX walk staged into
+            // M42.10/M42.11 — resolve the walk clip: creatures use their
+            // own directory clip, KF-game humanoids the per-body-class clip
+            // (`load_references` already registered every variant — a path
+            // lookup, no I/O), and Skyrim+ the decoded HKX walk staged into
             // `SkyrimWalkClip` by `populate_skyrim_walk_clip`. Playback is
             // left to `npc_walk_animation_system`, which swaps it in only
-            // while the actor is actually moving.
+            // while the actor is actually moving. The clip's authored
+            // stride (accum-root travel per loop) becomes the actor's
+            // `WalkSpeed`, so the step length matches the animation.
             let walk_handle = if let Some(path) = state.walk_kf_path.as_deref() {
                 load_kf_clip_by_path(world, tex_provider, path)
             } else if index.game.has_kf_animations() {
-                crate::npc_spawn::humanoid_walk_kf_path(index.game)
+                crate::npc_spawn::humanoid_walk_kf_path(index.game, state.gender, state.is_child)
                     .and_then(|path| world.resource::<AnimationClipRegistry>().get_by_path(path))
             } else {
                 world
@@ -1093,6 +1106,7 @@ fn advance_runtime_unit(
                     .and_then(|r| r.0)
             };
             if let Some(handle) = walk_handle {
+                let walk_speed = walk_speed_for(world, handle);
                 let last_pos = world
                     .query::<Transform>()
                     .and_then(|q| q.get(state.placement_root).map(|t| t.translation))
@@ -1107,6 +1121,7 @@ fn advance_runtime_unit(
                         transition_secs: 0.0,
                     },
                 );
+                world.insert(state.placement_root, crate::components::WalkSpeed(walk_speed));
             }
             apply_ai_package_behavior(world, state.placement_root, npc, index);
             // Eviction state restores in stamp_quest_reference after the caller
@@ -1517,12 +1532,14 @@ fn advance_prebaked_unit(
                         consumed_idle_serial: 0,
                     },
                 );
-                // M42.10 — prebaked-path actors (Skyrim+) resolve the same
-                // decoded HKX walk clip the runtime path uses.
+                // M42.10/M42.11 — prebaked-path actors (Skyrim+) resolve
+                // the same decoded HKX walk clip the runtime path uses,
+                // with the same authored-stride speed derivation.
                 if let Some(handle) = world
                     .try_resource::<crate::components::SkyrimWalkClip>()
                     .and_then(|r| r.0)
                 {
+                    let walk_speed = walk_speed_for(world, handle);
                     let last_pos = world
                         .query::<Transform>()
                         .and_then(|q| q.get(state.placement_root).map(|t| t.translation))
@@ -1537,6 +1554,7 @@ fn advance_prebaked_unit(
                             transition_secs: 0.0,
                         },
                     );
+                    world.insert(state.placement_root, crate::components::WalkSpeed(walk_speed));
                 }
             }
             apply_ai_package_behavior(world, state.placement_root, npc, index);

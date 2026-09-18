@@ -144,6 +144,9 @@ enum EscortPendingKind {
 /// lookup read `GlobalTransform`).
 struct EscortPending {
     entity: EntityId,
+    /// Authored stride speed (M42.11 `WalkSpeed`), engine default when
+    /// absent.
+    speed: f32,
     current: Vec3,
     rotation: Quat,
     /// The raw (un-Y-adjusted) point this tick is walking toward —
@@ -226,6 +229,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
         let state_q = world.query::<EscortState>();
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
+        let walk_speed_q = world.query::<crate::components::WalkSpeed>();
 
         for (entity, behavior) in behavior_q.iter() {
             if escorted_q.as_ref().is_some_and(|q| q.contains(entity)) {
@@ -234,6 +238,11 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
             };
+            let speed = walk_speed_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|s| s.0)
+                .unwrap_or(super::locomotion::LOCOMOTION_WALK_SPEED);
             let current = transform.translation;
             let existing_state = state_q.as_ref().and_then(|q| q.get(entity)).copied();
 
@@ -258,6 +267,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 );
                 scratch.pending.push(EscortPending {
                     entity,
+                    speed,
                     current,
                     rotation: transform.rotation,
                     goal: destination,
@@ -305,6 +315,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 );
                 scratch.pending.push(EscortPending {
                     entity,
+                    speed,
                     current,
                     rotation: transform.rotation,
                     goal: destination,
@@ -334,6 +345,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 );
                 scratch.pending.push(EscortPending {
                     entity,
+                    speed,
                     current,
                     rotation: transform.rotation,
                     goal: pos,
@@ -374,6 +386,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 p.waypoints,
                 p.goal,
                 dt,
+                p.speed,
                 physics.as_deref(),
             );
             let (state, arrived) = match &p.kind {

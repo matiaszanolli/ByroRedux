@@ -291,6 +291,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // WalkAnimation>()` writes and the spawn-finalize resource read
     // resolve even before the first walking actor spawns.
     world.register::<crate::components::WalkAnimation>();
+    world.register::<crate::components::WalkSpeed>();
     world.register::<crate::components::WalkStuckTimer>();
     world.insert_resource(crate::components::SkyrimWalkClip::default());
 

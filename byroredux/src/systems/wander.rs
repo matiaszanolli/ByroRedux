@@ -182,6 +182,7 @@ pub(crate) fn step_oscillating_wander(
     current_rotation: Quat,
     dt: f32,
     physics: Option<&byroredux_physics::PhysicsWorld>,
+    speed: f32,
     radius: f32,
     form_id: u32,
     mut state: OscillateWalk,
@@ -208,7 +209,7 @@ pub(crate) fn step_oscillating_wander(
             let step_point = waypoint_override.unwrap_or(state.target);
             let step_xz = Vec3::new(step_point.x, current.y, step_point.z);
             let (new_pos, rotation, blocked) =
-                step_toward_detailed(current, current_rotation, step_xz, dt, physics);
+                step_toward_detailed(current, current_rotation, step_xz, dt, speed, physics);
 
             // M42.10 — a leg that grinds against a wall (straight-line
             // fallback aimed into architecture, or a hash-picked target
@@ -246,6 +247,9 @@ struct WanderDecision {
     /// `WalkStuckTimer.secs` snapshot (M42.10) — `0.0` when the component
     /// is absent. Mutated by the movement pass, written back in Pass 2.
     stuck_secs: f32,
+    /// Authored stride speed (M42.11 `WalkSpeed`), engine default when
+    /// absent.
+    speed: f32,
     waypoint_override: Option<Vec3>,
     effective_goal: Vec3,
     waypoints: VecDeque<Vec3>,
@@ -300,6 +304,7 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
         let stuck_q = world.query::<WalkStuckTimer>();
+        let walk_speed_q = world.query::<crate::components::WalkSpeed>();
         for (entity, behavior) in behavior_q.iter() {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
@@ -323,6 +328,11 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                 .and_then(|q| q.get(entity))
                 .map(|t| t.secs)
                 .unwrap_or(0.0);
+            let speed = walk_speed_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|s| s.0)
+                .unwrap_or(super::locomotion::LOCOMOTION_WALK_SPEED);
 
             // EX-16 item 3 Phase 4: only bother resolving a path while
             // actually walking this leg — mirrors `guard_system`'s same
@@ -350,6 +360,7 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                 radius,
                 form_id: behavior.form_id,
                 stuck_secs,
+                speed,
                 waypoint_override,
                 effective_goal,
                 waypoints,
@@ -375,6 +386,7 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                 d.source_rotation,
                 dt,
                 physics.as_deref(),
+                d.speed,
                 d.radius,
                 d.form_id,
                 OscillateWalk {

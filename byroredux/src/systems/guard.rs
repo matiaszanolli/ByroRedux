@@ -93,6 +93,9 @@ fn resolve_anchor(world: &World, behavior: &GuardBehavior, home: Vec3) -> Vec3 {
 /// same time as a `GlobalTransform` read).
 struct GuardPending {
     entity: EntityId,
+    /// Authored stride speed (M42.11 `WalkSpeed`), engine default when
+    /// absent.
+    speed: f32,
     current: Vec3,
     rotation: Quat,
     /// `Some(anchor)` when beyond the leash and a walk-back is needed
@@ -163,6 +166,7 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
         let state_q = world.query::<GuardState>();
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
+        let walk_speed_q = world.query::<crate::components::WalkSpeed>();
 
         for (entity, behavior) in behavior_q.iter() {
             let Some(transform) = transform_q.get(entity) else {
@@ -205,8 +209,14 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
                 None => VecDeque::new(),
             };
 
+            let speed = walk_speed_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|s| s.0)
+                .unwrap_or(super::locomotion::LOCOMOTION_WALK_SPEED);
             scratch.pending.push(GuardPending {
                 entity,
+                speed,
                 current,
                 rotation: transform.rotation,
                 walk_back_to,
@@ -242,6 +252,7 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
                         p.waypoints,
                         anchor,
                         dt,
+                        p.speed,
                         physics.as_deref(),
                     );
                     (

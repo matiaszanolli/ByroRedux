@@ -61,6 +61,9 @@ struct PatrolDecision {
     /// `WalkStuckTimer.secs` snapshot (M42.10) — `0.0` when the component
     /// is absent. Mutated by the movement pass, written back in Pass 2.
     stuck_secs: f32,
+    /// Authored stride speed (M42.11 `WalkSpeed`), engine default when
+    /// absent.
+    speed: f32,
     waypoint_override: Option<Vec3>,
     effective_goal: Vec3,
     waypoints: VecDeque<Vec3>,
@@ -110,6 +113,7 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
         let stuck_q = world.query::<WalkStuckTimer>();
+        let walk_speed_q = world.query::<crate::components::WalkSpeed>();
         for (entity, behavior) in behavior_q.iter() {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
@@ -138,6 +142,11 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                 .and_then(|q| q.get(entity))
                 .map(|t| t.secs)
                 .unwrap_or(0.0);
+            let speed = walk_speed_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|s| s.0)
+                .unwrap_or(super::locomotion::LOCOMOTION_WALK_SPEED);
 
             // EX-16 item 3 Phase 4: mirrors `wander_system_inner` exactly
             // (same shared primitive, same caching shape) — only resolve
@@ -164,6 +173,7 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                 radius,
                 form_id: behavior.form_id,
                 stuck_secs,
+                speed,
                 waypoint_override,
                 effective_goal,
                 waypoints,
@@ -189,6 +199,7 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                 d.source_rotation,
                 dt,
                 physics.as_deref(),
+                d.speed,
                 d.radius,
                 d.form_id,
                 OscillateWalk {

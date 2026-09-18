@@ -25,7 +25,7 @@
 //!   `HitEvent` at [`crate::combat::attack_damage`]'s resolved value —
 //!   the same fields the player's own unarmed swing leaves `false`.
 
-use super::locomotion::step_toward;
+use super::locomotion::{step_toward, LOCOMOTION_WALK_SPEED};
 use byroredux_core::ecs::components::{Dead, Transform};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -105,11 +105,20 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
                     actor_transform.translation.y,
                     target_transform.translation.z,
                 );
+                // M42.11 — chase at the actor's authored stride when a
+                // walk clip derived one; engine default otherwise.
+                let speed = world
+                    .query::<crate::components::WalkSpeed>()
+                    .as_ref()
+                    .and_then(|q| q.get(entity))
+                    .map(|s| s.0)
+                    .unwrap_or(LOCOMOTION_WALK_SPEED);
                 steps.push((
                     decisions.len(),
                     actor_transform.translation,
                     actor_transform.rotation,
                     target_xz,
+                    speed,
                 ));
                 decisions.push(Decision {
                     entity,
@@ -153,9 +162,9 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
 
     if !steps.is_empty() {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
-        for (index, from, rotation, target_xz) in steps {
+        for (index, from, rotation, target_xz, speed) in steps {
             let (new_pos, new_rotation) =
-                step_toward(from, rotation, target_xz, dt, physics.as_deref());
+                step_toward(from, rotation, target_xz, dt, speed, physics.as_deref());
             decisions[index].new_translation = new_pos;
             decisions[index].new_rotation = new_rotation;
         }

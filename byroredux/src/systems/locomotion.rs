@@ -129,10 +129,11 @@ pub(crate) fn step_toward(
     current_rotation: Quat,
     target_xz: Vec3,
     dt: f32,
+    speed: f32,
     physics: Option<&byroredux_physics::PhysicsWorld>,
 ) -> (Vec3, Option<Quat>) {
     let (new_pos, rotation, _blocked) =
-        step_toward_detailed(current, current_rotation, target_xz, dt, physics);
+        step_toward_detailed(current, current_rotation, target_xz, dt, speed, physics);
     (new_pos, rotation)
 }
 
@@ -146,12 +147,13 @@ pub(crate) fn step_toward_detailed(
     current_rotation: Quat,
     target_xz: Vec3,
     dt: f32,
+    speed: f32,
     physics: Option<&byroredux_physics::PhysicsWorld>,
 ) -> (Vec3, Option<Quat>, bool) {
     let desired_xz = Vec3::new(target_xz.x - current.x, 0.0, target_xz.z - current.z);
     let desired_length = desired_xz.length();
 
-    let mut new_pos = current.move_towards(target_xz, LOCOMOTION_WALK_SPEED * dt);
+    let mut new_pos = current.move_towards(target_xz, speed * dt);
     let mut blocked = false;
 
     if let Some(pw) = physics {
@@ -162,9 +164,10 @@ pub(crate) fn step_toward_detailed(
         let lift = LOCOMOTION_NPC_CAPSULE_HALF_HEIGHT + LOCOMOTION_NPC_CAPSULE_RADIUS;
         // Clamped to the remaining distance (`move_towards` semantics) so
         // the final step of a leg lands on the target instead of
-        // overshooting past it.
+        // overshooting past it. `speed` is the actor's authored stride
+        // (M42.11 `WalkSpeed`) falling back to LOCOMOTION_WALK_SPEED.
         let desired = if desired_length > 1e-6 {
-            let step = (LOCOMOTION_WALK_SPEED * dt).min(desired_length);
+            let step = (speed * dt).min(desired_length);
             desired_xz * (step / desired_length)
         } else {
             Vec3::ZERO
@@ -291,11 +294,13 @@ pub(crate) fn step_along_waypoints(
     mut waypoints: VecDeque<Vec3>,
     goal: Vec3,
     dt: f32,
+    speed: f32,
     physics: Option<&byroredux_physics::PhysicsWorld>,
 ) -> (Vec3, Option<Quat>, VecDeque<Vec3>) {
     let step_point = waypoints.front().copied().unwrap_or(goal);
     let step_xz = Vec3::new(step_point.x, current.y, step_point.z);
-    let (new_pos, rotation) = step_toward(current, current_rotation, step_xz, dt, physics);
+    let (new_pos, rotation) =
+        step_toward(current, current_rotation, step_xz, dt, speed, physics);
     pop_reached_waypoint(new_pos, &mut waypoints);
     (new_pos, rotation, waypoints)
 }

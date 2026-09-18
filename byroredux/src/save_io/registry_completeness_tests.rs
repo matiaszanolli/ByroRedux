@@ -458,6 +458,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SkyrimWalkClip", "resolved once at cell load from the archive provider, read-only afterward — same posture as SandboxSitClip"),
         ("WalkAnimation", "runtime walk-clip playback state (M42.10): `walk_handle` re-derives from the spawn path lookup, `walking`/`last_pos`/`captured` are per-frame transient — same posture as NavPath"),
         ("WalkStuckTimer", "runtime blocked-leg scratch (M42.10), cleared on package handover and re-accumulated from zero against the same deterministic obstacle — same posture as NavPath"),
+        ("WalkSpeed", "authored locomotion speed (M42.11), re-derived at spawn from the walk clip's accumulation-root travel — same posture as WalkAnimation"),
         ("SaveState", "save-slot directory + ring cursor, resumed from disk at startup (SaveState::new) — save/load plumbing itself, not part of the world snapshot"),
         ("SceneImportCache", "process-lifetime parsed-scene cache wrapper around the same ParsedNifCache core as NifImportRegistry"),
         ("SeatReservations", "derived sandbox occupancy, pruned on cell-reference load against live Furniture + claimant Seated state — see its own doc"),

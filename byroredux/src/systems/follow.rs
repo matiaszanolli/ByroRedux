@@ -88,6 +88,9 @@ fn resolve_follow_target(world: &World, behavior: &FollowBehavior) -> Option<Ent
 /// `travel_system`'s two-pass read-then-write structure).
 struct FollowDecision {
     entity: EntityId,
+    /// Authored stride speed (M42.11 `WalkSpeed`), engine default when
+    /// absent.
+    speed: f32,
     /// Staged move inputs (current position, rotation, target XZ)
     /// collected in Pass 1a while `Transform`/`GlobalTransform` are held
     /// but `PhysicsWorld` is NOT — filled into `movement` by Pass 1b,
@@ -158,11 +161,17 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
         let state_q = world.query::<FollowState>();
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
+        let walk_speed_q = world.query::<crate::components::WalkSpeed>();
 
         for (entity, behavior) in behavior_q.iter() {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
             };
+            let speed = walk_speed_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|s| s.0)
+                .unwrap_or(super::locomotion::LOCOMOTION_WALK_SPEED);
             let existing_state = state_q.as_ref().and_then(|q| q.get(entity)).copied();
             let (target_entity, state_to_insert) = match existing_state {
                 Some(s) => (s.target_entity, None),
@@ -180,6 +189,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
             let Some(target_entity) = target_entity else {
                 scratch.decisions.push(FollowDecision {
                     entity,
+                    speed,
                     pending_move: None,
                     waypoints: VecDeque::new(),
                     effective_goal: Vec3::ZERO,
@@ -194,6 +204,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                 // tick rather than re-resolving (v0 discipline).
                 scratch.decisions.push(FollowDecision {
                     entity,
+                    speed,
                     pending_move: None,
                     waypoints: VecDeque::new(),
                     effective_goal: Vec3::ZERO,
@@ -234,6 +245,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
 
             scratch.decisions.push(FollowDecision {
                 entity,
+                speed,
                 pending_move,
                 waypoints,
                 effective_goal,
@@ -267,6 +279,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                     std::mem::take(&mut d.waypoints),
                     target_xz,
                     dt,
+                    d.speed,
                     physics.as_deref(),
                 );
                 d.movement = Some((new_pos, new_rotation));

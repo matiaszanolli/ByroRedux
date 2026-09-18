@@ -348,7 +348,14 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
             // collision can sit hundreds of units below the XMarkers and
             // make the convoy miss vertically bounded scripted triggers.
             let (mut translation, new_rotation) =
-                super::locomotion::step_toward(current, rotation, target_xz, dt, None);
+                super::locomotion::step_toward(
+                    current,
+                    rotation,
+                    target_xz,
+                    dt,
+                    super::locomotion::LOCOMOTION_WALK_SPEED,
+                    None,
+                );
             if horizontal_before > f32::EPSILON {
                 let horizontal_after = byroredux_core::math::Vec3::new(
                     translation.x - destination.x,
