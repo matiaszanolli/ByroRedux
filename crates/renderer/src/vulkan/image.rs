@@ -21,6 +21,11 @@
 //! Those rules now live here once:
 //! - the allocator lock is taken, used, and released in a single statement,
 //!   never held across a fallible call that might re-lock it (#1163 / #1165);
+//! - a poisoned allocator lock is **recovered** (`into_inner()`), not
+//!   unwrapped — on the create path it surfaces as an ordinary allocate
+//!   error, on the free path the free is attempted anyway (#4089: poison
+//!   means another thread panicked mid-operation; aborting teardown over it
+//!   is a second panic, not a recovery);
 //! - on allocate failure the image is destroyed and nothing was bound;
 //! - on bind or view failure the allocation is freed **before** the image is
 //!   destroyed, so no sub-allocation is stranded (#2178);
@@ -216,18 +221,28 @@ impl GpuImage {
         // #1163 / #1165 — the lock is acquired, used and dropped inside this
         // one statement. Binding the guard to a `let` and holding it across
         // the error arms below deadlocks, because those arms re-lock to free.
-        let allocation = match allocator
-            .lock()
-            .expect("allocator lock")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name,
-                requirements,
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .with_context(|| format!("allocate {name}"))
-        {
+        //
+        // #4089 — a poisoned lock is recovered via `into_inner()`, matching
+        // `free_allocation` below: poison means another thread panicked
+        // mid-allocation, and the old `.expect("allocator lock")` turned that
+        // into a second panic during teardown. It surfaces here as an
+        // ordinary allocate error instead — image destroyed, error bubbled.
+        let allocation = {
+            let mut guard = match allocator.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard
+                .allocate(&vk_alloc::AllocationCreateDesc {
+                    name,
+                    requirements,
+                    location: gpu_allocator::MemoryLocation::GpuOnly,
+                    linear: false,
+                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
+                })
+                .with_context(|| format!("allocate {name}"))
+        };
+        let allocation = match allocation {
             Ok(allocation) => allocation,
             Err(e) => {
                 // SAFETY: created above, never bound, no other reference.
