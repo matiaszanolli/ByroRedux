@@ -50,6 +50,10 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::water::WaterPlane>()
             .reads::<byroredux_core::ecs::components::water::WaterVolume>()
             .reads::<byroredux_core::ecs::components::water::WaterFlow>()
+            // #3974 — `player_water_state` falls back to a placed
+            // `WaterCurrentVolume` marker when the plane has no flow of
+            // its own (the dynamic path's XWCU+XPRM rapids arm).
+            .reads::<byroredux_core::ecs::components::water::WaterCurrentVolume>()
             // WATAL W1 — the character system owns the player's own
             // `WaterContact` row (`sync_player_water_contact`): the dynamic
             // buoyancy pass selects `MotionType::Dynamic` plus ragdoll bones

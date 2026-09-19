@@ -21,7 +21,9 @@
 
 use byroredux_core::ecs::components::actor_state::Dead;
 use byroredux_core::ecs::components::actor_values::{ActorValues, ActorVitals};
-use byroredux_core::ecs::components::water::{WaterContact, WaterFlow, WaterPlane, WaterVolume};
+use byroredux_core::ecs::components::water::{
+    WaterContact, WaterCurrentVolume, WaterFlow, WaterKind, WaterPlane, WaterVolume,
+};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{ActiveCamera, GlobalTransform, TotalTime, Transform, World};
@@ -1022,7 +1024,9 @@ pub(crate) fn horizontal_motion(yaw: f32, move_dir: Vec3, speed: f32, dt: f32) -
 /// This mirrors the dynamic-body buoyancy calculation for the one body that
 /// pass cannot see (the player is `KinematicPositionBased`, and
 /// `apply_buoyancy_with_scratch` selects `MotionType::Dynamic` plus ragdoll
-/// bones only). The result is published as a real [`WaterContact`] by
+/// bones only) — including the placed-`WaterCurrentVolume` arm (#3974): a
+/// marker's flow applies when the plane has none, the same precedence the
+/// dynamic path resolves. The result is published as a real [`WaterContact`] by
 /// [`sync_player_water_contact`], so the kinematic player reaches the same
 /// `water.contacts` diagnostic and the same downstream consumers as every
 /// other wet body.
@@ -1089,7 +1093,31 @@ fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<Player
             continue;
         }
         let distance = (surface_y - pos.y).abs();
-        let flow = flow_q.as_ref().and_then(|q| q.get(entity).copied());
+        // #3974 — mirror the dynamic path's placed-current arm
+        // (#3114/#3268): when the plane itself carries no `WaterFlow`, a
+        // placed `WaterCurrentVolume` marker (XWCU + XPRM rapids/currents)
+        // containing the capsule centre supplies the drift. Pre-fix this
+        // sampler queried `WaterPlane`/`WaterVolume`/`WaterFlow` only, so a
+        // swimmer in authored rapids felt nothing while a dropped barrel
+        // next to them drifted downstream. Plane flow wins when present —
+        // same precedence the dynamic path's `current_flow.or(plane flow)`
+        // resolution lands on.
+        let flow = flow_q
+            .as_ref()
+            .and_then(|q| q.get(entity).copied())
+            .or_else(|| {
+                let cq = world.query::<WaterCurrentVolume>()?;
+                let marker = cq.iter().find(|(_, current)| {
+                    let v = &current.volume;
+                    pos.x >= v.min[0]
+                        && pos.x <= v.max[0]
+                        && pos.y >= v.min[1]
+                        && pos.y <= v.max[1]
+                        && pos.z >= v.min[2]
+                        && pos.z <= v.max[2]
+                });
+                marker.map(|(_, current)| current.flow)
+            });
         if best.as_ref().is_none_or(|candidate| distance < candidate.1) {
             best = Some((
                 PlayerWaterState {
@@ -1591,6 +1619,77 @@ mod tests {
         );
     }
     use byroredux_core::ecs::components::water::WaterMaterial;
+
+    /// #3974 — the kinematic player's sampler mirrors the dynamic path's
+    /// placed-current arm (#3114/#3268): when the containing plane carries
+    /// no `WaterFlow`, a `WaterCurrentVolume` marker containing the
+    /// capsule centre supplies the drift; a plane-authored flow still
+    /// wins; and water outside the marker stays calm. Pre-fix the swimmer
+    /// in authored rapids felt nothing while a dropped barrel drifted.
+    #[test]
+    fn player_water_state_falls_back_to_a_placed_current_volume() {
+        use byroredux_core::ecs::components::water::WaterCurrentVolume;
+
+        let mut world = World::new();
+        world.register::<WaterPlane>();
+        world.register::<WaterVolume>();
+        world.register::<WaterFlow>();
+        world.register::<WaterCurrentVolume>();
+
+        let lake = world.spawn();
+        world.insert(
+            lake,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            lake,
+            WaterVolume {
+                min: [-10.0, -5.0, -10.0],
+                max: [10.0, 0.0, 10.0],
+            },
+        );
+        let marker = world.spawn();
+        world.insert(
+            marker,
+            WaterCurrentVolume {
+                volume: WaterVolume {
+                    min: [-2.0, -5.0, -2.0],
+                    max: [2.0, 0.0, 2.0],
+                },
+                flow: WaterFlow {
+                    direction: [1.0, 0.0, 0.0],
+                    speed: 3.0,
+                },
+            },
+        );
+
+        let pos = Vec3::new(0.0, -2.5, 0.0); // capsule centre inside both
+        let state = player_water_state(&world, pos, 40.0).expect("submerged");
+        let flow = state
+            .flow
+            .expect("the marker's current must reach the player");
+        assert_eq!(flow.speed, 3.0);
+
+        // Outside the marker's box the calm plane stays calm.
+        let outside =
+            player_water_state(&world, Vec3::new(8.0, -2.5, 0.0), 40.0).expect("submerged");
+        assert!(outside.flow.is_none());
+
+        // Precedence: a plane-authored flow wins over the marker.
+        world.insert(
+            lake,
+            WaterFlow {
+                direction: [0.0, 0.0, 1.0],
+                speed: 1.0,
+            },
+        );
+        let state = player_water_state(&world, pos, 40.0).expect("submerged");
+        assert_eq!(state.flow.map(|f| f.speed), Some(1.0));
+    }
 
     #[test]
     fn papyrus_control_and_restraint_state_gate_player_movement() {
