@@ -654,7 +654,12 @@ comment in the establishing crate, and the second consumer of each cluster
 re-derived it from scratch and got the opposite one):
 
 ```
-AnimationClipRegistry → NameIndex → AnimationPlayer
+AnimationClipRegistry → NameIndex → SubtreeCache → AnimationPlayer
+                                                     AnimationStack
+                                                   ⇒ Transform / AnimationTextKeyEvents /
+                                                     RootMotionDelta / Animated*
+                                                   (SubtreeCache miss path additionally
+                                                    records NameIndex → Children → Name)
 QuestAdvanceOnActivate → ScenePlayer → QuestStageState → SceneRegistry
 RapierHandles → CollisionShape → RigidBodyData → GlobalTransform
               → ActorBoneCollider   ⇒ then snapshot, drop, and take PhysicsWorld
@@ -665,6 +670,13 @@ calls the registry and `NameIndex` "the two outermost locks" (#2400): it holds
 the registry read for the whole function and takes `AnimationPlayer` for
 *write* underneath it. That makes the pair a hard blocking edge, not a
 reader-reader one. `save::validate_animation` took the reverse until #3649.
+#4184 — `SubtreeCache` sits between `NameIndex` and the
+`AnimationPlayer`/`AnimationStack` writes; its miss path drops its own read
+before recording `Children`-before-`Name`. It had never been named in this
+list, and a second consumer re-deriving its direction from scratch could
+pick `SubtreeCache` under `Transform`/`AnimationStack` and close a cycle
+against this system's every-frame edges — the exact class #3651 exists to
+prevent.
 
 **Scene / quest.** `actor_quest_trigger_is_in_sequence`
 (`crates/scripting/src/trigger.rs`) holds `QuestAdvanceOnActivate` and
