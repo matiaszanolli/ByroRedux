@@ -93,18 +93,25 @@ impl DerivedInput {
     }
 }
 
-/// Rounding applied to a formula's raw value before the cap clamp. Bethesda
-/// floors Health (`TotalHitPoints = floor(...)`) and ceils Unarmed Damage
-/// (`ceil((10 + Unarmed)/20)`); most stats are exact.
+/// Rounding applied to a formula's raw value before the cap clamp. The
+/// rounding mode is per-row sourced, not a blanket rule: only FO4 Health is
+/// captured with an explicit floor (`charal-fo4-ruleset.md`: `TotalHP =
+/// floor(...)`); the FO3/FNV Health capture states no mode, so those rows
+/// ship [`RoundMode::None`] (exact — and identity for their integer
+/// END/level domain). Unarmed Damage's ceil (`ceil((10 + Unarmed)/20)`) is
+/// sourced on FO3/FNV (`charal-fnv-fo3-ruleset.md`). Don't copy a mode onto
+/// a new row because "Bethesda obviously rounds" — ship `None` unless the
+/// capture states one (#4451).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum RoundMode {
-    /// No rounding (the value is used as-is).
+    /// No rounding (the value is used as-is). The correct default: most
+    /// rows' captures state no mode, and inventing one is the #4451 class.
     #[default]
     None,
-    /// `floor` — e.g. Health.
+    /// `floor` — FO4 Health only (the one capture-sourced floor).
     Floor,
-    /// `ceil` — e.g. Unarmed Damage.
+    /// `ceil` — FO3/FNV Unarmed Damage.
     Ceil,
 }
 
