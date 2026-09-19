@@ -124,6 +124,41 @@ fn player_wind_read_is_declared_and_weather_writer_is_exclusive() {
 
     let scheduler = crate::boot::build_scheduler();
     assert_eq!(scheduler.access_report().known_conflict_count(), 0);
+
+    // #4186 — the accepted lag, pinned on the built schedule: within
+    // Stage::Early, `weather_system` (exclusive) must register AFTER
+    // `player_controller_system` (parallel batch), so the controller
+    // deterministically reads the previous frame's WindField. A reshuffle
+    // that put weather into the parallel batch (or the player into the
+    // exclusive phase) changes which frame's wind the controller sees and
+    // would pass every declaration check above.
+    let early = scheduler
+        .access_report()
+        .stages
+        .into_iter()
+        .find(|s| s.stage == byroredux_core::ecs::Stage::Early)
+        .expect("Stage::Early must exist");
+    let player = early
+        .systems
+        .iter()
+        .position(|r| r.name.contains("player_controller_system"))
+        .expect("player_controller_system must be registered in Stage::Early");
+    let weather = early
+        .systems
+        .iter()
+        .position(|r| r.name.contains("weather_system"))
+        .expect("weather_system must be registered in Stage::Early");
+    assert!(
+        player < weather,
+        "weather_system ({weather}) must register after player_controller_system \
+         ({player}) in Stage::Early — the controller is defined to read last \
+         frame's WindField (#4186)"
+    );
+    assert!(
+        early.systems[weather].is_exclusive,
+        "weather_system must stay an Early exclusive — in the parallel batch it \
+         would race the controller's WindField read (#3111)"
+    );
 }
 
 #[test]
@@ -662,6 +697,71 @@ fn billboard_runs_after_camera_follow_in_late() {
             "make_billboard_system is registered in {:?} as well as \
              Stage::Late — an earlier-stage copy reads the previous frame's \
              camera pose (#3652)",
+            stage.stage,
+        );
+    }
+}
+
+/// #4185 (CONC-D4-01) — `footstep_system` was moved to the `Stage::Late`
+/// exclusive lane by the same #3652 reasoning as
+/// `make_billboard_system` (its spatial-audio trigger position is derived
+/// from the camera pose `camera_follow_system` authors in Late's parallel
+/// batch) but got none of that fix's pins. `analyze_pair` is intra-stage,
+/// so a reshuffle back to `PostUpdate` — or down into Late's parallel
+/// batch — is invisible to every counter. Same three assertions as the
+/// billboard pin above, extended per the finding.
+#[test]
+fn footstep_runs_after_camera_follow_in_late() {
+    use byroredux_core::ecs::Stage;
+
+    let report = crate::boot::build_scheduler().access_report();
+    let late = report
+        .stages
+        .iter()
+        .find(|s| s.stage == Stage::Late)
+        .expect("Stage::Late must exist in the schedule");
+
+    let index_of = |needle: &str| -> usize {
+        late.systems
+            .iter()
+            .position(|row| row.name.contains(needle))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no Stage::Late system matching `{needle}` — the \
+                     registration moved stage or was renamed (#4185). \
+                     Late systems: {:?}",
+                    late.systems.iter().map(|r| &r.name).collect::<Vec<_>>()
+                )
+            })
+    };
+
+    let camera_follow = index_of("systems::character::camera_follow_system");
+    let footstep = index_of("footstep_system");
+
+    assert!(
+        late.systems[footstep].is_exclusive,
+        "footstep_system must be a Late exclusive so it sequences after the \
+         parallel batch that authors the camera pose (#3652/#4185)"
+    );
+    assert!(
+        camera_follow < footstep,
+        "footstep_system ({footstep}) must run AFTER camera_follow_system \
+         ({camera_follow}) — otherwise its spatial-audio trigger position is \
+         one frame stale (#3652/#4185)"
+    );
+
+    for stage in &report.stages {
+        if stage.stage == Stage::Late {
+            continue;
+        }
+        assert!(
+            !stage
+                .systems
+                .iter()
+                .any(|r| r.name.contains("footstep_system")),
+            "footstep_system is registered in {:?} as well as Stage::Late — \
+             an earlier-stage copy reads the previous frame's camera pose \
+             (#3652/#4185)",
             stage.stage,
         );
     }

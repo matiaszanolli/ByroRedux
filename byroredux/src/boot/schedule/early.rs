@@ -77,6 +77,14 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
     // for water waves. Keep weather in the same stage but serialize it after
     // the parallel batch so the access analyzer and runtime agree: there is no
     // same-stage read/write race, and the controller sees one stable snapshot.
+    // #4186 — "stable" means *last frame's*: the exclusive phase runs after
+    // Early's parallel batch, so `player_controller_system` (parallel) reads
+    // the WindField `weather_system` wrote on the previous frame. Accepted
+    // cross-stage lag — wave-scroll/wind-wave scale change over
+    // seconds-to-minutes timescales — and structurally invisible to
+    // `analyze_pair`, which never compares a parallel entry against an
+    // exclusive one (#3653 is the documented-and-pinned precedent). Any new
+    // Early-parallel WindField consumer silently inherits the same lag.
     scheduler.add_exclusive_with_access(
         Stage::Early,
         weather_system,
