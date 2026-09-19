@@ -612,7 +612,19 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 24;
+    const BASELINE_MAJOR: u16 = 25;
+    // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
+    // gained the required `picked_up` tombstone field (the durable half of
+    // the P3 `PickedUp` marker, carried through the registered
+    // `PersistentReferenceStates` resource). The P3 commit had landed it
+    // with `#[serde(default)]` — the exact masked intra-type change this
+    // guard exists to prevent — so the default is removed and the version
+    // check rejects pre-v25 saves instead of silently default-filling them.
+    // (The fingerprint moved twice in this refresh: once for the new field,
+    // once more once the `#[serde(default)]` attribute itself left the
+    // struct's scanned span — both directions are the shape change.)
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xc71b_123b_1b58_c881;
+    // ---- earlier refresh history (kept for the false-positive record) ----
     // #4422 — refreshed WITH a major bump (v23 -> v24). `Material` gained
     // the required field `detail_neutral` (the encoded-space
     // detail-combine neutral declared at the NIFAL boundary — FaceTint
@@ -644,7 +656,6 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // fn delegating to `for_legacy_projection`) moved the scan span. The
     // type's serialized shape is still a plain `u8` newtype — no field
     // added, removed, or retyped — so no snapshot decodes differently.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0666_f922_7959_3339;
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

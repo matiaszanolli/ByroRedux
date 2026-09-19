@@ -516,6 +516,11 @@ pub(crate) enum LootSelection {
     /// One stack row by inventory index. The source row is zeroed in place
     /// (the `consume_item` convention) so the source's remaining equipment
     /// indices never shift; an instance handle travels with the moved row.
+    /// #4464 — constructed nowhere yet: the P3 spec explicitly defers
+    /// selective transfer ("a basic take-all action, not a container
+    /// browser"), so this arm waits for that UI. `transfer_loot` implements
+    /// and tests it end to end; only the constructor is missing.
+    #[allow(dead_code)] // #4464 — forward-latent until the selective-take UI
     Stack(InventoryIndex),
 }
 
@@ -525,15 +530,19 @@ pub(crate) struct LootOutcome {
     pub item_count: u64,
     /// One `(base_form_id, count)` row per moved stack.
     pub rows: Vec<(u32, u32)>,
+    /// #4464 — read nowhere yet: with take-all wired straight to activation
+    /// no caller branches on theft; the witness/bounty consumer the P3 spec
+    /// defers is what will read it.
+    #[allow(dead_code)] // #4464 — forward-latent until theft consequences
     pub stolen: bool,
 }
 
 /// Move loot from `source` into the player's inventory. Shared by the
-/// container browser (Take / Take All), the console smoke path, and pickup.
-/// All of the old take-all invariants are preserved: validation before any
-/// mutation, whole-stack appends that keep the player's equipment indices
-/// stable, instance handles never reallocated, and one unequip event per
-/// source equipment index the transfer cleared.
+/// activation take-all path (`container_loot_system`) and the console smoke
+/// path. All of the old take-all invariants are preserved: validation
+/// before any mutation, whole-stack appends that keep the player's
+/// equipment indices stable, instance handles never reallocated, and one
+/// unequip event per source equipment index the transfer cleared.
 ///
 /// Returns `None` (having moved nothing) when any validation fails: source
 /// is the player, is not a loot source, is locked, or either side lacks an
@@ -719,21 +728,16 @@ pub(crate) fn transfer_loot(
     Some(outcome)
 }
 
-/// A loot source the player activated this frame. P3's open/close
-/// presentation: activation no longer transfers instantly — the frame loop
-/// consumes this to open the native container browser, and the transfer is
-/// driven from its Take / Take All buttons (or the console smoke path).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PendingContainerOpen {
-    pub source: byroredux_core::ecs::EntityId,
-}
-impl Resource for PendingContainerOpen {}
-
 /// Consume canonical activation events without draining them: scripts observe
-/// the same activation later in Update. A container or corpse activation now
-/// opens the browser instead of transferring (see [`PendingContainerOpen`]);
-/// a loose world item is picked up directly — one item per placement, the
-/// Bethesda REFR convention.
+/// the same activation later in Update. A container or corpse activation is
+/// **Take All** (#4464): the P3 spec's "basic take-all action, not a
+/// container browser" (`docs/engine/playable-vertical-slice.md`) — every
+/// stack moves whole through [`transfer_loot`], the source's equipment
+/// clears with one unequip event per slot, and locked/non-container
+/// activations are rejected inside the transfer's own safety gates. An
+/// already-empty source transfers nothing and says nothing. A loose world
+/// item is picked up directly — one item per placement, the Bethesda REFR
+/// convention.
 pub(crate) fn container_loot_system(world: &World, _dt: f32) {
     let Some(player) = world
         .try_resource::<PlayerEntity>()
@@ -755,15 +759,7 @@ pub(crate) fn container_loot_system(world: &World, _dt: f32) {
             continue;
         }
         if is_loot_source(world, target) {
-            if world
-                .get::<byroredux_core::ecs::components::Locked>(target)
-                .is_some()
-            {
-                continue;
-            }
-            if let Some(mut pending) = world.try_resource_mut::<PendingContainerOpen>() {
-                pending.source = target;
-            }
+            transfer_loot(world, player, target, LootSelection::All);
         } else if pickup_loot(world, player, target) {
             // Handled: the item moved and the placement hid itself.
         }

@@ -32,8 +32,9 @@ struct ReferenceState {
     dead: bool,
     /// P3 pickup tombstone: the player picked this placement's item up, so a
     /// respawned copy must come back hidden and uninteractive, not restocked.
-    /// Older saves predate the field — `false` is the correct reading.
-    #[serde(default)]
+    /// Required (not `serde(default)`) — pre-v25 saves are rejected by the
+    /// FORMAT_MAJOR gate rather than silently default-filled (#4465 /
+    /// SAVE-D2-01, same rule as v23's chargen fields).
     picked_up: bool,
 }
 

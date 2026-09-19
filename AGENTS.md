@@ -13,6 +13,22 @@ cargo run                      # Launch engine (spinning cube demo)
 cargo build --release          # Release build
 ```
 
+### Binary-crate toolchain (rustc ≥ 1.94 required, #4466)
+
+`cranelift` 0.134 (wasmtime, via `mod-runtime`) sets an MSRV of 1.94; the
+default distro rustc here is 1.93.1, so the `byroredux` bin crate — and any
+workspace-wide cargo call — fails resolution on the default toolchain and
+gets **no compile/test feedback**. `cargo +1.96.0` does NOT work (distro
+cargo shadows the rustup shims); invoke the toolchain's cargo directly:
+
+```bash
+TC=$(rustup which --toolchain 1.96.0 cargo)   # 1.96.0 is installed here
+PATH="$(dirname "$TC"):$PATH" "$TC" test -p byroredux --bin byroredux
+```
+
+Verify any `byroredux/src/` change that way before pushing (details in
+`docs/contributing.md` §Tests).
+
 ### Debug CLI
 ```bash
 cargo run -p byro-dbg                       # Connect to running engine (port 9876)

@@ -445,7 +445,6 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingDeathReconciliations", "same-frame death handoff queue drained by the late exclusive reconciliation sink; canonical Dead state is saved separately"),
         ("PendingPlayerSaveActions", "one-shot player save/load requests drained after the scheduler's parallel batch joins (#3113)"),
         ("PendingSaveLoadSlot", "one-shot queued-load slot (#1848/SAVE-05), empty except mid-drain — save/load plumbing itself, not save-worthy state"),
-        ("PendingContainerOpen", "one-shot queued container-open slot drained by the native menu open, empty except mid-interaction — same posture as PendingSaveLoadSlot"),
         ("PlayerNotifications", "bounded transient save/load and gameplay feedback drained into the HUD/console before the next frame"),
         ("PapyrusPlayerEntity", "scripting-crate sibling of PlayerEntity (#3710 renamed it off the shared short name), pointing Papyrus's Game pseudo-singleton at the same process-lifetime player body; set from the same call site as PlayerEntity, same process-local-identity posture, not gameplay state"),
         ("PlayerEntity", "points to the process-lifetime player body, which deliberately outlives cell unload; the entity remains valid across live reload and the resource is process-local identity, not gameplay state"),

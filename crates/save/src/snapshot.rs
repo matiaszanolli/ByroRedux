@@ -207,7 +207,15 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// bump rather than `#[serde(default)]`-masking it, so a pre-v24 save is
 /// rejected by the version check instead of decoded with a field its
 /// writer never produced.
-pub const FORMAT_MAJOR: u16 = 24;
+///
+/// v24 -> v25 (#4465): `ReferenceState` gained the required `picked_up`
+/// tombstone field (P3 pickups — the durable half of the `PickedUp`
+/// marker, carried through the registered `PersistentReferenceStates`
+/// resource). The P3 commit had landed it with `#[serde(default)]`, the
+/// exact masked intra-type change SAVE-D2-01 (#1714) exists to prevent;
+/// per the blanket rule the default is removed and a pre-v25 save is
+/// rejected by the version check rather than silently default-filled.
+pub const FORMAT_MAJOR: u16 = 25;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
