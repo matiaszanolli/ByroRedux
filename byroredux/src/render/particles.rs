@@ -21,7 +21,8 @@
 //! overrides ride through the existing pipeline cache from #392.
 
 use byroredux_core::ecs::components::material::{
-    DEFAULT_GLASS_BLUR_SCALE, DEFAULT_GLASS_REFRACTION_SCALE,
+    DEFAULT_DIELECTRIC_IOR, DEFAULT_GLASS_BLUR_SCALE, DEFAULT_GLASS_REFRACTION_SCALE,
+    DEFAULT_PARALLAX_HEIGHT_SCALE, DEFAULT_PARALLAX_MAX_PASSES,
 };
 use byroredux_core::ecs::{ParticleEmitter, RenderLayer, TextureHandle, World};
 use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
@@ -175,8 +176,8 @@ pub(super) fn emit_particles(
                 detail_neutral: byroredux_core::ecs::components::material::DEFAULT_DETAIL_NEUTRAL,
                 gloss_map_index: 0,
                 parallax_map_index: 0,
-                parallax_height_scale: 0.04,
-                parallax_max_passes: 4.0,
+                parallax_height_scale: DEFAULT_PARALLAX_HEIGHT_SCALE,
+                parallax_max_passes: DEFAULT_PARALLAX_MAX_PASSES,
                 env_map_index: 0,
                 env_mask_index: 0,
                 alpha_threshold: 0.0,
@@ -186,7 +187,7 @@ pub(super) fn emit_particles(
                 // #1248 — generic dielectric default (η = 1.5 → F0 ≈ 0.04).
                 // Particles don't author IOR; the default reproduces the
                 // pre-#1248 hardcoded vec3(0.04) shader behaviour.
-                ior: 1.5,
+                ior: DEFAULT_DIELECTRIC_IOR,
                 // #1249 — Disney diffuse off (particles use the legacy
                 // Lambert path; MAT_FLAG_BGSM_PBR never fires here).
                 subsurface: 0.0,
@@ -300,9 +301,10 @@ pub(super) fn emit_particles(
                 grayscale_to_palette_scale: 1.0,
                 is_water: false,
             };
-            // #781 / PERF-N4 — dedup material payload.
-            cmd.material_id =
-                material_table.intern_by_hash(cmd.material_hash(), || cmd.to_gpu_material());
+            // #781 / PERF-N4 — dedup material payload. One build + one
+            // byte hash via `intern` (#4442 — the hash itself builds the
+            // struct since #4201, so a hash-then-closure call built twice).
+            cmd.material_id = material_table.intern(cmd.to_gpu_material());
             draw_commands.push(cmd);
         }
     }

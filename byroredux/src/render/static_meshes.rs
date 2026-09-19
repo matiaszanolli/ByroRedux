@@ -1209,11 +1209,11 @@ pub(super) fn collect_static_mesh_draws(
                     translucency_turbulence: mat.map(|m| m.translucency_turbulence).unwrap_or(0.0),
                     is_water: false,
                 };
-                // #781 / PERF-N4 — `intern_by_hash` skips the
-                // `to_gpu_material()` construction on the
-                // dedup-hit path (~97% of calls on Prospector).
-                cmd.material_id =
-                    material_table.intern_by_hash(cmd.material_hash(), || cmd.to_gpu_material());
+                // #781 / PERF-N4 — byte-hash dedup. #4201 made
+                // `material_hash` build the struct to hash it, so passing
+                // the built value to `intern` is one build + one hash;
+                // the old hash-then-closure shape built it twice (#4442).
+                cmd.material_id = material_table.intern(cmd.to_gpu_material());
                 draw_commands.push(cmd);
             }
         }

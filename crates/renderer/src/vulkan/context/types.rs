@@ -528,9 +528,10 @@ impl DrawCommand {
     /// the cheap part: it is plain memory writes, while the walk was ~107
     /// dependent hash steps. Building and then hashing the bytes measured
     /// 0.17 ms against the walk's 0.48 ms at 7,359 draws, and the lockstep
-    /// contract is now true by construction instead of by review. On the
-    /// ~3% miss path `intern_by_hash`'s factory builds the struct a second
-    /// time, which is the same cheap write.
+    /// contract is now true by construction instead of by review.
+    /// #4442 — the production call sites therefore pass the built struct
+    /// straight to `MaterialTable::intern` (one build); this method
+    /// remains the pinned bridge between the two sides of that contract.
     pub fn material_hash(&self) -> u64 {
         super::super::material::hash_gpu_material_fields(&self.to_gpu_material())
     }

@@ -1575,9 +1575,10 @@ fn pbr_bsdf_lobes(
 ///
 /// It is NOT inert engine-wide (#2515): the value reaches
 /// `GpuMaterial.material_alpha` through `to_gpu_material` and is hashed by
-/// `hash_gpu_material_fields` (`material.rs` writes
-/// `mat.material_alpha.to_bits()`), which `MaterialTable::intern_by_hash`
-/// keys on. So it is part of the material dedup identity, and changing it
+/// `hash_gpu_material_fields` — since #4201 that is the byte hash of the
+/// built struct, so `material_alpha` participates through its byte
+/// representation — which `MaterialTable::intern` keys on. So it is part
+/// of the material dedup identity, and changing it
 /// splits or merges material-table slots — these glass probes already
 /// occupy a slot distinct from an otherwise identical opaque dielectric
 /// purely because of it. Relevant to anyone measuring dedup ratio via
