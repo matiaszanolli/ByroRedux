@@ -880,6 +880,43 @@ impl TextureRegistry {
         Ok(())
     }
 
+    /// In-place mip-0 overwrite of an existing RGBA texture — the
+    /// streaming companion to [`Self::update_rgba`].
+    ///
+    /// [`Self::update_rgba`] allocates a fresh image + view + bindless
+    /// descriptor write per call (right for occasional content swaps,
+    /// pathological for a per-frame overlay). This writes the pixels into
+    /// the texture the handle already points at: no allocation, no
+    /// rebind, one pooled-staging copy.
+    ///
+    /// # Hazard contract
+    ///
+    /// The caller must guarantee no in-flight frame still samples this
+    /// handle — the HUD's triple-buffer rotation owns that policy. The
+    /// extent must match the texture's creation extent (asserted in
+    /// [`Texture::overwrite_rgba_pixels`] by the caller-supplied
+    /// `width`/`height`, which the overlay keeps fixed at launch).
+    pub fn write_rgba_inplace(
+        &mut self,
+        ctx: GpuUploadCtx,
+        handle: TextureHandle,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<()> {
+        let TextureRegistry {
+            textures, staging_pool, ..
+        } = self;
+        let entry = textures
+            .get_mut(handle as usize)
+            .ok_or_else(|| anyhow::anyhow!("write_rgba_inplace: unknown handle {handle}"))?;
+        let texture = entry
+            .texture
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("write_rgba_inplace: handle {handle} has no live texture"))?;
+        texture.overwrite_rgba_pixels(ctx, width, height, pixels, staging_pool.as_mut())
+    }
+
     /// Number of loaded textures (including fallback).
     pub fn len(&self) -> usize {
         self.textures.len()

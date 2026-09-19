@@ -859,7 +859,7 @@ pub(crate) fn setup_scene(
     // HUD when both somehow load.
     *hud = crate::hud::launch_hud(ctx, world, &args);
     if hud.is_some() {
-        *ui_texture_handle = Some(hud.as_ref().unwrap().texture_handle);
+        *ui_texture_handle = Some(hud.as_ref().unwrap().current_texture());
     }
 }
 

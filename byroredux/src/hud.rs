@@ -92,7 +92,16 @@ impl Default for HudControl {
 pub(crate) struct OblivionHud {
     renderer: MenuRenderer,
     assets: HudAssets,
-    pub texture_handle: u32,
+    /// Triple-buffered overlay textures, cycled per *upload*. In-flight
+    /// frames (two, per the renderer's frames-in-flight) may sample the
+    /// current and previous buffers, so uploads always target the buffer
+    /// last sampled three frames ago — the hazard contract
+    /// [`Texture::overwrite_rgba_pixels`] requires. Fixed handles also
+    /// mean zero allocations and zero bindless descriptor writes after
+    /// launch, where [`TextureRegistry::update_rgba`] would reallocate a
+    /// full image per call.
+    texture_handles: [u32; 3],
+    current: usize,
     width: u32,
     height: u32,
     /// Signature of the last rendered frame's driving inputs. The HUD is
@@ -205,16 +214,22 @@ pub(crate) fn launch_hud(
             };
             // Same transparent initial upload the `--menu` route uses, so
             // the composite quad exists before the first rasterized frame.
-            match ctx.texture_registry.register_rgba(
-                upload_ctx,
-                w,
-                h,
-                &vec![0u8; (w * h * 4) as usize],
-            ) {
-                Ok(handle) => {
+            let register = |ctx: &mut byroredux_renderer::vulkan::context::VulkanContext| {
+                let allocator = ctx.allocator.as_ref().unwrap();
+                let upload_ctx = byroredux_renderer::vulkan::GpuUploadCtx {
+                    device: &ctx.device,
+                    allocator,
+                    queue: &ctx.graphics_queue,
+                    command_pool: ctx.transfer_pool,
+                };
+                ctx.texture_registry
+                    .register_rgba(upload_ctx, w, h, &vec![0u8; (w * h * 4) as usize])
+            };
+            match (register(ctx), register(ctx), register(ctx)) {
+                (Ok(h0), Ok(h1), Ok(h2)) => {
                     log::info!(
                         "hud: loaded menus\\main\\hud_main_menu.xml misc='{}' textures='{}' \
-                         texture={handle} ({w}x{h}, {} NIF tiles skipped)",
+                         textures={h0}/{h1}/{h2} ({w}x{h}, {} NIF tiles skipped)",
                         misc_path,
                         textures_path,
                         renderer.nif_tiles
@@ -223,15 +238,16 @@ pub(crate) fn launch_hud(
                     Some(OblivionHud {
                         renderer,
                         assets,
-                        texture_handle: handle,
+                        texture_handles: [h0, h1, h2],
+                        current: 0,
                         width: w,
                         height: h,
                         last_signature: 0,
                         last_upload: std::time::Instant::now(),
                     })
                 }
-                Err(error) => {
-                    log::error!("hud: UI texture registration failed: {error:#}");
+                _ => {
+                    log::error!("hud: UI texture registration failed");
                     None
                 }
             }
@@ -303,6 +319,43 @@ impl OblivionHud {
 
     pub fn frame_size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// The handle the frame being recorded should composite.
+    pub fn current_texture(&self) -> u32 {
+        self.texture_handles[self.current]
+    }
+
+    /// Upload `pixels` into the next buffer of the rotation and advance.
+    /// Returns the handle to composite this frame.
+    ///
+    /// The overwritten buffer was last sampled three frames ago, so no
+    /// in-flight frame still reads it (see the field docs).
+    pub fn upload_frame(
+        &mut self,
+        ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
+        pixels: &[u8],
+    ) -> u32 {
+        let target = (self.current + 1) % self.texture_handles.len();
+        let allocator = ctx.allocator.as_ref().unwrap();
+        let upload_ctx = byroredux_renderer::vulkan::GpuUploadCtx {
+            device: &ctx.device,
+            allocator,
+            queue: &ctx.graphics_queue,
+            command_pool: ctx.transfer_pool,
+        };
+        let (w, h) = self.frame_size();
+        if let Err(error) = ctx.texture_registry.write_rgba_inplace(
+            upload_ctx,
+            self.texture_handles[target],
+            w,
+            h,
+            pixels,
+        ) {
+            log::error!("hud: texture upload failed: {error:#}");
+        }
+        self.current = target;
+        self.texture_handles[self.current]
     }
 }
 

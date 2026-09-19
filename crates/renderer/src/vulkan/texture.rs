@@ -98,6 +98,119 @@ impl Texture {
         Ok(texture)
     }
 
+    /// Overwrite the full mip-0 contents of an existing RGBA texture in
+    /// place — the streaming companion to [`Self::from_rgba`].
+    ///
+    /// Same pixel contract (`width * height * 4` RGBA bytes, the extent
+    /// the texture was created with), but the image, view, and bindless
+    /// descriptor stay untouched: no allocation, no rebind, one small
+    /// staging copy. [`TextureRegistry::update_rgba`] reallocates a full
+    /// image + view + descriptor write per call — fine for occasional
+    /// content swaps, pathological for a per-frame overlay (the first
+    /// live HUD run pinned a machine that way).
+    ///
+    /// # Hazard contract
+    ///
+    /// The copy runs in its own submission with UNDEFINED→TRANSFER_DST
+    /// (discard) barriers, which orders against *this* submission only.
+    /// The caller must guarantee no in-flight frame still samples this
+    /// texture — the HUD's triple-buffer rotation overwrites only the
+    /// buffer last sampled three frames ago (see `byroredux/src/hud.rs`).
+    pub fn overwrite_rgba_pixels(
+        &self,
+        ctx: GpuUploadCtx,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+        staging_pool: Option<&mut StagingPool>,
+    ) -> Result<()> {
+        assert_eq!(
+            pixels.len(),
+            (width * height * 4) as usize,
+            "pixel data must be width*height*4 RGBA bytes"
+        );
+        let GpuUploadCtx {
+            device,
+            allocator,
+            queue,
+            command_pool,
+        } = ctx;
+        let image_size = pixels.len() as vk::DeviceSize;
+
+        let (staging_buffer, staging_alloc) = if let Some(pool) = staging_pool {
+            pool.acquire(image_size)?
+        } else {
+            super::buffer::create_staging_buffer(
+                device,
+                allocator,
+                image_size,
+                "rgba_overwrite_staging",
+            )?
+        };
+        let mut staging = StagingGuard::new(
+            staging_buffer,
+            staging_alloc,
+            device.clone(),
+            allocator.clone(),
+        );
+        staging.mapped_slice_mut()?[..pixels.len()].copy_from_slice(pixels);
+
+        let region = vk::BufferImageCopy {
+            buffer_offset: 0,
+            buffer_row_length: 0,
+            buffer_image_height: 0,
+            image_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+            image_extent: vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
+        };
+
+        let image = self.image;
+        with_one_time_commands(device, queue, command_pool, |cmd| unsafe {
+            let barrier_to_dst =
+                image_barrier_undef_to_transfer_dst_layers(image, 1, 1);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::NONE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier_to_dst],
+            );
+            device.cmd_copy_buffer_to_image(
+                cmd,
+                staging.buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+            let barrier_to_read =
+                image_barrier_transfer_dst_to_shader_read_layers(image, 1, 1);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier_to_read],
+            );
+            Ok(())
+        })?;
+        // `with_one_time_commands` fence-waits its own submission, so the
+        // staging buffer can go back to the pool now (StagingGuard::drop).
+        Ok(())
+    }
+
     /// Create a texture from a DDS pixel-data payload with its full
     /// authored mip chain.
     ///

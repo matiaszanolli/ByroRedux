@@ -373,14 +373,7 @@ impl App {
                     .map(|control| *control)
                     .unwrap_or_default();
                 let hud = self.hud.as_mut().expect("is_some checked above");
-                tick_hud_overlay(
-                    hud,
-                    &self.world,
-                    ctx,
-                    frame.cam_forward,
-                    self.ui_texture_handle,
-                    &control,
-                )
+                tick_hud_overlay(hud, &self.world, ctx, frame.cam_forward, &control)
             } else {
                 tick_ui_overlay(
                     &self.world,
@@ -835,29 +828,21 @@ fn tick_hud_overlay(
     world: &byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
     cam_forward: [f32; 3],
-    texture_handle: Option<u32>,
     control: &crate::hud::HudControl,
 ) -> Option<u32> {
     if !control.visible {
         return None;
     }
-    let (w, h) = hud.frame_size();
-    let Some(pixels) = hud.render(world, cam_forward, control) else {
-        // Unchanged — keep compositing the previously uploaded frame.
-        return texture_handle;
-    };
-    let handle = texture_handle?;
-    let allocator = ctx.allocator.as_ref().unwrap();
-    let upload_ctx = GpuUploadCtx {
-        device: &ctx.device,
-        allocator,
-        queue: &ctx.graphics_queue,
-        command_pool: ctx.transfer_pool,
-    };
-    if let Err(e) = ctx.texture_registry.update_rgba(upload_ctx, handle, w, h, pixels) {
-        log::error!("HUD texture update failed: {e:#}");
+    // `render` borrows the renderer's frame buffer; `upload_frame` needs
+    // the exclusive borrow back. Copy on change — one 3.5 MB memcpy per
+    // *changed* frame, noise next to the staging upload itself.
+    let changed = hud.render(world, cam_forward, control).map(<[u8]>::to_vec);
+    match changed {
+        // Unchanged — keep compositing the previously uploaded buffer of
+        // the rotation.
+        None => Some(hud.current_texture()),
+        Some(pixels) => Some(hud.upload_frame(ctx, &pixels)),
     }
-    Some(handle)
 }
 
 /// Tick the Ruffle overlay, drain what the menu asked of the host, and
