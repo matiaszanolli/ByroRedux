@@ -428,14 +428,15 @@ Selected fields (full layout in
 | 420–424 | lighting texture roles | soft/rim lighting mask and back-lighting map indices |
 | 428 | `detail_neutral` | #4422 producer-declared detail-combine neutral → total **432** |
 
-The twelve entries at 300–344 are the original source-agnostic supplemental
+The twelve entries at 296–340 are the original source-agnostic supplemental
 texture roles introduced with `MaterialTextureSet<T>`. Three of them
 (`lighting_map`, `flow_map`,
 `wrinkle_map`) are populated and hashed but not yet sampled by any shader —
 that is intentional, not drift. The glass and Bethesda lighting suites are
-fully sampled by `triangle.frag`; every appended field is included in both
-draw-command and `GpuMaterial` hashing so material-table dedup cannot alias
-distinct authored responses.
+fully sampled by `triangle.frag`; every appended field is included in
+`GpuMaterial`'s byte-hash dedup (#4201 — one hash of the built struct, the
+retired draw-command field walk included) so material-table dedup cannot
+alias distinct authored responses.
 
 **`material_flags`** (offset 12):
 

@@ -150,11 +150,11 @@ struct GpuMaterial {
     float eyeLeftCenterX, eyeLeftCenterY, eyeLeftCenterZ, eyeCubemapScale;
     // eye_right RGB + multi_layer_inner_thickness (offsets 188-200)
     float eyeRightCenterX, eyeRightCenterY, eyeRightCenterZ, multiLayerInnerThickness;
-    // refraction_scale + multi_layer_inner_scale UV + sparkle_r (208-220)
+    // refraction_scale + multi_layer_inner_scale UV + sparkle_r
     float multiLayerRefractionScale, multiLayerInnerScaleU, multiLayerInnerScaleV, sparkleR;
-    // sparkle GB + sparkle_intensity + falloff_start (224-236)
+    // sparkle GB + sparkle_intensity + falloff_start
     float sparkleG, sparkleB, sparkleIntensity, falloffStartAngle;
-    // falloff_stop + opacities + soft_falloff_depth (240-252)
+    // falloff_stop + opacities + soft_falloff_depth
     float falloffStopAngle, falloffStartOpacity, falloffStopOpacity, softFalloffDepth;
     // #890 Stage 2c — bindless handle for
     // `BSEffectShaderProperty.greyscale_texture`. 0 = no LUT (the
@@ -171,7 +171,7 @@ struct GpuMaterial {
     // #1248 — per-material refractive index. Drives Schlick F0 via
     // `F0 = ((1-η)/(1+η))²` at every dielectric / glass site. Default
     // 1.5 reproduces the pre-#1248 hardcoded `vec3(0.04)` behaviour
-    // for legacy NIF content with no authored IOR. Offset 280.
+    // for legacy NIF content with no authored IOR. Offset 276.
     //
     // #2232 — this field is discriminated by `materialKind` and carries
     // THREE distinct, incompatible-range meanings:
