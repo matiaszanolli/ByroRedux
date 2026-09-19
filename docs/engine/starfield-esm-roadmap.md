@@ -70,7 +70,7 @@ Establish the existing parser's actual behavior against real Starfield data. Wit
 
 ## Phase 1 — 214-FourCC dispatch table + warned-skip pattern (1-2 sessions)
 
-Goal: every Starfield record FourCC is recognized; unhandled records emit a one-shot warn (mirroring existing `warned_scol` / `warned_movs` / `warned_pkin` / `warned_mswp` pattern at `crates/plugin/src/esm/records/mod.rs:190-193`) instead of getting silently skipped or — worse — mis-decoded as a similar-FourCC type.
+Goal: every Starfield record FourCC is recognized; unhandled records emit a one-shot warn (mirroring the existing `warned_scol` / `warned_movs` / `warned_pkin` / `warned_mswp` pattern; the dispatch and its warn arms now live in `crates/plugin/src/esm/records/parse.rs` — #4437 repointed this from the pre-split `records/mod.rs`) instead of getting silently skipped or — worse — mis-decoded as a similar-FourCC type.
 
 **Deliverables**:
 - Generated Rust source from `Gibbed.Starfield/FormType.cs` listing all 214 FourCCs as `pub const SF_RECORD_*: [u8; 4]`.
@@ -236,6 +236,6 @@ To keep this plan honest:
 - Gibbed FormType: `/mnt/data/src/reference/Gibbed.Starfield/projects/Gibbed.Starfield.PluginFormats/FormType.cs`
 - Existing ESM reader: `crates/plugin/src/esm/reader.rs` (1247 LOC, already SF-aware)
 - Existing CELL walker: `crates/plugin/src/esm/cell/` (3000+ LOC, FO3-FO76 coverage)
-- Existing record dispatch: `crates/plugin/src/esm/records/mod.rs` (200 LOC main + per-record-type sibs)
+- Existing record dispatch: `crates/plugin/src/esm/records/parse.rs` (moved from the `records/mod.rs` barrel under `eaa94b49d`, #4437) + per-record-type sibs
 - Audit findings that triggered this: `docs/audits/AUDIT_STARFIELD_2026-05-28.md` Dim 6 forward-blockers
 - Sibling Phase 1 (CDB consumer wiring): #1289 (closed 2026-05-28, commit 6bd510ba)

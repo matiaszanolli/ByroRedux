@@ -6,7 +6,7 @@
 
 **Tool**: `cargo run --release -p byroredux-plugin --example sf_smoke -- <ESM> [--tsv]`
 **Baseline TSVs**: `.claude/audit-baselines/sf-esm/` (one per ESM, checked in)
-**Methodology**: top-level GRUP walk (no recursion into CELL/WRLD cell-block sub-GRUPs — that's a Phase 1 deliverable). Compares per-FourCC counts against the hand-maintained `DISPATCH_HANDLED_FOURCCS` slice in `sf_smoke.rs` (snapshot of every `b"XXXX" =>` arm in `crates/plugin/src/esm/records/mod.rs`).
+**Methodology**: top-level GRUP walk (no recursion into CELL/WRLD cell-block sub-GRUPs — that's a Phase 1 deliverable). Compares per-FourCC counts against `DISPATCH_HANDLED_FOURCCS` — since #4278 derived from (and lockstep-pinned against) the live dispatch match in `crates/plugin/src/esm/records/parse.rs`; the dispatch moved out of the `records/mod.rs` barrel under `eaa94b49d` (#4437).
 
 ## The big number (Phase 1 — corrected slice)
 
@@ -158,11 +158,21 @@ Tiny placeholder DLC. Like Constellation — 5 GRUPs, no CELLs.
 
 Update: re-grep noted as a Phase 1 todo. Not blocking the conclusion: the existing parser handles most of what we need.
 
+> **#4437 correction (2026-09-19).** The "bug" framing above, and the "false
+> skip on LCTN" note below, were themselves the drift: LCTN has **never**
+> had a top-level dispatch arm, so `sf_smoke` reporting it "skip" was
+> correct — and it still reports `LCTN … 6017 … skip` today, agreeing with
+> `starfield-esm-phase0-baseline.md`'s own "LCTN silently skipped" row
+> below. The real #4278 drifts were the later SECH/AOPF and
+> OMOD/LVSP/SCEN cases (live arms reported as "skip"). Do **not** "fix"
+> the list by re-adding LCTN — that would over-report coverage, the
+> regression class inverted.
+
 ## Phase 0 decision: GO for Phase 1
 
 The data supports immediately proceeding to Phase 1. **Key revision** to the roadmap: the original plan estimated 1-2 sessions for Phase 1 because the dispatch was assumed to be near-empty for SF. The Phase 0 data shows the dispatch already handles 77-92% of vanilla SF byte content. Phase 1 effort revises down to:
 
-- **Re-grep `records/mod.rs`** for the complete `DISPATCH_HANDLED_FOURCCS` slice (sf_smoke's slice is incomplete — flagged a false "skip" on LCTN above).
+- **Re-grep the dispatch** (now `records/parse.rs`, post-`eaa94b49d`) for the complete `DISPATCH_HANDLED_FOURCCS` slice. *Historical note: the original wording here said the slice "flagged a false skip on LCTN" — per the #4437 correction above, LCTN's skip was correct; the real drifts were SECH/AOPF and OMOD/LVSP/SCEN.*
 - **Add warned-once skips for the 155 unhandled SF-only FourCCs** following the existing `warned_scol` / `warned_movs` pattern. Most of these will be log-noise-only types (SFTR / PNDT / STDT / BIOM / GBFM / SUNP etc.) that vanilla FO4/Skyrim plugins shouldn't carry.
 - **Phase 1 integration test** — `BYROREDUX_STARFIELD_DATA=... cargo test -p byroredux-plugin --test sf_full_parse -- --ignored` walks every SF ESM and asserts the per-ESM TSV baselines stay stable.
 
@@ -172,7 +182,7 @@ The data supports immediately proceeding to Phase 1. **Key revision** to the roa
 
 ## Next concrete action
 
-**Phase 1, step 1** ✓ DONE — re-grepped `records/mod.rs` for every dispatch arm, regenerated `DISPATCH_HANDLED_FOURCCS` (110 entries), refreshed the baselines. Corrected coverage is 86.1% / 98.6% / 86.0% for Starfield / ShatteredSpace / BlueprintShips.
+**Phase 1, step 1** ✓ DONE — re-grepped the dispatch (then `records/mod.rs`, now `records/parse.rs`) for every dispatch arm, regenerated `DISPATCH_HANDLED_FOURCCS` (110 entries), refreshed the baselines. Corrected coverage is 86.1% / 98.6% / 86.0% for Starfield / ShatteredSpace / BlueprintShips.
 
 **Phase 1, step 2** ✓ DONE — extended the walker with `--recurse` mode. Discovered 3.83 M leaf records in vanilla Starfield.esm, including 3.29 M REFRs across 30 717 CELLs. The "does the existing handler decode SF?" question is now refined to: **does `parse_esm()` actually capture those 3.29 M REFRs into `EsmIndex`, or does it silently drop most of them?**
 
@@ -229,6 +239,6 @@ Open follow-up items (file as issues when the first render attempt produces conc
 - Roadmap: [docs/engine/starfield-esm-roadmap.md](starfield-esm-roadmap.md)
 - Tool: [crates/plugin/examples/sf_smoke.rs](../../crates/plugin/examples/sf_smoke.rs)
 - Baselines: [.claude/audit-baselines/sf-esm/](../../.claude/audit-baselines/sf-esm/)
-- Existing dispatch: [crates/plugin/src/esm/records/mod.rs](../../crates/plugin/src/esm/records/mod.rs)
+- Existing dispatch: [crates/plugin/src/esm/records/parse.rs](../../crates/plugin/src/esm/records/parse.rs) (moved from the `records/mod.rs` barrel under `eaa94b49d`, #4437)
 - Gibbed FormType reference: `/mnt/data/src/reference/Gibbed.Starfield/projects/Gibbed.Starfield.PluginFormats/FormType.cs`
 - Sibling Phase 1 (CDB consumer wiring): [#1289](https://github.com/matiaszanolli/ByroRedux/issues/1289)

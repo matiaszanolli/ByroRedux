@@ -7,9 +7,9 @@
 //!   * Master file list
 //!   * Total file size + bytes consumed by GRUPs vs orphan records
 //!   * Per-top-level-GRUP-FourCC record/byte counts
-//!   * Which FourCCs the existing `records/mod.rs` dispatch HANDLES vs
-//!     silently SKIPS (via the catch-all `_ => skip_group` at
-//!     `records/mod.rs:925`)
+//!   * Which FourCCs the existing `records/parse.rs` dispatch HANDLES vs
+//!     silently SKIPS (via the catch-all `_ => skip_group`; the dispatch
+//!     moved from `records/mod.rs` under `eaa94b49d`)
 //!   * Any byte-level errors that would have caused a `?`-bailout in
 //!     the real parser (reported, but the walker keeps going so the
 //!     baseline covers the full file)
@@ -27,9 +27,11 @@ use std::collections::BTreeMap;
 
 /// Whether the ESM parser's top-level dispatch routes this FourCC to a
 /// parser. #4278 — the list used to be hand-maintained here and drifted
-/// from the real dispatch table three times (LCTN, then SECH/AOPF, then
-/// OMOD/LVSP/SCEN), each time reporting live arms as "skip"; it is now
-/// derived from and kept in lockstep with the match itself.
+/// from the real dispatch table twice (SECH/AOPF, then OMOD/LVSP/SCEN),
+/// each time reporting live arms as "skip"; it is now derived from and
+/// kept in lockstep with the match itself. (#4437 — the earlier drift
+/// histories also listed LCTN, but LCTN has never had a dispatch arm:
+/// `sf_smoke` correctly reporting it "skip" was never a drift.)
 fn is_dispatch_handled(fourcc: &[u8; 4]) -> bool {
     DISPATCH_HANDLED_FOURCCS.contains(fourcc)
 }
