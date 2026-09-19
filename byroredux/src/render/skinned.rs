@@ -81,6 +81,9 @@ pub(super) fn build_skinned_palettes(
     let gt_q = world.query::<GlobalTransform>();
     let skin_q = world.query::<SkinnedMesh>();
     let appearance_hidden = world.query::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>();
+    // P3 — picked-up placements stay resident but draw nothing (see the
+    // matching consult in `static_meshes.rs`).
+    let picked_up = world.query::<crate::inventory::PickedUp>();
     let (Some(gt_q), Some(skin_q)) = (gt_q, skin_q) else {
         return;
     };
@@ -98,6 +101,7 @@ pub(super) fn build_skinned_palettes(
         if appearance_hidden
             .as_ref()
             .is_some_and(|q| q.get(entity).is_some())
+            || picked_up.as_ref().is_some_and(|q| q.get(entity).is_some())
         {
             continue;
         }

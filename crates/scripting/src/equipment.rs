@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::world::World;
 
-use crate::events::{EquipmentChange, EquipmentEventBatch};
+use crate::events::{EquipmentChange, EquipmentEventBatch, ItemEventBatch, ItemTransfer};
 
 #[derive(Debug, Clone, Default)]
 pub struct EquipItemCatalog {
@@ -64,6 +64,29 @@ pub fn emit_equipment_changes(
         batch.0.extend(changes);
     } else {
         events.insert(wearer, EquipmentEventBatch(changes));
+    }
+}
+
+/// Append ordered item transfers to the wearer's one-frame batch — the
+/// `OnItemAdded`/`OnItemRemoved` channel. Same extend-or-insert shape as
+/// [`emit_equipment_changes`] so several same-frame producers (a looted
+/// stack pass, a consumption, a pickup) merge instead of overwriting.
+pub fn emit_item_transfers(
+    world: &World,
+    wearer: byroredux_core::ecs::EntityId,
+    transfers: impl IntoIterator<Item = ItemTransfer>,
+) {
+    let transfers = transfers.into_iter().collect::<Vec<_>>();
+    if transfers.is_empty() {
+        return;
+    }
+    let Some(mut events) = world.query_mut::<ItemEventBatch>() else {
+        return;
+    };
+    if let Some(batch) = events.get_mut(wearer) {
+        batch.0.extend(transfers);
+    } else {
+        events.insert(wearer, ItemEventBatch(transfers));
     }
 }
 

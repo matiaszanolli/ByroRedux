@@ -824,6 +824,33 @@ pub(super) fn spawn_synth_child(
         if let Some(current) = water_current_volume_from_ref(placed_ref, ref_pos, ref_scale) {
             world.insert(placement_root, current);
         }
+        // P3 — `XOWN` is REFR-level data like `teleport`/`lock` above, so
+        // only the primary synthetic child carries it. The minimal theft
+        // rule in `inventory::transfer_is_theft` reads this stamp.
+        if let Some(ownership) = placed_ref.ownership.as_ref() {
+            world.insert(
+                placement_root,
+                byroredux_core::ecs::components::Owned {
+                    owner_form_id: ownership.owner_form_id,
+                    faction_rank: ownership.faction_rank,
+                    global_var_form_id: ownership.global_var_form_id,
+                },
+            );
+        }
+        // P3 pickup tombstones — plain item placements have no other restore
+        // boundary (NPCs restore inside `stamp_quest_reference`, CONT
+        // inventories at their own attach step just below), so consume a
+        // parked `picked_up` row here. Gated off CONT bases and
+        // inventory-bearing entities: a looted container's row must stay
+        // parked until `attach_container_inventory` restores it, and NPC
+        // rows are restored with their authored inventory already attached.
+        if !record_index.containers.contains_key(&child_form_id)
+            && world
+                .get::<byroredux_core::ecs::components::Inventory>(placement_root)
+                .is_none()
+        {
+            crate::cell_loader::reference_state::restore(world, placement_root);
+        }
     }
 
     // #1889 / EXAL §5.2 — materialise the base record's

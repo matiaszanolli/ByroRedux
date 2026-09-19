@@ -186,6 +186,40 @@ impl Component for OnCellLoadEvent {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// One item entering or leaving a wearer's [`Inventory`] — the P3
+/// `OnItemAdded`/`OnItemRemoved` pair. Covers loot transfers (whole or
+/// selective), world pickups, and consumption; equip/unequip keeps its own
+/// [`EquipmentChange`] channel because it is a state transition on
+/// `EquipmentSlots`, not a stack-count change.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct ItemTransfer {
+    /// Base-item FormID of the moved stack.
+    pub item_form_id: u32,
+    /// Units moved in this transfer (a stack row moves whole today).
+    pub count: u32,
+    /// True when the item entered the wearer, false when it left.
+    pub added: bool,
+    /// True when the transfer was classified as theft (P3 minimal ownership
+    /// rules: source owned by someone other than the taker). No witness or
+    /// bounty system consumes this yet — it is recorded, not punished.
+    pub stolen: bool,
+}
+
+/// One-frame ordered batch of item transfers on the wearer entity — the
+/// batch-for-the-same-shape reason as [`EquipmentEventBatch`]: several rows
+/// move in one looted-stack pass and must not overwrite one another in a
+/// sparse component slot.
+///
+/// Pattern A (see `cleanup.rs` house rules): no single owning consumer —
+/// notification UI, quest fragments, and future crime systems all observe it
+/// in the frame it was raised; `event_cleanup_system` drains it.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct ItemEventBatch(pub Vec<ItemTransfer>);
+
+impl Component for ItemEventBatch {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// One real equipment-state transition on a wearer.
 ///
 /// Inventory items are stack rows keyed by authored FormID, not fabricated ECS

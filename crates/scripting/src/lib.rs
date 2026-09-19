@@ -60,11 +60,13 @@ pub use dialogue::{
     ActiveDialogueLine, DialogueLine, DialogueLineCompletionBatch, DialoguePlayback,
     DialoguePresentationEvent, DialoguePresentationEventBatch, DialogueRegistry,
 };
-pub use equipment::{emit_equipment_changes, install_equip_item_catalog, EquipItemCatalog};
+pub use equipment::{
+    emit_equipment_changes, emit_item_transfers, install_equip_item_catalog, EquipItemCatalog,
+};
 pub use events::{
     ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
-    EquipmentEventBatch, HitEvent, OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent, RippleEvent,
-    SplashEvent, TimerExpired,
+    EquipmentEventBatch, HitEvent, ItemEventBatch, ItemTransfer, OnCellLoadEvent, OnInitEvent,
+    OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 pub use fragment::{
     apply_effects, fragment_activation_flush_system, fragment_continuation_system,
@@ -172,6 +174,10 @@ pub fn register(world: &mut World) {
     world.register::<OnInitEvent>();
     world.register::<OnTriggerEnterEvent>();
     world.register::<EquipmentEventBatch>();
+    // P3 — item add/remove channel (`OnItemAdded`/`OnItemRemoved`). Emitted
+    // by loot transfers (whole/selective), world pickups, and consumption;
+    // drained by `event_cleanup_system` like the equipment batch above.
+    world.register::<ItemEventBatch>();
     // M47.2 — trigger-volume storage. The cell loader attaches a
     // `TriggerVolume` to each invisible trigger REFR; `trigger_detection_system`
     // emits `OnTriggerEnterEvent` on player entry, which the quest-advance

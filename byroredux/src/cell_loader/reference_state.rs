@@ -30,6 +30,11 @@ struct ReferenceState {
     weapon: Option<EquippedWeapon>,
     actor_values: Option<ActorValues>,
     dead: bool,
+    /// P3 pickup tombstone: the player picked this placement's item up, so a
+    /// respawned copy must come back hidden and uninteractive, not restocked.
+    /// Older saves predate the field — `false` is the correct reading.
+    #[serde(default)]
+    picked_up: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -104,7 +109,10 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
         };
         let inventory = world.get::<Inventory>(entity).map(|inv| inv.items.clone());
         let dead = world.get::<Dead>(entity).is_some();
-        if inventory.is_none() && !dead {
+        let picked_up = world
+            .get::<crate::inventory::PickedUp>(entity)
+            .is_some();
+        if inventory.is_none() && !dead && !picked_up {
             continue;
         }
         let stored = inventory.map(|items| {
@@ -146,6 +154,7 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
                     .get::<ActorValues>(entity)
                     .map(|values| values.clone()),
                 dead,
+                picked_up,
             },
         ));
     }
@@ -202,7 +211,45 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
         world.insert(entity, Dead);
         crate::combat::reconcile_dead_actor(world, entity);
     }
+    if state.picked_up {
+        // The item left with the player in a previous session/visit; the
+        // respawned placement must not restock it. The marker hides the
+        // meshes and bars interaction; the row is consumed exactly like
+        // every other restore because eviction re-captures the marker
+        // (see `capture`).
+        world.insert(entity, crate::inventory::PickedUp);
+    }
     true
+}
+
+/// Park a pickup tombstone for a placement whose item the player just took
+/// (P3). Writes `picked_up` onto an existing row when the reference already
+/// parked state (looted-then-evicted container edge), else inserts a minimal
+/// row. Durable across evictions and saves; consumed by [`restore`].
+pub(crate) fn mark_picked_up(world: &mut World, entity: EntityId) {
+    let Some(pair) = identity(world, entity) else {
+        return;
+    };
+    if world.try_resource::<PersistentReferenceStates>().is_none() {
+        return;
+    }
+    let mut store = world.resource_mut::<PersistentReferenceStates>();
+    match store.rows.get_mut(&pair) {
+        Some(state) => state.picked_up = true,
+        None => {
+            store.rows.insert(
+                pair,
+                ReferenceState {
+                    inventory: None,
+                    equipment: None,
+                    weapon: None,
+                    actor_values: None,
+                    dead: false,
+                    picked_up: true,
+                },
+            );
+        }
+    }
 }
 
 #[cfg(test)]

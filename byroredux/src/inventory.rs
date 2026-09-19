@@ -8,6 +8,8 @@
 use byroredux_core::ecs::components::{
     EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemStack,
 };
+use byroredux_core::ecs::sparse_set::SparseSetStorage;
+use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{Resource, World};
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
@@ -420,9 +422,260 @@ pub(crate) fn is_loot_source(world: &World, entity: byroredux_core::ecs::EntityI
         .is_some_and(|catalog| catalog.containers.contains(&base))
 }
 
+/// P3's minimal theft rule (no witness/bounty system — recorded, not
+/// punished): a transfer is theft when the source is owned and the owner is
+/// neither the player's own reference (0x14) nor a faction the player holds
+/// any rank in. `XRNK` rank minimums are not evaluated yet; membership is
+/// the exemption bar.
+fn transfer_is_theft(
+    world: &World,
+    player: byroredux_core::ecs::EntityId,
+    source: byroredux_core::ecs::EntityId,
+) -> bool {
+    let Some(owned) = world.get::<byroredux_core::ecs::components::Owned>(source) else {
+        return false;
+    };
+    let player_reference = world
+        .get::<byroredux_scripting::SceneAliasCandidate>(player)
+        .map(|identity| identity.reference_form_id)
+        .unwrap_or(0);
+    if owned.owner_form_id == player_reference {
+        return false;
+    }
+    if let Some(ranks) = world.get::<byroredux_core::ecs::components::FactionRanks>(player) {
+        if ranks.rank(owned.owner_form_id).is_some() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Which stacks a loot transfer moves out of a source inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LootSelection {
+    /// Every stack, then reset the source's equipment (take-all).
+    All,
+    /// One stack row by inventory index. The source row is zeroed in place
+    /// (the `consume_item` convention) so the source's remaining equipment
+    /// indices never shift; an instance handle travels with the moved row.
+    Stack(InventoryIndex),
+}
+
+/// What one validated transfer moved — drives the notification wording and
+/// the `ItemEventBatch` rows both sides publish.
+pub(crate) struct LootOutcome {
+    pub item_count: u64,
+    /// One `(base_form_id, count)` row per moved stack.
+    pub rows: Vec<(u32, u32)>,
+    pub stolen: bool,
+}
+
+/// Move loot from `source` into the player's inventory. Shared by the
+/// container browser (Take / Take All), the console smoke path, and pickup.
+/// All of the old take-all invariants are preserved: validation before any
+/// mutation, whole-stack appends that keep the player's equipment indices
+/// stable, instance handles never reallocated, and one unequip event per
+/// source equipment index the transfer cleared.
+///
+/// Returns `None` (having moved nothing) when any validation fails: source
+/// is the player, is not a loot source, is locked, or either side lacks an
+/// `Inventory`.
+pub(crate) fn transfer_loot(
+    world: &World,
+    player: byroredux_core::ecs::EntityId,
+    source: byroredux_core::ecs::EntityId,
+    selection: LootSelection,
+) -> Option<LootOutcome> {
+    if player == source
+        || !is_loot_source(world, source)
+        || world
+            .get::<byroredux_core::ecs::components::Locked>(source)
+            .is_some()
+    {
+        return None;
+    }
+    let stolen = transfer_is_theft(world, player, source);
+    let mut outcome = LootOutcome {
+        item_count: 0,
+        rows: Vec::new(),
+        stolen,
+    };
+    // Indices (not copies) of source rows this transfer emptied, each with
+    // its base form id, so source equipment pointing at them can be released
+    // after the storage guard drops. `All` clears every equipped index;
+    // `Stack` at most one.
+    let mut cleared_source_indices: Vec<(InventoryIndex, u32)> = Vec::new();
+    let mut source_form_ids: Option<Vec<u32>> = None;
+    {
+        let mut inventories = world.query_mut::<Inventory>()?;
+        // One storage write guard covers both inventories; validate the
+        // destination before taking anything so a missing player loses no loot.
+        if inventories.get_mut(player).is_none() {
+            return None;
+        }
+        let source_inventory = inventories.get_mut(source)?;
+        match selection {
+            LootSelection::All => {
+                let stacks = std::mem::take(&mut source_inventory.items);
+                outcome.item_count = stacks.iter().map(|stack| u64::from(stack.count)).sum();
+                outcome.rows = stacks
+                    .iter()
+                    .map(|stack| (stack.base_form_id, stack.count))
+                    .collect();
+                source_form_ids = Some(
+                    stacks.iter().map(|stack| stack.base_form_id).collect(),
+                );
+                let destination = inventories
+                    .get_mut(player)
+                    .expect("validated under the same guard");
+                // Append whole stacks: existing equipment indices stay stable
+                // and distinct instance-pool identities are never merged or
+                // discarded.
+                destination.items.extend(stacks);
+            }
+            LootSelection::Stack(index) => {
+                let stack = source_inventory
+                    .items
+                    .get(index.0 as usize)
+                    .copied()
+                    .filter(|stack| stack.count > 0)?;
+                outcome.item_count = u64::from(stack.count);
+                outcome.rows.push((stack.base_form_id, stack.count));
+                // Zero in place, `consume_item`-style: the row keeps its
+                // position (source equipment indices above it stay valid)
+                // and the instance handle travels with the moved row.
+                source_inventory.items[index.0 as usize] =
+                    ItemStack::new(stack.base_form_id, 0);
+                cleared_source_indices.push((index, stack.base_form_id));
+                let destination = inventories
+                    .get_mut(player)
+                    .expect("validated under the same guard");
+                destination.items.push(stack);
+            }
+        }
+    }
+    if outcome.item_count == 0 {
+        return Some(outcome);
+    }
+    // Both sides observe the transfer: the player gains (`added`), the
+    // source loses. Scripts on either entity read the same rows.
+    byroredux_scripting::emit_item_transfers(
+        world,
+        player,
+        outcome
+            .rows
+            .iter()
+            .map(|&(item_form_id, count)| byroredux_scripting::ItemTransfer {
+                item_form_id,
+                count,
+                added: true,
+                stolen,
+            }),
+    );
+    byroredux_scripting::emit_item_transfers(
+        world,
+        source,
+        outcome
+            .rows
+            .iter()
+            .map(|&(item_form_id, count)| byroredux_scripting::ItemTransfer {
+                item_form_id,
+                count,
+                added: false,
+                stolen,
+            }),
+    );
+    let noun = if outcome.item_count == 1 { "item" } else { "items" };
+    crate::notifications::push(
+        world,
+        if stolen {
+            format!("Stolen {} {noun}", outcome.item_count)
+        } else {
+            format!("Took {} {noun}", outcome.item_count)
+        },
+    );
+    // Equipment points into the source inventory, not the destination.
+    // Snapshot unique indices and release every storage guard before
+    // acquiring the next one or publishing the script event batch.
+    if matches!(selection, LootSelection::All) {
+        let mut equipped = Vec::new();
+        if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
+            if let Some(slots) = equipment.get_mut(source) {
+                equipped.extend(slots.equipped_indices());
+                *slots = EquipmentSlots::new();
+            }
+        }
+        if let Some(mut weapons) = world.query_mut::<EquippedWeapon>() {
+            weapons.remove(source);
+        }
+        equipped.sort_unstable_by_key(|index| index.0);
+        equipped.dedup();
+        let form_ids = source_form_ids.unwrap_or_default();
+        byroredux_scripting::emit_equipment_changes(
+            world,
+            source,
+            equipped.into_iter().filter_map(|index| {
+                form_ids.get(index.0 as usize).map(|&item_form_id| {
+                    byroredux_scripting::EquipmentChange {
+                        item_form_id,
+                        equipped: false,
+                    }
+                })
+            }),
+        );
+    } else {
+        // A selectively taken row that the source still had equipped stops
+        // being equipped: the armor left with the player. Release exactly
+        // that index so a partially looted corpse's other slots survive.
+        for (index, item_form_id) in cleared_source_indices {
+            let mut was_equipped = false;
+            if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
+                if let Some(slots) = equipment.get_mut(source) {
+                    was_equipped = slots.is_equipped(index);
+                    if was_equipped {
+                        slots.release(index);
+                    }
+                }
+            }
+            if let Some(mut weapons) = world.query_mut::<EquippedWeapon>() {
+                if weapons
+                    .get(source)
+                    .is_some_and(|weapon| weapon.inventory_index == index)
+                {
+                    weapons.remove(source);
+                    was_equipped = true;
+                }
+            }
+            if was_equipped {
+                byroredux_scripting::emit_equipment_changes(
+                    world,
+                    source,
+                    [byroredux_scripting::EquipmentChange {
+                        item_form_id,
+                        equipped: false,
+                    }],
+                );
+            }
+        }
+    }
+    Some(outcome)
+}
+
+/// A loot source the player activated this frame. P3's open/close
+/// presentation: activation no longer transfers instantly — the frame loop
+/// consumes this to open the native container browser, and the transfer is
+/// driven from its Take / Take All buttons (or the console smoke path).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PendingContainerOpen {
+    pub source: byroredux_core::ecs::EntityId,
+}
+impl Resource for PendingContainerOpen {}
+
 /// Consume canonical activation events without draining them: scripts observe
-/// the same activation later in Update. Only real CONT references and dead actors
-/// are lootable; live actors are never eligible merely because they own inventory.
+/// the same activation later in Update. A container or corpse activation now
+/// opens the browser instead of transferring (see [`PendingContainerOpen`]);
+/// a loose world item is picked up directly — one item per placement, the
+/// Bethesda REFR convention.
 pub(crate) fn container_loot_system(world: &World, _dt: f32) {
     let Some(player) = world
         .try_resource::<PlayerEntity>()
@@ -439,74 +692,114 @@ pub(crate) fn container_loot_system(world: &World, _dt: f32) {
                 .collect()
         })
         .unwrap_or_default();
-    for (container, activator) in events {
-        if activator != player
-            || container == player
-            || !is_loot_source(world, container)
-            || world
-                .get::<byroredux_core::ecs::components::Locked>(container)
+    for (target, activator) in events {
+        if activator != player || target == player {
+            continue;
+        }
+        if is_loot_source(world, target) {
+            if world
+                .get::<byroredux_core::ecs::components::Locked>(target)
                 .is_some()
-        {
-            continue;
-        }
-        let Some(mut inventories) = world.query_mut::<Inventory>() else {
-            continue;
-        };
-        // One storage write guard covers both inventories; validate the
-        // destination before taking anything so a missing player loses no loot.
-        if inventories.get_mut(player).is_none() {
-            continue;
-        }
-        let Some(source) = inventories.get_mut(container) else {
-            continue;
-        };
-        let stacks = std::mem::take(&mut source.items);
-        let item_count: u64 = stacks.iter().map(|stack| u64::from(stack.count)).sum();
-        let form_ids: Vec<_> = stacks.iter().map(|stack| stack.base_form_id).collect();
-        let destination = inventories
-            .get_mut(player)
-            .expect("validated under the same guard");
-        // Append whole stacks: existing equipment indices stay stable and
-        // distinct instance-pool identities are never merged or discarded.
-        destination.items.extend(stacks);
-        drop(inventories);
-        if item_count > 0 {
-            crate::notifications::push(
-                world,
-                format!(
-                    "Took {item_count} {}",
-                    if item_count == 1 { "item" } else { "items" }
-                ),
-            );
-        }
-        // Equipment points into the source inventory, not the destination.
-        // Snapshot unique indices and release every storage guard before
-        // acquiring the next one or publishing the script event batch.
-        let mut equipped = Vec::new();
-        if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
-            if let Some(slots) = equipment.get_mut(container) {
-                equipped.extend(slots.equipped_indices());
-                *slots = EquipmentSlots::new();
+            {
+                continue;
             }
+            if let Some(mut pending) = world.try_resource_mut::<PendingContainerOpen>() {
+                pending.source = target;
+            }
+        } else if pickup_loot(world, player, target) {
+            // Handled: the item moved and the placement hid itself.
         }
-        if let Some(mut weapons) = world.query_mut::<EquippedWeapon>() {
-            weapons.remove(container);
-        }
-        equipped.sort_unstable_by_key(|index| index.0);
-        equipped.dedup();
-        byroredux_scripting::emit_equipment_changes(
-            world,
-            container,
-            equipped.into_iter().filter_map(|index| {
-                form_ids.get(index.0 as usize).map(|&item_form_id| {
-                    byroredux_scripting::EquipmentChange {
-                        item_form_id,
-                        equipped: false,
-                    }
-                })
-            }),
-        );
     }
+}
+
+/// A world-placed item that can be picked up on activation: a base the item
+/// catalog knows (anything with a name/weight — MISC, WEAP, ARMO, ALCH, …)
+/// that is neither a container (those browse, see [`is_loot_source`]) nor
+/// carrying its own `Inventory` (NPCs, already-looted containers).
+pub(crate) fn is_pickup_target(world: &World, entity: byroredux_core::ecs::EntityId) -> bool {
+    if world.get::<Inventory>(entity).is_some()
+        || world
+            .get::<byroredux_core::ecs::components::Dead>(entity)
+            .is_some()
+        || world.get::<PickedUp>(entity).is_some()
+    {
+        return false;
+    }
+    let Some(base) = world
+        .get::<byroredux_scripting::SceneAliasCandidate>(entity)
+        .map(|identity| identity.base_form_id)
+    else {
+        return false;
+    };
+    world.try_resource::<InventoryCatalog>().is_some_and(|catalog| {
+        !catalog.containers.contains(&base) && catalog.entries.contains_key(&base)
+    })
+}
+
+/// Marker on a placement whose item the player already picked up. Keeps the
+/// entity resident-but-hidden (render + interaction skip it) and re-parks a
+/// `picked_up` tombstone on cell eviction so a respawned copy stays gone.
+/// Never serialized itself — the tombstone row is the durable half.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PickedUp;
+impl Component for PickedUp {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Execute a pickup: append one stack of the placement's base item to the
+/// player's inventory, hide the placement's meshes, park the tombstone, and
+/// publish the item/activation events. `false` when `target` is not a
+/// pickup target or the player cannot receive items.
+pub(crate) fn pickup_loot(
+    world: &World,
+    player: byroredux_core::ecs::EntityId,
+    target: byroredux_core::ecs::EntityId,
+) -> bool {
+    if !is_pickup_target(world, target) {
+        return false;
+    }
+    let Some(base) = world
+        .get::<byroredux_scripting::SceneAliasCandidate>(target)
+        .map(|identity| identity.base_form_id)
+    else {
+        return false;
+    };
+    let stolen = transfer_is_theft(world, player, target);
+    {
+        let Some(mut inventories) = world.query_mut::<Inventory>() else {
+            return false;
+        };
+        let Some(destination) = inventories.get_mut(player) else {
+            return false;
+        };
+        destination.items.push(ItemStack::new(base, 1));
+    }
+    world.insert(target, PickedUp);
+    crate::cell_loader::reference_state::mark_picked_up(world, target);
+    let name = world
+        .try_resource::<InventoryCatalog>()
+        .and_then(|catalog| catalog.entries.get(&base))
+        .map(|entry| entry.name.clone())
+        .unwrap_or_else(|| format!("Item {base:08X}"));
+    crate::notifications::push(
+        world,
+        if stolen {
+            format!("Stolen {name}")
+        } else {
+            format!("Added {name}")
+        },
+    );
+    byroredux_scripting::emit_item_transfers(
+        world,
+        player,
+        [byroredux_scripting::ItemTransfer {
+            item_form_id: base,
+            count: 1,
+            added: true,
+            stolen,
+        }],
+    );
+    true
 }
 
 /// Build the presentation snapshot only while the native inventory is visible.

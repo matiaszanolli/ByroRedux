@@ -56,8 +56,8 @@
 //! to `event_cleanup_system` below.
 
 use crate::events::{
-    ActivateEvent, AnimationTextKeyEvents, EquipmentEventBatch, HitEvent, OnCellLoadEvent,
-    OnInitEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
+    ActivateEvent, AnimationTextKeyEvents, EquipmentEventBatch, HitEvent, ItemEventBatch,
+    OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 use crate::papyrus_demo::mg07_door::UiMessageCommand;
 use crate::papyrus_demo::{CameraShakeCommand, ControllerRumbleCommand};
@@ -107,6 +107,7 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     drain_component::<OnCellLoadEvent>(world);
     drain_component::<OnInitEvent>(world);
     drain_component::<EquipmentEventBatch>(world);
+    drain_component::<ItemEventBatch>(world);
 }
 
 /// Regression for #2672. The module doc's two-pattern contract is only
@@ -234,8 +235,9 @@ fn drain_component<T: byroredux_core::ecs::storage::Component>(world: &World) {
 mod tests {
     use super::*;
     use crate::events::{
-        ActivateEvent, EquipmentChange, EquipmentEventBatch, HitEvent, OnCellLoadEvent,
-        OnInitEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
+        ActivateEvent, EquipmentChange, EquipmentEventBatch, HitEvent, ItemEventBatch,
+        ItemTransfer, OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent, RippleEvent, SplashEvent,
+        TimerExpired,
     };
     use crate::scene::{
         SceneEvent, SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch,
@@ -293,6 +295,16 @@ mod tests {
                 equipped: true,
             }]),
         );
+        let h = world.spawn();
+        world.insert(
+            h,
+            ItemEventBatch(vec![ItemTransfer {
+                item_form_id: 0x2345,
+                count: 2,
+                added: true,
+                stolen: false,
+            }]),
+        );
         let g = world.spawn();
         world.insert(
             g,
@@ -330,6 +342,7 @@ mod tests {
         assert!(!world.has::<OnCellLoadEvent>(e));
         assert!(!world.has::<OnInitEvent>(init));
         assert!(!world.has::<EquipmentEventBatch>(f));
+        assert!(!world.has::<ItemEventBatch>(h));
         assert!(!world.has::<SplashEvent>(g));
         assert!(!world.has::<RippleEvent>(g));
         assert!(!world.has::<SceneEventBatch>(g));
