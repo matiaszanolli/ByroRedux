@@ -55,25 +55,38 @@ impl Framebuffer {
         self.pixels[o + 3] = out_a.clamp(0, 255) as u8;
     }
 
-    /// Blit a texture sub-rect to a destination rect, scaled.
+    /// Blit a texture into a tile rect.
     ///
-    /// `crop` is the authored `cropx`/`cropy` in *display* pixels;
-    /// per the wiki it applies after zoom, so the texel-space source
-    /// offset is `crop * (src_extent / dst_extent)` — with the default
-    /// stretch zoom (`-1`) that is `crop * (tex_size / rect_size)`,
-    /// which reproduces the compass icon atlas math (32-px cells at
-    /// 32-px tiles → 1:1).
+    /// Zoom semantics per the CS Wiki (`Oblivion XML/Traits`):
+    ///
+    /// * `zoom < 0` (`&scale;`) — the texture stretches (non-uniformly) to
+    ///   fill the tile rect. The only mode where the rect scales the art.
+    /// * `zoom == 0` (unauthored) or `100` — the texture draws at natural
+    ///   size, top-left aligned at the tile origin, **clipped to the tile
+    ///   rect**. This is the mode the HUD ribbons depend on: their art is
+    ///   power-of-2 padded (256 px wide, ~164 px of ink) and the authored
+    ///   width is a *fill fraction* of the ink width, not a stretch target —
+    ///   stretching squeezed the transparent pad into the bar and rendered a
+    ///   constant ~63%-of-width bar at every health value.
+    /// * `zoom > 0` — natural size scaled by `zoom / 100`, clipped the same
+    ///   way.
+    ///
+    /// `crop` is the authored `cropx`/`cropy` in display pixels; per the
+    /// wiki it applies after zoom, so the texel-space source offset is
+    /// `crop * (tex_extent / draw_extent)`.
     pub fn blit(
         &mut self,
         tex: &Rgba8,
         mut dst: Rect,
         crop: (f32, f32),
+        zoom: f32,
         tint: [f32; 3],
         alpha: f32,
         clip: Option<Rect>,
     ) {
         // Zero extents mean "natural texture size" (TiImage default when
-        // the XML authored no width/height).
+        // the XML authored no width/height) — the tile rect, which clips
+        // the drawn image, then equals the full draw.
         if dst.w <= 0.0 {
             dst.w = tex.width as f32;
         }
@@ -83,34 +96,55 @@ impl Framebuffer {
         if dst.w <= 0.0 || dst.h <= 0.0 || alpha <= 0.0 {
             return;
         }
-        let clip = clip.unwrap_or(Rect {
-            x: 0.0,
-            y: 0.0,
-            w: self.width as f32,
-            h: self.height as f32,
-        });
+        // Draw extent: stretch fills the tile; natural/zoom draws the
+        // (scaled) texture, which the tile rect then clips.
+        let (draw_w, draw_h) = if zoom < 0.0 {
+            (dst.w, dst.h)
+        } else {
+            let scale = if zoom <= 0.0 { 1.0 } else { zoom / 100.0 };
+            (tex.width as f32 * scale, tex.height as f32 * scale)
+        };
+        // Clip chain: outer clip window ∩ the tile's own rect.
+        let tile = Rect {
+            x: dst.x,
+            y: dst.y,
+            w: dst.w,
+            h: dst.h,
+        };
+        let clip = match clip {
+            Some(c) => Rect {
+                x: c.x.max(tile.x),
+                y: c.y.max(tile.y),
+                w: (c.x + c.w).min(tile.x + tile.w) - c.x.max(tile.x),
+                h: (c.y + c.h).min(tile.y + tile.h) - c.y.max(tile.y),
+            },
+            None => tile,
+        };
+        if clip.w <= 0.0 || clip.h <= 0.0 {
+            return;
+        }
         let [tr, tg, tb] = tint_u8(tint);
         let a_mod = alpha.clamp(0.0, 255.0) / 255.0;
 
         let x0 = (dst.x.max(clip.x)).floor() as i64;
         let y0 = (dst.y.max(clip.y)).floor() as i64;
-        let x1 = ((dst.x + dst.w).min(clip.x + clip.w)).ceil() as i64;
-        let y1 = ((dst.y + dst.h).min(clip.y + clip.h)).ceil() as i64;
+        let x1 = ((dst.x + draw_w).min(clip.x + clip.w)).ceil() as i64;
+        let y1 = ((dst.y + draw_h).min(clip.y + clip.h)).ceil() as i64;
 
         // Source rect in texels: full texture minus the display-pixel
-        // crop converted through the dst→src scale.
-        let sx = tex.width as f32 / dst.w;
-        let sy = tex.height as f32 / dst.h;
+        // crop converted through the draw→src scale.
+        let sx = tex.width as f32 / draw_w;
+        let sy = tex.height as f32 / draw_h;
         let src_x0 = (crop.0 * sx).clamp(0.0, tex.width as f32 - 1.0);
         let src_y0 = (crop.1 * sy).clamp(0.0, tex.height as f32 - 1.0);
         let src_w = (tex.width as f32 - src_x0).max(0.01);
         let src_h = (tex.height as f32 - src_y0).max(0.01);
 
         for py in y0..y1 {
-            let v = (py as f32 - dst.y) / dst.h;
+            let v = (py as f32 - dst.y) / draw_h;
             let ty = (src_y0 + v * src_h) as i64;
             for px in x0..x1 {
-                let u = (px as f32 - dst.x) / dst.w;
+                let u = (px as f32 - dst.x) / draw_w;
                 let tx = (src_x0 + u * src_w) as i64;
                 let p = tex.pixel(tx, ty);
                 // Tint: menu art carries its own colour; authored tint
@@ -131,7 +165,7 @@ impl Framebuffer {
     }
 
     pub fn fill(&mut self, rect: Rect, tint: [f32; 3], alpha: f32, clip: Option<Rect>) {
-        self.blit(white_tex(), rect, (0.0, 0.0), tint, alpha, clip);
+        self.blit(white_tex(), rect, (0.0, 0.0), -1.0, tint, alpha, clip);
     }
 
     /// Draw one line of text with a bitmap font. Returns the line's

@@ -450,6 +450,7 @@ fn blit_scales_and_tints() {
         &tex,
         Rect { x: 0.0, y: 0.0, w: 4.0, h: 2.0 },
         (0.0, 0.0),
+        -1.0,
         [255.0, 255.0, 255.0],
         255.0,
         None,
@@ -483,6 +484,7 @@ fn crop_selects_atlas_cell_at_stretch_zoom() {
         &tex,
         Rect { x: 0.0, y: 0.0, w: 32.0, h: 1.0 },
         (32.0, 0.0),
+        -1.0,
         [255.0, 255.0, 255.0],
         255.0,
         None,
@@ -493,6 +495,59 @@ fn crop_selects_atlas_cell_at_stretch_zoom() {
         let o = x * 4;
         assert_eq!(fb.pixels[o + 3], 255, "pixel {x} should be opaque white");
     }
+}
+
+#[test]
+fn blit_default_zoom_draws_natural_size_clipped_to_tile() {
+    use crate::layout::Rect;
+    use crate::raster::Framebuffer;
+    use crate::tex::Rgba8;
+
+    // The HUD-ribbon shape: a power-of-2 padded texture — 8 px wide,
+    // ink only in the left 4 px — drawn into tile rects narrower than
+    // the texture. Default zoom (unauthored) must draw texels 1:1 from
+    // the tile origin and CLIP at the tile edge, never squeeze the
+    // transparent pad into the bar (that rendered a constant ~63%-width
+    // health bar at every fraction; see blit's doc).
+    let mut tex = Rgba8::new(8, 1);
+    for x in 0..4 {
+        let o = x * 4;
+        tex.pixels[o..o + 4].copy_from_slice(&[255, 0, 0, 255]);
+    }
+    // Half-width tile: 4 display px of red, then the tile clips.
+    let mut fb = Framebuffer::new(8, 1);
+    fb.blit(
+        &tex,
+        Rect { x: 1.0, y: 0.0, w: 4.0, h: 1.0 },
+        (0.0, 0.0),
+        0.0,
+        [255.0, 255.0, 255.0],
+        255.0,
+        None,
+    );
+    for x in 0..8 {
+        let o = x * 4;
+        let expect_opaque = (1..5).contains(&x);
+        assert_eq!(
+            fb.pixels[o + 3],
+            if expect_opaque { 255 } else { 0 },
+            "pixel {x}: natural draw clips at the tile rect"
+        );
+    }
+    // Full-width tile sees the whole ink span and none of the pad.
+    let mut fb = Framebuffer::new(8, 1);
+    fb.blit(
+        &tex,
+        Rect { x: 0.0, y: 0.0, w: 8.0, h: 1.0 },
+        (0.0, 0.0),
+        100.0,
+        [255.0, 255.0, 255.0],
+        255.0,
+        None,
+    );
+    assert_eq!(&fb.pixels[0..4], &[255, 0, 0, 255]);
+    assert_eq!(&fb.pixels[12..16], &[255, 0, 0, 255]);
+    assert_eq!(&fb.pixels[16..20], &[0, 0, 0, 0], "pad stays transparent");
 }
 
 #[test]

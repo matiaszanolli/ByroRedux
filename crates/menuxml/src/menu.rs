@@ -267,7 +267,8 @@ impl MenuRenderer {
                     ..
                 } => {
                     if let Some(tex) = self.texture(assets, filename, *zoom) {
-                        self.frame.blit(&tex, *rect, *crop, *tint, *alpha, *clip);
+                        self.frame
+                            .blit(&tex, *rect, *crop, *zoom, *tint, *alpha, *clip);
                     }
                 }
                 DrawItem::Text { font, .. } => {

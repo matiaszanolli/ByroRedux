@@ -205,15 +205,10 @@ pub(crate) fn launch_hud(
         ScreenTraits::new(w as f32, h as f32),
     ) {
         Ok(renderer) => {
-            let allocator = ctx.allocator.as_ref().unwrap();
-            let upload_ctx = byroredux_renderer::vulkan::GpuUploadCtx {
-                device: &ctx.device,
-                allocator,
-                queue: &ctx.graphics_queue,
-                command_pool: ctx.transfer_pool,
-            };
             // Same transparent initial upload the `--menu` route uses, so
             // the composite quad exists before the first rasterized frame.
+            // (The registration closure below rebuilds its own upload ctx —
+            // the outer one went unused after the triple-buffer rework.)
             let register = |ctx: &mut byroredux_renderer::vulkan::context::VulkanContext| {
                 let allocator = ctx.allocator.as_ref().unwrap();
                 let upload_ctx = byroredux_renderer::vulkan::GpuUploadCtx {
@@ -304,9 +299,14 @@ impl OblivionHud {
         }
         self.last_signature = hash;
         self.last_upload = std::time::Instant::now();
+        log::debug!(
+            "hud: render h={health:.2} m={magicka:.2} f={fatigue:.2} heading={heading:.1} \
+             visible={} -> buffer {}",
+            u8::from(control.visible),
+            (self.current + 1) % self.texture_handles.len()
+        );
 
-        self.renderer.set_override("HUDMainMenu", "user3", 1.0);
-        self.renderer
+        self.renderer.set_override("HUDMainMenu", "user3", 1.0);        self.renderer
             .set_override("hudmain_health_full", "user0", health);
         self.renderer
             .set_override("hudmain_magic_full", "user0", magicka);
@@ -314,7 +314,13 @@ impl OblivionHud {
             .set_override("hudmain_fatigue_full", "user0", fatigue);
         self.renderer
             .set_override("hudmain_compass_window", "user0", heading);
-        Some(self.renderer.render_frame(&self.assets))
+        let pixels = self.renderer.render_frame(&self.assets);
+        // Debug: BYRO_HUD_DUMP=1 writes each rendered frame's raw RGBA so
+        // engine-side output can be diffed against the crate renderer.
+        if std::env::var("BYRO_HUD_DUMP").as_deref() == Ok("1") {
+            let _ = std::fs::write("/tmp/hud_engine_frame.rgba", pixels);
+        }
+        Some(pixels)
     }
 
     pub fn frame_size(&self) -> (u32, u32) {

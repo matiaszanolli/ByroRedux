@@ -113,11 +113,48 @@ fn main() {
         write_png(&out.join(name), 1280, 720, px).unwrap();
         println!("wrote {name}");
     };
-    render("crate_full.png", 1.0, 1.0, 1.0, 90.0);
-    render("crate_pinned.png", 0.35, 0.7, 1.0, 90.0);
+    render("crate_full.png", 1.0, 1.0, 1.0, 0.0);
+    render("crate_pinned_h0.png", 0.35, 0.7, 1.0, 0.0);
+    render("crate_pinned_h90.png", 0.35, 0.7, 1.0, 90.0);
     // and the reverse order (engine smoke order: 1.0 first, then 0.35)
     render("crate_full2.png", 1.0, 1.0, 1.0, 90.0);
 
+    // --- probe 2: compass tiles at both headings ---
+    {
+        use byroredux_menuxml::eval::EvalState;
+        use byroredux_menuxml::parse::parse_document;
+        struct Src2<'a>(&'a Assets);
+        impl byroredux_menuxml::parse::MenuFileSource for Src2<'_> {
+            fn menu_xml(&self, path: &str) -> Option<Vec<u8>> { self.0.menu_xml(path) }
+        }
+        let xml = assets.menu_xml("menus\\main\\hud_main_menu.xml").unwrap();
+        let text = String::from_utf8(xml).unwrap();
+        let mut src = Src2(&assets);
+        let doc = parse_document(&text, &mut src);
+        for heading in [0.0f32, 90.0] {
+            let overrides: byroredux_menuxml::eval::Overrides = [
+                ("hudmainmenu".to_string(), "user3".to_string()),
+                ("hudmain_health_full".to_string(), "user0".to_string()),
+                ("hudmain_magic_full".to_string(), "user0".to_string()),
+                ("hudmain_fatigue_full".to_string(), "user0".to_string()),
+                ("hudmain_compass_window".to_string(), "user0".to_string()),
+            ]
+            .into_iter()
+            .map(|(k, v)| if k.ends_with("compass_window") { ((k, v), byroredux_menuxml::Scalar::Num(heading)) } else if k.ends_with("health_full") { ((k, v), byroredux_menuxml::Scalar::Num(0.35)) } else if k.ends_with("magic_full") { ((k, v), byroredux_menuxml::Scalar::Num(0.7)) } else if k.ends_with("fatigue_full") { ((k, v), byroredux_menuxml::Scalar::Num(1.0)) } else { ((k, v), byroredux_menuxml::Scalar::Num(1.0)) })
+            .collect();
+            let empty = std::collections::HashMap::new();
+            let mut eval = EvalState::new(&doc, byroredux_menuxml::ScreenTraits::new(1280.0, 720.0), &empty, &overrides);
+            eval.resolve_all();
+            println!("== heading {heading} ==");
+            for (idx, tile) in doc.tiles.iter().enumerate() {
+                let n = tile.name.as_deref().unwrap_or("").to_lowercase();
+                if n.contains("compass") || n.ends_with("health_full") || n.ends_with("magic_full") {
+                    let mut g = |t: &str| eval.trait_value(idx, t);
+                    println!("  {n}: x={:?} y={:?} w={:?} u0={:?} vis={:?}", g("x"), g("y"), g("width"), g("user0"), g("visible"));
+                }
+            }
+        }
+    }
     // --- trait probe: evaluate the health/magic/fatigue tiles directly ---
     {
         use byroredux_menuxml::eval::EvalState;
@@ -139,16 +176,17 @@ fn main() {
             (("hudmain_compass_window".into(), "user0".into()), 90.0),
         ]
         .into_iter()
-        .map(|(k, v)| (k, byroredux_menuxml::eval::Scalar::Num(v)))
+        .map(|(k, v)| (k, byroredux_menuxml::Scalar::Num(v)))
         .collect::<byroredux_menuxml::eval::Overrides>();
-        let mut eval = EvalState::new(&doc, ScreenTraits::new(1280.0, 720.0), &std::collections::HashMap::new(), &overrides);
+        let empty = std::collections::HashMap::new();
+        let mut eval = EvalState::new(&doc, ScreenTraits::new(1280.0, 720.0), &empty, &overrides);
         eval.resolve_all();
         for (idx, tile) in doc.tiles.iter().enumerate() {
-            let n = tile.name.to_lowercase();
+            let n = tile.name.as_deref().unwrap_or("").to_lowercase();
             if n.contains("health") || n.contains("magic_full") || n.contains("fatigue_full") {
-                let g = |t: &str| eval.trait_value(idx, t);
+                let mut g = |t: &str| eval.trait_value(idx, t);
                 println!(
-                    "tile {:?}: kind={:?} x={} y={} w={} h={} u0={} vis={} depth={}",
+                    "tile {:?}: kind={:?} x={:?} y={:?} w={:?} h={:?} u0={:?} vis={:?} depth={:?}",
                     tile.name, tile.kind, g("x"), g("y"), g("width"), g("height"),
                     g("user0"), g("visible"), g("depth")
                 );
