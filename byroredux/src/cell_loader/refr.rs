@@ -82,6 +82,33 @@ pub(crate) struct RefrTextureOverlay {
     /// BGSM v>2 `flow_texture` (BGEM does not author this field). Same
     /// no-wire-slot shape as `lighting` above. See #2594.
     pub(crate) flow: Option<FixedString>,
+    // ── #4434 — BGSM/BGEM named-role output ─────────────────────────
+    //
+    // `fill_from_bgsm` used to route these four into the wire-slot fields
+    // above (`glow`, `height`, `inner`), which the spawn side resolves
+    // through `slot_to_role` — so on an FO4/FO76 host a BGSM displacement
+    // map resolved as GreyscaleLut (never Height), a BGSM glow map on a
+    // tint-family shape resolved as Tint over the NIF's `_sk` mask, and a
+    // BGEM/BGSM inner layer on an FO76-layout host resolved as Specular:
+    // the exact wire-vocabulary leak #2695 closed on the NIF side. These
+    // fields carry the ROLE the BGSM field names directly (the same roles
+    // `merge_external_material` writes); the spawn side binds them
+    // without consulting the slot table. Wire-slot fields stay TXST/XTXR
+    // only.
+    ///
+    /// BGSM/BGEM `glow_texture` — the Emissive role.
+    pub(crate) bgsm_emissive: Option<FixedString>,
+    /// BGSM `displacement_texture` — the Height role (a tessellation
+    /// displacement input, NOT a palette LUT).
+    pub(crate) bgsm_height: Option<FixedString>,
+    /// BGSM `greyscale_texture` / BGEM `grayscale_texture` — the
+    /// GreyscaleLut (palette/gradient) role. Carried independently of
+    /// `bgsm_height`: a BGSM authoring both (e.g. the mirelurk
+    /// `fishingnet_nvtess.bgsm`) binds each to its own role instead of
+    /// racing for one wire slot.
+    pub(crate) bgsm_greyscale_lut: Option<FixedString>,
+    /// BGSM `inner_layer_texture` — the InnerLayer role.
+    pub(crate) bgsm_inner_layer: Option<FixedString>,
     pub(crate) material_path: Option<FixedString>,
     /// Resolved MSWP entries from the REFR's `XMSP` sub-record (#971).
     /// Each pair substitutes a BGSM/BGEM material path on the base
@@ -271,7 +298,14 @@ impl RefrTextureOverlay {
                 let f = &step.file;
                 Self::fill(&mut self.diffuse, Some(f.diffuse_texture.as_str()), pool);
                 Self::fill(&mut self.normal, Some(f.normal_texture.as_str()), pool);
-                Self::fill(&mut self.glow, Some(f.glow_texture.as_str()), pool);
+                // #4434 — `glow_texture` is the Emissive ROLE; it used to
+                // ride the wire-slot-2 field, which on an FO4 tint-family
+                // host resolved as Tint over the NIF's `_sk` mask.
+                Self::fill(
+                    &mut self.bgsm_emissive,
+                    Some(f.glow_texture.as_str()),
+                    pool,
+                );
                 Self::fill(
                     &mut self.smooth_spec,
                     Some(f.smooth_spec_texture.as_str()),
@@ -284,33 +318,34 @@ impl RefrTextureOverlay {
                 );
                 Self::fill(&mut self.env, Some(f.envmap_texture.as_str()), pool);
                 Self::fill(&mut self.wrinkle, Some(f.wrinkles_texture.as_str()), pool);
+                // #4434 — the four BGSM roles below used to ride the
+                // wire-slot fields (`glow`, `height`, `inner`) and were
+                // re-resolved through `slot_to_role` at spawn — which on
+                // FO4/FO76 hosts turned displacement into GreyscaleLut and
+                // a tint-family glow map into Tint. They now carry their
+                // ROLE directly (see the field docs above); the spawn side
+                // binds them without the slot table.
                 Self::fill(
-                    &mut self.height,
+                    &mut self.bgsm_height,
                     Some(f.displacement_texture.as_str()),
                     pool,
                 );
-                // #2594 — the remaining BGSM texture roles
-                // `merge_external_material` covers, previously dropped
-                // here entirely.
-                //
-                // `inner_layer_texture` routes into `self.inner`, the
-                // SAME raw wire-slot-6 field a TXST/XTXR override would
-                // use — slot 6 already means "MultiLayerParallax inner
-                // layer" per the shared game-aware table
-                // (`mesh_instance.rs`'s `pick(6, o.inner,
-                // TextureRole::InnerLayer)`), so no new field or spawn-
-                // side wiring is needed.
-                Self::fill(&mut self.inner, Some(f.inner_layer_texture.as_str()), pool);
-                // `greyscale_texture` shares wire-slot 3 with
-                // `displacement_texture` above — same as the NIF-native
-                // side, where a shader type reads slot 3 as EITHER
-                // Height OR GreyscaleLut, never both (mutually exclusive
-                // by `BSLightingShaderType`, not a per-material choice).
-                // `fill`'s first-non-empty-wins policy means this is a
-                // no-op whenever `displacement_texture` already won the
-                // slot, matching that exclusivity — the two BGSM fields
-                // are never simultaneously meaningful on real content.
-                Self::fill(&mut self.height, Some(f.greyscale_texture.as_str()), pool);
+                Self::fill(
+                    &mut self.bgsm_inner_layer,
+                    Some(f.inner_layer_texture.as_str()),
+                    pool,
+                );
+                // `greyscale_texture` no longer shares a field with
+                // `displacement_texture`: the old wire-slot-3 sharing made
+                // first-wins stand in for the shader-type exclusivity, and
+                // on FO4/FO76 it also let displacement WIN the LUT lane.
+                // Named roles carry both; a BGSM authoring both binds each
+                // to its own role.
+                Self::fill(
+                    &mut self.bgsm_greyscale_lut,
+                    Some(f.greyscale_texture.as_str()),
+                    pool,
+                );
                 // `lighting_texture` / `flow_texture` have no wire-slot
                 // analog at all (BGSM-only fields beyond the classic
                 // 8-slot `BSShaderTextureSet`) — dedicated overlay
@@ -330,7 +365,9 @@ impl RefrTextureOverlay {
             // policy via `Self::fill`).
             Self::fill(&mut self.diffuse, Some(bgem.base_texture.as_str()), pool);
             Self::fill(&mut self.normal, Some(bgem.normal_texture.as_str()), pool);
-            Self::fill(&mut self.glow, Some(bgem.glow_texture.as_str()), pool);
+            // #4434 — Emissive role directly (was the wire-slot-2 `glow`
+            // field; see the BGSM arm).
+            Self::fill(&mut self.bgsm_emissive, Some(bgem.glow_texture.as_str()), pool);
             // #2643 (SF-D9-2026-08-07-04) SIBLING — gate the envmap
             // texture AND mask fills on the authored `env_mapping_enabled()`
             // bit, exactly like `merge_external_material`'s BGEM arm
@@ -363,12 +400,11 @@ impl RefrTextureOverlay {
                 pool,
             );
             // `grayscale_texture` is BGEM's palette/gradient LUT (fire-
-            // gradient, electricity-gradient, magic VFX) — same
-            // wire-slot-3 sharing with `height` as the BGSM arm above
-            // (BGEM has no `displacement_texture` field, so there's
-            // nothing here for it to lose a first-wins race against).
+            // gradient, electricity-gradient, magic VFX) — carried as the
+            // GreyscaleLut role directly (#4434; it used to share the
+            // wire-slot-3 `height` field with BGSM displacement).
             Self::fill(
-                &mut self.height,
+                &mut self.bgsm_greyscale_lut,
                 Some(bgem.grayscale_texture.as_str()),
                 pool,
             );

@@ -329,20 +329,29 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                 })
             };
 
+            // #4434 — the four `bgsm_*` overlay fields carry their ROLE
+            // directly (fill_from_bgsm no longer routes through wire-slot
+            // fields), so they bind without `slot_to_role`; the wire-slot
+            // picks below remain the TXST/XTXR path and keep precedence,
+            // matching the old first-wins fill order between an XATO/XTXR
+            // override and the MNAM BGSM chain.
             (textures.emissive, sources.emissive) = resolve_effective(
-                ov.and_then(|o| pick(2, o.glow, TextureRole::Emissive)),
+                ov.and_then(|o| {
+                    pick(2, o.glow, TextureRole::Emissive).or(o.bgsm_emissive)
+                }),
                 material.textures.emissive,
                 sources.emissive,
             );
             // Slot 2 on the tint family (FaceTint / SkinTint / HairTint) is the
-            // `*_sk.dds` skin-tint mask, not a glow map.
+            // `*_sk.dds` skin-tint mask, not a glow map. (#4434 — a BGSM glow
+            // map no longer lands in `o.glow`, so it can never arrive here.)
             (textures.tint, sources.tint) = resolve_effective(
                 ov.and_then(|o| pick(2, o.glow, TextureRole::Tint)),
                 material.textures.tint,
                 sources.tint,
             );
             (textures.height, sources.height) = resolve_effective(
-                ov.and_then(|o| pick(3, o.height, TextureRole::Height)),
+                ov.and_then(|o| pick(3, o.height, TextureRole::Height).or(o.bgsm_height)),
                 material.textures.height,
                 sources.height,
             );
@@ -366,7 +375,9 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                 }
             }
             (textures.greyscale_lut, sources.greyscale_lut) = resolve_effective(
-                ov.and_then(|o| pick(3, o.height, TextureRole::GreyscaleLut)),
+                ov.and_then(|o| {
+                    pick(3, o.height, TextureRole::GreyscaleLut).or(o.bgsm_greyscale_lut)
+                }),
                 material.textures.greyscale_lut,
                 sources.greyscale_lut,
             );
@@ -404,7 +415,9 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                 sources.environment_mask,
             );
             (textures.inner_layer, sources.inner_layer) = resolve_effective(
-                ov.and_then(|o| pick(6, o.inner, TextureRole::InnerLayer)),
+                ov.and_then(|o| {
+                    pick(6, o.inner, TextureRole::InnerLayer).or(o.bgsm_inner_layer)
+                }),
                 material.textures.inner_layer,
                 sources.inner_layer,
             );
