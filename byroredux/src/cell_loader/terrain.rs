@@ -1082,8 +1082,12 @@ pub(super) fn spawn_terrain_mesh(
                 normal_has_alpha: ctx.texture_registry.handle_has_alpha(base_normal_index),
                 // #4423 — synthetic paths bind no tint texture; see the field doc.
                 tint_has_alpha: false,
-                parallax_height_scale: 0.04,
-                parallax_max_passes: 4.0,
+                // #4444 — canonical defaults, not literals (#3073 doctrine:
+                // a retune can't leave synthetic paths on the old numbers).
+                parallax_height_scale:
+                    byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE,
+                parallax_max_passes:
+                    byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES,
             },
         );
     }
