@@ -26,6 +26,62 @@ Commits hold that record.
 
 ---
 
+## Session 88 — "The Usual Suspects": the Oblivion HUD ships, and the composite "corruption" turns out to be told by an unreliable narrator  (2026-09-18, `5f3c7ec2..162428651`, 5 commits)
+
+The M48.4 slice — Oblivion's XML-menu HUD over the live frame — had two
+user-visible complaints left: elements "overlapping in the wrong way" and a
+render path that "crushed the CPU/GPU". The perf half fell quickly (per-frame
+`update_rgba` reallocation → change-signature skip + 33 ms cap + triple-buffered
+in-place `write_rgba_inplace` uploads: wall_fps 52 → 80, ui_ms 16.3 → 0.3).
+The visual half resisted: for most of the session the composited frame
+appeared corrupted — bars "decimated to scattered saturated pixels", TAA and
+FSR3 behaving differently — while the CPU-side rasterizer verified correct.
+
+The resolution had three layers, each a measurement artifact rather than a
+renderer bug: (1) the hand-rolled PNG analyzer only implemented the
+Sub/Up filters, so Paeth/Average rows decoded as garbage — including,
+invisibly, inside the smoke gate, which had been passing on filter
+artifacts; (2) once decoded correctly, the composite proved
+**pixel-identical** to the CPU frame under both upscalers (a synthetic
+full-frame test pattern confirmed the overlay end-to-end, 96% coverage,
+exact checker colors); (3) the remaining "health bar ignores the pin"
+signal was the red classifier admitting the trough's cream ornamentation
+(254,221,161 passes r>g+30) contiguously with the fill.
+
+- **The real bug** — `blit` stretched every texture into its tile rect,
+  treating zoom=-1 (the CS Wiki's *explicit* stretch directive) as the
+  default. The ribbon art is power-of-2 padded (256 px wide, ~164 px of
+  ink) and the authored bar width is a fill fraction of the *ink* width,
+  so the pad got squeezed into the bar: a constant ~63%-width health bar
+  at every value — the "overlapping/overglow" look. Fixed to the
+  documented contract: unzoomed draws texel-1:1 **clipped to the tile
+  rect**, zoom scales then clips, only `&scale;` stretches. Pinned
+  1.0 → 0.35 now shrinks the fill's contiguous red run 158 → 53 px,
+  crate and engine agreeing, across all three overlay buffers.
+- **tex.dump** — the throwaway texture dumper became a `tex.*` console
+  command: `tex.dump <bsa> <texture> [out.png]` opens any archive on
+  demand, resolves the three menu resolution sets, decodes DDS or `.tex`
+  font atlases, writes PNG (renderer's `image` dep re-exported; no new
+  binary-crate edge). Live-tested from byro-dbg on ribbon art, a font
+  atlas, and a miss.
+- **Smoke gate rebuilt** — full five-filter PNG decode, script-dir
+  resolution fix, strict fill classifier, pinned-both-captures with
+  settle delays (the boot bars are actor-driven live `ActorValues` —
+  the mine's NPCs feed them — not deterministic fulls; and the HUD
+  render is 33 ms rate-limited, so pipelined pin+capture pairs
+  photograph the previous state).
+- **Known issues filed** — water pipeline declares a 16-byte push-constant
+  range its 28-byte shaders exceed (validation error every startup), and
+  a BC2 mip-chain staging copy overruns its buffer by 8 bytes on long
+  streaming runs.
+- **Docs** — ROADMAP M48.4 entry, `docs/engine/ui.md` MenuXml section
+  (crate layout, zoom contract, engine integration, debug knobs), AGENTS
+  tree, smoke README row.
+
+Net effect: menuxml blit contract fixed + tex.dump + rebuilt smoke gate;
+full workspace 8 218 tests passing, `m48-4-oblivion-hud.sh` green
+(158 → 53 px), HUD overlay cost ~0.3 ms/frame.
+
 ## Session 87 — "The Long Walk": ambient NPCs walk instead of sliding, and a lighting/material fix tail closes four open issues  (2026-09-17 → 2026-09-18, `b2fa5c2a..5f3c7ec2`, 19 commits)
 
 M42's package runtimes had been complete but dormant: six locomotion procedures and sandbox seating sat behind per-procedure opt-in env gates, so walkers slid on their spawn idle pose with no authored walk clip ever verified against an archive. This session flipped that default on and closed the gap between "the AI decides to walk" and "the character visibly walks" (M42.10/M42.11), then spent the rest of the window on a lighting and NIFAL material fix tail — four of which closed real GitHub issues without the commits having carried a closing keyword, caught and reconciled as part of this close.

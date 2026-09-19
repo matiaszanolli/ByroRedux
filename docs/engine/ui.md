@@ -779,6 +779,74 @@ Bethesda menus wait to be called *into* before they call back out. Anyone
 sizing this number should re-measure rather than reason from the "HUD menus
 call the host every frame" intuition, which the corpus does not support.
 
+## Oblivion MenuXml HUD (M48.4)
+
+The pre-Skyrim games (Oblivion, FO3/FNV) do not use Scaleform — their
+menus are Bethesda's XML UI ("MenuXml"), evaluated per frame by a FOLD
+trait language. `byroredux-menuxml` is the first slice of that track:
+the Oblivion HUD, rendered over the live frame.
+
+**Crate layout** (`crates/menuxml/`):
+
+- `parse.rs` — tolerant scanner. Vanilla XML is not well-formed:
+  `</text-->` comment tails overlap tags, `<onlynotif>` is a shipped
+  typo, prefabs arrive via `<include>`. `Document` keeps a name index
+  for override targeting.
+- `eval.rs` — the trait FOLD: `copy/add/sub/mul/div/mod/min/max/and/or/
+  eq/neq/lt/lte/gt/gte/onlyif/not/ceil/floor/abs` with working-value +
+  argument chains, `&true;` = 2, comparisons yield 2/0, switch-case
+  `copy` of a `_name_` string appends the numeric working value
+  (`_animation_` + 23 → `_animation_23`). Selectors: `me()`, `parent()`,
+  `sibling()`, `child()`, `screen()`, `strings()`, bare tile names.
+  Only `visible` defaults true; `alpha/red/green/blue` default 255.
+- `layout.rs` — locus-chain positioning, depth sort (document order
+  tiebreak), `clipwindow` scissor accumulation. Rect tiles never paint
+  (vanilla's screen-wide grab zones are invisible hit targets).
+- `raster.rs` — CPU source-over rasterizer. The image blit implements
+  the CS-Wiki zoom contract: **default (unauthored) zoom draws texels
+  1:1 clipped to the tile rect** — the ribbon art is power-of-2 padded
+  (256 px wide, ~164 px of ink) and the authored bar width is a fill
+  *fraction* of the ink width, so stretching-as-default rendered a
+  constant ~63%-width health bar at every value. `zoom -1` (`&scale;`)
+  stretches to the tile; `cropx/cropy` apply post-zoom in display
+  pixels.
+- `tex.rs` / `font.rs` — own DDS decoder (BC1/BC2/BC3 + masked
+  uncompressed; the `image` crate rejects some vanilla headers) and the
+  `.fnt` + `.tex` bitmap-font pair (296-byte header, 256×56-byte glyph
+  records, white-on-transparent atlas tinted at draw time).
+- `menu.rs` — `MenuRenderer`: loads a menu + `strings.xml` + the font
+  table, resolves menu art across the three shipped resolution sets
+  (`textures\Menus`, `Menus80`, `Menus50` by UI width), applies
+  `(tile, trait)` overrides, renders frames.
+
+**Engine integration** (`byroredux/src/hud.rs`): `--hud` opens
+`Oblivion - Misc.bsa` + a texture BSA beside `--esm`, registers **three**
+overlay textures, and rotates uploads across them
+(`Texture::overwrite_rgba_pixels` / `write_rgba_inplace` — in-place mip-0
+copies, no image/view/descriptor churn; `TextureRegistry::update_rgba`
+reallocates all three per call and is not viable per frame). A change
+signature (bar bits + heading×10 + visibility) plus a 33 ms cadence cap
+keeps a static HUD at zero raster cost. Bar values come from pinned
+console values or Skyrim-keyed `ActorValues` — the vanilla playable slice
+already feeds them live from NPCs. Console surface: `hud.on`, `hud.off`,
+`hud.values <h> <m> <f>` (or `auto`), `hud.heading <deg>`, `hud.status`;
+`tex.dump <bsa-path> <texture-path> [out.png]` (in the `tex.*` family)
+extracts and decodes any archive texture — including menu sets and font
+atlases — to PNG for offline inspection.
+
+**Debugging**: `BYRO_HUD_DUMP=1` writes each rendered frame's raw RGBA to
+`/tmp/hud_engine_frame.rgba`; `RUST_LOG=byroredux::hud=debug` logs every
+render's values and target buffer. The `render_hud` example
+(`cargo run -p byroredux-menuxml --example render_hud`) renders reference
+frames + trait probes against installed data, independent of the engine.
+
+The smoke gate (`docs/smoke-tests/m48-4-oblivion-hud.sh`) pins
+`hud.values 1.0` then `0.35`, captures both frames, and asserts the
+health fill's contiguous strong-red run shrinks 158 → 53 px with a full
+five-filter PNG decode. The classifier is deliberately strict — the
+trough's cream ornamentation (254,221,161) passes an `r>g+30` filter and
+merges with the fill into a constant run that hides regressions.
+
 ## Related docs
 
 - [Creation Engine UI](../legacy/creation-engine-ui.md) — Bethesda menu

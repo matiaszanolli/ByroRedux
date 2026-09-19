@@ -24,8 +24,10 @@ Manual end-to-end checks that need a Vulkan device + on-disk game data
 (out of `cargo test` scope). All follow the same `--bench-hold` →
 `byro-dbg`-attach pattern documented in
 [`docs/smoke-tests/README.md`](docs/smoke-tests/README.md). Currently:
-[`docs/smoke-tests/m41-equip.sh`](docs/smoke-tests/m41-equip.sh)
-verifies Skyrim+ / FO4 NPC outfit equip end-to-end.
+[`docs/smoke-tests/m41-equip.sh`](docs/smoke-tests/m41-equip.sh) verifies
+Skyrim+ / FO4 NPC outfit equip end-to-end, and
+[`docs/smoke-tests/m48-4-oblivion-hud.sh`](docs/smoke-tests/m48-4-oblivion-hud.sh)
+verifies the Oblivion MenuXml HUD end-to-end (pin-driven bar-geometry gate).
 
 ### Shader Compilation
 ```bash
@@ -63,13 +65,14 @@ byroredux/              Binary — game loop, scene setup, systems
   src/commands/             Console commands (help, stats, entities, systems), split by topic
     mod.rs                   Command dispatch table
     scene.rs                 Scene / lighting / material / script-state commands
-    assets.rs                Texture / mesh / skin diagnostic commands
+    assets.rs                Texture / mesh / skin diagnostics + tex.dump (archive → PNG)
     actor_value.rs           setav/modav — live-edit an actor's ActorValues
     condition.rs             cond — evaluate a CTDA condition function live
     world_info.rs            Engine / world / memory introspection commands
     view.rs                  Camera + selection/picking commands
     shared.rs                Cross-command formatting helpers + shared import prelude
   src/helpers.rs            add_child, world_resource_set utilities
+  src/hud.rs                 Oblivion MenuXml HUD driver (--hud, triple-buffered uploads)
   src/cell_loader.rs        ESM cell loading (interior + exterior)
 crates/
   core/                      ECS, math (glam), types, string interning, form IDs
@@ -214,6 +217,15 @@ crates/
     src/events.rs            Transient marker components: ActivateEvent, HitEvent, TimerExpired
     src/timer.rs             ScriptTimer component + timer_tick_system
     src/cleanup.rs           event_cleanup_system (end-of-frame marker removal)
+  menuxml/                   Oblivion MenuXml UI (M48.4 legacy-UI track)
+    src/parse.rs              Tolerant XML scanner (vanilla quirks, <include> prefabs)
+    src/eval.rs               Per-frame trait FOLD language + selectors + overrides
+    src/layout.rs             Locus chains, depth sort, clipwindow scissor
+    src/raster.rs             CPU source-over rasterizer (zoom: natural+clip default, -1 stretch)
+    src/tex.rs                Own DDS decoder (BC1/2/3 + masked uncompressed) + .tex atlases
+    src/font.rs               .fnt bitmap fonts
+    src/menu.rs               MenuRenderer — sets, fonts, overrides, frames
+    examples/render_hud.rs    Reference-frame + trait-probe visualizer
   papyrus/                   Papyrus language parser (.psc source → AST)
     src/token.rs             Token enum (logos derive, case-insensitive keywords)
     src/lexer.rs             Lexer wrapper (line continuation, comments, doc comments)
