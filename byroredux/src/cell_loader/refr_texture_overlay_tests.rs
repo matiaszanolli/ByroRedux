@@ -612,7 +612,16 @@ fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
     // The 6 roles that were already forwarded pre-#2594.
     assert_eq!(resolved(&pool, ov.diffuse), Some(r"textures\a\diff.dds"));
     assert_eq!(resolved(&pool, ov.normal), Some(r"textures\a\nrm.dds"));
-    assert_eq!(resolved(&pool, ov.glow), Some(r"textures\a\glow.dds"));
+    // #4434 — glow_texture is the Emissive ROLE (bgsm_emissive), never the
+    // wire-slot-2 field a tint-family host would read as Tint.
+    assert_eq!(
+        resolved(&pool, ov.bgsm_emissive),
+        Some(r"textures\a\glow.dds")
+    );
+    assert!(
+        ov.glow.is_none(),
+        "BGSM glow must not ride the wire-slot-2 field (#4434)"
+    );
     assert_eq!(
         resolved(&pool, ov.smooth_spec),
         Some(r"textures\a\smooth_spec.dds")
@@ -623,14 +632,28 @@ fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
     );
     assert_eq!(resolved(&pool, ov.env), Some(r"textures\a\env.dds"));
     assert_eq!(resolved(&pool, ov.wrinkle), Some(r"textures\a\wrinkle.dds"));
-    // `height` — `displacement_texture` wins the wire-slot-3 race over
-    // `greyscale_texture` (empty on this fixture) via first-wins `fill`.
-    assert_eq!(resolved(&pool, ov.height), Some(r"textures\a\height.dds"));
+    // #4434 — displacement_texture is the Height ROLE (bgsm_height); it
+    // used to land in the wire-slot-3 field, which an FO4/FO76 host read
+    // as GreyscaleLut.
+    assert_eq!(
+        resolved(&pool, ov.bgsm_height),
+        Some(r"textures\a\height.dds")
+    );
+    assert!(
+        ov.height.is_none(),
+        "BGSM displacement must not ride the wire-slot-3 field (#4434)"
+    );
+    assert!(ov.bgsm_greyscale_lut.is_none());
     // The roles #2594 added.
     assert_eq!(
-        resolved(&pool, ov.inner),
+        resolved(&pool, ov.bgsm_inner_layer),
         Some(r"textures\a\inner.dds"),
-        "inner_layer_texture must route through the shared wire-slot-6 field"
+        "inner_layer_texture must carry the InnerLayer role (#4434 — was the \
+         wire-slot-6 field an FO76 host read as Specular)"
+    );
+    assert!(
+        ov.inner.is_none(),
+        "BGSM inner layer must not ride the wire-slot-6 field (#4434)"
     );
     assert_eq!(
         resolved(&pool, ov.lighting),
@@ -639,9 +662,12 @@ fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
     assert_eq!(resolved(&pool, ov.flow), Some(r"textures\a\flow.dds"));
 }
 
-/// `greyscale_texture` must reach the overlay (via the shared `height`
-/// field) when `displacement_texture` is absent — the two only race for
-/// the same slot when a BGSM authors both, which real content doesn't do.
+/// `greyscale_texture` must reach the overlay as the GreyscaleLut role.
+/// The old "the two only race for the same slot when a BGSM authors both,
+/// which real content doesn't do" premise is stale (#4434's audit found
+/// `materials\actors\mirelurk\fishingnet_nvtess.bgsm` authors both) —
+/// and since #4434 they no longer race at all: each BGSM field carries
+/// its own role.
 #[test]
 fn fill_from_bgsm_forwards_greyscale_texture_when_no_displacement() {
     let mut index = EsmCellIndex::default();
@@ -665,7 +691,50 @@ fn fill_from_bgsm_forwards_greyscale_texture_when_no_displacement() {
     let mut pool = StringPool::new();
     let ov = build_refr_texture_overlay(&placed, &index, Some(&mut provider), &mut pool)
         .expect("overlay");
-    assert_eq!(resolved(&pool, ov.height), Some(r"textures\a\gradient.dds"));
+    assert_eq!(
+        resolved(&pool, ov.bgsm_greyscale_lut),
+        Some(r"textures\a\gradient.dds")
+    );
+}
+
+/// #4434 — a BGSM authoring BOTH `displacement_texture` and
+/// `greyscale_texture` (the mirelurk `fishingnet_nvtess.bgsm` shape) must
+/// carry each in its OWN role field: pre-fix they raced for the shared
+/// wire-slot-3 field, first-wins, and on FO4/FO76 hosts the winner then
+/// resolved as GreyscaleLut regardless of which it was.
+#[test]
+fn fill_from_bgsm_carries_displacement_and_greyscale_independently() {
+    let mut index = EsmCellIndex::default();
+    let path = "materials/tests/both_height_lanes.bgsm";
+    index.texture_sets.insert(0x0020_0001, mnam_only_txst(path));
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.alt_texture_ref = Some(0x0020_0001);
+
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                displacement_texture: r"textures\a\displ.dds".into(),
+                greyscale_texture: r"textures\a\gradient.dds".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, Some(&mut provider), &mut pool)
+        .expect("overlay");
+    assert_eq!(resolved(&pool, ov.bgsm_height), Some(r"textures\a\displ.dds"));
+    assert_eq!(
+        resolved(&pool, ov.bgsm_greyscale_lut),
+        Some(r"textures\a\gradient.dds")
+    );
+    assert!(
+        ov.height.is_none() && ov.glow.is_none() && ov.inner.is_none(),
+        "no BGSM role may leak back into the TXST/XTXR wire-slot fields (#4434)"
+    );
 }
 
 /// BGSM template-chain child-first precedence extends to every #2594
@@ -705,7 +774,7 @@ fn fill_from_bgsm_new_roles_honor_child_first_chain() {
     );
     assert_eq!(resolved(&pool, ov.flow), Some(r"textures\parent\flow.dds"));
     assert_eq!(
-        resolved(&pool, ov.inner),
+        resolved(&pool, ov.bgsm_inner_layer),
         Some(r"textures\parent\inner.dds")
     );
 }
@@ -759,7 +828,11 @@ fn fill_from_bgsm_forwards_every_bgem_texture_role() {
         "BGEM base_texture must reach the overlay's diffuse role (#4287)"
     );
     assert_eq!(resolved(&pool, ov.normal), Some(r"textures\b\nrm.dds"));
-    assert_eq!(resolved(&pool, ov.glow), Some(r"textures\b\glow.dds"));
+    // #4434 — BGEM glow/grayscale carry their roles directly.
+    assert_eq!(
+        resolved(&pool, ov.bgsm_emissive),
+        Some(r"textures\b\glow.dds")
+    );
     assert_eq!(resolved(&pool, ov.env), Some(r"textures\b\env.dds"));
     assert_eq!(
         resolved(&pool, ov.env_mask),
@@ -778,10 +851,10 @@ fn fill_from_bgsm_forwards_every_bgem_texture_role() {
         "BGEM lighting_texture must reach the overlay"
     );
     assert_eq!(
-        resolved(&pool, ov.height),
+        resolved(&pool, ov.bgsm_greyscale_lut),
         Some(r"textures\b\gradient.dds"),
-        "BGEM grayscale_texture must reach the overlay as the greyscale-LUT role, \
-         via the same shared wire-slot-3 field as BGSM"
+        "BGEM grayscale_texture must carry the GreyscaleLut role (#4434 — was \
+         the shared wire-slot-3 field)"
     );
 }
 
