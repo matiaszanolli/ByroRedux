@@ -48,6 +48,7 @@ mod scene;
 mod scene_import_cache;
 #[cfg(test)]
 mod scheduler_access_tests;
+mod scaleform_hud;
 mod settings_io;
 mod sf_smoke;
 mod streaming;
@@ -407,6 +408,11 @@ struct App {
     /// `--hud` is the pre-Skyrim route, `--menu` the Skyrim+/FO4 one,
     /// and the frame tick prefers whichever is live.
     hud: Option<hud::MenuXmlHud>,
+    /// Scaleform HUD driver (M48.6 Skyrim `--hud` route). Owns the
+    /// response handlers + push cadence for a `hudmenu.swf` launched
+    /// into `ui_manager`; `None` unless `--hud` matched a Skyrim
+    /// install.
+    scaleform_hud: Option<scaleform_hud::ScaleformHudDriver>,
     /// Window-system state used to translate events into Scaleform space.
     ui_input_state: ui_input::UiInputState,
     /// Texture handle for the UI overlay (registered in the texture registry).
@@ -847,6 +853,7 @@ impl App {
             last_frame: Instant::now(),
             ui_manager: None,
             hud: None,
+            scaleform_hud: None,
             ui_input_state: ui_input::UiInputState::default(),
             ui_texture_handle: None,
             ui_reported_host_methods: std::collections::HashSet::new(),
@@ -949,6 +956,7 @@ impl App {
             &mut self.ui_manager,
             &mut self.ui_texture_handle,
             &mut self.hud,
+            &mut self.scaleform_hud,
             self.camera_pos_override,
             self.camera_forward_override,
             &mut self.streaming,

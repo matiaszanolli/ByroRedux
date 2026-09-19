@@ -1,42 +1,33 @@
-# M48.5 — Game-agnostic MenuXml UI profile + Fallout 3 HUD
+# M48.7 — Fallout 4 HUD: the `--hud` Scaleform route on AVM2
 
-**Premise (verified on disk + repo record):** FO3/FNV UI is Bethesda MenuXml — same family as Oblivion — not Scaleform (`Fallout - Misc.bsa` carries `menus\main\hud_main_menu.xml` + ~130 XMLs; art in `Fallout - Textures.bsa` under `textures\interface\hud\`; R4 decision `ROADMAP.md:883` agrees). The work: extract the per-game knobs out of the M48.4 Oblivion HUD into profiles, then wire FO3 as the second consumer with its own corpus test and smoke gate.
+**Premise (verified):** FO4's HUD is `interface\hudmenu.swf` in `Fallout4 - Interface.ba2` (present on disk; the `--menu` route already loads it green with `profile=Some(Fallout4Avm2) state=Some(AdapterInjected)`). The M48.6 Skyrim driver's skeleton is reusable nearly wholesale — the host bridge is profile-blind (same drain, `ScaleformValue` marshalling, `available_callbacks`/`invoke_callback`/`set_response_handler` all work for AVM2; BGSCodeObj calls arrive as `BGSCodeObj.<Method>`-namespaced ExternalInterface calls via the injected ABC adapter). FO4 Health/AP actor values are `0x2C9`/`0x2D0` — already stamped on FO4 NPCs by `derive_stored_actor_values`, and already sitting in `hud.rs`'s `FALLOUT_BARS`. Same negative finding as Skyrim: no meter-shaped BGSCodeObj methods exist, so meters stay engine-empty (GFx object-path limitation, now documented for both games) — FO4 gets the same chrome + protocol + console slice.
 
-## Step 0 — FO3 corpus probe (read-only, drives everything below)
+## Step 0 — discovery: FO4 hudmenu's live surface
 
-New env-gated test `crates/menuxml/tests/fo3_corpus.rs` (pattern: existing `vanilla_corpus.rs`, silently skips unless `BYROREDUX_FO3_DATA` is set; default path `/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data`). It answers, with assertions so the facts stay pinned:
+One `--menu` run (existing route) with host-call diagnostics + screenshot: the BGSCodeObj calls vanilla FO4 hudmenu makes at boot, and what its chrome draws statically (calibration for the smoke diff gate). The adapter guarantees `__byroBGSCodeObjReady` is registered when injected — a runtime AdapterInjected observable the smoke can gate on.
 
-- `menus\main\hud_main_menu.xml` parses non-empty; tile names for the HP/AP/XP bars, compass, ammo counter; which `<font>` indices the text tiles use; what shape `<filename>` paths take (expected: `textures\interface\…` or `interface\…`, i.e. the existing passthrough arm — `TextureSet` then stays Oblivion-scoped).
-- Where FO3 `.fnt` fonts live (probe `Fallout - Misc.bsa` and `Fallout - Textures.bsa` file tables) and whether `Font::parse`'s 296-byte-header / 256×14-f32 layout holds for them; how the glyph atlas is named (Oblivion derives `fonts\<name>.tex` from bytes at offset 12 — FO3 may differ).
-- The format of `menus\falloutdict.txt` (FO3's strings/dictionary — the analog of `menus\strings.xml`) → decides the strings-source handling.
-- That the HUD menu's referenced textures resolve in `Fallout - Textures.bsa`.
+## Step 1 — generalize `scaleform_hud.rs` to two games
 
-## Step 1 — `crates/menuxml`: per-game `MenuProfile`
+- `ScaleformGame` (enum or small profile struct): `Skyrim` (unchanged: `Skyrim - Interface.bsa`, Skyrim AV keys 0x3E8/9/A, 3 bars) and `Fallout4` (`Fallout4 - Interface.ba2`, `interface\hudmenu.swf`, hp `0x2C9` / ap `0x2D0`, labels health/ap, 2 bars). `hud_scaleform_args` probes both archives beside `--esm` and returns the game + archive path.
+- `hud.rs` skip-guard: extend the quiet `Ok(None)` arm (and the Err candidate text) with `Fallout4 - Interface.ba2` so a FO4 `--hud` launch reports one failure, not two.
+- `hud: loaded` line gains `profile=`/`state=` (from `UiManager::menu_profile()` + `host_object_state()`) — makes `state=Some(AdapterInjected)` smoke-greppable on the `--hud` route for both games.
+- Response handlers: gate the SkyUI poll handlers (`updateStats`/`RequestPlayerInfo`) on the Skyrim profile — on FO4 they'd be catalog-unknown noise. No fabricated FO4 handlers; `unknown/unanswered` via `hud.debug` stays the discovery instrument.
+- Push table: skip the adapter's own `__byro*`-prefixed callbacks; otherwise unchanged (name-matched, discovery-driven).
 
-- Add `MenuProfile` (struct of data + small fn pointers, no new deps): font table (`font_paths: &'static [&'static str]`), atlas-path derivation (`font_atlas_path: fn(&[u8]) -> Option<String>`; Oblivion = name@offset-12 → `fonts\<name>.tex`), and strings source (path + kind: `strings.xml` vs `falloutdict.txt`). Constructors `MenuProfile::oblivion()` / `::fallout3()` own these tables **once** — collapsing today's `FONT_PATHS` triplication (`byroredux/src/hud.rs:24`, `examples/render_hud.rs`, `tests/vanilla_corpus.rs` all switch to referencing the profile).
-- `MenuRenderer::load_with_profile(assets, menu_path, screen, profile)`; existing `load()` delegates with `MenuProfile::oblivion()` so current call sites and corpus tests don't churn.
-- Texture resolution in `menu.rs::texture()` stays as-is unless the probe shows FO3 needs a remap (the `textures\`-prefixed passthrough arm likely covers FO3's paths already).
-- If the probe finds FO3 `.fnt` layout differs, extend `font.rs` behind the profile rather than forking the crate.
-- Unit tests with a synthetic FO3-shaped profile (odd font indices, dict-as-strings) via the existing `MapSource`/`SynthAssets` fakes.
+## Step 2 — tests
 
-## Step 2 — engine: game-parameterized HUD driver (`byroredux/src/hud.rs`)
+- `crates/ui/tests/fallout4_hudmenu_protocol.rs` (mirror of the Skyrim pin, env-gated self-skipping on `BYROREDUX_FO4_DATA`): extract `interface\hudmenu.swf` → `host_object_state() == AdapterInjected`, lifecycle callbacks present, movie host-call surface ⊆ FO4 catalog, resource errors empty.
+- Driver launch dispatch (Skyrim vs FO4 selection) is covered by the smokes; no new hud.rs unit tests (consistent with M48.4–.6).
 
-- New `HudGameProfile { label, misc_bsa, default_textures_bsa, menu_profile, bar_labels: [&'static str; 3], av_keys: [u32; 3], bar_overrides: [(tile, trait); 3], compass_override, mode_override }` with `oblivion()` + `fallout3()` (an `fallout_nv()` twin is nearly free — include the table, no separate smoke).
-- `hud_archive_args` becomes game-aware: discover `Fallout - Misc.bsa` vs `Oblivion - Misc.bsa` beside `--esm` (existence probe, matching today's discovery-walk style); texture default `Fallout - Textures.bsa` vs `Oblivion - Textures - Compressed.bsa`; `--hud-textures` override unchanged. Error messages name both candidates.
-- `OblivionHud` → `MenuXmlHud` — triple-buffer rotation, change-signature skip, 33 ms cadence cap, and `HudAssets` all untouched; `render()` pushes overrides through the profile's vocabulary instead of the hardcoded `hudmain_*` names (`hud.rs:309-316`). Compass heading formula stays shared (same Z-up Gamebryo import convention; verify sign against probe output).
-- Actor values: `bar_fractions`'s hardcoded Skyrim keys (`hud.rs:36-38`) move into `av_keys`; FO3 keys come from the existing FO3 actor-value tables (cross-check `commands/actor_value.rs` / `crates/core/src/character/profile.rs`); the pinned/full-bars fallback behavior is unchanged.
-- `HudControl` bar fields → `[Option<f32>; 3]` with per-game labels surfaced in `hud.status`; `hud.values <a> <b> <c> | auto` CLI shape unchanged. `commands/hud.rs` descriptions/status wording become profile-labeled. Smoke-gate greps preserved (`hud: loaded …`, `hud: launched visible=`).
-- `app_frame.rs`'s `tick_hud_overlay` branch keeps its current shape (the `crates/ui` tests pin `app_frame.rs` textually via `include_str!` — the SWF branch must stay byte-identical).
+## Step 3 — smoke `m48-7-fo4-hud.sh` + README row
 
-## Step 3 — smoke gate `docs/smoke-tests/m48-5-fo3-hud.sh`
-
-Clone of the m48-4 procedure against the FO3 install (fixture args from `docs/smoke-tests/fixtures/fo3.env`, Megaton cell): engine + `--hud` + `--bench-hold` under `xvfb-run`, boot-line gate, `hud.status` gate, two pinned captures via `byro-dbg` (`hud.values 1 1 1` vs a partial pin), five-filter PNG decode and a fill-run classifier over the FO3 HP-bar rows (row coordinates and color thresholds taken from Step 0 probe renders — FO3 bars are solid fills, so the classifier is simpler than Oblivion's ornament-guarded red-run). README row + SKIP-77 when data is absent.
+FO4 fixture args (MedTekResearch01, Meshes/MeshesExtra/Textures1/Materials) + `--hud`, port-scoped like m48-6. Gates: `hud: loaded … backend=scaleform … state=Some(AdapterInjected)`; `hud.status` shows the 2 FO4 bar pins (`health=`/`ap=`) + `backend=scaleform`; `hud.debug` shows `__byroBGSCodeObjReady` among callbacks + driver liveness; chrome on/off pixel diff (same world-static technique as m48-6, bands calibrated in Step 0 — if vanilla FO4 hudmenu draws no static chrome, the gate degrades to protocol-only and that gets documented, not fudged). README row, SKIP-77 without data.
 
 ## Step 4 — docs + verification
 
-- `ROADMAP.md` M48.5 milestone row; `docs/engine/ui.md` legacy-UI section updated (FO3 column: MenuXml profile wired, per-game knob table); `AGENTS.md` workspace-tree line for `hud.rs`; HISTORY.md entry at `/session-close`.
-- Verification: `cargo test -p byroredux-menuxml` (both corpus tests with envs set); engine bin via the 1.96.0 toolchain path (`TC=$(rustup which --toolchain 1.96.0 cargo); PATH=… "$TC" test -p byroredux --bin byroredux` — AGENTS.md gotcha); **m48-4 Oblivion smoke re-run green** (the regression gate for the refactor), then m48-5.
+- ROADMAP M48.7 paragraph; `docs/engine/ui.md` M48.6 section extended with the FO4 dispatch (profile/state on the log line, adapter lifecycle notes: destruction ack conditional per `AdapterInjectedWithoutDestroyHook`); AGENTS.md tree line update + smoke list; smoke README row.
+- Verification: `cargo test -p byroredux-ui` (pins + new protocol test, `-j` capped), menuxml untouched-green, bin check via 1.96.0 toolchain, smokes m48-4/m48-5/m48-6/m48-7 + m48-menu-load skyrim leg (fo4 leg too, now that the #4466 cargo fix landed).
 
-**Non-goals:** any SWF/Scaleform path for FO3 (contradicts on-disk data and R4); unifying the loading-screen/HUD/SWF overlay producers behind a trait (they already agree on `Option<u32>`; the `include_str!`-pinned SWF branch makes that churn risky for no user-visible gain); VATS/dialog/inventory menus and the FO3 menu stack beyond the HUD (later M48.x slices, now cheap thanks to the profile); a separate FNV smoke gate.
+**Non-goals:** driven meters (same Ruffle object-path limitation as Skyrim, already documented); power-armor HUD (`powerarmorhudmenu.swf`); Pip-Boy; font fidelity; menu stack.
 
-**Risks:** FO3 `.fnt` layout/atlas naming may differ from Oblivion's (probe first, extend behind profile); `falloutdict.txt` format unknown until probed; FO3 AVIF keys need verification against the plugin records; if FO3 fonts fail the probe, ship bars+compass first (text tiles already degrade gracefully via the `None`-slot skip) and note the gap.
+**Risks:** Ruffle AVM2 runtime completeness on hudmenu (mitigated: the m48-menu-load FO4 leg is green and the installed lifecycle test runs it headlessly); FO4 hudmenu may draw no static chrome until pushed (Step 0 decides the pixel-gate shape honestly); FO4's modded install may add menu content (fixture BSAs are the vanilla set; Interface.ba2 confirmed vanilla-named).

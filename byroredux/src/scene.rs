@@ -825,6 +825,7 @@ pub(crate) fn setup_scene(
     ui_manager: &mut Option<UiManager>,
     ui_texture_handle: &mut Option<u32>,
     hud: &mut Option<crate::hud::MenuXmlHud>,
+    scaleform_hud: &mut Option<crate::scaleform_hud::ScaleformHudDriver>,
     camera_pos_override: Option<(f32, f32, f32)>,
     camera_forward_override: Option<(f32, f32, f32)>,
     streaming_slot: &mut Option<WorldStreamingState>,
@@ -854,12 +855,21 @@ pub(crate) fn setup_scene(
     );
     spawn_player_body(world, ctx, cam_pos, forward, spawn_plan, player_mode);
     launch_archive_menu(ctx, ui_manager, ui_texture_handle, &args);
-    // M48.4 — `--hud` launches the Oblivion MenuXml HUD after (and
-    // independently of) any Scaleform menu; the frame tick prefers the
-    // HUD when both somehow load.
-    *hud = crate::hud::launch_hud(ctx, world, &args);
-    if hud.is_some() {
-        *ui_texture_handle = Some(hud.as_ref().unwrap().current_texture());
+    // M48.4/M48.5/M48.6 — `--hud` is the vanilla-HUD front door, dispatched
+    // per game: Scaleform first (Skyrim — it would ride `ui_manager`), then
+    // the MenuXml profiles (Oblivion / FO3 / FNV). The routes are mutually
+    // exclusive per run: a Scaleform win suppresses the MenuXml probe (its
+    // archive candidates cannot match a Skyrim install anyway), and a
+    // `--menu` launch suppresses the Scaleform HUD (see
+    // `scaleform_hud::launch`). The frame tick prefers `hud` over
+    // `ui_manager` when both exist, which only `--menu` + a MenuXml game
+    // can produce.
+    *scaleform_hud = crate::scaleform_hud::launch(ctx, world, ui_manager, ui_texture_handle, &args);
+    if scaleform_hud.is_none() {
+        *hud = crate::hud::launch_hud(ctx, world, &args);
+        if hud.is_some() {
+            *ui_texture_handle = Some(hud.as_ref().unwrap().current_texture());
+        }
     }
 }
 

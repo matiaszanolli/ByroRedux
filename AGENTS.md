@@ -45,7 +45,11 @@ Skyrim+ / FO4 NPC outfit equip end-to-end, and
 [`docs/smoke-tests/m48-4-oblivion-hud.sh`](docs/smoke-tests/m48-4-oblivion-hud.sh)
 verifies the Oblivion MenuXml HUD end-to-end (pin-driven bar-geometry gate).
 [`docs/smoke-tests/m48-5-fo3-hud.sh`](docs/smoke-tests/m48-5-fo3-hud.sh)
-verifies the FO3 HUD on the same game-agnostic driver (tick-column gate).
+verifies the FO3 HUD on the same game-agnostic driver (tick-column gate), and
+[`docs/smoke-tests/m48-6-skyrim-hud.sh`](docs/smoke-tests/m48-6-skyrim-hud.sh)
+verifies the Skyrim Scaleform HUD (chrome on/off diff + bridge gates), and
+[`docs/smoke-tests/m48-7-fo4-hud.sh`](docs/smoke-tests/m48-7-fo4-hud.sh)
+verifies the Fallout 4 one on the same driver (AdapterInjected + chrome diff).
 
 ### Shader Compilation
 ```bash
@@ -91,6 +95,7 @@ byroredux/              Binary — game loop, scene setup, systems
     shared.rs                Cross-command formatting helpers + shared import prelude
   src/helpers.rs            add_child, world_resource_set utilities
   src/hud.rs                 MenuXml HUD driver — per-game profiles Oblivion/FO3/FNV (--hud, triple-buffered uploads)
+  src/scaleform_hud.rs       Scaleform HUD driver — Skyrim + Fallout 4 hudmenu.swf via --hud (transparent stage, hud.debug)
   src/cell_loader.rs        ESM cell loading (interior + exterior)
 crates/
   core/                      ECS, math (glam), types, string interning, form IDs

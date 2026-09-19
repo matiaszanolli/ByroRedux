@@ -79,6 +79,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(HudValuesCommand);
     registry.register(HudHeadingCommand);
     registry.register(HudStatusCommand);
+    registry.register(HudDebugCommand);
     registry.register(CondCommand);
     registry.register(DepthStatsCommand);
     registry.register(SetAvCommand);

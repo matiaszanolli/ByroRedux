@@ -83,9 +83,18 @@ CMDS
 pin_and_shoot "hud.values 1.0 1.0 1.0" "$OUT_DIR/full.png"
 pin_and_shoot "hud.values 0.35 0.7 1.0
 hud.heading 90" "$OUT_DIR/pinned.png"
-"$BIN_DIR/byro-dbg" <<CMDS | tee "$OUT_DIR/dbg.out"
+# Sessions retry once: the fixture cell keeps streaming past bench-hold
+# and a session landing on a busy frame can outrun the server's 5 s drain
+# timeout (same failure mode m48-5 hardened first).
+for _ in 1 2; do
+    if "$BIN_DIR/byro-dbg" <<CMDS | tee "$OUT_DIR/dbg.out"
 hud.status
 CMDS
+    then
+        break
+    fi
+    sleep 3
+done
 
 sleep 2
 kill $ENGINE 2>/dev/null

@@ -74,6 +74,14 @@ fail() {
     exit 1
 }
 
+# #4466 — the workspace's cranelift MSRV outruns the distro rustc/cargo,
+# so a bare `cargo run` fails dependency resolution before the engine
+# ever starts. Resolve the installed rustup toolchain's cargo AND put its
+# bin dir on PATH (cargo invokes `rustc` from PATH; the distro rustc
+# shadows the shims otherwise), same recipe as AGENTS.md §Tests.
+CARGO="$(rustup which --toolchain 1.96.0 cargo 2>/dev/null || command -v cargo)"
+PATH="$(dirname "$CARGO"):$PATH"
+
 # Args: $1 = label, $2 = archive path, $3 = archive-relative SWF path.
 run_menu () {
     local label="$1"
@@ -86,7 +94,7 @@ run_menu () {
     echo "  smoke[m48-menu-load/$label]: $swf out of $(basename "$archive")"
     echo "═══════════════════════════════════════════════════════════════"
 
-    cargo run --release --quiet -- \
+    "$CARGO" run --release --quiet -- \
         --menu "$swf" \
         --menu-archive "$archive" \
         --bench-frames "$BENCH_FRAMES" \
@@ -181,7 +189,7 @@ UI_ARMS
 
     # A launch that logged success and then died is not a pass. Attaching
     # byro-dbg proves the process is still serving after the bench window.
-    if ! printf 'stats\n' | cargo run --release --quiet -p byro-dbg > "$dbg_log" 2>&1; then
+    if ! printf 'stats\n' | "$CARGO" run --release --quiet -p byro-dbg > "$dbg_log" 2>&1; then
         eval "$kill_engine"
         echo "--- byro-dbg output ---" >&2
         cat "$dbg_log" >&2

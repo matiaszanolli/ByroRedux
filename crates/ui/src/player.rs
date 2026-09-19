@@ -433,6 +433,19 @@ impl SwfPlayer {
         self.dirty = true;
     }
 
+    /// Clear the stage to transparent instead of the movie's background
+    /// color, so the compositor sees alpha-0 wherever the movie drew
+    /// nothing (Ruffle's `WindowMode::Transparent` — player.rs clears to
+    /// `Color::from_rgba(0)` only in that mode).
+    ///
+    /// A HUD route needs this: the overlay texture is full-screen, so an
+    /// opaque stage clear washes the rendered world out entirely. Modal
+    /// `--menu` launches keep the default opaque stage.
+    pub fn set_stage_transparent(&mut self) {
+        self.player.lock().unwrap().set_window_mode("transparent");
+        self.dirty = true;
+    }
+
     /// Render the current frame to the internal pixel buffer.
     ///
     /// Returns the RGBA pixel data only when it differs from what the caller

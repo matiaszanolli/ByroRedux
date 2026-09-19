@@ -310,6 +310,20 @@ impl UiManager {
         }
     }
 
+    /// Clear the active menu's stage to transparent (see
+    /// [`SwfPlayer::set_stage_transparent`]) — the HUD route opts in so
+    /// the world shows through wherever the movie drew nothing. No-op
+    /// without a loaded menu.
+    pub fn set_stage_transparent(&mut self) -> bool {
+        match self.player.as_mut() {
+            Some(player) => {
+                player.set_stage_transparent();
+                true
+            }
+            None => false,
+        }
+    }
+
     // #2723 (SAFEUI-07) — a `close()` unloading the active menu
     // (`set_input_focus(false)` + `player = None` + `visible = false` +
     // `menu_name.clear()`) used to live here. It had zero callers: nothing

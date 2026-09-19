@@ -1,14 +1,17 @@
-//! `hud.*` — MenuXml HUD console control (M48.4 Oblivion / M48.5 FO3).
+//! `hud.*` — MenuXml/Scaleform HUD console control (M48.4 Oblivion /
+//! M48.5 FO3 / M48.6 Skyrim).
 //!
 //! The HUD renderer lives in the frame loop (see `hud.rs`'s module docs);
 //! these commands mutate the [`HudControl`] World resource it reads every
 //! frame. `hud.status` is the smoke-gate observable: it reports whether a
 //! HUD is live even when hidden, because the resource exists only after a
 //! successful `--hud` launch. Bar count and labels are the launched
-//! game's (3 for Oblivion, 2 for FO3/FNV).
+//! game's (3 for Oblivion/Skyrim, 2 for FO3/FNV), and `hud.status` /
+//! `hud.debug` name the backend that owns the overlay.
 
 use super::shared::*;
 use crate::hud::HudControl;
+use crate::scaleform_hud::ScaleformHudDiag;
 
 /// `hud.on` — show the HUD overlay.
 pub(crate) struct HudOnCommand;
@@ -156,16 +159,77 @@ impl ConsoleCommand for HudStatusCommand {
                     .map(|i| format!("{}={}", control.bar_labels[i], fmt(control.bars[i])))
                     .collect::<Vec<_>>()
                     .join(" ");
+                // `backend` goes last so the m48-4/m48-5 gates' grep
+                // prefixes (`hud: launched visible=true…`) survive the
+                // M48.6 addition.
                 CommandOutput::line(format!(
-                    "hud: launched visible={} {bars} heading={}",
+                    "hud: launched visible={} {bars} heading={} backend={}",
                     control.visible,
                     match control.heading {
                         Some(deg) => format!("{deg:.0} (pinned)"),
                         None => "auto".to_string(),
                     },
+                    control.backend.as_str(),
                 ))
             }
             None => CommandOutput::error("hud: not launched (start with --hud)"),
+        }
+    }
+}
+
+/// `hud.debug` — Scaleform HUD bridge diagnostics: the callbacks the
+/// movie registered (legal push targets), the host methods it called
+/// with no handler, and the last pushed frame's values. MenuXml-only
+/// runs have no bridge to inspect.
+pub(crate) struct HudDebugCommand;
+
+impl ConsoleCommand for HudDebugCommand {
+    fn name(&self) -> &str {
+        "hud.debug"
+    }
+    fn description(&self) -> &str {
+        "Dump the Scaleform HUD bridge diagnostics (Skyrim --hud)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        match world.try_resource::<ScaleformHudDiag>() {
+            Some(diag) => {
+                let list = |name: &str, items: &[String]| -> String {
+                    if items.is_empty() {
+                        format!("{name}: (none)")
+                    } else {
+                        format!("{name}: {}", items.join(", "))
+                    }
+                };
+                let bars = diag
+                    .last_push
+                    .map(|(a, b, c, deg)| {
+                        let count = diag.bar_count as usize;
+                        let values = [a, b, c];
+                        let labels = (0..count)
+                            .map(|i| {
+                                format!("{}={:.2}", diag.bar_labels[i], values[i])
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        format!("{labels} heading={deg:.1}")
+                    })
+                    .unwrap_or_else(|| "(never)".to_string());
+                CommandOutput::line(format!(
+                    "hud.debug (scaleform, {}): {}\n{}\n{}\nlast_push: {}",
+                    diag.game,
+                    list("callbacks", &diag.callbacks),
+                    list("unknown_methods", &diag.unknown_methods),
+                    list("unanswered_methods", &diag.unanswered_methods),
+                    bars,
+                ))
+            }
+            None => {
+                if world.try_resource::<HudControl>().is_some() {
+                    CommandOutput::error("hud.debug: MenuXml HUD has no Scaleform bridge")
+                } else {
+                    CommandOutput::error("hud: not launched (start with --hud)")
+                }
+            }
         }
     }
 }

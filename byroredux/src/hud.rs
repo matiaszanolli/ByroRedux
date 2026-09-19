@@ -12,6 +12,12 @@
 //!   under `HitPoints`/`ActionPoints`, instantiate the compass
 //!   template) before driving `_Value` / `cropx`.
 //!
+//! Skyrim is the Scaleform route: `crate::scaleform_hud` launches
+//! `hudmenu.swf` through the Ruffle player and owns that driver. The two
+//! routes share the [`HudControl`] command resource and are mutually
+//! exclusive per run (scene.rs launches the Scaleform probe first; a
+//! won Scaleform route suppresses this module's MenuXml launch).
+//!
 //! Shared machinery — archive resolution, triple-buffered overlay
 //! textures, change-signature + cadence throttling — is game-agnostic.
 //!
@@ -206,11 +212,32 @@ impl MenuAssets for HudAssets {
     }
 }
 
+/// Which HUD backend a launch installed — reported by `hud.status` and
+/// used by the console to shape diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HudBackend {
+    /// MenuXml CPU raster (`hud.rs`): Oblivion / FO3 / FNV.
+    MenuXml,
+    /// Scaleform SWF through the Ruffle player (`scaleform_hud.rs`).
+    Scaleform,
+}
+
+impl HudBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MenuXml => "menuxml",
+            Self::Scaleform => "scaleform",
+        }
+    }
+}
+
 /// Console-facing HUD control. Inserted at launch with the game
 /// profile's bar labels; `hud.*` commands and the frame-loop driver both
 /// go through it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HudControl {
+    /// Which backend owns the overlay (set at launch, immutable after).
+    pub backend: HudBackend,
     pub visible: bool,
     /// Pinned bar fractions (0..1), indexed like the profile's bar
     /// table. `None` = derive from actor values / default full — set by
@@ -229,6 +256,7 @@ impl byroredux_core::ecs::Resource for HudControl {}
 impl Default for HudControl {
     fn default() -> Self {
         Self {
+            backend: HudBackend::MenuXml,
             visible: true,
             bars: [None; 3],
             bar_count: 3,
@@ -317,17 +345,28 @@ fn hud_archive_args(args: &[String]) -> Result<Option<(String, String, HudGamePr
     ];
     let profile = candidates
         .iter()
-        .find(|p| esm_dir.join(p.misc_bsa).is_file())
-        .ok_or_else(|| {
-            format!(
-                "--hud: no vanilla menu corpus beside '{esm}' (looked for {})",
-                candidates
-                    .iter()
-                    .map(|p| p.misc_bsa)
-                    .collect::<Vec<_>>()
-                    .join(" / ")
-            )
-        })?;
+        .find(|p| esm_dir.join(p.misc_bsa).is_file());
+    let Some(profile) = profile else {
+        // Skyrim and FO4 carry their HUDs as Scaleform SWFs out of their
+        // interface archives — a different route (`crate::scaleform_hud`),
+        // which logs its own diagnostics. Stay quiet here so a `--hud`
+        // launch on those games reports one failure, not two.
+        if esm_dir.join("Skyrim - Interface.bsa").is_file()
+            || esm_dir.join("Fallout4 - Interface.ba2").is_file()
+        {
+            log::debug!("--hud: Scaleform-era interface archive present — Scaleform route owns the overlay");
+            return Ok(None);
+        }
+        return Err(format!(
+            "--hud: no vanilla menu corpus beside '{esm}' (looked for {} \
+             and the Skyrim/FO4 interface archives)",
+            candidates
+                .iter()
+                .map(|p| p.misc_bsa)
+                .collect::<Vec<_>>()
+                .join(" / ")
+        ));
+    };
 
     let textures = if let Some(t_idx) = args.iter().position(|a| a == "--hud-textures") {
         let path = args
@@ -645,7 +684,10 @@ fn bar_fractions(world: &World, control: &HudControl, profile: &HudGameProfile) 
     out
 }
 
-fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f32 {
+/// One bar's fraction: pinned debug value wins, then any stamped actor
+/// value, else full. Shared with the Scaleform HUD driver (Skyrim uses
+/// the same AVIF keys and the same pin semantics).
+pub(crate) fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f32 {
     pinned.map(|v| v.clamp(0.0, 1.0)).unwrap_or_else(|| {
         let av = match av {
             Some(av) => av,
@@ -675,8 +717,9 @@ fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f32 {
 }
 
 /// FxHash-style combiner for the frame signature — cheap and stable
-/// within a process, which is all the unchanged-skip needs.
-fn hash_signature(sig: (u32, u32, u32, i32, u8)) -> u64 {
+/// within a process, which is all the unchanged-skip needs. Shared with
+/// the Scaleform HUD driver (`scaleform_hud.rs`).
+pub(crate) fn hash_signature(sig: (u32, u32, u32, i32, u8)) -> u64 {
     let mut hash: u64 = 0x517c_c1b7_2722_0a95;
     for part in [
         sig.0 as u64,

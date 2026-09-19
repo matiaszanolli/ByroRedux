@@ -37,7 +37,7 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 | Ruffle render backend  | `ruffle_render_wgpu` on its **own** wgpu/Vulkan device (separate from the engine's `ash` Vulkan) |
 | Render path            | Ruffle → wgpu offscreen `TextureTarget` → `capture_frame()` CPU RGBA → Vulkan texture upload → fullscreen quad |
 | Lifetime               | `UiManager` is **not** an ECS resource — Ruffle's `Player` is not `Send + Sync`; it lives in the main loop alongside `VulkanContext` |
-| Status                 | Loose SWF demo (`--swf path.swf`) and archive-backed vanilla menu launch (`--menu interface\\hudmenu.swf --menu-archive <BSA-or-BA2>`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts; BSA/BA2-relative `ImportAssets` loading; focused winit input routing. The archive-backed route is verified end to end against real game data by [`docs/smoke-tests/m48-menu-load.sh`](../smoke-tests/m48-menu-load.sh) (#3273) — it needs a Vulkan device, so `cargo test` covers only the CLI-argument parser |
+| Status                 | Loose SWF demo (`--swf path.swf`), archive-backed vanilla menu launch (`--menu interface\\hudmenu.swf --menu-archive <BSA-or-BA2>`), and the M48.6 `--hud` Scaleform HUD route (vanilla `hudmenu.swf` over the live frame, `hud.*` console, transparent stage); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts; BSA/BA2-relative `ImportAssets` loading; focused winit input routing. The archive-backed route is verified end to end against real game data by [`docs/smoke-tests/m48-menu-load.sh`](../smoke-tests/m48-menu-load.sh) (#3273) — it needs a Vulkan device, so `cargo test` covers only the CLI-argument parser |
 | Pending                | Host-method behavior, remaining GFx stubs, Papyrus↔UI bridge, menu-stack/focus policy, font fidelity, full menu pack |
 
 ## Why Ruffle?
@@ -893,6 +893,81 @@ the graft/instantiate render are pinned env-gated in
 FO3 HUD art ships untinted (white ticks/strip) — the engine tints
 via `systemcolor &hudmain;`, whose default constant is not yet
 pinned from game settings, so M48.5 renders art-native colors.
+
+## Scaleform HUD (M48.6 Skyrim / M48.7 Fallout 4)
+
+`--hud` is the vanilla-HUD front door on every legacy-track game: the
+launcher probes the Scaleform route first (`Skyrim - Interface.bsa` or
+`Fallout4 - Interface.ba2` beside `--esm` → `byroredux/src/scaleform_hud.rs`,
+dispatched over a `ScaleformGame` enum), then the MenuXml profiles; the
+two are mutually exclusive per run, and `--menu` suppresses the Scaleform
+HUD (a second `UiManager` construction would orphan its host-call
+draining).
+
+The Skyrim HUD is `interface\hudmenu.swf` through the Ruffle player, with
+three HUD-grade fixes over the raw `--menu` route:
+
+- **Transparent stage** — `SwfPlayer::set_stage_transparent` flips
+  Ruffle's `WindowMode::Transparent`, whose clear is alpha-0 instead of
+  the movie's background color. Without it the full-screen overlay
+  texture carries an opaque stage clear and the rendered world is
+  invisible behind the HUD. `--menu` keeps the opaque stage (modal menus
+  own the screen by design).
+- **World input stays live** — `set_input_focus(false)` at launch; a HUD
+  is not a modal menu.
+- **`hud.off` hides** — the driver mirrors `HudControl.visible` into the
+  player each frame; `render()` answers `UiFrame::Hidden` and the UI
+  quad stops.
+
+The driver shares `HudControl` with the MenuXml track (Skyrim labels:
+health/magicka/stamina; `hud.status` gained a trailing
+`backend=menuxml|scaleform`), computes bar fractions from the same
+pinned-or-`ActorValues` semantics, and runs the same change-signature +
+33 ms cadence discipline. Bridge diagnostics reach the console through
+the `ScaleformHudDiag` resource mirror (`hud.debug`): the `Rc`-based
+bridge cannot live in the (Send-bounded) ECS, so the driver copies the
+registered-callback / unknown-method / unanswered-method sets out at 1 Hz
+alongside the last computed frame.
+
+**Protocol reality** (pinned by `crates/ui/tests/hudmenu_protocol.rs` and
+the `hud.debug` smoke gate): vanilla hudmenu is passive chrome. Its
+bytecode calls exactly four host methods — `GetButtonFromUserEvent`,
+`PlaySound`, `RegisterHUDComponents`, `myLog` — and it registers only the
+GameDelegate pair `call`/`respond` on ExternalInterface. The vanilla
+engine feeds the meters by GFx *object-path* invocation
+(`HUDMovieBaseInstance.HealthMeter_mc…`), a surface Ruffle does not
+expose (`call_internal_interface` reaches registered ExternalInterface
+callbacks only), so the bars stay engine-empty. Driving them needs
+either AVM1 injection into the movie or SkyUI-class menus — whose poll
+protocol (`updateStats`, `RequestPlayerInfo`, 0-100 percents) the
+response handlers registered at launch already answer, and whose
+state callbacks the driver's push table already targets.
+
+The smoke gate (`docs/smoke-tests/m48-6-skyrim-hud.sh`) gates the boot
+line, `backend=scaleform` + 3-bar pins, the `hud.debug` callback pair +
+driver liveness, and a chrome on/off pixel **diff**: `hud.off` between
+two captures makes the world (static across captures) cancel out, so the
+compass chrome is measured without a brightness assumption — the
+transparent stage lets the world legitimately contribute brightness.
+
+**M48.7 — Fallout 4 (AVM2):** the same driver serves
+`interface\hudmenu.swf` out of `Fallout4 - Interface.ba2` through the
+injected BGSCodeObj forwarding adapter — the `hud: loaded` line now
+carries `profile=` and `state=` (FO4 greps
+`state=Some(AdapterInjected)`). FO4 drives 2 bars (health `0x2C9` /
+ap `0x2D0`, the global AVIF space `derive_stored_actor_values` stamps
+FO4 NPCs with); the SkyUI poll handlers are Skyrim-gated (FO4's
+BGSCodeObj catalog has no meter-shaped queries and none are fabricated),
+and the push table skips the adapter's `__byro*` lifecycle hooks — which
+`hud.debug` mirrors as the runtime AdapterInjected observable. Protocol
+pinned by `crates/ui/tests/fallout4_hudmenu_protocol.rs`: vanilla FO4
+hudmenu is `AdapterInjected`, registers the lifecycle hooks
+(`__byroBGSCodeObjReady` answers `Bool(true)`), acknowledges destruction
+exactly once on drop (it declares `onCodeObjDestruction`), and boots
+with `unknown_methods()` empty — zero gameplay host calls while idle,
+so meters stay engine-empty exactly as on Skyrim. Smoke
+`docs/smoke-tests/m48-7-fo4-hud.sh` runs the MedTekResearch01 fixture
+and diffs chrome on/off over the health-bar and compass bands.
 
 ## Related docs
 

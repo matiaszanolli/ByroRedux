@@ -379,6 +379,8 @@ impl App {
                     &self.world,
                     ctx,
                     &mut self.ui_manager,
+                    frame.cam_forward,
+                    self.scaleform_hud.as_mut(),
                     UiOverlayState {
                         texture_handle: self.ui_texture_handle,
                         dropped_host_calls: &mut self.ui_dropped_host_calls,
@@ -850,10 +852,18 @@ fn tick_hud_overlay(
 /// upload the frame it produced. Returns the texture handle `draw_frame`
 /// should composite, or `None` when the overlay is hidden — which is what
 /// stops the UI quad being emitted at all (#2972).
+///
+/// `scaleform_hud` carries the M48.6 Skyrim `--hud` driver: when live it
+/// rides this same branch (the player must keep ticking/draining either
+/// way) and feeds `hudmenu.swf` engine state between the drain and the
+/// render, so a push marks the surface dirty and lands in the same
+/// frame's upload.
 fn tick_ui_overlay(
     world: &byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
     ui_manager: &mut Option<byroredux_ui::UiManager>,
+    cam_forward: [f32; 3],
+    scaleform_hud: Option<&mut crate::scaleform_hud::ScaleformHudDriver>,
     ui_state: UiOverlayState<'_>,
 ) -> Option<u32> {
     let mut ui_tex = None;
@@ -961,6 +971,14 @@ fn tick_ui_overlay(
                     );
                 }
             }
+        }
+
+        // M48.6 — feed the Scaleform HUD (if live) after the drain: the
+        // driver's pushes mark the surface dirty, so the render below
+        // uploads them this frame, and any GameDelegate calls the movie
+        // makes in response are drained next tick.
+        if let Some(driver) = scaleform_hud {
+            driver.tick(world, ui, cam_forward);
         }
 
         // #2972 — three-state, so "hidden" and "unchanged" no longer
