@@ -157,11 +157,16 @@ pub(crate) struct MaterialProvider {
     /// vanilla CDB materialises ~1.44M typed entries (multi-second parse,
     /// hundreds of MB–GB of RAM) that nothing reads today.
     /// SF-D3-AUDIT-01 / #2100.
-    /// Phase 2 (future, SF-D3-01 #1289): re-`parse` each CDB on demand and
-    /// walk the instance trees in load order to build ONE
+    /// Phase 2 (future, #3398): an **indexed / streaming** CDB reader —
+    /// NOT a full re-`parse`. The Phase-2 spike
+    /// (`docs/audits/SF_CDB_PHASE2_SPIKE_2026-08-29.md` §3) measured
+    /// `parse` at ~9.19 GB materialised per full-size CDB (~18 GB across
+    /// the 13 discovered) and concluded that calling `parse` on the
+    /// cell-load path is not viable; the indexed reader IS the project.
+    /// The reader walks instance trees in load order to build ONE
     /// `material_path → MaterialFields` lookup (DLC last-wins) so
     /// per-material metalness / roughness / texture paths flow into
-    /// `ImportedMesh` (mirrors the FO4 BGSM `resolve_bgsm` per-field
+    /// `ImportedMaterial` (mirrors the FO4 BGSM `resolve_bgsm` per-field
     /// translation already wired below) — a single index, no second
     /// per-game material path (CANONICAL-BOUNDARY). Archive order is
     /// preserved in `self.archives`, so re-discovery reproduces load order.

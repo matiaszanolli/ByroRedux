@@ -325,7 +325,7 @@ pub(crate) fn merge_external_material(
     } else {
         // Unknown extension — most likely a Starfield .mat JSON path that
         // SF-D3-01's suffix gate now correctly routes here. The .mat format
-        // is not yet parsed (tracked in SF-D6-03). Log once per path so the
+        // is not yet parsed (tracked in #4277). Log once per path so the
         // absence of material data is visible without spamming every frame.
         //
         // A `.mat` path only falls through to this generic arm when the
