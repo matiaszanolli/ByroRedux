@@ -17,11 +17,23 @@ Both questions are now answered. **Phase 2 is unblocked.**
 
 Reproduce with:
 
+> **#4435 note (2026-09-19).** The three `_tmp_` scratch examples this
+> block named were deleted by `a823c13a1` (#3150, 2026-09-02). The hash
+> probe is restored in-tree as
+> `crates/sfmaterial/examples/cdb_key_hash_probe.rs` (named, documented —
+> the `sf_smoke` convention); the other two remain recoverable from git
+> history via `git show a823c13a1^:<path>`.
+
 ```sh
-cargo run --release -p byroredux-sfmaterial --example _tmp_cdb_phase2_spike
-cargo run --release -p byroredux-nif --example _tmp_sf_matpath_dump -- \
-  "$SF/Starfield - Meshes01.ba2" --limit 3000 > /tmp/matpaths.txt
-cargo run --release -p byroredux-sfmaterial --example _tmp_cdb_hash_probe -- /tmp/matpaths.txt
+# In-tree (restored, #4435):
+cargo run --release -p byroredux-sfmaterial --example cdb_key_hash_probe -- /tmp/matpaths.txt
+
+# Deleted scratch examples — recover from history:
+git show 'a823c13a1^:crates/sfmaterial/examples/_tmp_cdb_phase2_spike.rs' > /tmp/cdb_phase2_spike.rs
+git show 'a823c13a1^:crates/nif/examples/_tmp_sf_matpath_dump.rs'      > /tmp/sf_matpath_dump.rs
+# then run the recovered matpath dump to produce /tmp/matpaths.txt:
+#   cargo run --release -p byroredux-nif --example _tmp_sf_matpath_dump -- \
+#     "$SF/Starfield - Meshes01.ba2" --limit 3000 > /tmp/matpaths.txt
 ```
 
 ---
@@ -219,7 +231,9 @@ exactly what must survive the walk: the `CompiledDB.HashMap`, the
    downstream walker from being factored into helpers.
 3. **Resolve the `BSResource::ID` label rotation** in the reader (§1) so
    downstream code reads `.Dir` and gets a directory.
-4. **Provider plumbing** in `byroredux/src/asset_provider/material.rs` —
+4. **Provider plumbing** in `byroredux/src/asset_provider/material/` (a
+   directory since #3857 — `provider.rs` runs the discovery,
+   `merge.rs` the `.mat` branch) —
    build the load-ordered index at `discover_starfield_cdbs`, store it on
    `MaterialProvider`, cache it beside `sf_cdb_cache` so it survives the
    per-cell provider rebuild.
@@ -228,15 +242,23 @@ exactly what must survive the walk: the `CompiledDB.HashMap`, the
    names hit the CDB sometimes, so the resolver order must be try-then-fall-
    through, not an unconditional gate.
 6. **Invert the pinned invariants** in
-   `byroredux/src/asset_provider/tests/starfield_mat.rs:177-188`, which
+   `byroredux/src/asset_provider/tests/starfield_mat.rs:168-209`, which
    deliberately assert today's zero-forwarding state.
 
 ## Artifacts
 
-- `crates/sfmaterial/examples/_tmp_cdb_phase2_spike.rs` — HashMap shape,
+> **#4435 note (2026-09-19).** All three `_tmp_` examples were deleted by
+> `a823c13a1` (#3150). The hash probe lives again as
+> `crates/sfmaterial/examples/cdb_key_hash_probe.rs`; the other two are
+> recoverable via `git show a823c13a1^:<path>`.
+
+- `crates/sfmaterial/examples/_tmp_cdb_phase2_spike.rs` *(deleted; git
+  history)* — HashMap shape,
   column-constancy proof, `ObjectInfo` layout, one expanded example per
   `BSMaterial::*` class.
-- `crates/sfmaterial/examples/_tmp_cdb_hash_probe.rs` — the hash brute-force
+- `crates/sfmaterial/examples/cdb_key_hash_probe.rs` *(restored in-tree,
+  #4435; originally `_tmp_cdb_hash_probe.rs`)* — the hash brute-force
   and the per-extension hit/miss breakdown.
-- `crates/nif/examples/_tmp_sf_matpath_dump.rs` — the NIF-side path corpus the
+- `crates/nif/examples/_tmp_sf_matpath_dump.rs` *(deleted; git history)* —
+  the NIF-side path corpus the
   probe tests against.
