@@ -458,8 +458,13 @@ impl VulkanContext {
         unsafe {
             if let Some(ref mut cc) = self.cluster_cull {
                 // Barrier: host writes to light/camera SSBOs must be visible
-                // to the compute shader before dispatch. Required by Vulkan
-                // spec even for HOST_COHERENT memory. Instance data is NOT
+                // to the compute shader before dispatch. Defense-in-depth
+                // rather than a spec requirement (#4182): host writes
+                // flushed before `queue_submit` are already visible
+                // (Vulkan 1.3 §7.9), and these are mapped writes made
+                // earlier in `draw_frame` — the barrier guards a future
+                // non-coherent memory type or a post-recording host write.
+                // Instance data is NOT
                 // uploaded yet — it is built and uploaded after this dispatch.
                 // HOST → COMPUTE_SHADER (light/camera UBO flush)
                 memory_barrier(

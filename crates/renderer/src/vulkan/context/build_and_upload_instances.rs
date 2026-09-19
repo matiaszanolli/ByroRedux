@@ -1085,10 +1085,14 @@ impl VulkanContext {
         // consumer that had its UBO folded here needs no per-dispatch
         // HOST→COMPUTE barrier. Fold history: composite (#909 /
         // REN-D1-NEW-03), SVGF (#961 / REN-D10-NEW-04), TAA + bloom
-        // (#1397 / NCPS-03). Required by Vulkan spec even for
-        // HOST_COHERENT memory.
+        // (#1397 / NCPS-03). #4182 — defense-in-depth, not a spec
+        // requirement: host writes flushed before `queue_submit` are
+        // already visible (Vulkan 1.3 §7.9 host-write ordering), and every
+        // write here is a mapped write made earlier in `draw_frame`. The
+        // barrier guards a future non-coherent memory type or a
+        // post-recording host write.
         // HOST → VERTEX|FRAGMENT|COMPUTE|DRAW_INDIRECT (instance SSBO + UBOs)
-        // SAFETY: `cmd` is recording. This single HOST_WRITE -> VERTEX|FRAGMENT|COMPUTE|DRAW_INDIRECT barrier makes every host-written buffer this frame (instance SSBO + composite/SVGF/TAA/bloom UBOs) visible to its shader consumers before the render pass; required by spec even for HOST_COHERENT memory.
+        // SAFETY: `cmd` is recording. This single HOST_WRITE -> VERTEX|FRAGMENT|COMPUTE|DRAW_INDIRECT barrier makes every host-written buffer this frame (instance SSBO + composite/SVGF/TAA/bloom UBOs) visible to its shader consumers before the render pass. Defense-in-depth (#4182): host writes before submit are already visible per spec §7.9 — this guards a future non-coherent memory type or a post-recording host write.
         unsafe {
             memory_barrier(
                 &self.device,

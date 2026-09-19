@@ -451,8 +451,11 @@ impl SsaoPipeline {
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
 
-        // HOST → COMPUTE_SHADER (UBO flush before dispatch; required even for
-        // HOST_COHERENT memory — the execution dependency ensures ordering).
+        // HOST → COMPUTE_SHADER (UBO flush before dispatch). Defense-in-depth,
+        // not a spec requirement (#4182): mapped writes before `queue_submit`
+        // are already visible per Vulkan 1.3 §7.9 host-write ordering — the
+        // barrier guards a future non-coherent memory type or a
+        // post-recording host write.
         memory_barrier(
             device,
             cmd,
