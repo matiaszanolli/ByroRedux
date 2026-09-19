@@ -282,7 +282,19 @@ const fn is_tint_family(shader_type: u32) -> bool {
 /// authors no companion texture.
 pub fn slot_to_colocated_role(context: TextureSlotContext, slot: u32) -> Option<TextureRole> {
     match (context.layout, slot) {
-        (TextureSlotLayout::Skyrim | TextureSlotLayout::Starfield, 2)
+        // #4431 — Skyrim only. Starfield used to ride this arm, but #3900
+        // moved Starfield onto FO76's slot vocabulary (one canonical
+        // boundary must not hold two rival vocabularies for one game) and
+        // did not update this sibling: for
+        // Starfield it still returned `LightingMask` on tint-family slot 2
+        // where FO76 returns `None`. The arm could not fire (soft/rim
+        // lighting is computed only for the Skyrim layout, and #3900's
+        // census found 0 Starfield `BSShaderTextureSet` blocks), but a
+        // future soft-lighting capture would have silently taken the
+        // Skyrim co-location. `apply_bs_lighting_shader` gates
+        // `soft_lighting`/`rim_lighting` on the Skyrim layout, so the
+        // context cannot even express it for Starfield.
+        (TextureSlotLayout::Skyrim, 2)
             if is_tint_family(context.shader_type)
                 && (context.soft_lighting || context.rim_lighting) =>
         {
@@ -747,6 +759,20 @@ mod tests {
             None,
             "the BGSM lane authors no companion texture — its unit default is correct"
         );
+
+        // #4431 — the Skyrim-only confinement is explicit on every
+        // non-Skyrim layout, not just FO4: #3900 moved Starfield onto
+        // FO76's slot vocabulary, and a future soft-lighting capture must
+        // not silently take the Skyrim co-location through a stale arm.
+        for layout in [TextureSlotLayout::Starfield, TextureSlotLayout::Fallout76] {
+            let mut other = tint;
+            other.layout = layout;
+            assert_eq!(
+                slot_to_colocated_role(other, 2),
+                None,
+                "{layout:?} must not take the Skyrim slot-2 co-location"
+            );
+        }
     }
 
     /// #2693 — inner layer is slot 6 on type 11, and slot 6 is inert elsewhere.
