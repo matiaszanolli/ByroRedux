@@ -1,6 +1,6 @@
 ---
 name: source-command-audit-legacy-compat-skill
-description: Audit ByroRedux compatibility gaps against Gamebryo 2.3 and Creation-era behavior across NIFAL, EXAL, PHYSAL, coordinate conversion, per-game translation, and uncovered legacy subsystems. Use when the user requests a legacy compatibility or cross-engine mapping audit.
+description: Audit ByroRedux compatibility gaps against Gamebryo 2.3 and Creation-era behavior in the seams no layer owner covers — coordinate and placement fidelity, legacy subsystem coverage, and cross-game translation patterns. Use when the user requests a legacy compatibility or cross-engine mapping audit.
 ---
 
 # Legacy Compatibility Audit
@@ -11,11 +11,11 @@ Use the Claude Code command as the canonical workflow instead of maintaining a d
 
 1. Read `.claude/commands/audit-legacy-compat/SKILL.md` completely.
 2. Read `.claude/commands/_audit-common.md` and `.claude/commands/_audit-severity.md` completely before auditing.
-3. Read the live layer specifications named by the selected dimensions, then follow the canonical command's process and report format.
+3. Read the live layer specifications named by the selected dimensions, then follow the canonical command's ownership table, process, and report format.
 
 ## Adapt Claude Conventions to Codex
 
-- Treat the user's text after the skill request as any requested audit focus or scope.
+- Treat the user's text after the skill request as any requested audit focus or depth.
 - Resolve each `/audit-<name>` reference to that audit's `SKILL.md` under `.claude/commands/`, and load a sibling audit only when the selected dimension requires its deeper checklist.
 - Use codebase-memory graph tools first for symbol discovery, callers, translation boundaries, and impact analysis. Use text search for legacy headers, literals, configs, docs, and graph gaps.
 - Interpret Claude `Task`-agent instructions as Codex sub-agent delegation only when delegation is available and allowed. Otherwise audit one dimension at a time.

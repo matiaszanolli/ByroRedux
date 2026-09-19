@@ -11,7 +11,7 @@ Use the Claude Code command as the canonical workflow instead of maintaining a d
 
 1. Read `.claude/commands/audit-incremental/SKILL.md` completely.
 2. Read `.claude/commands/_audit-common.md` and `.claude/commands/_audit-severity.md` completely before auditing.
-3. Follow the canonical command's scope selection, routing, checks, deduplication, and report format.
+3. Follow the canonical command's scope selection, owner routing through `.claude/commands/_audit-owners.md`, delta checks, deduplication, and report format.
 
 ## Adapt Claude Conventions to Codex
 
