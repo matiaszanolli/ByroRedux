@@ -571,6 +571,18 @@ Recorded so the next pass does not re-derive them.
   `pw.wake()` at `:352`, so the next `step` always takes the substep path and its
   post-loop `query_pipeline.update` (`world.rs:518-521`) covers the insert.
   Worth a `mark_colliders_dirty()` for symmetry, but not a defect.
+
+  > **#3968 correction (2026-09-19).** The disproof above is wrong at the
+  > gate level and was fixed accordingly: `wake()` does **not** guarantee a
+  > substep — the `accumulator >= PHYSICS_DT` gate is independent of
+  > `pending_wake` — so "the next step always takes the substep path" is
+  > false on every frame above 60 fps. The behaviour *was* safe, but for a
+  > reason this note never stated: `activate_ragdoll`'s #1772 keyframed
+  > teardown calls `pw.remove_body` per bone, and `remove_body` marks
+  > colliders dirty as a side effect — an accident with a hole, since the
+  > teardown is guarded by `if !bone_handles.is_empty()`. `build_ragdoll`
+  > now calls `pw.mark_colliders_dirty()` explicitly (pinned by
+  > `build_ragdoll_is_queryable_on_a_zero_substep_frame`).
 - **`register_newcomers` no longer refreshes the query pipeline, so a cast in the
   same frame sees a stale BVH.** It does not: `mark_colliders_dirty`
   (`sync.rs:885`) is honoured by both the stepping path and the no-step fast path

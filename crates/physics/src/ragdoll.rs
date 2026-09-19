@@ -421,6 +421,16 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
         }
     }
 
+    // #3968 — `wake()` does not guarantee a substep (the `accumulator >=
+    // PHYSICS_DT` gate is independent), and `mark_colliders_dirty()` is the
+    // only mechanism that reaches the query pipeline on a no-substep frame
+    // (#2864). Without this, a ragdoll built on a >60 fps frame is absent
+    // from the query BVH for up to one banked tick. The behaviour was
+    // historically safe only by accident — `activate_ragdoll`'s #1772
+    // keyframed teardown calls `remove_body` per bone, which marks dirty as
+    // a side effect — and that accident has a hole: the teardown is guarded
+    // by `if !bone_handles.is_empty()`.
+    pw.mark_colliders_dirty();
     pw.wake();
 
     Ragdoll {
@@ -862,6 +872,42 @@ mod tests {
             let expected = expected.limits(axis).unwrap();
             assert_eq!([actual.min, actual.max], [expected.min, expected.max]);
         }
+    }
+
+    /// #3968 — a ragdoll built on a >60 fps frame (`step` runs zero
+    /// substeps: `wake()` armed, `accumulator < PHYSICS_DT`) must still be
+    /// queryable: `mark_colliders_dirty()` is the only mechanism that
+    /// reaches the query pipeline on a no-substep frame (#2864), and
+    /// pre-fix `build_ragdoll` relied on `activate_ragdoll`'s teardown
+    /// marking dirty as a side effect — an accident with a hole
+    /// (`bone_handles.is_empty()` skips the teardown).
+    #[test]
+    fn build_ragdoll_is_queryable_on_a_zero_substep_frame() {
+        let mut pw = PhysicsWorld::new();
+        let spec = RagdollSpec {
+            bodies: vec![ball_body(1, 0.0, 0.0)],
+            constraints: vec![],
+        };
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let handle = rag.bodies[0].1;
+
+        // The >60 fps shape: wake armed, but the accumulator gate runs no
+        // substep — the #2856 pin's exact state.
+        assert_eq!(pw.step(PHYSICS_DT / 2.0), 0, "half a tick cannot step yet");
+
+        // The freshly built part's collider must be in the query BVH.
+        let pos = body_translation(&pw, handle).unwrap();
+        let hit = pw.cast_ray(
+            byroredux_core::math::Vec3::new(pos.x, pos.y + 100.0, pos.z),
+            byroredux_core::math::Vec3::new(0.0, -1.0, 0.0),
+            200.0,
+            None,
+        );
+        assert_eq!(
+            hit.and_then(|hit| hit.body),
+            Some(handle),
+            "a freshly built ragdoll must be queryable on a 0-substep frame (#3968)"
+        );
     }
 
     /// #2860 sibling — `RagdollSpec` already scales joint *pivots* by the
