@@ -50,10 +50,15 @@ pub fn oblivion_magicka_formula(intelligence_av: u32) -> DerivedStatFormula {
 /// Oblivion per-piece Armor Rating's skill-driven multiplier
 /// (`0.35 + 0.0065·ArmorSkill`). Source: UESP *Oblivion:The Complete Damage
 /// Formula* — `PieceArmorRating = BaseArmorRating × (0.35 + 0.0065 ×
-/// OpponentArmorSkill) × (ArmorHealth / MaxArmorHealth)`. CHARAL owns only
-/// the skill-driven multiplier; `BaseArmorRating` (per-piece content) and the
-/// condition ratio are equipment-layer inputs the combat system supplies, and
-/// the `Σ pieces, capped at 85` summation is a downstream combat concern, not
+/// ArmorSkill) × (ArmorHealth / MaxArmorHealth)`, where `ArmorSkill` is
+/// **the wearer's own** governing armor skill (UESP writes the formula from
+/// the attacker's perspective, hence its "Opponent" naming — the capture
+/// resolves the term to the defender's own skill, and that is what the
+/// shipped code reads: the actor's own LightArmor/HeavyArmor AV,
+/// actor-general scope). CHARAL owns only the skill-driven multiplier;
+/// `BaseArmorRating` (per-piece content) and the condition ratio are
+/// equipment-layer inputs the combat system supplies, and the
+/// `Σ pieces, capped at 85` summation is a downstream combat concern, not
 /// part of this per-skill formula (`docs/engine/charal-oblivion-ruleset.md`).
 /// The source gives one shared coefficient for "whichever armor skill governs
 /// the piece" — applied identically to both Light Armor and Heavy Armor below,
