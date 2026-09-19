@@ -59,6 +59,12 @@ Code quality, maintainability, hardening opportunities.
 | Wrong/divergent `Material` out of NIFAL `translate_material` | HIGH |
 | Translatable block silently dropped by NIFAL (collision shape / particle emitter params) | MEDIUM |
 | `#[repr(C)]` GPU struct size/layout drifts from shader struct (`GpuInstance` / `GpuCamera` / `GpuMaterial`) | HIGH |
+| Save: non-atomic write, or a partial/torn file that still loads | CRITICAL |
+| Save: serialized-shape change without a `FORMAT_MAJOR` bump / baseline refresh; or a load that silently drops gameplay state (inventory, loot, actor values) | HIGH |
+| Untrusted-input reader (archive / material / packfile / menu XML): out-of-bounds read from an unchecked on-disk offset | CRITICAL |
+| Untrusted-input reader: panic, or allocation sized directly from an on-disk field with no cap | HIGH |
+| Network-reachable debug/console surface that mutates world state without an explicit opt-in | HIGH |
+| Exterior/EXAL translation done at render time or per-game in a shader (NIFAL-style boundary violation) | HIGH |
 
 > **NIFAL rows** (the canonical-translation rows above) gate the single
 > `ImportedMesh → Material` boundary in `byroredux/src/material_translate.rs`
@@ -79,6 +85,8 @@ Does a `#[repr(C)]` GPU struct (GpuInstance/GpuCamera/GpuMaterial) drift from it
   → YES: At least HIGH (the size/offset pins in scene_buffer + material.rs are the lockstep guard; silent per-instance/per-material corruption otherwise)
 Does it emit a wrong/divergent Material from NIFAL translate_material?
   → YES: At least HIGH (one boundary, all-game blast radius, no per-draw fallback)
+Does it lose or corrupt saved state, or read past an untrusted on-disk length?
+  → YES: At least HIGH (CRITICAL for non-atomic writes and out-of-bounds reads)
 Does NIFAL silently drop a translatable block (collision shape / particle emitter params)?
   → YES: At least MEDIUM (escalate to HIGH if it removes visible game content)
 Does it affect GPU memory or rendering correctness?

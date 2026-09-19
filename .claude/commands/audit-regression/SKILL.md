@@ -1,6 +1,6 @@
 ---
 description: "Verify closed bug fixes haven't regressed — dynamically discovers and checks"
-argument-hint: "--issues <N,N,N> --limit <N> --label <label>"
+argument-hint: "--issues <N,N,N> --limit <N> --label <label> --recent"
 ---
 
 # Regression Verification Audit
@@ -9,62 +9,33 @@ Confirm that previously-fixed bugs are still fixed. This audit **dynamically
 discovers** closed bug issues from GitHub, locates each fix and its guard test,
 and reports any fix that has gone missing as a **Regression of #NNN**.
 
-See `.claude/commands/_audit-common.md` for project layout, severity, dedup,
-context rules, and the per-finding format. See `.claude/commands/_audit-severity.md`
-for the severity scale. This file only adds the regression-specific flow.
+Read `_audit-common.md` (dedup, methodology, per-finding format) and `_audit-severity.md` for shared protocol. This file only adds the regression-specific flow.
 
 ## Parameters (from $ARGUMENTS)
 
-- `--issues <N,N,N>`: Verify only these issue numbers (e.g., `--issues 9,16,1516`).
-- `--limit <N>`: Max closed issues to verify (default: 50).
-- `--label <label>`: Issue label filter (default: `bug`).
+- `--issues <N,N,N>`: verify exactly these issues (skips discovery).
+- `--limit <N>`: max issues to verify (default 40).
+- `--label <label>`: issue label filter for the fallback pass (default `bug`; use `bug,documentation,doc-rot` to include doc-rot fixes, or `game:<title>` to scope to one title).
+- `--recent`: skip churn weighting; take the N most-recently-closed issues instead.
 
-## Step 1 — Discover fixed issues
+## Step 1 — Discover fixes worth re-checking (churn-weighted)
+
+A fix can only regress if the code around it changed. With 4,400+ closed issues, "the last 50 closed" re-checks fixes nobody has touched and never reaches old fixes in hot files. Select by churn instead:
 
 ```bash
-gh issue list --repo matiaszanolli/ByroRedux --state closed --label bug \
-  --limit 50 --json number,title,body,closedAt,labels
+mkdir -p /tmp/audit
+D=$(ls docs/audits/AUDIT_REGRESSION_*.md | sort | tail -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')   # last sweep
+base=$(git rev-list -1 --before="$D 23:59" HEAD)
+git diff --name-only "$base"..HEAD -- '*.rs' '*.glsl' '*.comp' '*.frag' '*.vert' > /tmp/audit/churn.txt
+# earlier fix commits on the files that changed since, ranked by overlap:
+xargs -a /tmp/audit/churn.txt -I{} git log "$base" --format=%s -- {} \
+  | grep -oiE '(fix|fixes|fixed|close[sd]?|resolve[sd]?) #[0-9]+' | grep -oE '[0-9]+' \
+  | sort | uniq -c | sort -rn | head -"${LIMIT:-40}" > /tmp/audit/candidates.txt
 ```
 
-With `--issues`, fetch those numbers directly (`gh issue view <N> --repo
-matiaszanolli/ByroRedux --json number,title,body,closedAt,labels`) instead.
+Take the top candidates, then `gh issue view <N> --repo matiaszanolli/ByroRedux --json number,title,body,closedAt,labels` for each. If the churn list is empty or short, top up with `gh issue list --repo matiaszanolli/ByroRedux --state closed --label bug --limit 50 --json number,title,body,closedAt,labels`. Never trust a hand-typed closed-issue count; ask the API.
 
-> Default `--label bug` structurally misses closed issues carrying only the
-> `documentation` / `doc-rot` labels (e.g. #1818, a doc-rot fix) — pass
-> `--label bug,documentation,doc-rot` to include doc-rot regressions in the
-> discovery pass. To scope a regression sweep to one title, filter on the game
-> axis instead: `--label game:skyrim` (likewise `game:fnv`, `game:fo3`,
-> `game:fo4`, `game:fo76`, `game:oblivion`, `game:starfield`).
-
-For each issue, pull out:
-- **Number + title** — the regression handle.
-- **File references** — backtick-quoted paths in the body (`crates/nif/...`).
-- **Acceptance criteria / fix description** — what the fix is supposed to do.
-- **Related `#NNNN`** — phased fixes split across several issues (e.g. #1210 →
-  #1255 → #1257) regress as a set; verify the whole chain, not just the head.
-
-> **Discovery window caveat.** The repo has 3900+ closed issues (3941 via
-> `gh api search/issues -f q='repo:matiaszanolli/ByroRedux is:issue is:closed'
-> --jq .total_count`, 2026-09-11; re-run that query rather than trusting this
-> number — it was 3600+ as recently as the 2026-09-05 sync). The default
-> `--limit 50` only covers the most-recently-closed bugs, so older high-value
-> fixes get **no coverage** unless you raise `--limit` or pass them via
-> `--issues`. The unconditional **Step 4** fragile-area checks are the safety
-> net for fixes that landed as proactive refactors and were never an issue at
-> all — run them every time regardless of which issues Step 1 surfaced.
->
-> **Known-tricky verification candidates (2026-07 decompiler-safety + LC wave).**
-> These are no longer recent, but they're worth an explicit `--issues` pass
-> since the default `--limit` won't surface them: #1815 (decompiler
-> recursion-depth cap in the boolean-collapse pass), #1816 (`translate_pex`
-> missing `catch_unwind`), #1728 (Skyrim-BE/Starfield round-trip test for the
-> `.pex` reader), #1740 (DA10 `.pex` byte-equality parity test), #1731 (VWD
-> record-header flag parse + expose), #1718 (ragdoll bone/constraint-drop
-> telemetry on bone-name miss). Note **#1651** (BGSM/BGEM GL→Gamebryo blend
-> factors) was itself a WRONG fix — its premise was disproven and reverted by
-> **#1823**; don't re-verify #1651 as if it still holds. Several of these touch
-> the import→material boundary that **Step 4** already pins — cross-check
-> there.
+For each issue pull out: **number + title**; **file references** (backticked paths in the body); the **fix description / acceptance criteria**; **related `#NNNN`** — phased fixes (e.g. #1210 → #1255 → #1257) regress as a set, so verify the whole chain. Note **#1651** was itself a wrong fix, disproven and reverted by #1823 — do not verify it as if it still holds.
 
 ## Step 2 — Locate each fix and its guard
 
@@ -106,56 +77,19 @@ For each issue, work the fix → guard-test chain:
 - **UNVERIFIABLE** — the issue body names no file/symbol and no fix commit is
   findable. Note it and move on; don't guess.
 
-## Step 4 — Unconditional fragile-area checks
+## Step 4 — Unconditional fragile-area guards
 
-These guard fixes/contracts whose breakage is **invisible to GitHub-issue
-discovery** — most landed as refactors, not closed bugs — so check them every
-run regardless of Step 1's window. A FAIL here is still reported as a regression
-(reference the relevant issue if one exists, else describe the contract).
+These contracts landed as refactors, not closed bugs, so issue discovery never surfaces them. Run every time; a failure is reported as a regression (cite the issue if one exists, else the contract). Deep checklists live in the owning audit — this step only proves the guards are live.
 
-**NIFAL canonical-translation tier** (spec: `docs/engine/nifal.md`; see also
-`/audit-nifal` for the dimension-level checklist):
-
-- **Single material boundary.** `byroredux/src/material_translate.rs` (`fn
-  translate_material`) must remain the *only* `ImportedMesh → Material` site —
-  per-game material classification lives here, never in a shader. `Material`
-  (`crates/core/src/ecs/components/material.rs`) `metalness` / `roughness` must
-  stay plain resolved `f32` fields — no reintroduced `Option<f32>` and no
-  render-time classifier. The resolve-once contract is the boundary filling
-  overrides + `Material::resolve_pbr` (which calls `classify_pbr_keyword`)
-  filling only the unresolved slots.
-- **Typed particle emitters.** `NiPSysEmitter` / `NiPSysEmitterCtlr` /
-  `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` must still parse as **typed**
-  blocks (`crates/nif/src/blocks/particle.rs`, dispatched in
-  `crates/nif/src/blocks/mod.rs`), feed `extract_emitter_params` /
-  `extract_emitter_rate` (`crates/nif/src/import/walk/mod.rs` →
-  `ImportedEmitterParams` in `crates/nif/src/import/types.rs`), and be consumed
-  by `apply_emitter_params` (`byroredux/src/systems/particle.rs`). A regression
-  to opaque `NiPSysBlock` shows up as zero-sized emitters or clobbered colors.
-- **Collision shape coverage.** `BhkMultiSphereShape` + `BhkConvexListShape`
-  must still translate to a `CollisionShape` in
-  `crates/nif/src/import/collision/shape.rs` (dispatched from the shape-tree
-  walk in `mod.rs`; the dedicated shape decoders live in the `shape.rs`
-  sibling since the `#1876` module split — they were previously dropped to
-  `None`).
-
-**Disney BSDF + GPU struct contracts** (recent shader wave):
-
-- The Disney/Burley lobe now lives in `crates/renderer/shaders/include/pbr.glsl`
-  (split out of `triangle.frag`; the GLSL-PathTracer MIT attribution block stays
-  top-of-`triangle.frag`, Burley 2012 cite). The per-reservoir `resRadiance[]`
-  array was retired (#1369 factoring → commit 218b425b, which removed the ReSTIR
-  reservoir G-buffer attachment): WRS is register-local now, recomputing the
-  unshadowed radiance from the light index via `shadowableLightRadiance` in
-  `crates/renderer/shaders/include/lighting.glsl`. A regression here is a
-  reintroduced per-thread reservoir array or a re-added G-buffer reservoir
-  attachment — verify the array stays gone, not "intact".
-- `#[repr(C)]` GPU structs hold their size pins in
-  `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`:
-  `GpuInstance` = 160 B (`gpu_instance_is_160_bytes_std430_compatible`) and
-  `GpuCamera` = 368 B (`gpu_camera_is_368_bytes` — 352 B until #3323 appended
-  `exterior_sky_tint`). Run them:
-  `cargo test -p byroredux-renderer gpu_`.
+| Area | Contract | Verify |
+|---|---|---|
+| GPU struct sizes | every `#[repr(C)]` shader-contract struct keeps its pinned size (the pins, not this row, hold the numbers) | `cargo test -p byroredux-renderer gpu_` (`crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`, `crates/renderer/src/vulkan/material_tests.rs`) |
+| NIFAL single boundary | `translate_material` in `byroredux/src/material_translate.rs` is the only `ImportedMesh → Material` site; `metalness`/`roughness` stay plain resolved `f32`; `Material::resolve_pbr` fills only unresolved slots | `cargo test -p byroredux-core resolve_pbr`; `/audit-nifal` |
+| Typed particle emitters | `NiPSysEmitter*` parse typed (`crates/nif/src/blocks/particle.rs`) → `extract_emitter_params` (`crates/nif/src/import/walk/emitter.rs`) → `apply_emitter_params` (`byroredux/src/systems/particle.rs`); an opaque `NiPSysBlock` shows as zero-sized emitters | `cargo test -p byroredux apply_emitter_params` |
+| Collision coverage | every `Bhk*Shape` parser maps to a `CollisionShape` in `crates/nif/src/import/collision/shape.rs` (incl. `BhkMultiSphereShape`, `BhkConvexListShape`) | `cargo test -p byroredux-nif collision` |
+| ReSTIR reservoir | the per-thread `resRadiance[]` array stays *retired* (#1369) — WRS is register-local, radiance recomputed via `shadowableLightRadiance` in `crates/renderer/shaders/include/lighting.glsl`; verify it stays gone, not "intact" | grep `resRadiance` in `crates/renderer/shaders/` → only the retirement comments |
+| Scheduler access | every parallel system declares what it acquires | `cargo test -p byroredux system_access_declaration_tests` |
+| Save shape | serialized shape changes force a baseline refresh or `FORMAT_MAJOR` bump | `cargo test -p byroredux serde_default_guard_tests` |
 
 ## Output
 

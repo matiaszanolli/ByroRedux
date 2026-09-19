@@ -59,7 +59,7 @@ are already tracked upstream — record them in the summary, do not re-file.
   `byroredux/src/material_translate.rs` (`translate_material`) +
   `crates/core/src/ecs/components/material.rs` (`Material::resolve_pbr`); the per-frame
   particle system is `byroredux/src/systems/particle.rs` (`apply_emitter_params`), fed by
-  `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`).
+  `crates/nif/src/import/walk/emitter.rs` (`extract_emitter_params` / `extract_emitter_rate`).
 - Classify: **CONFIRMED** (bug still present) → file it; **STALE** (already fixed) → skip,
   record in summary; **UNVERIFIABLE** (cannot confirm against code) → skip, record in summary.
 
@@ -108,8 +108,11 @@ label. Map the finding's subsystem directly:
 | BSA / BA2 / CSG archive readers | `import-pipeline` *(no `bsa` label — flag the gap)* |
 | Vulkan renderer / RT / denoiser | `renderer` (+ `vulkan` / `pipeline` / `memory`) |
 | GLSL / SPIR-V sources, shader contract | `shaders` (+ `renderer`) |
-| Water — WATAL, buoyancy, waterline | `water` |
-| Terrain / LOD / sky / weather / worldspace (EXAL) | `terrain-exterior` |
+| Water — WATAL translation, buoyancy, waterline | `water` |
+| Terrain / LOD / sky / weather / ground cover / worldspace (EXAL, SKYAL) | `terrain-exterior` (+ `renderer` / `shaders` for the GPU half) |
+| Inventory / containers / loot / consumables / combat / AI packages / locomotion | `gameplay` + the narrower tag (`inventory` / `combat` / `ai` / `quests`) |
+| BGSM / CDB / HKX / FaceGen / MenuXml / game-detect readers | `import-pipeline` *(no own label — flag the gap)* |
+| SDK, debug server / protocol / `byro-dbg`, launcher, settings-io | `tech-debt` *(no own label — flag the gap)* |
 | Physics — Havok→Rapier, colliders, ragdoll (PHYSAL) | `physics` |
 | SpeedTree (`.spt`) | `speedtree` |
 | Character rulesets — ActorValues, perks, leveling (CHARAL) | `character` |
@@ -120,7 +123,7 @@ label. Map the finding's subsystem directly:
 | ECS storage / queries / scheduler | `ecs` |
 | GPU sync (semaphores, fences, barriers) | `sync` |
 | CPU lock ordering / races / access declarations | `concurrency` |
-| Platform / windowing, debug-server, audit infrastructure | `tech-debt` *(no own label — flag the gap)* |
+| Platform / windowing, audit infrastructure | `tech-debt` *(no own label — flag the gap)* |
 
 **Game** (zero or more) — apply whenever the finding is specific to a title, *in addition*
 to the domain label. A per-game audit report labels every finding with its game; a
@@ -158,6 +161,14 @@ domain/type; a per-finding `Dimension`/domain always overrides it:
 | `AUDIT_AUDIO_*` | `audio` | `bug` | — |
 | `AUDIT_SPEEDTREE_*` | `speedtree` | `bug` | `terrain-exterior` |
 | `AUDIT_SCRIPTING_*` | `scripting` | `bug` | — |
+| `AUDIT_PAPYRUS_*` | `scripting` | `bug` | — |
+| `AUDIT_PERFORMANCE_*` | `performance` | `bug` | + the landing subsystem |
+| `AUDIT_SAFETY_*` | `safety` | `bug` | + the landing subsystem |
+| `AUDIT_RUNTIME_*` | (per finding) | `bug` | `performance` on fps/draw-call drift |
+| `AUDIT_EXTERIOR_*` | `terrain-exterior` | `bug` | `water` / `shaders` / `renderer` per finding |
+| `AUDIT_GAMEPLAY_*` | `gameplay` | `bug` | `inventory` / `combat` / `ai` / `quests` per finding |
+| `AUDIT_PARSERS_*` | `import-pipeline` | `bug` | `game:*` where title-specific |
+| `AUDIT_TOOLING_*` | `tech-debt` | `bug` | — |
 | `AUDIT_FNV_*` / `AUDIT_FO3_*` / `AUDIT_FO4_*` / `AUDIT_SKYRIM_*` / `AUDIT_OBLIVION_*` / `AUDIT_STARFIELD_*` | (per finding) | `bug` | the matching `game:*` on **every** finding + `legacy-compat` |
 | `AUDIT_LEGACY_COMPAT_*` | `legacy-compat` | `bug` | `game:*` where title-specific |
 | `AUDIT_TECH_DEBT_*` | (per finding) | `bug` | `tech-debt` |
@@ -180,7 +191,7 @@ NIF-only):
 - [ ] **DROP**: If Vulkan objects change, the Drop impl is still reverse-order correct
 - [ ] **LOCK_ORDER**: If a RwLock scope changes, TypeId-sorted acquisition is preserved
 - [ ] **FFI**: If the cxx bridge is touched, pointer lifetimes across the boundary are sound
-- [ ] **CANONICAL-BOUNDARY**: If the fix touches `byroredux/src/material_translate.rs` (`translate_material`), `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`), or the emitter params in `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), per-game logic stays at the NIFAL parser→`Material` boundary — never pushed into shaders/renderer, never re-derived at render time. See `/audit-nifal`.
+- [ ] **CANONICAL-BOUNDARY**: If the fix touches `byroredux/src/material_translate.rs` (`translate_material`), `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`), or the emitter params in `crates/nif/src/import/walk/emitter.rs` (`extract_emitter_params` / `extract_emitter_rate`), per-game logic stays at the NIFAL parser→`Material` boundary — never pushed into shaders/renderer, never re-derived at render time. See `/audit-nifal`.
 - [ ] **TESTS**: A regression test pins this specific fix
 ```
 

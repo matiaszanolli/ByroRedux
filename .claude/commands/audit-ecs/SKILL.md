@@ -6,536 +6,281 @@ description: "Deep audit of the ECS — storage backends, queries, world, system
 
 Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 
-The ECS core is `crates/core/src/ecs/`. Since Session 34's split the module
-is one-file-per-concern: `storage.rs` holds only the `Component` /
-`ComponentStorage` / `DynStorage` traits + `EntityId`; the two backends live in
-`packed.rs` (`PackedStorage`) and `sparse_set.rs` (`SparseSetStorage`).
-`world.rs` owns the `RwLock`-per-storage `World`; `query.rs` the guard-owning
-query wrappers; `resource.rs` the resource guards; `scheduler.rs` the stage
-scheduler; `access.rs` the declared-access conflict analyzer; `lock_tracker.rs`
-the deadlock / ABBA detector; `systems.rs` the transform-propagation system. Dimension 10 (added 2026-08-13)
-extends this skill past `ecs/` into the sibling `crates/core/src/animation/`
-runtime, which had no owner dimension anywhere.
+Scope: `crates/core/src/ecs/` (one file per concern: `storage.rs` traits, `packed.rs` / `sparse_set.rs`
+backends, `world.rs`, `query.rs`, `resource.rs`, `scheduler.rs`, `access.rs`, `lock_tracker.rs`,
+`systems.rs` transform propagation, `hierarchy.rs`), its `components/` + `resources/` trees, the
+`crates/core/src/animation/` runtime (Dim 9), and scheduler *registration* in `byroredux/src/boot/schedule/`.
+Owner map: _audit-owners.md. Gameplay-system logic (combat, inventory, AI-package behaviors,
+containers/loot, notifications) belongs to `/audit-gameplay`; this audit keeps only ECS *shape* — storage
+class, lifecycle, lock/access declaration.
 
-Dimensions are ordered by ECS blast radius: lock ordering / deadlock first,
-then storage correctness, query borrow safety, scheduler declarations, resource
-lifetimes, then the cross-cutting lifecycle and hot-path guards.
+Dimensions run in order of blast radius. Per-dimension `Paths:` / `First step:` let you skip a
+dimension whose Paths have no commits since the last report
+(`git log --since=<last-report-date> --format='%h %s' -- <Paths>`).
 
 ## Dimensions
 
-### 1. Lock Ordering & Deadlock (HIGHEST blast radius)
+### 1. Lock Ordering & Deadlock Machinery (HIGHEST blast radius)
 
-A wrong lock order is a HIGH (per `_audit-severity`: "ECS deadlock potential").
+Paths: `crates/core/src/ecs/{world,lock_tracker,query,resource}.rs`
+First step: `cargo test -p byroredux-core lock_tracker` then `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux-core`
 
-- **Same-thread reentrancy**: `lock_tracker` (`lock_tracker.rs`) panics with a
-  clear message when a thread takes `write` on a type it already holds (read or
-  write), or `read` while holding `write`. The thread-local check runs in BOTH
-  debug and release; the global lock-order graph (ABBA, #313) is debug-only AND
-  opt-in via `BYRO_LOCK_ORDER_CHECK=1`.
-  Verify every `query` / `query_mut` / `resource` / `resource_mut` site in
-  `world.rs` arms a `TrackedRead` / `TrackedWrite` scope, defuses it only AFTER
-  the real lock is acquired, and that the wrapper's `Drop` untracks.
-- **TypeId-sorted multi-lock acquisition**: `query_2_mut` / `query_2_mut_mut`
-  (`world.rs`) and `resource_2_mut` / `try_resource_2_mut` (`world.rs`) acquire
-  in `id_a < id_b` order — and set up the *tracker scopes in the same order*
-  (the #313 fix: pre-fix the scopes were armed in generic-parameter order, which
-  looked like ABBA to the graph when the caller spelled `<B, A>`). A regression
-  that arms scopes in parameter order instead of TypeId order re-opens #313.
-- **Same-type double-lock panics, never deadlocks**: `query_2_mut` /
-  `query_2_mut_mut` / `resource_2_mut` `assert_ne!` on `A == B` with a clear
-  message. A silent self-deadlock is the regression.
-- **ABBA across rayon workers**: the global graph generalizes the pair guarantee
-  to any N-lock hold pattern across the parallel scheduler. Two single-type
-  queries acquired in opposite orders on two workers must trip the graph (when
-  run under `BYRO_LOCK_ORDER_CHECK=1`), not deadlock. Pin: this is the only
-  protection for ad-hoc N>2 lock holds.
-- **Poison-on-panic resolution**: every lock acquisition resolves
-  `PoisonError` through `storage_lock_poisoned::<T>()` /
-  `storage_lock_poisoned_erased()` / `resource_lock_poisoned::<R>()`
-  (`world.rs`) — a post-panic access re-panics loud with the type name, never
-  silently reads torn state. `despawn` uses the type-erased variant fed by the
-  `type_names` side-table (#466). Removing a poison-resolve site is a finding.
+A wrong lock order is HIGH. This dimension owns the *machinery*; system-level cycles, canonical-order
+adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
 
-### 2. Storage Correctness
+- **Reentrancy**: the thread-local check (write on a type already held, read while holding write)
+  panics in debug AND release. The global ABBA graph is debug-only and opt-in via
+  `BYRO_LOCK_ORDER_CHECK=1` (#313). Every `query` / `query_mut` / `resource` / `resource_mut` site in
+  `world.rs` must arm a `TrackedRead` / `TrackedWrite` scope, defuse it only AFTER the real lock is
+  taken, and untrack in `Drop`.
+- **TypeId-sorted pairs**: `query_2_mut`, `query_2_mut_mut`, `resource_2_mut`, `try_resource_2_mut`
+  acquire in `TypeId` order AND arm tracker scopes in the same order (arming in parameter order
+  re-opens #313 — a caller spelling `<B, A>` then looks like ABBA). Each `assert_ne!`s `A == B`; a
+  silent self-deadlock is the regression. `try_resource_2_mut` checks BOTH existences before taking
+  EITHER lock (#465).
+- **Tracker internals** (each pinned by tests in `lock_tracker.rs` — read them, do not re-derive):
+  `record_and_check` runs BEFORE the incoming `LockState` row is inserted, on the fresh-acquire AND
+  recursive-read paths (#2384/#3696; `is_clean()` true after a caught ABBA panic); `GRAPH` lock
+  poison is recovered with `unwrap_or_else(|poison| poison.into_inner())`, never `.expect` (#2385 —
+  an `.expect` blinds the detector after its first correct catch); a recursive read is a deduplicated
+  `log::warn!`, not a reject (#2386/#3249: `recursive_read_warns_once_and_continues`); the `held_others`
+  snapshot is gated on `cfg(debug_assertions)` AND `global_order::is_enabled()` (#823/#3680) so a
+  detector-off debug build allocates nothing.
+- **Poison**: every acquisition resolves `PoisonError` through `storage_lock_poisoned` /
+  `storage_lock_poisoned_erased` / `resource_lock_poisoned` (`world.rs`) — re-panic loud with the type
+  name. `despawn` uses the erased variant fed by the `type_names` side-table (#466); dropping either
+  loses the type name in every panic.
 
-- **SparseSetStorage** (`sparse_set.rs`): swap-remove fixes the sparse pointer
-  for the entity moved into the gap (`self.sparse[moved_entity] = Some(dense_idx)`);
-  removing the last element takes the no-swap path; insert into an existing
-  entity overwrites in place (no duplicate, len unchanged). Pinned by
-  `swap_remove`, `remove_last`, `overwrite` in the file's test module.
-- **PackedStorage** (`packed.rs`): `binary_search` maintains the sorted-by-entity
-  invariant on every insert/remove; `insert_bulk` uses the append + single-sort
-  fast path (#467) instead of O(n) per-insert shift; a bulk insert that
-  re-sorts must keep the set sorted AND deduplicated.
-- **Change tracking (`Component::TRACK_CHANGES`)**: opt-in per-entity dirty set
-  (`PackedStorage`, via `mark_dirty` on insert/get_mut/remove) and a monotonic
-  `structural_gen` counter (`SparseSetStorage::structural_generation`, bumped on
-  insert/remove incl. reparent overwrite). The const is `false` by default so
-  non-tracked components pay nothing (branch folds away). Enabled for
-  `Transform` / `GlobalTransform`. Audit: `drain_dirty_into` clears `out` then
-  drains while *preserving* `self.dirty` capacity (#1371); `take_dirty` hands
-  capacity away (0-cap regrow). The dirty set MAY contain duplicates — consumers
-  must tolerate that. A storage that forgets to `mark_dirty` on a mutation path
-  silently breaks transform propagation's fast path (dim 8).
-- **`insert_bulk` debug guard**: `World::insert_batch` (`world.rs`) wraps the
-  iterator so the `entity < next_entity` `debug_assert` still fires per item —
-  a bulk path that skips it lets unspawned IDs in.
+### 2. Storage Correctness & Change Tracking
 
-### 3. Query Borrow Safety
+Paths: `crates/core/src/ecs/{packed,sparse_set,storage}.rs`, `crates/core/src/ecs/components/{transform,global_transform,hierarchy,scene_flags,world_bound}.rs`
+First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include='*.rs' | grep -v test`
 
-- **Guard-owning wrappers**: `QueryRead` / `QueryWrite` / `ComponentRef`
-  (`query.rs`) hold the `RwLock*Guard` for the wrapper's lifetime and cache a
-  raw pointer downcast ONCE in `new()` (#1367 hot-path fix). The SAFETY argument:
-  the cached `*const`/`*mut T::Storage` points into the box the guard keeps
-  locked + pinned; no writer can move it while the lock is held. Re-verify each
-  `unsafe { &*self.storage }` / `&mut *self.storage` still has the guard field
-  alive (the `#[allow(dead_code)] guard` must not be dropped early).
-- **`ComponentRef` is the sound replacement for the unsound #35 pattern** —
-  it retains the guard rather than returning a raw pointer to dropped storage.
-  A regression that drops the guard and hands back a pointer is CRITICAL (UAF).
-- **Deref soundness**: `QueryWrite`'s `Deref`/`DerefMut` route through
-  `storage()` / `storage_mut()`; `DerefMut` requires `&mut self`, so the borrow
-  checker forbids a live `&` and `&mut` into the same storage simultaneously.
-- **`query` / `query_mut` return `None` for never-created storage** (no lazy
-  empty-storage creation on the read path). `register::<T>()` is the way to
-  guarantee a query succeeds before first insert.
+- **PackedStorage census**: production users are exactly `Transform`, `GlobalTransform`, `WorldBound`,
+  `SceneFlags`. Any other `PackedStorage` component is a finding unless it is read every frame by
+  renderer/physics/animation. Everything sparse (actors, markers, events) is `SparseSetStorage`.
+- **SparseSetStorage**: swap-remove repoints the sparse slot of the entity moved into the gap;
+  removing the last element takes the no-swap path; re-insert overwrites in place (`swap_remove`,
+  `remove_last`, `overwrite`).
+- **PackedStorage**: `binary_search` keeps the sorted-by-entity invariant on insert/remove;
+  `insert_bulk` is append + one sort and the result stays sorted AND deduplicated (#467);
+  `World::insert_batch` still fires the per-item `entity < next_entity` `debug_assert`.
+- **Change tracking** (`Component::TRACK_CHANGES`, default `false`): ON for `Transform`,
+  `GlobalTransform`, `Parent`, `Children`. `PackedStorage` keeps a dirty set (may hold duplicates —
+  consumers tolerate that); `SparseSetStorage::structural_generation` bumps on insert/remove.
+  `drain_dirty_into` preserves capacity (#1371); `take_dirty` hands it away. The `GlobalTransform`
+  dirty set has ONE destructive drainer (`make_world_bound_propagation_system`,
+  `byroredux/src/systems/bounds.rs`) — a second `take_dirty` / `drain_dirty_into` consumer steals its
+  work; other systems must use `get_mut` only where marking dirty is intended (billboards call this
+  out). A mutation path that forgets `mark_dirty` silently breaks Dim 6's fast path.
+- **Erased removal (per cell unload)**: `clear_erased` releases capacity; `remove_entities_erased`
+  early-outs on an empty victim set and, in `PackedStorage`, compacts in place with zero allocations
+  (`remove_entities_erased_does_not_reallocate`, #3689) while keeping sort order + dirty marks (#2396).
+  A regression is a per-streaming-cycle cost.
+- `EntityId` is monotonic and never recycled (`World::spawn` `checked_add` panic #36; `despawn`
+  reclaims nothing, #372/#3375). Do not describe it as generational or "fix" it by reuse (dangling
+  `Parent` refs go silent).
 
-### 4. Resource Lifetimes
+### 3. Query Borrow Safety & the ECS `unsafe`
 
-- `resource()` / `resource_mut()` panic with the type name when the resource was
-  never inserted; `try_resource()` / `try_resource_mut()` return `None`.
-- `ResourceRead` / `ResourceWrite` (`resource.rs`) downcast through the guard on
-  each `Deref` (NOT cached — these are not the #1367 hot path); verify the
-  downcast `expect` can't fire (TypeId keys the map).
-- Resources are usable from systems via `&self` interior mutability.
-- `insert_resource` returns the prior value (downcast back out of the old lock);
-  `remove_resource` resolves poison via `resource_lock_poisoned`.
-- `try_resource_2_mut` does BOTH existence checks before acquiring EITHER lock
-  (#465) — a regression that checks-then-locks-then-checks reintroduces a
-  partial-acquire deadlock window.
+Paths: `crates/core/src/ecs/query.rs`, `.github/workflows/ci.yml` (job `ecs-query-miri`)
+First step: `grep -n 'unsafe' crates/core/src/ecs/query.rs` (expect exactly 4 derefs)
 
-### 5. System & Scheduler Wiring
+- The only `unsafe` in `ecs/` is the four cached-pointer derefs in `query.rs` (`QueryRead::storage`,
+  `QueryWrite::storage` / `storage_mut`, `ComponentRef::Deref`; #1367). Each needs a SAFETY comment
+  tying the pointer to the live guard field; the `#[allow(dead_code)] guard` must not drop early;
+  `&mut *self.storage` stays gated by `&mut self`. A new unsafe block without a comment is MEDIUM.
+- `World::get` returns `ComponentRef` (owns its guard), never a raw pointer to dropped storage (the
+  unsound #35 pattern = CRITICAL UAF if it returns).
+- Guard: CI job `ecs-query-miri` runs `cargo miri test -p byroredux-core --lib ecs::world::tests`
+  skipping only `resource_visible_to_system_via_scheduler` (crossbeam-epoch TLS vs Miri). Confirm the
+  skip list has not widened and that any new cached-pointer site has a test under `ecs::world::tests`.
+- `query` / `query_mut` return `None` for never-created storage (no lazy creation); `register::<T>()`
+  guarantees success before first insert.
+- `HierarchyTraversalGuard` (`crates/core/src/ecs/hierarchy.rs`) bounds every parent/children walk to
+  `entities + child refs + 1` steps; transform propagation and bounds use it. A new hierarchy walk
+  without it, or without a visited set, is an unbounded-loop hazard on a cyclic `Parent` graph.
 
-- Blanket `System` impl for `Fn(&World, f32)` (`system.rs`); closures and bare
-  fns can't override `System::access`, so they declare via the scheduler's
-  registration-site override (dim 5b).
-- Mutations from a system are visible to later systems in the same `run()`
-  (pinned by `mutation_visible_across_stages`).
-- Empty scheduler and empty intermediate stages run without panic
-  (`empty_scheduler_runs_cleanly`, `empty_stages_skipped`).
-- `system_names()` returns stage-order then within-stage (parallel first, then
-  exclusive); duplicate names warn on `add_*` but `try_add_*` rejects with
-  `Err(name)` across the flat name space (#312).
-- Panic policy is **fail-fast by design** (TS-08 / #1412): a panicking system
-  aborts the frame and the process; do NOT report "missing `catch_unwind`" as a
-  bug — see the `Scheduler::run` doc comment. `run` takes `&mut self` and
-  `Scheduler` is intentionally NOT a `Resource` (re-entry is structurally
-  impossible, #868).
+### 4. Resources & World-Level State
 
-### 5b. Scheduler Access Declarations (R7 / M27, closed 2026-05-23)
+Paths: `crates/core/src/ecs/{resource.rs,resources/,game_profiles.rs,debug_load.rs,metrics.rs}`, `world.rs` resource half
+First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/src/ecs/resources`
 
-The stages are **`Early` → `Update` → `PostUpdate` → `Physics` → `Late`**
-(`Stage` enum, `scheduler.rs`, discriminants `0..=4`, iterated via
-`BTreeMap<Stage, _>` `Ord`). There is **no** *ParallelUpdate* or *LateExclusive*
-stage — "exclusive" is a *phase within every stage* (`StageData.exclusive`),
-not a stage. Exclusive systems run serially after the stage's parallel batch.
+- `resource()` / `resource_mut()` panic with the type name when never inserted; `try_*` return `None`.
+  `ResourceRead` / `ResourceWrite` downcast per `Deref` (not cached — not the #1367 hot path);
+  `insert_resource` returns the prior value; `remove_resource` resolves poison.
+- **Resource vs. component choice**: mode flags and singleton state are `Resource`s (`HardcoreMode`,
+  `SelectedRef`, the `*Bridge`/`*Telemetry` structs); per-actor state is a `SparseSetStorage`
+  component (`ActorVitals`, `TimedRestorations`). A new per-entity fact modelled as a global map keyed
+  by `EntityId` is the drift (it defeats `despawn` cleanup and save capture). Every new `Resource` /
+  `Component` is also subject to the save registry gate
+  (`every_component_or_resource_impl_is_saved_or_explicitly_allowlisted`, `byroredux/src/save_io/`,
+  `/audit-save`) and the debug-server registry.
+- `SkinSlotPool` (`resources/skin_slot_pool.rs`): every collection is `FxHashMap`/`FxHashSet`
+  (`_audit-common.md` hot-path hashing rule); `pose_dirty` and `drain_pending` are the renderer
+  hand-off. Overflow/retry semantics are `/audit-safety` Dim 7.
+- `OwnershipTracker` / `ReclaimPolicy` (`resources/ownership.rs`): the EX-08 soak-gate accounting.
+  Check each owner class's policy is honest — `Monotonic` only for identity watermarks (entity ids,
+  mesh/texture slot-vector lengths), `Exact` for anything that must return to baseline after unload,
+  `Bounded` for documented caches. A leaking class reclassified `Bounded`/`Monotonic` to turn the gate
+  green is the finding.
+- `DeltaTime` is stamped once per frame by the main loop (`byroredux/src/app_events.rs`); a system that
+  writes it or `TotalTime` is a finding.
 
-- **`Access` (not *SystemAccess*) is the declaration type** (`access.rs`):
-  `Access::new().reads::<T>().writes::<U>().reads_resource::<R>()…`. A system's
-  declaration is `Some(Access)` or `None` (undeclared). Three states: declared-
-  empty ("touches no ECS state"), declared-with-claims, or undeclared (`None`).
-  The default for both `System::access()` and the per-entry override is `None`.
-- **M27 Phase 1+2** (`a9810d40`): every parallel-stage system on the engine
-  binary declares reads/writes via `Scheduler::add_to_with_access` at the
-  registration site in `byroredux/src/boot/schedule/mod.rs` (`build_scheduler`; closures
-  can't impl `System::access`). Any parallel system registered via plain
-  `add_to` (no declared access) is a regression. Do not pin the registration
-  count: enumerate live declarations with
-  `rg -n '^\s*scheduler\.add_to_with_access\(' byroredux/src/boot/schedule/`, then
-  verify that `rg -n '^\s*scheduler\.add_to\(' byroredux/src/boot/schedule/` is empty
-  (the scheduler is built across `mod.rs` + the per-stage `early`/`update`/
-  `post_update`/`physics`/`late` files since the #3855 split).
-  The invariant is the zeroed access report below, not a wiring total.
-- **M27 Phase 3** (`05fe2bac`): 4 analyzer-visible conflicts were resolved two
-  ways — one dispatcher merge plus two exclusive re-stages. `player_controller_system`
-  (Stage::Early) stays **parallel** and declares the *union* of `fly_camera` +
-  `character_controller` accesses because it branches on `PlayerMode` per frame;
-  `audio_system` (Late) and `spin_system` (Update) were the two moved to
-  **exclusive**. `sys.accesses` reports **0 unknown / 0 conflicts**.
-- **`AccessConflict` lives in `access.rs`** (re-exported via `ecs::mod`) and has
-  EXACTLY three variants: `None`, `Unknown { left_undeclared, right_undeclared }`,
-  `Conflict { pairs }`. There is **no** `Parallel` variant (the #1521 wording
-  fix). `analyze_pair` returns `Unknown` when one/both sides are undeclared.
-  #1394 (`a7e1502b`) added the `undeclared_parallel_count()` accessor on
-  `AccessReport` — the migration KPI counting parallel-stage systems still at
-  `None` — NOT a reclassification. Driving `undeclared_parallel_count() == 0`
-  drives `unknown_pair_count()` to 0 because every parallel pair then has both
-  sides declared. Pin: `undeclared_closure_pairs_show_as_unknown`
-  (`scheduler.rs`) asserts two undeclared closures yield `unknown_pair_count() == 1`.
-- **Exclusive declarations are OPTIONAL and mostly absent** (#1236/#1237,
-  `94e78b9f`): `add_exclusive_with_access` / `try_add_exclusive_with_access`
-  EXIST so closures/fns *can* declare on the exclusive phase, but the live
-  schedule still registers most exclusives via plain `add_exclusive` (e.g.
-  `event_cleanup_system`, `audio_system`, `spin_system`, the DLC dispatchers),
-  so `undeclared_exclusive_count()` is non-zero by design. The analyzer
-  (`access_report`) only pairs parallel-stage systems — exclusives are listed
-  but never paired (`exclusive_systems_are_listed_but_not_paired`). Do NOT
-  report undeclared exclusives as a conflict; flag only a regression where a
-  *parallel* system loses its declaration.
-- **#1238 stage-order chain** (`54ea11c0`): `all_five_stages_run_in_order`
-  (`scheduler.rs`) registers out of order and asserts the `BTreeMap` `Ord` runs
-  `Early..=Late` exactly once. Reordering / merging / inserting a stage without
-  updating this test is the regression pattern. (Correct chain:
-  `Early → Update → PostUpdate → Physics → Late`.)
-- **Regression guard**: `byroredux/src/boot/registries.rs` (`install_runtime_registries`)
-  runs a release-level `assert_eq!(scheduler.access_report().undeclared_parallel_count(), 0)`
-  after building the schedule (#1394) — this is the boot guard, NOT a log line,
-  and NOT `debug_assert_eq!`: #2690's own comment states *"Keep these as
-  release assertions … a release-only divergence must not ship without the
-  proof."* Do not flag it as debug-only.
-  #1602 added two sibling asserts on the same snapshot: `known_conflict_count()`
-  and `unknown_pair_count()` must also be 0 (the old undeclared-only guard let a
-  declared WriteWrite conflict through — #1601).
-  Operators inspect contention at runtime via the `sys.accesses` console command
-  (reads the `SchedulerAccessReport` resource). A non-zero
-  `undeclared_parallel_count` / `known_conflict_count` is an audit finding.
+### 5. System & Scheduler Wiring, Declared Access
 
-### 6. Unsafe Code Review
+Paths: `crates/core/src/ecs/{scheduler,access,system}.rs`, `byroredux/src/boot/schedule/`, `byroredux/src/boot/registries.rs`, `byroredux/src/scheduler_access_tests.rs`
+First step: `cargo test -p byroredux -- system_access_declaration_tests scheduler_access` then `rg -n '^\s*scheduler\.add_to\(' byroredux/src/boot/schedule/` (must be empty)
 
-- The only `unsafe` in the ECS core is the four cached-pointer derefs in
-  `query.rs` (`QueryRead::storage`, `QueryWrite::storage`/`storage_mut`,
-  `ComponentRef::Deref`) — all #1367. Each MUST have a SAFETY comment tying
-  validity to the live guard. Verify no new unsafe block lacks one (MEDIUM min
-  per `_audit-severity`).
-- **That aliasing model is CI-checked as of #2271 (`3e151c2f`)**: the
-  `ecs-query-miri` job in `.github/workflows/ci.yml` runs
-  `cargo miri test -p byroredux-core --lib ecs::world::tests`, deliberately
-  scoped (not the whole crate) and skipping `resource_visible_to_system_via_scheduler`,
-  which trips crossbeam-epoch's platform thread-local pinning that Miri's
-  concurrency model does not support — that test exercises the scheduler, not
-  the cached-pointer contract. So "this needs Miri" is no longer an open
-  recommendation for this module; a *new* unsafe pattern outside
-  `ecs::world::tests`' reach still is. Regression = widening the skip list, or
-  a new cached-pointer site with no test under that module.
-- `World::spawn` uses `checked_add` and panics on `EntityId` overflow (#36);
-  `despawn` does NOT reclaim IDs (no generational tagging — #372, re-confirmed
-  by #3375) — document, do not "fix" by reusing IDs (silent corruption on
-  dangling `Parent` refs), and do not describe `EntityId` as *generational*:
-  it is monotonic and never recycled, which is a different safety argument.
-- **Erased-storage removal paths (regression guards, #2395/#2397, `eb944ec5`)**:
-  `PackedStorage::clear_erased` releases capacity rather than only truncating,
-  and `SparseSetStorage::remove_entities_erased` early-outs on an empty victim
-  set. `PackedStorage::remove_entities_erased`'s sort-order and dirty-marking
-  invariants are pinned by #2396's tests. These run on every cell unload, so a
-  regression here is a per-streaming-cycle cost, not a one-off.
-  `PackedStorage::remove_entities_erased`'s merge-compaction was rewritten by
-  #3689 from a drain-into-two-fresh-`Vec::with_capacity` shape to an in-place
-  read/write cursor (`Vec::swap` + `truncate` over the existing buffers) — zero
-  allocations per call instead of `2 × live_rows` of allocate-plus-move.
-  Non-reallocation is pinned directly by
-  `remove_entities_erased_does_not_reallocate` (same pointer + capacity across
-  a removal); reintroducing the two-buffer drain is a perf regression on every
-  streaming-boundary despawn, not just a style reversion.
+Stages: `Early → Update → PostUpdate → Physics → Late` (`Stage`, discriminants 0..=4, ordered by
+`BTreeMap`); "exclusive" is a *phase inside every stage* (`StageData.exclusive`, serial after that
+stage's parallel batch), not a stage. Registered per stage in `register_{early,update,post_update,physics,late}_systems`.
+
+- **The `Access` model**: `Access::new().reads::<T>().writes::<U>().reads_resource::<R>()…`;
+  declared / declared-empty / undeclared (`None`). `AccessConflict` has exactly `None`,
+  `Unknown { left_undeclared, right_undeclared }`, `Conflict { pairs }` (no `Parallel` variant);
+  `analyze_pair` returns `Unknown` when either side is undeclared. Closures/bare fns cannot override
+  `System::access`, so they declare at registration via `add_to_with_access` /
+  `add_exclusive_with_access`. Pins: `undeclared_closure_pairs_show_as_unknown`,
+  `exclusive_systems_are_listed_but_not_paired`, `all_five_stages_run_in_order` (reordering or
+  inserting a stage without updating it is the regression).
+- **Guard (mechanical declaration completeness)**:
+  `byroredux/src/boot/schedule/mod.rs::system_access_declaration_tests` —
+  `every_parallel_system_declares_everything_it_acquires` scans each parallel system's body (same-file
+  callees to depth 3, plus the explicit cross-file hops in `PARALLEL_SYSTEMS`) and fails if an acquired
+  type is missing from its `Access`; `the_parallel_system_table_covers_every_parallel_registration`
+  fails when an `add_to_with_access` lands outside the table; two exclusive fns are covered too
+  (`papyrus_provider_system`, `legacy_obscript_load_order_system`).
+  Sibling gates in `scheduler_access_tests.rs`: `scheduler_access_invariants_hold_on_the_real_schedule`
+  (non-vacuous floors: ≥9 parallel systems, ≥7 analysed pairs, then 0 undeclared / 0 conflicts / 0
+  unknown), `contract_bearing_exclusives_declare_their_access`, `p2_gameplay_exclusives_declare_non_empty_access`,
+  `late_telemetry_declarations_read_all_their_resources`. Boot enforces the same three counts as
+  RELEASE `assert_eq!`s in `install_runtime_registries` (#1394/#1602/#2690) — not `debug_assert!`, not a
+  log line. Confirm the guards are live: `rg -n '#\[ignore' byroredux/src/scheduler_access_tests.rs byroredux/src/boot/schedule/mod.rs` returns nothing, and `PARALLEL_SYSTEMS.len()` equals the
+  `add_to_with_access(` count.
+  **What the guard cannot see** (audit these by hand for every parallel system and any exclusive being
+  promoted to parallel): it matches only turbofish `query::<T>` / `query_mut` / `resource` /
+  `resource_mut` (+ `try_`) — NOT `world.get::<T>` / `get_mut` / `has::<T>`, `query_2_mut::<A, B>`,
+  `resource_2_mut`, or types inferred without a turbofish; it does not follow hops into a different file
+  unless listed in the table; closures and macro bodies are opaque. A same-session precedent: an
+  undeclared same-frame `GlobalTransform` write added to `fly_camera_system` made the boot
+  `known_conflict_count() == 0` proof unsound until the registration declared it (commit ac1d44f5c).
+- **Exclusive declarations are optional**: most `add_exclusive` registrations are undeclared by design
+  (`undeclared_exclusive_count()` non-zero); the analyzer never pairs exclusives. Flag only a *parallel*
+  system that lost its declaration, or an exclusive that a test above says must declare. Enumerate live
+  counts with `rg -c` on the four `add_*` forms; never quote a total.
+- **Panic policy is fail-fast** (#1412): do not report a missing `catch_unwind`. `Scheduler::run` takes
+  `&mut self` and `Scheduler` is deliberately not a `Resource` (re-entry impossible, #868).
+  `add_*` warns on duplicate names; `try_add_*` returns `Err(name)` across the flat name space (#312).
+- Cross-stage sequencing (a consumer in an earlier stage than its producer) is invisible to the
+  analyzer — see `/audit-concurrency` Dim 4 for the pinned cases and the by-hand rule.
+
+### 6. Hot-Path Performance Invariants (regression guards)
+
+Paths: `crates/core/src/ecs/systems.rs`, `byroredux/src/systems/{animation,audio,bounds}.rs`, `byroredux/src/components.rs`
+First step: `cargo test -p byroredux-core ecs::systems`
+
+- **Transform propagation fast path** (#825/#1371, `make_transform_propagation_system`): the cached
+  `roots` set is keyed on `(Transform::len(), Parent len-or-0, next_entity_id())` plus the `Parent` /
+  `Children` `structural_generation()` values and the drained `Transform` dirty set; the BFS is skipped
+  when nothing changed. Uses `drain_dirty_into`, not `take_dirty`. A path that stops bumping
+  `structural_generation` / `mark_dirty` yields a wrong `GlobalTransform` — a correctness bug, escalate.
+- **PostUpdate/Late ordering contract** (comments in `boot/schedule/post_update.rs`): transform
+  propagation, then bound propagation (drains the `GlobalTransform` dirty set), and no `Stage::Late`
+  system may write `GlobalTransform` on a `LocalBound`-bearing entity (its `WorldBound` lags a frame;
+  billboards are the one accepted exception). A new Late `GlobalTransform` writer must make that call.
+- **Animation scratch** (`byroredux/src/systems/animation.rs`): the `NameIndex.map` refill is in place
+  (`clear` + reserve + reinsert; a fresh map costs a ~3 ms stream-in spike, #824); `SubtreeCache` clears
+  only when the `Name` count changes (#278); `events` / `seen_labels` scratch is hoisted and
+  `clone`d not `mem::take`n (#828). Lock order inside channel apply is content-determined
+  (#2399) — do not reintroduce a macro that hides the acquisition order.
+- **`FootstepScratch`** (`byroredux/src/components.rs`): `mem::take` + restore so `Vec` capacity
+  survives; a per-frame `Vec::new` regresses (#932). Placement (Late exclusive after
+  `camera_follow_system`) is pinned by `footstep_runs_after_camera_follow_in_late`.
 
 ### 7. Component Lifecycles (load/unload, transient, idempotency)
 
-- **M40 streaming** (`byroredux/src/streaming.rs`): cell-load attaches
-  components, cell-unload removes them — verify no orphaned components after a
-  load/unload cycle.
-- **M41 NPC spawn** (`byroredux/src/npc_spawn.rs`): ACHR/REFR → entity dispatch
-  is idempotent (same REFR FormId never spawns twice).
-- **M42 AI-package behavior components** (`byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol}.rs`,
-  `crates/core/src/ecs/components/{sandbox,furniture,wander,travel,follow,escort,guard,patrol}.rs`):
-  seven procedure runtimes now exist — `SandboxBehavior`/`Seated` (M42),
-  `WanderBehavior`/`WanderState` (M42.3), `TravelBehavior`/`TravelState`/`Traveled`
-  (M42.4), `FollowBehavior`/`FollowState` (M42.5), `EscortBehavior`/`EscortState`/
-  `Escorted` (M42.6), `GuardBehavior`/`GuardState` (M42.7), `PatrolBehavior`/
-  `PatrolState` (M42.8) — ALL `SparseSetStorage` (only actors running that
-  procedure carry them). Verify a growing actor population doesn't force any of
-  them onto `PackedStorage`. An NPC's active package is always a single winning
-  `PackRecord` (`active_package`'s `find` in `crates/plugin/src/esm/records/misc/pack.rs`),
-  so at most one Behavior component lands per actor at spawn. That is now
-  structural rather than a thing to audit for: selection is a single `match`
-  over the `AmbientBehavior` enum (`insert_at_spawn` / `insert_at_runtime`,
-  `byroredux/src/npc_spawn/ai_package.rs`), so two behaviors on one actor is
-  unrepresentable. There is no `if runs_*` chain — that predicate family no
-  longer exists anywhere in the workspace, so do not go looking for it. What
-  IS worth auditing is that the enum's arms, `clear_ambient_behavior`'s
-  teardown list, and the `byro-dbg` registry
-  (`crates/debug-server/src/registration.rs`) all still enumerate the same
-  seven procedures; the registry lagged six of them by five milestones
-  (#4063) precisely because nothing tied the three lists together.
-  - **One-shot terminal markers**: `Seated` (Sandbox) and `Traveled`/`Escorted`
-    (Travel/Escort) are one-shot gates — once tagged, the corresponding system
-    must skip the entity on every later frame (never re-enter seat search /
-    re-walk to an already-reached destination).
-  - **Indefinite, non-terminal state**: `WanderState`/`PatrolState` (oscillate
-    forever) and `GuardState` (holds a post, walking back if the actor drifts
-    past `radius` — no terminal marker, since guarding never ends) are read
-    *and* written every tick by their system, unlike the one-shot markers above.
-  - **Live vs. frozen resolution**: `FollowState`/`EscortState` (mid-collect)
-    re-read their target's `GlobalTransform` fresh every tick; `TravelState`/
-    `EscortState` (once leading)/`GuardState` freeze a resolved-or-picked
-    position exactly once and never re-track it, even if the resolved
-    `NearReference` entity later moves. A system that blurs this line (freezes
-    a Follow target, or re-tracks a Travel destination) is a finding.
-  - **Shared logic, separate storage**: `patrol_system` calls `wander_system`'s
-    `step_oscillating_wander` (a plain-value, component-agnostic function in
-    `systems/wander.rs`) directly rather than duplicating the phase-transition
-    state machine — verify a future edit to one path doesn't silently diverge
-    from the other without updating both `wander_system` and `patrol_system`'s
-    call sites. `PatrolState` reuses `WanderPhase` directly (not a second enum).
-    `travel_system::resolve_destination` (`pub(crate)`, generic over primitive
-    fields) is the second instance of this pattern — `escort_system`'s lead
-    phase calls straight into it. `guard_system::resolve_anchor` does NOT:
-    it reaches the same `NearReference` FormID resolution through the shared
-    `resolve_entity_by_global_form_id` primitive, because its no-target
-    fallback is deliberately the actor's own position, NOT Travel's
-    hash-picked point — reusing Travel's fallback here was tried and reverted
-    because it trivially satisfies Guard's own leash check on the first tick).
-  - Seat claims in `SeatReservations` map each `(furniture entity, marker
-    index)` to its claimant actor. `prune_seat_reservations`
-    (`cell_loader/references/mod.rs`) runs per cell-reference load and keeps a
-    claim only while the furniture is live and the claimant still carries a
-    `Seated` component naming that furniture. Verify both liveness halves stay
-    intact: dropping the furniture check leaks unloaded seats; dropping the
-    claimant/`Seated` check strands a live cross-cell seat after its actor
-    despawns. Entity IDs are monotonic and never recycled, so do not justify
-    cleanup with an ID-reset premise.
-  - All seven systems are opt-in and NOT in the default scheduler — gated by
-    `BYRO_SANDBOX_SIT`/`BYRO_WANDER`/`BYRO_TRAVEL`/`BYRO_FOLLOW`/`BYRO_ESCORT`/
-    `BYRO_GUARD`/`BYRO_PATROL` respectively (`byroredux/src/boot/schedule/post_update.rs`). A regression that
-    registers one unconditionally (or drops its env-var check) changes default
-    engine behavior silently.
-- **Scripting transient markers** (`crates/scripting/src/events.rs`):
-  `ActivateEvent` / `HitEvent` / `TimerExpired` are removed by
-  `event_cleanup_system` (registered `add_exclusive(Stage::Late, …)`) — verify
-  single-frame lifetime.
-- **Gameplay slice (P2, added 2026-08-15/16 — no owner audit, so it is in scope
-  here)**: three `add_exclusive_with_access(Stage::Update, …)` registrations in
-  `byroredux/src/boot/schedule/update.rs`, in this order — `interaction::interaction_system`,
-  then `combat::combat_input_system`, then `combat::combat_damage_system`. #3473
-  (2026-08-30) declared each one's `Access` — they had inherited plain
-  `add_exclusive` and reported blank `sys.accesses` rows despite
-  `combat_input_system` carrying the deepest lock-hold stack in the schedule
-  (its `EquippedWeapon` → CHARAL chain, since flattened). Declaring access on an
-  exclusive still doesn't get it paired by the analyzer (dim 5b) — the point is
-  to put the disputed types on the report instead of a blank row, and to give
-  `BYRO_LOCK_ORDER_CHECK` a declaration to diff against if one is ever promoted
-  to parallel. Ordering is load-bearing: `interaction_system` is the canonical
-  producer of the action edges (`ActionState`/`InputAction`) both combat systems
-  consume, and it must stay ahead of every `OnActivate` consumer. Check:
-  - `combat_input_system` emits the canonical `HitEvent`
-    (`crates/scripting/src/events.rs`); `combat_damage_system` consumes it
-    (same-frame HitEvent → Health damage → death transition) and relies on the
-    Late-stage `event_cleanup_system` above for teardown — a combat-local
-    cleanup would double-free the marker, and a missed Late registration leaks
-    it. Do not report the Late-stage cleanup as combat's leak.
-  - The alive→dead transition inserts `Dead` and tears down the AI-behavior
-    component set (`SandboxBehavior`/`WanderBehavior`/`TravelBehavior`/
-    `FollowBehavior`/`EscortBehavior`/`GuardBehavior`/`PatrolBehavior` + their
-    `*State`/`Seated`/`Traveled`/`Escorted` siblings). A behavior component
-    surviving death re-animates a corpse — verify the teardown list against the
-    live seven-procedure roster above, since it must grow with it.
-  - `CombatState` (a `Resource`) holds cooldown plus a `CombatTraceEntry` trace
-    used as smoke evidence by `docs/smoke-tests/p2-melee-core.sh` — unbounded
-    trace growth across a long session is a real leak.
-  - `inventory.rs` must not become a second source of truth: canonical state is
-    `Inventory` + `EquipmentSlots` (`crates/core`), and `InventoryCatalog` is a
-    rebuilt-on-plugin-install metadata cache keyed by form id. Stale catalog
-    entries after a load-order change are the failure mode to look for.
-- **ScriptTimer** (`crates/scripting/src/timer.rs`): `timer_tick_system`
-  decrements per-frame, fires `TimerExpired` on hit — verify no negative-time
-  accumulation.
-- **Animation state machine**: there isn't one. *AnimationController*
-  (formerly *animation/controller.rs*) was deleted unconsumed under #3886
-  on 2026-09-11 — nothing constructed it, no system read it. `AnimationStack`
-  (`crates/core/src/animation/stack.rs`) is the whole sequencing surface;
-  audit its lifecycle directly (no dangling clip refs after unload) and do
-  not look for a controller layer above it.
-- **AnimationClipRegistry** (`crates/core/src/animation/registry.rs`): #790
-  dedupes by lowercased path so cell streaming doesn't grow it unboundedly —
-  losing case-folding interning leaks one keyframe set per cell load (steady RAM
-  growth across exterior streaming). Separately, `release()` (cell-loader LRU
-  eviction) clears a slot's contents but never returns the slot itself — no
-  free list, by design (#2689): a released handle can still be live on an
-  `AnimationPlayer`/`AnimationLayer` reading the empty stub, so reusing the
-  index would alias a future unrelated clip onto it. Every evict/reload cycle
-  therefore strands one empty stub header permanently; #2689 only makes this
-  observable via `stub_slot_count()`, it does not close the leak. Do not
-  propose a free list as the fix without addressing the aliasing hazard its own
-  rejection documents.
-- **DebugDrainSystem** (`crates/debug-server/src/system.rs`): registered
-  `add_exclusive(Stage::Late, …)` (`crates/debug-server/src/lib.rs`) — verify no
-  World mutation outside the drain (per-client TCP threads enqueue commands,
-  never mutate).
-- **AudioWorld** (`crates/audio/src/lib.rs`, M44): `audio_system` runs
-  `add_exclusive(Stage::Late, …)`; `OneShotSound` markers are pruned once kira
-  reaches `PlaybackState::Stopped` — verify no infinite-marker leak. Spatial
-  sub-track handle drop must precede listener handle drop (kira invariant).
-- **Particle emitter** (NIFAL typed-block path):
-  `byroredux/src/systems/particle.rs::apply_emitter_params` (registered
-  `add_exclusive(Stage::PostUpdate, particle_system)`) populates `ParticleEmitter`
-  (`crates/core/src/ecs/components/particle.rs`) from
-  `ImportedEmitterParams` (`crates/nif/src/import/types.rs`, built by
-  `extract_emitter_params` / `extract_emitter_rate` in
-  `crates/nif/src/import/walk/mod.rs` from the typed
-  `NiPSysEmitter`/`…Ctlr`/`…CtlrData`/`NiPSysGrowFadeModifier` blocks in
-  `crates/nif/src/blocks/particle.rs`). Pin the override semantics: authored size
-  is `initial_radius × base_scale.unwrap_or(1.0)` (Oblivion has no `base_scale`)
-  and color is NOT clobbered — see `apply_emitter_params_size_defaults_base_scale_to_one`
-  and `apply_emitter_params_overrides_kinematics_and_size_not_color`. Regression:
-  zero-sizing the emitter or overwriting the preset color. See `/audit-nifal`.
-- **Character / light-anim** (`byroredux/src/systems/character.rs`,
-  `byroredux/src/systems/light_anim.rs`): `character.rs` owns KCC state via
-  `byroredux_physics::CharacterController` (+ `RapierHandles`);
-  `animate_lights_system` reads `LightFlicker` (`crates/core/src/ecs/components/light.rs`)
-  against `LightSource`. Verify no orphaned `CharacterController` / `LightFlicker`
-  after a cell load/unload cycle, matching the `streaming.rs` orphan invariant.
+Paths: `byroredux/src/{streaming,npc_spawn}*`, `byroredux/src/cell_loader/unload.rs`, `crates/core/src/ecs/components/`, `crates/scripting/src/{events,timer,cleanup}.rs`, `crates/core/src/animation/registry.rs`
+First step: `cargo test -p byroredux rapier_release` then read `git log --since=<last-report-date> -- crates/core/src/ecs/components`
 
-### 8. Hot-Path Performance Invariants (regression guards)
+- **Cell load/unload symmetry** (`streaming.rs`, `cell_loader/unload.rs`): every component/resource row a
+  cell load attaches is removed on unload (no orphan `CharacterController`, `LightFlicker`,
+  `RapierHandles`, animation players, `SeatReservations` claims whose furniture or claimant is gone).
+  Spawn dispatch is idempotent — one REFR FormId never spawns twice.
+- **Behavior components stay sparse**: every AI-procedure `*Behavior` / `*State` / terminal marker is
+  `SparseSetStorage`. The roster is pinned in the debug registry by
+  `roster_tests::every_ai_procedure_behavior_component_is_registered`
+  (`crates/debug-server/src/registration.rs`, #4063); teardown completeness
+  (`clear_ambient_behavior`, `npc_spawn/ai_package.rs`) and behavior semantics are `/audit-gameplay`.
+- **Transient markers**: `ActivateEvent` / `HitEvent` / `TimerExpired` are removed by
+  `event_cleanup_system` (Late exclusive, registered after every consumer; a second cleanup site would
+  double-free). `timer_tick_system` never accumulates negative time.
+- **`AnimationClipRegistry`** (`animation/registry.rs`): interns by ASCII-lowercased path (#790) so
+  streaming does not grow it; `release()` clears a slot but never returns it — no free list, by design
+  (#2689), because a released handle may still sit on an `AnimationPlayer` / `AnimationLayer`. Every
+  evict/reload strands one empty stub (`stub_slot_count()`, visible not closed). Do not propose a
+  free list without addressing that aliasing hazard.
+- **No animation controller layer**: `AnimationStack` is the whole sequencing surface; audit its
+  lifecycle (no dangling clip refs after unload) rather than looking for a controller above it.
+- **Emitters**: `apply_emitter_params` (`byroredux/src/systems/particle.rs`) fills `ParticleEmitter`
+  from `ImportedEmitterParams`; size is `initial_radius × base_scale.unwrap_or(1.0)` and colour is not
+  clobbered (`apply_emitter_params_size_defaults_base_scale_to_one`,
+  `apply_emitter_params_overrides_kinematics_and_size_not_color`). Mapping correctness is `/audit-nifal`.
+- **Physics/audio handle lifetimes**: Rapier release on unload is `/audit-safety` Dim 3; kira
+  spatial sub-track handles drop before the listener; `OneShotSound` markers are pruned once kira
+  reports `Stopped` (`/audit-audio`).
 
-- **Lock-tracker held-set collection is `cfg(debug_assertions)` AND
-  `global_order::is_enabled()`-gated** (#823, tightened by #3680): the
-  `held_others: Vec` built before `record_and_check` in `lock_tracker.rs`
-  (`track_read`) sits behind both checks as one block — release builds skip the
-  alloc entirely, and (post-#3680) so does a debug build with the detector off
-  (the default; the graph is opt-in via `BYRO_LOCK_ORDER_CHECK=1`). Pre-#3680
-  every debug build paid the borrow/filter/collect on every acquisition
-  regardless of `is_enabled()`, which only gated `record_and_check`'s own
-  internal use of the Vec after it was already built. Re-enabling the
-  unconditional collect (in either release or a detector-off debug build)
-  reintroduces ~100 small allocs/frame for a no-op.
-- **`NameIndex.map` in-place refill** (#824): `animation_system`
-  (`byroredux/src/systems/animation.rs`, the `idx.map.clear()` block) refills the
-  `HashMap` in place (`clear` + `reserve` + reinsert) instead of `new()` +
-  `swap`. The fresh-map pattern costs a ~3 ms cell-stream-in spike.
-- **Transform-propagation change detection** (#825 + #1371):
-  `make_transform_propagation_system` (`crates/core/src/ecs/systems.rs`) keys a
-  cached `roots` set on `(Transform::len(), Parent-len-or-0, next_entity_id())`
-  AND tracks `Parent` / `Children` `structural_generation()` plus the drained
-  `Transform` dirty set. The FAST PATH skips the whole BFS when the dirty set is
-  empty and the full state is unchanged — a static cell with a moving camera
-  touches ~1 subtree, not all entities (~250 µs/frame regression at Megaton if
-  recomputed every frame). Uses `drain_dirty_into(&mut transform_dirty)` to keep
-  the scratch capacity across frames (#1371), NOT `take_dirty`. Any path that
-  stops bumping `structural_gen` / `mark_dirty` silently breaks this fast path
-  (escalate — wrong `GlobalTransform` is a correctness bug, not just perf).
-- **`animation_system` scratch hoisting** (#828): `events` / `seen_labels`
-  scratches are hoisted out of the per-entity loop and use `clone` (not
-  `mem::take`) so capacity persists; `write_root_motion` / `apply_bool_channels`
-  survive from the `2bdbc36` factoring — DRY-undo drift there is a finding.
-  `ensure_subtree_cache` and the `write_lazy!` macro do **not** survive:
-  both were removed by #2399 (`f46fcfd8`, content-determined lock order in
-  animation channel apply) — the macro was the *cause* of a lock-order
-  defect, so its removal was deliberate. Only historical comments in this
-  file still mention them; do not flag their absence as DRY-undo drift.
-- **`footstep_system` scratch** (#932): `byroredux/src/systems/audio.rs` writes a
-  `FootstepScratch: Resource` via `mem::take` + restore to preserve Vec capacity;
-  per-frame `Vec::new` is the regression. Registered
-  `add_exclusive(Stage::Late, footstep_system)` — it moved out of
-  `Stage::PostUpdate` in `1382efb0` (#3652 SIBLING follow-up), following
-  `make_billboard_system`, because both read the active camera's
-  `GlobalTransform` and `camera_follow_system` authors it in `Stage::Late`.
-  The stage is load-bearing when auditing it: the PostUpdate ordering contract
-  and the `GlobalTransform`-drain invariant in `#4061`/`#4062` are
-  stage-relative, so check it against `register_late_systems`, not
-  `register_post_update_systems`.
-- **Poison side-table** (#466): `World::despawn` names the offending component
-  via the `type_names` side-table; removing it loses the type name in panic
-  messages (10× harder bisects).
+### 8. NIFAL Canonical Material in the Component Layer
 
-### 9. NIFAL Canonical Material in the Component Layer
+Paths: `crates/core/src/ecs/components/material.rs`, `byroredux/src/material_translate.rs`
+First step: `cargo test -p byroredux-core resolve_pbr`
 
-The NIFAL tier resolves PBR scalars once, at the single `ImportedMesh → Material`
-boundary, so the renderer never re-classifies per draw. The ECS-owned `Material`
-component is the landing zone for that contract. See `/audit-nifal` for the
-upstream boundary.
+`Material` is the landing zone of the NIFAL boundary (upstream is `/audit-nifal`).
 
-- **Plain-`f32` contract**: `Material` (`crates/core/src/ecs/components/material.rs`)
-  carries `metalness: f32` / `roughness: f32` — fully resolved, NOT `Option<f32>`.
-  A regression to `Option`/`None` re-introduces per-draw classification (HIGH).
-- **Single mutation site**: `byroredux/src/material_translate.rs::translate_material`
-  is the SOLE `ImportedMesh → Material` boundary; `Material::resolve_pbr`
-  (`crates/core/src/ecs/components/material.rs`) is the only fill-the-gap helper
-  (runs the shared `classify_pbr_keyword`, fills only the unset slot). No
-  per-draw `classify_pbr` fallback survives in `byroredux/src/render/static_meshes.rs`.
-- **`resolve_pbr` idempotent + preserves translator values**: pinned by
-  `resolve_pbr_is_idempotent`, `resolve_pbr_preserves_upstream_translator_values`,
-  `resolve_pbr_fills_only_missing_slot`, `resolve_pbr_clamps_authored_out_of_range`
-  in the `material.rs` test module. Clobbering authored scalars or breaking
-  idempotency is a finding.
-- **ECS-adjacent producers**: Starfield CDB output (`crates/sfmaterial/`) must
-  flow through `translate_material` / `resolve_pbr`; `crates/debug-ui/` (egui
-  overlay) must not register or mutate gameplay components.
+- **Plain-`f32` contract**: `metalness` / `roughness` are resolved `f32`, not `Option<f32>` (a regression
+  re-introduces per-draw classification — HIGH).
+- **Single mutation site**: `material_translate.rs::translate_material` is the sole `ImportedMesh →
+  Material` boundary; `Material::resolve_pbr` is the only fill-the-gap helper (shared
+  `classify_pbr_keyword`, fills only the unset slot). No per-draw `classify_pbr` fallback survives in
+  `byroredux/src/render/static_meshes.rs`.
+- Pinned by `resolve_pbr_is_idempotent`, `resolve_pbr_preserves_upstream_translator_values`,
+  `resolve_pbr_fills_only_missing_slot`, `resolve_pbr_clamps_authored_out_of_range`; clobbering authored
+  scalars or breaking idempotency is a finding.
+- Other producers (Starfield CDB via `crates/sfmaterial/`) go through `translate_material` /
+  `resolve_pbr`; `crates/debug-ui/` must not register or mutate gameplay components.
 
-### 10. Animation Runtime (`crates/core/src/animation/`, added 2026-08-13)
+### 9. Animation Runtime (`crates/core/src/animation/`)
 
-`crates/core/src/animation/` is a `byroredux-core` subsystem with no owner
-dimension anywhere: `/audit-nif` owns the NIF/KF **import**, `/audit-nifal`
-Dim 7 owns the NIF→`AnimationClip` **translation boundary**, and nothing owns
-what happens after — sampling, layer blending, root-motion split, text-key
-dispatch. It lands here because `AnimationPlayer` / `AnimationStack` are ECS
-components driven by an ECS system (`byroredux/src/systems/animation.rs`), and
-`AnimationClipRegistry` is a `Resource`.
+Paths: `crates/core/src/animation/`, `byroredux/src/systems/animation.rs`, `byroredux/src/anim_convert.rs`
+First step: `cargo test -p byroredux-core --features inspect animation`
 
-- **Clip-handle validity**: `AnimationPlayer.clip_handle` / `AnimationLayer`
-  index into `AnimationClipRegistry` (`crates/core/src/animation/registry.rs`).
-  A stale handle after a cell unload must be a no-op, never a panic or an
-  out-of-bounds read. Verify unload clears or invalidates players alongside the
-  registry (same lifecycle class as Dimension 7).
-- **Time advance**: `advance_time` (`crates/core/src/animation/player.rs`) and
-  `advance_stack` (`crates/core/src/animation/stack.rs`) must handle `dt == 0`,
-  a negative/NaN `dt`, and a zero-length clip without dividing by zero or
-  looping forever. Verify `CycleType` (loop / clamp / reverse) is applied per
-  clip, not globally.
-- **Blend weights**: `AnimationLayer::effective_weight` + `play` + `cleanup_finished`
-  define the crossfade, with the live per-tick ramp written by `advance_stack`
-  (`stack.rs`). Verify weights are normalized (or documented as additive), that
-  `cleanup_finished` cannot remove a layer still contributing weight, and that
-  an unbounded layer stack cannot grow per frame — `play` on every tick with a
-  nonzero blend time is the leak shape. Two related bugs were fixed here
-  2026-08-30: #3701 — `with_blend_in` used to zero `weight` itself and have
-  `effective_weight()` multiply that zero by ramp progress, so a blending-in
-  layer held zero weight for the entire window then snapped to full at
-  completion instead of cross-fading; `advance_stack` now writes
-  `weight = blend_in_target * progress` every tick. #3702 — the blend-timer
-  decrements (`blend_in_remaining`/`blend_out_remaining`) lived inside
-  `advance_stack`'s `if !layer.playing { continue; }` gate, so a *paused*
-  layer scheduled for blend-out (`play()` schedules every existing layer's
-  blend-out unconditionally of `playing`) never ticked toward zero,
-  `cleanup_finished` could never retire it, and it held full weight forever —
-  exactly the "unbounded stack" leak shape above. Both timers now tick ahead
-  of the `playing` gate. Pinned by
-  `advance_stack_ticks_blend_out_on_a_paused_layer_so_it_can_be_retired`
-  (`animation/mod.rs`).
-- **`sample_blended_transform`** is the hot path (per bone, per skinned entity,
-  per frame). Verify it allocates nothing and short-circuits the single-layer
-  case (#3706 added the `if let [layer] = stack.layers.as_slice()` fast path,
-  resolving the registry/weight/channel gates once instead of running the
-  two-pass max-priority-then-blend walk twice; pinned bit-identical to the
-  general path by `single_layer_short_circuit_matches_two_pass_output`); cross-
-  reference `/audit-performance` Dim 1 for cost, report the allocation here.
-- **Root motion**: `split_root_motion` (`crates/core/src/animation/root_motion.rs`)
-  separates the delta applied to the entity from the residual left on the bone.
-  Verify the split is applied exactly once per tick and drained — an undrained
-  `RootMotionDelta` integrates every frame (the same failure mode
-  `/audit-scripting` Dim 8 checks on the cinematic path).
-- **Text keys**: `visit_stack_text_events` / `collect_stack_text_events`
-  (`crates/core/src/animation/stack.rs`) must not emit an event twice when a clip
-  loops across the frame boundary, and must emit it at all when a single frame
-  spans multiple key times (a large `dt` after a stall).
-- **Interpolation** (`crates/core/src/animation/interpolation.rs`): `find_key_pair`
-  boundary behaviour at t < first key and t > last key, plus quaternion
-  shortest-path (a missing dot-sign flip is a bone spinning the long way).
-  B-splines reach FNV/FO3 too — do not assume Skyrim+ (`feedback_bspline_not_skyrim_only`).
+Import is `/audit-nif`, the NIF→clip boundary is `/audit-nifal` Dim 7; this dimension owns sampling,
+blending, root-motion split and text-key dispatch, driven by an ECS system.
+
+- **Clip-handle validity**: `AnimationPlayer.clip_handle` / `AnimationLayer` index the registry; a stale
+  handle after unload is a no-op, never a panic or OOB read.
+- **Time advance**: `advance_time` (`player.rs`) / `advance_stack` (`stack.rs`) handle `dt == 0`,
+  negative/NaN `dt` and a zero-length clip without divide-by-zero or an endless loop; `CycleType` is
+  applied per clip.
+- **Blend weights**: `AnimationLayer::effective_weight`, `play`, `cleanup_finished`, with the live ramp
+  written by `advance_stack` (`weight = blend_in_target * progress` every tick, #3701). Blend timers
+  tick ahead of the `playing` gate so a paused blend-out layer still retires (#3702,
+  `advance_stack_ticks_blend_out_on_a_paused_layer_so_it_can_be_retired`). Check that
+  `cleanup_finished` never removes a layer still contributing weight and that `play` per tick with a
+  nonzero blend time cannot grow the stack unboundedly.
+- **`sample_blended_transform`** is the per-bone-per-frame hot path: no allocation, single-layer
+  short-circuit bit-identical to the general path (#3706,
+  `single_layer_short_circuit_matches_two_pass_output`). Cost belongs to `/audit-performance`.
+- **Root motion**: `split_root_motion` applies once per tick and is drained — an undrained
+  `RootMotionDelta` integrates every frame.
+- **Text keys**: `visit_stack_text_events` (`stack.rs`) emits each key exactly once across a loop
+  wrap and still emits when one large `dt` spans several key times.
+- **Interpolation** (`interpolation.rs`): `find_key_pair` at t < first / t > last key; quaternion
+  shortest-path (missing dot-sign flip = bone spinning the long way). B-splines occur on FNV/FO3 too.
 
 ## Process
 
-1. Read each file in `crates/core/src/ecs/` (paginate the >1000-line ones:
-   `world_tests.rs`, `scheduler.rs`, `resources/mod.rs`).
-2. Run `cargo test -p byroredux-core` and `cargo test -p byroredux` — verify the
-   scheduler/storage/query suites are green (test counts live in ROADMAP, not
-   here; do not pin a number).
-3. Check each dimension top-down (lock ordering first).
-4. Save report to `docs/audits/AUDIT_ECS_<TODAY>.md`.
+1. Scope: run each dimension's `First step:`; skim dimensions whose Paths are unchanged.
+2. `cargo test -p byroredux-core --features inspect` and `cargo test -p byroredux` (counts live in
+   ROADMAP.md; do not pin a number).
+3. Save the report to `docs/audits/AUDIT_ECS_<TODAY>.md`.

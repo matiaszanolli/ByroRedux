@@ -5,183 +5,112 @@ argument-hint: "--focus <dimensions>"
 
 # Fallout 3 Compatibility Audit
 
-Deep audit of ByroRedux readiness for **Fallout 3** content.
-
-FO3 rides the **FNV path** almost end-to-end: same NIF era (v20.2.0.7 / BSVER 34),
-same BSA format (v104), same ESM parser, same cell loader, same RT lighting. So
-this audit is NOT a re-run of `/audit-fnv` — it hunts the **divergences**: where
-FO3 content exercises a path FNV doesn't, where the shared code carries an
-FNV-only assumption, and where a feature is verified on FNV but only *assumed* on
-FO3. Order below is by FO3 risk, highest first.
+FO3 rides the **FNV path** almost end-to-end (NIF v20.2.0.7 / BSVER 34, BSA v104, one ESM parser, one cell loader, one RT pipeline). This is NOT a re-run of `/audit-fnv`: it hunts the **divergences** — where FO3 content exercises a path FNV doesn't, where shared code carries an FNV-only assumption, and where a feature is verified on FNV but only *assumed* on FO3. Its data goes through shared mechanisms owned elsewhere (`.claude/commands/_audit-owners.md`); a defect in the mechanism is filed against its owner, but **tag its FO3 reach**: a shared-code regression hits all four classic games (the 2026-09-19 HIGH did).
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, game data locations,
-methodology, deduplication, and finding format. See `.claude/commands/_audit-severity.md`
-for the severity scale (including the NIFAL canonical-translation rows).
+Read `.claude/commands/_audit-common.md` (layout, methodology, dedup, finding format) and `.claude/commands/_audit-severity.md` for shared protocol.
 
 ## Game Context
 
-| Aspect          | State                                                                       |
-|-----------------|-----------------------------------------------------------------------------|
-| NIF format      | v20.2.0.7 (BSVER 34) — same as FNV                                          |
-| BSA format      | v104 ✓                                                                       |
-| ESM parser      | Shared with FNV (`crates/plugin/src/esm/`); no FO3-specific arm             |
-| NIF parse rate  | 100.00% (17 172 across 6 archives — base + 5 DLC; re-measured 2026-08-28 under #3041, which moved the gate off the single `Fallout - Meshes.bsa` onto `open_all_mesh_archives`. The old 10 989 figure was one archive's worth) |
-| ESM records     | `index.total()` = 44 718 — an index-sum over ~95 typed category maps that double-counts by design, NOT a file record count (floor 44 000, #3756, re-measured 2026-08-30). The file itself holds 718 952 records vs `HEDR.numrec` 808 699. Do NOT cite the old "44 657 = 37 459 structured + 7 198 NAVMs" framing — 44 657 was this same index-sum metric measured in May, not a distinct file baseline |
-| Interior        | ✓ — Megaton, **929 REFRs** (parse-side baseline; NOT the stale 1609 figure) |
-| Exterior        | Wired (Capital Wasteland WRLD); **fresh GPU bench pending (R6a-stale-15)**   |
-| Scripting       | 1 257 SCPT records parse; real FO3 script logic still has no executing runtime (M47.0; tail M47.2). Narrow Sept-2026 exception (`obscript_runtime.rs`) doesn't reach FO3's real corpus — see Dimension 7 |
-| Reference data  | `/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/`              |
+| Aspect | State |
+|---|---|
+| NIF / BSA | v20.2.0.7 BSVER 34 · BSA v104 · 7 mesh/texture archives (base + 5 DLC `- Main.bsa`) |
+| Parse baselines (pull) | `crates/nif/tests/data/per_block_baselines/fallout_3.tsv` (17 172 NIFs, 6 mesh archives, 145 types, 0 unknown — the gate walks `open_all_mesh_archives`, #3041), `ROADMAP.md` FO3 row, `docs/feature-matrix.md`, `.claude/audit-baselines/runtime/fo3-MegatonPlayerHouse.tsv` |
+| Reference data | `/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/` |
+| FO3 vs FNV | Both are `GameKind::Fallout3NV`. The **only** discriminator is `CharacterRulesProfile` (`FALLOUT3` vs `FALLOUT_NEW_VEGAS`, #4448). A divergence branch keyed on `GameKind` cannot tell them apart; pins: `obscript_dialect_follows_the_profile_not_the_game_kind` (`byroredux/src/cell_loader/references/attach.rs`), `fn586_condition_gate_is_profile_scoped_not_game_scoped` (`crates/plugin/src/consumables.rs`) |
 
-### FO3-vs-FNV divergence map (the actual audit surface)
-
-- **Inline shader stack only.** FO3 ships `BSShaderPPLightingProperty` /
-  `BSShaderNoLightingProperty` with the legacy single-u32 flag layout — never
-  `BSLightingShaderProperty` (Skyrim+) and never BGSM external materials (FO4+).
-  Disney-BSDF and BGSM paths must be provably unreachable.
-- **Earlier authoring conventions** than FNV: pre-FNV record subforms (NPC_,
-  DIAL/INFO), FO3-era particle stacks. These are the FNV-shared paths most
-  likely to hit an untested edge on FO3 data. (`BSSegmentedTriShape` IS one of
-  these now — #3101's "zero entries" premise is stale: it measured only the
-  single `Fallout - Meshes.bsa` archive (10 989 NIFs), before #3041 widened the
-  gate to all 6 mesh-bearing archives. The current per-block baseline over the
-  full 17 172-NIF corpus (`crates/nif/tests/data/per_block_baselines/fallout_3.tsv`)
-  shows **1 374 `BSSegmentedTriShape` blocks, 0 unknown** — the GOTY DLC
-  archives evidently author it. Do not carry forward "never authored by FO3
-  content"; audit the segmented-shape decode on FO3 data like any other
-  reachable block.)
-- **Different worldspace.** Capital Wasteland is a distinct WRLD form ID with its
-  own origin/CLMT curves — any FNV-hardcoded worldspace name or coord is a bug.
-- **B-splines are reachable** (`NiBSplineCompTransformInterpolator`) — do not
-  rule them out by game era (`feedback_bspline_not_skyrim_only.md`).
-- **SpeedTree 5.x** (`crates/spt/`) is the FO3/FNV `.spt` generation — placeholder
-  billboard fallback only.
+**Authoring census** (measured — each line is a checklist premise that has already rotted once; re-measure before asserting the opposite):
+- Inline shader stack only: **0 BGSM/BGEM** in the FO3 archives; **0** `bump_texture`; no bump-tiling field exists on any `BSShader*Property`.
+- **0 `XATO` / `XTNM` / `XTXR`** in `Fallout3.esm` — no REFR texture overlays (#3511); `byroredux/src/cell_loader/refr_texture_overlay_tests.rs` fixtures are FO4-shaped and prove nothing about FO3.
+- `Fallout3.esm`: 718 952 records (`HEDR.numrec` 808 699 = records + GRUPs + the TES4 header), 1 257 SCPT, 54 SCOL bases / 389 REFRs, 244 TXST records (243 parsed — Bethesda's own *NullTextureSet* is skipped), 51 LTEX all carrying `TNAM` (the 51 `landscape_texture_sets` entries).
+- NIF: 1 374 `BSSegmentedTriShape` (#3101's "zero" measured one archive), 112 `bhkConvexListShape` chains, **0 `bhkMultiSphereShape`**, B-splines are 83% of base-archive `.kf` — never rule them out by era.
+- Object LOD: **114** `<world>.levelN.high.x<X>.y<Y>.nif` quads that no code path consumes (54 `washmontop.level8` in `Fallout - Meshes.bsa`, 60 in `Anchorage - Main.bsa`), every one with a plain sibling. Open #4468 counts only the 60 DLC ones.
+- **Known-open, do not re-file** (2026-09-19): #4398 (emitter orientation dropped), #4401 (paired clamp/parallax residuals of #4235), #4468 (`.high.` quads), #4469 (INFO `DATA` undecoded, routed `/audit-esm`), #4122 (SPT tail desync).
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,4`). Default: all 7.
+`--focus <dimensions>`: comma-separated numbers (e.g. `1,4`). Default: all 5.
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS`.
-2. `mkdir -p /tmp/audit/fo3`.
-3. Dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/issues.json`.
-4. Confirm `Fallout 3 goty/Data/` exists; if not, note which dimensions lose real-data validation.
-5. Before reporting a status/count claim, reconcile against the ROADMAP per-game
-   compat matrix and `docs/feature-matrix.md` — both carry live FO3 numbers.
+1. Parse `$ARGUMENTS`; `mkdir -p /tmp/audit/fo3`.
+2. Dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/issues.json`.
+3. Confirm `Fallout 3 goty/Data/` exists; if not, name the dimensions that lose real-data validation.
+4. **Run the real-data lane first** — it is the only guard for shared-code regressions on FO3 and no CI lane runs it: `cargo test -p byroredux-nif --release --test parse_real_nifs --test per_block_baselines --test block_coverage_baselines -- --ignored fallout_3 real_archive_torch`. A red gate is the headline finding; dimension agents then explain it.
+5. Reconcile every count against the tables above and the ROADMAP/feature-matrix rows. Measure across **all** archives (base + DLC), never the base archive alone.
+6. Scope by delta: `git log --since=<last AUDIT_FO3 date> --format='%h %cs %s' -- <dimension Paths>`.
+7. Toolchain: the `byroredux` bin crate needs rustc >= 1.94 — rustup cargo per `docs/contributing.md` § Toolchain note (#4466).
 
 ## Phase 2: Launch Dimension Agents (parallel)
 
-### Dimension 1: FO3 Rendering Path — Inline Shaders (highest divergence)
-**Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/import/material/mod.rs` (+ `walker.rs`, `shader_data.rs`), `byroredux/src/material_translate.rs` (`translate_material`), `crates/core/src/ecs/components/material.rs` (`resolve_pbr`, `EmissiveSource`, `classify_pbr_keyword`), `crates/nif/src/shader_flags.rs`, `crates/renderer/shaders/triangle.frag`
-**Checklist**:
-- `BSShaderPPLightingProperty` flag bits mapped correctly (decal, alpha-test, two-sided, glow, window). **Per-game flag bit positions differ across FO3/FNV/Skyrim** — confirm FO3 uses the legacy single-u32 layout via `crates/nif/src/shader_flags.rs`, not the FO4 u32-pair.
-- Normal map handle resolved from the dedicated `BSShaderTextureSet` normal slot (FO3+), NOT the bump slot — Oblivion reads normals from the bump slot via `NiTexturingProperty`; FO3 must not regress into that path.
-- `BSShaderNoLightingProperty` (UI / sky / glow / blood-splat) routes through the **fullbright** path (`c351e0b6`) and its decal flags are honored (`crates/nif/src/import/material/mod.rs` — the pre-#454 NoLighting branch had no flags2 check). Self-illumination must not dim with distance.
-- **NIFAL single boundary (#1241 / #1244, `3ce98db8`)**: FO3 materials flow through the SINGLE `material_translate::translate_material` (`ImportedMesh` + `ResolvedPaths` → canonical `Material`). `Material.metalness` / `Material.roughness` are plain resolved `f32` (no `Option`, no per-draw classify). FO3 authors no BGSM, so they arrive as the NaN sentinel and `Material::resolve_pbr` fills them via `classify_pbr_keyword`. Confirm concrete `f32` scalars out of the one boundary; no second per-game material site.
-- **`EmissiveSource` discriminator (#1280, `2e884741`)**: FO3 `BSShaderPPLighting`/`NoLighting` self-illumination maps to `EmissiveSource::Material` (legacy `NiMaterialProperty.emissive_mult` slot). All three variants currently share the `emissive_mult` slot — the discriminator is provenance, not yet a render branch. Skyrim+ `Lighting` / FO4+ `Effect` variants must not bleed into the FO3 ~1.0 scale.
-- **Disney-BSDF gate (#1248–#1252)**: zero FO3 materials author BGSM, so `MAT_FLAG_PBR_BSDF` (`(1u << 5)`, defined in `crates/renderer/shaders/include/shader_constants.glsl`) must be 0 across the Fallout3.esm material universe — the Burley/anisotropic-GGX/per-material-IOR lobe (`crates/renderer/shaders/include/pbr.glsl`) is unreachable for FO3. If any FO3 scene activates it, the gate regressed.
-- **`WaterShaderProperty` (#1243, `3509482a`)**: FO3 water materials route through `MaterialInfo` for distinct `GpuMaterial` entries (no dedup collapse with glass).
-- See also `/audit-nifal`.
+### Dimension 1: NIF, Inline-Shader Material & Collision — FO3 Authoring
+**Subagent**: `legacy-specialist`
+Routing: block decode `/audit-nif`; single-boundary / no-fabrication / particle + collision translation `/audit-nifal`; Disney-BSDF gate (`MAT_FLAG_PBR_BSDF` must be 0, FO3 authors no BGSM) `/audit-renderer`; solver + phantoms `/audit-physics`.
+**Paths**: `crates/nif/src/blocks/shader/`, `crates/nif/src/blocks/particle.rs`, `crates/nif/src/shader_flags.rs`, `crates/nif/src/import/material/`, `crates/nif/src/import/collision/`, `crates/nif/src/import/walk/emitter.rs`, `byroredux/src/material_translate.rs`
+**First step**: the Phase 1 lane, plus `git log --since=<date> -- crates/nif/src/import crates/nif/src/blocks/shader`
+- FO3 shader properties use the **`BSShaderFlags` F1 + `BSShaderFlags2` F2 pair** (`fo3nv_f1` / `fo3nv_f2` in `shader_flags.rs`) — never the Skyrim/FO4 vocabularies (same numeric bits, different meaning). Both properties are field-for-field with nif.xml on every BSVER gate (14/24/26/34).
+- Texture precedence: a `BSShaderTextureSet` outranks `NiTexturingProperty` for base + normal (#4235; census: 3 703 NoLighting base co-binds all name the identical path). Residuals: #4401 (open).
+- `BSShaderNoLightingProperty` -> `MATERIAL_KIND_NO_LIGHTING` (102) fullbright with **no distance term** (`crates/renderer/shaders/triangle.frag`); decal bits honored on both properties; two-sided comes from `NiStencilProperty` (no FO3 flag bit); legacy emissive is `EmissiveSource::Material` only.
+- `BSSegmentedTriShape` decodes the nif.xml 9-byte segment layout and feeds the plain `NiTriShape` geometry arm; segment (dismemberment) metadata is consumed-and-discarded by design — route to `/audit-nifal` + `/audit-character` when a consumer exists.
+- **Emitter birth rate**: FO3's leg of `real_archive_torch_meshes_surface_particle_emitters` (`crates/nif/tests/parse_real_nifs.rs`, `--ignored`) must hold its per-game floor. #4261 broke it on every game from 2026-09-12 to 2026-09-19 (#4467) because the fix ran only the default lane — **any change under `walk/` or `blocks/particle.rs` needs this lane**. Emitter spawn orientation is #4398 (open).
+- Collision: all FO3 chains classify `CollisionAuthoring::Classic`; `havok_motion_type` keeps BOX_INERTIA crates Dynamic (1 612 in FO3); every FO3-authored bhk shape kind has a `resolve_shape` arm (a new dispatch arm needs a resolve arm).
 **Output**: `/tmp/audit/fo3/dim_1.md`
 
-### Dimension 2: NIF v20.2.0.7 Parser — FO3 Block Subset
-**Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/properties.rs`, `crates/nif/src/blocks/shader/` (`legacy`, `mod`), `crates/nif/src/blocks/particle.rs`, `crates/nif/src/blocks/mod.rs` (dispatch), `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` / `extract_emitter_rate`), `byroredux/src/systems/particle.rs` (`apply_emitter_params`)
-**Checklist**:
-- `BSShaderPPLightingProperty` field completeness (refraction strength/period, parallax passes/scale, bump-map tiling) and `BSShaderNoLightingProperty` decode.
-- Stream-position audit: any block type that passes on FNV but trips on FO3-era authoring. The dispatch arm count is in `crates/nif/src/blocks/mod.rs` — a histogram shift from `nif_stats` flags a mis-dispatched block.
-- **Typed particle emitters (NIFAL particle slice, `5708b5b9` / `9db60714` / `8f856d35`)**: `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` are TYPED blocks (`crates/nif/src/blocks/particle.rs` — `parse_box_emitter` / `parse_sphere_emitter` / `parse_grow_fade_modifier`), not the old opaque controller stack. `extract_emitter_params` / `extract_emitter_rate` decode authored base kinematics + birth rate + GrowFade `base_scale` into `apply_emitter_params`. Dispatch is version-agnostic so FO3 smoke/fire/dust emitters hit this path — **now directly measured against FO3 data (#3754, 2026-08-30)**, closing what was an unverified gap: `float_interpolator_rate` was discarding whole authored ramp-up/spike rate curves (first key `0.0`, sentinel `value` of `-FLT_MAX`) and falling back to `fog.rs::particle_preset`'s 35/s name-guess, hitting real FO3 meshes (Tenpenny Tower's `tenpengate01`, `fxfallingrocks01`, `fxbubblestall01`); fixed via the curve's time-weighted mean, raising FO3 rate-bearing base meshes from 114 to 124. `real_archive_torch_meshes_surface_particle_emitters` now carries a per-game rate floor instead of one corpus-wide total, so a future FO3-only regression here is caught. See also `/audit-nifal`.
+### Dimension 2: ESM Data Slice (Fallout3.esm)
+**Subagent**: `general-purpose`
+Routing: GRUP walk, `SubReader` accounting, dispatch, remap `/audit-esm`. This dimension owns FO3-only authoring and its counts.
+**Paths**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/`, `crates/plugin/tests/parse_real_esm.rs`
+**First step**: `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored parse_rate_fo3_esm` (one test at a time; whole-file `--ignored` runs can spike >20 GB).
+- Baseline (#3756): `index.total()` >= `FO3_TOTAL_FLOOR` (44 000) is an *index-sum* over ~95 typed maps that double-counts by design — NOT a file record count. Also floor the cell tier `index.total()` cannot see: placed refs >= 573 000 (REFR 568 107 + ACHR 2 154 + ACRE 3 349 + PGRE 350) and exterior cells >= 41 900; 0 walker errors on the master and all 5 DLCs. Never cite "44 657" or "13 684".
+- FO3 is a strict subset of FNV's `NPC_`/`DIAL`/`INFO` subforms (sole FO3-only subform `INFO.SNDD`, 1 record) and shares `CELL.XCLL` (`XCLL_SIZES_FALLOUT_ERA`, FO3 `{36,40}`); the SCOL gate `is_scol_era` must keep FO3 dispatching (54 bases / 389 REFRs). `SCHR` u16 tail: see `/audit-fnv` Dim 2.
+- The one FO3 TXST consumer is `LTEX.TNAM -> TXST -> TX00` -> `EsmCellIndex.landscape_texture_sets` (terrain splat diffuse); the other ~192 parsed TXST have no live consumer on this title.
+- Shared-parser gaps reachable on FO3 (file against `/audit-esm`, note FO3 reach): #4469 INFO `DATA` (22 327 / 22 327 INFOs).
 **Output**: `/tmp/audit/fo3/dim_2.md`
 
-### Dimension 3: ESM Record Coverage (Fallout3.esm)
-**Scope split with `/audit-esm` (added 2026-08-13)**: `/audit-esm` owns the parser *as a parser* — GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap. This dimension owns **this game's data through it**: record counts, game-unique authoring, and the semantics that only show up on this title's masters. If the defect is in the shared mechanism, file it against `/audit-esm` instead of here.
+### Dimension 3: Cell Loading — Interior + Exterior
 **Subagent**: `general-purpose`
-**Entry points**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/` (post-Session-34 split — `walkers.rs` / helpers / support / `wrld.rs`). NOT `byroredux/src/cell_loader/refr_texture_overlay_tests.rs` — those fixtures are FO4-shaped and FO3 authors zero overlays (#3511).
-**Checklist**:
-- Parse `Fallout3.esm` through the shared parser. Reconcile against the live baseline (#3756, re-measured 2026-08-30): `index.total()` = **44 718** (an index-sum over ~95 typed category maps that double-counts by design — NOT a file record count; floor 44 000). The file itself holds **718 952** records, validated against `HEDR.numrec` **808 699** (records + GRUPs = 808 700, delta 1 = the TES4 header). Also confirm the cell-tier floors `index.total()` cannot see: placed refs ≥ 573 000 (REFR 568 107 + ACHR 2 154 + ACRE 3 349 + PGRE 350) and exterior cells ≥ 41 900. A drop here is the regression signal — do NOT use any older "13 684 structured" or "44 657 = 37 459 structured + 7 198 NAVMs" figure (the latter was this same index-sum metric measured in May, not a distinct file baseline).
-- FO3-unique authoring vs FNV: pre-FNV subforms for NPC_, DIAL, INFO. The parser deliberately keeps the soft/strict truncation read semantics (`crates/plugin/src/esm/sub_reader.rs` migration, R2 Phase B).
-- **SCPT SCHR flags are a u16 (#1654, `590351c1`)**: shared with Oblivion/FNV — the SCHR is exactly 20 bytes with a `u16` flags tail (cursor @18). `crates/plugin/src/esm/records/script.rs` reads it via `u16_or_default`; the old "u32 tail on FO3+" comment was itself wrong. A regression to a `u32` read fails on every real FO3 script and pins `ScriptRecord.flags` to 0.
-- CELL XCLL / RCLR layout identity vs FNV (FO3 interior lighting uses the same `CellLightingRes` path — confirm, don't assume).
-- WATR (rivers/ponds) and NAVM differences. WTHR / CLMT pulled through the shared parser.
-- **FO3 authors NO REFR texture overlays — do not audit this path here (#3511)**: measured twice, agreeing. Through the engine's own parser all 566 642 indexed FO3 REFRs carry 0 `alt_texture_ref` / `land_texture_ref` / `texture_slot_swaps`; a raw byte scan of `Fallout3.esm` finds **0 `XATO`, 0 `XTNM`, 0 `XTXR`** (FNV's 219 `XATO` are the *Activation Prompt* string sub-record, a different field entirely — see the provenance caveat at the `b"XATO"` arm in `crates/plugin/src/esm/cell/walkers.rs`, #1887; FO4 is the `XTNM` title, 42). The `refr_texture_overlay_tests.rs` fixtures this bullet used to cite are **FO4-shaped**, so a "verified working" conclusion drawn from them says nothing about FO3. Same premise-rot class as #3101.
-- **FO3 parses 243 total TXST records; only 51 are reached through `LTEX.TNAM`** (`landscape_texture_sets`, #3920, measured 2026-09-06) — not through REFRs: `LTEX.TNAM → TXST → TX00` builds `EsmCellIndex.landscape_texture_sets` (`crates/plugin/src/esm/records/mod.rs`), and all 51 carry a diffuse. That is the FO3 TXST consumer worth auditing — terrain splat diffuse paths, not per-instance overlays. Do not cite 243 as the join count; the other ~192 parsed TXST records sit in `EsmCellIndex.texture_sets` with no live consumer on this title.
-- **TXST/XATO/XTNM/XTXR dispatch** lives in `crates/plugin/src/esm/cell/walkers.rs`; an `unreachable_patterns` warning there is a smell.
+Routing: terrain / WTHR / water / LOD mechanism `/audit-exterior`; unload hygiene `/audit-safety` Dim 3.
+**Paths**: `byroredux/src/cell_loader/` (`load`, `unload`, `exterior`, `references/`, `spawn`), `byroredux/src/scene/`, `crates/plugin/src/esm/cell/wrld.rs`, `docs/engine/exterior-readiness-plan.md`
+**First step**: `git log --since=<date> --format='%h %cs %s' -- byroredux/src/cell_loader byroredux/src/scene crates/plugin/src/esm/cell`
+- Interior `MegatonPlayerHouse`: **929 REFRs** parse-side (never the stale 1609); fixture cell *MegatonMoriartysSaloon* 458 REFRs. GPU entity/FPS numbers come only from a Vulkan run — record "not measured" otherwise.
+- Exterior (Capital Wasteland): worldspace selection is data-driven (`select_worldspace_key`, deterministic tie-break; `--wrld` overrides #444's heuristic) — FO3 data has no `wastelandnv` EDID, so an FNV-first preference can never mis-pick; `wrld.rs` must hold no hardcoded worldspace name, origin or grid. Every `GameKind` use on the load path is asset-family classification, not a behavior branch. Gate: `docs/smoke-tests/m-exteriors.sh fo3` (`MegatonWorld`); last measured figures in `exterior-readiness-plan.md` (ROADMAP's FO3 row still says "GPU bench pending"). Default land texture is `DirtWasteland01.dds` (`DefaultLandTexture::for_game`).
+- Object LOD is `ObjectLodScheme::FalloutLegacyBlocks` (`placement_lod_supported` is Oblivion-only). It is **not a flat ring** (#3502): 7 of FO3's 15 worldspaces bake level-8 object quads with no level-4 sibling (93 of 422 quads: `dcworld01/03/06/12/17`, `paradisefalls`, `washmontop`); `LodBandSelection::coarsen_to_available` must stay **object-only** (terrain keeps subdividing — `object_lod.rs` true / `terrain_lod.rs` false) and those worldspaces must show distant buildings inside 16 cells.
+- `CachedNifImport` Arc cache: no re-parse and no leak across FO3 unload/load cycles.
 **Output**: `/tmp/audit/fo3/dim_3.md`
 
-### Dimension 4: FO3 Cell Loading End-to-End (interior + exterior)
+### Dimension 4: BSA v104 & Real-Data Validation
 **Subagent**: `general-purpose`
-**Entry points**: `byroredux/src/cell_loader/{load,unload,exterior,references/mod,spawn}.rs`, `byroredux/src/scene/{nif_loader,world_setup}.rs`
-**Checklist**:
-- FO3 interior loads via the SAME `--esm Fallout3.esm --cell <id>` CLI as FNV. Megaton parse-side baseline: **929 REFRs** (down from 1609 pre-NIF-expand; #455+, cell-loader stale-comment cleanup #822 / `ca6be24`). Any audit citing 1609 references pre-expand stats — confirm against current `cell_loader/*.rs` comments first.
-- **Exterior is WIRED** (ROADMAP: "Exterior wired; fresh GPU bench pending"). Capital Wasteland is a distinct WRLD form ID — audit `cell_loader/exterior.rs` + `crates/plugin/src/esm/cell/wrld.rs` for any FNV-hardcoded worldspace name, origin coord, or default grid that would mis-place FO3 exterior cells. The open item is a fresh GPU bench (R6a-stale-15), not a missing feature.
-- No FNV-only branch in the shared cell loader. WTHR→CLMT→WTHR resolution and FO3 CLMT sun-position curves resolve through the shared weather path.
-- `CachedNifImport` Arc cache prevents duplicate parsing; no leak across FO3 unload/load cycles.
-- `_far.nif` distant-object LOD (#1726/#1745, Session 52) — the
-  `placement_lod_supported` scheme is **Oblivion-only** (#2086, closed;
-  `cell_loader/placement_lod.rs::placement_lod_supported` gates on
-  `GameKind::Oblivion` alone), so don't ask FO3 to reproduce it. Instead
-  confirm the baked `landscape\lod\<world>\` asset tree (see #3100, closed)
-  is consumed where it exists; entry points `cell_loader/object_lod.rs`,
-  `cell_loader/placement_lod.rs`.
-- **The object-LOD ring is not a flat single-level ring (#3502, closed,
-  2026-08-30)**: it rides `LodBandLadder::for_object_game`, and 7 of FO3's
-  15 worldspaces bake object quads at level 8 with NO level-4 sibling — 93
-  of 422 object quads (`dcworld01` 8:3, `dcworld03` 8:4, `dcworld06` 8:6,
-  `dcworld12` 8:8, `dcworld17` 8:6, `paradisefalls` 8:1, `washmontop` 8:65).
-  Pre-fix, `select_lod_quads` always subdivided into a missing quad, which
-  for objects (fallback `ObjectLodBlock::empty()`) hollowed out the
-  8..15-cell band on those worldspaces whenever `--radius` put
-  `exclude_within` below `refine_threshold(8)` = 12. `lod_bands.rs`'s
-  `LodBandSelection::coarsen_to_available` now lets a quad that can draw,
-  and whose whole subtree can't, emit itself instead of descending — confirm
-  this stays object-only (terrain must keep subdividing) and that the 7
-  named worldspaces render their distant buildings inside 16 cells.
+Routing: reader discipline `/audit-parsers`. FO3's BSA is byte-identical in format to FNV's — a divergence here is a v104 regression, not a format gap.
+**Paths**: `crates/bsa/src/archive/`, `crates/facegen/`, `crates/spt/`, `crates/nif/examples/nif_stats.rs`
+**First step**: `cargo test -p byroredux-bsa --release --test bsa_real -- --ignored fnv_meshes_bsa_v104` (the only committed v104 real-data guard is FNV's — **no FO3 BSA test exists**; FO3 archives are checked by sweep).
+- Sweep every FO3 archive: `Fallout - Textures.bsa` extracts fully to valid DDS headers (12 261 / 12 261 at last measure), folder-hash census has 0 collisions over 1 810 folders, no game-conditional branch in the v104 path.
+- Pick one deathclaw-class creature (skinned via `BSDismemberSkinInstance`, `crates/nif/src/import/mesh/skin.rs`), one UI `BSShaderNoLightingProperty` element (fullbright route), one FaceGen head (`crates/facegen/`; may not render fully — note the gap), one `.spt` (`parse_rate_fo3_spt`: placeholder-billboard fallback, not a hard error).
+- Runtime telemetry diff: `/audit-runtime --game fo3`.
 **Output**: `/tmp/audit/fo3/dim_4.md`
 
-### Dimension 5: FO3 Collision Import (Havok → CollisionShape)
+### Dimension 5: Animation, NPC Spawn, Gameplay Data & the Scripting Gap
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/import/collision/mod.rs` (`extract_collision`, `examine_collision_kind`, `CollisionAuthoring`), `crates/nif/src/import/collision/shape.rs` (`resolve_shape`)
-**Checklist**:
-- FO3 Havok content is no longer merely skipped via `block_size` — `extract_collision` walks `bhk*CollisionObject` → `BhkRigidBody` → shape into `CollisionShape` + `RigidBodyData`. `examine_collision_kind` must classify FO3 chains as `CollisionAuthoring::Classic` (BSVER 34, legacy side), not `NewPhysicsStub` / `Phantom` / `Unrecognised` — a misclassified discriminator silently drops the rigid body.
-- **#1277 / `9c6096aa`**: `BhkMultiSphereShape` (→ sphere path) and `BhkConvexListShape` (→ `CollisionShape::Compound`, mirroring `BhkListShape`) now translate — they were dropped before. FO3 uses these in static/clutter collision; confirm FO3 meshes carrying them yield a non-`None` `extract_collision`, not a discarded shape.
-- **bhk motion_type via the canonical Havok enum (#1652, `dc33ec7d`)**: `collision/mod.rs::havok_motion_type` maps the raw `hkMotionType` byte per the full nif.xml enum (1–5/8 → Dynamic, 6 KEYFRAMED → Keyframed, 7 FIXED → Static, 9 CHARACTER → CharacterKinematic, 0/other → Static). The pre-fix `4 => Keyframed` / `_ => Static` collapse mis-typed BOX_INERTIA (4) clutter (crates/ammo boxes/debris) as kinematic-frozen instead of falling — shared with FNV/Oblivion, so confirm FO3 dynamic clutter still simulates.
-- Cross-check the Dim 2 "skips via block_size" note — that is now only true for shape kinds WITHOUT a translator. See also `/audit-nifal` (collision is part of the canonical tier) and `/audit-nif` for raw block decode.
+Routing: gameplay mechanism `/audit-gameplay`; MenuXml `/audit-ui`; scripting runtime `/audit-scripting`; clip registry `/audit-ecs`. The classic-era M41 guards (B-spline `FLT_MAX` pose fallback, clip-registry dedup, NPC hand meshes) are listed in `/audit-fnv` Dim 4 — verify them on FO3 data here.
+**Paths**: `crates/nif/src/anim/`, `byroredux/src/npc_spawn.rs`, `byroredux/src/hud.rs`, `crates/menuxml/`, `crates/plugin/src/consumables.rs`, `docs/smoke-tests/fixtures/fo3.env`
+**First step**: `git log --since=<date> --format='%h %cs %s' -- crates/nif/src/anim byroredux/src/npc_spawn byroredux/src/hud.rs crates/menuxml`
+- FO3 kf-era spawn works because its `skeleton.nif` resolves (unlike FO4); Megaton dwellers with no hands = the hand-mesh regression; the three `mtforward.kf` body-class walk clips (`humanoid_walk_kf_path`) exist in FO3's archive.
+- **HUD**: `HudGameProfile::fallout3` — menu art from `Fallout - Textures.bsa` (FNV: `Textures2`), 8 font slots (FNV: 9), 2 bars. Guards: `crates/menuxml/tests/fo3_corpus.rs` (`BYROREDUX_FO3_DATA`) and `docs/smoke-tests/m48-5-fo3-hud.sh`.
+- **Consumables**: Stimpak restores health + the seven body-condition AVIFs on FO3 as on FNV; FO3 has no Hardcore — CTDA fn 586 must be rejected under the FO3 profile (`fn586_condition_gate_is_profile_scoped_not_game_scoped`). Real-master guard: `real_stimpaks_restore_scaled_health_and_limbs_but_hardcore_only_health` in `byroredux/src/inventory.rs` (`--ignored`).
+- Playable gates declared in `fo3.env`: `p0-door-interaction`, `p5-save-restart`, `p2-melee-core` (Moriarty's Saloon). An undeclared gate exits 2 — that is unmeasured, not covered.
+- **Scripting gap (known, owned by `/audit-scripting`)**: 1 257 SCPT parse; there is no general executing runtime for FO3 script logic. M47.3 ticks compiled *quest* scripts game-agnostically (101 / 192 QUSTs carry script refs, 403 / 1 257 scripts have executable GameMode blocks; FO3's `SetStage`/`GetStage` ids match the Oblivion-derived table). The narrow `obscript_runtime.rs` load-order-idiom interpreter does not reach FO3: `obscript_dialect_for` gives `FALLOUT3` no compiled dialect.
 **Output**: `/tmp/audit/fo3/dim_5.md`
-
-### Dimension 6: BSA v104 + Real-Data Validation
-**Subagent**: `general-purpose`
-**Entry points**: `crates/bsa/src/archive/`, `crates/nif/examples/nif_stats.rs`, `crates/nif/tests/parse_real_nifs.rs`
-**Checklist**:
-- `Fallout - Meshes.bsa` lists + extracts cleanly; current NIF parse rate **100% / 17 172 across all 6 mesh-bearing archives** (base + 5 DLC — the gate walks `open_all_mesh_archives` since #3041, per-archive attributed; `nif_stats` for one archive at a time). `Fallout - Textures.bsa` DDS extraction yields valid BC1/BC3/BC5 headers. Folder-hash collisions across FO3's subdirectories. Format is identical to FNV — divergence here would be a v104 regression, not a format gap.
-- Pick **Megaton** interior (validated baseline — should match 929 REFRs / current entity count; capture `/cmd stats` and compare to feature-matrix, NOT the stale 1609/199-tex/42-FPS numbers).
-- Load a creature mesh (e.g. deathclaw): verify NiSkinData skinning extraction (`crates/nif/src/import/mesh/skin.rs`).
-- Pick a UI/menu `BSShaderNoLightingProperty` element: verify the fullbright (non-Phong) route.
-- Pick one FaceGen head mesh (`crates/facegen/`): parses; may not render fully — note the gap, don't fail the dimension.
-- Load a `.spt` (SpeedTree 5.x, `crates/spt/`): confirm placeholder-billboard fallback, not a hard parse error.
-**Output**: `/tmp/audit/fo3/dim_6.md`
-
-### Dimension 7: FO3 Animation / NPC Spawn + Scripting Gap
-**Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/anim/` (Session-35 split: `entry`, `sequence`, `controlled_block`, `transform`, `bspline`, `channel`, `keys`, `coord`), `crates/core/src/animation/`, `byroredux/src/anim_convert.rs`, `byroredux/src/npc_spawn.rs`
-**Checklist** — M41.0 long-tail regression guards (shared with FNV, Session 29; verify they hold on FO3 data):
-- B-spline pose-fallback (#772, `3c32a5e`): gated on the `FLT_MAX` sentinel. B-splines are reachable on FO3 (`feedback_bspline_not_skyrim_only.md`) — don't rule them out by era.
-- `AnimationClipRegistry` dedup (#790, `da99d15`): case-insensitive interning by lowercased path; without it one keyframe set leaks per cell load (RAM growth on FO3 exterior streaming).
-- NPC hand-mesh load (#793 / M41-HANDS, `da8d7e2`): `lefthand.nif` + `righthand.nif` loaded alongside `upperbody.nif` on kf-era NPCs (`byroredux/src/npc_spawn.rs`). Megaton dwellers depend on this — bodies with no hands = #793 regression. FO3 kf-era spawn works because its `skeleton.nif` resolves (unlike FO4).
-- **Scripting gap (FO3-distinctive)**: 1 257 FO3 SCPT records parse; real FO3 authored gameplay logic still has **no runtime that executes it** (M47.0 event-hook + M47.1 condition-eval landed; the M47.2 compiled-Papyrus recognizer slice is in progress). One narrow exception landed since (Sept 2026 SDK work, `crates/scripting/src/obscript_runtime.rs`, wired live via `attach_scpt_script` + `legacy_obscript_load_order_system`): a conservative interpreter for the exact script-extender load-order idiom (`IsModLoaded`/`GetModIndex`/`GetNumLoadedMods`/`GetNumLoadedPlugins`/`GetNthModName` plus `ext.`-qualified SDK calls). It doesn't reach FO3's real corpus in practice — it only compiles from a script's preserved `SCTX` source text, and `attach_scpt_script`'s dialect match gives FO3 (`CharacterRulesProfile::FALLOUT3`) no compiled-bytecode `ObscriptDialect` at all (only Oblivion gets `Obse`, only FNV's `FALLOUT_NEW_VEGAS` profile gets `Xnvse`) — and vanilla FO3 content doesn't author the mod-compatibility idiom this targets anyway. This remains the largest FO3-specific functional gap — note it as a known blocker for FO3 quest/world interactivity, not a bug to file. The scripting runtime itself is owned by `/audit-scripting` (crates/scripting, crates/pex, crates/papyrus) — do not deep-audit it here.
-**Output**: `/tmp/audit/fo3/dim_7.md`
 
 ## Phase 3: Merge
 
 1. Read all `/tmp/audit/fo3/dim_*.md`.
 2. Combine into `docs/audits/AUDIT_FO3_<TODAY>.md`:
-   - **Executive Summary** — Compatibility level + delta vs FNV (what's shared, what diverges).
-   - **Dimension Findings** — Grouped by severity per dimension.
-   - **FNV-Shared Surface** — Record types / block types / shader paths FO3 inherits from FNV coverage, plus any FO3-only gap inside them.
-   - **FO3-Distinctive Gaps** — Inline-shader-only material universe, Capital Wasteland worldspace, the 1 257-SCPT scripting runtime gap.
-   - **Validation Status** — Interior (Megaton 929 REFRs) + exterior (wired, bench pending) + creature/NPC.
+   - **Executive Summary** — compatibility level + delta vs FNV (what is shared, what diverges); state the real-data lane result first.
+   - **Dimension Findings** — grouped by severity per dimension.
+   - **FNV-Shared Surface** — record/block/shader paths FO3 inherits, plus any FO3-only gap inside them.
+   - **FO3-Distinctive Gaps** — inline-shader-only material universe, Capital Wasteland worldspace, the SCPT runtime gap.
+   - **Validation Status** — interior (Megaton 929 REFRs), exterior (population + image-health gates per `exterior-readiness-plan.md`; the R6a FPS bench is still pending per the ROADMAP row), creature/NPC.
+   - **Cross-Audit Routing** — shared-mechanism findings handed to their owner.
 3. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_FO3_<TODAY>.md`

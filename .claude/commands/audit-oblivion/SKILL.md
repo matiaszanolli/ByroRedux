@@ -5,355 +5,111 @@ argument-hint: "--focus <dimensions>"
 
 # Oblivion Compatibility Audit
 
-Deep audit of ByroRedux readiness for **The Elder Scrolls IV: Oblivion** content.
+Oblivion is the **oldest** title and exercises code no other game reaches. This audit owns **Oblivion's data through the shared mechanisms** (routing: `.claude/commands/_audit-owners.md`): only dimensions whose Paths are Oblivion-specific stay here; a defect in the shared mechanism goes to its owner audit.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, game-data locations,
-key reference docs, methodology, the path-reference convention, deduplication
-rules, and the base finding format. See `.claude/commands/_audit-severity.md`
-for the severity scale. Do not restate any of it here.
+Read `.claude/commands/_audit-common.md` (layout, methodology, dedup, finding format) and `.claude/commands/_audit-severity.md` for shared protocol.
 
-## What Makes Oblivion Different (the audit surface)
+## What Makes Oblivion Different
 
-Oblivion is the **oldest** title in the lineage and exercises code paths no
-other game reaches. Two NIF eras coexist in vanilla `Oblivion - Meshes.bsa`:
+Two NIF eras share `Oblivion - Meshes.bsa`: the **retail body** (v20.0.0.4, `bsver` 11, plus a v20.0.0.5 minority; inline strings, u16 flags) and a **v10.x NetImmerse tail** (down to pre-Gamebryo v3.3.0.13) with tight nif.xml version bands. **Neither has a per-block size table**: one N-byte under-read discards the rest of the file (no `block_size` recovery as on 20.2.0.7+), so drift is silent and Oblivion-only. The v10.x stride-drift family (#1506-#1509) is resolved — a **regression-guard set**. The 2026-09-05 CRITICAL (a `NiSkinPartition` reservation: clean rate 100% -> 92.41%, 730 of 9 612 meshes lost) is what a skipped corpus run looks like.
 
-1. **The retail body** — NIF **v20.0.0.4** (`bsver=11`), with a v20.0.0.5
-   minority alongside it: inline strings, u16 flags, **no per-block size
-   table**. v20.0.0.4 is what most clutter / architecture / creature meshes
-   are — `version.rs` documents it as "the most common Oblivion version,"
-   and a live census confirms it (OBL-D1-05 / #2566): 7,282 v20.0.0.4 files
-   vs. a v20.0.0.5 minority. Every version gate in this codebase is already
-   written as `<= V20_0_0_5` or `>= V20_0_0_4`, so this correction changes
-   no conclusion — only this file's own framing was stale.
-2. **The NetImmerse tail** — a long tail of **v10.x** sub-versions (down to
-   pre-Gamebryo v3.3.0.13) authored years earlier. These have subtly different
-   field layouts gated by tight version bands in nif.xml, and — like v20.0.0.5 —
-   **no block_size table**, so a single N-byte under-read truncates the entire
-   downstream subtree.
+| Aspect | State (verify; pull live figures) |
+|---|---|
+| NIF | Baselines: `crates/nif/tests/data/per_block_baselines/oblivion.tsv`, `crates/nif/tests/data/block_coverage_baselines/oblivion_truncations.tsv` (`truncating=0`; 9 612 NIFs = base + 8 DLC archives) |
+| BSA | v103; 17 archives / 147 629 files extract with 0 errors. Folder record is 16 B for v103 **and** v104 (24 B only for v105, `open.rs`) |
+| Exterior | Tamriel `(0,0)` radius 1 renders on-device; live figure in `docs/engine/exterior-readiness-plan.md` (#2377 / #2368 closed); `ROADMAP.md` Oblivion row |
+| Runtime baseline | `.claude/audit-baselines/runtime/oblivion-ICMarketDistrictTheGildedCarafe.tsv` |
+| Reference data | `/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/` |
 
-The v10.x tail is the Oblivion-unique risk. Retail FO3/FNV/Skyrim are all
-BS202 / 20.x and never touch these bands; a regression here is **silent and
-Oblivion-only**. The v10.x stride-drift family (#1506 NiInterpController /
-NiQuatTransform, #1507 NiPSysData + emitter, #1508 NiBlendInterpolator +
-ControlledBlock, #1509 NiGeomMorpherController `bsver > 9` gate) is **resolved**
-as of 2026-06-13; Oblivion-Meshes went from 56 truncated → 6 (further reduced by
-`#1543`/`#1544`, regenerated baseline #1611), then to **0** — the last file,
-`marker_radius.nif`, was fixed outright by `#2562`/`#2563`'s NiKeyframeController
-`Data`-ref fix, and the baseline was regenerated again (`#3082`, 2026-08-19) and
-widened to all eight DLC archives (`#3712`): 0 truncating across 9,612 vanilla +
-DLC NIFs. This audit treats that family as a **regression-guard set**, not open
-work.
-
-| Aspect            | Current state (verify, don't trust this table blindly)              |
-|-------------------|--------------------------------------------------------------------|
-| NIF format        | v20.0.0.4 retail (v20.0.0.5 minority) + v10.x NetImmerse tail (both sizeless) |
-| BSA format        | v103 — opens AND extracts cleanly across all vanilla archives (regression guard, #699) |
-| ESM parser        | **Live** — `crates/plugin/src/esm/` with `parse_esm_cells` walker + ~25 record types, several with Oblivion-specific decode branches. NOT a stub (the per-game *legacy/tes4.rs* stub was removed under #390). |
-| Parse rate        | See ROADMAP.md Oblivion compat-matrix row (drifts after each sweep; do NOT hardcode a number here). Post-v10.x-family + `#1543`/`#1544`/`#2562`/`#2563`: **0 residual truncations, 0 hard failures** — the checked-in `oblivion_truncations.tsv` baseline reads `truncating=0` (regenerated `#3082`, 2026-08-19; widened to all eight DLC archives by `#3712`: 9,612/9,612 clean). The corrupt-by-design `marker_radius.nif` (`#698` closed) was the last of the former six-file tail and is now fixed outright, not merely truncating. |
-| Cell loading      | Interior renders end-to-end (Anvil Heinrich Oaken Halls). Exterior parse + load + render ✓ — TES4 worldspace + LAND wiring is implemented and game-agnostic (#1556); Tamriel `(0,0)` radius 1 is on-device measured at 6,043 entities / 2,355 draws (2026-08-12 EX-01/EX-05 re-run, image-health + environment-value gates both clean) — see `docs/engine/exterior-readiness-plan.md` for the live figure. The repeatable readiness matrix (not first render) is what #2377/#2368 track. |
-| Reference data    | `/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/`           |
-
-### Known Quirks (do NOT re-derive — verify still hold)
-
-- **`user_version` only exists for files ≥ v10.0.1.8.** Older NetImmerse files
-  have `num_blocks` where `user_version` would be. Confirm the
-  `version >= NifVersion::V10_0_1_8` guard in `crates/nif/src/header.rs`.
-- **BSStreamHeader presence is the nif.xml dual-band condition** (post-#170),
-  NOT the old `version == 10.0.1.2 || user_version >= 3`. The live guard is
-  `version == V10_0_1_2 || (user_version >= 3 && (version ∈ {V20_2_0_7,
-  V20_0_0_5} || (V10_1_0_0 <= version <= V20_0_0_4 && user_version <= 11)))`.
-  A v20.0.0.5 Oblivion file with `user_version >= 3` reads the header; a
-  non-Bethesda file outside the band must NOT (regression of #170).
-- **`NiTexturingProperty` reads a `uint` count directly** — do NOT add a
-  leading `Has Shader Textures: bool`. nif.xml is wrong here; the Gamebryo 2.3
-  source is authoritative. Regressing this breaks every Oblivion clutter / book
-  / furniture mesh. Test lives in `crates/nif/src/blocks/properties_tests.rs`.
-- **Oblivion has no per-block size table.** A single mis-aligned read poisons
-  every subsequent block — there is no `block_size`-advance recovery path
-  (unlike 20.2.0.7+). This is why every v10.x stride-drift bug truncated whole
-  subtrees rather than one field.
-- **Pre-Gamebryo files (v < 5.0.0.1)** (e.g. `meshes/marker_*.nif`) inline
-  type names as sized strings instead of using the global block-type table
-  (nif.xml's table was introduced at 5.0.0.1, not 3.3.0.13 — that's an
-  unrelated field-presence gate on different fields; `header.rs:163-164`,
-  `#171`). The parser reads inline names in-loop and parses normally —
-  it does NOT return an empty `NifScene`. It only truncates (keeping
-  blocks parsed so far, `log::warn!`) if a mid-file inline-name read
-  itself fails, e.g. the corrupt-by-design `marker_radius.nif` (`#698`).
-- **NetImmerse v10.x leading group_id.** For versions in [10.0.0.0,
-  10.1.0.114), each block is preceded by a 4-byte group_id (`00 00 00 00`);
-  block content starts AFTER it. Mixing stream-relative vs file offsets is the
-  classic false-trail when chasing stride drift (see memory note
-  `nif_v10x_stride_drift_resolved`).
-- **`as_ni_node` walker must unwrap every NiNode subclass** (`BSOrderedNode`,
-  `NiBillboardNode`, `NiSwitchNode`, `NiLODNode`, …) so scene-graph walks
-  descend correctly.
+**Authoring census** (byte-scan of `Oblivion.esm`, 2026-09-19): 2 393 SCPT, 390 QUST, **604 CLOT**, 8 228 PGRD, **0 NAVI / NAVM**, 19 278 INFO with **0 `PNAM` / 0 `ANAM`**, 306 LVSP, 229 LTEX, 37 WTHR (all with `HNAM`). No `locomotion\` directory (the walk clip is `handtohandforward.kf`); 9 889 `.lod` names in `Oblivion - Meshes.bsa`.
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3`). Default: all 7.
+`--focus <dimensions>`: comma-separated numbers (e.g. `1,3`). Default: all 5.
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS`.
-2. `mkdir -p /tmp/audit/oblivion`.
-3. Fetch dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/issues.json`.
-4. Confirm `Oblivion/Data/` exists; if not, note which dimensions lose real-data validation.
-5. Read the current Oblivion row in `ROADMAP.md` (compat matrix) and
-   `docs/feature-matrix.md` so every status claim cites live numbers, not this file.
+1. Parse `$ARGUMENTS`; `mkdir -p /tmp/audit/oblivion`.
+2. Dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/issues.json`.
+3. Confirm `Oblivion/Data/` exists; if not, name the dimensions that lose real-data validation.
+4. **Run the corpus lane first** (release build; the plain `cargo test` lane never runs it): `cargo test -p byroredux-nif --release --test parse_real_nifs --test per_block_baselines --test block_coverage_baselines --test oblivion_stream_drift_corpus -- --ignored oblivion no_block_sizes`. Any red gate is the headline finding.
+5. Scope by delta: `git log --since=<last AUDIT_OBLIVION date> --format='%h %cs %s' -- <dimension Paths>`.
+6. Toolchain: the `byroredux` bin crate needs rustc >= 1.94 — rustup cargo per `docs/contributing.md` § Toolchain note (#4466).
+7. Always name `Oblivion.esm` real-data tests (cheap: ~3 s): a whole-crate `cargo test -p byroredux-plugin -- --ignored` spikes >20 GB and can kill the session.
 
 ## Phase 2: Launch Dimension Agents (parallel)
 
-Dimensions are ordered by Oblivion-specific risk: NIF version handling first
-(the v10.x tail is the unique surface), then archive, ESM, render, real-data.
-
-### Dimension 1: NIF Version Handling — v20.0.0.4 + the v10.x NetImmerse Tail
+### Dimension 1: NIF Version Handling & Corpus Integrity (v20.0.0.4 + the v10.x tail)
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/header.rs`, `crates/nif/src/version.rs`, `crates/nif/src/stream.rs`, `crates/nif/src/blocks/`, `docs/legacy/`
-**Checklist**:
-- `user_version` threshold (`V10_0_1_8`) and the BSStreamHeader dual-band guard
-  in `header.rs` match nif.xml (see Known Quirks). The #170 regression test in
-  `crates/nif/src/header.rs` (tests module) must still assert a non-Bethesda
-  out-of-band file does NOT read the header.
-- The v10.x sub-version constants exist and are used as gate boundaries:
-  `V10_0_1_2`, `V10_1_0_0`..`V10_1_0_114`, `V10_2_0_0`, `V20_0_0_4`,
-  `V20_0_0_5` in `crates/nif/src/version.rs`.
-- **#1509 regression guard** (`crates/nif/src/blocks/controller/morph.rs`):
-  `NiGeomMorpherController` gates its trailing field on `bsver > 9` (NOT the old
-  `bsver != 0 && bsver <= 11`). `doghead.nif` is v10.2.0.0 **bsver 9** and must
-  **skip** the trailing field; Oblivion's bsver-**11** morph rigs (e.g.
-  `obgatemini01.nif`) must **keep** it — an off-by-band gate either direction
-  truncates/misaligns `NiMorphData`. Tests:
-  `crates/nif/src/blocks/controller/path_lookat_tests.rs`.
-- **#1506/#1507/#1508 regression guards** — the resolved stride-drift family.
-  Each was a `since`/`until` field gated on the wrong comparator dropping N
-  bytes. Confirm `NiInterpController`/`NiQuatTransform`, `NiPSysData` + emitter,
-  and `NiBlendInterpolator` + ControlledBlock all still land exactly on the next
-  block boundary in the v10.x bands. Any new truncation growth on Oblivion-Meshes
-  is a regression of this family — escalate, don't re-derive.
-- `NiTexturingProperty` reads u32 count raw, no bool gate (regression guard).
-- Inline-string block-type handling for pre-5.0.0.1 (see Known Quirks).
-- u16 vs u32 flag width per block in the v20.0.0.5 vs v10.x layouts.
-- Oblivion-only / legacy block types dispatched in `crates/nif/src/blocks/mod.rs`:
-  NiKeyframeController, NiSequenceStreamHelper, NiBillboardNode + NiNode
-  subclasses, NiLight hierarchy, NiUVController, NiCamera, NiTextureEffect, the
-  legacy particle stack, the BSShader*Property aliases.
-- **Collision import** (`crates/nif/src/import/collision/mod.rs` + `crates/nif/src/import/collision/shape.rs`): `BhkMultiSphereShape`
-  and `BhkConvexListShape` translate into `CollisionShape` (the former to
-  `Ball`/`Compound`, the latter to `ConvexHull`/`Compound`) via
-  `resolve_shape_inner` in the `extract_collision` chain — they must not fall
-  out silently. Verify against the `BhkMultiSphereShape` / `BhkConvexListShape`
-  downcast arms.
-- **bhk motion_type via the canonical Havok enum (#1652, `dc33ec7d`)**:
-  `collision/mod.rs::havok_motion_type` maps the raw `hkMotionType` byte per the full
-  nif.xml enum (1–5/8 → Dynamic, 6 KEYFRAMED → Keyframed, 7 FIXED → Static, 9
-  CHARACTER → CharacterKinematic, 0/other → Static); the pre-fix
-  `4 => Keyframed` / `_ => Static` collapse froze BOX_INERTIA (4) clutter.
-  Shared with FNV/FO3 — re-introducing the collapse is the regression.
+Routing: generic stream position / dispatch / version gating -> `/audit-nif`; collision translation -> `/audit-nifal`, `/audit-physics`. This dimension owns the Oblivion-only bands and the corpus.
+**Paths**: `crates/nif/src/header.rs`, `crates/nif/src/version.rs`, `crates/nif/src/stream.rs`, `crates/nif/src/lib.rs`, `crates/nif/src/blocks/` (controller/, properties.rs, legacy blocks), `crates/nif/tests/`
+**First step**: the Phase 1 corpus lane; `git log --since=<date> --format='%h %cs %s' -- crates/nif/src/header.rs crates/nif/src/blocks crates/nif/src/lib.rs`
+- Corpus gates are the guard: 0 truncating, 0 unknown, per-block histogram equal to `oblivion.tsv` across base + 8 DLC archives (`per_block_baseline_oblivion`, `oblivion_block_count_parity`, `no_block_sizes_drift_detector_has_zero_false_positives_on_real_corpus`). `unknown` growth or `parsed` shrinkage is a stride-drift regression — escalate, do not re-derive; diff the histogram for new block types.
+- Header quirks (each pinned; aim at what the pin cannot see — a *new* off-band version): `user_version` exists only for >= v10.0.1.8; BSStreamHeader is the nif.xml dual band `V10_0_1_2 || (user_version >= 3 && (V20_2_0_7 || V20_0_0_5 || (V10_1_0_0..=V20_0_0_4 && user_version <= 11)))` (`bs_stream_header_not_read_for_off_spec_version`, #170); v10.0.0.0..10.1.0.114 blocks carry a leading 4-byte group_id (mixing stream-relative and file offsets is the classic false trail); pre-5.0.0.1 files inline block-type names, decided by version, not by an empty type table (`uses_inline_block_type_names`, #4257).
+- `NiTexturingProperty` reads a `u32` shader-map count directly — no leading `Has Shader Textures` bool (nif.xml is wrong; Gamebryo 2.3 is authoritative). Pin: `parse_ni_texturing_property_with_zero_shader_maps` (`crates/nif/src/blocks/properties_tests.rs`, #149).
+- `NiGeomMorpherController` trailing field gates on `bsver > 9` (`blocks/controller/morph.rs`): `doghead.nif` (v10.2.0.0 bsver 9) must skip it, bsver-11 rigs (`obgatemini01.nif`) keep it (`path_lookat_tests.rs`, #1509).
+- The sizeless runtime-size-cache recovery must refuse a skip that contradicts the failed block (#3926, `crates/nif/src/lib.rs`) — a plausible-looking recovery is silent mis-alignment.
+- Scene walk: `as_ni_node` (`crates/nif/src/import/walk/mod.rs`) unwraps every NiNode subclass (`BSOrderedNode`, `NiBillboardNode`, `NiSwitchNode`, `NiLODNode`, `BsFaceGenNiNode`); a missed subclass drops the whole subtree.
+- Deep-trace 3 meshes (Heinrich Oaken Halls chandelier, a book, a creature head) through `import_nif_scene`: mesh count + material chain. Tools: `nif_stats`, `recovery_trace` (`crates/nif/examples/`).
 **Output**: `/tmp/audit/oblivion/dim_1.md`
 
-### Dimension 2: BSA v103 Archive
+### Dimension 2: BSA v103 & ESM Data Slice (Oblivion.esm)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/bsa/src/archive/` (`mod.rs`, `open.rs`, `extract.rs`, `hash.rs`)
-**Checklist**: This is a **regression guard** — v103 decompression has worked
-end-to-end since 2026-04-17 (#699); the "v103 is broken" premise is dead, do not
-regenerate it.
-- `BSA_V_OBLIVION = 103` recognised in `open.rs`; rejection only outside {103,104,105}.
-- **Folder-record size**: v103 AND v104 are **16 bytes**; only v105 (Skyrim SE)
-  is 24. The live code is `if version == BSA_V_SKYRIM_SE { 24 } else { 16 }` in
-  `open.rs`. (The older skill text claiming "v104 = 24 B" was wrong — verify
-  against the constant, do not perpetuate it.)
-- v103 archive-flag semantics (e.g. the "Xbox archive" bit several vanilla v103
-  archives set, ignored for embedded names — `embed_file_names` gates on
-  `>= BSA_V_FO3_SKYRIM`).
-- Folder/file hash function in `hash.rs` still produces correct hashes.
-- Full-archive sweep stays at 100% extraction. Only escalate to an open finding
-  if `meshes/*.nif` extraction starts failing on a previously-clean archive.
+Routing: reader discipline `/audit-parsers`; GRUP walk / `SubReader` / remap / dispatch `/audit-esm`. This dimension owns TES4-only decode branches and their real-data pins.
+**Paths**: `crates/bsa/src/archive/`, `crates/plugin/src/esm/records/` (`actor/`, `items.rs`, `climate.rs`, `pathgrid.rs`, `misc/dialogue.rs`), `crates/plugin/src/esm/cell/walkers.rs`
+**First step**: `cargo test -p byroredux-bsa --release --test bsa_real -- --ignored oblivion`, then `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored clas_oblivion_knight race_oblivion` (single named tests).
+- **BSA v103** is a regression guard (#699): `oblivion_all_bsas_v103_brute_force_extract_zero_errors` sweeps all 17 archives; `embed_file_names` gates on `>= BSA_V_FO3_SKYRIM`, and the "Xbox archive" flag several v103 archives set must not change name handling.
+- **16-byte ACBS** (#1650): Oblivion `NPC_`/`CREA` ACBS is 16 B (flags u32 @0, level i16 @10), distinct from the >=24 B FNV/FO3/Skyrim layout, so `parse_npc` needs the `GameKind::Oblivion` arm gated on `len >= 16` *before* the FNV arm (else level defaults to 1 and every actor reads Male). Pins: `oblivion_16byte_acbs_parses_level_and_gender`, `fnv_ignores_16byte_acbs`.
+- Other TES4 branches: MGEF-by-code map (`oblivion_mgef_populates_magic_effects_by_code`), CONT 4-byte payload guard, CLMT three-entry WLST keyed on `GameKind`, RACE/CLAS `is_oblivion` / `flags_oblivion` arms (real-data pins above), XCLL sizes `[28, 32, 36]` with the >= 92 ambient-cube arm **game-validated** to Skyrim/FO4/FO76 (`crates/plugin/src/esm/cell/tests/cell.rs`).
+- **CLOT enters inventory** as a wearable `ItemKind::Armor` (`parse_clot`: BMDT slots, MODL/MOD3 male/female meshes; SLGM likewise). Pin: `oblivion_clothing_enters_inventory_and_gender_aware_equipment` (`records/tests.rs`). The `EsmIndex.clothing` doc says "~150 records"; the master has 604.
+- **Navigation is PGRD-only** (`pathgrid.rs`, 8 228 grids; layout census in its header). As of 2026-09-19 `CellData.pathgrids` has no consumer beyond the walker: `docs/engine/navmesh-pathfinding.md` covers NAVM only, so Oblivion packages have no path graph.
+- DIAL/INFO: with zero `PNAM` / `ANAM`, speakers resolve through the `GetIsID` condition fallback and `build_conversation_tree` must order without PNAM chains (#3600); TCLF / NAME / CTDT and multi-segment responses are kept (#3614, #3616); LVSP (306) dispatches (#3617); SBSP (33) / ROAD (2) are recorded in `RecordType` as deliberate non-goals (#3619).
 **Output**: `/tmp/audit/oblivion/dim_2.md`
 
-### Dimension 3: ESM Record Coverage (live path, not a stub)
-**Scope split with `/audit-esm` (added 2026-08-13)**: `/audit-esm` owns the parser *as a parser* — GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap. This dimension owns **this game's data through it**: record counts, game-unique authoring, and the semantics that only show up on this title's masters. If the defect is in the shared mechanism, file it against `/audit-esm` instead of here.
-**Subagent**: `general-purpose`
-**Entry points**: `crates/plugin/src/esm/` (`mod.rs`, `reader.rs`, `cell/`, `records/`)
-**Checklist**: TES4 records share the live ESM path with FNV/FO3 — there is no
-per-game stub (removed under #390). The parser already carries Oblivion-specific
-decode branches; the audit's job is correctness + coverage gaps, not "does it
-exist".
-- TES4 header (`HEDR` version 1.0 vs 0.94) and GRUP structure handled by the
-  walker (`crates/plugin/src/esm/records/grup_walker.rs`).
-- Oblivion-specific branches already present — verify they're correct, not
-  regressed: `flags_oblivion` + `is_oblivion` in
-  `crates/plugin/src/esm/records/actor/mod.rs` (split from *actor.rs*, #2055); MGEF-by-code map (Oblivion 4-char
-  effect codes) and the CONT 4-byte-payload guard in
-  `crates/plugin/src/esm/records/tests.rs` / `container.rs`; CLMT three-entry
-  WLST in `crates/plugin/src/esm/records/climate.rs`.
-- **16-byte ACBS guard (#1650, `3d5d0d68`)**: Oblivion `NPC_`/`CREA` ship a
-  **16-byte** ACBS (flags u32 @0, level i16 @10) — distinct from the ≥24-byte
-  FNV/FO3/Skyrim layout, so `parse_npc` (`actor/mod.rs`) needs a `GameKind::Oblivion`
-  arm gated on `len >= 16` *before* the FNV arm. Pre-fix the ≥24 arm never fired
-  on Oblivion: `record.level` defaulted to 1 (high-level NPCs resolved
-  lowest-tier inventory) and `acbs_flags` defaulted to 0 (every actor read Male
-  via `Gender::from_acbs_flags`). Tests: `oblivion_16byte_acbs_parses_level_and_gender`
-  + `fnv_ignores_16byte_acbs` in `crates/plugin/src/esm/records/actor/tests.rs`. Per-game layout must stay
-  gated at the parser→record boundary, never re-derived at spawn/equip time.
-- The two ignored Oblivion real-data parity tests
-  (`clas_oblivion_knight_against_vanilla`, `race_oblivion_data_and_subs_against_vanilla`)
-  still pass against vanilla `Oblivion.esm` when un-ignored.
-- CELL walker: does `parse_esm_cells` (`crates/plugin/src/esm/cell/mod.rs`)
-  handle Oblivion's CELL group layout (XCLL lighting, RCLR, interior vs
-  exterior block grouping)?
-- DIAL/INFO format differs between Oblivion and later titles — does the
-  conversation-tree decode (M24.2) account for it, or silently mis-read?
-- What is the minimum record set the cell loader needs to place an Oblivion
-  exterior REFR? (Feeds the Blocker Chain.)
+### Dimension 3: Legacy-Property Rendering Path (highest historical yield)
+**Subagent**: `renderer-specialist`
+Routing: the single material boundary / no render-time fallback / emitter translation `/audit-nifal`; Disney-BSDF gate (`MAT_FLAG_PBR_BSDF` must be 0, no BGSM/`.mat`) `/audit-renderer`.
+**Paths**: `crates/nif/src/import/material/` (`legacy_properties.rs`, `walker.rs`), `byroredux/src/cell_loader/spawn/mesh_instance.rs`, `byroredux/src/scene/nif_loader.rs`, `byroredux/src/render/static_meshes.rs`, `byroredux/src/asset_provider/texture.rs`, `crates/renderer/shaders/include/material_sampling.glsl`
+**First step**: `cargo test -p byroredux --bin byroredux parallax_alpha_gate` (rustup toolchain, see Phase 1) and `git log --since=<date> --format='%h %cs %s' -- crates/nif/src/import/material byroredux/src/render byroredux/src/cell_loader/spawn`
+- **`APPLY_HILIGHT2` is Oblivion's parallax flag.** The importer records `parallax_height_in_alpha` on the intent alone (`parallax_map.is_none()`) because Oblivion authors no normal slot (14 `bump_texture` uses in the whole mesh archive pair); normals resolve by filename (`derive_normal_map_path`, #1303) downstream of `MaterialInfo`, and the asset provider binds that `_n.dds` into the height slot (`mesh_instance.rs`, `nif_loader.rs`, #3596). Height is the normal's **alpha**: when the bound normal has none (BC1/BC4/BC5 return `A = 1.0`, sliding the whole surface) the render site must withhold `PARALLAX_ALPHA_HEIGHT_BIT` **and zero the height slot** (#3562, #4260). Guard: `byroredux/src/render/parallax_alpha_gate_tests.rs`; it cannot see the real alpha-format split — 2026-09-11 census: 1 274 `APPLY_HILIGHT2` properties, 100 with a BC1 `_n.dds`; re-measure.
+- The bit is bit 31 of `parallaxMapIndex`: every shader reader must mask it (`textures[0x8000000N]` is out of bounds) and **both** POM marchers (`material_sampling.glsl`, secondary-ray `ray_hit.glsl`) must honor the channel. Scale defaults are the named `DEFAULT_PARALLAX_*` constants, never literals (#4263).
+- Apply modes 1 (`APPLY_DECAL`) and 3 (`APPLY_HILIGHT`) are decoded and unconsumed: 681 of 30 121 instances are non-default and their PC semantics are unsourced (#3625, 2026-09-11) — no value is guessed for them.
+- Legacy properties (pins in `crates/nif/src/import/material/`: `emissive_source_tests.rs`, `alpha_flag_tests.rs`, `double_sided_tests.rs`, `stencil_state_capture_tests.rs`): raw monitor-space `NiMaterialProperty` colors; all 11 AlphaFunction values routed, per-slot blend fallback (#4262); `NiWireframeProperty` -> LINE pipeline and `NiShadeProperty.flat_shading` -> fragment shader (#869); `NiStencilProperty` dormant except the two-sided promotion (#930).
+- **Emitters**: 140 of 208 emitter-bearing Oblivion NIFs carry several `NiPSysEmitter`s (`obgatemini01.nif` 11, `transformation.nif` 13); each `ImportedParticleEmitter` needs its **own** kinematics / curve / rate, not the first match (#4261, then #4467 when that fix lost rates behind opaque sibling controllers). Oblivion's leg of `real_archive_torch_meshes_surface_particle_emitters` (`--ignored`) is the guard; the pre-Skyrim emitter layout is version-gated (#1239).
 **Output**: `/tmp/audit/oblivion/dim_3.md`
 
-### Dimension 4: Rendering Path for Oblivion Shaders
-**Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/import/material/` (`mod.rs`, `walker.rs`, `shader_data.rs`), `crates/nif/src/import/walk/`, `byroredux/src/systems/particle.rs`, `crates/renderer/shaders/triangle.frag`
-**Checklist**:
-- `NiTexturingProperty` → `MaterialInfo` pipeline (base slot 0, dark slot 1,
-  normal-from-bump per #131, detail, glow, gloss).
-- **`APPLY_HILIGHT2` is Oblivion's parallax flag.** `NiTexturingProperty`'s Apply Mode was read and discarded at *both* of its on-disk homes; `apply_mode: u32` now stores it from each (a standalone `uint` below 20.1.0.2, `(flags >> 1) & 0x7` at and above), and `APPLY_HILIGHT2` — nif.xml's "Parallax Flag in some Oblivion meshes", **1 433 properties across 741 vanilla meshes** — flags `parallax_height_in_alpha`. **#3530 (`19813460`) wired this but gated the binding on `info.normal_map.is_some()`, which is never true on Oblivion** — the title resolves normal maps by `_n.dds` filename convention downstream of `MaterialInfo` (#1303), so the route measured **0 of 35,322** imported meshes with the flag actually set. **#3596 fixed the reachability**: the parser now records `parallax_height_in_alpha = true` on the `APPLY_HILIGHT2` intent alone (`info.parallax_map.is_none()` is the only gate left), and the asset provider (`cell_loader::spawn::mesh_instance` + `scene::nif_loader`) binds the derived `_n.dds` into the height slot downstream, as `DerivedNormal` provenance. The height source is still the **normal map's alpha**, because Oblivion ships no `_p.dds` at all; that reuses the existing `NORMAL_ALPHA_SPEC_BIT` mechanism verbatim rather than inventing a second one, and the `0.04 / 4.0` scale pair is the engine default every consumer's `unwrap_or` already used — **no constant was invented for Oblivion**. **#3562** added the missing safety gate this route needed: `static_meshes.rs` only sets the bit when the bound normal texture's format actually carries alpha (`normal_has_alpha`) — BC1/BC4/BC5 always decode `A = 1.0`, which without the gate froze the POM marcher's depth compare and produced a full grazing-incidence UV slide on every fragment. The per-game rule stays at the NIFAL boundary: `Material::parallax_height_in_alpha` is canonical state, and the render side only transports it as **bit 31 of `parallaxMapIndex`**. Every shader reader must mask that bit — mandatory, not cosmetic, since `textures[0x8000000N]` is a wildly out-of-bounds bindless index — and **both** POM marchers (raster and secondary-ray) must honour the channel or reflections disagree with the raster pass. This is also what took `FORMAT_MAJOR` to 10 at the time (`19813460`; current value is higher — see `/audit-save`). Apply Mode values 1 (`APPLY_DECAL`) and 3 (`APPLY_HILIGHT`) remain deliberately unconsumed — their real semantics on Oblivion PC content are unverified and `#3625` documented the measured histogram rather than guessing (30,121 instances measured; 681 non-default, non-`APPLY_HILIGHT2`).
-- `NiMaterialProperty` color mapping is raw monitor-space (per 0e8efc6 — do NOT
-  `srgb_to_linear` legacy colors).
-- `NiAlphaProperty` blend-factor extraction routes every Gamebryo AlphaFunction
-  enum value.
-- `NiStencilProperty` / `NiZBufferProperty` / `NiVertexColorProperty` /
-  `NiSpecularProperty` / `NiWireframeProperty` / `NiDitherProperty` /
-  `NiShadeProperty` — honored or dropped silently? **#869 guards**:
-  `NiWireframeProperty` wires to the LINE pipeline variant;
-  `NiShadeProperty.flat_shading` is consumed in the fragment shader.
-- Vertex-color interaction with material color.
-- **#1239 Oblivion `NiPSysEmitter` version gating**: Oblivion's pre-Skyrim
-  emitter field layout is routed via nif.xml's version gate — a regression
-  silently misparses emitter authoring.
-- **Typed particle-emitter import → runtime path**: `NiPSysEmitter` /
-  `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` are
-  TYPED blocks (`crates/nif/src/blocks/particle.rs`) decoded by
-  `extract_emitter_params` + `extract_emitter_rate`
-  (`crates/nif/src/import/walk/mod.rs`) and fed into
-  `apply_emitter_params` (`byroredux/src/systems/particle.rs`). Verify an
-  Oblivion emitter that parses (per the #1239 gate) actually reaches the ECS
-  authoring path and animates — not just parses-then-drops.
-- **Disney BSDF gating regression guard (#1248-#1252)**: zero Oblivion materials
-  author BGSM/`.mat`, so `MAT_FLAG_PBR_BSDF` (`crates/renderer/shaders/include/shader_constants.glsl`)
-  must be 0 across the entire Oblivion material universe — the Disney lobe
-  (`crates/renderer/shaders/include/pbr.glsl`) is
-  unreachable for Oblivion. Any Oblivion scene activating Burley / anisotropic
-  GGX is a gate regression.
+### Dimension 4: Exterior & Lighting Data (Tamriel)
+**Subagent**: `general-purpose`
+Routing: WTHR / sun / terrain / LOD / water translation mechanism -> `/audit-exterior`. This dimension checks the Oblivion-only inputs.
+**Paths**: `byroredux/src/cell_loader/` (`placement_lod.rs`, `terrain.rs`), `byroredux/src/env_translate.rs`, `byroredux/src/systems/light_anim.rs`, `crates/plugin/src/esm/cell/`, `docs/engine/exterior-readiness-plan.md`
+**First step**: `docs/smoke-tests/m-exteriors.sh oblivion static` (needs a Vulkan device), and `git log --since=<date> --format='%h %cs %s' -- byroredux/src/cell_loader byroredux/src/env_translate.rs`
+- **`_far.nif` placement LOD is real only here** (`placement_lod_supported_is_oblivion_only`; FO3/FNV ship none and use `ObjectLodScheme::FalloutLegacyBlocks`): confirm placements and LOD textures still resolve on a Tamriel exterior.
+- **`WTHR.HNAM`** (Oblivion-only HDR block, 37 / 37 weathers): the sunlight dimmer rides the EXAL boundary onto `WeatherDataRes` and multiplies the sampled sun colour; absence is a neutral 1.0 and a short/degenerate block must clamp, not go negative (`sunlight_dimmer_translates_from_the_hnam_block`, #4057).
+- **LTEX / default land textures**: Oblivion `LTEX.ICON` is relative to `landscape\` and rooted there at the parse boundary (226 of 229 resolve; three ship nowhere), default land texture is `Default.DDS` (`DefaultLandTexture::for_game`), and layers without `TX01` take the diffuse's `_n` sibling. Pins (`--ignored`, `byroredux/src/cell_loader/terrain.rs`): `oblivion_ltex_paths_exist_in_vanilla_archives`, `default_land_textures_exist_in_vanilla_archives`. A checkerboard on lake/sea beds means a missing key.
+- LIGH falloff: an authored 0.0 means "default", which is the quadratic 2.0 pre-Skyrim (`falloff_exponent_sentinel_resolves_per_layout_generation`, `light_anim.rs`) — not the Skyrim 1.0.
+- Embedded `NiControllerSequence` animation (423 files / 792 sequences: gates, banners) must reach the ECS on cell load (#3602); frozen animated statics are the symptom. Repeatable gate: `m-exteriors.sh oblivion static|boundary|soak|cycle|water` and `/audit-runtime --game oblivion`.
 **Output**: `/tmp/audit/oblivion/dim_4.md`
 
-### Dimension 5: NIFAL Canonical Material Translation for Oblivion
-**Subagent**: `renderer-specialist`
-**Entry points**: `byroredux/src/material_translate.rs`, `crates/nif/src/import/material/walker.rs`, `crates/core/src/ecs/components/material.rs`, `byroredux/src/render/static_meshes.rs`, `docs/engine/nifal.md`
-**Checklist**: Trace an Oblivion `NiTexturingProperty`/`NiMaterialProperty`
-`MaterialInfo` through the single canonical boundary `translate_material`
-(`byroredux/src/material_translate.rs`) into the ECS `Material`.
-- Metalness/roughness arrive as plain `f32` carrying the `f32::NAN` sentinel
-  (`mesh.metalness_override`/`roughness_override` `.unwrap_or(f32::NAN)`) and are
-  resolved exactly once by `Material::resolve_pbr`
-  (`crates/core/src/ecs/components/material.rs`). Confirm no per-draw
-  `classify_pbr` reappears and that `static_meshes.rs` still reads
-  `m.roughness`/`m.metalness` directly with no render-time keyword scan.
-- `emissive_source` is tagged `EmissiveSource::Material` for Oblivion legacy
-  meshes via the `NiMaterialProperty` arm in
-  `crates/nif/src/import/material/walker.rs` (distinct from the Skyrim/FO4
-  `BSLightingShaderProperty` arm). Test:
-  `crates/nif/src/import/material/emissive_source_tests.rs`.
-- `MAT_FLAG_PBR_BSDF` stays 0 across the all-legacy Oblivion universe (shared
-  with Dim 4's Disney-gate guard; flag this once, cross-reference).
-See `/audit-nifal` for the cross-game canonical-tier audit; this is the
-Oblivion-specific slice.
+### Dimension 5: Gameplay & UI Data Slice (M47.3 ObScript quests, MenuXml HUD)
+**Subagent**: `general-purpose`
+Routing: quest-script runtime `/audit-scripting`; HUD drivers / MenuXml eval-layout-raster `/audit-ui`, parse side `/audit-parsers`; gameplay mechanism `/audit-gameplay`.
+**Paths**: `crates/scripting/src/obscript_vm.rs`, `crates/scripting/src/obscript_quests.rs`, `byroredux/src/hud.rs`, `crates/menuxml/`, `byroredux/src/cell_loader/references/attach.rs`
+**First step**: `cargo test -p byroredux-scripting --release -- --ignored vanilla_oblivion_quest_scripts_execute_and_setstage` (`BYROREDUX_OBLIVION_DATA`, ~160 MB resident) and `git log --since=<date> --format='%h %cs %s' -- crates/scripting crates/menuxml byroredux/src/hud.rs`
+- **M47.3** (mechanism `/audit-scripting`): 255 vanilla QUST scripts install once per load order and tick every 5 s (`fQuestProcessInterval`); command ids were derived empirically from `Oblivion.esm` and 2 349 of 2 393 SCPT decode clean (residue: per-command string-argument signatures); unknown commands are counted, never faked. Oblivion's dialect is `Obse` (`obscript_dialect_follows_the_profile_not_the_game_kind`). Object-script blocks, `Message` UI and actor-state functions are phase 2 (ROADMAP M47.3).
+- **MenuXml HUD** (`--hud`, `HudGameProfile::oblivion`): the XML *authors* the art, so the driver pushes only trait overrides (`hudmain_health_full` / `hudmain_magic_full` / `hudmain_fatigue_full`, `hudmain_compass_window` `user0`, `HUDMainMenu` `user3`); XML + 5 font slots come from `Oblivion - Misc.bsa`, art from `Oblivion - Textures - Compressed.bsa` (three `Menus` / `Menus80` / `Menus50` sets). Oblivion has no stamped index-keyed ActorValues, so bars read the Skyrim-keyed `0x3E8` / `0x3E9` / `0x3EA` and fall back to full. Guards: `crates/menuxml/tests/vanilla_corpus.rs` (`BYROREDUX_OBLIVION_DATA`), `docs/smoke-tests/m48-4-oblivion-hud.sh`. The driver, throttle, overlay and eval/layout/raster are shared -> `/audit-ui`.
+- Playable gate: `docs/smoke-tests/p0-door-interaction.sh oblivion` is the only gate `oblivion.env` declares; an undeclared gate exits 2 (unmeasured, not covered).
 **Output**: `/tmp/audit/oblivion/dim_5.md`
-
-### Dimension 6: Real-Data Validation
-**Subagent**: `general-purpose`
-**Entry points**: `crates/nif/examples/nif_stats.rs`, `crates/nif/examples/recovery_trace.rs`, `crates/nif/tests/parse_real_nifs.rs`, `crates/nif/tests/per_block_baselines.rs`
-**Checklist**:
-- Run `nif_stats` (and `nif_stats --tsv` for the per-type histogram) over
-  `Oblivion - Meshes.bsa` **and the eight vanilla DLC archives** (`#3712`
-  widened `Game::optional_mesh_archives` to cover all of them — 9,612 NIFs
-  total); compare clean/recovered/truncated counts against the current
-  ROADMAP Oblivion row AND the checked-in Oblivion baseline in
-  `per_block_baselines.rs`. Any `unknown` growth or `parsed` shrinkage is a
-  regression.
-- Run `recovery_trace` to confirm the residual truncated-file count is
-  **0** (`oblivion_truncations.tsv` baseline, regenerated `#3082`/`#3712`).
-  The former six-file NetImmerse-marker tail (`marker_arrow`/`divine`/`map`/
-  `radius`/`temple`/`travel`) is fully resolved — including the
-  corrupt-by-design `marker_radius.nif` (`#698` closed), which was fixed
-  outright by `#2562`/`#2563`'s `NiKeyframeController` `Data`-ref fix rather
-  than merely truncating cleanly. Any truncation reappearing on this corpus
-  is new drift, not the expected tail.
-- Cross-check the block-type histogram for any new types appearing since the last
-  sweep.
-- Pick 3 representative interior meshes (Anvil Heinrich Oaken Halls chandelier, a
-  book, a creature head) and trace them through `import_nif_scene` → verify
-  expected mesh count + material chain.
-**Output**: `/tmp/audit/oblivion/dim_6.md`
-
-### Dimension 7: Exterior Blocker Chain & Game-Specific Quirks
-**Subagent**: `general-purpose`
-**Entry points**: `ROADMAP.md` (Known Issues + compat matrix), `docs/feature-matrix.md`, `byroredux/src/cell_loader/`, `docs/audits/`
-**Checklist**:
-- The exterior wiring (TES4 worldspace + LAND) is **implemented and
-  game-agnostic** — parse + load + render ✓ since #1556; Tamriel `(0,0)`
-  radius 1 is on-device measured at 6,043 entities / 2,355 draws
-  (2026-08-12 EX-01/EX-05 re-run, image-health + environment-value gates
-  both clean — see `docs/engine/exterior-readiness-plan.md` for the live
-  figure). The remaining work is the *repeatable readiness matrix*
-  (#2377/#2368), not a first render. It is *not* BSA v103 decompression
-  either, which has worked end-to-end since 2026-04-17 (#699). Do not
-  regenerate the dead "v103 is broken" framing, the stale "render bench
-  pending" framing, or re-file the wiring as missing.
-- Does the `--bsa` CLI path open + list + extract Oblivion archives end-to-end?
-- Are there Oblivion-specific record types the cell loader
-  (`byroredux/src/cell_loader/`) needs beyond the FNV-aligned set to place
-  exterior REFRs?
-- Animation blocks that parse but can't play because scene-graph name resolution
-  is missing?
-- The pre-5.0.0.1 inline-name path itself logs at `debug` (one line per
-  file, `lib.rs:405-410`) and only escalates to `warn` on the rare
-  mid-file read failure (`lib.rs:429-433`, keyed per truncated block, not
-  per file) — confirm this hasn't drifted to a per-block `warn` on the
-  common case (spam risk on full-archive sweeps).
-- Any 100%-parse NIFs that would still render wrong (legacy particle emitters
-  that parse but don't route to the renderer — cross-check Dim 4)?
-- `_far.nif` distant-object LOD (#1726/#1745, Session 52) — verify the
-  placement scheme + real LOD textures still resolve on Oblivion exteriors;
-  entry points `cell_loader/object_lod.rs`, `cell_loader/placement_lod.rs`.
-  **Oblivion is the only game where this route is real**: `placement_lod_supported`
-  gates on `GameKind::Oblivion` alone (`cell_loader/placement_lod.rs:329-330`),
-  and FO3/FNV ship zero `_far.nif` / `distantlod\` entries (#2086, #3422).
-  FO3/FNV use `ObjectLodScheme::FalloutLegacyBlocks` instead — don't ask them
-  to reproduce this one.
-**Output**: `/tmp/audit/oblivion/dim_7.md`
 
 ## Phase 3: Merge
 
-1. Read all `/tmp/audit/oblivion/dim_*.md` files.
-2. Combine into `docs/audits/AUDIT_OBLIVION_<TODAY>.md` with structure:
-   - **Executive Summary** — Current compatibility level (NIF parse incl. v10.x
-     tail, archive extract, ESM parse, render end-to-end), top blockers in
-     priority order. Cite ROADMAP/feature-matrix numbers, not this skill.
-   - **Dimension Findings** — Grouped by severity per dimension.
-   - **Blocker Chain** — Sequential list to reach "exterior cell renders".
-     Interiors already work end-to-end (Anvil Heinrich Oaken Halls). TES4
-     worldspace + LAND wiring is already implemented and game-agnostic
-     (#1556) and exterior cells already render on-device (Tamriel `(0,0)`
-     radius 1, 6,043 entities / 2,355 draws, 2026-08-12 EX-01/EX-05) — the
-     chain to first render is already closed; the remaining chain is the
-     repeatable readiness matrix (#2377/#2368) → any placement/LOD gaps it
-     surfaces. Do NOT regenerate the stale BSA-v103 framing, nor the stale
-     "wiring missing" / "render bench pending" framing.
-   - **Regression Guard List** — Previously-fixed items this audit verified still
-     hold: the v10.x stride-drift family (#1506/#1507/#1508/#1509),
-     `NiTexturingProperty` u32 count, BSStreamHeader dual-band (#170),
-     `user_version` threshold, BSA v103 extraction (#699), Disney-gate stays 0.
-3. Remove cross-dimension duplicates.
+1. Read all `/tmp/audit/oblivion/dim_*.md`; combine into `docs/audits/AUDIT_OBLIVION_<TODAY>.md`:
+   - **Executive Summary** — compatibility level (NIF parse incl. v10.x tail, archive extract, ESM parse, render); state the corpus-lane result first; cite ROADMAP / feature-matrix numbers.
+   - **Dimension Findings** — grouped by severity per dimension.
+   - **Regression Guard List** — stride-drift family (#1506-#1509), #170 dual band, `NiTexturingProperty` u32 count, BSA v103 sweep, `parallax_alpha_gate_tests`, Disney gate stays 0.
+   - **Open Work** — from `ROADMAP.md` Known Issues; interiors and the Tamriel exterior already render, so neither is a blocker.
+2. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_OBLIVION_<TODAY>.md`
 (label every finding `game:oblivion` + `legacy-compat`, plus its own domain label.)

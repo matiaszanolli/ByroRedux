@@ -321,19 +321,6 @@ if (( ${#missing_basenames[@]} > 0 )) && [[ "${SKIP_BASENAME_CHECK:-0}" != "1" ]
 fi
 
 # ---------------------------------------------------------------------------
-# Crate-count drift (FATAL)
-#
-# `_audit-common.md` documents the crate roster and tells audits to use it as a
-# coverage sanity check, so a stale count silently understates required
-# coverage. It went stale on two consecutive crate additions — #2261 (`hkx`)
-# and #2420 (`mod-runtime`) — because the number was fixed by hand each time
-# and hand-fixing does not survive the next `crates/` addition.
-#
-# The count is mechanically derivable, so derive it. Pointer sentences in other
-# skills deliberately no longer quote a number at all (#2420); this guards the
-# one remaining literal, in the file that owns it.
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
 # NUL bytes in tracked text sources (FATAL)
 #
 # #3210 — three raw NUL bytes inside byte-string literals in
@@ -369,18 +356,99 @@ if ! nul_report=$(scripts/check-text-source-integrity.sh 2>&1); then
     stale_count=$((stale_count + 1))
 fi
 
-crate_dirs=$(find crates -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
-common_md=.claude/commands/_audit-common.md
-documented=$(grep -oE '^Crate count: [0-9]+' "$common_md" 2>/dev/null | grep -oE '[0-9]+')
-if [[ -z "$documented" ]]; then
+# ---------------------------------------------------------------------------
+# Ownership-map coverage (`.claude/commands/_audit-owners.md`)
+#
+# Replaces the hand-maintained "Crate count: N" literal, which went stale on
+# every crate addition (#2261 hkx, #2420 mod-runtime) and could only ever say
+# "the number moved", never "nobody audits the new thing". The map is the one
+# place ownership lives; this derives everything else from the live tree.
+#   FATAL     a row whose path prefix matches no tracked file (rotted row)
+#   FATAL     a tracked crates/* or tools/* directory with no owner row
+#   ADVISORY  a byroredux/src module >=300 non-test LOC that only the
+#             `byroredux/src/` catch-all row reaches (owned in name only)
+# ---------------------------------------------------------------------------
+owners_md=.claude/commands/_audit-owners.md
+if [[ ! -f "$owners_md" ]]; then
     echo
-    echo "STALE  _audit-common.md — no parseable 'Crate count: N' line"
+    echo "STALE  $owners_md is missing — ownership coverage cannot be checked"
     stale_count=$((stale_count + 1))
-elif [[ "$documented" != "$crate_dirs" ]]; then
-    echo
-    echo "STALE  _audit-common.md 'Crate count: $documented' — live tree has $crate_dirs"
-    echo "       Update the count AND the name list beside it."
-    stale_count=$((stale_count + 1))
+else
+    owner_prefixes=()
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        while IFS= read -r pfx; do
+            [[ -n "$pfx" ]] && owner_prefixes+=("$pfx")
+        done < <(expand_braces "$row")
+    done < <(sed -nE 's/^\| `([^`]+)` \|.*/\1/p' "$owners_md")
+
+    has_tracked_prefix() {  # $1 = prefix; true iff some tracked path starts with it
+        awk -v p="$1" 'index($0, p) == 1 { found = 1; exit } END { exit !found }' "$all_paths_file"
+    }
+
+    if (( ${#owner_prefixes[@]} == 0 )); then
+        echo
+        echo "STALE  $owners_md — no parseable ownership rows"
+        stale_count=$((stale_count + 1))
+    fi
+
+    # Every owner a row names must be a real skill (`per-game` is the one
+    # placeholder: it means "whichever audit-<game> applies").
+    while IFS= read -r owner; do
+        [[ -n "$owner" && "$owner" != "per-game" ]] || continue
+        if [[ ! -f ".claude/commands/audit-${owner}/SKILL.md" ]]; then
+            echo
+            echo "STALE  $owners_md — owner \`$owner\` has no .claude/commands/audit-${owner}/SKILL.md"
+            stale_count=$((stale_count + 1))
+        fi
+    done < <(sed -nE 's/^\| `[^`]+` \| ([^|]+) \|.*/\1/p' "$owners_md" \
+                | tr ';,' '\n\n' \
+                | sed -E 's/\([^)]*\)//g; s/ Dims? [0-9][0-9+-]*//g; s/^[[:space:]]+//; s/[[:space:]]+$//' \
+                | sort -u)
+
+    for pfx in "${owner_prefixes[@]}"; do
+        if ! has_tracked_prefix "$pfx"; then
+            echo
+            echo "STALE  $owners_md — owner row \`$pfx\` matches no tracked path (moved or deleted)"
+            stale_count=$((stale_count + 1))
+        fi
+    done
+
+    # True iff some owner row sits at or under `$1` (a specific owner), or
+    # covers it from above. `$2` = "specific" ignores the byroredux/src/ catch-all.
+    is_owned() {
+        local target="$1" mode="${2:-any}" pfx
+        for pfx in "${owner_prefixes[@]}"; do
+            [[ "$mode" == "specific" && "$pfx" == "byroredux/src/" ]] && continue
+            [[ "$target" == "$pfx"* || "$pfx" == "$target"* ]] && return 0
+        done
+        return 1
+    }
+
+    while IFS= read -r d; do
+        is_owned "$d/" any || {
+            echo
+            echo "STALE  $d/ has no owner row in $owners_md — add one (and an audit that covers it)"
+            stale_count=$((stale_count + 1))
+        }
+    done < <(cut -d/ -f1-2 "$all_paths_file" | grep -E '^(crates|tools)/[^/]+$' | sort -u)
+
+    unowned_modules=()
+    while IFS= read -r entry; do
+        [[ "$entry" == *_tests.rs || "$entry" == *tests ]] && continue
+        loc=$(grep -E "^byroredux/src/${entry}(\.rs$|/)" "$all_paths_file" \
+                | grep -vE '(_tests?\.rs|/tests?/|/tests\.rs)$' \
+                | xargs cat 2>/dev/null | wc -l | tr -d ' ')
+        (( loc >= 300 )) || continue
+        is_owned "byroredux/src/$entry" specific || unowned_modules+=("byroredux/src/$entry ($loc LOC)")
+    done < <(grep -E '^byroredux/src/' "$all_paths_file" | sed -E 's|^byroredux/src/([^/]+).*|\1|; s|\.rs$||' | sort -u)
+
+    if (( ${#unowned_modules[@]} > 0 )); then
+        echo
+        echo "ADVISORY (ownership) — byroredux/src modules >=300 LOC reached only by the catch-all row:"
+        printf '  %s\n' "${unowned_modules[@]}"
+        echo "  Add a specific row to $owners_md (or fold into an existing prefix). Not a failure."
+    fi
 fi
 
 # ---------------------------------------------------------------------------

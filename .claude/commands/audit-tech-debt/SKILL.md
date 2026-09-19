@@ -5,45 +5,36 @@ argument-hint: "--focus <dimensions> --depth shallow|deep"
 
 # Tech-Debt Audit
 
-Audit ByroRedux for accumulated technical debt: code that compiles, passes
-tests, and ships, but quietly raises the cost of every future change. The goal
-is **not** correctness bugs (other audits own that) — it is decay that crept in
-since the last cleanup pass.
+Audit ByroRedux for accumulated technical debt: code that compiles, passes tests and ships, but raises the
+cost of every future change. Correctness bugs belong to other audits; this one hunts decay since the last
+cleanup pass.
 
-**Every dimension below is a DISCOVERY RECIPE, not a finding list.** Instances
-churn between audits (markers get deleted, files get split, line numbers drift).
-So each dimension hands you a command to enumerate *current* instances, then a
-triage rule. Do not trust any hardcoded instance list — there are none here on
-purpose. Re-run the recipe; report what it surfaces today.
+**Every dimension below is a DISCOVERY RECIPE, not a finding list.** Instances churn between audits, so each
+dimension hands you a command that enumerates *current* instances plus a triage rule. There is no hardcoded
+instance list here on purpose — re-run the recipe and report what it surfaces today. Where a `cargo test` /
+CI gate already enforces an invariant, the dimension names the guard and aims at what it cannot see.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, the crate roster,
-methodology, deduplication, context rules, severity, and finding format. Do not
-duplicate any of that here. The newest crates — `crates/sdk/` (the
-renderer-independent Studio surface, landed 2026-08-25 with its engine-side
-adapter `byroredux/src/studio_host.rs` and, per #3457, without a layout row),
-`crates/mod-runtime/` (the sandboxed-WASM mod host, consumed by
-`byroredux/src/extensions/` since `24df5304`),
-`crates/pex/` (M47.2 compiled-Papyrus `.pex` decompiler), `crates/save/` (M45
-full-ECS snapshot save/load), `crates/hkx/` (M47.2 Havok packfile reader for the
-MQ101 cinematic slice), and the expanded `crates/scripting/` (M47.1/M47.2
-recognizer chain) — are young code that has not yet seen a debt sweep; the
-dimensions below should reach them.
+See `.claude/commands/_audit-common.md` for layout, crate roster, methodology, dedup, severity and finding
+format. Young code has had the fewest sweeps — find it with
+`git log --diff-filter=A --since=<last-report-date> --name-only --format= -- 'crates/*/Cargo.toml' 'tools/*/Cargo.toml'`
+plus the crates the last report never names (today `crates/sdk`, `crates/mod-runtime`, `crates/menuxml`,
+`crates/scripting`, `crates/save`, `crates/hkx`, `crates/spt`, and `tools/`). File real findings there; do not
+just note the crate is young. `crates/cxx-bridge` and `crates/platform` are deliberate placeholders owned here:
+check they have not grown a second job or silent consumers, not that they are small.
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,5`). Default: all 9.
-- `--depth shallow|deep`: `shallow` = surface counts + worst offenders; `deep` = per-instance triage with a concrete fix proposal. Default: `deep`.
+- `--focus <dimensions>`: comma-separated dimension numbers (e.g. `1,3,5`). Default: all 9.
+- `--depth shallow|deep`: `shallow` = surface counts + worst offenders; `deep` = per-instance triage with a concrete fix proposal. Default `deep`.
 
 ## Extra Per-Finding Fields
 
 - **Dimension**: one of the 9 below.
 - **Age** (when relevant): commit hash + date the debt landed (`git log -L` / `git blame`).
 - **Effort**: trivial (≤30 min) | small (≤2 h) | medium (≤1 day) | large (>1 day, decompose first).
-- **ID convention**: `TD<dim>-NNN` (e.g. `TD7-050` = Dim 7 Doc Rot, finding 50). The
-  path-validation gate (`_audit-validate.sh`, #1114) was itself a `TD7-*` finding —
-  recurring stale-path findings are what motivated the gate.
+- **ID convention**: `TD<dim>-<date>-NN` (e.g. `TD3-2026-09-05-02` = Dim 3 Stale Documentation, finding 2 of that report).
 
 ## Severity for Tech Debt
 
@@ -60,49 +51,22 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS` for `--focus`, `--depth`.
-2. `mkdir -p /tmp/audit/tech-debt`.
+1. Parse `$ARGUMENTS`. 2. `mkdir -p /tmp/audit/tech-debt`.
 3. Dedup baseline:
-   ```bash
-   gh issue list --repo matiaszanolli/ByroRedux --limit 500 --state all --label tech-debt --json number,title,state > /tmp/audit/tech-debt/issues_all.json
-   ```
+   `gh issue list --repo matiaszanolli/ByroRedux --limit 500 --state all --label tech-debt --json number,title,state > /tmp/audit/tech-debt/issues_all.json`
 4. Scan `docs/audits/` for prior `AUDIT_TECH_DEBT_*.md` (diff direction, not re-litigation).
-5. **Production-LOC helper** (#3081 / TD4-2026-08-16-01 — Dim 1's actual
-   subject is production complexity, not file length; a file that is long
-   because of bulk inline tests is not the debt this dimension hunts).
-   Define once, reuse for both the snapshot below and Dim 1's own discovery:
+5. **Production-LOC helper** (Dim 1's subject is production complexity, not file length — a file long from bulk
+   inline tests is not the debt this dimension hunts). Source the checked-in script and run its self-test first;
+   a failure means no figure below it can be trusted:
    ```bash
-   # Production LOC estimate for one .rs file.
-   #
-   # Pure-test files by this codebase's own naming convention (`tests.rs` /
-   # `*_tests.rs`, or anything under a `tests/` dir — e.g.
-   # `acceleration/tests/predicates_tests.rs`,
-   # `scene_buffer/gpu_instance_layout_tests.rs`)
-   # report 0: their `#[cfg(test)] #[path = "..."] mod <name>;` gate lives in
-   # the PARENT file that declares them, so no in-file marker exists to
-   # detect it from the file's own content.
-   #
-   # Everything else: total LOC minus every line inside a #[cfg(test)]-gated
-   # BRACE-DELIMITED item, tracked by brace depth so multiple scattered test
-   # blocks in one file are all excluded (a first-#[cfg(test)]-occurrence
-   # cutoff badly undercounts a file like draw.rs, whose first #[cfg(test)]
-   # sits ~200 lines into a 4700-line file, well before the bulk of its
-   # production code). A #[cfg(test)] attribute on a `;`-terminated item
-   # (an external `mod tests;` declaration, a `#[path]` attribute line, or a
-   # test-only `use`) has no block to track — only that one line is excluded.
-   #
-   # The helper lives in a checked-in script, not inline here (#4336): the
-   # inline awk counted braces inside string literals, which misread every
-   # test module full of `"{call}"` format strings or `split("\n}\n")` source
-   # scans — it reported translate/effects.rs at 2093 (true: 1681) and hid 67
-   # production lines of context/draw.rs. The script strips comments, strings,
-   # raw strings and char literals before counting, and ships fixtures for
-   # each shape. Run the self-test first; a failure means no figure below it
-   # can be trusted.
    source .claude/commands/audit-tech-debt/prod_loc.sh
-   prod_loc_self_test
+   prod_loc_self_test        # must print "prod_loc self-test: ok"
    ```
-6. Snapshot totals so the next audit can diff:
+   *prod_loc* `<file>` reports 0 for pure-test files (`tests.rs`, `*_tests.rs`, anything under `tests/` — their
+   `#[cfg(test)] mod` gate lives in the parent) and otherwise total LOC minus every `#[cfg(test)]`-gated braced
+   item, counting braces on code only (comments, strings, raw strings and char literals stripped, #4336).
+6. Snapshot totals so the next audit can diff. `tools/` is in scope (four workspace binaries); `tools/nifskope` is
+   vendored and pruned:
    ```bash
    {
      echo "markers (TODO/FIXME/HACK/XXX/TBD/WIP/KLUDGE): $(grep -RInE '(TODO|FIXME|HACK|XXX|TBD|WIP|KLUDGE)\b' crates byroredux tools --exclude-dir=nifskope | wc -l)"
@@ -110,441 +74,238 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "unimplemented!/todo!(): $(grep -RInE 'unimplemented!|todo!\(\)' crates byroredux tools --exclude-dir=nifskope | wc -l)"
      echo "#[ignore] tests:        $(grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools --exclude-dir=nifskope | wc -l)"
      echo "files >2000 production LOC: $(for f in $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*'); do echo "$(prod_loc "$f")"; done | awk '$1>2000' | wc -l)"
-     echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l | xargs -I{} echo {})"
+     echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   #3893 — the scan covers `tools/` since 2026-09-19 (four workspace
-   binaries live there; `tools/nifskope` is vendored and pruned). The
-   tree-wide `#[ignore]` baseline is **182**; pre-#3893 crates+byroredux-only
-   reports said **181** — do not read that delta as a regression.
-   Orientation only (will drift — re-run, never quote): the marker total runs ~21 on the #3877 vocabulary (~20 on the older TODO/FIXME/HACK/XXX-only one),
-   `unimplemented!/todo!()` is currently **0** (the engine prefers explicit
-   fallbacks over panics — a fresh `todo!()` is therefore notable), `#[ignore]`
-   runs in the low hundreds when scoped to `.rs` sources under `crates`/`byroredux`
-   (mostly Vulkan/smoke gating, not debt) — do not compare against a raw
-   whole-repo grep, which also matches markdown prose mentioning the literal
-   string `#[ignore]` (#2262).
-   The **production**>2000-LOC set (Dim 1's actual subject) must be
-   re-measured with *prod_loc* over every `.rs` file in `crates/` +
-   `byroredux/` on every run — never quote a count from this file. Dated
-   history, for diff direction only: 12 files on 2026-09-05; 2 on 2026-09-11
-   (`context/mod.rs` 2831, `compatibility/storage_util.rs` 2160); 3 on
-   2026-09-14 under the string-aware counter (#4336), because
-   *crates/nif/src/blocks/shader.rs* — which had dipped under threshold on
-   2026-09-11 through incidental shrinkage, **not** a split — re-crossed on
-   2026-09-12 at 2058 production (#4339), then was split into
-   `crates/nif/src/blocks/shader/` by `eaa94b49d`. A file that dips under by
-   shrinkage is still a live candidate; only an actual split removes one.
-   Splits that did land and should not be re-proposed: the
-   sandbox-runtime/ECS-event adapter → `byroredux/src/extensions/` (#3843,
-   2026-09-11); `crates/scripting/src/fragment.rs` →
-   `crates/scripting/src/fragment/` (#3854, `f5127c1c`, 2026-09-10), leaving
-   the front file at 144 lines.
-   *crates/renderer/src/texture_registry.rs* left the bucket on 2026-09-11:
-   split into `crates/renderer/src/texture_registry/` under #3737 by
-   lifecycle phase (lookup / upload / release), largest survivor
-   `crates/renderer/src/texture_registry/mod.rs` at 1259 total.
-   **Four files left the bucket on 2026-09-09**, three of them by an actual
-   file-level split: *byroredux/src/boot.rs* → `byroredux/src/boot/`
-   (#3855, `8c5e02aa`; largest survivor `boot/mod.rs` at 606 total),
-   *byroredux/src/asset_provider/material.rs* →
-   `byroredux/src/asset_provider/material/` (#3857, `42f0ead4`; largest
-   survivor `material/merge.rs` at 1239 total),
-   `crates/nif/src/import/walk/mod.rs` → satellite walkers split out
-   (`9aae918b`; mod.rs now 1107 production), and
-   `crates/renderer/src/mesh.rs` (1439 production, down from ~2230 —
-   re-measure before attributing a cause; no split commit was identified).
-   Do **not** re-propose the boot / material / walk splits: they are done.
-   **`crates/renderer/src/vulkan/volumetrics.rs` dropped OUT of the bucket
-   (~2940 → ~1895 production)** — #2256 (2026-09-08) moved `new` / `new_inner`
-   / `create_volume` / `initialize_layouts` into a new
-   `crates/renderer/src/vulkan/volumetrics/init.rs` (~1160 production, itself
-   under threshold), keeping the per-frame recording path (`dispatch`,
-   `record_neutral_frame`, the `write_*` descriptor updates) plus every pure
-   helper and GPU-struct definition in the parent. Same construct-vs-record
-   seam as the `draw.rs` split below, and the same instruction: do not
-   re-propose splitting `volumetrics.rs` on the strength of a pre-2026-09-08
-   figure — re-measure first.
-   *compatibility.rs*, *papyrus_provider.rs*, *runtime.rs* and *extensions.rs*
-   were all split in 2026-09 (#3851 / #3852 / #3853 / #3843) and are no
-   longer single files — see the young-crate note below and the `extensions/`
-   split noted above. Re-run the recipe rather than assuming the bucket is
-   empty; `crates/sdk`, `crates/scripting`, `crates/mod-runtime` are still the
-   "young crates … not yet seen a debt sweep" case named at the top of this
-   skill — file real Dim 1 findings there as they emerge, don't just note the
-   crate is young.
-   **`context/draw.rs` dropped OUT of the bucket entirely (~3620 → ~1760
-   production)** — #3282 (`7463204e`, 2026-09-02) split the re-grown
-   ~2500-LOC `draw_frame` into phase helpers, and `crates/renderer/src/vulkan/context/`
-   now holds 18 files, not the handful the Session-34/35/36 split left behind:
-   alongside `draw.rs`/`mod.rs` there's `dispatch_skin_and_cluster.rs`,
-   `assemble_camera_and_lights.rs`, `geometry_pass.rs`,
-   `build_and_upload_instances.rs`, `skinned_blas_refit.rs`, `post_passes.rs`,
-   `begin_frame_recording.rs`, `sync_and_acquire_frame.rs`, `depth_capture.rs`,
-   `screenshot.rs`, `render_debug.rs`, `teardown.rs`, `resources.rs`,
-   `helpers.rs`, `resize.rs`, `init.rs`. Do not re-propose splitting
-   `draw.rs` — it is done; `context/mod.rs` (2831 production as of
-   2026-09-11, up from ~2650) is the live candidate left in that directory.
-   The *texture_registry.rs* disagreement with #3081's evidence table (which
-   reported its production at 838 — majority-test) was resolved on
-   2026-09-11: 2013 was the reproducible figure, 838 was not, and the file
-   was split under #3737. Its tests were never inline — they live in sibling
-   files reached by `#[path = "..."] mod`, which is why a marker count
-   mistook production for test bulk. The content was genuinely ~2060 lines of
-   production texture-registry
-   logic (samplers, path normalisation, bindless acquire/release). File that
-   as a real Dim 1 finding rather than silently adopting a figure this check
-   disproves. `crates/renderer/src/vulkan/material.rs` (#2257, ~1440
-   production) and `gpu_instance_layout_tests.rs` (0 production — reached
-   only via an external `#[cfg(test)] mod` declaration in its parent) both
-   confirm as false positives under the OLD total-LOC recipe. The separate
-   total-LOC->2000 bucket (test-heavy files, lower priority — report but do
-   not auto-file as Dim 1) had 40 members at the 2026-09-05 re-check and 43
-   on 2026-09-14; naming them here would rot within a session, so re-run the command
-   and check each hit with *prod_loc* before filing — only a production count
-   over 2000 belongs in Dim 1. Note #2258/#2259 (2026-08-03,
-   `record_post_passes` / `build_tlas` decomposition) and, in this same window,
-   #3739 (`build_scheduler` → five `register_*_systems` functions inside
-   *boot.rs*, since split into `byroredux/src/boot/`) and #3738 (`recreate_screen_passes` → five phase methods inside
-   `resize.rs`) all extracted helpers *within* a file rather than splitting the
-   file itself — none of the three moved their host file across the 2000-LOC
-   line (in *boot.rs*'s case the file crossed threshold anyway, from unrelated
-   growth) — file-level crossings and function-level splits are independent
-   signals; don't assume one moves the other.
+   Measured 2026-09-19 (diff direction only, re-run, never quote): markers 22 (16 are `XXXX` false positives),
+   `allow(dead_code)` 28, `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 217 (tools-inclusive;
+   earlier reports scoped to `crates`+`byroredux` read lower), production >2000 LOC: 3, test-heavy >2000: 52. A
+   raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
 
-Ordered by debt impact: complexity and duplication compound across every future
-edit; doc/audit rot misdirects the *next* audit; markers and dead code are
-cheap. Each agent writes `/tmp/audit/tech-debt/dim_<N>.md`.
+Ordered by debt impact: complexity and duplication compound across every edit; doc/audit rot misdirects the *next*
+audit; markers and dead code are cheap. Recent yield (`grep -h '\*\*Dimension\*\*' docs/audits/AUDIT_TECH_DEBT_*.md`):
+Dims 4, 3, 1, 8 dominate (then 2, 9); 5 and 6 rarely surface real debt. Each agent writes `/tmp/audit/tech-debt/dim_<N>.md`.
 
 ### Dimension 1: File / Function / Module Complexity
-The highest-leverage debt: an oversized file taxes every edit, review, and merge.
+Paths: all `.rs` under `crates/`, `byroredux/`, `tools/`
+First step: the two-bucket command below
 
-**Discovery**: two buckets, not one (#3081 / TD4-2026-08-16-01 — total LOC is a
-proxy for the property this dimension actually hunts, production complexity,
-and the two had decoupled: 7 of 11 files the old single-bucket recipe reported
-were majority-test, 2 were pure-test files with zero production code). Use the
-*prod_loc* helper defined in Phase 1, step 5:
+An oversized file taxes every edit, review and merge. Threshold is **2000 production LOC**. Two buckets:
 ```bash
-# Primary bucket — the dimension's actual subject. File real findings from this.
+# Primary — the dimension's actual subject. File real findings from this.
 for f in $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*'); do
-    p=$(prod_loc "$f")
-    [ "$p" -gt 2000 ] && echo -e "$p\t$f"
+    p=$(prod_loc "$f"); [ "$p" -gt 2000 ] && echo -e "$p\t$f"
 done | sort -rn
-
-# Secondary bucket — test-heavy files, lower priority. Report but do not
-# auto-file: only escalate one of these into a Dim 1 finding if its OWN
-# prod_loc figure (above) also crosses 2000.
+# Secondary — test-heavy files, report but do not auto-file: escalate one only if its OWN prod_loc also crosses 2000.
 find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | sort -rn
 ```
-Session 34/35/36 (2026-05) split the original oversized set (acceleration.rs,
-dispatch_tests.rs, cell/tests.rs, draw.rs, scene_buffer.rs, context/mod.rs,
-import/mesh.rs, blocks/collision.rs, nif/anim.rs) into submodules — **all of
-those are closed; do not re-file them.** Membership has since turned over: the
-two big Vulkan-context files *grew* after re-split, and several `byroredux/`
-files crossed 2000 (mostly on the test-only bucket now — see Phase 1 step 6's
-orientation note for the live production-bucket membership). Re-run both
-commands; the threshold is **2000 LOC** (the Session-34 split target) measured
-against **production** LOC for the primary bucket. Whatever it lists today is
-the live set — including any file the skill once cited as a *success* (a
-previously-split module can grow back over threshold).
+The recipe output is authoritative. A file that once split can re-cross (a previously-split file that grew back is a
+live finding); a file that dips under by incidental shrinkage is still a candidate — only an actual split removes one;
+and files within ~5% of the line (check the snapshot) are worth naming as watch-list rows. Function-level splits inside
+a file and file-level splits are independent signals — a `register_*_systems` / phase-helper extraction does not move
+its host file across the line.
 
-**Per oversized file, propose a split AXIS by responsibility** (not by line count):
-- A Vulkan `context/` file → per-pass recording groups (geometry / RT / denoise /
-  composite / overlay) or struct+new() vs Drop vs accessors. Vulkan-recording
-  splits are render-pass-adjacent — see `feedback_speculative_vulkan_fixes.md`
-  before proposing barrier/order changes.
-- ~~*byroredux/src/asset_provider/material.rs* → per-game material-path resolution vs the Starfield `materialsbeta.cdb` path.~~ **DONE (#3857, `42f0ead4`, 2026-09-09)** — split into `byroredux/src/asset_provider/material/` along exactly that axis: `provider.rs` (archive-backed sidecar lookup + caches, 627), `cdb.rs` (Starfield CDB discovery/probe/fallback, 254), `merge.rs` (the NIFAL sidecar merge boundary, 1239) and `mod.rs` (345). No survivor is over threshold; do not re-propose this split. The rest of `byroredux/src/asset_provider/` (`archive.rs`/`texture.rs`/`script.rs`) was already split per the module map — check the submodules stay cohesive, not re-bloated.
-- ~~`byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.~~ **DONE (#2731)** — main.rs is 1267 LOC (re-measured 2026-09-05, up from 1053, up from 834 at the split); the ApplicationHandler moved to `byroredux/src/app_events.rs` and the frame driver to `byroredux/src/app_frame.rs`. Do not re-propose this split — it keeps drifting back up, not settling, so re-measure rather than trust either prior number. The live oversized-file candidates in the binary are now `byroredux/src/interaction.rs` (1626 total / 1141 production, and it mixes UI input routing with the canonical player-action/activation producer — a real seam) and `byroredux/src/app_events.rs` (1310 total / 1342 production). ***byroredux/src/boot.rs* is no longer one of them** — it is gone, split into `byroredux/src/boot/` under #3855 (`8c5e02aa`, 2026-09-09) along the axis this entry called for: `cli.rs` (532), `world.rs` (470), `registries.rs` (86), `mod.rs` (606) and a `schedule/` subdir carrying one file per registration stage (`early`/`update`/`physics`/`post_update`/`late` + `mod.rs`, 50–582 each). No survivor is near threshold. The earlier #3739 (`d03f7a35`, 2026-09-03) **function-level** split of `build_scheduler` into five per-stage `register_*_systems` functions did not by itself clear the file-level threshold — that took the #3855 file-level split, which is the worked example of why the two signals are independent (see the #2258/#2259 note below). Do not re-propose either split.
-- `byroredux/src/commands/` → console-command groups, already split per-domain (world_info / assets / view / scene / shared) under #1323; check the submodules stay cohesive, not re-bloated.
-- `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
-- `crates/nif/src/import/collision/mod.rs` → split per bhk shape family (primitive/compound/mesh/compressed), mirroring `crates/nif/src/blocks/collision/`.
-- ~~`crates/nif/src/import/walk/mod.rs` → split the satellite walkers out per the module doc's own category list rather than by traversal-order.~~ **DONE (`9aae918b`, 2026-09-09)** — `emitter.rs` (736), `lights.rs` (318), `node_attrs.rs` (150) and `texture_effect.rs` (100) were lifted out; `mod.rs` retains hierarchical/flat traversal (`walk_node_hierarchical`/`walk_node_flat`) at 1107 production, under threshold. Do not re-propose.
-- `crates/core/src/ecs/resources/mod.rs` → partially split already (`SkinSlotPool` extracted to `skin_slot_pool.rs` under #1869; `mod.rs` was 1210 LOC after that split and is **1822 LOC as of 2026-08-29** — still under threshold, but it has re-bloated by half again, which is the condition the next line names). Split further per resource domain (rendering/world/audio/scripting).
-- Actor record split per NPC_ data-group (13 groups) — done (#2055): `crates/plugin/src/esm/records/actor/mod.rs` (+ `tests.rs`).
-- **Young-crate sweep candidates, all now resolved — none left to propose.** The engine-side SDK/mod-runtime ECS-event adapter that used to sit at `crates/scripting/src/fragment.rs` (first crossed 2026-09-05) was split under #3843 (2026-09-11) along the axis its own module doc suggested — handle assignment, canonical delivery, command write-back — plus the legacy-extender shims, capture, persistence and the scheduler-registered systems: see `byroredux/src/extensions/`. `crates/scripting/src/fragment.rs` itself (~2540 as of 2026-09-05) was a *different* file split separately under #3854 (`f5127c1c`, 2026-09-10) into `crates/scripting/src/fragment/` — see the Phase-1 note above; do not conflate the two similarly-named splits when re-reading old audit prose.
+**Per file, propose a split AXIS by responsibility, chosen after reading the file's internal structure** — never from a
+name or a tag. Precedent: a metadata enum tag (`ExtenderFamily`) touching 30 of 3759 lines was *not* the seam; the real
+axis was the four-layer service stack (routes → declarations → source aliases → runtime adapters) with one service
+holding over half the lines (#3851). Splits that worked: Vulkan `context/` and `volumetrics` by
+construct-vs-record-vs-teardown; *boot.rs* into one file per registration stage; *runtime.rs* into one file per
+`impl <wit>::Host` block. Data tables (FourCC → id maps, `shader_constants_data.rs`) want a static table or
+generation, not a split. Vulkan-recording splits are render-pass-adjacent — read
+*feedback_speculative_vulkan_fixes* before proposing barrier/order changes.
 
-  **Three of these were split in 2026-09; their axes are now settled fact, not guesses — do not re-derive them.** *crates/sdk/src/compatibility.rs* -> `compatibility/` (#3851): the axis this skill proposed — one module per `ExtenderFamily::{Skse,F4se,Xnvse,Obse,PapyrusUtil,JContainers,Shared}` — was **wrong**, and is recorded here because it is the exact failure this bullet's own caveat warns about. `ExtenderFamily` is a metadata tag on `SourceAlias`/`CompatibilityMatch`, present on 30 of 3759 production lines, 23 of them inside two classifier functions; splitting on it would have produced one ~160-line module and six near-empty ones while leaving the real mass untouched. The real axis was **service surface**, each service repeating a four-layer stack (routes -> declarations -> source aliases -> runtime adapters), and PapyrusUtil's StorageUtil alone was ~2050 of the 3759 lines. *crates/scripting/src/papyrus_provider.rs* -> `papyrus_provider/` (#3852), split on the IR its front end produces and its interpreter consumes. *crates/mod-runtime/src/runtime.rs* -> `runtime/` (#3853): here the guessed per-binding axis **did** hold — 19 `impl <wit>::Host for HostState` blocks relocated one per file. Each needs its own read-through before filing a specific axis — do not assume the above groupings are correct without checking the file's actual internal structure first.
-
-**Also flag**: functions >200 LOC (propose extraction); match arms >50 cases
-(want a lookup table); nesting depth >5 (state-machine extraction); a `mod.rs` /
-`lib.rs` with >20 `pub use` (doing two jobs). `cargo +nightly clippy --all-targets
--- -W clippy::cognitive_complexity` if available, else inspect the worst offenders.
+**Also flag**: functions >200 LOC (propose extraction); match arms >50 cases (want a lookup table); nesting depth >5;
+a `mod.rs` / `lib.rs` with >20 `pub use` (two jobs). `cargo +nightly clippy --all-targets -- -W clippy::cognitive_complexity`
+if available, else inspect the worst offenders.
 
 ### Dimension 2: Logic Duplication
-CLAUDE.md global policy is explicit: *improve existing code, never duplicate logic.*
-Every finding must name a concrete consolidation site.
+Paths: sibling-file families under `crates/nif/src/blocks/`, `crates/plugin/src/esm/records/`, `crates/renderer/src/vulkan/`, `byroredux/src/cell_loader/`, `byroredux/src/systems/`
+First step: `ls crates/nif/src/blocks/*.rs crates/plugin/src/esm/records/*.rs crates/plugin/src/esm/records/*/*.rs crates/renderer/src/vulkan/*.rs byroredux/src/cell_loader/*.rs`, then read two siblings side by side
 
-**Discovery**: target subsystems with N>1 sibling files, then read for repeated scaffolding:
-```bash
-ls crates/nif/src/blocks/*.rs crates/plugin/src/esm/records/**/*.rs crates/renderer/src/vulkan/*.rs byroredux/src/cell_loader/*.rs
-```
-**Look for**:
-- Block-parser scaffolding repeated across `crates/nif/src/blocks/` (header read → field read → fixup) that should funnel through a shared helper/macro.
-- Texture-upload chains (BC1/BC3/BC5/RGBA) duplicated in `crates/renderer/src/vulkan/`.
-- The same image-layout barrier sequence repeated per render pass.
-- `vk::WriteDescriptorSet` builder boilerplate.
-- ESM sub-record parse loops repeated across `crates/plugin/src/esm/records/`.
-- ~~Z-up → Y-up coordinate flips reimplemented outside the canonical homes
-  (`crates/nif/src/import/coord.rs`, `crates/nif/src/anim/coord.rs`)~~ —
-  **stale since #1044/TD3-002**. `crates/core/src/math/coord.rs`
-  (`zup_to_yup_pos`/`zup_to_yup_quat_wxyz`) is the single source of truth
-  today; both named files converged onto it — `anim/coord.rs` is now a
-  14-line `pub use` re-export whose own header says so. Do not flag the
-  ~15 call sites that use the re-exports as leaks; that is the exact
-  inversion of the truth on a fully-converged consolidation. If a genuine
-  reimplementation is found, it must live somewhere *other* than these
-  two named files.
+CLAUDE.md global policy: *improve existing code, never duplicate logic.* Every finding names a concrete
+consolidation site (an existing helper to extend, or the new one and its callers).
+**Look for**: block-parser scaffolding (header → field → fixup) repeated across `crates/nif/src/blocks/`; texture-upload
+chains (BC1/BC3/BC5/RGBA) and image-layout barrier sequences repeated per pass in `crates/renderer/src/vulkan/`
+(`vulkan/image.rs` `GpuImage` and the shared barrier helpers are the consolidation targets — a pass that still
+hand-rolls create/bind/destroy is a candidate); `vk::WriteDescriptorSet` builder boilerplate; ESM sub-record parse loops
+across `crates/plugin/src/esm/records/`; AI-procedure systems sharing scaffolding; near-identical per-game HUD/profile
+tables. The Z-up→Y-up conversion has one home, `crates/core/src/math/coord.rs` (`zup_to_yup_pos`,
+`zup_to_yup_quat_wxyz`); re-exports elsewhere are not leaks — a genuine reimplementation would live outside that file.
 
 ### Dimension 3: Stale Documentation & Comments
-Doc rot is high-impact debt because it misleads the *next* reader and the *next*
-audit. **Run the path gate first** (it is also Dim 9's input):
-```bash
-.claude/commands/_audit-validate.sh
-```
-Any STALE refs it prints are auto-eligible findings (effort: trivial). Then
-sweep for content rot the gate cannot see:
-- **Numeric claims in doc comments that drift from a pinned test.** The canonical
-  trap: `GpuCamera` / `GpuInstance` / `GpuMaterial` byte sizes and `Vertex::SIZE`.
-  Do NOT trust prose — cross-check against the layout test, whose value is
-  authoritative and whose *name* may itself be stale:
-  ```bash
-  # The pins are spread across files — `GpuMaterial`'s lives in
-  # `material_tests.rs`, not the layout-tests file — so search the directory.
-  grep -rn "fn gpu_.*_is_[0-9]\+_bytes\|size_of::<Gpu" crates/renderer/src/vulkan/
-  ```
-- Doc comments naming renamed/deleted symbols. The recurring one: the **deleted
-  render-time `Material::classify_pbr`** (PBR resolution moved to the parse-time
-  NIFAL boundary). Several doc-comments in `crates/core/src/ecs/components/material.rs`
-  still name it — each must frame it as *deleted/historical*, never as a live
-  entry point. Enumerate and read each:
-  ```bash
-  grep -n "classify_pbr" crates/core/src/ecs/components/material.rs
-  ```
-  The surviving symbols are the free function `classify_pbr_keyword` and the
-  method `Material::resolve_pbr`; `metalness`/`roughness` are plain resolved `f32`.
-  (This overlaps Dim 8 — report material doc rot under Dim 3.)
-- ROADMAP.md milestones marked "in progress" whose issues are all closed (or vice versa) — cross-check `git log` / `gh issue`.
-- **`docs/feature-matrix.md` — re-check each milestone row against shipped code**
-  (`git log --grep M45`, `--grep M47.2`, …). The known M45/M47.2 lag was fixed on
-  2026-06-21 (the Save/load row was removed, the M47.2 row now reads "✓ `.pex`
-  recognizer slice … full transpiler deferred"), so those are clean — but the
-  matrix is a *status floor, not a record of what exists*, so any future
-  milestone can drift the same way. Flag any row whose status contradicts the
-  crate that implements it.
-- HISTORY.md entries referencing later-reverted work.
-- README.md command examples whose flags/paths changed.
-- `docs/legacy/` references to Gamebryo source paths that moved.
-- `crates/renderer/shaders/triangle.frag` doc comments quoting outdated GPU struct byte sizes — cross-check the layout test, not the prose.
+Paths: `docs/`, `ROADMAP.md`, `HISTORY.md`, `README.md`, `CLAUDE.md`, doc comments across the tree
+First step: `.claude/commands/_audit-validate.sh`
 
-**Path convention (post-#1114)**: a backticked `.ext` path in any audit-*.md or
-this file asserts "exists right now". Forward-looking (not-yet-created) or
-backwards-looking (deleted) refs must NOT use backticks. The gate fails on any
-backticked path that does not resolve. The gate now globs both the shared
-`.claude/commands/_audit-*.md` files AND every `.claude/commands/audit-*/SKILL.md`
-subdir (so paths in *this very file* ARE gate-covered) — run it before committing.
+Doc rot misleads the next reader and the next audit. **Run the gate first**: `_audit-validate.sh` resolves every
+backticked path in the audit skills AND `docs/engine/*.md` against the tree (fatal on STALE) and lists backticked
+symbols found in no tracked `.rs` file (advisory — clear it, do not learn to scroll past it). STALE refs are
+auto-eligible findings (trivial). Guards that already police a class — aim at what they cannot see:
+- **`GpuMaterial` size**: `gpu_material_size_claims` (`crates/renderer/src/vulkan/material_tests.rs`) scans `crates`,
+  `byroredux`, `tools`, `docs/engine`, `.claude/commands` and the top-level status docs for a stale `GpuMaterial` byte
+  count (plus `bindings_glsl_states_the_real_struct_size`). It does NOT cover `GpuCamera` / `GpuInstance` / `Vertex::SIZE` or
+  a size stated without the type name — cross-check those against the layout tests, never the prose:
+  `grep -rn "fn gpu_.*_is_[0-9]\+_bytes\|size_of::<Gpu" crates/renderer/src/vulkan/`. A GPU-size claim found stale in
+  prose is MEDIUM (severity table).
+- **Deleted `Material::classify_pbr`**: `no_source_file_frames_the_deleted_classify_pbr_as_live`
+  (`byroredux/src/workspace_hygiene_tests.rs`) fails a doc that names it as live. The survivors are the free fn
+  `classify_pbr_keyword` and `Material::resolve_pbr`.
+- Beyond the guards, sweep: doc comments naming renamed/deleted symbols (`git log --diff-filter=D --since=<last>` then
+  grep each deleted name); ROADMAP.md milestones "in progress" whose issues are closed (or vice versa) — cross-check
+  `git log` / `gh issue`; **`docs/feature-matrix.md`** rows against the crate that implements them (`git log --grep M45`,
+  …) — it is a status floor, so flag any row contradicting shipped code; HISTORY.md entries referencing reverted work;
+  README.md / `CLAUDE.md` command examples whose flags or paths changed; per-game compat numbers in `docs/engine/game-compatibility.md`
+  vs ROADMAP.md's matrix (ROADMAP is the single home); `docs/legacy/` Gamebryo source paths that moved;
+  `crates/renderer/shaders/triangle.frag` comments quoting outdated struct sizes.
+- **`docs/engine/*.md` are the "authoritative" references audits are told to believe** (`_audit-common.md`): beyond the gate's
+  path/symbol check, sample their numbers and lists against code — stage order and lock order (`ecs.md`), VRAM/pool figures
+  (`memory-budget.md`), shader binding tables (`shader-pipeline.md`), dependency and crate lists — a doc that misled an audit
+  in the last 90 days is MEDIUM.
+- **Path convention**: a backticked path or snake_case symbol in an audit skill asserts "exists right now"; deleted or
+  forward-looking names go in italics or plain text (`_audit-common.md` Path-Reference Convention).
 
 ### Dimension 4: Audit-Finding Rot
-The audit infrastructure decays like any other code, and stale baselines actively
-misdirect future audits.
-**Discovery**:
-```bash
-.claude/commands/_audit-validate.sh            # structural path gate (#1114)
-ls .claude/commands/_audit-*.md .claude/commands/audit-*/SKILL.md docs/audits/
-```
-- STALE refs from the gate that live in *other* audit skills → Dim 4 findings (trivial).
-- Symbol-anchor refs the gate cannot verify (e.g. `crates/audio/src/lib.rs::drain_pending_oneshots`) — spot-check the symbol still exists.
-- "Existing: #NNN" callouts in skills where the issue is now CLOSED — reframe as a closed-state baseline.
-- Skill files quoting a dimension count ("all N dimensions") that no longer matches the live list.
-- `docs/audits/` reports >90 days old whose CRITICAL/HIGH findings are not all triaged on GitHub.
-- **Do NOT flag** `.claude/issues/<N>/ISSUE.md` "Status: Open" drift — dropped per
-  TD10-001 / #1156: local issue files are immutable snapshots; GitHub is
-  authoritative. Query `gh issue view <N> --json state` for live state.
+Paths: `.claude/commands/`, `docs/audits/`
+First step: `.claude/commands/_audit-validate.sh` then `ls .claude/commands/ docs/audits/ | tail -40`
 
-### Dimension 5: Stale Markers (TODO / FIXME / HACK / XXX)
-**Discovery**:
+Stale baselines actively misdirect future audits.
+- STALE refs the gate prints in *other* audit skills → Dim 4 findings (trivial); advisory symbols in skills likewise.
+- Numeric claims in skills and `_audit-common.md` (LOC figures, struct sizes, counts, "all N dimensions") — the gate
+  cannot see numbers: re-measure a sample (`wc -l`, *prod_loc*, `grep -c`) and flag any off by >20%. Layout-row LOC
+  drift has been the single most repeated finding here.
+- "Existing: #NNN" / "open issue" callouts in skills where the issue is now CLOSED: `gh issue view N --json state`.
+- Dimension cross-references between skills ("`/audit-x` Dim N") that no longer name that dimension.
+- `docs/audits/` reports older than 90 days whose CRITICAL/HIGH findings have no GitHub trace. Known-open: reports
+  dated before 2026-06-07 predate `/audit-publish`, so a missing issue is *not* evidence a finding is open (#3875,
+  `_audit-common.md` Deduplication) — verify against code and say which you checked.
+- Do NOT flag `.claude/issues/<N>/ISSUE.md` "Status: Open" drift: local issue files are immutable snapshots (TD10-001 / #1156);
+  `gh issue view <N> --json state` is authoritative.
+
+### Dimension 5: Stale Markers (TODO / FIXME / HACK / XXX / TBD)
+Paths: `crates/`, `byroredux/`, `tools/` (not `tools/nifskope`), `crates/renderer/shaders/`
+First step: the two greps below
 ```bash
 grep -RInE '(TODO|FIXME|HACK|XXX|TBD|WIP|KLUDGE)\b' crates byroredux tools --exclude-dir=nifskope
 grep -RInE '(TODO|FIXME|HACK|XXX|TBD|WIP|KLUDGE)\b' crates/renderer/shaders/
 ```
-**One vocabulary, both commands (#3877).** The two lines used to disagree: the
-shader scan was `(TODO|HACK)` — no `FIXME`, no `XXX`, and no `\b` anchor — so a
-`// FIXME` in any of the 22 shaders or 15 GLSL includes was invisible to the
-dimension that exists to find it. Keep the token list identical in both; if you
-add a token, add it to both or the asymmetry returns.
-
-`TBD` is in the list because the codebase actually uses it and four consecutive
-Dim 5 runs never saw it. The one live site —
-`crates/plugin/src/esm/records/items.rs` (the FNV `WEAP` `b"DNAM"` arm) — is
-**not** debt on triage: it records an unresolved format semantic *and* its own
-resolution in place ("Not stored; NAM6 remains the authoritative spread
-source"), which is the documented-unknown class, not a stale marker. Report it
-as such if it surfaces. It is worth seeing anyway: it sits in the same comment
-block as #3324, a false-premise comment that *"sent two audits searching this
-blob"* before it was closed.
-`tools` is in scope (#3876): `tools/byro-dbg`, `byro-launcher`, `byro-detect`
-and `texture-upscale` are all first-party `[workspace] members` — 17 `.rs`
-files, ~4 700 LOC — and the launcher/detect cluster has **no owner audit
-skill**, so this dimension is one of the few generic sweeps that reaches it.
-`tools/nifskope` is excluded deliberately: it is vendored reference code and is
-*not* a workspace member. Before #3876 the recipe covered only `crates` +
-`byroredux`, which is why the 2026-08-30 report's *"zero live markers in the
-entire codebase"* was true but unmeasured over `tools/`.
-**Triage each** (skip markers <30 days old unless they name a closed issue):
-- `git blame` for age — anything >6 months gets reported.
-- Does it name an issue number? Is that issue still open? Closed issue + live marker → "marker outlived its driver" (delete or reopen).
-- Does it name a milestone (M21, M29, …) now complete per ROADMAP.md?
-- `// TODO: implement` on a path now reachable from a shipped CLI flag → promote (see severity table).
-- **False positives to exclude**: `XXXX` is the ESM extended-size sub-record tag
-  — protocol, not a marker. Key this on comment content ("references the ESM
-  `XXXX` extended-size escape"), not an enumerated file list — new legitimate
-  consumers appear over time (past sites: `esm/reader.rs`,
-  `esm/cell/wrld.rs`; `records/misc/magic.rs` uses the literal `*b"XXXX"` byte
-  pattern as an arbitrary-wrong-type test sentinel, same false-positive class).
-  `// FIXME note` referencing a *reference implementation's* FIXME (e.g.
-  `crates/bgsm/src/bgem.rs`) is documentation of upstream, not our debt.
-- **Must-not-delete**: the third-party attribution block atop
-  `crates/renderer/shaders/triangle.frag` (GLSL-PathTracer MIT notice + Burley
-  2012 citation, ~first 30 lines). Flag any edit that strips/truncates it — MIT
-  requires the notice travel with the code.
+Keep the token list identical in both commands (an asymmetry once hid every shader `FIXME`, #3877); `TBD` is in it because
+the codebase uses it. `tools/` (`byro-dbg`, `byro-launcher`, `byro-detect`, `texture-upscale`) is first-party and in scope.
+**Triage each** (skip markers <30 days old unless they name a closed issue): `git blame` for age — over 6 months gets
+reported; does it name an issue, and is that issue still open (closed issue + live marker = "marker outlived its driver");
+does it name a milestone now complete per ROADMAP.md; a `// TODO: implement` on a path reachable from a shipped CLI flag
+promotes (severity table).
+**False positives**: `XXXX`, the ESM extended-size sub-record tag (key on comment content — "references the ESM `XXXX`
+escape" — not a file list; `reader.rs`, `cell/wrld.rs`, the `b"XXXX"` test sentinels in `records/misc/magic.rs` and the
+FourCC table doc in `sdk/src/compatibility/storage_util.rs` all qualify); a `// FIXME` quoting a reference implementation's
+own FIXME (`crates/bgsm/src/bgem.rs`, `bs_geometry.rs`) documents upstream; a `TBD` that records an unresolved format
+semantic together with its own resolution (the FNV `WEAP` `DNAM` arm in `crates/plugin/src/esm/records/items.rs`) is a
+documented unknown, not a stale marker.
+**Must-not-delete**: the third-party attribution block atop `crates/renderer/shaders/triangle.frag` (GLSL-PathTracer MIT
+notice + Burley citation, ~first 30 lines). Flag any edit that strips it — MIT requires the notice to travel with the code.
 
 ### Dimension 6: Stub & Placeholder Implementations
-**Discovery**:
+Paths: `crates/`, `byroredux/`, `tools/`
+First step: the two greps below
 ```bash
 grep -RInE 'unimplemented!|todo!\(\)|panic!\("not ' crates byroredux tools --exclude-dir=nifskope
 grep -RInE '// *(stub|TODO: real|placeholder|not yet)' crates byroredux tools --exclude-dir=nifskope
 ```
-The first command currently returns **nothing** — the codebase prefers explicit
-fallbacks to panics, so any hit is genuinely notable. For each:
-- Reachable from a shipped CLI flag or smoke test? → promote to MEDIUM.
-- Functions returning `None` / `Vec::new()` / `Default::default()` with a "// stub"/"// TODO: real impl" comment.
-- Trait impls with empty bodies that the trait docs say should do work.
-- Per-game ESM record coverage in `crates/plugin/src/esm/records/` — fully wired
-  vs stubbed per game; cross-check ROADMAP.md per-game compat matrix. (The legacy
-  per-game stubs in *crates/plugin/src/legacy/* were removed under #390, and the
-  rest of that module under #4384 — coverage lives in the unified records tree;
-  do not re-file either.)
-- Console commands in `byroredux/src/commands/` that exist but no-op / print "TODO".
+The first command should return nothing — any hit is notable. For each: reachable from a shipped CLI flag or smoke test →
+MEDIUM; functions returning `None` / `Vec::new()` / `Default::default()` under a stub comment; trait impls with empty bodies
+the trait docs say should do work; console commands in `byroredux/src/commands/` that no-op or print "TODO".
+**Production-unreachable features** are the yield here: a public builder/system with zero non-test callers whose docs or
+ROADMAP say it is wired (a ruleset builder that `main` never calls; a component nothing inserts). For a candidate
+`name`: `grep -rnw name crates byroredux tools --include='*.rs'` and drop test-only hits. Cross-check per-game ESM record
+coverage in `crates/plugin/src/esm/records/` against the ROADMAP.md compat matrix (wired vs stubbed).
 
 ### Dimension 7: Magic Numbers & Hardcoded Constants
-**Discovery**: read the version-gate and budget sites; do not regex blindly (most
-literals are legitimate).
-- Bare numeric literals in `crates/nif/src/blocks/` compared against version codes → should be a `NifVersion` constant.
-- Vulkan `MAX_*`/`MIN_*` hardcoded inline → reference `vk::PhysicalDeviceLimits` or a named constant.
-- **Shader `#define` provenance**: every shader define is generated from one Rust
-  source — `crates/renderer/src/shader_constants_data.rs` is `include!`d by both
-  `crates/renderer/src/shader_constants.rs` and `crates/renderer/build.rs` (which
-  emits `shaders/include/shader_constants.glsl`). The generated-header infra
-  exists; the check is **"every shader `#define` is sourced from
-  `shader_constants_data.rs`; flag any literal that bypasses it"** (lockstep risk
-  HIGH — `feedback_shader_struct_sync.md`).
-- **GPU `#[repr(C)]` size literals**: `GpuCamera`, `GpuInstance`, `GpuMaterial`
-  sizes are pinned by `gpu_*_is_N_bytes` tests spread across
-  `crates/renderer/src/vulkan/` (`GpuCamera`/`GpuInstance` in
-  `gpu_instance_layout_tests.rs`, `GpuMaterial` in `material_tests.rs`). Flag any
-  inline size literal that should reference those tests, and any doc comment
-  quoting an outdated size (overlaps Dim 3). Get the live values from the tests,
-  not from memory:
-  ```bash
-  grep -rn "fn gpu_.*_is_[0-9]\+_bytes\|size_of::<Gpu" crates/renderer/src/vulkan/
-  ```
-- Frame/ray/cache budgets (`GLASS_RAY_BUDGET`, `MAX_TOTAL_BONES`, `MAX_MATERIALS`, …) scattered vs in one tunable module.
-- ESM sub-record sizes hardcoded (`if data.len() == 24`) → named constant from the record struct.
-- **Do NOT flag** protocol-defined magic: FourCC tags, BSA/NIF/BA2 magic, Vulkan format enums.
+Paths: `crates/nif/src/blocks/`, `crates/renderer/`, `crates/plugin/src/esm/records/`
+First step: read the version-gate and budget sites; do not regex blindly (most literals are legitimate)
+
+- Bare numeric literals compared against version codes in `crates/nif/src/blocks/` → a `NifVersion` constant.
+- Vulkan `MAX_*` / `MIN_*` hardcoded inline → `vk::PhysicalDeviceLimits` or a named constant.
+- **Shader `#define` provenance**: every define is generated from `crates/renderer/src/shader_constants_data.rs`
+  (`include!`d by `shader_constants.rs` and `crates/renderer/build.rs`, which emits `shaders/include/shader_constants.glsl`);
+  source-scan tests in `shader_constants.rs` police the generated header. The check is "every shader `#define` / loop
+  bound / budget literal that bypasses that file" (lockstep risk HIGH — *feedback_shader_struct_sync*).
+- GPU `#[repr(C)]` size literals: reference the layout pins (Dim 3 has the recipe and the guards); an inline size
+  literal that should reference them is a code finding here, a stale prose figure is Dim 3.
+- Frame/ray/cache budgets (`MAX_TOTAL_BONES`, `MAX_MATERIALS`, …) scattered vs one tunable module; ESM sub-record sizes
+  hardcoded (`if data.len() == 24`) → a named constant on the record struct.
+- Do NOT flag protocol-defined magic: FourCC tags, BSA/NIF/BA2 magic, Vulkan format enums.
 
 ### Dimension 8: Dead Code & Backwards-Compat Cruft
-**Discovery**:
+Paths: `crates/`, `byroredux/`, `tools/`, every `Cargo.toml`
+First step: `cargo clippy --workspace -- -D warnings` (the CI gate) and the greps below
 ```bash
 grep -RInE 'allow\(dead_code\)' crates byroredux tools --exclude-dir=nifskope
 grep -RInE '#\[deprecated\]|// *removed:|_unused|fn .*_unused' crates byroredux
 cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.toml deps vs use stmts"
 ```
-- Each `#[allow(dead_code)]` — actually called now, or still dead? Delete if dead.
-- `pub fn` in a private module no one imports (`cargo +nightly rustc -- -W unused`).
-- `mod.rs`/`lib.rs` re-exports with no downstream consumer.
-- `_`-prefixed params that survived a refactor (CLAUDE.md: delete, don't rename to `_var`).
-- `// removed: …` breadcrumbs (CLAUDE.md: delete completely, no breadcrumbs).
-- Re-exports of deleted types kept "for compatibility" — ByroRedux has no external consumers yet, so these are pure rot.
-- `Cargo.toml` feature flags with only one branch (always-on/always-off) → remove the flag.
-- `#[deprecated]` items with no consumers → delete, don't deprecate.
-- **Do NOT flag**: `cfg(test)`/`cfg(debug_assertions)`-gated code, FFI boundary
-  functions, or public API of a workspace-internal crate a future binary will
-  consume (note such cases rather than deleting).
+- **Clippy gate** (CI job `Test + Check + Clippy` runs `cargo clippy --workspace -- -D warnings`; the toolchain is stable, so
+  a new rustc/clippy raises lints on untouched code — rustc 1.96 did, commit 800802516). A red gate is a finding: list each
+  failing lint and file. Run `--all-targets --keep-going` too (the plain form aborts at the first failing crate);
+  test/example-target lints are outside the CI gate — report them as a lower-priority bucket. Check every
+  `#[allow(clippy::…)]` carries a reason comment (the house style for `too_many_arguments`).
+- Each `#[allow(dead_code)]`: called now or still dead? Delete if dead. `pub fn` in a private module nobody imports (`cargo +nightly rustc -p <crate> -- -W unused`);
+  `mod.rs`/`lib.rs` re-exports with no consumer; `_`-prefixed params that survived a refactor (delete, do not rename);
+  `// removed: …` breadcrumbs (delete completely); re-exports of deleted types "for compatibility" (no external consumers
+  exist — pure rot); `#[deprecated]` items with no consumers; `Cargo.toml` feature flags with one branch always on/off.
+- **Do NOT flag**: `cfg(test)` / `cfg(debug_assertions)`-gated code, FFI boundary functions, or the public API of a
+  workspace-internal crate a future binary will consume (note it rather than deleting).
 
 ### Dimension 9: Test Hygiene
-**Discovery**:
+Paths: every `#[test]`/`#[ignore]` site, `.github/workflows/ci.yml`, `byroredux/tests/`
+First step: the ignore-triage command below
 ```bash
-# Matches BOTH `#[ignore]` and Rust's documented reason form
-# `#[ignore = "..."]`. The bare-`]` pattern this recipe used until #3456
-# silently dropped every reason-form test — a 19% undercount at the time
-# (126 vs 155) — and the reason form is precisely what an author reaches
-# for when the reason is "blocked on #NNNN", i.e. the highest-value input
-# to the triage rule below. Do not re-tighten it.
-grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux
+# All ignores (matches BOTH `#[ignore]` and the reason form `#[ignore = "…"]` — do not tighten to a bare `]`)
+grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools
+# Ignores whose reason is NOT a data/hardware gate — the triage input
+grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools | grep -viE 'game data|installed|\.(bsa|ba2|esm)|BSA|BA2|ESM|audio device|vulkan|gpu|rt-capable|display|opt-in|corpus|real (data|master)|steam|env'
 ```
-**Every `#[ignore]` site now carries a reason string (#3749, `8b9a8572`, 2026-09-03)**
-— 138 bare sites across 27 files were converted to `#[ignore = "<reason>"]`
-(verifying each against its own function body, not a line-window guess); a
-fresh `grep -RInE '^[[:space:]]*#\[ignore\]'` (bare form only) should return
-**zero** hits. The regex above must still match both forms — a bare
-`#[ignore]` reappearing is itself a TD9 finding (a new test skipping the
-now-universal convention) — but the practical payoff is that the triage rule
-below can now run off the grep output's reason text directly, no need to open
-each function body to learn why a test is gated.
-Most `#[ignore]`s gate Vulkan/smoke tests that need a GPU or on-disk game data —
-those are **not** debt. Triage the rest:
-- Each `#[ignore]` test: referenced issue still open? If it guards a closed CRITICAL/HIGH fix → MEDIUM (severity table).
-- Tests with only smoke assertions (`assert!(result.is_ok())` and nothing else) — should assert on values.
-- Commented-out assertions inside otherwise-passing tests (`// assert_eq!(…)`).
-- `#[cfg(feature = "…")]`-gated tests where the feature is never enabled in CI.
-- Tests that `println!` without a follow-up assert.
-- `byroredux/tests/golden_frames.rs` (opts into `--ignored`) — still runnable, golden image current.
-- Cross-reference "must not regress" lines in other audit skills (e.g. `audit-performance`) — each named regression test still present and not `#[ignore]`d.
+- **Guards**: `workspace_hygiene_tests` (`byroredux/src/workspace_hygiene_tests.rs`) — `every_ignore_attribute_carries_a_reason`
+  (a bare `#[ignore]` fails; the reason text is the triage input), `no_tmp_scratch_examples_are_committed` (`_tmp_*`
+  probes), and the `classify_pbr` check (Dim 3). Confirm they are not themselves `#[ignore]`d.
+- Most `#[ignore]`s gate Vulkan / game-data / audio tests — not debt. Triage the remainder: does a reason name an issue
+  (`gh issue view N`), and if it guards a closed CRITICAL/HIGH fix → MEDIUM.
+- Tests with only smoke assertions (`assert!(result.is_ok())`); commented-out assertions in passing tests; tests that
+  `println!` without an assert.
+- **Feature gates vs CI lanes**: enumerate `[features]` (`grep -A6 '^\[features\]' crates/*/Cargo.toml byroredux/Cargo.toml`)
+  and compare with `.github/workflows/ci.yml` — non-default states run only where a lane names them (today: `core`
+  `inspect`/`save` via workspace unification, `byroredux-spt --features recon`, `byroredux` without `debug-server` / with
+  `tracing-tracy` / with `dhat-heap`, `byroredux-nif --features dhat-heap`). A feature or `required-features` target with no
+  lane can rot silently (the class #3894 / #4387 / #4390 closed).
+- `byroredux/tests/golden_frames.rs` (opts into `--ignored`) — still runnable, golden images current.
+- Cross-reference "must not regress" lines in other audit skills — each named regression test still exists and is not
+  `#[ignore]`d (`_audit-validate.sh` advisory names symbols that are gone).
 
 ## Cross-Dimension Dedup
 
-A TODO inside a dead function reports under Dim 8 (Dead Code), not also Dim 5.
-Material doc rot reports under Dim 3, not also Dim 8. A stale GPU-size doc comment
-reports under Dim 3; a stale GPU-size *code literal* under Dim 7. NIFAL/material
-*translation correctness* is out of scope here — that is `/audit-nifal`. This
-audit only owns the *debt* around that tier (dead code, stale doc, leftover
-breadcrumbs).
+A TODO inside a dead function reports under Dim 8, not also Dim 5. Material doc rot reports under Dim 3, not Dim 8. A stale
+GPU-size doc comment is Dim 3; a stale GPU-size *code literal* is Dim 7. NIFAL/material *translation correctness* is out of
+scope (`/audit-nifal`) — this audit owns only the debt around that tier.
 
 ## Phase 3: Merge
 
 1. Read all `/tmp/audit/tech-debt/dim_*.md`.
-2. Combine into `docs/audits/AUDIT_TECH_DEBT_<TODAY>.md`:
-   - **Executive Summary** — findings by severity + delta vs `baseline.txt`.
-   - **Baseline Snapshot** — the Phase-1 counts, so the next audit can diff.
-   - **Top 10 Quick Wins** — trivial/small effort, immediate readability or compile-time payoff.
-   - **Top 5 Medium Investments** — file/function splits, duplication consolidations.
-   - **Findings** — by severity (HIGH → MEDIUM → LOW), then by dimension.
-   - **Deferred** — findings gated on an in-progress milestone; name the gating milestone.
+2. Combine into `docs/audits/AUDIT_TECH_DEBT_<TODAY>.md`: **Executive Summary** (findings by severity + delta vs
+   `baseline.txt`), **Baseline Snapshot** (the Phase-1 counts), **Top 10 Quick Wins** (trivial/small effort),
+   **Top 5 Medium Investments** (splits, consolidations), **Findings** (HIGH → MEDIUM → LOW, then by dimension),
+   **Deferred** (gated on an in-progress milestone; name it).
 3. Remove cross-dimension duplicates per the rules above.
 
 ## Phase 4: Cleanup
 
-1. `rm -rf /tmp/audit/tech-debt`.
-2. Tell the user the report is ready.
-3. Suggest: `/audit-publish docs/audits/AUDIT_TECH_DEBT_<TODAY>.md`.
+`rm -rf /tmp/audit/tech-debt`; tell the user the report is ready; suggest
+`/audit-publish docs/audits/AUDIT_TECH_DEBT_<TODAY>.md`.
 
 ## GitHub Labels
 
-Findings publish under the `tech-debt` label (plus the standard `<severity>` and
-`<domain>` labels). It is registered in the repo — `/audit-publish` applies it
-automatically when a finding's audit type is `TECH_DEBT`.
-
-Two sibling kind labels split the bucket further (both registered 2026-08-21) —
-apply the one that matches the defect instead of leaving everything under bare
-`tech-debt`:
-
-- **`doc-rot`** — documentation drifted from code: a stale ROADMAP row, a SKILL
-  doc naming a deleted symbol, a comment describing removed behaviour. These
-  publish as `documentation` (type), not `bug`.
-- **`test-gap`** — missing, vacuous, or non-asserting coverage: an `#[ignore]`d
-  test with no data gate, a test whose assertions are satisfied by a sibling, an
-  entry point with zero tests.
-
-Pure debt — dead code, duplication, magic numbers, oversized files, stale
-markers — stays `tech-debt` + `bug`.
+Findings publish under `tech-debt` (plus the standard `<severity>` and `<domain>` labels; `/audit-publish` applies it for
+`TECH_DEBT` reports). Two sibling kind labels split the bucket — apply the one that matches:
+- **`doc-rot`** — documentation drifted from code (stale ROADMAP row, a SKILL naming a deleted symbol, a comment describing
+  removed behaviour); publishes as `documentation`, not `bug`.
+- **`test-gap`** — missing, vacuous or non-asserting coverage (an `#[ignore]`d test with no data gate, an entry point with
+  zero tests).
+Pure debt (dead code, duplication, magic numbers, oversized files, stale markers) stays `tech-debt` + `bug`.

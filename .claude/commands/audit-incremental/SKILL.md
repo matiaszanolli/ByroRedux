@@ -5,209 +5,55 @@ argument-hint: "[--working] [--commits <N>] [--range <A>..<B>] [--since <date>]"
 
 # Incremental / Delta Audit
 
-Audit **only what changed**, not a whole subsystem. The goal is to catch
-*new* bugs and *regressions* introduced by recent work — fast — by routing
-each changed file to the subsystem/per-game audit dimensions that own it
-and applying their checks to the diff alone.
+Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 
-This is a meta-audit: it does not define dimensions, it *dispatches* to the
-real audit skills (each lives at `.claude/commands/audit-<NAME>/SKILL.md`).
-Use those for the authoritative checklist of any one area.
+Audit **only what changed**. This is a meta-audit: it defines no dimensions of its own, it *dispatches* the diff to the owning audits (`.claude/commands/audit-<name>/SKILL.md`) and applies their checks to the hunks alone. Do not re-audit untouched code.
 
-See `.claude/commands/_audit-common.md` for project layout, severity,
-methodology, deduplication, context rules, and the base finding format.
-See `.claude/commands/_audit-severity.md` for the severity scale + special
-rules (the NIFAL / GPU-struct / AS / SSBO rows are the ones a delta most
-often trips).
+## Step 1 — Scope
 
-## Step 1: Determine the diff scope
+Default is the working tree.
 
-Pick the narrowest scope that covers the work under review. Default to the
-working tree if nothing is specified.
+| Argument | Diff command |
+|---|---|
+| *(none)* / `--working` | `git diff HEAD --name-only` (staged only: `git diff --staged --name-only`) |
+| `--commits <N>` | `git diff HEAD~<N>..HEAD --name-only` |
+| `--range <A>..<B>` | `git diff <A>..<B> --name-only` |
+| `--since <date>` | base=`$(git log --since="<date>" --format=%H \| tail -1)`; `git diff ${base}^..HEAD --name-only` |
 
-| Argument | Scope | Diff command |
-|----------|-------|--------------|
-| *(none)* / `--working` | uncommitted work | `git diff HEAD --name-only` (add `--staged`-less; for staged-only use `git diff --staged --name-only`) |
-| `--commits <N>` | last N commits | `git diff "HEAD~<N>..HEAD" --name-only` |
-| `--range <A>..<B>` | explicit revision range | `git diff "<A>..<B>" --name-only` |
-| `--since <date>` | everything since a date | base=`$(git log --since="<date>" --format="%H" \| tail -1)`; then `git diff "${base}^..HEAD" --name-only` |
+Also pull the hunks for the same scope (`git diff <scope>`; `-U6` for context) and `git log --oneline <scope>` for themes and milestone tags.
 
-Then pull the actual hunks for the same scope (swap `--name-only` for
-nothing, or `-U6` for more context) and the commit log:
+## Step 2 — Route (mechanical)
 
 ```bash
-git diff HEAD~10..HEAD --stat        # changed-file overview (substitute your scope)
-git diff HEAD~10..HEAD               # the hunks you will actually audit
-git log --oneline HEAD~10..HEAD      # commit themes, PR numbers, milestone tags
+git diff <scope> --name-only | .claude/commands/_audit-route.sh | sort -t$'\t' -k2,2r
 ```
 
-Audit the **diff**, with just enough surrounding context to confirm each
-finding (`_audit-common.md` § Methodology) — do not re-audit untouched code.
+Output is `path  RISK  owners` from `.claude/commands/_audit-owners.md` (first matching row wins; every listed owner applies; `Dim N` narrows an owner to one dimension). Then:
 
-## Step 2: Route each changed file to its audit dimension
+1. Group changed files by owner. For each owner, open its SKILL.md, read the `Paths:` line of each dimension, and run **only the dimensions whose Paths intersect the diff** — apply their checklists to the diff.
+2. Risk is the *floor* severity for an un-disproven finding there.
+3. `(unrouted)` paths mean the ownership map has a gap: report it as a `tech-debt` finding against `_audit-owners.md` (add a row) and route the file by judgement meanwhile.
+4. A file can hit several owners (a shader + its `#[repr(C)]` host struct → renderer **and** the GPU-struct rule). Check both.
 
-Map every changed path to the audit skill(s) that own it, then apply that
-skill's checks to the diff. A file can hit multiple rows (e.g. a shader +
-its `#[repr(C)]` host struct → renderer **and** the GPU-struct-sync rule).
-Risk is the *floor* severity for an un-disproven finding in that area.
+## Step 3 — Delta checks on every changed hunk
 
-| Changed path | Owning audit(s) | Risk |
-|--------------|-----------------|------|
-| `crates/renderer/src/vulkan/**` (pipeline, sync, descriptors, context/) | `/audit-renderer`, `/audit-safety`, `/audit-concurrency` | HIGH |
-| `crates/renderer/src/vulkan/acceleration/**`, `svgf.rs`, `gbuffer.rs`, `composite.rs` (RT / denoise / G-buffer) | `/audit-renderer` | HIGH |
-| `crates/renderer/src/vulkan/scene_buffer/**`, `material.rs` (`#[repr(C)]` GPU structs) | `/audit-renderer`, `/audit-nifal` | HIGH |
-| `crates/renderer/src/vulkan/volumetrics.rs` + `shaders/volumetrics_*.comp` (M55) | `/audit-renderer` | HIGH |
-| `crates/renderer/src/vulkan/bloom.rs` + `shaders/bloom_*.comp` (M58) | `/audit-renderer` | HIGH |
-| `crates/renderer/src/vulkan/water.rs`, `shaders/water.vert`/`water.frag`, `byroredux/src/systems/water.rs`, `byroredux/src/cell_loader/water.rs` (M38) | `/audit-renderer`, `/audit-fnv` | HIGH |
-| `crates/renderer/shaders/**` (any `.comp`/`.vert`/`.frag`) | `/audit-renderer` (+ GPU-struct-sync rule) | HIGH |
-| `crates/core/src/ecs/**` | `/audit-ecs`, `/audit-concurrency` | HIGH |
-| `crates/nif/src/blocks/**`, `crates/nif/src/import/**`, `crates/nif/src/anim/**` | `/audit-nif`; per-game `/audit-<game>` | HIGH |
-| `crates/bsa/src/**` (BSA / BA2 / CSG) | `/audit-nif` (archive feed), per-game `/audit-<game>` | HIGH |
-| `byroredux/src/material_translate.rs`, `crates/core/src/ecs/components/material.rs`, `crates/nif/src/import/collision/mod.rs` (NIFAL boundary) | `/audit-nifal` | HIGH |
-| `byroredux/src/env_translate.rs` (EXAL boundary) | `/audit-nifal` (mirror), `/audit-renderer` | MEDIUM |
-| `byroredux/src/ragdoll.rs`, `crates/physics/src/**` (PHYSAL / Rapier bridge, character controller, buoyancy) | `/audit-physics`, `/audit-safety` | HIGH |
-| `byroredux/src/systems/character.rs` (player/character controller) | `/audit-physics` Dim 5 | MEDIUM |
-| `crates/spt/src/**`, `byroredux/src/cell_loader/refr.rs` (.spt route) | `/audit-speedtree` | MEDIUM |
-| `crates/plugin/src/**` — reader / sub_reader / GRUP dispatch / per-record decoders / cell walkers / strings table | `/audit-esm`; per-game `/audit-<game>` for the game-specific slice | HIGH |
-| `crates/ui/src/**`, `byroredux/src/ui_input.rs` (Scaleform/Ruffle host layer) | `/audit-ui`, `/audit-safety` (FFI half) | MEDIUM |
-| `crates/core/src/character/**` (CHARAL rulesets, derived formulas, leveling) | `/audit-character` | HIGH |
-| `crates/core/src/animation/**` | `/audit-ecs` Dim 10 (runtime), `/audit-nif` (import), `/audit-nifal` Dim 7 (translation) | MEDIUM |
-| `crates/hkx/src/**`, `byroredux/src/asset_provider/animation.rs` | `/audit-scripting` Dim 8 | MEDIUM |
-| `crates/fsr3-sys/**`, `crates/renderer/src/vulkan/{frame_upscaler,upscaling,presentation,exposure}.rs` | `/audit-renderer` Dim 23, `/audit-safety` Dim 1 | HIGH |
-| `crates/mod-runtime/src/**` (sandboxed mod host) | `/audit-safety` Dim 11 | MEDIUM |
-| `byroredux/src/cell_loader/**` | per-game `/audit-<game>` | MEDIUM |
-| `byroredux/src/systems/**`, `byroredux/src/render/**` | `/audit-ecs`, `/audit-renderer`, `/audit-performance` | MEDIUM |
-| `byroredux/src/scene/**` | per-game `/audit-<game>` | MEDIUM |
-| `byroredux/src/main.rs`, `byroredux/src/commands/**` | `/audit-ecs` | MEDIUM |
-| `byroredux/src/boot/schedule/` (scheduler registration + declared access) | `/audit-concurrency` Dim 4, `/audit-ecs` Dim 5 | HIGH |
-| `crates/scripting/**`, `crates/pex/**`, `crates/papyrus/**` | `/audit-scripting` | MEDIUM |
-| `crates/save/**`, `byroredux/src/save_io.rs`, `byroredux/src/save_io/**` | `/audit-save` | MEDIUM |
-| `byroredux/src/streaming.rs`, `streaming_helpers.rs`, `byroredux/src/npc_spawn.rs`, `byroredux/src/npc_spawn/**` | `/audit-performance` Dim 7, `/audit-concurrency` Dim 7 | MEDIUM |
-| `byroredux/src/fog.rs`, `byroredux/src/env_translate.rs`, `byroredux/src/groundcover_translate.rs` (EXAL) | `/audit-renderer`, `/audit-nifal` (mirror) | MEDIUM |
-| `byroredux/src/asset_provider/archive.rs` (sibling-BSA auto-load, AE path strip) | per-game `/audit-<game>` | MEDIUM |
-| `crates/audio/src/{lib,tests}.rs` | `/audit-audio` | MEDIUM |
-| `crates/sfmaterial/src/**` (Starfield CDB) | `/audit-starfield` | MEDIUM |
-| `crates/bgsm/src/**` (FO4+ BGSM/BGEM) | `/audit-fo4`, `/audit-nifal` | MEDIUM |
-| `crates/facegen/src/**` | per-game `/audit-<game>` | MEDIUM |
-| `crates/debug-ui/src/**`, `crates/renderer/src/vulkan/egui_pass.rs` (egui overlay → touches `draw_frame`) | `/audit-renderer`, `/audit-concurrency` | MEDIUM |
-| `**/tests/**`, `**/*_tests.rs`, `byroredux/tests/golden_frames.rs` | `/audit-regression` | LOW |
-| `*.md`, `docs/**` | `/audit-tech-debt` (doc rot) | LOW |
+- [ ] **New bug** — logic error, off-by-one, wrong byte width, missing version/era gate (B-splines reach FNV/FO3, not just Skyrim+).
+- [ ] **Contract break** — public signature changed without every call site (`git grep` the symbol workspace-wide).
+- [ ] **Silent divergence** — a value built at two sites and only one edited (the classic NIFAL leak: the two `Material` load paths, `byroredux/src/cell_loader/spawn.rs` and `byroredux/src/scene/nif_loader.rs`; defer to `/audit-nifal`).
+- [ ] **Unsafe delta** — new `unsafe`, or a SAFETY comment that no longer matches the body (MEDIUM floor for unsafe-without-comment).
+- [ ] **Lock / query delta** — changed `RwLock` scope or new multi-component query: TypeId-sorted acquisition (deadlock → HIGH). A new system acquisition must be declared at its registration under `byroredux/src/boot/schedule/` (guard: `byroredux/src/boot/schedule/mod.rs` `system_access_declaration_tests`).
+- [ ] **Vulkan delta** — new pipeline/barrier/sync, AS build/refit, descriptor write: missing barrier or wrong AS geometry → severity special rules.
+- [ ] **GPU-struct lockstep** — a touched `#[repr(C)]` struct (`GpuInstance`/`GpuCamera`/`GpuMaterial`/`GpuLight`) **and** its mirror in every shader reading it; size/offset drift → HIGH. Guards live in `crates/renderer/src/vulkan/scene_buffer/`.
+- [ ] **Save shape** — a touched `Serialize` type: does `byroredux/src/save_io/serde_default_guard_tests.rs` need a baseline refresh or a `FORMAT_MAJOR` bump (`/audit-save`)?
+- [ ] **Missing test** — changed path with no test update; list under "Missing Tests" even if the code is right.
+- [ ] **Rust** — Vulkan destroy order still reverse of build; new `unwrap()`/`expect()` on a recoverable path; borrow-scope changes; a new impl consistent with its family (Component storage decl, `Send + Sync`).
 
-> Layout shifts that often surprise a delta audit. Only
-> *byroredux/src/render.rs* is fully gone — `byroredux/src/render/` replaced
-> it. The other three still exist as files **beside** their directories, so a
-> delta audit must check both: `systems.rs` (54 LOC) + `systems/`,
-> `cell_loader.rs` (580 LOC) + `cell_loader/`, and `scene.rs` (1706 LOC, but
-> only ~23 before its first `#[cfg(test)]` — a thin head with a large in-file
-> test tail) + `scene/`. `crates/renderer/src/vulkan/acceleration/` and
-> `scene_buffer/` are genuine splits with a thin `mod.rs` dispatch;
-> `volumetrics/` is **not** — it holds only `noise.rs`, while
-> `volumetrics.rs` remains ~3 000 production lines. `crates/scripting/src/scene.rs`
-> (188 LOC) is thin over `crates/scripting/src/scene/`. The authoritative tree is
-> in `_audit-common.md` § Project Layout — route against it, not against
-> memory.
->
-> **Four owner audits were added 2026-08-13** — `/audit-esm`,
-> `/audit-ui`, `/audit-physics`, `/audit-character`. Diffs in
-> `crates/plugin`, `crates/ui`, `crates/physics` and
-> `crates/core/src/character` used to route to "per-game audits, partially"
-> or to nothing at all; route them to their owner now. A delta report that
-> still says one of those areas has no owner has a stale premise.
+Multi-file translation chains — a diff to one tier is incomplete without the others:
+- **Particle emitter**: typed blocks (`crates/nif/src/blocks/particle.rs`) → extraction (`crates/nif/src/import/walk/emitter.rs`) → system (`byroredux/src/systems/particle.rs`).
+- **Collision shape**: a new `Bhk*Shape` parser (`crates/nif/src/blocks/collision/`) must also be mapped in `crates/nif/src/import/collision/mod.rs`, or it is silently dropped (MEDIUM; HIGH if visible content vanishes). PHYSAL consumes ragdoll constraints, so it can ripple into `byroredux/src/ragdoll.rs` + `crates/physics/`.
 
-## Step 3: Regression-focused checks on each changed file
+## Step 4 — Dedup and report
 
-For every changed file, read the hunk + minimal context and ask:
+Dedup per `_audit-common.md` § Deduplication (a regression of a closed issue is "Regression of #NNN"). Extra finding field: **Changed in**: `<file>` (commit `<hash>` / working tree).
 
-- [ ] **New bug** — logic error, off-by-one, wrong byte width, missing
-      version/era gate (B-splines reach FNV/FO3, not just Skyrim+).
-- [ ] **Contract break** — did a public signature change without *all*
-      call sites updating? (`git grep` the symbol across the workspace.)
-- [ ] **Silent divergence** — was a value built at two sites and only one
-      edited? The classic NIFAL leak: the two `Material` load paths.
-- [ ] **Unsafe delta** — new `unsafe` block, changed safety invariant, or
-      a safety comment that no longer matches the body (`_audit-severity`:
-      MEDIUM floor for unsafe-without-comment).
-- [ ] **Lock / query delta** — changed RwLock scope or a new multi-component
-      query? Verify TypeId-sorted acquisition (deadlock → HIGH floor).
-- [ ] **Vulkan delta** — new pipeline/barrier/sync, AS build/refit, or
-      descriptor write? Missing barrier or wrong AS geometry → see the
-      severity special-rules table (HIGH/CRITICAL floors).
-- [ ] **GPU-struct lockstep** — a touched `#[repr(C)]` struct
-      (`GpuInstance`/`GpuCamera`/`GpuMaterial`/`GpuLight`) **and** its
-      mirror in every shader that reads it. Size/offset drift → HIGH.
-- [ ] **Missing test** — a changed code path with no corresponding test
-      update. Flag in the "Missing Tests" section even if the code is right.
-
-### Rust-specific deltas
-
-- [ ] **Drop ordering** — Vulkan destruction order still reverse of build?
-- [ ] **Error handling** — new `unwrap()`/`expect()` on a recoverable path?
-- [ ] **Lifetimes** — a borrow whose scope changed (temporary outliving / new dangling borrow)?
-- [ ] **Trait impls** — a new impl consistent with the existing family (Component storage decl, Send+Sync)?
-
-### NIFAL boundary delta (when the diff touches the material rows)
-
-The canonical material contract is **resolve-once at the translation
-boundary, no render-time fallback** — so a wrong value there is silently
-wrong across every game.
-
-- `Material::metalness` / `roughness` are plain resolved `f32`
-  (`crates/core/src/ecs/components/material.rs`), not `Option`. They are
-  finalized by `Material::resolve_pbr`, which clamps and — only when the
-  upstream override arrived `NaN` — falls back to `classify_pbr_keyword`
-  (the surviving keyword classifier; it is a sentinel-backstop for
-  non-pre-classified sources, **not** a per-draw safety net).
-- NIF-imported content is pre-classified at import (`classify_legacy_pbr`)
-  so `resolve_pbr` only clamps; BGSM/BGEM also arrive pre-classified.
-  Confirm a diff did not leave either scalar `NaN` at draw time.
-- Both load paths must still route through `translate_material`:
-  `byroredux/src/cell_loader/spawn.rs` (REFR spawn) and
-  `byroredux/src/scene/nif_loader.rs` (loose-NIF). If a diff adds a field
-  to one and not the other, that is the divergence this layer exists to
-  prevent. Defer to `/audit-nifal` for the full single-boundary checklist.
-
-### NIFAL particle / collision chain (multi-file translation surfaces)
-
-These are not single-file changes — a diff to one tier is incomplete
-without the others:
-
-- **Particle emitter:** typed blocks
-  (`crates/nif/src/blocks/particle.rs`: `NiPSysEmitter` /
-  `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier`)
-  → extraction (`crates/nif/src/import/walk/mod.rs`:
-  `extract_emitter_params` / `extract_emitter_rate`) → system
-  (`byroredux/src/systems/particle.rs`: `apply_emitter_params`). Audit all three.
-- **Collision shape:** a new `Bhk*Shape` parser
-  (`crates/nif/src/blocks/collision/`) is also a translation surface —
-  `crates/nif/src/import/collision/mod.rs` must map it to `CollisionShape`,
-  or it is silently dropped (MEDIUM floor; HIGH if it removes visible
-  game content). PHYSAL now consumes ragdoll constraints, so a collision
-  diff can ripple into `byroredux/src/ragdoll.rs` + `crates/physics/`.
-
-## Step 4: Deduplicate
-
-Run the dedup pass from `_audit-common.md` § Deduplication for every
-finding (existing-issue search + prior-report scan) before recording it.
-A regression of a *closed* issue is reported as "Regression of #NNN".
-
-## Extra Per-Finding Field
-
-In addition to the base format in `_audit-common.md`:
-
-- **Changed in**: `<file-path>` (commit `<hash>` / working tree)
-
-## Output
-
-Write to: **`docs/audits/AUDIT_INCREMENTAL_<TODAY>.md`** (YYYY-MM-DD).
-
-### Report structure
-1. **Change summary** — scope (range/commits/since), files changed, themes.
-2. **Routing map** — each changed file → dimension(s) it was audited under.
-3. **Findings** — new bugs + regressions (base format + `Changed in`).
-4. **Missing tests** — changed code paths with no test update.
-
-Then suggest:
-
-```
-/audit-publish docs/audits/AUDIT_INCREMENTAL_<TODAY>.md
-```
+Write `docs/audits/AUDIT_INCREMENTAL_<TODAY>.md`: (1) change summary — scope, files, themes; (2) routing map — file → owner dimensions audited; (3) findings; (4) missing tests. Then suggest `/audit-publish docs/audits/AUDIT_INCREMENTAL_<TODAY>.md`.

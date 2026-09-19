@@ -9,175 +9,106 @@ Deep audit of ByroRedux readiness for **Fallout 4** content.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, game data locations, key reference docs, methodology, deduplication rules, and finding format. See `.claude/commands/_audit-severity.md` for severity. This file only carries FO4-specific context — do not duplicate the common map here.
+Read `.claude/commands/_audit-common.md` (layout, game data, dedup, finding format) and `.claude/commands/_audit-severity.md`. This file carries only FO4-specific context.
 
-## What's Landed (audit as regression guards, not blockers)
+**Scope**: this skill owns *FO4's data through the shared mechanisms*. Defects in the mechanism itself go to the owner: BA2/CSG/BGSM/`.uvd` reader discipline → `/audit-parsers`; NIF block parsing → `/audit-nif`; ESM walker → `/audit-esm`; canonical-material invariants → `/audit-nifal`; Scaleform HUD (`--hud`, `byroredux/src/scaleform_hud.rs`, `docs/smoke-tests/m48-7-fo4-hud.sh`, AVM2/`BGSCodeObj`) → `/audit-ui`; runtime telemetry (`.claude/audit-baselines/runtime/fo4-InstituteBioScience.tsv`) → `/audit-runtime` — run it after any precombine / SCOL / spawn change.
 
-FO4 is one of the more complete game paths. Treat each item below as **shipped** — the audit job is to confirm it still holds, not to re-propose it.
-
-- **NIF** — BSVER 130 + Next-Gen patch range parses. Half-float vertices, BSTriShape, BSGeometry, inline tangents, BSSubIndexTriShape.
-- **BA2** — exhaustive version match `{1, 2, 3, 7, 8}` (GNRL + DX10); unknown majors bail at `open()`.
-- **BGSM/BGEM materials** — full external-material parser crate `crates/bgsm/`, merged into the mesh before NIFAL translate.
-- **ESM architecture records** — SCOL / MOVS / PKIN / TXST parsed; SCOL/PKIN placements expand into individual statics.
-- **M49 precombined geometry (CSG)** — **closed Session 45, 2026-06-02** (#1351 / #1188 Stage A). `.csg` reader, NIF precombine decode, cell-loader spawn, per-tier LOD selection, owning-REFR texture slot routing all shipped. ROADMAP language describing M49 as "blocked / no spec" is stale — the format was cracked from first principles, spec written, pipeline landed.
-- **FO4 metalness from spec chromaticity** (#1476) — legacy spec-glossiness BGSMs derive metalness from spec-color **saturation**, not luminance (luminance made all vanilla concrete read chrome).
-
-Still open (legitimate forward scope): `_precomb.nif` collision, `.uvd` occlusion volumes, MOVS physics runtime, FaceGen NIF truncation tail, deeper cell coverage (LIGH power state / CONT leveled items / NPC_ face morph), Havok behavior-graph driving.
+Everything below is **shipped** — audit as regression guard, never re-propose as pending: NIF BSVER 130+ incl. Next-Gen, BA2 v1/v7/v8, the BGSM/BGEM parser, SCOL/PKIN expansion, M49 CSG precombines, BSConnectPoint attach graph.
 
 ## Game Context
 
-| Aspect       | State |
-|--------------|-------|
-| NIF format   | BSVER 130 + Next-Gen patches; `FALLOUT4..FO4_DLC_UPPER` (130..=139) carries DLC trailing fields (`crates/nif/src/version.rs`) |
-| BA2 format   | Exhaustive `match` over `{1, 2, 3, 7, 8}` in `crates/bsa/src/ba2.rs` (consts `BA2_V_FO4=1`, `BA2_V_FO4_NEXT_GEN_TEX=7`, `BA2_V_FO4_NEXT_GEN_MESH=8`); GNRL + DX10 |
-| ESM records  | SCOL / MOVS / PKIN / TXST in `crates/plugin/src/esm/records/`; SCOL/PKIN expand in `byroredux/src/cell_loader/refr.rs` |
-| Precombines  | M49 CSG pipeline landed — `crates/bsa/src/csg.rs` → `crates/nif/src/import/precombine.rs` → `byroredux/src/cell_loader/precombined.rs` |
-| Parse rate   | 100.00% clean across **all 8 mesh-bearing archives** — the two base plus the six DLC `Main.ba2`s — **235 082 / 235 082**, re-measured 2026-08-29 under #3466, which took the gate from 166 568 (70.8% of the shipped corpus). The older 159 866 / #1593 / "both vanilla mesh archives" framings are all pre-#3466 and understate coverage. `DLCUltraHighResolution` is textures-only and stays out. Still re-run the harness before citing a parse rate. |
-| Rendering    | Interior cells render end-to-end (MedTekResearch01 bench, ~21k entities). BGSM/BGEM merged; precombined entities spawned interior + exterior. |
-| Reference    | `/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/` |
-| Bench        | `--cell MedTekResearch01` (see ROADMAP for the full `--bsa`/`--textures-ba2`/`--materials-ba2` invocation) |
+| Aspect | State |
+|---|---|
+| NIF | BSVER 130 + Next-Gen patches (`FALLOUT4..FO4_DLC_UPPER` = 130..=139 carries the DLC trailing fields, `crates/nif/src/version.rs`) |
+| Shader flags | typed u32 pair at BSVER 130 **only**; BSVER 131 (`FO4_SHADER_GAP`) has neither; BSVER ≥ 132 uses CRC arrays. Guard: `bsver_shader_flag_band_tests` (`version.rs`), gates `carries_typed_shader_flags` / `carries_crc_shader_flags` |
+| Materials | PBR params live in external `.bgsm`/`.bgem`; the NIF carries a path stub. `crates/bgsm/` parses; `merge_external_material` folds into `ImportedMesh.material` before `translate_material` |
+| Precombines | `crates/bsa/src/csg.rs` → `crates/nif/src/import/precombine.rs` → `byroredux/src/cell_loader/precombined.rs`. Spec `docs/engine/fo4-csg-format.md` |
+| Data | `/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/`; bench `--cell MedTekResearch01` (ROADMAP) |
 
-### Known FO4 Specifics
+## Parameters / Setup
 
-- **Half-float vertices** — `VF_FULL_PRECISION` controls f32 vs u16 binary16 positions/normals; FO4 defaults to half.
-- **FO4 shader flags** — `BSLightingShaderProperty` flags are a **u32 pair** (shader_flags_1 + shader_flags_2), not the single mask of FO3/FNV/Skyrim.
-- **DLC trailing fields** — subsurface, rimlight, backlight, fresnel, wetness in the `FALLOUT4..FO4_DLC_UPPER` BSVER band.
-- **External materials** — PBR-ish params live in `.bgsm`/`.bgem` files; the NIF carries only the path. The block parser returns a material-reference stub when BSVER ≥ 155 and Name is a BGSM/BGEM path; `crates/bgsm/` parses the file.
-- **Inline per-vertex tangents** (#795 / #796) — when `VF_TANGENTS | VF_NORMALS` are both set, FO4+ BSTriShape ships tangents **inline** in the packed-vertex blob (shared with Skyrim SE's identical BSTriShape format), NOT via a separate `NiBinaryExtraData` (the Oblivion/FO3/FNV path, #783/M-NORMALS). Consolidating the two into one is a regression of #795/#796.
-- **Architecture records** — SCOL (prefab collections), MOVS (movable statics), PKIN (packins), TXST (texture sets w/ DODT decal-data + DNAM flags).
+`--focus <dimensions>` (comma-separated, default all 5). Setup: parse `$ARGUMENTS`; `mkdir -p /tmp/audit/fo4`; `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/issues.json`; confirm `Fallout 4/Data/` exists (else note dimensions losing real-data validation).
 
-## Parameters (from $ARGUMENTS)
+## Dimensions
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3`). Default: all 9.
-
-## Phase 1: Setup
-
-1. Parse `$ARGUMENTS`.
-2. `mkdir -p /tmp/audit/fo4`.
-3. Dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/issues.json`.
-4. Confirm `Fallout 4/Data/` exists; if not, note which dimensions lose real-data validation.
-
-## Phase 2: Launch Dimension Agents (parallel)
-
-Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material translation, and the BA2 reader are the hot, recently-churned areas.
-
-### Dimension 1: M49 Precombined Geometry — CSG + Decode + Spawn (highest FO4 risk)
+### Dimension 1: M49 Precombined Geometry — Decode + Spawn (highest FO4 risk)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/bsa/src/csg.rs` (`CsgArchive::open`, `read_psg`), `crates/nif/src/import/precombine.rs` (`decode_shared_geom_object`, `psg_vertex_stride`, `PrecombineGeometry::into_imported_mesh`, `collect_precombine_geom_refs`, `precombine_material_from_shape`), `byroredux/src/cell_loader/precombined.rs` (`spawn_precombined_meshes`), `byroredux/src/cell_loader/load.rs` (the `pc_spawned` / `absorbed_refs` gate), `crates/plugin/src/esm/cell/wrld.rs` + `crates/plugin/src/esm/cell/mod.rs` (`precombined_mesh_hashes`). Spec: `docs/engine/fo4-csg-format.md`.
-**Checklist**:
-- **Vertex stride** — `psg_vertex_stride(vertex_desc)` must match the `BSPackedGeomObject` packed layout; an off-by-N stride silently shifts every vertex. Cross-check against the spec doc.
-- **Y-up convert** — `into_imported_mesh` applies the Z-up→Y-up + per-instance transform. Confirm the instance transform composes (no double-apply with `cell_origin`).
-- **CSG resolve** — `spawn_precombined_meshes` opens the companion `<Plugin> - Geometry.csg` once per cell; missing CSG must fall back to per-REFR (return 0 spawns) rather than panic.
-- **`read_psg` length bound (#3758)** — the shared-geometry `.csg` payload length is computed from three raw `u32`s off an `_oc.nif` (`num_verts * stride + (tri_start + lod_count) * 6`), the one size in the CSG reader that never passes through `crates/bsa/src/safety.rs` because it originates outside the archive; `read_psg` now bounds it against the archive's own PSG space before `Vec::with_capacity`. A regression that reserves on the raw computed length before that bound reintroduces an allocator abort (`handle_alloc_error`, unrecoverable by the loop's `continue`-on-`Err` arms) on a corrupt/adversarial count.
-- **Archive chain precedence for precombine re-bakes (#3637)** — mesh/material extraction across `--bsa`/`--textures-bsa`/`--materials-ba2` chains now resolves **last-listed-wins**; pre-fix it was first-wins, so a DLC's re-baked `_oc.nif` (naming a different CSG blob than the base game's) was silently shadowed whenever the natural `--master`-order invocation (base archive before DLC archive) was used — 1,681 shadowed mesh entries measured on the installed FO4 corpus. A reversion to first-wins silently resurrects base-game precombines over their DLC overrides.
-- **Single upload per precombine object, not per instance (#3510)** — `CachedNifImport::geometry_dedup` maps each `BSPackedGeomDataCombined` instance to its object's representative mesh so `prepare_mesh_uploads` uploads/BLAS-builds the shared geometry once and lets the batcher instance the rest; measured 1.37x VRAM overall / 4.6x on the worst tile pre-fix. A regression that lets `sub_mesh_index` (flattened-`Vec` position) key the dedup cache again reintroduces one upload + one BLAS build per instance.
-- **Owning-plugin resolution (#1592→#1590, `d6bf8437`)** — the CSG path AND the `_oc.nif` precombine-object path key off the cell's **owning** plugin (form-id high byte), NOT the last-loaded `--esm` (`precombined.rs::open_geometry_csg` is fed the owning path). A DLC / multi-master cell must open `<owning-plugin> - Geometry.csg`, else every DLC-owned precombine silently falls back to per-REFR (or reads the wrong CSG blob). Tests: the `#1590` cases in `precombined.rs`.
-- **REFR de-dup gate** (#1188) — `cell.absorbed_refs` are suppressed **only when `pc_spawned > 0`**; verify the `load.rs` gate renders absorbed REFRs when the precombine spawns nothing (no double-draw, no holes).
-- **LOD bands (#4234)** — a shared-geometry object's three LOD triangle bands are **disjoint sub-meshes whose union is the model**, so every populated band is decoded (`precombine_lod_bands` / `decode_shared_geom_object` in `crates/nif/src/import/precombine.rs`). *select_finest_lod* (#3641, and the earlier `a30c088a` one-tier rule) was removed in `66fff31b`: keeping only the largest band dropped 12.45% of `MeshesExtra.ba2`'s baked triangles. A regression that picks one band again silently deletes geometry, and does not cause z-fighting. Distance LOD, if added, must drop tail bands and never pick one. An empty band's `tri_offset` is untrusted.
-- **Texturing** — precombine shapes texture through the owning REFR's shape-slot indices (`2900de70`); a regression renders untextured/checker precombines.
-- **Opaque-architecture alpha-blend guard (`887aae52`)** — on the precombine path only, `spawn_precombined_meshes` keeps the BGSM merge's two_sided/decal/alpha_test/texture flags but **restores the pre-merge (NIF-shape) alpha-blend state**. FO4 authors the "Standard" blend mode identically on transparent lab glass and opaque Institute metal architecture, so forwarding the merged `has_alpha` makes every precombined wall `MATERIAL_KIND_GLASS` → see-through, mirror-hazy walls. A regression that re-applies the merged alpha-blend on the precombine path reintroduces the transparent/reflective-wall bug.
-- **Exterior path** — `cell_origin = cell_grid_to_world_yup(gx, gy)` for exterior (#1221 / #1222); without it exterior precombines stack at world origin.
+**Paths**: `crates/nif/src/import/precombine.rs`, `byroredux/src/cell_loader/precombined.rs`, `byroredux/src/cell_loader/load.rs` + `exterior.rs`, `byroredux/src/cell_loader/spawn/mesh_instance.rs`, `crates/bsa/src/csg.rs`, `crates/bsa/src/uvd.rs`
+**First step**: `git log --since=<last report> --format='%h %cs %s' -- crates/nif/src/import/precombine.rs byroredux/src/cell_loader/precombined.rs crates/bsa/src/csg.rs`
+**Guards** (confirm live, not `#[ignore]`d/vacuous): `precombine.rs` tests `decode_keeps_every_lod_band` + `lod_bands_skip_empty_bands_and_bound_the_read` (#4234); `csg.rs` `oversized_read_len_is_rejected_before_it_is_reserved` (#3758 — `read_psg` must bound its length before `Vec::with_capacity`; reader discipline is `/audit-parsers`); `precombined.rs` tests `resolve_precombine_owner_follows_form_id_mod_index`, `csg_paths_index_every_plugin_in_the_load_order`, `dedup_requires_both_a_cache_key_and_a_matching_length` (#3510); `#[ignore]`d real-data `dlc_rebake_of_a_master_owned_cell_decodes_from_the_dlc_csg`. Unguarded: the alpha-blend restore below.
+**Checklist** (what the guards cannot see):
+- **Stride / transform** — `psg_vertex_stride(vertex_desc)` vs the `BSPackedGeomObject` layout (off-by-N shifts every vertex silently; cross-check the spec doc). `into_imported_mesh` applies Z-up→Y-up + instance transform once — no double-apply with `cell_origin`; exterior `cell_origin = cell_grid_to_world_yup(gx, gy)` (else precombines stack at origin).
+- **LOD bands (#4234)** — the three bands are disjoint sub-meshes whose union is the model (12,096/12,096 `BSMeshLODTriShape`); every populated band is decoded. Picking one band deletes geometry (12.45% of `MeshesExtra.ba2`'s baked triangles) and is not z-fighting. Distance LOD may drop tail bands, never pick one. An empty band's offset is untrusted.
+- **Which CSG blob** — the `_oc.nif` *filename* keys off the cell's owning plugin (form-id mod byte; DLC bakes under `<plugin>.esm\`), but the *geometry blob* is chosen by each object's `BSPackedGeomObject::filename_hash` → `csg_paths_by_name_hash` (#2369: DLCs re-bake ~460 master-owned cells into their own blob). A blob no loaded plugin answers to, or a missing CSG, must fail closed to per-REFR (0 spawns), never read another plugin's PSG space or panic.
+- **REFR de-dup gate (#1188)** — `cell.absorbed_refs` suppress per-REFR rendering only when `pc_spawned > 0` (`absorbed_refs_or_empty`, shared by interior `load.rs` and exterior `exterior.rs`); absorbed REFRs must render when nothing spawned (no holes, no double-draw with SCOL expansion).
+- **Texturing** — each mesh takes its material from the *owning shape's* shader/alpha properties (`collect_precombine_geom_refs` + `precombine_material_from_shape`), then the BGSM merge; no REFR overlay on this path (`pre_merge_materials` empty by design, #4290). Regression = untextured/checker precombines.
+- **Opaque-architecture blend guard** — on this path only, `spawn_precombined_meshes` keeps the BGSM merge's two_sided/decal/alpha_test/texture flags but restores the pre-merge alpha-blend triple (`has_alpha`, `src/dst_blend_mode`): FO4 authors the "Standard" blend identically on lab glass and opaque Institute metal, so forwarding the merged `has_alpha` makes walls `MATERIAL_KIND_GLASS` (see-through, mirror-hazy).
+- **Archive chain precedence (#3637)** — `--bsa` / `--materials-ba2` chains resolve last-listed-wins (a DLC's re-baked `_oc.nif` must not be shadowed; 1,871 DLC mesh entries were shadowed pre-fix per the #3637 title). Guard: `byroredux/src/asset_provider/tests/archive_precedence.rs` (real-data, `#[ignore]`d — run it).
+- **Upload once per object (#3510)** — `CachedNifImport::geometry_dedup` maps every instance to its object's representative; keying the cache on the flattened sub-mesh index reintroduces one upload + BLAS per instance (1.37x VRAM, 4.6x worst tile).
+- **Exterior streaming** — `PrecombinedSpawnJob` yields between hashes / meshes / BLAS batches; the synchronous `spawn_precombined_meshes` wrapper must stay behaviourally identical.
+- **`.uvd` previs** — envelope only (`parse_uvd_header`, incl. `exterior_cell_grid`; PVS payload uncracked, no occlusion consumer, #3810). Verify nothing pretends to consume the payload.
 **Output**: `/tmp/audit/fo4/dim_1.md`
 
-### Dimension 2: BGSM / BGEM Consumption + Metalness-from-Chromaticity (regression pin #1476)
+### Dimension 2: BGSM / BGEM → `ImportedMaterial` (merge + roles)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/bgsm/src/` (`lib`, `base`, `bgsm`, `bgem`, `reader`, `template`), `byroredux/src/asset_provider/material/merge.rs` (`merge_external_material`).
+**Paths**: `crates/bgsm/src/`, `byroredux/src/asset_provider/material/{merge,mod,provider}.rs`, `byroredux/src/cell_loader/spawn/mesh_instance.rs` (REFR overlay), `byroredux/src/asset_provider/tests/{bgsm_merge,material_flags}.rs`
+**First step**: `git log --since=<last report> --format='%h %cs %s' -- crates/bgsm byroredux/src/asset_provider/material`
+**Guards**: `bgsm_merge.rs` (`bgsm_merge_forwards_alpha_blend_mode`, `bgsm_blend_to_gamebryo_is_identity_narrowing`, the neutral-roughness pair, `bgem_glass_forwards_authored_optics_and_overlay_roles`); `material_flags.rs::bgsm_metalness_*`; `crates/bgsm/src/template.rs` `resolve_breaks_*_cycle` (#1148). Parser discipline for `crates/bgsm` is `/audit-parsers`.
 **Checklist**:
-- **Single data source** — `merge_external_material` is the FO4 material merge: albedo/diffuse tint, specular, emissive, smoothness→roughness, translucency suite (#1147), model-space-normals bit, texture roles. It runs **before** `translate_material`.
-- **Narrowed merge signature (2026-07-27, `05d68926`)** — the fn takes `&mut ImportedMaterial`, *not* `&mut ImportedMesh`: an external BGSM/BGEM sidecar may patch material semantics but must not reach geometry, transforms, skinning, or scene ownership. A widened signature is a NIFAL boundary violation, report it as such. Material state now lives at `ImportedMesh.material`, not as flat fields.
-- **Texture roles, not slot indices** — BGSM texture paths land in `MaterialTextureSet` (22 named roles + `decals: [T; 4]`, `crates/nif/src/import/types.rs`). FO4's slot ordering must be consumed into roles at the merge; any downstream code indexing FO4 slots numerically has leaked a per-game vocabulary past the import boundary.
-- **Metalness from saturation, NOT luminance** (#1476, `08ed03be`) — for legacy spec-glossiness BGSMs (`leaf.pbr == false`, ~all vanilla architecture), metalness = `(max-min)/max` of `specular_color` (mult-invariant saturation): white spec `[1,1,1]` → 0 (concrete is dielectric), tinted spec → metallic. **Any reversion to luminance (`0.2126·r + …`) for the non-pbr branch is the #1476 regression — it makes vanilla concrete read chrome.** The luminance path is correct *only* for `leaf.pbr == true`.
-- **smoothness→roughness applied exactly once at parse** — `material.roughness_override = Some((1.0 - leaf.smoothness).clamp(0.04, 1.0))`. Audit any downstream re-application of the `1.0 - smoothness` inversion.
-- **Neutral-roughness fallback when smoothness=1.0 has no gloss map (#3639)** — `smoothness == 1.0` clamps roughness to the 0.04 floor (near-mirror); `triangle.frag` only relaxes that via the per-texel gloss map, so once the full BGSM template-chain walk still finds no `smooth_spec` texture, `merge_external_material` now overrides to a neutral `0.5` instead of leaving the material stuck at the floor with no per-pixel escape (up to 425 vanilla materials — hair, eyeballs, creature glow — measured). A regression that drops this fallback (or fires it even when a `smooth_spec` texture *did* resolve, including from a template parent) is the #3639 regression. **#3905 (2026-09-07)** closed the gap this arm can't see on its own: an authored-but-*unresolvable* gloss map (missing from the archive, failed load) satisfies `textures.smooth_spec.is_none()`'s negation here but still resolves to bindless handle 0 in the shader, so it stayed pinned at the 0.04 floor. `material_translate::resolve_unresolved_gloss_neutral_roughness` now applies the same shared `NEAR_MIRROR_NEUTRAL_ROUGHNESS` constant at both spawn paths (cell loader + loose-NIF viewer), gated on the shader's own `glossMapIndex != 0u` predicate. The two arms cover disjoint populations (authored-nowhere vs. authored-but-unresolved) and must not collapse into one check — a regression that drops the spawn-time arm silently reintroduces over-dark rendering on any BGSM whose gloss map path fails to resolve.
-- **Archive precedence for `.bgsm`/`.bgem` lookup (#3637)** — `MaterialProvider::extract_from_archives` / its `resolve_bgsm` reader resolve `--materials-ba2` chains last-listed-wins, mirroring the mesh/texture fix in Dimension 1; a reversion to first-wins silently drops an override material layered by a later-listed archive.
-- **Magic-vs-extension reconciliation** (#758 footgun) — the `.bgsm`/`.bgem`/`.mat` arm dispatches on file content; verify it logs and does not blindly trust the extension.
-- **Cycle-aware template resolve** (#1148) — `template.rs::resolve` / `resolve_depth` track `visited` lowercase keys and break `A→B→A` self-refs (vanilla `defaulttemplate_wet.bgsm`); verify the cycle-break + `DEPTH_LIMIT` still fire.
-- **Blend-factor pass-through, NOT a swap (#1823 fixed a regression of #1651, `27334481`)** — `src_blend`/`dst_blend` in BGSM/BGEM are already Gamebryo-native (`bgsm_blend_to_gamebryo`, a plain `u8` cast); Standard=(6,7), Additive=(6,0), Multiplicative=(4,1) feed `gamebryo_to_vk_blend_factor` verbatim. `#1651`'s premise ("GL-style enum inverted at 0/1") was false and its 0↔1 swap corrupted Additive (dst 0→1→ZERO, kills accumulation) and Multiplicative (dst 1→0→ONE, dest leaks through); Standard's (6,7) is a fixed point of the swap, which is why it slipped through review. Any reintroduction of a 0↔1 swap (or a function named `gl_to_gamebryo_blend`) is the regression.
+- **Narrowed signature** — `merge_external_material` takes `&mut ImportedMaterial`, never `&mut ImportedMesh`, and is the only exported fn in `merge.rs` (test `merge_external_material_is_the_only_exported_fn_in_this_file`); a widened signature is a NIFAL boundary violation. It runs **before** `translate_material`.
+- **Roles, not slots** — BGSM texture paths and REFR/TXST overlays land in `MaterialTextureSet` roles (`crates/nif/src/import/types.rs`); FO4 wire-slot numbers must not survive past the import boundary. Overlay output is carried as named roles, not wire slots (#4434). Texture-set slot 7 is the `_s.dds` smooth-spec map and routes to the smooth-spec role, not Specular (#4424: the BC5 map fed to the specular-colour multiply tinted every FO4 highlight warm); the gloss-sampler channel semantics are still an open question — do not guess.
+- **Metalness from saturation, not luminance (#1476)** — legacy spec-glossiness BGSMs (`pbr == false`): `bgsm_metalness` = `(max-min)/max` of `specular_color` (white spec → 0). Luminance for the non-PBR branch makes vanilla concrete read chrome; luminance is correct only for `pbr == true`.
+- **smoothness→roughness exactly once** at the merge (`(1 - smoothness)` clamped to the near-mirror floor); flag any downstream re-inversion.
+- **Neutral-roughness fallback** — `smoothness == 1.0` with no resolvable gloss map → neutral 0.5 (`NEAR_MIRROR_NEUTRAL_ROUGHNESS`): #3639 at the merge (authored-nowhere; must not fire when a template parent supplies `smooth_spec`), #3905 at spawn via `material_translate::resolve_unresolved_gloss_neutral_roughness` (authored-but-unresolvable; gated on the shader's `glossMapIndex != 0u`). The arms cover disjoint populations — collapsing them regresses.
+- **Blend factors pass through** (#1823) — BGSM/BGEM `src_blend`/`dst_blend` are already Gamebryo-native (Standard (6,7), Additive (6,0), Multiplicative (4,1)); any 0↔1 swap (or a `gl_to_gamebryo_blend`) corrupts Additive/Multiplicative while leaving Standard untouched.
+- **BGEM merge** — `merge_bgem_arm` deliberately leaves metalness/roughness as NaN so `resolve_pbr`'s classifier runs; effect data merges into the NIF payload (#4425). Glass is `glass_enabled`-driven and must not misclassify opaque architecture with a stuck flag.
+- **Lookup** — `.bgsm`/`.bgem`/`.mat` dispatch on content magic, not extension (#758); last-listed-wins across `--materials-ba2` (#3637); template resolve is cycle-aware and depth-limited (`DEPTH_LIMIT = 16`).
 **Output**: `/tmp/audit/fo4/dim_2.md`
 
-### Dimension 3: BA2 Reader — GNRL + DX10 (Exhaustive Version Match)
-**Subagent**: `general-purpose`
-**Entry points**: `crates/bsa/src/ba2.rs`.
+### Dimension 3: NIF BSVER 130 Geometry, Shader Flags, Collision (FO4 slice)
+**Subagent**: `legacy-specialist`
+**Paths**: `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs`, `crates/nif/src/import/mesh/{bs_tri_shape,bs_geometry}.rs`, `crates/nif/src/blocks/shader/lighting.rs`, `crates/nif/src/import/material/dedicated_shader.rs`, `crates/nif/src/import/collision/shape.rs`
+**First step**: `git log --since=<last report> --format='%h %cs %s' -- crates/nif/src/import/material crates/nif/src/blocks/shader`
+**Guards**: `fo4_shader_flag_tests.rs`, `alpha_flag_tests.rs` (`crates/nif/src/import/material/`); `bsver_shader_flag_band_tests`; `parse_rate_fo4_all_meshes` (Dim 5). Parser mechanics are `/audit-nif`; the canonical handoff (single `translate_material` boundary, resolve-once metalness/roughness, glass classified after `resolve_pbr`) is `/audit-nifal` — file there.
 **Checklist**:
-- **Exhaustive dispatch** (#811, `f480337`) — version handling is a `match` over the supported set; unknown majors (0, 4, 5, 6, 9, …) bail at `open()`. Any reintroduction of a cascading `if v == 1 { … } else if v == 7 { … }` chain with a silent v1 fallback is the regression. Mirrors the BSA allowlist now at `crates/bsa/src/archive/open.rs` (the `ba2.rs` comment already points at the post-split `archive/open.rs`).
-- **GNRL** — extract a mesh and a script, byte-exact.
-- **DX10** — DDS header reconstruction from width/height/`dxgi_format`/mip count; DXT1/DXT5/BC5/BC7 encoding; mip chunk assembly (mip0 largest → mip_last); per-archive zlib-vs-uncompressed flag.
-- **Cross-version** — `BA2_V_FO4` (1) / `BA2_V_FO4_NEXT_GEN_TEX` (7) / `BA2_V_FO4_NEXT_GEN_MESH` (8) all force zlib; confirm the Next-Gen mesh/tex archives extract.
+- `VF_FULL_PRECISION` default-half unless set; binary16 decode incl. denormals/NaN. `BSSubIndexTriShape` segments walked (actors lean on it); skinned indices/weights honour the packed layout. Inline tangents when `VF_TANGENTS | VF_NORMALS` (shared with Skyrim SE) — consolidating with the `NiBinaryExtraData` path is a regression of #795/#796.
+- **Render-affecting flags consumed, not just parsed (#1592)** — `dedicated_shader.rs` ORs `Model_Space_Normals` (F4SF1 bit 12) and `Alpha_Test` (F4SF2 bit 25) into `MaterialInfo`, gated by `carries_typed_shader_flags` (BSVER 130 only). `Glow_Map` (F4SF2 bit 6) is deliberately not gated: glow sources from the `BSShaderTextureSet` slot regardless. These are lower priority than the BGSM merge (vanilla is BGSM-backed; only inline/loose/modded NIFs exercise them).
+- Skin/Hair tint `BSLightingShaderType` variants sample different slots than the default path — the per-type map must match what `triangle.frag` reads (#563). A BGSM material must never fall back to Lambert (FO4's inverse of the FNV regression); bare `BSShaderPropertyBaseOnly` stubs route through `MaterialInfo` (#1244).
+- **Parsed-then-dropped is FO4's recurring finding class** (`texture_clamp_mode` on 7.9% of lit materials #3507; the greyscale→palette enable bit): every decoded FO4 shader/BGSM field must reach an `ImportedMaterial` sink and the canonical `Material`, with one default across the three material tiers (#3515).
+- **Collision** — `BhkMultiSphereShape` and `BhkConvexListShape` translate to `CollisionShape` in `import/collision/shape.rs` (two `downcast_ref` arms); an arm reverting to "unsupported + drop" removes power-armor / settlement / debris collision. Packed-Havok (`BhkSystemBinary`) collision is blocked on the blob decode (PHYSAL, `/audit-physics`); FO4 architecture uses synthesized ghost trimesh colliders. The precombine collision sibling is `<cell_formid:08x>_physics.nif` (not `_precomb.nif`, which appears in no archive) — forward scope.
 **Output**: `/tmp/audit/fo4/dim_3.md`
 
-### Dimension 4: NIF BSVER 130 + Half-Float Vertices + FO4 Collision
-**Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs`, `crates/nif/src/import/mesh/bs_tri_shape.rs`, `crates/nif/src/import/mesh/bs_geometry.rs`, `crates/nif/src/import/collision/shape.rs`.
+### Dimension 4: ESM Architecture Records + Cell Expansion
+**Scope split with `/audit-esm`**: it owns the parser as a parser (GRUP walk, `SubReader` accounting, FormID remap); this dimension owns FO4's data through it. Shared-mechanism defects → `/audit-esm`.
+**Subagent**: `general-purpose`
+**Paths**: `crates/plugin/src/esm/records/{scol,movs,pkin,mswp,parse}.rs`, `crates/plugin/src/esm/cell/{mod,support,walkers,wrld}.rs`, `byroredux/src/cell_loader/{refr,references/,spawn.rs,nif_import_registry.rs}`
+**First step**: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin/src/esm/records crates/plugin/src/esm/cell byroredux/src/cell_loader/refr.rs`
+**Guards**: `cell_loader/scol_expansion_tests.rs`, `pkin_expansion_tests.rs`, `attach_points_spawn_tests.rs`, `refr_texture_overlay_tests.rs`; the real-data ESM harness (#819) before any parse-rate claim.
 **Checklist**:
-- VF_FULL_PRECISION resolution (default-half unless set); half-float decode matches IEEE 754 binary16 incl. denormals/NaN.
-- BSSubIndexTriShape segment data walked (FO4 actors lean on it); skinned bone indices/weights honor packed layout.
-- DLC trailing fields on `BSLightingShaderProperty` in the `FALLOUT4..FO4_DLC_UPPER` band (subsurface/rimlight/backlight/fresnel/wetness). Next-Gen patch BSVER values still dispatch.
-- **#1242 constant rename** — the BSVER bound is `FO4_DLC_UPPER` (= 140), not the old misnamed *FO4_ENV_SCALE*. Any reference to the old name anywhere under `crates/nif/` or `crates/plugin/` is a regression target.
-- **FO4 collision (regression pin)** — `BhkMultiSphereShape` and `BhkConvexListShape` translate to `CollisionShape` in `crates/nif/src/import/collision/shape.rs` (search the two `downcast_ref` arms) instead of falling through to the "unsupported" log + drop. Power-armor / settlement / destructible-debris collision depends on this; either arm reverting to a drop is a regression (NIFAL "parsed then dropped" leak class).
+- SCOL/PKIN expand into per-instance synthetic REFRs with composed (parent × child) transform; recursion bounded by `MAX_PKIN_DEPTH = 4` (vanilla has zero nesting; the cap guards modded cross-recursion); SCOL-of-SCOL has its own gate. MOVS is parse-only (physics runtime unwired). The `TXST` group arm is in `records/parse.rs` and its decode in `esm/cell/support.rs` — an `unreachable_patterns` warning there means `b"TXST"` matches earlier than intended. The FO4-architecture maps must surface in `categories()` (`records/index.rs`).
+- **TXST DODT (`DecalData`) has zero consumers** — 303 vanilla payloads parse onto `TextureSet.decal_data` and are never read (`grep decal_data` finds only the parser); DNAM *is* consumed (`TXST_FLAG_MODEL_SPACE_NORMALS` in `refr.rs`). A real, measured asymmetry with no tracker as of 2026-09-19 — file it as a coverage gap, not a parse bug.
+- **BSConnectPoint** — the import lifts `BSConnectPoint::Parents/Children` into `AttachPoints` / `ChildAttachConnections` (`crates/core/src/ecs/components/attach_points.rs`); spawn must materialise them (modular weapons / power-armor frames otherwise spawn base-receiver only).
 **Output**: `/tmp/audit/fo4/dim_4.md`
 
-### Dimension 5: FO4 Shader Flags & BGSM PBR Routing (Disney path)
-**Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/shader/lighting.rs` (BSLightingShaderProperty), `crates/nif/src/import/material/` (`mod`, `walker`, `dedicated_shader`, `shader_data`), `crates/renderer/shaders/include/lighting.glsl` + `include/pbr.glsl` (Disney lobe gates).
+### Dimension 5: Archives + Real-Data Validation + Forward Scope
+**Subagent**: `general-purpose`
+**Paths**: `crates/bsa/src/ba2.rs`, `crates/nif/tests/parse_real_nifs.rs`, `crates/nif/examples/nif_stats.rs`, `ROADMAP.md`, `docs/feature-matrix.md`
+**First step**: `BYROREDUX_FO4_DATA=… cargo test -p byroredux-nif --test parse_real_nifs -- --ignored fo4`
 **Checklist**:
-- **u32 flag pair** read as two separate fields (shader_flags_1 + shader_flags_2). FO4 flag bit positions differ from Skyrim — verify decal / alpha-test / skinned / glow / window / refraction / parallax / facegen bits read from the correct mask + bit.
-- **Render-affecting bits consumed, not just parsed (#1592, `f7fbbed5`)** — the dedicated-shader arm (`crates/nif/src/import/material/dedicated_shader.rs`, split out of `walker.rs` under #2059) must OR Model_Space_Normals (F4SF1 bit 12) and Alpha_Test (F4SF2 bit 25) into `MaterialInfo`, gated on `bsver >= FALLOUT4`. Glow_Map (F4SF2 bit 6) is deliberately **not** gated here (#1733 doc-fix, corrected the #1592 comment) — glow sources unconditionally from the `BSShaderTextureSet` glow slot regardless of the flag bit; do not re-propose wiring it as a gap. Vanilla FO4 is BGSM-backed so this only bites inline/loose/modded NIFs, but a regression decodes an object-space normal map as tangent-space or renders an inline cutout opaque. Tests: `crates/nif/src/import/material/fo4_shader_flag_tests.rs`, `alpha_flag_tests.rs`.
-- **BGSM Name stopcond** — when the material is external, the block parser returns before reading the inline Phong trailing fields (those belong to the BGSM). `ImportedMesh.material_path` flows to `Material.material_path` for diagnostics; `mesh.info <id>` surfaces it when texture_path is absent.
-- **BSShaderTextureSet slot routing** (#563) — SkinTint / HairTint `BSLightingShaderType` variants sample different slots than the default LSP path; verify the per-type slot map is in lockstep with what `triangle.frag` reads.
-- **PBR flag, not Lambert** — `MaterialInfo::classify_legacy_pbr` / `into_imported_material` (`crates/nif/src/import/material/mod.rs`) seed the PBR overrides and `merge_external_material` flips `ImportedMaterial::is_pbr` for BGSM-authored material; the FO4-specific regression is a BGSM material **falling back to Lambert** (opposite of the FNV/FO3 regression). #1241 surfaces smoothness/IOR/specular_strength into `MaterialInfo` so the Disney lobe has data.
-- **#1244 `BSShaderPropertyBaseOnly` consumer** wired at import — bare-stub BSShaderProperty routes through MaterialInfo; verify FO4 fallback meshes aren't default-everything.
-- The per-game→canonical handoff is covered in depth by **Dimension 7**; cross-game canonical invariants live in `/audit-nifal`.
+- **BA2** (FO4 slice; reader discipline is `/audit-parsers`) — version dispatch is an exhaustive `match` (v1/v7/v8 FO4 → zlib; v2/v3 Starfield → `/audit-starfield` Dim 1); unknown majors bail at `open()` and a cascading `if v == 1 … else` with a silent v1 fallback is the regression (#811). GNRL byte-exact; DX10 reconstructs the DDS header from width/height/`dxgi_format`/mips (BC1/BC3/BC5/BC7, mip0 → mip_last).
+- **Parse rate** — `parse_rate_fo4_all_meshes` covers all 8 mesh-bearing archives (base pair + six DLC `Main.ba2`; `DLCUltraHighResolution` is textures-only), 235,082 NIFs incl. `.bto`/`.btr` at the last measurement (2026-08-29, #3466), 100.00% clean. Report the measured number, not ROADMAP's.
+- Trace `import_nif_scene` on a workshop item, a creature (deathclaw / super mutant), a power-armor frame (heavy skinning + BSConnectPoint) and a modular weapon: mesh count, `material_path`, skinned vs rigid, connect points.
+- **Forward scope** (do not file as blockers): precombine `_physics.nif` collision and packed-Havok decode, `.uvd` PVS payload / occlusion consumer, MOVS physics runtime, DecalData consumer (above), `BSBehaviorGraphExtraData` parse-only (verify nothing pretends to drive it), FaceGen NIF truncation tail, deeper cell coverage (LIGH power state / CONT leveled items / NPC_ face morph).
 **Output**: `/tmp/audit/fo4/dim_5.md`
-
-### Dimension 6: ESM Architecture Records (SCOL / MOVS / PKIN / TXST)
-**Scope split with `/audit-esm` (added 2026-08-13)**: `/audit-esm` owns the parser *as a parser* — GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap. This dimension owns **this game's data through it**: record counts, game-unique authoring, and the semantics that only show up on this title's masters. If the defect is in the shared mechanism, file it against `/audit-esm` instead of here.
-**Subagent**: `general-purpose`
-**Entry points**: `crates/plugin/src/esm/records/` (`scol.rs`, `movs.rs`, `pkin.rs`, `mswp.rs`; TXST lives in the misc set), `crates/plugin/src/esm/cell/` (`mod`, `walkers`, `support`, `wrld` + `cell/tests/`).
-**Checklist**:
-- SCOL — prefab of child-static placements w/ per-instance scale/rotation, parsed into an expandable structure. PKIN — packins (grouped bundles). MOVS — movable statics (parse-only; physics runtime not wired). TXST — texture sets referenced by NIF material paths.
-- **TXST DODT + DNAM** (#813 / #814) — decal-data sub-record + flags parsed via `DecalData`; pre-fix, 207/382 (DODT) + 382/382 (DNAM) vanilla TXSTs dropped authoring. Any TXST read path without `DecalData` is the regression. The TXST group arm lives in `esm/records/mod.rs` and the DODT/DNAM decode in `esm/cell/support.rs`; an `unreachable_patterns` warning at either site suggests `b"TXST"` matches before the intended arm.
-- **Category index exposure** (#817) — the FO4-architecture maps must surface in `categories()`; a missing entry hides records from category iteration.
-- Re-run the real-data ESM parse harness (#819) before reporting any parse-rate finding.
-**Output**: `/tmp/audit/fo4/dim_6.md`
-
-### Dimension 7: NIFAL Canonical Material Translation (FO4 is PBR-canonical)
-**Subagent**: `renderer-specialist`
-**Entry points**: `byroredux/src/material_translate.rs` (`translate_material` — the single boundary), `crates/core/src/ecs/components/material.rs` (`Material`, `Material::resolve_pbr`), `byroredux/src/cell_loader.rs` (`pack_imported_material_flags`, `pack_effect_shader_flags`). Spec: `docs/engine/nifal.md`. **See also `/audit-nifal`.**
-**Checklist**:
-- **Single boundary** — `translate_material(mesh, paths, extra_material_flags)` is the only `ImportedMesh → Material` site; both the cell-loader REFR-spawn path and the loose-NIF `scene` path must route through it, not verbatim struct literals.
-- **BGSM PBR flag routing** — `effect_shader_flags` ORs `pack_effect_shader_flags` + `pack_imported_material_flags(mesh)` + caller `extra_material_flags`. Verify BGSM meshes get `material_flag::PBR_BSDF` (and where authored `material_flag::TRANSLUCENCY` / `material_flag::MODEL_SPACE_NORMALS`) → shader-side `MAT_FLAG_PBR_BSDF`. Tests: `pack_imported_material_flags_tests` in `cell_loader.rs`.
-- **Resolve-once contract** — `Material.metalness` / `Material.roughness` are plain `f32` (not `Option` + per-draw classify), seeded from `mesh.metalness_override` / `mesh.roughness_override` (or `f32::NAN` for legacy inline-shader content), then `resolve_pbr()` fills NaN from the classifier and clamps (metalness 0..1, roughness 0.04..1). `resolve_pbr` is idempotent (tests `resolve_pbr_is_idempotent`, `resolve_pbr_preserves_upstream_translator_values`, `resolve_pbr_fills_only_missing_slot` in `material.rs`). Any consumer re-deriving roughness or re-running a classifier at draw-time is the regression.
-- Glass is classified **after** `resolve_pbr` (forced glass roughness wins) via `helpers::classify_glass_into_material`.
-**Output**: `/tmp/audit/fo4/dim_7.md`
-
-### Dimension 8: FO4 Cell Load End-to-End (SCOL/PKIN Expansion)
-**Subagent**: `general-purpose`
-**Entry points**: `byroredux/src/cell_loader/refr.rs` (`expand_scol_placements`, `expand_pkin_placements`), `byroredux/src/cell_loader/references/mod.rs` (wires the expanders), `byroredux/src/cell_loader/exterior.rs` (Phase-3a).
-**Checklist**:
-- `expand_scol_placements` / `expand_pkin_placements` turn a prefab/packin into per-instance synthetic REFRs with composed transform (parent × child), recursion bounded by `MAX_PKIN_DEPTH = 4` (shared, #1180 / #1182; vanilla has zero nesting, the cap guards modded cross-recursion). `cell_loader/references/` fires the first matching expander and composes placements.
-- Tests: `cell_loader/scol_expansion_tests.rs`, `cell_loader/pkin_expansion_tests.rs`.
-- Precombine spawn (Dim 1) and SCOL/PKIN expansion are independent carriers of the same cell — confirm no double-draw between an expanded SCOL static and a precombine that subsumed it (the `absorbed_refs` gate in Dim 1 is the de-dup mechanism).
-- **BSConnectPoint attach-graph consumer (#1594, `c16600a5`)** — the import lifts `BSConnectPoint::Parents`/`::Children` into `AttachPoints` / `ChildAttachConnections` ECS components (`crates/core/src/ecs/components/attach_points.rs`); the cell-load spawn path (`cell_loader/spawn.rs` + `cell_loader/references/`, cached in `nif_import_registry.rs`) must materialize them onto spawned entities. Pre-fix the chain dead-ended at the import boundary and modular weapons / power-armor frames spawned as base-receiver only. Regression target: a spawn path that imports the connect graph but attaches no `AttachPoints` component. Tests: `cell_loader/attach_points_spawn_tests.rs`.
-**Output**: `/tmp/audit/fo4/dim_8.md`
-
-### Dimension 9: Real-Data Validation + Forward Scope
-**Subagent**: `general-purpose`
-**Entry points**: `crates/nif/tests/parse_real_nifs.rs` (`parse_rate_fallout_4`, `parse_rate_fo4_all_meshes`), `crates/nif/examples/nif_stats.rs`, `ROADMAP.md`, `docs/feature-matrix.md`.
-**Checklist**:
-- Re-run `BYROREDUX_FO4_DATA=… cargo test -p byroredux-nif --test parse_real_nifs -- --ignored fo4` (`parse_rate_fo4_all_meshes` covers all 8 mesh-bearing archives since #3466 — the two base plus the six DLC `Main.ba2`s — not just `Fallout4 - Meshes.ba2` + `MeshesExtra.ba2`) — all parse 100.00% clean, 235 082 NIFs. Report the measured number; do not cite the stale ROADMAP figure without re-running.
-- Trace `import_nif_scene` on: a settlement workshop item, a creature (deathclaw / super mutant), a power-armor frame (heavy skinning + BSConnectPoint), a modular weapon (receiver/barrel/stock via BSConnectPoint). For each: mesh count, material_path (BGSM ref or null), skinned vs rigid, connect-point extra-data presence.
-- **Forward scope** (do NOT re-file as blockers): `_precomb.nif` collision, `.uvd` occlusion volumes, MOVS physics runtime, FaceGen NIF truncation tail, deeper cell coverage (LIGH power state / CONT leveled items / NPC_ face morph), `BSBehaviorGraphExtraData` parse-only (verify nothing pretends to drive it). The BGSM parser, SCOL/PKIN expansion, and the M49 CSG pipeline are **all shipped** — never list them as pending.
-**Output**: `/tmp/audit/fo4/dim_9.md`
 
 ## Phase 3: Merge
 
-1. Read all `/tmp/audit/fo4/dim_*.md`.
-2. Combine into `docs/audits/AUDIT_FO4_<TODAY>.md`:
-   - **Executive Summary** — NIF + BA2 + BGSM parser + SCOL/PKIN expansion + **M49 CSG precombines** all landed; parse rate per the latest `parse_rate_fo4_all_meshes` run. Pending: precombine collision / `.uvd` volumes, MOVS physics, deeper cell coverage (LIGH/CONT/NPC_).
+1. Read `/tmp/audit/fo4/dim_*.md`; combine into `docs/audits/AUDIT_FO4_<TODAY>.md`:
+   - **Executive Summary** — measured parse rate; what is shipped vs pending (above).
    - **Dimension Findings** — grouped by severity per dimension.
-   - **BGSM Consumption Table** — BGSM field × merged-into-`ImportedMesh.material` (`ImportedMaterial`) by `merge_external_material` / surfaced-on-canonical-`Material` (post-NIFAL). Texture columns must name the `MaterialTextureSet` role, not an FO4 slot number.
-   - **Forward Scope Chain** — precombine collision / `.uvd` → MOVS physics → deeper REFR/LIGH/CONT/NPC_ coverage. Do NOT list the CSG reader, BGSM parser, or SCOL expansion as pending.
-3. Remove cross-dimension duplicates.
+   - **BGSM Consumption Table** — BGSM field × merged-into-`ImportedMaterial` by `merge_external_material` / surfaced-on-canonical-`Material`. Texture columns name the `MaterialTextureSet` role, never an FO4 slot number.
+   - **Forward Scope Chain** — precombine collision / `.uvd` payload → MOVS physics → DecalData → deeper REFR/LIGH/CONT/NPC_ coverage.
+2. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_FO4_<TODAY>.md`
 (label every finding `game:fo4` + `legacy-compat`, plus its own domain label.)

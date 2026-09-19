@@ -1,481 +1,117 @@
 ---
-description: "Deep audit of the Scaleform/SWF UI (R4 + M48) — Ruffle host bridge, AVM1/AVM2 profile split, ABC adapter injection, archive navigator, offscreen wgpu readback, input routing"
+description: "Deep audit of the game UI tracks — Scaleform/SWF (Ruffle host bridge, AVM1/AVM2 profiles, ABC adapter injection, archive navigator, offscreen wgpu readback, overlay upload, input routing) and the Oblivion/FO3/FNV MenuXml track (eval, layout, raster) with both HUD drivers"
 argument-hint: "--focus <dimensions> --depth shallow|deep"
 ---
 
-# Scaleform / SWF UI Audit (R4 + M48)
+# UI Audit: Scaleform (R4 + M48) and MenuXml (M48.4-M48.7)
 
-Audit `crates/ui/` — the Ruffle-backed Scaleform host layer — plus its engine-side
-wiring. Before this skill existed, `crates/ui/` had **no owner**: the `ui-deep`
-preset borrowed `/audit-safety` + `/audit-concurrency` + `/audit-tech-debt`,
-which covers FFI and drift but never audits the *host contract* — the part that
-decides whether a vanilla Bethesda menu actually works.
+Read `.claude/commands/_audit-common.md` (delta-first scoping, dedup, finding format) and `_audit-severity.md` for shared protocol.
 
-**Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
-
-See `.claude/commands/_audit-common.md` for project layout, methodology,
-deduplication, context rules, and finding format. See
-`.claude/commands/_audit-severity.md` for the severity scale. Do NOT duplicate
-those here.
+Audits the *host contract* that decides whether a Bethesda menu works, on two tracks that share one overlay compositing path. Orchestrator; one Task agent per dimension (max 3 concurrent).
 
 ## Scope
 
-**Crate**: `crates/ui/src/`
-- `crates/ui/src/lib.rs` — `UiManager` (main-loop-owned, deliberately **not** an
-  ECS `Resource`: Ruffle's `Player` is not `Send + Sync`).
-- `crates/ui/src/profile.rs` — `ScaleformProfile::{SkyrimAvm1, Fallout4Avm2}` +
-  `detect` / `from_movie` / `is_avm2`.
-- `crates/ui/src/host.rs` + `crates/ui/src/host/` — `ScaleformHostBridge`,
-  `ScaleformHostCall`, `ScaleformHostDispatch`, `ScaleformValue`,
-  `MAX_QUEUED_CALLS`.
-- `crates/ui/src/avm2_host.rs` — the FO4 `BGSCodeObj` ABC-injection adapter
-  (`ScaleformHostObjectState`, the `__byro_fallout4_*` helper/callback names).
-- `crates/ui/src/catalog.rs` — `ScaleformHostCatalog`, the pinned per-profile
-  host-method inventories.
-- `crates/ui/src/navigator.rs` — `ScaleformResourceProvider`,
-  `ScaleformResourceLoad`, archive-backed URL resolution + local-executor pump.
-- `crates/ui/src/player.rs` — `SwfPlayer`: offscreen wgpu device, `TextureTarget`,
-  frame capture.
-- `crates/ui/src/input.rs` — the engine-neutral `UiInputEvent` vocabulary.
+- **Scaleform**: `crates/ui/src/` (`lib.rs` `UiManager`, deliberately not an ECS `Resource`; `profile.rs`; `prepare.rs`; `host.rs`; `avm1_host.rs` Skyrim scanner; `avm2_host.rs` FO4 `BGSCodeObj` ABC injection; `catalog.rs`; `navigator.rs`; `player.rs` offscreen wgpu; `input.rs`); protocol pins `crates/ui/tests/{hudmenu_protocol,fallout4_hudmenu_protocol}.rs`.
+- **MenuXml**: `crates/menuxml/src/` (`eval`, `layout`, `raster`, `menu`, `profile` audited here; `parse`, `tex`, `font` are the parse side, owned by `/audit-parsers`).
+- **Engine side**: `byroredux/src/{ui_input,hud,scaleform_hud}.rs`, `byroredux/src/commands/hud.rs`, `byroredux/src/app_frame.rs` (`tick_ui_overlay`, `tick_hud_overlay`), `app_events.rs`, `scene.rs` (`--menu`/`--hud` launch), renderer `crates/renderer/src/vulkan/{presentation.rs,texture.rs,context/post_passes.rs}` + `crates/renderer/shaders/ui.{vert,frag}`.
+- **Handoffs**: GPU teardown order `/audit-concurrency`; Ruffle/wgpu `unsafe` `/audit-safety`; MenuXml XML/DDS/`.fnt` parse robustness `/audit-parsers`; what a HUD *shows* (actor values, inventory) `/audit-gameplay`.
 
-**Engine-side wiring** (Dimension 7 — outside the crate):
-`byroredux/src/ui_input.rs` (winit → `UiInputEvent` translation,
-`dispatch_window_event`, `release_world_input`, `is_debug_overlay_key`),
-`byroredux/src/app_frame.rs` (the per-frame tick → `drain_host_calls` → `render` →
-`update_rgba` chain and `ui_texture_handle` — moved out of *main.rs* by the
-#2731 split; window/input event routing is its sibling `byroredux/src/app_events.rs`),
-`byroredux/src/scene.rs`
-(`UiManager` construction), and the renderer side
-`crates/renderer/src/vulkan/context/resources.rs` (`register_ui_quad`) with
-`crates/renderer/shaders/ui.vert` / `crates/renderer/shaders/ui.frag`.
+**Ground truth**: `docs/engine/ui.md` (host contract, MenuXml section, pending list), `docs/smoke-tests/README.md`.
 
-**Ground truth — read before auditing**:
-- `docs/engine/ui.md` — the authoritative host contract: profile split,
-  `GameDelegate` / `BGSCodeObj` semantics, the pinned catalog counts, and the
-  explicit *Pending* row (host-method behavior, remaining `_global.gfx` stubs,
-  Papyrus↔UI bridge, menu-stack/focus policy, font fidelity, full menu pack).
-- *creation_engine_ui_system* + *text_replacement_system* in project memory —
-  the 34 vanilla menus and the markup/font system this layer eventually serves.
+**Deliberately unbuilt** (verified 2026-09-19 against `docs/engine/ui.md`; re-verify, do not trust this line): engine handlers for host methods (menus receive `Null`), Papyrus↔UI bridge, menu stack/focus policy, font fidelity, full menu pack, Starfield HUD (#4470, blocked). Audit the *mechanism* that will carry them.
 
-**Deliberately unbuilt — do NOT report as bugs** (verified 2026-08-20; they are
-the *Pending* row — re-verify against `docs/engine/ui.md` rather than trusting
-this line, per the "never write an instruction to not look" convention in
-`_audit-common.md`):
-engine handlers for host methods (menus currently receive `Null` by design),
-Papyrus↔UI bridge, menu stack / focus policy, font fidelity, the full menu pack.
-Audit the *mechanism* that will carry them, and flag anything that would make
-landing them harder.
+**Known-open**: #3429 (a Scaleform overlay that animates allocates a fresh full-viewport image and blocks on a fence per uploaded frame: `tick_ui_overlay` still uses `update_rgba`; the MenuXml HUD avoids it, see Dim 5).
 
-## Parameters (from $ARGUMENTS)
+## Parameters
 
-- `--focus <dimensions>`: comma-separated dimension numbers. Default: all 7.
-- `--depth shallow|deep`: `shallow` = API/contract check; `deep` = trace a menu
-  load end-to-end (archive → SWF → VM → host call → pixels → GPU). Default: `deep`.
+`--focus <dims>` (default all 7) · `--depth shallow|deep` (`deep` traces archive → SWF/XML → VM/eval → host call → pixels → GPU).
 
-## Extra Per-Finding Fields
-
-- **Dimension**: Profile & VM Selection | Host Bridge Transport | AVM2 Adapter
-  Injection | Catalog Fidelity | Resource Navigator | Render & Device Lifecycle
-  | Engine Wiring & Input Routing
-- **Profile**: `SkyrimAvm1` | `Fallout4Avm2` | both | n/a
+**Extra fields**: **Dimension**: Profile & Bridge | AVM2 Adapter | Catalog & AVM1 Scanner | Resource Navigator | Render & Overlay Upload | Engine Wiring & Input | MenuXml & HUD Drivers. **Profile**: `SkyrimAvm1` | `Fallout4Avm2` | `MenuXml` | both | n/a.
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS` for `--focus`, `--depth`.
-2. `mkdir -p /tmp/audit/ui`.
-3. `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/ui/issues.json`.
-4. Read the most recent `docs/audits/AUDIT_UI_*.md` if one exists; otherwise read
-   the UI sections of the most recent `AUDIT_SAFETY_*`, `AUDIT_TECH_DEBT_*` and
-   `AUDIT_INCREMENTAL_*` reports — that is where this crate's findings have been
-   filed until now, and therefore where your duplicates are.
-5. `cargo test -p byroredux-ui` and record the pass/ignored counts. Several tests
-   need a real wgpu device and are `#[ignore]`d — note which, because a
-   "verified" claim that depends on an ignored test is not verified.
-6. **Count, do not trust, the catalog sizes.** `docs/engine/ui.md` quotes a
-   74-method Skyrim catalog and a 269-method FO4 catalog (grown from 138 on
-   2026-08-24, and the earlier "sample, not a complete surface" caveat was
-   dropped from the doc along with it — re-verify that caveat's removal is
-   still accurate rather than assuming it). Re-derive both from
-   `crates/ui/src/catalog.rs` before citing either number — a quoted count that
-   no longer matches the array is exactly the drift class #2730 was filed for.
-   **The 269 FO4 entries now carry a provenance split (#3773):** 138
-   `Measured` (kind read from F4CF's reconstructed AS3) + 131
-   `HeuristicNamePrefix` (kind inferred by #2966's corpus sweep), on a new
-   `ScaleformHostMethod::provenance: ScaleformKindProvenance` field. Re-derive
-   the 138/131 split the same way, not just the 269 total.
+1. `mkdir -p /tmp/audit/ui`; dedup per `_audit-common.md`; read the latest `docs/audits/AUDIT_UI_*.md` (date D = delta baseline).
+2. `cargo test -p byroredux-ui -p byroredux-menuxml`; record pass/ignored. Data-gated tests **return early (silent pass) without game data**: `crates/menuxml/tests/{vanilla_corpus,fo3_corpus}.rs` (`BYROREDUX_OBLIVION_DATA`, `BYROREDUX_FO3_DATA`), `crates/ui/tests/*_protocol.rs` (`BYROREDUX_SKYRIM_DATA`/`BYROREDUX_SKYRIMSE_DATA`, FO4), and `avm1_host/tests.rs::installed_skyrim_host_calls_are_all_cataloged` is `#[ignore]`d. A "verified" claim resting on one of these is unverified unless you ran it with data.
+3. **Count, do not trust, catalog sizes.** Re-derive from `crates/ui/src/catalog.rs`: Skyrim array = **142** (74 `Measured` SkyUI-sourced + 68 `HeuristicNamePrefix` from the #3103 corpus sweep); FO4 = **269** (138 + 131, #2966). `docs/engine/ui.md` and the ROADMAP M48 row still quote 74 for Skyrim as of 2026-09-19 (doc rot; a 74 that meant the measured half is not a wrong count, a 74 that claims the whole catalog is).
 
-## Phase 2: Launch Dimension Agents
+## Phase 2: Dimensions
 
-### Dimension 1: Profile & VM Selection
-**Entry points**: `crates/ui/src/profile.rs` — `ScaleformProfile::detect`,
-`from_movie`, `is_avm2`, `external_interface_id`; `crates/ui/src/player.rs` —
-`SwfPlayer::new`, `new_with_profile`, `from_resource_provider`, `profile`
-**Checklist**:
-- Detection is `SwfMovie::is_action_script_3()` — a property of the movie, not a
-  guess from the game name or file path. Verify no caller infers the profile from
-  `--game` / archive provenance; a Skyrim-family menu shipped as AS3 must route to
-  `Fallout4Avm2` on its own evidence.
-- `new_with_profile` lets a caller force a profile. Verify a forced profile that
-  contradicts the movie either fails loudly or is documented as a test-only
-  override — silently running AVM1 host wiring on an AVM2 movie yields a menu
-  that loads, renders, and answers nothing.
-- `external_interface_id` differs per profile (`byroredux-skyrim-ui` /
-  `byroredux-fallout4-ui`). Verify the id used at registration matches the id the
-  bridge filters on — a mismatch makes every host call vanish silently.
-- `SwfMovie::from_data` failure path: a malformed/encrypted SWF must produce an
-  `Err`, not a partially-initialized player.
+### Dim 1: Profile, Prepare & Host Bridge Transport
+**Paths**: `crates/ui/src/{profile,prepare,host,lib}.rs`, `crates/ui/src/host/tests.rs`
+**First step**: `git log --since=D -- crates/ui/src/host.rs crates/ui/src/prepare.rs crates/ui/src/profile.rs crates/ui/src/lib.rs`
+**Guards**: `host/tests.rs::a_response_handler_may_re_enter_its_own_bridge` (handler is cloned out of the map before invocation; a refactor holding one borrow across the call re-introduces the panic); `prepare.rs` tests (`an_archive_menu_open_decompresses_and_parses_once`, `a_loose_avm1_movie_is_decompressed_once_and_never_parsed`, `a_profile_mismatch_is_rejected_before_any_further_decode`) via `SwfDecodeCounts`.
+- Profile comes from `SwfMovie::is_action_script_3()`, never from `--game` or archive provenance. A forced `new_with_profile` that contradicts the movie fails loudly or is test-only. The `external_interface_id` used at registration equals the id the bridge filters on (mismatch = every host call vanishes silently). Malformed SWF returns `Err`, not a half-built player.
+- Queue: `MAX_QUEUED_CALLS` (1024) evicts oldest with `pop_front`, counts each eviction, warns once. A drained batch may be non-contiguous; the engine (`app_frame.rs`) latches `dropped_host_calls` per menu and `host_call_gap_for_menu` resets it on a menu swap. Regression = comparing against zero or dropping the latch.
+- Every bounded set (`callbacks`, `known_methods`, `unknown_methods`, `unanswered_methods` via `insert_bounded`; the player's error/load lists) caps at `MAX_DISTINCT_HOST_METHOD_NAMES` and logs once at the trip. Engine-authored `__byro*` names draw on a separate `RESERVED_HOST_METHOD_NAMES` (32) band so untrusted movie content cannot lock out `__byroBGSCodeObjReady`/`Destroy` (the guard sits in `insert_bounded`, the single choke point for all sets; check a new set goes through it).
+- One SWF decode per open: `prepare_movie` → `PreparedMovie`; floor is two inflates + one tag walk. A stage taking raw bytes again is the regression; `--menu` passes `profile: None` and reads `UiManager::menu_profile()` (no pre-extract-and-detect).
+- `ScaleformValue` round-trips in both directions with unrepresentable values becoming explicit `Null`; `ScaleformHostDispatch::MissingResponse` (Request with no response) stays distinct from `Unknown`.
+- The bridge is `Rc`/`RefCell` (Ruffle is single-threaded): nothing hands a clone to another thread; `UiManager` stays out of the ECS resource set (`ScaleformHudDiag` is the console mirror).
 **Output**: `/tmp/audit/ui/dim_1.md`
 
-### Dimension 2: Host Bridge Transport (bidirectional ExternalInterface)
-**Entry points**: `crates/ui/src/host.rs` — `ScaleformHostBridge` (`register_method`,
-`set_response`, `set_response_values`, `set_response_handler`, `drain_calls`,
-`dropped_calls`, `queued_call_count`, `available_callbacks`, `has_callback`,
-`unknown_methods`, `unanswered_methods`, `code_object_destruction_count`),
-`ScaleformHostCall`, `ScaleformValue`, `MAX_QUEUED_CALLS`
-**Checklist**:
-- **Drain-based queue with a backstop.** `MAX_QUEUED_CALLS` (1024) evicts oldest
-  and increments `dropped_calls`; the overflow warn is one-shot
-  (`overflow_warned`) with further drops counted, not logged. Verify: eviction is
-  `VecDeque::pop_front` (O(1), not `Vec::remove(0)`), the counter increments once
-  per eviction, and the one-shot warn cannot re-arm into per-frame spam.
-- **A drained batch may be non-contiguous** once eviction has fired. Verify
-  `drain_calls`' doc contract is honoured by consumers — any consumer that treats
-  `sequence` as gap-free is wrong. **The engine now actually reads the drop
-  counter (#2969, `a984836c`)**: `UiManager::dropped_host_calls()` sits beside
-  `drain_host_calls()`, and `byroredux/src/app_frame.rs` latches it, warning on
-  each *increase* with how many calls the menu lost and how many the current
-  batch holds. Latched rather than compared against zero so the message tracks
-  increases instead of repeating every frame; a **decrease** is a menu swap
-  handing over a fresh bridge, which `host_call_gap` treats as a reset rather
-  than letting `checked_sub` wrap it into an enormous gap. The bridge's own
-  producer-side warn says "a call was lost"; this says "the batch you are about
-  to act on has a hole in it", which is the one that stops being cosmetic once
-  the loop routes calls into quest / inventory / player state. Regression =
-  dropping the latch, or comparing against zero. Sibling check: every other
-  bounded channel here (`callbacks_capped`, `known_methods_capped`,
-  `unknown_methods_capped`, `unanswered_methods_capped` via `insert_bounded`,
-  and `player.rs`'s `resource_errors_capped` / `resource_loads_capped`) logs
-  once at the point it trips — the drop counter was the only one stored for a
-  consumer and never read.
-- **One SWF decode per menu open (#2968, `0e91fc5e`).** `crates/ui/src/prepare.rs`
-  (`prepare_movie`, `PreparedMovie`, `SwfDecodeCounts`) does the decompress once
-  and the tag parse at most once, then hands each load stage what it wanted.
-  `SwfPlayer`'s constructors used to hand raw bytes to four independent stages —
-  profile detection, host-object injection, `ImportAssets` extraction, and
-  Ruffle's `SwfMovie::from_data` — each re-inflating the whole compressed stream
-  and two of them walking every tag, synchronously on the winit main-loop
-  thread. On FO4's multi-megabyte `hudmenu.swf` / `pipboymenu.swf` that was four
-  inflates and two tag walks per menu open. The final `SwfMovie::from_data`
-  still decompresses (Ruffle exposes no constructor taking an already-decoded
-  `SwfBuf`), so the floor is **two inflates and one tag walk**, not one — and
-  `SwfDecodeCounts` exists to make that assertable rather than intended.
-  Regression = a stage re-added that takes raw bytes instead of `PreparedMovie`.
-  **That floor was true of the crate but not of the only production caller
-  until #3771**: `scene.rs`'s `--menu` route separately pre-extracted the
-  archive entry and ran its own `ScaleformProfile::detect` purely to hand
-  `prepare_movie` a value for its own mismatch-guard cross-check against the
-  same bytes — a second archive extraction and whole-stream inflate to
-  produce a tautology (2 archive extractions + 3 inflates end-to-end).
-  `SwfPlayer::from_resource_provider`'s `profile` parameter is now
-  `Option<ScaleformProfile>`; `scene.rs` passes `None` and reads
-  `UiManager::menu_profile()` afterward. Regression = a caller re-adding a
-  pre-extract-and-detect step to supply a profile `prepare_movie` would have
-  derived itself.
-- `ScaleformValue` conversion in both directions: AS → Rust on call arguments,
-  Rust → AS on `respond`. Verify number/bool/string/null round-trips and that an
-  unrepresentable value becomes an explicit Null rather than a panic.
-- `ScaleformHostDispatch::{Unknown, MissingResponse}` are the diagnosis channel.
-  Verify a `Request`-kind method with no registered response resolves to
-  `MissingResponse` (not `Unknown`) — those are different bugs for whoever lands
-  the handler, and collapsing them destroys the signal.
-- `set_response_handler` closures run inside the VM callback. Verify they cannot
-  re-enter the bridge in a way that deadlocks the `RefCell`/borrow (`state.borrow()`
-  held across a call into ActionScript is the classic re-entrancy panic).
-  **Pinned (#UI-D2-2026-09-09-01)**: `record_call` clones the handler out of
-  `response_handlers` and lets that immutable borrow expire *before* invoking
-  it — the only thing making re-entry safe, since there are no production
-  handlers yet to exercise it. Regression guard:
-  `a_response_handler_may_re_enter_its_own_bridge` (re-enters through both a
-  shared and a mutable borrow, and asserts the re-entrant mutation actually
-  landed, not just that nothing panicked). A "tidier" refactor that holds one
-  borrow across the handler call reintroduces the panic.
-- Interior mutability: the bridge is `Rc`/`RefCell`-based because Ruffle is
-  single-threaded. Verify nothing hands a bridge clone to another thread and that
-  `UiManager` staying out of the ECS `Resource` set is still true.
+### Dim 2: AVM2 Adapter Injection (FO4 `BGSCodeObj`), highest risk
+**Paths**: `crates/ui/src/avm2_host.rs`
+**First step**: `git log --since=D -- crates/ui/src/avm2_host.rs`
+**Guards**: `avm2_host.rs::no_other_injected_name_is_a_prefix_of_another`, `generated_adapter_pool_carries_no_abandoned_loader_strategy`, `crates/ui/tests/fallout4_hudmenu_protocol.rs` (data-gated). Bytecode surgery on a third-party binary: a wrong constant-pool index yields a movie that loads and misbehaves, and no test fails.
+- Every index written is one the rewriter added or verified (append-then-reference ordering). Injection is idempotent (menu reload / resize rebuild must not duplicate helpers or traits).
+- `ScaleformHostObjectState` has four variants (`NotRequired`, `NotPresent`, `AdapterInjected`, `AdapterInjectedWithoutDestroyHook`). The re-injection probe scans for `DESTROYED_EVENT`, not its strict prefix `DESTROY_CALLBACK`; the four destroy strings are emitted together or not at all. Both `scene.rs` menu-load log sites call `UiManager::host_object_state()` (else `NotPresent` logs like a healthy menu).
+- The destroy callback is registered only when the movie's class declares `onCodeObjDestruction`; `AdapterInjectedWithoutDestroyHook` does not increment `code_object_destruction_count()`.
+- One shared helper normalises `BGSCodeObj.Method` → `Method` while keeping the transport name in `ScaleformHostCall` (not 269 per-method copies).
+- Degradation: an unparseable ABC tag or no lifecycle-class match returns the *original* bytes with `NotPresent` + `log::warn!`; the hard `Err` is kept only for `patch_root_constructor` (a partial rewrite would corrupt the SWF). No third branch may silently hard-fail.
 **Output**: `/tmp/audit/ui/dim_2.md`
 
-### Dimension 3: AVM2 Adapter Injection (FO4 `BGSCodeObj`)
-**Entry points**: `crates/ui/src/avm2_host.rs` — the ABC rewrite path
-(`swf::avm2::read::Reader` → `Writer`, `decompress_swf` / `parse_swf` /
-`write_swf`), `ScaleformHostObjectState`, the `__byro_fallout4_*` helpers and
-`__byroBGSCodeObj*` callbacks, `ADAPTER_NAME`
-**Why it is the highest-risk dimension**: this is bytecode surgery on a
-third-party binary before Ruffle parses it. A wrong constant-pool index does not
-fail a test — it produces a movie that loads and misbehaves.
-**Checklist**:
-- Constant-pool / multiname index handling: every index written must be one the
-  rewriter itself added or verified present. Off-by-one into a `ConstantPool` is
-  the signature failure here — check the append-then-reference ordering.
-- Idempotency: injecting twice (menu reload, resize-triggered rebuild) must not
-  double-install helpers or duplicate traits. Verify a guard on `ADAPTER_NAME` or
-  the helper prefix.
-- `ScaleformHostObjectState` has four variants: `NotRequired` (AVM1),
-  `NotPresent` (movie doesn't declare `BGSCodeObj`/`onCodeObjCreate`),
-  `AdapterInjected`, and `AdapterInjectedWithoutDestroyHook` — added
-  2026-08-24 for movies whose lifecycle class declares `onCodeObjCreate` but
-  not the optional `onCodeObjDestruction` trait. **A movie that never creates
-  `BGSCodeObj` now IS visible to the engine, not just required to be
-  (regression guard, #3427)**: `UiManager::host_object_state()` exists and is
-  folded into both menu-load log lines in `scene.rs`. Verify both log sites
-  still call it — before #3427 `NotPresent` had no engine consumer, so it
-  logged identically to a clean `AdapterInjected` menu.
-- **The re-injection state probe scans for `DESTROYED_EVENT`, not
-  `DESTROY_CALLBACK` (#3435)**. `DESTROY_CALLBACK`
-  (`"__byroBGSCodeObjDestroy"`) is a strict prefix of `DESTROYED_EVENT`
-  (`"__byroBGSCodeObjDestroyed"`), so a raw byte scan on the shorter name
-  also matches a pool carrying only the longer one — it cannot, on its own
-  terms, tell `AdapterInjected` apart from `AdapterInjectedWithoutDestroyHook`.
-  It was correct only because `build_adapter_abc` emits all four destroy
-  strings together or none (an invariant two functions away with nothing
-  pinning it at the time). Regression guards:
-  `no_other_injected_name_is_a_prefix_of_another` (fails if a future constant
-  extends an existing one) and the emit-together invariant pinned at its own
-  site. Verify the probe still scans `DESTROYED_EVENT`, not the shorter
-  prefix constant.
-- Lifecycle ordering: constructor patch → object populated → `onCodeObjCreate`
-  → … → destroy callback (only if declared) → `code_object_destruction_count`.
-  **The destroy callback is registered only when the movie's class declares
-  `onCodeObjDestruction`** (no longer unconditional) — verify the injector
-  checks for the trait before registering rather than assuming its presence,
-  and that `AdapterInjectedWithoutDestroyHook` correctly skips incrementing
-  `code_object_destruction_count()` (there is no hook to invoke it). For
-  movies that DO declare the hook, verify the destroy path still runs on menu
-  close and the counter is observable.
-- Every forwarding function must normalize `BGSCodeObj.Method` → logical method
-  `Method` while retaining the transport name in `ScaleformHostCall`. Verify the
-  normalization is one shared helper, not repeated per method (269 copies of a
-  string split, one per current FO4 catalog entry — re-derive the count from
-  Phase 1 step 6 rather than trusting this number — is exactly the drift
-  `/audit-tech-debt` Dim 2 exists for).
-- Failure to rewrite must degrade to "no host object", never to a corrupted SWF
-  handed to Ruffle. Verify the error path returns the *original* bytes.
-  **Scope is now two named branches (#3428)**: an unparseable ABC candidate
-  tag and no instance-level trait match both degrade to
-  `ScaleformHostObjectState::NotPresent` with a `log::warn!`, matching the
-  host-call inventory scan's non-fatal policy — these are "this movie has no
-  host object", not failures. The hard `Err` is kept ONLY for
-  `patch_root_constructor`, where a partial rewrite really would hand Ruffle
-  a corrupt SWF. Verify no third branch has since been added as a silent
-  hard-Err that should instead degrade.
+### Dim 3: Catalog Fidelity & the AVM1 Scanner
+**Paths**: `crates/ui/src/{catalog,avm1_host}.rs`, `crates/ui/src/avm1_host/tests.rs`
+**First step**: `git log --since=D -- crates/ui/src/catalog.rs crates/ui/src/avm1_host.rs`
+**Guards** (default lane): `catalog.rs::{skyrim_catalog_is_sorted_and_unique, fallout4_catalog_is_sorted_and_unique, fallout4_catalog_provenance_split_matches_the_2966_sweep, skyrim_catalog_provenance_split_matches_the_3103_sweep, the_skyrim_prefix_heuristic_respects_camel_case_boundaries}` (`find` is a case-sensitive `binary_search_by`, so sortedness under `str::cmp` is its prerequisite). Data-gated: `installed_skyrim_host_calls_are_all_cataloged` (Phase 1).
+- Diff the re-derived counts (Phase 1 step 3) against every number in `docs/engine/ui.md`, ROADMAP and prior reports; mismatch = doc rot.
+- Only sweep-added entries may be `HeuristicNamePrefix`; a `Command`/`Request` mis-type on a heuristic entry is lower confidence than on a `Measured` one. `kind` only selects a diagnostic bucket (`record_call` queues every call and answers from the configured response regardless), so a misclassification moves a name between `unanswered_methods()` and `Queued`; it cannot drop a call. Spot-check high-traffic methods against the installed-ABC/SkyUI evidence in `docs/engine/ui.md`.
+- AVM1 scanner: `GameDelegate.call` operands are read right-to-left; function bodies are nested byte slices and the constant pool descends with the walk; the stack is cleared on unmodelled actions (can lose a site, never invent one); `Avm1HostCallInventory::unresolved` counts recognised-but-unnamed sites. Runtime-named calls (`this.callbackName`) are invisible to a static walk; the catalog is a union, not a proof of completeness.
+- `unknown_methods()` is live, not test-only: the frame driver warns once per `(menu, method)` (`ui_reported_host_methods`, bounded by the same cap) and the set is not cleared per frame or per menu load.
 **Output**: `/tmp/audit/ui/dim_3.md`
 
-### Dimension 4: Catalog Fidelity & Drift
-**Entry points**: `crates/ui/src/catalog.rs` — `ScaleformHostCatalog::for_profile`,
-`methods`, `host_object`, `find`; `ScaleformHostMethodKind::{Command, Request}`;
-`ScaleformKindProvenance::{Measured, HeuristicNamePrefix}`
-**Checklist**:
-- Re-derive both method counts from the source arrays (Phase 1 step 6) and diff
-  them against every number quoted in `docs/engine/ui.md` and in this repo's
-  audit reports. A mismatch is doc rot → `/audit-tech-debt` Dim 3 severity floor.
-- **Provenance marker (#3773)**: every `ScaleformHostMethod` carries
-  `provenance`; only the FO4 array's 131 `#2966`-sweep entries (added via
-  `command_heuristic`/`request_heuristic` constructors) may be
-  `HeuristicNamePrefix` — every Skyrim entry and the FO4 array's other 138
-  must be `Measured`. Guards: `fallout4_catalog_provenance_split_matches_the_2966_sweep`,
-  `skyrim_catalog_is_entirely_measured`. A `HeuristicNamePrefix` entry's
-  `kind` is a weaker claim (the name-prefix rule doesn't distinguish
-  `Command`/`Request` for every case) than a `Measured` one — treat a
-  heuristic-provenance `Command` mis-typed as `Request` (or vice versa) as
-  lower-confidence than the same mistake on a `Measured` entry, not
-  equally severe.
-- `Command` vs `Request` classification is what decides whether the menu waits
-  for a response. A method mis-typed as `Command` leaves an AS callback hanging
-  forever; mis-typed as `Request` produces a spurious `MissingResponse`. Spot-check
-  the classification of the highest-traffic methods against the SkyUI /
-  installed-ABC evidence cited in `docs/engine/ui.md`.
-- `find` case-normalization: **stale as written** (flagged 2026-09-09, never
-  corrected here) — neither `ui.md` nor `catalog.rs` claims case-insensitive
-  lookup, and `find`'s `binary_search_by(|m| m.name.cmp(name))` is a plain
-  case-sensitive `Ord` comparison with no normalization point anywhere in
-  `normalize_call`. Verify sortedness under `str::cmp` instead (the actual
-  prerequisite for `binary_search_by` to work at all) — pinned by
-  `*_catalog_is_sorted_and_unique`.
-- Methods observed at runtime but absent from the catalog surface through
-  `unknown_methods()`. Verify that path is live (not test-only) — the frame
-  driver (`byroredux/src/app_frame.rs`, post-#2731) logs
-  a one-shot warn per unknown method; confirm the de-dup set actually suppresses
-  repeats and is not cleared per frame.
+### Dim 4: Resource Navigator (archive-backed loads)
+**Paths**: `crates/ui/src/navigator.rs`, `crates/ui/src/player.rs` (load side)
+**First step**: `git log --since=D -- crates/ui/src/navigator.rs`
+**Guards**: `archive_menu_route_tests` in `byroredux/src/scene.rs` (CLI-argument parser only); `docs/smoke-tests/m48-menu-load.sh` (Vulkan + game data) is the only end-to-end gate.
+- Movies are **untrusted content**; URL→archive resolution is confined to the game archives (`archive_movie_url` rejects `..` escapes; `resolve_url` joins against the movie URL). Verify absolute paths, non-archive schemes and network/filesystem escapes are refused (escape = HIGH); one backslash/case normalisation point matching `byroredux/src/asset_provider/`.
+- The local-executor pump runs from the same place the player ticks; a load future that is never polled hangs the menu silently unless surfaced via `resource_error`. `resource_loads()` records misses as well as hits.
+- Bounds: `resource_loads` dedups by `archive_path` with a hit counter and caps at `MAX_RECORDED_RESOURCE_LOADS`; `import_asset_paths` caps at `MAX_IMPORT_ASSET_PATHS` (512). One unresolvable `ImportAssets` URL is a recorded non-fatal error on both the root scan (`PreparedMovie::root_import_errors`) and nested scans; a `Result`-collecting `.collect()` reappearing turns one bad import into a whole-menu failure.
 **Output**: `/tmp/audit/ui/dim_4.md`
 
-### Dimension 5: Resource Navigator (archive-backed loads)
-**Entry points**: `crates/ui/src/navigator.rs` — `ScaleformResourceProvider`,
-`resolve_url`, `ScaleformResourceLoad`, the local-executor pump;
-`crates/ui/src/player.rs` — `from_resource_provider`, `resource_loads`,
-`resource_error`
-**Checklist**:
-- URL → archive path resolution must be confined to the game archives. Verify a
-  menu cannot escape to the filesystem or the network: relative traversal
-  (`../`), absolute paths, and any non-archive scheme must be refused. Ruffle
-  movies are **untrusted content** — this is a real trust boundary, treat an
-  escape as HIGH.
-- Case-insensitivity + backslash→forward-slash normalization match the
-  engine-wide asset convention (`byroredux/src/asset_provider/`). Verify one
-  normalization point, not two divergent ones.
-- The local-executor pump must be driven from the same place the player ticks.
-  A load future that is created but never polled hangs the menu with no error —
-  verify pending loads are either advanced each tick or surfaced through
-  `resource_error`.
-- `resource_loads()` is the observability channel for what a menu actually
-  requested. Verify it records misses as well as hits — a missing asset that
-  leaves no trace is undebuggable.
-- Unbounded growth: `resource_loads` (`Vec<ScaleformResourceLoad>`, exposed as
-  `&[ScaleformResourceLoad]`) still accumulates for the life of the player —
-  confirm it is bounded or cleared on menu swap. Contrast with the sibling
-  `import_asset_paths` set, which is **now bounded** (`MAX_IMPORT_ASSET_PATHS`
-  = 512, `extend_import_asset_paths`, 2026-08-24): it latches
-  `import_asset_paths_capped` and logs one warn on overflow rather than
-  growing without limit. A hostile or malformed `ImportAssets` graph with more
-  than 512 distinct paths is the concrete DoS shape this closes — verify
-  `resource_loads` doesn't have the same unbounded exposure to that same
-  input.
-- **One bad `ImportAssets` URL must not cost its siblings (#3770).**
-  `import_asset_paths_from_tags` partitions into `(resolved paths, error
-  messages)` instead of `.collect()`-ing into a `Result` that short-circuits
-  the whole scan on the first unresolvable URL — the same non-fatal policy
-  `ScaleformNavigator::fetch` already applies at fetch time and nested-import
-  scans already applied one level down. `PreparedMovie::root_import_errors`
-  carries the root scan's failures into `resource_errors()` instead of
-  aborting construction. Verify both the root scan and any nested scan treat
-  a single bad URL as a recorded, non-fatal error — a regression here is a
-  `Result`-collecting `.collect()` reappearing on either scan, which turns
-  one malformed import back into a whole-menu load failure.
+### Dim 5: Render Path, Overlay Upload & Device Lifecycle
+**Paths**: `crates/ui/src/player.rs`, `byroredux/src/app_frame.rs`, `byroredux/src/hud.rs` (`upload_frame`), `crates/renderer/src/vulkan/{texture.rs,presentation.rs}`, `crates/renderer/src/texture_registry/mod.rs`, `crates/renderer/src/vulkan/context/{post_passes,build_and_upload_instances}.rs`
+**First step**: `git log --since=D -- crates/ui/src/player.rs crates/renderer/src/vulkan/presentation.rs crates/renderer/src/vulkan/texture.rs byroredux/src/hud.rs`
+**Guards** (source-shape, default lane): `presentation.rs::ui_overlay_composites_after_the_tone_map_draw`; `lib.rs` test on `UiFrame::Hidden => {}` in `app_frame.rs`. Neither can see pixel stride, image hazards or device lifetime; say so instead of claiming verification.
+- **Second GPU device**: the UI creates its own wgpu device on Vulkan beside `VulkanContext`. Quantify device + allocator + `TextureTarget` against `docs/engine/memory-budget.md` and *feedback_vram_baseline*; a per-menu device never reused is a leak class. Creation failure leaves the engine running with UI off, and a transient failure is not cached as permanent.
+- `UiManager::render()` returns `UiFrame::{Fresh, Unchanged, Hidden}`: `Unchanged` reuses the previous handle, `Hidden` stops the UI quad (a hidden overlay must not keep compositing its last frame). Pixel format and row stride from `capture_frame` match the upload (a mismatch is a sheared overlay `cargo test` cannot see). `UiManager` size, `TextureTarget` size and `register_ui_quad` extent move together on resize with no orphaned target.
+- **Overlay composites after tone-mapping**, inside the presentation pass at output resolution: the quad in the geometry pass (fog, bloom, TAA, FSR, ACES) is the regression. Both descriptor sets are rebound before the overlay draw (the tone-map draw binds an incompatible set 0); the UI pipeline is owned by `PresentationPipeline` and rebuilt only in its recreate.
+- **`MAX_INSTANCES` overflow**: `ui_instance_idx` is captured immediately after the push and becomes `None` when it lands past the cap, at capture time, not after `UiOverlayDraw` is built (else `firstInstance` reads out of range; `robust_buffer_access` is off).
+- **Triple-buffered in-place upload (MenuXml HUD)**: `MenuXmlHud` owns three fixed textures rotated per *upload*; `write_rgba_inplace` → `Texture::overwrite_rgba_pixels` allocates nothing and writes no descriptor, but requires that no in-flight frame still samples the target. That holds only while there is at most one upload per frame and `MAX_FRAMES_IN_FLIGHT` (`crates/renderer/src/vulkan/sync.rs`, 2) stays 2 or lower; the copy is its own submission with an UNDEFINED→TRANSFER_DST discard barrier. Nothing in `cargo test` sees a violation: a finding here needs validation-layer or RenderDoc evidence (*feedback_speculative_vulkan_fixes*), not a reading. The Scaleform path still uses `update_rgba` (#3429 above); `tick_hud_overlay` copies the frame (`to_vec`, ~3.5 MB) per *changed* frame.
+- `SwfPlayer` (and its wgpu device) drops before the Vulkan allocator tears down; report the ordering here, the teardown finding in `/audit-concurrency`.
 **Output**: `/tmp/audit/ui/dim_5.md`
 
-### Dimension 6: Render Path & Device Lifecycle
-**Entry points**: `crates/ui/src/player.rs` — `SwfPlayer::new` (wgpu instance /
-adapter / device creation, `Descriptors`, `TextureTarget`, `WgpuRenderBackend`),
-`tick`, `render`, `dimensions`; `byroredux/src/app_frame.rs` (the
-`update_rgba` upload); `crates/renderer/src/vulkan/context/resources.rs`
-(`register_ui_quad`); `record_presentation_pass` (`UiOverlayDraw`,
-`ui_instance_idx`) in the renderer's presentation-pass recording path
-**Checklist**:
-- **A second GPU device.** The UI creates its own wgpu device on the Vulkan
-  backend, separate from `VulkanContext`. Quantify it: one extra logical device,
-  one extra allocator, and the `TextureTarget` at menu resolution. Check it
-  against `docs/engine/memory-budget.md` and against `feedback_vram_baseline`
-  (RT floor is 6 GB; budget total under ~4 GB) — a per-menu device that is
-  created and never reused is a leak class, not a style question.
-- Device/adapter creation failure must leave the engine running with the UI off,
-  never panic. Verify the failure is not cached in a way that permanently
-  disables the UI for the session (a transient failure should be retryable).
-- `render()` returns `Option<&[u8]>` — `None` means "no new frame". Verify the
-  engine reuses the previous `ui_texture_handle` on `None` (it does today) rather
-  than uploading a stale or empty buffer.
-- Pixel format and row stride from `capture_frame` must match the
-  `update_rgba` expectation exactly. A stride mismatch is a sheared overlay, and
-  nothing in `cargo test` can see it — say so rather than claiming verification.
-- Resize: `UiManager.width/height` vs the `TextureTarget` size vs
-  `register_ui_quad`'s descriptor. Verify all three move together on a window
-  resize, and that a resize during an active menu does not orphan the old target.
-- **The overlay composites AFTER tone-mapping, in the presentation pass
-  (regression guard, #3426, `b28acb0c`).** The UI quad used to draw at the tail
-  of the *main geometry* pass, alpha-blended into colour attachment 0 — the
-  render-resolution HDR direct-lighting G-buffer — so every menu went through
-  height fog / volumetric transmittance keyed off the world depth still under
-  it, the M58 bloom add, TAA accumulation with a zero motion vector and no FSR
-  reactive or transparency mask, FSR upscaling, and only then
-  `aces(graded * exposure)` in `presentation.frag`, which maps linear 1.0 to
-  ~0.80 — white menu chrome reached the swapchain at ~80% grey. It now draws
-  inside the presentation pass, immediately after the fullscreen tone-map
-  triangle and in the same subpass, at **output** resolution straight onto the
-  swapchain. `create_ui_pipeline` is built against that render pass (one colour
-  attachment, so the old eight-entry blend table with its
-  `color_write_mask(empty)` G-buffer masking is gone) and is owned by
-  `PresentationPipeline`, which is what a swapchain recreate rebuilds — the
-  former `VulkanContext::pipeline_ui` and its geometry-pass lifecycle are
-  retired. `ui.vert`/`ui.frag` and the shared scene pipeline layout are
-  unchanged, so the overlay still reads its bindless `textureIndex` out of the
-  instance SSBO; **both descriptor sets are rebound before the draw** because
-  the tone-map draw binds a layout-incompatible set 0 — dropping that rebind is
-  the subtle regression. No texture-format change: the capture is sRGB-encoded
-  bytes uploaded as `R8G8B8A8_SRGB`, the sampler linearises, Vulkan blends in
-  linear space. Regression = the quad moving back into the geometry pass, or a
-  UI pipeline rebuilt anywhere but the presentation-pass recreate.
-- **Overflowing `MAX_INSTANCES` must skip the UI draw, not read past the SSBO
-  (#3601).** The UI quad's `GpuInstance` is pushed onto `gpu_instances` LAST,
-  and `ui_instance_idx` captures its index before the push; `upload_instances`
-  clamps an overflowing buffer to `instances[..MAX_INSTANCES]`, silently
-  dropping exactly that last-pushed UI instance. `ui_instance_idx` only
-  survives as `Some(idx)` when it lands under `MAX_INSTANCES`, else `None`,
-  reusing `record_presentation_pass`'s existing "overlay unavailable" `None`
-  arm. Verify the clamp happens at capture time (immediately after the push),
-  not after `UiOverlayDraw` is already built — a `None` produced too late
-  still hands `firstInstance` an out-of-range index for `ui.vert` to read
-  (`robust_buffer_access` is not enabled, so this is UB feeding a bindless
-  `nonuniformEXT` texture index in `ui.frag`, not a clean failure).
-- Teardown order: `SwfPlayer` (and its wgpu device) must drop before the Vulkan
-  context tears down its allocator. Cross-reference `/audit-concurrency` Dim 6 —
-  report the ordering fact here, keep the GPU-teardown finding there.
+### Dim 6: Engine Wiring & Input Routing
+**Paths**: `byroredux/src/{ui_input,app_frame,app_events,scene,scaleform_hud}.rs`, `crates/ui/src/{input,lib}.rs`, `byroredux/src/main.rs` (`route_scaleform_window_event`)
+**First step**: `git log --since=D -- byroredux/src/ui_input.rs byroredux/src/app_events.rs byroredux/src/scaleform_hud.rs`
+**Guards**: `ui_input.rs` tests (`focus_release_does_not_recapture_or_rotate_on_return`, `mouse_look_requires_both_window_focus_and_capture`).
+- Focus is a two-state contract: a focused menu stops world input; releasing focus leaves no key stuck and does not recapture the cursor or rotate the camera on return (`release_world_input` fires once; `apply_mouse_look` needs window focus **and** capture). A menu open/close mid-strafe leaves the camera still.
+- Dispatch order: egui debug overlay → focused Scaleform menu → world. `is_debug_overlay_key` is checked before the UI swallow. A menu-open frame leaking an `InputAction` edge into `combat_input_system` / `interaction_system` is a finding here.
+- winit → `UiInputEvent`: physical vs logical key, mouse buttons, wheel units (line vs pixel) and IME each translated once; `crates/ui/src/input.rs` stays winit-free; `set_mouse_in_stage` updates on every motion event including leaving the window.
+- **HUD route is not a modal menu**: `scaleform_hud::launch` keeps world input (`set_input_focus(false)`), sets the stage transparent, and yields to `--menu` when a `UiManager` already exists; the Scaleform probe runs first and a won Scaleform route suppresses the MenuXml launch (mutually exclusive per run). `hud.off` must really hide it (`UiFrame::Hidden` for Scaleform, early return for MenuXml).
+- Per-frame cost is timed into `bench_ui_ns`; tick+render happen once per frame and are skipped when no menu is loaded.
 **Output**: `/tmp/audit/ui/dim_6.md`
 
-### Dimension 7: Engine Wiring & Input Routing
-**Entry points**: `byroredux/src/ui_input.rs` — `dispatch_window_event`,
-`release_world_input`, `is_debug_overlay_key` (still called from
-`byroredux/src/main.rs`'s `route_scaleform_window_event`);
-`byroredux/src/app_frame.rs` — the UI block in the frame loop (tick →
-`drain_host_calls` → `render` → upload); `byroredux/src/app_events.rs` — the
-winit event arm and `release_world_input_for_ui`, the
-`has_input_focus` gates. **Note (2026-08-15/16)**: this dimension now shares the
-input surface with the un-owned gameplay slice — `byroredux/src/interaction.rs`
-became the canonical player-action producer (`ActionState`/`InputAction`, the
-hold/look edges) and its `interaction_system` is the first `Stage::Update`
-exclusive. UI focus must still win over world controls; a menu-open frame that
-leaks an `InputAction` edge into `combat_input_system` is a Dim 7 finding.
-`crates/ui/src/lib.rs` — `UiManager::handle_input`,
-`set_mouse_in_stage`, `has_input_focus`, `visible`, `menu_name`
-**Checklist**:
-- **Focus is a two-state contract**: when the menu has focus the world must stop
-  receiving input, and when focus is released the world must not stay latched.
-  `release_world_input` exists for exactly that. Verify a menu open/close cycle
-  leaves no key stuck down (open a menu mid-strafe → close → camera keeps moving
-  is the concrete failure).
-- The debug-overlay key must remain reachable while a menu holds focus
-  (`is_debug_overlay_key` is checked before the UI swallow). Verify the ordering.
-- winit → `UiInputEvent` translation: verify the physical/logical key split,
-  mouse-button mapping, wheel-delta units (line vs pixel), and IME events are
-  each translated once. `crates/ui/src/input.rs` is deliberately winit-free —
-  flag any winit type that leaked into the crate.
-- `set_mouse_in_stage` drives hover/cursor behavior; verify it is updated on
-  every relevant motion event, including leaving the window.
-- Per-frame cost: the UI block is timed into `bench_ui_ns` when benching. Verify
-  the tick+render happens once per frame and is skipped entirely when no menu is
-  loaded (`ui_manager` is `None`) — a hidden menu that still ticks Ruffle is pure
-  waste, and `/audit-performance` has no dimension that would catch it.
-- The host-call consumer logs at `debug` per call and warns once per unknown
-  method. Verify the warn de-dup set (`ui_reported_host_methods`) is not reset
-  per menu load in a way that re-spams on every open.
+### Dim 7: MenuXml Track & the HUD Drivers
+**Paths**: `crates/menuxml/src/{eval,layout,raster,menu,profile}.rs`, `byroredux/src/{hud,scaleform_hud}.rs`, `byroredux/src/commands/hud.rs`, `docs/smoke-tests/m48-{4,5,6,7}-*-hud.sh`
+**First step**: `git log --since=D -- crates/menuxml/src byroredux/src/hud.rs byroredux/src/scaleform_hud.rs docs/smoke-tests/`
+**Guards**: `crates/menuxml/src/tests.rs` (synthetic eval/layout/raster/graft, default lane); data-gated corpus tests and protocol pins (Phase 1 step 2); smoke gates `m48-4-oblivion-hud.sh` (health-fill run 158→53 px after a pin), `m48-5-fo3-hud.sh` (tick columns 226→68), `m48-6-skyrim-hud.sh` / `m48-7-fo4-hud.sh` (chrome on/off pixel diff; **bars are not gated**, vanilla feeds them by GFx object-path calls Ruffle cannot make). Smokes need a Vulkan device + game data; `m48-menu-load.sh` exits 77 (SKIP) on missing data but `m48-4..7` exit 1 ("FAIL: missing …"), so an absent-data run reads as a failure, not a skip, and is not covered by `scripts/check-playable-smoke-contracts.sh`.
+- **Eval**: a trait's operator chain is a *fold* (each op sees the previous working value; booleans are 2/0; `onlyif`); reads are on-demand and memoised per frame with `MAX_READ_DEPTH` (32) cutting cycles to 0, so a self-referential mod menu cannot hang. Engine overrides are keyed by lower-cased tile **name**: duplicate names (grafted prefabs, FO3 `hp_meter`/`ap_meter`) share one override, so verify grafted tiles get unique names. `ScreenTraits` `cropx`/`cropy` implement the 4:3-safe insets.
+- **Layout**: locus chain for x/y, stable depth sort (document order tiebreak), `visible`/`alpha 0` skip, `clipwindow` intersection. Negative, NaN or huge authored extents must not panic or explode work.
+- **Raster**: `blit` iterates the clip-rect range and only `blend` bounds-checks per pixel; verify the loop is clamped to the framebuffer *before* iterating (a huge authored width is otherwise a CPU stall on mod XML). Zoom contract: `zoom<0` stretches, `0`/`100` draws texels 1:1 clipped to the tile rect (stretch-as-default squeezes padded ribbon art into a constant-width bar), `>0` scales, crop applies after zoom; `tiled` repeats 1:1 with `cropx` as a wrapping scroll (compass strip); text wrap uses the font's metrics.
+- **HUD drivers (`hud.rs`)**: bar fractions come from `fraction()`, which scans the *whole* `ActorValues` storage and takes the first entity with the key: no player filter, so any actor spawned earlier feeds the bar (the m48-4 script notes the boot state is driven by the mine's NPCs). Verify or file. Unchanged-skip: change signature (heading quantised to 0.1°) plus a 33 ms `HUD_REFRESH_INTERVAL` cadence cap; the rate limiter must leave the signature unset so a throttled change is not lost. Compass heading = `atan2(f.x, -f.z)`. Per-game facts live in `HudGameProfile`/`MenuProfile` (font table, strings source, AVIF keys 0x2C9/0x2D0 FO3/FNV, Skyrim 0x3E8-0x3EA): a per-game branch outside the profile is a doctrine violation (*feedback_format_translation*).
+- **Scaleform HUD (`scaleform_hud.rs`)**: vanilla Skyrim `hudmenu` calls exactly `GetButtonFromUserEvent`/`PlaySound`/`RegisterHUDComponents`/`myLog` and registers only the `GameDelegate` `call`/`respond` pair; FO4's makes zero host calls at idle. The driver's `updateStats`/`RequestPlayerInfo` handlers (Skyrim only) and push table therefore answer SkyUI-class menus, not vanilla; they must stay catalog-consistent, and the push skips `__byro*` hooks. Response shapes are working hypotheses: unverified until a menu polls them.
 **Output**: `/tmp/audit/ui/dim_7.md`
 
 ## Phase 3: Merge
 
-1. Read all `/tmp/audit/ui/dim_*.md`.
-2. Combine into `docs/audits/AUDIT_UI_<TODAY>.md`:
-   - **Executive Summary** — findings by severity; which profile(s) were actually
-     traced end-to-end; the re-derived catalog counts vs the documented ones.
-   - **Host Contract Matrix** — profile × {detection, host object, transport,
-     catalog size, live consumer} with verified/drifted per cell.
-   - **Findings** — grouped by severity, deduplicated.
-   - **Pending-Row Readiness** — which invariants this audit pinned for the
-     handlers, Papyrus↔UI bridge and menu-stack work that are still unbuilt.
-     Do **not** list those as findings.
-3. Cross-audit dedup: GPU teardown ordering belongs to `/audit-concurrency`
-   Dim 6, Ruffle/wgpu `unsafe` to `/audit-safety`, generated-adapter and catalog
-   drift to `/audit-tech-debt`. Report the fact once, here, with a pointer.
-
-## Phase 4: Cleanup
-
-1. `rm -rf /tmp/audit/ui`
-2. Inform the user the report is ready.
-3. Suggest: `/audit-publish docs/audits/AUDIT_UI_<TODAY>.md`
-   (domain label: `ui`; add `legacy-compat` when the finding is about Bethesda menu
-   fidelity, and the matching `game:*` when it is specific to one title's menus).
+Combine `/tmp/audit/ui/dim_*.md` into `docs/audits/AUDIT_UI_<TODAY>.md` (header per `_audit-common.md` Report finalization): Executive Summary (findings by severity; which profiles were traced end to end; re-derived catalog counts vs documented), **Host Contract Matrix** (profile × {detection, host object, transport, catalog size, live consumer, HUD route} verified/drifted), Findings (deduplicated), **Pending-Row Readiness** (invariants pinned for the unbuilt handlers / Papyrus bridge / menu stack; never listed as findings). Then `rm -rf /tmp/audit/ui`; suggest `/audit-publish docs/audits/AUDIT_UI_<TODAY>.md` (labels `ui`; add `legacy-compat` for menu-fidelity findings and `game:*` when one title's menus are the cause).

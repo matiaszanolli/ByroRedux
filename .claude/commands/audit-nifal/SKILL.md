@@ -5,288 +5,181 @@ argument-hint: "--focus <dimensions> --game <fnv|fo3|skyrim|oblivion|fo4|fo76|st
 
 # NIFAL Audit — Canonical Translation Layer
 
-Deep audit of **NIFAL** (the NIF Abstraction Layer; spec: `docs/engine/nifal.md`).
-NIFAL is the engine's canonical translation tier — the cornerstone of cross-game
-compatibility. It is not a crate; it is the **discipline** that every per-game NIF
-data category is folded into one game-agnostic representation through a single
-explicit `translate()` boundary, with no `Option` "resolve-later" leaks and no
-render-time heuristics downstream.
-
-The three-tier model this audit enforces (per `docs/engine/nifal.md` §1):
+Audit **NIFAL** (spec: `docs/engine/nifal.md`): the discipline that every per-game NIF data
+category is folded into one game-agnostic representation through a single explicit
+`translate()` boundary — no `Option` "resolve-later" leaks, no render-time heuristics.
 
 ```
-  NIF bytes ──parse──▶  Imported*  ──translate()──▶  Canonical  ──consume──▶  ECS / GPU
-            (per-game,             (one site per       (the ECS               (no per-game
-             raw, messy)           category, folds     component when         branches, no
-                                   in every quirk)     one already            Option fallback)
-                                                       serves the role)
+  NIF bytes ──parse──▶ Imported* ──translate()──▶ Canonical ──consume──▶ ECS / GPU
+           (per-game, raw, messy)  (one site per category)  (the ECS component that already
+                                                             serves the role; no third type)
 ```
 
-**The canonical-type rule** (spec §1): *where an ECS component already serves the
-game-agnostic, engine-facing role, that component IS the canonical type.* Do NOT
-flag the absence of a third `Canonical*` struct as a leak — that is deliberate
-(ceremony with no new capability). The canonical tier is reached by (a) making the
-`translate()` boundary the sole producer and (b) removing residual `Option`/raw
-leaks from the component itself.
+**Canonical-type rule** (spec §1): where an ECS component already serves the game-agnostic
+role, that component IS the canonical type. Do NOT flag the absence of a third `Canonical*`
+struct.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, game data locations,
-methodology, deduplication, context rules, and base finding format.
-See `.claude/commands/_audit-severity.md` for the severity scale — it carries
-**dedicated NIFAL rows** (wrong `translate_material` output = HIGH all-game blast
-radius; translatable block silently dropped = MEDIUM, escalate to HIGH if it
-removes visible content) and the matching decision-tree branches. Apply those rows;
-do not re-derive severities here.
+Read `.claude/commands/_audit-common.md` and `.claude/commands/_audit-severity.md` (it has
+dedicated NIFAL rows: wrong `translate_material` output = HIGH; translatable block silently
+dropped = MEDIUM, HIGH if it removes visible content). Do not re-derive severities.
 
-**Scope vs `/audit-nif`**: `/audit-nif` owns the *parse* side (block field
-correctness, version handling, stream position, coverage). NIFAL owns the
-*translate* side (does each parsed category reach one canonical representation
-through one boundary, with no leak/fabrication/fallback?). When a finding is "the
-bytes are read wrong," it belongs to `/audit-nif`; when it is "the bytes are read
-fine but the data is dropped, duplicated, or resolved per-game downstream," it
-belongs here.
+**Scope vs `/audit-nif`**: NIF owns the *parse* side (bytes read wrong). NIFAL owns the
+*translate* side: bytes read fine but data dropped, duplicated, or resolved per-game
+downstream. **Not here**: mesh-water and env translation (`water_material_from_mesh`,
+`attach_mesh_water` in `material_translate.rs`, `env_translate.rs`) → `/audit-exterior`;
+`GpuMaterial` layout/shader contract → `/audit-renderer`; `Material` save shape →
+`/audit-save`; BGSM/BGEM/CDB *parse* → `/audit-parsers` (the merge boundary is Dim 8 here).
 
 ## The four tier invariants (every dimension is a lens on these)
 
-- **single-boundary** — exactly one `translate()` site per category that needs one.
-  A second construction site that fills a canonical type field-by-field is a
-  violation (caller count is the cheap detector).
-- **no-fabrication** — no invented value / guessed normalization. A new constant
-  must cite a measurement or source (`feedback_no_guessing`). The emissive no-op
-  (Dim 1) and particle colour/size-curve deferrals (Dim 5) are the canonical
-  "measured, then deliberately NOT normalized" examples.
-- **no-leak** — no `Option` "resolve-later" field or raw enum/block-type
-  discriminator on a *canonical* type reaches a consumer that has to re-resolve it.
-  (Raw-tier `Imported*` carrying `Option`s is fine — the leak is the crossing into
-  the canonical/consumer tier.)
-- **no-render-time-fallback** — no classification deferred to a per-draw heuristic.
-  The deleted `classify_pbr` / render-side glass heuristics are the cautionary tale;
-  a re-introduction is a regression, not a new design choice.
+- **single-boundary** — exactly one `translate()` site per category; a second construction
+  site filling a canonical type field-by-field is a violation (caller count is the detector).
+- **no-fabrication** — no invented value or guessed normalization; a new constant must cite a
+  measurement or source (*feedback_no_guessing*). Canonical "measured, then deliberately NOT
+  normalized": emissive scale (Dim 1), particle colour/size-curve deferrals (Dim 5).
+- **no-leak** — no `Option` "resolve-later" field or raw enum/block-type discriminator on a
+  *canonical* type reaches a consumer that re-resolves it (raw-tier `Imported*` may carry them).
+- **no-render-time-fallback** — no classification deferred to a per-draw heuristic (the deleted
+  `classify_pbr` / render-side glass heuristics; re-introduction is a regression).
 
-**Highest blast radius first.** Order findings by NIFAL risk: (1) a wrong/divergent
-canonical `Material` out of `translate_material` (HIGH, silently wrong on *every*
-game, no per-draw fallback to mask it); (2) a *translatable* parsed block silently
-dropped at an unsupported-shape/skip fallback (removes authored content); (3) a
-no-render-time-fallback violation (classification leaked into shader/render); (4) a
-single-boundary violation (a second construction site that can diverge the paths).
+Risk order: (1) wrong/divergent canonical `Material` from `translate_material` (all games, no
+fallback to mask it); (2) a translatable block silently dropped; (3) a render-time fallback;
+(4) a second construction site.
+
+**Guard confidence is limited.** The text-scan / kitchen-sink completeness guards below all
+have known holes (open as of 2026-09-19: #4404 particles, #4405 animation, #4411 material —
+comment prose or substrings count as pins). A green guard is not proof a field is asserted:
+open the test and confirm a real assertion exists for the field you are auditing.
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,6`). Default: all 9.
-- `--game <name>`: Focus on a specific variant: `fnv`, `fo3`, `skyrim`, `oblivion`,
-  `fo4`, `fo76`, `starfield`. Default: all detected (from `_audit-common.md` game
-  data locations).
+- `--focus <dimensions>`: comma-separated numbers (e.g. `1,8`). Default: all 9.
+- `--game <name>`: `fnv`, `fo3`, `skyrim`, `oblivion`, `fo4`, `fo76`, `starfield`. Default: all detected.
 
 ## Extra Per-Finding Fields
 
-- **Dimension**: Material | Geometry/Transform | Skinning/Lights | Nodes | Particles
-  | Collision | Animation | Shader-flags/Effects | Completeness
-- **Tier Violated**: which tier invariant broke — `single-boundary` | `no-fabrication`
-  | `no-leak` | `no-render-time-fallback` | `parked-not-leak` (verify a "deferred"
-  field is genuinely unconsumed, not a silent drop)
-- **Game Affected**: which variant(s) the divergence manifests on
+- **Dimension**: Material | Geometry/Transform | Skinning/Lights | Nodes | Particles | Collision | Animation | Shader-flags/Effects | Completeness
+- **Tier Violated**: `single-boundary` | `no-fabrication` | `no-leak` | `no-render-time-fallback` | `parked-not-leak` (verify a "deferred" field is genuinely unconsumed) | `harness-gap`
+- **Game Affected**: variant(s) where the divergence manifests
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS`.
-2. `mkdir -p /tmp/audit/nifal`.
-3. Fetch dedup baseline:
-   `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/issues.json`,
-   and scan `docs/audits/` for prior `AUDIT_NIFAL_*` / `AUDIT_NIF_*` reports.
-4. Read `docs/engine/nifal.md` (the spec — per-category leak inventory in §2,
-   surveyed/converged status per category) and `docs/engine/material-abstraction.md`
-   (the material-slice predecessor; its §2 "Leak A"/"Leak B" are recorded **closed**
-   in `nifal.md` §3 — do not re-report them as open).
-5. Check which game data directories exist.
+1. Parse `$ARGUMENTS`; `mkdir -p /tmp/audit/nifal`.
+2. `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/issues.json`;
+   scan `docs/audits/` for `AUDIT_NIFAL_*` / `AUDIT_NIF_*`. NIFAL has many open findings —
+   dedup carefully (`gh issue list --search "NIFAL in:title"`).
+3. Read `docs/engine/nifal.md` (§2 per-category inventory; its Skinning and Particles prose
+   is known-stale, #4410/#4409) and `docs/engine/material-abstraction.md` (Leak A/B are
+   recorded closed — do not re-report).
+4. `cargo test -p byroredux-nif -p byroredux material_translate` for the default-lane guards.
 
-## Phase 2: Launch Dimension Agents
+## Phase 2: Dimensions
 
-### Dimension 1: Material — the reference realisation (single boundary, no PBR fallback, glass-once)
-**Entry points**:
-- `byroredux/src/material_translate.rs::translate_material(source: &ImportedMaterial, mesh_name: Option<&str>, paths: ResolvedPaths, extra_material_flags: u32) -> Material` — the **single** raw-material → `Material` boundary (`ResolvedPaths { textures: MaterialTextureSet<Option<String>>, material_path: Option<String> }` also defined here). It calls `Material::resolve_pbr()` then `helpers::classify_glass_into_material` internally.
-  **Signature narrowed 2026-07-27 (`05d68926`)** — it used to take `&ImportedMesh`. It now takes `&ImportedMaterial` + an explicit `mesh_name`, so the boundary provably cannot read geometry, skinning, transforms, or scene ownership. **Any future widening back to `&ImportedMesh` is a Dimension-1 regression** — flag it even if nothing currently misuses it, because the narrow type is what makes "material translation cannot depend on geometry" checkable rather than merely intended.
-- Callers (MUST all route through this one fn — multiple callers of one boundary is correct, not a violation, per the Particles/Animation dimensions' phrasing below): `byroredux/src/scene/nif_loader.rs` (loose-NIF path), `byroredux/src/cell_loader/spawn/mesh_instance.rs` (cell path), `byroredux/src/cell_loader/placement_lod.rs` (LOD placement path).
-- `crates/core/src/ecs/components/material.rs` — the canonical `Material`; `Material::resolve_pbr()`, `classify_pbr_keyword()` (the `NaN`-sentinel backstop classifier), `EmissiveSource` enum (`None`/`Material`/`Lighting`/`Effect`).
-- `byroredux/src/helpers.rs::classify_glass_into_material` — the single glass classifier (defined once; the many call sites in that file are its unit tests).
-- `byroredux/src/render/static_meshes.rs` — the renderer consumer (reads `m.metalness` / `m.roughness` directly).
-
-**Checklist**:
-- `translate_material` is the ONLY site that fills a `Material` from an `ImportedMaterial`. Any second site building a `Material` field-by-field from import data is a `single-boundary` violation (the pre-converged state had two ~110-line literals in `spawn.rs` + `nif_loader.rs` — regression pattern).
-- `Material.metalness` / `Material.roughness` are plain `f32` (resolved, clamped `metalness ∈ [0,1]`, `roughness ∈ [0.04,1]` — verify the clamp in `resolve_pbr`). No `metalness_override: Option<f32>` / `roughness_override: Option<f32>` field on the canonical `Material`, and no per-draw `classify_pbr` fallback in the renderer (`no-leak` + `no-render-time-fallback`).
-- `resolve_pbr()` only fills `NaN` sentinels (via `classify_pbr_keyword`) then clamps; for NIF/BGSM content the override is already `Some(…)` at import so the classifier arm is a backstop. It must not overwrite an authored BGSM/BGEM override.
-- Glass is classified **once**, alpha-aware, inside `translate_material` via `classify_glass_into_material`, AFTER `resolve_pbr` so the forced glass roughness wins. Engine-synthesized kinds (`material_kind >= 100`) are never demoted; conductors (`metalness >= 0.3`), non-alpha, and decals are gated out. No glass heuristic at render time (`material-abstraction.md` §2 "Leak A" is closed — confirm it stays deleted).
-- `material_kind: u32` is intentionally kept as-is (it is the GPU shader-dispatch contract — the `material_kind == N` ladder in `triangle.frag`; 0–20 vanilla `shader_type`, 100 GLASS, 101 EFFECT_SHADER). Do NOT flag its `u32`-ness as a leak. **Future-slice invariant**: any *SurfaceClass*-style enum introduced later MUST lower to the exact `triangle.frag` ladder (drift risk vs the shader — a shader-adjacent change).
-- `effect_shader_flags` packs the union of BSEffect SLSF bits (`cell_loader::pack_effect_shader_flags`) + BGSM v>2 bits (`cell_loader::pack_imported_material_flags`) + the caller's `extra_material_flags` (REFR-overlay model-space-normals on the cell path; `0` on the loose path).
-
-**Regression pins**:
-- **Oblivion parallax is canonical state, not a render-time per-game branch (#3530, `19813460`).** `Material::parallax_height_in_alpha` records that a material's height values live in the texture's alpha rather than `.r` — the Oblivion `APPLY_HILIGHT2` route, since Oblivion ships no `_p.dds`. It is decided ONCE at the NIFAL boundary from `NiTexturingProperty.apply_mode`; the renderer only transports it as bit 31 of `parallaxMapIndex`. A `if game == oblivion` anywhere downstream is the violation, and so is inventing an Oblivion-specific height-scale constant — the `0.04 / 4.0` pair is the engine default every consumer's `unwrap_or` already used, deliberately reused rather than fabricated.
-- **Authored blend/clamp state is carried, not re-derived (#2571, `3770e33d`; #3516).** `Material.texture_clamp_mode` / `src_blend_mode` / `dst_blend_mode` (`crates/core/src/ecs/components/material.rs`) are copied verbatim from the matching `ImportedMaterial` fields — defaults `0` / `6` (SRC_ALPHA) / `7` (INV_SRC_ALPHA, the Gamebryo default). They exist so a consumer never has to go back to the raw `NiTexturingProperty`/`NiAlphaProperty` to learn how a surface blends. #3516 fixed the upstream decode reading `TexDesc`'s clamp from the wrong nibble — a decode bug that looked like correct canonical plumbing. Regression = a render-time re-derivation of clamp/blend state from raw NIF properties.
-- **Every `Material` scalar is finiteness-sanitised in ONE place (#2687, #3373, `59b85565`).** `Material::sanitize_finite` (`crates/core/src/ecs/components/material.rs`) is the single sweep, consumed by `crates/save/src/driver.rs` on restore and probed on a clone by `validate_material_finiteness` (`crates/save/src/validate.rs`) so the pre-save check stays pure. #3373's lesson is the load-bearing one: the BGEM glass-optics fields were added to the struct and to the GPU layout but **not** to the sanitise field list, so a non-finite authored value round-tripped through save/load unrepaired. **Any field added to `Material` must be added to `sanitize_finite`'s macro list in the same commit** — that omission is silent, and neither the size pin nor the offset pin catches it.
-- **material_translate dedup**: the two duplicate `Material` construction literals were collapsed into `translate_material`. A field added in one load path that doesn't go through the boundary can silently diverge the two paths — the regression this dedup prevents.
-- **`resolve_pbr`'s classifier backstop reads the real `specular_authored` signal, not a hardcoded `false` (#2573, 2026-09-03)**. `MaterialInfo::specular_authored` was computed correctly at NIF import but silently dropped at the `ImportedMaterial` boundary — `resolve_pbr`'s call to `classify_pbr_keyword` hardcoded `specular_authored: false` regardless of what the source authored. Not merely latent: #2707 already put a live path in production (Starfield material-reference stubs) where metalness/roughness overrides arrive `None`, making this backstop reachable today. Fixed by threading `specular_authored: bool` through `ImportedMaterial` → `into_imported_material` → `Material` → `translate_material`, with `resolve_pbr` now reading `self.specular_authored`. This was a save-shape change (`Material` is a registered saved column) — `FORMAT_MAJOR` bumped 20→21. Regression = `resolve_pbr` reverting to a hardcoded backstop input instead of the threaded field.
-- **Emissive scale = no-op** (spec §4): `Material.emissive_mult` is fed by three `EmissiveSource` variants (`Material` legacy / `Lighting` Skyrim+ / `Effect` FO4+). All three were **measured** across Oblivion/FNV/Skyrim/FO4 and already share a ~1.0 scale — **no normalization is applied or wanted**. A future "emissive normalization constant" is a `no-fabrication` violation (inventing a correction for a divergence the ground truth shows does not exist). The one genuine distinction (`BSEffectShaderProperty.base_color_scale` is a diffuse-tint, not emissive) is captured by the `EmissiveSource::Effect` discriminator and left for a future BSEffect render path (#166 rename note in `import/material/dedicated_shader.rs`). Open question Q2 in `material-abstraction.md` is resolved no-op — do not re-open it. Tooling: `crates/nif/examples/material_dump.rs` (the `emisM` + `emSrc` columns).
+### Dimension 1: Material — the reference realisation
+Paths: `byroredux/src/material_translate.rs`, `crates/core/src/ecs/components/material.rs`, `byroredux/src/helpers.rs`, `byroredux/src/cell_loader/{spawn/mesh_instance,placement_lod,object_lod}.rs`, `byroredux/src/scene/nif_loader.rs`
+First step: `git diff <last-report>..HEAD -- crates/core/src/ecs/components/material.rs byroredux/src/material_translate.rs | grep '^[+-].*pub '`
+**The boundary**: `translate_material(source: &ImportedMaterial, mesh_name: Option<&str>, paths: ResolvedPaths, extra_material_flags: u32) -> Material` — the only raw-material → `Material` producer (calls `Material::resolve_pbr()` then `helpers::classify_glass_into_material`). Its narrow input type is what makes "material translation cannot depend on geometry" checkable: **widening it back to `&ImportedMesh` is a regression** even if nothing misuses it yet. Callers must all route through it: loose path `nif_loader.rs`, cell path `spawn/mesh_instance.rs`, LOD paths `placement_lod.rs` + `object_lod.rs`; `translate_texture_only_material` serves draws with no NIF material (terrain, water, `.btr`) — each such spawner still has to get a `Material`.
+**Guards** (`byroredux` crate tests): `every_exterior_spawner_inserts_a_boundary_material` (scans `SPAWNER_ROOTS` for `, MeshHandle(` inserts; file granularity only), `both_spawn_sites_derive_markers_through_this_boundary`, `translate_material_copies_every_canonical_field` + `every_source_derived_material_field_is_pinned_by_a_test` (kitchen sink; known hole #4411), `nif_importer_material_kind_literals_match_renderer_constants` — all in `material_translate.rs`; `workspace_hygiene_tests::no_source_file_frames_the_deleted_classify_pbr_as_live` (docs only — nothing forbids a render-time classifier in code).
+**Checklist** (what the guards cannot see):
+- Only `translate_material` builds a `Material` from import data (a second field-by-field literal is `single-boundary`). Phase-2 path resolution for texture-only spawners is documented incompletely (#4264/#4246 open — known, dated 2026-09-19).
+- `Material.metalness` / `roughness` are plain `f32`, clamped `[0,1]` / `[0.04,1]` in `resolve_pbr`; no `Option` override field on the canonical type; no per-draw `classify_pbr` in the renderer. `resolve_pbr` fills only `NaN` sentinels (backstop for non-pre-classified sources, e.g. Starfield material-reference stubs) and reads the threaded `specular_authored`, never a hardcoded `false`; it must not overwrite an authored BGSM/BGEM override.
+- Glass is classified **once**, alpha-aware, inside `translate_material` after `resolve_pbr` (forced glass roughness wins); engine-synthesized kinds (`material_kind >= 100`: 100 glass, 101 effect, 102 no-lighting, 103 fire-refraction) are never demoted; conductors, non-alpha and decals are gated out. `material_kind: u32` is the GPU shader-dispatch contract — its `u32`-ness is not a leak. Known-open: the shader-type discriminator never reaches the canonical `Material` (#4256), and glass split by `shader_type` (#4392).
+- Carried, not re-derived: `texture_clamp_mode` / `src_blend_mode` / `dst_blend_mode` copy the import fields (defaults 0 / 6 / 7); Oblivion `parallax_height_in_alpha` is decided once from `NiTexturingProperty.apply_mode` (a downstream `if game == oblivion`, or an invented Oblivion height scale, is the violation); the detail-combine neutral is **declared by the producer** (`Material.detail_neutral`: 128/255 classic, 65/255 Skyrim FaceTint via `slot_role::detail_neutral_for`; detail view is raw UNORM, the shader divides in encoded space with no per-game branch — #4422). A shader-side per-game constant for any of these is `no-render-time-fallback`.
+- **Every `f32` field added to `Material` must be added to `Material::sanitize_finite`'s macro list in the same commit** (silently missed once — the BGEM glass-optics fields, #3373; `detail_neutral` did it right). Neither the size pin nor the offset pin catches an omission; `Material` is a saved column (shape change → `/audit-save`).
+- **Emissive scale = no-op** (spec §4): the three `EmissiveSource` variants were measured across four games and share ~1.0 scale; an "emissive normalization constant" is `no-fabrication`. Open question Q2 in `material-abstraction.md` is resolved — do not re-open. Tool: `crates/nif/examples/material_dump.rs`.
 **Output**: `/tmp/audit/nifal/dim_1.md`
 
-### Dimension 2: Geometry / Transform — the cleanest category (the template the others match)
-**Entry points**:
-- `crates/nif/src/import/coord.rs` — Z-up (Gamebryo) → Y-up (renderer): `zup_point_to_yup`, `zup_matrix_to_yup_quat` (thin wrappers over `byroredux_core::math::coord`).
-- `crates/nif/src/import/mesh/tangent.rs` — `synthesize_tangents` / `synthesize_tangents_yup` (Mikkelsen synthesis fallback).
-- `crates/nif/src/import/mesh/` per-game extractors — `ni_tri_shape.rs`, `bs_tri_shape.rs`, `bs_geometry.rs`; each feeds `ImportedMesh.local_bound_radius` (field on `crates/nif/src/import/types.rs`, derived via `mesh::extract_local_bound`).
-- `crates/nif/src/rotation.rs` — degenerate-rotation SVD repair: `is_degenerate_rotation`, `repair_rotation_svd_or_identity`, `sanitize_rotation` (done ONCE at parse time — see #277; NOTE the repair lives in `rotation.rs`, not `transform.rs`).
-- `crates/nif/src/import/transform.rs::compose_transforms` — parent×child composition (assumes rotations already sanitized).
-- Consumer: `crates/renderer/src/mesh.rs::MeshRegistry::upload` (format-agnostic).
-
+### Dimension 2: Geometry / Transform — the template the others match
+Paths: `crates/nif/src/import/{coord,transform,mod}.rs`, `crates/nif/src/rotation.rs`, `crates/nif/src/import/mesh/{ni_tri_shape,bs_tri_shape,bs_geometry,tangent}.rs`
+First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/import/mesh crates/nif/src/rotation.rs`
+**Guards**: `tangent_convention_tests.rs`, `crates/nif/src/import/mesh/*_tests.rs` per-game extractors.
 **Checklist**:
-- Every per-game vertex decode (classic `NiTriShape`, Skyrim packed-half `BSTriShape`, Starfield `BSGeometry` UDEC3) converges to a single `Vec<[f32;3]>` positions + `Vec<u32>` indices in renderer space. No `Option`-gated "decode-later" geometry reaches the consumer.
-- Z-up→Y-up is applied consistently at the import boundary, not duplicated per-consumer; the renderer never re-handles coordinate frames.
-- Tangents either come from authored extra-data OR Mikkelsen synthesis — one resolved tangent array reaches the vertex buffer (no per-game tangent branch in the shader).
-- SVD rotation repair fires once at parse; `compose_transforms` / `zup_matrix_to_yup_quat` assume valid rotations (don't re-check per composition). A consumer re-validating rotations is a leak of raw-tier messiness.
-- `local_bound_radius` is derived in renderer (Y-up) space at extraction. No render-time bound recomputation.
+- Every per-game vertex decode (classic, packed-half `BSTriShape`, Starfield `BSGeometry` UDEC3) converges to renderer-space positions + `u32` indices; no `Option`-gated decode-later geometry reaches the consumer (`MeshRegistry::upload` in `crates/renderer/src/mesh.rs` is format-agnostic).
+- Z-up→Y-up once at the import boundary (`zup_point_to_yup`, `zup_matrix_to_yup_quat`), never per consumer. One resolved tangent array (authored or Mikkelsen `synthesize_tangents`) reaches the vertex buffer.
+- Degenerate-rotation SVD repair (`is_degenerate_rotation`, `repair_rotation_svd_or_identity`, `sanitize_rotation` in `rotation.rs`) fires once at parse; a consumer re-validating rotations is a raw-tier leak. `local_bound_radius` is derived at extraction (`extract_local_bound`), Y-up; no render-time recomputation.
 **Output**: `/tmp/audit/nifal/dim_2.md`
 
 ### Dimension 3: Skinning & Lights
-**Entry points**:
-- Skinning: `crates/nif/src/import/mesh/skin.rs` — `ImportedSkin` (struct on `crates/nif/src/import/types.rs`, with `global_skin_transform`), the #613 partition-local→global bone-index remap (done at extraction).
-- Lights: `crates/nif/src/import/types.rs::LightKind` (`Ambient`/`Directional`/`Point`/`Spot`) + `ImportedLight.radius`; populated by `walk_node_lights` in `crates/nif/src/import/walk/lights.rs` (split out of `walk/mod.rs` by `#3856`, 2026-09-09 — `walk/mod.rs` retains only the two scene-graph walkers + shared helpers; `walk_node_hierarchical`/`walk_node_flat` never call a satellite walker directly, pinned by `the_scene_graph_walkers_never_call_a_satellite_walker`).
-
+Paths: `crates/nif/src/import/mesh/{skin,sse_recon}.rs`, `crates/nif/src/import/walk/lights.rs`, `crates/nif/src/import/types.rs`
+First step: `grep -rn 'skin_attach_bone_names\|widen_packed_bone_indices' crates/nif/src`
+**Guards**: `walk::lights::light_dispatch_coverage_tests` (all four `NiLight` arms present; anti-vacuity assert); `walk::tests::the_scene_graph_walkers_never_call_a_satellite_walker`; `sse_skin_index_space_tests.rs` (`#[ignore]`, Skyrim data).
 **Checklist**:
-- **Skinning** (`no-leak` / converged): `ImportedSkin` emits **global** bone indices — partition-local remap done at extraction (#613 / SK-D1-01: pre-#613 silently aliased every vertex past partition 0). The defensive u16-range warning in `skin.rs` (the `bone_refs_slice.len() > u16::MAX` guard) must stay. `global_skin_transform` carried through. Palette skinning is game-agnostic downstream — no consumer should re-derive partition layout.
-- **Starfield bone-name resolution reads BOTH authored channels, `SkinAttach` first (regression guard, `#3930`, HIGH, 2026-09-10):** a Starfield `BsSkinInstance`'s `bone_refs` are either real node refs, or all NULL with the names carried instead in a `SkinAttach` extra-data block on the same `BSGeometry` (inline length-prefixed `NiString`s, never reaching the header string table — the reason an earlier pass, `#3549`, concluded the identity "is not in the file at all" and fell back to geometrically reconstructing ~21% of names). `skin_attach_bone_names` (`crates/nif/src/import/mesh/skin.rs`) is now the primary source per bone entry — a non-empty `SkinAttach` name wins, a blank entry falls through to the node ref, and the `#3549` geometric solver stays the last resort before a synthesized `Bone{i}` placeholder. A count mismatch between the two channels declines the whole list rather than zipping positionally (mirrors the solver's own decline discipline). Regression = reverting to `bone_refs`-only resolution, which is exactly what produced fabricated `Bone{i}`/geometrically-guessed names on content that authored real ones (measured zero mismatches across 18,990 shapes).
-- **Lights** (`no-leak` / converged): `ImportedLight` resolves to the `LightKind` enum with a derived effective `radius` (Bethesda units, from attenuation). The renderer must NEVER inspect the source NIF block type (NiAmbientLight / NiDirectionalLight / NiPointLight / NiSpotLight) — that is the raw-tier discriminator collapsed at translate. A downstream `match` on source block type is a leak. **Completeness guard (`#2532`, 2026-09-08):** `light_dispatch_coverage_tests` (`crates/nif/src/import/walk/lights.rs`) mirrors the collision `dispatch_coverage_tests` idiom — it fails if any of the four `NiLight` subtype dispatch arms goes missing, with an anti-vacuity assertion (the light arms are module-qualified, so a naive extractor over-matches empty). Extend it rather than re-deriving light-arm coverage by hand.
+- `ImportedSkin` emits **global** bone indices. Skyrim SE packed indices already address the skin bone list and are only widened (`widen_packed_bone_indices`); a partition-palette remap on that channel is the regression (see `/audit-nif` Dim 4). Palette skinning is game-agnostic downstream — no consumer re-derives partition layout.
+- Starfield bone names read **both** authored channels, `SkinAttach` first (`skin_attach_bone_names`), then node refs, then the geometric solver, then a `Bone{i}` placeholder; a count mismatch between channels declines the list rather than zipping (#3930). Reverting to `bone_refs`-only fabricates names.
+- Lights: `ImportedLight` resolves to `LightKind` + effective `radius`; the renderer never inspects the source block type. `NiSpotLight`/`NiDirectionalLight` direction is world column 0 (Gamebryo model direction (1,0,0), #4395), with the directional kind negated once at the boundary ("toward the light"). `NiAmbientLight` scoping is parked by census (0 live vanilla population; `crates/nif/examples/ambient_light_census.rs`; the spawn gate's colour-sum predicate drops black ones).
 **Output**: `/tmp/audit/nifal/dim_3.md`
 
 ### Dimension 4: Nodes — raw-tier-parked passthroughs (verify parked, not silently dropped)
-**Entry points**:
-- `crates/nif/src/import/types.rs` — parked `ImportedNode` fields: `bs_value_node: Option<BsValueNodeData>`, `bs_ordered_node: Option<BsOrderedNodeData>`, `tree_bones: Option<TreeBones>`, `range_kind: Option<BsRangeKind>`, `lod_group: Option<LodGroupData>`; parked `ImportedMesh` fields: `bs_lod_cutoffs: Option<[u32;3]>`, `bs_sub_index: Option<BsSubIndexTriShapeData>`.
-- Live (canonical) node data consumers: spawn sites in `byroredux/src/scene/nif_loader.rs` + `byroredux/src/cell_loader/spawn.rs` (`name`, `flags`→`SceneFlags`, `collision`→`CollisionShape`/`RigidBodyData`, `billboard_mode`→`Billboard`).
-
-**Checklist**:
-- The live node data (name, flags, collision, billboard_mode) IS consumed at the spawn sites — confirm no canonical node field is dropped.
-- The `ImportedNode → ECS` step is deliberately NOT a single *translate_node* boundary (no such fn exists, and none should): the two load paths handle nodes structurally differently (loose-NIF spawns the full NiNode hierarchy as entities; cell loader uses a flattened placement-root). Do NOT flag the absence of one boundary as a `single-boundary` violation for nodes — it is documented (spec §2 Nodes).
-- The fields below are **raw-tier-parked with deferred translation** — verify (per-game) they have **zero canonical ECS consumers** (`parked-not-leak`). They sit on the raw `ImportedMesh`/`ImportedNode`, which the tier model permits to carry per-game data, and reach no canonical component. If you find ANY of them feeding a canonical ECS component without a translate step, THAT is a leak finding. (Grep `\.field` / `field:` outside `types.rs`, the parser, and `_tests` — the expected hit count is zero.)
-
-  | Field | Source block | Authored data | Blocked on |
-  |---|---|---|---|
-  | `bs_value_node` | `BSValueNode` | LOD-distance / billboard-mode hint (FO3/FNV) | M35 LOD selector |
-  | `bs_ordered_node` | `BSOrderedNode` | alpha-sort bound + draw-order hint | `RenderOrderHint` + `build_render_data` sort key |
-  | `tree_bones` | `BSTreeNode` | SpeedTree branch/trunk bone names | SpeedTree wind/bend sim |
-  | `range_kind` | `BSRangeNode`/`BSDamageStage`/`BSBlastNode`/`BSDebrisNode` | destructible/blast/debris discriminator | destructible-switching / blast / debris systems |
-  | `lod_group` | `NiLODNode` → `NiRangeLODData` | center + per-level near/far (Y-up); foundation parsed, import walks child 0 only; **content-absent** in shipped archives | per-frame distance-switch system |
-  | `bs_lod_cutoffs` | `BSLODTriShape` | mesh-level LOD0/1/2 triangle-count cutoffs (Skyrim ~43 meshes — the content-bearing in-cell LOD) | in-cell LOD draw-count consumer |
-  | `bs_sub_index` | `BSSubIndexTriShape` | dismemberment / locational-damage segment ids | dismemberment system |
-
-  When a consumer feature lands, its slice must translate the parked field (data already captured — no parser change). Until then, this table is the bounded-gap record. The deeper passthrough inventory (NiTextureEffect, NiSwitchNode identity, BSFurnitureMarker/BSInvMarker, BSBound cell-path) lives in `nifal.md` §2 "Passthroughs" — cross-check against it; do not re-report a documented passthrough as a leak.
+Paths: `crates/nif/src/import/types.rs`, spawn sites `byroredux/src/scene/nif_loader.rs`, `byroredux/src/cell_loader/spawn.rs`
+First step: `for f in bs_value_node bs_ordered_node tree_bones range_kind lod_group bs_lod_cutoffs bs_sub_index; do grep -rn --include='*.rs' "\.$f\b" byroredux/src crates/renderer/src crates/core/src | grep -v test; done` — **expected empty** (zero canonical consumers).
+- Live node data (name, flags → `SceneFlags`, collision, `billboard_mode` → `Billboard`) IS consumed at the spawn sites. There is deliberately no single *translate_node* (loose-NIF spawns the full hierarchy; the cell loader a flattened placement root) — do not flag its absence.
+- Parked with deferred translation (blocker in parens): `bs_value_node` (M35 LOD selector), `bs_ordered_node` (render-order hint), `tree_bones` (SpeedTree wind), `range_kind` (destructible/blast/debris systems), `lod_group` (per-frame distance switch; content-absent), `bs_lod_cutoffs` (in-cell LOD draw count), `bs_sub_index` (dismemberment). Any of them feeding a canonical component without a translate step is a leak. The deeper passthrough inventory (NiTextureEffect, NiSwitchNode identity, BSFurnitureMarker, BSBound) is `nifal.md` §2 "Passthroughs" — cross-check before reporting.
 **Output**: `/tmp/audit/nifal/dim_4.md`
 
-### Dimension 5: Particles — one shared overlay boundary folds every authored emitter override
-**Entry points**:
-- Parser (typed blocks): `crates/nif/src/blocks/particle.rs` — `NiPSysEmitter { params: EmitterBaseParams }` (box/sphere/cylinder/array/mesh variants via `read_emitter_base`/`read_volume_emitter_base`), `NiPSysEmitterCtlr { interpolator_ref }`, `NiPSysEmitterCtlrData` (legacy birth-rate), `NiPSysGrowFadeModifier { base_scale }`.
-- Import: `crates/nif/src/import/walk/emitter.rs::extract_emitter_params` (moved out of `walk/mod.rs` by `#3856`, 2026-09-09 — the particle cluster is now its own ~34%-of-the-old-file module) → `ImportedEmitterParams` (surfaced on `ImportedParticleEmitter(+Flat)`); `extract_emitter_rate` (controller → `NiFloatInterpolator` constant / `NiFloatData` first key; legacy fallback `NiPSysEmitterCtlrData`).
-- **The boundary**: `byroredux/src/systems/particle.rs::apply_emitter_overlays` — the **single overlay site** (#1513) that folds colour curve + base params + birth rate + force fields onto a name-heuristic preset in place. Called from BOTH `byroredux/src/scene/nif_loader.rs` and `byroredux/src/cell_loader/spawn.rs` (find them with `grep -rn 'apply_emitter_overlays(' byroredux/src` — line hints drift) via `crate::systems::apply_emitter_overlays` (re-exported by `pub(crate) use particle::*` in `systems.rs`). `apply_emitter_params` is the sub-helper it delegates to for the kinematic/lifetime/size subset — not itself the boundary.
-
+### Dimension 5: Particles — one overlay boundary folds every authored emitter override
+Paths: `byroredux/src/systems/particle.rs`, `crates/nif/src/import/walk/emitter.rs`, `crates/nif/src/blocks/particle.rs`
+First step: `grep -rn 'apply_emitter_overlays(' byroredux/src | grep -v 'systems/particle.rs'` (expect the two spawn sites: `cell_loader/spawn.rs`, `scene/nif_loader.rs`)
+**The boundary**: `apply_emitter_overlays` folds colour curve, base params (`apply_emitter_params`), birth rate, force fields, texture/blend, max particles, effect shader and greyscale LUT onto a name-heuristic preset; both load paths route through it (#1513).
+**Guards**: `every_overlay_parameter_reaches_the_preset` (value test, each overlay set distinct from the preset) + `every_declared_overlay_parameter_is_read_by_the_body` (source scan) — both have known holes (#4404).
 **Checklist** (`no-fabrication` / `single-boundary`):
-- `apply_emitter_overlays` is the single site overlaying authored data onto the preset. Both load paths route through it — a second inline overlay (colour, base params, rate, or force fields written field-by-field at a spawn site) is a `single-boundary` violation. This is the #1513 dedup: before it, the four overlays were copy-pasted inline at both sites.
-- **Completeness guard (`#4167`, 2026-09-12):** `every_overlay_parameter_reaches_the_preset` (`systems/particle.rs`) pins all eleven overlays landing on the preset, each set to a value distinct from `torch_flame()`'s so a dropped overlay fails as a wrong value rather than a coincidental match. Its structural sibling `every_declared_overlay_parameter_is_read_by_the_body` scans the fn's own source and requires every declared parameter to appear in the body — an unread *function parameter* draws no `unused_variables` warning in Rust, so an overlay added to the signature and never wired in is invisible to both the compiler and the value test. Extend both rather than re-deriving overlay coverage by hand.
-- Authored **kinematic + lifetime** fields (speed, speed_variation, declination, declination_variation, life, life_variation) override the name-heuristic preset guesses (via `apply_emitter_params`).
-- `initial_color` is **intentionally NOT applied** — colour stays owned by the `color_curve` override (white nif.xml default would wash out tuned presets). Flag a future change that starts applying it as a `no-fabrication` regression (in reverse).
-- Spawn **rate** is authored: `extract_emitter_rate` follows `NiPSysEmitterCtlr.interpolator_ref`; the overlay sets `preset.rate` when present (FLT_MAX sentinel rejected — #1363/#1364). Legacy `NiParticleSystemController` content has no controller → keeps preset rate. **Ramp-up birth-rate curves are now recovered, not dropped whole (#3754, 2026-08-30)**: `float_interpolator_rate` used to read only `keys.first()`, and `sane()`'s by-design rejection of a `0.0` first key (#1771) combined with the `-FLT_MAX` "use the keyed data" sentinel meant a curve already in hand fell through entirely to the name-heuristic preset. Fixed with the curve's **time-weighted mean** (not the curve's peak — measured off real content that authored spikes, not plateaus, where a peak would have overshot the file by 16–30×) as a second pass over the whole tier chain (not inlined, to avoid re-ranking an already-resolved emitter — re-ranking itself is #1402's separate business). Regression = reverting to `keys.first()`, or inlining the curve tier into the main chain.
-- Particle **size**: `apply_emitter_params` sets constant `start_size = end_size = initial_radius × base_scale` (`base_scale None → 1.0`). `base_scale` is essential (FNV oasis smoke `radius 50 × 0.15 = 7.5`; raw radius alone would be ~7× oversized). The grow→steady→fade bell shape canNOT map to the linear `start_size→end_size` — only the authored *magnitude* is translated (size-over-life curve is documented future work, not a leak).
-- **Force fields** are Z-up→Y-up converted at overlay time (`convert_force_fields_zup_to_yup`, #984), not per-particle per-frame.
-
-**Regression pins**:
-- **Typed particle blocks**: the box/sphere/cylinder/array/mesh parsers read the base via `read_emitter_base` instead of skipping it (byte advancement unchanged, `Radius Variation` interleaved before `Life Span` per nif.xml). A parser reverting to skipping the base, or a per-game hardcoded layout without the BSVER gate, is the regression.
-- Tooling: `crates/nif/examples/emitter_dump.rs` (`rate / radius / bscale / speed / spdVar / decl / declVar / life / lifeVar / initColor`).
+- A second inline overlay at a spawn site is a `single-boundary` violation. Authored kinematics + lifetime + size override the preset; `initial_color` is intentionally NOT applied (the colour curve owns colour — starting to apply it is a reverse `no-fabrication` regression). Size = `initial_radius × base_scale` (`base_scale` essential: FNV oasis smoke 50 × 0.15); the grow→steady→fade bell cannot map to linear start/end — only magnitude translates.
+- Birth rate is authored (`extract_emitter_rate`; FLT_MAX sentinel rejected; ramp curves recovered as the **time-weighted mean**, not `keys.first()` or the peak, #3754; sibling-controller resolution by `target_ref`, #4467 — see `/audit-nif` Dim 4). Legacy `NiParticleSystemController` keeps the preset rate.
+- Force fields are Z-up→Y-up converted once at overlay time (`convert_force_fields_zup_to_yup`). Known-open: emitter orientation dropped so the spawn cone is world-axis aligned (#4398). Tool: `crates/nif/examples/emitter_dump.rs`.
 **Output**: `/tmp/audit/nifal/dim_5.md`
 
-### Dimension 6: Collision — every parsed bhk*Shape resolves to a CollisionShape (no silent drop)
-**Entry points**:
-- `crates/nif/src/import/collision/shape.rs` — `resolve_shape` / `resolve_shape_inner` (recursive bhk-shape → `CollisionShape`; split out of the sibling `crates/nif/src/import/collision/mod.rs` by #1876, which keeps `extract_collision` / `examine_collision_kind` / the documented-limitation table); `CollisionShape` / `RigidBodyData` / `MotionType` are `byroredux_core::ecs::components::collision` types (the canonical tier). Havok→engine transform + per-game `havok_scale` (`scene.havok_scale`, ×7.0 TES4/FO3/FNV, ×69.99 Skyrim+/FO4) applied uniformly. Recursion depth is bounded (#1385) and non-finite floats guarded (#1409).
-
+### Dimension 6: Collision — every parsed bhk*Shape resolves (no silent drop)
+Paths: `crates/nif/src/import/collision/{mod,shape,ragdoll}.rs`
+First step: `cargo test -p byroredux-nif dispatch_coverage_tests`
+**Guard**: `import::collision::dispatch_coverage_tests::every_dispatched_bhk_shape_has_resolve_arm` (every `Bhk*Shape` with a dispatch arm has a `downcast_ref` arm in `resolve_shape_inner`; source scan over whole files, known-weak per #4411). Count shape arms fresh; do not quote a number.
 **Checklist** (`no-leak` — "parsed for byte-correctness then dropped at the unsupported-shape fallback" is the prime leak class):
-- Every parsed `bhk*Shape` variant is handled (resolved to a `CollisionShape`, delegated, folded into a `Compound`, or explicitly parked with a documented reason) in `resolve_shape_inner`. **As of #1334 there are 16 shape arms** (count `downcast_ref::<Bhk*Shape>` arms in `import/collision/shape.rs`; post-#1876 that file holds shapes only — the `BhkCollisionObject`/`BhkNPCollisionObject`/`BhkPCollisionObject` object downcasts live in `mod.rs`): `BhkSphereShape`, `BhkPlaneShape`, `BhkMultiSphereShape`, `BhkBoxShape`, `BhkCapsuleShape`, `BhkCylinderShape`, `BhkConvexVerticesShape`, `BhkMoppBvTreeShape`, `BhkConvexSweepShape`, `BhkListShape`, `BhkConvexListShape`, `BhkTransformShape`, `BhkNiTriStripsShape`, `BhkMeshShape`, `BhkPackedNiTriStripsShape`, `BhkCompressedMeshShape`. `BhkPlaneShape` (`#1334`) is the one deliberate exception — it returns `None` (no half-space `CollisionShape` variant yet; the trimesh fallback renders the correct ground surface anyway), documented at its arm, not a leak. A parsed `*Shape` block type with NO resolve arm at all (falls through to the unsupported-shape fallback) silently vanishes the authored collision — that is a leak finding. (The `dispatch_coverage_tests` module in `import/collision/mod.rs` already automates this diff — it scans `blocks/mod.rs` for dispatched `bhk…Shape` structs and `shape.rs` for resolve arms. Extend it rather than re-deriving the cross-check by hand.)
-- Havok→engine transform + `havok_scale` are applied uniformly inside `collision.rs` (Z-up→Y-up `(x, z, -y)`, quaternion swap). No consumer re-applies the scale.
-- **`hkMotionType` byte collapses to the canonical `MotionType` at translate** (`#1652`, `extract_from_classic`): the raw Havok byte resolves to `Dynamic` / `Keyframed` / `Static` / `CharacterKinematic` per the canonical `hkMotionType` enum — the per-game raw byte is the raw-tier discriminator and must NOT leak past this decode. A downstream consumer inspecting the raw motion byte (instead of `RigidBodyData.motion_type`) is a `no-leak` violation; the old `4 => Keyframed / _ => Static` collapse is a `no-fabrication` regression (invents the wrong canonical value).
-- **`CollisionAuthoringSummary` — the scene-level census that disambiguates an empty shape array** (added 2026-08-07): `summarize_collision_authoring` (`crates/nif/src/import/collision/mod.rs`) scans **every** parsed collision-object block, not just the ones `resolve_shape_inner` successfully resolves, and tallies `classic` / `new_physics` / `phantom` counts, plus `plane_shapes` (#4163 — a shape-type count on a different axis from the three object-wrapper counts). This exists because `resolve_shape`'s output is ambiguous on its own — zero decoded `CollisionShape`s on a placement means either "nothing was authored" or "FO4+/FO76/Starfield packed Havok (`BhkNPCollisionObject` → `BhkSystemBinary`) was authored but the blob still doesn't resolve to a shape" (the outer container decodes since `#3809`'s `parse_havok_packfile` — see the documented-limitation bullet below — but `hknpCompressedMeshShapeData`'s field layout doesn't, so no `CollisionShape` comes out the other end), and only the census tells them apart (`needs_packed_havok_fallback()` = `new_physics > 0`). It rides `CachedNifImport.collision_authoring` (`byroredux/src/cell_loader/nif_import_registry.rs`) into the cell loader. Two invariants to check: (1) the summary crosses the NIFAL boundary carrying only its four `u32` counts (`classic`, `new_physics`, `phantom`, `plane_shapes`) — no `bsver`, raw block-type string, or per-game enum; a game-specific field reaching `CachedNifImport` or the spawn call site is a `no-leak` violation. (2) the consumer it feeds (`cell_loader/spawn.rs::spawn_packed_havok_proxy` / `synthesize_packed_havok_proxy`) stays renderer-free — the synthesized ghost entity gets `CollisionShape` + `RigidBodyData` + `Transform`/`GlobalTransform` + `Parent(placement_root)` and explicitly **no** `MeshHandle`; a future change that attaches one would put a blob-derived guess into the BLAS/TLAS as if it were authored geometry.
-
-**Regression pins** (do NOT re-report these as open leaks — verify they stay resolved):
-- **`BhkMultiSphereShape`** → `Compound` of `Ball` children at each sphere's scaled center (single centred sphere unwraps to a plain `Ball`). Pre-fix fell through the fallback (#9c6096aa).
-- **`BhkConvexListShape`** → `Compound` of resolved convex sub-shapes (mirrors `BhkListShape`; FO3/FNV/Skyrim destructibles + debris). Pre-fix dropped silently (#9c6096aa).
-- **`BhkConvexSweepShape`** (delegates to its inner `shape_ref`) and **`BhkMeshShape`** (resolves tri-strip data with per-axis scale) → added #1360/#1361. A revert is a `no-leak` regression.
-- **Documented limitations (NOT leaks)** — confirm they stay documented in the table at the top of `import/collision/mod.rs`, and do NOT report them as leaks:
-  - `BhkNPCollisionObject` (FO4/FO76/Starfield Havok-serialised `BhkSystemBinary` blob) — still does not resolve to a `CollisionShape`, but is no longer an undone container problem: `#3809` (2026-09-07) decoded the classic Havok packfile's fixup tables (the previously-unread part of `__data__`), so `blocks::collision::havok_packfile::parse_havok_packfile` / `HavokPackfile::objects()` now returns a typed object graph — every FO4 `_physics.nif` blob resolves the same five named top-level classes (`hknpPhysicsSystemData`, `hknpCompressedMeshShape`, `hkRefCountedProperties`, `hknpBSMaterialProperties`, `hknpCompressedMeshShapeData`) in order. What remains genuinely undone is `hknpCompressedMeshShapeData`'s own bit-packed field layout (no `__types__` reflection ships, so it needs corpus inference) — see `docs/engine/physal.md`'s coverage table, which now reads "container + object table decoded; blocked on `hknpCompressedMeshShapeData`'s field layout." As of 2026-08-07 the fallback is authoring-aware rather than blind: Architecture meshes still get `cell_loader/spawn.rs::synthesize_static_trimesh` (precise per-submesh static trimesh), while Clutter/Actor placements flagged by `CollisionAuthoringSummary.needs_packed_havok_fallback()` get a single conservative placement-following `Cuboid` proxy instead (`synthesize_packed_havok_proxy` / `spawn_packed_havok_proxy`) — an approximation of presence and rough extent, not a claim the payload was decoded.
-  - `BhkPCollisionObject` phantoms (Skyrim+ trigger volumes) — need a `TriggerVolume` ECS path, not a rigid body. The `is::<BhkNPCollisionObject>` / `is::<BhkPCollisionObject>` discriminators let the trimesh fallback distinguish the two — verify they're intact.
+- Every parsed `bhk*Shape` is resolved, delegated, folded into a `Compound`, or explicitly parked with a documented reason. `BhkPlaneShape → None` is the documented exception — its stated justification (trimesh fallback renders the ground) is disputed, #4407. Havok→engine transform + per-game `havok_scale` are applied uniformly in `collision/`; recursion depth is bounded and non-finite floats guarded.
+- The raw `hkMotionType` byte collapses to canonical `MotionType` at translate (`havok_motion_type`); a consumer reading the raw byte is `no-leak`.
+- **`CollisionAuthoringSummary`** (`summarize_collision_authoring`) crosses the boundary carrying only four `u32` counts (`classic`, `new_physics`, `phantom`, `plane_shapes`) — no `bsver`/block-type string/per-game enum (a game-specific field reaching `CachedNifImport` is `no-leak`). Its consumer (`cell_loader/spawn.rs::spawn_packed_havok_proxy`) stays renderer-free: `CollisionShape` + `RigidBodyData` + transforms, and **no** `MeshHandle` (a blob-derived guess must not enter the BLAS/TLAS as authored geometry). Stale-comment lead: #4408.
+- Documented limitations (NOT leaks; confirm they stay in the table at the top of `import/collision/mod.rs`): `BhkNPCollisionObject` blob does not resolve to a shape (container decoded, `hknpCompressedMeshShapeData` layout not — `docs/engine/physal.md`); `BhkPCollisionObject` phantoms need a trigger-volume path, not a rigid body; decoded-but-not-imported constraint kinds (ball-and-socket / spring / chain).
 **Output**: `/tmp/audit/nifal/dim_6.md`
 
-### Dimension 7: Animation / controllers — single NIF→AnimationClip boundary (surveyed converged 2026-06-02)
-**Entry points**:
-- Parser/import: `crates/nif/src/anim/entry.rs::import_kf` (KF sequences) + `import_embedded_animations` (mesh-embedded controllers); both funnel through one set of `extract_*_channel_at` cores in `crates/nif/src/anim/`.
-- **The boundary**: `byroredux/src/anim_convert.rs::convert_nif_clip` — the single NIF→core `AnimationClip` translation (multiple callers — `npc_spawn.rs`, `cell_loader/references/mod.rs` + `partial.rs`, `scene.rs` + `scene/nif_loader.rs`, `systems/animation.rs` — all route through this one fn; multiple callers of one boundary is correct, not a single-boundary violation).
-- **Completeness guard (`#4167`, 2026-09-12):** `canonical_animation_completeness_harness` (`anim_convert.rs`) is a kitchen-sink value harness in the Material idiom — one source clip with every copied field set to a distinctive non-default value, plus a collection-count test so a wholesale-dropped channel list fails too. **`convert_nif_clip` is not the only producer of the canonical `AnimationClip`**: `asset_provider/animation.rs::convert_hkx_clip` builds the same target from Havok behaviour-graph idles and has its own guard, `every_hkx_sample_field_survives_convert_hkx_clip`, covering what is structurally different there (per-sample Z-up→Y-up, the `(x,y,z,w)`→glam reorder, the three-axis scale average, frame-index→time) plus `cart_exit_idles_gain_completion_events_and_clamp` for the synthesized completion events. Extend whichever producer changed; a field added to `byroredux_core`'s `AnimationClip` usually needs both.
-- Canonical type: ECS `AnimationClip` (`crates/core/src/animation/`).
-
-**Checklist** (`no-leak` / `no-fabrication`):
-- Every per-game variation is resolved at import: B-spline compressed interpolators (FO3/FNV + Skyrim+ — *not* Skyrim-only, per `feedback_bspline_not_skyrim_only`) sampled to linear keys; XYZ-Euler rotation keys composed to quaternions; TBC/Hermite tangents decoded; Z-up→Y-up once. The player/stack consumers must see only game-agnostic quaternion keys — no `Option`/era branch downstream.
-- Text-key events wired: `NiControllerSequence.text_keys_ref` → `AnimationClip.text_keys` → `AnimationTextKeyEvents` ECS → scripting. Embedded controllers set `text_keys: Vec::new()` by design (mesh-local controllers carry no event keys) — verify that's a deliberate empty, not a drop.
-- Intentionally **parked** (captured, no renderer consumer yet, NOT leaks): per-light **ambient** colour channels and **morph-weight** channels. Confirm they reach no canonical consumer.
+### Dimension 7: Animation / controllers — single NIF→AnimationClip boundary
+Paths: `byroredux/src/anim_convert.rs`, `byroredux/src/asset_provider/animation.rs`, `crates/nif/src/anim/`
+First step: `cargo test -p byroredux -- canonical_animation_completeness_harness every_hkx_sample_field`
+**Boundary**: `convert_nif_clip` (many callers, one function — correct). **It is not the only producer** of the canonical `AnimationClip`: `convert_hkx_clip` builds it from Havok behaviour-graph idles; a field added to `AnimationClip` usually needs both producers.
+**Guards**: `anim_convert::canonical_animation_completeness_harness::{every_clip_scalar_survives_convert_nif_clip, every_transform_channel_field_survives_convert_nif_clip, every_non_transform_channel_survives_convert_nif_clip}`; `asset_provider::animation::tests::every_hkx_sample_field_survives_convert_hkx_clip` — harness value choices let some field drops pass (#4405).
+**Checklist**:
+- Per-game variation resolved at import: B-spline interpolators (FO3/FNV *and* Skyrim+ — *feedback_bspline_not_skyrim_only*) sampled to linear keys; XYZ-Euler composed to quaternions; TBC/Hermite decoded; Z-up→Y-up once. Consumers see only game-agnostic quaternion keys.
+- Text-key events wired end to end (`text_keys_ref` → `AnimationClip.text_keys` → `AnimationTextKeyEvents`); embedded controllers' empty `text_keys` is deliberate. Parked, not leaks: per-light ambient colour channels and morph-weight channels (confirm no canonical consumer).
+- Known-open rotation-sanitizer holes: non-B-spline paths still square to inf (#4396), NaN static-pose fallbacks (#4397), identity substitution for overflow (#4406).
 **Output**: `/tmp/audit/nifal/dim_7.md`
 
-### Dimension 8: Shader flags / texture sets / effect shaders — per-game vocabularies collapse at parse (surveyed converged 2026-06-02)
-**Entry points**:
-- `crates/nif/src/shader_flags.rs` — namespaced per-game flag vocabularies (`fo3nv_f1`, `skyrim_slsf1`, `fo4_slsf1`, + FO76/Starfield CRC32 arrays), and the unit-test equivalence asserts on bits 26/27 (`fo3nv_and_skyrim_decal_bits_agree`) guarding bit-meaning collisions. The `ShaderFlags<'a>` typed view and its `is_decal()` / `is_two_sided()` were deleted as transitively dead in *#1897*; the live decal / two-sided helpers are `is_decal_from_legacy_shader_flags` / `is_decal_from_modern_shader_flags` / `is_two_sided_from_modern_shader_flags` in `crates/nif/src/import/material/mod.rs`.
-- `MaterialInfo` (`crates/nif/src/import/material/`) — decal / two-sided read once per property type; `BSShaderTextureSet` slot→role mapping keyed on `shader_type`.
-- `EmissiveSource::Effect` + `material_kind == 101` — `BSEffectShaderProperty` capture/route.
-
+### Dimension 8: Shader flags / texture roles / effect shaders (highest report yield)
+Paths: `crates/nif/src/shader_flags.rs`, `crates/nif/src/import/material/{slot_role,dedicated_shader,walker,mod}.rs`, `crates/nif/src/import/types.rs` (`MaterialTextureSet`), `byroredux/src/asset_provider/material/merge.rs`, `byroredux/src/cell_loader/refr.rs`, `byroredux/src/asset_provider/texture.rs`
+First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/import/material byroredux/src/asset_provider/material byroredux/src/cell_loader/refr.rs`
+**Guards**: `crates/nif/src/import/types.rs` tests `roles_covers_every_field_in_the_set` + `values_covers_every_field_in_the_set` (count-based: catch an omission, not *which* role); `material_translate::tests::documented_texture_role_list_matches_the_struct` (struct ↔ `nifal.md`); `asset_provider::texture::tests::common_material_texture_walk_covers_every_secondary_role_once` (all 25 secondary roles pinned to a colour space both directions; a data map flipping to sRGB fails); `slot_role.rs` confinement tests (non-Skyrim layouts never take the Skyrim co-location arms, #4431); `render/tint_alpha_gate_tests.rs`; `fo3nv_and_skyrim_decal_bits_agree`.
 **Checklist** (`no-render-time-fallback` / `no-leak`):
-- Per-game flag vocabularies are dispatched by **block type** (the wire format already discriminates the game), NOT by a runtime `if game ==`. Verify `triangle.frag` **and its `#include`d `include/*.glsl` headers** have **zero** `if game ==` branches — the renderer reads `material.is_decal` / `two_sided` with no per-game branch. A per-game branch leaking into the shader is the cardinal `no-render-time-fallback`/leak violation for this dimension.
-- All 9 `BSLightingShaderProperty` shader-type variants forward their trailing data (SkinTint/HairTint/Parallax/MultiLayer/Eye/Sparkle — the pre-#343 8-of-9 drop is closed). A variant dropping its trailing data is a regression.
-- `BSEffectShaderProperty` captured + routed (EFFECT_* flags, `material_kind == 101`). The one *deferred* item is the `base_color_scale` diffuse-tint-vs-emissive render path — tagged via `EmissiveSource::Effect`, not dropped (don't re-report as a leak).
-- **FO4 render-affecting flags reach `MaterialInfo`** (`#1592`, `import/material/dedicated_shader.rs` — split out of *walker.rs* by #2059): `Model_Space_Normals` (F4SF1 bit 12) + `Alpha_Test` (F4SF2 bit 25) are ORed into `MaterialInfo` (plus the FO76+ `MODELSPACENORMALS` CRC for `bsver >= 132`) so the per-game flag vocabulary collapses into the canonical fields (`model_space_normals` / `alpha_test`), not a render-time `if game == fo4`. The NIF flag is a strictly lower-priority source than the later BGSM merge (which OR-upgrades). Regression = the walker parsing the F4SF pair but dropping these bits (a `no-leak` violation — the data is read fine but never reaches the canonical material).
-- **Greyscale-to-palette enable bits reach `MaterialInfo` on the LIT path too, not just the effect-shader arm (regression guard, `#3897`/`#3898`, 2026-09-05).** `SLSF1::Greyscale_To_PaletteColor`/`_Alpha` are authored directly by a `BSLightingShaderProperty` (not only `BSEffectShaderProperty`, the previously-sole caller of `is_palette_color_from_modern_shader_flags`), and `slot_to_role` already routes FO4 slot 3 into the `greyscale_lut` role (`#2997`) — but `into_imported_material` hardcoded the enable triple to `false` on the lit path with a stale "no BGSM has merged yet" rationale, leaving `triangle.frag`'s palette branch permanently dead on real content (measured: 30,166 FO4 `BSLightingShaderProperty`s, 30,155 with a populated slot 3 — hair/beards, armor palettes, vehicle paint). Fixed by capturing both bits on the lit path via the same typed-word + CRC32-list union the effect arm already used, so FO76/Starfield CRC-array content is covered too. The BGSM-side gate (`#2108`) is now keyed on *whether the NIF supplied the LUT* rather than `is_some()`: when the NIF won the slot, a BGSM's enable bit is OR'd in one-way (a closer BGSM authoring the remap off still shadows an ancestor) rather than discarded outright — a two-independent-gates bug where fixing only one changed nothing on screen, so audit both halves together, not just whichever one a report names.
-
-**Texture roles — the 2026-07-27 unification (`1d94eb24` + `05d68926`). This is now the primary subject of this dimension:**
-- `MaterialTextureSet<T>` (`crates/nif/src/import/types.rs`) is the canonical texture vocabulary: 22 named roles (`base_color`, `normal`, `emissive`, `detail`, `smooth_spec`, `dark`, `height`, `environment`, `environment_mask`, `tint`, `inner_layer`, `specular`, `lighting_mask`, `back_lighting`, `lighting`, `flow`, `wrinkle`, `greyscale_lut`, `reflectance`, `emittance_gradient`, `glass_roughness_scratch`, `glass_dirt_overlay`) plus ordered `decals: [T; 4]` — 26 entries from `values()`. This list is the checklist an auditor diffs `values()` against, so it is kept honest by `documented_texture_role_list_matches_the_struct` (`byroredux/src/material_translate.rs`), which scans both this file and `docs/engine/nifal.md` (#3465).
-- **Every** source populates the same roles: `NiTexturingProperty` (legacy), `BSShaderTextureSet` (FO3→Skyrim), BGSM/BGEM (FO4+), `BSEffectShaderProperty`. **A per-game slot index surviving past the NIF import boundary is the cardinal violation for this dimension** — game-specific slot numbers and container formats must stop there. Starfield `.mat`/CDB is NOT yet one of these live sources — `probe_starfield_cdb` (Phase 1) validates only the header and stops there, no code path resolves a texture role out of a `.mat` at all. `ImportedTextureSource::Mat` / `MaterialTextureSource::Mat` existed with zero producers and were deleted (`#3906`, 2026-09-07) rather than left advertising a provenance label that could never appear (`mat.dump` showing `src=mat` read as "not consulted" when the real answer was "not implemented"). Regression = re-adding a `Mat` provenance arm before the Phase-2 CDB path actually fills a role through it.
-- `T` is generic over pipeline stage and must be converted with `map_ref`, never re-parsed: `Option<FixedString>` (imported) → `Option<String>` (archive-resolved, `ResolvedPaths`) → bindless index (renderer). A consumer that reconstructs a path string from a role it was already handed is a `no-leak` violation.
-- Two roles are deliberately distinct and are the likeliest mis-merge: `smooth_spec` (smoothness / specular-**strength** mask — legacy gloss map, BGSM smooth-spec) vs `specular` (standalone specular-**colour** map). Collapsing them silently changes shading on FO4 content. Same care for `environment` vs `environment_mask`.
-- **Three hand-written role walks — `map_ref` is compiler-protected, `roles()` and `values()` both now carry an omission-guard test (fixed #3734, `fc2f29da`, 2026-09-03; do not re-file "unprotected").** `map_ref` builds a full struct literal, so a forgotten role there *is* a compile error. `roles()` (name+value pairs, `types.rs`) has `roles_covers_every_field_in_the_set` (#3349). `values()` (bare fixed-size array `.chain(self.decals.iter())`, the exhaustive lifecycle contract `nifal.md` cites for texture release) used to have only a sequential-integer-literal test that caught reordering, not omission — add a role to the struct, forget it in `values()`, and the count-based assert still passed. `values_covers_every_field_in_the_set` closes that: it counts `map_ref`'s visits (compiler-forced-exhaustive) and asserts `values().count()` equals it, so a forgotten field now fails a test rather than silently dropping out of every exhaustive visit (texture release, validation). Still diff `values()`'s array against the struct field list on review — the guard catches a *count* mismatch, not which specific role was dropped — but the "no test failure unless one asserts the count" premise is now false; a real omission does fail. A related, distinctly-shaped gap (`supplemental_texture_indices`, #2697) was checked in the same pass and found already closed (indexed writes against named `slot::` constants); the sibling with a different shape (16 named GPU-material slots vs. this type's 26 roles) is #3814, closed by `d63b8ce0`, which pins the 16 generic supplemental lanes — verify its guard in `byroredux/src/render/static_meshes.rs` still holds rather than re-filing it.
-- `secondary_values()` is `values().skip(1)`, which hard-codes "base_color is element 0". Reordering `values()` so base_color isn't first silently reclassifies a role as secondary. Flag any reordering of that array as load-bearing.
+- **Vocabulary**: `MaterialTextureSet<T>` — 22 named roles + `decals: [T; 4]`; `values()` yields 26, `secondary_values()` (= `values().skip(1)`, hard-codes `base_color` first — reordering is load-bearing) yields 25. Every source populates the same roles (`NiTexturingProperty`, `BSShaderTextureSet` FO3→Skyrim, BGSM/BGEM, `BSEffectShaderProperty`). **A per-game slot index surviving past the NIF import boundary is the cardinal violation.** `slot_to_role` is the one table used by both the importer and the REFR overlay; Starfield/FO76 do not enter it (roles come from BGSM/CDB). Starfield `.mat`/CDB is not yet a live texture-role source (the unproduced `Mat` provenance label was deleted, #3906) — re-adding it before a code path fills a role through it is the regression.
+- `T` converts with `map_ref` only (`Option<FixedString>` → `Option<String>` → bindless index); a consumer rebuilding a path from a role it was handed is `no-leak`.
+- Likeliest mis-merges: `smooth_spec` (specular-**strength**/gloss) vs `specular` (specular-**colour**) — FO4 slot 7 is `smooth_spec` (its `_s.dds` is BC5; feeding it to the colour multiply tinted every FO4 highlight, #4424); `environment` vs `environment_mask`. Known-open: FO4 slot-2 ignores the `Glow_Map` gate (#4430).
+- **Tint role**: the Skyrim skin `_sk.dds` is a subsurface input, not an albedo multiplier; the tint multiply fires only when the tint DDS carries a real alpha (`TINT_ALPHA_WEIGHT_BIT`, #4423). FaceGen per-NPC tint override keys on canonical **FaceTint** heads (kind 4), not SkinTint (`select_facegen_diffuse`, `scene/nif_loader.rs`, #4421).
+- **BGSM/BGEM merge boundary** (`asset_provider/material/merge.rs`): the overlay carries **named roles** (`bgsm_emissive`, `bgsm_height`, `bgsm_greyscale_lut`, `bgsm_inner_layer` on `RefrTextureOverlay`), never re-resolved through NIF wire slots (#4434); the BGEM arm updates the NIF's effect payload in place and ORs enable bits, never assigns (#4425); greyscale-to-palette bits are captured on the lit path too, and BGSM's enable is one-way OR'd when the NIF supplied the LUT (#3897/#3898/#4286). Known-open: MSWP re-merge leaves BGEM glass roles on the source sidecar (#4400); paired clamp/parallax slot precedence (#4401); #4402 contract comment.
+- Per-game flag vocabularies dispatch by **block type**, never a runtime `if game ==`: `grep -n 'if game' crates/renderer/shaders/triangle.frag crates/renderer/shaders/include/*.glsl` must be empty. All nine `BSLightingShaderProperty` shader types forward trailing data. `BSEffectShaderProperty` is captured and routed (`material_kind == 101`); its `base_color_scale` diffuse-tint-vs-emissive path is deferred via `EmissiveSource::Effect`. FO4 `Model_Space_Normals` / `Alpha_Test` bits reach `MaterialInfo` (`/audit-nif` Dim 4 owns the parse side); Skyrim effect-shader `env_map_scale` unauthored stays out of `MaterialInfo` (#4393); `BSShaderTextureSet` outranks `NiTexturingProperty` (#4235).
+- **Flipbooks**: `NiFlipController` slots resolve to canonical roles (#3901) — known-open: frames bypass the per-role resolver, dropping authored CLAMP (#4426); frame textures are released on cell unload via `AnimatedTextureFlip::all_handles` (#4427) — check any new texture-owning component joins the unload walk.
+- Starfield wetness/luminance parsed but no `ImportedMaterial` sink (#4282, known-open).
 **Output**: `/tmp/audit/nifal/dim_8.md`
 
-### Dimension 9: Translation-completeness signal + cross-cutting tier invariants
-**Entry points**:
-- `crates/nif/tests/translation_completeness.rs` — `cross_game_translation_completeness` (`#[ignore]`-gated; run with `cargo test -p byroredux-nif --test translation_completeness -- --ignored`), `collect_stats`, `MaterialStats::record/print_row`. Per-game (`Oblivion`/`FNV`/`Skyrim`/…) aggregate fill-rate over the **raw pre-merge `ImportedMaterial` tier** — the importer's output before any BGSM/BGEM/CDB sidecar merge (#2214) — **not** the canonical `Material`. A near-zero `tex`/`nrm` fill on content that sources its textures from sidecars the harness never merges (FO76, Starfield) is a documented structural zero, not a translation leak; do not re-file it.
-
-**Checklist** (the four tier invariants stated up top, applied across every dimension):
-- **single-boundary**: each category that needs one declares its boundary, not scattered construction — Material ✓ `translate_material`; Particles ✓ `apply_emitter_overlays`; Animation ✓ `convert_nif_clip`; EXAL exterior ✓ `env_translate.rs::translate_*`; Nodes ✗ by design (Dim 4). New categories must declare a boundary.
-- **no-fabrication**: the emissive no-op (Dim 1) and particle colour/size-curve deferrals (Dim 5) are the canonical "measured, then deliberately NOT normalized" examples. Any new constant must cite a measurement or source.
-- **no-leak**: no `Option`/raw discriminator on a canonical type reaches a consumer that re-resolves it.
-- **no-render-time-fallback**: no classification deferred to a per-draw heuristic (the deleted `classify_pbr` / render-side glass heuristics are the cautionary tale; `triangle.frag` `if game ==` count must be zero — Dim 8).
-- The completeness harness is the **per-game coverage signal**: a category that converges on FNV but drops to ~0 fill on Starfield is an unverified-game leak even if no single-game audit flagged it. Treat large per-game fill-rate divergence (in `print_row` output) as a lead, not gospel — verify the underlying extractor.
+### Dimension 9: Translation-completeness signal + cross-cutting invariants
+Paths: `crates/nif/tests/translation_completeness.rs`, `crates/nif/examples/`
+First step: `cargo test -p byroredux-nif --test translation_completeness -- --ignored` (opt-in, needs game data; one game at a time)
+- `cross_game_translation_completeness` reports per-game fill rate over the **raw pre-merge `ImportedMaterial`** tier (before BGSM/BGEM/CDB merge, #2214), stratified sample. A near-zero `tex`/`nrm` fill on FO76/Starfield is a documented structural zero, not a leak. Large per-game fill divergence is a lead, not proof — verify the extractor. A category that converges on FNV but drops to ~0 on Starfield is an unverified-game leak.
+- Boundary inventory to keep true: Material ✓ `translate_material`; Particles ✓ `apply_emitter_overlays`; Animation ✓ `convert_nif_clip` (+ `convert_hkx_clip`); Nodes ✗ by design (Dim 4); exterior → `/audit-exterior`. A new category must declare a boundary. Ground cover has no canonical `Material` and neither spec records it (#4304, known-open).
 **Output**: `/tmp/audit/nifal/dim_9.md`
 
 ## Phase 3: Merge
 
-1. Read all `/tmp/audit/nifal/dim_*.md` files.
-2. Combine into `docs/audits/AUDIT_NIFAL_<TODAY>.md` (YYYY-MM-DD) with structure:
-   - **Executive Summary** — per-category convergence status (converged / triaged /
-     pending) vs the spec §2 leak inventory; count of single-boundary / no-fabrication
-     / no-leak / no-render-time-fallback violations found.
-   - **Per-Category Tier Matrix** — table of category × tier-invariant (single-boundary,
-     no-fabrication, no-leak, no-render-time-fallback) marked pass / fail / N-A, with the
-     boundary fn cited for each.
-   - **Findings** — grouped by severity (apply the NIFAL severity rows in
-     `_audit-severity.md`), using the base finding format plus the Extra Per-Finding
-     Fields above.
-   - **Documented-limitation ledger** — restate the parked-not-leak items (node/mesh
-     passthroughs, FO4+ NP blob, phantoms, size-over-life curve, ambient/morph anim
-     channels) so they are not re-reported next sweep.
-3. Remove cross-dimension duplicates.
+1. Read all `/tmp/audit/nifal/dim_*.md`; combine into `docs/audits/AUDIT_NIFAL_<TODAY>.md`:
+   - **Executive Summary** — per-category status (converged / triaged / pending) vs the spec §2 inventory; violation counts per invariant.
+   - **Per-Category Tier Matrix** — category × invariant (pass / fail / N-A) with the boundary fn cited.
+   - **Findings** — by severity (NIFAL rows in `_audit-severity.md`), base format + Extra Fields above.
+   - **Documented-limitation ledger** — restate parked-not-leak items (node/mesh passthroughs, FO4+ NP blob, phantoms, size-over-life curve, ambient/morph anim channels, NiAmbientLight scoping) so they are not re-reported.
+2. Remove cross-dimension duplicates.
 
-Run `.claude/commands/_audit-validate.sh` before finalizing (backticked paths must
-resolve against the live tree — Path-Reference Convention in `_audit-common.md`).
-
-Suggest: `/audit-publish docs/audits/AUDIT_NIFAL_<TODAY>.md`
-(domain label: `nifal`, plus the subsystem the finding lands in — `nif-parser` for
-parse-side, `renderer`/`shaders` for the consuming end; add the matching `game:*` when the
-finding is specific to one title's translation path.)
+Run `.claude/commands/_audit-validate.sh` before finalizing. Suggest `/audit-publish docs/audits/AUDIT_NIFAL_<TODAY>.md` (domain label `nifal`, plus `nif-parser` for parse-side or `renderer`/`shaders` for the consuming end; add `game:*` when title-specific).

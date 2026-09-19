@@ -5,169 +5,275 @@ argument-hint: "--focus <dimensions> --depth shallow|deep"
 
 # Concurrency and Synchronization Audit
 
-Audit ByroRedux for data races, deadlocks, incorrect lock ordering, missing
-Vulkan synchronization, and thread-safety violations.
+Audit ByroRedux for data races, deadlocks, incorrect lock ordering, missing Vulkan synchronization and
+thread-safety violations.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, methodology,
-deduplication, context rules, finding format, and the path-reference convention.
-See `.claude/commands/_audit-severity.md` for the severity scale — the rows that
-matter here:
+See `.claude/commands/_audit-common.md` for layout, methodology, dedup, finding format and the
+path-reference convention; `.claude/commands/_audit-severity.md` for the scale. Rows that matter here:
 
 | Condition | Minimum Severity |
 |-----------|-----------------|
 | Data race on Vulkan queue / use-after-free / AS built at wrong address | CRITICAL |
-| Vulkan spec violation (missing barrier, fence misuse) | HIGH |
-| Missing AS barrier (build → shader read) | HIGH |
-| Resource / descriptor / command-buffer leak per frame | HIGH |
-| Missing cleanup on swapchain recreate | HIGH |
+| Vulkan spec violation (missing barrier, fence misuse); missing AS barrier (build → shader read) | HIGH |
+| Resource / descriptor / command-buffer leak per frame; missing cleanup on swapchain recreate | HIGH |
 | ECS deadlock potential (RwLock ordering violation) | HIGH |
 | FFI lifetime violation across the cxx bridge | CRITICAL |
 
-Dimensions below are ordered by **concurrency blast radius**: GPU queue / AS
-data races (CRITICAL) first, then ECS deadlock surfaces, then the
-already-closed scheduler/access machinery (now regression guards), then the
-slower-moving lifecycle / worker / chain dimensions.
+Dimensions run by blast radius. Each has `Paths:` and `First step:`; skip a dimension whose Paths have
+no commits since the last `AUDIT_CONCURRENCY_*` report.
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3`). Default: all 7.
-- `--depth shallow|deep`: `shallow` = check barrier/lock presence; `deep` = trace concurrent paths and timing windows. Default: `deep`.
+- `--focus <dimensions>`: comma-separated dimension numbers (e.g. `1,3`). Default: all 7.
+- `--depth shallow|deep`: `shallow` = barrier/lock presence; `deep` = trace concurrent paths and timing windows. Default `deep`.
 
 ## Extra Per-Finding Fields
 
-- **Dimension**: Vulkan Queue & AS Sync | Compute → AS → Fragment Chains | ECS Lock Ordering | Scheduler Access Declarations | RwLock Patterns (Resource↔Storage, Physics) | Resource Lifecycle | Worker Threads (Streaming, Debug)
-- **Trigger Conditions**: Exact timing/concurrency window needed to reproduce
-- **Verification Path**: For Vulkan-sync findings — whether the failure is observable in `cargo test`, the validation layer, or only RenderDoc (see "Speculative-fix guardrail" below)
+- **Dimension**: Vulkan Queue & AS Sync | Compute → AS → Fragment Chains | ECS Lock Ordering | Scheduler Access Declarations | RwLock Patterns (Resource↔Storage, Physics) | Resource Lifecycle | Worker Threads
+- **Trigger Conditions**: exact timing/concurrency window to reproduce.
+- **Verification Path** (Vulkan-sync): `cargo test`, validation layer, or only RenderDoc.
 
 ## Speculative-fix guardrail (read before reporting any Vulkan-sync finding)
 
-Vulkan render-pass / pipeline-barrier / semaphore / fence bugs are largely
-**invisible to `cargo test`** — there is no headless device assertion that
-catches a missing image barrier or a wrong stage mask. Per the project's
-standing rule, do **not** propose shipping a barrier/stage/layout change on
-reasoning alone. Frame each such finding as **"needs validation-layer or
-RenderDoc confirmation"** and state the concrete signal that would confirm it
-(a specific `VUID-*` validation message, a RenderDoc resource-state mismatch,
-or a visible artifact class). A finding whose only evidence is "this barrier
-looks wrong" is a HYPOTHESIS row, not a fix.
+Barrier / stage-mask / layout / semaphore bugs are largely **invisible to `cargo test`**. Do not
+propose a change on reasoning alone; frame it as **"needs validation-layer or RenderDoc confirmation"**
+and name the confirming signal (a `VUID-*` message, a RenderDoc resource-state mismatch, a visible
+artifact). "This barrier looks wrong" is a HYPOTHESIS row, not a fix.
 
-**The cheapest evidence channel is now sync-validation in release (#ec81f233).**
-`BYRO_VALIDATION=<v>` (`instance.rs::validation_enabled`) turns on the Khronos
-validation layer + Synchronization Validation in a **release** build — debug
-builds are too slow to stream into the dense cells that fault. `BYRO_VALIDATION=gpuav`
-additionally enables GPU-Assisted Validation (shader OOB / descriptor checks).
-The debug messenger routes layer messages into the Rust log whenever validation
-is enabled. A sync-validation RAW/WAR hazard count (e.g. the ~40/frame the
-`--cornell` harness reported pre-#507945d8) is the confirmed-bug signal — prefer
-it over "looks wrong." Confirm any AS-build-input / barrier finding against a
-captured validation run before escalating past HYPOTHESIS.
+- **Cheapest evidence**: `BYRO_VALIDATION=<v>` (`crates/renderer/src/vulkan/instance.rs`,
+  `validation_enabled`) enables the Khronos layer + Synchronization Validation in a **release** build;
+  `BYRO_VALIDATION=gpuav` adds GPU-assisted validation. Messages route into the Rust log. A
+  sync-validation RAW/WAR/WAW hazard count is the confirmed-bug signal; capture before escalating past
+  HYPOTHESIS.
+- **A host fence wait is not a device edge.** `sync_and_acquire_frame.rs` waits on EVERY
+  frame-in-flight fence, so frames never overlap on the queue — yet sync validation models the queue and
+  only sees barriers (#4177/#4179/#4181/#4293). Do not dismiss a validation-reported hazard because "the
+  fence covers it", and do not justify a barrier by "frames can overlap".
+- HOST_WRITE→shader barriers are defense-in-depth, not a spec requirement (host writes before
+  `queue_submit` are already visible, #4182) — an "unneeded" one is not a finding.
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS`
-2. `mkdir -p /tmp/audit/concurrency`
-3. Fetch dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/concurrency/issues.json`
+1. Parse `$ARGUMENTS`. 2. `mkdir -p /tmp/audit/concurrency`.
+3. `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/concurrency/issues.json`
 
 ## Phase 2: Launch Dimension Agents
 
 ### Dimension 1: Vulkan Queue & Acceleration-Structure Sync (CRITICAL surface)
-**Entry points**: `crates/renderer/src/vulkan/context/draw.rs` (`draw_frame`), `crates/renderer/src/vulkan/sync.rs`, `crates/renderer/src/vulkan/acceleration/` (`blas_static.rs`, `blas_skinned.rs`, `tlas.rs`), `crates/renderer/src/vulkan/context/resize.rs`
+Paths: `crates/renderer/src/vulkan/{sync.rs,texture.rs}`, `crates/renderer/src/vulkan/context/{init,draw,sync_and_acquire_frame,resize,skinned_blas_refit}.rs`, `crates/renderer/src/vulkan/acceleration/`
+First step: `git log --since=<last-report-date> --format='%h %s' -- crates/renderer/src/vulkan/{sync.rs,acceleration,context}`
 **Checklist**:
-- **Queue submission is single-Mutex.** `graphics_queue` and `present_queue` are both `Arc<Mutex<vk::Queue>>` (`context/mod.rs`); `present_queue` is an `Arc::clone` of `graphics_queue` when the graphics and present queue families match (the common desktop case, #284), so one Mutex serialises all submits + presents; when the families differ it is an independent Mutex over the separate queue. Vulkan requires host access to each queue to be externally synchronized (`VUID-vkQueueSubmit-queue-00893`): bind the `MutexGuard` and keep it alive across `queue_submit` / `queue_present`, even though `vk::Queue` is `Copy`. Release the queue guard immediately after the call and before any subsequent `wait_for_fences`; the fence wait does not access the queue and must not serialize other submitters. Cross-check the main submit and present in `draw.rs` plus the one-time-command submit in `texture.rs`; `one_time_lock_scope_tests` pins lock → submit → unlock → wait (#1713).
-- **Frame-in-flight discipline.** The `in_flight[frame]` fence must be waited on before its command buffer / per-frame resources are reused; `image_available[frame]` semaphore must not be reused while a prior acquire is still pending (the draw.rs comment block around the acquire→submit window documents the ordering — verify it still holds).
-- **Acquire → render → present semaphore chain** is correct and uses per-image (not per-frame) signal semaphores where required by the swapchain image index.
-- **AS build → read barrier.** Every BLAS/TLAS build or refit that a later ray query reads must be followed by an `ACCELERATION_STRUCTURE_WRITE_KHR → ACCELERATION_STRUCTURE_READ_KHR` barrier before the fragment-stage ray-query consumer. Static BLAS: `blas_static.rs` (`memory_barrier`, WRITE→READ). Skinned BLAS refit: `blas_skinned.rs` (regression guard, #1790: `record_scratch_serialize_barrier`'s dst mask is WRITE|READ, not WRITE-only — it must cover a first-sight frame's same-command-buffer BUILD-then-UPDATE-refit adjacency, where the UPDATE reads `srcAccelerationStructure`). TLAS: `tlas.rs` (`cmd_pipeline_barrier`). A missing or wrong-stage barrier here is HIGH (CRITICAL if the AS is built at a wrong/stale device address — wrong geometry in shadows/reflections/GI).
-- **Deferred BLAS-scratch destruction (regression guard, #1782).** `blas_scratch_buffer` retirement on grow/shrink routes through `pending_destroy_scratch` (deferred) instead of an immediate free — same use-after-free class as #a476b256 below, but for the scratch allocation rather than a `BlasEntry`. `build_skinned_blas_batched_on_cmd`'s own grow-destroy is deliberately immediate — but the safety argument is the `draw_frame` **both-slots** `wait_for_fences` (`context/draw.rs`, #282), not "this frame-in-flight slot's own previous recording has retired" (corrected #3643: the *other* slot's recording captures the same scratch device address too, so the slot-local framing alone doesn't cover it). That both-slots wait is only device-idle-equivalent at `MAX_FRAMES_IN_FLIGHT == 2` — it's item 1 on the `sync.rs` #870 list a future FIF bump has to address. Don't flag the immediate free as a missed `pending_destroy_scratch` instance.
-- **AS build INPUT barrier access flag (regression guard, #507945d8).** Distinct from the build→read barrier above: the *inputs* to a build (instance-buffer copy → TLAS build in `tlas.rs`; skinned-vertex compute write → BLAS build in `draw.rs`) must be made visible with `SHADER_READ` at the `ACCELERATION_STRUCTURE_BUILD` stage, NOT `ACCELERATION_STRUCTURE_READ_KHR` (that flag reads an AS structure, not build inputs). The wrong flag is a copy/compute → build RAW hazard sync-validation catches — confirm via a `BYRO_VALIDATION` run, don't escalate on reasoning alone.
-- **Deferred AS destruction vs in-flight reads (#a476b256).** BLAS eviction/drop routes the AS handle + buffers through `pending_destroy_blas` (deferred countdown), so an unload/eviction can't free an AS the in-flight frame's ray queries still read. Verify no path re-introduces an immediate `destroy_acceleration_structure` at the eviction site (use-after-free = CRITICAL) and that shutdown drains the queue.
-- **Swapchain recreate sync.** `recreate_swapchain` (`context/resize.rs`) must cover all in-flight work with `device_wait_idle` (or equivalent fence drain) before destroying/rebuilding swapchain-dependent resources — no use-after-destroy across the recreate.
-- **One-time command buffers** (BLAS initial build, staging copies) block the main thread on a fence — flag if any such blocking submit runs inside the per-frame hot path rather than at load time.
+- **Queue submission is single-Mutex.** `graphics_queue` / `present_queue` are `Arc<Mutex<vk::Queue>>`
+  (created in `context/init.rs`; `present_queue` is an `Arc::clone` of the graphics queue when the
+  families match, so one Mutex serialises submits + presents). Vulkan requires external synchronization
+  (`VUID-vkQueueSubmit-queue-00893`): bind the `MutexGuard` and keep it across `queue_submit` /
+  `queue_present` even though `vk::Queue` is `Copy` (a temporary `.lock().unwrap()` drops at end of
+  statement — `draw.rs` documents this at the submit). Release before any `wait_for_fences`. Also check the
+  one-time-command submit in `texture.rs` (`one_time_lock_scope_tests` pins lock → submit → unlock → wait, #1713).
+- **Frame-in-flight discipline (the both-slots wait).** `sync_and_acquire_frame.rs` waits on all
+  `in_flight` fences before re-recording; that is the safety argument for the immediate scratch free in
+  `build_skinned_blas_batched_on_cmd`, the TLAS resize, and every non-per-FIF resource. It is
+  device-idle-equivalent only at `MAX_FRAMES_IN_FLIGHT == 2`. Guard: the const-assert in `sync.rs`
+  (#870) and `frames_in_flight_contract_names_every_dependent_resource` (#3643) — confirm neither
+  is `#[ignore]`d and a FIF bump would fail them. `image_available[frame]` must not be reused while an
+  acquire is pending (comment block at the acquire → submit window); `render_finished` is per swapchain
+  image (`render_finished_is_sized_and_indexed_per_swapchain_image`).
+- **AS build → read barriers.** BLAS/TLAS builds/refits read later by ray queries need
+  `ACCELERATION_STRUCTURE_WRITE_KHR → ..._READ_KHR` before the fragment consumer: static
+  (`blas_static.rs`), skinned refit (`blas_skinned.rs`; `record_scratch_serialize_barrier` dst is WRITE|READ,
+  #1790; scratch-serialize before the static batch's first build, #4177; the refit publish lives in
+  `context/skinned_blas_refit.rs`), TLAS (`tlas.rs`; BLAS writes published to the TLAS build at frame
+  scope, #4179). Missing/wrong-stage = HIGH; CRITICAL if the AS was built at a wrong/stale address.
+- **AS build INPUT access flag (#507945d8).** Inputs to a build (instance copy → TLAS in `tlas.rs`;
+  skinned-vertex compute write → BLAS build in `skinned_blas_refit.rs`) use `SHADER_READ` at the
+  `ACCELERATION_STRUCTURE_BUILD` stage, not `ACCELERATION_STRUCTURE_READ_KHR`. Confirm via a `BYRO_VALIDATION` run.
+- **Deferred destruction vs in-flight reads.** BLAS entries route through `pending_destroy_blas`
+  (#a476b256), BLAS scratch through `pending_destroy_scratch` (#1782); the tick runs AFTER the fence
+  wait (`sync_and_acquire_frame.rs`, alongside the mesh and texture ticks) and shutdown drains. Any new
+  immediate `destroy_acceleration_structure` at an eviction site = CRITICAL UAF. The skinned-batch scratch
+  grow is deliberately immediate (both-slots wait) — not a missed deferral (#3643).
+- **Swapchain recreate.** `recreate_swapchain` (`context/resize.rs`) idles the device
+  (`device_wait_idle`) before destroying swapchain-dependent resources. The TLAS-resize `device_wait_idle`
+  (`tlas.rs`, #1390) is belt-and-suspenders behind the both-slots wait.
+- **Blocking one-time submits.** BLAS initial builds and staging copies fence-wait; flag one inside the
+  per-frame path. The known per-frame case is the overlay upload (HUD via `write_rgba_inplace`, Ruffle UI via
+  `update_rgba`): each is its own submission + fence wait on the graphics-queue lock. In-place
+  overwrite carries a hazard contract — no in-flight frame may still sample the handle. The HUD's
+  `texture_handles: [u32; 3]` rotation (`byroredux/src/hud.rs`) satisfies it only while the count exceeds
+  `MAX_FRAMES_IN_FLIGHT`; no test ties the two — verify by reading.
 **Output**: `/tmp/audit/concurrency/dim_1.md`
 
 ### Dimension 2: Compute → AS → Fragment Chains
-**Entry points**: `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/src/vulkan/acceleration/blas_skinned.rs` (refit path), `crates/renderer/src/vulkan/svgf.rs`, `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/src/vulkan/caustic.rs`, `crates/renderer/src/vulkan/water_caustic.rs`, `crates/renderer/src/vulkan/volumetrics.rs`, `crates/renderer/src/vulkan/bloom.rs`, `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/context/draw.rs` (master ordering)
+Paths: `crates/renderer/src/vulkan/{skin_compute,svgf,taa,caustic,water_caustic,volumetrics,bloom,groundcover,sky_cube,material}.rs`, `crates/renderer/src/vulkan/context/{post_passes,dispatch_skin_and_cluster,skinned_blas_refit}.rs`
+First step: `git log --since=<last-report-date> --format='%h %s' -- crates/renderer/src/vulkan/context/post_passes.rs crates/renderer/src/vulkan/*.rs`
 **Checklist**:
-- **Skin chain (M29).** Palette build (`skin_compute.rs`) → `COMPUTE_WRITE→SHADER_READ` → per-mesh skin output → BLAS refit (`blas_skinned.rs`) reads it → fragment ray query hits the refit BLAS. The full palette→skin→refit→ray-query chain must be intact; a drift = stale geometry in shadows/reflections/GI. The live raster path uses inline skinning in `triangle.vert` (not the SSBO output), so a `VERTEX_INPUT` barrier is **not** currently required — flag only if a raster-from-skinned-SSBO path is added without one. **Second consumer, same publish barrier (#3582).** `caustic_splat.comp` also dereferences the skinned-vertex SSBO (`skinnedVertexAddress`, an inline deref that bypasses `include/ray_hit.glsl` — an include-graph trace can't see it), so `record_skinned_blas_refit`'s dst stage mask must carry `COMPUTE_SHADER` alongside `ACCELERATION_STRUCTURE_BUILD_KHR`/`FRAGMENT_SHADER`. A source-scan test enumerates every `.comp` for `skinnedVertexAddress` and requires the bit when a consumer exists — treat a bare fragment-only mask as a regression if a new compute consumer is added without it.
-- **Cross-frame ping-pong (no slot N reads slot N's in-flight write).** SVGF history, TAA history, caustic accumulator, water-caustic per-FIF `R32_UINT` accumulator, and volumetrics (`lighting_volumes` → `integrated_volumes`) all read the *previous* frame's slot. Verify the per-frame-in-flight indexing.
-- **Volumetrics gate (#1105).** Injection writes `lighting_volumes` (COMPUTE) → integration reads it, writes `integrated_volumes` (COMPUTE→COMPUTE) → `composite.frag` samples it (COMPUTE_WRITE→FRAGMENT_READ). `write_tlas` must run before `dispatch` each gated frame — `volumetrics.rs` keeps a `tlas_written: [bool; MAX_FRAMES_IN_FLIGHT]` latch that `dispatch` `debug_assert!`s and then resets. Verify the latch set/reset symmetry.
-- **Bloom within-frame RAW chain (#931).** Down-pyramid and up-pyramid each need a per-mip `COMPUTE_WRITE(SHADER_WRITE)→COMPUTE_READ(SHADER_READ)` image barrier so mip[i+1] sees mip[i]'s write; `up_mips[0]` must complete before composite samples it. Confirm the "post-barrier on the just-written mip only" accounting leaves no missing publish on the final up-mip.
-- **Caustic CLEAR → COMPUTE → FRAGMENT.** Accumulator cleared before compute writes; compute completes before composite reads.
-- **MaterialBuffer SSBO (R1).** `material.rs` upload is `HOST_WRITE → VERTEX/FRAGMENT_READ`; today it lands before draw recording so the frame fence already covers it — flag only if the upload moves into a compute path mid-frame.
+- **Skin chain (M29).** Palette build (`skin_compute.rs`) → `COMPUTE_WRITE→SHADER_READ` → per-mesh skin output →
+  BLAS refit reads it → fragment ray query. The raster path skins inline in `triangle.vert`, so a
+  `VERTEX_INPUT` barrier is not needed until a raster-from-skinned-SSBO path appears. **Second
+  consumer (#3582)**: `caustic_splat.comp` dereferences `skinnedVertexAddress` inline (an include-graph
+  trace cannot see it), so the refit publish dst mask must carry `COMPUTE_SHADER`. Guard:
+  `skin_publish_barrier_consumer_tests` in `context/skinned_blas_refit.rs` (source-scans `.comp` files for
+  the deref and requires the bit) — confirm it still scans every `.comp`.
+- **Frame-tail order.** composite → bloom → TAA → upscale, pinned by `taa_resolves_the_post_bloom_scene_tap`
+  (`context/post_passes.rs`); the TAA output slot arrives in `GENERAL` and must be restored to it after the blit.
+- **Cross-frame ping-pong.** SVGF / TAA history, caustic and water-caustic accumulators, volumetrics
+  (`lighting_volumes` → `integrated_volumes`) read the previous frame's slot; verify per-FIF indexing.
+- **Volumetrics (#1105).** inject → integrate (COMPUTE→COMPUTE) → `composite.frag` (COMPUTE_WRITE→FRAGMENT_READ);
+  `tlas_written: [bool; MAX_FRAMES_IN_FLIGHT]` latch must be set before and reset after each gated
+  `dispatch` (symmetric); callers gate on `VOLUMETRIC_OUTPUT_CONSUMED`.
+- **Bloom (#931).** per-mip `SHADER_WRITE → SHADER_READ` image barriers on both pyramids (post-barrier
+  on the just-written mip only); `up_mips[0]` completes before composite samples it. Caustic: CLEAR → COMPUTE → FRAGMENT.
+- **Ground-cover / sky-bake compute** (pipeline semantics belong to `/audit-exterior`): sync correctness
+  stays here. `groundcover.rs::record_scatter` orders counter zero-fill → extrema seeds (TRANSFER→TRANSFER,
+  #4293), scatter → publish incl. counter readback (#4181), and the interaction field's trailing barrier;
+  `sky_cube.rs::record_bake` runs mid-frame (`context/build_and_upload_instances.rs`) — check its
+  publish barrier before the first consumer. Evidence is a `BYRO_VALIDATION` capture, not reading.
+- **MaterialBuffer SSBO.** upload is `HOST_WRITE → VERTEX/FRAGMENT_READ`, before draw recording; flag only if it moves into a mid-frame compute path.
 **Output**: `/tmp/audit/concurrency/dim_2.md`
 
-### Dimension 3: ECS Lock Ordering & Deadlock
-**Entry points**: `crates/core/src/ecs/world.rs` (`query_2_mut`, `query_2_mut_mut`, the resource-pair queries), `crates/core/src/ecs/query.rs`, `crates/core/src/ecs/lock_tracker.rs`, all system functions under `byroredux/src/systems/` (`animation.rs`, `audio.rs`, `billboard.rs`, `bounds.rs`, `camera.rs`, `character.rs`, `debug.rs`, `light_anim.rs`, `metrics.rs`, `particle.rs`, `water.rs`, `weather.rs`)
+### Dimension 3: ECS Lock Ordering & Deadlock (system level)
+Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test --workspace` (what CI's `lock-order-check` job runs; a nonzero failure count is a hard regression)
+Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
+`GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
+re-audit it here. This dimension owns how *systems* use it.
 **Checklist**:
-- **TypeId-sorted acquisition is the deadlock-prevention invariant.** `world.rs` multi-component queries acquire storage locks in `TypeId`-ascending order regardless of the generic-parameter order the caller spells (the `if id_a < id_b { … } else { … }` branches in `query_2_mut`). The `lock_tracker` scope guards are set up in the *same* order so the lock-order graph never sees a spurious ABBA edge when the caller writes `<B, A>` with `TypeId(A) < TypeId(B)` (#313). Verify any new multi-lock accessor follows this and that same-type access still hits the `assert_ne!` panic.
-- **Static proof vs `lock_tracker` coverage.** The scheduler access report is the primary guard for declared parallel systems: `undeclared_parallel_count() == 0` + `unknown_pair_count() == 0` proves every same-stage pair is declared, while `known_conflict_count() == 0` proves no pair overlaps on a component/resource with either side writing. Such a batch has no cross-thread blocking edge and therefore cannot form an ABBA cycle. The construction assertions in `install_runtime_registries` enforce this in every build, and `build_scheduler_reports_zero_access_conflicts` pins it in tests. Same-thread re-entrant conflict detection remains always-on in debug and release. The debug-only, opt-in `BYRO_LOCK_ORDER_CHECK=1` global graph supplements the static proof for incomplete declarations, exclusive/cross-stage paths, and multi-lock code exercised by the run; its green result is reachability-bounded, not a whole-program proof — but it is now also the exact job CI runs (`BYRO_LOCK_ORDER_CHECK=1 cargo test --workspace`, #3819), so a red run blocks merges rather than being an occasionally-consulted dev tool. #3819 (2026-09-03) closed the four cycle families (`Transform<->GlobalTransform` reverse-order outlier in *extensions.rs*, since split into `byroredux/src/extensions/`, `ActorValues`/`FactionReputation` vs `GlobalFormIdResolver`, a same-thread test-hygiene self-closure, and one test's own polarity bug) that had left the job red at 26 failures; treat a nonzero count here as a hard regression, not noise. `is_enabled()` (#3680) gates the `held_others` snapshot itself, not just `record_and_check`'s internal check, so the detector's disabled fast path really is the one relaxed load its own doc promises — a debug build with `BYRO_LOCK_ORDER_CHECK` unset allocates nothing extra per acquisition.
-- **Check-before-insert ordering in `track_read`/`track_write` (#2384, extended #3696).** `global_order::record_and_check` — which can itself `panic!` on a detected ABBA cycle — must run and be given the chance to panic *before* the incoming acquisition's `LockState` row is inserted into the thread-local `LOCKS` map. If insertion happened first, a caller that `catch_unwind`s the ABBA panic (a test harness, or any future embedding) would be left with an orphaned row no RAII guard owns, permanently poisoning that thread's tracker. #3696 closed a gap in this same guarantee: `track_read`'s recursive-read branch used to `return` before ever reaching `record_and_check`, so a re-entrant read that closed a cycle as the *incoming* edge (thread holds H, re-reads T, some other thread already recorded `T -> H`) went unchecked; the call is now hoisted above the recursive-read early return, with `type_id` explicitly filtered out of `held_others` so the recursive row already in the map doesn't present as a trivial self-loop. Verify any refactor of `track_read`/`track_write` preserves check-then-insert on *both* the fresh-acquisition and recursive-read paths, and that `lock_tracker::is_clean()` returns `true` after a caught ABBA panic once the surviving guards are dropped (regression tests: the ABBA scenario in `lock_tracker`'s own test module asserting `is_clean()` post-`catch_unwind`, its Scenario 4b extension for the recursive-read case, and the cross-thread real-`World` scenario gated `#2387`).
-- **`global_order::GRAPH` poison recovery (#2385).** The global lock-order graph's `RwLock` is read/written via `unwrap_or_else(|poison| poison.into_inner())`, not `.expect("GRAPH poisoned")`. A legitimately-detected ABBA cycle panics *while holding* `GRAPH.write()`, which poisons that `RwLock` on any implementation that doesn't recover — every subsequent lock-order check would then itself panic with an opaque "GRAPH poisoned" message instead of reporting the next real deadlock, silently blinding the detector after its first correct catch. Flag a reintroduced `.expect(...)`/`.unwrap()` on `GRAPH.read()`/`.write()` as a HIGH regression, not a style nit.
-- **Recursive-read hazard warning, not a hard reject (#2386, de-duplicated #3249).** A second live read guard on the same `TypeId` from the same thread (typically two distinct `World` instances that happen to share a component type, since `TypeId`-only tracking can't distinguish that from a true intra-`World` recursive lock) logs a `log::warn!` instead of being silently allowed with no signal — recursive reads can deadlock behind a parked writer on some `RwLock` implementations. Pre-#3249 this fired on every 1→2 acquisition transition, so a per-frame recursive-read path warned every frame forever with no way to locate the call site among the workspace's many `query::<T>()` sites; it's now deduplicated per `(thread, TypeId)` for the life of the thread via a `WARNED_RECURSIVE_READ_TYPES` set, and `#[track_caller]` is propagated from `World::get`/`query`/`query_2_mut`/`resource`/`try_resource` through `TrackedRead::new` so the message names the actual acquisition site. Verify this stays a *warning* (not a hard reject) on the plain recursive-read path: strengthening it to a panic would break legitimate multi-`World` patterns (e.g. tooling that opens a second `World` for diffing), and dropping the warning entirely would resurrect the hazard with no diagnostic — note this is separate from the #3696 change above, which *can* still panic a recursive read that closes a real cross-type ABBA cycle under `BYRO_LOCK_ORDER_CHECK=1`. Regression tests: `recursive_read_warns_once_and_continues`, `recursive_read_warns_only_once_across_multiple_acquire_release_cycles`, `recursive_read_dedup_is_per_type_not_global`.
-- **Guard lifetime in system bodies.** No `query_mut`/`resource_mut` guard held across a call that re-enters the same storage/resource; nested query patterns (e.g. animation querying Player then Transform) must drop the first guard or use the paired *query_N_mut* accessor; no `World::insert` (structural mutation, `&mut self`) during system execution (systems hold `&World`).
-- **Poisoning.** Storage `RwLock`s poison on panic; every acquisition resolves `PoisonError` through `storage_lock_poisoned::<T>()` (re-panics with a diagnostic). Confirm no acquisition path silently `unwrap()`s a poisoned guard into torn state.
+- **Static proof first.** For the parallel batch, `undeclared_parallel_count() == 0` +
+  `unknown_pair_count() == 0` + `known_conflict_count() == 0` means no cross-thread blocking edge, hence
+  no ABBA among declared parallel systems. Enforced in every build by `install_runtime_registries`
+  (release `assert_eq!`) and in tests by `build_scheduler_reports_zero_access_conflicts` and
+  `scheduler_access_invariants_hold_on_the_real_schedule`. Declaration completeness is
+  `/audit-ecs` Dim 5's guard; its blind spots are Dim 4 below.
+- **Dynamic supplement, reachability-bounded.** `BYRO_LOCK_ORDER_CHECK=1` (debug-only, opt-in graph)
+  covers what declarations cannot: exclusive/cross-stage paths and hand-ordered N-lock holds. CI runs it
+  twice — `lock-order-check` (`cargo test --workspace`, single-threaded hand-built worlds) and
+  `vulkan-validation` (the only job where rayon dispatches the real parallel batch against a real world;
+  pinned by `vulkan_validation_job_enables_the_lock_order_detector` and
+  `vulkan_validation_job_fails_on_a_panic` in `byroredux/src/scheduler_access_tests.rs`). A green run proves only what it exercised.
+- **Canonical order.** `docs/engine/ecs.md` § Lock-ordering policy is the arbiter for hand-ordered
+  holds (`StringPool` is a sink: acquired last, nothing beneath it). New multi-lock code follows it.
+- **Guard lifetime in system bodies.** No `query_mut` / `resource_mut` guard held across a call that
+  re-enters the same storage/resource or acquires a pair the other way; nested patterns drop the first guard or
+  use `query_2_mut`; no structural mutation (`World::insert` / `spawn` need `&mut self`) inside a system.
+- **Guard ↔ sandbox boundary.** `byroredux/src/extensions/` hosts untrusted WASM behind an
+  `Arc<Mutex<ExtensionHost>>` (`ExtensionHostSlot`, `extensions/systems.rs`). Every dispatch path snapshots
+  ECS state before guest entry, drops every ECS guard, enters the guest, and commits its returned command
+  batch afterwards (`extensions/dispatch.rs` module doc; `commands.rs::enter_guest`). A host `Mutex`
+  guard or ECS guard held across guest entry — or a host function that re-acquires ECS storage the
+  caller already holds — is a deadlock/reentrancy finding. Trust-boundary questions are `/audit-safety` Dim 8.
 **Output**: `/tmp/audit/concurrency/dim_3.md`
 
-### Dimension 4: Scheduler Access Declarations (regression guard — M27 closed)
-**Entry points**: `crates/core/src/ecs/scheduler.rs`, `crates/core/src/ecs/access.rs`, `byroredux/src/commands/world_info.rs` (`sys.accesses`)
-**Status**: M27 (parallel dispatch) and R7 (access declarations) are **closed**
-(ROADMAP.md). The `parallel-scheduler` feature is **on by default**; the
-post-migration `sys.accesses` report is **0 unknown / 0 conflicts**. This
-dimension is therefore a **regression guard**, not migration tracking.
+### Dimension 4: Scheduler Proof Soundness (regression guard)
+Paths: `byroredux/src/boot/schedule/`, `byroredux/src/boot/registries.rs`, `byroredux/src/scheduler_access_tests.rs`, `crates/core/src/ecs/{scheduler,access}.rs`
+First step: `cargo test -p byroredux -- scheduler_access system_access_declaration`
+The access model and the mechanical declaration guard (`system_access_declaration_tests`,
+`PARALLEL_SYSTEMS`) are owned by `/audit-ecs` Dim 5 — one guard line here, then aim at what it cannot see.
+`sys.accesses` (`byroredux/src/commands/world_info.rs`) is the operator view of the same report.
 **Checklist**:
-- **The conflict model is sound and matches the enum.** `AccessConflict` has exactly three variants — `None`, `Unknown { left_undeclared, right_undeclared }`, `Conflict { pairs }` (`access.rs`); there is **no `Parallel` variant**. `analyze_pair` returns `Unknown` whenever either side is undeclared (the *pessimistic* fallback, not "no conflict"), `Conflict` on a write/read or write/write overlap on the same component or resource, `None` otherwise. Verify any new variant or analyzer change preserves the "undeclared ⇒ Unknown ⇒ assume serialise" semantics.
-- **Migration KPIs.** `AccessReport::undeclared_parallel_count()` is the migration KPI (the population the analyzer can reason about); `undeclared_count()` = parallel + exclusive split via `undeclared_parallel_count()` + `undeclared_exclusive_count()` (#1237). `known_conflict_count()` and `unknown_pair_count()` must stay **0** on the engine binary. A nonzero unknown count means a parallel-stage system lacks an `add_to_with_access` declaration (closures/bare fns cannot override `System::access`, so they need the registration-site channel); a nonzero known-conflict count means two declared same-stage systems overlap on a lock with at least one writer. Either breaks the static no-ABBA proof and must fail construction (#1236).
-- **Exclusive phase.** Exclusive systems run serially after the parallel batch (`StageData.exclusive`) — they're listed in the report but never paired; the two systems re-staged in M27 Phase 3 (`audio_system` in Late, `spin_system` in Update) must stay exclusive — flag any move back to parallel. The third Phase-3 resolution was a *merge*, not a re-stage: `player_controller_system` remains a parallel Stage::Early system declaring the union of `fly_camera` + `character_controller` accesses.
-- **Re-entry & panic policy.** `Scheduler` is owned by `App`, never a `Resource` — re-entry from a system body is structurally impossible (#868). Panic-in-system is fail-fast by design (#1412); do not report "missing catch_unwind" as a bug.
-- **Worked regression example: `WindField` producer/consumer pairing (#3111).** `byroredux/src/boot/schedule/early.rs`'s `weather_system` is the sole writer of `byroredux_core::ecs::components::groundcover::WindField`, registered `add_exclusive_with_access` in `Stage::Early`; `player_controller_system` (`add_to_with_access`, parallel, same stage) is one of several readers, alongside the `Stage::Late` billboard exclusive (`make_billboard_system`, moved here from `Stage::PostUpdate` under #3652 — see the cross-stage bullet below for exactly why), `physics_sync_system` (parallel, `Stage::Physics`), and `submersion_system` (exclusive, `Stage::Late`). `Scheduler::run` always finishes a stage's whole parallel phase (rayon `par_iter_mut`) before starting that stage's exclusive phase serially, so `weather_system` running exclusive-in-`Stage::Early` structurally cannot race `player_controller_system`'s parallel read in the same stage — that's the actual mechanism the #3111 comment is asserting. Two distinct regressions to check for here, and only the first is caught by the KPIs above:
-  - `weather_system` flipped from `add_exclusive_with_access` to `add_to_with_access` while remaining in `Stage::Early`: this produces a real same-stage parallel Read/Write `Conflict` row against every other `WindField` reader in that stage, so `known_conflict_count()` leaving 0 is the automatic catch.
-  - A `WindField` writer (`weather_system` or a future one) moved to a stage that executes *after* one of its readers' stages, or a reader moved to execute *before* the writer's stage: `analyze_pair` only reasons about pairs within the same stage, so a cross-stage sequencing mistake is **invisible to the conflict/unknown counters** and must be checked by hand — it would silently make that reader consume the previous frame's `WindField` instead of the current one. `known_conflict_count() == 0` is necessary but not sufficient evidence that a single-writer/multi-reader resource like this one is still sequenced correctly. **This exact class of bug shipped for real** (#3652, different resource: `make_billboard_system` and `footstep_system` sat in `Stage::PostUpdate` — *before* `Stage::Physics`/`Stage::Late` — reading `GlobalTransform` that `camera_follow_system` (`Stage::Late`) had only written for frame N-1, one frame stale; `analyze_pair`'s intra-stage-only reasoning kept every scheduler-conflict KPI green throughout). Both were fixed by moving the *consumer* to a `Stage::Late` exclusive after the writer's parallel batch, not by moving the writer earlier — check any future WindField-style single-writer/multi-reader resource for the same shape before trusting a green KPI report.
+- **Confirm the proof is live**: the two tests above are not `#[ignore]`d, the report's non-vacuity floors
+  (≥9 parallel systems, ≥7 pairs) still hold, and `PARALLEL_SYSTEMS.len()` equals the `add_to_with_access(` count.
+- **Blind spots of the guard** (audit by hand): acquisitions via `world.get` / `get_mut` / `has`,
+  `query_2_mut`, `resource_2_mut` or inferred types (the scan reads only turbofish `query` / `query_mut` /
+  `resource` / `resource_mut`); cross-file helper hops not listed in the table; closures and macros;
+  exclusive systems (only two are scanned — `papyrus_provider_system`, `legacy_obscript_load_order_system`).
+  An under-declared parallel system makes `known_conflict_count() == 0` unsound (the same-session
+  `fly_camera_system` `GlobalTransform` write is the precedent, commit ac1d44f5c).
+- **Cross-stage sequencing is invisible to the analyzer** (`analyze_pair` reasons within one stage). A
+  consumer in an earlier stage than its single producer silently reads last frame's value while every KPI
+  stays green. Pinned today: `player_wind_read_is_declared_and_weather_writer_is_exclusive` (WindField:
+  weather is an Early exclusive registered after the parallel player controller, so the controller reads
+  the previous frame's wind by design, #3111/#4186), `billboard_runs_after_camera_follow_in_late`,
+  `footstep_runs_after_camera_follow_in_late`, `submersion_runs_after_camera_follow_and_before_water_audio`
+  (#3652/#3180/#4185 — each was a real one-frame-stale bug). For any NEW single-writer / multi-reader resource,
+  check writer-stage ≤ reader-stage and that a test like these pins it; fix by moving the *consumer* to
+  a Late exclusive after the writer, not by moving the writer.
+- **Exclusives** run serially after the parallel batch and are never paired; undeclared ones are by design (a
+  system demoted to exclusive to clear a conflict stays exclusive). Flag only a *parallel* system that lost its declaration.
 **Output**: `/tmp/audit/concurrency/dim_4.md`
 
 ### Dimension 5: RwLock Patterns — Resource↔Storage & Physics Step
-**Entry points**: `crates/physics/src/sync.rs` (`physics_sync_system`, `set_linear_velocity`, `set_kinematic_translation`), `crates/physics/src/world.rs` (`PhysicsWorld`), `crates/physics/src/components.rs` (`RapierHandles`), `crates/physics/src/config.rs` (`ContactConfig`), `byroredux/src/cell_loader/unload.rs` (`release_victim_rapier_bodies`), `byroredux/src/systems/character.rs`
+Paths: `crates/physics/src/{sync,world,components,config}.rs`, `byroredux/src/cell_loader/unload.rs`, `byroredux/src/systems/character.rs`, `byroredux/src/ragdoll.rs`
+First step: `cargo test -p byroredux-physics sync` and `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux-physics`
 **Checklist**:
-- **TypeId-sorting does NOT cover the Resource↔Storage pair.** The deadlock-prevention sort in *query_N_mut* orders *storage* locks; a Resource lock (`resource_mut`) and a storage lock (`query`/`query_mut`) are an unordered pair. So no `resource_mut::<PhysicsWorld>()` guard may be held across a `query`/`query_mut` iteration and vice-versa. `physics_sync_system` is a multi-phase system, numbered in its own `BYRO_PROFILE` comment: Phase 1 collect newcomers + register, Phase 2 push kinematic, Phase 2.5 water buoyancy (WATAL Phase 2, `crate::water::apply_buoyancy`), Phase 3 Rapier step, Phase 4 pull dynamic. Verify Phase 1 `collect_newcomers` collects to a `Vec` under read guards and **drops them** before `register_newcomers` takes the `PhysicsWorld` + `RapierHandles` write guards.
-- **The canonical lock order in `docs/engine/ecs.md` is the arbiter — three cycles were closed against it in Session 76.** Each was a genuine 2-cycle in `lock_tracker`'s single `TypeId` graph (which keys storages and resources together), each aborts a `BYRO_LOCK_ORDER_CHECK=1` session once both edges are observed, and each was fixed the same structural way — **snapshot, then acquire**, never "hold both and be careful":
-  * `Transform -> GlobalTransform` is canonical (`make_transform_propagation_system`). `pull_dynamic` (`crates/physics/src/sync.rs`) used to hold `Parent` + `GlobalTransform` + `Transform` read guards together and closed the reverse edge, reachable in production via `ground_character_body_at` (door / cell-transition arrival) → `physics_sync_system` → `pull_dynamic`. Split into two sequential passes: parent-relative resolution first (`Parent` + `GlobalTransform`, collected into an intermediate `Vec`), sleeping-skip check second (`Transform` alone), with the global guard dropped before the transform guard is acquired (#3303, `df162912`). Same shape as #3260's fix for `camera_follow_system`. Guard: `pull_dynamic_does_not_close_transform_global_transform_lock_cycle` — it recreates the forward edge and drives a parented dynamic body under the opt-in detector, and was confirmed to panic pre-fix.
-  * `CharacterRuleset -> ActorValues` is now the recorded canonical direction (`docs/engine/ecs.md` named neither type before). `evaluate_function`'s `GetActorValue` arm held its `ActorValues` storage guard across a `CharacterRuleset` resource read, while `pool_regen_tick_system` and `melee_damage_charal_bonus` take the pair the other way round — the former for write. The arm now snapshots what the ruleset branch needs (cloning `ActorValues` only on the rare fall-through, *after* the carried-value fast path has returned) and reads `CharacterLevel` before touching the ruleset (#3441, `b28acb0c`). Guard: `get_actor_value_does_not_hold_actor_values_across_ruleset`.
-  * #3312 (`911ac31f`) swept the residual edges left after those two.
-  The lesson to apply, not just record: a cycle here is almost never "two systems disagree about an order" — it is one site holding a guard across a call that acquires the pair the other way. Look for the *hold across a call*, and fix it by snapshotting, not by reordering the other site.
-  Session 76 was not the end of this sweep. #3580 (`acaf247e`, one day later) found the CI lock-order job still red on five more live cycles of the same class: `combat_approach_line_of_sight_reaches` bound `PhysicsWorld` across `RapierHandles`/`ActorColliderOwner` storage reads (closing a ring against the canonical `RapierHandles -> GlobalTransform` / `GlobalTransform -> PhysicsWorld` edges), plus `Inventory<->EquipmentSlots` (`crates/save`'s `validate_equipment` vs. `crates/scripting`'s TypeId-ordered `query_2_mut_mut`), `EquipmentSlots<->Inventory` again in `condition::evaluate`'s `GetEquipped` arm, `QuestStageState<->SceneRegistry`, and `PlayerEntity->QuestStageAdvancedBatch`. #3446 (`c27a6868`, same day) separately fixed a `StringPool` ordering violation and made explicit in `docs/engine/ecs.md` that `StringPool` is a *sink* (no outgoing edges) — a second site acquiring it mid-graph is the same class of regression. #3819 (2026-09-03) is the actual headline: `BYRO_LOCK_ORDER_CHECK=1 cargo test --workspace` is now the CI lock-order-check job (not just an ad hoc opt-in run), and had drifted to 26 failures across four more cycle families before being greened — see the "Static proof vs `lock_tracker` coverage" bullet above. Treat "how many cycles has this canonical order closed" as an open, growing count, not a fixed three.
-- **Helper lock order.** `set_linear_velocity` / `set_kinematic_translation` read `RapierHandles` via `world.query::<RapierHandles>()...copied()` (the read guard drops at the end of the `match`/`let` expression because the handle is `Copy`), *then* take `resource_mut::<PhysicsWorld>()`. Confirm the read guard is genuinely dropped before the write guard, and that callers (e.g. `character_controller_system`) don't already hold a `PhysicsWorld` guard when they call these.
-- **`ContactConfig`** is read via `try_resource` (optional) and snapshotted once per batch in `register_newcomers` — confirm it is not re-locked inside the per-newcomer loop.
-- **Cell-unload teardown (#1520).** `release_victim_rapier_bodies` (`unload.rs`) collects each victim's `RapierHandles` into a scratch `Vec` under the storage read guard, drops it, then removes bodies/colliders from `PhysicsWorld` — same release-reads-before-write discipline; verify it runs before the despawn loop drops the handles.
-- **Single-threaded placement.** `physics_sync_system` runs in `Stage::Physics` after transform propagation and must not be co-scheduled (parallel) with any other system that touches `PhysicsWorld` / `RapierHandles` / `Transform`.
+- **TypeId sorting does not cover Resource↔Storage.** A `resource_mut` and a `query`/`query_mut` are an
+  unordered pair, so no `resource_mut::<PhysicsWorld>()` guard may span a storage-query iteration or
+  vice versa. `physics_sync_system` phases (numbered in its own comments): 1 collect newcomers +
+  register, 2 push kinematic, 2.5 water buoyancy (`crate::water::apply_buoyancy`), 3 Rapier step, 4 pull
+  dynamic. Phase 1 `collect_newcomers` collects to a `Vec` under read guards and **drops them** before
+  `register_newcomers` takes the `PhysicsWorld` + `RapierHandles` write guards.
+- **Fix shape for every closed cycle: snapshot, then acquire** — never "hold both and be careful". A
+  cycle here is almost never two systems disagreeing on an order; it is one site holding a guard *across a
+  call* that acquires the pair the other way. `docs/engine/ecs.md` records the canonical direction; guards to
+  confirm are live: `pull_dynamic_does_not_close_transform_global_transform_lock_cycle`
+  (`crates/physics/src/sync.rs`, `Transform -> GlobalTransform`) and
+  `get_actor_value_does_not_hold_actor_values_across_ruleset` (`crates/scripting/src/condition.rs`,
+  `CharacterRuleset -> ActorValues`). The count of closed cycles is open and growing — the CI
+  lock-order job (Dim 3) is what finds the next one; a second site acquiring `StringPool` mid-graph is the same class.
+- **Helper order.** `set_linear_velocity` / `set_kinematic_translation` read `RapierHandles` via
+  `world.query::<RapierHandles>()…copied()` (guard drops with the expression), *then* take
+  `resource_mut::<PhysicsWorld>()`; callers (e.g. `character_controller_system`) must not already hold a
+  `PhysicsWorld` guard.
+- **`ContactConfig`** is read via `try_resource` and snapshotted once per batch in `register_newcomers`, not re-locked per newcomer.
+- **Cell-unload teardown (#1520).** `release_victim_rapier_bodies` (`unload.rs`) collects victims'
+  `RapierHandles` under the read guard, drops it, then removes bodies from `PhysicsWorld`, before the despawn loop drops the handles.
+- **Placement.** `physics_sync_system` is a Physics-stage parallel system after transform propagation and
+  must not be co-scheduled with another system touching `PhysicsWorld` / `RapierHandles` / `Transform`
+  (a declared conflict would already fail Dim 4's proof).
 **Output**: `/tmp/audit/concurrency/dim_5.md`
 
 ### Dimension 6: Resource Lifecycle (GPU teardown ordering)
-**Entry points**: `crates/renderer/src/vulkan/context/teardown.rs` (`impl Drop for VulkanContext`, not `context/mod.rs` — moved under #1749), all `destroy()` methods, `crates/renderer/src/vulkan/buffer.rs`, `crates/renderer/src/vulkan/acceleration/`, `crates/renderer/src/vulkan/context/resize.rs`, `crates/renderer/src/vulkan/egui_pass.rs`, `crates/renderer/src/vulkan/scene_buffer/`, `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/image.rs` (`GpuImage`, the shared image-lifecycle type the 2026-09 GpuImage migration series routed most passes' create/bind/destroy through)
+Paths: `crates/renderer/src/vulkan/context/{teardown,resize}.rs`, `crates/renderer/src/vulkan/{buffer,image,egui_pass,material}.rs`, `crates/renderer/src/vulkan/{acceleration,scene_buffer}/`
+First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/teardown.rs`
 **Checklist**:
-- **Destruction order is NOT reverse-creation order (corrected 2026-08-30, #3658/CONC-D6-2026-08-30-02)** — `destroy_allocator_owned_resources` (`context/teardown.rs`) actually starts with `texture_registry`, the *first*-created subsystem, and after the `device_wait_idle` its contract requires, Vulkan imposes no cross-subsystem destroy ordering at all (a descriptor set may name an already-destroyed image view as long as it's never used again). Only four local orderings are load-bearing, each commented at its own site: `skin_slots` before `skin_compute`; placeholders after the passes whose descriptors name them; `frame_upscaler::destroy_allocations` after `destroy_device_objects`; and `exposure` before the `Arc::try_unwrap`. Do not flag a "reverse-creation order" violation on its own — flag only a violation of one of those four named orderings, or an `Arc::try_unwrap`/allocator-freed-early hazard. Drop reached for all GPU resources; allocator freed last. #1483 hoisted allocator-independent destroys (no gpu-allocator memory — e.g. query pools) out of the `Some(allocator)` guard in Drop so they'd also run on an allocator-`None` Drop path; that path is hypothetical at HEAD (`VulkanContext::allocator` is never set to `None` before `Drop` runs) but the hoist stays as defence-in-depth — verify no resource that *needs* the allocator is destroyed after the guard is dropped.
-- **No use-after-destroy across swapchain recreate.** G-buffer / SVGF / TAA / caustic / water-caustic / volumetrics (`lighting_volumes` + `integrated_volumes`) / bloom (`down_mips` + `up_mips`) / composite resources rebuilt on recreate; per-FIF history/accumulator images freed for every in-flight slot; egui framebuffers rebuilt (`resize.rs`).
-- **AS cleanup on shutdown.** All `BlasEntry` buffers + `TlasState` buffers + scratch released; per-skinned-entity skin output buffers retained until the owning entity is destroyed.
-- **Other GPU SSBO/descriptor cleanup.** `scene_buffer` cleanup, `MaterialBuffer` SSBO (R1), texture registry, `EguiPass::destroy()` (releases egui-ash-renderer resources + framebuffers; `egui_pass: Option<EguiPass>` taken/dropped in reverse order in `context/teardown.rs`'s `impl Drop for VulkanContext`).
-- **Per-frame leaks.** Any descriptor / command-buffer / staging allocation created per frame but not freed/reset is HIGH (compounds).
+- **Destruction order is NOT reverse-creation.** After the `device_wait_idle` its contract requires,
+  `destroy_allocator_owned_resources` (`context/teardown.rs`) imposes no cross-subsystem order. Only
+  **three** orderings are load-bearing, each commented at its site: `skin_slots` before `skin_compute`
+  (a real `VUID-vkFreeDescriptorSets-descriptorPool-parameter` otherwise); `frame_upscaler::destroy_allocations`
+  after `destroy_device_objects`; `exposure` before the `Arc::try_unwrap`. The 1×1 placeholders are
+  allocator-backed (destroy before `allocator.take()`) but not order-constrained (#4188). Flag a violation of one
+  of those, an allocator-freed-early / `Arc::try_unwrap` hazard, or a resource that needs the allocator destroyed
+  after it — not a "reverse-creation" mismatch.
+- **Swapchain recreate.** G-buffer, SVGF, TAA, caustic, water-caustic, volumetrics, bloom, composite and
+  egui framebuffers are rebuilt; per-FIF history/accumulator images freed for every in-flight slot (`resize.rs`).
+- **AS cleanup on shutdown.** All `BlasEntry` buffers, `TlasState` buffers and scratch released; per-entity skin outputs kept until the entity is destroyed.
+- **Other GPU cleanup.** `scene_buffer`, `MaterialBuffer`, texture registry, `EguiPass::destroy()`
+  (`Option<EguiPass>` taken in `Drop`), and `GpuImage` (`vulkan/image.rs`), which routes most passes' image
+  create/bind/destroy through one lock rule: a poisoned allocator lock is recovered, not unwrapped (#4089).
+- **Per-frame leaks.** Any descriptor / command-buffer / staging allocation created per frame but not freed or reset is HIGH.
 **Output**: `/tmp/audit/concurrency/dim_6.md`
 
-### Dimension 7: Worker Threads (Streaming, Debug Server) & Thread-Safety Bounds
-**Entry points**: `byroredux/src/streaming.rs` (M40 async pre-parse worker), `crates/debug-server/src/listener.rs` (per-client TCP threads), `crates/debug-server/src/system.rs` (`DebugDrainSystem`), `crates/debug-ui/src/lib.rs`, all types with `Send + Sync` bounds (`Component`, `Resource`), `crates/renderer/src/vulkan/allocator.rs` (`SharedAllocator`)
+### Dimension 7: Worker Threads & Thread-Safety Bounds
+Paths: `byroredux/src/streaming.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/lib.rs`
+First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs' crates byroredux tools | grep -v test` (a new worker thread outside this list is a coverage gap)
 **Checklist**:
-- **Streaming Drop ordering (#1167).** `WorldStreamingState::request_tx` is `Option<mpsc::Sender<LoadCellRequest>>` and `worker` is `Option<JoinHandle<()>>`. `Drop` no longer orders field drops by hand — it delegates entirely to `shutdown(&mut self, timeout)`, which is the one place the sequencing lives: take the `worker` `JoinHandle` out of `self` first, then `take()` + drop `request_tx` to close the channel (so the worker's next `request_rx.recv()` errors and it exits), *then* `join_with_timeout` the handle. `Drop::drop` is purely a safety net (`self.shutdown(Duration::from_secs(1))`) for exit paths that don't call `shutdown` explicitly; a prior explicit `shutdown()` call already left `worker`/`request_tx` at `None`, so `Drop`'s own call short-circuits and the join runs exactly once. Verify `shutdown` still takes `worker` before dropping `request_tx`, and drops/closes the channel before calling `join_with_timeout`.
-- **Worker ↔ main data flow.** Parsed cell payload moves to the main thread via channel — no shared `&mut World` from the worker. Off-thread NIF/texture extract goes through `Arc<TextureProvider>` whose inner `BsaArchive`/`Ba2Archive` serialise `File` access via Mutex (concurrent extracts safe). External-material resolution (the free fn `merge_external_material`, which takes `&mut ImportedMaterial` + `&mut MaterialProvider` + `&mut StringPool` — it is NOT a `MaterialProvider` method) stays main-thread-only — confirm the worker doesn't touch it. Three `&mut` borrows in one signature is the reason: `MaterialProvider`'s caches (`bgsm_cache`/`bgem_cache`/`csg_cache`/`failed_paths`) and the shared `StringPool` are both mutated, so moving this off-thread needs a real synchronisation story, not just a clone. NIF import cache (`Resource`) accessed from the worker must use a read-only fast path with write-back deferred to main.
-- **Debug server.** Per-client TCP threads do **not** touch the World directly — all mutations route through `DebugDrainSystem` on the main thread (Late-stage exclusive). The command queue between listener and main thread must be bounded (no unbounded buffering on a slow main loop). Screenshot readback completes on a fence wait — verify no race between the drain system and present.
-- **Allocator sharing.** `SharedAllocator = Arc<Mutex<vulkan::Allocator>>` (`allocator.rs`) is held by `VulkanContext` and cloned into `EguiPass` (`egui_pass.rs`), volumetrics, ssao, scene_buffer, etc. All dispatch runs single-threaded inside `draw_frame`; the only correctness concern is that no holder keeps the Mutex locked across a queue submit. The egui overlay dispatch runs after composite on the main loop.
-- **`Send + Sync` bounds.** Component/Resource storage reached only through World query/resource guards; no raw pointer shared across threads; cxx-bridge pointer lifetimes bounded; Ruffle/wgpu (UI) device is `Send` but not `Sync` — confirm it stays on one thread.
-- **Out of scope:** parse-time `Material` translation (`byroredux/src/material_translate.rs::translate_material`, `Material::resolve_pbr`) is single-threaded with no Mutex/RwLock/resource_mut — see `/audit-nifal` for that boundary.
+- **Streaming worker shutdown.** `WorldStreamingState::shutdown` takes the `worker` handle first, then
+  drops `request_tx` (the worker's `recv()` errors and it exits), *then* `join_with_timeout` (poll on
+  `is_finished`, no watcher thread); `Drop` only calls `shutdown(1 s)` as a safety net, so a prior explicit
+  shutdown short-circuits it. The worker runs each cell under `catch_unwind`
+  (`pre_parse_cell_panic_safe`).
+- **Worker ↔ main flow.** Parsed payloads move to the main thread over a channel; no shared `&mut World`.
+  The worker uses `Arc<TextureProvider>` (BSA/BA2 `File` reads serialised by a `Mutex`). External-material
+  resolution (`merge_external_material`, which takes `&mut ImportedMaterial` + `&mut MaterialProvider` +
+  `&mut StringPool`) is main-thread-only — moving it needs a real synchronisation story. The NIF import
+  cache is read-only on the worker with write-back deferred to main.
+- **Debug server (thread/lock shape only; command surface is `/audit-tooling`).** Per-client TCP threads
+  never touch the `World`: they enqueue into a bounded queue (`MAX_QUEUED_COMMANDS`, client cap
+  `MAX_CONCURRENT_CLIENTS`, `listener.rs`) and `DebugDrainSystem` (Late exclusive) executes on the main
+  thread. Screenshot readback completes on a fence wait — check the drain/present race.
+- **Allocator sharing.** `SharedAllocator = Arc<Mutex<Allocator>>` is cloned into the egui pass,
+  volumetrics, SSAO, scene buffers, etc.; no holder keeps it locked across a queue submit or a
+  fence wait. The egui pass takes the queue as a `Mutex` so its lock scopes to the `set_textures` submit (#1713).
+- **`Send + Sync` bounds.** Component/Resource storage is reached only through World guards; no raw
+  pointer crosses threads; the Ruffle/wgpu device (`crates/ui`) is `Send` but not `Sync` and stays on one
+  thread; kira runs its own audio thread behind `AudioWorld` — no ECS guard is held across a kira call.
+- Out of scope: parse-time `Material` translation is single-threaded (`/audit-nifal`).
 **Output**: `/tmp/audit/concurrency/dim_7.md`
 
 ## Phase 3: Merge
 
-1. Read all `/tmp/audit/concurrency/dim_*.md` files
-2. Combine into `docs/audits/AUDIT_CONCURRENCY_<TODAY>.md`
-3. Remove cross-dimension duplicates
+1. Read all `/tmp/audit/concurrency/dim_*.md`. 2. Combine into `docs/audits/AUDIT_CONCURRENCY_<TODAY>.md`. 3. Remove cross-dimension duplicates.
 
-Suggest: `/audit-publish docs/audits/AUDIT_CONCURRENCY_<TODAY>.md`
-(domain label: `concurrency` for CPU-side lock ordering / access declarations, `sync`
-for GPU-side semaphore/fence/barrier findings.)
+Suggest: `/audit-publish docs/audits/AUDIT_CONCURRENCY_<TODAY>.md` (domain label *concurrency* for CPU-side
+lock ordering / access declarations, *sync* for GPU-side semaphore/fence/barrier findings).

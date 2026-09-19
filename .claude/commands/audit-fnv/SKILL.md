@@ -1,192 +1,112 @@
 ---
-description: "Per-game audit of Fallout New Vegas compatibility — reference title, ESM + cells + RT lighting + ragdoll"
+description: "Per-game audit of Fallout New Vegas compatibility — reference title: cell load, ESM/NIF data, ragdoll, ambient AI, consumables, HUD profile"
 argument-hint: "--focus <dimensions>"
 ---
 
 # Fallout New Vegas Compatibility Audit
 
-Deep audit of ByroRedux readiness for **Fallout: New Vegas** content. FNV is the **reference title** — the most-validated end-to-end path in the engine and the *reference realization* for the canonical translation layers (NIFAL material/physics, PHYSAL ragdoll). Audits here hunt regressions and unshipped polish, not missing foundations: a foundation that broke on FNV is the single highest-severity finding this command can produce.
+FNV is the **reference title** — the most-validated end-to-end path and the reference realization for NIFAL material/physics and PHYSAL ragdoll. This audit owns **FNV's data through the shared mechanisms** (routing: `.claude/commands/_audit-owners.md`); a defect in the mechanism itself is filed against its owner audit, named under each dimension. A foundation that broke on FNV is the highest-severity finding this command can produce; the rest is regressions and unshipped polish.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for the master project-layout map, key reference docs, game-data locations, methodology, dedup rules, and finding format. See `.claude/commands/_audit-severity.md` for severity.
+Read `.claude/commands/_audit-common.md` (layout, methodology, dedup, finding format) and `.claude/commands/_audit-severity.md` for shared protocol.
 
 ## Game Context
 
-| Aspect         | State                                                                                  |
-|----------------|----------------------------------------------------------------------------------------|
-| NIF format     | v20.2.0.7 · `bsver` 34 (`bsver::FO3_FNV` in `crates/nif/src/version.rs`)                |
-| BSA format     | v104 — `crates/bsa/src/archive/`                                                        |
-| ESM parser     | Long-tail dispatch closed; `unknown_records` catch-all removed                          |
-| Ragdoll        | PHYSAL slice 1 *reference* (classic bhk chain) — `byroredux/src/ragdoll.rs`             |
-| Reference data | `/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/`                       |
+| Aspect | State |
+|---|---|
+| NIF / BSA | v20.2.0.7, `bsver` 34 (`bsver::FO3_FNV`) · BSA v104 (`crates/bsa/src/archive/`) |
+| Archive priority | Last-listed wins per pool; `Update.bsa` is listed last in all three FNV pools (`assets/debug_profiles.toml`). Guard: `byroredux/src/asset_provider/tests/archive_precedence.rs` |
+| Reference data | `/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/` |
+| Baselines (pull, never hardcode) | `ROADMAP.md` FNV row (parse rate + Prospector bench-of-record and its commit), `docs/feature-matrix.md`, `.claude/audit-baselines/runtime/fnv-FreesideAtomicWrangler.tsv`, `crates/nif/tests/data/per_block_baselines/fallout_nv.tsv` |
 
-**Authoritative status** — do NOT hardcode counts here (they rot). Pull live from:
-- `ROADMAP.md` — per-game compat matrix (FNV parse rate, the Prospector bench-of-record entity/FPS/fence/draw numbers + the commit they were taken at), Known Issues.
-- `docs/feature-matrix.md` — what works at runtime on FNV per subsystem.
-
-The Prospector Saloon bench is the FNV bench-of-record; treat any drop below the ROADMAP-recorded numbers (at the recorded commit) as the regression baseline. The full pre-collider FNV baseline has not been recovered — see ROADMAP Known Issues before flagging fence/FPS as a fresh regression.
+**Authoring census** (byte-scan of the shipped data, 2026-09-19 — these prevent false findings):
+- 20 archives / 182 177 entries: **0 `_far.nif`, 0 `distantlod\`**. FNV object LOD is `ObjectLodScheme::FalloutLegacyBlocks`; `placement_lod_supported` is Oblivion-only (`placement_lod_supported_is_oblivion_only`). FNV also ships 25 `<world>.level4.high.x<X>.y<Y>.nif` quads (6 in `Fallout - Meshes.bsa`, 19 in `LonesomeRoad - Main.bsa`) that no code path consumes — the same fidelity-only gap as open #4468 (filed for FO3 only; not a coverage hole).
+- FalloutNV.esm: **98 SCOL bases / 1 084 REFRs**; 0 MOVS / PKIN / MSWP; 219 `XATO` (all *Activation Prompt* strings, #3511 — not texture overlays) and 0 `XTNM` / `XTXR`.
+- 989 `BSSegmentedTriShape` blocks (`fallout_nv.tsv`).
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3`). Default: all 9.
+`--focus <dimensions>`: comma-separated numbers (e.g. `1,3`). Default: all 6.
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS`.
-2. `mkdir -p /tmp/audit/fnv`.
-3. Dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/issues.json`.
-4. Confirm `Fallout New Vegas/Data/` exists (required — FNV is the baseline).
-5. Read the FNV row of `ROADMAP.md`'s compat matrix + `docs/feature-matrix.md` to capture the *current* baseline numbers and commit. Every "regression" claim is judged against those, not against numbers written into this skill.
+1. Parse `$ARGUMENTS`; `mkdir -p /tmp/audit/fnv`.
+2. Dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/issues.json`.
+3. Confirm `Fallout New Vegas/Data/` exists (required — FNV is the baseline).
+4. Read the FNV rows above; every "regression" is judged against them, not against numbers in this skill.
+5. Scope by delta: `git log --since=<last AUDIT_FNV date> --format='%h %cs %s' -- <dimension Paths>`; skim dimensions whose Paths did not change.
+6. Toolchain: the `byroredux` bin crate needs rustc >= 1.94 — use the rustup cargo per `docs/contributing.md` § Toolchain note (#4466) or bin-crate tests give no feedback.
 
 ## Phase 2: Launch Dimension Agents (parallel)
 
-Dimensions are ordered by current FNV risk: the layers most likely to silently break FNV first (cell load + canonical translation + RT), regression guards last.
+Ordered by FNV risk: cell load first (highest blast radius), gameplay-data slices last.
 
-### Dimension 1: Cell Loading End-to-End (highest blast radius)
+### Dimension 1: Cell Loading & Streaming
 **Subagent**: `general-purpose`
-**Entry points**: `byroredux/src/cell_loader/` (`cell_loader.rs` is a thin dispatcher), `byroredux/src/scene/world_setup.rs`, `byroredux/src/streaming.rs`
-Companion docs: `docs/engine/pipeline-overview.md` (interior cell load trace) and
-`docs/engine/exterior-grid-streaming.md` (exterior grid, background pre-parse,
-cell-boundary + door-teleport swaps) — verified against the tree 2026-07-15 and
-2026-07-27 respectively (each doc's own currency note has the exact date).
-**Checklist**:
-- Interior load — Prospector Saloon entity count + XCLL lighting + `NiAlphaProperty` decal routing.
-- Exterior 7×7 (radius 3) WastelandNV grid — LAND terrain (`byroredux/src/cell_loader/terrain.rs`), LTEX/TXST splat, WTHR→CLMT→WTHR resolution, cloud texture resolution through the asset provider's `TextureProvider`.
-- `NifImportRegistry` Arc cache (`byroredux/src/cell_loader/nif_import_registry.rs::CachedNifImport`) prevents duplicate parsing across cells.
-- **Cell unload hygiene (regression guard)**: `byroredux/src/cell_loader/unload.rs` must drop BLAS per freed mesh handle and release physics bodies. **#1520 (`34c7a218`): Rapier bodies/colliders are released on unload** — verify the unload path frees them (covered by `byroredux/src/cell_loader/rapier_release_tests.rs`); a leak here compounds per cell-streaming cycle. Also check the `inventory_release_tests.rs` / `unload_skin_cleanup_tests.rs` siblings.
-- M38 water — `byroredux/src/cell_loader/water.rs` spawns `WaterPlane` per cell; `byroredux/src/systems/water.rs::submersion_system` writes camera submersion state on entry.
-- **Object LOD — `ObjectLodScheme::FalloutLegacyBlocks`** (#3321, `e23a9908`; the newest and least-reviewed FNV LOD code). Verify on the WastelandNV exterior grid:
-  - quad path shape `meshes\landscape\lod\<world>\blocks\<world>.level<L>.x<qx>.y<qy>.nif` (`cell_loader/object_lod.rs::object_lod_archive_path`);
-  - the shared atlas `textures\landscape\lod\<world>\blocks\<world>.buildings.dds` resolving out of `Fallout - Textures2.bsa` (`object_lod_atlas_path`);
-  - the legacy-ladder arm of `LodBandLadder::for_object_game` (`cell_loader/lod_bands.rs`).
-  Census pin (2026-08-27, all 20 FNV BSAs / 182 177 entries): **0 `_far.nif`, 0 `distantlod\` entries** — FNV ships neither, and `placement_lod_supported` is Oblivion-only by construction (`cell_loader/placement_lod.rs:313-315`, pinned by `placement_lod_supported_is_oblivion_only`). Do not re-derive this; the `_far.nif` route can only ever confirm a no-op here.
+**Paths**: `byroredux/src/cell_loader/` (general files; `terrain*`, `water.rs`, `lod*`, `object_lod.rs`, `placement_lod.rs` are `/audit-exterior`), `byroredux/src/scene/`, `byroredux/src/streaming.rs`, `docs/engine/pipeline-overview.md`, `docs/engine/exterior-grid-streaming.md`
+**First step**: `git log --since=<date> --format='%h %cs %s' -- byroredux/src/cell_loader byroredux/src/scene byroredux/src/streaming.rs`
+- Interior `GSProspectorSaloonInterior`: entity/draw counts vs the ROADMAP row; XCLL lighting resolves (`fog_far_color` optional field; an authored LIGH falloff of 0.0 must resolve to the pre-Skyrim quadratic default, `falloff_exponent_sentinel_resolves_per_layout_generation` in `byroredux/src/systems/light_anim.rs`); `NiAlphaProperty` decal routing.
+- Exterior WastelandNV radius 3 and the FNV-specific data: default land texture `DirtWasteland01.dds` via `DefaultLandTexture::for_game` (guard `default_land_textures_exist_in_vanilla_archives`, `--ignored`); WTHR/CLMT/terrain/water translation mechanism -> `/audit-exterior`. Repeatable gate: `docs/smoke-tests/m-exteriors.sh fnv static|boundary|soak|cycle|water`.
+- Cache and unload hygiene (mechanism: `/audit-safety` Dim 3, `/audit-performance`): `NifImportRegistry` Arc cache (`byroredux/src/cell_loader/nif_import_registry_tests.rs`); unload frees BLAS / Rapier / skin / inventory state (`rapier_release_tests.rs`, `inventory_release_tests.rs`, `unload_skin_cleanup_tests.rs`, `unload_greyscale_lut_tests.rs`, all under `byroredux/src/cell_loader/`). FNV check: after a Prospector -> Goodsprings -> Prospector round trip `stats` returns to baseline.
+- Persistent reference state across a cell round trip (door/loot/pickup state, `byroredux/src/cell_loader/reference_state.rs` — mechanism `/audit-gameplay`, `/audit-save`): `docs/smoke-tests/p0-door-interaction.sh fnv`, `p5-save-restart.sh fnv`.
 **Output**: `/tmp/audit/fnv/dim_1.md`
 
-### Dimension 2: NIFAL Canonical Translation — FNV Slice
-**Subagent**: `legacy-specialist`
-**Entry points**: `byroredux/src/material_translate.rs`, `crates/core/src/ecs/components/material.rs`, `crates/nif/src/import/collision/mod.rs`, `docs/engine/nifal.md`
-**Checklist**: FNV is the reference content for this boundary, so it must be exercised here first.
-- `material_translate.rs::translate_material` is the **single** `ImportedMesh → Material` boundary — no second per-game material path may exist.
-- FNV materials land with `Material::metalness` / `roughness` as **plain resolved `f32`** (`material.rs`), not `Option`. `Material::resolve_pbr` (→ `classify_pbr_keyword`) runs **once** at translation — there must be no per-draw keyword scan in `byroredux/src/render/static_meshes.rs` (the old render-time `Material::classify_pbr` is deleted).
-- **EmissiveSource guard**: FNV legacy emissive uses `EmissiveSource::Material` (the genuine `NiMaterialProperty.emissive_mult` scalar). The `EmissiveSource` enum (`material.rs`) carries `Material` / `Lighting` / `Effect` variants; Skyrim+ `Lighting` and FO4+ `Effect` must not bleed into the FNV `Material` path (~1.0 scale untouched).
-- **Collision-shape no-drop guard (`9c6096aa`)**: `BhkMultiSphereShape` + `BhkConvexListShape` translate to `CollisionShape` via `collision/shape.rs::resolve_shape` (Compound of `Ball` children / `ConvexHull`) — previously silently dropped. Any FNV mesh with a multi-sphere / convex-list Havok shape must surface a `CollisionShape`.
-- **No-fabrication invariant**: translation may not invent PBR values FNV never authored; keyword-classified dielectric defaults are fine, fabricated metalness is not.
-- See `/audit-nifal` for the dedicated single-boundary / no-fabrication / no-render-time-fallback audit.
+### Dimension 2: ESM Data Slice (FalloutNV.esm)
+**Subagent**: `general-purpose`
+Routing: GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap -> `/audit-esm`. This dimension owns the semantics that only show on FNV's masters.
+**Paths**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/`, `crates/plugin/src/equip.rs`, `crates/plugin/tests/parse_real_esm.rs`
+**First step**: `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored parse_rate_fnv_esm` (one test at a time; whole-file `--ignored` runs can spike >20 GB).
+- `index.total()` >= `FNV_TOTAL_FLOOR` and the ROADMAP/feature-matrix record counts; do not transcribe counts into this skill.
+- Gameplay-record spot checks: Varmint Rifle stats, NCR faction relations, VATS AVIF entries; the FNV actor-value roster and Health resolution (`fnv_actor_value_roster_and_health_resolve_on_shipped_master`); PLDT decode (`parse_rate_fnv_pack_pldt_location`).
+- **SCOL is FNV-era** (#1538): `is_scol_era` in `crates/plugin/src/esm/records/parse.rs` must keep dispatching `parse_scol_group` for `Fallout3NV`; re-narrowing it to FO4-only silently drops 1 084 placements. MOVS/PKIN/MSWP are FO4+-only and must not take FNV dispatch. An `unreachable_patterns` warning in `esm/cell/walkers.rs` is a smell.
+- **SCPT `SCHR` is a 20-byte header with a `u16` flags tail on Oblivion/FO3/FNV** (#1654): `ScriptRecord.flags` is read via `u16_or_default` in `records/script.rs`; a `u32` read fails every real script and pins flags to 0. Guard: `parse_scpt_extracts_schr_scda_sctx_and_vars` + the real-data script counts.
+- LVLI flattening: `expand_leveled_form_id` / `expand_leveled_loot` (`equip.rs`) — NPC outfits and container loot must resolve to base items, not empty. Guard: `fnv_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_master` + `equip.rs` `expand_leveled_*` tests.
 **Output**: `/tmp/audit/fnv/dim_2.md`
 
-### Dimension 3: RT Lighting Pipeline — FNV Scenes
-**Subagent**: `renderer-specialist`
-**Entry points**: `crates/renderer/src/vulkan/acceleration/`, `crates/renderer/shaders/triangle.frag`, `crates/renderer/shaders/composite.frag`, `docs/engine/lighting-from-cells.md`
-**Checklist**:
-- TLAS frustum culling — no lights dropped for in-view fragments.
-- ReSTIR-DI direct lighting in `crates/renderer/shaders/triangle.frag` (shared radiance helper `shadowableLightRadiance` in `crates/renderer/shaders/include/lighting.glsl`) — the default path is a SINGLE spatiotemporal reservoir. The old reservoir *G-buffer attachment* was retired #1583/#1590, but reservoir state did **not** stay register-local: `6b061120` reintroduced it as `reservoirsCurr`/`reservoirsPrev` SSBOs (set 1, bindings 16/17 in `crates/renderer/shaders/include/bindings.glsl`), which carry temporal reuse plus an in-pass spatial disk of previous-frame neighbours; estimator `W = wSum / (M · pHat)`, with `RESTIR_M_CAP` bounding history. The legacy per-frame 16-slot WRS arm (`NUM_RESERVOIRS = 16`, `W = resWSum / (K · w_sel)`) is preprocessed OUT under `ENABLE_LEGACY_WRS = 0` (#1799) — flip that constant to A/B, don't assume it's live. Also: shadow-ray budget caps, distance-based shadow/GI ray fallback.
-- BLAS compaction + **LRU eviction at the dynamic VRAM-derived budget**: `predicates.rs::blas_budget_for_heap` = `(heap_bytes - reserved_bytes) / 3` floored at `MIN_BLAS_BUDGET_BYTES` (~4 GB on a 12 GB-VRAM dev box — NOT any stale "1 GB" figure). The `reserved_bytes` subtraction is #3839: the resolution-scaled reservation is taken off the top before the third is computed, so the old `heap / 3` is the pre-#3839 formula. The raw heap comes from the sibling `probe_blas_heap_bytes`; the split (`fa5c4191`) lets a resize re-derive the budget without re-probing the device. The result is still cached in the `blas_budget_bytes` field (`acceleration/mod.rs`), now alongside `blas_heap_bytes`.
-- SVGF temporal accumulation uses motion vectors + `mesh_id` disocclusion; TAA Halton jitter + YCoCg variance clamp.
-- M33 sky gradient + cloud layer blends correctly with tone-mapped geometry.
-- **Disney BSDF gate guard (#1248–#1252)**: zero FNV materials author BGSM (FO4+), so `MAT_FLAG_PBR_BSDF` (`crates/renderer/shaders/include/shader_constants.glsl` = 32u) must be 0 across the FalloutNV.esm material universe — the Disney lobe (now in `crates/renderer/shaders/include/pbr.glsl`) is unreachable for FNV. If any FNV scene activates Burley retro-reflection / anisotropic GGX / per-material-IOR Fresnel, the gate regressed.
-- **#1125 skyTint interior gate** at both glass miss fallbacks — the reflection miss in `traceReflection` (`crates/renderer/shaders/include/raytrace.glsl`) and the refraction miss in `crates/renderer/shaders/triangle.frag` — FNV interiors (Prospector, every Vault) must drop to cell ambient alone, not default zenith blue.
-- Sun-sprite mip-0 force (`8b5d77c1`) at `composite.frag::compute_sky` — explicit `textureLod` 0.0 avoids pixelating the tiny screen-space sun disc.
+### Dimension 3: NIF / NIFAL Slice — the Reference Realization
+**Subagent**: `legacy-specialist`
+Routing: block decode -> `/audit-nif`; the single-boundary / no-fabrication / no-render-time-fallback rules and collision/particle translation -> `/audit-nifal`; the Disney-BSDF gate (`MAT_FLAG_PBR_BSDF` must be 0 — FNV authors no BGSM/BGEM) -> `/audit-renderer`.
+**Paths**: `crates/nif/src/blocks/`, `crates/nif/src/import/`, `byroredux/src/material_translate.rs`, `crates/nif/tests/parse_real_nifs.rs`, `crates/nif/tests/per_block_baselines.rs`
+**First step**: `cargo test -p byroredux-nif --release --test parse_real_nifs --test per_block_baselines --test block_coverage_baselines -- --ignored fallout_nv real_archive_torch` (real-data lane; plain `cargo test` never runs it).
+- Parse rate and per-block histogram hold vs `fallout_nv.tsv` / ROADMAP; a histogram shift = a mis-dispatched block.
+- FNV legacy emissive is `EmissiveSource::Material` (`emissive_source_tests.rs`); Skyrim/FO4 variants must not bleed in.
+- FNV must place on the post-Oblivion side of every `bsver` gate (`bsver::FO3_FNV` = 34); `examine_collision_kind` classifies FNV chains `CollisionAuthoring::Classic`; `havok_motion_type` maps BOX_INERTIA (4) to Dynamic (`havok_motion_type_maps_full_enum`).
+- Emitter birth rate reaches the ECS from the *authored* controller chain, per emitter instance: the per-game rate floor `real_archive_torch_meshes_surface_particle_emitters` (`--ignored`) must be green for FNV. It was red on main 2026-09-12..19 (#4467) because the fix session ran only the default lane — any change under `crates/nif/src/import/walk/` needs this lane run.
+- `MAX_NIF_NODE_DEPTH` (128) never trips on a legit FNV scene (`crates/nif/src/import/walk/tests.rs`).
 **Output**: `/tmp/audit/fnv/dim_3.md`
 
-### Dimension 4: ESM Record Parser — Coverage & Accuracy
-**Scope split with `/audit-esm` (added 2026-08-13)**: `/audit-esm` owns the parser *as a parser* — GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap. This dimension owns **this game's data through it**: record counts, game-unique authoring, and the semantics that only show up on this title's masters. If the defect is in the shared mechanism, file it against `/audit-esm` instead of here.
-**Subagent**: `general-purpose`
-**Entry points**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/` (post-split: `walkers.rs` / `helpers.rs` / `support.rs` / `wrld.rs`)
-**Checklist**:
-- Record counts on FalloutNV.esm match the ROADMAP / `feature-matrix` baseline (do not transcribe a fixed count into this skill — diff against the living doc).
-- Spot-check semantics: Varmint Rifle stats, NCR faction relations, VATS AVIF entries (the FNV gameplay-record path in `crates/plugin/src/esm/records/index.rs` + `crates/plugin/src/esm/records/misc/effects.rs`).
-- CELL `XCLL` `fog_far_color` optional-field handling.
-- **SCOL is FNV-era, not an FO4 addition** (#1538): FalloutNV.esm carries **98 SCOL bases referenced by 1084 REFRs** (road segments, guardrails, debris LOD) — the `is_scol_era = is_fo4_plus || Fallout3NV` gate in `crates/plugin/src/esm/records/mod.rs` MUST keep dispatching `parse_scol_group` for FNV/FO3; re-narrowing it to FO4-only is the regression that silently drops those 1084 placements. The genuinely FO4+-only records are **MOVS / PKIN / MSWP** (byte-scan-confirmed absent from FalloutNV.esm) — those must not steal FNV dispatch. TXST/`XATO`/`XTNM`/`XTXR` cell-subrecord arms live in `crates/plugin/src/esm/cell/walkers.rs`; an `unreachable_patterns` warning there is a code smell. **FNV's 219 `XATO` are NOT texture overlays** (#3511/#1887): on FO3/FNV `XATO` is the *Activation Prompt* string sub-record, grouped with the SCRV/SCVR/SLSD script vars. FalloutNV.esm ships 0 `XTNM` and 0 `XTXR`, so the per-instance texture-override path has no FNV corpus either — it is an FO4 path (42 `XTNM` on Fallout4.esm).
-- LVLI leveled-list flattening — `crates/plugin/src/equip.rs::expand_leveled_form_id` resolves NPC default-outfit LVLI refs into base ARMO/WEAP; FNV NPCs whose outfits reference LVLI must spawn gear, not empty.
-- **SCPT SCHR flags are a u16 (#1654, `590351c1`)**: the Oblivion/FO3/FNV SCHR is exactly 20 bytes with a `u16` flags tail after the `script_type` u16 (cursor @18, 2 bytes left). `crates/plugin/src/esm/records/script.rs` reads it via `u16_or_default` into `ScriptRecord.flags`; a `u32` read fails on every real script and `unwrap_or(0)` pins flags to 0. The field is a u16 on every game — a regression back to u32 silently zeroes all script flags.
+### Dimension 4: Animation, Skinning & PHYSAL Ragdoll (FNV reference slice)
+**Subagent**: `legacy-specialist`
+Routing: the solver end (collider translation, fixed-step, `build_ragdoll`, controller) -> `/audit-physics`; clip registry / lock shape -> `/audit-ecs`. This dimension owns the **source axis**: does FNV's authored bhk chain reach the canonical spec intact.
+**Paths**: `crates/nif/src/anim/`, `crates/nif/src/import/collision/`, `byroredux/src/ragdoll.rs`, `byroredux/src/anim_convert.rs`, `byroredux/src/npc_spawn.rs`, `docs/engine/physal.md`
+**First step**: `cargo test -p byroredux-nif --release --test ragdoll_import -- --ignored fnv_` and `docs/smoke-tests/m41-ragdoll.sh`.
+- Classic-era guards, verified on FNV data (FO3 re-verifies on its own): B-spline pose fallback gated on the `FLT_MAX` sentinel (`crates/nif/src/anim/bspline.rs`; B-splines are reachable on FNV/FO3); clip registry dedup by lowercased path (`get_or_insert_by_path_dedupes_repeated_calls`); NPC hand meshes load beside `upperbody.nif` on kf-era NPCs (`byroredux/src/npc_spawn.rs`) — bodies with no hands are the regression.
+- Ragdoll: `template_from_imported` / `extract_ragdoll` warn on dropped bodies/constraints rather than silently shrinking; FNV's dominant constraint is a `bhkMalleableConstraint` wrapping a Ragdoll (`docs/engine/physal.md` § FO3/FNV) and must yield a jointed body. Real-data guard: `fnv_protectron_skeleton_is_one_connected_component` (`crates/nif/tests/ragdoll_import.rs`). `bhkBallAndSocketConstraint` / `bhkStiffSpringConstraint` / the ball-socket chain are decoded (#4212) but `extract_ragdoll` warns and drops them (no canonical joint kind) — a sole-link drop detaches a limb; no FNV occupancy census exists (#3792 left it open), so measure before assuming there is no FNV example. Writeback must not corrupt the skinned palette (`byroredux/src/ragdoll_installed_tests.rs`).
+- No per-game branch in `ragdoll.rs` or the solver bridge — the only per-game seam is the constraint CInfo decode.
 **Output**: `/tmp/audit/fnv/dim_4.md`
 
-### Dimension 5: NIF Parser — FNV Regression Guard
-**Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/`, `crates/nif/tests/parse_real_nifs.rs`, `crates/nif/examples/nif_stats.rs`
-**Checklist**:
-- Parse rate holds at the ROADMAP FNV figure; block histogram from `nif_stats` matches expected distribution (a meaningful shift = a block type being mis-dispatched).
-- `NiTexturingProperty` decal-slot off-by-one; `BSMultiBound*`; `BSDecalPlacementVectorExtraData` all stay fixed (reference N23.4 FO3/FNV validation).
-- **#1277 collision/version guards**:
-  - `collision/mod.rs::examine_collision_kind` classifies FNV chains as `CollisionAuthoring::Classic` (the bhk* path), not `NewPhysicsStub`/`Phantom`/`Unrecognised` — a misclassified discriminator silently drops the rigid body.
-  - **bhk motion_type via the canonical Havok enum (#1652, `dc33ec7d`)**: `collision/mod.rs::havok_motion_type` maps the raw `hkMotionType` byte per the full nif.xml enum (1–5/8 → Dynamic, 6 KEYFRAMED → Keyframed, 7 FIXED → Static, 9 CHARACTER → CharacterKinematic, 0/other → Static). The pre-fix `4 => Keyframed` / `_ => Static` collapse mis-typed BOX_INERTIA (4) clutter (crates/ammo boxes) as kinematic-frozen instead of falling — re-introducing the collapse is the regression.
-  - `version.rs` raw-`bsver`-compare migration: `bsver::FO3_FNV = 34`, `RIGID_BODY_FLAGS16 = 76`, `NI_BS_LTE_16 = 16` etc. must still place FNV (`bsver` 34, `> NI_BS_LTE_16`) on the post-Oblivion side of every gate — a flipped comparison shifts field layout and corrupts collision/anim reads.
-- **#1269 walker guard**: `MAX_NIF_NODE_DEPTH = 128` in `crates/nif/src/import/walk/mod.rs` guards both hierarchical + flat walkers; a legit FNV scene must never trip the 128-depth bail (covered by `crates/nif/src/import/walk/tests.rs`).
+### Dimension 5: Ambient AI, Consumables & HUD — FNV Data Through Gameplay Mechanisms
+**Subagent**: `general-purpose`
+Routing: procedure runtimes, package selection, seat reservation, CTDA fail-open, consumable/restoration/loot mechanics, HUD driver -> `/audit-gameplay`; MenuXml eval/layout/raster -> `/audit-ui`, parse side -> `/audit-parsers`; character formulas -> `/audit-character`. Check here only what FNV authors.
+**Paths**: `byroredux/src/npc_spawn.rs`, `byroredux/src/boot/schedule/post_update.rs`, `byroredux/src/hud.rs`, `byroredux/src/inventory.rs`, `crates/menuxml/src/profile.rs`, `docs/engine/npc-spawn-ai-packages.md`, `docs/engine/playable-vertical-slice.md`
+**First step**: `git log --since=<date> --format='%h %cs %s' -- byroredux/src/npc_spawn byroredux/src/hud.rs byroredux/src/inventory.rs crates/menuxml`
+- **Ambient locomotion is default-on** (M42.10): sandbox seat, Wander/Travel/Follow/Escort/Guard/Patrol and walk playback register unconditionally behind the single `BYRO_NO_AI_LOCOMOTION=1` kill-switch; the seven older `BYRO_*` opt-in variables are not read. Guard: `ambient_locomotion_default_on_tests` in `byroredux/src/boot/schedule/mod.rs`. A finding that "NPCs walk without an opt-in" is a false premise.
+- Walk clips are FNV assets: `humanoid_walk_kf_path` resolves `locomotion\{male,female,child}\mtforward.kf` under `meshes\characters\_male\` per `(gender, is_child)`, child gated on the RACE child flag; `walk_speed_for` derives per-actor speed from the clip's authored stride, sane range [30, 250] u/s, fallback `LOCOMOTION_WALK_SPEED`. Confirm on real FNV NPCs that female/child actors get their own clip and a measurable stride.
+- **Consumables / Hardcore** (mechanism: `/audit-gameplay` Dim 3): FNV's eligible plans per the spec (`docs/engine/playable-vertical-slice.md` § P3) are Stimpak (`00015169`), Blood Pack, Bitter Drink. `IsHardcore` (CTDA 586) selects the saved `HardcoreMode` flag (`crates/core/src/ecs/resources/hardcore.rs`); hunger/thirst/sleep/ammo weight/companion death are documented as unbuilt (that doc, 2026-09-16). Only Stimpak has a real-master test: `real_stimpaks_restore_scaled_health_and_limbs_but_hardcore_only_health` (`--ignored`, needs FO3 + FNV masters).
+- **HUD profile** (`HudGameProfile::fallout_nv`): assembled style (meters grafted from `menus\prefabs\meter.xml`, compass from `template_compass_window`), 2 bars = Health `0x2C9` / ActionPoints `0x2D0` (`crates/core/src/character/fallout.rs`), 9 font slots (FO3 has 8) from `Fallout - Textures2.bsa`, menu XML from `Fallout - Misc.bsa`. The profile is chosen from the `--esm` file name containing `falloutnv`. Guard for the font table: `profiles_pin_corpus_facts`. **Coverage gap**: the corpus test (`crates/menuxml/tests/fo3_corpus.rs`) and smoke (`m48-5-fo3-hud.sh`) are FO3-only — verify FNV by hand: `--game fnv --hud`, then `hud.status` / `hud.values 0.3 0.9`.
 **Output**: `/tmp/audit/fnv/dim_5.md`
 
-### Dimension 6: Animation, Skinning & Particles (FNV)
-**Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/anim/`, `crates/core/src/animation/`, `byroredux/src/anim_convert.rs`, `byroredux/src/npc_spawn.rs`, `byroredux/src/systems/particle.rs`
-**Checklist**:
-- `.kf` load from BSA; AnimationClipRegistry populated; `NiTransformInterpolator` + `NiFloatInterpolator` + `NiBoolInterpolator` channels sample correctly; NiTextKeyExtraData text events collected; Clamp/Loop/Reverse cycle types honored; FixedString interning at clip-load (#340) — no per-frame StringPool locks.
-- Skinning regression (NOT a foundation check — GPU skinning M29 + #178 SkinnedMesh palette are live): NiSkinData sparse weights still parse; bone palette stays correct on the GPU path.
-- **B-spline pose-fallback (#772)**: gated on a `FLT_MAX` sentinel; without it NPCs vanish under FNV `BSPSysSimpleColorModifier` particle stacks that share time-zero with the actor's player. `NiBSplineCompTransformInterpolator` IS reachable on FNV/FO3 — do not rule it out by game era.
-- **AnimationClipRegistry dedup (#790)**: dedup by lowercased path so cell streaming doesn't grow it unboundedly (else one keyframe set leaks per cell load).
-- **NPC hand-mesh load (#793)**: `lefthand.nif` + `righthand.nif` load alongside `upperbody.nif` on kf-era NPCs (`npc_spawn.rs`) — any body assembly loading only `upperbody` leaves Doc Mitchell / Sunny Smiles handless.
-- **Typed-emitter particle pin (`5708b5b9` / `9db60714`)**: `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` are typed structs in `crates/nif/src/blocks/particle.rs`. `walk/mod.rs::extract_emitter_params` + `::extract_emitter_rate` feed `systems/particle.rs::apply_emitter_params` — FNV's heavy particle stacks must drive from the **authored** birth-rate / emitter size / `base_scale`, not preset kinematics. (Particle translation is part of the NIFAL tier — see `/audit-nifal`.)
+### Dimension 6: Real-Data Validation, Bench-of-Record & Smoke Gates
+**Subagent**: `general-purpose`
+Routing: renderer correctness of RT lighting / denoise / sky on FNV scenes -> `/audit-renderer`, `/audit-exterior`; runtime telemetry diff -> `/audit-runtime --game fnv`.
+**Paths**: `assets/debug_profiles.toml`, `byroredux/src/game_profiles.rs`, `scripts/fsr-bench-matrix.sh`, `docs/smoke-tests/`, `.claude/audit-baselines/runtime/`
+**First step**: `git log --since=<date> --format='%h %cs %s' -- scripts/fsr-bench-matrix.sh docs/smoke-tests assets/debug_profiles.toml`
+- **Use `--game fnv`** for anything not the bench-of-record (#3346): it expands to absolute `--esm` / `--bsa` / `--textures-bsa` paths, so CWD cannot break it. A vanilla `Data/` has no bare `Meshes.bsa` (`Fallout - Meshes.bsa`; `--bsa` opens the literal path) and a bare-name run from the wrong CWD loads ~36 entities with a spurious FPS.
+- **Bench-of-record**: `scripts/fsr-bench-matrix.sh 3 300` (encodes archives, CWD, upscaler sweep and the #3347 sanity gates), or single-config `cargo run --release -- --game fnv --cell GSProspectorSaloonInterior --upscaler taa --bench-frames 300 --bench-hold` then `byro-dbg` (port 9876) `stats`. **`--upscaler taa` is mandatory for comparison**: the flag defaults to `fsr3`, and comparing FSR-Quality FPS to the ROADMAP TAA-native headline reads as a fake ~75% win (#2560). Compare entity/draw/FPS/fence to the ROADMAP FNV row at its recorded commit; the pre-collider baseline was never recovered, so read ROADMAP Known Issues before flagging fence/FPS.
+- Chrome/posterized surfaces: run `tex.missing` first (`Update.bsa` + `Fallout - Textures2.bsa` split the texture set). The committed v104 real-data guard is `fnv_meshes_bsa_v104_extracts_nif_with_gamebryo_magic` (`crates/bsa/tests/bsa_real.rs`, `--ignored`); reader discipline is `/audit-parsers`.
+- Playable-slice gates on FNV (`docs/smoke-tests/README.md`): `p0-door-interaction.sh fnv`, `p1-character-traversal.sh fnv`, `p5-save-restart.sh fnv`, `w1-water-traversal.sh fnv` (real capsule Lake Mead shore -> swim -> dive -> surface -> shore -> cell boundary), `m-exteriors.sh fnv`. Missing data is exit 77, never a pass.
 **Output**: `/tmp/audit/fnv/dim_6.md`
-
-### Dimension 7: PHYSAL Ragdoll — FNV Reference Slice
-**Subagent**: `legacy-specialist`
-**Entry points**: `byroredux/src/ragdoll.rs`, `crates/nif/src/import/collision/mod.rs` (ragdoll + constraint decode), `crates/nif/src/blocks/collision/`, `docs/engine/physal.md`
-**Checklist**: FNV is the *reference realization* for PHYSAL slice 1 (the classic bhk chain — `0a0bc3ce` / `2c21a470`, 2026-06-14). Newly shipped, so audit for correctness, not just regression.
-- The importer hands `ImportedRagdoll` (bone *names* + `ImportedJointKind`); `ragdoll.rs::activate_ragdoll` resolves it against the skeleton's `GlobalTransform`, and `ragdoll_writeback_system` writes solver results back to bone transforms.
-- **Silent-drop regression guards (#1718/#1539/#1540/#1772, the D7 audit-guard family)**: `template_from_imported` (`ragdoll.rs`) warns on dropped bodies/constraints by bone-name miss (#1718, `ffe9a816`); `extract_ragdoll` (`import/collision/ragdoll.rs`) warns on dropped constraint kinds (#1539) — note #3330 then #3792 narrowed what reaches that arm: `bhkHingeConstraint` and `bhkPrismaticConstraint` are now both decoded into canonical `LimitedHinge`/`Prismatic` joints (both eras, bare **and** `BhkBreakableConstraint`-wrapped), leaving only `bhkBallAndSocketConstraint` / `bhkStiffSpringConstraint` undecoded (still `Other`), so the two Sentry Turret skeletons no longer fragment. `creatures\protectron\skeleton.nif` — the live example this bullet used to cite (2 × `bhkPrismaticConstraint` + 1 breakable-wrapped edge) — is fixed as of #3792 (13 bodies, 12/12 joints, 1 connected component; real-data-gated `fnv_protectron_skeleton_is_one_connected_component`, `crates/nif/tests/ragdoll_import.rs`). No FNV occupancy census has been run for BallAndSocket/StiffSpring (#3792 left it open), so there is no confirmed live example still hitting that drop path — look for one rather than assuming none exists. Trimesh bone inertia no longer degenerate (#1540); keyframed bone-follower bodies are torn down on ragdoll activation, not left double-simulating (#1772, `da4a849d`). Confirm all still hold on a real FNV skeleton with divergent bone naming.
-- Per PHYSAL, the *only* per-game seam is the constraint CInfo decode — confirm no per-game branch leaked into `ragdoll.rs` or the solver bridge (`crates/physics/`).
-- FNV's dominant constraint form is a `bhkMalleableConstraint` wrapping a Ragdoll (see `docs/engine/physal.md` §FO3/FNV) — confirm that decode path in `crates/nif/src/blocks/collision/constraints.rs` + `ragdoll.rs` survives and produces a jointed body, not a single rigid blob.
-- Writeback must not corrupt the skinned bone palette feeding the GPU skin path (cross-check Dimension 6).
-- **Scope split with `/audit-physics` (added 2026-08-13)**: the solver end — collider translation, the fixed-step accumulator, `build_ragdoll`/`remove_ragdoll` completeness, the character controller — is owned there. Keep this dimension on the FNV *source axis*: does FNV's authored bhk chain reach the canonical spec intact on real skeletons.
-**Output**: `/tmp/audit/fnv/dim_7.md`
-
-### Dimension 8: Real-Data Validation & Bench-of-Record
-**Subagent**: `general-purpose`
-**Entry points**: `crates/nif/examples/nif_stats.rs`, demo CLI invocations
-**Checklist**:
-- **CWD matters** (ROADMAP repro note): bare `--bsa` / `--textures-bsa` names resolve against CWD, not the `--esm` folder. Run with CWD = `Fallout New Vegas/Data/`, else archives silently fail and the scene loads near-empty (~36 entities / spurious FPS).
-- **Prefer `--game fnv` for anything that isn't the bench-of-record (#3346).** It expands to *absolute* `--esm` / `--bsa` / `--textures-bsa` paths from `assets/debug_profiles.toml`, so it is CWD-independent and cannot mistype an archive name — neither failure mode above can occur:
-  `cargo run --release -- --game fnv --cell GSProspectorSaloonInterior --bench-frames 300 --bench-hold`
-  Since #3331 the bench-of-record below uses this same profile form. The
-  bare-name + `cd` shape survives only in `ROADMAP.md`'s repro column, where it
-  is annotated; do not copy it from there without adding `--upscaler taa`.
-- Interior bench-of-record. **Use `scripts/fsr-bench-matrix.sh 3 300` as the
-  authoritative form** — it already encodes the archive names, the CWD, and the
-  upscaler sweep. Only hand-run the command when you need a single config:
-  `cargo run --release -- --game fnv --cell GSProspectorSaloonInterior --upscaler taa --bench-frames 300 --bench-hold`
-  then attach `byro-dbg` (port 9876) and capture `stats`. Compare entity / draw / FPS / fence against the **ROADMAP FNV row** (not numbers in this skill).
-  Three things this command gets right that the pre-#3331 one did not:
-  - **The archive names.** A vanilla FNV `Data/` has no `Meshes.bsa` /
-    `Textures.bsa` — they are `Fallout - Meshes.bsa` / `Fallout - Textures.bsa`.
-    `Archive::open` takes the **literal** path with no stem matching, so the old
-    bare names opened nothing and produced exactly the ~36-entity near-empty
-    scene the CWD bullet above warns about. `--game fnv` sidesteps the question
-    entirely by expanding absolute paths from `assets/debug_profiles.toml`.
-  - **`--upscaler taa`.** The flag defaults to `fsr3` (`cli_args.rs`), so the
-    bare command measures **FSR 3.1 Quality (~254 FPS)** while the ROADMAP FNV
-    row's headline figure is **TAA native (~145 FPS)**. Comparing them reads as
-    a 75% "improvement" that is purely a config difference — this is #2560 /
-    FNV-D8-01, annotated in ROADMAP but never propagated here until #3331.
-  - **No third `--textures-bsa`.** `Fallout - Textures2.bsa` auto-loads as a
-    `<stem>N.bsa` sibling of `Fallout - Textures.bsa` (`asset_provider/archive.rs`);
-    naming it explicitly is redundant.
-- Exterior: `--grid <x>,<y> --radius 3` on WastelandNV.
-- Validate `tex.missing` / `tex.loaded` return sensible output (FNV ships base textures split across `Fallout - Textures.bsa` + DLC archives — `tex.missing` first when surfaces look chrome/posterized).
-**Output**: `/tmp/audit/fnv/dim_8.md`
-
-### Dimension 9: AI Packages & Procedure Runtimes (M41.5/M42–M42.8)
-**Subagent**: `general-purpose`
-**Entry points**: `byroredux/src/npc_spawn.rs` (`spawn_npc_entity`), `byroredux/src/npc_spawn/ai_package.rs` (`apply_ai_package_behavior` — the package-selection tail — + `package_conditions_pass`; split out of `npc_spawn.rs` under #2198), `byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol,locomotion}.rs`, `crates/core/src/ecs/components/{sandbox,furniture,wander,travel,follow,escort,guard,patrol}.rs`, `crates/plugin/src/esm/records/misc/pack.rs` (PACK/PKDT/PSDT/PLDT/PTDT decode + `active_package` resolve + `PackRecord::is_*()`; the former seven `active_package_is_*` wrappers were deleted as dead code by #2031 and survive only as `#[cfg(test)]`-only shims, #3042), `docs/engine/npc-spawn-ai-packages.md`
-**Checklist**: Seven of ~17 FO3/FNV package procedures execute (Sandbox, Wander M42.3, Travel M42.4, Follow M42.5, Escort M42.6, Guard M42.7, Patrol M42.8) — audit for correctness of what's implemented, not for missing scope. **Do not** flag the absence of a Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon runtime as a bug — each needs a subsystem (item/furniture use beyond seat-snap, combat, magic, dialogue) that doesn't exist in this engine at all yet, not just a missing dispatch arm. Do also not flag the seven's documented v0 approximations (no animation-clip swap, `PTD2` unparsed, single-tile-only pathing) as bugs — see `docs/engine/npc-spawn-ai-packages.md` for the authoritative v0-scope list per procedure. **Two former entries on that list have since shipped and were removed from it by #3351** — NAVM pathing (2026-08-23, single-tile; Phase 2 cross-tile is *blocked*, not unscheduled) and package re-evaluation (`ambient_ai_package_system`, once per in-game minute per actor, M42.9 / #2652). Do not suppress a finding about either on the grounds that it is "documented v0 scope".
-- **CTDA fail-open is intentional, not a bug (M42.2)**: `package_conditions_pass` treats a package's whole condition list as passing if ANY referenced function is outside the ~19-function M47.1 catalog (`ConditionFunction::Unknown`) — this preserves M42.1 behavior (every scheduled package eligible) rather than silently dropping packages the evaluator can't reason about. Only lists whose every function is implemented are gated for real. Applies to all seven procedures' selection, not just Sandbox's. Verify a regression doesn't flip this to fail-closed.
-- **Schedule gating, all seven procedures**: `active_package` (`crates/plugin/src/esm/records/misc/pack.rs`) picks the first package scheduled-active at `GameTimeRes.hour` whose CTDA conditions pass — verify an NPC with a non-matching package active at the current hour (e.g. an `AtBar` schedule) does NOT get that procedure's Behavior marker for that hour. Since an NPC's active package is always a single winning `PackRecord`, `apply_ai_package_behavior` resolves it ONCE and matches its procedure type through an `is_sandbox()`/`is_wander()`/… `else if` chain (#2031 collapsed the former 14 `active_package_is_*`/`active_*_location` calls into that single resolve) — mutual exclusion is by construction, so verify the chain still inserts at most one Behavior component per actor.
-- **PLDT search radius/destination, six of seven**: Sandbox/Wander/Travel/Escort/Guard/Patrol all read a PLDT radius (Follow instead reads PTDT's `count_or_distance` as a stand-off distance) — verify radius-0 / no-PLDT packages fall back to each system's own default rather than a degenerate radius-0 search.
-- **NearReference resolution differs by procedure — do not flag the difference as inconsistency**: Sandbox's search *center* is deliberately never resolved (investigated 2026-07-14 against real FalloutNV.esm: 1822 NearReference Sandbox packages, ~12% theoretically resolvable, not worth it). Travel/Escort/Guard DO attempt `NearReference` FormID resolution via `resolve_entity_by_global_form_id` on their own first tick (a materially different, later vantage point than Sandbox's spawn-time investigation — the whole cell has finished loading by then). Guard's *fallback* on a resolution miss is deliberately the actor's own position (not Travel's hash-picked point — reusing Travel's fallback was tried and reverted, since it trivially satisfies Guard's own leash check on tick one and the actor never walks anywhere). Follow has no fallback at all — an unresolved PTDT target means the actor never moves, by design (a Follow package with nothing to follow has nothing meaningful to do).
-- **Seat reservation correctness (`0a21d5f9`)**: seats are keyed `(furniture entity, marker index)`, not just `furniture entity` — verify a multi-marker furniture (bench, long table) seats one actor per marker independently rather than treating the whole furniture as one seat. Sandbox-specific; the other six procedures don't touch furniture.
-- **Legacy marker over-match (known v0 limitation, Sandbox-specific)**: FNV/FO3/Oblivion `BSFurnitureMarker`s carry no `AnimationType`, so the translate-boundary discriminant (`furniture_component`, `byroredux/src/cell_loader/references/attach.rs`, #2010) defaults every legacy marker to `FurnitureMarkerKind::Sit` and `is_sit_marker` (which now just reads that resolved `kind`) treats them all as sit-eligible — sleep/lean markers on FNV furniture will be over-matched as sit targets. Confirm this is still documented as a known gap, not silently "fixed" by a heuristic that could misfire.
-- **Live-tracking vs. frozen destination (Follow/Escort vs. Travel/Guard)**: `follow_system` and `escort_system`'s collect phase re-read the target's `GlobalTransform` fresh every tick; `travel_system`, `escort_system`'s lead phase, and `guard_system` resolve/pick a position exactly once and freeze it. A `NearReference` target that moves after Travel/Guard resolution is NOT re-tracked — that's Follow's job, and conflating the two is a finding.
-- **Patrol shares Wander's algorithm on purpose, not by accident**: no patrol-route/waypoint data is decoded anywhere in this codebase (Bethesda's real routes come from linked patrol-idle markers, outside `PACK`'s own sub-records) — v0 Patrol calls `wander_system`'s shared `step_oscillating_wander` core directly. Do not flag "Patrol is identical to Wander" as a bug; do flag if `patrol_system` silently diverges from `wander_system`'s core without an equivalent update on both sides, or if it duplicates the state machine instead of calling the shared function.
-- **All seven are opt-in, none in the default scheduler**: `BYRO_SANDBOX_SIT`/`BYRO_WANDER`/`BYRO_TRAVEL`/`BYRO_FOLLOW`/`BYRO_ESCORT`/`BYRO_GUARD`/`BYRO_PATROL` (`byroredux/src/boot/schedule/post_update.rs`, post-#3855 split of the former *boot.rs*) — a regression that registers any of these seven systems unconditionally silently changes FNV NPC behavior for every cell load, not just test scenarios.
-**Output**: `/tmp/audit/fnv/dim_9.md`
 
 ## Phase 3: Merge
 
@@ -194,8 +114,8 @@ cell-boundary + door-teleport swaps) — verified against the tree 2026-07-15 an
 2. Combine into `docs/audits/AUDIT_FNV_<TODAY>.md`:
    - **Executive Summary** — FNV is the baseline; any regression against the ROADMAP-recorded numbers is at least HIGH (CRITICAL if it breaks a shipped foundation).
    - **Dimension Findings** — grouped by severity per dimension.
-   - **Baseline Comparison Table** — ROADMAP number vs observed for entity count, draw count, FPS, fence, parse rate, record count (cite the ROADMAP commit you compared against).
-   - **Regression Guard List** — previously-fixed issues this audit verified still correct.
+   - **Baseline Comparison Table** — ROADMAP number vs observed for entity count, draw count, FPS, fence, parse rate, record count (cite the ROADMAP commit compared against).
+   - **Regression Guard List** — previously-fixed issues verified still correct.
 3. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_FNV_<TODAY>.md`

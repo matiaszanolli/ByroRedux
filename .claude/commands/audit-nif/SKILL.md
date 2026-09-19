@@ -5,152 +5,297 @@ argument-hint: "--focus <dimensions> --game <fnv|fo3|skyrim|oblivion|fo4|fo76|st
 
 # NIF Parser Audit
 
-Deep audit of the NIF binary-format parser (`crates/nif/src/`) for byte-accurate
-correctness across the Oblivion → Starfield version span. Tests against real game
-data when a corpus is available.
+Audit the NIF binary-format parser (`crates/nif/src/`) for byte-accurate correctness
+across the Oblivion → Starfield version span. Real game data is used when available.
 
-The recurring NIF failure mode is **stream-position drift**: a block over-reads
-or under-reads its payload, the consumed-byte count diverges from the header
-`block_sizes` entry, and either the `block_size` reconciliation masks it (parse
-"succeeds" with silent corruption) or — on Oblivion-era files that ship *no*
-`block_sizes` table — every following block is misaligned and the scene
-truncates. Dimensions below are ordered by that risk.
+The recurring failure mode is **stream-position drift**: a block over/under-reads its
+payload, the consumed-byte count diverges from the header `block_sizes` entry, and either the
+reconciliation masks it (parse "succeeds" with silent corruption) or — on Oblivion-era files
+with *no* `block_sizes` table — every later block is misaligned and the scene truncates.
+Dimensions are ordered by that risk.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout (its NIF Blocks / NIF
-Import / NIF Animation lines map the full `crates/nif/src/` tree), game-data
-locations, methodology, deduplication, severity, context rules, path-reference
-convention, and the base finding format. Do not duplicate any of that here.
+Read `.claude/commands/_audit-common.md` and `.claude/commands/_audit-severity.md` for
+shared protocol (layout, game-data locations, dedup, finding format). Do not duplicate them.
+`docs/engine/nif-parser.md` is the code-verified reference (module map, version handling,
+per-game coverage matrix, block coverage) — prefer it over re-deriving. The authoritative
+block spec is `/mnt/data/src/reference/nifxml/nif.xml` (*reference_nifxml*); Gamebryo 2.3
+source is the tiebreaker.
 
-`docs/engine/nif-parser.md` is the code-verified reference for this domain
-(module map, parse pipeline, version-handling thresholds, per-game coverage
-matrix, per-block recovery). Prefer it over re-deriving facts from source.
+**Not in scope**: BSA/BA2/CSG archive-reader discipline and the FO4 previs header
+(`/audit-parsers`); per-game *material* translation and the canonical tier (`/audit-nifal`);
+SpeedTree `.spt` (`/audit-speedtree`); Havok→Rapier behaviour (`/audit-physics` — only the
+constraint CInfo decode is a NIF seam).
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g. `1,2`). Default: all 6.
-- `--game <name>`: Restrict to one variant: `fnv`, `fo3`, `skyrim`, `oblivion`, `fo4`, `fo76`, `starfield`. Default: all detected.
-- `--corpus <path>`: Directory of extracted `.nif` files for bulk testing.
+- `--focus <dimensions>`: comma-separated numbers (e.g. `1,2`). Default: all 6.
+- `--game <name>`: `fnv`, `fo3`, `skyrim`, `oblivion`, `fo4`, `fo76`, `starfield`. Default: all detected.
+- `--corpus <path>`: directory of extracted `.nif` files for bulk testing.
 
 ## Extra Per-Finding Fields
 
 - **Dimension**: Stream Position | Version Gating | Block Dispatch Coverage | Geometry Handoff | Collision/Shader Parsing | Allocation Hygiene
-- **Game Affected**: Which `NifVariant`(s) the finding applies to (cite the `bsver` band)
+- **Game Affected**: which `NifVariant`(s), citing the `bsver` band.
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS`.
-2. `mkdir -p /tmp/audit/nif`.
-3. Fetch the dedup baseline (see `_audit-common.md` → Deduplication).
-4. Check which game-data directories exist (`_audit-common.md` → Game Data Locations).
-5. Skim `docs/engine/nif-parser.md` § "Per-game NIF coverage" so you measure
-   findings against the current clean/recoverable rates rather than re-counting.
+1. Parse `$ARGUMENTS`; `mkdir -p /tmp/audit/nif`; fetch the dedup baseline (`_audit-common.md`).
+2. Note which game-data directories exist. Skim `docs/engine/nif-parser.md` § "Per-game NIF
+   coverage" so findings are measured against current clean/recoverable rates.
+3. `cargo test -p byroredux-nif` (default lane); record the pass count.
+4. **Corpus gates are opt-in** (`#[ignore]`, need installed data): `parse_real_nifs`,
+   `per_block_baselines`, `block_coverage_baselines`, `oblivion_stream_drift_corpus`,
+   `constraint_drift_corpus`, `normal_synthesis_corpus` under `crates/nif/tests/`. They run
+   nightly per title in `.github/workflows/real-data-gates.yml` (`BYROREDUX_REQUIRE_GAME_DATA=1`,
+   so an absent corpus is a failed job). Locally: one title at a time,
+   `BYROREDUX_<GAME>_DATA=<Data dir> cargo test -p byroredux-nif --test per_block_baselines <game> -- --ignored --nocapture`.
+   Check the latest nightly result before trusting a green default `cargo test` for parse rates.
 
-## Phase 2: Launch Dimension Agents
+## Phase 2: Dimensions
 
 ### Dimension 1: Stream Position Integrity (PRIMARY)
-**Entry points**: `crates/nif/src/lib.rs` (`parse_nif` → `parse_nif_with_options` → `dispatch_blocks` for the block loop / `no_block_sizes` reconciliation, `parse_block_with_name_arc` calls; `parse_header` / `finalize_scene` are the sibling phases post-#1672), `crates/nif/src/stream.rs` (`position`, `skip`, the `read_*` cursor primitives), every block parser's `parse()`.
-**Checklist**:
-- Each block consumes exactly its `block_sizes` entry when one exists. The loop in `lib.rs` already diffs consumed-vs-`block_size` and logs both the over-read (recovers by seeking to expected end) and the under-read ("parsed Ok but consumed != block_size") paths — a finding here is a *block whose drift the reconciliation is silently absorbing*, not the reconciliation itself.
-- Oblivion-era files (NIF v20.0.0.4/5 and the v10.x NetImmerse family) ship **no** `block_sizes` table (`header.block_sizes.is_empty()` → `no_block_sizes` branch). There is no per-block recovery anchor — one wrong field cascades. Audit these parsers for unconditional reads that assume a later-game layout.
-- No read may exceed the block boundary unconditionally; version-gated trailing fields (see Dim 2) must be guarded, not always-read.
-- Boolean width correctness: `read_bool` (version-dependent 1-or-4-byte, see `stream.rs:193` + `read_bool_version_dependent` test) vs `read_byte_bool` (always 1 byte) must match the nif.xml type annotation per field. A phantom or missing bool is the classic 1-/3-byte drift (cf. the resolved `NiTriStripsData`/`NiTriShapeData` v10.0.1.x phantom-bool and `NiGeomMorpherController` phantom-weight cases — keep them from regressing).
-- `BSShaderPropertyData::parse_fo3` (`crates/nif/src/blocks/base.rs`) is the shared FO3-era shader prelude — confirm only FO3/FNV-era shaders call it and that it returns the `(Self, texture_clamp_mode)` byte-for-byte.
-**If corpus available**: parse every NIF and report consumed-vs-`block_size` mismatches grouped by block type with frequency counts; flag any non-zero count on a *known* block type (drift), and separately any `no_block_sizes` truncation.
-**Regression guards** (resolved drift — verify still fixed, do not re-report):
-- **Oblivion v10.x truncation family**: `#1509` (`NiGeomMorpherController` bsver=9 over-read on v10.2 morph rigs), the v10.1.0.x `NiBlendInterpolator` bands + `ControlledBlock` blend fields, v10.x `NiPSysData` + emitter trailing fields, `#1337` (full v10.0.1.x format), `#1329` (v10.0.1.0 Havok chain), `#1310`/`#1301`/`#1302` (`NiTriStripsData`/`NiTriShapeData`/`NiGeomMorpherController` phantom bool/weight). Method of record: extract → `trace_block` → byte-decode the stride drift (see memory "NIF v10.x stride drift resolved").
-- **A size-cache-estimated skip on the Oblivion no-`block_sizes` path must be refused when it provably contradicts the block that just failed to parse (regression guard, `#3926`, `232fdc45`, 2026-09-07).** On a game with no per-block size table, `Err` recovery skips by the median of previously-observed consumed sizes for the same block type in the same file — an *estimate*, unvalidated on its own. `#3925` measured what an unvalidated wrong median costs: 74 genuine `NiSkinPartition` failures (the `#3918` bug, above) multiplied into 464 downstream `NiNode` substitutions, because every subsequent block then parsed from a bad offset with nothing catching it. The fix rejects only a *provable* contradiction — when the median is smaller than `consumed` (the bytes the failing block's own parser actually read before erroring), skipping by it would land inside a region already walked as that block's own data, which is misaligned by construction, not merely uncertain; no fudge factor or tolerance is introduced, so a variable-size type whose median is a legitimate estimate still recovers exactly as before. A rejected skip falls through to truncation instead (counted, not silent). `NifScene::recovered_by_guess` now separately counts every skip that was *inferred* (median cache / `oblivion_skip_sizes`) rather than declared by the file, and `parse_real_nifs` asserts it is **zero** on every shipped corpus (absolute, not a rate — a plausible-looking wrong-offset skip parses "successfully" and would not move any clean-rate number). Regression = a size-cache skip landing inside the failed block's own already-consumed bytes without being refused, or `recovered_by_guess` drifting off zero on real content.
-- **Starfield `BSLightingShaderProperty` over-read** (`#1510`): drove 1036 `NiUnknown` → 0. Regression = a Starfield (`bsver >= FO76 = 155`) shader reading the FO4 field tail.
-- **Starfield `BSLightingShaderProperty` trailing tail** (`#1606`): a `bsver >= STARFIELD` form carries an undocumented 38-B tail (9× f32 + 2 B, nif.xml does not document it). Captured opaque as `starfield_tail: Vec<u8>` (`crates/nif/src/blocks/shader/mod.rs`, `read_starfield_tail`) consumed **to `block_size`** (not a hardcoded 38, so it survives a future tail length). Guard tests: `parse_bs_lighting_starfield_captures_trailing_tail` + the empty-without-size sibling. Regression = dropping the tail capture (re-opens the consumed != block_size drift) or hardcoding 38.
-- **An opaque tail captured to `block_size` is invisible to `drift_histogram` by construction — it needs its OWN telemetry (`#2625`, `5b32f7e2`, 2026-09-08).** `read_starfield_tail` consumes exactly `block_size - consumed` inside the block parser, so by the time `parse_nif` compares consumed-vs-`block_size` they agree exactly and `drift_histogram` records nothing no matter how much of the block the parser doesn't understand — measured across four archives: shader-block drift `{}` (empty) while the captured tail lengths were bimodal `{38: 1868, 42: 11}`, a length anomaly the histogram exists to raise and structurally cannot. `NiObject::opaque_tail_len` (default `None`, distinct from `Some(0)` = "has a tail slot, consumed everything") feeds a third histogram, `NifScene::opaque_tail_histogram`. A trait method rather than a downcast over a hardcoded type list, so a fifth tail-capturing block doesn't go stale by omission — a test asserts every struct declaring a `starfield_tail` field has an override. Regression = a new opaque-tail-capturing block (mirroring `BSWeakReferenceNode`/`BsFaceGenNiNode`/`BSLightingShaderProperty`/`BSEffectShaderProperty`'s idiom) that doesn't wire `opaque_tail_len`, silently reopening this blind spot for itself.
-- **Pre-10.1.0.106 `NiSequence` / `ControlledBlock` / `NiControllerSequence` layout** (`#2345`, `2695e4fe`; completed by `#3468`, `1293dfc0`). Gates transcribed from nif.xml: `NiSequence`'s Accum Root Name + Text Keys are `until="10.1.0.103"`, `ControlledBlock`'s Target Name is `until="10.1.0.103"`, its Interpolator/Priority and five IDTag strings are `since="10.1.0.106"`/`since="10.1.0.104"`, and **all ten** `NiControllerSequence` fields are `since="10.1.0.106"` — below that a `NiControllerSequence` is structurally just its `NiSequence`. The follow-up matters as much as the original: #2345 threaded the accum root name through but dropped the Text Keys ref and `ControlledBlock`'s Target Name on the floor, so `text_keys_ref` stayed NULL (every sequence on that band lost all text-key events — the footstep/hit/sound channel `collect_text_key_events` feeds) and `node_name` stayed `None` (short-circuiting `anim/controlled_block.rs`'s target resolution, so **no channel in the sequence bound at all**). Exactly one of each `until`/`since` pair is present for any version — a read that fires both, or discards the `until` half, is the regression. Guard tests: `crates/nif/src/blocks/controller/sequence_pre_10_1_0_106_tests.rs`.
-- **Root-NiNode / inline-type-name truncation** (`#688` / `#698`): truncate on inline type-name read failure (`#698`) rather than hard-`Err`; `#688` refuted the "v=20.0.0.5" framing — keep the recovery semantics.
-- **`NiDynamicEffect`'s pre-4.0.0.2 affected-nodes field group** (`#3717`, `ed9e4bf2`, 2026-09-03): nif.xml defines two affected-nodes field groups on `NiDynamicEffect` (`NiLight`/`NiTextureEffect`'s shared base) — the parser implemented only the `since="10.1.0.0"` pair, leaving the `until="4.0.0.2"` pair completely unread. An under-read of `4 + 4×N` bytes on any `NiLight`/`NiTextureEffect` in that band, and files that old ship no `block_sizes` recovery anchor — exactly the cascading-corruption risk this dimension is ordered around. Both `until="4.0.0.2"` sub-ranges (≤3.3.0.13 `Ptr`, 4.0.0.0..=4.0.0.2 `uint`) are byte-identical on disk — nif.xml's type distinction there is block-index-vs-raw-pointer-hash semantics, not a layout difference — so one read covers both. Regression = reverting to only the `since="10.1.0.0"` arm.
-- **`BSFaceGenNiNode` 2-byte under-read** (`#3464`, `132262eb`, 2026-09-02): Starfield (bsver=175) FaceGen head nodes were aliased straight to plain `NiNode::parse` as a coverage-first stub (`#727`) — measured 100% (1 417/1 417) 2-byte under-read on real content, specific to this type (sibling `NiNode`/`BSWeakReferenceNode` blocks in the same bsver band drift by zero on the corpus #3464 measured — `BSWeakReferenceNode` did have its own residual, unrelated 6-instance truncation in `Starfield - MeshesPatch.ba2` specifically, bsver 175, a garbage `num_water_refs` implying an 80-byte overrun; fixed by `#3524`, `bb8ced68`, 2026-09-08, which declines the unfittable payload and captures the remainder to `starfield_tail` instead of issuing the overrun — see the opaque-tail-histogram regression guard below, since capturing to `block_size` is exactly the pattern that can hide drift from the reconciliation loop). Fixed with a dedicated `BsFaceGenNiNode` type that captures the undocumented tail opaquely to `block_size`, mirroring `BSWeakReferenceNode`'s `#1882`/`#1606` `starfield_tail` idiom rather than fabricating field semantics nif.xml doesn't document. Regression = re-aliasing to plain `NiNode::parse`, or `is_ni_node_subclass` reverting to matching the erased "NiNode" alias name instead of the type's own RTTI.
-- **Pre-10.1.0.106 `NiControllerSequence` cycle_type/duration defaults** (`#3437`, `132262eb`, 2026-09-02): the substituted default for a below-band sequence used to be `cycle_type = 0` (`CYCLE_LOOP`) where nif.xml's own documented default is `CYCLE_CLAMP = 2` (enum order `LOOP=0`/`REVERSE=1`/`CLAMP=2`) — every such sequence looped instead of clamping. Fixing that alone would have surfaced a second latent bug: the Clamp arm computes `duration = stop_time - start_time`, which for the substituted `FLT_MIN`/`FLT_MAX` sentinels overflows to `-inf`, freezing playback at the first tick. Both are fixed together — the literal default is `2`, and `import_sequence` (`crates/nif/src/anim/sequence.rs`) collapses a non-finite/non-positive computed duration to `0.0` at the origin, in addition to the existing `#3432` sanitizer downstream in `anim_convert.rs`. Regression = either half reverting alone.
+Paths: `crates/nif/src/{lib,stream,header,scene}.rs`, every `blocks/**/*.rs` `parse()`
+First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/blocks crates/nif/src/lib.rs`
+Flow: `parse_nif` → `parse_nif_with_options` → `dispatch_blocks` (block loop, `no_block_sizes`
+branch) with `parse_header` / `finalize_scene` as sibling phases.
+**Guards**: the `NifScene::recovered_by_guess` zero-assert in the corpus walk
+(`tests/common`, surfaced by `parse_real_nifs`: a size-cache/`oblivion_skip_sizes` skip is
+*inferred*, not file-declared — absolute zero, not a rate; a size-cache skip that lands
+inside the failed block's own consumed bytes is refused, #3926);
+`every_tail_capturing_block_reports_it_and_parse_nif_records_it` (`blocks/shader_tests/starfield.rs`;
+source-shape scan of `blocks/shader/*.rs` + `blocks/node.rs`: every struct declaring a
+`starfield_tail` field overrides `opaque_tail_len`; a tail-capturing block in a file not in
+its list is invisible to it); `blocks/controller/sequence_pre_10_1_0_106_tests.rs`;
+`tests/oblivion_stream_drift_corpus.rs` (no-`block_sizes` detector has zero false positives).
+**Checklist** (what the guards cannot see):
+- Each block consumes exactly its `block_sizes` entry. A finding is a block whose drift the
+  reconciliation is *silently absorbing*, not the reconciliation itself.
+- Oblivion-era files (v20.0.0.4/5 and the v10.x NetImmerse family) ship **no** `block_sizes`:
+  one wrong field cascades. Audit those parsers for unconditional reads that assume a
+  later-game layout; version-gated trailing fields must be guarded, never always-read.
+- Bool width: `read_bool` (version-dependent 1 or 4 bytes) vs `read_byte_bool` (always 1) must
+  match the nif.xml type per field — a phantom/missing bool is the classic 1-/3-byte drift.
+- **An opaque tail captured to `block_size` is invisible to `drift_histogram`** (consumed ==
+  declared by construction). It needs its own telemetry: `NiObject::opaque_tail_len` feeding
+  `NifScene::opaque_tail_histogram` (#2625). Regression = a new tail-capturing block that
+  doesn't wire it. Also confirm capture-to-`block_size` is used, never a hardcoded length
+  (Starfield `BSLightingShaderProperty` tail is 38 B on most content but bimodal `{38, 42}`).
+- Pre-10.1.0.106 `NiSequence` / `ControlledBlock` / `NiControllerSequence`: exactly one of
+  each `until="10.1.0.103"` / `since="10.1.0.106"` pair is present for any version (a read
+  that fires both, or drops the `until` half, loses text keys and binds no channel);
+  below-band `cycle_type` default is `CYCLE_CLAMP = 2`, and `import_sequence`
+  (`crates/nif/src/anim/sequence.rs`) collapses a non-finite/non-positive duration to `0.0`.
+- `NiDynamicEffect` carries two affected-nodes groups (`until="4.0.0.2"` and
+  `since="10.1.0.0"`); both must be read (`NiLight`/`NiTextureEffect`, no anchor on files
+  that old).
+- Starfield `BSFaceGenNiNode` has its own type with an opaque `starfield_tail` (aliasing it
+  to plain `NiNode::parse` under-reads 2 B on every instance); `BSWeakReferenceNode` declines
+  an unfittable payload into `starfield_tail` rather than overrunning.
+- Regression pins (verify still fixed, do not re-report): Oblivion v10.x family (#1509,
+  #1337, #1329, #1310/#1301/#1302 — method: extract → `trace_block` → byte-decode; memory
+  *nif_v10x_stride_drift_resolved*); Starfield shader over-read (#1510: gate FO76-tail fields
+  on `bsver < STARFIELD`, since `#BS_F76#` is stream 155 only); root-NiNode / inline-type-name
+  truncation recovers rather than hard-`Err` (#688/#698).
+- If a corpus is available: report consumed-vs-`block_size` mismatches by block type with
+  counts; any non-zero on a *known* type is drift; separately any `no_block_sizes` truncation.
 **Output**: `/tmp/audit/nif/dim_1.md`
 
-### Dimension 2: Version Gating
-**Entry points**: `crates/nif/src/version.rs` (`NifVersion` constants, `NifVariant::detect`, `bsver()`, the feature-flag helper methods), `crates/nif/src/shader_flags.rs` (the namespaced per-game flag-constant modules), all `stream.bsver()` / `stream.version()` call sites in block parsers.
+### Dimension 2: Version Gating (highest report yield)
+Paths: `crates/nif/src/{version,shader_flags}.rs`, all `stream.bsver()` / `stream.version()` sites in `blocks/`
+First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/version.rs crates/nif/src/shader_flags.rs`, then for every parser changed since, compare each `since=`/`until=`/`vercond` in nif.xml with the gate written; `grep -rn 'V10_1_0_106\|V10_1_0_103' crates/nif/src/blocks` shows raw uses of constants a `NifVersion` helper already encodes.
+**Guard**: the `detect_*` tests in `version.rs`. Nothing guards helper-vs-literal use.
 **Checklist**:
-- `NifVariant::detect` covers every known `(version, user_version, user_version_2)` combination (cross-check the `detect_*` unit tests in `version.rs` against the seven shipping games + the FO3-dev edge case).
-- Feature presence routes through the **named helper surface**, not raw version literals. `NifVariant` itself is now minimal — `#1840` and `#1897` deleted its seven feature-flag helpers (`has_properties_list`, `has_effects_list`, `has_culling_mode`, `has_shader_alpha_refs`, `has_shader_property_fo3_fields`, `uses_bs_tri_shape`, `has_material_crc`; see the removal-log comment at `version.rs:596-606`) as call-site-less dead code — today `impl NifVariant` has exactly `detect` and `bsver`. The live named-helper surface lives on **`NifVersion`** instead: the collision-band `has_mopp_offset` / `has_havok_strips_scale` / `has_object_group_id` / `has_skin_data_partition_ref` / `has_skin_data_vertex_weights_flag`, plus the v10.x-era `has_keyframe_controller_data` / `has_quat_transform_trs_valid` / `has_interp_controller_manager_controlled` / `uses_old_rigid_body_layout`, plus the `NiControllerSequence` pair `has_ni_sequence_prologue` (≤ V10_1_0_103) / `has_controller_sequence_fields` (≥ V10_1_0_106, added by `#3476`). Verify the live set in `version.rs` before citing a name — it has been pruned twice (#938/#1511, then #1840/#1897), and grown at least twice since (`#2168` added `has_skin_data_vertex_weights_flag`; `#3476`, 2026-09-02, added the sequence-prologue pair by routing 7 of `NiControllerSequence::parse`'s 19 raw `stream.version()` comparisons through them — 12 remain as genuinely distinct compound-bound predicates, not overlooked call sites) — pure additions the "pruned twice" framing above doesn't cover. **A new parser that hardcodes a raw version literal for a feature a helper already covers is the regression.** New gates should add a helper, not a literal — but a helper with no call site is itself dead code (the #1511/#1840/#1897 lesson): add it *with* its consumer. See `docs/engine/nif-parser.md`'s "Version handling" section for the current doctrine.
-- `bsver` band thresholds are named constants in `version.rs` (`OBLIVION = 11`, `FO3_FNV = 34`, `RIGID_BODY_FLAGS16 = 76`, `SKYRIM_LE = 83`, `SKYRIM_SE = 100`, `FALLOUT4 = 130`, `FO4_DLC_UPPER = 140`, `FO76 = 155`, `STARFIELD = 172`, …). Confirm comparisons use the right operator and the right constant (off-by-one band membership is a silent cross-game corruptor).
-- `shader_flags.rs` holds the per-game flag vocabularies as namespaced constant modules (`fo3nv_f1`/`fo3nv_f2`, `skyrim_slsf1`/`skyrim_slsf2`, `fo4_slsf1`/`fo4_slsf2`, plus the FO76/Starfield `bs_shader_crc32` arrays) — the FO3/FNV `BSShaderFlags`+`BSShaderFlags2` u32 *pair* vs the Skyrim+ single-word storage. Verify each game reads its own storage shape. The `ShaderFlags<'a>` typed view that used to wrap them was deleted as transitively dead (*#1897*); production import reads the constants directly via `is_decal_from_legacy_shader_flags` / `is_decal_from_modern_shader_flags` / `is_two_sided_from_modern_shader_flags` (`crates/nif/src/import/material/mod.rs`).
-- Oblivion v20.0.0.5 specifics: no block sizes (→ Dim 1), u16 flags below `FLAGS_U32_THRESHOLD = 26`, inline strings (no string table below `STRING_TABLE_THRESHOLD`).
-**Regression guards**:
-- **Per-game `NiPSysEmitter` / `NiTextureEffect` version gating** (`#1239` / `#1240`): `NiPSysEmitter` routes through the nif.xml version gate so Oblivion (`bsver < 26`) parses correctly; `NiTextureEffect`'s embedded `NiDynamicEffect` base is gated `bsver < FALLOUT4` (FO4+ removed it). Regression = a parser hardcoding one layout without a band check.
+- `NifVariant::detect` covers every `(version, user_version, user_version_2)` combination of
+  the seven titles + the FO3-dev edge case. `impl NifVariant` is minimal (`detect`, `bsver`);
+  the live named-helper surface is on **`NifVersion`** (`has_mopp_offset`,
+  `has_havok_strips_scale`, `has_object_group_id`, `has_skin_data_partition_ref`,
+  `has_skin_data_vertex_weights_flag`, `has_keyframe_controller_data`,
+  `has_quat_transform_trs_valid`, `has_interp_controller_manager_controlled`,
+  `uses_old_rigid_body_layout`, `has_ni_sequence_prologue`, `has_controller_sequence_fields`) —
+  verify against `version.rs` before citing (it has been pruned and grown). **A new parser
+  that hardcodes a raw version literal for a feature a helper covers is the regression**; a
+  new helper needs a consumer in the same change (dead helpers were pruned). Doctrine:
+  `docs/engine/nif-parser.md` "Version handling".
+- `bsver` bands are named constants (`OBLIVION = 11`, `FO3_FNV = 34`, `RIGID_BODY_FLAGS16 = 76`,
+  `SKYRIM_LE = 83`, `SKYRIM_SE = 100`, `FALLOUT4 = 130`, `FO4_DLC_UPPER = 140`, `FO76 = 155`,
+  `STARFIELD = 172`, …): check operator and constant (off-by-one band membership silently
+  corrupts a neighbouring game). FO76 (155) and Starfield (172+) differ — keep apart.
+- `shader_flags.rs`: FO3/FNV `BSShaderFlags` + `BSShaderFlags2` u32 *pair* (`fo3nv_f1/f2`) vs
+  Skyrim+ single-word storage (`skyrim_slsf1/2`, `fo4_slsf1/2`) and the FO76/Starfield
+  `bs_shader_crc32` arrays; each game reads its own storage shape. Import reads them via
+  `is_decal_from_legacy_shader_flags` / `is_decal_from_modern_shader_flags` /
+  `is_two_sided_from_modern_shader_flags` (`crates/nif/src/import/material/mod.rs`).
+- Oblivion specifics: u16 flags below `FLAGS_U32_THRESHOLD = 26`; inline strings below
+  `STRING_TABLE_THRESHOLD`; `NiPSysEmitter` routed through the nif.xml gate (`bsver < 26`);
+  `NiTextureEffect`'s embedded `NiDynamicEffect` base gated `bsver < FALLOUT4`.
 **Output**: `/tmp/audit/nif/dim_2.md`
 
 ### Dimension 3: Block Dispatch Coverage
-**Entry points**: `crates/nif/src/blocks/mod.rs` (`parse_block` / `parse_block_with_name_arc` → `parse_block_inner`, which carries the `match type_name` dispatch table), the test-infra baselines.
+Paths: `crates/nif/src/blocks/mod.rs`, `crates/nif/tests/{per_block,block_coverage}_baselines.rs`, `crates/nif/tests/data/`, `crates/nif/src/corpus.rs`, `crates/nif/src/kfm.rs`
+First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archive-or-dir> --tsv` and diff against `tests/data/per_block_baselines/<game>.tsv` (`--unknown-only` for the short view)
 **Checklist**:
-- The dispatch is a hand-written `match type_name` in `parse_block_inner` (the `impl_ni_object!` macro in the same file only generates the `NiObject` trait impls — `block_type_name` / `as_any` — not dispatch arms). Count live arms fresh from that match, top-level arms only (five nested `match` blocks — four `let type_name_static: &'static str = match type_name { ... }` RTTI-preservation arms plus the `type_name_arc_hint` fallback near the end of the function — inflate a naive `grep -c '=>'`; this count has grown from two as more shared-parser wrapper types (`NiPreSplitDataController`, `BsNamedFloatInterpController`, `BsShaderController`, `BsPackedCombinedGeomDataExtra`) were added, so re-verify the count rather than trusting this number either); do **not** quote a stale number — count it or cite `docs/engine/nif-parser.md` § "Block coverage" (which has the same staleness risk — its "two small nested match blocks" phrasing is itself stale, flag it for a doc-rot pass if not already fixed).
-- From a corpus or BSA/BA2 listing, enumerate block-type names that appear in real NIFs but fall through to the `NiUnknown` placeholder. Count `NiUnknown` fallbacks per game and flag any that cascade (a missing block with no `block_sizes` anchor in Oblivion truncates the rest of the scene — link Dim 1).
-- A block that *parses but is silently dropped downstream* is a Dim 4/5 finding, not a coverage gap — keep the boundary clean.
-**Test-infra signal** (extend, don't reinvent):
-- `crates/nif/tests/per_block_baselines.rs` (opt-in `--ignored`, needs `nif_stats --tsv` + game data) compares per-type `parsed` vs `unknown` against checked-in 7-game TSV baselines and fails on `unknown` growth / `parsed` shrinkage. `crates/nif/tests/block_coverage_baselines.rs` is the sibling coverage surface. `BYROREDUX_REGEN_BASELINES=1` regenerates after an intentional change. New coverage findings should land as a baseline-test extension. Note: `#BS_F76# == 155` while Starfield ≠ FO76 (different shader tail) — keep the two apart.
-- **The baseline keys on WIRE RTTI, not the parsed struct's name (#3326, `2d7a6f02`).** `record_scene_blocks` (`crates/nif/tests/common/mod.rs`) resolves each block's name through `header.block_type_indices` → `header.block_types`, falling back to `block_type_name()` only for pre-`V5_0_0_1` headers and truncated scenes. The gate was blind exactly where it exists to watch: several dispatch arms deliberately parse multiple wire types into one struct and keep the discriminator in a FIELD (`BhkRigidBody.is_t`, `BhkCollisionObject.is_blend`, `BsRangeNode.kind`, `NiPSysBlock.original_type`, `NiTriShape::parse_segmented`), so a regression that lost the discriminator moved no baseline row. Two old rows were provably not wire types at all: `NiSingleInterpController` is `abstract="true"` in nif.xml, and *NiPSysBlock* is a parser-internal catch-all name appearing nowhere in nif.xml. Regression = re-keying on the struct name.
-- **The corpus definition is shared, not per-harness (#2587/#2347).** `crates/nif/src/corpus.rs` owns both rules a baseline needs to agree on: `NIF_ENTRY_EXTENSIONS` / `is_nif_entry` (`.nif`, `.bto`, `.btr` — `.bto`/`.btr` are **renamed NIFs**, same `parse_nif` → `import_nif_scene` path; filtering on `.nif` alone left 10 662 files in `Skyrim - Meshes1.bsa` alone, 3.3× that archive's `.nif` count, contributing to no baseline) and `per_block_tsv_header`. Both the `nif_stats` example and the `tests/common` harness had drifted independent copies. Regression = a second private copy of either rule.
-- **The gates walk EVERY mesh-bearing archive, not the primary one (#3041 → #3466 → #3369).** `open_all_mesh_archives` (all-or-nothing, so a host missing DLC skips the game rather than reporting absent content as a regression) plus `open_optional_mesh_archives` / `Game::optional_mesh_archives` (present-only — originally for the per-account Skyrim CC/AE set, `#3369`; widened by `#3712` to also pin Oblivion's eight vanilla DLC archives, 1,580 NIFs / 16.4% of that corpus, previously covered by no test at all; `#3924` then wired both tiers into the runtime `GameProfileEntry::optional_bsas` game-profile loader so e.g. `--esm ccBGSSSE001-Fish.esm` is actually openable, not just corpus-swept — before that fix the corpus gate was measuring parse coverage for content the engine could not load). `run_all_meshes_gate` (`crates/nif/tests/parse_real_nifs.rs`) is the shared loop — per-archive attribution, `limit` is a **per-archive** cap because a global cap silently stops walking later archives, which is the blind spot being closed. Coverage went FNV 14 881→20 746, FO3 10 989→17 172, Skyrim SE 18 862→33 424, FO4 166 568→235 082 (70.8%→100%), Starfield 89 276→120 543 (74.1%→100%), and FO76 from **no gate at all** (34.8%) to 168 208.
-- **FO76's `GeneratedMeshes` truncation tail is CLOSED — do not re-file as open (fixed by #3461, `132262eb`, 2026-09-02; re-verified live 2026-09-05).** The gap surfaced 2026-08-29 (#3466): `SeventySix - GeneratedMeshes02.ba2` measured 0.00% clean (all 2 049 NIFs truncating) and `01` measured 95.03% (1 007 of 20 245 truncating), both fully *recoverable*, which is why it stayed invisible under the recoverable-rate assertion. The root cause was `BSDistantObjectExtraData` (FO76 bsver 152–167) having no dispatch arm at all and falling through to `NiUnknown` — 112 716 instances across the `GeneratedMeshes`/`UpdateMain` archives. #3461 added a typed `BsDistantObjectExtraData` mirroring the `BSDistantObjectLargeRefExtraData` (#942) sibling shape. Re-run `cargo test -p byroredux-nif --release --test parse_real_nifs parse_rate_fo76_all_meshes -- --ignored --nocapture` before trusting this: confirmed 2026-09-05 that both `GeneratedMeshes01.ba2` and `GeneratedMeshes02.ba2` now parse **100.00% clean, 0 truncated** (20 245/20 245 and 2 049/2 049), same as every other FO76 archive — the whole-game gate reports 168 208 NIFs, 20/20 archives present. `docs/engine/nif-parser.md`'s FO76 coverage row (98.18% / "known-open... pending #3461") and the `min_clean: 0.945` / `0.0` floors + module comment in `crates/nif/tests/parse_real_nifs.rs` are now stale doc rot — flag them for `/audit-tech-debt` Dim 3 (or fix directly if in scope), but the underlying parser gap itself is closed.
+- Dispatch is a hand-written `match type_name` in `parse_block_inner` (the `impl_ni_object!`
+  macro only generates trait impls). Count top-level arms fresh — nested `match`es
+  (`type_name_static` RTTI arms, `type_name_arc_hint`) inflate a naive `grep -c '=>'`; never
+  quote a stale number or copy one from `docs/engine/nif-parser.md` § "Block coverage".
+- From a corpus or archive listing, enumerate block types that fall through to `NiUnknown`;
+  count per game; flag any that cascade (a missing block on Oblivion truncates the scene → Dim 1).
+- A block that parses but is dropped downstream is a Dim 4/5 finding, not coverage.
+- **Baseline harness invariants**: baselines key on **wire RTTI** via
+  `header.block_type_indices` (`record_scene_blocks`, `tests/common/mod.rs`), not the parsed
+  struct name (several arms parse multiple wire types into one struct — `BhkRigidBody.is_t`,
+  `NiPSysBlock.original_type`); the corpus definition is shared in `corpus.rs`
+  (`NIF_ENTRY_EXTENSIONS` includes `.bto`/`.btr` — renamed NIFs; a second private copy of
+  the rule is the regression); the gates walk **every** mesh-bearing archive
+  (`open_all_mesh_archives` all-or-nothing, `open_optional_mesh_archives` present-only,
+  `run_all_meshes_gate` with a *per-archive* `limit`); `parse_real_nifs` asserts a per-archive
+  clean-rate floor (`min_clean`, 0.995) plus recoverable 100% — truncation counts as
+  recoverable, so the floor is what catches silent clean-rate collapse. New coverage
+  findings should land as a baseline-test extension; `BYROREDUX_REGEN_BASELINES=1`
+  regenerates after an intentional change.
+- `kfm.rs` (KFM binary catalog, v1.2.0.0–2.2.0.0, transcribed from `NiKFMTool::ReadBinary`)
+  has no engine consumer today — audit for version-gate fidelity and `allocate_vec` bounds
+  only; "unused" is not a finding.
 **Output**: `/tmp/audit/nif/dim_3.md`
 
 ### Dimension 4: Geometry Extraction & Import Handoff
-**Entry points**: `crates/nif/src/import/mod.rs` (thin dispatch — `import_nif`, `import_nif_scene`), `crates/nif/src/import/types.rs` (`ImportedNode` / `ImportedMesh` / `ImportedScene`), `crates/nif/src/import/walk/mod.rs` (`walk_node_hierarchical` / `walk_node_flat` + shared helpers only, since the `#3856` split, 2026-09-09 — the satellite walkers `walk_node_lights` / `walk_node_texture_effects` / `walk_node_particle_emitters_flat` plus `extract_emitter_params` / `extract_emitter_rate` now live in `walk/lights.rs` / `walk/texture_effect.rs` / `walk/emitter.rs` respectively), `crates/nif/src/import/mesh/` (`ni_tri_shape`, `bs_tri_shape`, `bs_geometry`, `tangent`, `sse_recon`, `skin`, `material_path`, `decode`), `crates/nif/src/import/material/walker.rs` (`extract_material_info` / `extract_material_info_from_refs`) + `import/material/mod.rs` flag helpers, `crates/nif/src/import/transform.rs`, `crates/nif/src/import/coord.rs`.
-**Checklist** (this is the *parse → ECS* handoff; per-game **material** classification lives at the `material_translate.rs` boundary — audit that under `/audit-nifal`, not here):
-- All `NiAVObject` fields accessed via the `.av.*` sub-struct (no stale flat-field access after the split).
-- Per-game geometry path selected correctly: classic `NiTriShape` (Oblivion/FO3/FNV) vs Skyrim SE+ packed-half `BSTriShape` vs Starfield `BSGeometry` (`bsver 155`). Each decodes its own vertex stride and index format.
-- Tangent handoff: FO4+ `BSTriShape` ships tangents **inline** in the packed-vertex blob when `VF_TANGENTS | VF_NORMALS` are both set (decoded in `import/mesh/bs_tri_shape.rs`); the Bethesda authored-blob path (Oblivion/FO3/FNV) reads `NiBinaryExtraData` named `"Tangent space (binormal & tangent vectors)"` and MUST honor the `[tangents…, bitangents…]` swap (the `tangents` field actually holds ∂P/∂V — `#786`); Starfield `BSGeometry` unpacks UDEC3 `tangents_raw`, whose 2-bit W is normalized to exactly ±1 at import (`#2246`, `import/mesh/bs_geometry.rs`) so no consumer needs a defensive re-clamp; content with none of these uses `tangent::synthesize_tangents` (Mikkelsen). Distinct paths — don't cross-wire them.
-- SSE skinned-geometry reconstruction (`sse_recon::try_reconstruct_sse_geometry`) and skin extraction (`skin::*`, partition-local → global bone remap) consume the right counts.
-- **Skyrim SE `NiSkinPartition::Triangles` are ALREADY global indices (regression guard, #3355/#3360, `07ca5979`).** nifly forces `bMappedIndices = false` for `Stream() == 100`, so on SSE `Triangles` is nifly's *trueTriangles* and pushing it through `vertex_map` inverts the mapping. Measured over both vanilla SSE mesh archives before the fix: 26 913 blocks, 10 501 damaged, 3 297 664 triangles dropped (17.6%) and 6 681 098 corrupted (35.6%) — **only 46.8% survived intact**, because a raw index ≥ `vertex_map.len()` was treated as malformed under the #725/NIF-D4-04 policy when it was a valid global index merely past that partition's own vertex count, and every index below that length was silently repointed. Regression = re-applying `vertex_map` on the `Stream() == 100` band.
-- Coordinate conversion (Z-up Gamebryo → Y-up renderer, `coord.rs`) applied consistently to positions, normals, and rotations.
-**Regression guards**:
-- **Typed particle decode**: `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` are TYPED structs in `crates/nif/src/blocks/particle.rs` (formerly opaque `NiPSysBlock`). Their params flow `extract_emitter_params` / `extract_emitter_rate` (`import/walk/emitter.rs`, moved out of `walk/mod.rs` by `#3856`) → `apply_emitter_params` (`byroredux/src/systems/particle.rs`). Regression = reverting to an opaque block, or dropping the authored birth-rate / base-scale so the runtime falls back to a hardcoded preset. `apply_emitter_params` overrides kinematics + size, *not* color (see its unit tests).
-- **Geometry bulk-read fast paths** (perf, but also a correctness handoff): `BSGeometry::parse` (`crates/nif/src/blocks/bs_geometry.rs` — the parser, not the same-named import extractor) bulk-reads raw vertex/UV data via `read_u16_array` then unpacks with `.chunks_exact(N).map(...).collect()` (a direct `read_pod_vec` doesn't fit — the per-element `unpack_norm_i16`/`half_to_f32` transform changes element size); `NiTriShape` tangent extraction uses `std::mem::take` on the `Vec<f32>` to avoid a per-mesh clone (`#1263`/`#1265`). Regression = a reintroduced per-vertex `allocate_vec` + push loop, or a clone instead of `mem::take`.
+Paths: `crates/nif/src/import/{mod,types,transform,coord,precombine}.rs`, `import/mesh/`, `import/walk/`, `import/material/{walker,dedicated_shader}.rs`
+First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/import/mesh crates/nif/src/import/walk`
+This is the *parse → ECS* handoff; per-game material classification is `/audit-nifal`.
+**Guards**: `import/mesh/sse_skin_index_space_tests.rs` (`#[ignore]`, needs Skyrim SE data),
+`bs_tri_shape_partition_remap_tests.rs`, `sse_skin_geometry_reconstruction_tests.rs`,
+`tangent_convention_tests.rs`, `tests/normal_synthesis_corpus.rs` (ignored), `import/walk/tests.rs`.
+**Checklist**:
+- All `NiAVObject` fields via the `.av.*` sub-struct. Coordinate conversion (Z-up → Y-up,
+  `coord.rs`) applied consistently to positions, normals, rotations.
+- Per-game geometry path: classic `NiTriShape` (Oblivion/FO3/FNV) vs Skyrim SE+ packed-half
+  `BSTriShape` vs Starfield `BSGeometry` (bulk-read via `read_u16_array` + unpack; import
+  extractor in `import/mesh/bs_geometry.rs`). Each decodes its own stride and index format.
+- **Tangents**: FO4+ `BSTriShape` inline when `VF_TANGENTS | VF_NORMALS` set;
+  Oblivion/FO3/FNV `NiBinaryExtraData` "Tangent space (binormal & tangent vectors)" — must
+  honor the `[tangents…, bitangents…]` swap (the field holds ∂P/∂V, #786); Starfield UDEC3
+  `tangents_raw` with W normalized to ±1 at import (#2246); otherwise
+  `tangent::synthesize_tangents` (Mikkelsen). Distinct paths — don't cross-wire.
+- **Skyrim SE skinning index spaces** (#3355/#3360, then the 2026-09-17 correction): the
+  `NiSkinPartition::Triangles` are already **global** vertex indices on the `Stream() == 100`
+  band (do not push them through `vertex_map`); the packed `BSTriShape` / SSE global-buffer
+  bone indices already address the skin's bone list and are only *widened*
+  (`widen_packed_bone_indices`); only the separate `NiSkinPartition.bone_indices` channel is
+  partition-local. Regression = re-applying a partition palette to the packed channel (the
+  deleted *remap_bs_tri_shape_bone_indices* behaviour) or `vertex_map` to triangles.
+  `sse_recon::try_reconstruct_sse_geometry` and `skin::*` consume the right counts.
+- **Particle emitters**: `NiPSysEmitter`/`NiPSysEmitterCtlr`/`NiPSysEmitterCtlrData`/
+  `NiPSysGrowFadeModifier` are typed (`blocks/particle.rs`); params flow
+  `extract_emitter_params` / `extract_emitter_rate` (`import/walk/emitter.rs`) →
+  `apply_emitter_params` (`byroredux/src/systems/particle.rs`, overrides kinematics + size,
+  not colour). The rate walk is scoped to the system's own controller chain; when a sibling
+  `NiPSys*` controller parses to the opaque `NiPSysBlock` marker (which discards
+  `next_controller_ref`) the fallback resolves by `base.target_ref` to the ctlr targeting the
+  system whose `controller_ref` equals the chain head — per-instance exact, never a
+  whole-scene first-match, and gated on a non-NULL chain head (#4467; opt-in gate
+  `real_archive_torch_meshes_surface_particle_emitters`). Regression = a hardcoded preset
+  replacing an authored birth rate, or the fallback claiming another system's ctlr.
+- FO4 precombined geometry (`import/precombine.rs`, M49) reuses `decode_bs_vertex_stream`
+  with `full_precision = false` (PSG positions are half even when the descriptor sets
+  full-precision); container read is `byroredux_bsa::CsgArchive` (`/audit-parsers`); spec
+  `docs/engine/fo4-csg-format.md`.
+- FO4 model-space normals + alpha-test: `dedicated_shader.rs` ORs `Model_Space_Normals`
+  (F4SF1 bit 12, or the `MODELSPACENORMALS` CRC for `bsver >= 132`) and `Alpha_Test`
+  (F4SF2 bit 25) into `MaterialInfo`; parsed-but-dropped bits render object-space normals as
+  tangent-space. The NIF flag ranks below the later BGSM merge.
 **Output**: `/tmp/audit/nif/dim_4.md`
 
 ### Dimension 5: Collision & Shader Block Parsing
-**Entry points**: `crates/nif/src/blocks/collision/` (`collision_object`, `rigid_body`, `ragdoll`, `shape_primitive`, `shape_compound`, `shape_mesh`, `compressed_mesh`, `constraints`, `phantom_action`), `crates/nif/src/blocks/shader/` (`mod`, `lighting`, `effect`, `legacy`, `sky_water`), `crates/nif/src/import/collision/mod.rs` (`extract_collision`, `examine_collision_kind`, `summarize_collision_authoring` → `CollisionAuthoringSummary`).
+Paths: `crates/nif/src/blocks/collision/`, `crates/nif/src/blocks/shader/`, `crates/nif/src/import/collision/`
+First step: `cargo test -p byroredux-nif -- dispatch_coverage_tests bhk_ hk_packed`
+**Guards**: `import::collision::dispatch_coverage_tests::every_dispatched_bhk_shape_has_resolve_arm`
+(a new `bhk*Shape` dispatch arm needs a `resolve_shape_inner` `downcast_ref` arm — else it
+parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
+`import::collision::dispatch_tests::havok_motion_type_maps_full_enum`;
+`blocks/collision/hk_packed_ni_tri_strips_data_tests.rs`;
+`tests/constraint_drift_corpus.rs` (opt-in; drift must be a known motor-tail value).
 **Checklist**:
-- **`bhk*` field-for-field**: rigid-body flag width changes across the band (`uses_old_rigid_body_layout`, `RIGID_BODY_FLAGS16 = 76`, `RIGID_BODY_EXTRA_FLOATS = 9`); MOPP offset / Havok strips scale presence is version-gated (`has_mopp_offset`, `has_havok_strips_scale`); constraint `CInfo` decode is per-game (`constraints.rs` carries `parse_fo3` arms). The PHYSAL per-game seam is *only* the constraint CInfo decode — keep it confined there (memory "PHYSAL").
-- **`BSLightingShaderProperty::parse`** (`shader/lighting.rs`) is a thin `bsver` dispatcher → `parse_skyrim` (83–129) / `parse_fo4` (130–154) / `parse_fo76_plus` (≥155). Each variant must read **only** its own field set (Skyrim-only lighting-effect fields, no FO4 subsurface / FO76 trailing). A variant reading another's tail is the over-read in `#1510`; the Starfield path additionally captures `starfield_tail` to `block_size` (`#1606`, Dim 1).
-- Shader-type trailing data: `BSLightingShaderProperty` has 0–7 type-specific trailing fields — confirm the per-`shader_type` field count matches nif.xml.
-**Regression guards**:
-- **FO3+ `hkSubPartData` is decoded, not skipped** (`#2550`, `84dbf1bf`): `HkPackedNiTriStripsData::parse` used to consume the FO3+ sub-part table as a bare `stream.skip(12)` per entry, discarding each sub-part's Havok filter and material — the surface-sound / impact-effect classification — on every packed mesh authoring more than one. Geometry always collided correctly, which is why it stayed invisible. `HkSubPartData` already existed in the module and `BhkPackedNiTriStripsShape::parse` already decoded the identical table inline for Oblivion (`until="20.0.0.5"`); FO3+ merely moved it into the data block. Same three fields, same order, unchanged byte count. Regression = reverting to the bare skip. Guard tests: `crates/nif/src/blocks/collision/hk_packed_ni_tri_strips_data_tests.rs`.
-- **Starfield shader-type translation is keyed at the PARSER boundary, not the slot-table tag** (`#3364`, `d9d2d16a`): `canonical_shader_type` used to translate the `BSShaderType155` enum only when `TextureSlotLayout` was `Fallout76` — but which enum an integer came from is decided by `BSLightingShaderProperty::parse_with_size`, which routes every `bsver >= FO76 (155)` through `parse_fo76_plus` / `parse_shader_type_data_fo76`, and Starfield is 172+. Since `TextureSlotLayout::from_bsver` splits `Starfield` off from `Fallout76`, Starfield raw types fell through untranslated and were read as Skyrim `BSLightingShaderType` numbers — a Starfield FaceTint (3) reached the slot table as Skyrim Parallax and bound the head's detail map as a POM height field, exactly the failure #2694 fixed for Skyrim. `normalize_shader_type` masks types 4 and 5 (their payload variants carry the tag); 3 / 12 / 17 parse to `ShaderTypeData::None` and did not. Regression = re-narrowing the gate to the layout tag, or letting Starfield and FO76 diverge.
-- **`BSEffectShaderProperty` Starfield stub discriminator** (`#1721`, sibling of `#1510`): for `bsver >= STARFIELD`, the material-reference stub gate must be `!name.is_empty()` (Starfield hash-path refs carry no `.bgem`/`.mat` suffix), not the FO76 suffix-aware `is_material_reference` test — the two parsers must stay in lockstep. Regression = reverting to `is_material_reference` for the Starfield band (silently reads garbage source-texture/base-color/falloff). Guard test: `parse_bs_effect_starfield_hashpath_name_stubs`.
-- **Collision-shape translation completeness** (`import/collision/mod.rs::extract_collision` → `import/collision/shape.rs::resolve_shape_inner`, split out by #1876): MUST translate `BhkMultiSphereShape` + `BhkConvexListShape` to `CollisionShape` (the `downcast_ref::<…>()` arms in `shape.rs` must stay; the `dispatch_coverage_tests` module in `import/collision/mod.rs` is the structural guard). Regression = a shape that parses but never reaches `extract_collision`.
-- **Per-variant collision dispatch** (`examine_collision_kind` → `CollisionAuthoring`): the enum must keep distinguishing `None` / `Classic` / `NewPhysicsStub` / `Phantom` / `Unrecognised` (British spelling). Regression = collapsing the discriminator so a Skyrim+ phantom (`BhkPCollisionObject` wrapping `bhkPhantom`) gets force-translated as a rigid body instead of routed to a future TriggerVolume path.
-- **Constraint `CInfo` decode coverage is now five typed kinds, four remaining name-only stubs** (`#3792`, `13fdb48e`, 2026-09-02, closing out `#3330`'s deferred third): `constraints.rs` decodes `Hinge`/`LimitedHinge`/`Prismatic`/`Ragdoll` CInfo (Prismatic added last — `PrismaticCInfo` + `parse_fo3`/`parse_oblivion`, two genuinely different field orders across the version gate), and `BhkBreakableConstraint` now decodes its wrapped inner CInfo for those same four canonical types (a `data: BhkConstraintData` field) instead of a byte-count `stream.skip` — consumption unchanged, so the trailer stays reachable exactly as before. `BallAndSocket`/`StiffSpring` still have no canonical joint kind and stay `Other` (explicitly deferred, not a leak). Verified end-to-end against FNV's `creatures\protectron\skeleton.nif`: 12/12 authored constraint edges now surface as one connected ragdoll component (previously 9/12, 4 fragments). Regression = a canonical-kind arm reverting to a bare skip, or `BhkBreakableConstraint` losing its wrapped-payload decode.
-- **`is_havok_constraint_stub` drift-telemetry suppression is narrowed to genuinely name-only types** (`#3713`, `b61f02ea`, 2026-09-03): the predicate used to list nine constraint type names and route their under-consume into a *suppressed* drift histogram to hide the by-design "motor left for `block_size` recovery" tail — but four of those nine (including Prismatic, post-#3792) had since grown typed `CInfo` decoders and stayed on the suppression list anyway, so a real parser regression in one of them would land in the same hidden bucket as the intentional tail, indistinguishable from it. This is exactly what hid the historic `bhkHingeConstraint` +128 under-read (a whole missing parser) until #3330 found it by hand. Now narrowed to the four genuinely name-only stubs; a new `corpus::is_known_constraint_motor_tail_drift` predicate pins the by-design residual (drift values 1/18/19/26 — the four `hkMotorType` payload shapes, with `bhkMalleableConstraint` stacking +4 for its own trailing `Strength: f32` on top of its wrapped inner type's drift) against real four-game corpus data. Regression = re-adding a now-decoded type back onto the suppression list, which is the exact mechanism that hid #3330 the first time.
-- **`BhkNPCollisionObject` status is "approximated," not "decoded"** (`summarize_collision_authoring` → `CollisionAuthoringSummary`, added 2026-08-07): the FO4/FO76/Starfield `BhkSystemBinary` blob still does **not** resolve to a `CollisionShape` — do not report it as decoded. What DID change (`#3809`, 2026-09-07): the outer container is no longer opaque — `blocks::collision::havok_packfile::parse_havok_packfile` decodes the classic Havok packfile header, section table, and (the actual fix) the three fixup tables (virtual/global/local) that were previously being read as high-entropy payload, turning `__data__` into a typed object graph via `HavokPackfile::objects()` — every FO4 `_physics.nif` blob resolves the same five top-level classes in order (`hknpPhysicsSystemData`, `hknpCompressedMeshShape`, `hkRefCountedProperties`, `hknpBSMaterialProperties`, `hknpCompressedMeshShapeData`). What remains opaque is narrower and specific: `hknpCompressedMeshShapeData`'s own bit-packed field layout (no `__types__` reflection metadata ships, so it needs corpus inference, not a container problem). `docs/engine/physal.md`'s coverage table says exactly this ("container + object table decoded... blocked on `hknpCompressedMeshShapeData`'s field layout") — cite it rather than the old blanket "still not parsed." Separately, `summarize_collision_authoring` scans every parsed collision-object block (not just the ones `extract_collision` resolves to a shape) to tally `classic`/`new_physics`/`phantom` counts, so a scene can be told apart as "authored packed Havok we can't read" vs. "authored nothing," feeding `CachedNifImport.collision_authoring` (`byroredux/src/cell_loader/nif_import_registry.rs`) for the cell-loader's render-geometry proxy policy (see `docs/engine/physics.md` § Packed-Havok geometry fallbacks). Regression = the census under/over-counting a block type, or a game-specific detail (raw `bsver`, block-type string, per-game enum) escaping `collision/mod.rs` through the summary — flag the latter as a Dim 5 finding and cross-link to `/audit-nifal` Dim 6, which owns leak classification for this boundary.
-- **`hkMotionType` byte → canonical `MotionType`** (`#1652`, `extract_from_classic` in `crates/nif/src/import/collision/mod.rs`): the raw Havok byte maps via the full canonical enum — `1..=5 | 8 => Dynamic`, `6 => Keyframed`, `7 => Static`, `9 => CharacterKinematic`, `0`/other `=> Static`. Regression = the old `4 => Keyframed / _ => Static` collapse (mislabels keyframed/fixed/character bodies, wrong solver behaviour). This decode is the canonical-tier boundary — the `MotionType` enum lives in `crates/core/src/ecs/components/collision.rs`; see `/audit-nifal` Dim 6.
-- **FO4 model-space-normals + alpha-test consumption** (`#1592`, `crates/nif/src/import/material/dedicated_shader.rs` — split out of *walker.rs* by #2059): for an FO4 `BSLightingShaderProperty` the parser reads the full F4SF1/F4SF2 pair, but the walker must OR `Model_Space_Normals` (F4SF1 bit 12) + `Alpha_Test` (F4SF2 bit 25) into `MaterialInfo` (plus the FO76+ `MODELSPACENORMALS` CRC for `bsver >= 132`). Parsed-but-dropped bits render an object-space normal map as tangent-space or a cutout as opaque on inline/loose/modded FO4 NIFs. The NIF flag is strictly lower priority than the later BGSM merge. Regression = the walker dropping these bits again.
+- **`bhk*` field-for-field**: rigid-body flag width (`uses_old_rigid_body_layout`,
+  `RIGID_BODY_FLAGS16 = 76`, `RIGID_BODY_EXTRA_FLOATS = 9`); MOPP offset / strips scale gated
+  (`has_mopp_offset`, `has_havok_strips_scale`); FO3+ `hkSubPartData` is *decoded* (filter +
+  material), never `skip(12)`. The PHYSAL per-game seam is only the constraint CInfo decode.
+- **Constraint CInfo**: typed decoders exist for hinge (into `LimitedHingeCInfo`), limited
+  hinge, prismatic, ragdoll, ball-and-socket, stiff-spring and the ball-socket chain
+  (`BhkConstraintData`; `BhkBreakableConstraint` and malleable wrappers decode the inner
+  CInfo). Only `bhkGenericConstraint` remains a name-only stub
+  (`is_havok_constraint_stub` in `lib.rs` — its drift is suppressed; anything else on that
+  list hides real drift, the mechanism that hid `bhkHingeConstraint`'s +128). By-design
+  residuals are pinned by `corpus::is_known_constraint_motor_tail_drift` (1/18/19/26;
+  malleable +4; the three no-motor types exactly 0). *Decoded is not imported*: the ragdoll
+  importer (`import/collision/ragdoll.rs`) still declines ball-and-socket / spring / chain
+  until a canonical joint kind exists (`docs/engine/physal.md`).
+- **`BSLightingShaderProperty::parse`** is a thin `bsver` dispatcher → `parse_skyrim`
+  (83–129) / `parse_fo4` (130–154) / `parse_fo76_plus` (≥155); each reads only its own field
+  set; per-`shader_type` trailing count (0–7) matches nif.xml. Starfield captures
+  `starfield_tail` to `block_size`. The material-reference stub gate is `!name.is_empty()`
+  for `bsver >= STARFIELD` (hash-path refs carry no `.bgem` suffix) but the suffix-aware
+  `is_material_reference` for FO76 (152..171); `BSEffectShaderProperty` and
+  `BSLightingShaderProperty::parse_fo76_plus` must stay in lockstep (`parse_bs_effect_starfield_hashpath_name_stubs`).
+- Starfield shader-type translation is keyed at the **parser** boundary
+  (`parse_with_size` routes every `bsver >= 155` through `parse_fo76_plus`), not the
+  slot-table layout tag; `normalize_shader_type` masks types 4/5 — a Starfield FaceTint (3)
+  must not reach the slot table as Skyrim Parallax (#3364).
+- **`BhkNPCollisionObject` is "approximated", not "decoded"**: the FO4/FO76/Starfield
+  `BhkSystemBinary` blob does not resolve to a `CollisionShape`.
+  `blocks::collision::havok_packfile::parse_havok_packfile` decodes the container (header,
+  sections, three fixup tables → typed object graph); what stays opaque is
+  `hknpCompressedMeshShapeData`'s bit-packed layout (`docs/engine/physal.md`). Do not report
+  it as decoded. `summarize_collision_authoring` scans every collision block and feeds
+  `CachedNifImport.collision_authoring` (`byroredux/src/cell_loader/nif_import_registry.rs`);
+  `examine_collision_kind` keeps `None / Classic / NewPhysicsStub / Phantom / Unrecognised`
+  distinct (a Skyrim+ phantom must not be force-translated as a rigid body). A per-game
+  detail (raw `bsver`, block-type string) escaping `import/collision/` is a finding →
+  cross-link `/audit-nifal`.
+- `hkMotionType` byte → canonical `MotionType` (`havok_motion_type`): `1..=5 | 8` Dynamic,
+  `6` Keyframed, `7` Static, `9` CharacterKinematic, else Static; the zero-mass "Dynamic"
+  reclassification lives beside it — see `/audit-physics`, do not re-derive.
 **Output**: `/tmp/audit/nif/dim_5.md`
 
 ### Dimension 6: Allocation Hygiene (PERF)
-**Entry points**: `crates/nif/src/stream.rs` (`allocate_vec`, `read_pod_vec`), all `blocks/*.rs` callers, `byroredux/src/streaming.rs` (`pre_parse_cell`).
+Paths: `crates/nif/src/stream.rs`, `blocks/**/*.rs` callers, `crates/nif/tests/heap_allocation_bounds*.rs`, `byroredux/src/streaming.rs` (`pre_parse_cell`)
+First step: `cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds` (CI job `nif-heap-allocation-bounds` runs the three heap files, each its own process)
+**Guards**: the dhat-gated `heap_allocation_bounds.rs` (single node, FO4 packed vertices,
+SSE geometry+particle, skin blocks), `heap_allocation_bounds_geometry.rs`,
+`heap_allocation_bounds_import.rs`; `stream.rs` unit tests
+(`allocate_vec_sized_*`, `allocate_vec_min_bytes_uses_the_supplied_minimum_not_size_of`).
 **Checklist**:
-- `allocate_vec::<T>(count)` and the `read_pod_vec` wrappers carry `#[must_use]` (the message names the fix-up: bind it or `stream.skip()`). A bound-check-only call site that discards the Vec is a no-op/leak pattern. Verify the attribute is present on the helpers and the KFM `allocate_vec` site (`#831`, extended by `#1246`).
-- Bulk arrays go through `read_pod_vec<T>` (collapses the double allocation, `#833`); direct allocate-then-loop-and-fill is the regression. `read_pod_vec` has a top-of-module big-endian compile-error gate. **`bytemuck` is NOT a workspace `Cargo.toml` dep** despite some audits claiming it — `read_pod_vec` bounds `T: AnyBitPattern` via the re-export; confirm before reporting.
-- Per-block parse-loop counters use the `entry().get_mut() / insert` split, not `entry().or_insert(name.to_string())` (`#832`; the `to_string` path leaks throwaway short strings per Oblivion cell).
-- `ragdoll.rs` bone-pose / template parse uses `allocate_vec` (not the old `check_alloc` idiom, `#1245`); verify no other `bhk*`/`ragdoll` parser regressed back.
-- Per-block dispatch interns block names as `Arc<str>` (`#1261`); `pre_parse_cell` (`byroredux/src/streaming.rs`) is a two-phase pipeline — serial header extract → rayon-parallel body parse (`#877`) — with a serial fast path for small models (`#1262`). Verify the phase split is intact and both paths are wired (collapsing them, or routing small cells through the parallel overhead, is the regression).
-- **`allocate_vec_min_bytes`'s caller-supplied minimum must be the true smallest legitimate on-disk encoding for one *emitted* element, not `size_of` of the in-memory type (regression guard, `#3918`, `f1abb334`, 2026-09-06).** `NiSkinPartition::parse`'s strip branch pre-sized its de-stripped-triangle output at `allocate_vec_sized::<[u16; 3]>(num_triangles)` — 6 bytes/triangle — but those triangles are never read off the stream; `blocks::strip::destrip` *generates* them from the u16 strip index arrays, where a strip of length `L` costs `2L` bytes and yields up to `L - 2` triangles, i.e. strictly more than 2 bytes/triangle, never 6. The 3x-inflated bound rejected valid strip-based partitions with `UnexpectedEof` whenever the payload sat near the file's end — measured 100%→98.29% clean on FO3 (294 truncated, including `characters\_male\lefthand.nif`/`righthand.nif`, the two meshes every kf-era NPC's hands load), ≥741 truncated on FNV, 730 on Oblivion — and it failed **silently downstream**: a demoted `NiUnknown` partition makes `triangle_body_parts` return empty, so `hide_skin_partitions` stops hiding and NPCs render bare skin through their armor with every other gate green. Two siblings of the same class found by the same test: `InterpBlendItem` (`interpolator.rs`) bounded at `size_of` (20, padded) when the real minimum is 17; `NiAgdDataStream` (`agd.rs`) bounded at `size_of` (28) when the unpadded minimum is 25 — both over-demand only 12–18%, so neither has an attributable vanilla-corpus regression today, but both are the same mistake. Regression = any `allocate_vec_min_bytes`/`allocate_vec_sized` call reverting to a `size_of`-derived bound for a *generated* (not directly-read) element type.
-- **The headline per-game gate now asserts a `MIN_CLEAN_RATE` floor, not just `recoverable_rate() >= 100%` (regression guard, `#3919`, `bd40e91a`, 2026-09-06).** Truncation counts as recoverable, so #3918's silent 100%→98.29% FO3 clean-rate collapse above passed the old assertion outright — and the per-block baseline that would have named the exact block and delta was never invoked at all, because `ci.yml`'s `cargo test --workspace` skips every `#[ignore]`d test unconditionally. `parse_real_nifs.rs` now asserts `MIN_CLEAN_RATE` (99.5%, one shared floor since all seven titles measure 100.00% clean post-#3918) next to the recoverable floor, with its own worst-archive attribution; `.github/workflows/real-data-gates.yml` additionally runs the three ignored corpus harnesses (`parse_real_nifs` / `per_block_baselines` / `block_coverage_baselines`) nightly per-title on the self-hosted game-data runner with `BYROREDUX_REQUIRE_GAME_DATA=1` (`#3850`) so an absent corpus fails the job instead of a silent no-op. Regression = a new corpus-truncating change that stays green because it's back under 99.5% loosened, or a `#[ignore]`d gate that quietly stops running nightly.
-**Test-infra signal**: `crates/nif/tests/heap_allocation_bounds.rs` bounds two `dhat`-gated cases in one binary — the original bare-NiNode gate (`parse_skyrim_se_single_node_stays_within_heap_budget`, `#1247`) and, added by `#a3216671`, `parse_skyrim_se_geometry_particle_stays_within_heap_budget` (a synthetic Skyrim SE `BSTriShape` + `NiPSysSphereEmitter` NIF, ~8× the measured ~1.5 KB / 15-block parse — the blocks the #832/#833/#408 discipline guards). `heap_allocation_bounds_geometry.rs` is a separate, earlier gate (`#1381`) over an FNV-based geometry+particle NIF (`parse_geometry_particle_stays_within_heap_budget`) — a distinct file/binary because `dhat::Profiler` is a process-global singleton. New alloc-reduction findings should extend whichever of the two already covers the touched parser rather than add ad-hoc checks.
+- `allocate_vec` / `allocate_vec_sized` / `allocate_vec_min_bytes` are `#[must_use]`; a call
+  that only bound-checks and drops the Vec is a no-op. Bulk arrays go through `read_pod_vec<T>`
+  (single allocation); allocate-then-loop-fill is the regression. `read_pod_vec` is bounded by
+  the crate-local `unsafe trait AnyBitPattern` with an explicit per-type impl list
+  (`stream.rs`; `bytemuck` is *not* a dependency — check before reporting it) and a
+  big-endian `compile_error!` gate.
+- **`allocate_vec_min_bytes`'s minimum must be the smallest legitimate on-disk encoding of one
+  *emitted* element, not `size_of` of the in-memory type** (#3918): a generated element (e.g.
+  de-stripped triangles, ≥ 2 B each on disk, 6 B in memory) with a `size_of`-derived bound
+  rejects valid data near EOF and fails silently downstream (a demoted `NiUnknown`
+  `NiSkinPartition` un-hides skin partitions → NPCs render bare skin through armor). Known
+  siblings over-demand by 12–18% (`InterpBlendItem` 20 vs 17, `NiAgdDataStream` 28 vs 25).
+- Per-block loop counters use the `entry().get_mut() / insert` split, not
+  `or_insert(name.to_string())`; block names are interned `Arc<str>`; `ragdoll.rs` uses
+  `allocate_vec` (not the old `check_alloc`).
+- `pre_parse_cell` is two-phase — serial header extract → rayon-parallel body parse — with a
+  serial fast path for small models; collapsing either path is the regression.
+- `NifStream` caps any single file-driven allocation (256 MB); confirm new readers route
+  through the capped helpers, not raw `vec![0; n]`.
 **Output**: `/tmp/audit/nif/dim_6.md`
 
 ## Phase 3: Merge
 
-1. Read all `/tmp/audit/nif/dim_*.md`.
-2. Combine into `docs/audits/AUDIT_NIF_<TODAY>.md` (`YYYY-MM-DD`) with:
-   - **Executive Summary** — clean/recoverable rate per game (vs the `nif-parser.md` matrix), total stream-position mismatches, critical coverage gaps.
+1. Read all `/tmp/audit/nif/dim_*.md`; combine into `docs/audits/AUDIT_NIF_<TODAY>.md`:
+   - **Executive Summary** — clean/recoverable rate per game (vs the `nif-parser.md` matrix),
+     stream-position mismatches, critical coverage gaps.
    - **Block Type Coverage Matrix** — block types × games (parsed / skipped / NiUnknown).
-   - **Findings** — grouped by severity (per `_audit-severity.md`; note the NIF rows: hard parse failure = HIGH, stream-position mismatch the `block_size` reconciliation covers = MEDIUM).
-   - **Prioritized Fix Order** — rendering-blocking blocks first, then animation, then collision.
-3. Remove cross-dimension duplicates. Per-game **material** translation belongs to `/audit-nifal`; cross-link instead of duplicating.
+   - **Findings** — by severity (`_audit-severity.md` NIF rows: hard parse failure = HIGH;
+     a mismatch the `block_size` reconciliation covers = MEDIUM).
+   - **Prioritized Fix Order** — rendering-blocking blocks, then animation, then collision.
+2. Remove cross-dimension duplicates; material translation → `/audit-nifal`.
 
 Suggest: `/audit-publish docs/audits/AUDIT_NIF_<TODAY>.md`
