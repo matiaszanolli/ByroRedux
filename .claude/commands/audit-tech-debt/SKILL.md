@@ -109,10 +109,14 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "allow(dead_code):      $(grep -RInE 'allow\(dead_code\)' crates byroredux tools --exclude-dir=nifskope | wc -l)"
      echo "unimplemented!/todo!(): $(grep -RInE 'unimplemented!|todo!\(\)' crates byroredux tools --exclude-dir=nifskope | wc -l)"
      echo "#[ignore] tests:        $(grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools --exclude-dir=nifskope | wc -l)"
-     echo "files >2000 production LOC: $(for f in $(find crates byroredux -name '*.rs'); do echo "$(prod_loc "$f")"; done | awk '$1>2000' | wc -l)"
-     echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l | xargs -I{} echo {})"
+     echo "files >2000 production LOC: $(for f in $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*'); do echo "$(prod_loc "$f")"; done | awk '$1>2000' | wc -l)"
+     echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l | xargs -I{} echo {})"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
+   #3893 — the scan covers `tools/` since 2026-09-19 (four workspace
+   binaries live there; `tools/nifskope` is vendored and pruned). The
+   tree-wide `#[ignore]` baseline is **182**; pre-#3893 crates+byroredux-only
+   reports said **181** — do not read that delta as a regression.
    Orientation only (will drift — re-run, never quote): the marker total runs ~21 on the #3877 vocabulary (~20 on the older TODO/FIXME/HACK/XXX-only one),
    `unimplemented!/todo!()` is currently **0** (the engine prefers explicit
    fallbacks over panics — a fresh `todo!()` is therefore notable), `#[ignore]`
@@ -224,7 +228,7 @@ were majority-test, 2 were pure-test files with zero production code). Use the
 *prod_loc* helper defined in Phase 1, step 5:
 ```bash
 # Primary bucket — the dimension's actual subject. File real findings from this.
-for f in $(find crates byroredux -name '*.rs'); do
+for f in $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*'); do
     p=$(prod_loc "$f")
     [ "$p" -gt 2000 ] && echo -e "$p\t$f"
 done | sort -rn
@@ -232,7 +236,7 @@ done | sort -rn
 # Secondary bucket — test-heavy files, lower priority. Report but do not
 # auto-file: only escalate one of these into a Dim 1 finding if its OWN
 # prod_loc figure (above) also crosses 2000.
-find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | sort -rn
+find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | sort -rn
 ```
 Session 34/35/36 (2026-05) split the original oversized set (acceleration.rs,
 dispatch_tests.rs, cell/tests.rs, draw.rs, scene_buffer.rs, context/mod.rs,
@@ -408,8 +412,8 @@ entire codebase"* was true but unmeasured over `tools/`.
 ### Dimension 6: Stub & Placeholder Implementations
 **Discovery**:
 ```bash
-grep -RInE 'unimplemented!|todo!\(\)|panic!\("not ' crates byroredux
-grep -RInE '// *(stub|TODO: real|placeholder|not yet)' crates byroredux
+grep -RInE 'unimplemented!|todo!\(\)|panic!\("not ' crates byroredux tools --exclude-dir=nifskope
+grep -RInE '// *(stub|TODO: real|placeholder|not yet)' crates byroredux tools --exclude-dir=nifskope
 ```
 The first command currently returns **nothing** — the codebase prefers explicit
 fallbacks to panics, so any hit is genuinely notable. For each:
@@ -452,7 +456,7 @@ literals are legitimate).
 ### Dimension 8: Dead Code & Backwards-Compat Cruft
 **Discovery**:
 ```bash
-grep -RInE 'allow\(dead_code\)' crates byroredux
+grep -RInE 'allow\(dead_code\)' crates byroredux tools --exclude-dir=nifskope
 grep -RInE '#\[deprecated\]|// *removed:|_unused|fn .*_unused' crates byroredux
 cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.toml deps vs use stmts"
 ```
