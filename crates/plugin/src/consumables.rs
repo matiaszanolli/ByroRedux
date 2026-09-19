@@ -493,6 +493,73 @@ mod tests {
         let (index, _, _) = fixture();
         assert_eq!(instant_restorations(&index, 1), Some(vec![(30, 25.0)]));
     }
+
+    /// #4448 — CTDA function 586 (`IsModLoaded`-class legacy condition) is
+    /// whitelisted in `restoration_plan` by **profile**, not game kind: FO3
+    /// and FNV share `GameKind::Fallout3NV`, and the gate must follow
+    /// `CharacterRulesProfile::FALLOUT_NEW_VEGAS` (the profile documents
+    /// this double duty on itself). Both legs share one game kind, so the
+    /// discriminator under test is provably the profile row, and a future
+    /// profile restructure that stops distinguishing the two flips this
+    /// test.
+    #[test]
+    fn fn586_condition_gate_is_profile_scoped_not_game_scoped() {
+        use byroredux_core::character::CharacterRulesProfile;
+        // FNV-shaped effect payload (the integer-effects test's shape).
+        let fnv_mgef = |av: u32| {
+            let mut data = vec![0; 72];
+            data[..4].copy_from_slice(&0x470u32.to_le_bytes());
+            data[68..72].copy_from_slice(&av.to_le_bytes());
+            sub(b"DATA", data)
+        };
+        // CTDA: function 586, param_1 == 0 — the exact shape the whitelist
+        // gate admits (comparator 0, Subject, literal 0.0).
+        let mut condition = vec![0; 32];
+        condition[8..10].copy_from_slice(&586u16.to_le_bytes());
+        for (profile, expect_plan) in [
+            (CharacterRulesProfile::FALLOUT_NEW_VEGAS, true),
+            (CharacterRulesProfile::FALLOUT3, false),
+        ] {
+            let (mut index, mut alch, _) = fixture();
+            index.game = GameKind::Fallout3NV;
+            index.character_rules = profile;
+            // Fallout-shaped ENIT flags + EFIT, as in the integer-effects
+            // test; MGEF is authoritative over the stale EFIT AV cache.
+            // AV 16 is `restoration()`'s canonical Fallout Health mapping.
+            alch[0].data[4..8].copy_from_slice(&[1, 0xcd, 0xcd, 0xcd]);
+            alch[2].data = [25u32, 0, 0, 0, u32::MAX]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect();
+            let remap = Some(FormIdRemap::regular(2, vec![0]));
+            index.actor_values.get_mut(&30).unwrap().editor_id = "Health".into();
+            index.magic_effects.insert(
+                0x0200_0020,
+                parse_mgef_for_game(0x0200_0020, &[fnv_mgef(16)], index.game, &remap),
+            );
+            // Fixture sanity: without the CTDA the plan must resolve on
+            // both profiles — a None here means the fixture, not the gate.
+            index
+                .items
+                .insert(1, parse_alch_for_game(1, &alch, index.game, &remap));
+            assert!(
+                restoration_plan(&index, 1).is_some(),
+                "{profile:?}: base plan without the CTDA must resolve"
+            );
+            // The real subject: the same item WITH the fn-586 CTDA.
+            let mut with_ctda = alch.clone();
+            with_ctda.push(sub(b"CTDA", condition.clone()));
+            index
+                .items
+                .insert(1, parse_alch_for_game(1, &with_ctda, index.game, &remap));
+            assert_eq!(
+                restoration_plan(&index, 1).is_some(),
+                expect_plan,
+                "{profile:?} must {} the fn-586 condition",
+                if expect_plan { "whitelist" } else { "reject" }
+            );
+        }
+    }
     #[test]
     fn unsupported_effect_never_becomes_partial_potion() {
         let (mut index, _, _) = fixture();

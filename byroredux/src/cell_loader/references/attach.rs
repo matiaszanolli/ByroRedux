@@ -247,6 +247,37 @@ pub(super) fn attach_container_inventory(
     true
 }
 
+/// The compiled-ObScript dialect a game's scripts parse under — `None` for
+/// every game whose bytecode this codebase cannot yet decode (FO3, FO4+).
+///
+/// #4448 — this is one of two documented consumers that use
+/// `CharacterRulesProfile` as a **game-identity oracle**: the script dialect
+/// is scripting-layer data, not character-ruleset data, but the profile is
+/// the codebase's only FO3-vs-FNV discriminator (both share
+/// `GameKind::Fallout3NV` — that is exactly why the profile exists). The
+/// profile documents this double duty on itself; `obscript_dialect_for` and
+/// its pinning test keep the selection explicit so a future profile
+/// restructure flips a test, not the scripting layer silently. The second
+/// consumer is `consumables.rs`'s CTDA fn-586 whitelist
+/// (`fn586_condition_gate_is_profile_scoped_not_game_scoped`).
+fn obscript_dialect_for(
+    game: byroredux_plugin::esm::reader::GameKind,
+    profile: byroredux_core::character::CharacterRulesProfile,
+) -> Option<byroredux_scripting::ObscriptDialect> {
+    match game {
+        byroredux_plugin::esm::reader::GameKind::Oblivion => {
+            Some(byroredux_scripting::ObscriptDialect::Obse)
+        }
+        byroredux_plugin::esm::reader::GameKind::Fallout3NV
+            if profile
+                == byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS =>
+        {
+            Some(byroredux_scripting::ObscriptDialect::Xnvse)
+        }
+        _ => None,
+    }
+}
+
 /// FO3 / FNV / Oblivion path: resolve the base record's `SCRI` form id,
 /// translate the conservative engine-native ObScript subset, then optionally
 /// layer an existing hand-written M47.0 spawner on top. Returns `true` when
@@ -270,16 +301,7 @@ fn attach_scpt_script(
         );
         return false;
     };
-    let dialect = match index.game {
-        esm::reader::GameKind::Oblivion => Some(byroredux_scripting::ObscriptDialect::Obse),
-        esm::reader::GameKind::Fallout3NV
-            if index.character_rules
-                == byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS =>
-        {
-            Some(byroredux_scripting::ObscriptDialect::Xnvse)
-        }
-        _ => None,
-    };
+    let dialect = obscript_dialect_for(index.game, index.character_rules);
     let source = script.source.as_deref();
     let report = source
         .map(|source| {
@@ -357,7 +379,40 @@ mod scpt_compatibility_tests {
     use super::*;
     use byroredux_core::character::CharacterRulesProfile;
     use byroredux_plugin::esm::records::{ActiRecord, EsmIndex, ScriptLocalVar, ScriptRecord};
+    use byroredux_plugin::esm::reader::GameKind;
     use byroredux_scripting::{CompatibilityDisposition, CompatibilityRegistry};
+
+    /// #4448 — the dialect pick is the profile-as-oracle consumer, pinned:
+    /// Oblivion → Obse; FNV (profile) → Xnvse; FO3 (same
+    /// `GameKind::Fallout3NV`, different profile) → None. The two Fallout
+    /// legs prove the discriminator is the profile row, not the broad game
+    /// kind, so a profile restructure that stops distinguishing them fails
+    /// here instead of silently changing the scripting layer.
+    #[test]
+    fn obscript_dialect_follows_the_profile_not_the_game_kind() {
+        assert_eq!(
+            obscript_dialect_for(GameKind::Oblivion, CharacterRulesProfile::OBLIVION),
+            Some(byroredux_scripting::ObscriptDialect::Obse)
+        );
+        assert_eq!(
+            obscript_dialect_for(
+                GameKind::Fallout3NV,
+                CharacterRulesProfile::FALLOUT_NEW_VEGAS
+            ),
+            Some(byroredux_scripting::ObscriptDialect::Xnvse)
+        );
+        assert_eq!(
+            obscript_dialect_for(GameKind::Fallout3NV, CharacterRulesProfile::FALLOUT3),
+            None,
+            "FO3 has no compiled-bytecode dialect yet — a future arm here is \
+             a deliberate /audit-scripting decision"
+        );
+        // Non-Fallout kinds never get a Fallout dialect, whatever profile.
+        assert_eq!(
+            obscript_dialect_for(GameKind::Skyrim, CharacterRulesProfile::SKYRIM),
+            None
+        );
+    }
 
     #[test]
     fn scpt_source_records_xnvse_probe_before_runtime_attachment() {

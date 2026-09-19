@@ -67,6 +67,18 @@ enum RulesetBuilder {
 /// profile owns the skill roster, NPC population model, Health coefficients,
 /// the body-condition seeding base, and the matching runtime ruleset builder
 /// as one coherent unit.
+///
+/// **Documented exception (#4448)** — the profile doubles as the codebase's
+/// only FO3-vs-FNV discriminator (both share the broad
+/// `GameKind::Fallout3NV`), and two non-character consumers rely on that
+/// duty: `attach.rs::obscript_dialect_for` (script dialect) and
+/// `consumables.rs`'s CTDA fn-586 whitelist. The data they branch on is not
+/// character-ruleset data, so restructuring this type is a
+/// scripting/consumables-visible change — the two consumers are pinned by
+/// tests (`obscript_dialect_follows_the_profile_not_the_game_kind`,
+/// `fn586_condition_gate_is_profile_scoped_not_game_scoped`) so such a
+/// restructure fails loudly instead of drifting silently. Prefer adding a
+/// policy row of the consumer's own before adding a third such consumer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CharacterRulesProfile {
     name: &'static str,
