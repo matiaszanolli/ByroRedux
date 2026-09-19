@@ -105,6 +105,16 @@ fn decode_entry(bytes: &[u8]) -> String {
     }
 }
 
+/// #4178 — does a `.STRINGS`/`.DLSTRINGS`/`.ILSTRINGS` length prefix agree
+/// with the NUL scan it is being discarded in favour of? The prefix may or
+/// may not count the terminator (both spellings exist in shipped content),
+/// so agreement is `declared == nul_pos` or `declared == nul_pos + 1`;
+/// anything else says the `has_length_prefix` flag is wrong for this data.
+/// Pure so the ±1 contract is testable without a log capture.
+fn declared_length_matches(declared: usize, nul_pos: usize) -> bool {
+    declared == nul_pos || declared == nul_pos + 1
+}
+
 /// A single loaded Bethesda companion string file.
 ///
 /// Parses the on-disk format into an in-memory `id → String` map for O(1)
@@ -197,6 +207,24 @@ impl StringsTable {
                     .iter()
                     .position(|&b| b == 0)
                     .unwrap_or(blob.len() - str_start);
+                // #4178 — the declared length and the NUL scan must agree.
+                // The flag is a fixed per-extension literal today, but the
+                // moment a caller derives it from anything else a mismatch
+                // shifts every string by 4 bytes — and `.STRINGS`-shaped
+                // data stays human-readable enough to pass an eyeball
+                // check. The corpus measured 100% agreement across 116,825
+                // real entries (the length may or may not count the NUL),
+                // so any disagreement outside that ±1 band is a real
+                // signal.
+                let declared =
+                    u32::from_le_bytes(blob[offset..offset + 4].try_into().unwrap()) as usize;
+                if !declared_length_matches(declared, nul_pos) {
+                    log::warn!(
+                        "strings entry 0x{id:08X}: length prefix ({declared}) disagrees \
+                         with the NUL offset ({nul_pos}) — has_length_prefix may be \
+                         wrong for this file"
+                    );
+                }
                 decode_entry(&blob[str_start..str_start + nul_pos])
             } else {
                 let nul_pos = blob[offset..]
@@ -350,13 +378,39 @@ impl StringTableSet {
         // candidate loop sits outside that so a fully-present `_english`
         // install is never shadowed by a stray loose `_en` file.
         let candidates = language_candidates(language);
+        // #4176 — the exact-case probe loses to a mod override whose file
+        // is cased differently from the canon name on a case-sensitive
+        // filesystem: the loose override then silently loses to the
+        // archive, inverting Bethesda's order. Fall back to a
+        // case-insensitive directory match before consulting the archive.
+        // (The archive path needs no fallback — its lookup already
+        // normalises case.)
+        let loose_candidate = |name: &str| -> Option<std::path::PathBuf> {
+            let exact = strings_dir.join(name);
+            if exact.is_file() {
+                return Some(exact);
+            }
+            let entries = std::fs::read_dir(&strings_dir).ok()?;
+            entries
+                .flatten()
+                .find(|entry| entry.file_name().to_string_lossy().eq_ignore_ascii_case(name))
+                .map(|entry| entry.path())
+        };
         let mut load_file = |ext: &str, has_prefix: bool| -> Option<StringsTable> {
             for candidate in &candidates {
                 let name = format!("{stem}_{candidate}.{ext}");
-                let path = strings_dir.join(&name);
-                let (data, source) = match std::fs::read(&path) {
-                    Ok(data) => (data, path.display().to_string()),
-                    Err(_) => {
+                let (data, source) = match loose_candidate(&name) {
+                    Some(path) => match std::fs::read(&path) {
+                        Ok(data) => (data, path.display().to_string()),
+                        Err(_) => {
+                            let archive_path = format!(r"strings\{name}");
+                            match read_archive(&archive_path) {
+                                Some(data) => (data, archive_path),
+                                None => continue,
+                            }
+                        }
+                    },
+                    None => {
                         let archive_path = format!(r"strings\{name}");
                         match read_archive(&archive_path) {
                             Some(data) => (data, archive_path),
@@ -694,4 +748,61 @@ mod tests {
         );
         assert_eq!(set.resolve(0x0001), Some("Whiterun"));
     }
+
+/// the canon name must still win over the archive on a case-sensitive
+/// filesystem (Linux tmp is one): the exact-case probe misses, the
+/// case-insensitive directory match finds it, and Bethesda's override
+/// order is preserved instead of silently inverted.
+#[test]
+fn loose_companion_file_is_found_case_insensitively() {
+    let dir = std::env::temp_dir().join(format!(
+        "byroredux-plugin-ci-strings-{}",
+        std::process::id()
+    ));
+    let plugin = dir.join("TestMod.esm");
+    let strings_dir = dir.join("Strings");
+    std::fs::create_dir_all(&strings_dir).unwrap();
+    // Canon casing per Bethesda convention vs what the mod actually wrote.
+    std::fs::write(
+        strings_dir.join("testmod_english.STRINGS"),
+        build_strings_file(&[(0x0001, "Override Sword")], false),
+    )
+    .unwrap();
+
+    // The archive authors nothing, so "Override Sword" can only come from
+    // the case-insensitive loose match of `testmod_english.STRINGS` — the
+    // exact-case probe misses on this filename. (The DL/IL extensions
+    // still consult the archive and find nothing; that is the ordinary
+    // fallback, not the defect.)
+    let set = StringTableSet::load_with_archive(&plugin, "english", |_| None);
+
+    assert_eq!(
+        set.resolve(0x0001),
+        Some("Override Sword"),
+        "the case-insensitive loose match must supply the table"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// #4178 — the ±1 length-prefix agreement contract: the prefix may or may
+/// not count the NUL (both spellings ship), anything else disagrees, and a
+/// deliberately-wrong prefix still parses the text (the warn is the
+/// signal, not a rejection).
+#[test]
+fn declared_length_matches_tolerates_only_the_nul_counting_difference() {
+    assert!(declared_length_matches(6, 6), "exact agreement");
+    assert!(declared_length_matches(7, 6), "prefix counting the NUL");
+    assert!(!declared_length_matches(0, 6), "a discarded prefix (0)");
+    assert!(!declared_length_matches(5, 6));
+
+    // End to end: a file whose prefixed length lies still parses the text
+    // via the NUL scan — the warn fires, the data survives.
+    let mut data = build_strings_file(&[(0x0001, "Shifted")], true);
+    // The declared length lives in the 4 bytes after the directory: entry
+    // blob offset 0 holds it. Header (8) + dir entry id (4) + offset (4).
+    let prefix_pos = 16;
+    data[prefix_pos..prefix_pos + 4].copy_from_slice(&999u32.to_le_bytes());
+    let table = StringsTable::parse(&data, true).expect("a wrong prefix must not reject");
+    assert_eq!(table.get(0x0001), Some("Shifted"));
+}
 }
