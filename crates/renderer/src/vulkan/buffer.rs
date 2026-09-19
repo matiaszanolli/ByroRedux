@@ -39,11 +39,12 @@ use gpu_allocator::MemoryLocation;
 // less-visible trait — see `private_bounds` below if this regresses.
 pub unsafe trait NoUninit: Copy {}
 
-/// Byte view of a `NoUninit` slice — the single place `write_mapped` and
-/// `write_mapped_prefix` obtain their `&[u8]`, so the safety argument lives
-/// once rather than once per entry point.
+/// Byte view of a `NoUninit` slice — the single place `write_mapped`,
+/// `write_mapped_prefix`, and the material-table byte views (#4445:
+/// `GpuMaterial::as_bytes` / `hash_material_slice`) obtain their `&[u8]`,
+/// so the safety argument lives once rather than once per entry point.
 #[inline]
-fn byte_view<T: NoUninit>(data: &[T]) -> &[u8] {
+pub(crate) fn byte_view<T: NoUninit>(data: &[T]) -> &[u8] {
     // SAFETY: `T: NoUninit` guarantees every byte of `T` is initialised (no
     // implicit `#[repr(C)]` padding), so the byte view contains no
     // uninitialised bytes — the class of UB `T: Copy` alone does NOT rule out

@@ -29,7 +29,7 @@
 use super::scene_buffer::MAX_MATERIALS;
 use byroredux_core::ecs::components::material::{
     DEFAULT_DIELECTRIC_IOR, DEFAULT_GLASS_BLUR_SCALE, DEFAULT_GLASS_REFRACTION_SCALE,
-    GLASS_SURFACE_BEHAVIOR,
+    DEFAULT_PARALLAX_HEIGHT_SCALE, DEFAULT_PARALLAX_MAX_PASSES, GLASS_SURFACE_BEHAVIOR,
 };
 use rustc_hash::FxHashMap;
 use std::sync::Once;
@@ -60,7 +60,8 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// **CRITICAL**: All fields are scalar (f32/u32). NEVER use `[f32; 3]` —
 /// std430 aligns vec3 to 16 B, which would silently mismatch a tightly-
 /// packed `#[repr(C)]` Rust struct. Pad explicitly with named pad fields
-/// so the byte-level `Hash`/`Eq` impls below are deterministic.
+/// so the byte-level `Eq` impl and `hash_gpu_material_fields` below are
+/// deterministic.
 ///
 /// **Shader Struct Sync** (current, narrower contract): only
 /// `crates/renderer/shaders/include/bindings.glsl` declares the matching
@@ -160,43 +161,43 @@ pub struct GpuMaterial {
     // `scene_buffer/gpu_types.rs` (near `avg_albedo_r`) explains why the
     // per-instance copy stays. Subsequent fields shift down by 12 bytes.
 
-    // ── skin_tint_a + skin_tint RGB (offsets 144-156) ───────────────
+    // ── skin_tint_a + skin_tint RGB ──────────────────────────────────
     pub skin_tint_a: f32, // offset 140
     pub skin_tint_r: f32, // offset 144
     pub skin_tint_g: f32, // offset 148
     pub skin_tint_b: f32, // offset 152
 
-    // ── hair_tint RGB + multi_layer_envmap_strength (offsets 160-172)
+    // ── hair_tint RGB + multi_layer_envmap_strength ──────────────────
     pub hair_tint_r: f32,                 // offset 156
     pub hair_tint_g: f32,                 // offset 160
     pub hair_tint_b: f32,                 // offset 164
     pub multi_layer_envmap_strength: f32, // offset 168
 
-    // ── eye_left RGB + eye_cubemap_scale (offsets 176-188) ──────────
+    // ── eye_left RGB + eye_cubemap_scale ─────────────────────────────
     pub eye_left_center_x: f32, // offset 172
     pub eye_left_center_y: f32, // offset 176
     pub eye_left_center_z: f32, // offset 180
     pub eye_cubemap_scale: f32, // offset 184
 
-    // ── eye_right RGB + multi_layer_inner_thickness (offsets 192-204)
+    // ── eye_right RGB + multi_layer_inner_thickness ──────────────────
     pub eye_right_center_x: f32,          // offset 188
     pub eye_right_center_y: f32,          // offset 192
     pub eye_right_center_z: f32,          // offset 196
     pub multi_layer_inner_thickness: f32, // offset 200
 
-    // ── refraction_scale + multi_layer_inner_scale UV + sparkle_r (208-220)
+    // ── refraction_scale + multi_layer_inner_scale UV + sparkle_r ────
     pub multi_layer_refraction_scale: f32, // offset 204
     pub multi_layer_inner_scale_u: f32,    // offset 208
     pub multi_layer_inner_scale_v: f32,    // offset 212
     pub sparkle_r: f32,                    // offset 216
 
-    // ── sparkle_g/b + sparkle_intensity + falloff_start (224-236) ───
+    // ── sparkle_g/b + sparkle_intensity + falloff_start ──────────────
     pub sparkle_g: f32,           // offset 220
     pub sparkle_b: f32,           // offset 224
     pub sparkle_intensity: f32,   // offset 228
     pub falloff_start_angle: f32, // offset 232
 
-    // ── falloff_stop + opacities + soft_falloff_depth + pad (240-256)
+    // ── falloff_stop + opacities + soft_falloff_depth + greyscale LUT
     pub falloff_stop_angle: f32,    // offset 236
     pub falloff_start_opacity: f32, // offset 240
     pub falloff_stop_opacity: f32,  // offset 244
@@ -218,7 +219,7 @@ pub struct GpuMaterial {
     /// `_pad_falloff` — repacked #890 Stage 2c.
     pub greyscale_lut_index: u32, // offset 252
 
-    // ── BGSM translucency parameter suite (vec4 #18; offsets 260-280) ─
+    // ── BGSM translucency parameter suite (vec4 #18) ─────────────────
     //
     // #1147 / FO4-D6-003 Phase 2b. The translucency fields are read by
     // `triangle.frag` only when `material_flags & BGSM_TRANSLUCENCY != 0`
@@ -241,7 +242,7 @@ pub struct GpuMaterial {
     /// typically 0.5 – 4.0 on FO4 content.
     pub translucency_transmissive_scale: f32, // offset 268
 
-    // ── BGSM translucency turbulence (vec4 #19; offsets 276-280) ─────
+    // ── BGSM translucency turbulence (vec4 #19) ──────────────────────
     /// `BgsmFile.translucency_turbulence`. Adds a noise-driven
     /// perturbation to the transmission term so SSS doesn't appear
     /// uniformly smooth on materials authored for variation
@@ -249,7 +250,7 @@ pub struct GpuMaterial {
     /// shader consumes it as a multiplier on a `sin(viewDotN * k)`
     /// term to keep cost trivial.
     pub translucency_turbulence: f32, // offset 272
-    // ── PBR IOR (vec4 #20; offsets 280-292) ──────────────────────────
+    // ── PBR IOR (vec4 #20) ───────────────────────────────────────────
     /// Refractive index — per-material η that drives the Schlick F0
     /// derivation `F0 = ((1-η)/(1+η))²` instead of the legacy hardcoded
     /// `vec3(0.04)` dielectric default. Default 1.5 (soda-lime glass /
@@ -273,7 +274,7 @@ pub struct GpuMaterial {
     /// distortion strength, not a physical IOR — see
     /// `SurfaceBehavior::ior`'s doc in `crates/core`. See #1248.
     pub ior: f32, // offset 276
-    // ── Disney diffuse lobe (vec4 #21; offsets 284-296) ──────────────
+    // ── Disney diffuse lobe (vec4 #21) ───────────────────────────────
     /// Disney "subsurface" diffuse-lobe weight (0 = pure Burley
     /// diffuse, 1 = full Hanrahan-Krueger fake-SSS). Cheap
     /// approximation for waxy / marble / skin without a full BSSRDF.
@@ -307,7 +308,7 @@ pub struct GpuMaterial {
     /// knightcrawler25/GLSL-PathTracer `pathtrace.glsl:100-102` (MIT).
     pub anisotropic: f32, // offset 292
 
-    // ── Supplemental semantic texture roles (offsets 300-344) ─────
+    // ── Supplemental semantic texture roles ─────────────────────────
     // These are source-format agnostic. The NIF translation layer maps
     // legacy slots, BSShader texture sets, BGSM/BGEM, and effect shaders
     // into the same role names before a material reaches this record.
@@ -351,7 +352,7 @@ pub struct GpuMaterial {
     pub decal_map_2_index: u32,     // offset 336
     pub decal_map_3_index: u32,     // offset 340
 
-    // ── Animated BSShaderProperty color/scalar (offsets 348-360) ────
+    // ── Animated BSShaderProperty color/scalar ──────────────────────
     //
     // #2221 — same "layout parity, no shader consumer yet" precedent as
     // `lighting_map_index` / `flow_map_index` / `wrinkle_map_index`
@@ -372,7 +373,7 @@ pub struct GpuMaterial {
     pub shader_color_b: f32, // offset 352
     pub shader_float: f32,   // offset 356
 
-    // ── BGEM v21+ glass optical suite (offsets 364-392) ────────────
+    // ── BGEM v21+ glass optical suite ────────────────────────────────
     pub glass_fresnel_r: f32,                   // offset 360
     pub glass_fresnel_g: f32,                   // offset 364
     pub glass_fresnel_b: f32,                   // offset 368
@@ -382,7 +383,7 @@ pub struct GpuMaterial {
     pub glass_roughness_scratch_map_index: u32, // offset 384
     pub glass_dirt_overlay_map_index: u32,      // offset 388
 
-    // ── Bethesda authored lighting response (offsets 396-428) ──────
+    // ── Bethesda authored lighting response ─────────────────────────
     pub lighting_effect_1: f32,          // offset 392
     pub lighting_effect_2: f32,          // offset 396
     pub subsurface_rolloff: f32,         // offset 400
@@ -447,9 +448,10 @@ impl Default for GpuMaterial {
             alpha_test_func: 0,
             material_kind: 0,
             material_alpha: 1.0,
-            // POM defaults match BSShaderPPLightingProperty.
-            parallax_height_scale: 0.04,
-            parallax_max_passes: 4.0,
+            // POM defaults match BSShaderPPLightingProperty (#4444 — named
+            // canonical defaults, not literals).
+            parallax_height_scale: DEFAULT_PARALLAX_HEIGHT_SCALE,
+            parallax_max_passes: DEFAULT_PARALLAX_MAX_PASSES,
             // UV transform — identity.
             uv_offset_u: 0.0,
             uv_offset_v: 0.0,
@@ -623,7 +625,8 @@ pub mod material_flag {
     // `MATERIAL_KIND_EFFECT_SHADER` branch can branch on them.
     //
     // Bit positions must stay in lockstep with `triangle.frag` —
-    // the GLSL refers to the same `0x...u` literals.
+    // the GLSL reads the generated `shader_constants.glsl` `MAT_FLAG_*`
+    // `#define`s, not hand-written literals (see the module header above).
 
     /// `SLSF1::Soft_Effect` (nif.xml bit 30) — near-camera depth
     /// feathering for soft particles (smoke, dust, force-field haze).
@@ -735,7 +738,9 @@ pub mod material_flag {
     /// Bit-shift for the 8-bit `BSEffectShaderProperty.lighting_influence`
     /// byte packed into `material_flags` bits 16–23. Extract in GLSL as
     /// `float((materialFlags >> MAT_FLAG_EFFECT_LI_SHIFT) & 0xFFu) / 255.0`.
-    /// Bits 11–15 are reserved for future single-bit flags; bits 24–31
+    /// Bits 11–15 all carry assigned single-bit flags (`THIN_GLASS`,
+    /// `MSN_HAS_AUTHORED_Z`, `SOFT_LIGHTING`, `RIM_LIGHTING`,
+    /// `BACK_LIGHTING` — no reserved bits left in that range); bits 24–31
     /// are free. Only meaningful when `EFFECT_LIT` is also set — the byte
     /// scales the directional + ambient contribution in the
     /// `MATERIAL_KIND_EFFECT_SHADER` lit branch. `0` (packed value of
@@ -784,19 +789,16 @@ pub mod material_flag {
 impl GpuMaterial {
     /// Byte view shared by the byte-level `PartialEq`/`Eq` impls below and
     /// by `hash_gpu_material_fields` (#4201), so the dedup key and the
-    /// equality it stands in for are defined over exactly the same bytes. Safe because [`GpuMaterial`] is
-    /// `#[repr(C)]` + `Copy`, has no `Drop`, and all padding bytes are
-    /// named fields the producer always initialises (so the byte
-    /// representation is deterministic for any value reachable through
-    /// the public API).
+    /// equality it stands in for are defined over exactly the same bytes.
+    ///
+    /// Routed through the crate's single bounded helper
+    /// [`crate::vulkan::buffer::byte_view`] (#4445), whose `T: NoUninit`
+    /// bound carries the "no uninitialised bytes" argument at the type
+    /// level — `GpuMaterial` implements it (#3990), so a future field that
+    /// introduces padding fails the bound here (at the dedup hash and
+    /// equality) instead of only at `write_mapped`.
     fn as_bytes(&self) -> &[u8] {
-        // SAFETY: see doc comment above.
-        unsafe {
-            std::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
+        crate::vulkan::buffer::byte_view(std::slice::from_ref(self))
     }
 }
 
@@ -1099,9 +1101,10 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
 /// `intern` O(1) amortised. Pre-#781 the index keyed on `GpuMaterial`
 /// itself, requiring a full-record byte-hash on every lookup AND forcing
 /// the caller to construct the full `GpuMaterial` even on dedup hits.
-/// The fast path now goes through [`Self::intern_by_hash`], which takes
-/// a precomputed u64 + a closure that produces the `GpuMaterial` only
-/// on miss.
+/// The lookup is keyed on a precomputed u64 — [`Self::intern`] builds
+/// the value once, hashes it, and interns; [`Self::intern_by_hash`] is
+/// the hash-first primitive beneath it (#4442 reworded this history:
+/// #4201 retired the field-walk hash the closure API existed to avoid).
 pub struct MaterialTable {
     /// Insertion-ordered material storage, indexed by `material_id`.
     materials: Vec<GpuMaterial>,
@@ -1243,15 +1246,17 @@ impl MaterialTable {
         self.intern_by_hash(hash, || material)
     }
 
-    /// Hot-path intern entry: take a precomputed u64 hash + a closure
-    /// that produces the [`GpuMaterial`] only on dedup miss. The
-    /// closure is NOT invoked when the hash already maps to a stored
-    /// material — `to_gpu_material` (the dominant construction
-    /// cost) is skipped on the ~97% dedup-hit path. See #781 / PERF-N4.
+    /// Intern a [`GpuMaterial`] under a precomputed u64 hash — the
+    /// primitive [`Self::intern`] delegates to. Production callers should
+    /// prefer `intern`: since #4201 `DrawCommand::material_hash` builds
+    /// the struct to hash it, so `intern(struct)` is one build while an
+    /// `intern_by_hash` + closure call built the struct twice on the miss
+    /// path (#4442). The closure now only defers construction for callers
+    /// that genuinely hold a hash before they hold the value.
     ///
-    /// **Hash quality contract**: callers must produce a u64 that is a
-    /// pure function of the same fields [`hash_gpu_material_fields`]
-    /// reads, in the same order. The lockstep is pinned by
+    /// **Hash quality contract**: the hash must be
+    /// [`hash_gpu_material_fields`] of the same value the factory
+    /// returns. The lockstep is pinned by
     /// `vulkan::context::draw_command_tests::material_hash_matches_gpu_material_field_hash`
     /// for [`DrawCommand::material_hash`]; any other producer must
     /// uphold the same invariant or risk silent miscoloring.

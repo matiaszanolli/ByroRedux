@@ -427,22 +427,14 @@ impl super::buffers::SceneBuffers {
 /// the per-frame budget; collision resistance is irrelevant for a
 /// same-frame content gate.
 ///
-/// Routed through `GpuMaterial::as_bytes`-equivalent slice cast so
-/// the same raw-byte view `GpuMaterial::as_bytes` gives its
-/// `PartialEq`/`Eq` impls drives the slice hash too — padding
-/// handling stays consistent.
+/// Routed through the crate's single bounded byte view (#4445) — the
+/// same view `GpuMaterial::as_bytes` gives its `PartialEq`/`Eq` impls,
+/// so the slice hash and the dedup equality stay defined over exactly
+/// the same bytes.
 pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMaterial]) -> u64 {
     use std::hash::Hasher;
     let mut hasher = rustc_hash::FxHasher::default();
-    let byte_size = std::mem::size_of_val(materials);
-    // SAFETY: `GpuMaterial` is `#[repr(C)]` with f32/u32 fields and
-    // explicit padding fields the producer always initialises (see the
-    // `GpuMaterial::as_bytes` doc comment in `vulkan/material.rs`).
-    // The slice view is contiguous because `[T]` storage is too;
-    // `byte_size` matches the slice's footprint exactly.
-    let bytes: &[u8] =
-        unsafe { std::slice::from_raw_parts(materials.as_ptr() as *const u8, byte_size) };
-    hasher.write(bytes);
+    hasher.write(crate::vulkan::buffer::byte_view(materials));
     hasher.finish()
 }
 
