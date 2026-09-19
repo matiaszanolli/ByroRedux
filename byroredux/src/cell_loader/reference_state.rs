@@ -226,7 +226,10 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
 /// (P3). Writes `picked_up` onto an existing row when the reference already
 /// parked state (looted-then-evicted container edge), else inserts a minimal
 /// row. Durable across evictions and saves; consumed by [`restore`].
-pub(crate) fn mark_picked_up(world: &mut World, entity: EntityId) {
+///
+/// Takes `&World` (every body operation is interior-mutable resource
+/// access) — its one caller, `pickup_item`, holds `&World`.
+pub(crate) fn mark_picked_up(world: &World, entity: EntityId) {
     let Some(pair) = identity(world, entity) else {
         return;
     };

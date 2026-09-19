@@ -247,6 +247,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // write into and silently no-ops. The cell loader's insert is
     // conditional; this registration is not.
     world.register::<byroredux_core::ecs::components::Locked>();
+    // P3 pickups — `pickup_loot` runs as a `&World` system and inserts the
+    // `PickedUp` marker through the `query_mut` write guard, which no-ops
+    // (`None`) until the storage exists. Pre-register, mirroring
+    // `WaterContact`'s `query_mut::insert` note above.
+    world.register::<crate::inventory::PickedUp>();
     // #3299 — actor state carried across ordinary stream-tile eviction.
     world.insert_resource(crate::cell_loader::stream_snapshot::StreamStateSnapshots::default());
     world.insert_resource(crate::cell_loader::reference_state::PersistentReferenceStates::default());

@@ -41,7 +41,14 @@ fn av(form_id: u32) -> DerivedInput {
 
 const LEVEL: DerivedInput = DerivedInput::LEVEL;
 
-/// The six derived stats shared verbatim by FO3 and FNV (all actor-general).
+/// The six derived stats shared verbatim by FO3 and FNV. Carry Weight and
+/// the two resistances are actor-general per the capture document; Critical
+/// Chance, Melee Damage and Unarmed Damage ship `ActorGeneral` as an
+/// explicit but UNsourced choice — no capture line states their scope
+/// (#4450), the mirror of #2937's documented conservative `player_only` for
+/// Action Points. Flipping any of the three is a reviewed edit: cite the
+/// per-stat source in `charal-fnv-fo3-ruleset.md` and update the pinning
+/// test.
 fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, resolve: &F) {
     let strength = resolve("Strength");
     // Carry Weight = 150 + 10·STR.
@@ -308,6 +315,28 @@ mod tests {
             fnv.derived_formula(0x2D0).unwrap().scope,
             DerivedScope::PlayerOnly
         );
+    }
+
+    /// #4450 — the mirror of the #2937 AP decision, pinned the same way:
+    /// Critical Chance / Melee Damage / Unarmed Damage ship `ActorGeneral`
+    /// as an explicit choice with NO capture line stating their scope (the
+    /// capture's derived table annotates Health / Carry Weight / Rad /
+    /// Poison / AP, and is silent on these three). Pin the chosen behavior
+    /// so a silent flip — in either direction — is a deliberate, reviewed
+    /// change accompanied by a per-stat citation in
+    /// `charal-fnv-fo3-ruleset.md`.
+    #[test]
+    fn fo3_fnv_crit_melee_unarmed_scopes_are_actor_general_pending_a_source() {
+        for rs in [fallout3_ruleset(full), falloutnv_ruleset(full)] {
+            for out in [0x2D2, 0x2D3, 0x2D4] {
+                assert_eq!(
+                    rs.derived_formula(out).unwrap().scope,
+                    DerivedScope::ActorGeneral,
+                    "{out:#06X}'s ActorGeneral scope is an explicit unsourced choice \
+                     (#4450), not a captured fact; flipping it needs a citation"
+                );
+            }
+        }
     }
 
     #[test]

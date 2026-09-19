@@ -224,15 +224,27 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
         NpcStatModel::CreatureData => derive_creature_actor_values(stats, index),
         NpcStatModel::None => Vec::new(),
     };
-    if index.game == super::super::reader::GameKind::Fallout3NV
-        && index.health_actor_value_key().is_some_and(|health| values.iter().any(|&(id, _)| id == health))
-    {
-        // GECK Stats List: body-condition AVs start at 100, independently of
-        // actor health. Damage/restoration then use the same saved AV layers.
-        for name in crate::consumables::BODY_CONDITION_VALUES {
-            if let Some(id) = index.actor_value_form_id(name) {
-                if !values.iter().any(|&(key, _)| key == id) {
-                    values.push((id, 100.0));
+    // #4447 — the body-condition seeding base is profile data
+    // (`CharacterRulesProfile::body_condition_base`: FO3/FNV = 100 per the
+    // GECK Stats List, every other family = none), not a `game ==` kind
+    // compare. A kind branch cannot distinguish FO3 from FNV — the split
+    // the profile exists to carry — and follows the broad kind onto any
+    // future Fallout3NV-kind master, where the profile row is the reviewed
+    // answer. Still gated on Health landing so the "unpopulated, not zero"
+    // contract holds: a derivation that produced no Health is a shell and
+    // gets no conditions either.
+    if let Some(condition_base) = index.character_rules.body_condition_base() {
+        if index
+            .health_actor_value_key()
+            .is_some_and(|health| values.iter().any(|&(id, _)| id == health))
+        {
+            // GECK Stats List: body-condition AVs start at 100, independently of
+            // actor health. Damage/restoration then use the same saved AV layers.
+            for name in crate::consumables::BODY_CONDITION_VALUES {
+                if let Some(id) = index.actor_value_form_id(name) {
+                    if !values.iter().any(|&(key, _)| key == id) {
+                        values.push((id, condition_base));
+                    }
                 }
             }
         }
@@ -664,6 +676,58 @@ mod tests {
         // Right NPC, unsupported profile → empty.
         index.character_rules = CharacterRulesProfile::NONE;
         assert!(derive_npc_actor_values(&npc_with_class(0x2000), &index).is_empty());
+    }
+
+    /// #4447 — body-condition seeding follows
+    /// `CharacterRulesProfile::body_condition_base`, not a `game ==` kind
+    /// compare. Pre-fix this was a raw `GameKind::Fallout3NV` branch that
+    /// no unit fixture could exercise (the fixtures author no
+    /// body-condition AVIFs), so its only cover was an `#[ignore]`d
+    /// real-master test. Both legs are old-code killers: the FO4 leg sets
+    /// the exact kind the old branch matched, with a profile that owns no
+    /// body-condition base — the old code seeds anyway; the new code must
+    /// not.
+    #[test]
+    fn body_condition_seeding_follows_the_profile_not_the_game_kind() {
+        // (a) FNV profile + one authored body-condition AVIF → seeded at
+        // the profile's base (100).
+        let mut index = fnv_index_with_class(0x2000, [5; 7]);
+        index
+            .actor_values
+            .insert(0x500, avif(0x500, "AVLeftAttackCondition"));
+        let pairs = derive_npc_actor_values(&npc_with_class(0x2000), &index);
+        let condition = index.actor_value_form_id("LeftAttackCondition").unwrap();
+        assert_eq!(
+            pairs.iter().find(|(k, _)| *k == condition).map(|(_, v)| *v),
+            Some(100.0),
+            "the FNV profile seeds body conditions at its authored base"
+        );
+
+        // (b) FO4 profile under the exact kind the old branch matched —
+        // kind says Fallout3NV, profile owns no body-condition base: no
+        // seeding. The profile is the reviewed answer, not the kind.
+        let mut fo4 = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT4,
+            game: crate::esm::reader::GameKind::Fallout3NV,
+            ..EsmIndex::default()
+        };
+        fo4.actor_values.insert(0x3E8, avif(0x3E8, "Health"));
+        fo4.actor_values
+            .insert(0x500, avif(0x500, "AVLeftAttackCondition"));
+        let npc = NpcRecord {
+            calculated_health: 100,
+            ..NpcRecord::default()
+        };
+        let pairs = derive_npc_actor_values(&npc, &fo4);
+        assert!(
+            !pairs.iter().any(|(k, _)| *k == 0x500),
+            "an FO4 profile must not seed body conditions, even under a \
+             Fallout3NV kind — the gate is the profile row, not the kind"
+        );
+        assert!(
+            pairs.iter().any(|(k, _)| *k == 0x3E8),
+            "the Health gate itself still passes — only the seeding is absent"
+        );
     }
 
     /// #3381 — the Skyrim (`RaceBaseOffsets`) arm must resolve `TPLT` +

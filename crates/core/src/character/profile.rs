@@ -65,7 +65,8 @@ enum RulesetBuilder {
 ///
 /// This is deliberately data: consumers do not branch on game identity. A
 /// profile owns the skill roster, NPC population model, Health coefficients,
-/// and the matching runtime ruleset builder as one coherent unit.
+/// the body-condition seeding base, and the matching runtime ruleset builder
+/// as one coherent unit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CharacterRulesProfile {
     name: &'static str,
@@ -77,6 +78,14 @@ pub struct CharacterRulesProfile {
     /// `NPC_` auto-calculates from its CLAS, while a `CREA` reads its own
     /// `DATA` and references no class whatsoever (#3390).
     creature_stats: NpcStatModel,
+    /// Base value the game's body-condition actor values are seeded at on
+    /// every populated actor, when the game has such a value set at all.
+    /// FO3/FNV seed the seven GECK limb-condition AVs at 100 ("GECK Stats
+    /// List" — the AV names live in `consumables::BODY_CONDITION_VALUES`);
+    /// every other family authors none, so the field is `None` there and
+    /// the seeding no-ops. #4447 — this is profile data, not a
+    /// consumer-side `game ==` branch.
+    body_condition_base: Option<f32>,
     ruleset: RulesetBuilder,
 }
 
@@ -86,6 +95,7 @@ impl CharacterRulesProfile {
         skills: SkillSet::NONE,
         npc_stats: NpcStatModel::None,
         creature_stats: NpcStatModel::None,
+        body_condition_base: None,
         ruleset: RulesetBuilder::None,
     };
 
@@ -94,6 +104,7 @@ impl CharacterRulesProfile {
         skills: SkillSet::OBLIVION,
         npc_stats: NpcStatModel::None,
         creature_stats: NpcStatModel::None,
+        body_condition_base: None,
         ruleset: RulesetBuilder::None,
     };
 
@@ -108,6 +119,7 @@ impl CharacterRulesProfile {
             },
         },
         creature_stats: NpcStatModel::CreatureData,
+        body_condition_base: Some(100.0),
         ruleset: RulesetBuilder::Fallout3,
     };
 
@@ -123,6 +135,7 @@ impl CharacterRulesProfile {
             },
         },
         creature_stats: NpcStatModel::CreatureData,
+        body_condition_base: Some(100.0),
         ruleset: RulesetBuilder::FalloutNewVegas,
     };
 
@@ -137,6 +150,7 @@ impl CharacterRulesProfile {
         // `RulesetBuilder` arm carries `XpCurve` (Fallout) or falls through
         // `RulesetBuilder::None` (Oblivion), so without this arm `with_gmst`
         // executed only inside its own unit test.
+        body_condition_base: None,
         ruleset: RulesetBuilder::Skyrim,
     };
 
@@ -145,6 +159,7 @@ impl CharacterRulesProfile {
         skills: SkillSet::NONE,
         npc_stats: NpcStatModel::Stored,
         creature_stats: NpcStatModel::None,
+        body_condition_base: None,
         ruleset: RulesetBuilder::Fallout4,
     };
 
@@ -153,6 +168,7 @@ impl CharacterRulesProfile {
         skills: SkillSet::NONE,
         npc_stats: NpcStatModel::Stored,
         creature_stats: NpcStatModel::None,
+        body_condition_base: None,
         ruleset: RulesetBuilder::None,
     };
 
@@ -161,6 +177,7 @@ impl CharacterRulesProfile {
         skills: SkillSet::NONE,
         npc_stats: NpcStatModel::Stored,
         creature_stats: NpcStatModel::None,
+        body_condition_base: None,
         ruleset: RulesetBuilder::None,
     };
 
@@ -188,6 +205,15 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn creature_stat_model(self) -> NpcStatModel {
         self.creature_stats
+    }
+
+    /// Base value body-condition actor values are seeded at on every
+    /// populated actor (FO3/FNV: 100, per the GECK Stats List), or `None`
+    /// on families that author no such value set — in which case the
+    /// seeding no-ops entirely.
+    #[must_use]
+    pub const fn body_condition_base(self) -> Option<f32> {
+        self.body_condition_base
     }
 
     /// Build the canonical runtime ruleset with authored AVIF FormIDs.
@@ -329,6 +355,39 @@ mod tests {
             "gmst must actually be invoked for the level-up mult curve setting, \
              got {requested:?}"
         );
+    }
+
+    /// #4447 — body-condition seeding is profile data, not a consumer-side
+    /// game-kind compare. FO3/FNV seed the seven GECK limb-condition AVs at
+    /// 100; every other family authors none. Before this, the gate lived as
+    /// a raw `GameKind::Fallout3NV` branch in `derive_npc_actor_values`,
+    /// invisible to this table and unexercisable by the plugin crate's unit
+    /// fixtures.
+    #[test]
+    fn body_condition_seeding_is_owned_by_the_fo3_fnv_profiles() {
+        assert_eq!(
+            CharacterRulesProfile::FALLOUT3.body_condition_base(),
+            Some(100.0)
+        );
+        assert_eq!(
+            CharacterRulesProfile::FALLOUT_NEW_VEGAS.body_condition_base(),
+            Some(100.0)
+        );
+        for profile in [
+            CharacterRulesProfile::NONE,
+            CharacterRulesProfile::OBLIVION,
+            CharacterRulesProfile::SKYRIM,
+            CharacterRulesProfile::FALLOUT4,
+            CharacterRulesProfile::FALLOUT76,
+            CharacterRulesProfile::STARFIELD,
+        ] {
+            assert_eq!(
+                profile.body_condition_base(),
+                None,
+                "{} authors no body-condition value set",
+                profile.name()
+            );
+        }
     }
 
     /// #3848 — Oblivion's `RulesetBuilder::None` is a blocked arm, not a

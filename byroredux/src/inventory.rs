@@ -123,6 +123,46 @@ pub(crate) struct PlayerInventoryTemplate {
 
 impl Resource for PlayerInventoryTemplate {}
 
+/// The player's spawn-time CHARAL seed, stamped onto the body once it
+/// exists (#4458). Built from the base Player `NPC_` record through
+/// `derive_npc_actor_values` — the same derivation every NPC's
+/// `stamp_actor_values` performs — so the consumable and drowning paths,
+/// which gate on the player carrying `ActorValues` + `ActorVitals`, have a
+/// populated (never empty/zero-SPECIAL) set to read. `None` fields mean
+/// the derivation yielded nothing (no records / unsupported profile): the
+/// body then carries no actor values, the pre-#4458 state, rather than a
+/// wrong-by-construction empty one.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PlayerCharacterTemplate {
+    values: Option<byroredux_core::ecs::components::ActorValues>,
+    vitals: Option<byroredux_core::ecs::components::ActorVitals>,
+}
+
+impl Resource for PlayerCharacterTemplate {}
+
+/// Derive the player's actor values from the base Player `NPC_` record —
+/// never the placed reference (`0x14`) — mirroring `stamp_actor_values`
+/// (`npc_spawn.rs`) line for line: `derive_npc_actor_values`, then vitals
+/// keyed by the resolved Health AVIF only when Health actually landed.
+fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate {
+    let Some(player) = index.npcs.get(&player_npc_form_id(index.game)) else {
+        return PlayerCharacterTemplate::default();
+    };
+    let pairs = byroredux_plugin::esm::records::derive_npc_actor_values(player, index);
+    if pairs.is_empty() {
+        return PlayerCharacterTemplate::default();
+    }
+    let health = index
+        .health_actor_value_key()
+        .filter(|health| pairs.iter().any(|(form_id, _)| form_id == health));
+    PlayerCharacterTemplate {
+        values: Some(byroredux_core::ecs::components::ActorValues::from_pairs(pairs)),
+        vitals: health.map(|health| byroredux_core::ecs::components::ActorVitals {
+            health,
+        }),
+    }
+}
+
 /// Rebuild item presentation metadata and the base player's starting loadout
 /// from the resolved plugin index.
 pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
@@ -191,6 +231,7 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
         containers: index.containers.keys().copied().collect(),
     });
     world.insert_resource(build_player_template(index));
+    world.insert_resource(build_player_character_template(index));
 }
 
 fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<EquipTarget>) {
@@ -394,6 +435,23 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
     world.insert(player, equipment);
     if let Some(weapon) = template.equipped_weapon {
         world.insert(player, weapon);
+    }
+    // #4458 — the player's CHARAL seed rides the same one-shot attach as
+    // the inventory seed: `ActorValues` + `ActorVitals` derived from the
+    // base Player NPC_ record, the exact stamps `stamp_actor_values` puts
+    // on every NPC. The consumable (`consume_item`) and drowning
+    // (`apply_player_drowning_damage`) paths gate on precisely these two
+    // components; before this they were structurally Unavailable in every
+    // fresh session.
+    let character = world
+        .try_resource::<PlayerCharacterTemplate>()
+        .map(|template| template.clone())
+        .unwrap_or_default();
+    if let Some(values) = character.values {
+        world.insert(player, values);
+    }
+    if let Some(vitals) = character.vitals {
+        world.insert(player, vitals);
     }
 }
 
@@ -774,12 +832,16 @@ pub(crate) fn pickup_loot(
         };
         destination.items.push(ItemStack::new(base, 1));
     }
-    world.insert(target, PickedUp);
+    // A `&World` system inserts through the query write guard (the
+    // `apply_player_drowning_damage` pattern), which needs the storage to
+    // exist — `boot/world.rs` pre-registers `PickedUp` for exactly this.
+    if let Some(mut markers) = world.query_mut::<PickedUp>() {
+        markers.insert(target, PickedUp);
+    }
     crate::cell_loader::reference_state::mark_picked_up(world, target);
     let name = world
         .try_resource::<InventoryCatalog>()
-        .and_then(|catalog| catalog.entries.get(&base))
-        .map(|entry| entry.name.clone())
+        .and_then(|catalog| catalog.entries.get(&base).map(|entry| entry.name.clone()))
         .unwrap_or_else(|| format!("Item {base:08X}"));
     crate::notifications::push(
         world,
@@ -2510,6 +2572,143 @@ mod tests {
         ] {
             assert_eq!(player_npc_form_id(game), 0x0000_0007, "{game:?}");
         }
+    }
+
+    /// #4458 — the player's CHARAL seed derives from the base Player
+    /// `NPC_` record through the same population path every NPC takes.
+    /// Pre-fix, `consume_item` / `apply_player_drowning_damage` gated on
+    /// the player carrying `ActorValues` + `ActorVitals` while no
+    /// production path stamped either, so every consumable use silently
+    /// returned `Unavailable`; the tests that covered those paths
+    /// hand-inserted the components. The seed must be a POPULATED
+    /// derivation (the scene.rs #3158 note's zero-SPECIAL warning is why
+    /// an empty stub was never acceptable), and it must degrade to `None`
+    /// — the pre-fix state — when the index has nothing to derive from.
+    #[test]
+    fn player_character_template_derives_from_the_player_npc_record() {
+        use byroredux_core::character::CharacterRulesProfile;
+        use byroredux_core::ecs::components::ActorVitals;
+        use byroredux_plugin::esm::records::{AvifRecord, ClassRecord, NpcRecord};
+
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            game: GameKind::Fallout3NV,
+            ..EsmIndex::default()
+        };
+        for (fid, name) in [
+            (0x100u32, "AVStrength"),
+            (0x101, "AVPerception"),
+            (0x102, "AVEndurance"),
+            (0x103, "AVCharisma"),
+            (0x104, "AVIntelligence"),
+            (0x105, "AVAgility"),
+            (0x106, "AVLuck"),
+            (0x2C9, "AVHealth"),
+        ] {
+            index.actor_values.insert(
+                fid,
+                AvifRecord {
+                    form_id: fid,
+                    editor_id: name.to_owned(),
+                    ..Default::default()
+                },
+            );
+        }
+        index.classes.insert(
+            0x2000,
+            ClassRecord {
+                form_id: 0x2000,
+                base_attributes: [5, 6, 5, 4, 7, 6, 5],
+                ..Default::default()
+            },
+        );
+        index.npcs.insert(
+            PLAYER_NPC_FORM_ID,
+            NpcRecord {
+                class_form_id: 0x2000,
+                level: 1,
+                ..Default::default()
+            },
+        );
+
+        let template = build_player_character_template(&index);
+        let values = template.values.expect("a populated derivation");
+        let health = index.health_actor_value_key().expect("Health AVIF");
+        assert_eq!(
+            values.current(health),
+            200.0,
+            "FNV Health 95 + 20·END(5) + 5·L(1), the NPC curve the player \
+             record's class derives"
+        );
+        assert_eq!(values.current(index.actor_value_form_id("Luck").unwrap()), 5.0);
+        assert_eq!(template.vitals, Some(ActorVitals { health }));
+
+        // Degradation: no Player NPC_ in the index → no seed, never an
+        // empty zero-SPECIAL component.
+        let empty = build_player_character_template(&EsmIndex::default());
+        assert!(empty.values.is_none());
+        assert_eq!(empty.vitals, None);
+    }
+
+    /// #4458 — the production path end to end: `install_catalog` builds
+    /// the seed resource, `attach_to_player` stamps both components onto
+    /// the body. This is the leg every pre-fix test faked with
+    /// hand-inserted `ActorValues`/`ActorVitals`.
+    #[test]
+    fn attach_to_player_stamps_the_character_seed() {
+        use byroredux_core::character::CharacterRulesProfile;
+        use byroredux_core::ecs::components::{ActorValues, ActorVitals};
+        use byroredux_plugin::esm::records::{AvifRecord, ClassRecord, NpcRecord};
+
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            game: GameKind::Fallout3NV,
+            ..EsmIndex::default()
+        };
+        index.actor_values.insert(
+            0x2C9,
+            AvifRecord {
+                form_id: 0x2C9,
+                editor_id: "AVHealth".to_owned(),
+                ..Default::default()
+            },
+        );
+        index.classes.insert(
+            0x2000,
+            ClassRecord {
+                form_id: 0x2000,
+                base_attributes: [5, 5, 5, 5, 5, 5, 5],
+                ..Default::default()
+            },
+        );
+        index.npcs.insert(
+            PLAYER_NPC_FORM_ID,
+            NpcRecord {
+                class_form_id: 0x2000,
+                level: 1,
+                ..Default::default()
+            },
+        );
+
+        let mut world = World::new();
+        install_catalog(&mut world, &index);
+        let player = world.spawn();
+        attach_to_player(&mut world, player);
+
+        let values = world
+            .get::<ActorValues>(player)
+            .expect("the player body must carry its derived actor values");
+        assert_eq!(
+            values.current(index.health_actor_value_key().unwrap()),
+            200.0,
+            "95 + 20·5 + 5·1"
+        );
+        assert_eq!(
+            world.get::<ActorVitals>(player).map(|v| *v),
+            Some(ActorVitals {
+                health: index.health_actor_value_key().unwrap()
+            })
+        );
     }
 
     #[test]
