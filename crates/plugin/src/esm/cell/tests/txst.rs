@@ -646,3 +646,52 @@ fn decal_data_doc_does_not_claim_a_nonexistent_m28_decal_milestone() {
 // arm dropped these on the `_` match — stealing-detection /
 // property-crime gameplay had no input. Cross-game (Oblivion +
 // FO3 + FNV + Skyrim+ all use the same wire format).
+
+/// The decode models TX00–TX07 only; Starfield's PBR maps
+/// (`_metal`/`_rough`/`_ao`/`_opacity`) must still parse — the modelled
+/// slots survive and the record lands — while the unmodelled FourCCs hit
+/// the first-sighting warn gate (first call true, repeat false).
+#[test]
+fn starfield_pbr_slots_parse_without_dropping_the_record() {
+    use super::super::support::warn_unmodelled_txst_slot;
+
+    let record = build_txst_record(
+        0x0000_1000,
+        &[
+            (b"TX00", "textures/foo_diffuse.dds"),
+            (b"TX08", "textures/foo_metal.dds"),
+            (b"TX09", "textures/foo_rough.dds"),
+        ],
+    );
+    let group = wrap_in_txst_group(&[record]);
+
+    let mut reader = EsmReader::new(&group);
+    let header = reader.read_group_header().expect("group header");
+    let end = reader.group_content_end(&header);
+    let mut diffuse_only: HashMap<u32, String> = HashMap::new();
+    let mut sets: HashMap<u32, TextureSet> = HashMap::new();
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Starfield,
+    )
+    .expect("parse must succeed despite unmodelled higher slots");
+
+    let set = sets
+        .get(&0x0000_1000)
+        .expect("the record must land despite unmodelled higher slots");
+    assert_eq!(
+        set.diffuse.as_deref(),
+        Some("textures/foo_diffuse.dds"),
+        "the modelled TX00 must survive"
+    );
+
+    // The warn gate: first sighting of a FourCC warns, repeats do not.
+    // (The parse above already saw TX08/TX09 once each, so those two now
+    // report false; TX17 is fresh and must report true first.)
+    assert!(!warn_unmodelled_txst_slot(b"TX08"));
+    assert!(warn_unmodelled_txst_slot(b"TX17"));
+    assert!(!warn_unmodelled_txst_slot(b"TX17"));
+}

@@ -656,6 +656,26 @@ fn parse_txst_group_inner(
                             color: [d[32], d[33], d[34], d[35]],
                         });
                     }
+                    // #4438 — Starfield authors PBR maps in slots this
+                    // decode does not model: TX08 `_metal`, TX09 `_rough`,
+                    // TX17 `_ao`, TX19 `_opacity` (census: 39 sub-records
+                    // across 23 vanilla Starfield.esm TXSTs, 20 of the
+                    // records decals whose `_opacity` is exactly the
+                    // coverage map they need). There is no canonical sink
+                    // for them yet (SF-D3-01), so capture nothing but make
+                    // the drop visible: warn once per FourCC rather than
+                    // once per record.
+                    sub_type if sub_type.starts_with(b"TX") && sub_type.len() == 4 => {
+                        if warn_unmodelled_txst_slot(sub_type) {
+                            log::warn!(
+                                "TXST sub-record {} has no modelled slot; texture path \
+                                 dropped (Starfield PBR maps TX08 metal / TX09 rough / \
+                                 TX17 AO / TX19 opacity land here until SF-D3-01 gives \
+                                 them a canonical sink)",
+                                String::from_utf8_lossy(sub_type),
+                            );
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -673,6 +693,22 @@ fn parse_txst_group_inner(
         }
     }
     Ok(())
+}
+
+/// #4438 — first-sighting gate for unmodelled TXST `TX*` slots. Returns
+/// `true` the first time a given FourCC is seen this process, `false`
+/// after — so the parse warns once per slot kind instead of once per
+/// record. The bool return is the test seam: a caller can pin the
+/// first-true / then-false contract without capturing logs.
+pub(super) fn warn_unmodelled_txst_slot(fourcc: &[u8]) -> bool {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<[u8; 4]>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut key = [0u8; 4];
+    key.copy_from_slice(&fourcc[..4]);
+    seen.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key)
 }
 
 /// Parse SCOL (Static Collection) records. Each record is captured
