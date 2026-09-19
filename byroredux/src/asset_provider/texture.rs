@@ -961,34 +961,63 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["environment"],
         );
-        for role in [
-            "normal",
-            "smooth_spec",
-            "height",
-            "environment_mask",
-            "specular",
-            "lighting_mask",
-            "glass_roughness_scratch",
+        // #4432 — the FULL colour-space table, pinned per role, replacing
+        // the partial loops that covered 13 of the 25 secondary roles. A
+        // role-table edit that flips a data map to sRGB (a wrinkle normal
+        // or flow vector sampled through an sRGB view is garbage), or a
+        // new role walked without a pinned space, fails here — the
+        // remaining unpinned half of #3814's GPU-lane pin.
+        let expected: &[(&str, bool, TextureColorSpace)] = &[
+            ("normal", false, TextureColorSpace::Linear),
+            ("emissive", false, TextureColorSpace::Srgb),
             // #4422 — the detail combine divides by the declared neutral in
             // encoded space, so the view must be raw UNORM (was Srgb).
-            "detail",
-        ] {
-            assert!(seen.iter().any(|(path, cubemap, color_space)| path == role
-                && !cubemap
-                && *color_space == TextureColorSpace::Linear));
+            ("detail", false, TextureColorSpace::Linear),
+            ("smooth_spec", false, TextureColorSpace::Linear),
+            ("dark", false, TextureColorSpace::Srgb),
+            ("height", false, TextureColorSpace::Linear),
+            ("environment", true, TextureColorSpace::Srgb),
+            ("environment_mask", false, TextureColorSpace::Linear),
+            ("tint", false, TextureColorSpace::Srgb),
+            ("inner_layer", false, TextureColorSpace::Srgb),
+            ("specular", false, TextureColorSpace::Linear),
+            ("lighting_mask", false, TextureColorSpace::Linear),
+            ("back_lighting", false, TextureColorSpace::Srgb),
+            ("lighting", false, TextureColorSpace::Linear),
+            ("flow", false, TextureColorSpace::Linear),
+            // #2999 — wrinkle is an `_n` normal map: a data texture.
+            ("wrinkle", false, TextureColorSpace::Linear),
+            ("greyscale_lut", false, TextureColorSpace::Srgb),
+            ("reflectance", false, TextureColorSpace::Linear),
+            ("emittance_gradient", false, TextureColorSpace::Srgb),
+            ("glass_roughness_scratch", false, TextureColorSpace::Linear),
+            ("glass_dirt_overlay", false, TextureColorSpace::Srgb),
+            ("decal_0", false, TextureColorSpace::Srgb),
+            ("decal_1", false, TextureColorSpace::Srgb),
+            ("decal_2", false, TextureColorSpace::Srgb),
+            ("decal_3", false, TextureColorSpace::Srgb),
+        ];
+        assert_eq!(
+            expected.len(),
+            textures.secondary_values().count(),
+            "the pinned table must cover every secondary role — extend it \
+             when a role is added to MaterialTextureSet"
+        );
+        for (path, cubemap, color_space) in &seen {
+            let (_, want_cubemap, want_space) = expected
+                .iter()
+                .copied()
+                .find(|(name, _, _)| *name == path.as_str())
+                .unwrap_or_else(|| {
+                    panic!("role {path:?} was walked but is not in the pinned colour-space table")
+                });
+            assert_eq!((cubemap, color_space), (&want_cubemap, &want_space));
         }
-        for role in [
-            "emissive",
-            // #4422 — detail is a raw-space numeric combine input now, not a
-            // colour sample: it moved to the Linear assertions above.
-            "dark",
-            "back_lighting",
-            "glass_dirt_overlay",
-            "decal_0",
-        ] {
-            assert!(seen.iter().any(|(path, cubemap, color_space)| path == role
-                && !cubemap
-                && *color_space == TextureColorSpace::Srgb));
+        for (name, _, _) in expected {
+            assert!(
+                seen.iter().any(|(path, _, _)| path == *name),
+                "pinned role {name} was never walked"
+            );
         }
         assert!(handles.secondary_values().all(|&handle| handle != 0));
     }
