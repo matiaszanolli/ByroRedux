@@ -18,14 +18,20 @@ impl VulkanContext {
     /// function's contract requires, Vulkan imposes no cross-subsystem
     /// destroy ordering (a descriptor set may name a destroyed image view
     /// as long as it is never used again, and every parent/child pair is
-    /// contained inside one subsystem's own `destroy`) — only four
+    /// contained inside one subsystem's own `destroy`) — only three
     /// orderings below are load-bearing, each commented at its own site:
-    /// `skin_slots` before `skin_compute`; placeholders after the passes
-    /// whose descriptors name them; `frame_upscaler::destroy_allocations`
+    /// `skin_slots` before `skin_compute`; `frame_upscaler::destroy_allocations`
     /// after `destroy_device_objects`; and `exposure` before the
-    /// `Arc::try_unwrap`. **Do not "restore" reverse-creation order** — that
-    /// would reshuffle those four local constraints, and moving
-    /// `skin_compute`'s pipeline/pool destroy ahead of its per-slot
+    /// `Arc::try_unwrap`. The 1×1 placeholders are **not** a fourth: they
+    /// are allocator-backed, so they must be destroyed before
+    /// `self.allocator.take()`, but their position relative to the passes
+    /// whose descriptors name them is unconstrained once `device_wait_idle`
+    /// has run (#4188 — the earlier version of this list asserted a
+    /// "placeholders after the passes" ordering the code visibly does not
+    /// implement; a documented ordering the code violates discredits the
+    /// three entries that are real). **Do not "restore" reverse-creation
+    /// order** — that would reshuffle the three local constraints, and
+    /// moving `skin_compute`'s pipeline/pool destroy ahead of its per-slot
     /// `free_descriptor_sets` is a real
     /// `VUID-vkFreeDescriptorSets-descriptorPool-parameter` violation.
     ///
@@ -151,13 +157,15 @@ impl VulkanContext {
         if let Some(ref mut ssao) = self.post.ssao {
             ssao.destroy(&self.device, alloc);
         }
-        // #2141 / #2142 — the 1×1 placeholders. Torn down here,
-        // alongside the passes whose descriptors may still name
-        // them: both are allocator-backed, so they must go before
-        // the `self.allocator.take()` + `Arc::try_unwrap` below,
-        // and after the descriptor sets that reference them have
-        // stopped being used (the device_wait_idle at the top of
-        // Drop already guarantees nothing is in flight).
+        // #2141 / #2142 — the 1×1 placeholders. Both are
+        // allocator-backed, so they must be destroyed before the
+        // `self.allocator.take()` + `Arc::try_unwrap` below. Their
+        // position relative to the passes whose descriptors name them
+        // is unconstrained: the device_wait_idle at the top of Drop
+        // guarantees nothing is in flight, and Vulkan imposes no
+        // cross-subsystem ordering past that point (#4188 — this is
+        // why the header does not list the placeholders as a
+        // load-bearing ordering).
         // SAFETY (both `destroy` calls): `device_wait_idle` ran at
         // the top of Drop, so no in-flight command buffer still
         // references these handles.
