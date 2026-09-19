@@ -970,6 +970,125 @@ mod emitter_rate_tests {
         );
     }
 
+    // ── #4467 — hop-≥2 chains behind opaque `NiPSysBlock` siblings ──
+    //
+    // On real content the emitter ctlr usually sits behind sibling
+    // `NiPSys*` controllers (`NiPSysModifierActiveCtlr`,
+    // `BSPSysMultiTargetEmitterCtlr`, …) that parse to the opaque
+    // `NiPSysBlock` marker, which discards `next_controller_ref` — so
+    // `walk_controller_chain` stops at hop 1 and #4261's own-chain
+    // scoping lost the ctlr entirely (FO3 rate coverage 94.3%→70.8%).
+    // The fallback resolves the scene's ctlrs by `base.target_ref`
+    // pointing at the system whose `controller_ref` equals the chain
+    // head — per-instance exact (census: 100% of FO3/SSE ctlrs target
+    // their system directly).
+
+    use crate::blocks::particle::{NiPSysBlock, NiParticleSystem};
+
+    fn particle_system(controller_ref: BlockRef) -> NiParticleSystem {
+        NiParticleSystem {
+            original_type: "NiParticleSystem".to_string(),
+            transform: Default::default(),
+            properties: Vec::new(),
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            modifier_refs: Vec::new(),
+            controller_ref,
+            data_ref: BlockRef::NULL,
+        }
+    }
+
+    /// The measured corpus shape: system `[2]`'s chain head `[3]` is an
+    /// opaque sibling-controller marker (`NiPSysModifierActiveCtlr`
+    /// parses to `NiPSysBlock`, discarding `next_controller_ref`), and
+    /// the real `NiPSysEmitterCtlr` `[1]` sits BEHIND it, reachable only
+    /// via its `base.target_ref` → `[2]`. Pre-fix this resolved to
+    /// `None` (walk stops at hop 1); post-fix the target-ref fallback
+    /// finds `[1]` and its rate.
+    #[test]
+    fn emitter_ctlr_behind_an_opaque_sibling_is_found_by_target_ref() {
+        let mut scene = NifScene::default();
+        // [0] the rate source.
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: 25.0,
+            data_ref: BlockRef::NULL,
+        }));
+        // [1] the emitter ctlr — target_ref → the system at [2], NOT in
+        // any chain the walk can traverse from [3].
+        let mut ctlr = emitter_ctlr(BlockRef(0u32));
+        ctlr.base.target_ref = BlockRef(2u32);
+        scene.blocks.push(Box::new(ctlr));
+        // [2] the particle system; its chain head is [3].
+        scene
+            .blocks
+            .push(Box::new(particle_system(BlockRef(3u32))));
+        // [3] the sibling controller the chain actually starts with —
+        // parses to the opaque marker, so the walk cannot advance past it.
+        scene.blocks.push(Box::new(NiPSysBlock::marker(
+            "NiPSysModifierActiveCtlr",
+        )));
+
+        assert_eq!(
+            extract_emitter_rate(&scene, BlockRef(3u32)),
+            Some(25.0),
+            "the ctlr behind an opaque sibling head must be found via its \
+             base.target_ref (#4467)"
+        );
+    }
+
+    /// The fallback is per-instance, not a scene-wide first-match: a
+    /// second system's ctlr must not be claimed by the first system's
+    /// lookup, and a ctlr targeting a non-system block must be ignored.
+    #[test]
+    fn target_ref_fallback_stays_per_instance() {
+        let mut scene = NifScene::default();
+        // [0] rate source for system A's ctlr.
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value: 11.0,
+            data_ref: BlockRef::NULL,
+        }));
+        // [1] system A's ctlr — targets system A at [2].
+        let mut ctlr_a = emitter_ctlr(BlockRef(0u32));
+        ctlr_a.base.target_ref = BlockRef(2u32);
+        scene.blocks.push(Box::new(ctlr_a));
+        // [2] system A, chain head [3] (opaque marker).
+        scene
+            .blocks
+            .push(Box::new(particle_system(BlockRef(3u32))));
+        // [3] system A's opaque sibling head.
+        scene
+            .blocks
+            .push(Box::new(NiPSysBlock::marker("NiPSysModifierActiveCtlr")));
+        // [4] system B, chain head [5] (also an opaque marker) — a
+        // different system whose ctlr does not exist in this scene.
+        scene
+            .blocks
+            .push(Box::new(particle_system(BlockRef(5u32))));
+        // [5] system B's opaque sibling head.
+        scene.blocks.push(Box::new(NiPSysBlock::marker(
+            "BSPSysMultiTargetEmitterCtlr",
+        )));
+
+        assert_eq!(
+            extract_emitter_rate(&scene, BlockRef(3u32)),
+            Some(11.0),
+            "system A resolves its own ctlr through the fallback"
+        );
+        assert_eq!(
+            extract_emitter_rate(&scene, BlockRef(5u32)),
+            None,
+            "system B must not claim system A's ctlr — the fallback is \
+             target-keyed, not a whole-scene first-match"
+        );
+        // A NULL chain head authors no chain; the fallback must not
+        // match ctlrs of other chainless systems.
+        assert_eq!(
+            extract_emitter_rate(&scene, BlockRef::NULL),
+            None,
+            "a NULL controller_ref must not claim any ctlr via the fallback"
+        );
+    }
+
     // ── #2548 — NiBlendFloatInterpolator wrapper ────────────────────
     //
     // 78% of real FO3 NiPSysEmitterCtlr.interpolator_ref targets are this

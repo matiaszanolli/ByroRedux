@@ -379,7 +379,7 @@ pub(crate) fn extract_emitter_max_particles(scene: &NifScene, data_ref: BlockRef
         .filter(|m| *m > 0)
 }
 
-/// #4261 (OB-D4-02) — the modern-tier controller lookup below now walks
+/// #4261 (OB-D4-02) — the modern-tier controller lookup below walks
 /// `controller_ref`'s own chain (`NiObjectNETData.controller_ref` →
 /// `next_controller_ref`, the same mechanism `crate::anim` already uses
 /// for embedded-animation import) for the `NiPSysEmitterCtlr` that
@@ -387,11 +387,33 @@ pub(crate) fn extract_emitter_max_particles(scene: &NifScene, data_ref: BlockRef
 /// whole-scene first-match. Returns the controller's `interpolator_ref`
 /// (a plain `BlockRef`, not the controller itself, to sidestep threading
 /// a borrow out through the chain-walk callback's per-call lifetime).
+///
+/// #4467 — the chain walk can only advance through controller types
+/// `anim::time_controller_base_of` recognizes, and on real content the
+/// emitter ctlr usually sits at **hop ≥ 2** of the system's chain, behind
+/// sibling `NiPSys*` controllers (`NiPSysModifierActiveCtlr`,
+/// `BSPSysMultiTargetEmitterCtlr`, `NiPSysEmitterSpeedCtlr`, …) that the
+/// block parser collapses into the opaque `NiPSysBlock` marker — which
+/// discards `NiTimeControllerBase.next_controller_ref`. At such a head
+/// the walk stops at hop 1 and the ctlr two links down is unreachable.
+/// Measured (FO3 audit 2026-09-19): only 230/422 `Fallout - Meshes.bsa`
+/// particle systems have their emitter ctlr at hop 1; authored-rate
+/// coverage fell on every game (FO3 94.3%→70.8%, FNV 100%→50.5%).
+///
+/// When the own-chain walk finds nothing, fall back to resolving the
+/// scene's `NiPSysEmitterCtlr` blocks by `base.target_ref`: the one whose
+/// target is a `NiParticleSystem` whose own `controller_ref` equals the
+/// chain head we were handed IS this system's ctlr — per-instance exact
+/// (a multi-emitter NIF's second system still gets its own ctlr), unlike
+/// the pre-#4261 whole-scene first-match this replaces. Census basis:
+/// 361/361 FO3 ctlrs (and 393/393 SSE) target their `NiParticleSystem`
+/// directly, so the fallback is total over the measured corpus, not a
+/// heuristic.
 fn find_own_emitter_ctlr_interpolator(
     scene: &NifScene,
     controller_ref: BlockRef,
 ) -> Option<BlockRef> {
-    use crate::blocks::particle::NiPSysEmitterCtlr;
+    use crate::blocks::particle::{NiPSysEmitterCtlr, NiParticleSystem};
 
     let mut found: Option<BlockRef> = None;
     crate::anim::walk_controller_chain(scene, controller_ref, |_idx, block, _base| {
@@ -401,7 +423,30 @@ fn find_own_emitter_ctlr_interpolator(
             }
         }
     });
-    found
+    if found.is_some() {
+        return found;
+    }
+    // The walk stopped at an unrecognized/marker controller before
+    // reaching this system's emitter ctlr (or the chain is empty). Resolve
+    // by target instead. A NULL `controller_ref` means the system authors
+    // no chain at all — matching it would claim ctlrs belonging to OTHER
+    // chainless systems, so the fallback is gated on a real head.
+    if controller_ref.index().is_none() {
+        return None;
+    }
+    scene.blocks.iter().find_map(|b| {
+        b.as_any()
+            .downcast_ref::<NiPSysEmitterCtlr>()
+            .filter(|ctlr| {
+                ctlr.base
+                    .target_ref
+                    .index()
+                    .and_then(|t| scene.blocks.get(t))
+                    .and_then(|tb| tb.as_any().downcast_ref::<NiParticleSystem>())
+                    .is_some_and(|sys| sys.controller_ref == controller_ref)
+            })
+            .map(|ctlr| ctlr.interpolator_ref)
+    })
 }
 
 /// Legacy `NiPSysEmitterCtlrData` tier (below) stays a whole-scene scan:
@@ -409,8 +454,8 @@ fn find_own_emitter_ctlr_interpolator(
 /// `NiParticleSystemController` (until v10.0.1.0) this codebase doesn't
 /// currently link back to a specific `NiParticleSystem` at all — a
 /// residual, lower-priority scope this #4261 pass didn't extend to. The
-/// modern tier above (the dominant case on every measured multi-emitter
-/// NIF) is now exact.
+/// modern tier above resolves per-instance: own-chain walk first, then
+/// the #4467 target-ref fallback for chains the walk cannot traverse.
 pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -> Option<f32> {
     use crate::anim::resolve_blend_interpolator_target;
     use crate::blocks::interpolator::{NiBlendFloatInterpolator, NiFloatData, NiFloatInterpolator};
