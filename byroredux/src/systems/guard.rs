@@ -304,10 +304,15 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
         }
     }
     if let Some(mut nq) = world.query_mut::<NavPath>() {
-        for d in &scratch.decisions {
-            match &d.nav_path {
+        // #4189 — take the path instead of cloning it: `scratch.decisions`
+        // is rebuilt from scratch next frame and nothing reads `d.nav_path`
+        // after this loop, so the clone was a per-entity-per-tick heap
+        // allocation for a value that is about to be dropped. Same
+        // mem::take treatment the input side got.
+        for d in &mut scratch.decisions {
+            match d.nav_path.take() {
                 Some(path) => {
-                    nq.insert(d.entity, path.clone());
+                    nq.insert(d.entity, path);
                 }
                 None => {
                     nq.remove(d.entity);
