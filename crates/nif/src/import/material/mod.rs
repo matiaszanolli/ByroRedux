@@ -1339,8 +1339,14 @@ impl MaterialInfo {
             environment_mask: self.env_mask,
             tint: self.tint_map,
             inner_layer: self.inner_layer_map,
-            // Standalone BGSM/BGEM roles are populated by the downstream
-            // material-file translator; inline NIF shaders do not expose them.
+            // #4433 — `specular` HAS inline NIF producers: `slot_to_role`
+            // routes FO4 slot 7, FO76 slot 6 and Skyrim MSN slot 7 here, and
+            // `apply_bs_lighting_shader` writes them into `specular_map`
+            // (#2998/#3085). The comment that used to sit above this line
+            // ("inline NIF shaders do not expose them") described the
+            // pre-#2998 world; the roles it still describes are `flow`
+            // (hard-coded `None` below) and the dedicated BGEM v21+ glass
+            // suite, which only the external material merge populates.
             specular: self.specular_map,
             lighting_mask: self.lighting_mask_map,
             back_lighting: self.back_lighting_map,
