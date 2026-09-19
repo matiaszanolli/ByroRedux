@@ -1,6 +1,7 @@
 //! Texture / mesh / skin diagnostic commands.
 //!
-//! `tex.missing`, `tex.loaded`, `mesh.info`, `mesh.cache`, `skin.coverage`, `skin.list`, `skin.dump`.
+//! `tex.missing`, `tex.loaded`, `tex.dump`, `mesh.info`, `mesh.cache`,
+//! `skin.coverage`, `skin.list`, `skin.dump`.
 
 use super::shared::*;
 use crate::components::{MaterialTextureDebugInfo, MaterialTextureHandles, MaterialTextureSource};
@@ -222,6 +223,133 @@ mod tex_loaded_tests {
             "the collapsed bucket must carry both entities' count; got:\n{out}"
         );
     }
+}
+
+pub(crate) struct TexDumpCommand;
+impl ConsoleCommand for TexDumpCommand {
+    fn name(&self) -> &str {
+        "tex.dump"
+    }
+    fn description(&self) -> &str {
+        "Extract one texture from an on-disk archive, decode it, and write \
+         a PNG for offline inspection: \
+         tex.dump <bsa-path> <texture-path> [out.png]. Menu art \
+         (Menus\\...) resolves through the textures\\Menus / Menus80 / \
+         Menus50 resolution sets like the menu renderer; `.tex` font \
+         atlases decode too."
+    }
+    fn execute(&self, _world: &World, args: &str) -> CommandOutput {
+        let parts = split_quoted_args(args);
+        let (Some(archive_path), Some(texture_path)) = (parts.first(), parts.get(1)) else {
+            return CommandOutput::error(
+                "usage: tex.dump <bsa-path> <texture-path> [out.png] \
+                 (quote paths containing spaces)",
+            );
+        };
+        let out_path = parts
+            .get(2)
+            .cloned()
+            .unwrap_or_else(|| "/tmp/tex_dump.png".to_string());
+
+        let archive = match crate::asset_provider::Archive::open(archive_path) {
+            Ok(archive) => archive,
+            Err(e) => return CommandOutput::error(format!("tex.dump: open '{archive_path}': {e}")),
+        };
+
+        // Candidate archive keys, mirroring the menu renderer's set
+        // resolution: the path as given, then — for menu art — the three
+        // resolution classes. All lowercased: the menu renderer lowercases
+        // its candidates, and the BSA keys are authored in mixed case.
+        let lowered = texture_path.trim().replace('/', "\\").to_lowercase();
+        let mut candidates = vec![lowered.clone()];
+        if let Some(rest) = lowered
+            .strip_prefix("menus\\")
+            .or_else(|| lowered.strip_prefix("menus80\\"))
+            .or_else(|| lowered.strip_prefix("menus50\\"))
+        {
+            for set in ["menus", "menus80", "menus50"] {
+                candidates.push(format!("textures\\{set}\\{rest}"));
+            }
+        }
+        let (hit, bytes) = match candidates
+            .iter()
+            .find_map(|key| archive.extract(key).ok().map(|b| (key.clone(), b)))
+        {
+            Some(hit) => hit,
+            None => {
+                return CommandOutput::error(format!(
+                    "tex.dump: '{}' not found in '{}' (tried {} keys)",
+                    texture_path,
+                    archive_path,
+                    candidates.len()
+                ))
+            }
+        };
+
+        let is_font_tex = hit.ends_with(".tex");
+        let decoded = if is_font_tex {
+            byroredux_menuxml::tex::Rgba8::parse_font_tex(&bytes)
+                .map_err(|e| format!("font .tex decode: {e}"))
+        } else {
+            byroredux_menuxml::tex::Rgba8::decode_dds(&bytes)
+                .ok_or_else(|| "DDS decode (BC1/BC2/BC3 + uncompressed only)".to_string())
+        };
+        let tex = match decoded {
+            Ok(tex) => tex,
+            Err(e) => {
+                return CommandOutput::error(format!(
+                    "tex.dump: '{hit}' ({} bytes): {e}",
+                    bytes.len()
+                ))
+            }
+        };
+
+        let mut png = Vec::new();
+        let encoder = byroredux_renderer::image::codecs::png::PngEncoder::new(std::io::Cursor::new(&mut png));
+        if let Err(e) = byroredux_renderer::image::ImageEncoder::write_image(
+            encoder,
+            &tex.pixels,
+            tex.width,
+            tex.height,
+            byroredux_renderer::image::ColorType::Rgba8,
+        ) {
+            return CommandOutput::error(format!("tex.dump: PNG encode: {e}"));
+        }
+        if let Err(e) = std::fs::write(&out_path, &png) {
+            return CommandOutput::error(format!("tex.dump: write '{out_path}': {e}"));
+        }
+        CommandOutput::line(format!(
+            "tex.dump: {}x{} ({}) -> {} [{}]",
+            tex.width,
+            tex.height,
+            if is_font_tex { "font atlas" } else { "dds" },
+            out_path,
+            hit
+        ))
+    }
+}
+
+/// Whitespace split honoring double-quoted segments — archive paths like
+/// `Oblivion - Misc.bsa` contain spaces.
+fn split_quoted_args(args: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for ch in args.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            c if c.is_whitespace() && !in_quotes => {
+                if !current.is_empty() {
+                    parts.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
 }
 
 pub(crate) struct MeshInfoCommand;

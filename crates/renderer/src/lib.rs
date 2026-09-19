@@ -33,6 +33,12 @@ pub use mesh::{
 };
 pub use texture_registry::{TextureColorSpace, TextureRegistry};
 pub use vertex::Vertex;
+
+/// Re-export of the `image` crate. The renderer links it as a hard
+/// dependency (screenshot PNG encoding); engine-side debug commands
+/// (`tex.dump`) need the same encoder without adding a direct dependency
+/// edge from the binary crate.
+pub use image;
 pub use vulkan::context::{
     is_refractive_glass, DepthCaptureHandle, DofView, DrawCommand, FrameTimings, ScreenshotHandle,
     SkyDalcCube, SkyParams, SkyWeatherParams, VulkanContext,

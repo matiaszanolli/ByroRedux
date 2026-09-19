@@ -319,6 +319,8 @@ pub fn print_help() {
     println!("Asset diagnostics:");
     println!("  tex.missing        Entities falling back on the magenta checker");
     println!("  tex.loaded         Currently-resident textures + byte size");
+    println!("  tex.dump <bsa> <tex> [out.png]  Extract + decode one archive");
+    println!("                     texture to PNG (menu sets + font atlases)");
     println!("  mesh.info <id>     MeshHandle / TextureHandle / Material paths");
     println!("  mesh.cache         NIF import cache stats");
     println!();
