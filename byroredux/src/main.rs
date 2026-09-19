@@ -402,11 +402,11 @@ struct App {
     scheduler: Scheduler,
     last_frame: Instant,
     ui_manager: Option<UiManager>,
-    /// Oblivion MenuXml HUD (M48.4 legacy-UI track). Mutually exclusive
-    /// with the Scaleform overlay in practice: `--hud` is the Oblivion
-    /// route, `--menu` the Skyrim+/FO4 one, and the frame tick prefers
-    /// whichever is live.
-    hud: Option<hud::OblivionHud>,
+    /// MenuXml HUD (M48.4 Oblivion / M48.5 FO3-FNV legacy-UI track).
+    /// Mutually exclusive with the Scaleform overlay in practice:
+    /// `--hud` is the pre-Skyrim route, `--menu` the Skyrim+/FO4 one,
+    /// and the frame tick prefers whichever is live.
+    hud: Option<hud::MenuXmlHud>,
     /// Window-system state used to translate events into Scaleform space.
     ui_input_state: ui_input::UiInputState,
     /// Texture handle for the UI overlay (registered in the texture registry).

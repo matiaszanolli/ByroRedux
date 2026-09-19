@@ -779,12 +779,14 @@ Bethesda menus wait to be called *into* before they call back out. Anyone
 sizing this number should re-measure rather than reason from the "HUD menus
 call the host every frame" intuition, which the corpus does not support.
 
-## Oblivion MenuXml HUD (M48.4)
+## MenuXml legacy UI (M48.4 Oblivion / M48.5 FO3)
 
 The pre-Skyrim games (Oblivion, FO3/FNV) do not use Scaleform — their
 menus are Bethesda's XML UI ("MenuXml"), evaluated per frame by a FOLD
-trait language. `byroredux-menuxml` is the first slice of that track:
-the Oblivion HUD, rendered over the live frame.
+trait language. `byroredux-menuxml` carries that track: the M48.4
+Oblivion HUD first, then M48.5 generalized the per-game facts behind
+`MenuProfile` and added FO3 as the second consumer (FNV rides the same
+profile with a ninth font slot).
 
 **Crate layout** (`crates/menuxml/`):
 
@@ -809,18 +811,52 @@ the Oblivion HUD, rendered over the live frame.
   *fraction* of the ink width, so stretching-as-default rendered a
   constant ~63%-width health bar at every value. `zoom -1` (`&scale;`)
   stretches to the tile; `cropx/cropy` apply post-zoom in display
-  pixels.
+  pixels. M48.5 adds the FO3-era `<tile>` repeat mode: 1:1 texel
+  tiling across the tile rect with `cropx` as a *wrapping* scroll
+  offset — the tick-mark meters and the seamlessly scrolling
+  compass strip both ride it.
 - `tex.rs` / `font.rs` — own DDS decoder (BC1/BC2/BC3 + masked
   uncompressed; the `image` crate rejects some vanilla headers) and the
   `.fnt` + `.tex` bitmap-font pair (296-byte header, 256×56-byte glyph
   records, white-on-transparent atlas tinted at draw time).
-- `menu.rs` — `MenuRenderer`: loads a menu + `strings.xml` + the font
-  table, resolves menu art across the three shipped resolution sets
-  (`textures\Menus`, `Menus80`, `Menus50` by UI width), applies
-  `(tile, trait)` overrides, renders frames.
+- `menu.rs` — `MenuRenderer`: loads a menu + the game's strings
+  document + font table (per `MenuProfile`), resolves menu art
+  across the three shipped resolution sets (`textures\Menus`,
+  `Menus80`, `Menus50` by UI width — an Oblivion-only convention;
+  FO3's `Interface\…` paths resolve through the `textures\`
+  passthrough arm), applies `(tile, trait)` overrides, renders
+  frames. M48.5 adds the runtime menu API the source engine had
+  from C++: `instantiate_template` (clone a `<template>`
+  prototype's content under a named tile) and `graft_fragment`
+  (wrap a rootless prefab like the ops-driven
+  `menus\prefabs\meter.xml` as a named child rect, so
+  `parent()`/`sibling()` ops resolve against the wrapper).
+- `profile.rs` — `MenuProfile`: the per-game corpus facts in one
+  place. Oblivion: 5 `[Fonts]` slots in the Misc BSA, atlas
+  `fonts\<name>.tex`, strings from `menus\strings.xml`. FO3/FNV:
+  8/9 slots in the *texture* BSA under `textures\fonts\`, atlas
+  `.tex` or `.dds` beside each `.fnt` (binary layout identical —
+  14632 B, atlas name at offset 12), no strings document
+  (`falloutdict.txt` is the hacking dictionary; FO3's `-sPrefixed`
+  strings are GMST refs, future work).
 
-**Engine integration** (`byroredux/src/hud.rs`): `--hud` opens
-`Oblivion - Misc.bsa` + a texture BSA beside `--esm`, registers **three**
+**Engine integration** (`byroredux/src/hud.rs`): `--hud` discovers
+the game from the corpus itself — whichever vanilla Misc BSA sits
+beside `--esm` (`Fallout - Misc.bsa` vs `Oblivion - Misc.bsa`;
+FO3/FNV split by the master's name) selects an `HudGameProfile`:
+archive names, `MenuProfile`, bar count/labels/AVIF keys, and the
+assembly style. **Oblivion** is *authored* — the XML ships the
+bar/compass art and the driver only pushes `hudmain_*`
+overrides. **FO3/FNV** are *assembled* — `hud_main_menu.xml`
+ships empty container rects and the launch path mirrors the
+source engine's C++ assembly: `meter.xml` grafted under
+`HitPoints`/`ActionPoints` (anchored bottom-left/-right),
+`template_compass_window` instantiated at the root, then driven
+per frame via `_Value` (0..1 fill) and `cropx` (heading × strip
+texels/degree). FO3 bar values read the character-module AVIF
+keys (HP `0x2C9`, AP `0x2D0`); Oblivion still reads the
+Skyrim-keyed values the playable slice stamps. The driver
+registers **three**
 overlay textures, and rotates uploads across them
 (`Texture::overwrite_rgba_pixels` / `write_rgba_inplace` — in-place mip-0
 copies, no image/view/descriptor churn; `TextureRegistry::update_rgba`
@@ -829,7 +865,7 @@ signature (bar bits + heading×10 + visibility) plus a 33 ms cadence cap
 keeps a static HUD at zero raster cost. Bar values come from pinned
 console values or Skyrim-keyed `ActorValues` — the vanilla playable slice
 already feeds them live from NPCs. Console surface: `hud.on`, `hud.off`,
-`hud.values <h> <m> <f>` (or `auto`), `hud.heading <deg>`, `hud.status`;
+`hud.values <f0> <f1> [<f2>]` — one fraction per the game's bars, 2 for FO3 (or `auto`), `hud.heading <deg>`, `hud.status`;
 `tex.dump <bsa-path> <texture-path> [out.png]` (in the `tex.*` family)
 extracts and decodes any archive texture — including menu sets and font
 atlases — to PNG for offline inspection.
@@ -846,6 +882,17 @@ health fill's contiguous strong-red run shrinks 158 → 53 px with a full
 five-filter PNG decode. The classifier is deliberately strict — the
 trough's cream ornamentation (254,221,161) passes an `r>g+30` filter and
 merges with the fill into a constant run that hides regressions.
+
+The M48.5 gate (`docs/smoke-tests/m48-5-fo3-hud.sh`) runs the FO3
+fixture cell (Moriarty's Saloon — an interior, so the scene behind
+the HUD is dark) and counts near-white tick columns
+(`min(r,g,b) > 180`) in the HP band: 226 → 68 columns after a 30%
+pin, plus a compass-band ink check (327 columns). Corpus facts and
+the graft/instantiate render are pinned env-gated in
+`crates/menuxml/tests/fo3_corpus.rs` (`BYROREDUX_FO3_DATA`). The
+FO3 HUD art ships untinted (white ticks/strip) — the engine tints
+via `systemcolor &hudmain;`, whose default constant is not yet
+pinned from game settings, so M48.5 renders art-native colors.
 
 ## Related docs
 

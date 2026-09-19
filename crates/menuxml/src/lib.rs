@@ -27,6 +27,7 @@ pub mod font;
 pub mod layout;
 pub mod menu;
 pub mod parse;
+pub mod profile;
 pub mod raster;
 pub mod tex;
 
@@ -38,5 +39,6 @@ pub use font::{Font, FontError, Glyph};
 pub use layout::{DrawItem, Rect};
 pub use menu::{MenuAssets, MenuError, MenuRenderer, TextureSet};
 pub use parse::{Document, Op, OpArg, OpKind, RawTrait, Scalar, Tile, TileKind};
+pub use profile::{FontArchive, MenuProfile};
 pub use raster::Framebuffer;
 pub use tex::{Rgba8, TexError};

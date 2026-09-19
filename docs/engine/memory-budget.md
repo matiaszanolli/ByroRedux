@@ -85,6 +85,9 @@ Trimming or lazily-populating those is a separate, unscoped follow-up.
 Resident for the lifetime of `VulkanContext`. Double-buffered
 (`MAX_FRAMES_IN_FLIGHT` = 2) — two live copies, two in-flight frames.
 Constants in [`scene_buffer/constants.rs`](../../crates/renderer/src/vulkan/scene_buffer/constants.rs).
+All MB/KB figures on this page are decimal (1 MB = 10⁶ B) — stated once
+here per #4200; parenthesised MiB figures are the binary equivalents of
+measured allocations.
 
 | Buffer | Constant | Entries | Entry size | Per-frame | × 2 FIF |
 |---|---|---|---|---|---|

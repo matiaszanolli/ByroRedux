@@ -824,7 +824,7 @@ pub(crate) fn setup_scene(
     ctx: &mut VulkanContext,
     ui_manager: &mut Option<UiManager>,
     ui_texture_handle: &mut Option<u32>,
-    hud: &mut Option<crate::hud::OblivionHud>,
+    hud: &mut Option<crate::hud::MenuXmlHud>,
     camera_pos_override: Option<(f32, f32, f32)>,
     camera_forward_override: Option<(f32, f32, f32)>,
     streaming_slot: &mut Option<WorldStreamingState>,

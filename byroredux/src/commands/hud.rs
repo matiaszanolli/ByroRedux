@@ -1,10 +1,11 @@
-//! `hud.*` — Oblivion MenuXml HUD console control (M48.4).
+//! `hud.*` — MenuXml HUD console control (M48.4 Oblivion / M48.5 FO3).
 //!
 //! The HUD renderer lives in the frame loop (see `hud.rs`'s module docs);
 //! these commands mutate the [`HudControl`] World resource it reads every
 //! frame. `hud.status` is the smoke-gate observable: it reports whether a
 //! HUD is live even when hidden, because the resource exists only after a
-//! successful `--hud` launch.
+//! successful `--hud` launch. Bar count and labels are the launched
+//! game's (3 for Oblivion, 2 for FO3/FNV).
 
 use super::shared::*;
 use crate::hud::HudControl;
@@ -17,7 +18,7 @@ impl ConsoleCommand for HudOnCommand {
         "hud.on"
     }
     fn description(&self) -> &str {
-        "Show the Oblivion MenuXml HUD overlay"
+        "Show the MenuXml HUD overlay"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         match world.try_resource_mut::<HudControl>() {
@@ -38,7 +39,7 @@ impl ConsoleCommand for HudOffCommand {
         "hud.off"
     }
     fn description(&self) -> &str {
-        "Hide the Oblivion MenuXml HUD overlay"
+        "Hide the MenuXml HUD overlay"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         match world.try_resource_mut::<HudControl>() {
@@ -51,8 +52,9 @@ impl ConsoleCommand for HudOffCommand {
     }
 }
 
-/// `hud.values <health> <magicka> <fatigue>` — pin bar fractions (0..1);
-/// `hud.values auto` returns them to actor-value derivation.
+/// `hud.values <f0> [f1] [f2]` — pin bar fractions (0..1), one per the
+/// game's bars; `hud.values auto` returns them to actor-value
+/// derivation.
 pub(crate) struct HudValuesCommand;
 
 impl ConsoleCommand for HudValuesCommand {
@@ -60,34 +62,42 @@ impl ConsoleCommand for HudValuesCommand {
         "hud.values"
     }
     fn description(&self) -> &str {
-        "Pin HUD bar fractions: hud.values <0-1> <0-1> <0-1> | auto"
+        "Pin HUD bar fractions: hud.values <0-1>... | auto"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let Some(mut control) = world.try_resource_mut::<HudControl>() else {
             return CommandOutput::error("hud: not launched (start with --hud)");
         };
+        let count = control.bar_count as usize;
+        let labels = control.bar_labels;
         let tokens: Vec<&str> = args.split_whitespace().collect();
         if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("auto") {
-            control.health = None;
-            control.magicka = None;
-            control.fatigue = None;
+            control.bars = [None; 3];
             return CommandOutput::line("hud: bars follow actor values");
         }
-        if tokens.len() != 3 {
-            return CommandOutput::error("usage: hud.values <health> <magicka> <fatigue> (0-1) | auto");
+        if tokens.len() != count {
+            let usage = labels[..count].join(" ");
+            return CommandOutput::error(format!(
+                "usage: hud.values <{usage}> (one 0-1 fraction per bar) | auto"
+            ));
         }
         let parse = |t: &str| -> Result<f32, ()> {
             t.parse::<f32>().map(|v| v.clamp(0.0, 1.0)).map_err(|_| ())
         };
-        match (parse(tokens[0]), parse(tokens[1]), parse(tokens[2])) {
-            (Ok(h), Ok(m), Ok(f)) => {
-                control.health = Some(h);
-                control.magicka = Some(m);
-                control.fatigue = Some(f);
-                CommandOutput::line(format!("hud: bars pinned to {h:.2}/{m:.2}/{f:.2}"))
-            }
-            _ => CommandOutput::error("hud.values: three 0-1 fractions or 'auto'"),
+        let parsed: Vec<Result<f32, ()>> = tokens.iter().map(|t| parse(t)).collect();
+        if parsed.iter().any(|p| p.is_err()) {
+            return CommandOutput::error("hud.values: 0-1 fractions or 'auto'");
         }
+        let values: Vec<f32> = parsed.into_iter().map(|p| p.unwrap()).collect();
+        for (slot, value) in values.iter().enumerate() {
+            control.bars[slot] = Some(*value);
+        }
+        let joined = values
+            .iter()
+            .map(|v| format!("{v:.2}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        CommandOutput::line(format!("hud: bars pinned to {joined}"))
     }
 }
 
@@ -133,21 +143,22 @@ impl ConsoleCommand for HudStatusCommand {
         "hud.status"
     }
     fn description(&self) -> &str {
-        "Report the Oblivion MenuXml HUD state"
+        "Report the MenuXml HUD state"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         match world.try_resource::<HudControl>() {
             Some(control) => {
-                let fmt = |v: Option<f32>, live: f32| match v {
+                let fmt = |v: Option<f32>| match v {
                     Some(pinned) => format!("{pinned:.2} (pinned)"),
-                    None => format!("{live:.2} (auto)"),
+                    None => "1.00 (auto)".to_string(),
                 };
+                let bars = (0..control.bar_count as usize)
+                    .map(|i| format!("{}={}", control.bar_labels[i], fmt(control.bars[i])))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 CommandOutput::line(format!(
-                    "hud: launched visible={} health={} magicka={} fatigue={} heading={}",
+                    "hud: launched visible={} {bars} heading={}",
                     control.visible,
-                    fmt(control.health, 1.0),
-                    fmt(control.magicka, 1.0),
-                    fmt(control.fatigue, 1.0),
                     match control.heading {
                         Some(deg) => format!("{deg:.0} (pinned)"),
                         None => "auto".to_string(),

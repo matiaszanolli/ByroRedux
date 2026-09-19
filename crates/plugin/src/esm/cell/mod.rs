@@ -257,6 +257,12 @@ pub struct CellData {
     /// quest / Story Manager systems for "player is in location X"
     /// conditions.
     pub location_form: Option<u32>,
+    /// Encounter zone (XEZN, FormID — references an ECZN record).
+    /// Governs spawn scaling / faction ownership for the cell; the ECZN
+    /// records themselves live in `EsmIndex.encounter_zones`. #4173 —
+    /// pre-fix the sub-record fell to the CELL walker's catch-all, so the
+    /// zone map was populated but un-linkable to any cell.
+    pub encounter_zone_form: Option<u32>,
     /// Region list (XCLR, FormID array — each entry references a REGN
     /// record). Empty when the cell isn't tagged with any regions.
     /// Regions drive ambient SFX, weather overrides, and encounter

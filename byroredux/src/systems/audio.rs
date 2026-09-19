@@ -52,10 +52,15 @@ fn strongest_ready_ripple(
 ///   - `AudioWorld` resource isn't registered (engine started without
 ///     audio wiring).
 ///
-/// Runs in `Stage::Late` alongside `audio_system` — registered earlier
-/// in `boot/schedule/mod.rs::build_scheduler` (systems within a stage run in
-/// registration order) so the send level is in place before any new
-/// spatial track gets constructed this frame.
+/// Runs in `Stage::Late` as a **parallel** registration, while
+/// `audio_system` is a `Stage::Late` **exclusive** — `Scheduler::run`
+/// completes a stage's entire parallel batch before starting its exclusive
+/// list, which — not registration order — is what guarantees the send
+/// level is in place before any new spatial track gets constructed this
+/// frame. (#4146 — the earlier version of this comment attributed the
+/// ordering to registration order and a since-split `boot.rs` path; the
+/// parallel-vs-exclusive mechanism is structural and path-independent, and
+/// registration order is only ever an exclusive-vs-exclusive rule.)
 pub(crate) fn reverb_zone_system(world: &World, _dt: f32) {
     /// Subtle interior wet — matches `set_reverb_send_db` doc.
     /// `-6 dB` is more pronounced; `-12 dB` is the audit's call.

@@ -1,12 +1,19 @@
-//! Oblivion MenuXml HUD — the M48.4 legacy-UI track's engine side.
+//! MenuXml HUD — the M48.4/M48.5 legacy-UI track's engine side.
 //!
 //! [`byroredux_menuxml`] parses and renders Bethesda's XML menus; this
-//! module is the `byroredux` half: resolves the two archives a HUD needs
-//! (`Oblivion - Misc.bsa` for menu XML + fonts, a texture BSA for menu
-//! art), registers the overlay texture through the same
-//! [`crate::asset_provider::archive::Archive`] path `--menu` uses, and
-//! drives the per-frame trait overrides (bar fractions, compass heading)
-//! from engine state.
+//! module is the `byroredux` half, parameterized by [`HudGameProfile`]:
+//!
+//! * **Oblivion** — the XML authors the bar/compass art; the driver only
+//!   pushes trait overrides (`hudmain_*` tile vocabulary).
+//! * **FO3/FNV** — `hud_main_menu.xml` ships empty container rects; the
+//!   source engine assembled meters and the compass from
+//!   `menus\prefabs\meter.xml` + `hudtemplates.xml` prototypes at
+//!   runtime, so the launch path mirrors that assembly (graft meters
+//!   under `HitPoints`/`ActionPoints`, instantiate the compass
+//!   template) before driving `_Value` / `cropx`.
+//!
+//! Shared machinery — archive resolution, triple-buffered overlay
+//! textures, change-signature + cadence throttling — is game-agnostic.
 //!
 //! Console control (`hud.on` / `hud.off` / `hud.values` / `hud.heading`)
 //! flows through the [`HudControl`] World resource — commands can only
@@ -16,31 +23,161 @@
 use byroredux_core::ecs::components::ActorValues;
 use byroredux_core::ecs::World;
 use byroredux_menuxml::menu::MenuAssets;
+use byroredux_menuxml::profile::{FontArchive, MenuProfile};
+use byroredux_menuxml::tex::Rgba8;
 use byroredux_menuxml::{MenuRenderer, ScreenTraits};
 
 use crate::asset_provider::Archive;
 
-/// Oblivion.ini `[Fonts]` order — the `<font>` trait's 1-based table.
-const FONT_PATHS: [&str; 5] = [
-    "fonts\\Kingthings_Regular.fnt",
-    "fonts\\Kingthings_Shadowed.fnt",
-    "fonts\\Tahoma_Bold_Small.fnt",
-    "fonts\\Daedric_Font.fnt",
-    "fonts\\Handwritten.fnt",
-];
-
 /// Skyrim-profile AVIF keys the engine already stamps (`0x3E8` Health,
 /// `0x3E9` Magicka, `0x3EA` Stamina). Oblivion's index-based actor
-/// values are not yet stamped onto the player capsule, so the HUD reads
-/// these opportunistically and falls back to full bars.
-const AV_HEALTH: u32 = 0x3E8;
-const AV_MAGICKA: u32 = 0x3E9;
-const AV_STAMINA: u32 = 0x3EA;
+/// values are not yet stamped onto the player capsule, so the Oblivion
+/// HUD reads these opportunistically and falls back to full bars.
+///
+/// FO3/FNV use their own AVIF keys from
+/// `crates/core/src/character/fallout.rs` (`Health 0x2C9`,
+/// `ActionPoints 0x2D0`).
+#[derive(Clone, Copy)]
+pub(crate) struct HudBar {
+    /// Console/debug label (`hud.status`, `hud.values` usage).
+    label: &'static str,
+    /// Global-space AVIF key the fraction derives from. `None` — pin or
+    /// full bar; no actor-value source wired yet.
+    av: Option<u32>,
+}
 
-/// The two archives a HUD render needs.
+/// How a game's HUD content is assembled from its corpus.
+#[derive(Clone, Copy)]
+pub(crate) enum HudStyle {
+    /// The XML authors the art (Oblivion); the driver only pushes trait
+    /// values. `bars`/`compass`/`mode` are `(tile, trait)` override
+    /// pairs, per the vanilla XML comments' HUD contract.
+    Authored {
+        bars: [(&'static str, &'static str); 3],
+        compass: (&'static str, &'static str),
+        mode: (&'static str, &'static str),
+    },
+    /// The XML ships container rects (FO3/FNV); the driver grafts the
+    /// ops-driven `meter.xml` prefab under each container and
+    /// instantiates the compass template at launch, then drives
+    /// `_Value` per bar and scrolls the strip via `cropx`.
+    Assembled {
+        /// Container rect names: bar 0 (HP), bar 1 (AP).
+        containers: [&'static str; 2],
+        meter_prefab: &'static str,
+        compass_template: &'static str,
+        /// Resolved archive path of the compass strip texture (its
+        /// natural width maps the 360° heading to texels).
+        compass_strip: &'static str,
+    },
+}
+
+/// Everything game-specific about driving a MenuXml HUD.
+#[derive(Clone, Copy)]
+pub(crate) struct HudGameProfile {
+    pub(crate) label: &'static str,
+    /// The BSA carrying the menu XML corpus (+ Oblivion's fonts).
+    misc_bsa: &'static str,
+    /// The texture archive menu art defaults to (overridable).
+    default_textures_bsa: &'static str,
+    menu_path: &'static str,
+    menu: MenuProfile,
+    style: HudStyle,
+    bars: &'static [HudBar],
+}
+
+static OBLIVION_BARS: &[HudBar] = &[
+    HudBar {
+        label: "health",
+        av: Some(0x3E8),
+    },
+    HudBar {
+        label: "magicka",
+        av: Some(0x3E9),
+    },
+    HudBar {
+        label: "fatigue",
+        av: Some(0x3EA),
+    },
+];
+
+static FALLOUT_BARS: &[HudBar] = &[
+    HudBar {
+        label: "hp",
+        av: Some(0x2C9),
+    },
+    HudBar {
+        label: "ap",
+        av: Some(0x2D0),
+    },
+    // No third bar: FO3's XP meter is a level-up popup (authored
+    // `visible &false;`), not a persistent bar.
+];
+
+impl HudGameProfile {
+    pub(crate) fn oblivion() -> Self {
+        Self {
+            label: "Oblivion",
+            misc_bsa: "Oblivion - Misc.bsa",
+            default_textures_bsa: "Oblivion - Textures - Compressed.bsa",
+            menu_path: "menus\\main\\hud_main_menu.xml",
+            menu: MenuProfile::oblivion(),
+            style: HudStyle::Authored {
+                bars: [
+                    ("hudmain_health_full", "user0"),
+                    ("hudmain_magic_full", "user0"),
+                    ("hudmain_fatigue_full", "user0"),
+                ],
+                compass: ("hudmain_compass_window", "user0"),
+                mode: ("HUDMainMenu", "user3"),
+            },
+            bars: OBLIVION_BARS,
+        }
+    }
+
+    pub(crate) fn fallout3() -> Self {
+        Self::fallout("Fallout 3", MenuProfile::fallout3())
+    }
+
+    pub(crate) fn fallout_nv() -> Self {
+        Self::fallout("Fallout: New Vegas", MenuProfile::fallout_nv())
+    }
+
+    fn fallout(label: &'static str, menu: MenuProfile) -> Self {
+        Self {
+            label,
+            misc_bsa: "Fallout - Misc.bsa",
+            // FNV keeps its interface art in Textures2 (FO3: Textures);
+            // both default via this field and can be overridden.
+            default_textures_bsa: if label == "Fallout 3" {
+                "Fallout - Textures.bsa"
+            } else {
+                "Fallout - Textures2.bsa"
+            },
+            menu_path: "menus\\main\\hud_main_menu.xml",
+            menu,
+            style: HudStyle::Assembled {
+                containers: ["HitPoints", "ActionPoints"],
+                meter_prefab: "menus\\prefabs\\meter.xml",
+                compass_template: "template_compass_window",
+                compass_strip: "textures\\interface\\hud\\glow_hud_comp_direction_strip.dds",
+            },
+            bars: FALLOUT_BARS,
+        }
+    }
+
+    /// The driven-bar count (2 Fallout, 3 Oblivion).
+    fn bar_count(&self) -> usize {
+        self.bars.len()
+    }
+}
+
+/// The two archives a HUD render needs, plus the profile that says
+/// which one carries fonts (Oblivion: Misc; FO3/FNV: the texture BSA).
 pub(crate) struct HudAssets {
     misc: Archive,
     textures: Archive,
+    profile: HudGameProfile,
 }
 
 impl MenuAssets for HudAssets {
@@ -51,23 +188,38 @@ impl MenuAssets for HudAssets {
         self.textures.extract(path).ok()
     }
     fn font(&self, index: u8) -> Option<Vec<u8>> {
-        self.misc.extract(FONT_PATHS.get(index as usize - 1)?).ok()
+        let path = self.profile.menu.font_paths.get(index as usize - 1)?;
+        match self.profile.menu.font_archive {
+            FontArchive::Misc => self.misc.extract(path).ok(),
+            FontArchive::Textures => self.textures.extract(path).ok(),
+        }
     }
     fn font_texture(&self, path: &str) -> Option<Vec<u8>> {
-        self.misc.extract(path).ok()
+        match self.profile.menu.font_archive {
+            FontArchive::Misc => self.misc.extract(path).ok(),
+            FontArchive::Textures => self
+                .textures
+                .extract(path)
+                .or_else(|_| self.misc.extract(path))
+                .ok(),
+        }
     }
 }
 
-/// Console-facing HUD control. Inserted at launch; `hud.*` commands and
-/// the frame-loop driver both go through it.
+/// Console-facing HUD control. Inserted at launch with the game
+/// profile's bar labels; `hud.*` commands and the frame-loop driver both
+/// go through it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HudControl {
     pub visible: bool,
-    /// Pinned bar fractions (0..1). `None` = derive from actor values /
-    /// default full — set by `hud.values`, cleared by `hud.values auto`.
-    pub health: Option<f32>,
-    pub magicka: Option<f32>,
-    pub fatigue: Option<f32>,
+    /// Pinned bar fractions (0..1), indexed like the profile's bar
+    /// table. `None` = derive from actor values / default full — set by
+    /// `hud.values`, cleared by `hud.values auto`.
+    pub bars: [Option<f32>; 3],
+    /// How many bars this game's HUD drives (3 Oblivion, 2 FO3/FNV)
+    /// and their labels — sizes `hud.values` and labels `hud.status`.
+    pub bar_count: u8,
+    pub bar_labels: [&'static str; 3],
     /// Pinned compass heading in degrees. `None` = follow the camera.
     pub heading: Option<f32>,
 }
@@ -78,9 +230,9 @@ impl Default for HudControl {
     fn default() -> Self {
         Self {
             visible: true,
-            health: None,
-            magicka: None,
-            fatigue: None,
+            bars: [None; 3],
+            bar_count: 3,
+            bar_labels: ["health", "magicka", "fatigue"],
             heading: None,
         }
     }
@@ -89,9 +241,13 @@ impl Default for HudControl {
 /// The live HUD owned by the frame loop (see module docs for why it is
 /// not a World resource: the driver runs beside the render tick, and
 /// `HudControl` is the command surface).
-pub(crate) struct OblivionHud {
+pub(crate) struct MenuXmlHud {
     renderer: MenuRenderer,
     assets: HudAssets,
+    profile: HudGameProfile,
+    /// Compass strip texels per degree of heading (0 = strip unknown —
+    /// the compass stays at cropx 0 rather than guessing).
+    px_per_degree: f32,
     /// Triple-buffered overlay textures, cycled per *upload*. In-flight
     /// frames (two, per the renderer's frames-in-flight) may sample the
     /// current and previous buffers, so uploads always target the buffer
@@ -124,32 +280,55 @@ pub(crate) struct OblivionHud {
 pub(crate) const HUD_REFRESH_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(33);
 
-/// Resolve `--hud` into archive paths.
+/// Resolve `--hud` into archives + a game profile.
 ///
-/// Requires the Misc BSA (menus + fonts); the texture BSA defaults to the
-/// sibling `Oblivion - Textures - Compressed.bsa` and can be overridden
-/// with `--hud-textures <path>`. Discovery walks the `--esm` directory so
-/// the smoke fixtures only add one flag.
-fn hud_archive_args(args: &[String]) -> Result<Option<(String, String)>, String> {
-    let Some(hud_index) = args.iter().position(|arg| arg == "--hud") else {
+/// The game is discovered from the corpus itself: whichever vanilla
+/// Misc BSA sits beside `--esm` (FO3 vs FNV split by the master's
+/// name). Requires the Misc BSA (menus + Oblivion fonts); the texture
+/// BSA defaults per profile and can be overridden with
+/// `--hud-textures <path>`.
+fn hud_archive_args(args: &[String]) -> Result<Option<(String, String, HudGameProfile)>, String> {
+    if !args.iter().any(|arg| arg == "--hud") {
         return Ok(None);
-    };
-    let esm_dir = args
+    }
+    let esm = args
         .iter()
         .position(|a| a == "--esm")
         .and_then(|i| args.get(i + 1))
         .filter(|v| !v.starts_with("--"))
-        .map(std::path::PathBuf::from)
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .cloned()
         .ok_or_else(|| "--hud requires --esm <path> (archive discovery root)".to_string())?;
+    let esm_dir = std::path::PathBuf::from(&esm)
+        .parent()
+        .map(|d| d.to_path_buf())
+        .ok_or_else(|| "--hud: cannot resolve the --esm directory".to_string())?;
 
-    let misc = esm_dir.join("Oblivion - Misc.bsa");
-    if !misc.is_file() {
-        return Err(format!(
-            "--hud: '{}' not found (vanilla 'Oblivion - Misc.bsa' carries the menu XMLs and fonts)",
-            misc.display()
-        ));
-    }
+    let candidates = [
+        HudGameProfile::oblivion(),
+        {
+            // FO3 vs FNV share `Fallout - Misc.bsa`; the master's stem
+            // decides the font table (FNV adds a ninth slot).
+            if esm.to_lowercase().contains("falloutnv") {
+                HudGameProfile::fallout_nv()
+            } else {
+                HudGameProfile::fallout3()
+            }
+        }
+    ];
+    let profile = candidates
+        .iter()
+        .find(|p| esm_dir.join(p.misc_bsa).is_file())
+        .ok_or_else(|| {
+            format!(
+                "--hud: no vanilla menu corpus beside '{esm}' (looked for {})",
+                candidates
+                    .iter()
+                    .map(|p| p.misc_bsa)
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            )
+        })?;
+
     let textures = if let Some(t_idx) = args.iter().position(|a| a == "--hud-textures") {
         let path = args
             .get(t_idx + 1)
@@ -157,7 +336,7 @@ fn hud_archive_args(args: &[String]) -> Result<Option<(String, String)>, String>
             .ok_or_else(|| "--hud-textures requires a BSA path".to_string())?;
         std::path::PathBuf::from(path)
     } else {
-        let candidate = esm_dir.join("Oblivion - Textures - Compressed.bsa");
+        let candidate = esm_dir.join(profile.default_textures_bsa);
         if !candidate.is_file() {
             return Err(format!(
                 "--hud: no texture archive — pass --hud-textures <path> (no '{}' beside the ESM)",
@@ -166,32 +345,36 @@ fn hud_archive_args(args: &[String]) -> Result<Option<(String, String)>, String>
         }
         candidate
     };
-    let _ = hud_index;
     Ok(Some((
-        misc.to_string_lossy().into_owned(),
+        esm_dir.join(profile.misc_bsa).to_string_lossy().into_owned(),
         textures.to_string_lossy().into_owned(),
+        *profile,
     )))
 }
 
 /// Launch the HUD when `--hud` is present. Mirrors `launch_archive_menu`:
-/// opens the archives, registers the transparent overlay texture, and
-/// logs the `hud: loaded` line a smoke gate can grep.
+/// opens the archives, assembles the per-game HUD content, registers the
+/// transparent overlay textures, and logs the `hud: loaded` line a smoke
+/// gate can grep.
 pub(crate) fn launch_hud(
     ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
     world: &mut World,
     args: &[String],
-) -> Option<OblivionHud> {
-    let pair = match hud_archive_args(args) {
-        Ok(Some(pair)) => pair,
+) -> Option<MenuXmlHud> {
+    let (misc_path, textures_path, profile) = match hud_archive_args(args) {
+        Ok(Some(triple)) => triple,
         Ok(None) => return None,
         Err(error) => {
             log::error!("{error}");
             return None;
         }
     };
-    let (misc_path, textures_path) = &pair;
-    let assets = match (Archive::open(misc_path), Archive::open(textures_path)) {
-        (Ok(misc), Ok(textures)) => HudAssets { misc, textures },
+    let assets = match (Archive::open(&misc_path), Archive::open(&textures_path)) {
+        (Ok(misc), Ok(textures)) => HudAssets {
+            misc,
+            textures,
+            profile,
+        },
         (Err(e), _) | (_, Err(e)) => {
             log::error!("hud: archive open failed: {e}");
             return None;
@@ -199,12 +382,65 @@ pub(crate) fn launch_hud(
     };
 
     let (w, h) = ctx.swapchain_extent();
-    match MenuRenderer::load(
-        &assets,
-        "menus\\main\\hud_main_menu.xml",
-        ScreenTraits::new(w as f32, h as f32),
-    ) {
-        Ok(renderer) => {
+    let screen = ScreenTraits::new(w as f32, h as f32);
+    match MenuRenderer::load_with_profile(&assets, profile.menu_path, screen, profile.menu) {
+        Ok(mut renderer) => {
+            // The Fallout assembly the source engine performed in C++:
+            // meters grafted under the named containers, compass
+            // instantiated from the hudtemplates prototype. Engine-side
+            // placement anchors the meters to the bottom screen corners
+            // (the authored container rects carry no x/y).
+            let mut px_per_degree = 0.0f32;
+            if let HudStyle::Assembled {
+                containers,
+                meter_prefab,
+                compass_template,
+                compass_strip,
+            } = profile.style
+            {
+                let layout = [
+                    ("hp_meter", 30.0),
+                    ("ap_meter", w as f32 - 330.0),
+                ];
+                for (i, (name, x)) in layout.iter().enumerate() {
+                    match renderer.graft_fragment(&assets, meter_prefab, containers[i], name) {
+                        Ok(_) => {
+                            renderer.set_override(name, "x", *x);
+                            renderer.set_override(name, "y", h as f32 - 100.0);
+                            renderer.set_override(name, "width", 300.0);
+                            renderer.set_override(name, "visible", 2.0);
+                            renderer.set_override(name, "alpha", 255.0);
+                        }
+                        Err(error) => {
+                            log::error!("hud: {} meter graft failed: {error}", profile.label);
+                            return None;
+                        }
+                    }
+                }
+                match renderer.instantiate_template(compass_template, "HUDMainMenu", "hud_compass")
+                {
+                    Ok(_) => {
+                        // Tile mode makes the strip wrap seamlessly as
+                        // cropx scrolls past the texture edge.
+                        renderer.set_override("hud_compass", "tile", 2.0);
+                        renderer.set_override("hud_compass", "visible", 2.0);
+                        renderer.set_override("hud_compass", "alpha", 255.0);
+                    }
+                    Err(error) => {
+                        log::error!("hud: compass instantiation failed: {error}");
+                        return None;
+                    }
+                }
+                px_per_degree = assets
+                    .texture(compass_strip)
+                    .and_then(|b| Rgba8::decode_dds(&b))
+                    .map(|strip| strip.width as f32 / 360.0)
+                    .unwrap_or(0.0);
+                if px_per_degree == 0.0 {
+                    log::warn!("hud: compass strip '{compass_strip}' unavailable — compass fixed at north");
+                }
+            }
+
             // Same transparent initial upload the `--menu` route uses, so
             // the composite quad exists before the first rasterized frame.
             // (The registration closure below rebuilds its own upload ctx —
@@ -223,16 +459,28 @@ pub(crate) fn launch_hud(
             match (register(ctx), register(ctx), register(ctx)) {
                 (Ok(h0), Ok(h1), Ok(h2)) => {
                     log::info!(
-                        "hud: loaded menus\\main\\hud_main_menu.xml misc='{}' textures='{}' \
-                         textures={h0}/{h1}/{h2} ({w}x{h}, {} NIF tiles skipped)",
+                        "hud: loaded {} misc='{}' textures='{}' textures={h0}/{h1}/{h2} \
+                         ({w}x{h}, {} NIF tiles skipped)",
+                        profile.menu_path,
                         misc_path,
                         textures_path,
                         renderer.nif_tiles
                     );
-                    world.insert_resource(HudControl::default());
-                    Some(OblivionHud {
+                    let mut control = HudControl {
+                        bar_count: profile.bar_count() as u8,
+                        ..HudControl::default()
+                    };
+                    control.bar_labels = [
+                        profile.bars[0].label,
+                        profile.bars[1].label,
+                        profile.bars.get(2).map(|b| b.label).unwrap_or("xp"),
+                    ];
+                    world.insert_resource(control);
+                    Some(MenuXmlHud {
                         renderer,
                         assets,
+                        profile,
+                        px_per_degree,
                         texture_handles: [h0, h1, h2],
                         current: 0,
                         width: w,
@@ -254,37 +502,33 @@ pub(crate) fn launch_hud(
     }
 }
 
-impl OblivionHud {
+impl MenuXmlHud {
     /// Compute this frame's trait values and rasterize.
     ///
-    /// `camera_forward` drives the compass heading (Oblivion's north is
-    /// Gamebryo +Y, which the Z-up→Y-up import maps to engine −Z; east
-    /// stays +X — so heading = `atan2(f.x, -f.z)` degrees, 0 = north).
-    /// Compute this frame's trait values and rasterize. `None` means
+    /// `camera_forward` drives the compass heading (the pre-Skyrim
+    /// games share Oblivion's convention: north is Gamebryo +Y, which
+    /// the Z-up→Y-up import maps to engine −Z; east stays +X — so
+    /// heading = `atan2(f.x, -f.z)` degrees, 0 = north). `None` means
     /// "unchanged since the last uploaded frame" — keep compositing the
     /// existing texture (mirrors `UiFrame::Unchanged`).
-    ///
-    /// `camera_forward` drives the compass heading (Oblivion's north is
-    /// Gamebryo +Y, which the Z-up→Y-up import maps to engine −Z; east
-    /// stays +X — so heading = `atan2(f.x, -f.z)` degrees, 0 = north).
     pub fn render(
         &mut self,
         world: &World,
         camera_forward: [f32; 3],
         control: &HudControl,
     ) -> Option<&[u8]> {
-        let (health, magicka, fatigue) = bar_fractions(world, control);
+        let fractions = bar_fractions(world, control, &self.profile);
         let heading = control.heading.unwrap_or_else(|| {
             f32::atan2(camera_forward[0], -camera_forward[2])
                 .to_degrees()
                 .rem_euclid(360.0)
         });
-        // Heading quantized to 0.1° — the compass face is 2048 px over
-        // 360° (~0.18°/px), so finer deltas are sub-pixel.
+        // Heading quantized to 0.1° — sub-pixel for every game's compass
+        // face (Oblivion's is 2048 px/360° ≈ 0.18°/px).
         let hash = hash_signature((
-            health.to_bits(),
-            magicka.to_bits(),
-            fatigue.to_bits(),
+            fractions[0].to_bits(),
+            fractions[1].to_bits(),
+            fractions[2].to_bits(),
             (heading * 10.0) as i32,
             u8::from(control.visible),
         ));
@@ -300,20 +544,39 @@ impl OblivionHud {
         self.last_signature = hash;
         self.last_upload = std::time::Instant::now();
         log::debug!(
-            "hud: render h={health:.2} m={magicka:.2} f={fatigue:.2} heading={heading:.1} \
-             visible={} -> buffer {}",
+            "hud: render bars={} heading={heading:.1} visible={} -> buffer {}",
+            fractions
+                .iter()
+                .take(self.profile.bar_count())
+                .map(|f| format!("{f:.2}"))
+                .collect::<Vec<_>>()
+                .join("/"),
             u8::from(control.visible),
             (self.current + 1) % self.texture_handles.len()
         );
 
-        self.renderer.set_override("HUDMainMenu", "user3", 1.0);        self.renderer
-            .set_override("hudmain_health_full", "user0", health);
-        self.renderer
-            .set_override("hudmain_magic_full", "user0", magicka);
-        self.renderer
-            .set_override("hudmain_fatigue_full", "user0", fatigue);
-        self.renderer
-            .set_override("hudmain_compass_window", "user0", heading);
+        match self.profile.style {
+            HudStyle::Authored {
+                bars,
+                compass,
+                mode,
+            } => {
+                self.renderer.set_override(mode.0, mode.1, 1.0);
+                for ((tile, trait_name), fraction) in bars.iter().zip(fractions) {
+                    self.renderer.set_override(tile, trait_name, fraction);
+                }
+                self.renderer
+                    .set_override(compass.0, compass.1, heading);
+            }
+            HudStyle::Assembled { .. } => {
+                self.renderer.set_override("hp_meter", "_Value", fractions[0]);
+                self.renderer.set_override("ap_meter", "_Value", fractions[1]);
+                if self.px_per_degree > 0.0 {
+                    self.renderer
+                        .set_override("hud_compass", "cropx", heading * self.px_per_degree);
+                }
+            }
+        }
         let pixels = self.renderer.render_frame(&self.assets);
         // Debug: BYRO_HUD_DUMP=1 writes each rendered frame's raw RGBA so
         // engine-side output can be diffed against the crate renderer.
@@ -366,45 +629,49 @@ impl OblivionHud {
 }
 
 /// Bar fractions for the HUD: pinned debug values win, then any stamped
-/// Skyrim-profile actor values on an actor entity, else full bars.
+/// actor values on an actor entity, else full bars.
 ///
 /// Oblivion NPCs do not yet carry AVIF-keyed `ActorValues` (the
 /// index-keyed Oblivion actor-value profile is future work), so today
-/// this reads the Skyrim-keyed values that *are* stamped on actors in
-/// the Skyrim flow and defaults to full elsewhere — the HUD renders
-/// correct art either way, and `hud.values` drives it deterministically
-/// for smokes.
-fn bar_fractions(world: &World, control: &HudControl) -> (f32, f32, f32) {
-    let fallback = (control.health, control.magicka, control.fatigue);
-    let fraction = |av: u32, pinned: Option<f32>| -> f32 {
-        pinned.map(|v| v.clamp(0.0, 1.0)).unwrap_or_else(|| {
-            let mut found = None;
-            if let Some(query) = world.query::<ActorValues>() {
-                for (_, values) in query.iter() {
-                    if let Some(av) = values.get(av) {
-                        found = Some(*av);
-                        break;
-                    }
+/// the Oblivion profile reads the Skyrim-keyed values that *are*
+/// stamped in the Skyrim flow; FO3/FNV read their own AVIF keys.
+/// `hud.values` drives everything deterministically for smokes either
+/// way.
+fn bar_fractions(world: &World, control: &HudControl, profile: &HudGameProfile) -> [f32; 3] {
+    let mut out = [1.0f32; 3];
+    for (slot, bar) in profile.bars.iter().enumerate() {
+        out[slot] = fraction(world, bar.av, control.bars[slot]);
+    }
+    out
+}
+
+fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f32 {
+    pinned.map(|v| v.clamp(0.0, 1.0)).unwrap_or_else(|| {
+        let av = match av {
+            Some(av) => av,
+            None => return 1.0,
+        };
+        let mut found = None;
+        if let Some(query) = world.query::<ActorValues>() {
+            for (_, values) in query.iter() {
+                if let Some(av) = values.get(av) {
+                    found = Some(*av);
+                    break;
                 }
             }
-            match found {
-                Some(av) => {
-                    let max = av.base + av.permanent_mod + av.temporary_mod;
-                    if max > 0.0 {
-                        (av.current() / max).clamp(0.0, 1.0)
-                    } else {
-                        1.0
-                    }
+        }
+        match found {
+            Some(av) => {
+                let max = av.base + av.permanent_mod + av.temporary_mod;
+                if max > 0.0 {
+                    (av.current() / max).clamp(0.0, 1.0)
+                } else {
+                    1.0
                 }
-                None => 1.0,
             }
-        })
-    };
-    (
-        fraction(AV_HEALTH, fallback.0),
-        fraction(AV_MAGICKA, fallback.1),
-        fraction(AV_STAMINA, fallback.2),
-    )
+            None => 1.0,
+        }
+    })
 }
 
 /// FxHash-style combiner for the frame signature — cheap and stable

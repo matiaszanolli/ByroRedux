@@ -768,7 +768,20 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     // #4070 — DATA @8. An ITEM/WEAP cross-reference, the
                     // same kind of embedded FormID as light_form_id @24
                     // below; #3715 remapped only that one.
-                    out.associated_item = remap_fid(header.associated_item, remap);
+                    // #4172 — the documented "no item" sentinel
+                    // (0xFFFFFFFF) must bypass the remap: its mod_index
+                    // byte is 255, which on any multi-master load falls
+                    // into FormIdRemap::remap's suspicious-out-of-range
+                    // warn arm, logging one false warning per no-item MGEF
+                    // (common, well-documented authored data) and drowning
+                    // the genuinely-malformed case that branch exists to
+                    // catch. The value round-trips either way; the guard
+                    // keeps the log honest.
+                    out.associated_item = if header.associated_item == 0xFFFF_FFFF {
+                        0xFFFF_FFFF
+                    } else {
+                        remap_fid(header.associated_item, remap)
+                    };
                     out.magic_school = header.magic_school;
                     out.resistance_av = header.resistance_av;
                     // #3715 — embedded light-effect FormID.
@@ -1353,6 +1366,36 @@ mod tests {
         assert_eq!(
             m.effect_shader_id, 0x0000_2222,
             "a master-slot effect_shader_id (mod_index 0) already sits at slot 0"
+        );
+    }
+
+    /// #4172 — the documented "no associated item" sentinel (0xFFFFFFFF)
+    /// must bypass the remap: its mod_index byte is 255, which on a
+    /// multi-master remap lands in the suspicious-out-of-range warn arm.
+    /// The old behavior round-tripped the value correctly but logged one
+    /// false warning per no-item MGEF. Pin the sentinel round-trip under
+    /// the same non-identity remap the remap pin above uses.
+    #[test]
+    fn parse_mgef_associated_item_sentinel_bypasses_the_remap() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // effect_flags
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // base_cost
+        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // associated_item sentinel
+        data.extend_from_slice(&0i32.to_le_bytes()); // magic_school
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // resistance_av
+        data.extend_from_slice(&0u16.to_le_bytes()); // counter_count
+        data.extend_from_slice(&0u16.to_le_bytes()); // pad
+        data.extend_from_slice(&0u32.to_le_bytes()); // light_form_id
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // projectile_speed
+        data.extend_from_slice(&0u32.to_le_bytes()); // effect_shader_id
+        assert_eq!(data.len(), 36);
+        let subs = vec![sub(b"DATA", &data)];
+        let m = parse_mgef(0x6002, &subs, &remap);
+        assert_eq!(
+            m.associated_item, 0xFFFF_FFFF,
+            "the no-item sentinel must round-trip verbatim, never enter the \
+             remap's out-of-range warn arm"
         );
     }
 

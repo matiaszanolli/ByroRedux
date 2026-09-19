@@ -828,3 +828,73 @@ impl TileSeed {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Runtime tile grafting (menu API)
+// ---------------------------------------------------------------------------
+
+/// Stage copies of `tiles[tile]`'s subtree into `staged`, remapping the
+/// root's parent to `parent` and optionally renaming it. Indices handed
+/// out are positions in the combined arena (`base` + staged offset), so
+/// the staged Vec can be appended afterwards.
+fn stage_subtree(
+    tiles: &[Tile],
+    base: usize,
+    tile: usize,
+    parent: usize,
+    rename: Option<&str>,
+    staged: &mut Vec<Tile>,
+) -> usize {
+    let idx = base + staged.len();
+    let mut clone = tiles[tile].clone();
+    clone.parent = Some(parent);
+    clone.children = Vec::new();
+    if let Some(name) = rename {
+        clone.name = Some(name.to_string());
+    }
+    staged.push(clone);
+    for &child in &tiles[tile].children {
+        let child_idx = stage_subtree(tiles, base, child, idx, None, staged);
+        staged[idx - base].children.push(child_idx);
+    }
+    idx
+}
+
+impl Document {
+    /// Clone `tile` and its subtree as a new child of `parent` (same
+    /// document). The runtime menu API the source engine used to
+    /// assemble HUD content: `<template>` prototypes never draw
+    /// themselves — the engine clones their content under named
+    /// container tiles.
+    pub fn deep_clone(&mut self, tile: usize, parent: usize, rename: Option<&str>) -> usize {
+        let base = self.tiles.len();
+        let mut staged = Vec::new();
+        let idx = stage_subtree(&self.tiles, base, tile, parent, rename, &mut staged);
+        self.finish_graft(staged, idx, parent)
+    }
+
+    /// Graft `src[tile]`'s subtree (a different document — a parsed
+    /// prefab fragment) as a new child of `parent` in this document.
+    pub fn graft_subtree(&mut self, src: &Document, tile: usize, parent: usize, rename: Option<&str>) -> usize {
+        let base = self.tiles.len();
+        let mut staged = Vec::new();
+        let idx = stage_subtree(&src.tiles, base, tile, parent, rename, &mut staged);
+        self.finish_graft(staged, idx, parent)
+    }
+
+    fn finish_graft(&mut self, mut staged: Vec<Tile>, idx: usize, parent: usize) -> usize {
+        self.tiles.append(&mut staged);
+        self.tiles[parent].children.push(idx);
+        // Register every grafted tile's name (first-wins, like parsing) —
+        // the menu API keeps clones addressable by name.
+        for i in idx..self.tiles.len() {
+            if let Some(name) = &self.tiles[i].name {
+                self.name_index.entry(name.to_lowercase()).or_insert(i);
+            }
+            if let Some(id) = self.tiles[i].id {
+                self.id_index.entry(id).or_insert(i);
+            }
+        }
+        idx
+    }
+}

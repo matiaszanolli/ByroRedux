@@ -224,6 +224,9 @@ fn parse_cell_group_inner(
                 let mut music_type_enum: Option<u8> = None;
                 let mut climate_override: Option<u32> = None;
                 let mut location_form: Option<u32> = None;
+                // #4173 — XEZN encounter-zone FormID (references an ECZN
+                // record; spawn scaling / faction ownership per cell).
+                let mut encounter_zone_form: Option<u32> = None;
                 let mut regions: Vec<u32> = Vec::new();
                 // SK-D6-02 / #566 — LTMP lighting-template FormID. Skyrim+
                 // cells that omit XCLL fall back to this LGTM reference;
@@ -386,6 +389,10 @@ fn parse_cell_group_inner(
                         // it for "outside through window" effects).
                         b"XCCM" => climate_override = read_form_id(reader, &sub.data),
                         b"XLCN" => location_form = read_form_id(reader, &sub.data),
+                        // #4173 — XEZN encounter zone (ECZN FormID), the
+                        // CELL-side half of the spawn-scaling pair; the
+                        // ECZN records themselves were already parsed.
+                        b"XEZN" => encounter_zone_form = read_form_id(reader, &sub.data),
                         // XCLR is a packed FormID array — region tags
                         // referenced by REGN records. Variable length;
                         // empty list is normal.
@@ -667,6 +674,7 @@ fn parse_cell_group_inner(
                             music_type_enum,
                             climate_override,
                             location_form,
+                            encounter_zone_form,
                             regions: regions.clone(),
                             lighting_template_form,
                             ownership,

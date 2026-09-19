@@ -18,6 +18,7 @@ use crate::eval::{EvalState, Overrides, ScreenTraits};
 use crate::font::Font;
 use crate::layout::{build_draw_list, DrawItem};
 use crate::parse::{parse_document, Document, MenuFileSource, Scalar};
+use crate::profile::MenuProfile;
 use crate::raster::Framebuffer;
 use crate::tex::Rgba8;
 
@@ -76,6 +77,8 @@ pub enum MenuError {
     MissingMenu(String),
     #[error("menu XML '{0}' is not valid UTF-8")]
     BadUtf8(String),
+    #[error("tile '{0}' not found")]
+    MissingTile(String),
     #[error("font {0} unavailable: {1}")]
     FontUnavailable(u8, String),
     #[error("strings.xml missing — strings() selections read as 0")]
@@ -111,12 +114,25 @@ impl MenuFileSource for AssetsAsFileSource<'_> {
 }
 
 impl MenuRenderer {
-    /// Load `menu_path` (e.g. `menus\main\hud_main_menu.xml`) with
-    /// `menus\strings.xml` and the font table from `assets`.
+    /// Load `menu_path` (e.g. `menus\main\hud_main_menu.xml`) with the
+    /// Oblivion corpus profile. See [`load_with_profile`].
     pub fn load(
         assets: &dyn MenuAssets,
         menu_path: &str,
         screen: ScreenTraits,
+    ) -> Result<Self, MenuError> {
+        Self::load_with_profile(assets, menu_path, screen, MenuProfile::oblivion())
+    }
+
+    /// Load with an explicit per-game corpus profile: the font table
+    /// (slot count from `profile.font_paths`; the paths themselves are
+    /// the [`MenuAssets`] implementor's concern) and the strings
+    /// document feeding `strings()` selections.
+    pub fn load_with_profile(
+        assets: &dyn MenuAssets,
+        menu_path: &str,
+        screen: ScreenTraits,
+        profile: MenuProfile,
     ) -> Result<Self, MenuError> {
         let xml = assets
             .menu_xml(menu_path)
@@ -124,25 +140,30 @@ impl MenuRenderer {
         let text = String::from_utf8(xml)
             .map_err(|_| MenuError::BadUtf8(menu_path.to_string()))?;
 
-        let strings = assets.menu_xml("menus\\strings.xml").and_then(|b| {
-            String::from_utf8(b).ok().map(|s| {
-                let mut src = AssetsAsFileSource { assets };
-                let doc = parse_document(&s, &mut src);
-                let mut map = HashMap::new();
-                // strings.xml is a flat `<rect name="Strings">` of
-                // `_name` text traits.
-                for (k, v) in &doc.tiles[0].traits {
-                    if let crate::parse::RawTrait::Str(s) = v {
-                        map.insert(k.clone(), Scalar::Str(s.clone()));
-                    } else if let crate::parse::RawTrait::Num(n) = v {
-                        map.insert(k.clone(), Scalar::Num(*n));
+        let strings = profile.strings_path.and_then(|path| {
+            assets.menu_xml(path).and_then(|b| {
+                String::from_utf8(b).ok().map(|s| {
+                    let mut src = AssetsAsFileSource { assets };
+                    let doc = parse_document(&s, &mut src);
+                    let mut map = HashMap::new();
+                    // A strings document is a flat `<rect name="Strings">`
+                    // of `_name` text traits.
+                    for (k, v) in &doc.tiles[0].traits {
+                        if let crate::parse::RawTrait::Str(s) = v {
+                            map.insert(k.clone(), Scalar::Str(s.clone()));
+                        } else if let crate::parse::RawTrait::Num(n) = v {
+                            map.insert(k.clone(), Scalar::Num(*n));
+                        }
                     }
-                }
-                map
+                    map
+                })
             })
         });
         if strings.is_none() {
-            log::warn!("menuxml: menus\\strings.xml unavailable — strings() reads 0");
+            log::debug!(
+                "menuxml: no strings document for the {} corpus — strings() reads 0",
+                profile.label
+            );
         }
 
         let mut src = AssetsAsFileSource { assets };
@@ -153,22 +174,25 @@ impl MenuRenderer {
             .filter(|t| t.kind == crate::parse::TileKind::Nif)
             .count();
 
-        // Font table: indices 1..=5 per Oblivion.ini [Fonts]. Any slot
-        // that fails to load stays `None` and text using it is skipped
-        // (with one warn) rather than aborting the whole HUD.
+        // Font table: 1-based slots per the game ini's [Fonts] order
+        // (the profile's table length). Any slot that fails to load
+        // stays `None` and text using it is skipped (with one warn)
+        // rather than aborting the whole HUD.
         let mut fonts = Vec::new();
         fonts.push(None); // index 0 — unused; `<font> 0` is unauthored
-        for index in 1u8..=5 {
+        for index in 1u8..=profile.font_paths.len() as u8 {
             let loaded = assets.font(index).and_then(|fnt| {
-                // The .fnt names its atlas; fetch `fonts\<name>.tex`.
+                // The .fnt names its atlas; resolve through the profile's
+                // candidate paths (Oblivion: `fonts\<name>.tex`; FO3 ships
+                // `.tex` and `.dds` beside each `.fnt`).
                 let name = String::from_utf8_lossy(&fnt[12..])
                     .split('\0')
                     .next()
                     .unwrap_or("")
                     .to_string();
-                let tex_path = format!("fonts\\{name}.tex");
-                assets
-                    .font_texture(&tex_path)
+                (profile.font_atlas)(&name)
+                    .iter()
+                    .find_map(|p| assets.font_texture(p))
                     .and_then(|tex| Font::parse(&fnt, &tex).ok())
                     .map(Arc::new)
                     .map(Some)
@@ -221,6 +245,79 @@ impl MenuRenderer {
             .remove(&(tile.to_lowercase(), trait_name.to_lowercase()));
     }
 
+    /// Runtime menu-API: clone a `<template>` prototype's content subtree
+    /// under the named tile, renaming the clone's root `new_name`.
+    ///
+    /// The source engine assembled its FO3 HUD this way —
+    /// `hud_main_menu.xml` ships only empty container rects (`HitPoints`,
+    /// `ActionPoints`, …) while the art lives in `<template>` prototypes
+    /// (`menus\prefabs\hudtemplates.xml`) that engine code instantiated
+    /// at runtime. Templates with several children clone all of them;
+    /// `new_name` applies to the first.
+    pub fn instantiate_template(
+        &mut self,
+        template_name: &str,
+        parent_name: &str,
+        new_name: &str,
+    ) -> Result<usize, MenuError> {
+        let template = self
+            .doc
+            .name_index
+            .get(&template_name.to_lowercase())
+            .copied()
+            .ok_or_else(|| MenuError::MissingTile(template_name.to_string()))?;
+        let parent = self
+            .doc
+            .name_index
+            .get(&parent_name.to_lowercase())
+            .copied()
+            .ok_or_else(|| MenuError::MissingTile(parent_name.to_string()))?;
+        let children = self.doc.tiles[template].children.clone();
+        let first = children.first().copied().ok_or_else(|| {
+            MenuError::MissingTile(format!("{template_name} has no content to instantiate"))
+        })?;
+        let idx = self.doc.deep_clone(first, parent, Some(new_name));
+        for &child in &children[1..] {
+            self.doc.deep_clone(child, parent, None);
+        }
+        Ok(idx)
+    }
+
+    /// Runtime menu-API: graft a parsed prefab fragment (loose traits +
+    /// children — e.g. FO3's ops-driven `menus\prefabs\meter.xml`) as a
+    /// new child rect named `new_name` under the named tile.
+    ///
+    /// The fragment's top-level traits land on the wrapper tile (the
+    /// same splicing semantics `<include>` applies), so `src="parent()"`
+    /// ops inside the fragment resolve against the wrapper — the driver
+    /// then drives the wrapper (`_Value`, `x`, …) through overrides.
+    pub fn graft_fragment(
+        &mut self,
+        assets: &dyn MenuAssets,
+        fragment_path: &str,
+        parent_name: &str,
+        new_name: &str,
+    ) -> Result<usize, MenuError> {
+        let xml = assets
+            .menu_xml(fragment_path)
+            .ok_or_else(|| MenuError::MissingMenu(fragment_path.to_string()))?;
+        let text = String::from_utf8(xml)
+            .map_err(|_| MenuError::BadUtf8(fragment_path.to_string()))?;
+        // Prefab fragments are rootless (loose traits + tiles); wrapping
+        // them in an explicit rect makes the wrapper own those traits,
+        // exactly the `<include>` splice semantics the graft wants.
+        let wrapped = format!("<rect name=\"{new_name}\">\n{text}\n</rect>");
+        let mut src = AssetsAsFileSource { assets };
+        let fragment = parse_document(&wrapped, &mut src);
+        let parent = self
+            .doc
+            .name_index
+            .get(&parent_name.to_lowercase())
+            .copied()
+            .ok_or_else(|| MenuError::MissingTile(parent_name.to_string()))?;
+        Ok(self.doc.graft_subtree(&fragment, 0, parent, Some(new_name)))
+    }
+
     /// Tile index by name, for drivers that want to probe traits.
     pub fn tile(&self, name: &str) -> Option<usize> {
         self.doc.name_index.get(&name.to_lowercase()).copied()
@@ -263,12 +360,13 @@ impl MenuRenderer {
                     zoom,
                     tint,
                     alpha,
+                    tiled,
                     clip,
                     ..
                 } => {
                     if let Some(tex) = self.texture(assets, filename, *zoom) {
                         self.frame
-                            .blit(&tex, *rect, *crop, *zoom, *tint, *alpha, *clip);
+                            .blit(&tex, *rect, *crop, *zoom, *tint, *alpha, *tiled, *clip);
                     }
                 }
                 DrawItem::Text { font, .. } => {

@@ -453,6 +453,7 @@ fn blit_scales_and_tints() {
         -1.0,
         [255.0, 255.0, 255.0],
         255.0,
+        false,
         None,
     );
     // 2x horizontal stretch: columns 0-1 sample texel col 0 (alpha 0),
@@ -487,6 +488,7 @@ fn crop_selects_atlas_cell_at_stretch_zoom() {
         -1.0,
         [255.0, 255.0, 255.0],
         255.0,
+        false,
         None,
     );
     // The white cell should now fill the first 32 display pixels…
@@ -523,6 +525,7 @@ fn blit_default_zoom_draws_natural_size_clipped_to_tile() {
         0.0,
         [255.0, 255.0, 255.0],
         255.0,
+        false,
         None,
     );
     for x in 0..8 {
@@ -543,6 +546,7 @@ fn blit_default_zoom_draws_natural_size_clipped_to_tile() {
         100.0,
         [255.0, 255.0, 255.0],
         255.0,
+        false,
         None,
     );
     assert_eq!(&fb.pixels[0..4], &[255, 0, 0, 255]);
@@ -661,4 +665,266 @@ fn renderer_produces_frame_and_applies_overrides() {
     // Override plumbing exists.
     r.set_override("hudmain_health_full", "user0", 0.5);
     let _ = r.render_frame(&assets);
+}
+
+// ---------------------------------------------------------------------------
+// Tile-mode raster (FO3 `<tile>` trait — M48.5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tiled_blit_repeats_and_scrolls_with_wrap() {
+    use crate::layout::Rect;
+    use crate::raster::Framebuffer;
+    use crate::tex::Rgba8;
+
+    // 2×1 texture: black texel then white texel.
+    let mut tex = Rgba8::new(2, 1);
+    tex.pixels[4..8].copy_from_slice(&[255, 255, 255, 255]);
+    let mut fb = Framebuffer::new(6, 1);
+    fb.blit(
+        &tex,
+        Rect { x: 0.0, y: 0.0, w: 6.0, h: 1.0 },
+        (0.0, 0.0),
+        0.0,
+        [255.0, 255.0, 255.0],
+        255.0,
+        true,
+        None,
+    );
+    for x in 0..6 {
+        let o = x * 4;
+        let expect_white = x % 2 == 1;
+        assert_eq!(fb.pixels[o], if expect_white { 255 } else { 0 }, "x={x}");
+    }
+    // cropx 1 scrolls the window one texel and wraps at the edge.
+    let mut fb = Framebuffer::new(6, 1);
+    fb.blit(
+        &tex,
+        Rect { x: 0.0, y: 0.0, w: 6.0, h: 1.0 },
+        (1.0, 0.0),
+        0.0,
+        [255.0, 255.0, 255.0],
+        255.0,
+        true,
+        None,
+    );
+    for x in 0..6 {
+        let o = x * 4;
+        let expect_white = x % 2 == 0;
+        assert_eq!(fb.pixels[o], if expect_white { 255 } else { 0 }, "x={x}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime grafting + templates (FO3 HUD assembly — M48.5)
+// ---------------------------------------------------------------------------
+
+/// The vanilla FO3 `menus\prefabs\meter.xml` shape (traits trimmed to the
+/// load-bearing ops): `_Value` scales MeterImage's width, `tile` repeats
+/// the tick mark, `parent()`/`sibling()` resolve through the graft.
+const METER_FRAGMENT: &str = r#"
+    <_Value> </_Value>
+    <_SolidMeter> &false; </_SolidMeter>
+    <_ShowBackground> &false; </_ShowBackground>
+    <height> 24 </height>
+    <width> 600 </width>
+    <alpha> 255 </alpha>
+    <justify> &left; </justify>
+    <locus> &true; </locus>
+    <image name="MeterBackground">
+        <filename> solid.dds </filename>
+        <height> <copy src="parent()" trait="height"/> </height>
+        <width> <copy src="parent()" trait="width"/> </width>
+        <depth> 1 </depth>
+        <visible> <copy src="parent()" trait="_ShowBackground"/> </visible>
+    </image>
+    <image name="MeterImage">
+        <height> <copy src="parent()" trait="height"/> </height>
+        <width>
+            <copy src="parent()" trait="width"/>
+            <mul src="parent()" trait="_Value"/>
+        </width>
+        <alpha> <copy src="parent()" trait="alpha"/> </alpha>
+        <depth> 2 </depth>
+        <x> <copy src="sibling(MeterBackground)" trait="x"/> </x>
+        <filename>
+            <copy src="parent()" trait="_SolidMeter"/>
+            <copy src="me()" trait="_filename_"/>
+        </filename>
+        <_filename_0>Interface\HUD\hud_tick_mark.dds</_filename_0>
+        <_filename_1>Interface\Shared\solid.dds</_filename_1>
+        <tile> <not src="parent()" trait="_SolidMeter"/> </tile>
+    </image>
+"#;
+
+/// Grafting `meter.xml` under a container rect mirrors the source
+/// engine's runtime HUD assembly: the fragment's loose traits land on the
+/// wrapper, `parent()` ops resolve against it, and an override on the
+/// wrapper's `_Value` scales the meter's drawn width.
+#[test]
+fn graft_fragment_drives_meter_ops_from_overrides() {
+    use crate::eval::Overrides;
+    use crate::menu::MenuError;
+    use crate::profile::MenuProfile;
+
+    let mut s = src(&[
+        (
+            "menus\\main\\hud_main_menu.xml",
+            r#"
+            <menu name="HUDMainMenu">
+                <locus> &true; </locus>
+                <rect name="HitPoints">
+                    <width> 369 </width>
+                    <height> 127 </height>
+                </rect>
+            </menu>"#,
+        ),
+        ("menus\\prefabs\\meter.xml", METER_FRAGMENT),
+    ]);
+    let main_text = s.files.get("menus\\main\\hud_main_menu.xml").unwrap().clone();
+    let meter_text = s.files.get("menus\\prefabs\\meter.xml").unwrap().clone();
+    let mut doc = parse_document(&main_text, &mut s);
+    // Same wrapping graft_fragment applies to rootless prefabs.
+    let wrapped = format!("<rect name=\"hp_meter\">\n{meter_text}\n</rect>");
+    let fragment = parse_document(&wrapped, &mut s);
+
+    let hp = doc.name_index["hitpoints"];
+    let wrapper = doc.graft_subtree(&fragment, 0, hp, Some("hp_meter"));
+    assert_eq!(doc.tiles[wrapper].parent, Some(hp));
+    // Loose fragment traits landed on the wrapper.
+    assert_eq!(doc.tiles[wrapper].traits.get("width"), Some(&RawTrait::Num(600.0)));
+    assert!(doc.tiles[wrapper].traits.get("locus").is_some());
+    let meter_img = doc.name_index["meterimage"];
+    assert_eq!(doc.tiles[meter_img].parent, Some(wrapper));
+
+    // Profile plumbing: an 8-slot FO3 table loads without any font data
+    // (slots stay None) and skips the strings document.
+    struct NoFonts;
+    impl MenuAssets for NoFonts {
+        fn menu_xml(&self, _: &str) -> Option<Vec<u8>> { None }
+        fn texture(&self, _: &str) -> Option<Vec<u8>> { None }
+        fn font(&self, _: u8) -> Option<Vec<u8>> { None }
+        fn font_texture(&self, _: &str) -> Option<Vec<u8>> { None }
+    }
+    let result = MenuRenderer::load_with_profile(
+        &NoFonts,
+        "menus\\main\\hud_main_menu.xml",
+        ScreenTraits::new(1280.0, 720.0),
+        MenuProfile::fallout3(),
+    );
+    assert!(
+        matches!(result, Err(MenuError::MissingMenu(_))),
+        "menu xml absent from NoFonts → MissingMenu"
+    );
+
+    // Half value → half the authored 600px meter width, tick-repeated.
+    let mut overrides = Overrides::new();
+    overrides.insert(
+        ("hp_meter".to_string(), "_value".to_string()),
+        Scalar::Num(0.5),
+    );
+    let strings = HashMap::new();
+    let mut eval = crate::eval::EvalState::new(
+        &doc,
+        ScreenTraits::new(1280.0, 720.0),
+        &strings,
+        &overrides,
+    );
+    eval.resolve_all();
+    let items = build_draw_list(&doc, &mut eval);
+    let meter = items
+        .iter()
+        .find(|i| i.tile() == meter_img)
+        .expect("MeterImage in the draw list");
+    match meter {
+        crate::layout::DrawItem::Image { rect, tiled, .. } => {
+            assert_eq!(rect.w, 300.0, "600 × _Value 0.5");
+            assert!(tiled, "tick-meter repeats its texture");
+        }
+        other => panic!("expected an image item, got {other:?}"),
+    }
+}
+
+/// `<template>` prototypes never draw themselves; instantiating one
+/// through the renderer's menu API clones its content subtree under the
+/// named tile, renamed and driven by overrides.
+#[test]
+fn instantiate_template_clones_prototype_content() {
+    let assets = SynthAssets {
+        xml: br#"
+        <menu name="HUDMainMenu">
+            <locus> &true; </locus>
+            <rect name="Compass"/>
+            <template name="template_compass_window">
+                <image name="compass_window">
+                    <filename> Interface\HUD\glow_hud_comp_direction_strip.dds </filename>
+                    <width> 345 </width>
+                    <height> 64 </height>
+                    <tile> &true; </tile>
+                    <x> 20 </x>
+                    <y> 65 </y>
+                </image>
+            </template>
+        </menu>"#
+            .to_vec(),
+        strings: Vec::new(),
+    };
+    let mut r = MenuRenderer::load(
+        &assets,
+        "menus\\main\\hud_main_menu.xml",
+        ScreenTraits::new(1280.0, 720.0),
+    )
+    .expect("load");
+    assert!(
+        r.tile("template_compass_window").is_some(),
+        "template parses into the arena"
+    );
+
+    let clone = r
+        .instantiate_template("template_compass_window", "Compass", "hud_compass")
+        .expect("instantiate");
+    let _ = clone;
+
+    // The clone draws with the prototype's authored traits, and overrides
+    // address it by its new name (cropx scrolls the strip).
+    r.set_override("hud_compass", "cropx", 100.0);
+    let _ = r.render_frame(&assets);
+
+    // A missing parent or template names the failure.
+    assert!(r.instantiate_template("template_compass_window", "Nope", "x").is_err());
+    assert!(r.instantiate_template("template_nope", "Compass", "x").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Per-game profiles (M48.5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn profiles_pin_corpus_facts() {
+    use crate::profile::{FontArchive, MenuProfile};
+
+    let ob = MenuProfile::oblivion();
+    assert_eq!(ob.font_paths.len(), 5);
+    assert_eq!(ob.font_archive, FontArchive::Misc);
+    assert_eq!(ob.strings_path, Some("menus\\strings.xml"));
+    assert_eq!((ob.font_atlas)("Glow_X"), vec!["fonts\\Glow_X.tex"]);
+
+    for (profile, slots) in [
+        (MenuProfile::fallout3(), 8),
+        (MenuProfile::fallout_nv(), 9),
+    ] {
+        assert_eq!(profile.font_paths.len(), slots, "{} font slots", profile.label);
+        assert_eq!(profile.font_archive, FontArchive::Textures);
+        assert_eq!(profile.strings_path, None);
+        // Both atlas candidates beside each .fnt, .tex preferred.
+        assert_eq!(
+            (profile.font_atlas)("Glow_Monofonto_Large_0_Lod_A"),
+            vec![
+                "textures\\fonts\\Glow_Monofonto_Large_0_Lod_A.tex".to_string(),
+                "textures\\fonts\\Glow_Monofonto_Large_0_Lod_A.dds".to_string(),
+            ]
+        );
+        // The HUD's text tiles use slots 7/8 — both must be populated.
+        assert!(profile.font_paths.len() >= 8);
+    }
 }

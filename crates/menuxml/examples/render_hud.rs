@@ -3,15 +3,7 @@
 //! crate output can be diffed against engine screenshots.
 use byroredux_bsa::BsaArchive;
 use byroredux_menuxml::menu::MenuAssets;
-use byroredux_menuxml::{MenuRenderer, ScreenTraits};
-
-const FONT_PATHS: [&str; 5] = [
-    "fonts\\Kingthings_Regular.fnt",
-    "fonts\\Kingthings_Shadowed.fnt",
-    "fonts\\Tahoma_Bold_Small.fnt",
-    "fonts\\Daedric_Font.fnt",
-    "fonts\\Handwritten.fnt",
-];
+use byroredux_menuxml::{MenuRenderer, MenuProfile, ScreenTraits};
 
 struct Assets {
     misc: BsaArchive,
@@ -21,7 +13,8 @@ impl MenuAssets for Assets {
     fn menu_xml(&self, path: &str) -> Option<Vec<u8>> { self.misc.extract(path).ok() }
     fn texture(&self, path: &str) -> Option<Vec<u8>> { self.textures.extract(path).ok() }
     fn font(&self, index: u8) -> Option<Vec<u8>> {
-        self.misc.extract(FONT_PATHS.get(index as usize - 1)?).ok()
+        let profile = MenuProfile::oblivion();
+        self.misc.extract(profile.font_paths.get(index as usize - 1)?).ok()
     }
     fn font_texture(&self, path: &str) -> Option<Vec<u8>> { self.misc.extract(path).ok() }
 }
@@ -73,7 +66,7 @@ fn write_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) -> st
 
     let mut out = Vec::new();
     out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
-    let mut chunk = |len: u32, tag: &[u8; 4], data: &[u8], out: &mut Vec<u8>| {
+    let chunk = |len: u32, tag: &[u8; 4], data: &[u8], out: &mut Vec<u8>| {
         out.extend_from_slice(&len.to_be_bytes());
         let mut body = Vec::with_capacity(4 + data.len());
         body.extend_from_slice(tag);

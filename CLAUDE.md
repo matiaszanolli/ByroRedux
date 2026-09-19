@@ -142,7 +142,7 @@ crates/
       descriptors.rs         write_ao_texture / geometry_buffers / cluster_buffers / tlas + destroy
     src/vulkan/gbuffer.rs    GBuffer — normal, motion vector, mesh ID, raw indirect, albedo attachments
     src/vulkan/svgf.rs       SvgfPipeline — temporal accumulation denoiser for indirect lighting
-    src/vulkan/composite.rs  CompositePipeline — direct + denoised indirect reassembly, ACES tone mapping
+    src/vulkan/composite.rs  CompositePipeline — direct + denoised indirect reassembly, linear HDR out (#4202: ACES lives downstream in presentation)
     src/vulkan/ssao.rs       SSAO compute pipeline (noise texture, kernel, screen-space AO)
     src/vulkan/descriptors.rs Descriptor set/pool management
     src/vulkan/compute.rs    Compute pipeline utilities
@@ -155,7 +155,8 @@ crates/
       triangle.vert/frag     Main geometry pass — PBR + RT ray queries (shadows, reflections, GI)
       svgf_temporal.comp     SVGF temporal accumulation with motion vector reprojection
       taa.comp               TAA resolve (Halton jitter + YCoCg variance clamp, M37.5)
-      composite.vert/frag    Fullscreen quad — direct + denoised indirect + ACES tone mapping
+      composite.vert/frag    Fullscreen quad — direct + denoised indirect reassembly, linear HDR out
+      presentation.frag      Exposure + ACES tone map after the FSR upscale boundary (bloom runs on composite's linear HDR, before this)
       ssao.comp              Screen-space ambient occlusion compute
       cluster_cull.comp      Clustered lighting frustum assignment
       skin_vertices.comp     GPU pre-skinning (M29)

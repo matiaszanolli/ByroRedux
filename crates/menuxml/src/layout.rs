@@ -36,6 +36,10 @@ pub enum DrawItem {
         /// Authored zoom; −1 (the default, `&scale;`) stretches to the
         /// tile rect.
         zoom: f32,
+        /// `<tile> &true;` — repeat the texture at 1:1 texel scale
+        /// across the tile rect (FO3-era trait; the tick-mark meters
+        /// and scrolling compass strip depend on it).
+        tiled: bool,
         tint: [f32; 3],
         alpha: f32,
         clip: Option<Rect>,
@@ -181,6 +185,7 @@ fn walk_children(
                             filename,
                             crop: (num(eval, child, "cropx"), num(eval, child, "cropy")),
                             zoom: num(eval, child, "zoom"),
+                            tiled: eval.trait_value(child, "tile").truthy(),
                             tint,
                             alpha,
                             clip: clip_here,

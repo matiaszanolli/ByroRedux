@@ -13,16 +13,7 @@ use std::path::PathBuf;
 use byroredux_bsa::BsaArchive;
 use byroredux_menuxml::menu::{MenuAssets, MenuRenderer};
 use byroredux_menuxml::parse::{parse_document, MenuFileSource, Scalar};
-use byroredux_menuxml::{Document, ScreenTraits};
-
-/// Oblivion.ini `[Fonts]` order — the `<font>` trait's 1-based table.
-const FONT_PATHS: [&str; 5] = [
-    "fonts\\Kingthings_Regular.fnt",
-    "fonts\\Kingthings_Shadowed.fnt",
-    "fonts\\Tahoma_Bold_Small.fnt",
-    "fonts\\Daedric_Font.fnt",
-    "fonts\\Handwritten.fnt",
-];
+use byroredux_menuxml::{Document, MenuProfile, ScreenTraits};
 
 struct OblivionAssets {
     misc: BsaArchive,
@@ -37,7 +28,8 @@ impl MenuAssets for OblivionAssets {
         self.textures.extract(path).ok()
     }
     fn font(&self, index: u8) -> Option<Vec<u8>> {
-        self.misc.extract(FONT_PATHS.get(index as usize - 1)?).ok()
+        let profile = MenuProfile::oblivion();
+        self.misc.extract(profile.font_paths.get(index as usize - 1)?).ok()
     }
     fn font_texture(&self, path: &str) -> Option<Vec<u8>> {
         self.misc.extract(path).ok()

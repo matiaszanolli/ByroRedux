@@ -149,6 +149,11 @@ step_cell_transition`. Sequence:
    `cell_loader::validate_cell_loadable`; the exterior branch builds and
    validates its world context. A corrupt/stale save therefore cannot strand
    the player mid-teardown.
+   1b. **Extensions preflight**: `crate::extensions::preflight_extension_state`
+   snapshots the sandboxed-extension state that must survive the teardown
+   below — see [Engine-native extension state](#engine-native-extension-state)
+   for what it captures and why (#4145; this call is part of the real
+   ordering, not an optional add-on).
 2. **Tear down**: drain the streaming state, unload the current interior
    (`streaming_helpers::drain_streaming_state`,
    `cell_loader::unload_current_interior`). The latter clears both
@@ -168,6 +173,10 @@ step_cell_transition`. Sequence:
    and `GameTimeRes` wholesale, so instance ids resolve correctly and the
    next weather tick re-derives sky, fog, sun, and exterior directional
    lighting from the saved clock.
+   3b. **Extensions restore**: `crate::extensions::restore_extension_state`
+   re-applies the state step 1b snapshotted, between the reload (step 3)
+   and the first `restore_resources` call — same position in the real
+   ordering, same [prose section](#engine-native-extension-state) (#4145).
 
    It runs **twice**, and the first call is the load-bearing one (#3789).
    `ReferenceEnableState` has a *spawn-time* consumer —

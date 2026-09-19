@@ -44,6 +44,8 @@ Manual end-to-end checks that need a Vulkan device + on-disk game data
 Skyrim+ / FO4 NPC outfit equip end-to-end, and
 [`docs/smoke-tests/m48-4-oblivion-hud.sh`](docs/smoke-tests/m48-4-oblivion-hud.sh)
 verifies the Oblivion MenuXml HUD end-to-end (pin-driven bar-geometry gate).
+[`docs/smoke-tests/m48-5-fo3-hud.sh`](docs/smoke-tests/m48-5-fo3-hud.sh)
+verifies the FO3 HUD on the same game-agnostic driver (tick-column gate).
 
 ### Shader Compilation
 ```bash
@@ -88,7 +90,7 @@ byroredux/              Binary — game loop, scene setup, systems
     view.rs                  Camera + selection/picking commands
     shared.rs                Cross-command formatting helpers + shared import prelude
   src/helpers.rs            add_child, world_resource_set utilities
-  src/hud.rs                 Oblivion MenuXml HUD driver (--hud, triple-buffered uploads)
+  src/hud.rs                 MenuXml HUD driver — per-game profiles Oblivion/FO3/FNV (--hud, triple-buffered uploads)
   src/cell_loader.rs        ESM cell loading (interior + exterior)
 crates/
   core/                      ECS, math (glam), types, string interning, form IDs
@@ -233,14 +235,15 @@ crates/
     src/events.rs            Transient marker components: ActivateEvent, HitEvent, TimerExpired
     src/timer.rs             ScriptTimer component + timer_tick_system
     src/cleanup.rs           event_cleanup_system (end-of-frame marker removal)
-  menuxml/                   Oblivion MenuXml UI (M48.4 legacy-UI track)
+  menuxml/                   Oblivion/FO3/FNV MenuXml UI (M48.4/M48.5 legacy-UI track)
     src/parse.rs              Tolerant XML scanner (vanilla quirks, <include> prefabs)
     src/eval.rs               Per-frame trait FOLD language + selectors + overrides
     src/layout.rs             Locus chains, depth sort, clipwindow scissor
     src/raster.rs             CPU source-over rasterizer (zoom: natural+clip default, -1 stretch)
     src/tex.rs                Own DDS decoder (BC1/2/3 + masked uncompressed) + .tex atlases
     src/font.rs               .fnt bitmap fonts
-    src/menu.rs               MenuRenderer — sets, fonts, overrides, frames
+    src/menu.rs               MenuRenderer — sets, fonts, overrides, frames; runtime menu API (instantiate_template / graft_fragment)
+    src/profile.rs            Per-game corpus profiles (font table, font archive, strings source)
     examples/render_hud.rs    Reference-frame + trait-probe visualizer
   papyrus/                   Papyrus language parser (.psc source → AST)
     src/token.rs             Token enum (logos derive, case-insensitive keywords)

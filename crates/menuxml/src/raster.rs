@@ -74,6 +74,14 @@ impl Framebuffer {
     /// `crop` is the authored `cropx`/`cropy` in display pixels; per the
     /// wiki it applies after zoom, so the texel-space source offset is
     /// `crop * (tex_extent / draw_extent)`.
+    ///
+    /// `tiled` implements the `tile` trait (FO3-era): repeat the texture
+    /// at 1:1 texel scale across the tile rect (the HUD's tick-mark
+    /// meters are a repeated 8×20 tick; the draw width is the fill
+    /// fraction). `crop` becomes a direct texel-space scroll offset
+    /// wrapping at the texture edges — the compass strip scrolls by
+    /// overriding `cropx` with no visible seam. Zoom is ignored in tile
+    /// mode (the corpus never combines them).
     pub fn blit(
         &mut self,
         tex: &Rgba8,
@@ -82,6 +90,7 @@ impl Framebuffer {
         zoom: f32,
         tint: [f32; 3],
         alpha: f32,
+        tiled: bool,
         clip: Option<Rect>,
     ) {
         // Zero extents mean "natural texture size" (TiImage default when
@@ -96,9 +105,9 @@ impl Framebuffer {
         if dst.w <= 0.0 || dst.h <= 0.0 || alpha <= 0.0 {
             return;
         }
-        // Draw extent: stretch fills the tile; natural/zoom draws the
-        // (scaled) texture, which the tile rect then clips.
-        let (draw_w, draw_h) = if zoom < 0.0 {
+        // Draw extent: stretch and tile fill the tile; natural/zoom draws
+        // the (scaled) texture, which the tile rect then clips.
+        let (draw_w, draw_h) = if tiled || zoom < 0.0 {
             (dst.w, dst.h)
         } else {
             let scale = if zoom <= 0.0 { 1.0 } else { zoom / 100.0 };
@@ -139,13 +148,25 @@ impl Framebuffer {
         let src_y0 = (crop.1 * sy).clamp(0.0, tex.height as f32 - 1.0);
         let src_w = (tex.width as f32 - src_x0).max(0.01);
         let src_h = (tex.height as f32 - src_y0).max(0.01);
+        let tw = tex.width as i64;
+        let th = tex.height as i64;
+        let scroll_x = crop.0 as i64;
+        let scroll_y = crop.1 as i64;
 
         for py in y0..y1 {
             let v = (py as f32 - dst.y) / draw_h;
-            let ty = (src_y0 + v * src_h) as i64;
+            let ty = if tiled {
+                (scroll_y + py - dst.y as i64).rem_euclid(th)
+            } else {
+                (src_y0 + v * src_h) as i64
+            };
             for px in x0..x1 {
                 let u = (px as f32 - dst.x) / draw_w;
-                let tx = (src_x0 + u * src_w) as i64;
+                let tx = if tiled {
+                    (scroll_x + px - dst.x as i64).rem_euclid(tw)
+                } else {
+                    (src_x0 + u * src_w) as i64
+                };
                 let p = tex.pixel(tx, ty);
                 // Tint: menu art carries its own colour; authored tint
                 // replaces RGB only when it is not the default white.
@@ -165,7 +186,7 @@ impl Framebuffer {
     }
 
     pub fn fill(&mut self, rect: Rect, tint: [f32; 3], alpha: f32, clip: Option<Rect>) {
-        self.blit(white_tex(), rect, (0.0, 0.0), -1.0, tint, alpha, clip);
+        self.blit(white_tex(), rect, (0.0, 0.0), -1.0, tint, alpha, false, clip);
     }
 
     /// Draw one line of text with a bitmap font. Returns the line's

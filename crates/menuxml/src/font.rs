@@ -82,7 +82,11 @@ impl Font {
             .map(|p| 12 + p)
             .unwrap_or(HEADER_LEN);
         let texture_name = String::from_utf8_lossy(&fnt[12..name_end]).to_string();
-        let atlas = Rgba8::parse_font_tex(tex).map_err(FontError::BadAtlas)?;
+        // Oblivion atlases are `.tex` (raw u32-header RGBA); FO3/FNV ship
+        // both, so fall back to DDS when the `.tex` candidate is absent.
+        let atlas = Rgba8::parse_font_tex(tex)
+            .or_else(|e| Rgba8::decode_dds(tex).ok_or(e))
+            .map_err(FontError::BadAtlas)?;
 
         let expect = HEADER_LEN + GLYPH_COUNT * GLYPH_LEN;
         if fnt.len() < expect {

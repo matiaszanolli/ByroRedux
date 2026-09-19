@@ -912,3 +912,34 @@ fn particle_emitter_rate_lag_is_structural() {
         );
     }
 }
+
+/// #4146 — reverb_zone_system's ordering guarantee against `audio_system`
+/// is the parallel-vs-exclusive mechanism (Late's parallel batch completes
+/// before its exclusive list), not registration order. Pin the shapes in
+/// the registration source so a future conversion of either system — the
+/// parallel→exclusive swap #3652 gave billboard/footstep — trips a test
+/// instead of silently invalidating the comment's premise.
+#[test]
+fn reverb_zone_is_parallel_and_audio_is_exclusive_in_late() {
+    let reverb = BOOT_RS
+        .find("crate::systems::reverb_zone_system,")
+        .expect("reverb_zone_system registration");
+    let prefix = &BOOT_RS[reverb.saturating_sub(200)..reverb];
+    assert!(
+        prefix.contains("add_to_with_access("),
+        "reverb_zone_system must stay a parallel `add_to_with_access` \
+         registration — converting it to an exclusive changes which side of \
+         audio_system's exclusive slot it sequences on (#4146)"
+    );
+
+    let audio = BOOT_RS
+        .find("Stage::Late, byroredux_audio::audio_system)")
+        .expect("audio_system registration");
+    let audio_prefix = &BOOT_RS[audio.saturating_sub(120)..audio];
+    assert!(
+        audio_prefix.contains("add_exclusive("),
+        "audio_system must stay a bare exclusive registration — the reverb \
+         ordering guarantee is 'parallel batch completes before exclusives' \
+         (#4146)"
+    );
+}

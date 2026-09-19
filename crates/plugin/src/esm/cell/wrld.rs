@@ -378,6 +378,8 @@ fn parse_wrld_children_inner(
                 let mut music_type_enum: Option<u8> = None;
                 let mut climate_override: Option<u32> = None;
                 let mut location_form: Option<u32> = None;
+                // #4173 — XEZN encounter zone, exterior-cell arm.
+                let mut encounter_zone_form: Option<u32> = None;
                 let mut regions: Vec<u32> = Vec::new();
                 // SK-D6-02 / #566 — exterior cells can also carry an
                 // LTMP lighting-template FormID. Same fallback semantics
@@ -457,6 +459,8 @@ fn parse_wrld_children_inner(
                         }
                         b"XCCM" => climate_override = read_form_id(reader, &sub.data),
                         b"XLCN" => location_form = read_form_id(reader, &sub.data),
+                        // #4173 — XEZN encounter zone (ECZN FormID).
+                        b"XEZN" => encounter_zone_form = read_form_id(reader, &sub.data),
                         b"XCLR" => regions = read_form_id_array(reader, &sub.data),
                         // LTMP — lighting template FormID (SK-D6-02 / #566).
                         b"LTMP" => lighting_template_form = read_form_id(reader, &sub.data),
@@ -560,6 +564,7 @@ fn parse_wrld_children_inner(
                     music_type_enum,
                     climate_override,
                     location_form,
+                    encounter_zone_form,
                     regions,
                     lighting_template_form,
                     ownership,

@@ -819,12 +819,13 @@ struct UiOverlayState<'a> {
     reported_host_methods_capped: &'a mut bool,
 }
 
-/// Tick the Oblivion MenuXml HUD: push engine state into the menu's
-/// trait overrides, rasterize, and upload through the same overlay
-/// texture the Scaleform path uses. `None` (hidden) stops the UI quad —
-/// the same contract as [`tick_ui_overlay`]'s `UiFrame::Hidden` arm.
+/// Tick the MenuXml HUD (Oblivion M48.4 / FO3-FNV M48.5): push engine
+/// state into the menu's trait overrides, rasterize, and upload through
+/// the same overlay texture the Scaleform path uses. `None` (hidden)
+/// stops the UI quad — the same contract as [`tick_ui_overlay`]'s
+/// `UiFrame::Hidden` arm.
 fn tick_hud_overlay(
-    hud: &mut crate::hud::OblivionHud,
+    hud: &mut crate::hud::MenuXmlHud,
     world: &byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
     cam_forward: [f32; 3],
