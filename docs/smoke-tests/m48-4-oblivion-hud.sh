@@ -149,20 +149,22 @@ def rgba(png):
     return out, w, h
 
 def red_run(buf, w):
-    """Longest contiguous red-dominant column run in the health-fill rows.
+    """Longest contiguous health-fill column run in the bar rows.
 
-    The trough's permanent red-brown ornamentation defeats raw counts (973
-    of 1455 red pixels survive a 100%->35% pin), but the solid fill is the
-    only long contiguous run: ~106 px at 35%, ~3x that at full bars
-    (measured against the MenuXml CPU dump at 1280x720).
+    The classifier is deliberately STRICT (r>150, r>g+80, r>b+60): the
+    trough's gold/cream ornamentation sits contiguously with the fill and
+    a loose filter (r>g+30) admits it — cream (254,221,161) passes such a
+    filter and merges ornament + fill into one constant ~158px "run" at
+    every pin value, hiding regressions. Only the fill red (225,95,82)
+    passes the strict bounds: ~53 px at 35%, ~158 px at full.
     """
     cols = []
     for x in range(250, 560):
         hit = False
-        for y in range(666, 673):
+        for y in range(664, 676):
             i = (y*w + x) * 4
             r, g, b = buf[i], buf[i+1], buf[i+2]
-            if r > 120 and r > g + 30 and r > b + 20:
+            if r > 150 and r > g + 80 and r > b + 60:
                 hit = True
                 break
         cols.append(hit)
@@ -183,7 +185,7 @@ full, W, H = rgba(f"{sys.argv[1]}/full.png")
 pinned, _, _ = rgba(f"{sys.argv[1]}/pinned.png")
 run_full = red_run(full, W)
 run_pinned = red_run(pinned, W)
-assert run_full > 200, f"FAIL: full-bars health fill missing ({run_full} px run)"
+assert run_full > 140, f"FAIL: full-bars health fill missing ({run_full} px run)"
 assert 30 < run_pinned < run_full * 0.75, \
     f"FAIL: pinned 35% fill not a shrunken run ({run_pinned} vs {run_full})"
 print(f"PASS: health fill run {run_full} -> {run_pinned} px after 35% pin")
