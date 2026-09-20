@@ -21,6 +21,14 @@ include!("src/shader_constants_data.rs");
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/shader_constants_data.rs");
+    // #4490 — the .spv files are include_bytes!-tracked, but editing a .glsl
+    // source alone recompiles nothing (cargo only sees the generated header
+    // and the .spv bytes), which is the stale-SPIR-V trap documented in
+    // docs/engine/skyal.md §4. Pin the whole shader tree so an edited source
+    // or a recompiled .spv reliably dirties this crate. Smoke scripts were
+    // separately instructed to `touch crates/renderer/src/lib.rs` after
+    // shader edits; this is the structural half of the same fix.
+    println!("cargo:rerun-if-changed=shaders");
 
     let mut out = String::new();
     writeln!(
