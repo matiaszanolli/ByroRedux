@@ -11,8 +11,10 @@ on:
         options:
           - skyrim_se
           - fnv
+          - fo3
+          - fo4
       gate:
-        description: Playable-slice gate to execute
+        description: Gate to execute
         required: true
         default: all
         type: choice
@@ -21,6 +23,9 @@ on:
           - p0-door-interaction
           - p1-character-traversal
           - p2-melee-core
+          - w1-water-traversal
+          - m-exteriors-static
+          - groundcover-eval
 
 jobs:
   smoke:
@@ -38,12 +43,14 @@ jobs:
           GAME: ${{ inputs.game }}
           BYROREDUX_SKYRIM_DATA: ${{ vars.BYROREDUX_SKYRIM_DATA }}
           BYROREDUX_FNV_DATA: ${{ vars.BYROREDUX_FNV_DATA }}
+          BYROREDUX_FO3_DATA: ${{ vars.BYROREDUX_FO3_DATA }}
+          BYROREDUX_FO4_DATA: ${{ vars.BYROREDUX_FO4_DATA }}
         run: |
           run_gate() {
-            local gate="$1"
+            local gate="$1"; shift
             set +e
             xvfb-run -a --server-args="-screen 0 1280x720x24" \
-              "docs/smoke-tests/$gate.sh" "$GAME"
+              "docs/smoke-tests/$gate.sh" "$@"
             local status=$?
             set -e
             if (( status == 77 )); then
@@ -55,9 +62,43 @@ jobs:
 
           case "${{ inputs.gate }}" in
             all)
-              run_gate p0-door-interaction
-              run_gate p1-character-traversal
-              run_gate p2-melee-core
+              run_gate p0-door-interaction "$GAME"
+              run_gate p1-character-traversal "$GAME"
+              run_gate p2-melee-core "$GAME"
               ;;
-            *) run_gate "${{ inputs.gate }}" ;;
+            # EXT-D7-2026-09-19-05 / #4492 — the exterior harnesses see GPU
+            # output that no cargo-test lane can. m-exteriors.sh takes the
+            # profile as argv[1] and the mode as argv[2], and names its
+            # Skyrim profile `skyrim`, not `skyrim_se`.
+            m-exteriors-static)
+              ext_game="$GAME"
+              if [[ "$ext_game" == skyrim_se ]]; then ext_game=skyrim; fi
+              run_gate m-exteriors.sh "$ext_game" static
+              ;;
+            # The ground-cover eval is not game-parameterised: its four
+            # reference cases pin one FNV and one Skyrim pose each
+            # (EXAL §11.5). One X server wraps the whole script the same way
+            # scripts/material-provider-matrix.sh is driven in
+            # rt-correctness.yml.
+            groundcover-eval)
+              set +e
+              xvfb-run -a --server-args="-screen 0 1280x720x24" \
+                scripts/renderer-eval-groundcover.sh
+              status=$?
+              set -e
+              if (( status == 77 )); then
+                echo "::error::renderer-eval-groundcover skipped because game data is unavailable"
+                exit 1
+              fi
+              exit "$status"
+              ;;
+            *) run_gate "${{ inputs.gate }}" "$GAME" ;;
           esac
+      - name: Publish groundcover references
+        if: always() && inputs.gate == 'groundcover-eval'
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-eval-groundcover-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/renderer-eval-groundcover
+          if-no-files-found: error
+          retention-days: 30
