@@ -869,6 +869,17 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             target_sunlight,
             target_fog_col,
         ) = sample_wthr_colors(&target.sky_colors, b_a, b_b, b_t);
+        // #4481 / EXT-D4-2026-09-19-02 — the target side of the fade carries
+        // its own HNAM "Sunlight Dimmer" exactly like the source multiply
+        // above, so the fade eases from `src × d_src` to `tgt × d_tgt`.
+        // Pre-fix `target_sunlight` was sampled undimmed: the fade ran on
+        // the source weather's dimmer all the way to an undimmed target,
+        // and the completion frame popped by the dimmer delta.
+        let target_sunlight = [
+            target_sunlight[0] * target.sunlight_dimmer,
+            target_sunlight[1] * target.sunlight_dimmer,
+            target_sunlight[2] * target.sunlight_dimmer,
+        ];
         // #1018 / REN-D15-NEW-09 — `night_factor` above was derived
         // from the SOURCE weather's `(slot_a, slot_b, t)`. The
         // target's fog distance must use the target's own TOD
@@ -1197,9 +1208,12 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
     let tr_target_precipitation = tr.target.precipitation;
     let tr_target_dalc = tr.target.skyrim_dalc_per_tod;
     let tr_target_cloud_velocities = tr.target.cloud_layer_velocities;
+    let tr_target_cloud_velocities_authored = tr.target.cloud_layer_velocities_authored;
     let tr_target_cloud_colors = tr.target.cloud_layer_colors;
     let tr_target_cloud_alphas = tr.target.cloud_layer_alphas;
     let tr_target_weather = tr.target.weather;
+    let tr_target_sunlight_dimmer = tr.target.sunlight_dimmer;
+    let tr_target_grass_dimmer = tr.target.grass_dimmer;
     // Lock-order boundary (#3263): weather_system holds WeatherDataRes while
     // reading WeatherTransitionRes. Do not move the WeatherDataRes write
     // above this drop or borrow `tr.target` through it; either change would
@@ -1216,12 +1230,26 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
         wd.wind_speed = tr_target_wind;
         wd.precipitation = tr_target_precipitation;
         wd.cloud_layer_velocities = tr_target_cloud_velocities;
+        // #3985 sibling of #4481 — the velocities above are only meaningful
+        // together with their authored-presence flags: pre-fix the promoted
+        // target velocities were re-interpreted through the source's flags,
+        // so a layer the target authored fell back to the wind-driven
+        // synthetic vector (or vice versa) for the rest of the session.
+        wd.cloud_layer_velocities_authored = tr_target_cloud_velocities_authored;
         wd.cloud_layer_colors = tr_target_cloud_colors;
         wd.cloud_layer_alphas = tr_target_cloud_alphas;
         wd.weather = tr_target_weather;
         // #1102 / REN-D15-002 — promote DALC ambient cube so the Skyrim
         // 6-axis directional ambient uses the target weather.
         wd.skyrim_dalc_per_tod = tr_target_dalc;
+        // #4481 / EXT-D4-2026-09-19-02 — promote the HNAM dimmers with the
+        // palette they belong to. Pre-fix the promoted target palette was
+        // multiplied by the *source's* `sunlight_dimmer` on every following
+        // frame, and `GroundCoverDimmer` reverted to the source weather's
+        // value — permanently, until the next transition or worldspace
+        // reload.
+        wd.sunlight_dimmer = tr_target_sunlight_dimmer;
+        wd.grass_dimmer = tr_target_grass_dimmer;
     }
 }
 
@@ -2518,6 +2546,233 @@ mod dalc_cube_crossfade_tests {
         assert!(
             sky.current_dalc_cube.is_none(),
             "no DALC data on either side of the fade must not manufacture a cube"
+        );
+    }
+}
+
+/// Regression tests for #4481 / EXT-D4-2026-09-19-02 and #4485 /
+/// EXT-D4-2026-09-19-03 — the Oblivion `HNAM` dimmers through the WTHR
+/// cross-fade and its consumers. Pre-#4481 the fade's `target_sunlight` was
+/// sampled undimmed and `promote_weather_transition_target` copied eleven
+/// fields but neither dimmer, so the post-fade steady state ran the target
+/// palette on the *source's* `sunlight_dimmer` while `GroundCoverDimmer`
+/// reverted to the source weather's value — permanently, until the next
+/// transition or worldspace reload. Pre-#4485 the consumer-side multiply was
+/// exercised exclusively at dimmer 1.0, so a dropped, doubled, or misplaced
+/// dimmer was an identity in every test.
+#[cfg(test)]
+mod hnam_dimmer_tests {
+    use super::*;
+    use byroredux_plugin::esm::records::weather::SKY_SUNLIGHT;
+
+    const DAY_SUNLIGHT: [f32; 3] = [1.0, 1.0, 1.0];
+
+    /// `WeatherDataRes` with `SKY_SUNLIGHT = 1.0` at every TOD slot, so the
+    /// sampled palette *is* the dimmer: any deviation in
+    /// `CellLightingRes.directional_color` is the dimmer chain itself.
+    fn weather(sunlight_dimmer: f32, grass_dimmer: f32) -> WeatherDataRes {
+        let mut sky_colors = [[[0.0_f32; 3]; 6]; 10];
+        sky_colors[SKY_SUNLIGHT].fill(DAY_SUNLIGHT);
+        WeatherDataRes {
+            sky_colors,
+            fog: [100.0, 60000.0, 200.0, 30000.0],
+            fog_media: [
+                crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
+                crate::fog::FogMedium::from_legacy_ramp(200.0, 30000.0, None),
+            ],
+            tod_hours: [6.0, 10.0, 18.0, 22.0],
+            skyrim_dalc_per_tod: None,
+            wind_speed: 0,
+            precipitation: 0.0,
+            cloud_layer_velocities: [[0.0; 2]; 4],
+            cloud_layer_velocities_authored: [false; 4],
+            cloud_layer_colors: [[[1.0; 3]; 4]; 4],
+            cloud_layer_alphas: [[1.0; 4]; 4],
+            weather: crate::components::WeatherSkyState::default(),
+            grass_dimmer,
+            sunlight_dimmer,
+        }
+    }
+
+    /// Exterior world at noon with an optional in-flight cross-fade. Noon
+    /// with symmetric `tod_hours` folds both sides to a pure `TOD_DAY`
+    /// sample, so every directional-colour assertion below isolates the
+    /// dimmer chain from TOD interpolation.
+    fn build_world(source: WeatherDataRes, target: Option<WeatherDataRes>, elapsed_secs: f32) -> World {
+        let mut world = World::new();
+        world.insert_resource(GameTimeRes::frozen_at(12.0));
+        world.insert_resource(source);
+        if let Some(target) = target {
+            world.insert_resource(WeatherTransitionRes {
+                target,
+                elapsed_secs,
+                duration_secs: 8.0,
+                done: false,
+            });
+        }
+        world.insert_resource(CellLightingRes {
+            ambient: [0.1, 0.1, 0.1],
+            directional_color: [0.0, 0.0, 0.0],
+            directional_dir: [0.0, 1.0, 0.0],
+            is_interior: false,
+            fog_color: [0.0, 0.0, 0.0],
+            fog_near: 100.0,
+            fog_far: 60000.0,
+            fog_medium: crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+            inheritance_flags: None,
+        });
+        world
+    }
+
+    /// #4481, fade-curve half — halfway through a source(1.0) → target(0.5)
+    /// fade the directional colour must be the halfway blend 0.75. Pre-fix
+    /// `target_sunlight` was sampled undimmed, so the fade held the source's
+    /// dimmed value flat all the way out.
+    #[test]
+    fn cross_fade_eases_toward_the_dimmed_target_sunlight() {
+        let world = build_world(weather(1.0, 1.0), Some(weather(0.5, 1.0)), 4.0);
+        weather_system(&world, 0.0);
+
+        let cell_lit = world.try_resource::<CellLightingRes>().unwrap();
+        assert_eq!(
+            cell_lit.directional_color,
+            [0.75, 0.75, 0.75],
+            "halfway through an 8s fade the directional colour must be \
+             lerp(1.0 × d_src, 1.0 × d_tgt, 0.5) = 0.75 — pre-#4481 the \
+             undimmed target sample kept it at 1.0"
+        );
+    }
+
+    /// #4481, promotion + steady-state half — on completion the dimmers move
+    /// with the target snapshot and the *next* frame runs the promoted
+    /// palette on them. Pre-fix `wd.sunlight_dimmer` stayed at the source's
+    /// 1.0 forever and `GroundCoverDimmer` reverted to the source value.
+    #[test]
+    fn promotion_carries_the_dimmers_and_the_steady_state_uses_them() {
+        let mut world = build_world(weather(1.0, 1.0), Some(weather(0.5, 0.8)), 8.0);
+        world.insert_resource(GroundCoverDimmer::default());
+        // dt > 0 saturates t at 1.0 → blend, promote, latch `done`.
+        weather_system(&world, 0.016);
+
+        {
+            let wd = world.try_resource::<WeatherDataRes>().unwrap();
+            assert_eq!(
+                wd.sunlight_dimmer, 0.5,
+                "promotion must move the target's HNAM sunlight dimmer onto \
+                 the live resource"
+            );
+            assert_eq!(
+                wd.grass_dimmer, 0.8,
+                "promotion must move the target's HNAM grass dimmer onto the \
+                 live resource"
+            );
+        }
+        // Completion frame: the blend at t = 1.0 is the dimmed target. All
+        // reads are scoped so no resource lock is held across the next
+        // weather_system call (the ECS lock tracker deadlocks otherwise).
+        {
+            let cell_lit = world.try_resource::<CellLightingRes>().unwrap();
+            assert_eq!(
+                cell_lit.directional_color,
+                [0.5, 0.5, 0.5],
+                "the completion frame must land exactly on the dimmed target"
+            );
+            assert_eq!(
+                world.try_resource::<GroundCoverDimmer>().unwrap().0,
+                0.8,
+                "the completion frame must publish the target's grass dimmer"
+            );
+        }
+
+        // Steady state on the following frame — the pin that was missing
+        // entirely pre-#4481.
+        weather_system(&world, 0.016);
+        let cell_lit = world.try_resource::<CellLightingRes>().unwrap();
+        assert_eq!(
+            cell_lit.directional_color,
+            [0.5, 0.5, 0.5],
+            "post-promotion steady state must multiply the promoted palette \
+             by the promoted sunlight dimmer — pre-#4481 the source's 1.0 \
+             persisted and this ran at full sun"
+        );
+        assert_eq!(
+            world.try_resource::<GroundCoverDimmer>().unwrap().0,
+            0.8,
+            "post-promotion steady state must keep the target's grass dimmer \
+             — pre-#4481 it reverted to the source weather's value"
+        );
+    }
+
+    /// #4481 SIBLING check — every other `WeatherDataRes` field audited for
+    /// the same promotion omission. One real one found: #3985's
+    /// `cloud_layer_velocities_authored` presence flags were blended in the
+    /// fade block but never promoted, so the promoted target velocities were
+    /// re-interpreted through the source's flags (an authored target layer
+    /// silently fell back to the wind-driven synthetic vector, or vice
+    /// versa). sky/fog/fog_media/tod_hours/wind/precipitation/DALC/cloud
+    /// colours+alphas+velocities/weather were already promoted; this pins
+    /// the last field.
+    #[test]
+    fn promotion_carries_the_cloud_velocity_presence_flags() {
+        let mut source = weather(1.0, 1.0);
+        source.cloud_layer_velocities_authored = [false; 4];
+        let mut target = weather(1.0, 1.0);
+        target.cloud_layer_velocities = [[0.5, 0.25]; 4];
+        target.cloud_layer_velocities_authored = [true, false, false, false];
+        let world = build_world(source, Some(target), 8.0);
+
+        weather_system(&world, 0.016);
+
+        let wd = world.try_resource::<WeatherDataRes>().unwrap();
+        assert_eq!(
+            wd.cloud_layer_velocities_authored,
+            [true, false, false, false],
+            "promoted target velocities must carry the target's own \
+             authored-presence flags"
+        );
+        assert_eq!(
+            wd.cloud_layer_velocities[0],
+            [0.5, 0.25],
+            "fixture sanity: the target's authored velocity was promoted"
+        );
+    }
+
+    /// #4485 / EXT-D4-2026-09-19-03 — the consumer-side multiply at
+    /// dimmer ≠ 1.0. Every prior fixture hard-coded `sunlight_dimmer: 1.0`,
+    /// making the multiply an identity: a dropped, doubled, or misplaced
+    /// dimmer could not fail a single test. `SKY_SUNLIGHT = 1.0` plus
+    /// `sunlight_dimmer = 0.5` must land `0.5` on
+    /// `CellLightingRes.directional_color`, and `grass_dimmer` must reach
+    /// `GroundCoverDimmer` in the same pass.
+    #[test]
+    fn consumer_multiplies_sunlight_and_grass_dimmers_without_a_transition() {
+        let mut world = build_world(weather(0.5, 0.25), None, 0.0);
+        world.insert_resource(GroundCoverDimmer::default());
+
+        weather_system(&world, 0.016);
+
+        let cell_lit = world.try_resource::<CellLightingRes>().unwrap();
+        assert_eq!(
+            cell_lit.directional_color,
+            [0.5, 0.5, 0.5],
+            "SKY_SUNLIGHT 1.0 × sunlight_dimmer 0.5 must land exactly on \
+             CellLightingRes.directional_color"
+        );
+        assert_eq!(
+            world.try_resource::<GroundCoverDimmer>().unwrap().0,
+            0.25,
+            "grass_dimmer must reach GroundCoverDimmer through the same pass"
         );
     }
 }
