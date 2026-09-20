@@ -291,8 +291,8 @@ pub const GROUNDCOVER_DRAW_DISTANCE: f32 = 3000.0;
 /// `cluster_cull.comp` (§4).
 pub const GROUNDCOVER_SCATTER_WORKGROUP: u32 = 64;
 /// Candidate points each scatter thread draws. Total candidates per chunk is
-/// `GROUNDCOVER_SCATTER_WORKGROUP × this` — 4,096 over a 512-unit chunk, one
-/// candidate per 8 units (≈11 cm).
+/// `GROUNDCOVER_SCATTER_WORKGROUP × this` — 16,384 over a 512-unit chunk, one
+/// candidate per 4 units (≈6 cm).
 ///
 /// Raised from 64 (4,096 per chunk) on 2026-09-16 after the Skyrim exterior
 /// capture at `2,-4` still read as isolated sprouts: 15% acceptance yielded
@@ -318,12 +318,14 @@ pub const GROUNDCOVER_CANDIDATES_PER_THREAD: u32 = 256;
 /// two tuning constants above cannot be edited out of step with it.
 pub const GROUNDCOVER_MAX_BLADES_PER_CHUNK: u32 =
     GROUNDCOVER_SCATTER_WORKGROUP * GROUNDCOVER_CANDIDATES_PER_THREAD;
-/// Ceiling on chunks dispatched in one frame. At 512 units a chunk and a
-/// 2000-unit draw distance the chunks within reach number ~67 (the disc of
-/// radius draw distance + chunk half-diagonal), and Skyrim tundra dispatches 48
-/// after the behind-camera cull. 256 keeps ~4× headroom while holding the blade
-/// buffer at `256 × 4096 × 16 B` = 16 MB, the same size it had at 1,024 chunks
-/// × 1,024 blades before the candidate budget rose.
+/// Ceiling on chunks dispatched in one frame. At 512 units a chunk and the
+/// 3000-unit draw distance the chunks within reach bound at ~167 (the binary's
+/// `chunk_cap_covers_every_chunk_in_reach`, a disc of radius draw distance +
+/// two chunk bound radii; the cull's conservative square residency needs
+/// 15×15 = 225 slots), so 256 covers the bound while holding the blade buffer
+/// at `256 × 16,384 × 16 B` = 64 MiB — the size the candidate budget's rise to
+/// 256 per thread (2026-09-16) took it to from the 16 MB it had held at
+/// 1,024 chunks × 1,024 and then 256 × 4,096 blades.
 ///
 /// The headroom is enforced rather than argued: the binary's
 /// `chunk_cap_covers_every_chunk_in_reach` bounds the chunks the distance cull

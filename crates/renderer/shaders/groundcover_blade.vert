@@ -103,7 +103,12 @@ layout(push_constant) uniform GcBladePush {
 #define GC_SPECIES_COUNT    uint(pc.gustAndCounts.z)
 #define GC_LOD_WORD         uint(pc.gustAndCounts.w)
 #define GC_LOD_TIER         (GC_LOD_WORD & 3u)
-#define GC_FRAME_SERIAL     (GC_LOD_WORD >> 2u)
+// The host masks the serial to these 22 bits before packing so the word
+// stays exactly representable in f32 for the life of the process (#4498);
+// masking the unpack to match keeps the two sides from drifting apart. The
+// serial only rotates the blue-noise tile, which wraps by construction, so
+// the truncated period is free.
+#define GC_FRAME_SERIAL     ((GC_LOD_WORD >> 2u) & 0x3FFFFFu)
 
 #include "include/terrain_sample.glsl"
 #include "include/groundcover_density.glsl"
