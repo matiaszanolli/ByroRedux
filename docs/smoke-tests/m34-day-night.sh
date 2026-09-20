@@ -31,7 +31,9 @@ required=(
 for path in "${required[@]}"; do
     if [[ ! -f "$path" ]]; then
         echo "smoke[m34-day-night]: SKIP — required data not found: $path"
-        exit 0
+        # README contract (lines 7-8): a data-less run is an explicit SKIP
+        # with exit 77, never a pass (#4489).
+        exit 77
     fi
 done
 

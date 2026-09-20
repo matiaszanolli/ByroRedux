@@ -86,10 +86,15 @@ fail() {
 
 smoke_require_data
 
-if [[ ! -x "$ENGINE_BIN" || ! -x "$DEBUG_BIN" ]]; then
-    echo "smoke[w1-water-traversal]: building release binaries"
-    (cd "$ROOT_DIR" && cargo build --release --quiet -p byroredux -p byro-dbg)
-fi
+# Always build (cheap when fresh): a pre-existing binary is not evidence it
+# is current, and a stale one invalidates every gate below. Stale-SPIR-V trap
+# (SKYAL §4): a recompiled .spv does not reliably trigger a cargo rebuild —
+# after any shader edit run
+#   touch crates/renderer/src/lib.rs
+# before this build. (A renderer build.rs rerun-if-changed on shaders/** is
+# the structural fix, tracked separately.)
+echo "smoke[w1-water-traversal]: building release binaries"
+(cd "$ROOT_DIR" && cargo build --release --quiet -p byroredux -p byro-dbg)
 
 engine_stdout="$LOG_DIR/engine.stdout"
 engine_stderr="$LOG_DIR/engine.stderr"

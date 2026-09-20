@@ -70,9 +70,20 @@ case "$MODE" in
         ;;
 esac
 TIMEOUT_SECONDS="${BYROREDUX_SMOKE_TIMEOUT:-240}"
+# #4491 cycle-mode composite_term pixel floors ("sky responds to the sun"
+# in pixels). MIN_SUN_DELTA: minimum noon-vs-night pre-tonemap mean luminance
+# delta. NOON_MIN_SD: the ~10/255 (0.039) washout line — a noon frame flatter
+# than this is the veil class, not a sky. Both are recalibratable via env if
+# a fixture legitimately frames low contrast.
+CYCLE_MIN_SUN_DELTA="${BYROREDUX_CYCLE_MIN_SUN_DELTA:-0.02}"
+CYCLE_NOON_MIN_SD="${BYROREDUX_CYCLE_NOON_MIN_SD:-0.039}"
 ARTIFACT_DIR="${BYROREDUX_EXTERIOR_ARTIFACT_DIR:-$(mktemp -d /tmp/byro-exterior-smoke.XXXXXX)}"
 SUMMARY="$ARTIFACT_DIR/summary.tsv"
 ACTIVE_PID=""
+# #4489 — a data-less run must be distinguishable from a green one by exit
+# code (README contract: missing game data is SKIP/77, never a pass).
+SKIP_COUNT=0
+RAN_COUNT=0
 
 mkdir -p "$ARTIFACT_DIR"
 printf 'profile\tresult\tentities\tdraws\timage_mean\timage_stddev\tenv\tmissing_textures\tfailed_nifs\tcrossings\tfull_samples\tfull_max_ms\tfull_superseded\tlod_samples\tlod_max_ms\tlod_superseded\tframe_p50_ms\tframe_p95_ms\tframe_max_ms\townership\tground_probe\n' > "$SUMMARY"
@@ -86,10 +97,15 @@ cleanup_active () {
 }
 trap cleanup_active EXIT INT TERM
 
-if [[ ! -x "$ENGINE_BIN" || ! -x "$DEBUG_BIN" ]]; then
-    echo "exterior-smoke: building release engine and debug client"
-    cargo build --release --quiet -p byroredux -p byro-dbg
-fi
+# Always build (cheap when fresh): a pre-existing binary is not evidence it
+# is current, and a stale one invalidates every capture below. Stale-SPIR-V
+# trap (SKYAL §4): a recompiled .spv does not reliably trigger a cargo
+# rebuild — after any shader edit run
+#   touch crates/renderer/src/lib.rs
+# before this build. (A renderer build.rs rerun-if-changed on shaders/** is
+# the structural fix, tracked separately.)
+echo "exterior-smoke: building release engine and debug client"
+cargo build --release --quiet -p byroredux -p byro-dbg
 
 if ! command -v magick >/dev/null 2>&1; then
     echo "exterior-smoke: FAIL - ImageMagick 'magick' is required for the blank/white-out gate"
@@ -110,12 +126,17 @@ profile_ready () {
     if (( missing != 0 )); then
         echo "exterior-smoke[$label]: SKIP - required game data is not installed"
         printf '%s\tSKIP\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+        SKIP_COUNT=$((SKIP_COUNT + 1))
         return 1
     fi
     return 0
 }
 
-image_health () {
+# Read one image's RGB mean/standard deviation into FRAME_MEAN/FRAME_STDDEV
+# without gating. Shared by image_health's blank/white-out gate and the
+# cycle-mode composite_term pixel invariant (#4491), which needs the raw
+# stats of captures the blank-frame floors do not apply to.
+frame_stats () {
     local image="$1"
     local mean_out stddev_out
     if [[ ! -s "$image" ]]; then
@@ -125,8 +146,17 @@ image_health () {
         magick "$image" -colorspace RGB \
             -format '%[fx:mean] %[fx:standard_deviation]\n' info:
     )
-    IMAGE_MEAN="$mean_out"
-    IMAGE_STDDEV="$stddev_out"
+    FRAME_MEAN="$mean_out"
+    FRAME_STDDEV="$stddev_out"
+}
+
+image_health () {
+    local image="$1"
+    if ! frame_stats "$image"; then
+        return 1
+    fi
+    IMAGE_MEAN="$FRAME_MEAN"
+    IMAGE_STDDEV="$FRAME_STDDEV"
 
     # Reject effectively black/white and near-solid frames. These thresholds
     # intentionally leave generous headroom for dark interiors accidentally
@@ -135,7 +165,18 @@ image_health () {
         'BEGIN { exit !(mean > 0.01 && mean < 0.98 && sd > 0.005) }'
 }
 
-# Args: label, data_dir, worldspace, grid, entity_floor, draw_floor, CLI args...
+# Args: label, data_dir, worldspace, grid, entity_floor, draw_floor,
+#       missing_tex_baseline, CLI args...
+#
+# `missing_tex_baseline` is the calibrated steady-state unique-missing-texture
+# count for the profile's fixture on a healthy install; the script hard-fails
+# at >= 2x it (#4508) because a checkerboard-placeholder × normal-map "chrome"
+# frame passes every image/population gate while the texture pipeline is
+# broken. Initial values: the legitimate FNV steady state is 1 entry (the
+# `<no path, no material>` placeholder, see ROADMAP #chrome) and the
+# historical chrome-class failure measured 39 unique on FNV, so the FNV-class
+# ceilings land between the two; FO4 carries the largest corpus. Re-measure on
+# a clean install before tightening.
 run_profile () {
     local label="$1"
     local data_dir="$2"
@@ -143,7 +184,10 @@ run_profile () {
     local grid="$4"
     local entity_floor="$5"
     local draw_floor="$6"
-    shift 6
+    local missing_tex_baseline="$7"
+    shift 7
+
+    RAN_COUNT=$((RAN_COUNT + 1))
 
     local profile_dir="$ARTIFACT_DIR/$label"
     local stdout_log="$profile_dir/engine.stdout.log"
@@ -217,6 +261,12 @@ run_profile () {
         esac
         : "${water_under_look:=$water_look}"
     fi
+    # --upscaler taa in every mode (EXT-D7-2026-09-19-06 item 2, MANUAL
+    # ACCEPTANCE): the FSR reactive / linear-compression ground-cover masks
+    # (#4297) are therefore never exercised against the real upscaler on a
+    # live frame here — their only guards are shader-text `contains` scans.
+    # The rendered-mask verdict is human-only (EXAL-GC §12.14 upscaler
+    # contract).
     local bench_args=(--bench-frames "$BENCH_FRAMES" --bench-hold --screenshot "$screenshot" --upscaler taa)
     if [[ "$MODE" == boundary ]]; then
         bench_args+=(--bench-mode renderer-stepped --bench-camera grid-cross --fly)
@@ -261,6 +311,10 @@ run_profile () {
     done
 
     if [[ "$MODE" == cycle ]]; then
+        # Per-phase composite_term captures (#4491): the pre-bloom,
+        # pre-tonemap, linear view (SKYAL §4) so the pixel invariant below
+        # gates sky assembly, not tone mapping or bloom. `render.debug final`
+        # restores the ordinary view before the next phase's health sample.
         env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<EOF || true
 time.pause
 time.set 06:00
@@ -269,18 +323,27 @@ env.health
 water.dump
 r.health
 screenshot $profile_dir/sunrise.png
+render.debug composite_term
+screenshot $profile_dir/sunrise-composite-term.png
+render.debug final
 time.set 12:00
 time.show
 env.health
 water.dump
 r.health
 screenshot $profile_dir/noon.png
+render.debug composite_term
+screenshot $profile_dir/noon-composite-term.png
+render.debug final
 time.set 23:00
 time.show
 env.health
 water.dump
 r.health
 screenshot $profile_dir/night.png
+render.debug composite_term
+screenshot $profile_dir/night-composite-term.png
+render.debug final
 r.health
 stats
 light.dump
@@ -294,6 +357,11 @@ lod.coverage
 terrain.seams
 world.owners
 world.owners report
+time.set 12:00
+time.show
+render.debug composite_term
+screenshot $profile_dir/noon-2-composite-term.png
+render.debug final
 .quit
 EOF
     elif [[ "$MODE" == water ]]; then
@@ -435,6 +503,12 @@ EOF
     fi
 
     if [[ "$MODE" == cycle ]]; then
+        # MANUAL ACCEPTANCE (EXT-D7-2026-09-19-06 item 3): cloud march
+        # rendering (coverage → density, WTHR layer mips) has no pixel
+        # invariant in this mode — the gates below see image health and CPU
+        # environment state only, never cloud shape. Unit tests pin the
+        # source inputs; the rendered cloudscape verdict is human-only
+        # (SKYAL §2.3).
         local phase phase_image
         for phase in sunrise noon night; do
             phase_image="$profile_dir/$phase.png"
@@ -457,6 +531,55 @@ EOF
             hard_fail=1
         else
             echo "exterior-smoke[$label]: PASS in-session sunrise/noon/night endpoints"
+        fi
+
+        # #4491 — "sky responds to the sun" checked in pixels, not in the
+        # SkyParamsRes struct the sun-intensity greps above read. The
+        # per-phase composite_term captures (pre-bloom, pre-tonemap, linear
+        # — SKYAL §4) must show a noon-vs-night mean luminance delta above
+        # CYCLE_MIN_SUN_DELTA and above twice the run-to-run noise floor
+        # measured by capturing noon twice (SKYAL §4's two-capture rule), and
+        # the noon frame must keep scene contrast above the ~10/255 washout
+        # line. A sky that ignores the sun, or a repeat of the SKYAL §1.1
+        # bloom-gain wash, fails here even with a perfect CPU-side sun value.
+        local term_phase term_image
+        local noon1_mean="" noon1_sd="" noon2_mean="" night_mean=""
+        local term_captures_complete=1
+        for term_phase in sunrise noon night; do
+            term_image="$profile_dir/$term_phase-composite-term.png"
+            if frame_stats "$term_image"; then
+                case "$term_phase" in
+                    noon)  noon1_mean="$FRAME_MEAN" noon1_sd="$FRAME_STDDEV" ;;
+                    night) night_mean="$FRAME_MEAN" ;;
+                esac
+            else
+                echo "exterior-smoke[$label]: HARD FAIL - $term_phase composite_term capture missing or unreadable"
+                hard_fail=1
+                term_captures_complete=0
+            fi
+        done
+        if frame_stats "$profile_dir/noon-2-composite-term.png"; then
+            noon2_mean="$FRAME_MEAN"
+        else
+            echo "exterior-smoke[$label]: HARD FAIL - noon noise-floor composite_term capture missing or unreadable"
+            hard_fail=1
+            term_captures_complete=0
+        fi
+        if (( term_captures_complete != 0 )); then
+            if awk -v noon="$noon1_mean" -v night="$night_mean" \
+                    -v repeat="$noon2_mean" -v sd="$noon1_sd" \
+                    -v min_delta="$CYCLE_MIN_SUN_DELTA" -v min_sd="$CYCLE_NOON_MIN_SD" \
+                    'BEGIN {
+                        signal = noon - night;
+                        noise = repeat - noon; if (noise < 0) noise = -noise;
+                        floor = min_delta; if (2 * noise > floor) floor = 2 * noise;
+                        exit !(signal > floor && sd > min_sd)
+                    }'; then
+                echo "exterior-smoke[$label]: PASS sky responds to the sun in pixels (composite_term noon=$noon1_mean night=$night_mean noon-repeat=$noon2_mean sd=$noon1_sd)"
+            else
+                echo "exterior-smoke[$label]: HARD FAIL - composite_term pixels contradict the sun cycle (noon=$noon1_mean night=$night_mean noon-repeat=$noon2_mean sd=$noon1_sd; need noon-night delta > $CYCLE_MIN_SUN_DELTA and > 2x repeat noise, noon sd > $CYCLE_NOON_MIN_SD)"
+                hard_fail=1
+            fi
         fi
 
         local cycle_water_samples
@@ -532,6 +655,13 @@ EOF
             hard_fail=1
         fi
 
+        # MANUAL ACCEPTANCE (EXT-D7-2026-09-19-06 item 5): this oracle is
+        # near-vacuous by construction — a >0.01 full-frame mean difference
+        # between captures 250-450 units apart with different look angles
+        # clears on almost any scene change, so it proves the two captures
+        # differ, not that the above/below MATERIAL transition is correct.
+        # Material-fidelity acceptance beyond this stays human-only
+        # (WATAL §8).
         local waterline_delta
         waterline_delta="$(magick "$surface_image" "$submerged_image" \
             -compose difference -composite -colorspace RGB \
@@ -767,6 +897,15 @@ EOF
     if [[ "$failed_nifs" != "unknown" && "$failed_nifs" != "0" ]]; then
         echo "exterior-smoke[$label]: WARN - $failed_nifs failed NIF cache entries"
     fi
+    # #4508 — the WARN above is deliberate for content drift, but a texture
+    # pipeline this broken produces a "chrome" frame (checker placeholder ×
+    # valid normal map) whose sd clears every image gate. At 2x the profile's
+    # calibrated baseline it stops being drift and fails the run.
+    if [[ "$missing_textures" =~ ^[0-9]+$ ]] \
+            && (( missing_textures >= missing_tex_baseline * 2 )); then
+        echo "exterior-smoke[$label]: HARD FAIL - $missing_textures unique missing textures reached 2x the calibrated baseline ($missing_tex_baseline)"
+        hard_fail=1
+    fi
 
     local result=PASS
     if (( hard_fail != 0 )); then
@@ -791,7 +930,7 @@ fnv_run () {
         # Lake Mead: contiguous full-detail CELL water around grid (19,13).
         grid="19,13"
     fi
-    run_profile fnv "$FNV_DATA" WastelandNV "$grid" 2500 700 \
+    run_profile fnv "$FNV_DATA" WastelandNV "$grid" 2500 700 12 \
         --esm "$esm" --grid "$grid" --radius 1 --wrld WastelandNV \
         --bsa "$meshes" --textures-bsa "$textures"
 }
@@ -808,7 +947,7 @@ fo3_run () {
         world="Wasteland"
         grid="10,-9"
     fi
-    run_profile fo3 "$FO3_DATA" "$world" "$grid" 2000 700 \
+    run_profile fo3 "$FO3_DATA" "$world" "$grid" 2000 700 12 \
         --esm "$esm" --grid "$grid" --radius 1 --wrld "$world" \
         --bsa "$meshes" --textures-bsa "$textures"
 }
@@ -822,7 +961,7 @@ oblivion_run () {
     if [[ "$MODE" == water ]]; then
         grid="13,7"
     fi
-    run_profile oblivion "$OBLIVION_DATA" Tamriel "$grid" 3500 1300 \
+    run_profile oblivion "$OBLIVION_DATA" Tamriel "$grid" 3500 1300 12 \
         --esm "$esm" --grid "$grid" --radius 1 --wrld Tamriel \
         --bsa "$meshes" --textures-bsa "$textures"
 }
@@ -855,7 +994,7 @@ skyrim_run () {
     for archive in "$SKYRIM_DATA"/Skyrim\ -\ Textures{0..8}.bsa; do
         args+=(--textures-bsa "$archive")
     done
-    run_profile skyrim "$SKYRIM_DATA" Tamriel "$grid" 3500 500 "${args[@]}"
+    run_profile skyrim "$SKYRIM_DATA" Tamriel "$grid" 3500 500 12 "${args[@]}"
 }
 
 fo4_run () {
@@ -885,7 +1024,7 @@ fo4_run () {
     done
     args+=(--textures-bsa "$FO4_DATA/Fallout4 - TexturesPatch.ba2")
     args+=(--materials-ba2 "$FO4_DATA/Fallout4 - Materials.ba2")
-    run_profile fo4 "$FO4_DATA" Commonwealth "$grid" 30000 12000 "${args[@]}"
+    run_profile fo4 "$FO4_DATA" Commonwealth "$grid" 30000 12000 24 "${args[@]}"
 }
 
 total_rc=0
@@ -919,5 +1058,14 @@ echo "exterior-smoke: artifacts retained at $ARTIFACT_DIR"
 if (( total_rc != 0 )); then
     echo "exterior-smoke: FAIL - one or more installed profiles hit a hard gate"
     exit "$total_rc"
+fi
+# #4489 — README contract (lines 7-8): missing game data is an explicit SKIP
+# with exit code 77, never a pass. When nothing actually ran, the SKIP rows
+# above stay visible but the exit code says "not a green run", the same
+# contract w1-water-traversal.sh honours and playable-smoke.yml promotes to a
+# CI error.
+if (( RAN_COUNT == 0 )); then
+    echo "exterior-smoke: SKIP - no selected profile ran (${SKIP_COUNT} skipped: missing game data)"
+    exit 77
 fi
 echo "exterior-smoke: PASS - every installed selected profile passed"
