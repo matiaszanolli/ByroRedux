@@ -346,8 +346,15 @@ pub const DEFAULT_EMISSIVE_HISTORY_WEIGHT: f32 = 0.75;
 /// Bethesda's fog colour is an apparent in-scattering tint, while the
 /// canonical medium stores a separate scalar single-scatter albedo. Dividing
 /// by the strongest channel preserves the authored channel ratios and leaves
-/// that scalar as the peak spectral albedo. Black remains black absorption;
-/// invalid and negative channels contribute no scattering.
+/// that scalar as the peak spectral albedo. Black (or invalid/negative) tint
+/// normalizes to zero chromaticity — which the injection shader then handles,
+/// not pure absorption: `volumetrics_inject.comp` promotes a zero-chromaticity
+/// tint to neutral (white) scatter while extinction > 0 (3ce970a5a), so a
+/// clear interior's dust medium stays lit by candles and bulbs instead of
+/// going perfectly absorbing, while the alpha-gated equilibrium in-scatter
+/// (`pack_fog_tint`'s zero peak) stays zero. This CPU/GPU split is pinned by
+/// `injection_shader_promotes_zero_tint_to_neutral_scatter`; the GLSL arm and
+/// this contract must change together.
 pub fn normalize_fog_tint(color: [f32; 3]) -> [f32; 3] {
     let sanitized = color.map(|channel| {
         if channel.is_finite() {
@@ -578,15 +585,26 @@ fn build_fog_volume_clusters(
 /// Single source of truth for whether the composite shader actually
 /// consumes the integrated volumetric output.
 ///
+/// Current consumer: `composite.frag` reads the integrated volume
+/// directly, every frame — `sampleVolumetricColumn` rebuilds the bilinear
+/// 2x2 froxel-column footprint with depth-compatibility weights
+/// (`volumetricFroxel`, set 0 binding 6) and applies it as
+/// `combined = combined * vol.a + vol.rgb` in HDR-linear, pre-ACES. No
+/// intermediate pass touches the volume between integrate and composite.
+///
 /// History: gated off 2026-05-09 after a diagnosed per-froxel single-
 /// shadow-ray banding artifact on Prospector Saloon cup-and-lantern
-/// interior content (commits `f62d4bd`, `33f48b5`). Re-enabled once
-/// M-LIGHT v2 — a 3x3 XY spatial blur over the injection buffer in
-/// `volumetrics_integrate.comp` — resolved the banding, and #1462
+/// interior content (commits `f62d4bd`, `33f48b5`). Re-enabled once the
+/// banding had a fix — at the time, M-LIGHT v2's 3x3 XY blur over the
+/// injection buffer in `volumetrics_integrate.comp` — and #1462
 /// (the inject/integrate/composite depth-slice convention mismatch,
 /// a ~half-slab fog-depth bias) was reconciled by moving `inject`'s
 /// per-slice world-distance sample from slice-CENTER to slice-FRONT-
 /// EDGE, matching what `integrate` and `composite` already assumed.
+/// That blur is gone: 5be840d2b (2026-08-16) deleted it and moved its
+/// edge-softening job into composite's depth-aware reconstruction, so
+/// this gate stands on the direct composite consumer above, not on the
+/// blur.
 ///
 /// Also resolved alongside: the blanket `is_exterior` zero that used
 /// to suppress ALL sun/scattering contribution for interior cells
@@ -748,6 +766,22 @@ fn decode_combustion_light_moment(bytes: &[u8]) -> GpuCombustionLightMoment {
         radiant_b: word(6),
         luminous_volume: word(7),
     }
+}
+
+/// #4535 — run a latched drain step: the fallible body only executes while
+/// the latch is set, and the latch is consumed only once the body returned
+/// `Ok`. A failed drain must leave the slot latched (`combustion_moment_dirty`'s
+/// documented invariant: "cleared only by a drain that actually zeroes") so
+/// the next drain retries the zero instead of skipping it while the buffer
+/// still holds un-drained moments — which the next inject pass would
+/// `atomicAdd` on top of, surfacing one cycle of stale combustion light.
+fn latched_drain<T>(latch: &mut bool, drain: impl FnOnce() -> Result<T>) -> Result<Option<T>> {
+    if !*latch {
+        return Ok(None);
+    }
+    let value = drain()?;
+    *latch = false;
+    Ok(Some(value))
 }
 
 fn combustion_light_from_moment(
@@ -1390,27 +1424,35 @@ impl VolumetricsPipeline {
         //
         // Gated on `combustion_moment_dirty`, NOT on `had_grid`: a reset path
         // can clear `had_grid` after a dispatch already accumulated, and the
-        // buffer would still need zeroing. See the field's doc.
-        if !std::mem::take(&mut self.combustion_moment_dirty[frame]) {
+        // buffer would still need zeroing. See the field's doc. `latched_drain`
+        // consumes the flag only after the read/zero/flush succeeded (#4535).
+        let moments = {
+            let latch = &mut self.combustion_moment_dirty[frame];
+            let buffer = &mut self.combustion_light_moment_buffers[frame];
+            latched_drain(latch, || {
+                buffer.invalidate_if_needed(device)?;
+                let mut moments =
+                    [GpuCombustionLightMoment::default(); COMBUSTION_LIGHT_GRID_COUNT];
+                {
+                    let bytes = buffer.mapped_slice_mut()?;
+                    let stride = std::mem::size_of::<GpuCombustionLightMoment>();
+                    anyhow::ensure!(
+                        bytes.len() >= stride * COMBUSTION_LIGHT_GRID_COUNT,
+                        "combustion light moment buffer is truncated"
+                    );
+                    for (index, moment) in moments.iter_mut().enumerate() {
+                        let start = index * stride;
+                        *moment = decode_combustion_light_moment(&bytes[start..start + stride]);
+                    }
+                    bytes[..stride * COMBUSTION_LIGHT_GRID_COUNT].fill(0);
+                }
+                buffer.flush_if_needed(device)?;
+                Ok(moments)
+            })?
+        };
+        let Some(moments) = moments else {
             return Ok(0);
-        }
-        let buffer = &mut self.combustion_light_moment_buffers[frame];
-        buffer.invalidate_if_needed(device)?;
-        let mut moments = [GpuCombustionLightMoment::default(); COMBUSTION_LIGHT_GRID_COUNT];
-        {
-            let bytes = buffer.mapped_slice_mut()?;
-            let stride = std::mem::size_of::<GpuCombustionLightMoment>();
-            anyhow::ensure!(
-                bytes.len() >= stride * COMBUSTION_LIGHT_GRID_COUNT,
-                "combustion light moment buffer is truncated"
-            );
-            for (index, moment) in moments.iter_mut().enumerate() {
-                let start = index * stride;
-                *moment = decode_combustion_light_moment(&bytes[start..start + stride]);
-            }
-            bytes[..stride * COMBUSTION_LIGHT_GRID_COUNT].fill(0);
-        }
-        buffer.flush_if_needed(device)?;
+        };
         if !had_grid {
             return Ok(0);
         }
@@ -1933,14 +1975,80 @@ mod unit_tests {
         assert_eq!(pack_fog_tint([f32::NAN, -1.0, f32::INFINITY]), [0.0; 4]);
     }
 
+    /// CPU side of the zero-tint contract (see `normalize_fog_tint`): black
+    /// and invalid inputs still normalize to a finite, all-zero chromaticity.
+    /// Since 3ce970a5a the injection shader promotes that zero to neutral
+    /// scatter while extinction > 0, so "zero chromaticity" no longer means
+    /// "purely absorptive" — the GLSL arm is pinned by
+    /// `injection_shader_promotes_zero_tint_to_neutral_scatter`.
     #[test]
-    fn black_or_invalid_fog_tint_stays_finite_and_absorptive() {
+    fn black_or_invalid_fog_tint_stays_finite_and_zero_chromaticity() {
         assert_eq!(normalize_fog_tint([0.0; 3]), [0.0; 3]);
         assert_eq!(
             normalize_fog_tint([f32::NAN, -1.0, f32::INFINITY]),
             [0.0; 3]
         );
         assert_eq!(normalize_fog_tint([f32::NAN, 2.0, -4.0]), [0.0, 1.0, 0.0]);
+    }
+
+    /// Source-shape tie for the zero-tint contract (REN-D8): the CPU
+    /// `normalize_fog_tint` sends black/zero tint as zero chromaticity, and
+    /// `volumetrics_inject.comp` deliberately scatters that neutrally while
+    /// extinction > 0 (3ce970a5a) so interior dust shafts stay lit. Pin the
+    /// GLSL arm so the two sides cannot silently diverge — a future edit
+    /// "restoring" CPU-side absorption or deleting the shader branch fails
+    /// here instead of changing shipped visuals.
+    #[test]
+    fn injection_shader_promotes_zero_tint_to_neutral_scatter() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        for contract in [
+            "max(fog_chromaticity.r, max(fog_chromaticity.g, fog_chromaticity.b)) <= 1.0e-6",
+            "&& global_extinction > 0.0",
+            "fog_chromaticity = vec3(1.0);",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "volumetrics_inject.comp lost the zero-tint neutral-scatter arm \
+                 that normalize_fog_tint's black-tint contract is documented \
+                 against (3ce970a5a): {contract}"
+            );
+        }
+    }
+
+    /// #4532 — `VOLUMETRIC_OUTPUT_CONSUMED`'s doc justifies the gate by the
+    /// CURRENT consumer: composite reads the integrated volume directly
+    /// (`sampleVolumetricColumn`, `combined = combined * vol.a + vol.rgb`).
+    /// The doc used to credit the 3x3 XY injection blur deleted from
+    /// `volumetrics_integrate.comp` by 5be840d2b; pin both halves so the doc
+    /// site cannot silently rot again — if composite stops consuming, or the
+    /// blur ever returns, the doc needs re-deriving alongside the shader.
+    #[test]
+    fn volumetric_output_gate_doc_matches_the_actual_consumer() {
+        assert!(
+            VOLUMETRIC_OUTPUT_CONSUMED,
+            "the gate is off — the VOLUMETRIC_OUTPUT_CONSUMED doc and \
+             record_volumetrics_pass describe a live composite consumer"
+        );
+        let composite = include_str!("../../shaders/composite.frag");
+        for contract in [
+            "uniform sampler3D volumetricFroxel;",
+            "vec4 vol = sampleVolumetricColumn(fragUV, sliceTexel, depth);",
+            "combined = combined * vol.a + vol.rgb;",
+        ] {
+            assert!(
+                composite.contains(contract),
+                "composite.frag no longer consumes the integrated volume via \
+                 `{contract}` — rewrite the VOLUMETRIC_OUTPUT_CONSUMED doc in \
+                 volumetrics.rs to the new consumer (#4532)"
+            );
+        }
+        let integrate = include_str!("../../shaders/volumetrics_integrate.comp");
+        assert!(
+            !integrate.contains("sampleInjectionBlurred"),
+            "the 3x3 XY injection blur the VOLUMETRIC_OUTPUT_CONSUMED doc \
+             used to credit came back — reconcile the doc with the new \
+             mechanism (#4532)"
+        );
     }
 
     #[test]
@@ -2222,6 +2330,52 @@ mod unit_tests {
             light.params[1] > 0.0,
             "luminous volume must derive source radius"
         );
+    }
+
+    /// #4535 — a failed combustion-moment drain must NOT consume the
+    /// `combustion_moment_dirty` latch. The drain's read/zero/flush is
+    /// fallible (mapped-buffer invalidation, truncation check, flush) and
+    /// the slot is only all-zero once it succeeds; consuming the latch up
+    /// front made a failed drain skip the zero while stale moments remained
+    /// — which the next inject pass `atomicAdd`s onto, surfacing one cycle
+    /// of stale combustion light. `append_combustion_surface_lights` is
+    /// device-bound, so the latch ordering itself is pinned here through
+    /// `latched_drain`, the seam it delegates the decision to.
+    #[test]
+    fn failed_combustion_moment_drain_leaves_the_slot_latched() {
+        let mut latched = true;
+        let mut drain_calls = 0;
+
+        // A failed drain propagates the error and keeps the latch set...
+        let outcome = latched_drain(&mut latched, || {
+            drain_calls += 1;
+            Err::<(), _>(anyhow::anyhow!("mapped read failed"))
+        });
+        assert!(outcome.is_err());
+        assert!(
+            latched,
+            "a failed drain must leave the slot latched so the next drain \
+             re-runs the zero"
+        );
+
+        // ...the retry on the next pass is what consumes it.
+        let drained = latched_drain(&mut latched, || {
+            drain_calls += 1;
+            Ok(7u32)
+        })
+        .expect("successful drain");
+        assert_eq!(drained, Some(7));
+        assert!(!latched);
+
+        // A clear latch skips the fallible body entirely — the #3835
+        // fog-free-scene early-out.
+        let skipped = latched_drain(&mut latched, || {
+            drain_calls += 1;
+            Ok(9u32)
+        })
+        .expect("a clear latch is not an error");
+        assert_eq!(skipped, None);
+        assert_eq!(drain_calls, 2, "a clear latch must not run the drain body");
     }
 
     #[test]
