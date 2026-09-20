@@ -15,7 +15,7 @@
 
 use byroredux_core::ecs::World;
 use byroredux_scripting::quest_stages::{
-    QuestDefinitionRegistry, QuestObjectiveState, QuestStageState,
+    ObjectiveStatus, QuestDefinitionRegistry, QuestObjectiveState, QuestStageState,
 };
 use byroredux_scripting::QuestStatus;
 
@@ -31,19 +31,45 @@ const MAX_OBJECTIVE_CHARS: usize = 96;
 /// Compose the active-objective HUD lines. Returns `None` when quest state
 /// is absent (no quest runtime installed) or no running quest has a
 /// displayed, unfinished, authored objective — the HUD then draws nothing.
+///
+/// Lock-order posture (#313): exactly one resource guard is held at a time,
+/// each dropped before the next is taken, so this producer can never
+/// participate in a cross-storage acquisition cycle — the parallel-systems
+/// discipline `inventory::consume_item` documents for its catalog guard.
 pub(crate) fn snapshot(world: &World) -> Option<Vec<byroredux_debug_ui::ObjectiveView>> {
-    let stages = world.try_resource::<QuestStageState>()?;
-    let objective_state = world.try_resource::<QuestObjectiveState>()?;
+    let running: Vec<byroredux_scripting::QuestFormId> = world
+        .try_resource::<QuestStageState>()?
+        .iter()
+        .filter(|(_, data)| data.status == QuestStatus::Running)
+        .map(|(quest, _)| quest)
+        .collect();
+    if running.is_empty() {
+        return None;
+    }
+    let candidates: Vec<(byroredux_scripting::QuestFormId, Vec<(i32, ObjectiveStatus)>)> = {
+        let objective_state = world.try_resource::<QuestObjectiveState>()?;
+        running
+            .iter()
+            .map(|&quest| (quest, objective_state.iter_quest(quest).collect()))
+            .collect()
+    };
+    let candidates = candidates
+        .into_iter()
+        .filter(|(_, objectives)| {
+            objectives
+                .iter()
+                .any(|(_, status)| status.displayed && !status.completed && !status.failed)
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
     let definitions = world.try_resource::<QuestDefinitionRegistry>()?;
-
     // Collect every candidate, then order — an early break would let the
     // stage map's iteration order decide which quest survives the cap.
     let mut lines: Vec<(u32, i32, byroredux_debug_ui::ObjectiveView)> = Vec::new();
-    for (quest, data) in stages.iter() {
-        if data.status != QuestStatus::Running {
-            continue;
-        }
-        for (index, status) in objective_state.iter_quest(quest) {
+    for (quest, objectives) in candidates {
+        for (index, status) in objectives {
             if !status.displayed || status.completed || status.failed {
                 continue;
             }

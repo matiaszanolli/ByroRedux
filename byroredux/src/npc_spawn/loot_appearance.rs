@@ -99,9 +99,13 @@ pub(crate) fn status(world: &World, actor: EntityId) -> String {
         a.parts.get(a.next_part).map(|part| part.path.as_str()))
 }
 
-fn set_hidden(world: &mut World, root: EntityId, hidden: bool) {
+/// Mesh entities at or under `root`, cycle-safe. `NpcAppearanceHidden` is
+/// consumed by the render passes per mesh entity, so hiding a root means
+/// marking every mesh in its subtree.
+fn mesh_entities_under(world: &World, root: EntityId) -> Vec<EntityId> {
     let mut pending = vec![root];
     let mut seen = HashSet::new();
+    let mut meshes = Vec::new();
     while let Some(entity) = pending.pop() {
         if !seen.insert(entity) {
             continue;
@@ -110,10 +114,97 @@ fn set_hidden(world: &mut World, root: EntityId, hidden: bool) {
             pending.extend(children.0.iter().copied());
         }
         if world.get::<MeshHandle>(entity).is_some() {
-            if hidden {
-                world.insert(entity, NpcAppearanceHidden);
+            meshes.push(entity);
+        }
+    }
+    meshes
+}
+
+fn set_hidden(world: &mut World, root: EntityId, hidden: bool) {
+    for entity in mesh_entities_under(world, root) {
+        if hidden {
+            world.insert(entity, NpcAppearanceHidden);
+        } else {
+            world.remove::<NpcAppearanceHidden>(entity);
+        }
+    }
+}
+
+/// P3 live re-equip reconcile: hide/reveal a living actor's gear meshes when
+/// an [`EquipmentEventBatch`] names the item they were spawned from.
+///
+/// Spawn-time armor roots already carry `NpcEquipmentPart` ownership
+/// (actor + inventory row + FormID), so an unequip of that row maps straight
+/// onto the meshes to hide — and re-equipping the same item reveals exactly
+/// what the earlier unequip hid. This is the mesh half of "wire equip/
+/// unequip through the mesh attachment pipeline" for every actor whose
+/// meshes exist; two halves remain deliberately out of scope:
+///
+/// - **Newly acquired gear** (an item the actor did not spawn wearing) has
+///   no root to reveal — spawning it is the corpse-restoration machinery's
+///   import path, applied to mid-life equips later.
+/// - **Covered skin re-exposure** (removing a chest piece should unmask the
+///   torso skin) needs biped-coverage composition; the full-strip corpse
+///   path owns that today.
+///
+/// Dead actors are skipped: death reconciliation owns their appearance
+/// lifecycle (it hides originals permanently and stages a restored body), so
+/// a scripted equip event on a corpse must not resurrect gear over it.
+pub(crate) fn equipment_appearance_system(world: &World, _dt: f32) {
+    let Some(events) = world.query::<byroredux_scripting::EquipmentEventBatch>() else {
+        return;
+    };
+    let changes: Vec<(EntityId, Vec<byroredux_scripting::EquipmentChange>)> = events
+        .iter()
+        .map(|(wearer, batch)| (wearer, batch.0.clone()))
+        .collect();
+    drop(events);
+    if changes.is_empty() {
+        return;
+    }
+    let Some(parts) = world.query::<NpcEquipmentPart>() else {
+        return;
+    };
+    let gear_roots: Vec<(EntityId, EntityId, u32)> = parts
+        .iter()
+        .filter(|(_, part)| !part.intrinsic_skin)
+        .map(|(root, part)| (part.actor, root, part.form_id))
+        .collect();
+    drop(parts);
+    if gear_roots.is_empty() {
+        return;
+    }
+    // Expand to (root, hide) actions and pre-walk the meshes so no storage
+    // guard spans another query.
+    let mut actions: Vec<(EntityId, bool)> = Vec::new();
+    for (wearer, batch) in &changes {
+        if world.get::<Dead>(*wearer).is_some() {
+            continue;
+        }
+        for change in batch {
+            for &(owner, root, form_id) in &gear_roots {
+                if owner == *wearer && form_id == change.item_form_id {
+                    actions.push((root, !change.equipped));
+                }
+            }
+        }
+    }
+    if actions.is_empty() {
+        return;
+    }
+    let walks: Vec<(Vec<EntityId>, bool)> = actions
+        .iter()
+        .map(|&(root, hide)| (mesh_entities_under(world, root), hide))
+        .collect();
+    let Some(mut hidden) = world.query_mut::<NpcAppearanceHidden>() else {
+        return;
+    };
+    for (entities, hide) in walks {
+        for entity in entities {
+            if hide {
+                hidden.insert(entity, NpcAppearanceHidden);
             } else {
-                world.remove::<NpcAppearanceHidden>(entity);
+                hidden.remove(entity);
             }
         }
     }
@@ -355,5 +446,117 @@ mod tests {
         assert!(world.get::<NpcAppearanceHidden>(child).is_some());
         assert!(world.get::<NpcAppearanceHidden>(skeleton).is_none());
         assert!(world.get::<NpcAppearanceHidden>(actor).is_none());
+    }
+
+    // ── P3 live re-equip reconcile ─────────────────────────────────────
+
+    use byroredux_scripting::{EquipmentChange, EquipmentEventBatch};
+
+    /// A living actor with two gear roots (FormIDs 0xAAA, 0xBBB) and one
+    /// intrinsic-skin root, all carrying `NpcEquipmentPart` ownership the
+    /// spawn paths stamp.
+    fn equip_fixture() -> (World, EntityId, EntityId, EntityId, EntityId) {
+        let mut world = World::new();
+        world.register::<NpcAppearanceHidden>();
+        world.register::<NpcEquipmentPart>();
+        world.register::<EquipmentEventBatch>();
+        let actor = world.spawn();
+        let gear_a = world.spawn();
+        let gear_b = world.spawn();
+        let skin = world.spawn();
+        for (root, form_id, intrinsic) in [
+            (gear_a, 0xAAAu32, false),
+            (gear_b, 0xBBB, false),
+            (skin, 0xAAA, true),
+        ] {
+            world.insert(root, MeshHandle(root as u32));
+            world.insert(
+                root,
+                NpcEquipmentPart {
+                    actor,
+                    inventory_index: None,
+                    form_id,
+                    intrinsic_skin: intrinsic,
+                    hidden_biped_mask: 0,
+                },
+            );
+        }
+        (world, actor, gear_a, gear_b, skin)
+    }
+
+    #[test]
+    fn unequip_hides_only_the_named_gear_roots() {
+        let (mut world, actor, gear_a, gear_b, skin) = equip_fixture();
+        world.insert(
+            actor,
+            EquipmentEventBatch(vec![EquipmentChange {
+                item_form_id: 0xAAA,
+                equipped: false,
+            }]),
+        );
+        equipment_appearance_system(&mut world, 0.0);
+        assert!(
+            world.get::<NpcAppearanceHidden>(gear_a).is_some(),
+            "the unequipped item's meshes must hide"
+        );
+        assert!(world.get::<NpcAppearanceHidden>(gear_b).is_none());
+        assert!(
+            world.get::<NpcAppearanceHidden>(skin).is_none(),
+            "race skin is a body layer, not gear"
+        );
+    }
+
+    #[test]
+    fn re_equipping_reveals_what_the_unequip_hid() {
+        let (mut world, actor, gear_a, _, _) = equip_fixture();
+        world.insert(
+            actor,
+            EquipmentEventBatch(vec![EquipmentChange {
+                item_form_id: 0xAAA,
+                equipped: false,
+            }]),
+        );
+        equipment_appearance_system(&mut world, 0.0);
+        world.insert(
+            actor,
+            EquipmentEventBatch(vec![EquipmentChange {
+                item_form_id: 0xAAA,
+                equipped: true,
+            }]),
+        );
+        equipment_appearance_system(&mut world, 0.0);
+        assert!(
+            world.get::<NpcAppearanceHidden>(gear_a).is_none(),
+            "re-equipping the same item reveals its spawn-time meshes"
+        );
+    }
+
+    #[test]
+    fn dead_wearers_and_unknown_items_are_untouched() {
+        let (mut world, actor, gear_a, _, _) = equip_fixture();
+        world.insert(actor, Dead);
+        world.insert(
+            actor,
+            EquipmentEventBatch(vec![EquipmentChange {
+                item_form_id: 0xAAA,
+                equipped: false,
+            }]),
+        );
+        equipment_appearance_system(&mut world, 0.0);
+        assert!(
+            world.get::<NpcAppearanceHidden>(gear_a).is_none(),
+            "death reconciliation owns dead actors' appearance"
+        );
+
+        let (mut world, actor, gear_a, _, _) = equip_fixture();
+        world.insert(
+            actor,
+            EquipmentEventBatch(vec![EquipmentChange {
+                item_form_id: 0xCCC,
+                equipped: false,
+            }]),
+        );
+        equipment_appearance_system(&mut world, 0.0);
+        assert!(world.get::<NpcAppearanceHidden>(gear_a).is_none());
     }
 }

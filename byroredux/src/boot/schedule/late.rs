@@ -396,6 +396,22 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_core::string::StringPool>()
             .writes_resource::<crate::extensions::ExtensionHostSlot>(),
     );
+    // P3 re-equip reconcile — runs after the Update-stage emitters
+    // (container/corpse loot, native inventory actions) and beside the
+    // other equipment-event readers, before the end-of-Late cleanup drains
+    // the batch. Hides/reveals living actors' gear mesh roots; dead actors
+    // are death-reconciliation territory.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::npc_spawn::loot_appearance::equipment_appearance_system,
+        Access::new()
+            .reads::<byroredux_scripting::EquipmentEventBatch>()
+            .reads::<crate::npc_spawn::NpcEquipmentPart>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .writes::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>()
+            .reads::<byroredux_core::ecs::Children>()
+            .reads::<byroredux_core::ecs::MeshHandle>(),
+    );
     scheduler.add_exclusive_with_access(
         Stage::Late,
         crate::extensions::extension_equipment_dispatch_system,

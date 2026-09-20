@@ -1219,7 +1219,7 @@ for FO3/FNV/FO4, resolved once per plugin load from the AVIF table into a new
 `PlayerVitals` resource stamped by `install_catalog` — not serialized, the
 values it reads stay in the saved `ActorValues` column; `current` subtracts the
 damage layer from the composed undamaged `max`, so the bar shows exactly what
-combat damage and restorative consumption see). It also draws active quest
+combat damage and restorative consumption read). It also draws active quest
 objective lines (top-left: quest display name + authored objective text) for
 running quests whose objectives a fragment has `SetObjectiveDisplayed` and not
 completed/failed, composed from `QuestStageState` + `QuestObjectiveState` +
@@ -1227,9 +1227,39 @@ completed/failed, composed from `QuestStageState` + `QuestObjectiveState` +
 ordered by (quest FormID, objective index) and capped at four lines. Both are
 gated by new `interface.show_vitals` / `interface.show_objectives` settings,
 suppress during loading screens and benchmark captures, and keep the hidden
-overlay's early-return cheap when they have nothing to draw. Live Vulkan
-captures and the P4 objective fixture that will feed real text into the
-objective consumer remain open.
+overlay's early-return cheap when they have nothing to draw.
+
+**Live HUD gate (2026-09-20):**
+[`p3-hud.sh`](../smoke-tests/p3-hud.sh) passes on the live engine — the
+Character-mode player at the Bannered Mare (its `ActorValues` proven live by a
+`modav` health bump), MS01 advanced to stage 15 through the canonical
+`quest.setstage` fragment path, and both captures pixel-verified against the
+exact colors `panels.rs` paints: bars present in both, the objective title
+appearing only after the fragment displayed objective 10. Two real defects
+the first captures exposed and closed: the bench-window HUD suppression keyed
+on `bench_frames_target` (which stays set through `--bench-hold`, so the bars
+could never render in any smoke-style session — it now keys on
+`harness_active`, keeping automatic `--screenshot` bench captures HUD-free),
+and smoke cleanup now kills the port-listener orphan (a leaked engine's
+frame-time tail outruns byro-dbg's response window for every later GPU smoke
+on the machine). Derivation tools shipped with the gate:
+`probe_objective_fragments` (which QUST stages call `SetObjective*` in real
+`.pex` bytes) and `dump_stage_fragment_effects` (the production-lowered
+effects per stage — MS01 stage 10 displays nothing; 15 is the display stage).
+
+**Live re-equip reconcile (2026-09-20):** `equipment_appearance_system`
+(Late, beside the other equipment-event readers) now hides and reveals a
+living actor's gear meshes from its `EquipmentEventBatch` — spawn-time armor
+roots carry `NpcEquipmentPart` ownership, so an unequip of that row maps
+straight onto the meshes to hide, and re-equipping the same item reveals
+exactly what the unequip hid. Dead actors stay death-reconciliation's.
+Deliberately open halves: newly-acquired gear (no spawn-time root) needs the
+corpse-restoration import path applied mid-life, and covered-skin re-exposure
+needs biped-coverage composition. The **player** body is a bare capsule
+today (no skeleton/meshes, `spawn_player_body`), so player ToggleEquip events
+are observed but find no meshes — closing that needs a visible third-person
+player body first (race skeleton + skin via the NPC assembly paths), which is
+the next structural step for this phase.
 
 ### P4 — Authored objective and dialogue loop
 
@@ -1243,6 +1273,15 @@ Goal: a small piece of shipping content can be followed and completed.
   fixture; do not broaden the catalog speculatively.
 - Turn the route into a repeatable smoke with observable quest-stage and
   presentation assertions.
+
+**Fixture frozen 2026-09-20:** [`p4-quest-fixture.md`](p4-quest-fixture.md)
+pins MS01 "The Forsworn Conspiracy" (`0x00018B4B`) — the objective-densest
+vanilla quest whose fragments lower through the production recognizer chain,
+with the stage-15 objective display already gated live by `p3-hud.sh` and
+stage 10 kept as the displays-nothing negative control. DIAL/INFO parsing
+already exists; the fixture names its first blockers in order: NPC
+activation → topic selection (the M47.1 evaluator covers the CTDA shape),
+a native response surface, and completion transitions in the objective HUD.
 
 ### P5 — Persistence and session hardening
 
