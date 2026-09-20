@@ -20,13 +20,12 @@ use byroredux_renderer::{SceneMeshUpload, VulkanContext};
 use std::time::{Duration, Instant};
 
 use crate::asset_provider::{
-    derive_normal_map_path, derive_present_normal_map_path,
-    resolve_material_texture_handles_with_clamp, resolve_texture, resolve_texture_with_clamp,
-    MaterialProvider, TextureProvider,
+    build_material_texture_handles, derive_normal_map_path, derive_present_normal_map_path,
+    resolve_texture, resolve_texture_with_clamp, MaterialProvider, TextureProvider,
 };
 use crate::components::{
     texture_path_is_fx_mesh, DoorTeleport, IsFxMesh, MaterialTextureDebugInfo,
-    MaterialTextureHandles, MaterialTextureSource,
+    MaterialTextureSource,
 };
 
 use super::nif_import_registry::CachedNifImport;
@@ -584,6 +583,11 @@ pub(super) fn spawn_placed_instances(
     light_kind: byroredux_core::ecs::LightKind,
     light_direction: [f32; 3],
     light_outer_angle: f32,
+    // REN-D10-2026-09-20-01 (#4514) — LIGH falloff exponent, resolved by the
+    // caller through `canonical_light_falloff_exponent` (which needs `game`)
+    // the same way the flags lanes above are. Inert `1.0` when `light_data`
+    // is `None` — the `Emitter` default this lane replaces at the spawn site.
+    light_falloff_exponent: f32,
     refr_overlay: Option<&RefrTextureOverlay>,
     clip_handle: Option<u32>,
     // #renderlayer — base content-class derived from the REFR's base
@@ -761,6 +765,7 @@ pub(super) fn spawn_placed_instances(
         light_kind,
         light_direction,
         light_outer_angle,
+        light_falloff_exponent,
         placement_root,
         collision_fallback,
         spawned_nif_lights,

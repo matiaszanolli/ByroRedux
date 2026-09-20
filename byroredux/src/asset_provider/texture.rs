@@ -737,6 +737,45 @@ pub(crate) fn resolve_material_texture_handles_with_clamp(
     })
 }
 
+/// REN-6-2026-09-20-02 (#4529) — the single producer of the
+/// [`crate::components::MaterialTextureHandles`] component: resolve every
+/// secondary role with the material's authored clamp mode, then derive the
+/// channel-presence flags from the handles actually acquired. Both static
+/// spawn paths (loose-NIF `scene/nif_loader.rs` and cell-loader
+/// `cell_loader/spawn/mesh_instance.rs`) construct through here, so a new
+/// presence lane lands on NIF-loaded and REFR-overlaid meshes together —
+/// the divergence this closes was the audit's finding.
+pub(crate) fn build_material_texture_handles(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    textures: &MaterialTextureSet<Option<String>>,
+    base_handle: u32,
+    clamp_mode: u8,
+    parallax_height_scale: f32,
+    parallax_max_passes: f32,
+) -> crate::components::MaterialTextureHandles {
+    let texture_handles = resolve_material_texture_handles_with_clamp(
+        ctx,
+        tex_provider,
+        textures,
+        base_handle,
+        clamp_mode,
+    );
+    let normal_has_alpha = texture_handles.normal != 0
+        && ctx.texture_registry.handle_has_alpha(texture_handles.normal);
+    // #4423 — the tint multiply may only fire on an alpha-bearing tint
+    // texture; see `MaterialTextureHandles::tint_has_alpha`.
+    let tint_has_alpha = texture_handles.tint != 0
+        && ctx.texture_registry.handle_has_alpha(texture_handles.tint);
+    crate::components::MaterialTextureHandles {
+        textures: texture_handles,
+        normal_has_alpha,
+        tint_has_alpha,
+        parallax_height_scale,
+        parallax_max_passes,
+    }
+}
+
 fn map_secondary_texture_handles(
     textures: &MaterialTextureSet<Option<String>>,
     base_handle: u32,

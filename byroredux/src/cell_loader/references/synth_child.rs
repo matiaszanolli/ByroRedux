@@ -780,6 +780,15 @@ pub(super) fn spawn_synth_child(
         light_geometry.kind,
         light_geometry.direction,
         light_geometry.outer_angle,
+        // REN-D10-2026-09-20-01 (#4514) — the falloff lane resolves through
+        // the same per-layout canonicalizer the LIGH-only and fxlight spawn
+        // branches above call directly; without it the meshed-lamp ESM
+        // fallback below the spawn site reads the pre-Skyrim 0.0 sentinel
+        // as k=1.0 instead of k=2.0.
+        stat.light_data
+            .as_ref()
+            .map(|ld| crate::systems::canonical_light_falloff_exponent(game, ld.falloff_exponent))
+            .unwrap_or(1.0),
         refr_overlay.as_ref(),
         clip_handle,
         stat.record_type.render_layer(),

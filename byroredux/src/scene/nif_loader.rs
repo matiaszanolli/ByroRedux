@@ -23,13 +23,12 @@ use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{
-    build_material_provider, build_texture_provider, derive_present_normal_map_path,
-    merge_external_material, resolve_material_texture_handles_with_clamp, resolve_texture,
+    build_material_provider, build_material_texture_handles, build_texture_provider,
+    derive_present_normal_map_path, merge_external_material, resolve_texture,
     resolve_texture_with_clamp, MaterialProvider, TextureProvider,
 };
 use crate::components::{
-    texture_path_is_fx_mesh, IsFxMesh, MaterialTextureDebugInfo, MaterialTextureHandles,
-    MaterialTextureSource,
+    texture_path_is_fx_mesh, IsFxMesh, MaterialTextureDebugInfo, MaterialTextureSource,
 };
 use crate::helpers::add_child;
 
@@ -1352,41 +1351,25 @@ fn spawn_nif_mesh(
     }
 
     // Resolve all secondary roles with the same authored sampler addressing
-    // mode as base colour. This is the exact helper used by placed cell
+    // mode as base colour, and derive the channel-presence flags, through the
+    // one shared producer (#4529) — the exact constructor used by placed cell
     // meshes, eliminating the old loose-NIF/material-slot divergence.
-    let texture_handles = resolve_material_texture_handles_with_clamp(
+    let texture_handles = build_material_texture_handles(
         ctx,
         tex_provider,
         &owned_textures,
         tex_handle,
         canonical_clamp_mode,
+        canonical_parallax_height_scale,
+        canonical_parallax_max_passes,
     );
-    let normal_has_alpha = texture_handles.normal != 0
-        && ctx
-            .texture_registry
-            .handle_has_alpha(texture_handles.normal);
-    // #4423 — the tint multiply may only fire on an alpha-bearing tint
-    // texture; see `MaterialTextureHandles::tint_has_alpha`.
-    let tint_has_alpha = texture_handles.tint != 0
-        && ctx
-            .texture_registry
-            .handle_has_alpha(texture_handles.tint);
-    world.insert(
-        entity,
-        MaterialTextureHandles {
-            textures: texture_handles,
-            normal_has_alpha,
-            tint_has_alpha,
-            parallax_height_scale: canonical_parallax_height_scale,
-            parallax_max_passes: canonical_parallax_max_passes,
-        },
-    );
+    world.insert(entity, texture_handles);
     if mesh_water {
         crate::material_translate::attach_mesh_water(
             world,
             entity,
-            texture_handles.normal,
-            texture_handles.flow,
+            texture_handles.textures.normal,
+            texture_handles.textures.flow,
             crate::material_translate::MeshWaterSource {
                 name: mesh.name.as_deref(),
                 positions: &mesh.positions,

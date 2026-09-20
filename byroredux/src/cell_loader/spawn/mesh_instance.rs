@@ -532,6 +532,14 @@ pub(super) struct PlacementCtx<'a> {
     pub(super) light_kind: byroredux_core::ecs::LightKind,
     pub(super) light_direction: [f32; 3],
     pub(super) light_outer_angle: f32,
+    // REN-D10-2026-09-20-01 (#4514) — LIGH falloff exponent, already resolved
+    // through `canonical_light_falloff_exponent` by the caller (which has
+    // `game`) exactly like the flags/geometry lanes above. This file's
+    // ESM-light fallback is the third `from_legacy_world_units` spawn site;
+    // it used to read the raw LIGH record field, letting the pre-Skyrim
+    // 32-byte 0.0 sentinel reach `Emitter`'s non-ESM `1.0` net instead of
+    // the quadratic `2.0` pre-Skyrim layouts mean.
+    pub(super) light_falloff_exponent: f32,
     pub(super) placement_root: byroredux_core::ecs::EntityId,
     pub(super) collision_fallback: MissingCollisionFallback,
     pub(super) spawned_nif_lights: usize,
@@ -894,6 +902,7 @@ pub(super) fn spawn_mesh_instance(
         light_kind,
         light_direction,
         light_outer_angle,
+        light_falloff_exponent,
         placement_root,
         collision_fallback,
         spawned_nif_lights,
@@ -1157,41 +1166,25 @@ pub(super) fn spawn_mesh_instance(
         }
     }
     // Resolve every secondary semantic role with the SAME authored clamp mode
-    // as base colour. The shared helper is also used by loose-NIF spawning so
-    // structures, clutter, actors, and exterior statics cannot drift.
-    let texture_handles = resolve_material_texture_handles_with_clamp(
+    // as base colour, and derive the channel-presence flags, through the one
+    // shared producer (#4529) so structures, clutter, actors, and exterior
+    // statics cannot drift against the loose-NIF spawn path.
+    let texture_handles = build_material_texture_handles(
         ctx,
         tex_provider,
         &eff_textures,
         tex_handle,
         canonical_clamp_mode,
+        canonical_parallax_height_scale,
+        canonical_parallax_max_passes,
     );
-    let normal_has_alpha = texture_handles.normal != 0
-        && ctx
-            .texture_registry
-            .handle_has_alpha(texture_handles.normal);
-    // #4423 — the tint multiply may only fire on an alpha-bearing tint
-    // texture; see `MaterialTextureHandles::tint_has_alpha`.
-    let tint_has_alpha = texture_handles.tint != 0
-        && ctx
-            .texture_registry
-            .handle_has_alpha(texture_handles.tint);
-    world.insert(
-        entity,
-        MaterialTextureHandles {
-            textures: texture_handles,
-            normal_has_alpha,
-            tint_has_alpha,
-            parallax_height_scale: canonical_parallax_height_scale,
-            parallax_max_passes: canonical_parallax_max_passes,
-        },
-    );
+    world.insert(entity, texture_handles);
     if mesh_water {
         crate::material_translate::attach_mesh_water(
             world,
             entity,
-            texture_handles.normal,
-            texture_handles.flow,
+            texture_handles.textures.normal,
+            texture_handles.textures.flow,
             crate::material_translate::MeshWaterSource {
                 name: mesh.name.as_deref(),
                 positions: &mesh.positions,
@@ -1423,7 +1416,13 @@ pub(super) fn spawn_mesh_instance(
                     light_radius_or_default(ld.radius),
                     ld.color,
                     ld.flags,
-                    ld.falloff_exponent,
+                    // REN-D10-2026-09-20-01 (#4514) — the canonicalized
+                    // lane, NOT the raw LIGH record field: pre-Skyrim
+                    // 32-byte LIGH carries the 0.0 "field absent" sentinel,
+                    // and the raw value resolved k=1.0 through `Emitter`'s
+                    // non-ESM last-resort net instead of the quadratic
+                    // k=2.0.
+                    light_falloff_exponent,
                     light_kind,
                     light_direction,
                     light_outer_angle,
@@ -1542,6 +1541,147 @@ mod tests {
         assert!(
             !production.contains("MorphSlot::create("),
             "spawn must not upload a delta buffer once per entity"
+        );
+    }
+
+    /// REN-D10-2026-09-20-01 (#4514) — all three LIGH (ESM) spawn sites of
+    /// `LightSource::from_legacy_world_units` must consume the
+    /// `canonical_light_falloff_exponent` lane, never the raw record field.
+    /// The pre-Skyrim 32-byte LIGH layout carries the 0.0 "field absent"
+    /// sentinel; 6b4e6252c canonicalized the two `synth_child.rs` branches
+    /// but missed this file's ESM-light fallback (the dominant meshed-lamp
+    /// path), which resolved k=1.0 where pre-Skyrim layouts mean k=2.0.
+    /// Driving any site live needs a `VulkanContext`, so the wiring is
+    /// pinned at source level — the same shape as
+    /// `morph_spawn_uses_mesh_handle_shared_delta_cache` above. The fourth
+    /// `from_legacy_world_units` site (NIF-authored lights in
+    /// `spawn_nif_lights`) is a non-ESM producer with no sentinel to
+    /// resolve; `Emitter`'s own `1.0` net is its documented contract, so it
+    /// is deliberately out of scope here.
+    #[test]
+    fn every_ligh_spawn_site_consumes_the_canonical_falloff_lane() {
+        let here = include_str!("mesh_instance.rs");
+        // Production-only: this test's own prose quotes the forbidden
+        // literal, and the split at the test module keeps it out of the
+        // scanned half.
+        let production = &here[..here
+            .find("\n#[cfg(test)]")
+            .expect("mesh_instance.rs must retain its test module")];
+        let spawn = include_str!("../spawn.rs");
+        let synth = include_str!("../references/synth_child.rs");
+
+        // Site 3 — this file's ESM-light fallback. The lane must arrive via
+        // `PlacementCtx` (destructure + call argument) and the raw field
+        // must not be read anywhere in this file's production half.
+        assert_eq!(
+            production.matches("light_falloff_exponent,").count(),
+            2,
+            "the canonicalized falloff lane must be destructured from \
+             PlacementCtx and passed to from_legacy_world_units (#4514)"
+        );
+        assert!(
+            !production.contains("ld.falloff_exponent"),
+            "the ESM-light fallback must consume the canonicalized lane, \
+             not the raw LIGH record field (#4514)"
+        );
+
+        // The lane is threaded through `spawn_placed_instances` — one
+        // parameter in the signature, one forward into `PlacementCtx`.
+        assert!(
+            spawn.contains("light_falloff_exponent: f32,")
+                && spawn.matches("light_falloff_exponent,").count() == 1,
+            "spawn_placed_instances must thread the falloff lane from its \
+             caller into PlacementCtx (#4514)"
+        );
+        assert!(
+            !spawn.contains("ld.falloff_exponent"),
+            "spawn_placed_instances must not read the raw LIGH record field (#4514)"
+        );
+
+        // Sites 1 + 2 — the LIGH-only and fxlight branches in synth_child,
+        // plus the lane producer feeding `spawn_placed_instances`: three
+        // canonicalizer calls for two direct sites and one lane.
+        assert_eq!(
+            synth
+                .matches("canonical_light_falloff_exponent(game, ld.falloff_exponent)")
+                .count(),
+            3,
+            "both synth_child from_legacy_world_units sites and the \
+             spawn_placed_instances lane must route through the \
+             canonicalizer (#4514)"
+        );
+        assert_eq!(
+            synth.matches("LightSource::from_legacy_world_units(").count(),
+            2,
+            "the synth_child site census drifted — re-classify any new \
+             ESM-light spawn site before extending this guard (#4514)"
+        );
+        assert_eq!(
+            spawn.matches("LightSource::from_legacy_world_units(").count(),
+            1,
+            "spawn.rs must keep exactly the non-ESM NIF-light site (#4514)"
+        );
+        assert_eq!(
+            production
+                .matches("LightSource::from_legacy_world_units(")
+                .count(),
+            1,
+            "mesh_instance.rs must keep exactly the ESM-fallback site (#4514)"
+        );
+    }
+
+    /// REN-6-2026-09-20-02 (#4529) — both static spawn paths must build the
+    /// `MaterialTextureHandles` component through the one shared producer,
+    /// and the channel-presence derivation must live only in that producer.
+    /// The duplicated resolve → normal_has_alpha/tint_has_alpha → insert
+    /// block that used to sit in this file and `scene/nif_loader.rs` is the
+    /// #2444/#2300 duplicate-construction class: a presence lane added to
+    /// one copy and not the other lands only on NIF-loaded or only on
+    /// REFR-overlaid meshes. Driving either path live needs a
+    /// `VulkanContext`, so the wiring is pinned at source level — the same
+    /// shape as `morph_spawn_uses_mesh_handle_shared_delta_cache` above.
+    #[test]
+    fn both_spawn_paths_build_material_texture_handles_through_one_producer() {
+        let here = include_str!("mesh_instance.rs");
+        // Production-only: this test's own source quotes the scanned
+        // literals, and the split at the test module keeps them out of the
+        // scanned half.
+        let production = &here[..here
+            .find("\n#[cfg(test)]")
+            .expect("mesh_instance.rs must retain its test module")];
+        let nif_loader = include_str!("../../scene/nif_loader.rs");
+        let producer = include_str!("../../asset_provider/texture.rs");
+
+        // Each site constructs through the producer exactly once —
+        // `build_material_texture_handles(` can only match the call, not
+        // either file's import line.
+        assert_eq!(
+            production.matches("build_material_texture_handles(").count(),
+            1,
+            "the cell-loader spawn path must construct MaterialTextureHandles \
+             through the shared producer (#4529)"
+        );
+        assert_eq!(
+            nif_loader.matches("build_material_texture_handles(").count(),
+            1,
+            "the loose-NIF spawn path must construct MaterialTextureHandles \
+             through the shared producer (#4529)"
+        );
+        // …and neither retains an inline presence derivation.
+        assert!(
+            !production.contains("handle_has_alpha(") && !nif_loader.contains("handle_has_alpha("),
+            "channel-presence flags are derived only inside \
+             build_material_texture_handles; an inline derivation at a spawn \
+             site is the divergence #4529 closed"
+        );
+
+        // The producer keeps owning both presence lanes, derived from the
+        // handles it resolved itself.
+        assert!(
+            producer.contains("handle_has_alpha(texture_handles.normal)")
+                && producer.contains("handle_has_alpha(texture_handles.tint)"),
+            "the shared producer must derive normal + tint presence from the \
+             handles it resolved (#4529)"
         );
     }
 
