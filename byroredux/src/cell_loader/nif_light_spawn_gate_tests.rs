@@ -130,6 +130,11 @@ fn spawn_nif_lights_skips_zero_color_placeholder() {
 /// Pure-zero RGB → not spawnable. The audit's exact case: an
 /// authored-off `NiPointLight` placeholder.
 #[test]
+fn zero_color_light_is_not_spawnable() {
+    let placeholder = light_with_color([0.0, 0.0, 0.0]);
+    assert!(!is_spawnable_nif_light(&placeholder));
+}
+
 /// W2.9 census pin (light & shadow correctness campaign, 2026-09-18) —
 /// the `NiAmbientLight` redesign decision, grounded by
 /// `cargo run --release -p byroredux-nif --example ambient_light_census`:
@@ -163,11 +168,6 @@ fn black_ambient_lights_stay_dropped_census_pinned() {
     let mut lit = ambient;
     lit.color = [0.2, 0.2, 0.2];
     assert!(is_spawnable_nif_light(&lit));
-}
-
-fn zero_color_light_is_not_spawnable() {
-    let placeholder = light_with_color([0.0, 0.0, 0.0]);
-    assert!(!is_spawnable_nif_light(&placeholder));
 }
 
 /// Just under the `1e-4` threshold — also not spawnable. Locks

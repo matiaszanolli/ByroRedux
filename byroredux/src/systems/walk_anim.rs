@@ -348,7 +348,6 @@ pub(crate) fn npc_walk_animation_system(world: &World, dt: f32) {
 mod tests {
     use super::*;
     use crate::components::HavokAnimationTarget;
-    use byroredux_core::ecs::Component;
 
     fn walk_component(handle: u32, last_pos: Vec3) -> WalkAnimation {
         WalkAnimation {

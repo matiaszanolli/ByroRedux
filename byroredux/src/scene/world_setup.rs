@@ -1451,6 +1451,7 @@ mod tests {
             music_type_enum: None,
             climate_override: None,
             location_form: None,
+            encounter_zone_form: None,
             regions,
             lighting_template_form: None,
             ownership: None,
