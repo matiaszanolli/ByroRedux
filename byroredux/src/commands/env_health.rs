@@ -12,10 +12,11 @@
 //! already guarantee, so a failure means a producer was bypassed rather than
 //! that a threshold was set too tight:
 //!
-//! - **Finite.** `CellLightingRes` and `SkyParamsRes` are copied more or less
-//!   verbatim into the per-frame UBO. Nothing between here and the shader
-//!   rejects a NaN, and `fit_legacy_fog_extinction` is the only consumer that
-//!   guards its own inputs.
+//! - **Finite.** `CellLightingRes`, `SkyParamsRes`, `WeatherDataRes` and the
+//!   canonical `WaterMaterial` are copied more or less verbatim into the
+//!   per-frame UBO / `water.frag` push constants. Nothing between here and
+//!   the shaders rejects a NaN, and `fit_legacy_fog_extinction` is the only
+//!   consumer that guards its own inputs.
 //! - **Non-negative radiance.** Colours and intensities are linear radiance
 //!   multipliers. A negative one subtracts light, which no authored record can
 //!   express.
@@ -29,13 +30,22 @@
 //!   fact, so disagreement means one of the two is stale — the "confirmed
 //!   exterior lighting" case the smoke matrix has to gate.
 //!
+//! #4483 — the gate is deliberately **coverage over the whole canonical env
+//! tier**, not just the two legacy resources: a corrupt WATR's NaN reaches
+//! `WaterMaterial` (and the push constants) verbatim through
+//! `resolve_water_material`'s unclamped scalars — clamping policy belongs to
+//! WATAL — so `env.health` is the input gate on that path, exactly as it is
+//! for a NaN weather fog distance or a non-finite `FogMedium` coefficient.
+//!
 //! Fog distances are reported but **not** gated. `fit_legacy_fog_extinction`
 //! already treats `far <= near` as "no fog" rather than as an error, so an
 //! inverted ramp is a shipped authoring pattern the engine absorbs, not a
 //! defect. Gating it would be inventing a rule the engine does not hold.
 
 use super::shared::*;
-use crate::components::{CellLightingRes, SkyParamsRes};
+use byroredux_core::ecs::components::water::{WaterMaterial, WaterPlane};
+use crate::components::{CellLightingRes, SkyParamsRes, WeatherDataRes};
+use crate::fog::FogMedium;
 
 /// Tolerance on `‖dir‖ == 1`.
 ///
@@ -46,21 +56,23 @@ use crate::components::{CellLightingRes, SkyParamsRes};
 /// magnitude outside it.
 const UNIT_LENGTH_EPSILON: f32 = 1.0e-3;
 
-/// One violated rule, named by the field that broke it.
+/// One violated rule, named by the field that broke it. `field` is a dotted
+/// rule name (`lighting.fog_near`, `water[2].ior`, …) — composed for the
+/// per-plane/per-medium repeats, hence owned rather than `&'static`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EnvFinding {
-    pub(crate) field: &'static str,
+    pub(crate) field: String,
     pub(crate) detail: String,
 }
 
-fn finding(field: &'static str, detail: impl Into<String>) -> EnvFinding {
+fn finding(field: impl Into<String>, detail: impl Into<String>) -> EnvFinding {
     EnvFinding {
-        field,
+        field: field.into(),
         detail: detail.into(),
     }
 }
 
-fn check_finite(out: &mut Vec<EnvFinding>, field: &'static str, values: &[f32]) {
+fn check_finite(out: &mut Vec<EnvFinding>, field: &str, values: &[f32]) {
     if let Some((i, v)) = values
         .iter()
         .enumerate()
@@ -73,7 +85,7 @@ fn check_finite(out: &mut Vec<EnvFinding>, field: &'static str, values: &[f32]) 
 
 /// Radiance must be finite and non-negative. Checked together so a NaN
 /// colour reports once rather than tripping both rules.
-fn check_radiance(out: &mut Vec<EnvFinding>, field: &'static str, values: &[f32]) {
+fn check_radiance(out: &mut Vec<EnvFinding>, field: &str, values: &[f32]) {
     let before = out.len();
     check_finite(out, field, values);
     if out.len() != before {
@@ -92,7 +104,7 @@ fn check_radiance(out: &mut Vec<EnvFinding>, field: &'static str, values: &[f32]
     }
 }
 
-fn check_unit_direction(out: &mut Vec<EnvFinding>, field: &'static str, dir: [f32; 3]) {
+fn check_unit_direction(out: &mut Vec<EnvFinding>, field: &str, dir: [f32; 3]) {
     let before = out.len();
     check_finite(out, field, &dir);
     if out.len() != before {
@@ -107,6 +119,114 @@ fn check_unit_direction(out: &mut Vec<EnvFinding>, field: &'static str, dir: [f3
     }
 }
 
+/// All four coefficients of one canonical fog medium are finite. The fitter
+/// makes `from_legacy_ramp` values finite by construction (`fog.rs` returns
+/// 0.0 for non-finite inputs) and `lerp` preserves finiteness, so a finding
+/// here means a producer bypassed both.
+fn check_fog_medium(out: &mut Vec<EnvFinding>, prefix: &str, medium: &FogMedium) {
+    check_finite(
+        out,
+        &format!("{prefix}.extinction_per_meter"),
+        &[medium.extinction_per_meter],
+    );
+    check_finite(
+        out,
+        &format!("{prefix}.single_scatter_albedo"),
+        &[medium.single_scatter_albedo],
+    );
+    check_finite(out, &format!("{prefix}.coverage"), &[medium.coverage]);
+    check_finite(
+        out,
+        &format!("{prefix}.scale_height_meters"),
+        &[medium.scale_height_meters],
+    );
+}
+
+/// Walk one resolved `WaterMaterial` (#4483). Every `f32` here reaches
+/// `water.frag`'s push constants verbatim: colours get the radiance rule,
+/// every other scalar the finite rule. Structural fields (indices, flags,
+/// the normal encoding) have no non-finite value space and are skipped.
+fn check_water_plane(out: &mut Vec<EnvFinding>, prefix: &str, mat: &WaterMaterial) {
+    for (field, values) in [
+        ("shallow_color", &mat.shallow_color[..]),
+        ("deep_color", &mat.deep_color[..]),
+        ("underwater_color", &mat.underwater_color[..]),
+        ("reflection_tint", &mat.reflection_tint[..]),
+        ("day_shallow_color", &mat.day_shallow_color[..]),
+        ("day_deep_color", &mat.day_deep_color[..]),
+        ("day_reflection_tint", &mat.day_reflection_tint[..]),
+        ("night_shallow_color", &mat.night_shallow_color[..]),
+        ("night_deep_color", &mat.night_deep_color[..]),
+        ("night_reflection_tint", &mat.night_reflection_tint[..]),
+    ] {
+        check_radiance(out, &format!("{prefix}.{field}"), values);
+    }
+    for (field, values) in [
+        ("fog_near", &[mat.fog_near][..]),
+        ("fog_far", &[mat.fog_far][..]),
+        ("depth_amount", &[mat.depth_amount][..]),
+        ("underwater_fog_near", &[mat.underwater_fog_near][..]),
+        ("underwater_fog_far", &[mat.underwater_fog_far][..]),
+        ("underwater_fog_amount", &[mat.underwater_fog_amount][..]),
+        ("opacity", &[mat.opacity][..]),
+        ("alpha_controls", &mat.alpha_controls[..]),
+        ("fresnel_f0", &[mat.fresnel_f0][..]),
+        ("reflectivity", &[mat.reflectivity][..]),
+        (
+            "reflection_hdr_multiplier",
+            &[mat.reflection_hdr_multiplier][..],
+        ),
+        ("day_fog_near", &[mat.day_fog_near][..]),
+        ("day_fog_far", &[mat.day_fog_far][..]),
+        ("night_fog_near", &[mat.night_fog_near][..]),
+        ("night_fog_far", &[mat.night_fog_far][..]),
+        ("scroll_a", &mat.scroll_a[..]),
+        ("scroll_b", &mat.scroll_b[..]),
+        ("scroll_c", &mat.scroll_c[..]),
+        ("uv_scale_a", &[mat.uv_scale_a][..]),
+        ("uv_scale_b", &[mat.uv_scale_b][..]),
+        ("uv_scale_c", &[mat.uv_scale_c][..]),
+        ("uv_offset", &mat.uv_offset[..]),
+        (
+            "noise_amplitude_scales",
+            &mat.noise_amplitude_scales[..],
+        ),
+        ("noise_falloff", &[mat.noise_falloff][..]),
+        ("normal_falloff", &mat.normal_falloff[..]),
+        ("displacement", &mat.displacement[..]),
+        ("rain_start_size", &[mat.rain_start_size][..]),
+        ("rain_velocity", &[mat.rain_velocity][..]),
+        ("rain_falloff", &[mat.rain_falloff][..]),
+        ("rain_dampener", &[mat.rain_dampener][..]),
+        ("normal_magnitude", &[mat.normal_magnitude][..]),
+        (
+            "above_water_fog_amount",
+            &[mat.above_water_fog_amount][..],
+        ),
+        ("depth_weights", &mat.depth_weights[..]),
+        ("effect_controls", &mat.effect_controls[..]),
+        ("specular_magnitude", &[mat.specular_magnitude][..]),
+        ("specular_radius", &[mat.specular_radius][..]),
+        ("flowmap_scale", &[mat.flowmap_scale][..]),
+        (
+            "absorption_coefficients",
+            &mat.absorption_coefficients[..],
+        ),
+        ("concentration", &mat.concentration[..]),
+        ("foam_strength", &[mat.foam_strength][..]),
+        ("shoreline_width", &[mat.shoreline_width][..]),
+        ("ior", &[mat.ior][..]),
+        ("wave_amplitude", &[mat.wave_amplitude][..]),
+        ("wave_frequency", &[mat.wave_frequency][..]),
+        ("angular_velocity", &[mat.angular_velocity][..]),
+        ("rain_response", &[mat.rain_response][..]),
+        ("sun_specular_power", &[mat.sun_specular_power][..]),
+        ("roughness", &[mat.roughness][..]),
+    ] {
+        check_finite(out, &format!("{prefix}.{field}"), values);
+    }
+}
+
 /// Evaluate every environment rule. Pure — no `World`, no renderer — so the
 /// rules are unit-testable without a Vulkan device or game data.
 ///
@@ -117,6 +237,8 @@ fn check_unit_direction(out: &mut Vec<EnvFinding>, field: &'static str, dir: [f3
 pub(crate) fn check_environment(
     lighting: Option<&CellLightingRes>,
     sky: Option<&SkyParamsRes>,
+    weather: Option<&WeatherDataRes>,
+    water_planes: &[WaterMaterial],
 ) -> Vec<EnvFinding> {
     let mut out = Vec::new();
 
@@ -131,11 +253,7 @@ pub(crate) fn check_environment(
         check_radiance(&mut out, "lighting.fog_color", &lit.fog_color);
         check_finite(&mut out, "lighting.fog_near", &[lit.fog_near]);
         check_finite(&mut out, "lighting.fog_far", &[lit.fog_far]);
-        check_finite(
-            &mut out,
-            "lighting.fog_medium.extinction_per_meter",
-            &[lit.fog_medium.extinction_per_meter],
-        );
+        check_fog_medium(&mut out, "lighting.fog_medium", &lit.fog_medium);
         if let Some(c) = lit.fog_far_color {
             check_radiance(&mut out, "lighting.fog_far_color", &c);
         }
@@ -194,6 +312,23 @@ pub(crate) fn check_environment(
         }
     }
 
+    // #4483 — the weather-side canonical inputs: the legacy TOD fog
+    // distances (`WeatherDataRes::fog`) feed the `cell_lit` writes every
+    // frame and both fitted media feed `fog_medium` verbatim.
+    if let Some(wd) = weather {
+        check_finite(&mut out, "weather.fog", &wd.fog);
+        check_fog_medium(&mut out, "weather.fog_media[0]", &wd.fog_media[0]);
+        check_fog_medium(&mut out, "weather.fog_media[1]", &wd.fog_media[1]);
+    }
+
+    // #4483 — the canonical water tier. ~40 `f32` fields reach
+    // `water.frag`'s push constants verbatim from `resolve_water_material`
+    // with no clamp on the corrupt-input path (clamping is WATAL policy),
+    // so this gate is the input check for the whole material.
+    for (index, mat) in water_planes.iter().enumerate() {
+        check_water_plane(&mut out, &format!("water[{index}]"), mat);
+    }
+
     if let (Some(lit), Some(sky)) = (lighting, sky) {
         if lit.is_interior == sky.is_exterior {
             out.push(finding(
@@ -224,20 +359,31 @@ impl ConsoleCommand for EnvHealthCommand {
     }
 
     fn description(&self) -> &str {
-        "Gate CellLightingRes + SkyParamsRes on finite, usable values (#2368)"
+        "Gate CellLightingRes + SkyParamsRes + WeatherDataRes + WaterMaterial on finite, usable values (#2368, #4483)"
     }
 
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         let lighting = world.try_resource::<CellLightingRes>();
         let sky = world.try_resource::<SkyParamsRes>();
+        let weather = world.try_resource::<WeatherDataRes>();
+        let water_planes: Vec<WaterMaterial> = world
+            .query::<WaterPlane>()
+            .map(|query| query.iter().map(|(_, plane)| plane.material).collect())
+            .unwrap_or_default();
         let mut lines = vec![format!(
-            "env: resources lighting={} sky={}",
+            "env: resources lighting={} sky={} weather={} water_planes={}",
             if lighting.is_some() {
                 "present"
             } else {
                 "absent"
             },
             if sky.is_some() { "present" } else { "absent" },
+            if weather.is_some() {
+                "present"
+            } else {
+                "absent"
+            },
+            water_planes.len(),
         )];
 
         // Evidence, not gates — see the module doc on why fog ordering is
@@ -262,7 +408,12 @@ impl ConsoleCommand for EnvHealthCommand {
             ));
         }
 
-        let findings = check_environment(lighting.as_deref(), sky.as_deref());
+        let findings = check_environment(
+            lighting.as_deref(),
+            sky.as_deref(),
+            weather.as_deref(),
+            &water_planes,
+        );
         if findings.is_empty() {
             lines.push("env: PASS".to_string());
         } else {
