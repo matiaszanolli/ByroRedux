@@ -273,6 +273,10 @@ Still open:
   with the texture-alpha provenance recorded here as its citation.
 * **Noise shape frequencies** (`0.00008` / `0.0009` per metre) predate the
   sourced pass and are not yet justified.
+* **Rendered-march acceptance is manual** (2026-09-19): unit tests pin the
+  coverage → density source shape and `m-exteriors.sh cycle` only image-healths
+  its PNGs — no gate checks a cloud invariant in pixels, so the cloudscape
+  verdict is human-only (EXT-D7-2026-09-19-06 item 3).
 
 ---
 

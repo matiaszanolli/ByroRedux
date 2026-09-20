@@ -321,6 +321,11 @@ FO3/FNV content (#3200): every vanilla `WATR`'s `FNAM` clears the bit and its
 ("water quality") FormID link present on 73/78 FNV and 51/53 FO3 records,
 now captured on `WatrRecord::effect_form` at the parse boundary — see the
 table below.
+The modern family's `TNAM` is likewise captured at the parse boundary with no
+consumer yet: a `MATT` surface impact-material FormID
+(`WatrRecord::material_type_form`, authored on 9 vanilla records — Skyrim 5,
+FO4 2, FO76 2), deliberately distinct from Oblivion's text `TNAM` diffuse
+path — consumer pending.
 An all-zero `NAM0` is treated as a sentinel: named or flow-textured rivers
 retain their bounded kind fallback current instead of becoming motionless.
 That explicit velocity is also retained as provenance and promotes a neutral
@@ -570,6 +575,7 @@ Everything else is a SENTINEL the older game leaves unset, identical across game
 | normal/noise texture | **SENTINEL** `u32::MAX` → procedural | AUTHORED (`NNAM`) | AUTHORED (`TNAM`) | NNAM/TNAM role resolved by `GameKind` |
 | surface material / medium | AUTHORED `MNAM`; `lava` on 2/23 | n/a | n/a | Oblivion `MNAM` → `material_name` → `WaterKind::Lava` |
 | surface sound | AUTHORED `SNAM` on 17/23 (consumer pending) | n/a | n/a | Oblivion `SNAM` → `surface_sound` |
+| surface impact material | n/a | n/a | AUTHORED `TNAM` on 9 vanilla records (consumer pending) | Skyrim/FO4/FO76 `TNAM` → MATT `material_type_form` (Skyrim 5, FO4 2, FO76 2); not a texture path — Oblivion's text `TNAM` is the diffuse-texture row above |
 | noise layers (`NAM2`/`NAM3`/`NAM4`, flowing `NAM5`) | **SENTINEL** `[u32::MAX;3]` | **SENTINEL** | AUTHORED (NAM5 replaces layer 3 for flow) | NAM2-5 |
 | below-water fog split | **SENTINEL** (reuse above) | **SENTINEL** | AUTHORED (DNAM tail) | DNAM[144..152] |
 | `wave_amplitude/frequency` | AUTHORED | AUTHORED (displacement force/velocity) | AUTHORED (displacement force overrides amplitude) | FO3/FNV DATA[76..84], DNAM[76..80] |
@@ -754,7 +760,11 @@ authored worldspace LOD water, NAM2–4 noise layers, and bounded sunlight
   It runs the Skyrim `(2,-10)` flowing-water fixture and FNV Lake Mead
   `(19,13)`, retaining paired above/below captures, `water.dump`,
   `water.contacts`, finite-output telemetry, and an image-delta verdict.
-  Dynamic-body contact remains a separate open gate.
+  That delta oracle is deliberately weak (a >0.01 full-frame mean difference
+  between poses 250–450 units apart with different look angles), so
+  above/below material fidelity beyond it is MANUAL acceptance
+  (EXT-D7-2026-09-19-06 item 5). Dynamic-body contact remains a separate
+  open gate.
 - **Shipped 2026-09-09:** `docs/smoke-tests/w1-water-traversal.sh` is the W1
   traversal gate — a real `CharacterController` capsule walking shore → swim →
   dive → surface → shore → water-adjacent cell boundary on both frozen

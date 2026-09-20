@@ -811,6 +811,28 @@ the field changing coherently across nearby roots rather than each ribbon
 shimmering independently. The clip is evidence for the Step 6 checklist, not
 a claim that the separate ten-second no-loop inspection has been completed.
 
+#### Washout precheck (2026-09-19)
+
+The harness's own baseline can be the failure it exists to catch: the
+committed `gc-backlit-*` references at `00d4ef5d0` measure luminance sd
+0.0092–0.0106 (≈2.3–2.7/255) — the ground-framing poses were themselves the
+washout veil, while the frontlit frames measured 0.077–0.090. The protocol,
+now encoded in the script instead of only in audit prose (#4482, #4509):
+
+1. Measure luminance standard deviation first (`magick …
+   %[fx:standard_deviation]`). Below ~10/255 (sd 0.039) a frame carries no
+   scene contrast and cannot arbitrate any ground-cover A/B.
+2. Treat only `gc-backlit-*` poses as ground-framing. A backlit frame under
+   the line is stamped `washed_out=yes` in `manifest.tsv` (with the measured
+   sd) and fails the run; a frontlit frame under it is stamped and warned.
+3. Confirm the veil is gone — backlit sd above the line — before trusting a
+   wind, palette, or cross-fade delta. An A/B over washed frames reports
+   "no delta" for a real fix.
+4. The `bench:` and `groundcover:` telemetry rows must be present, and a
+   backlit case must not report the annihilated `chunks=0 blades=0`
+   signature; otherwise a pass that scattered nothing mints a
+   perfectly-formed reference row.
+
 1. **Terrain attribute sampling path — ANSWERED 2026-09-06 (#4052).** Both
    candidates were built and measured on real terrain. **Read the global vertex
    SSBO directly (path A). Do not bake an attribute texture.** And, for §4:
@@ -1560,6 +1582,18 @@ are named in `shader_constants_data.rs` (rather than left as shader literals)
 so the pending evidence and any eventual retune are reviewable; #4378 moved
 them without changing their values.
 
+The 2026-09-19 post-#4378 literal sweep of all 15 `groundcover_*` GLSL files
+found exactly one numeric arrival since: the R2 constants
+`A1 = 0.7548776662466927` / `A2 = 0.5698402909980532` in
+`include/groundcover_candidate.glsl` (`byroGcCandidate`). These are
+**cited-math** — the Roberts 2018 generalised golden-ratio weights, cited
+in-file and by §13's R2 entry — and so exempt from the uncited register above,
+recorded here so the next sweep does not re-flag them. The remaining
+#4378-class straggler is unchanged: the debug-only `gl_PointSize` legibility
+ramp in `groundcover_blade.vert`'s `GC_DEBUG_POINTS` branch is still uncited
+in the shader source — cosmetic debug-view sizing with no published source to
+cite, tuning nothing a player sees.
+
 ### 12.13 Density from the candidate budget (2026-09-13)
 
 **Measured cause.** After §12.12 Phase A, Skyrim `2,-4` accepted 5,923 of
@@ -1596,6 +1630,13 @@ as sprouts:** the built-in species' blades are 6–14 units tall, so near the
 camera each covers little of the screen. That is blade size — §12.12 Phase B's
 sourced dimensions — not blade count.
 
+**Second rise (2026-09-16, `7996edf61`).** The candidate budget rose another
+4×: `GROUNDCOVER_CANDIDATES_PER_THREAD` 64 → 256, taking
+`GROUNDCOVER_MAX_BLADES_PER_CHUNK` 4,096 → 16,384 (one candidate per 4 units)
+and the blade buffer 16 → 64 MiB. `GROUNDCOVER_MAX_CHUNKS` stayed 256; the
+draw distance is 3000 units (~167-chunk bound, ~1.5× headroom). The size-pin
+test and `memory-budget.md` ledger row moved with it in the same commit.
+
 ### 12.14 Upscaler contract (2026-09-15)
 
 The opaque ribbon tier is ordinary temporal geometry, not a global FSR mask
@@ -1613,6 +1654,13 @@ reintroduce a blanket `1.0` mask. This is the ground-cover instantiation of
 the [FSR 3.1 input contract](fsr3-upscaler-integration-plan.md#14-fsr-input-contracts),
 which keeps vector sign, jitter exclusion, and material-driven masks shared
 with the main geometry pass.
+
+> **Acceptance status (2026-09-20, #4506):** rendered-mask acceptance here is
+> human-only. The unit guard over these masks is shader-text `contains`
+> scanning (#4297), and `m-exteriors.sh` hardcodes `--upscaler taa` in every
+> bench mode, so the reactive/linear-compression masks are never exercised
+> against the real upscaler on a live frame. Any change to this contract
+> needs a manual FSR-mode capture.
 
 ---
 
