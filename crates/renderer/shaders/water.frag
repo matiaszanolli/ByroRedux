@@ -1382,6 +1382,36 @@ void main() {
                     != gl_RayQueryCommittedIntersectionNoneEXT) {
                     float floorT = rayQueryGetIntersectionTEXT(floorRq, true);
                     vec3 floorWorld = vWorldPos + refractDir * floorT;
+                    // #4545 — occlusion gate. The deposit below lands at the
+                    // floor hit's SCREEN projection, but the surface that
+                    // actually owns that pixel can be anything between the
+                    // camera and the bed: the Riverwood bridge's deck and
+                    // beams occlude the riverbed, and without this test they
+                    // inherited the bed's caustic net (live-reported with a
+                    // screenshot). One terminate-on-first-hit ray back toward
+                    // the camera is a pure boolean visibility query — the
+                    // cheapest ray the pipeline can issue. Water planes are
+                    // not TLAS-eligible (the reflection/refraction rays above
+                    // already rely on that), so the surface itself cannot
+                    // occlude this ray from either side. The origin backs off
+                    // along the ray so the bed triangle the floor query just
+                    // hit cannot self-report at t≈0.
+                    vec3 toCamera = cameraPos.xyz - floorWorld;
+                    float cameraDist = length(toCamera);
+                    toCamera /= max(cameraDist, 1.0e-4);
+                    rayQueryEXT occlRq;
+                    rayQueryInitializeEXT(
+                        occlRq, topLevelAS,
+                        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                        0xFF,
+                        floorWorld + toCamera * 1.0, 0.0, toCamera,
+                        max(cameraDist - 2.0, 0.0)
+                    );
+                    while (rayQueryProceedEXT(occlRq)) {}
+                    bool causticOccluded = rayQueryGetIntersectionTypeEXT(
+                        occlRq, true)
+                        != gl_RayQueryCommittedIntersectionNoneEXT;
+                    if (!causticOccluded) {
                     // 4. Project floor hit to screen-space.
                     // #markarth-precision / #1488 — `floorWorld` is ABSOLUTE
                     // (vWorldPos arrives absolute for the TLAS trace) but
@@ -1467,6 +1497,7 @@ void main() {
                             }
                         }
                     }
+                    } // !causticOccluded (#4545)
                 }
             }
         }

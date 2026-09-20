@@ -2415,4 +2415,37 @@ mod reflection_intensity_contract_tests {
              reflection term needs its own measurable view (#4543 gate)"
         );
     }
+
+    /// #4545 — every caustic deposit must pass the camera-visibility gate.
+    ///
+    /// The deposit lands at the floor hit's SCREEN projection, so without
+    /// an occlusion test any surface between the camera and the riverbed
+    /// (the Riverwood bridge's deck and beams) inherits the bed's caustic
+    /// net. The gate is one terminate-on-first-hit ray from the hit back
+    /// toward the camera; this pins that the deposit loop stays inside the
+    /// `!causticOccluded` arm and that the gate actually traces.
+    #[test]
+    fn caustic_deposits_are_gated_on_camera_visibility() {
+        let gate = WATER_FRAG_SRC
+            .find("bool causticOccluded")
+            .expect("water.frag lost the #4545 caustic occlusion gate");
+        let deposit = WATER_FRAG_SRC
+            .find("imageAtomicAdd(waterCausticAccum")
+            .expect("water.frag lost its caustic deposit");
+        let gate_close = WATER_FRAG_SRC[gate..]
+            .find("} // !causticOccluded (#4545)")
+            .map(|offset| gate + offset)
+            .expect("water.frag lost the closing brace of the occlusion arm");
+        assert!(
+            gate < deposit && deposit < gate_close,
+            "water.frag deposits caustics outside the camera-visibility \
+             arm (#4545 relapse) — occluded riverbed hits must not write \
+             the accumulator"
+        );
+        assert!(
+            WATER_FRAG_SRC.contains("gl_RayFlagsTerminateOnFirstHitEXT"),
+            "the #4545 occlusion query must stay a terminate-on-first-hit \
+             boolean ray, not a full closest-hit trace"
+        );
+    }
 }
