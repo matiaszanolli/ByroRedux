@@ -160,9 +160,11 @@ layout(std430, set = 2, binding = 1) readonly buffer WaterParamsBlock {
     WaterParams params[];
 } waterParams;
 
+// Bare 4-byte selector — a trailing uvec3 would std430-pad this block to
+// 28 B, past the pipeline layout's declared 16 B push range (#4510 /
+// VUID-layout-10069). The remaining range width is host-side padding only.
 layout(push_constant) uniform WaterDrawPush {
     uint waterIndex;
-    uvec3 _reserved;
 } drawPush;
 
 layout(location = 0) out vec3 vWorldPos;

@@ -189,16 +189,28 @@ const _: () = assert!(
 );
 
 /// Per-draw selector for the material array uploaded once per frame.
+///
+/// The GLSL `WaterDrawPush` blocks (water.vert / water.frag) declare only
+/// the 4-byte `water_index` selector; these trailing words exist so
+/// [`WaterPipeline::record_draw`] fills the pipeline layout's declared
+/// 16 B `VkPushConstantRange`. The shader must not declare them — a
+/// trailing `uvec3` std430-pads the block to 28 B, past the declared
+/// range (#4510 / VUID-layout-10069).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct WaterPush {
     pub water_index: u32,
+    /// Host-side padding only; never read by either shader stage.
     pub _reserved: [u32; 3],
 }
 
+// 16 B is the range `WaterPipeline::new` declares and `record_draw` pushes;
+// it upper-bounds the shaders' 4-byte selector block rather than mirroring
+// it (`push_constant_block_tests` pins the compiled block against this).
 const _: () = assert!(
     std::mem::size_of::<WaterPush>() == 16,
-    "WaterPush must match the shader's 16-byte push block"
+    "WaterPush must stay the 16-byte push range; the GLSL block declares \
+     only the 4-byte waterIndex selector"
 );
 
 /// Small initial allocation; each frame slot grows geometrically when a cell
@@ -1391,6 +1403,27 @@ mod tests {
         );
     }
 
+    /// REN-D8-2026-09-20-03 / #4534 — `traceWaterRay`'s header must not
+    /// quantify the refraction miss term. 7996edf61 normalized the
+    /// absorption ramp, so a miss shades at `fog_far` where transmission is
+    /// exactly 0% and the old `exp(-2t)` shape's ~14% residue the header
+    /// quoted no longer exists — any percentage there rots with the next
+    /// ramp tweak. The header's miss-fallback contract sentence must stay.
+    #[test]
+    fn trace_water_ray_header_keeps_the_contract_without_a_stale_miss_percentage() {
+        let src = include_str!("../../shaders/water.frag");
+        assert!(
+            !src.contains("~14%"),
+            "traceWaterRay's header still quantifies the miss term as ~14% — the ramp \
+             it described was normalized in 7996edf61 and now transmits 0% at fog_far; \
+             delete the number rather than let it rot (#4534)"
+        );
+        assert!(
+            src.contains("`missFallback` is the colour returned on a TLAS miss."),
+            "the traceWaterRay header must keep its missFallback contract sentence"
+        );
+    }
+
     /// #3822 (REN-WD-D15-01) — the refraction half of water's alpha must
     /// stop competing with an RT refraction it already resolved. `refrHit`
     /// is hoisted out of the refraction `if` block and feeds a third,
@@ -2235,5 +2268,48 @@ mod attachment_doc_pin_tests {
              — that alpha IS the SRC_ALPHA the coverage blend attenuates the \
              receiver's demodulated GI by (#3977 / #3821)",
         );
+    }
+}
+
+/// REN-D4-2026-09-20-01 / #4510 — the compiled water push-constant block
+/// must stay inside the pipeline layout's declared `WaterPush` range.
+///
+/// Both stages used to declare `uint waterIndex; uvec3 _reserved;`: under
+/// std430 the uvec3 aligns to 16, so the block spanned [0, 28] against the
+/// 16 B `VkPushConstantRange` — two VUID-layout-10069 validation errors at
+/// every pipeline creation, tolerated only because `_reserved` was never
+/// read. A Rust-side `size_of` assert cannot see the GLSL side, so this
+/// reflects the committed `.spv` binaries directly (the same rspirv
+/// `uniform_block_size_by_name` guard the #1447/#1493/#2464 UBO pins use)
+/// and holds each stage's block against `size_of::<WaterPush>()`.
+#[cfg(test)]
+mod push_constant_block_tests {
+    use super::super::reflect::uniform_block_size_by_name;
+    use super::{WATER_FRAG_SPV, WATER_VERT_SPV, WaterPush};
+
+    /// The shader blocks must fit the single VERTEX|FRAGMENT range
+    /// `WaterPipeline::new` declares. `uniform_block_size_by_name` reports
+    /// the block's span rounded up to 16 B — never smaller than the true
+    /// std430 extent — so a result within the 16 B range guarantees the raw
+    /// extent is too, while the pre-fix 28 B block reports 32 B and fails.
+    #[test]
+    fn water_push_constant_blocks_stay_inside_the_declared_16_byte_range() {
+        let declared = std::mem::size_of::<WaterPush>() as u32;
+        for (name, spv) in [("water.vert", WATER_VERT_SPV), ("water.frag", WATER_FRAG_SPV)] {
+            let size = uniform_block_size_by_name(spv, "WaterDrawPush")
+                .unwrap_or_else(|e| panic!("{name}: reflect WaterDrawPush failed: {e}"))
+                .unwrap_or_else(|| {
+                    panic!("{name}: declares no WaterDrawPush push-constant block")
+                });
+            assert!(
+                size <= declared,
+                "{name}.spv's WaterDrawPush block spans {size} B but the pipeline \
+                 layout declares only {declared} B — VUID-layout-10069 fires on every \
+                 pipeline creation. The GLSL block must stay at the bare waterIndex \
+                 selector; grow the Rust WaterPush range (and both stages together) \
+                 if a new word is genuinely needed. Recompile with glslangValidator -V \
+                 {name} -o {name}.spv after any GLSL edit. See #4510."
+            );
+        }
     }
 }
