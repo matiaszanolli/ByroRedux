@@ -1647,10 +1647,18 @@ of the interaction displacement ping-pong. It projects the preceding pose with
 the scene's origin-corrected `prevViewProj`, then `groundcover_blade.frag`
 writes `0.5 * (current_ndc - previous_ndc)` into the normal motion attachment.
 
-The ribbon tier is depth-writing and opaque, so both FSR reactive and
-transparency/composition masks are `0.0`. A future stochastic card cross-fade
-may write a material-driven reactive value, bounded by `0.9`; it must not
-reintroduce a blanket `1.0` mask. This is the ground-cover instantiation of
+The ribbon tier is depth-writing and opaque, so its transparency/composition
+mask is `0.0`. Its reactive mask is not: since `fd0cd577c` (which replaced
+the era when both masks were blanket `1.0`) `groundcover_blade.frag` writes
+the transition-driven value
+`0.9 * max(midTransition, cardTransition)` — zero at the opaque LOD
+endpoints, rising only across either stochastic LOD/card handoff
+(`4·w·(1−w)` for the mid-tier weight and the card weight respectively).
+It is material-driven and bounded by `0.9`; it must not regress to a blanket
+`1.0` mask. Pinned by
+`blade_motion_and_fsr_mask_contract_stay_material_driven`
+(`crates/renderer/src/vulkan/groundcover.rs`). This is the ground-cover
+instantiation of
 the [FSR 3.1 input contract](fsr3-upscaler-integration-plan.md#14-fsr-input-contracts),
 which keeps vector sign, jitter exclusion, and material-driven masks shared
 with the main geometry pass.

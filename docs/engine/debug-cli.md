@@ -306,6 +306,13 @@ cam.tp <entity_id>          → teleport camera to over-the-shoulder framing of
 # Asset / texture diagnostics
 tex.missing                 → entities with fallback texture + expected paths
 tex.loaded                  → unique loaded textures + fallback count
+tex.dump <bsa> <tex> [out]  → extract one texture from an on-disk archive,
+                             decode it, and write a PNG for offline
+                             inspection (default `/tmp/tex_dump.png`; quote
+                             paths containing spaces). Menu art resolves
+                             through the textures\menus / menus80 / menus50
+                             resolution sets like the menu renderer; `.tex`
+                             font atlases decode too
 mesh.info <entity_id>       → mesh / texture / material / transform / parent
                              chain / FormID / markers / aux-component dump
                              (see below)

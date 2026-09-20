@@ -135,10 +135,16 @@ it where that is not `draw_frame` itself.
                            SSBO plus the composite, SVGF, TAA and water param
                            UBOs, which are uploaded ABOVE it specifically so
                            they fold onto this one dependency (#909, #961,
-                           #1397). That fold is why the later passes — step 17
+                           #1397). That fold is why the later passes — step 16
                            composite most visibly — carry no HOST barrier of
                            their own despite consuming host-written UBOs.
-                           Required by spec even for HOST_COHERENT memory.
+                           Defense-in-depth (#4182), not a spec requirement:
+                           host writes flushed before `queue_submit` are
+                           already visible (Vulkan 1.3 §7.9 host-write
+                           ordering), and every write here is a mapped write
+                           made earlier in `draw_frame`. The barrier guards a
+                           future non-coherent memory type or a
+                           post-recording host write.
 6  [Main render pass]   ─  raster (BEGIN → END):
      triangle.vert / .frag  geometry + RT ray-queries
      water.vert / .frag     water + caustic imageAtomicAdd
@@ -185,20 +191,28 @@ it where that is not `draw_frame` itself.
                            cluster_cull's cluster grid + light-index list
                            from step 5
 14 volumetrics_integrate ─┘
-15 taa.comp              ─  TAA resolve
-16 ssao.comp             ─  SSAO texture
-17 [Composite render pass]─ raster:
+15 ssao.comp             ─  SSAO texture
+16 [Composite render pass]─ raster:
      composite.vert / .frag  HDR combine → intermediate HDR image
                            (`R16G16B16A16_SFLOAT`, `SHADER_READ_ONLY_OPTIMAL`;
                            no tone-map, does NOT write the swapchain; does
-                           NOT add bloom — see step 18, #2796)
-18 bloom_downsample ×N   ─┐ bloom pyramid, runs AFTER composite
+                           NOT add bloom — see step 17, #2796)
+17 bloom_downsample ×N   ─┐ bloom pyramid, runs AFTER composite
    bloom_upsample   ×N    │ (`record_bloom_pass`, ordered after
    bloom_apply.comp      ─┘ `record_composite_pass` and before
-                           `record_upscale_pass`); `bloom_apply.comp` reads
-                           composite's HDR output back as a storage image
-                           and adds `up_mips[0]` in place
-                           (`BLOOM_INTENSITY = 0.15`)
+                           `record_taa_pass`/`record_upscale_pass`);
+                           `bloom_apply.comp` reads composite's HDR output
+                           back as a storage image and adds `up_mips[0]` in
+                           place (`BLOOM_INTENSITY = 0.15`)
+18 taa.comp              ─  TAA resolve — runs AFTER composite + bloom
+                           (#3572): it resolves the SAME fully-composited,
+                           post-bloom scene image the upscale consumes, so
+                           sky / denoised indirect / volumetrics / caustics /
+                           bloom are inside the filter on both jitter phases
+                           (the pre-#3572 raw-HDR tap resolved direct lighting
+                           only). Composite reads the raw HDR attachment
+                           directly; TAA's output feeds the
+                           upscale/presentation tap below.
 19 frame_upscaler.record  ─  FSR 3.1 SDK dispatch (Quality preset default) or
                            native-blit fallback (`--upscaler taa`) — render-
                            resolution HDR → output-resolution HDR. Raw

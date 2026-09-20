@@ -518,8 +518,14 @@ special cases.
 
 Ground cover's opaque ribbon tier follows this table directly: it emits an
 unjittered current-to-previous velocity from its shared-clock wind and
-displacement samples and writes zero to both masks. Its detailed contract is
-documented in [EXAL ground cover §12.14](exal-groundcover.md#1214-upscaler-contract-2026-09-15).
+displacement samples, and its transparency/composition mask stays zero.
+Its reactive mask is not zero: since `fd0cd577c` the ribbon writes
+`0.9 × max(midTransition, cardTransition)` — a transition-driven value that
+is zero at the opaque LOD endpoints and rises only across either stochastic
+LOD/card handoff, never a blanket mask (pinned by
+`blade_motion_and_fsr_mask_contract_stay_material_driven`). Its detailed
+contract is documented in
+[EXAL ground cover §12.14](exal-groundcover.md#1214-upscaler-contract-2026-09-15).
 
 For every dispatch, provide the exact current render/upscale sizes, FSR pixel
 jitter, motion scale, frame delta in milliseconds, exposure/pre-exposure,

@@ -256,21 +256,7 @@ impl ConsoleCommand for TexDumpCommand {
             Err(e) => return CommandOutput::error(format!("tex.dump: open '{archive_path}': {e}")),
         };
 
-        // Candidate archive keys, mirroring the menu renderer's set
-        // resolution: the path as given, then — for menu art — the three
-        // resolution classes. All lowercased: the menu renderer lowercases
-        // its candidates, and the BSA keys are authored in mixed case.
-        let lowered = texture_path.trim().replace('/', "\\").to_lowercase();
-        let mut candidates = vec![lowered.clone()];
-        if let Some(rest) = lowered
-            .strip_prefix("menus\\")
-            .or_else(|| lowered.strip_prefix("menus80\\"))
-            .or_else(|| lowered.strip_prefix("menus50\\"))
-        {
-            for set in ["menus", "menus80", "menus50"] {
-                candidates.push(format!("textures\\{set}\\{rest}"));
-            }
-        }
+        let candidates = tex_dump_candidate_keys(texture_path);
         let (hit, bytes) = match candidates
             .iter()
             .find_map(|key| archive.extract(key).ok().map(|b| (key.clone(), b)))
@@ -287,14 +273,7 @@ impl ConsoleCommand for TexDumpCommand {
         };
 
         let is_font_tex = hit.ends_with(".tex");
-        let decoded = if is_font_tex {
-            byroredux_menuxml::tex::Rgba8::parse_font_tex(&bytes)
-                .map_err(|e| format!("font .tex decode: {e}"))
-        } else {
-            byroredux_menuxml::tex::Rgba8::decode_dds(&bytes)
-                .ok_or_else(|| "DDS decode (BC1/BC2/BC3 + uncompressed only)".to_string())
-        };
-        let tex = match decoded {
+        let tex = match decode_tex_dump_bytes(&hit, &bytes) {
             Ok(tex) => tex,
             Err(e) => {
                 return CommandOutput::error(format!(
@@ -350,6 +329,230 @@ fn split_quoted_args(args: &str) -> Vec<String> {
         parts.push(current);
     }
     parts
+}
+
+/// Archive lookup keys for one `tex.dump` texture path, in probe order.
+/// Pure function extracted from `TexDumpCommand::execute` so the menu-art
+/// candidate resolution — the exact order `extract` is tried in — is
+/// unit-testable without an on-disk archive (the `bsa`/`ba2` crates are
+/// readers only, so this repo has no synthetic archive fixture; the same
+/// constraint the asset-provider tests document).
+///
+/// The path as given (trimmed, `/` → `\`, lowercased — the BSA keys are
+/// authored in mixed case and the menu renderer lowercases its candidates)
+/// always probes first; menu art (`Menus\…` / `Menus80\…` / `Menus50\…`)
+/// then probes the three resolution-set rewrites `textures\{set}\{rest}`
+/// in the menu renderer's own order, so `tex.dump Menus\icons\foo.dds`
+/// finds `textures\menus\icons\foo.dds` exactly like the live HUD does.
+fn tex_dump_candidate_keys(texture_path: &str) -> Vec<String> {
+    let lowered = texture_path.trim().replace('/', "\\").to_lowercase();
+    let mut candidates = vec![lowered.clone()];
+    if let Some(rest) = lowered
+        .strip_prefix("menus\\")
+        .or_else(|| lowered.strip_prefix("menus80\\"))
+        .or_else(|| lowered.strip_prefix("menus50\\"))
+    {
+        for set in ["menus", "menus80", "menus50"] {
+            candidates.push(format!("textures\\{set}\\{rest}"));
+        }
+    }
+    candidates
+}
+
+/// Decode one extracted archive blob — the `.tex`-vs-DDS dispatch half of
+/// `TexDumpCommand` (the decode itself is the bounded menuxml decoder:
+/// 8192² cap, truncation-checked). Extracted for the same reason as
+/// [`tex_dump_candidate_keys`]: the failure an operator sees for garbage
+/// or unsupported bytes is part of the command surface.
+fn decode_tex_dump_bytes(key: &str, bytes: &[u8]) -> Result<byroredux_menuxml::tex::Rgba8, String> {
+    if key.ends_with(".tex") {
+        byroredux_menuxml::tex::Rgba8::parse_font_tex(bytes)
+            .map_err(|e| format!("font .tex decode: {e}"))
+    } else {
+        byroredux_menuxml::tex::Rgba8::decode_dds(bytes)
+            .ok_or_else(|| "DDS decode (BC1/BC2/BC3 + uncompressed only)".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tex_dump_tests {
+    use super::*;
+    use byroredux_core::ecs::World;
+
+    // ── arg split (ae572745f) ──────────────────────────────────────
+    //
+    // Archive paths like `Oblivion - Misc.bsa` contain spaces, so the
+    // whole point of the quoted split is that a quoted segment stays
+    // ONE argument.
+
+    #[test]
+    fn quoted_paths_with_spaces_stay_one_argument() {
+        assert_eq!(
+            split_quoted_args(r#""Oblivion - Misc.bsa" menus\icons\foo.dds"#),
+            vec![
+                "Oblivion - Misc.bsa".to_string(),
+                r"menus\icons\foo.dds".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn all_three_arguments_may_be_quoted_or_plain() {
+        assert_eq!(
+            split_quoted_args(
+                r#""Skyrim - Textures.bsa" "textures\clutter\pot.dds" "C:\tmp\my dump.png""#
+            )
+            .len(),
+            3,
+            "quoted archive, texture and output paths must each split out whole"
+        );
+        assert_eq!(
+            split_quoted_args("foo.bsa bar.dds out.png"),
+            vec!["foo.bsa", "bar.dds", "out.png"],
+            "the plain whitespace split still works when nothing is quoted"
+        );
+    }
+
+    #[test]
+    fn empty_args_and_unterminated_quote_degrade_without_panicking() {
+        assert!(split_quoted_args("").is_empty());
+        assert!(split_quoted_args("   ").is_empty());
+        assert_eq!(
+            split_quoted_args(r#""unterminated.bsa"#),
+            vec!["unterminated.bsa"],
+            "an unterminated quote keeps its content as one tolerant segment"
+        );
+    }
+
+    // ── candidate resolution order ─────────────────────────────────
+
+    /// The order `extract` probes in IS the command's resolution
+    /// semantics: the literal (normalized) path first, then the menu
+    /// renderer's three resolution sets in its own menus → menus80 →
+    /// menus50 order.
+    #[test]
+    fn menu_art_probes_the_resolution_sets_after_the_literal_path() {
+        assert_eq!(
+            tex_dump_candidate_keys(r"Menus\Icons\Foo.DDS"),
+            vec![
+                r"menus\icons\foo.dds",
+                r"textures\menus\icons\foo.dds",
+                r"textures\menus80\icons\foo.dds",
+                r"textures\menus50\icons\foo.dds",
+            ]
+        );
+    }
+
+    #[test]
+    fn menus80_and_menus50_prefixes_fan_out_to_all_three_sets() {
+        for prefix in ["menus80", "menus50"] {
+            let keys = tex_dump_candidate_keys(&format!(r"{prefix}\test\bar.dds"));
+            assert_eq!(keys.len(), 4, "{prefix} menu art must fan out");
+            assert_eq!(keys[0], format!(r"{prefix}\test\bar.dds"));
+            assert_eq!(keys[1], r"textures\menus\test\bar.dds");
+            assert_eq!(keys[2], r"textures\menus80\test\bar.dds");
+            assert_eq!(keys[3], r"textures\menus50\test\bar.dds");
+        }
+    }
+
+    #[test]
+    fn non_menu_paths_and_near_miss_prefixes_probe_only_the_literal_key() {
+        assert_eq!(
+            tex_dump_candidate_keys(r"Textures\Landscape\Dirt.DDS"),
+            vec![r"textures\landscape\dirt.dds"],
+            "non-menu art gets exactly one probe — its normalized self"
+        );
+        assert_eq!(
+            tex_dump_candidate_keys("menus/icons/foo.dds")[0],
+            r"menus\icons\foo.dds",
+            "forward slashes normalise to the archive's backslash convention"
+        );
+        assert_eq!(
+            tex_dump_candidate_keys(r"menus folders\x.dds").len(),
+            1,
+            "a 'menus' prefix that is not the whole path segment is not menu art"
+        );
+    }
+
+    // ── decode dispatch (failure path + one success pin) ───────────
+
+    /// Minimal 4×4 DXT1 fixture — the smallest blob the menuxml decoder
+    /// accepts (128-byte header + one 8-byte BC1 block): magic, height at
+    /// header offset 8, width at 12, `DDPF_FOURCC` + "DXT1", then a black
+    /// block. Hand-rolled because the repo has no synthetic archive
+    /// fixture and the command's archive half is otherwise untestable.
+    fn minimal_dxt1_dds() -> Vec<u8> {
+        let mut d = vec![0u8; 128];
+        d[0..4].copy_from_slice(b"DDS ");
+        d[12..16].copy_from_slice(&4u32.to_le_bytes()); // height
+        d[16..20].copy_from_slice(&4u32.to_le_bytes()); // width
+        d[80..84].copy_from_slice(&0x4u32.to_le_bytes()); // DDPF_FOURCC
+        d[84..88].copy_from_slice(b"DXT1");
+        d.extend_from_slice(&[0u8; 8]); // one black BC1 block
+        d
+    }
+
+    #[test]
+    fn garbage_bytes_fail_decode_with_the_operator_message() {
+        let err = decode_tex_dump_bytes(r"menus\icons\junk.dds", &[0xFFu8; 64])
+            .expect_err("garbage must not decode as DDS");
+        assert!(err.contains("DDS decode"), "got: {err}");
+
+        let tex_err = decode_tex_dump_bytes(r"menus\fonts\junk.tex", b"not a tex atlas")
+            .expect_err("garbage must not decode as a font atlas");
+        assert!(tex_err.contains("font .tex decode"), "got: {tex_err}");
+
+        let mut truncated = minimal_dxt1_dds();
+        truncated.truncate(130);
+        assert!(
+            decode_tex_dump_bytes("menus\\icons\\cut.dds", &truncated).is_err(),
+            "a payload-truncated DDS must fail, not panic"
+        );
+    }
+
+    #[test]
+    fn minimal_dds_decodes_through_the_same_dispatch() {
+        // Success pin: proves the failure test above is about blob
+        // content, not about the dispatch being wired shut.
+        let tex = decode_tex_dump_bytes(r"menus\icons\ok.dds", &minimal_dxt1_dds())
+            .expect("the minimal fixture must decode");
+        assert_eq!((tex.width, tex.height), (4, 4));
+        assert_eq!(tex.pixels.len(), 4 * 4 * 4);
+        assert_eq!(&tex.pixels[0..4], &[0, 0, 0, 255], "black opaque block");
+    }
+
+    // ── command-surface failure paths through `execute` ────────────
+
+    #[test]
+    fn missing_arguments_report_usage() {
+        let world = World::new();
+        let out = TexDumpCommand.execute(&world, "");
+        assert!(
+            out.lines[0].starts_with("Error: usage: tex.dump"),
+            "{:?}",
+            out.lines
+        );
+        let out = TexDumpCommand.execute(&world, "only-archive.bsa");
+        assert!(
+            out.lines[0].contains("usage: tex.dump"),
+            "one argument is also insufficient: {:?}",
+            out.lines
+        );
+    }
+
+    #[test]
+    fn unopenable_archive_reports_the_open_error() {
+        let world = World::new();
+        let out = TexDumpCommand.execute(
+            &world,
+            "tex-dump-tests-definitely-missing-8a6f.bsa menus\\icons\\foo.dds",
+        );
+        let line = out.lines.join("\n");
+        assert!(
+            line.contains("tex.dump: open 'tex-dump-tests-definitely-missing-8a6f.bsa'"),
+            "the open failure must name the archive: {line}"
+        );
+    }
 }
 
 pub(crate) struct MeshInfoCommand;

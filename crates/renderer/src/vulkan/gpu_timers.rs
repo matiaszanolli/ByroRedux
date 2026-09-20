@@ -294,7 +294,9 @@ pub struct GpuPerFrameTimers {
     /// Per-frame "was this bracket's pair written?" — set by the
     /// END writer, cleared on reset. Slot index matches the frame
     /// slot the pool reads from. Each u32 packs `BIT_*` flags
-    /// (one per bracket — currently 18). The bit-gated read in
+    /// (one per bracket — the module header's bracket table is the
+    /// authoritative count; per-site numbers rot on the next bump).
+    /// The bit-gated read in
     /// `read_and_reset` is required because WAIT-reading an
     /// unwritten query blocks forever.
     ///
@@ -486,7 +488,7 @@ impl GpuPerFrameTimers {
     /// the per-frame command buffer.
     ///
     /// The first time a slot is read its `active_bits` are zero —
-    /// nothing has been written yet — so all eighteen ms fields stay
+    /// nothing has been written yet — so every ms field stays
     /// at the default `0.0` until the second cycle. From then on
     /// the snapshot is whatever the previous cycle wrote, with
     /// inactive brackets reading `0.0`.
@@ -494,9 +496,9 @@ impl GpuPerFrameTimers {
         let pool = self.pools[frame];
         let bits = self.active_bits[frame];
         // #2041 / PERF-D9-02 — one batched read for the whole pool instead
-        // of up to eighteen individual per-bracket `get_query_pool_results`
-        // calls (one driver round-trip each). Deliberately WITHOUT
-        // `WAIT`: WAIT-reading the full 36-query pool when only a subset
+        // of one `get_query_pool_results` call per bracket (a driver
+        // round-trip each). Deliberately WITHOUT
+        // `WAIT`: WAIT-reading the full pool when only a subset
         // was written blocks forever on the unwritten queries (Vulkan
         // spec — VK_QUERY_RESULT_WAIT_BIT blocks until ALL queried
         // results are available; reset-but-never-written queries never
@@ -1423,5 +1425,34 @@ mod tests {
             "the module doc's bracket table rows must be numbered 0..QUERIES_PER_FRAME \
              with none skipped or duplicated"
         );
+    }
+
+    /// Regression for REN-D12-2026-09-20-01 — #4315's bump to 38 queries
+    /// updated the table (guarded by the test above) but left four *prose*
+    /// mentions elsewhere in this file still quoting the pre-#4315 bracket
+    /// and pool counts — the exact rot #4210's own history predicted for
+    /// the next bump. The module header
+    /// is the one place that states the live numbers (`QUERIES_PER_FRAME`
+    /// (38) … 19 start/end brackets, plus the bump history "32/16 → 34/17
+    /// → 36/18"); every other comment stays count-free so the next bracket
+    /// addition has one number to move. The stale spellings are assembled
+    /// from fragments below so this test's own source can't match them.
+    #[test]
+    fn prose_outside_the_module_header_carries_no_bracket_counts() {
+        let src = include_str!("gpu_timers.rs");
+        let rotted = [
+            format!("eight{}", "een"),
+            format!("currently {}", 18),
+            format!("{}-query", 36),
+            format!("full {}", 36),
+        ];
+        for pattern in &rotted {
+            assert!(
+                !src.contains(pattern.as_str()),
+                "gpu_timers.rs prose re-quotes a bracket/pool count \
+                 (\"{pattern}\") — the module header states both numbers \
+                 once; per-site copies rot on the next bump"
+            );
+        }
     }
 }

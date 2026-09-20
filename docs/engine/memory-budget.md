@@ -797,8 +797,36 @@ four rows are per `SwfPlayer`; the device is shared across all of them.
 
 The deferred-destroy copies are not a leak — the ring drains — but they are
 resident because `TextureRegistry::update_rgba` recreates the image rather
-than updating it in place, so an animating HUD cycles a fresh full-viewport
-`VkImage` every frame (#3429).
+than updating it in place, so an animating Scaleform HUD cycles a fresh
+full-viewport `VkImage` every frame (#3429). This describes the Scaleform
+driver (`scaleform_hud.rs` — one `register_rgba` handle at launch, then a
+fresh `from_rgba` allocation per `UiFrame::Fresh` upload). The MenuXml HUD
+driver below is the deliberate counter-example: fixed handles, in-place
+overwrite, zero allocations after launch.
+
+### MenuXml HUD overlay textures (3 × swapchain extent, `dc306a6a0`)
+
+[`byroredux/src/hud.rs`](../../byroredux/src/hud.rs) — the MenuXml driver
+(Oblivion / FO3 / FNV `--hud`) registers **three** full-viewport RGBA8
+overlay textures once at launch (`R8G8B8A8_SRGB`, 4 B/px, via
+`register_rgba` at the swapchain extent) and never allocates again: each
+rasterized HUD frame goes into the rotation through the in-place
+`overwrite_rgba_pixels` copy.
+
+Three buffers, not two: with `MAX_FRAMES_IN_FLIGHT` = 2 an upload can land
+while both in-flight frames may still sample the current and previous
+buffers, so uploads always target the buffer last sampled *three* frames
+ago — `MAX_FRAMES_IN_FLIGHT + 1` — which is the hazard contract
+`overwrite_rgba_pixels` requires. Fixed handles also mean zero bindless
+descriptor writes after launch.
+
+Formula: `width × height × 4 B` per texture × 3 textures.
+
+| Resolution | Per texture | Total (3 textures) |
+|---|---|---|
+| 1920×1080 | ~8.3 MB | **~24.9 MB** |
+| 2560×1440 | ~14.7 MB | **~44.2 MB** |
+| 3840×2160 | ~33.2 MB | **~99.5 MB** |
 
 ## Sky and Ground Cover (fixed-size)
 
@@ -855,11 +883,12 @@ authoritative rather than re-derived.
 | Global geometry SSBO rebuild (#3298) | — (idle) | +2× projected, ≤ ~512 MB, + up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
 | Sky bake + cloud noise + ground cover (fixed size, see [Sky and Ground Cover](#sky-and-ground-cover-fixed-size)) | ~20 MB | ~20 MB |
 | Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~42 MB + a second logical device |
+| MenuXml HUD overlay textures (3 × swapchain extent, RGBA8, see [Scaleform UI](#scaleform-ui-ruffle--wgpu--3431)) | ~25 MB (1080p) | ~100 MB (4K) |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.86 GB** | **~4.11 GB at native 4K** — #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section |
+| **Estimated total** | **~1.88 GB** | **~4.21 GB at native 4K** — #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount |
 
 The 6 GB RT-minimum and 4 GB whole-renderer target remain design targets.
 Static BLAS residency is separately enforced at 1 GiB, so a Vulkan driver
