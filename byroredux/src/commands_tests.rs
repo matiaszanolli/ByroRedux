@@ -1067,9 +1067,13 @@ fn rt_masks_prints_the_shared_machine_line() {
         effect: 6,
         glass: 2,
         // The shape the investigation is looking for: every actor-layer
-        // instance diverted, none left in the shadow-casting bucket.
+        // instance diverted, none left in the shadow-casting bucket. The
+        // divert is attributed to `actor_diverted_effect_shader` because
+        // the alpha-blend lane is structurally dead (#4518): the divert
+        // returns AlphaBlend only for non-Actors while the census
+        // breakdown is Actor-guarded, so it can never increment here.
         actor_layer_total: 6,
-        actor_diverted_alpha_blend: 6,
+        actor_diverted_effect_shader: 6,
         ..Default::default()
     });
     let text = ShadowMasksCommand.execute(&world, "").lines.join("\n");

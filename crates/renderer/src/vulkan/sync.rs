@@ -45,7 +45,7 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 // #3643 — read that as written: **(a) alone is NOT sufficient.** The
 // depth image is the resource this assert is named after, not the only
 // one riding on the both-slots wait. Per-FIF-ing depth would let the
-// assert be deleted while these five other non-per-FIF resources
+// assert be deleted while these six other non-per-FIF resources
 // silently lose their only guarantee:
 //
 //   1. `acceleration/blas_skinned.rs`'s `blas_scratch_buffer` —
@@ -65,11 +65,17 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //   5. `morph_compute.rs`'s mapped `weight_buffer`, host-written by
 //      `flush_pending_morph_weights` (#3244); its own regression test
 //      pins "flush after the wait", and the wait it finds is this one.
+//   6. `byroredux/src/hud.rs`'s triple-buffered overlay `texture_handles`
+//      rotation (#4516) — `upload_frame` overwrites in place the buffer
+//      last sampled three uploads ago, on the field-doc premise that
+//      only two frames ("two, per the renderer's frames-in-flight") can
+//      be sampling at once. A bump must re-derive that premise at the
+//      new slot count, not inherit it from this list.
 //
 // `FrameSync::images_in_flight` (below) carries its own version of the
-// warning and is the sixth. So option (b) — or per-FIF-ing every one of
-// them — is mandatory on any bump; (a) on its own only removes the
-// tripwire. (b) having landed (#3442) is why these six now rest on an
+// warning and is the seventh. So option (b) — or per-FIF-ing every one
+// of them — is mandatory on any bump; (a) on its own only removes the
+// tripwire. (b) having landed (#3442) is why these seven now rest on an
 // N-agnostic premise rather than on the `== 2` assert alone — but the
 // assert stays: nothing here has audited the *rest* of a bump, and
 // deleting a live tripwire on the strength of one remedy is exactly the
@@ -85,8 +91,9 @@ const _: () = assert!(
      MAX_FRAMES_IN_FLIGHT == 2; see #870 for the safety contract. \
      Per-FIF-ing the depth image is NOT enough to delete this assert: \
      the skinned BLAS scratch free, the depth-capture/screenshot \
-     staging destroys, the terrain tile buffer and the mapped morph \
-     weight buffer all rest on the same both-slots wait (#3643)"
+     staging destroys, the terrain tile buffer, the mapped morph \
+     weight buffer and the HUD's triple-buffered overlay rotation \
+     all rest on the same both-slots wait (#3643, #4516)"
 );
 
 /// Per-frame synchronization objects.
@@ -627,6 +634,13 @@ mod tests {
             ),
             ("screenshot_staging", include_str!("context/screenshot.rs")),
             ("weight_buffer", include_str!("morph_compute.rs")),
+            // #4516 — the MenuXml HUD's 3-buffer overlay rotation lives in
+            // the bin crate; `include_str!` reaches it by repo-relative
+            // path the same way the docs/ scans elsewhere in this crate do.
+            (
+                "texture_handles",
+                include_str!("../../../../byroredux/src/hud.rs"),
+            ),
         ] {
             assert!(
                 owner.contains(resource),
@@ -653,6 +667,18 @@ mod tests {
              BOTH-slots wait as its guarantee — the slot-local argument \
              alone is insufficient and would keep reading correct at 3+ \
              slots (#3643)",
+        );
+        // #4516 — the same premise pin the blas_skinned entry gives
+        // `*both-slots*`: the HUD rotation's site must keep naming the
+        // frames-in-flight count its three-deep overwrite margin is
+        // derived from, so a bump review re-derives it there instead of
+        // trusting this list.
+        assert!(
+            include_str!("../../../../byroredux/src/hud.rs")
+                .contains("two, per the renderer's frames-in-flight"),
+            "hud.rs's rotation doc must keep naming the frames-in-flight \
+             count its overwrite margin presumes — that sentence is what \
+             a MAX_FRAMES_IN_FLIGHT bump invalidates first (#4516)",
         );
     }
 }

@@ -241,8 +241,8 @@ impl Drop for VulkanContext {
         // destroying resources. Destruction does NOT follow reverse-creation
         // order (see `destroy_allocator_owned_resources`'s doc, corrected
         // 2026-08-30) — Vulkan imposes no cross-subsystem ordering once the
-        // device is idle; only four local orderings (documented at their own
-        // sites) are load-bearing.
+        // device is idle; only three local orderings (documented at their
+        // own sites) are load-bearing.
         unsafe {
             let _ = self.device.device_wait_idle();
 
@@ -534,6 +534,50 @@ mod skin_slot_drain_is_not_nested_under_skin_compute_tests {
             "skin_slots must drain BEFORE SkinComputePipeline::destroy tears down the \
              descriptor pool those sets were allocated from (M29 / \
              VUID-vkFreeDescriptorSets-descriptorPool-parameter)"
+        );
+    }
+}
+
+/// #4527 — the two doc sites naming the count of load-bearing local
+/// teardown orderings must stay in agreement. #4188 demoted the 1×1
+/// placeholder ordering in `destroy_allocator_owned_resources`'s doc but
+/// missed Drop's own SAFETY comment, which kept claiming the stale count
+/// across revisions — exactly the drift that leads a future teardown
+/// edit to trust the wrong site.
+#[cfg(test)]
+mod ordering_count_doc_sites_agree_tests {
+    /// Both sites are scanned from one flattened copy of this file with
+    /// runtime-composed needles (same technique as the sync.rs source
+    /// scans): a literal needle here would match its own source and stay
+    /// green after the production comments drifted. The count lives in a
+    /// single const so adding or removing a load-bearing ordering fails
+    /// both needles until it is re-derived against the sites.
+    const COUNT: &str = "three";
+
+    #[test]
+    fn both_ordering_count_sites_name_the_same_count() {
+        let flat = include_str!("teardown.rs")
+            .replace("///", " ")
+            .replace("//", " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let helper_doc = "only ".to_string() + COUNT + " orderings below are load-bearing";
+        let drop_safety = "only ".to_string() + COUNT + " local orderings";
+        assert!(
+            flat.contains(&helper_doc),
+            "the helper doc must still state the load-bearing-ordering \
+             count; if the list changed, re-derive it and update every \
+             site that names it (#4188, #4527)"
+        );
+        assert!(
+            flat.contains(&drop_safety),
+            "Drop's own SAFETY comment must state the same \
+             load-bearing-ordering count as the helper doc — #4188 \
+             corrected one site and missed this one, and a teardown edit \
+             trusting the stale count is the exact failure this pins \
+             (#4527)"
         );
     }
 }

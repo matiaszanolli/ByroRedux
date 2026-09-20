@@ -1208,8 +1208,6 @@ pub struct ShadowMaskCensus {
     pub actor_layer_total: u32,
     /// ...of those, diverted to `GLASS` by the refractive-glass test.
     pub actor_diverted_glass: u32,
-    /// ...diverted to `EFFECT` by `alpha_blend`.
-    pub actor_diverted_alpha_blend: u32,
     /// ...diverted to `EFFECT` by `MATERIAL_KIND_EFFECT_SHADER`.
     pub actor_diverted_effect_shader: u32,
     /// ...diverted to `EFFECT` by `MATERIAL_KIND_FIRE_REFRACTION`.
@@ -1220,13 +1218,14 @@ impl ShadowMaskCensus {
     /// Actor-layer instances that did not reach
     /// `VISIBILITY_LAYER_DYNAMIC_ACTOR`, and therefore cast no shadow.
     ///
-    /// The four causes partition this total: they are attributed in the
+    /// The three causes partition this total: they are attributed in the
     /// same precedence order `shadow_mask_for_instance` tests them, so an
     /// instance that is both refractive glass and `alpha_blend` is counted
-    /// once, under glass.
+    /// once, under glass. There is deliberately no `alpha_blend` cause:
+    /// since 84bbc44ed blended Actor draws keep the opaque bucket, so the
+    /// alpha test in the divert chain can never fire for an actor (#4518).
     pub fn actor_diverted(&self) -> u32 {
         self.actor_diverted_glass
-            + self.actor_diverted_alpha_blend
             + self.actor_diverted_effect_shader
             + self.actor_diverted_fire_refraction
     }
@@ -1272,7 +1271,7 @@ impl ShadowMaskCensus {
             "shadow-masks: frame={} sampled={} total={} architecture={} static_prop={} \
              dynamic_actor={} foliage={} effect={} glass={} shadow_invisible={} \
              actor_layer_total={} actor_diverted={} actor_diverted_glass={} \
-             actor_diverted_alpha_blend={} actor_diverted_effect_shader={} \
+             actor_diverted_effect_shader={} \
              actor_diverted_fire_refraction={} verdict={}",
             self.frame,
             u8::from(self.sampled),
@@ -1287,7 +1286,6 @@ impl ShadowMaskCensus {
             self.actor_layer_total,
             self.actor_diverted(),
             self.actor_diverted_glass,
-            self.actor_diverted_alpha_blend,
             self.actor_diverted_effect_shader,
             self.actor_diverted_fire_refraction,
             self.verdict(),
@@ -2165,14 +2163,13 @@ mod tests {
         let census = ShadowMaskCensus {
             sampled: true,
             dynamic_actor: 9,
-            actor_layer_total: 24,
+            actor_layer_total: 21,
             actor_diverted_glass: 1,
-            actor_diverted_alpha_blend: 3,
             actor_diverted_effect_shader: 4,
             actor_diverted_fire_refraction: 7,
             ..Default::default()
         };
-        assert_eq!(census.actor_diverted(), 15);
+        assert_eq!(census.actor_diverted(), 12);
         assert_eq!(
             census.dynamic_actor + census.actor_diverted(),
             census.actor_layer_total
@@ -2197,7 +2194,7 @@ mod tests {
         let diverted = ShadowMaskCensus {
             sampled: true,
             actor_layer_total: 4,
-            actor_diverted_alpha_blend: 4,
+            actor_diverted_effect_shader: 4,
             ..Default::default()
         };
         assert_eq!(diverted.verdict(), "DIVERTED");
@@ -2233,7 +2230,7 @@ mod tests {
             dynamic_actor: 2,
             effect: 5,
             actor_layer_total: 7,
-            actor_diverted_alpha_blend: 5,
+            actor_diverted_effect_shader: 5,
             ..Default::default()
         };
         let line = census.machine_line();
@@ -2245,7 +2242,6 @@ mod tests {
             "effect=5",
             "actor_layer_total=7",
             "actor_diverted=5",
-            "actor_diverted_alpha_blend=5",
             "verdict=DIVERTED",
         ] {
             assert!(

@@ -675,8 +675,12 @@ impl AccelerationManager {
                     draw_cmd.alpha_blend,
                     draw_cmd.multi_layer_refraction_scale,
                 ) {
+                    // #4518 — no `AlphaBlend` increment: since 84bbc44ed
+                    // blended Actor draws keep the opaque bucket, so this
+                    // Actor-guarded match can never see that cause (the
+                    // variant stays representable for non-Actor layers).
                     Some(MaskDivertCause::RefractiveGlass) => census.actor_diverted_glass += 1,
-                    Some(MaskDivertCause::AlphaBlend) => census.actor_diverted_alpha_blend += 1,
+                    Some(MaskDivertCause::AlphaBlend) => {}
                     Some(MaskDivertCause::EffectShader) => census.actor_diverted_effect_shader += 1,
                     Some(MaskDivertCause::FireRefraction) => {
                         census.actor_diverted_fire_refraction += 1

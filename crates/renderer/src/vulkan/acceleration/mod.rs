@@ -88,7 +88,6 @@ pub struct ShadowMaskSnapshot {
     pub glass: u32,
     pub actor_layer_total: u32,
     pub actor_diverted_glass: u32,
-    pub actor_diverted_alpha_blend: u32,
     pub actor_diverted_effect_shader: u32,
     pub actor_diverted_fire_refraction: u32,
 }
