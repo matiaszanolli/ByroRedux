@@ -61,6 +61,16 @@ case "${bench_camera}" in
         exit 2
         ;;
 esac
+if ! command -v magick >/dev/null 2>&1; then
+    echo "renderer-eval-groundcover: ImageMagick 'magick' is required for the luminance-std washout precheck" >&2
+    exit 2
+fi
+# Washout precheck (EXAL §11.5): measure luminance standard deviation before
+# trusting any frame. Below ~10/255 (sd 0.039) a frame carries no scene
+# contrast; the committed 2026-09-15 backlit baseline measured 0.0092-0.0106 —
+# the ground-framing poses WERE the veil. A backlit frame under the line is
+# stamped in the manifest and fails the run.
+washed_out_line="${BYROREDUX_GC_WASHOUT_SD:-0.039}"
 bench_mode="renderer-static"
 bench_camera_args=()
 if [[ "${bench_camera}" != "static" ]]; then
@@ -77,14 +87,22 @@ if [[ -n "${window_size}" ]]; then
 fi
 
 mkdir -p "${output_root}"
+# Always build (cheap when fresh) so a capture can never be attributed to a
+# stale binary. Stale-SPIR-V trap (SKYAL §4): a recompiled .spv does not
+# reliably trigger a cargo rebuild — after any shader edit run
+#   touch crates/renderer/src/lib.rs
+# before this build. (A renderer build.rs rerun-if-changed on shaders/** is
+# the structural fix, tracked separately.)
 cargo build --manifest-path "${repo_root}/Cargo.toml" --release -p byroredux --bin byroredux
 engine="${repo_root}/target/release/byroredux"
 manifest="${output_root}/manifest.tsv"
 # A full suite starts a fresh manifest. A selected case appends only when a
 # manifest already exists, allowing a runner to collect the same four stable
 # cases in separate bounded invocations without losing earlier evidence.
+# (#4482/#4509: the manifest carries the measured luminance sd and the
+# washed_out verdict per row.)
 if [[ -z "${case_filter}" || ! -s "${manifest}" ]]; then
-    printf 'case\tgame\tgrid\thour\tpose\tframes\tpng_sha256\tbench\tgroundcover\n' > "${manifest}"
+    printf 'case\tgame\tgrid\thour\tpose\tframes\tpng_sha256\tbench\tgroundcover\tluma_sd\twashed_out\n' > "${manifest}"
 fi
 
 capture() {
@@ -121,13 +139,49 @@ capture() {
         tail -n 80 "${log}" >&2 || true
         exit 1
     fi
-    local hash bench groundcover
+    local hash bench groundcover luma_sd washed_out
     hash="$(sha256sum "${png}" | awk '{print $1}')"
     bench="$(awk '/^bench:/{line=$0} END{print line}' "${log}")"
     groundcover="$(awk '/^groundcover:/{line=$0} END{print line}' "${log}")"
-    printf '%s\t%s\t%s\t7\t%s|%s\t%s\t%s\t%s\t%s\n' \
+    if ! luma_sd="$(magick "${png}" -colorspace RGB -format '%[fx:standard_deviation]' info:)"; then
+        echo "renderer-eval-groundcover: ${case_name}: luminance-std precheck could not read ${png}" >&2
+        exit 1
+    fi
+    washed_out="no"
+    if awk -v sd="${luma_sd}" -v line="${washed_out_line}" 'BEGIN { exit !(sd < line) }'; then
+        washed_out="yes"
+    fi
+    printf '%s\t%s\t%s\t7\t%s|%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "${case_name}" "${game}" "${grid}" "${pos}" "${forward}" "${frames}" \
-        "${hash}" "${bench//$'\t'/ }" "${groundcover//$'\t'/ }" >> "${manifest}"
+        "${hash}" "${bench//$'\t'/ }" "${groundcover//$'\t'/ }" \
+        "${luma_sd}" "${washed_out}" >> "${manifest}"
+
+    # A missing telemetry row must never mint a well-formed reference row
+    # (#4509): an empty bench:/groundcover: column is the engine scattering
+    # nothing, or the bench summary never printing, recorded as if measured.
+    if [[ -z "${bench}" ]]; then
+        echo "renderer-eval-groundcover: ${case_name}: FAIL - no bench: telemetry row in ${log}" >&2
+        exit 1
+    fi
+    if [[ -z "${groundcover}" ]]; then
+        echo "renderer-eval-groundcover: ${case_name}: FAIL - no groundcover: telemetry row in ${log}" >&2
+        exit 1
+    fi
+    if [[ "${case_name}" == gc-backlit-* ]]; then
+        local chunks blades
+        chunks="$(grep -oE 'chunks=[0-9]+' <<< "${groundcover}" | head -1 | cut -d= -f2 || true)"
+        blades="$(grep -oE 'blades=[0-9]+' <<< "${groundcover}" | head -1 | cut -d= -f2 || true)"
+        if [[ "${chunks}" == "0" && "${blades}" == "0" ]]; then
+            echo "renderer-eval-groundcover: ${case_name}: FAIL - backlit case reports annihilated ground cover (${groundcover})" >&2
+            exit 1
+        fi
+        if [[ "${washed_out}" == "yes" ]]; then
+            echo "renderer-eval-groundcover: ${case_name}: FAIL - backlit frame is washed out (luminance sd ${luma_sd} < ${washed_out_line}); row stamped washed_out=yes. This baseline IS the veil (#4482): fix the veil, then re-mint with sd recorded." >&2
+            exit 1
+        fi
+    elif [[ "${washed_out}" == "yes" ]]; then
+        echo "renderer-eval-groundcover: ${case_name}: WARN - frame under the washout line (sd ${luma_sd} < ${washed_out_line}), stamped washed_out=yes; only gc-backlit-* poses are ground-framing" >&2
+    fi
 }
 
 # Goodsprings outskirts: WastelandNV 0,0.  The named pose identifiers are
