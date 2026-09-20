@@ -115,13 +115,17 @@ pub(super) fn gpu_light_from_emitter(
 }
 
 /// PERF-D5-NEW-02 / #1800 — cheap CPU-side "how much does this light
-/// matter for one-bounce GI" proxy: sum of the light's RGB channels
-/// (already scaled by `dimmer × intensity` at translation time) times
-/// its effective range. Not physically exact — it has no idea where any
-/// given GI hit point actually is — but it's a stable, frame-wide
+/// matter" proxy: sum of the light's RGB channels (already scaled by
+/// `dimmer × intensity` at translation time) times its effective range.
+/// Not physically exact and not proximity-aware — it has no idea where
+/// any given shaded point actually is — but it's a stable, frame-wide
 /// ordering that favors bright, far-reaching lights over dim or
-/// tightly-clamped ones, which is exactly what `giHitIrradiance`'s fixed
-/// `GI_HIT_LIGHT_CAP`-sized prefix scan needs to be biased toward.
+/// tightly-clamped ones. Since #4017 the one-bounce GI pass
+/// (`pathHitRadiance`) scores lights per hit with its own top-K, so
+/// this score no longer gates what GI sees; it survives because the
+/// MAX_LIGHTS clamp drops the lowest-scoring tail of the suffix this
+/// orders (see the sort call below) — the sorted order is the contract
+/// upload_lights' overflow warn documents.
 fn gi_priority_score(light: &byroredux_renderer::GpuLight) -> f32 {
     light.gi_priority_score()
 }
@@ -134,9 +138,12 @@ fn gi_priority_score(light: &byroredux_renderer::GpuLight) -> f32 {
 /// directional first (slot 0 if present), then point lights sorted by
 /// descending [`gi_priority_score`] (#1800 — see the sort call below for
 /// why). The shader-side cluster builder doesn't care about ordering
-/// (it indexes lights by ID from its own per-cluster lists), but
-/// `giHitIrradiance`'s fixed-prefix GI scan does, and the once-per-session
-/// info log below references the first three slots post-sort.
+/// (it indexes lights by ID from its own per-cluster lists), and since
+/// #4017 neither does the GI pass (`pathHitRadiance` scans every light
+/// with a per-hit top-K) — the sort is load-bearing because the
+/// MAX_LIGHTS clamp drops the lowest-scoring tail of this array, and
+/// the once-per-session info log below references the first three slots
+/// post-sort.
 ///
 /// `sort_scratch` is the caller-owned decorate-sort buffer (#2172 /
 /// PERF-D1-02); its contents on entry are irrelevant — it is cleared
@@ -197,12 +204,12 @@ pub(super) fn collect_lights(
         }
     }
 
-    // PERF-D5-NEW-02 / #1800 — `giHitIrradiance` (lighting.glsl) only
-    // scans the first `GI_HIT_LIGHT_CAP` (8) entries of this array in
-    // upload order for the one-bounce GI shadow-ray pass; the
-    // directional light (if present) is always exactly one entry and
-    // always pushed first, so everything from here on is the
-    // point-light suffix that needs priority-sorting below.
+    // PERF-D5-NEW-02 / #1800 — the directional light (if present) is
+    // always exactly one entry and always pushed first, so everything
+    // from here on is the point-light suffix that the priority sort
+    // below reorders — the same suffix the MAX_LIGHTS clamp truncates,
+    // which is why that suffix must be priority-ordered (see the sort
+    // call below).
     let directional_count = gpu_lights.len();
 
     // Placed point lights from LIGH records. Read-only — no write
@@ -236,26 +243,21 @@ pub(super) fn collect_lights(
         }
     }
 
-    // PERF-D5-NEW-02 / #1800 — the one-bounce GI hit-irradiance pass
-    // (`giHitIrradiance` in lighting.glsl) evaluates only the first
-    // `GI_HIT_LIGHT_CAP` entries of this same array, in whatever order
-    // they land here — the shader has no per-hit-point light selection,
-    // it just walks a fixed prefix. Left as arbitrary ECS sparse-set
-    // iteration order, that prefix has nothing to do with which lights
-    // actually matter for GI: a cell with, say, 20 point lights would
-    // permanently exclude 12 of them from the bounce term (and could
-    // flicker across cell reloads as ECS iteration order shuffles which
-    // 8 "win"), while still paying up to 8 shadow-ray traces against
-    // lights that might be nowhere near the hit point.
-    //
-    // Sorting the point-light suffix once per frame by descending
-    // `gi_priority_score` (a cheap CPU-side "intensity × radius" proxy)
-    // makes "first 8" approximate "8 most influential" scene-wide,
-    // without touching the shader's per-hit ray-query logic or the
-    // primary-fragment path's clustered culling (which indexes lights
-    // by ID from its own per-cluster lists and doesn't care about array
-    // order). The directional light, if present, is never part of this
-    // sort — it stays pinned at index 0.
+    // PERF-D5-NEW-02 / #1800 — sort the point-light suffix by descending
+    // `gi_priority_score` (a cheap CPU-side "intensity × radius" proxy).
+    // #4017 removed the original consumer: the one-bounce GI pass is now
+    // `pathHitRadiance` (lighting.glsl), which scores every light per hit
+    // with its own top-K and doesn't depend on array order. The sort is
+    // still load-bearing for a different reason — the light SSBO is
+    // capped at MAX_LIGHTS and `upload_lights` truncates this array's
+    // tail. Sorted, that clamp deterministically drops the lowest-scoring
+    // lights (the policy upload.rs's overflow warn documents); unsorted,
+    // it would drop whatever ECS sparse-set iteration order happens to
+    // place last — an order that shuffles across cell reloads, so an
+    // overflowing cell would flicker which lights vanish. The
+    // primary-fragment path's clustered culling (also order-agnostic) is
+    // unaffected either way. The directional light, if present, is never
+    // part of this sort — it stays pinned at index 0.
     //
     // #2034 / PERF-D1-2026-07-16-02 — precompute `gi_priority_score` once
     // per light (Schwartzian transform / decorate-sort-undecorate)
@@ -276,8 +278,9 @@ pub(super) fn collect_lights(
     // heap-allocates a light-count-sized temporary above its insertion-sort
     // cutoff, which would undo the caller-owned scratch #2172 just introduced.
     // Stability buys nothing on a freshly decorated buffer, and pattern-defeating
-    // quicksort is still deterministic for a given input, so the GI prefix does
-    // not flicker frame to frame.
+    // quicksort is still deterministic for a given input, so the sorted order —
+    // and with it the overflow tail the MAX_LIGHTS clamp drops — does not
+    // flicker frame to frame.
     sort_scratch.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
     for (slot, (_, light)) in suffix.iter_mut().zip(sort_scratch.iter()) {
         *slot = *light;
@@ -571,11 +574,15 @@ mod directional_source_contract_tests {
     }
 }
 
-/// PERF-D5-NEW-02 / #1800 — `giHitIrradiance` (lighting.glsl) only scans
-/// the first `GI_HIT_LIGHT_CAP` entries of the uploaded light array;
-/// `collect_lights` must order the point-light suffix by descending
-/// [`gi_priority_score`] so that fixed prefix approximates "the most
-/// influential lights" rather than arbitrary ECS iteration order.
+/// PERF-D5-NEW-02 / #1800 — the point-light suffix of the uploaded light
+/// array must be ordered by descending [`gi_priority_score`]. #4017
+/// replaced the original fixed-prefix GI consumer (`giHitIrradiance`)
+/// with `pathHitRadiance`, which scores every light per hit with its own
+/// top-K — so the ordering no longer gates what GI sees. It is still
+/// load-bearing: `upload_lights` caps the SSBO at MAX_LIGHTS, and the
+/// sorted order is what makes that clamp drop the lowest-scoring tail
+/// deterministically instead of arbitrary ECS iteration order (the
+/// policy upload.rs's overflow warn documents).
 #[cfg(test)]
 mod gi_light_priority_tests {
     use super::*;
@@ -729,10 +736,10 @@ mod gi_light_priority_tests {
     /// order that (pre-fix) would have survived verbatim as ECS
     /// iteration order — dimmest first, brightest last — must come out
     /// of `collect_lights` sorted brightest/farthest-reaching first.
-    /// This is the exact bug: pre-fix, `giHitIrradiance`'s fixed 8-light
-    /// prefix would have hit the dim light first and the bright one last
-    /// (or not at all, in a >8-light cell), regardless of which one
-    /// actually matters for GI.
+    /// The sorted order is what makes the MAX_LIGHTS overflow clamp drop
+    /// the lowest-scoring tail deterministically (and, before #4017, it
+    /// was also what kept `giHitIrradiance`'s fixed GI prefix
+    /// meaningful).
     #[test]
     fn collect_lights_sorts_point_lights_brightest_first() {
         let mut world = World::new();
@@ -753,8 +760,8 @@ mod gi_light_priority_tests {
         );
         // The brightest/farthest-reaching light (authored radius 900,
         // color 0.9 — effective range = 900 * LIGHT_RANGE_EXTENSION)
-        // must land first — inside GI_HIT_LIGHT_CAP even in a cell with
-        // more lights than the cap.
+        // must land first — an overflowing cell's MAX_LIGHTS clamp
+        // would keep it and drop the dim tail.
         let expected_effective_range = 900.0 * super::LIGHT_RANGE_EXTENSION;
         assert!(
             (lights[0].position_radius[3] - expected_effective_range).abs() < 1e-3,

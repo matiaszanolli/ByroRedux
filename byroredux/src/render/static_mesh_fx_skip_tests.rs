@@ -108,6 +108,39 @@ fn staged_or_superseded_npc_parts_stay_hidden_even_when_animation_says_visible()
     );
 }
 
+/// Lockstep guard for the PickedUp render-skip (REN-D9): the draw skip in
+/// `static_meshes.rs` and the palette dispatch skip in `skinned.rs` must drop
+/// a picked-up entity together — a draw-half-only skip would render the item
+/// with a stale/identity palette (bind pose). Mirrors
+/// `staged_or_superseded_npc_parts_stay_hidden_even_when_animation_says_visible`
+/// above; the palette-side half lives in `bone_palette_overflow_tests.rs`.
+#[test]
+fn picked_up_placements_stay_hidden_even_when_animation_says_visible() {
+    use crate::inventory::PickedUp;
+    use byroredux_core::ecs::AnimatedVisibility;
+    let mut world = world_with_mesh(false);
+    let mesh = world
+        .query::<MeshHandle>()
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap()
+        .0;
+    world.insert(mesh, AnimatedVisibility(true));
+    world.insert(mesh, PickedUp);
+    assert!(
+        run_build(&world).is_empty(),
+        "no raster or TLAS draw for a picked-up item"
+    );
+    world.remove::<PickedUp>(mesh);
+    assert_eq!(run_build(&world).len(), 1);
+    world.insert(mesh, AnimatedVisibility(false));
+    assert!(
+        run_build(&world).is_empty(),
+        "removing the marker must restore ordinary visibility gating"
+    );
+}
+
 #[test]
 fn authored_decal_is_alpha_composited_without_depth_or_tlas_occlusion() {
     let mut world = world_with_mesh(false);

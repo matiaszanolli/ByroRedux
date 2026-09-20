@@ -47,6 +47,36 @@ fn staged_body_gets_its_first_skin_upload_only_when_revealed() {
     assert_eq!(pool.drain_pending(8).len(), 1);
 }
 
+/// Lockstep guard for the PickedUp render-skip (REN-D9): the palette
+/// dispatch skip here and the draw skip in `static_meshes.rs` must drop a
+/// picked-up entity together — a palette-half-only skip would leave the mesh
+/// drawn in bind pose. Mirrors
+/// `staged_body_gets_its_first_skin_upload_only_when_revealed` above; the
+/// draw-side half lives in `static_mesh_fx_skip_tests.rs`.
+#[test]
+fn picked_up_body_gets_its_first_skin_upload_only_when_dropped() {
+    use crate::inventory::PickedUp;
+    let mut world = make_skinned_world(1);
+    let mesh = world
+        .query::<SkinnedMesh>()
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap()
+        .0;
+    world.insert(mesh, PickedUp);
+    let mut pool = byroredux_core::ecs::resources::SkinSlotPool::new(4);
+    let mut bones = Vec::new();
+    let mut offsets = rustc_hash::FxHashMap::default();
+    super::skinned::build_skinned_palettes(&world, 1, &mut bones, &mut offsets, &mut pool);
+    assert!(offsets.is_empty());
+    assert!(pool.drain_pending(8).is_empty());
+    world.remove::<PickedUp>(mesh);
+    super::skinned::build_skinned_palettes(&world, 2, &mut bones, &mut offsets, &mut pool);
+    assert!(offsets.contains_key(&mesh));
+    assert_eq!(pool.drain_pending(8).len(), 1);
+}
+
 fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, rustc_hash::FxHashMap<EntityId, u32>) {
     let mut draw_commands = Vec::new();
     let mut gpu_lights = Vec::new();

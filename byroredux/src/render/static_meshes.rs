@@ -155,12 +155,18 @@ pub(super) fn tlas_exclusion(
 /// (`parallax_height_in_alpha`, #3530), the height slot is that normal
 /// map's handle, so it follows a `Normal` flip unless a `Height` flip binds
 /// it explicitly.
+///
+/// #4528 — and returns, separately, whether the texture now occupying the
+/// HEIGHT slot carries alpha. An explicit `Height` flip rebinds that slot
+/// frame-by-frame to textures whose format the normal map's says nothing
+/// about, so the parallax alpha-vs-red gate has to key on the `Height`
+/// flipbook's own recorded lane once one is active.
 fn apply_texture_flip_roles(
     flip: &AnimatedTextureFlip,
     textures: &mut byroredux_nif::import::MaterialTextureSet<u32>,
     spawn_normal_has_alpha: bool,
     parallax_height_in_alpha: bool,
-) -> bool {
+) -> (bool, bool) {
     use byroredux_core::ecs::FlipTextureRole;
     for (role, handle) in flip.active_handles() {
         let slot = match role {
@@ -184,7 +190,7 @@ fn apply_texture_flip_roles(
             textures.height = normal;
         }
     }
-    match normal_flip {
+    let normal_has_alpha = match normal_flip {
         // A flipped frame whose alpha presence was not recorded is treated
         // as alpha-less: reading a missing channel is the #3562 failure,
         // skipping a present one only loses the gloss/height detail.
@@ -192,7 +198,18 @@ fn apply_texture_flip_roles(
             .active_has_alpha(FlipTextureRole::Normal)
             .unwrap_or(false),
         None => spawn_normal_has_alpha,
-    }
+    };
+    // An unrecorded Height-frame presence reads alpha-less, the same policy
+    // as the `Normal` lane. An out-of-range `current_index` binds no handle,
+    // leaving the #3530 spawn-time binding (the normal map) in the slot —
+    // so the normal-keyed answer is the right one there too.
+    let height_has_alpha = match flip.handle_for_role(FlipTextureRole::Height) {
+        Some(_) => flip
+            .active_has_alpha(FlipTextureRole::Height)
+            .unwrap_or(false),
+        None => normal_has_alpha,
+    };
+    (normal_has_alpha, height_has_alpha)
 }
 
 /// Per-frame tally of [`tlas_exclusion`]'s verdicts.
@@ -501,14 +518,18 @@ pub(super) fn collect_static_mesh_draws(
                 let spawn_normal_has_alpha = material_texture_handles
                     .map(|handles| handles.normal_has_alpha)
                     .unwrap_or(false);
-                let normal_has_alpha = match texture_flip {
+                // (normal_has_alpha, height_has_alpha) — the first feeds the
+                // normal-alpha-as-spec gloss binding below; the second is
+                // what the height slot actually holds (#4528) and feeds the
+                // parallax gate.
+                let (normal_has_alpha, height_has_alpha) = match texture_flip {
                     Some(flip) => apply_texture_flip_roles(
                         flip,
                         &mut texture_indices,
                         spawn_normal_has_alpha,
                         mat.is_some_and(|material| material.parallax_height_in_alpha),
                     ),
-                    None => spawn_normal_has_alpha,
+                    None => (spawn_normal_has_alpha, spawn_normal_has_alpha),
                 };
                 let normal_map_index = texture_indices.normal;
                 let dark_map_index = texture_indices.dark;
@@ -552,7 +573,12 @@ pub(super) fn collect_static_mesh_draws(
                 let parallax_height_in_alpha =
                     mat.is_some_and(|material| material.parallax_height_in_alpha);
                 if parallax_map_index != 0 && parallax_height_in_alpha {
-                    if normal_has_alpha {
+                    // #4528 — the question is whether the texture the height
+                    // SLOT holds has an alpha channel, and a `Height`
+                    // flipbook rebinds that slot to its own frames: keying
+                    // on the normal here would zero POM under alpha-bearing
+                    // height frames and set the bit under BC1 ones.
+                    if height_has_alpha {
                         parallax_map_index |= crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT;
                     } else {
                         // #4260 (OB-D4-01) — `parallax_height_in_alpha` means
@@ -1858,7 +1884,10 @@ mod tests {
 
     /// #4301 — a `Normal` flip gates the alpha-channel reads on the active
     /// frame's own format, not the spawn-time normal map's, and a height
-    /// carried in the normal's alpha follows the flipped normal.
+    /// carried in the normal's alpha follows the flipped normal. The second
+    /// tuple element is the height-slot answer (#4528); with no `Height`
+    /// flip it is the normal's, because the #3530 binding put the normal in
+    /// that slot.
     #[test]
     fn a_normal_flip_uses_the_active_frames_alpha_presence() {
         use byroredux_core::ecs::{FlipTextureRole, TextureFlipEntry};
@@ -1880,22 +1909,18 @@ mod tests {
 
         // Spawn normal had alpha; the active BC5-like frame does not.
         let mut textures = spawn();
-        assert!(!apply_texture_flip_roles(
-            &flip_at(1),
-            &mut textures,
-            true,
-            true
-        ));
+        assert_eq!(
+            apply_texture_flip_roles(&flip_at(1), &mut textures, true, true),
+            (false, false)
+        );
         assert_eq!((textures.normal, textures.height), (51, 51));
 
         // And the reverse: an alpha-less spawn map, an alpha-carrying frame.
         let mut textures = spawn();
-        assert!(apply_texture_flip_roles(
-            &flip_at(0),
-            &mut textures,
-            false,
-            true
-        ));
+        assert_eq!(
+            apply_texture_flip_roles(&flip_at(0), &mut textures, false, true),
+            (true, true)
+        );
         assert_eq!((textures.normal, textures.height), (50, 50));
 
         // Height stays put when it is a real height texture.
@@ -1906,12 +1931,10 @@ mod tests {
         // Unrecorded alpha presence is treated as alpha-less.
         let mut unknown = flip_at(0);
         unknown.0[0].handles_have_alpha.clear();
-        assert!(!apply_texture_flip_roles(
-            &unknown,
-            &mut spawn(),
-            true,
-            false
-        ));
+        assert_eq!(
+            apply_texture_flip_roles(&unknown, &mut spawn(), true, false),
+            (false, false)
+        );
 
         // No Normal flip: the spawn-time answer stands.
         let emissive = AnimatedTextureFlip(vec![TextureFlipEntry {
@@ -1920,12 +1943,89 @@ mod tests {
             handles_have_alpha: vec![false],
             current_index: 0,
         }]);
-        assert!(apply_texture_flip_roles(
-            &emissive,
-            &mut spawn(),
-            true,
-            true
-        ));
+        assert_eq!(
+            apply_texture_flip_roles(&emissive, &mut spawn(), true, true),
+            (true, true)
+        );
+    }
+
+    /// #4528 — an explicit `Height` flip keys the parallax alpha-vs-red gate
+    /// on the height frames' own recorded alpha presence, not the normal
+    /// map's. Both polarities matter: keying on a BC5-like normal zeroes POM
+    /// under alpha-bearing height frames, and keying on an alpha-bearing
+    /// normal sets the bit under BC1 ones (the #3562 swim).
+    #[test]
+    fn a_height_flip_keys_the_parallax_gate_on_its_own_frames_alpha() {
+        use byroredux_core::ecs::{FlipTextureRole, TextureFlipEntry};
+        use byroredux_nif::import::MaterialTextureSet;
+
+        // A BC5-like normal (alpha-less, staying put) beside the Height
+        // flipbook under test.
+        let flip_at = |current_index| {
+            AnimatedTextureFlip(vec![
+                TextureFlipEntry {
+                    role: FlipTextureRole::Normal,
+                    handles: vec![9],
+                    handles_have_alpha: vec![false],
+                    current_index: 0,
+                },
+                TextureFlipEntry {
+                    role: FlipTextureRole::Height,
+                    handles: vec![60, 61],
+                    handles_have_alpha: vec![true, false],
+                    current_index,
+                },
+            ])
+        };
+        let spawn = || MaterialTextureSet::<u32> {
+            normal: 9,
+            height: 9,
+            ..Default::default()
+        };
+
+        // Alpha-bearing height frames over the alpha-less normal: the gate
+        // must OPEN on the height lane.
+        let mut textures = spawn();
+        assert_eq!(
+            apply_texture_flip_roles(&flip_at(0), &mut textures, false, true),
+            (false, true),
+            "the normal stays alpha-less; the height slot's own frame has alpha"
+        );
+        assert_eq!(textures.height, 60, "the height flip keeps its own slot");
+
+        // And the reverse polarity: BC1 height frames over an alpha-bearing
+        // normal must CLOSE the gate — the bit must not ride in on the
+        // normal's alpha.
+        let mut bc1_height = flip_at(1);
+        bc1_height.0[0].handles_have_alpha = vec![true];
+        let mut textures = spawn();
+        assert_eq!(
+            apply_texture_flip_roles(&bc1_height, &mut textures, true, true),
+            (true, false)
+        );
+        assert_eq!(textures.height, 61);
+
+        // Unrecorded height presence reads alpha-less, same as the Normal
+        // lane's policy.
+        let mut unknown = flip_at(0);
+        unknown.0[1].handles_have_alpha.clear();
+        assert_eq!(
+            apply_texture_flip_roles(&unknown, &mut spawn(), false, true),
+            (false, false)
+        );
+
+        // An out-of-range Height index binds no frame, so the #3530
+        // spawn-time binding stays in the slot and the normal-keyed answer
+        // is the right one again.
+        let mut detached = flip_at(0);
+        detached.0[1].current_index = 5;
+        let mut textures = spawn();
+        assert_eq!(
+            apply_texture_flip_roles(&detached, &mut textures, false, true),
+            (false, false),
+            "no active height frame: the slot still holds the spawn normal (9)"
+        );
+        assert_eq!(textures.height, 9);
     }
 
     /// No `AnimatedTextureFlip` on the entity: the spawn-time

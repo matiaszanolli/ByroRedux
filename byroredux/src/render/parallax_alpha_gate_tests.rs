@@ -29,10 +29,21 @@
 //! synthetic 0/1,430 figure above, which only covered normal-slot presence,
 //! not the alpha-format split. The slot must now be zeroed entirely in this
 //! case, not just left flag-less.
+//!
+//! #4528 — the gate also has to describe the texture the height slot
+//! actually holds. An explicit `Height` flipbook (`NiFlipController` on
+//! TexType 7) rebinds that slot frame-by-frame, so keying on the normal
+//! map's alpha fails in both directions: alpha-bearing height frames over a
+//! BC5 normal spuriously zero POM, and BC1 height frames over an
+//! alpha-bearing normal set the bit and swim (the #3562 failure again).
+//! Zero vanilla Oblivion NIFs fire this (it needs `parallax_height_in_alpha`
+//! plus a TexType-7 flip), so like the pins above this is a
+//! correctness/robustness fixture, not a visual-bug repro.
 
 use super::*;
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, GlobalTransform, Material, MeshHandle, TextureHandle, World,
+    ActiveCamera, AnimatedTextureFlip, Camera, FlipTextureRole, GlobalTransform, Material,
+    MeshHandle, TextureFlipEntry, TextureHandle, World,
 };
 
 use crate::components::MaterialTextureHandles;
@@ -183,5 +194,69 @@ fn a_height_bearing_normal_alpha_is_not_also_bound_as_the_spec_mask() {
         "the normal alpha is already claimed as parallax height; binding it \
          as the per-pixel specular mask too makes specular strength track \
          displacement — crevices matte, raised brickwork glossy (#3567)"
+    );
+}
+
+/// #4528 — the `world_with_alpha_height_material` shape plus an explicit
+/// `Height` flipbook on the same entity. The flip's frames rebind the
+/// height slot (handles 70/71) away from the spawn-time normal binding, so
+/// the parallax gate has to follow the height frames' own recorded alpha
+/// presence (`anim_convert.rs`'s attach-time `handle_has_alpha` lookup)
+/// rather than the normal map's.
+fn world_with_height_flipbook(height_frames_have_alpha: bool, normal_has_alpha: bool) -> World {
+    let mut world = world_with_alpha_height_material(normal_has_alpha);
+    let mesh_e = world
+        .query::<MeshHandle>()
+        .expect("fixture world")
+        .iter()
+        .next()
+        .expect("the fixture spawns exactly one mesh")
+        .0;
+    world.insert(
+        mesh_e,
+        AnimatedTextureFlip(vec![TextureFlipEntry {
+            role: FlipTextureRole::Height,
+            handles: vec![70, 71],
+            handles_have_alpha: vec![height_frames_have_alpha; 2],
+            current_index: 0,
+        }]),
+    );
+    world
+}
+
+/// #4528, polarity A — alpha-bearing height frames over a BC5-like
+/// (alpha-less) normal. Keyed on the normal, the gate would read `false`
+/// and zero the slot, disabling POM on content whose height data is right
+/// there in the bound frame's alpha. The gate must open on the height
+/// flipbook's own lane and the index must be the active frame's handle.
+#[test]
+fn a_height_flipbook_frames_alpha_opens_the_parallax_gate() {
+    let index = parallax_index(&world_with_height_flipbook(true, false));
+    assert_ne!(
+        index & crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT,
+        0,
+        "the bound height frame carries alpha — the #3530 height path must run"
+    );
+    assert_eq!(
+        index & !crate::material_translate::PARALLAX_ALPHA_HEIGHT_BIT,
+        70,
+        "the flagged index must be the flipbook's active frame, not the \
+         spawn-time normal binding"
+    );
+}
+
+/// #4528, polarity B — BC1-style (alpha-less) height frames over an
+/// alpha-bearing normal. Keyed on the normal, the gate would set the bit
+/// and the shader would read a constant `A = 1.0` out of the height frames
+/// — the #3562 full-slide swim. The alpha-less frame must zero the slot
+/// entirely, exactly as #4260 does for an alpha-less normal.
+#[test]
+fn an_alpha_less_height_flipbook_frame_zeroes_the_parallax_slot() {
+    let cmds = run_build(&world_with_height_flipbook(false, true));
+    assert_eq!(cmds.len(), 1, "fixture spawns exactly one mesh");
+    assert_eq!(
+        cmds[0].parallax_map_index, 0,
+        "the bound height frames have no alpha to read; keying the bit on \
+         the alpha-bearing normal instead would swim the whole material"
     );
 }
