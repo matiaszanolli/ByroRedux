@@ -609,6 +609,27 @@ void main() {
         ivec2 hitPixel = ivec2(landPx);
         if (any(lessThan(hitPixel, ivec2(0))) || any(greaterThanEqual(hitPixel, size))) continue;
 
+        // #4545 — occlusion gate, the compute-side twin of water.frag's
+        // camera-visibility ray. The deposit below lands at the receiver
+        // hit's SCREEN projection, but the surface that owns that pixel can
+        // be anything nearer the camera — a bottle standing between the
+        // camera and its own table pool, a wall over a corridor focus.
+        // Compare the hit's NDC depth against the scene depth at the
+        // landing pixel (same `viewProj` rasterized it, so the encodings
+        // are directly comparable): a receiver meaningfully in front of the
+        // caustic target occludes it and gets nothing. The slop band covers
+        // same-surface rasterization quantization and the ±8 px temporal
+        // jitter; real occlusion events are orders of magnitude larger in
+        // encoded depth. depthTex holds OPAQUE depth (the blended glass
+        // pipeline preserves it), so a pane between the camera and the pool
+        // does NOT reject — the caustic legitimately shows through glass.
+        float receiverZ = texelFetch(depthTex, hitPixel, 0).r;
+        float depthSlop = 1.0e-4 + ndc.z * 5.0e-3;
+        if (depthIsInFront(receiverZ, ndc.z)
+            && abs(receiverZ - ndc.z) > depthSlop) {
+            continue;
+        }
+
         // Caustic brightness falls off with light distance² and refracted
         // travel distance. Approximate everything with a single polynomial.
         float lightFall;

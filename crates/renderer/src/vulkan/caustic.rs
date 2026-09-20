@@ -1355,6 +1355,36 @@ mod tests {
         );
     }
 
+    /// #4545 — the glass caustic deposit must pass the landing-pixel
+    /// occlusion test. The splat projects the receiver hit to its screen
+    /// pixel, so whatever surface actually owns that pixel — anything
+    /// nearer the camera than the caustic target — inherits the pool
+    /// unless the deposit is rejected (the water-side twin fixed the same
+    /// artifact on the Riverwood bridge). Pins that the depth gate sits
+    /// before the deposit loop and uses the convention-aware predicate,
+    /// not a raw `<` against the encoded buffer.
+    #[test]
+    fn glass_caustic_deposits_are_gated_on_landing_pixel_visibility() {
+        let shader = include_str!("../../shaders/caustic_splat.comp");
+        let gate = shader
+            .find("float receiverZ = texelFetch(depthTex, hitPixel, 0).r;")
+            .expect("caustic_splat.comp lost the #4545 landing-pixel depth gate");
+        let deposit = shader
+            .find("imageAtomicAdd(causticAccum, ivec3(q, channel), fv)")
+            .expect("caustic_splat.comp lost its deposit");
+        assert!(
+            gate < deposit,
+            "caustic_splat.comp deposits before (or without) the landing-pixel \
+             visibility gate (#4545 relapse) — occluded receivers must not \
+             inherit the caustic pool"
+        );
+        assert!(
+            shader.contains("depthIsInFront(receiverZ, ndc.z)"),
+            "the gate must compare through depth_convention.glsl's \
+             depthIsInFront so a reversed-Z flip cannot invert the test"
+        );
+    }
+
     #[test]
     fn glass_caustic_source_comes_from_committed_glass_hit_not_opaque_gbuffer() {
         let shader = include_str!("../../shaders/caustic_splat.comp");

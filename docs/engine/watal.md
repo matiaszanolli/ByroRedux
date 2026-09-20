@@ -448,8 +448,16 @@ inherited the bed's caustic net. Every deposit now passes one
 terminate-on-first-hit ray from the floor hit back toward the camera; water is
 not TLAS-eligible so the surface cannot self-occlude the query from either
 side. Pinned by `caustic_deposits_are_gated_on_camera_visibility` in
-`vulkan/water.rs`. The glass-side `caustic_splat.comp` projects the same way
-without an occlusion test — same artifact class, tracked on #4545.
+`vulkan/water.rs`. The glass-side `caustic_splat.comp` projected the same way
+without an occlusion test — fixed the same day with its compute-native twin:
+the landing pixel's `depthTex` sample is compared against the hit's own NDC
+depth through `depth_convention.glsl`'s new `depthIsInFront` predicate
+(mapping-agnostic, so a reversed-Z flip cannot invert the test), with a slop
+band for same-surface quantization; opaque depth is preserved under blended
+glass, so panes between the camera and the pool correctly do NOT reject.
+Verified on the Cornell glass scene (pools survive the gate); pinned by
+`glass_caustic_deposits_are_gated_on_landing_pixel_visibility` in
+`vulkan/caustic.rs`.
 
 **Regression guard, not a remaining fragility:** the procedural-noise hash
 bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and

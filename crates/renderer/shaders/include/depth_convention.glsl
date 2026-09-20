@@ -85,4 +85,16 @@ float depthLinearize(float z, float nearPlane, float farPlane) {
     return nearPlane / max(denom, 1.0e-6);
 }
 
+// True when encoded depth `a` is strictly nearer the camera than `b`.
+// Consumers that only need "which of two depths is in front" should call
+// this instead of spelling out the mapping's direction — the whole point
+// of this header (#4545's caustic occlusion gate is the first caller).
+bool depthIsInFront(float a, float b) {
+#if BYRO_REVERSED_Z
+    return a > b;
+#else
+    return a < b;
+#endif
+}
+
 #endif // BYRO_DEPTH_CONVENTION_GLSL
