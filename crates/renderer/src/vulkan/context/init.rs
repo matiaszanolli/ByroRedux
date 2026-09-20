@@ -998,8 +998,9 @@ impl VulkanContext {
                 Ok(e) => Some(e),
                 Err(e) => {
                     log::warn!(
-                        "Exposure resource creation failed: {e} — presentation falls back to the \
-                         default exposure constant"
+                        "Exposure resource creation failed: {e} — presentation falls back to \
+                         NO_EXPOSURE_RESOURCE_FALLBACK (1.0), matching the SDK's \
+                         null-exposure substitution"
                     );
                     None
                 }
@@ -1758,14 +1759,13 @@ impl VulkanContext {
                 .as_ref()
                 .is_some_and(FrameUpscaler::is_fsr_dispatch_active)
         {
-            log::error!(
+            log::warn!(
                 "FSR context creation failed at startup; promoting to native-resolution \
-                 TAA instead of silently staying at the reduced FSR render extent. \
-                 Note that TAA is not an equivalent replacement for image stability: \
-                 its resolve is wired to the pre-composite HDR attachment, so sky, \
-                 denoised indirect, volumetrics, caustics and bloom bypass it \
-                 entirely, where FSR reconstructs the fully composited scene \
-                 (#3572, open) — expect geometry/sky silhouettes to crawl"
+                 TAA instead of silently staying at the reduced FSR render extent. TAA \
+                 resolves the same fully-composited post-bloom scene FSR would (#3572); \
+                 what differs is the upscale — the render extent returns to native \
+                 output size, trading FSR's reduced-res reconstruction for full-res \
+                 geometric AA"
             );
             if let Err(e) = context.set_upscaler_mode(UpscalerMode::Taa, window_size) {
                 log::error!(

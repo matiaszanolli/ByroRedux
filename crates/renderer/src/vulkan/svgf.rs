@@ -2264,7 +2264,7 @@ mod denoiser_anchor_rot_tests {
                  Line numbers rot silently — every one of these pointed at \
                  unrelated code within weeks (#2922). Name the symbol \
                  instead (`octEncode`, `wait_for_fences` in `draw_frame`, \
-                 `nearest_sampler`, `rebind_hdr_views`, the `tlas_handle` \
+                 `nearest_sampler`, `apply_to_scene`, the `tlas_handle` \
                  gate); see #1040 and `_audit-common.md`'s Path-Reference \
                  Convention.",
                 find_line_anchor(src).unwrap_or_default(),
@@ -2298,8 +2298,8 @@ mod denoiser_anchor_rot_tests {
                 include_str!("svgf.rs"),
             ),
             (
-                "post_passes bloom view rebind",
-                "rebind_hdr_views",
+                "post_passes bloom in-place scene add",
+                "apply_to_scene",
                 include_str!("context/post_passes.rs"),
             ),
             // #4009 — the caustic / water / volumetrics half of the sweep.

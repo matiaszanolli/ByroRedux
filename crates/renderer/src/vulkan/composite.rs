@@ -1258,27 +1258,6 @@ impl CompositePipeline {
         result
     }
 
-
-    pub fn rebind_hdr_views(
-        &mut self,
-        device: &ash::Device,
-        hdr_views: &[vk::ImageView],
-        hdr_layout: vk::ImageLayout,
-    ) {
-        debug_assert_eq!(hdr_views.len(), MAX_FRAMES_IN_FLIGHT);
-        for (i, &hdr_view) in hdr_views.iter().enumerate() {
-            let info = [vk::DescriptorImageInfo::default()
-                .sampler(self.hdr_sampler)
-                .image_view(hdr_view)
-                .image_layout(hdr_layout)];
-            let write = write_combined_image_sampler(self.descriptor_sets[i], 0, &info);
-            // SAFETY: descriptor set `i` owned by `self`; `info` references
-            // caller-borrowed `hdr_views[i]` (live for this call) and
-            // `self.hdr_sampler` (live for `self`).
-            unsafe { device.update_descriptor_sets(&[write], &[]) };
-        }
-    }
-
     /// Upload per-frame composite parameters (fog state, etc.) to the
     /// frame's UBO. Call once per frame before `dispatch`.
     pub fn upload_params(

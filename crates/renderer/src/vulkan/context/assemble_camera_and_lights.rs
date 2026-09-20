@@ -29,6 +29,20 @@ pub(super) fn pack_weather_surface(wetness: f32, snow: f32) -> u32 {
     pack(wetness) | (pack(snow) << 16)
 }
 
+/// #4513 — whether the TAA arm may put the Halton sub-pixel offset on this
+/// frame's projection: only when the pipeline exists, has not permanently
+/// failed (#1932), AND the frame is not a raw-output correctness view. The
+/// last conjunct mirrors #3632's fold into `is_fsr_dispatch_active`:
+/// `record_taa_pass` skips the resolve entirely under a raw view, so a
+/// jittered frame would reach the screen with nothing to reconstruct it
+/// back out of — exactly the shimmer those views exist to exclude. The
+/// debug flags are frame-stable (console/env-driven, never mid-frame), so
+/// this reads the same predicate the dispatch gate will. Free function so
+/// the rule is unit-testable without a live `VulkanContext`.
+fn taa_jitter_gate(taa_present: bool, taa_failed: bool, raw_output_view: bool) -> bool {
+    taa_present && !taa_failed && !raw_output_view
+}
+
 /// Output of [`VulkanContext::assemble_camera_and_lights`] — the locals
 /// later phases (or `draw_frame`'s own tail, after `record_geometry_pass`)
 /// still need. A struct rather than a long tuple: 9 fields of similar
@@ -144,8 +158,16 @@ impl VulkanContext {
         // a stable pinhole fallback image.
         let (jx, jy, fsr_jitter_pixel, fsr_reset_pending) = match self.renderer_config.upscaler {
             super::super::upscaling::UpscalerMode::Taa => {
-                let (jx, jy) = taa_jitter(
+                let jitter_active = taa_jitter_gate(
                     self.post.taa.is_some(),
+                    self.taa_failed,
+                    crate::shader_constants::render_debug_requires_raw_output(
+                        self.render_debug_flags,
+                        self.render_debug_mode.shader_value(),
+                    ),
+                );
+                let (jx, jy) = taa_jitter(
+                    jitter_active,
                     self.taa_failed,
                     self.frame_counter,
                     self.frame_extents.render.width as f32,
@@ -623,5 +645,69 @@ mod weather_surface_pack_tests {
     fn clamps_invalid_surface_inputs_to_safe_range() {
         assert_eq!(pack_weather_surface(-1.0, f32::NAN), 0);
         assert_eq!(pack_weather_surface(2.0, f32::INFINITY), 0x0000_FFFF);
+    }
+}
+
+#[cfg(test)]
+mod taa_jitter_gate_tests {
+    use super::taa_jitter_gate;
+
+    /// #4513 — raw-output view + TAA mode ⇒ no jitter. `record_taa_pass`
+    /// skips the resolve entirely under a raw correctness view, so the
+    /// projection must be unjittered too; before this gate the TAA arm
+    /// applied Halton jitter to a frame nothing temporally reconstructs,
+    /// leaving permanent shimmer on the raw oracles.
+    #[test]
+    fn raw_output_view_leaves_taa_mode_unjittered() {
+        assert!(!taa_jitter_gate(true, false, true));
+    }
+
+    /// The pre-existing gates keep their shape: a healthy pipeline jitters,
+    /// and a missing or failed one stays unjittered (#1932) regardless of
+    /// the debug view.
+    #[test]
+    fn healthy_taa_jitters_and_missing_or_failed_stays_unjittered() {
+        assert!(taa_jitter_gate(true, false, false));
+        assert!(!taa_jitter_gate(false, false, false));
+        assert!(!taa_jitter_gate(true, true, false));
+        assert!(!taa_jitter_gate(true, true, true));
+    }
+
+    /// Pins the wiring, not just the predicate: the raw-output policy must
+    /// be evaluated inside the TAA arm of the upscaler match and folded
+    /// into the `taa_jitter` decision (the call itself needs a live
+    /// `VulkanContext`, so this mirrors the source-scan convention of
+    /// `draw.rs`'s `is_fsr_dispatch_active_tests`).
+    #[test]
+    fn taa_arm_feeds_the_raw_output_gate_into_taa_jitter() {
+        let full_src = include_str!("assemble_camera_and_lights.rs");
+        let test_mod_start = full_src
+            .find("#[cfg(test)]")
+            .expect("this file has at least one #[cfg(test)] module");
+        let src = &full_src[..test_mod_start];
+        let arm_start = src
+            .find("UpscalerMode::Taa => {")
+            .expect("the upscaler match must still have a Taa arm");
+        let arm_end = src[arm_start..]
+            .find("UpscalerMode::Fsr3(_)")
+            .map(|rel| arm_start + rel)
+            .expect("the Fsr3 arm must follow the Taa arm");
+        let arm = &src[arm_start..arm_end];
+        let gate = arm
+            .find("taa_jitter_gate(")
+            .expect("the TAA arm must route its jitter through taa_jitter_gate");
+        let call = arm
+            .find("taa_jitter(")
+            .expect("the TAA arm must still derive its offset from taa_jitter");
+        assert!(
+            gate < call,
+            "the jitter decision (taa_jitter_gate, folding in the raw-output \
+             policy) must be made before taa_jitter runs — #3632 fixed the \
+             FSR arm's is_fsr_dispatch_active only"
+        );
+        assert!(
+            arm.contains("render_debug_requires_raw_output("),
+            "the TAA arm must consult the shared raw-output policy (#4513)"
+        );
     }
 }

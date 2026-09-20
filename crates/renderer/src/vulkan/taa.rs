@@ -1,17 +1,22 @@
 //! Temporal Antialiasing (TAA) — reproject-and-resolve compute pass.
 //!
-//! Runs between SVGF and composite:
+//! Runs after composite and bloom, before upscale (#3572):
 //!
 //!   main render pass → raw HDR + motion + mesh_id + normal (per frame-in-flight)
 //!   SVGF temporal    → denoised indirect           (per frame-in-flight)
+//!   composite        → fully assembled scene image (sky + GI + caustics + direct)
+//!   bloom            → added in place on the scene image
 //!   TAA dispatch     → anti-aliased HDR            (THIS module)
-//!   composite        → tone-mapped swapchain
+//!   upscale          → output HDR (native blit, or FSR reconstruction)
+//!   presentation     → tone-mapped swapchain
 //!
 //! Owns a per-frame-in-flight RGBA16F history image. Each frame reads
 //! the OTHER slot (the previous frame's history) via motion-vector
 //! reprojection, neighborhood-clamps it against the 3×3 current-pixel
 //! stats in YCoCg, and writes the resolved color to its own slot. The
-//! composite pass then samples the same slot as this frame's HDR input.
+//! upscale pass then blits (or FSR-reconstructs) from the same slot into
+//! the output-resolution image presentation samples; composite itself
+//! reads the raw HDR attachment, never this output.
 //!
 //! Projection-matrix jitter (Halton 2,3) is applied CPU-side in the
 //! camera UBO construction; this shader just consumes the result.
@@ -1183,19 +1188,21 @@ mod tests {
     /// #4309 — every `imageStore(uOutput, …)` must forward the HDR coverage
     /// lane, not a literal alpha.
     ///
-    /// `composite.frag`'s sky arm reads `coverage = clamp(direct4.a, 0, 1)`
-    /// and weights `sky_radiance(...) * (1.0 - coverage)` (#2466), and under
-    /// `--upscaler taa` — the automatic FSR fallback (#2480) included —
-    /// composite binding 0 is this shader's output. So the pass-through is a
-    /// live contract, and `vec4(rgb, 1.0)` at any of the three stores makes
-    /// every clear-depth pixel report full coverage and replaces the sky with
-    /// black.
+    /// The lane is authored by the main render pass
+    /// (`pipeline::coverage_alpha_factors`) and forwarded by composite into
+    /// the scene image alpha; this shader is the last pass between that
+    /// image and the upscale blit, and presentation forwards the alpha it
+    /// samples to the swapchain (#3426). So `vec4(rgb, 1.0)` at any of the
+    /// three stores silently zeroes the coverage every clear-depth pixel
+    /// carries past this point. (#3572 re-tapped composite's own binding 0
+    /// to the raw HDR attachment, so its sky arm no longer reads the lane
+    /// from this output — the forwarding is about keeping the lane intact
+    /// downstream, not about the sky arm.)
     ///
     /// That edit looked safe for as long as the shader's own comment called
-    /// the lane "harmless today" and `coverage_alpha_factors`'s rustdoc said
-    /// it "has no other consumer". Both are corrected; this is the part a
-    /// comment cannot do. There is no unit test that can render the sky, but
-    /// there is one that can insist the alpha argument is a variable.
+    /// the lane "harmless today"; this is the part a comment cannot do.
+    /// There is no unit test that can render the sky, but there is one that
+    /// can insist the alpha argument is a variable.
     #[test]
     fn every_output_store_forwards_the_coverage_lane() {
         let src = include_str!("../../shaders/taa.comp");

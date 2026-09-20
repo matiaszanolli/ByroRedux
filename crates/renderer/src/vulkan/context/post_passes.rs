@@ -822,45 +822,20 @@ impl VulkanContext {
     /// TAA resolve (#2258 / TD1-080, extracted from `record_post_passes`):
     /// reprojects previous frame's history via motion vectors,
     /// neighborhood-clamps in YCoCg, and writes the anti-aliased HDR
-    /// result for composite to sample. Runs after SVGF (which denoises
-    /// the indirect term) and before SSAO/composite.
+    /// result for the upscale/presentation tap to sample. #3572 moved the
+    /// dispatch to run after composite and bloom, resolving the SAME
+    /// fully-composited, post-bloom scene image `record_upscale_pass`
+    /// feeds FSR (`composite.scene_view`, wired in at pipeline
+    /// construction) instead of the raw direct-only main-pass attachment;
+    /// composite reads the raw HDR attachment directly and never samples
+    /// this pass's output.
     ///
-    /// TAA permanent-failure recovery: on the first dispatch error the
-    /// composite's binding 0 (which currently points at TAA's output)
-    /// gets rebound to the raw HDR render-pass attachments so the screen
-    /// keeps updating — without the fallback the last TAA-written HDR
-    /// frame would freeze on screen for the rest of the session with only
-    /// a `warn!` log hinting at the cause. See #479.
-    ///
-    /// **Known coverage gap — #3572, OPEN.** This resolve is wired to
-    /// `composite.hdr_image_views[f]`, the raw main-render-pass attachment,
-    /// i.e. direct lighting only. Everything composite *adds* after it —
-    /// the analytically-synthesised sky, the SVGF-denoised indirect,
-    /// volumetrics, water caustics, and (since #2796) bloom — is never seen
-    /// by the resolve. FSR is the mirror image: `record_upscale_pass` takes
-    /// `composite.scene_image(frame)`, the fully composited post-bloom
-    /// scene, so it temporally reconstructs all of it. Since
-    /// `UpscalerMode::default()` is `Fsr3(Quality)`, the lower-coverage path
-    /// is the one `--upscaler taa` selects — including the automatic
-    /// promotion to TAA when FSR fails to construct at startup (#2480).
-    ///
-    /// The visible consequence is the geometry/sky silhouette:
-    /// `composite.frag` classifies each pixel with a hard binary
-    /// `depth < 1.0` against the JITTERED depth buffer, downstream of this
-    /// resolve, so sub-pixel Halton jitter flips a silhouette pixel between
-    /// "TAA-resolved geometry" and "freshly computed, never temporally
-    /// filtered sky" every frame. #2760 softened the history-acceptance half
-    /// (`disocclusionFromSky`), which can only help the frames on which the
-    /// pixel is geometry.
-    ///
-    /// Not fixed here on purpose: the fix is to dispatch this on
-    /// `composite.scene_image(frame)` after `record_composite_pass`, and
-    /// that image is `COLOR_ATTACHMENT | SAMPLED | TRANSFER_SRC | STORAGE`
-    /// and already changes layout twice in the tail of the frame. Per the
-    /// project's standing rule, a barrier/pass-order restructure whose
-    /// failure modes are invisible to `cargo test` needs a RenderDoc capture
-    /// or a `BYRO_VALIDATION=1` sync-validation run first — not test
-    /// evidence.
+    /// TAA permanent-failure policy: `latch_taa_failure` (below) is the
+    /// one reachable failure path, and no descriptor rebind exists or is
+    /// needed — composite's binding 0 names the raw HDR attachment
+    /// unconditionally, so a latched failure simply leaves the frame tail
+    /// blitting the composite scene through un-resolved. See #479 /
+    /// #3572.
     ///
     /// # Safety
     /// `cmd` is in the recording state — opened by `begin_command_buffer`
@@ -922,8 +897,8 @@ impl VulkanContext {
     /// the next.
     pub(super) fn latch_taa_failure(&mut self, error: &anyhow::Error) {
         log::error!(
-            "TAA parameter upload failed — falling back to raw HDR for the rest \
-             of the session: {error}"
+            "TAA parameter upload failed — the frame tail blits the composite \
+             scene through un-resolved for the rest of the session: {error}"
         );
         self.taa_failed = true;
         // #3572 — composite samples the raw HDR attachment directly (no
@@ -931,8 +906,8 @@ impl VulkanContext {
         // latch this arm used to schedule is retired with the composite-side
         // tap. #3605 (REN-2026-08-30-D13-02) — this frame's geometry pass already
         // rendered with the Halton jitter offset (chosen at the top of
-        // `draw_frame`, before the upload failed), and the raw-HDR fallback
-        // above blits that image through with nothing to resolve it. Mirrors
+        // `draw_frame`, before the upload failed), and the frame tail blits
+        // that image through with nothing to resolve it. Mirrors
         // the FSR sibling at #2519: flush temporal history so the NEXT frame
         // does not reproject against a half-pixel-shifted image — later
         // frames are chosen unjittered by the `!taa_failed` gate (#1932), so
@@ -1012,12 +987,11 @@ impl VulkanContext {
     /// upscale samples it.
     ///
     /// This is a SEPARATE image from composite's own `hdrTex` input
-    /// (binding 0, `composite.hdr_image_views`): that one still gets
-    /// swapped between the raw main-pass HDR and TAA's resolved output by
-    /// `rebind_hdr_views` (unaffected by this change — composite still
-    /// reads whichever one TAA availability selects); bloom now reads
-    /// composite's OUTPUT (`scene_image_views`) instead, which is
-    /// downstream of that swap either way.
+    /// (binding 0): composite reads the raw main-pass HDR attachment
+    /// there unconditionally — no TAA-output swap has existed since #3572
+    /// retired the rebind mechanism. Bloom reads composite's OUTPUT
+    /// (`scene_image_views`), the same post-bloom image TAA resolves and
+    /// the upscale pass consumes.
     ///
     /// Pre-#2796 this read the pre-composite raw HDR attachment (whatever
     /// the main render pass alone had written), which structurally never

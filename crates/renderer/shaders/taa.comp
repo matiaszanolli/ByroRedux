@@ -7,9 +7,12 @@
 
 // Temporal Antialiasing (TAA) — reproject + neighborhood-clamp resolve.
 //
-// Runs after SVGF and before composite. Consumes the jittered current HDR
-// image + motion vectors + mesh IDs, produces an anti-aliased HDR image
-// plus an updated history that the NEXT frame reads as its prior.
+// Runs after composite and bloom, before upscale (#3572). Consumes the
+// composited post-bloom scene image (itself assembled from the jittered
+// main render pass) + motion vectors + mesh IDs, produces an anti-aliased
+// HDR image plus an updated history that the NEXT frame reads as its
+// prior; the upscale pass then blits/reconstructs from it into the image
+// presentation samples.
 //
 // Jitter: the main render pass is rendered with a sub-pixel Halton(2,3)
 // offset baked into the projection matrix. Each frame samples a different
@@ -99,25 +102,23 @@ void main() {
     // Read RGBA together: HDR.a carries the accumulated *coverage* lane
     // the main pass authors per fragment (`pipeline::coverage_alpha_factors`
     // — 0 where nothing drew, the over-operator coverage for classic alpha
-    // blends). Forwarding it at all three imageStore sites below is
-    // load-bearing, not defensive.
+    // blends) and composite forwards into the scene image alpha
+    // (`vec4(combined, direct4.a)`). Forwarding it at all three imageStore
+    // sites below keeps that lane intact end-to-end: this output feeds the
+    // upscale blit, and presentation forwards the alpha it samples to the
+    // swapchain (#3426).
     //
-    // #4309 — this comment used to say the pass-through was "harmless today
-    // (composite forwards .a to the swapchain which ignores it)" and only
-    // mattered to "a future composite branch that gates on alpha". Both
-    // halves were false. Composite writes the offscreen HDR scene image;
-    // presentation owns the swapchain (#3426). And the branch is not future:
-    // `composite.frag`'s sky arm reads `coverage = clamp(direct4.a, 0, 1)`
-    // and weights `sky_radiance(...) * (1.0 - coverage)` (#2466). Under
-    // `--upscaler taa` — including the automatic FSR fallback (#2480) —
-    // composite's binding 0 *is* this shader's output, so that arm reads
-    // exactly what is written here.
-    //
-    // Writing `vec4(rgb, 1.0)` instead, which the old comment made sound
-    // safe, would report full coverage on every clear-depth pixel and
-    // replace the sky with black. Nothing in the test suite would fail;
-    // `taa.rs`'s `every_output_store_forwards_the_coverage_lane` exists to
-    // catch exactly that edit. See #676 / DEN-6 for the original fix.
+    // #4309 — this comment used to call the pass-through "harmless today
+    // (composite forwards .a to the swapchain which ignores it)". That was
+    // false pre-#3572, when composite's binding 0 *was* this shader's
+    // output and its sky arm gated on the lane (#2466); #3572 re-tapped
+    // composite to the raw HDR attachment, so the sky arm reads coverage
+    // from there again and this pass only carries the lane downstream.
+    // The forwarding stays: writing `vec4(rgb, 1.0)` would silently zero
+    // the coverage every clear-depth pixel reports past this point.
+    // Nothing in the test suite would fail; `taa.rs`'s
+    // `every_output_store_forwards_the_coverage_lane` exists to catch
+    // exactly that edit. See #676 / DEN-6 for the original fix.
     vec4 curr    = texelFetch(uCurrHdr, pix, 0);
     vec3 currRgb = curr.rgb;
     float currA  = curr.a;
@@ -166,17 +167,19 @@ void main() {
     bool background = currMid == 0u;
 
     // #2760 (REN-D13-02) — geometry/sky silhouettes never stabilize under
-    // TAA jitter: sky is synthesised later in composite.frag and never
-    // exists in this HDR attachment, so the sky side of a silhouette
-    // carries only the render-pass clear colour and mesh_id 0. Sub-pixel
-    // Halton jitter flips which side of the edge a given pixel centre
-    // falls on every frame; with a parked camera the motion vector is
-    // exactly zero, so the SAME screen pixel reprojects to itself and
-    // alternates covered/uncovered forever — a permanent, not one-frame,
+    // TAA jitter. Since #3572 the sky side of a silhouette carries real
+    // composited sky radiance (this pass samples the post-composite scene
+    // image, not the bare main-pass attachment), but the G-buffer
+    // classification still flips: mesh_id comes from the main render
+    // pass, where nothing drew on sky pixels, so a pixel whose centre
+    // jitter-straddles the edge alternates between a geometry mesh_id and
+    // 0 every frame; with a parked camera the motion vector is exactly
+    // zero, so the SAME screen pixel reprojects to itself and alternates
+    // covered/uncovered forever — a permanent, not one-frame,
     // disocclusion. Treat "current is real geometry, reprojected sample
-    // was sky" as its own case: still refuse the (garbage) history colour,
-    // but via the tight variance clamp below instead of a hard bypass, so
-    // the pixel still gets the current-frame neighbourhood-mean box filter
+    // was sky" as its own case: still refuse the history colour, but via
+    // the tight variance clamp below instead of a hard bypass, so the
+    // pixel still gets the current-frame neighbourhood-mean box filter
     // instead of zero antialiasing. Ordinary disocclusion between two real
     // surfaces (neither side is sky) is untouched.
     bool disocclusionFromSky = currMid != 0u && prevMid == 0u;

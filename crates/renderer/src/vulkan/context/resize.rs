@@ -1671,8 +1671,9 @@ mod tests {
     /// so every resize (and every preset switch) replaces the output
     /// `VkImage`/`VkImageView` handles. `PresentationPipeline` writes those
     /// views into its descriptor sets exactly once, in `create`/
-    /// `write_inputs` — there is no `rebind_upscaled_views` sibling to
-    /// `composite.rs::rebind_hdr_views`. The only thing keeping the
+    /// `write_inputs` — there is no `rebind_upscaled_views` sibling (the
+    /// composite-side rebind helper that once had one was retired by
+    /// #3572). The only thing keeping the
     /// presentation descriptor off a destroyed view is source ordering:
     /// retire the old presentation pipeline, THEN recreate the upscaler
     /// (destroying its old views), THEN rebuild presentation against the

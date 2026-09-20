@@ -75,8 +75,8 @@ pub const FSR_DISPATCH_FAILURE_RECOVERY_FRAMES: u32 = 1;
 /// and the same reasoning: `taa_jitter`'s `!taa_failed` gate (#1932) already
 /// keeps every frame AFTER the latch unjittered, but the failing frame's
 /// geometry pass rendered with the Halton offset before `record_taa_pass`
-/// discovered the failure in the post-pass tail. Composite then falls back
-/// to raw HDR with nothing to resolve that jitter, and the very next frame's
+/// discovered the failure in the post-pass tail. The frame tail then blits
+/// the composite scene through un-resolved, and the very next frame's
 /// SVGF / volumetrics reprojection would otherwise accumulate against a
 /// half-pixel-shifted image. One frame is the whole exposure — kept as its
 /// own named constant (not a re-use of the FSR one) so a change to either
@@ -855,6 +855,20 @@ impl FrameUpscaler {
             .aspect_mask(vk::ImageAspectFlags::DEPTH)
             .level_count(1)
             .layer_count(1);
+        // #4538 — the scene_color entry below is an execution-only barrier
+        // with `old == new == SHADER_READ_ONLY_OPTIMAL` hard-coded, while
+        // #3572 made GENERAL a representable `scene_color_layout` (the TAA
+        // output slot). Only TAA/FSR construction exclusivity keeps that
+        // hard-coding honest — FSR mode never owns a TAA output — so pin
+        // the exclusivity here rather than letting a future layout refactor
+        // hand the SDK a GENERAL image behind a SHADER_READ_ONLY barrier.
+        debug_assert_eq!(
+            inputs.scene_color_layout,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            "FSR's scene_color input barrier hard-codes SHADER_READ_ONLY_OPTIMAL \
+             on both sides; a GENERAL scene_color_layout needs the barrier (and \
+             the SDK's declared input state) to follow inputs.scene_color_layout"
+        );
         // #2200 / TD2-NEW-01 — the four color inputs the SDK only reads take
         // an identical execution-only barrier: same access pair, same layout
         // on both sides. They exist to order the producing render pass before
@@ -1271,6 +1285,40 @@ mod tests {
         assert_eq!(
             blit_output_src_access(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             vk::AccessFlags::SHADER_READ
+        );
+    }
+
+    /// #4538 — `record_fsr_barriers_before`'s scene_color entry is an
+    /// execution-only barrier that hard-codes `SHADER_READ_ONLY_OPTIMAL` on
+    /// both sides, while #3572 made `GENERAL` a representable
+    /// `UpscaleDispatchInputs::scene_color_layout` (the TAA output slot).
+    /// The barrier is only correct under TAA/FSR construction exclusivity,
+    /// so that exclusivity must be asserted where the barrier is built, not
+    /// merely documented. Source-scan pin: recording the barrier needs a
+    /// live device and an active SDK context.
+    #[test]
+    fn fsr_scene_color_barrier_asserts_the_layout_it_hard_codes() {
+        let production = include_str!("frame_upscaler.rs")
+            .split_once("\n#[cfg(test)]")
+            .expect("frame_upscaler.rs has a #[cfg(test)] module")
+            .0;
+        let fn_start = production
+            .find("unsafe fn record_fsr_barriers_before(")
+            .expect("record_fsr_barriers_before must still exist");
+        let fn_end = production[fn_start..]
+            .find("\n    /// Put depth back into the layout")
+            .map(|rel| fn_start + rel)
+            .expect("record_fsr_depth_restore's doc must still follow record_fsr_barriers_before");
+        let body = &production[fn_start..fn_end];
+        assert!(
+            body.contains("debug_assert_eq!("),
+            "record_fsr_barriers_before must fail loudly when scene_color arrives \
+             in a layout its execution-only barrier does not handle (#4538)"
+        );
+        assert!(
+            body.contains("inputs.scene_color_layout"),
+            "the assertion must key on the actual scene_color_layout input, not \
+             restate a second hard-coded guess"
         );
     }
 
