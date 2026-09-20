@@ -989,8 +989,11 @@ const SUN_SIZE_COS: f32 = 0.9995;
 ///
 /// * the producer, [`crate::systems::weather::compute_sun_arc`], which
 ///   ramps up to it and holds it between sunrise-end and sunset-begin;
-/// * the bootstrap seed used by [`translate_climate_sky`] below, before the
-///   per-frame `weather_system` re-derives the live value from the TOD arc;
+/// * the bootstrap seed `scene::world_setup::apply_environment` installs
+///   through [`translate_sky`] / [`translate_exterior_cell_lighting`] (or
+///   their [`procedural_fallback_sky`] / [`procedural_fallback_cell_lighting`]
+///   no-climate counterparts) before the per-frame `weather_system`
+///   re-derives the live value from the TOD arc;
 /// * the divisor in `render::compute_directional_upload`, which normalises
 ///   `sun_intensity / peak` into the surface-lighting scale.
 ///
@@ -1171,6 +1174,26 @@ fn precipitation_components(classification: u8) -> [f32; 2] {
     ]
 }
 
+/// Neutral moon-glare for a WTHR that authors no moon-glare colour at all,
+/// and the one declaration behind [`WeatherSkyState::default`]'s
+/// `moon_glare` — the `FB_TOD_HOURS`/`weather::DEFAULT_TOD_HOURS`
+/// arrangement (#2812): the default aliases this value so the two cannot
+/// drift (#4494 — pre-fix the literal was duplicated verbatim in both files
+/// with neither copy citing the other). There is no authored field to
+/// translate here: Gamebryo-era WTHRs carry no moon data at all and even
+/// Skyrim ships it only as a colour table that is legitimately all-zero on
+/// overcast records, so this is a documented engine choice, not data — same
+/// class as the cloud-coverage constants (`fog_coverage_from_weather`'s
+/// provenance note, skyal.md §2).
+pub(crate) const FALLBACK_MOON_GLARE: f32 = 0.35;
+
+/// Neutral sun-glare for a WTHR whose `DATA` glare byte is 0, and the one
+/// declaration behind [`WeatherSkyState::default`]'s `sun_glare` — same
+/// one-declaration arrangement as [`FALLBACK_MOON_GLARE`]: an unauthored 0
+/// is "no data", not an authored glareless sun, so the engine substitutes
+/// its neutral multiplier rather than forwarding the sentinel.
+pub(crate) const NEUTRAL_SUN_GLARE: f32 = 1.0;
+
 /// Translate the authored non-colour WTHR controls into normalized render
 /// values. Per-TOD cloud tint is sampled by `weather_system`; this seed is
 /// useful for the first frame before that system has run.
@@ -1212,7 +1235,7 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
     let moon_glare = if authored_moon_glare > 0.001 {
         authored_moon_glare
     } else {
-        0.35
+        FALLBACK_MOON_GLARE
     };
     let aurora_always = wthr.classification & WTHR_AURORA_ALWAYS_VISIBLE != 0;
     let aurora_follows_sun = wthr.classification & WTHR_AURORA_FOLLOWS_SUN != 0;
@@ -1229,7 +1252,7 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
         lightning_color,
         stars_color: wthr.sky_colors[SKY_STARS][slot].to_rgb_f32(),
         sun_glare: if wthr.sun_glare == 0 {
-            1.0
+            NEUTRAL_SUN_GLARE
         } else {
             wthr.sun_glare as f32 / 255.0
         },
@@ -1402,7 +1425,10 @@ const FB_LOWER: [f32; 3] = [
     FB_HORIZON[2] * 0.3,
 ];
 const FB_SUN_COLOR: [f32; 3] = [1.0, 0.95, 0.8];
-const FB_STARS_COLOR: [f32; 3] = [0.75, 0.8, 1.0];
+/// Star colour of the procedural fallback sky — and the one declaration
+/// behind [`WeatherSkyState::default`]'s `stars_color` (#4494, same
+/// anti-drift alias arrangement as [`FB_TOD_HOURS`]).
+pub(crate) const FB_STARS_COLOR: [f32; 3] = [0.75, 0.8, 1.0];
 /// Sunrise-begin / sunrise-end / sunset-begin / sunset-end breakpoints used
 /// whenever no climate record drives them — the **one** declaration (#2812).
 ///
@@ -3071,6 +3097,16 @@ mod tests {
     /// authors. They may differ ONLY in AUTHORED fields. This is what lets
     /// the renderer + solver consume one `WaterMaterial` regardless of the
     /// source game.
+    ///
+    /// #4486 — this synthetic guard now pins the **full** §4 sentinel list,
+    /// not a 5-scalar selection (pre-fix `noise_map_indices`, the wave
+    /// defaults, the underwater-fog/depth/absorption zeros,
+    /// `blend_normals`, the specular sentinels and the GNAM-less deep-tint
+    /// mirror were all unpinned). What a synthetic literal structurally
+    /// cannot see — the sentinel set the *parser* decides per game
+    /// (FO3/FNV `OffsetNoise`, Oblivion NNAM-vs-Skyrim TNAM texture roles,
+    /// the pre-Skyrim formats' missing tail bytes) — is covered by
+    /// `water_sentinels_hold_on_real_watr_per_game` below.
     #[test]
     fn resolve_water_material_sentinels_are_game_invariant() {
         // "Oblivion-shaped": sparse DATA — colours + a short fog only.
@@ -3115,6 +3151,10 @@ mod tests {
 
         // SENTINEL fields no game authors must be identical across games
         // AND equal to the canonical default — the translate-up invariant.
+        // #4486: the loop used to pin 5 scalars; it now walks the full §4
+        // sentinel list, including the rows the unpinned-list audit named
+        // (underwater fog/depth zeros, specular sentinels, the wave
+        // defaults, absorption/concentration Starfield columns).
         for (label, a, b, d) in [
             ("ior", ob.ior, sk.ior, def.ior),
             (
@@ -3125,6 +3165,72 @@ mod tests {
             ),
             ("uv_scale_a", ob.uv_scale_a, sk.uv_scale_a, def.uv_scale_a),
             ("uv_scale_b", ob.uv_scale_b, sk.uv_scale_b, def.uv_scale_b),
+            ("uv_scale_c", ob.uv_scale_c, sk.uv_scale_c, def.uv_scale_c),
+            ("depth_amount", ob.depth_amount, sk.depth_amount, def.depth_amount),
+            (
+                "underwater_fog_near",
+                ob.underwater_fog_near,
+                sk.underwater_fog_near,
+                def.underwater_fog_near,
+            ),
+            (
+                "underwater_fog_far",
+                ob.underwater_fog_far,
+                sk.underwater_fog_far,
+                def.underwater_fog_far,
+            ),
+            (
+                "underwater_fog_amount",
+                ob.underwater_fog_amount,
+                sk.underwater_fog_amount,
+                def.underwater_fog_amount,
+            ),
+            (
+                "specular_magnitude",
+                ob.specular_magnitude,
+                sk.specular_magnitude,
+                def.specular_magnitude,
+            ),
+            (
+                "specular_radius",
+                ob.specular_radius,
+                sk.specular_radius,
+                def.specular_radius,
+            ),
+            (
+                "normal_magnitude",
+                ob.normal_magnitude,
+                sk.normal_magnitude,
+                def.normal_magnitude,
+            ),
+            (
+                "above_water_fog_amount",
+                ob.above_water_fog_amount,
+                sk.above_water_fog_amount,
+                def.above_water_fog_amount,
+            ),
+            ("flowmap_scale", ob.flowmap_scale, sk.flowmap_scale, def.flowmap_scale),
+            ("noise_falloff", ob.noise_falloff, sk.noise_falloff, def.noise_falloff),
+            (
+                "angular_velocity",
+                ob.angular_velocity,
+                sk.angular_velocity,
+                def.angular_velocity,
+            ),
+            // WATAL Phase 1 defaults — the unauthored wave shape is the
+            // named canonical constant, not a local literal.
+            (
+                "wave_amplitude",
+                ob.wave_amplitude,
+                sk.wave_amplitude,
+                byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_AMPLITUDE,
+            ),
+            (
+                "wave_frequency",
+                ob.wave_frequency,
+                sk.wave_frequency,
+                byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_FREQUENCY,
+            ),
             (
                 "foam_strength",
                 ob.foam_strength,
@@ -3135,23 +3241,319 @@ mod tests {
             assert_eq!(a, b, "SENTINEL `{label}` must be game-invariant");
             assert_eq!(a, d, "SENTINEL `{label}` must equal the canonical default");
         }
+        // Array sentinels — each shape checked as its own triple.
+        assert_eq!(ob.alpha_controls, sk.alpha_controls, "SENTINEL must be game-invariant");
+        assert_eq!(ob.alpha_controls, def.alpha_controls, "SENTINEL must equal the default");
+        assert_eq!(ob.depth_weights, sk.depth_weights, "SENTINEL must be game-invariant");
+        assert_eq!(ob.depth_weights, def.depth_weights, "SENTINEL must equal the default");
+        assert_eq!(ob.effect_controls, sk.effect_controls, "SENTINEL must be game-invariant");
+        assert_eq!(ob.effect_controls, def.effect_controls, "SENTINEL must equal the default");
         assert_eq!(
-            ob.normal_map_index,
-            u32::MAX,
-            "no texture authored → procedural sentinel"
-        );
-        assert!(
-            (def.foam_strength - 0.65).abs() < f32::EPSILON,
-            "calm-water sentinel must retain shoreline foam"
+            ob.noise_amplitude_scales, sk.noise_amplitude_scales,
+            "SENTINEL must be game-invariant"
         );
         assert_eq!(
-            sk.normal_map_index,
-            u32::MAX,
-            "no texture authored → procedural sentinel"
+            ob.noise_amplitude_scales, def.noise_amplitude_scales,
+            "SENTINEL must equal the default"
         );
+        assert_eq!(ob.normal_falloff, sk.normal_falloff, "SENTINEL must be game-invariant");
+        assert_eq!(ob.normal_falloff, def.normal_falloff, "SENTINEL must equal the default");
+        assert_eq!(
+            ob.absorption_coefficients, sk.absorption_coefficients,
+            "SENTINEL must be game-invariant"
+        );
+        assert_eq!(
+            ob.absorption_coefficients, def.absorption_coefficients,
+            "SENTINEL must equal the default"
+        );
+        assert_eq!(ob.concentration, sk.concentration, "SENTINEL must be game-invariant");
+        assert_eq!(ob.concentration, def.concentration, "SENTINEL must equal the default");
+        assert_eq!(ob.uv_offset, sk.uv_offset, "SENTINEL must be game-invariant");
+        assert_eq!(ob.uv_offset, def.uv_offset, "SENTINEL must equal the default");
+        assert_eq!(
+            ob.blend_normals, sk.blend_normals,
+            "SENTINEL must be game-invariant"
+        );
+        assert!(ob.blend_normals, "no FNAM blend bit authored → compatibility default");
+        // Procedural bindless sentinels — handles are assigned downstream of
+        // this boundary, so `resolve` must leave them unset.
+        assert_eq!(ob.normal_map_index, u32::MAX, "no texture authored → procedural sentinel");
+        assert_eq!(ob.flow_map_index, u32::MAX, "cell WATR → no mesh flow map");
+        assert_eq!(
+            ob.noise_map_indices,
+            [u32::MAX; 3],
+            "no noise layers authored → procedural sentinel"
+        );
+        // Deep-tint fallback: no GNAM variant on either record, so the
+        // day/night palettes mirror the record's own base deep tint instead
+        // of inventing a per-variant value.
+        assert_eq!(ob.day_deep_color, ob.deep_color, "day palette mirrors base without GNAM");
+        assert_eq!(ob.night_deep_color, ob.deep_color, "night palette mirrors base without GNAM");
+        assert_eq!(sk.day_deep_color, sk.deep_color, "day palette mirrors base without GNAM");
+        assert_eq!(sk.night_deep_color, sk.deep_color, "night palette mirrors base without GNAM");
         // Calm water authors no flow — a real distinction, not a leak.
         assert!(matches!(ob_kind, WaterKind::Calm));
         assert!(ob_flow.is_none(), "calm water has no synthesized flow");
+    }
+
+    /// #4486 / EXT-D5-2026-09-19-02 — the §4 sentinel invariant against
+    /// **real parsed records**. The synthetic guard above cannot see what
+    /// the parser decides per game, so this harness decodes one real WATR
+    /// from each vanilla master behind the repo's `BYROREDUX_*_DATA`
+    /// fixture env vars (same convention as the sound-candidate harness in
+    /// `asset_provider::texture`) and resolves it through the boundary,
+    /// pinning per game:
+    ///
+    /// - the parse-decided `WaterNormalEncoding` (FO3/FNV `OffsetNoise`,
+    ///   everyone else `TangentNormal`) — the SIBLING completeness check;
+    /// - the engine-invariant scalars no game authors (`ior`,
+    ///   `shoreline_width`, foam-by-kind) and the procedural bindless
+    ///   sentinels (handles are assigned downstream of this boundary);
+    /// - the Starfield-only zero columns (`absorption_coefficients`,
+    ///   `concentration`);
+    /// - for the pre-Skyrim formats, the §4 SENTINEL rows their DATA/DNAM
+    ///   layout has no bytes for (depth ramp, below-water fog split,
+    ///   specular controls, depth-response weights, noise UV scales, …).
+    ///
+    /// Each game is skipped independently when its master is not on disk.
+    /// Run with:
+    /// ```sh
+    /// BYROREDUX_OBLIVION_DATA=<path> BYROREDUX_FNV_DATA=<path> \
+    /// BYROREDUX_FO3_DATA=<path> BYROREDUX_SKYRIMSE_DATA=<path> \
+    /// BYROREDUX_FO4_DATA=<path> \
+    ///     cargo test -p byroredux --bin byroredux \
+    ///     water_sentinels_hold_on_real_watr_per_game -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs vanilla game masters on disk (parses one ESM per game)"]
+    fn water_sentinels_hold_on_real_watr_per_game() {
+        use byroredux_core::ecs::components::water::WaterNormalEncoding;
+        use std::path::PathBuf;
+
+        const STEAM: &str = "/mnt/data/SteamLibrary/steamapps/common";
+
+        /// Which §4 SENTINEL rows the game's WATR payload has no bytes for.
+        /// Grounded in the per-era decoders (`crates/plugin/.../misc/water.rs`),
+        /// not the §4 table's column labels: the FO3/FNV long-DATA layout
+        /// DOES author the underwater-fog / specular / noise-UV tail, so
+        /// only the depth-response, flow-map, normal-falloff, noise-falloff
+        /// and Starfield columns stay sentinel there.
+        #[derive(Clone, Copy)]
+        enum Layout {
+            /// TES4 short DATA (+ NAM1): no modern-tail bytes at all.
+            Tes4Short,
+            /// FO3/FNV 186/196-byte long DATA/DNAM.
+            FalloutLong,
+            /// Skyrim 228/232-byte DNAM / FO4 201-byte DNAM — the canonical,
+            /// most-authored tail.
+            Modern,
+        }
+
+        // (label, env var, default Data dir, master, parse-decided normal
+        // encoding, layout)
+        const GAMES: [(&str, &str, &str, &str, WaterNormalEncoding, Layout); 5] = [
+            (
+                "oblivion",
+                "BYROREDUX_OBLIVION_DATA",
+                "Oblivion/Data",
+                "Oblivion.esm",
+                WaterNormalEncoding::TangentNormal,
+                Layout::Tes4Short,
+            ),
+            (
+                "fnv",
+                "BYROREDUX_FNV_DATA",
+                "Fallout New Vegas/Data",
+                "FalloutNV.esm",
+                WaterNormalEncoding::OffsetNoise,
+                Layout::FalloutLong,
+            ),
+            (
+                "fo3",
+                "BYROREDUX_FO3_DATA",
+                "Fallout 3 goty/Data",
+                "Fallout3.esm",
+                WaterNormalEncoding::OffsetNoise,
+                Layout::FalloutLong,
+            ),
+            (
+                "skyrimse",
+                "BYROREDUX_SKYRIMSE_DATA",
+                "Skyrim Special Edition/Data",
+                "Skyrim.esm",
+                WaterNormalEncoding::TangentNormal,
+                Layout::Modern,
+            ),
+            (
+                "fo4",
+                "BYROREDUX_FO4_DATA",
+                "Fallout 4/Data",
+                "Fallout4.esm",
+                WaterNormalEncoding::TangentNormal,
+                Layout::Modern,
+            ),
+        ];
+
+        let mut games_checked = 0usize;
+        for (label, env_var, default_dir, master, encoding, layout) in GAMES {
+            // An explicitly-set override is binding (#3850 convention); the
+            // documented Steam layout is only the fallback.
+            let dir = std::env::var_os(env_var)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(STEAM).join(default_dir));
+            let master_path = dir.join(master);
+            if !master_path.is_file() {
+                eprintln!("skipping {label}: {} not found", master_path.display());
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&master_path) else {
+                eprintln!("skipping {label}: {} unreadable", master_path.display());
+                continue;
+            };
+            let index = byroredux_plugin::esm::parse_esm(&bytes)
+                .unwrap_or_else(|err| panic!("{label}: parsing {} failed: {err}", master_path.display()));
+
+            // Deterministic pick: the lowest FormID the master actually
+            // ships. The invariant is per-format, not per-record, so any
+            // real WATR must hold it.
+            let Some((&form, _)) = index.waters.iter().min_by_key(|(&fid, _)| fid) else {
+                eprintln!(
+                    "skipping {label}: no WATR records parsed from {}",
+                    master_path.display()
+                );
+                continue;
+            };
+
+            let (mat, kind, _, _, _) = resolve_water_material(&index.waters, Some(form));
+            let def = WaterMaterial::default();
+
+            // Parse-decided per-game normal decoding.
+            assert_eq!(
+                mat.normal_encoding, encoding,
+                "{label}: WaterNormalEncoding is decided at parse, not at translate"
+            );
+
+            // Bindless texture handles are assigned downstream of this
+            // boundary — resolve must leave the procedural sentinels.
+            assert_eq!(mat.normal_map_index, u32::MAX, "{label}");
+            assert_eq!(mat.flow_map_index, u32::MAX, "{label}");
+            assert_eq!(mat.noise_map_indices, [u32::MAX; 3], "{label}");
+            // Mesh-water-authored UV offsets never come from a cell WATR.
+            assert_eq!(mat.uv_offset, [0.0; 2], "{label}");
+
+            // Engine-invariant shading constants (§4 "engine-invariant" row).
+            assert_eq!(mat.ior, def.ior, "{label}");
+            assert_eq!(mat.shoreline_width, def.shoreline_width, "{label}");
+            assert_eq!(
+                mat.foam_strength,
+                kind.canonical_foam_strength(),
+                "{label}: foam must follow the resolved kind"
+            );
+
+            // Starfield-only columns: every pre-Starfield record leaves
+            // them at the zero sentinel.
+            assert_eq!(mat.absorption_coefficients, [0.0; 3], "{label}");
+            assert_eq!(mat.concentration, [0.0; 4], "{label}");
+
+            match layout {
+                Layout::Tes4Short => {
+                    // The pre-Skyrim FNAM contracts have no blend-normals bit.
+                    assert!(
+                        mat.blend_normals,
+                        "{label}: pre-Skyrim FNAM has no blend-normals bit"
+                    );
+                    // TES4's short DATA has no bytes for any of these, so a
+                    // value off the canonical default means the decoder
+                    // started promoting a sentinel — the exact whole-game
+                    // rendering change this harness exists to stop.
+                    for (field, value, expected) in [
+                        ("depth_amount", mat.depth_amount, def.depth_amount),
+                        (
+                            "underwater_fog_near",
+                            mat.underwater_fog_near,
+                            def.underwater_fog_near,
+                        ),
+                        ("underwater_fog_far", mat.underwater_fog_far, def.underwater_fog_far),
+                        (
+                            "underwater_fog_amount",
+                            mat.underwater_fog_amount,
+                            def.underwater_fog_amount,
+                        ),
+                        ("above_water_fog_amount", mat.above_water_fog_amount, def.above_water_fog_amount),
+                        ("specular_magnitude", mat.specular_magnitude, def.specular_magnitude),
+                        ("specular_radius", mat.specular_radius, def.specular_radius),
+                        ("normal_magnitude", mat.normal_magnitude, def.normal_magnitude),
+                        ("flowmap_scale", mat.flowmap_scale, def.flowmap_scale),
+                        ("noise_falloff", mat.noise_falloff, def.noise_falloff),
+                        ("roughness", mat.roughness, def.roughness),
+                        ("uv_scale_a", mat.uv_scale_a, def.uv_scale_a),
+                        ("uv_scale_b", mat.uv_scale_b, def.uv_scale_b),
+                        ("uv_scale_c", mat.uv_scale_c, def.uv_scale_c),
+                    ] {
+                        assert_eq!(
+                            value, expected,
+                            "{label}: TES4 DATA cannot author `{field}` — a §4 \
+                             SENTINEL row leaked into the decode"
+                        );
+                    }
+                    assert_eq!(mat.effect_controls, def.effect_controls, "{label}");
+                    assert_eq!(mat.depth_weights, def.depth_weights, "{label}");
+                    assert_eq!(mat.noise_amplitude_scales, def.noise_amplitude_scales, "{label}");
+                    assert_eq!(mat.normal_falloff, def.normal_falloff, "{label}");
+                }
+                Layout::FalloutLong => {
+                    // The FO3/FNV FNAM contract has no blend-normals bit.
+                    assert!(
+                        mat.blend_normals,
+                        "{label}: FO3/FNV FNAM has no blend-normals bit"
+                    );
+                    // The FO3/FNV long DATA/DNAM authors the underwater-fog
+                    // pair (140/144/148), the specular Light Radius/Brightness
+                    // pair (164/168), the effect-control head (152/156), the
+                    // noise UV scales and amplitudes — those are AUTHORED here
+                    // and deliberately NOT pinned. The depth-response,
+                    // flow-map, normal-falloff and noise-falloff columns have
+                    // no Fallout bytes and must stay sentinel.
+                    for (field, value, expected) in [
+                        ("depth_amount", mat.depth_amount, def.depth_amount),
+                        ("normal_magnitude", mat.normal_magnitude, def.normal_magnitude),
+                        ("flowmap_scale", mat.flowmap_scale, def.flowmap_scale),
+                        ("noise_falloff", mat.noise_falloff, def.noise_falloff),
+                        ("roughness", mat.roughness, def.roughness),
+                    ] {
+                        assert_eq!(
+                            value, expected,
+                            "{label}: the FO3/FNV layout cannot author `{field}` — \
+                             a §4 SENTINEL row leaked into the decode"
+                        );
+                    }
+                    assert_eq!(mat.depth_weights, def.depth_weights, "{label}");
+                    assert_eq!(mat.normal_falloff, def.normal_falloff, "{label}");
+                }
+                Layout::Modern => {
+                    // The Skyrim/FO4 decoders author the full canonical tail
+                    // except `depth_amount`, which only the FO4/FO76 DNAM
+                    // layouts carry — Skyrim's 228/232-byte records leave it
+                    // at the zero sentinel even though §4 groups them in the
+                    // canonical column.
+                    if label == "skyrimse" {
+                        assert_eq!(
+                            mat.depth_amount, def.depth_amount,
+                            "{label}: Skyrim DNAM has no depth-amount byte — a §4 \
+                             SENTINEL row leaked into the decode"
+                        );
+                    }
+                }
+            }
+
+            games_checked += 1;
+        }
+        assert!(
+            games_checked > 0,
+            "no game master was found — set BYROREDUX_*_DATA or install the \
+             vanilla games under {STEAM}"
+        );
     }
 
     /// Regression pin for #1997 (REN-D15-01) — the returned `normal_path`

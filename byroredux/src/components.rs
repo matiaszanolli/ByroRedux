@@ -1192,16 +1192,29 @@ pub(crate) struct WeatherSkyState {
 }
 
 impl Default for WeatherSkyState {
+    /// Engine-chosen neutral weather state for "exterior, no authored WTHR"
+    /// (the procedural-fallback path) and the pre-first-frame seed. The
+    /// constants that also serve the *authored* translate path alias their
+    /// one declaration in `env_translate` — the `FB_TOD_HOURS`/
+    /// `weather::DEFAULT_TOD_HOURS` arrangement (#2812) — so the duplicated
+    /// values cannot drift (#4494); the rest are documented engine choices,
+    /// not translated data.
     fn default() -> Self {
         Self {
+            // Engine default occupancy for the no-record state. It is NOT
+            // one of `env_translate::fog_coverage_from_weather`'s
+            // classification-driven values (skyal.md §2 provenance note) —
+            // those apply only once a WTHR is resolved.
             cloud_coverage: 0.35,
             cloud_tints: [[1.0, 1.0, 1.0, 1.0]; 4],
             precipitation: [0.0; 2],
             thunder_frequency: 0.0,
             lightning_color: [1.0; 3],
-            stars_color: [0.75, 0.8, 1.0],
-            sun_glare: 1.0,
-            moon_glare: 0.35,
+            stars_color: crate::env_translate::FB_STARS_COLOR,
+            // Aliased from the fallback constants `weather_sky_state`
+            // substitutes for unauthored glare data — one declaration each.
+            sun_glare: crate::env_translate::NEUTRAL_SUN_GLARE,
+            moon_glare: crate::env_translate::FALLBACK_MOON_GLARE,
             aurora_intensity: 0.0,
             aurora_follows_sun: false,
             wind_direction: [1.0, 0.0],
