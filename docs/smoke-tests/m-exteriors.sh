@@ -24,9 +24,11 @@
 #             restarting the world or resetting its resources.
 #   water     fixed real-data waterline poses per profile. Captures one
 #             frame above and one below the same authored surface (plus the
-#             ungated `water_term` / `water_normal` oracle views at the surface
-#             pose), then gates WATR provenance, canonical volume membership, current provenance,
-#             image health, and a material above/below visual delta (EX-13/W0).
+#             ungated `water_term` / `water_normal` oracle views and the
+#             gated `water_refl` reflection oracle at the surface pose),
+#             then gates WATR provenance, canonical volume membership, current provenance,
+#             image health, a material above/below visual delta (EX-13/W0),
+#             and a live reflection-term floor (#4543).
 #
 # Usage:
 #   docs/smoke-tests/m-exteriors.sh [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle|water]
@@ -377,6 +379,8 @@ render.debug water_term
 screenshot $profile_dir/water-term.png
 render.debug water_normal
 screenshot $profile_dir/water-normal.png
+render.debug water_refl
+screenshot $profile_dir/water-refl.png
 render.debug final
 cam.pos $water_submerged_pos
 input.look $water_under_look
@@ -672,6 +676,27 @@ EOF
             hard_fail=1
         else
             echo "exterior-smoke[$label]: PASS waterline visual delta=$waterline_delta"
+        fi
+
+        # #4543 — the reflection oracle gate. `water_refl` paints every
+        # non-water surface flat 0.08 grey, so the capture mean directly
+        # measures the water's reflection term: a dead mirror collapses
+        # back toward the grey floor (the pre-fix stack of four serial
+        # authored multipliers capped the mirror at ~1% of sky radiance —
+        # matte water at every viewing angle). Floor is env-overridable for
+        # calibration, not for acceptance.
+        local refl_image="$profile_dir/water-refl.png"
+        local refl_min="${BYROREDUX_WATER_REFL_MIN:-0.12}"
+        local refl_mean
+        refl_mean="$(magick "$refl_image" -colorspace RGB \
+            -format '%[fx:mean]' info: 2>/dev/null || true)"
+        if [[ -z "$refl_mean" ]] \
+                || ! awk -v m="$refl_mean" -v floor="$refl_min" \
+                    'BEGIN { exit !(m >= floor) }'; then
+            echo "exterior-smoke[$label]: HARD FAIL - water reflection oracle mean=${refl_mean:-missing} below floor $refl_min (#4543 dead mirror)"
+            hard_fail=1
+        else
+            echo "exterior-smoke[$label]: PASS water reflection oracle mean=$refl_mean (floor $refl_min)"
         fi
     fi
 

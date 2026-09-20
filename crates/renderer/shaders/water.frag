@@ -1015,18 +1015,33 @@ void main() {
     }
     if (reflHit) {
         reflColor *= exp(-reflDist * RT_DIST_FALLOFF);
+        // WATR DATA reflection_color is a filter on *geometry-hit*
+        // radiance (#1069 / F-WAT-09 — "tints geometry-hit colour"), so it
+        // lives inside the hit arm: the sky-miss reflection keeps the
+        // environment's own colour and an authored grey tint can no longer
+        // dim the sky mirror it was never meant to touch. It still lands
+        // before the TIR capture below, which is correct — TIR energy is
+        // all reflection by definition.
+        reflColor *= push.tint_reflect.rgb;
+        // The "Reflections" depth weight (Skyrim DNAM[208]) gates the
+        // geometry term of the same depth-effect family as its siblings:
+        // depth.y is the absorption rate, depth.z the normal amplitude,
+        // depth.w the sun-glint scale.
+        reflColor *= max(push.depth.x, 0.0);
     }
     // No miss re-select here (#2804): every `hit = false` path in
     // `traceWaterRay` already returns `missFallback`, which is exactly
     // `reflectionMiss`, so the former
     // `mix(reflectionMiss, reflColor, reflHit ? 1.0 : 0.0)` selected
     // `reflColor` in both branches.
-    // WATR DATA reflection_color is a filter on reflected radiance. It must
-    // not be mixed into the shared ray terminus, because that contaminates
-    // the refraction branch with a reflection-only material parameter.
-    reflColor *= push.tint_reflect.rgb;
-    reflColor *= max(push.depth.x, 0.0)
-        * max(push.effects.z, 0.0);
+    //
+    // Reflection Magnitude (Skyrim DNAM[196]; canonical default 1.0) is the
+    // single authored reflection intensity. The pre-fix stack serially
+    // multiplied depth.x, effects.z, the reflection tint AND Reflectivity
+    // Amount into the ray colour, so RiverWaterFlowNE's 0.30 x 0.42 x ~0.55
+    // tint x 0.8 capped the whole mirror at ~1% of sky radiance before
+    // Fresnel even ran — water read as matte at every viewing angle.
+    reflColor *= max(push.effects.z, 0.0);
 
     // ── Refraction ray (skipped for waterfalls) ──
     vec3 refrColor;
@@ -1040,6 +1055,11 @@ void main() {
     // True when a refraction ray was actually traced (RT live, no TIR),
     // whether or not it hit — see the coverage term below.
     bool refrTraced = false;
+    // True when the refraction arm hit total internal reflection: all
+    // energy stays in the reflection, so the surface mix below must not
+    // re-admit scatter-tinted refraction through a Reflectivity-scaled
+    // share.
+    bool tirReflection = false;
     // A negative refraction-magnitude lane is WATAL's compact canonical
     // "authored refractions disabled" sentinel for mesh water. Zero remains
     // the legacy/default fully perturbed-normal path.
@@ -1080,6 +1100,7 @@ void main() {
         } else {
             refrColor = reflColor;
             fresnel = 1.0;
+            tirReflection = true;
         }
     } else {
         // Non-refracting sheets/media: use the deep colour modulated by
@@ -1190,7 +1211,15 @@ void main() {
     refrColor = mix(refrColor, scatterColour, clamp(lightScatter, 0.0, 1.0));
 
     // ── Surface colour ──
-    vec3 surfaceColor = mix(refrColor, reflColor * push.tint_reflect.w, fresnel);
+    // Reflectivity Amount (Skyrim DNAM[20]; canonical default 0.85) scales
+    // the Fresnel share of the mirror instead of dimming the ray colour a
+    // second time. TIR pins the mix at full energy by flag — the TIR arm's
+    // `refrColor = reflColor` alias alone would not survive the scatter
+    // rewrite above.
+    float reflMix = tirReflection
+        ? 1.0
+        : fresnel * clamp(push.tint_reflect.w, 0.0, 1.0);
+    vec3 surfaceColor = mix(refrColor, reflColor, reflMix);
     surfaceColor += vec3(sunSpecular);
 
     // Foam is bright white-ish with a faint tint from the shallow
@@ -1253,6 +1282,14 @@ void main() {
 
     outColor = vec4(surfaceColor, alpha);
     // WATAL oracles: opaque, so the blend cannot mix in what lies beneath.
+    if (renderDebug.x == RENDER_DEBUG_WATER_REFL) {
+        // The reflection term alone (post-magnitude, post-mix) — the term
+        // `water_term` cannot see: that view exposes only refraction,
+        // foam and coverage, so a dead or crushed mirror had no oracle.
+        outColor = vec4(reflColor * reflMix, 1.0);
+        outRawIndirect.a = 1.0;
+        return;
+    }
     if (renderDebug.x == RENDER_DEBUG_WATER_TERM) {
         outColor = vec4(refrHit ? 0.0 : 1.0, foamMask, alpha, 1.0);
         outRawIndirect.a = 1.0;

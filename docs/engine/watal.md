@@ -414,6 +414,21 @@ combine bounded raster-side vertex displacement with fragment normal
 perturbation. Reflection rays now shade their material-aware hit and apply the
 per-WATR tint.
 
+**Reflection intensity contract (#4543, 2026-09-20):** exactly one authored
+scalar multiplies the reflected ray colour — Reflection Magnitude (Skyrim
+DNAM[196], canonical default 1.0). The pre-fix stack serially applied the
+reflection tint, the "Reflections" depth weight (DNAM[208]), the magnitude AND
+Reflectivity Amount, capping `RiverWaterFlowNE`'s mirror at ~1% of sky radiance
+(matte water at every angle — the live report that opened the bug). Now: the
+tint and depth weight gate the geometry-hit arm only (the sky-miss mirror keeps
+the environment's own colour, matching the reflection_color "tints geometry-hit
+colour" rule this doc has always stated); Reflectivity Amount (DNAM[20]) scales
+the Fresnel share of the surface mix; TIR pins the mix at full energy. The
+`water_refl` render-debug oracle exposes the term alone (non-water surfaces
+paint flat 0.08 grey) and `m-exteriors.sh water` floors its capture mean —
+`reflection_intensity_contract_tests` in `vulkan/water.rs` pins the GLSL source
+shape.
+
 **Regression guard, not a remaining fragility:** the procedural-noise hash
 bands past ~176k world units (#1502) are fixed — `sampleScrollingNormal` and
 `foamFlowStreaks` both subtract `originOffset` before hashing, rebased twice

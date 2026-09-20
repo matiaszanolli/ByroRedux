@@ -1304,12 +1304,14 @@ pub const RENDER_DEBUG_VOLUMETRIC_TERM: u32 = 8;
 pub const RENDER_DEBUG_MATERIAL_ROLE: u32 = 9;
 // Water-pass oracles (WATAL W2/W3). `WATER_TERM` packs R = refraction ray
 // missed, G = foam mask, B = output coverage; `WATER_NORMAL` is the
-// perturbed shading normal. Every non-water surface renders a flat dim grey
-// so the water footprint reads unambiguously.
+// perturbed shading normal; `WATER_REFL` is the reflection term alone
+// (post-magnitude, post-Fresnel-mix). Every non-water surface renders a
+// flat dim grey so the water footprint reads unambiguously.
 pub const RENDER_DEBUG_WATER_TERM: u32 = 10;
 pub const RENDER_DEBUG_WATER_NORMAL: u32 = 11;
 pub const RENDER_DEBUG_TERRAIN_LOD: u32 = 12;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_TERRAIN_LOD;
+pub const RENDER_DEBUG_WATER_REFL: u32 = 13;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_WATER_REFL;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -1329,6 +1331,7 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_WATER_TERM", RENDER_DEBUG_WATER_TERM),
     ("RENDER_DEBUG_WATER_NORMAL", RENDER_DEBUG_WATER_NORMAL),
     ("RENDER_DEBUG_TERRAIN_LOD", RENDER_DEBUG_TERRAIN_LOD),
+    ("RENDER_DEBUG_WATER_REFL", RENDER_DEBUG_WATER_REFL),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];

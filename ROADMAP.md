@@ -1186,16 +1186,19 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ### Open — Tier 1 / 2 blockers
 
-- [ ] **Water pipeline declares a 16-byte push-constant range but its
-  shaders use 28 bytes (found 2026-09-18, M48.4 HUD session).** Every
-  startup logs two khronos validation errors from `vkCreateGraphicsPipelines`
-  for the water pipeline: `pStages[0..1] SPIR-V ... push constant buffer
-  Block with range [0, 28] which outside the VkPushConstantRange of
-  [0, 16]`. Water renders (the driver tolerates the out-of-range block),
-  but the layout/shader contract is wrong and GPU-assisted validation
-  refuses to run cleanly. Fix: widen the water pipeline layout's push
-  constant range to cover `WaterPush`'s real 28 bytes (see
-  `create_ui_pipeline`'s #4005 doc note for the size audit hook).
+- [x] **Water pipeline declared a 16-byte push-constant range while its
+  shaders used 28 bytes (found 2026-09-18, M48.4 HUD session). — CLOSED
+  2026-09-20 by #4510** (stale bullet: the fix landed with the renderer
+  audit batch and predated this tick). Both stages now declare only the
+  4-byte `waterIndex` selector; the Rust `WaterPush` pads host-side to the
+  declared 16 B, and `push_constant_block_tests`
+  (`crates/renderer/src/vulkan/water.rs`) reflects the committed `.spv`
+  binaries against the range so a relapse fails `cargo test`. Original
+  entry: every startup logged two khronos validation errors from
+  `vkCreateGraphicsPipelines` for the water pipeline
+  (`Block with range [0, 28] which outside the VkPushConstantRange of
+  [0, 16]`); water rendered only because the driver tolerated the
+  out-of-range block, and GPU-assisted validation refused to run cleanly.
 - [ ] **BC2 world-texture mip-chain staging copy overruns the staging
   buffer by 8 bytes on long streaming runs (observed 2026-09-18).**
   `vkCmdCopyBufferToImage ... exceeds VkBuffer total size` fires

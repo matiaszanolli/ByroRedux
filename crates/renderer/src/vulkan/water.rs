@@ -2313,3 +2313,106 @@ mod push_constant_block_tests {
         }
     }
 }
+
+/// #4543 — the reflection intensity contract of `water.frag`.
+///
+/// The pre-fix shader serially multiplied FOUR authored scalars into the
+/// reflected ray colour (reflection tint × the "Reflections" depth weight ×
+/// Reflection Magnitude × Reflectivity Amount) before the Fresnel mix ran,
+/// capping Skyrim's `RiverWaterFlowNE` mirror at ~1% of sky radiance —
+/// water read as matte at every viewing angle. The authored semantics
+/// (verified against UESP's WATR DNAM table and a raw record decode):
+/// Reflection Magnitude (DNAM[196]) is THE intensity; the depth weight
+/// (DNAM[208]) belongs to the depth-effect family like its absorption /
+/// normal-amplitude / sun-glint siblings; Reflectivity Amount (DNAM[20])
+/// scales the Fresnel share; the reflection colour tints geometry hits
+/// only. SPIR-V reflection cannot see arithmetic, so this pins the GLSL
+/// source shape the same way `mesh.rs` / `buffer.rs` pin their hot paths.
+#[cfg(test)]
+mod reflection_intensity_contract_tests {
+    const WATER_FRAG_SRC: &str = include_str!("../../shaders/water.frag");
+
+    /// Reflection Magnitude is the sole ray-colour intensity multiplier,
+    /// applied unconditionally after the hit/miss arms — never compounded
+    /// with the depth weight on the same line, the pre-fix shape.
+    #[test]
+    fn reflection_magnitude_is_the_sole_ray_multiplier() {
+        assert!(
+            WATER_FRAG_SRC.contains("reflColor *= max(push.effects.z, 0.0);"),
+            "water.frag lost its Reflection Magnitude gate (#4543) — the \
+             authored intensity (canonical default 1.0) must stay the single \
+             ray-colour multiplier"
+        );
+        assert!(
+            !WATER_FRAG_SRC.contains("* max(push.effects.z, 0.0);"),
+            "water.frag re-compounded the reflection magnitude with another \
+             scalar on one line (#4543 relapse) — each authored control owns \
+             one role: magnitude = intensity, depth.x = geometry-hit gate, \
+             reflectivity = Fresnel share"
+        );
+    }
+
+    /// The reflection tint and the "Reflections" depth weight gate the
+    /// geometry-HIT arm only; the sky-miss mirror keeps the environment's
+    /// own colour so an authored grey tint cannot dim it.
+    #[test]
+    fn tint_and_depth_weight_gate_the_geometry_hit_arm_only() {
+        let hit_arm = WATER_FRAG_SRC
+            .find("if (reflHit) {")
+            .expect("water.frag lost its reflHit arm");
+        let magnitude = WATER_FRAG_SRC
+            .find("reflColor *= max(push.effects.z, 0.0);")
+            .expect("magnitude gate (guarded by the sibling test)");
+        let tint = WATER_FRAG_SRC
+            .find("reflColor *= push.tint_reflect.rgb;")
+            .expect("water.frag lost the reflection-tint filter");
+        let depth = WATER_FRAG_SRC
+            .find("reflColor *= max(push.depth.x, 0.0);")
+            .expect("water.frag lost the Reflections depth-weight gate");
+        assert!(
+            hit_arm < tint && tint < depth && depth < magnitude,
+            "water.frag moved the tint / depth-weight filters outside the \
+             geometry-hit arm (#4543 relapse) — they must apply before the \
+             magnitude and inside `if (reflHit)`"
+        );
+        assert_eq!(
+            WATER_FRAG_SRC.match_indices("reflColor *= push.tint_reflect.rgb;").count(),
+            1,
+            "the reflection tint must be applied exactly once"
+        );
+    }
+
+    /// Reflectivity Amount scales the Fresnel share inside the surface
+    /// mix; it must not dim the ray colour a second time, and TIR keeps
+    /// full energy.
+    #[test]
+    fn reflectivity_scales_the_fresnel_mix_not_the_ray() {
+        assert!(
+            WATER_FRAG_SRC.contains("fresnel * clamp(push.tint_reflect.w, 0.0, 1.0)"),
+            "water.frag lost the Reflectivity-scaled Fresnel mix (#4543) — \
+             Reflectivity Amount (DNAM[20]) scales the mirror share, it is \
+             not a third serial ray dimmer"
+        );
+        assert!(
+            !WATER_FRAG_SRC.contains("reflColor * push.tint_reflect.w, fresnel)"),
+            "water.frag re-introduced the pre-#4543 surface mix that dimmed \
+             the ray colour by Reflectivity before Fresnel"
+        );
+        assert!(
+            WATER_FRAG_SRC.contains("tirReflection"),
+            "water.frag lost the TIR full-energy flag — total internal \
+             reflection must pin the surface mix at 1.0"
+        );
+    }
+
+    /// The `water_refl` oracle keeps a dead mirror measurable from a
+    /// capture (`water_term` exposes only refraction/foam/coverage).
+    #[test]
+    fn water_refl_oracle_stays_wired() {
+        assert!(
+            WATER_FRAG_SRC.contains("RENDER_DEBUG_WATER_REFL"),
+            "water.frag lost the RENDER_DEBUG_WATER_REFL oracle — the \
+             reflection term needs its own measurable view (#4543 gate)"
+        );
+    }
+}

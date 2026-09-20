@@ -27,10 +27,11 @@ pub enum RenderDebugMode {
     WaterTerm = crate::shader_constants::RENDER_DEBUG_WATER_TERM,
     WaterNormal = crate::shader_constants::RENDER_DEBUG_WATER_NORMAL,
     TerrainLod = crate::shader_constants::RENDER_DEBUG_TERRAIN_LOD,
+    WaterRefl = crate::shader_constants::RENDER_DEBUG_WATER_REFL,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 13] = [
+    pub const USER_MODES: [Self; 14] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -44,6 +45,7 @@ impl RenderDebugMode {
         Self::WaterTerm,
         Self::WaterNormal,
         Self::TerrainLod,
+        Self::WaterRefl,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -62,6 +64,7 @@ impl RenderDebugMode {
             Self::WaterTerm => "water_term",
             Self::WaterNormal => "water_normal",
             Self::TerrainLod => "terrain_lod",
+            Self::WaterRefl => "water_refl",
         }
     }
 
@@ -103,6 +106,7 @@ impl FromStr for RenderDebugMode {
             "role" | "material_role" => Ok(Self::MaterialRole),
             "water" | "water_term" => Ok(Self::WaterTerm),
             "water_normal" => Ok(Self::WaterNormal),
+            "water_refl" | "water_reflection" => Ok(Self::WaterRefl),
             "terrain_lod" | "terrain-lod" => Ok(Self::TerrainLod),
             _ => Err(format!(
                 "unknown render debug mode '{value}' (expected {})",

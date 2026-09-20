@@ -197,7 +197,8 @@ void main() {
     bool viewMaterialRole = debugMode == RENDER_DEBUG_MATERIAL_ROLE;
     // The water oracles are drawn by water.frag; everything else recedes.
     bool viewWaterDebug = debugMode == RENDER_DEBUG_WATER_TERM
-        || debugMode == RENDER_DEBUG_WATER_NORMAL;
+        || debugMode == RENDER_DEBUG_WATER_NORMAL
+        || debugMode == RENDER_DEBUG_WATER_REFL;
     bool viewRtLod = debugMode == RENDER_DEBUG_RT_LOD
         || (legacyDebugMode && (dbgFlags & DBG_VIZ_RT_LOD) == DBG_VIZ_RT_LOD);
 
