@@ -8,18 +8,59 @@
 //! `landscape\\lod\\<world>\\blocks\\`. This probe counts all three families
 //! side by side so the next such claim is made against a full inventory.
 //!
+//! Both archive families are opened (EXT-D6-2026-09-19-03 / #4502): the
+//! leading magic picks `BsaArchive` (`BSA\0`, Oblivion → Skyrim SE) or
+//! `Ba2Archive` (`BTDX`, FO4/FO76/Starfield), so a BA2 game produces real
+//! counts instead of a bare `skip` that reads as "no LOD content".
+//!
 //! Splits `landscape\\lod` entries into the *terrain* quadtree and its
 //! *blocks* (object-LOD) sibling, per worldspace, per level.
 //!
 //! Usage:
 //!   cargo run -p byroredux-bsa --example probe_lod_corpus -- <ARCHIVE> [ARCHIVE ...]
 
+use std::fs::File;
+use std::io::{self, Read};
+
+/// Either archive family, selected by the leading four bytes: `BsaArchive`
+/// and `Ba2Archive` each hard-reject the other's file, so opening blind
+/// cannot work.
+enum AnyArchive {
+    Bsa(byroredux_bsa::BsaArchive),
+    Ba2(byroredux_bsa::Ba2Archive),
+}
+
+impl AnyArchive {
+    fn open(path: &str) -> io::Result<Self> {
+        let mut magic = [0u8; 4];
+        File::open(path)?.read_exact(&mut magic)?;
+        match magic {
+            [b'B', b'S', b'A', 0] => Ok(Self::Bsa(byroredux_bsa::BsaArchive::open(path)?)),
+            [b'B', b'T', b'D', b'X'] => Ok(Self::Ba2(byroredux_bsa::Ba2Archive::open(path)?)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported magic {:?}", String::from_utf8_lossy(&other)),
+            )),
+        }
+    }
+
+    fn list_files(&self) -> Vec<&str> {
+        match self {
+            Self::Bsa(a) => a.list_files(),
+            Self::Ba2(a) => a.list_files(),
+        }
+    }
+}
+
 fn main() {
     let mut total = 0usize;
     for path in std::env::args().skip(1) {
-        let Ok(archive) = byroredux_bsa::BsaArchive::open(&path) else {
-            eprintln!("skip {path}");
-            continue;
+        let archive = match AnyArchive::open(&path) {
+            Ok(archive) => archive,
+            Err(e) => {
+                eprintln!("skip {path} ({e})");
+                continue;
+            }
         };
         let mut lod = 0usize;
         let mut blocks: std::collections::BTreeMap<
