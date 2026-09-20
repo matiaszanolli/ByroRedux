@@ -69,6 +69,7 @@ fn empty_cell(editor_id: &str, refr_form_ids: &[u32]) -> CellData {
         music_type_enum: None,
         climate_override: None,
         location_form: None,
+        encounter_zone_form: None,
         regions: Vec::new(),
         regional_color_override: None,
         precombined_mesh_hashes: Vec::new(),
