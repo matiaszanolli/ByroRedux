@@ -5823,3 +5823,53 @@ fn descriptors_hash_views_route_through_byte_view_except_the_ash_type() {
          exemption (#4521); it is the only sanctioned hand-rolled view"
     );
 }
+
+/// #4523 — the `dark` texture role is live on shipped content (the
+/// full-corpus census found 8 Oblivion meshes setting the slot), so its
+/// combine is no longer dead code: a plain multiplicative modulation
+/// whose neutral is white (1.0). Pinned like the detail/tint combines
+/// (#4422/#4423): the gate, the sample, and the bare multiply must stay
+/// in lockstep across the raster and ray paths — a "fix" that mixes,
+/// divides, or scales the sample changes shipped Oblivion shading with
+/// no other guard noticing.
+#[test]
+fn dark_combine_is_the_pinned_bare_multiply_in_both_paths() {
+    let cases = [
+        (
+            "triangle.frag",
+            include_str!("../../../shaders/triangle.frag"),
+            "vec3 darkSample = texture(",
+            "albedo *= darkSample;",
+        ),
+        (
+            "include/ray_hit.glsl",
+            include_str!("../../../shaders/include/ray_hit.glsl"),
+            "vec3 darkSample = textureLod(",
+            "rgb *= darkSample;",
+        ),
+    ];
+    for (name, src, sample, multiply) in cases {
+        let anchor = "if (mat.darkMapIndex != 0u) {";
+        let branch_start = src
+            .find(anchor)
+            .unwrap_or_else(|| panic!("{name}: dark branch must keep its index gate"));
+        let branch_end = src[branch_start..]
+            .find("\n    }\n")
+            .map(|i| branch_start + i)
+            .unwrap_or_else(|| panic!("{name}: dark branch must close"));
+        let branch = &src[branch_start..branch_end];
+
+        assert!(
+            branch.contains(sample),
+            "{name}: the dark map must be sampled inside the gated branch \
+             (expected `{sample}`)"
+        );
+        assert!(
+            branch.contains(multiply),
+            "{name}: the dark combine must stay the bare multiplicative \
+             modulation (expected `{multiply}`) — white is the role's \
+             neutral, and the #4523 census shows shipped Oblivion meshes \
+             depend on exactly this combine"
+        );
+    }
+}

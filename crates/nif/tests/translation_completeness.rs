@@ -46,7 +46,7 @@ mod common;
 use byroredux_core::string::StringPool;
 use byroredux_nif::import::{import_nif_with_resolver, ImportedMesh, MeshResolver};
 use byroredux_nif::parse_nif;
-use common::{open_ba2_by_name, open_mesh_archive, Game, MeshArchive};
+use common::{open_all_mesh_archives, open_ba2_by_name, open_mesh_archive, Game, MeshArchive};
 use std::collections::{BTreeMap, VecDeque};
 
 /// Every game the cross-game completeness signal walks. Kept in lock-step
@@ -862,4 +862,118 @@ fn stratification_bucket_strips_shared_meshes_root() {
         stratification_bucket("textures\\actors\\dog.dds"),
         "textures"
     );
+}
+
+// ---- #4523: the dark texture role's population census ----
+
+/// #4523 — the `dark` texture role's shipped population must stay exactly
+/// what the census measured: live on Oblivion only (8 meshes in 6 files —
+/// the "evil" candlestick clutter pair, the persuasion minigame menu
+/// meshes, and the armor-repair white-spot overlay) and zero on every
+/// other game, where FO4+ is zero *by construction* (no shipped mesh NIF
+/// carries a `NiTexturingProperty` at all, and BGSM/BGEM has no dark
+/// slot). The role's only writer is `NiTexturingProperty`'s dark slot, so
+/// the byte prefilter on the block name is complete: a NIF without the
+/// string cannot set the role regardless of its other blocks. A drift in
+/// either direction means parser/routing or content changes and must be
+/// re-looked before the bare multiply inherits them silently (the #4422
+/// unpinned-role class).
+///
+/// Full-corpus numbers from 2026-09-20 (scratch sweep over the complete
+/// FO4/FO76/Starfield mesh-archive sets): 299,936 mesh NIFs, zero
+/// `NiTexturingProperty` blocks; 36,890 FO4/FO76 BGSM/BGEM files, no dark
+/// slot in the format. Runtime is dominated by archive decompression of
+/// every mesh archive (minutes).
+#[test]
+#[ignore = "walks every mesh archive of every installed game; needs game data on disk"]
+fn dark_texture_role_population_matches_the_documented_census() {
+    eprintln!("\n=== #4523: dark texture role population census ===");
+    eprintln!(
+        "  {:<10} {:>10} {:>16} {:>14} {:>12}",
+        "game", "nifs", "ni_texturing", "meshes", "dark_set"
+    );
+
+    let mut total_dark = 0usize;
+    let mut oblivion_dark = 0usize;
+    let mut probed = 0usize;
+    for &game in &Game::ALL {
+        let Some(archives) = open_all_mesh_archives(game) else {
+            eprintln!("  {:<10} SKIP (no data)", game.label());
+            continue;
+        };
+        probed += 1;
+        let mut nifs = 0usize;
+        let mut ni_texturing = 0usize;
+        let mut meshes = 0usize;
+        let mut dark_set = 0usize;
+        for (archive_name, archive) in archives {
+            for file in archive.list_files() {
+                if !file.to_ascii_lowercase().ends_with(".nif") {
+                    continue;
+                }
+                nifs += 1;
+                let Ok(bytes) = archive.extract(&file) else {
+                    continue;
+                };
+                if !windows(&bytes, b"NiTexturingProperty") {
+                    continue;
+                }
+                ni_texturing += 1;
+                let Ok(scene) = parse_nif(&bytes) else {
+                    // A block-name hit that doesn't parse still counts as
+                    // population evidence; report it loudly rather than
+                    // quietly folding it into the zero.
+                    eprintln!("    {file}: NiTexturingProperty hit but parse failed");
+                    continue;
+                };
+                let mut pool = StringPool::new();
+                let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+                meshes += imported.meshes.len();
+                for mesh in &imported.meshes {
+                    if let Some(path) = mesh.material.textures.dark.as_ref() {
+                        eprintln!("    DARK HIT {archive_name}/{file}: {path:?}");
+                        dark_set += 1;
+                    }
+                }
+                let _ = archive_name;
+            }
+        }
+        eprintln!(
+            "  {:<10} {:>10} {:>16} {:>14} {:>12}",
+            game.label(),
+            nifs,
+            ni_texturing,
+            meshes,
+            dark_set
+        );
+        total_dark += dark_set;
+        if game == Game::Oblivion {
+            oblivion_dark = dark_set;
+        }
+    }
+
+    if probed == 0 {
+        eprintln!("  (no game data resolved; harness ran no games — install at least one)");
+        return; // Treat as skip rather than failure.
+    }
+
+    // The census pin: Oblivion is the one shipped corpus where the role is
+    // live (8 dark-set meshes; the hits above name the files), and every
+    // other game must stay at zero.
+    assert_eq!(
+        total_dark, 8,
+        "the dark role's shipped population drifted from the #4523 census \
+         (Oblivion: 8 meshes in 6 files, all other games zero) — check the \
+         DARK HIT lines above and MaterialTextureSet::dark's doc before \
+         treating either direction as progress"
+    );
+    assert_eq!(
+        oblivion_dark, 8,
+        "all 8 dark-set meshes must come from Oblivion — a hit in any other \
+         game contradicts the role's documented population"
+    );
+}
+
+fn windows(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
 }

@@ -340,6 +340,21 @@ pub struct MaterialTextureSet<T> {
     /// Smoothness/specular-strength mask (legacy gloss map / BGSM smooth-spec).
     pub smooth_spec: T,
     /// Legacy multiplicative dark/light map.
+    ///
+    /// Population (full-corpus #4523 census, 2026-09-20): live on exactly
+    /// one shipped corpus — Oblivion, 8 meshes in 6 files (the "evil"
+    /// candlestick clutter pair, the persuasion minigame menu meshes, and
+    /// the armor-repair white-spot overlay) — and zero everywhere else:
+    /// FO3/FNV/Skyrim shipped no dark-slot NIF, and FO4+/modern content
+    /// cannot reach the role at all (zero `NiTexturingProperty` blocks in
+    /// all 299,936 FO4/FO76/Starfield mesh NIFs; BGSM/BGEM's version-gated
+    /// slot vocabulary has no dark slot — 36,890 material files scanned,
+    /// "dark" only ever inside texture file names). The combine is a plain
+    /// multiplicative modulation whose neutral is white (1.0); the GLSL
+    /// multiply is source-shape pinned in the renderer and the census is
+    /// re-derivable via the translation-completeness dark-role harness.
+    /// A new producer route must keep this census true or re-open the
+    /// population question (#4422's unpinned-role lesson).
     pub dark: T,
     pub height: T,
     pub environment: T,
@@ -526,6 +541,32 @@ impl<T> MaterialTextureSet<T> {
 #[cfg(test)]
 mod material_texture_set_tests {
     use super::MaterialTextureSet;
+
+    /// #4523 — the `dark` role's documented population must stay honest:
+    /// exactly one producer site in the crate, and the measured census
+    /// attached to the role definition. A second writer, or a doc stripped
+    /// of the census, means the population premise is being inherited
+    /// instead of re-derived — the #4422 class this pins against.
+    #[test]
+    fn dark_role_has_one_writer_and_carries_its_census_doc() {
+        let types_src = include_str!("types.rs");
+        assert!(
+            types_src.contains("#4523 census, 2026-09-20") && types_src.contains("8 meshes in 6 files"),
+            "the dark role's doc must carry its measured census (Oblivion: 8 \
+             meshes; everywhere else zero) — re-run the translation_\
+             completeness dark-role harness if the population premise changes"
+        );
+
+        let legacy_src = include_str!("material/legacy_properties.rs");
+        assert_eq!(
+            legacy_src.matches("info.dark_map = ").count(),
+            1,
+            "legacy_properties' NiTexturingProperty dark slot is documented as \
+             the dark role's only writer; if you just added another producer \
+             route, the population census and the role's pins need to be \
+             re-derived (see the dark field's doc)"
+        );
+    }
 
     #[test]
     fn canonical_iteration_covers_every_role_once() {

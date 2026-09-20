@@ -261,6 +261,12 @@ fn apply_texturing_property(
         }
         // Dark / multiplicative lightmap (slot 1). Baked shadow data
         // on Oblivion interior architecture — `albedo *= dark`. #264.
+        // This is the dark role's ONLY writer, and the role is live on
+        // shipped content: the #4523 full-corpus census (2026-09-20) found
+        // 8 Oblivion meshes setting the slot, zero everywhere else — FO4+
+        // cannot reach this arm at all (no shipped mesh NIF there carries
+        // a `NiTexturingProperty`; BGSM/BGEM has no dark slot). See
+        // `MaterialTextureSet::dark` for the census and pins.
         if info.dark_map.is_none() {
             info.dark_map = tex_desc_source_path(scene, tex_prop.dark_texture.as_ref(), pool);
         }
