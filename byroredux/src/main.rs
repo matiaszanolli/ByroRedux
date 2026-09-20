@@ -34,6 +34,7 @@ mod helpers;
 mod interaction;
 mod inventory;
 mod notifications;
+mod objectives;
 mod hud;
 mod list_cells;
 mod material_translate;
@@ -1150,6 +1151,14 @@ fn build_debug_ui_snapshot(
         interaction_prompt: build_interaction_prompt(world),
         show_crosshair: setting_bool(world, byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID, true),
         show_prompts: setting_bool(world, byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID, true),
+        show_vitals: setting_bool(world, byroredux_debug_ui::SHOW_VITALS_SETTING_ID, true),
+        vitals: inventory::vitals_snapshot(world),
+        show_objectives: setting_bool(
+            world,
+            byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
+            true,
+        ),
+        objectives: objectives::snapshot(world),
         metrics,
         settings,
         inventory: include_inventory

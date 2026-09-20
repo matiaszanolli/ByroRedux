@@ -140,6 +140,86 @@ pub(crate) struct PlayerCharacterTemplate {
 
 impl Resource for PlayerCharacterTemplate {}
 
+/// The native HUD vitals bars' canonical keys — (display label, AVIF FormID)
+/// pairs resolved once per plugin load from the same AVIF table `ActorValues`
+/// is keyed by. Presentation state only: never serialized, rebuilt from
+/// records on every `install_catalog`, exactly like the restorable-effect
+/// catalog it sits beside.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PlayerVitals {
+    bars: Vec<(&'static str, u32)>,
+}
+
+impl Resource for PlayerVitals {}
+
+/// (display label, AVIF editor id) candidates per game, in draw order.
+/// A vital the game does not author (or the resolver cannot find) drops out
+/// — an FO3/FNV player shows no Magicka bar rather than an empty one. The
+/// resolver matches both `Health` and Skyrim's `AVHealth` spelling, so the
+/// editor ids here are the canonical un-prefixed ones.
+fn vital_bar_candidates(game: GameKind) -> &'static [(&'static str, &'static str)] {
+    match game {
+        GameKind::Skyrim => &[
+            ("Health", "Health"),
+            ("Magicka", "Magicka"),
+            ("Stamina", "Stamina"),
+        ],
+        GameKind::Oblivion => &[
+            ("Health", "Health"),
+            ("Magicka", "Magicka"),
+            ("Fatigue", "Fatigue"),
+        ],
+        GameKind::Fallout3NV | GameKind::Fallout4 | GameKind::Fallout76 => {
+            &[("HP", "Health"), ("AP", "ActionPoints")]
+        }
+        GameKind::Starfield => &[("HP", "Health"), ("O2", "O2")],
+    }
+}
+
+fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
+    PlayerVitals {
+        bars: vital_bar_candidates(index.game)
+            .iter()
+            .filter_map(|&(label, editor_id)| {
+                index.actor_value_form_id(editor_id).map(|avif| (label, avif))
+            })
+            .collect(),
+    }
+}
+
+/// Compose the player's vitals bars from canonical `ActorValues`. Returns
+/// `None` when there is no player body, it carries no actor values, or the
+/// catalog resolved no bars — the HUD then draws nothing rather than empty
+/// bars. `max` is the composed undamaged value (`base + permanent +
+/// temporary`); `current` additionally subtracts the damage layer, so the
+/// bar shows the red-equivalent missing share the same way combat damage
+/// and restorative consumption read it.
+pub(crate) fn vitals_snapshot(
+    world: &World,
+) -> Option<Vec<byroredux_debug_ui::VitalBarView>> {
+    use byroredux_core::ecs::components::ActorValues;
+    let player = world.try_resource::<PlayerEntity>().and_then(|r| r.0)?;
+    let vitals = world.try_resource::<PlayerVitals>()?;
+    let values = world.get::<ActorValues>(player)?;
+    let bars: Vec<byroredux_debug_ui::VitalBarView> = vitals
+        .bars
+        .iter()
+        .filter_map(|&(label, avif)| {
+            let entry = values.get(avif)?;
+            let max = entry.base + entry.permanent_mod + entry.temporary_mod;
+            if max <= 0.0 {
+                return None;
+            }
+            Some(byroredux_debug_ui::VitalBarView {
+                label,
+                current: max - entry.damage,
+                max,
+            })
+        })
+        .collect();
+    (!bars.is_empty()).then_some(bars)
+}
+
 /// Derive the player's actor values from the base Player `NPC_` record —
 /// never the placed reference (`0x14`) — mirroring `stamp_actor_values`
 /// (`npc_spawn.rs`) line for line: `derive_npc_actor_values`, then vitals
@@ -232,6 +312,7 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
     });
     world.insert_resource(build_player_template(index));
     world.insert_resource(build_player_character_template(index));
+    world.insert_resource(build_player_vitals(index));
 }
 
 fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<EquipTarget>) {
@@ -2740,6 +2821,104 @@ mod tests {
         assert!(
             !build_player_template(&index).inventory.items.is_empty(),
             "the authored Player inventory must reach the startup template",
+        );
+    }
+
+    #[test]
+    fn vitals_snapshot_composes_layers_and_skips_absent_values() {
+        let mut world = World::new();
+        world.register::<byroredux_core::ecs::components::ActorValues>();
+        let player = world.spawn();
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(PlayerVitals {
+            bars: vec![("Health", 1000), ("Magicka", 1001), ("Fatigue", 1002)],
+        });
+        let mut values = byroredux_core::ecs::components::ActorValues::new();
+        values.set_base(1000, 100.0);
+        values.apply_damage(1000, 35.0);
+        values.set_base(1001, 50.0);
+        values.mod_temporary(1001, 20.0);
+        // 1002 (Fatigue) carries no entry at all — the absent-AV contract.
+        world.insert(player, values);
+
+        let bars = vitals_snapshot(&world).expect("a populated player must compose bars");
+        assert_eq!(
+            bars,
+            vec![
+                byroredux_debug_ui::VitalBarView {
+                    label: "Health",
+                    current: 65.0,
+                    max: 100.0
+                },
+                byroredux_debug_ui::VitalBarView {
+                    label: "Magicka",
+                    current: 70.0,
+                    max: 70.0
+                },
+            ],
+            "current subtracts the damage layer; absent values drop their bar"
+        );
+    }
+
+    #[test]
+    fn vitals_snapshot_without_a_player_or_bars_is_none() {
+        let mut world = World::new();
+        assert!(vitals_snapshot(&world).is_none(), "no player resource");
+
+        world.insert_resource(PlayerEntity(None));
+        world.insert_resource(PlayerVitals::default());
+        let player = world.spawn();
+        world.insert_resource(PlayerEntity(Some(player)));
+        assert!(
+            vitals_snapshot(&world).is_none(),
+            "no resolvable bars → the HUD draws nothing"
+        );
+    }
+
+    #[test]
+    fn install_catalog_resolves_per_game_vital_keys() {
+        use byroredux_plugin::esm::records::AvifRecord;
+        let avif = |form_id: u32, editor_id: &str| AvifRecord {
+            form_id,
+            editor_id: editor_id.to_owned(),
+            ..Default::default()
+        };
+        let build = |game: GameKind| {
+            let mut index = EsmIndex {
+                game,
+                ..Default::default()
+            };
+            index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
+            index.actor_values.insert(0x3E9, avif(0x3E9, "AVMagicka"));
+            index.actor_values.insert(0x3EA, avif(0x3EA, "Fatigue"));
+            index.actor_values.insert(0x3EB, avif(0x3EB, "ActionPoints"));
+            index
+        };
+
+        let mut world = World::new();
+        install_catalog(&mut world, &build(GameKind::Oblivion));
+        let labels: Vec<_> = world
+            .try_resource::<PlayerVitals>()
+            .unwrap()
+            .bars
+            .iter()
+            .map(|&(label, _)| label)
+            .collect();
+        assert_eq!(labels, vec!["Health", "Magicka", "Fatigue"]);
+
+        let mut world = World::new();
+        install_catalog(&mut world, &build(GameKind::Fallout3NV));
+        let labels: Vec<_> = world
+            .try_resource::<PlayerVitals>()
+            .unwrap()
+            .bars
+            .iter()
+            .map(|&(label, _)| label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["HP", "AP"],
+            "FO3/FNV vocabulary, and the Magicka/Fatigue AVIFs this game does not use drop out"
         );
     }
 }

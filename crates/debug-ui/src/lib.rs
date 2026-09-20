@@ -41,7 +41,8 @@ use winit::window::Window;
 
 pub use panels::{
     GameMenuPage, GameMenuState, InteractionPrompt, InventoryAction, InventoryItemView,
-    InventorySnapshot, PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad,
+    InventorySnapshot, ObjectiveView, PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad,
+    VitalBarView,
 };
 
 /// Setting IDs and the built-in registrations, re-exported from `core`.
@@ -51,7 +52,8 @@ pub use panels::{
 /// `byroredux_debug_ui::UPSCALER_SETTING_ID` is the established path.
 pub use byroredux_core::settings::builtin::{
     register_builtin_settings, FOV_SETTING_ID, OVERLAY_SCALE_SETTING_ID, SHOW_CROSSHAIR_SETTING_ID,
-    SHOW_PROMPTS_SETTING_ID, UPSCALER_SETTING_ID,
+    SHOW_OBJECTIVES_SETTING_ID, SHOW_PROMPTS_SETTING_ID, SHOW_VITALS_SETTING_ID,
+    UPSCALER_SETTING_ID,
 };
 
 /// Persistent egui state shared between the App's event loop and
@@ -299,6 +301,13 @@ impl DebugUiState {
             && !self.game_menu.visible
             && snapshot.interaction_prompt.is_none()
             && !snapshot.show_crosshair
+            // Vitals/objectives only count toward "something visible" when
+            // there is actual content to draw — a toggle with no player body
+            // or no active objective must keep the hidden-overlay steady
+            // state cheap.
+            && (!snapshot.show_vitals || snapshot.vitals.as_ref().is_none_or(Vec::is_empty))
+            && (!snapshot.show_objectives
+                || snapshot.objectives.as_ref().is_none_or(Vec::is_empty))
             && snapshot.loading_tip.is_none()
             && self.player_message.is_none()
         {

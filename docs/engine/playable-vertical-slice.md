@@ -1211,6 +1211,26 @@ script event delivery remain unimplemented. Unsupported items stay unavailable
 without losing a stack. Live Vulkan gameplay and the consumption-specific full
 save/reload smoke remain pending.
 
+**Vitals bars + objective text HUD consumers (2026-09-20):** the two remaining
+"presentation consumers of canonical ECS state" from this phase's list are now
+live. The native HUD draws the player's vitals bars (bottom-left: per-game
+Health/Magicka/Stamina for Skyrim, Health/Magicka/Fatigue for Oblivion, HP/AP
+for FO3/FNV/FO4, resolved once per plugin load from the AVIF table into a new
+`PlayerVitals` resource stamped by `install_catalog` — not serialized, the
+values it reads stay in the saved `ActorValues` column; `current` subtracts the
+damage layer from the composed undamaged `max`, so the bar shows exactly what
+combat damage and restorative consumption see). It also draws active quest
+objective lines (top-left: quest display name + authored objective text) for
+running quests whose objectives a fragment has `SetObjectiveDisplayed` and not
+completed/failed, composed from `QuestStageState` + `QuestObjectiveState` +
+`QuestDefinitionRegistry` (`byroredux/src/objectives.rs`), deterministically
+ordered by (quest FormID, objective index) and capped at four lines. Both are
+gated by new `interface.show_vitals` / `interface.show_objectives` settings,
+suppress during loading screens and benchmark captures, and keep the hidden
+overlay's early-return cheap when they have nothing to draw. Live Vulkan
+captures and the P4 objective fixture that will feed real text into the
+objective consumer remain open.
+
 ### P4 — Authored objective and dialogue loop
 
 Goal: a small piece of shipping content can be followed and completed.

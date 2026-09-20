@@ -20,6 +20,8 @@ pub const OVERLAY_SCALE_SETTING_ID: &str = "interface.overlay_scale";
 /// Stable keys for the player-facing HUD and camera settings.
 pub const SHOW_CROSSHAIR_SETTING_ID: &str = "interface.show_crosshair";
 pub const SHOW_PROMPTS_SETTING_ID: &str = "interface.show_prompts";
+pub const SHOW_VITALS_SETTING_ID: &str = "interface.show_vitals";
+pub const SHOW_OBJECTIVES_SETTING_ID: &str = "interface.show_objectives";
 pub const FOV_SETTING_ID: &str = "gameplay.field_of_view";
 
 /// Stable registry key for the temporal reconstruction path. The value is the
@@ -68,6 +70,20 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
         "Interface",
         "Show interaction prompts",
         "Show the active key and action when an object can be used.",
+        true,
+    ))?;
+    registry.register(SettingEntry::toggle(
+        SHOW_VITALS_SETTING_ID,
+        "Interface",
+        "Show vitals bars",
+        "Show the player's health and resource bars during gameplay.",
+        true,
+    ))?;
+    registry.register(SettingEntry::toggle(
+        SHOW_OBJECTIVES_SETTING_ID,
+        "Interface",
+        "Show objective text",
+        "Show active quest objectives while gameplay owns input.",
         true,
     ))?;
     registry.register(SettingEntry::choice(

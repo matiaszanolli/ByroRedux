@@ -167,6 +167,18 @@ impl App {
                     byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID,
                     true,
                 ),
+                show_vitals: setting_bool(
+                    &self.world,
+                    byroredux_debug_ui::SHOW_VITALS_SETTING_ID,
+                    true,
+                ),
+                vitals: crate::inventory::vitals_snapshot(&self.world),
+                show_objectives: setting_bool(
+                    &self.world,
+                    byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
+                    true,
+                ),
+                objectives: crate::objectives::snapshot(&self.world),
                 ..Default::default()
             }
         };
@@ -174,12 +186,16 @@ impl App {
         // captures. Keep the new HUD reticle out of those established images.
         if self.bench_frames_target.is_some() {
             snapshot.show_crosshair = false;
+            snapshot.vitals = None;
+            snapshot.objectives = None;
         }
         self.debug_ui_refresh_entities = false;
         snapshot.loading_tip = self.loading_screen.tip().map(str::to_owned);
         if snapshot.loading_tip.is_some() {
             snapshot.show_crosshair = false;
             snapshot.interaction_prompt = None;
+            snapshot.vitals = None;
+            snapshot.objectives = None;
         }
 
         let player_messages = crate::notifications::drain(&self.world);

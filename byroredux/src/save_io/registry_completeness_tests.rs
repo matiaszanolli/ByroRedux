@@ -450,6 +450,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PlayerEntity", "points to the process-lifetime player body, which deliberately outlives cell unload; the entity remains valid across live reload and the resource is process-local identity, not gameplay state"),
         ("PlayerInventoryTemplate", "read-only starting loadout rebuilt from the master Player NPC record; live Inventory/EquipmentSlots are saved separately"),
         ("PlayerCharacterTemplate", "read-only CHARAL seed (ActorValues/ActorVitals) rebuilt from the master Player NPC record via derive_npc_actor_values (#4458); live actor values are saved separately"),
+        ("PlayerVitals", "native HUD vitals-bar keys (display label + AVIF FormID) resolved from the plugin's AVIF table by install_catalog; pure presentation wiring — the values it reads live in the saved ActorValues column"),
         ("PlayerMode", "engine-wide FlyCam/Character flag set at scene-setup from CLI flags + scene type, not gameplay state"),
         ("RagdollActive", "marker for live ragdoll simulation, same physics-rebuild posture as PhysicsWorld above — not snapshot-restored"),
         ("RagdollTemplate", "per-actor ragdoll blueprint resolved at spawn against the loaded skeleton, rederived identically every load — same posture as PhysicsWorld"),
