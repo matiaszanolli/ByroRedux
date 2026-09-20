@@ -146,14 +146,13 @@ pub(crate) fn parse_wrld_group(
                         // XCLW (FO3/FNV/Skyrim+; Oblivion ships no DNAM and
                         // defaults to sea level Z=0 in the loader). 8-byte
                         // layout verified against FalloutNV.esm + Skyrim.esm.
-                        // #1305 follow-up.
+                        // Routed through the same finite/sentinel gate as
+                        // XCLW: a corrupt NaN/huge default must not become a
+                        // canonical height that every water-less cell of the
+                        // worldspace inherits (#4487 / #1305 follow-up).
                         b"DNAM" if sub.data.len() >= 8 => {
-                            record.default_water_height = Some(f32::from_le_bytes([
-                                sub.data[4],
-                                sub.data[5],
-                                sub.data[6],
-                                sub.data[7],
-                            ]));
+                            record.default_water_height =
+                                super::helpers::gated_water_height(&sub.data[4..]);
                         }
                         // ZNAM — default music FormID (MUSC).
                         b"ZNAM" if sub.data.len() >= 4 => {
@@ -171,12 +170,12 @@ pub(crate) fn parse_wrld_group(
                             record.lod_water_form = read_form_id(reader, &sub.data);
                         }
                         b"NAM4" if sub.data.len() >= 4 => {
-                            record.lod_water_height = Some(f32::from_le_bytes([
-                                sub.data[0],
-                                sub.data[1],
-                                sub.data[2],
-                                sub.data[3],
-                            ]));
+                            // Same gate as XCLW / DNAM — the LOD ring uploads
+                            // its plane straight to the GPU, so a NaN or
+                            // sentinel height must decode to "no LOD water"
+                            // rather than NaN vertex Y positions (#4487).
+                            record.lod_water_height =
+                                super::helpers::gated_water_height(&sub.data);
                         }
                         // OFST — per-cell offset table. Deliberately NOT
                         // captured: #1849 stored the raw u32 words for a
@@ -433,14 +432,14 @@ fn parse_wrld_children_inner(
                             ]);
                             grid = Some((grid_x, grid_y));
                         }
-                        // XCLW water-plane height. `xclw_water_height`
+                        // XCLW water-plane height. `gated_water_height`
                         // returns None for the `#INT_MIN#` / FLT_MAX
                         // "no water" sentinels; the explicit bit stops
                         // those dry cells inheriting WRLD water (#1305 /
                         // OBL-D6-NEW-02).
                         b"XCLW" => {
                             water_height_is_explicit = true;
-                            water_height = super::helpers::xclw_water_height(&sub.data);
+                            water_height = super::helpers::gated_water_height(&sub.data);
                         }
                         // Skyrim extended sub-records — see the interior
                         // walker above for semantics. Exterior cells use

@@ -338,3 +338,48 @@ fn out_of_range_quadrant_atxt_does_not_leak_into_a_later_vtxt() {
          for the following VTXT to attach to"
     );
 }
+
+/// #4484 / EXT-D2-2026-09-19-02 — VTXT opacity is a raw wire f32, and
+/// both the doc on `TerrainTextureLayer::alpha` ("0.0–1.0") and the splat
+/// sorter's "NaN cannot appear" comparator premise lean on the parser
+/// providing that guarantee. The gate is pinned here at parse level:
+/// non-finite opacities (NaN / ±Inf) decode to 0.0, finite out-of-range
+/// ones clamp into [0.0, 1.0], and in-range ones pass through unchanged.
+/// Without the gate a NaN alpha makes coverage ranking non-total (and
+/// `sort_by` documented as may-panic on such input), silently and
+/// nondeterministically reshuffling which splat lanes survive the cap.
+#[test]
+fn vtxt_nonfinite_and_out_of_range_opacity_is_gated() {
+    let mut atxt = Vec::new();
+    atxt.extend_from_slice(&0x5555u32.to_le_bytes());
+    atxt.push(0); // SW
+    atxt.push(0);
+    atxt.extend_from_slice(&0u16.to_le_bytes());
+
+    let mut vtxt = Vec::new();
+    let row = |pos: u16, opacity: f32, buf: &mut Vec<u8>| {
+        buf.extend_from_slice(&pos.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes()); // unused
+        buf.extend_from_slice(&opacity.to_le_bytes());
+    };
+    row(0, f32::NAN, &mut vtxt);
+    row(1, f32::INFINITY, &mut vtxt);
+    row(2, f32::NEG_INFINITY, &mut vtxt);
+    row(3, 5.0, &mut vtxt);
+    row(4, -3.0, &mut vtxt);
+    row(5, 0.75, &mut vtxt);
+
+    let land = parse_synthetic_land(&[(b"ATXT", atxt), (b"VTXT", vtxt)]);
+    let layers = &land.quadrants[0].layers;
+    assert_eq!(layers.len(), 1);
+    let alpha = layers[0].alpha.as_ref().expect("VTXT must populate alpha");
+    assert_eq!(alpha[0], 0.0, "NaN opacity must drop to 0.0, not poison coverage ranking");
+    assert_eq!(
+        alpha[1], 0.0,
+        "+Inf is non-finite and must drop to 0.0, not clamp to 1.0"
+    );
+    assert_eq!(alpha[2], 0.0, "-Inf is non-finite and must drop to 0.0");
+    assert_eq!(alpha[3], 1.0, "finite opacity above 1.0 must clamp to 1.0");
+    assert_eq!(alpha[4], 0.0, "negative finite opacity must clamp to 0.0");
+    assert_eq!(alpha[5], 0.75, "in-range opacity passes through unchanged");
+}

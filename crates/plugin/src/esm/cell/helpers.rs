@@ -42,15 +42,20 @@ pub(super) fn read_form_id_array(reader: &EsmReader, data: &[u8]) -> Vec<u32> {
         .collect()
 }
 
-/// Parse an `XCLW` water-plane height (f32, Z-up world units). Returns
-/// `None` for Bethesda's "no water" sentinels: `#INT_MIN#`
-/// (-2147483648.0, nif.xml line 59) and `f32::MAX` (observed in Skyrim
-/// exterior CELL records). Without this, sentinel cells spawn planes at
-/// impossible heights, poisoning water bounds and render work. Also
-/// `None` when the payload is too short. Same XCLW layout across
-/// Oblivion / FO3 / FNV / Skyrim, so shared by both the interior and
-/// exterior walkers. #1305 / OBL-D6-NEW-02.
-pub(super) fn xclw_water_height(data: &[u8]) -> Option<f32> {
+/// Gate a wire f32 water-plane height (Z-up world units). Shared by the
+/// three sub-records that author one: CELL `XCLW` (cell level), WRLD
+/// `DNAM` (worldspace-default, second f32 of the payload), and WRLD
+/// `NAM4` (distant-LOD ring). Returns `None` for Bethesda's "no water"
+/// sentinels: `#INT_MIN#` (-2147483648.0, nif.xml line 59) and
+/// `f32::MAX` (observed in Skyrim exterior CELL records). Without this,
+/// sentinel — or corrupt — cells spawn planes at impossible heights,
+/// poisoning water bounds and render work; a NaN that slips through
+/// culls every triangle of the plane (NaN `<=` is always false) and
+/// silently drains the worldspace (#4487). Also `None` when the payload
+/// is too short. Same f32 layout across Oblivion / FO3 / FNV / Skyrim+,
+/// so shared by the interior walker, the exterior walker, and the WRLD
+/// walker. #1305 / OBL-D6-NEW-02.
+pub(super) fn gated_water_height(data: &[u8]) -> Option<f32> {
     if data.len() < 4 {
         return None;
     }
@@ -94,36 +99,38 @@ pub(super) fn xwcu_linear_velocity(data: &[u8]) -> Option<[f32; 3]> {
 
 #[cfg(test)]
 mod tests {
-    use super::xclw_water_height;
+    use super::gated_water_height;
 
     #[test]
-    fn xclw_normal_height_passes_through() {
+    fn gated_water_height_normal_height_passes_through() {
         assert_eq!(
-            xclw_water_height(&(-2000.0f32).to_le_bytes()),
+            gated_water_height(&(-2000.0f32).to_le_bytes()),
             Some(-2000.0)
         );
-        assert_eq!(xclw_water_height(&3450.0f32.to_le_bytes()), Some(3450.0));
-        assert_eq!(xclw_water_height(&0.0f32.to_le_bytes()), Some(0.0));
+        assert_eq!(gated_water_height(&3450.0f32.to_le_bytes()), Some(3450.0));
+        assert_eq!(gated_water_height(&0.0f32.to_le_bytes()), Some(0.0));
     }
 
     #[test]
-    fn xclw_int_min_sentinel_is_no_water() {
+    fn gated_water_height_int_min_sentinel_is_no_water() {
         // The #INT_MIN# "no water" marker — must NOT spawn a water plane.
         assert_eq!(
-            xclw_water_height(&(-2_147_483_648.0f32).to_le_bytes()),
+            gated_water_height(&(-2_147_483_648.0f32).to_le_bytes()),
             None
         );
     }
 
     #[test]
-    fn xclw_float_max_sentinel_is_no_water() {
+    fn gated_water_height_float_max_sentinel_is_no_water() {
         // Skyrim exterior CELLs use FLT_MAX for an explicitly dry tile.
-        assert_eq!(xclw_water_height(&f32::MAX.to_le_bytes()), None);
+        assert_eq!(gated_water_height(&f32::MAX.to_le_bytes()), None);
     }
 
     #[test]
-    fn xclw_short_or_nonfinite_is_none() {
-        assert_eq!(xclw_water_height(&[0u8; 3]), None);
-        assert_eq!(xclw_water_height(&f32::NAN.to_le_bytes()), None);
+    fn gated_water_height_short_or_nonfinite_is_none() {
+        assert_eq!(gated_water_height(&[0u8; 3]), None);
+        assert_eq!(gated_water_height(&f32::NAN.to_le_bytes()), None);
+        // #4487 — +Inf must not become a canonical height either.
+        assert_eq!(gated_water_height(&f32::INFINITY.to_le_bytes()), None);
     }
 }

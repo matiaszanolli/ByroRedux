@@ -291,13 +291,13 @@ fn parse_cell_group_inner(
                             // (Z-up). Same layout across Oblivion / FO3 / FNV
                             // / Skyrim — the cell's water surface sits at
                             // this Z (interior) or Z-in-worldspace (exterior).
-                            // `xclw_water_height` returns None for the
+                            // `gated_water_height` returns None for the
                             // `#INT_MIN#` / FLT_MAX "no water" sentinels.
                             // `water_height_is_explicit` keeps that None
                             // distinct from an absent XCLW. See #397 /
                             // #356 / #1305.
                             water_height_is_explicit = true;
-                            water_height = super::helpers::xclw_water_height(&sub.data);
+                            water_height = super::helpers::gated_water_height(&sub.data);
                         }
                         // Skyrim extended CELL sub-records (#356). Each is
                         // a 4-byte FormID; the walker previously dropped
@@ -1313,8 +1313,19 @@ pub(crate) fn parse_land_record(
                         let pos = r.u16_or_default() as usize;
                         let _unused = r.u16_or_default();
                         let opacity = r.f32_or_default();
-                        if pos < 17 * 17 {
-                            alpha[pos] = opacity;
+                        if pos < 17 * 17 && opacity.is_finite() {
+                            // #4484 — the opacity is a raw wire f32, so gate
+                            // it here at the decode choke point (the same
+                            // pattern as the bin-side VHGT
+                            // `sanitize_land_height`): non-finite values are
+                            // dropped to 0.0 and finite ones are clamped into
+                            // the documented 0.0–1.0 range. Both the doc on
+                            // `TerrainTextureLayer::alpha` and the splat
+                            // sorter's "NaN cannot appear" comparator
+                            // premise lean on this gate — a NaN alpha makes
+                            // coverage ranking non-total (and `sort_by`
+                            // documented as may-panic on it).
+                            alpha[pos] = opacity.clamp(0.0, 1.0);
                         }
                     }
                     quadrants[quadrant].layers.push(TerrainTextureLayer {

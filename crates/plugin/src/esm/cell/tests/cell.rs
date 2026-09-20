@@ -1464,7 +1464,7 @@ fn parse_cell_without_xclw_leaves_water_height_none() {
 #[test]
 fn parse_cell_xclw_sentinel_is_explicit_no_water() {
     // #3827 / ESM-D5-01 — walker-level regression for the XCLW tri-state.
-    // `xclw_water_height` is already unit-tested at the helper boundary for
+    // `gated_water_height` is already unit-tested at the helper boundary for
     // all four cases (normal height, #INT_MIN#, Skyrim FLT_MAX, too-short),
     // but nothing drove a full `parse_cell_group` call with an authored
     // sentinel payload and asserted the composed result: an explicit XCLW

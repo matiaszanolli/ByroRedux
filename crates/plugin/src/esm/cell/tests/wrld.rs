@@ -439,7 +439,7 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
 fn parse_wrld_exterior_cell_xclw_sentinel_is_explicit_no_water() {
     // #3827 / ESM-D5-01 — the exterior-walker counterpart to
     // `parse_cell_xclw_sentinel_is_explicit_no_water` (interior walker,
-    // `tests/cell.rs`). `xclw_water_height` is already unit-tested at the
+    // `tests/cell.rs`). `gated_water_height` is already unit-tested at the
     // helper boundary; this drives a full `parse_wrld_group` call with an
     // authored `#INT_MIN#` sentinel and asserts the resulting `CellData`
     // keeps the tri-state distinct: `water_height == None` (the author
@@ -578,6 +578,49 @@ fn wrld_short_dnam_leaves_default_water_none() {
     assert_eq!(w.default_water_height, None);
 }
 
+/// #4487 / EXT-D5-2026-09-19-03 — a corrupt or hostile DNAM water f32
+/// must not become the worldspace-default height. `default_water_height`
+/// is inherited by every water-less cell of the worldspace, so a NaN
+/// culls the inherited plane's every triangle (NaN `<=` is always false
+/// → silently dry ocean) and a huge magnitude spawns an impossible plane
+/// — the exact failure mode the XCLW gate already prevents one record
+/// over. Mirrors `gated_water_height_short_or_nonfinite_is_none` at
+/// parse level: NaN / ±Inf / FLT_MAX / ±huge all decode to `None`; the
+/// sane-payload positive case is `wrld_dnam_captures_default_water_height`.
+#[test]
+fn wrld_dnam_nonfinite_or_huge_water_height_is_none() {
+    let dnam = |water: f32| {
+        let mut v = Vec::new();
+        v.extend_from_slice(&(-2500.0f32).to_le_bytes()); // default land height
+        v.extend_from_slice(&water.to_le_bytes());
+        v
+    };
+    for (case, water) in [
+        ("NaN", f32::NAN),
+        ("+Inf", f32::INFINITY),
+        ("-Inf", f32::NEG_INFINITY),
+        ("FLT_MAX sentinel", f32::MAX),
+        ("huge positive", 2.0e9f32),
+        ("huge negative", -2.0e9f32),
+    ] {
+        let wrld = build_wrld_record(
+            0x0000_009B,
+            &[
+                (b"EDID", b"CorruptWater\0".to_vec()),
+                (b"DNAM", dnam(water)),
+            ],
+        );
+        let buf = build_wrld_group(&[wrld]);
+        let (worldspaces, _c, _e, _persistent) = parse_synthetic_wrld(&buf);
+        let w = worldspaces.get("corruptwater").expect("decoded");
+        assert_eq!(
+            w.default_water_height, None,
+            "{case} DNAM water height must gate to None, not become the \
+             worldspace default every water-less cell inherits"
+        );
+    }
+}
+
 /// #1849 — WRLD `NAM3` (LOD water type FormID) and `NAM4` (LOD water
 /// height f32) previously fell to the walker's `_ => {}` default arm
 /// and were dropped. `OFST` stays in the fixture on purpose: #2454
@@ -629,6 +672,40 @@ fn wrld_nam3_nam4_captured_across_an_unconsumed_ofst() {
         Some(10_500.0),
         "DNAM water height untouched by NAM4"
     );
+}
+
+/// #4487 — the NAM4 LOD-water height carries the same no-fabrication
+/// rule: `spawn_lod_water_plane` uploads it straight to the GPU as the
+/// distant-water ring, so a NaN or sentinel payload must decode to
+/// `None` ("no LOD water") rather than NaN vertex Y positions. Same
+/// gate as `wrld_dnam_nonfinite_or_huge_water_height_is_none`, at the
+/// NAM4 arm's own read (first f32 of the payload).
+#[test]
+fn wrld_nam4_nonfinite_or_huge_lod_water_height_is_none() {
+    for (case, height) in [
+        ("NaN", f32::NAN),
+        ("+Inf", f32::INFINITY),
+        ("-Inf", f32::NEG_INFINITY),
+        ("FLT_MAX sentinel", f32::MAX),
+        ("huge positive", 2.0e9f32),
+        ("huge negative", -2.0e9f32),
+    ] {
+        let wrld = build_wrld_record(
+            0x0000_009C,
+            &[
+                (b"EDID", b"CorruptLodWater\0".to_vec()),
+                (b"NAM4", height.to_le_bytes().to_vec()),
+            ],
+        );
+        let buf = build_wrld_group(&[wrld]);
+        let (worldspaces, _c, _e, _persistent) = parse_synthetic_wrld(&buf);
+        let w = worldspaces.get("corruptlodwater").expect("decoded");
+        assert_eq!(
+            w.lod_water_height, None,
+            "{case} NAM4 height must gate to None, not become the LOD \
+             water plane uploaded to the GPU"
+        );
+    }
 }
 
 /// Oblivion authors no `NAM3`/`NAM4` at all (disk-sampled: 0 of 84
