@@ -1,13 +1,15 @@
 //! Bloom pyramid pipeline (M58, Tier 8).
 //!
-//! Produces a blurred-bright-content texture that composite adds to
-//! the scene HDR before tone-mapping. The single biggest "softness"
-//! lever — bright emissives stop ending at their texel edges and
-//! start spilling outward like real-world bright surfaces do.
+//! Produces a blurred-bright-content texture that `bloom_apply.comp`
+//! adds to the composite-owned scene image in place, after composite
+//! and before the TAA resolve — bright emissives stop ending at their
+//! texel edges and start spilling outward like real-world bright
+//! surfaces do. Tone mapping lives further downstream, in
+//! `presentation.frag`.
 //!
 //! ## Architecture
 //!
-//! Two halves, both written as separable compute passes:
+//! Two build halves plus a one-shot apply, all compute:
 //!
 //! 1. **Down-pyramid** — `BLOOM_MIP_COUNT` levels, each half the
 //!    resolution of the previous. `down_mips[0]` is half-screen,
@@ -16,9 +18,12 @@
 //! 2. **Up-pyramid** — `BLOOM_MIP_COUNT - 1` levels. `up_mips[N-2]`
 //!    is fed by `down_mips[N-1]` upsampled, summed with
 //!    `down_mips[N-2]`. Each subsequent level reads the larger one
-//!    above and the same-resolution down-mip, sums them. Final
-//!    `up_mips[0]` is what composite samples
+//!    above and the same-resolution down-mip, sums them
 //!    (`bloom_upsample.comp`).
+//! 3. **Apply** — `bloom_apply.comp` via [`BloomPipeline::apply_to_scene`]
+//!    samples the final `up_mips[0]` and adds it into the scene storage
+//!    image in place (#2796); nothing consumes `up_mips[0]` anywhere
+//!    else.
 //!
 //! ## Filter choice (and what we deliberately did NOT do)
 //!
@@ -1667,6 +1672,43 @@ mod bright_pass_tests {
              gives {footprint}×{footprint} (#4311). Taps at ±0.5 land on source texel centres \
              and point-sample; only ±1.0 lands on corners and averages 2×2 per tap.",
             offsets[0],
+        );
+    }
+}
+
+#[cfg(test)]
+mod module_doc_tests {
+    /// #4531 — the module doc once described the pre-#2796 architecture:
+    /// "composite adds" the bloom and "composite samples up_mips[0]".
+    /// Reality: composite owns the scene image, `bloom_apply.comp` adds
+    /// the pyramid INTO it in place after composite (TAA resolves the
+    /// post-bloom tap), and tone mapping lives in presentation.frag.
+    /// Same doc-rot class as the #3572 cluster — the pass moved, the
+    /// doc stayed.
+    #[test]
+    fn module_doc_describes_the_apply_in_place_architecture() {
+        let doc = include_str!("bloom.rs")
+            .lines()
+            .take_while(|l| l.starts_with("//!") || l.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for stale in [
+            "composite adds",
+            "before tone-mapping",
+            "composite samples",
+        ] {
+            assert!(
+                !doc.contains(stale),
+                "module doc still claims `{stale}` — bloom is applied in \
+                 place by bloom_apply.comp AFTER composite (#2796); tone \
+                 mapping is presentation's"
+            );
+        }
+        assert!(
+            doc.contains("apply_to_scene") && doc.contains("in place"),
+            "module doc must name the apply step (bloom_apply.comp via \
+             apply_to_scene) — it is the only consumer of up_mips[0]"
         );
     }
 }
