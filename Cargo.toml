@@ -207,11 +207,14 @@ dhat = "0.3"
 sysinfo = { version = "0.30", default-features = false }
 
 # Terminal UI for `byro-dbg --tui` (Phase 3 of the debug-UI plan).
-# ratatui 0.28 pairs with crossterm 0.28; both are pinned at the
+# ratatui 0.30 pairs with crossterm 0.29; both are pinned at the
 # workspace level so any future TUI tool in the workspace picks up
-# the same versions without per-crate drift.
-ratatui = "0.28"
-crossterm = "0.28"
+# the same versions without per-crate drift. 0.30 is the first
+# ratatui with no `lru` dependency (0.28/0.29 pin lru ^0.12, which
+# carries the RUSTSEC Stacked-Borrows advisory fixed only in 0.16.3
+# — Dependabot alert #2).
+ratatui = "0.30"
+crossterm = "0.29"
 
 # Embedded debug-UI overlay (Phase 4 of the debug-UI plan).
 # egui 0.33 + egui-winit 0.33 are the latest series that
