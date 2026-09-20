@@ -604,10 +604,22 @@ impl StagingGuard {
     /// disarms the guard (clears `allocation`) before handing the
     /// resources off, so the subsequent `Drop` is a no-op.
     ///
-    /// `capacity` should be `allocation.size()` from the acquire call —
-    /// the pool uses it as the entry size for best-fit searches.
+    /// `capacity` must be the buffer's *requested* size — the `size` that
+    /// was passed to [`StagingPool::acquire`] — never the allocation
+    /// footprint. gpu-allocator rounds allocations up above the VkBuffer
+    /// create size (alignment / heap classes), and `acquire`'s best-fit
+    /// trusts `entry.capacity` as the buffer's usable size, so an entry
+    /// recorded at the allocation size can hand out a buffer smaller than a
+    /// later caller's request (#4512: `vkCmdCopyBufferToImage` regions
+    /// exceeding the VkBuffer total size by exactly the rounding slack).
     pub fn release_to(mut self, pool: &mut StagingPool, capacity: vk::DeviceSize) {
         if let Some(alloc) = self.allocation.take() {
+            debug_assert!(
+                capacity <= alloc.size(),
+                "released capacity {} exceeds the allocation footprint {}",
+                capacity,
+                alloc.size()
+            );
             pool.release(self.buffer, alloc, capacity);
         }
         // `self` drops here; `allocation` is `None` so `Drop` is a no-op.
@@ -880,12 +892,12 @@ impl GpuBuffer {
         }
 
         if let Some(pool) = staging_pool {
-            let capacity = staging
-                .allocation
-                .as_ref()
-                .map(|allocation| allocation.size())
-                .unwrap_or(staging_size);
-            staging.release_to(pool, capacity);
+            // Release the *requested* size, never the allocation footprint —
+            // gpu-allocator rounds allocations up above the VkBuffer create
+            // size, and a pool entry recorded at the inflated size lets
+            // `acquire`'s best-fit hand out a buffer smaller than a later
+            // upload's budget (#4512's +8 B staging overrun class).
+            staging.release_to(pool, staging_size);
         } else {
             staging.destroy();
         }
@@ -2307,5 +2319,41 @@ mod destroyed_handle_nulling_tests {
                  validation-layer complaint or a GPU fault (#2487)."
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod staging_release_capacity_tests {
+    //! #4512 sibling — pooled staging must be released at the *requested*
+    //! size, never `allocation.size()`. The allocator rounds the footprint
+    //! up above the VkBuffer create size, and `StagingPool::acquire`'s
+    //! best-fit trusts the recorded capacity, so an inflated entry hands
+    //! out a buffer smaller than a later upload's budget (observed live as
+    //! `vkCmdCopyBufferToImage` regions exceeding the buffer total by
+    //! exactly the round-16 slack). Needs a live device to exercise, so
+    //! this pins the shape at the source level.
+
+    #[test]
+    fn pooled_staging_releases_the_requested_size_not_the_allocation_footprint() {
+        let src = include_str!("buffer.rs");
+        let production = src
+            .split_once("\n#[cfg(test)]")
+            .expect("source lost its test modules")
+            .0;
+
+        assert!(
+            production.contains("staging.release_to(pool, staging_size)"),
+            "the batched device-local upload must release its staging buffer \
+             at the requested `staging_size` — the size `acquire` was called \
+             with — so pool entries never claim more capacity than their \
+             VkBuffer actually has"
+        );
+        assert!(
+            !production.contains(".map(|allocation| allocation.size())"),
+            "releasing pooled staging at `allocation.size()` re-opens #4512: \
+             the allocator rounds the footprint up above the buffer create \
+             size, and acquire's best-fit then serves a buffer smaller than \
+             a later upload's budget"
+        );
     }
 }

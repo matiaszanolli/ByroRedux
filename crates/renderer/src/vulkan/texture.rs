@@ -7,7 +7,7 @@ use super::descriptors::{
     image_barrier_undef_to_transfer_dst_layers,
 };
 use super::GpuUploadCtx;
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use gpu_allocator::MemoryLocation;
@@ -54,6 +54,11 @@ pub struct Texture {
     /// allocator is no longer needed (`Drop` short-circuits the
     /// self-clean), so dropping the Arc here is safe.
     allocator: Option<SharedAllocator>,
+    /// Extent the image was created with. `overwrite_rgba_pixels`
+    /// checks streaming uploads against it so a mismatched extent fails
+    /// as a returned error instead of addressing a different-sized image
+    /// (#4515 — previously nothing retained the creation extent).
+    creation_extent: vk::Extent3D,
 }
 
 impl Texture {
@@ -76,11 +81,19 @@ impl Texture {
         sampler: vk::Sampler,
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
-        assert_eq!(
+        // from_rgba sizes the image at (width, height) itself, so the
+        // creation-extent arm passes by construction; the payload arm is
+        // the real check here.
+        validate_rgba_upload(
+            vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
+            width,
+            height,
             pixels.len(),
-            (width * height * 4) as usize,
-            "pixel data must be width*height*4 RGBA bytes"
-        );
+        )?;
         let meta = super::dds::DdsMetadata {
             width,
             height,
@@ -101,13 +114,18 @@ impl Texture {
     /// Overwrite the full mip-0 contents of an existing RGBA texture in
     /// place — the streaming companion to [`Self::from_rgba`].
     ///
-    /// Same pixel contract (`width * height * 4` RGBA bytes, the extent
-    /// the texture was created with), but the image, view, and bindless
-    /// descriptor stay untouched: no allocation, no rebind, one small
-    /// staging copy. [`TextureRegistry::update_rgba`] reallocates a full
-    /// image + view + descriptor write per call — fine for occasional
-    /// content swaps, pathological for a per-frame overlay (the first
-    /// live HUD run pinned a machine that way).
+    /// Same pixel contract (`width * height * 4` RGBA bytes), and
+    /// `width`/`height` must equal the extent the texture was created
+    /// with — both are checked with overflow-free u64 math against the
+    /// creation extent stored on `Texture`, failing as a returned error
+    /// (#4515; previously the only check was caller-supplied w/h vs
+    /// pixels, so a mismatched upload would have addressed a smaller
+    /// image). The image, view, and bindless descriptor stay untouched:
+    /// no allocation, no rebind, one small staging copy.
+    /// [`TextureRegistry::update_rgba`] reallocates a full image + view +
+    /// descriptor write per call — fine for occasional content swaps,
+    /// pathological for a per-frame overlay (the first live HUD run
+    /// pinned a machine that way).
     ///
     /// # Hazard contract
     ///
@@ -124,11 +142,7 @@ impl Texture {
         pixels: &[u8],
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<()> {
-        assert_eq!(
-            pixels.len(),
-            (width * height * 4) as usize,
-            "pixel data must be width*height*4 RGBA bytes"
-        );
+        validate_rgba_upload(self.creation_extent, width, height, pixels.len())?;
         let GpuUploadCtx {
             device,
             allocator,
@@ -273,8 +287,9 @@ impl Texture {
         // Release staging — back to pool (reuse) or destroy. Safe to
         // do here because the fence wait inside `with_one_time_commands`
         // has already returned, so the GPU is done reading the staging
-        // buffer. `record_dds_upload` already resolved this to the
-        // buffer's actual capacity (#1921), not the requested size.
+        // buffer. The release capacity is the requested `image_size` —
+        // see the note in `record_dds_upload` for why it must not be the
+        // allocation's footprint (#4512 / #1921 tradeoff).
         if let Some(pool) = staging_pool {
             staging.release_to(pool, staging_capacity_holder);
         } else {
@@ -316,7 +331,11 @@ impl Texture {
         use super::dds;
 
         let total_size = dds::total_data_size(meta);
-        assert!(
+        // #4511 — a returned error, not a release `assert!`: the input is
+        // mod-authorable, and a truncated-but-plausible DDS must fail the
+        // upload (checkerboard fallback / queued-upload drop) instead of
+        // panicking the engine.
+        ensure!(
             pixel_data.len() as u64 >= total_size,
             "DDS pixel data too small: {} bytes for {}x{} {:?} {} mips ({} expected)",
             pixel_data.len(),
@@ -434,44 +453,19 @@ impl Texture {
             return Err(error).context("Failed to bind DDS texture image memory");
         }
 
-        // Build per-mip copy regions.
-        let mut regions = Vec::with_capacity((meta.mip_count * meta.array_layers) as usize);
-        let mut buffer_offset: vk::DeviceSize = 0;
-        // DDS cubemap payloads are face-major: all mips for +X, then all
-        // mips for -X, +Y, -Y, +Z, -Z. A 2D texture is the one-layer
-        // degenerate case of the same loop.
-        for layer in 0..meta.array_layers {
-            for mip in 0..meta.mip_count {
-                let mip_w = (meta.width >> mip).max(1);
-                let mip_h = (meta.height >> mip).max(1);
-                let mip_bytes = dds::mip_size(
-                    meta.width,
-                    meta.height,
-                    mip,
-                    meta.block_size,
-                    meta.compressed,
-                );
-
-                regions.push(vk::BufferImageCopy {
-                    buffer_offset,
-                    buffer_row_length: 0,
-                    buffer_image_height: 0,
-                    image_subresource: vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: mip,
-                        base_array_layer: layer,
-                        layer_count: 1,
-                    },
-                    image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-                    image_extent: vk::Extent3D {
-                        width: mip_w,
-                        height: mip_h,
-                        depth: 1,
-                    },
-                });
-                buffer_offset += mip_bytes as vk::DeviceSize;
-            }
-        }
+        // Build per-mip copy regions. The walk returns the exact byte
+        // total the regions address — the same walk `dds::total_data_size`
+        // prices the staging budget with, asserted here so a drift between
+        // the region list and its budget can never land again (#4512).
+        let (regions, regions_total) = build_dds_copy_regions(meta);
+        debug_assert_eq!(
+            regions_total, total_size,
+            "per-mip region walk and staging budget disagree",
+        );
+        debug_assert!(
+            regions_total <= image_size,
+            "copy regions ({regions_total} B) exceed the staging buffer ({image_size} B)",
+        );
 
         // 3-5. Record layout transitions + copy into the provided cmd.
         // Per-image barriers (not global) so multiple uploads recorded
@@ -568,21 +562,21 @@ impl Texture {
             view_kind,
         );
 
-        // #1921 — the returned size is for `StagingGuard::release_to`,
-        // which must record the STAGING BUFFER's actual capacity, not
-        // the (possibly smaller) requested `image_size`. `StagingPool::
-        // acquire` is best-fit (capacity >= size), so a larger pooled
-        // buffer can legitimately serve a smaller upload; returning
-        // `image_size` here made every pooled reuse re-record the
-        // buffer under a shrunken capacity, ratcheting the pool's
-        // ledger down on every reuse. Fall back to `image_size` only
-        // for the non-pooled branch above, where the buffer was
-        // created at exactly that size.
-        let staging_capacity = staging
-            .allocation
-            .as_ref()
-            .map(|a| a.size())
-            .unwrap_or(image_size);
+        // Release capacity handed to `StagingGuard::release_to`: the size
+        // this upload requested, never `allocation.size()`. The allocation
+        // footprint is rounded up to the driver's memory-requirement
+        // granularity and can exceed the VkBuffer's create size (observed
+        // +8/16 B); recording it as the pool entry's capacity let
+        // `StagingPool::acquire` hand an upload a buffer smaller than the
+        // regions about to be copied out of it — the exactly-+8 B
+        // `vkCmdCopyBufferToImage` overruns on Skyrim deep-mip chains
+        // (#4512). Requested-size release keeps every entry's capacity ≤
+        // its buffer's true size. Cost: #1921's ledger concern returns — a
+        // larger buffer reused for a smaller upload is re-recorded under
+        // the smaller size, a pool-hit-rate regression, not a correctness
+        // one. The complete fix (tracking the VkBuffer create size per
+        // entry) belongs in `StagingPool` itself.
+        let staging_capacity = image_size;
 
         Ok((
             Self {
@@ -593,6 +587,11 @@ impl Texture {
                 allocation: Some(image_alloc),
                 device: device.clone(),
                 allocator: Some(allocator.clone()),
+                creation_extent: vk::Extent3D {
+                    width: meta.width,
+                    height: meta.height,
+                    depth: 1,
+                },
             },
             staging,
             staging_capacity,
@@ -713,6 +712,79 @@ impl Drop for Texture {
             }
         }
     }
+}
+
+/// Per-mip `vk::BufferImageCopy` regions for a DDS upload, face-major
+/// (all mips of +X, then -X, +Y, -Y, +Z, -Z — an ordinary 2D texture is
+/// the one-layer degenerate case), together with the exact byte total
+/// the regions address. The total comes from the same walk as the
+/// regions, so the per-mip region list and the staging budget priced by
+/// `dds::total_data_size` cannot disagree on odd sub-block final mips
+/// (#4512). Byte sizes use `dds::mip_size`, so `buffer_row_length`/`
+/// buffer_image_height` stay 0 (tightly packed).
+fn build_dds_copy_regions(meta: &super::dds::DdsMetadata) -> (Vec<vk::BufferImageCopy>, u64) {
+    use super::dds;
+
+    let mut regions = Vec::with_capacity((meta.mip_count * meta.array_layers) as usize);
+    let mut buffer_offset: u64 = 0;
+    for layer in 0..meta.array_layers {
+        for mip in 0..meta.mip_count {
+            let mip_bytes = dds::mip_size(
+                meta.width,
+                meta.height,
+                mip,
+                meta.block_size,
+                meta.compressed,
+            );
+            regions.push(vk::BufferImageCopy {
+                buffer_offset,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: mip,
+                    base_array_layer: layer,
+                    layer_count: 1,
+                },
+                image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+                image_extent: vk::Extent3D {
+                    width: dds::mip_dimension(meta.width, mip),
+                    height: dds::mip_dimension(meta.height, mip),
+                    depth: 1,
+                },
+            });
+            buffer_offset += mip_bytes;
+        }
+    }
+    (regions, buffer_offset)
+}
+
+/// Validate a streaming RGBA upload for [`Texture::overwrite_rgba_pixels`]
+/// (#4515): the pixel payload must be exactly `width * height * 4` bytes
+/// (u64 math — the old `width * height * 4` product wraps u32), and the
+/// caller's extent must match the extent the image was created with. The
+/// check exists so a second consumer can rely on the documented contract;
+/// mismatches fail as a returned error, not an assertion.
+fn validate_rgba_upload(
+    creation_extent: vk::Extent3D,
+    width: u32,
+    height: u32,
+    pixel_data_len: usize,
+) -> Result<()> {
+    ensure!(
+        width == creation_extent.width && height == creation_extent.height,
+        "RGBA upload extent {width}x{height} does not match the texture's \
+         creation extent {}x{}",
+        creation_extent.width,
+        creation_extent.height,
+    );
+    let expected = u64::from(width) * u64::from(height) * 4;
+    ensure!(
+        pixel_data_len as u64 == expected,
+        "pixel data must be width*height*4 RGBA bytes: got {pixel_data_len}, \
+         expected {expected} for {width}x{height}",
+    );
+    Ok(())
 }
 
 /// Run a closure in a one-time-submit command buffer: allocate, record,
@@ -1053,5 +1125,202 @@ mod one_time_lock_scope_tests {
                  call within the preceding error-handling arm (#1861)",
             );
         }
+    }
+}
+
+/// #4511 / #4512 / #4515 — upload-path guards. The GPU-touching halves of
+/// these paths can't run under `cargo test` (no Vulkan device), so the
+/// behavioral pins cover the extracted pure helpers
+/// (`build_dds_copy_regions`, `validate_rgba_upload`) and the remaining
+/// in-`record_dds_upload` decisions are pinned as static source checks,
+/// same seam as `one_time_lock_scope_tests` above.
+#[cfg(test)]
+mod dds_upload_guard_tests {
+    use super::*;
+    use crate::vulkan::dds;
+
+    fn meta(
+        width: u32,
+        height: u32,
+        mip_count: u32,
+        array_layers: u32,
+        compressed: bool,
+    ) -> dds::DdsMetadata {
+        dds::DdsMetadata {
+            width,
+            height,
+            mip_count,
+            format: if compressed {
+                vk::Format::BC1_RGBA_UNORM_BLOCK
+            } else {
+                vk::Format::R8G8B8A8_UNORM
+            },
+            block_size: if compressed { 8 } else { 4 },
+            compressed,
+            array_layers,
+            is_cubemap: array_layers == 6,
+            data_offset: 128,
+            expand: None,
+        }
+    }
+
+    /// #4512 / REN-D9-2026-09-20-03 — the per-mip region walk and the
+    /// `dds::total_data_size` staging budget must price identical bytes on
+    /// odd sub-block final mips. The live form of the reported overrun was
+    /// Skyrim deep-mip chains: a 173×2970 texture prices 349528 B at 11
+    /// mips and 349536 B at 12 — exactly the audit's observed
+    /// `pRegions[8] 349536 > 349528` pair (one extra 1×1 BC1 block).
+    #[test]
+    fn bc1_deep_chain_region_bytes_match_staging_budget() {
+        for &(w, h, mips) in
+            &[(344u32, 1375u32, 11u32), (173u32, 2970u32, 11u32), (173u32, 2970u32, 12u32)]
+        {
+            let m = meta(w, h, mips, 1, true);
+            let (regions, total) = build_dds_copy_regions(&m);
+            assert_eq!(regions.len() as u32, mips, "{w}x{h} @{mips}");
+            assert_eq!(
+                total,
+                dds::total_data_size(&m),
+                "{w}x{h} @{mips} mips: region walk vs staging budget",
+            );
+
+            // Contiguous offsets, whole blocks, extents matching each mip.
+            let mut offset = 0u64;
+            for (mip, region) in regions.iter().enumerate() {
+                let mip = mip as u32;
+                assert_eq!(region.buffer_offset, offset, "{w}x{h} mip {mip}");
+                assert_eq!(region.image_extent.width, dds::mip_dimension(w, mip));
+                assert_eq!(region.image_extent.height, dds::mip_dimension(h, mip));
+                offset += dds::mip_size(w, h, mip, 8, true);
+            }
+            assert_eq!(offset, total, "{w}x{h} @{mips} mips: per-region sum");
+        }
+        // The observed pair, pinned as literals: 11 mips vs 12 differ by
+        // exactly one BC1 block — both must price the same on both sides.
+        assert_eq!(
+            dds::total_data_size(&meta(173, 2970, 11, 1, true)),
+            349_528u64,
+        );
+        assert_eq!(
+            dds::total_data_size(&meta(173, 2970, 12, 1, true)),
+            349_536u64,
+        );
+    }
+
+    #[test]
+    fn cubemap_regions_cover_all_six_faces() {
+        let m = meta(4, 4, 1, 6, true);
+        let (regions, total) = build_dds_copy_regions(&m);
+        assert_eq!(regions.len(), 6);
+        assert_eq!(total, 48); // 6 faces × one 4×4 BC1 block (8 B)
+        assert_eq!(total, dds::total_data_size(&m));
+        for (layer, region) in regions.iter().enumerate() {
+            assert_eq!(region.image_subresource.base_array_layer, layer as u32);
+        }
+    }
+
+    /// #4515 / REN-D5-2026-09-20-02 — a streaming upload whose extent
+    /// differs from the texture's creation extent must be an error, and
+    /// the payload-length check must survive the u32 wrap
+    /// (`65536² × 4 = 2^34`).
+    #[test]
+    fn rgba_overwrite_extent_mismatch_is_an_error() {
+        let creation = vk::Extent3D {
+            width: 256,
+            height: 128,
+            depth: 1,
+        };
+        assert!(validate_rgba_upload(creation, 256, 128, 256 * 128 * 4).is_ok());
+        // A second consumer relying on the old (nonexistent) assertion
+        // would upload a larger overlay into the smaller image.
+        let err = validate_rgba_upload(creation, 512, 256, 512 * 256 * 4)
+            .expect_err("extent mismatch must fail");
+        assert!(err.to_string().contains("creation extent"), "{err}");
+    }
+
+    #[test]
+    fn rgba_overwrite_payload_length_uses_u64_math() {
+        let creation = vk::Extent3D {
+            width: 65536,
+            height: 65536,
+            depth: 1,
+        };
+        let err = validate_rgba_upload(creation, 65536, 65536, 0)
+            .expect_err("wrong payload length must fail");
+        assert!(err.to_string().contains("expected"), "{err}");
+        // 65536² × 4 = 2^34: the old u32 `width * height * 4` wrapped to 0.
+        assert!(
+            validate_rgba_upload(creation, 65536, 65536, 17_179_869_184usize).is_ok()
+        );
+    }
+
+    /// #4511 — the payload-length gate in `record_dds_upload` must be a
+    /// returned error (`ensure!`), not a release `assert!`: a
+    /// truncated-but-plausible DDS has to fail the upload (checkerboard
+    /// fallback / queued-upload drop) rather than panic the engine.
+    #[test]
+    fn dds_payload_check_is_an_error_not_a_release_assert() {
+        let src = include_str!("texture.rs");
+        let pos = src
+            .find("DDS pixel data too small")
+            .expect("payload-length gate message must exist");
+        let pre = &src[pos.saturating_sub(160)..pos];
+        assert!(
+            pre.contains("ensure!("),
+            "the DDS payload gate must be anyhow ensure! (returned error); \
+             found: {pre}",
+        );
+        assert!(
+            !pre.contains("assert!("),
+            "the DDS payload gate regressed to a release assert!: {pre}",
+        );
+    }
+
+    /// #4512 — the staging release capacity must be the requested
+    /// `image_size`, never `allocation.size()`: the allocation footprint
+    /// is rounded up to the driver's memory-requirement granularity and
+    /// can exceed the VkBuffer create size, which let `StagingPool::
+    /// acquire` hand an upload a buffer smaller than the regions about to
+    /// be copied out of it (the +8 B Skyrim overruns).
+    #[test]
+    fn staging_release_capacity_is_requested_size_not_allocation_size() {
+        let src = include_str!("texture.rs");
+        let pos = src
+            .find("let staging_capacity = ")
+            .expect("staging release capacity computation in record_dds_upload");
+        let window = &src[pos..pos + 300];
+        assert!(
+            !window.contains("allocation.size()"),
+            "record_dds_upload regressed to releasing staging at the \
+             allocation footprint (pool acquire can then return a buffer \
+             smaller than the upload): {window}",
+        );
+        assert!(
+            window.contains("image_size"),
+            "staging release capacity must be the requested image_size: {window}",
+        );
+    }
+
+    /// #4515 — `Texture` must store its creation extent and
+    /// `overwrite_rgba_pixels` must validate uploads against it (the doc
+    /// previously claimed an assertion that did not exist).
+    #[test]
+    fn rgba_overwrite_validates_against_creation_extent() {
+        let src = include_str!("texture.rs");
+        assert!(
+            src.contains("creation_extent: vk::Extent3D"),
+            "Texture must store its creation extent (#4515)",
+        );
+        let fn_pos = src
+            .find("fn overwrite_rgba_pixels")
+            .expect("overwrite_rgba_pixels must exist");
+        let body = &src[fn_pos..fn_pos + src[fn_pos..]
+            .find("pub fn from_dds_with_mip_chain")
+            .expect("from_dds_with_mip_chain follows overwrite_rgba_pixels")];
+        assert!(
+            body.contains("validate_rgba_upload(self.creation_extent"),
+            "overwrite_rgba_pixels must check the upload against the \
+             texture's stored creation extent (#4515)",
+        );
     }
 }

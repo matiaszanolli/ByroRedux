@@ -7,6 +7,13 @@ const DDS_MAGIC: u32 = 0x20534444; // "DDS "
 const HEADER_SIZE: usize = 128; // 4 magic + 124 DDS_HEADER
 const DX10_EXT_SIZE: usize = 20;
 
+/// Upper bound on any single DDS dimension this renderer accepts. DDS
+/// archives are mod-authorable input and `vkCreateImage` sizes from the
+/// header fields, so an uncapped hostile header is a VRAM/OOM bomb
+/// (32768² RGBA8 also wraps the old u32 mip math to 0 while allocating
+/// 4 GiB). Same 8192 bound as the menuxml DDS decoder (`tex.rs`).
+pub const MAX_TEXTURE_DIMENSION: u32 = 8192;
+
 // DDS_HEADER.dwCaps2 cubemap bits.
 const DDSCAPS2_CUBEMAP: u32 = 0x0000_0200;
 const DDSCAPS2_CUBEMAP_ALL_FACES: u32 = 0x0000_fc00;
@@ -174,8 +181,8 @@ pub fn average_rgb(meta: &DdsMetadata, data: &[u8]) -> Option<[f32; 3]> {
     for m in 0..target {
         offset += mip_size(meta.width, meta.height, m, meta.block_size, meta.compressed) as usize;
     }
-    let w = (meta.width >> target).max(1) as usize;
-    let h = (meta.height >> target).max(1) as usize;
+    let w = mip_dimension(meta.width, target) as usize;
+    let h = mip_dimension(meta.height, target) as usize;
     let bs = meta.block_size as usize;
 
     // Cap the number of samples so a single-mip 4K texture doesn't pay a
@@ -273,7 +280,17 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
     // DDS_HEADER starts at offset 4
     let height = read_u32(data, 12);
     let width = read_u32(data, 16);
-    let mip_count = read_u32(data, 28).max(1);
+    ensure!(
+        width > 0
+            && height > 0
+            && width <= MAX_TEXTURE_DIMENSION
+            && height <= MAX_TEXTURE_DIMENSION,
+        "DDS dimensions {width}x{height} outside 1x1..={MAX_TEXTURE_DIMENSION} \
+         — refusing to size a GPU image from it",
+    );
+    let mip_count = read_u32(data, 28)
+        .max(1)
+        .min(full_mip_chain_len(width, height));
     let caps2 = read_u32(data, 112);
     let legacy_cubemap = caps2 & DDSCAPS2_CUBEMAP != 0;
     if legacy_cubemap {
@@ -472,8 +489,8 @@ pub fn expand_uncompressed_rgb(meta: &DdsMetadata, data: &[u8]) -> Vec<u8> {
     let mut total_pixels = 0usize;
     for _layer in 0..meta.array_layers {
         for m in 0..meta.mip_count {
-            let w = (meta.width >> m).max(1) as usize;
-            let h = (meta.height >> m).max(1) as usize;
+            let w = mip_dimension(meta.width, m) as usize;
+            let h = mip_dimension(meta.height, m) as usize;
             total_pixels += w * h;
         }
     }
@@ -481,8 +498,8 @@ pub fn expand_uncompressed_rgb(meta: &DdsMetadata, data: &[u8]) -> Vec<u8> {
     let mut src_off = meta.data_offset;
     for _layer in 0..meta.array_layers {
         for m in 0..meta.mip_count {
-            let w = (meta.width >> m).max(1) as usize;
-            let h = (meta.height >> m).max(1) as usize;
+            let w = mip_dimension(meta.width, m) as usize;
+            let h = mip_dimension(meta.height, m) as usize;
             for _ in 0..(w * h) {
                 let mut val = 0u32;
                 for b in 0..src_bpp {
@@ -530,19 +547,41 @@ fn scale_channel(val: u32, mask: u32) -> u8 {
     ((raw * 255 + max / 2) / max) as u8
 }
 
+/// Dimension of mip level `mip_level` of a `dim`-wide/tall image: halved
+/// per level, floored at 1 (the degenerate tail mip). `checked_shr`
+/// because a mip level ≥ 32 panics the raw shift in debug builds (#4511).
+#[inline]
+pub fn mip_dimension(dim: u32, mip_level: u32) -> u32 {
+    dim.checked_shr(mip_level).unwrap_or(0).max(1)
+}
+
+/// Number of mips in the full chain of a `width` × `height` image (every
+/// level down to 1×1). `parse_dds` clamps the header's mipMapCount to
+/// this: levels past it would only produce degenerate 1×1 tails.
+fn full_mip_chain_len(width: u32, height: u32) -> u32 {
+    32 - width.max(height).leading_zeros()
+}
+
 /// Compute byte size of a single mip level.
 ///
 /// For block-compressed: dimensions are rounded up to block boundaries (4×4).
 /// For uncompressed: width × height × bytes_per_pixel.
-pub fn mip_size(width: u32, height: u32, mip_level: u32, block_size: u32, compressed: bool) -> u32 {
-    let w = (width >> mip_level).max(1);
-    let h = (height >> mip_level).max(1);
+///
+/// u64 with saturating multiplies: inputs from `parse_dds` are gated to
+/// [`MAX_TEXTURE_DIMENSION`], but the function is `pub` and hand-built
+/// metadata reaches it too — a 32768² RGBA8 mip is exactly 2^32, which
+/// wrapped to 0 in the old u32 math and priced a 4 GiB upload as a
+/// 0-byte staging budget (#4511).
+pub fn mip_size(width: u32, height: u32, mip_level: u32, block_size: u32, compressed: bool) -> u64 {
+    let w = mip_dimension(width, mip_level);
+    let h = mip_dimension(height, mip_level);
     if compressed {
-        let blocks_x = w.div_ceil(4);
-        let blocks_y = h.div_ceil(4);
-        blocks_x * blocks_y * block_size
+        let blocks = u64::from(w.div_ceil(4)).saturating_mul(u64::from(h.div_ceil(4)));
+        blocks.saturating_mul(u64::from(block_size))
     } else {
-        w * h * block_size
+        u64::from(w)
+            .saturating_mul(u64::from(h))
+            .saturating_mul(u64::from(block_size))
     }
 }
 
@@ -550,13 +589,7 @@ pub fn mip_size(width: u32, height: u32, mip_level: u32, block_size: u32, compre
 pub fn total_data_size(meta: &DdsMetadata) -> u64 {
     let mut total = 0u64;
     for mip in 0..meta.mip_count {
-        total += mip_size(
-            meta.width,
-            meta.height,
-            mip,
-            meta.block_size,
-            meta.compressed,
-        ) as u64;
+        total += mip_size(meta.width, meta.height, mip, meta.block_size, meta.compressed);
     }
     total * u64::from(meta.array_layers)
 }
@@ -1234,5 +1267,73 @@ mod tests {
         let meta = parse_dds(&data).unwrap();
         assert_eq!(meta.format, vk::Format::BC5_UNORM_BLOCK);
         assert!(average_rgb(&meta, &data).is_none());
+    }
+
+    // ── #4511 / REN-D5-2026-09-20-01 — untrusted-input hardening ─────────
+
+    #[test]
+    fn reject_zero_dimensions() {
+        // A 0-extent header would otherwise reach vkCreateImage and fail
+        // there (or worse, price a 0-byte staging budget).
+        assert!(parse_dds(&make_dds_header(0, 64, 1, b"DXT1")).is_err());
+        assert!(parse_dds(&make_dds_header(64, 0, 1, b"DXT1")).is_err());
+    }
+
+    #[test]
+    fn reject_absurd_dimensions() {
+        // 32768² is far past the cap: pre-fix the header drove
+        // vkCreateImage sized from on-disk fields (4 GiB device-local)
+        // with the u32 mip math wrapping to 0 on the way.
+        let err = parse_dds(&make_dds_header(32768, 32768, 1, b"DXT1"))
+            .expect_err("dimensions past MAX_TEXTURE_DIMENSION must be rejected");
+        assert!(err.to_string().contains("32768"), "{err}");
+    }
+
+    #[test]
+    fn dimension_cap_boundary_is_accepted() {
+        let meta = parse_dds(&make_dds_header(8192, 8192, 1, b"DXT1")).unwrap();
+        assert_eq!(meta.width, 8192);
+        assert_eq!(meta.height, 8192);
+    }
+
+    #[test]
+    fn mip_count_clamped_to_full_chain() {
+        // 64×64 holds exactly 7 mips; a header claiming 99 drove the old
+        // shift math past the width (debug panic at mip ≥ 32).
+        let meta = parse_dds(&make_dds_header(64, 64, 99, b"DXT1")).unwrap();
+        assert_eq!(meta.mip_count, 7);
+    }
+
+    #[test]
+    fn mip_size_at_u32_limit_does_not_wrap() {
+        // 32768² RGBA8 is exactly 2^32 — the old u32 multiply wrapped to
+        // 0, so `total_data_size` priced the upload as 0 bytes.
+        assert_eq!(mip_size(32768, 32768, 0, 4, false), 4_294_967_296u64);
+    }
+
+    #[test]
+    fn total_data_size_at_u32_limit_does_not_wrap() {
+        let meta = DdsMetadata {
+            width: 32768,
+            height: 32768,
+            mip_count: 1,
+            format: vk::Format::R8G8B8A8_SRGB,
+            block_size: 4,
+            compressed: false,
+            array_layers: 1,
+            is_cubemap: false,
+            data_offset: 128,
+            expand: None,
+        };
+        assert_eq!(total_data_size(&meta), 4_294_967_296u64);
+    }
+
+    #[test]
+    fn mip_level_past_width_prices_unit_tail() {
+        // mip_level ≥ 32 must not panic the raw shift (debug builds) —
+        // it prices as the degenerate 1×1 tail mip.
+        assert_eq!(mip_size(256, 256, 32, 8, true), 8);
+        assert_eq!(mip_size(256, 256, 40, 4, false), 4);
+        assert_eq!(mip_dimension(256, 32), 1);
     }
 }
