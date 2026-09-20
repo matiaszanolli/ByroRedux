@@ -17,3 +17,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
+byroredux-bsa = { path = "../bsa" }

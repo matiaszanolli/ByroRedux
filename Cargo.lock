@@ -966,6 +966,7 @@ name = "byroredux-plugin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byroredux-bsa",
  "byroredux-core",
  "byroredux-sdk",
  "env_logger",

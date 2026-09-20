@@ -183,8 +183,19 @@ impl App {
             }
         };
         // Benchmark screenshots are renderer evidence rather than gameplay
-        // captures. Keep the new HUD reticle out of those established images.
-        if self.bench_frames_target.is_some() {
+        // captures, so the HUD stays out of them — but only while the
+        // finite bench window is actually open. `harness_active` follows
+        // the summary latch (the `--screenshot` capture path fires before
+        // it flips, so those PNGs keep their established HUD-free look),
+        // and a `--bench-hold` interactive tail is an inspection session
+        // by bench.rs's own contract — there the HUD, like the interaction
+        // prompt (which was never gated), is legitimate smoke evidence.
+        // Without the target check this would suppress the HUD in every
+        // ordinary non-bench session too, since `harness_active` only
+        // means "the summary hasn't printed".
+        let bench_window_open = self.bench_frames_target.is_some()
+            && crate::bench::harness_active(self.bench_summary_printed);
+        if bench_window_open {
             snapshot.show_crosshair = false;
             snapshot.vitals = None;
             snapshot.objectives = None;
