@@ -1051,6 +1051,102 @@ mod tests {
     use super::*;
     use byroredux_core::ecs::components::water::{WaterKind, WaterMaterial};
 
+    /// Blank out `//` line comments, `/* */` block comments, and string /
+    /// char literals, keeping everything else (newlines collapse to
+    /// spaces so formatting cannot hide token adjacency). Conservative by
+    /// design: unrecognised constructs stay in the scanned text, so the
+    /// only failure direction is a false positive, never a silent pass
+    /// (#4500).
+    fn strip_comments_and_strings(src: &str) -> String {
+        #[derive(Clone, Copy, PartialEq)]
+        enum St {
+            Code,
+            LineComment,
+            BlockComment,
+            Str,
+            Char,
+        }
+        let mut out = String::with_capacity(src.len());
+        let mut st = St::Code;
+        let bytes: Vec<char> = src.chars().collect();
+        let mut i = 0;
+        while i < bytes.len() {
+            let c = bytes[i];
+            let next = bytes.get(i + 1).copied();
+            match st {
+                St::Code => match (c, next) {
+                    ('/', Some('/')) => {
+                        st = St::LineComment;
+                        out.push(' ');
+                        i += 2;
+                    }
+                    ('/', Some('*')) => {
+                        st = St::BlockComment;
+                        out.push(' ');
+                        i += 2;
+                    }
+                    ('"', _) => {
+                        st = St::Str;
+                        out.push(' ');
+                        i += 1;
+                    }
+                    ('\'', _) => {
+                        // Discriminate char literals from lifetimes so a
+                        // `'a` can never swallow following code: a char
+                        // literal closes (or escapes) within two chars,
+                        // a lifetime keeps an identifier going.
+                        let j = bytes.get(i + 1).copied();
+                        let k = bytes.get(i + 2).copied();
+                        if j == Some('\\') || k == Some('\'') {
+                            st = St::Char;
+                            out.push(' ');
+                        } else if j.is_some_and(char::is_alphanumeric) {
+                            // Lifetime — keep it in the scanned text.
+                            out.push('\'');
+                        } else {
+                            st = St::Char;
+                            out.push(' ');
+                        }
+                        i += 1;
+                    }
+                    (c, _) => {
+                        out.push(if c.is_whitespace() { ' ' } else { c });
+                        i += 1;
+                    }
+                },
+                St::LineComment => {
+                    if c == '\n' {
+                        st = St::Code;
+                        out.push(' ');
+                    }
+                    i += 1;
+                }
+                St::BlockComment => {
+                    if c == '*' && next == Some('/') {
+                        st = St::Code;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                St::Str | St::Char => {
+                    // Escapes: keep consuming until the closing quote;
+                    // `\` always skips the following char.
+                    if c == '\\' {
+                        i += 2;
+                    } else if (st == St::Str && c == '"') || (st == St::Char && c == '\'') {
+                        st = St::Code;
+                        out.push(' ');
+                        i += 1;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn mesh_plane(kind: WaterKind, shader_flags: u32) -> WaterPlane {
         WaterPlane {
             kind,
@@ -1196,6 +1292,17 @@ mod tests {
         );
     }
 
+    /// #4500 — the previous guard matched the exact whitespace of
+    /// `world.insert(\n        entity,\n        WaterVolume`, so any
+    /// reformat or helper-mediated insert silently voided it. This one
+    /// strips comments and string/char literals, then asserts the
+    /// remaining *code* of the spawn path contains no `WaterVolume` /
+    /// `WaterCurrentVolume` token at all — formatting-insensitive, and
+    /// covering helper-mediated inserts because the whole function body
+    /// is scanned, not just literal `world.insert` shapes. The stripper
+    /// is deliberately conservative: anything it fails to recognise
+    /// (e.g. raw strings) stays in the scanned text, so a miss can only
+    /// false-positive the guard, never silently pass it.
     #[test]
     fn lod_water_is_render_only_and_cannot_create_false_submersion() {
         let src = include_str!("water.rs");
@@ -1205,10 +1312,12 @@ mod tests {
         let end = src
             .find("pub(crate) fn unload_lod_water_plane")
             .expect("LOD-water unload function");
-        let lod_body = &src[start..end];
+        let lod_body = strip_comments_and_strings(&src[start..end]);
         assert!(
-            !lod_body.contains("world.insert(\n        entity,\n        WaterVolume"),
-            "distant LOD water has no shoreline geometry and must not drive physics/submersion"
+            !lod_body.contains("WaterVolume") && !lod_body.contains("WaterCurrentVolume"),
+            "distant LOD water has no shoreline geometry and must not drive \
+             physics/submersion — a WaterVolume/WaterCurrentVolume appeared in \
+             spawn_lod_water_plane's code"
         );
     }
 
