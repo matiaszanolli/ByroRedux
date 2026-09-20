@@ -519,6 +519,19 @@ pub(crate) fn worldspace_name_chain(
 /// scale up in proportion to the current the physics sink is simulating.
 const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
 
+/// Fraction of an authored layer's cross-stream motion that survives on
+/// directional water (river / rapids / waterfall carries a canonical
+/// [`WaterFlow`]).
+///
+/// The per-layer wind directions in shipped records sit ~90° off their own
+/// NAM0 flow, so without this the dominant layer slides sideways across the
+/// current at ~80% of the downstream rate — read live as "way too
+/// aggressive" sideways movement. A quarter keeps a visible trace of
+/// cross-chop (real rivers are not rails) while cutting the lateral drift
+/// by ~70%. Calm water keeps authored layer motion verbatim; this only
+/// applies where a current exists to define "sideways".
+const WATER_CROSS_STREAM_SCROLL: f32 = 0.25;
+
 fn resolve_water_colors(
     waters: &HashMap<u32, esm::records::misc::WatrRecord>,
     rec: &esm::records::misc::WatrRecord,
@@ -870,18 +883,38 @@ fn classify_water_kind_and_flow(
             })
             .unwrap_or_else(|| WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]));
         let scroll = canonical.speed * WATER_SCROLL_UV_PER_BU_PER_S;
-        let authored_a = resolve_water_layer_motion(rec, 0);
-        let authored_b = resolve_water_layer_motion(rec, 1);
-        let authored_c = resolve_water_layer_motion(rec, 2);
+        // A current reads as a current only when the surface it drags moves
+        // downstream. Every direction-named vanilla record authors its
+        // per-layer wind directions ~90° off its NAM0 flow (NE/NW/SE
+        // census: RiverWaterFlowNE layer dirs 4.07/4.66/4.40 rad against a
+        // -0.49 rad flow), so their raw addition slid the dominant layer
+        // SIDEWAYS across the river at ~80% of the downstream rate — the
+        // "way too aggressive sideways movement" live report. Keep each
+        // layer's authored speed profile, but confine it to the flow axis:
+        // a quarter of the cross-stream component survives as natural
+        // chop, and the deliberate counter-layer rotation below is halved
+        // to match (0.5 -> 0.25 of the downstream rate).
         let flow_x = canonical.direction[0];
         let flow_z = canonical.direction[2];
+        let flow_axis = [flow_x, flow_z];
+        let confine_to_flow = |motion: [f32; 2]| {
+            let along = motion[0] * flow_axis[0] + motion[1] * flow_axis[1];
+            let cross = [motion[0] - along * flow_axis[0], motion[1] - along * flow_axis[1]];
+            [
+                along * flow_axis[0] + cross[0] * WATER_CROSS_STREAM_SCROLL,
+                along * flow_axis[1] + cross[1] * WATER_CROSS_STREAM_SCROLL,
+            ]
+        };
+        let authored_a = confine_to_flow(resolve_water_layer_motion(rec, 0));
+        let authored_b = confine_to_flow(resolve_water_layer_motion(rec, 1));
+        let authored_c = confine_to_flow(resolve_water_layer_motion(rec, 2));
         mat.scroll_a = [
             flow_x * scroll + authored_a[0],
             flow_z * scroll + authored_a[1],
         ];
         mat.scroll_b = [
-            -flow_z * scroll * 0.5 + authored_b[0],
-            flow_x * scroll * 0.5 + authored_b[1],
+            -flow_z * scroll * WATER_CROSS_STREAM_SCROLL + authored_b[0],
+            flow_x * scroll * WATER_CROSS_STREAM_SCROLL + authored_b[1],
         ];
         mat.scroll_c = if authored_c != [0.0, 0.0] {
             authored_c
@@ -2644,7 +2677,7 @@ mod tests {
     }
 
     #[test]
-    fn flowing_water_preserves_authored_layer_motion() {
+    fn flowing_water_confines_authored_layer_motion_to_the_flow_axis() {
         let mut rec = calm_watr(
             0x000A_0002,
             "LocalizedWater",
@@ -2663,11 +2696,64 @@ mod tests {
 
         let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0002));
         assert!(matches!(kind, WaterKind::River));
-        assert!(flow.is_some());
-        assert!(mat.scroll_a[0] > 0.10);
-        assert!(mat.scroll_b[1] > 0.20);
+        let flow = flow.expect("flowing water must carry its canonical current");
+        // wind_direction 0 → the fallback current runs along +X, so the flow
+        // axis is (1, 0) and "cross-stream" is the scroll-y lane.
+        let scroll = flow.speed * WATER_SCROLL_UV_PER_BU_PER_S;
+        // Layer A: authored (0.10, 0) is already along-flow and survives
+        // verbatim on top of the current-driven term.
+        assert!((mat.scroll_a[0] - (scroll + 0.10)).abs() < 1e-6);
+        assert!(mat.scroll_a[1].abs() < 1e-6);
+        // Layer B: authored (0, 0.20) is PURE cross-stream and must be cut to
+        // the quarter-fraction; the deliberate counter-rotation uses the same
+        // fraction of the downstream rate (pre-fix it rotated at 0.5×).
+        assert!((mat.scroll_b[0] - 0.0).abs() < 1e-6);
+        assert!((mat.scroll_b[1] - (0.20 * WATER_CROSS_STREAM_SCROLL + scroll * WATER_CROSS_STREAM_SCROLL)).abs() < 1e-6);
+        // Layer C: authored (0.30·cos 0.25, 0.30·sin 0.25) keeps its
+        // along-flow component; its cross component is quartered.
         assert!((mat.scroll_c[0] - 0.30 * 0.25_f32.cos()).abs() < 1e-6);
-        assert!((mat.scroll_c[1] - 0.30 * 0.25_f32.sin()).abs() < 1e-6);
+        assert!(
+            (mat.scroll_c[1] - 0.30 * 0.25_f32.sin() * WATER_CROSS_STREAM_SCROLL).abs() < 1e-6,
+            "cross-stream authored motion must be attenuated, not preserved"
+        );
+    }
+
+    /// The #4544 counterpart guard: with the authored cross-stream motion
+    /// quartered and the counter-layer rotation halved, the dominant layer's
+    /// lateral drift on a real NE river record must fall to ~a quarter of
+    /// its downstream rate (pre-fix census: ~80%). Uses the vanilla
+    /// `RiverWaterFlowNE` authoring — NAM0 (2.54, -1.35), layer dirs
+    /// 4.067/4.660/4.398 rad, speeds 0.09/0.04/0.30.
+    #[test]
+    fn riverwater_flowne_scroll_runs_downstream_not_sideways() {
+        let rec = calm_watr(
+            0x000A_0009,
+            "RiverWaterFlowNE",
+            WaterParams {
+                noise_wind_directions: [4.066_617, 4.660_029, 4.398_229_6],
+                noise_wind_speeds: [0.09, 0.04, 0.30],
+                ..WaterParams::default()
+            },
+        );
+        let rec = esm::records::misc::WatrRecord {
+            linear_velocity: Some([2.54, -1.35]),
+            ..rec
+        };
+        let waters = HashMap::from([(rec.form_id, rec)]);
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0009));
+        assert!(matches!(kind, WaterKind::River));
+        let flow = flow.expect("NE river must carry its NAM0 current");
+        let f = flow.direction;
+        let axis = [f[0], f[2]];
+        assert!(axis[0] > 0.8 && axis[1] < -0.3, "flow must point ENE in engine XZ");
+        let (along, cross) = (mat.scroll_a[0] * axis[0] + mat.scroll_a[1] * axis[1],
+                              -mat.scroll_a[0] * axis[1] + mat.scroll_a[1] * axis[0]);
+        let cross_ratio = (cross.abs() / along.max(1e-6)).abs();
+        assert!(
+            cross_ratio < 0.35,
+            "dominant layer drifts {cross_ratio:.2}× its downstream rate — \
+             sideways current motion must stay well under half (pre-fix ~0.80)"
+        );
     }
 
     #[test]
