@@ -470,9 +470,11 @@ struct GpuTerrainTile {
     // they ride the record the tile slot already indexes rather than a
     // parallel array plus a new descriptor binding to keep in step with it.
     //
-    // std430: both vec4 rows are on their 16-byte boundaries (96, 112) and
-    // the struct's stride is 144. `gpu_terrain_tile_field_offsets_match_
-    // shader_contract` pins the Rust half against exactly those numbers.
+    // std430: both vec4 rows are on their 16-byte boundaries (96, 112), the
+    // Tier-3 atlas uvec4 lands on its own at 144, and the struct's stride is
+    // 160. `gpu_terrain_tile_field_offsets_match_shader_contract` and
+    // `gpu_terrain_tile_is_160_bytes` pin the Rust half against exactly
+    // those numbers.
     /// `cover_affinity` for LAND splat layers 0-3 and 4-7.
     vec4 coverAffinity0;
     vec4 coverAffinity1;

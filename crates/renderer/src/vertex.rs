@@ -43,10 +43,17 @@ pub struct Vertex {
     /// (Oblivion / FO3 / FNV) and inline in the BSTriShape vertex
     /// stream (Skyrim+ / FO4) — see [`crate::import::ImportedMesh::tangents`]
     /// for the per-engine decode contract. Zero `[0, 0, 0, 0]` on
-    /// rigid / particle / UI / terrain content with no authored
-    /// tangents; the fragment shader's `perturbNormal` detects the
+    /// rigid / particle / UI content with no authored tangents; the
+    /// fragment shader's `perturbNormal` detects the
     /// zero magnitude and falls back to screen-space derivative TBN
-    /// reconstruction (the pre-#783 code path). When non-zero, the
+    /// reconstruction (the pre-#783 code path). **Terrain is the
+    /// deliberate exception**: [`Self::new_terrain`] emits the synthetic
+    /// `[1, 0, 0, -1]` — world +X with a negative bitangent sign — because
+    /// a zero tangent fails `perturbNormal`'s Path-1 gate and silently
+    /// facets every LAND normal-mapped splat down the derivative fallback
+    /// (#2474), and `w = -1` is what LAND's row-flipped V coordinate needs
+    /// to reconstruct the true bitangent (sign corrected by #2822).
+    /// When non-zero, the
     /// shader reconstructs the bitangent as `w * cross(N, T)` and
     /// uses that authored TBN for normal-map perturbation —
     /// eliminating the screen-space-derivative discontinuities at
@@ -370,7 +377,11 @@ mod tests {
     /// (`dot(vertexTangent.xyz, vertexTangent.xyz) > 1e-4` in
     /// `include/material_sampling.glsl`) takes the authored-tangent path
     /// instead of falling through to the screen-space-derivative fallback
-    /// meant for tangent-less synthetic geometry.
+    /// meant for tangent-less synthetic geometry. #2822 — the exact
+    /// constant, `[1, 0, 0, -1]`, is pinned here with no softer assertion:
+    /// "restoring" `w = +1` (per the pre-fix code) or zeroing the field
+    /// flips every terrain normal map's green channel, and no other guard
+    /// would notice.
     #[test]
     fn terrain_vertex_carries_a_nonzero_tangent() {
         let v = Vertex::new_terrain(
