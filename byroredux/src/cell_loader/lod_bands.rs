@@ -607,6 +607,48 @@ mod tests {
         }
     }
 
+    /// #4504 — the uniform patterns above (everything baked / one band
+    /// baked) are not what real worldspaces look like: FO3's `washmontop`
+    /// bakes 112 level-4 + 33 level-8 + 7 level-16 + 1 oddity quad, and a
+    /// 4/16/32 ladder mixes three depths. Run the same cell-by-cell
+    /// overlap check over a mixed pattern: both coarse bands fully baked,
+    /// the level-8 band holed per-quad (the missing half descends to
+    /// level 4 — availability is only consulted above the finest band,
+    /// so the fine-depth mix must come from the 8-band holes).
+    #[test]
+    fn partition_never_covers_a_cell_twice_over_a_mixed_depth_pattern() {
+        let ladder = fo4();
+        let sel = selection(&ladder, (7, -3));
+        let mixed = |level: i32, qx: i32, qy: i32| match level {
+            32 | 16 => true,
+            8 => (qx + qy) % 2 != 0,
+            _ => false,
+        };
+        let quads = select_lod_quads(&sel, |_, _, _| false, mixed);
+        assert!(!quads.is_empty());
+
+        let depths: HashSet<i32> = quads.iter().map(|&(l, _, _)| l).collect();
+        assert!(
+            depths.len() >= 3,
+            "the mixed pattern must actually produce multi-depth output, got {depths:?}"
+        );
+
+        let mut seen: HashSet<(i32, i32)> = HashSet::new();
+        for &(level, qx, qy) in &quads {
+            for dy in 0..level {
+                for dx in 0..level {
+                    assert!(
+                        seen.insert((qx + dx, qy + dy)),
+                        "cell ({}, {}) covered twice — level-{level} quad ({qx}, {qy}) \
+                         overlaps another band under mixed availability",
+                        qx + dx,
+                        qy + dy,
+                    );
+                }
+            }
+        }
+    }
+
     /// The complement of the overlap test. Past the full-detail boundary
     /// annulus, every cell in the ring is covered — the bands leave no hole
     /// in the horizon.

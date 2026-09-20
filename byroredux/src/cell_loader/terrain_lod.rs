@@ -8,9 +8,11 @@
 //!     per cell edge) — ~1/64th the triangles of full-detail terrain,
 //!   * uses an authored legacy LOD diffuse/normal quad where available, then a
 //!     single base ground texture fallback (no per-vertex splat blend),
-//!   * builds **no BLAS** and spawns with [`IsLodTerrain`] so the renderer
-//!     keeps it out of the TLAS — distant terrain needs no RT shadows/GI,
-//!     costing zero ray-tracing budget,
+//!   * builds **no BLAS** at spawn and marks blocks [`IsLodTerrain`] so the
+//!     renderer's bounded restore path may later admit camera-local blocks
+//!     into the TLAS as RT shadow casters (`LOD_SHADOW_CASTER_DISTANCE`,
+//!     #4180) — distant terrain beyond that ring costs zero ray-tracing
+//!     budget; see `docs/engine/shadow-pipeline-tradeoffs.md`,
 //!   * holes out each actually-resident full-detail cell so the LOD
 //!     never overlaps / z-fights the streamed near terrain.
 //!
@@ -809,12 +811,14 @@ fn spawn_lod_block(
     }
 
     // Upload into the global geometry pool only (#1370). LOD blocks
-    // rasterize from the global vertex/index buffer and never enter the
-    // TLAS, so the per-mesh buffers `upload_scene_mesh` would create are
-    // pure boot-time waste — ~2 synchronous fence-waits + 2 tiny
-    // device-local sub-allocations per block, ×hundreds of blocks. The
-    // geometry rides the single `rebuild_geometry_ssbo` the frame loop
-    // already runs for the resident scene.
+    // rasterize from the global vertex/index buffer and enter the TLAS
+    // only through the renderer's bounded camera-local shadow-caster
+    // restore path (which builds BLAS on demand, #4180), so the per-mesh
+    // buffers `upload_scene_mesh` would create are pure boot-time waste —
+    // ~2 synchronous fence-waits + 2 tiny device-local sub-allocations
+    // per block, ×hundreds of blocks. The geometry rides the single
+    // `rebuild_geometry_ssbo` the frame loop already runs for the
+    // resident scene.
     let mesh_handle = match ctx
         .mesh_registry
         .upload_scene_mesh_global_only(&vertices, &indices)
@@ -1195,6 +1199,38 @@ mod tests {
                         assert!(
                             quad_min_chebyshev(qx, qy, level, (px, py)) > radius_unload,
                             "level-{level} quad ({qx}, {qy}) reaches inside the streaming radius"
+                        );
+                    }
+                }
+            }
+        }
+
+        // #4505 — same premise for the FO3/FNV legacy NIF/DDS ladder
+        // (`FALLOUT_LEGACY_REFINE_BU`: the finest band refines at 12
+        // cells). The tightest configuration is `--radius 7`, where
+        // `radius_unload` reaches 8 and an emitted level-8 quad persists
+        // down to the full-detail boundary by one cell of margin; sweep
+        // every playable radius so a future threshold retune that puts
+        // coarse geometry over hysteresis-band cells fails here, not in
+        // the world.
+        let legacy = LodBandLadder::for_terrain_game(GameKind::Fallout3NV).unwrap();
+        for radius_unload in 6..=8 {
+            for py in 0..8 {
+                for px in 0..8 {
+                    let quads = desired_lod_quads(
+                        Some(&legacy),
+                        (px, py),
+                        (0, 0),
+                        radius_unload,
+                        None,
+                        |_, _, _| false,
+                        |_, _, _| true,
+                    );
+                    for (level, qx, qy) in quads {
+                        assert!(
+                            quad_min_chebyshev(qx, qy, level, (px, py)) > radius_unload,
+                            "legacy level-{level} quad ({qx}, {qy}) reaches inside \
+                             radius_unload {radius_unload}"
                         );
                     }
                 }
