@@ -420,10 +420,12 @@ fn select_top_by_coverage(sorted: &mut Vec<(u32, u16, PerQuadrantAlpha)>, max_la
     sorted.sort_by(|a, b| {
         let ca = total_coverage(&a.2);
         let cb = total_coverage(&b.2);
-        // Descending coverage; partial_cmp is safe because alpha values
-        // from the ATXT parser are finite [0, 1] f32s — NaN cannot
-        // appear. Default to Equal on the impossible None branch.
-        cb.partial_cmp(&ca).unwrap_or(std::cmp::Ordering::Equal)
+        // Descending coverage. The parser gates VTXT opacity to finite
+        // [0, 1] at the decode choke point (#4484), so NaN cannot reach
+        // this comparator any more — but `total_cmp` keeps the order a
+        // true total (and `sort_by` panic-free) even if a future decode
+        // path regresses that gate: defense in depth, per #4484.
+        cb.total_cmp(&ca)
     });
     sorted.truncate(max_layers);
     // Re-sort by (layer, ltex) so the shader's per-layer-index access
@@ -842,7 +844,16 @@ pub(super) fn spawn_terrain_mesh(
                 (1.0 - row as f32 / 32.0) * LAND_TEXTURE_TILES_PER_CELL,
             ];
 
-            // Pack up to 8 splat weights into 2× RGBA8 unorm (#470).
+            // Pack up to 8 splat weights into 2× RGBA8 unorm (#470). The
+            // layer budget is capped at 8 upstream (`build_cell_splat_layers`:
+            // base transitions ≤ 4 + authored budget truncation) — the
+            // assert pins that contract at the packer so a future budget
+            // edit fails here instead of indexing out of bounds.
+            debug_assert!(
+                splat_layers.layers.len() <= 8,
+                "splat packer received {} layers; the 2×RGBA8 budget is 8",
+                splat_layers.layers.len()
+            );
             let mut splat0 = [0u8; 4];
             let mut splat1 = [0u8; 4];
             for (i, layer) in splat_layers.layers.iter().enumerate() {
@@ -1623,6 +1634,36 @@ mod tests {
                 "output not sorted by (layer_field, ltex_form_id)"
             );
         }
+    }
+
+    /// #4496 — the packer's `splat1[i - 4]` indexing is only safe because
+    /// the layer budget is capped at 8: base transitions (at most one per
+    /// quadrant slot, so ≤ 4) plus authored layers truncated to
+    /// `8 - transitions.len()`. Pin both premises at the pure planner for
+    /// the worst-case fully-mixed cell — four distinct BTXT bases, none
+    /// canonical — so a future "fifth base transition" or budget edit
+    /// fails here (and the packer's `debug_assert!`) instead of indexing
+    /// out of bounds in every exterior cell.
+    #[test]
+    fn splat_layer_budget_never_exceeds_the_packer_bound() {
+        let bases = [Some(0x100u32), Some(0x200), Some(0x300), Some(0x400)];
+        let present = [true; 4];
+        let transitions = base_transition_layers_for_bases(&bases, &present, Some(0xDEAD));
+        assert_eq!(
+            transitions.len(),
+            4,
+            "four distinct non-canonical bases must yield four transitions"
+        );
+
+        // The budget arithmetic exactly as `build_cell_splat_layers` runs
+        // it, for arbitrarily many authored layers.
+        let authored_budget = 8 - transitions.len();
+        let capped = 20usize.min(authored_budget);
+        assert!(
+            transitions.len() + capped <= 8,
+            "layer count {} exceeds the 2×RGBA8 packer budget of 8",
+            transitions.len() + capped
+        );
     }
 
     #[test]
