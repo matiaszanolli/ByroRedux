@@ -1396,6 +1396,12 @@ mod bindings_glsl_contract_pin {
 ///    on the same line (the struct's own doc, its trailing offset comment,
 ///    the layout doc's heading and table total, the memory-budget row).
 ///
+/// Rule 4 (#4522) extends rule 2 to size prose that names no `Gpu*` type
+/// on the claim line at all: a bare `N bytes` inside the `///` doc block
+/// of an item that names `GpuMaterial` (the doc of
+/// `hash_gpu_material_fields` carried a stale "428 bytes" a line below
+/// "`FxHasher::write` … for these", invisible to rule 2).
+///
 /// Scope is live source, engine docs, the audit skills and the top-level
 /// status docs. `docs/audits/`, `HISTORY.md` and `.claude/issues/` are
 /// dated records and are not scanned.
@@ -1549,6 +1555,88 @@ mod gpu_material_size_claims {
             .collect()
     }
 
+    /// Plausible `GpuMaterial` record-size band for rule 4. A bare
+    /// `N bytes` claim inside the doc of a `GpuMaterial`-typed item is
+    /// only treated as a size claim when N lands in this band, so
+    /// unrelated byte prose near the symbol ("16 bytes at a time" —
+    /// FxHasher's chunk width) stays out; compounds like "4-byte u32"
+    /// never carry a standalone " bytes"/" B" unit and are excluded by
+    /// the unit test itself. If the record ever outgrows the band this
+    /// assert fires — widen it rather than let the rule go silent.
+    const BARE_CLAIM_BAND: (usize, usize) = (128, 4096);
+
+    /// Rule 4 (#4522): bare `N bytes` / `N B` claims inside the `///` doc
+    /// block of an item that names `GpuMaterial`, returning
+    /// `(1-based line, value)` pairs. The item is the first non-blank
+    /// line after the block, attributes (`#[repr(C)]`, `#[derive…]`)
+    /// skipped, so the struct's own multi-attribute declaration still
+    /// attaches its doc.
+    ///
+    /// Exclusions, tuned against the live tree so only genuine size
+    /// prose flags:
+    /// - lines carrying a [`HISTORIC_MARKERS`] phrase (rule 2's
+    ///   semantics), and
+    /// - lines containing a history arrow: the struct's size-history
+    ///   block chains `272 B → 260 B → …` across lines and a chain's
+    ///   "to" side can land on the *next* line, so no per-line reading
+    ///   of an arrow-bearing line is trustworthy;
+    /// - numbers glued into identifiers, `#issue` references or
+    ///   thousands separators, and values outside [`BARE_CLAIM_BAND`].
+    fn bare_doc_block_claims(text: &str) -> Vec<(usize, usize)> {
+        let live = std::mem::size_of::<GpuMaterial>();
+        assert!(
+            live >= BARE_CLAIM_BAND.0 && live <= BARE_CLAIM_BAND.1,
+            "GpuMaterial ({live} B) left the bare-claim band {BARE_CLAIM_BAND:?} — \
+             widen BARE_CLAIM_BAND or rule 4 silently stops guarding doc prose (#4522)"
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            if !lines[i].trim_start().starts_with("///") {
+                i += 1;
+                continue;
+            }
+            let block = i;
+            while i < lines.len() && lines[i].trim_start().starts_with("///") {
+                i += 1;
+            }
+            let mut item = i;
+            while item < lines.len() && lines[item].trim().is_empty() {
+                item += 1;
+            }
+            while item < lines.len() && lines[item].trim_start().starts_with("#[") {
+                item += 1;
+            }
+            if !lines.get(item).is_some_and(|line| line.contains("GpuMaterial")) {
+                continue;
+            }
+            for line_no in block..i {
+                let line = lines[line_no];
+                if HISTORIC_MARKERS.iter().any(|m| line.contains(m))
+                    || line.contains('→')
+                    || line.contains("->")
+                {
+                    continue;
+                }
+                for (value, start, end) in numbers(line) {
+                    let glued = line[..start].chars().last().is_some_and(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, '_' | '#' | '.' | ',')
+                    });
+                    let after = line[end..].trim_start_matches('*');
+                    let unit = (after.starts_with(" B")
+                        && !after[2..].starts_with(|c: char| c.is_ascii_alphanumeric()))
+                        || after.starts_with(" bytes");
+                    let in_band = value >= BARE_CLAIM_BAND.0 && value <= BARE_CLAIM_BAND.1;
+                    if !glued && unit && in_band {
+                        out.push((line_no + 1, value));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     #[test]
     fn no_file_states_a_stale_gpu_material_size() {
         let live = std::mem::size_of::<GpuMaterial>();
@@ -1563,6 +1651,17 @@ mod gpu_material_size_claims {
                 Some((head, _)) => head.to_string(),
                 None => text,
             };
+            // Rule 4 (#4522) — bare byte claims in the doc block of a
+            // `GpuMaterial`-typed item; block-structured, so it runs once
+            // per Rust file before the per-line rules below.
+            if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                for (line_no, value) in bare_doc_block_claims(&text) {
+                    if value != live {
+                        let line = text.lines().nth(line_no - 1).unwrap_or("").trim();
+                        stale.push(format!("{}:{}: {}", path.display(), line_no, line));
+                    }
+                }
+            }
             for (idx, line) in text.lines().enumerate() {
                 // Rule 1.
                 let dated = HISTORIC_MARKERS.iter().any(|m| line.contains(m));
@@ -1665,5 +1764,54 @@ mod gpu_material_size_claims {
         assert!(current_size_claims("the 368-byte `GpuCamera` and `GpuMaterial` tests").is_empty());
         assert!(current_size_claims("`GpuMaterial` (#3909) x432 B_ok").is_empty());
         assert!(current_size_claims("no type here: 432 B").is_empty());
+    }
+
+    /// The rule-4 scanner itself (#4522): a bare byte claim under the doc
+    /// of a `GpuMaterial`-typed item is a size claim even when the claim
+    /// line names no type; unrelated byte prose, history arrows, dated
+    /// history and attribute-separated items behave as documented.
+    #[test]
+    fn doc_block_bare_byte_claims_near_gpu_material_items_are_scanned() {
+        let item = "pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {";
+
+        // The #4522 shape: the stale size sits on its own line, no type.
+        let stale = format!("/// ~27 steps for these\n///    428 bytes, and building.\n{item}");
+        assert_eq!(bare_doc_block_claims(&stale), vec![(2, 428)]);
+
+        // The corrected doc states the live size; extraction still sees it
+        // (the != live comparison happens in the tree scan, not here).
+        let live = format!("/// ~27 steps for these\n///    432 bytes, and building.\n{item}");
+        assert_eq!(bare_doc_block_claims(&live), vec![(2, 432)]);
+
+        // A ` B` spelling is a claim too.
+        let b_unit = format!("/// total 431 B\n{item}");
+        assert_eq!(bare_doc_block_claims(&b_unit), vec![(1, 431)]);
+
+        // Doc not attached to a GpuMaterial-typed item: out of scope.
+        let other = "///    428 bytes of state.\npub fn hash_gpu_light_fields(l: &GpuLight)";
+        assert!(bare_doc_block_claims(other).is_empty());
+
+        // Unrelated byte prose near the symbol: FxHasher's chunk width
+        // sits below the band; a field-width "4-byte" compound has no
+        // standalone unit.
+        let chunk = format!("/// 16 bytes at a time on two streams.\n{item}");
+        assert!(bare_doc_block_claims(&chunk).is_empty());
+        let field = format!("/// every field is a 4-byte u32 or f32.\n{item}");
+        assert!(bare_doc_block_claims(&field).is_empty());
+
+        // History reads as history: arrows on the line (including the
+        // struct doc's cross-line chains) and dated markers.
+        let arrowed = "/// 272 B → 260 B (#804 dropped a lane)\npub struct GpuMaterial {";
+        assert!(bare_doc_block_claims(arrowed).is_empty());
+        let chain = "/// 272 B → 260 B\n/// → 296 B (#1249)\npub struct GpuMaterial {";
+        assert!(bare_doc_block_claims(chain).is_empty());
+        let dated = format!("/// was 300 bytes at R1\n{item}");
+        assert!(bare_doc_block_claims(&dated).is_empty());
+
+        // Attributes between doc and item do not detach the block
+        // (the struct's own declaration carries two).
+        let attrs = "#[repr(C)]\n#[derive(Clone, Copy)]\npub struct GpuMaterial {";
+        let attached = format!("/// record is 431 bytes.\n{attrs}");
+        assert_eq!(bare_doc_block_claims(&attached), vec![(1, 431)]);
     }
 }

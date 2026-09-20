@@ -459,31 +459,25 @@ pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMateri
 ///
 /// The positional argument now lives once, on `unsafe impl NoUninit for
 /// GpuInstance` in `gpu_types.rs`, next to the field offsets it reasons about.
+/// Routed through the crate's bounded byte view (`byte_view`, #4521) so the
+/// no-uninitialised-bytes argument is upheld by the type bound rather than
+/// restated per site.
 pub(super) fn hash_instance_slice(instances: &[super::gpu_types::GpuInstance]) -> u64 {
     use std::hash::Hasher;
     let mut hasher = rustc_hash::FxHasher::default();
-    let byte_size = std::mem::size_of_val(instances);
-    // SAFETY: `GpuInstance: NoUninit` (see `gpu_types.rs`) is the standing
-    // claim that every byte of a valid instance is initialised, so the byte
-    // view below contains no uninitialised bytes. `byte_size` is exactly the
-    // slice footprint, and `gpu_instance_field_offsets_match_shader_contract`
-    // pins the offsets the impl's argument rests on.
-    let bytes: &[u8] =
-        unsafe { std::slice::from_raw_parts(instances.as_ptr() as *const u8, byte_size) };
-    hasher.write(bytes);
+    hasher.write(crate::vulkan::buffer::byte_view(instances));
     hasher.finish()
 }
 
 /// Content hash for the previous-rigid-model upload dirty gate. The payload is
 /// a tightly packed slice of 16 `f32` matrix lanes with no implicit padding.
+/// Routed through `byte_view` (#4521): `GpuPreviousModel` is `[[f32; 4]; 4]`,
+/// and the `NoUninit` blanket impl for `[T; N]` over a `NoUninit` element
+/// covers it, so the no-padding invariant rides the type bound.
 pub(super) fn hash_previous_model_slice(models: &[super::gpu_types::GpuPreviousModel]) -> u64 {
     use std::hash::Hasher;
     let mut hasher = rustc_hash::FxHasher::default();
-    let byte_size = std::mem::size_of_val(models);
-    // SAFETY: nested fixed-size f32 arrays are contiguous and contain no
-    // padding; `byte_size` is exactly the slice footprint.
-    let bytes = unsafe { std::slice::from_raw_parts(models.as_ptr().cast::<u8>(), byte_size) };
-    hasher.write(bytes);
+    hasher.write(crate::vulkan::buffer::byte_view(models));
     hasher.finish()
 }
 
@@ -496,15 +490,23 @@ pub(super) fn hash_previous_model_slice(models: &[super::gpu_types::GpuPreviousM
 /// unconditionally `copy_nonoverlapping` + `flush_range`'d every frame.
 ///
 /// `VkDrawIndexedIndirectCommand` is a Vulkan-spec `#[repr(C)]` struct of
-/// five `u32`/`i32` fields (20 B, no padding — all 4-byte-aligned), so
-/// the raw byte-slice cast is sound for the same reason
-/// `hash_material_slice`'s is.
+/// five `u32`/`i32` fields (20 B, no padding — all 4-byte-aligned), so the
+/// raw byte-slice cast is sound. #4521 — this is the one deliberate
+/// `byte_view` exemption in the crate: the type is ash-owned, and this
+/// crate's `NoUninit` impls for foreign Vulkan types are kept as a single
+/// audited list in `buffer.rs` (`AccelerationStructureInstanceKHR`)
+/// instead of accreting per call site, so the view stays hand-rolled with
+/// its invariant restated below. Documented at `byte_view`'s doc claim;
+/// pinned by
+/// `descriptors_hash_views_route_through_byte_view_except_the_ash_type`.
 pub(super) fn hash_indirect_slice(draws: &[ash::vk::DrawIndexedIndirectCommand]) -> u64 {
     use std::hash::Hasher;
     let mut hasher = rustc_hash::FxHasher::default();
     let byte_size = std::mem::size_of_val(draws);
-    // SAFETY: see hash_material_slice — same invariant on the producer
-    // side; `VkDrawIndexedIndirectCommand` has no implicit padding.
+    // SAFETY: `VkDrawIndexedIndirectCommand` is `#[repr(C)]` with five
+    // 4-byte-aligned `u32`/`i32` fields (20 B, no implicit padding), so
+    // every byte of a valid element is initialised; `byte_size` is exactly
+    // the slice footprint, and the returned slice borrows `draws`.
     let bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(draws.as_ptr() as *const u8, byte_size) };
     hasher.write(bytes);
@@ -519,20 +521,30 @@ pub(super) fn hash_indirect_slice(draws: &[ash::vk::DrawIndexedIndirectCommand])
 /// the gate.
 ///
 /// `GpuLight` is `#[repr(C)]` with four plain `[f32; 4]` fields and no
-/// implicit padding, so the raw byte-slice cast is sound for the same
-/// reason `hash_material_slice`'s is. The hash covers the clamped
+/// implicit padding. The hash covers the clamped
 /// prefix actually written (`lights[..count]`), so its length changing
 /// (e.g. the scene going from N lights to 0) always changes the hash
 /// even though the `LightHeader.count` the hash doesn't directly cover
 /// is a pure function of that same length.
+///
+/// Routed through the crate's bounded byte view (`byte_view`, #4521)
+/// like its three siblings.
 pub(super) fn hash_light_slice(lights: &[super::gpu_types::GpuLight]) -> u64 {
     use std::hash::Hasher;
     let mut hasher = rustc_hash::FxHasher::default();
-    let byte_size = std::mem::size_of_val(lights);
-    // SAFETY: see hash_material_slice — same invariant on the producer
-    // side; `GpuLight` has no implicit padding (four `[f32; 4]` fields).
-    let bytes: &[u8] =
-        unsafe { std::slice::from_raw_parts(lights.as_ptr() as *const u8, byte_size) };
-    hasher.write(bytes);
+    hasher.write(crate::vulkan::buffer::byte_view(lights));
     hasher.finish()
 }
+
+/// #4521 — `byte_view` needs the `NoUninit` bound. The impl sits here
+/// rather than beside its `gpu_types.rs` siblings only so this file's
+/// hash-view conversion is one auditable unit; the invariant it states
+/// is the same one `upload_lights`' raw `copy_nonoverlapping` already
+/// rests on.
+// SAFETY: `GpuLight` is `#[repr(C)]` and all four fields are `[f32; 4]`
+// (16 B each, 64 B total) — homogeneous scalar arrays tile the declared
+// size with no implicit padding, so every byte of a valid instance is
+// initialised. Same argument as `unsafe impl NoUninit for
+// GpuSelectedRayProbe` in `gpu_types.rs`; `gpu_light_is_64_bytes` (in
+// `gpu_instance_layout_tests.rs`) holds the layout fixed.
+unsafe impl crate::vulkan::buffer::NoUninit for super::gpu_types::GpuLight {}

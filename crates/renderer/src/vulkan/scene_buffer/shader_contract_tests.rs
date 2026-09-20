@@ -5640,3 +5640,186 @@ fn lit_palette_branch_indexes_the_lut_row_by_the_authored_scale() {
          corrects #2443's premise). Branch text:\n{branch}"
     );
 }
+
+/// #4422 / REN-3-2026-09-20-01 regression. The detail combine's
+/// encoded-space arithmetic is the exact expression the 2026-09-16 HIGH
+/// darkening lived in: pre-#4422 the shader multiplied the (then-sRGB-view)
+/// sample by a flat `× 2.0`, linearising it first and rendering every
+/// FaceGeom head at ≈11% albedo. #4422's pins cover the CPU legs
+/// (`GpuMaterial.detail_neutral`, the raw-UNORM view, the packer, the size
+/// growth) — until now nothing pinned the GLSL combine itself, so a
+/// shader-side revert to the old multiply passed the whole suite. This
+/// pins the branch in BOTH consumers that share the arithmetic: the
+/// primary raster path (triangle.frag) and the secondary-ray helper
+/// (ray_hit.glsl, whose comment declares lockstep with triangle.frag).
+#[test]
+fn detail_combine_divides_by_the_producer_neutral_in_both_raster_and_ray_paths() {
+    let cases = [
+        (
+            "triangle.frag",
+            include_str!("../../../shaders/triangle.frag"),
+            "albedo *= detailSample / max(mat.detailNeutral, 1e-4);",
+            "sampleUV * 2.0",
+        ),
+        (
+            "include/ray_hit.glsl",
+            include_str!("../../../shaders/include/ray_hit.glsl"),
+            "rgb *= detailSample / max(mat.detailNeutral, 1e-4);",
+            "uv * 2.0",
+        ),
+    ];
+    for (name, src, divide, uv_scale) in cases {
+        let anchor = "if (mat.detailMapIndex != 0u && (dbgFlags & DBG_BYPASS_DETAIL) == 0u) {";
+        let branch_start = src
+            .find(anchor)
+            .unwrap_or_else(|| panic!("{name}: detail branch must keep its DBG_BYPASS_DETAIL gate"));
+        let branch_end = src[branch_start..]
+            .find("\n    }\n")
+            .map(|i| branch_start + i)
+            .unwrap_or_else(|| panic!("{name}: detail branch must close"));
+        let branch = &src[branch_start..branch_end];
+
+        assert!(
+            branch.contains(divide),
+            "{name}: the detail combine must divide the raw-UNORM sample by \
+             the producer-declared neutral (expected `{divide}`) — the \
+             encoded-space combine is the #4422 fix, and the divide-by-\
+             `max(…, 1e-4)` floor is what keeps a zero neutral from \
+             dividing by 0"
+        );
+        assert!(
+            !branch.contains("detailSample *"),
+            "{name}: the detail sample must not be MULTIPLIED back into the \
+             albedo — `detailSample * 2.0` is exactly the pre-#4422 combine \
+             that darkened FaceGeom heads to ≈11% albedo (REN-3-2026-09-20-01)"
+        );
+        assert!(
+            branch.contains(uv_scale),
+            "{name}: the detail sample must keep its 2× UV scale \
+             (`{uv_scale}`, the Gamebryo high-frequency-overlay convention) \
+             — the forbidden `× 2.0` is on the SAMPLE, never on the UVs"
+        );
+    }
+}
+
+/// #4423 / REN-3-2026-09-20-01 regression. The tint multiply is the other
+/// half of the 2026-09-16 HIGH class: vanilla tint maps ship BC1, so an
+/// unguarded `tintSample.a` read the format default 1.0 and the weighted
+/// mix collapsed Skyrim skin to 1/5..1/200 of its diffuse. The fix gates
+/// the block on TWO conditions — a real tint index AND the packer's
+/// TINT_ALPHA_WEIGHT_BIT marker — and masks the bit off the sampled
+/// handle. The CPU legs are pinned packer-side; this pins the GLSL gate in
+/// both consumers (triangle.frag primary path, ray_hit.glsl secondary-ray
+/// helper), tightly enough that dropping either condition, re-widening
+/// `&&` to `||`, or sampling the unmasked handle all fail.
+#[test]
+fn tint_multiply_is_gated_on_both_the_index_and_the_alpha_weight_bit() {
+    // Exact two-line header, shared verbatim by both consumers.
+    let gate = "if ((mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT) != 0u\n        \
+                && (mat.tintMapIndex & TINT_ALPHA_WEIGHT_BIT) != 0u) {";
+    let cases = [
+        (
+            "triangle.frag",
+            include_str!("../../../shaders/triangle.frag"),
+            "albedo = mix(albedo, albedo * tintSample.rgb, tintSample.a);",
+        ),
+        (
+            "include/ray_hit.glsl",
+            include_str!("../../../shaders/include/ray_hit.glsl"),
+            "rgb = mix(rgb, rgb * tintSample.rgb, tintSample.a);",
+        ),
+    ];
+    for (name, src, weighted_mix) in cases {
+        let branch_start = src
+            .find(gate)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{name}: the tint block must open with the exact two-condition \
+                     gate — one condition alone re-opens #4423 (a BC1 tint's `.a` \
+                     reads the format default 1.0 and the mix collapses skin)"
+                )
+            });
+        let branch_end = src[branch_start..]
+            .find("\n    }\n")
+            .map(|i| branch_start + i)
+            .unwrap_or_else(|| panic!("{name}: tint branch must close"));
+        let branch = &src[branch_start..branch_end];
+
+        assert!(
+            branch.contains("textures[nonuniformEXT(mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT)]"),
+            "{name}: the sampled handle must mask TINT_ALPHA_WEIGHT_BIT off \
+             the tint index — the bit is a packer marker, not an SSBO slot"
+        );
+        assert!(
+            branch.contains(weighted_mix),
+            "{name}: the tint role is a weighted mix toward the tinted \
+             albedo (expected `{weighted_mix}`)"
+        );
+        assert!(
+            !src.contains("if (mat.tintMapIndex != 0u)"),
+            "{name}: the pre-#4423 single-condition tint gate must not come \
+             back — an alpha-less tint texture has no authored weight"
+        );
+    }
+}
+
+/// #4521 / REN-3-2026-09-20-02 regression. #4445 declared `byte_view` the
+/// single place byte views come from, yet four sibling dirty-gate hash
+/// views in `descriptors.rs` still hand-rolled `slice::from_raw_parts`.
+/// Three now route through the bounded helper (`hash_instance_slice`,
+/// `hash_previous_model_slice`, `hash_light_slice`); the ash-typed
+/// `hash_indirect_slice` is the one documented exemption — foreign
+/// Vulkan-type `NoUninit` impls stay the single audited entry in
+/// `buffer.rs` instead of accreting per call site. This pins the file's
+/// production code to exactly that shape, and pins `byte_view`'s doc to
+/// still name the exemption so the "single place" claim stays true.
+#[test]
+fn descriptors_hash_views_route_through_byte_view_except_the_ash_type() {
+    let src = include_str!("descriptors.rs");
+    // Production half only, in case a `#[cfg(test)]` module ever grows
+    // here (there is none today).
+    let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+
+    assert_eq!(
+        production.match_indices("from_raw_parts").count(),
+        1,
+        "descriptors.rs must hand-roll exactly one byte view — the documented \
+         `hash_indirect_slice` exemption (#4521). Route every new byte view \
+         through `crate::vulkan::buffer::byte_view` so the NoUninit bound \
+         carries the no-uninitialised-bytes argument."
+    );
+
+    // The single hand-rolled view must live inside the exempted function.
+    let exempt = production
+        .find("fn hash_indirect_slice")
+        .expect("the exempted ash-typed hash view must exist");
+    assert!(
+        !production[..exempt].contains("from_raw_parts"),
+        "a hand-rolled from_raw_parts appeared outside the documented \
+         `hash_indirect_slice` exemption (#4521)"
+    );
+
+    // The three convertible views ride the type-bounded helper.
+    for (what, call) in [
+        ("instances", "byte_view(instances)"),
+        ("previous models", "byte_view(models)"),
+        ("lights", "byte_view(lights)"),
+    ] {
+        assert!(
+            production
+                .contains(&format!("hasher.write(crate::vulkan::buffer::{call})")),
+            "the {what} dirty-gate hash must take its bytes from \
+             `crate::vulkan::buffer::{call}` (#4521) — a hand-rolled \
+             from_raw_parts there re-opens the #4445 singularity"
+        );
+    }
+
+    // byte_view's doc claim must still document the exemption — the doc
+    // and the code above drift or fail together.
+    let buffer = include_str!("../buffer.rs");
+    assert!(
+        buffer.contains("hash_indirect_slice"),
+        "byte_view's 'single place' doc must name the hash_indirect_slice \
+         exemption (#4521); it is the only sanctioned hand-rolled view"
+    );
+}

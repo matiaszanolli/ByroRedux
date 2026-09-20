@@ -1066,7 +1066,7 @@ pub mod presets {
 ///    ~107 dependent steps per draw per frame: 0.48 ms at MedTek's 7,359
 ///    draws, measured in release. `FxHasher::write` compresses a byte slice
 ///    16 bytes at a time on two independent streams, ~27 steps for these
-///    428 bytes, and building the struct first is plain memory writes. The
+///    432 bytes, and building the struct first is plain memory writes. The
 ///    two together measured 0.17 ms on the same workload.
 ///  * **Coverage by discipline.** A field added to the struct but not to
 ///    the walk silently collapsed two distinct materials onto one table slot

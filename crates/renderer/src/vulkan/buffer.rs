@@ -43,6 +43,15 @@ pub unsafe trait NoUninit: Copy {}
 /// `write_mapped_prefix`, and the material-table byte views (#4445:
 /// `GpuMaterial::as_bytes` / `hash_material_slice`) obtain their `&[u8]`,
 /// so the safety argument lives once rather than once per entry point.
+///
+/// #4521 — the scene_buffer dirty-gate hash views (`hash_instance_slice` /
+/// `hash_previous_model_slice` / `hash_light_slice`) also route through
+/// here. One documented exemption keeps this claim true:
+/// `hash_indirect_slice` (`scene_buffer/descriptors.rs`) hand-rolls its
+/// `from_raw_parts` because `VkDrawIndexedIndirectCommand` is ash-owned
+/// and this crate's `NoUninit` impls for foreign Vulkan types stay the
+/// single audited entry in the list below rather than accreting per call
+/// site.
 #[inline]
 pub(crate) fn byte_view<T: NoUninit>(data: &[T]) -> &[u8] {
     // SAFETY: `T: NoUninit` guarantees every byte of `T` is initialised (no
