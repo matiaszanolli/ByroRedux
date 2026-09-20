@@ -452,7 +452,8 @@ vec3 traceWaterRay(
             // diffuse plus authored emission is a stable, bounded surface-
             // colour proxy that preserves detail without firing another
             // light/shadow tree from every reflection and refraction hit.
-            return rayHitAlbedo(mat, uv, baseSample.rgb, 0.0)
+            return rayHitAlbedo(mat, uv, baseSample.rgb, 0.0,
+                                floatBitsToUint(jitter.z))
                  + rayHitEmission(mat, uv, baseSample.rgb, 0.0);
         }
 

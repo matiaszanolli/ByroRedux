@@ -701,23 +701,46 @@ fn stamp_precedes_the_ssbo_drop_in_build_tlas_instances() {
 /// chain so the census can attribute a cause. Duplicated predicates drift;
 /// this is what stops them.
 ///
-/// The contract in both directions, over the whole reachable input space:
+/// The contract in both directions, over every render layer × material
+/// kind × alpha × refraction-scale cell:
 ///
 /// * a cause is reported **iff** the render layer did not decide the mask
-///   (checked against `RenderLayer::Actor`, whose own bucket is distinct
-///   from every divert target);
+///   (every [`RenderLayer`] variant is swept; 84bbc44ed's blended-actor
+///   policy shows up as blended `RenderLayer::Actor` draws reporting
+///   `None`, their preserved bucket being distinct from every divert
+///   target);
 /// * the reported cause names a bucket the mask actually landed in.
 #[test]
 fn divert_cause_matches_the_mask_it_explains() {
     use super::super::predicates::{mask_divert_cause, MaskDivertCause};
     use crate::shader_constants::{
-        VISIBILITY_LAYER_DYNAMIC_ACTOR, VISIBILITY_LAYER_EFFECT, VISIBILITY_LAYER_GLASS,
+        VISIBILITY_LAYER_ARCHITECTURE, VISIBILITY_LAYER_DYNAMIC_ACTOR, VISIBILITY_LAYER_EFFECT,
+        VISIBILITY_LAYER_FOLIAGE, VISIBILITY_LAYER_GLASS, VISIBILITY_LAYER_STATIC_PROP,
     };
     use crate::vulkan::scene_buffer::{
         MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS,
         MATERIAL_KIND_MULTI_LAYER_PARALLAX,
     };
     use byroredux_core::ecs::components::RenderLayer;
+
+    // The `iff` direction needs every layer's own bucket to be distinct
+    // from both divert targets, or "the layer decided" and "a divert
+    // cause fired" could agree by numeric coincidence.
+    let layer_bucket = |layer: RenderLayer| match layer {
+        RenderLayer::Architecture => VISIBILITY_LAYER_ARCHITECTURE as u8,
+        RenderLayer::Clutter => VISIBILITY_LAYER_STATIC_PROP as u8,
+        RenderLayer::Actor => VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
+        RenderLayer::Decal => VISIBILITY_LAYER_FOLIAGE as u8,
+    };
+    for layer in [
+        RenderLayer::Architecture,
+        RenderLayer::Clutter,
+        RenderLayer::Actor,
+        RenderLayer::Decal,
+    ] {
+        assert_ne!(layer_bucket(layer), VISIBILITY_LAYER_GLASS as u8);
+        assert_ne!(layer_bucket(layer), VISIBILITY_LAYER_EFFECT as u8);
+    }
 
     let kinds = [
         0u32,
@@ -728,49 +751,56 @@ fn divert_cause_matches_the_mask_it_explains() {
     ];
     let mut saw_each = [false; 4];
 
-    // Alpha remains a diversion for non-actor proxy geometry. The actor
-    // sweep below intentionally does not reach this arm because ordinary
-    // blended character meshes now retain the dynamic-actor shadow bucket.
-    assert_eq!(
-        mask_divert_cause(0, RenderLayer::Architecture, true, 0.0),
-        Some(MaskDivertCause::AlphaBlend)
-    );
-    saw_each[1] = true;
+    // 84bbc44ed: alpha diverts non-actor proxy geometry only. Blended
+    // actor draws sit inside this sweep and must fall through to `None`
+    // with their preserved dynamic-actor bucket — exactly what the two
+    // contract arms below enforce cell by cell.
+    for layer in [
+        RenderLayer::Architecture,
+        RenderLayer::Clutter,
+        RenderLayer::Actor,
+        RenderLayer::Decal,
+    ] {
+        for kind in kinds {
+            for alpha_blend in [false, true] {
+                for scale in [0.0f32, 1.0] {
+                    let mask = shadow_mask_for_instance(kind, layer, alpha_blend, scale);
+                    let cause = mask_divert_cause(kind, layer, alpha_blend, scale);
 
-    for kind in kinds {
-        for alpha_blend in [false, true] {
-            for scale in [0.0f32, 1.0] {
-                let mask = shadow_mask_for_instance(kind, RenderLayer::Actor, alpha_blend, scale);
-                let cause = mask_divert_cause(kind, RenderLayer::Actor, alpha_blend, scale);
-
-                match cause {
-                    None => assert_eq!(
-                        mask,
-                        VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
-                        "no divert cause reported, so the render layer must have                          decided (kind={kind} alpha_blend={alpha_blend} scale={scale})"
-                    ),
-                    Some(c) => {
-                        assert_ne!(
+                    match cause {
+                        None => assert_eq!(
                             mask,
-                            VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
-                            "cause {c:?} reported but the mask is still the actor                              bucket (kind={kind} alpha_blend={alpha_blend} scale={scale})"
-                        );
-                        let expected = match c {
-                            MaskDivertCause::RefractiveGlass => VISIBILITY_LAYER_GLASS as u8,
-                            MaskDivertCause::AlphaBlend
-                            | MaskDivertCause::EffectShader
-                            | MaskDivertCause::FireRefraction => VISIBILITY_LAYER_EFFECT as u8,
-                        };
-                        assert_eq!(
-                            mask, expected,
-                            "cause {c:?} names the wrong bucket                              (kind={kind} alpha_blend={alpha_blend} scale={scale})"
-                        );
-                        saw_each[match c {
-                            MaskDivertCause::RefractiveGlass => 0,
-                            MaskDivertCause::AlphaBlend => 1,
-                            MaskDivertCause::EffectShader => 2,
-                            MaskDivertCause::FireRefraction => 3,
-                        }] = true;
+                            layer_bucket(layer),
+                            "no divert cause reported, so the render layer must have \
+                             decided (layer={layer:?} kind={kind} alpha_blend={alpha_blend} \
+                             scale={scale})"
+                        ),
+                        Some(c) => {
+                            assert_ne!(
+                                mask,
+                                layer_bucket(layer),
+                                "cause {c:?} reported but the mask is still the render \
+                                 layer's own bucket (layer={layer:?} kind={kind} \
+                                 alpha_blend={alpha_blend} scale={scale})"
+                            );
+                            let expected = match c {
+                                MaskDivertCause::RefractiveGlass => VISIBILITY_LAYER_GLASS as u8,
+                                MaskDivertCause::AlphaBlend
+                                | MaskDivertCause::EffectShader
+                                | MaskDivertCause::FireRefraction => VISIBILITY_LAYER_EFFECT as u8,
+                            };
+                            assert_eq!(
+                                mask, expected,
+                                "cause {c:?} names the wrong bucket (layer={layer:?} \
+                                 kind={kind} alpha_blend={alpha_blend} scale={scale})"
+                            );
+                            saw_each[match c {
+                                MaskDivertCause::RefractiveGlass => 0,
+                                MaskDivertCause::AlphaBlend => 1,
+                                MaskDivertCause::EffectShader => 2,
+                                MaskDivertCause::FireRefraction => 3,
+                            }] = true;
+                        }
                     }
                 }
             }

@@ -2333,4 +2333,68 @@ mod tests {
             );
         }
     }
+
+    /// DBG_BYPASS_DETAIL must gate the detail combine on the secondary-ray
+    /// albedo too, not just the raster primary: `rayHitAlbedo` shades the
+    /// reflection, GI, refraction and water-ray termini, and a detail A/B
+    /// that leaves the term live there understates the diff. Source-text
+    /// guard: GLSL happily compiles an unused parameter, so neither the
+    /// SPIR-V build nor the artifact gate can catch the gate going missing.
+    #[test]
+    fn detail_bypass_flag_gates_every_albedo_combine() {
+        let primary = include_str!("../shaders/triangle.frag");
+        assert!(
+            primary.contains(
+                "if (mat.detailMapIndex != 0u && (dbgFlags & DBG_BYPASS_DETAIL) == 0u) {"
+            ),
+            "triangle.frag's primary detail combine must keep its DBG_BYPASS_DETAIL gate"
+        );
+
+        let ray_hit = include_str!("../shaders/include/ray_hit.glsl");
+        assert!(
+            ray_hit.contains("float lod, uint dbgFlags) {"),
+            "rayHitAlbedo must receive the debug flags from its callers"
+        );
+        assert!(
+            ray_hit.lines().any(|line| {
+                line.trim_start()
+                    .starts_with("if (mat.detailMapIndex != 0u")
+                    && line.contains("(dbgFlags & DBG_BYPASS_DETAIL) == 0u")
+            }),
+            "rayHitAlbedo's detail combine must gate on DBG_BYPASS_DETAIL, \
+             matching the primary combine"
+        );
+
+        // Every caller must actually feed the flags in; whitespace is
+        // stripped so reformatting a call across lines cannot defeat the pin.
+        for (name, src, needles) in [
+            (
+                "triangle.frag",
+                include_str!("../shaders/triangle.frag"),
+                &[
+                    "rayHitAlbedo(tMat,tUV,tAlbedo,refrMip,dbgFlags)",
+                    "rayHitAlbedo(hitMat,hitUV,hitBase.rgb,0.0,dbgFlags)",
+                ][..],
+            ),
+            (
+                "include/raytrace.glsl",
+                include_str!("../shaders/include/raytrace.glsl"),
+                &["rayHitAlbedo(hitMat,hitUV,hitBaseRgb,mipBias,floatBitsToUint(jitter.z))"][..],
+            ),
+            (
+                "water.frag",
+                include_str!("../shaders/water.frag"),
+                &["rayHitAlbedo(mat,uv,baseSample.rgb,0.0,floatBitsToUint(jitter.z))"][..],
+            ),
+        ] {
+            let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+            for needle in needles {
+                assert!(
+                    flat.contains(needle),
+                    "{name}: rayHitAlbedo must be called with the debug flags \
+                     (missing `{needle}` after whitespace stripping)"
+                );
+            }
+        }
+    }
 }

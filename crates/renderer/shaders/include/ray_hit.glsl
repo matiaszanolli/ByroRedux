@@ -458,6 +458,14 @@ bool rayHitHasCoverage(
 //   6. detail      (2x-UV high-frequency modulation, divided by the
 //      producer-declared encoded neutral — #4422)
 //
+// `dbgFlags` rides along so role 6 honours the same DBG_BYPASS_DETAIL
+// gate the primary combine in triangle.frag applies: without it a
+// detail-map A/B via the debug bit left the term live on every
+// reflection, GI, refraction and water-ray albedo, so the diff
+// understated the detail contribution. Every caller holds the flags —
+// `triangle.frag` decodes them once in main, `raytrace.glsl` and
+// `water.frag` bitcast them from `jitter.z` like everyone else.
+//
 // The COVERAGE half of the decal composite (texColor.a via
 // `rayHitHasCoverage`) was already fixed by #3986 — this closes the
 // remaining colour half. All texture fetches use the caller-supplied
@@ -474,7 +482,7 @@ bool rayHitHasCoverage(
 // receive. Not a per-game branch: every role gates on the same
 // game-agnostic `GpuMaterial` fields the raster path reads (NIFAL
 // boundary preserved).
-vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod) {
+vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod, uint dbgFlags) {
     vec3 rgb = baseRgb;
 
     uint decals[4] = uint[4](
@@ -529,8 +537,9 @@ vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod) {
 
     // #4422 — same producer-declared neutral as the primary path: raw
     // UNORM view, divide by `detailNeutral`. Kept in lockstep with
-    // triangle.frag's combine (see the note there).
-    if (mat.detailMapIndex != 0u) {
+    // triangle.frag's combine (see the note there), including its
+    // DBG_BYPASS_DETAIL gate.
+    if (mat.detailMapIndex != 0u && (dbgFlags & DBG_BYPASS_DETAIL) == 0u) {
         vec3 detailSample = textureLod(
             textures[nonuniformEXT(mat.detailMapIndex)], uv * 2.0, lod).rgb;
         rgb *= detailSample / max(mat.detailNeutral, 1e-4);

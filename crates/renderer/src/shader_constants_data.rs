@@ -1343,7 +1343,10 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
 /// 0x1 — bypass parallax-occlusion mapping in the base-UV sampler.
 pub const DBG_BYPASS_POM: u32 = 0x1;
 
-/// 0x2 — bypass detail-map blend on the base albedo.
+/// 0x2 — bypass detail-map blend on the base albedo. Gated on the primary
+/// combine in `triangle.frag` AND on every secondary-ray terminus through
+/// `rayHitAlbedo` (reflection / GI / refraction / water-ray), so a
+/// detail-map A/B shows the term's full contribution.
 pub const DBG_BYPASS_DETAIL: u32 = 0x2;
 
 /// 0x4 — visualize per-fragment world-space normal as colour.

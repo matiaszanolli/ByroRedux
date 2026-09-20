@@ -381,7 +381,9 @@ fn water_fragment_uses_shared_material_aware_ray_hits() {
         "materials[inst.materialId]",
         "instIdx, primIdx, bary, direction, mat",
         "instIdx, primIdx, bary, inst, mat, uv, baseSample",
-        "rayHitAlbedo(mat, uv, baseSample.rgb, 0.0)",
+        // dbgFlags keeps the water-ray terminus on the shared DBG_BYPASS_DETAIL
+        // contract (floatBitsToUint(jitter.z) is water.frag's decode of it).
+        "rayHitAlbedo(mat, uv, baseSample.rgb, 0.0,",
         "rayHitEmission(mat, uv, baseSample.rgb, 0.0)",
     ] {
         assert!(
@@ -444,16 +446,19 @@ fn secondary_ray_coverage_includes_barycentric_vertex_alpha() {
 /// AND that every one of its four call sites was updated to the new
 /// `(mat, uv, baseRgb, lod)` signature (the roles need `uv`/`lod` to
 /// sample from — the pre-fix `(mat, baseRgb)` signature couldn't have
-/// composed them at all).
+/// composed them at all); `dbgFlags` rides on the end so the detail role
+/// honours the shared DBG_BYPASS_DETAIL gate.
 #[test]
 fn ray_hit_albedo_composes_every_raster_albedo_role() {
     let hit = include_str!("../../../shaders/include/ray_hit.glsl");
 
     assert!(
-        hit.contains("vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod) {"),
+        hit.contains(
+            "vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod, uint dbgFlags) {"
+        ),
         "rayHitAlbedo must take uv + an explicit lod to sample the \
          additional albedo-modifying roles — the pre-fix (mat, baseRgb) \
-         signature had no way to."
+         signature had no way to — plus dbgFlags for the DBG_BYPASS_DETAIL gate."
     );
 
     let fn_start = hit
@@ -4352,7 +4357,7 @@ fn refraction_terminus_tints_through_ray_hit_albedo_not_instance_avg_albedo() {
     let src = include_str!("../../../shaders/triangle.frag");
 
     assert!(
-        src.contains("vec3 tColor = rayHitAlbedo(tMat, tUV, tAlbedo, refrMip);"),
+        src.contains("vec3 tColor = rayHitAlbedo(tMat, tUV, tAlbedo, refrMip, dbgFlags);"),
         "the IOR refraction terminus must tint its texel sample with the hit \
          material's own diffuse colour via rayHitAlbedo, the same helper \
          traceReflection / the GI bounce / traceWaterRay / \

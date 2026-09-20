@@ -184,7 +184,8 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     // triangle.frag's path loop) genuinely wants the LOD-0 sample and
     // keeps its own.
     vec3 hitBaseRgb = sampleRayHitBase(hitInst, hitMat, hitUV, mipBias).rgb;
-    vec3 hitColor = rayHitAlbedo(hitMat, hitUV, hitBaseRgb, mipBias);
+    vec3 hitColor = rayHitAlbedo(
+        hitMat, hitUV, hitBaseRgb, mipBias, floatBitsToUint(jitter.z));
 
     float hitDist = travelled;
     vec3 hitPos = hitPosition;

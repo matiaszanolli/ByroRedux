@@ -1038,11 +1038,17 @@ pub(super) enum MaskDivertCause {
 
 /// The cause, if any, that overrode the render layer for this instance.
 ///
-/// Deliberately re-derives the same predicates in the same order as
-/// [`shadow_mask_for_instance`] rather than having that function return a
-/// pair: the mask is on the per-instance hot path of every TLAS build and
-/// this is diagnostic-only. `divert_cause_matches_the_mask_it_explains`
-/// pins the two against each other over the whole input space, so the
+/// Deliberately re-derives [`shadow_mask_for_instance`]'s routing rather
+/// than having that function return a pair: the mask is on the
+/// per-instance hot path of every TLAS build and this is diagnostic-only.
+/// Since 84bbc44ed's blended-actor policy the two are equivalent foldings
+/// of one precedence chain, not the same predicates in the same order:
+/// the mask orders glass → effect family → actor preservation → non-actor
+/// alpha blends, while this spells the preservation arm out as an
+/// explicit `render_layer != Actor` guard on the alpha test. Both still
+/// land in the same bucket on every input, which
+/// `divert_cause_matches_the_mask_it_explains` pins over the full render
+/// layer × material kind × alpha × refraction-scale space, so the
 /// duplication cannot drift into a lie.
 pub(super) fn mask_divert_cause(
     material_kind: u32,

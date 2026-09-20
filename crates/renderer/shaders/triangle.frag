@@ -2486,7 +2486,7 @@ void main() {
                 // `handle_avg_rgb` returns None for untextured handles, which
                 // degenerates the double-multiply to identity on exactly the
                 // untextured content that scene is made of.
-                vec3 tColor = rayHitAlbedo(tMat, tUV, tAlbedo, refrMip);
+                vec3 tColor = rayHitAlbedo(tMat, tUV, tAlbedo, refrMip, dbgFlags);
 
                 // Light the refracted surface with a real one-bounce
                 // direct-light evaluation (per-light N·L + shadow ray),
@@ -4104,7 +4104,8 @@ void main() {
                 }
 
                 vec3 hitAlbedo = clamp(
-                    rayHitAlbedo(hitMat, hitUV, hitBase.rgb, 0.0), vec3(0.0), vec3(1.0));
+                    rayHitAlbedo(hitMat, hitUV, hitBase.rgb, 0.0, dbgFlags),
+                    vec3(0.0), vec3(1.0));
                 vec3 viewDir = -pathDir;
                 // The first two material hits get GI_VISIBLE_LIGHT_CAP then 1
                 // strongest local lights. Later specular hits still carry
