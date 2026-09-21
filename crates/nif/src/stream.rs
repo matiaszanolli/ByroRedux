@@ -742,12 +742,15 @@ impl<'a> NifStream<'a> {
         // resulting bind-inverse misskins every legacy NiSkinData
         // body NIF as a horizontal ribbon (visible since M29 #178
         // shipped without rendered skinned content).
-        let translation = self.read_ni_point3()?;
+        let mut translation = self.read_ni_point3()?;
         let rotation = self.read_ni_matrix3()?;
-        let scale = self.read_f32_le()?;
+        let mut scale = self.read_f32_le()?;
         // Sanitize once at parse time so downstream code can treat the
-        // rotation as a valid rotation matrix. See #277.
+        // rotation as a valid rotation matrix. See #277. #4549 —
+        // translation/scale join the gate: they have no classifier
+        // downstream, so non-finite components are neutralized here.
         let rotation = crate::rotation::sanitize_rotation(rotation);
+        crate::rotation::sanitize_transform_translation_and_scale(&mut translation, &mut scale);
         Ok(NiTransform {
             rotation,
             translation,
@@ -768,9 +771,13 @@ impl<'a> NifStream<'a> {
     /// reads as the next two rotation rows + translation row).
     pub fn read_ni_transform_struct(&mut self) -> io::Result<NiTransform> {
         let rotation = self.read_ni_matrix3()?;
-        let translation = self.read_ni_point3()?;
-        let scale = self.read_f32_le()?;
+        let mut translation = self.read_ni_point3()?;
+        let mut scale = self.read_f32_le()?;
         let rotation = crate::rotation::sanitize_rotation(rotation);
+        // #4549 — same gate as the NiAVObject-order reader above; this
+        // struct-order variant feeds skin bind-inverses, whose
+        // non-finite cells would poison a whole palette.
+        crate::rotation::sanitize_transform_translation_and_scale(&mut translation, &mut scale);
         Ok(NiTransform {
             rotation,
             translation,

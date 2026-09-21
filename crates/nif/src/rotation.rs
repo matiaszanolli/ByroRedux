@@ -126,6 +126,66 @@ fn warn_reflection_reoriented(m: &NiMatrix3, repaired: &NiMatrix3) {
     }
 }
 
+/// #4549 (NIFAL-D2-2026-09-21-01) — a rotation matrix carrying NaN or ±inf
+/// is collapsed to identity behind the shared rate limiter. Every
+/// classifier in [`sanitize_rotation`] is an unordered float comparison
+/// and therefore NaN-blind, and SVD arithmetic on non-finite input yields
+/// NaN singular values that sail past `max_sv < 0.01` — so without this
+/// head gate a single corrupt cell reached `Quat::from_xyzw` as NaN and
+/// poisoned the entity's `GlobalTransform` (the anim-side #4396/#4397
+/// failure chain, static-transform edition).
+fn warn_non_finite_rotation_rejected(m: &NiMatrix3) {
+    let count = SCALE_DISCARD_WARNINGS.fetch_add(1, Ordering::Relaxed);
+    if count >= MAX_SCALE_DISCARD_WARNINGS {
+        return;
+    }
+    log::warn!(
+        "NiTransform.rotation carries a non-finite cell (NaN/±inf) — collapsed to \
+         identity; no meaningful orientation is recoverable (#4549). Matrix: {m:?}"
+    );
+    if count + 1 == MAX_SCALE_DISCARD_WARNINGS {
+        log::warn!("further rotation-sanitisation warnings suppressed for this process (#2456)");
+    }
+}
+
+/// #4549 — static-transform translation and scale have no classifier
+/// downstream at all (rotation at least had the det/column checks), so
+/// non-finite components are neutralized right at the two
+/// `stream.rs::read_ni_transform*` sites: a non-finite translation
+/// component becomes 0 (the node stays at its parent origin), a
+/// non-finite scale becomes 1 (the node keeps its authored shape).
+/// Shares the rotation sanitizer's rate limiter.
+pub(crate) fn sanitize_transform_translation_and_scale(
+    translation: &mut crate::types::NiPoint3,
+    scale: &mut f32,
+) {
+    let mut bad = false;
+    for component in [&mut translation.x, &mut translation.y, &mut translation.z] {
+        if !component.is_finite() {
+            *component = 0.0;
+            bad = true;
+        }
+    }
+    if !scale.is_finite() {
+        *scale = 1.0;
+        bad = true;
+    }
+    if bad {
+        let count = SCALE_DISCARD_WARNINGS.fetch_add(1, Ordering::Relaxed);
+        if count < MAX_SCALE_DISCARD_WARNINGS {
+            log::warn!(
+                "NiTransform translation/scale carried a non-finite value — translation \
+                 components zeroed, scale reset to 1.0 (#4549)"
+            );
+            if count + 1 == MAX_SCALE_DISCARD_WARNINGS {
+                log::warn!(
+                    "further rotation-sanitisation warnings suppressed for this process (#2456)"
+                );
+            }
+        }
+    }
+}
+
 fn warn_scaled_rotation_discarded(m: &NiMatrix3, mode: &str) {
     let count = SCALE_DISCARD_WARNINGS.fetch_add(1, Ordering::Relaxed);
     if count >= MAX_SCALE_DISCARD_WARNINGS {
@@ -173,7 +233,12 @@ pub fn repair_rotation_svd_or_identity(m: &NiMatrix3) -> NiMatrix3 {
     let svd = mat.svd(true, true);
 
     let max_sv = svd.singular_values.max();
-    if max_sv < 0.01 {
+    // #4549 — SVD on non-finite input yields NaN singular values, and
+    // `NaN < 0.01` is false: the "no meaningful orientation" escape never
+    // fired and the function returned an all-NaN matrix, violating its
+    // own contract. A non-finite largest singular value is the same
+    // "nothing recoverable" case.
+    if !max_sv.is_finite() || max_sv < 0.01 {
         return NiMatrix3::default();
     }
 
@@ -187,13 +252,19 @@ pub fn repair_rotation_svd_or_identity(m: &NiMatrix3) -> NiMatrix3 {
         nearest = u_fixed * vt;
     }
 
-    NiMatrix3 {
-        rows: [
-            [nearest[(0, 0)], nearest[(0, 1)], nearest[(0, 2)]],
-            [nearest[(1, 0)], nearest[(1, 1)], nearest[(1, 2)]],
-            [nearest[(2, 0)], nearest[(2, 1)], nearest[(2, 2)]],
-        ],
+    let rows = [
+        [nearest[(0, 0)], nearest[(0, 1)], nearest[(0, 2)]],
+        [nearest[(1, 0)], nearest[(1, 1)], nearest[(1, 2)]],
+        [nearest[(2, 0)], nearest[(2, 1)], nearest[(2, 2)]],
+    ];
+    // #4549 — belt-and-braces on the OUTPUT: the repair's doc promises a
+    // valid rotation, so a non-finite cell anywhere (degenerate U/V
+    // bases on pathological input) collapses to identity rather than
+    // shipping poison.
+    if !rows.iter().flatten().all(|v| v.is_finite()) {
+        return NiMatrix3::default();
     }
+    NiMatrix3 { rows }
 }
 
 /// Sanitize a rotation matrix: pass-through for valid rotations (~99.9% of
@@ -219,6 +290,14 @@ pub fn repair_rotation_svd_or_identity(m: &NiMatrix3) -> NiMatrix3 {
 /// it rather than repairing it — see that function's doc.
 #[inline]
 pub fn sanitize_rotation(m: NiMatrix3) -> NiMatrix3 {
+    // #4549 — the head gate: `is_degenerate_rotation` and
+    // `is_non_orthonormal` are unordered float comparisons, false for
+    // NaN, so a NaN cell previously passed through every classifier
+    // unchanged and reached the quat conversion as NaN.
+    if !m.rows.iter().flatten().all(|v| v.is_finite()) {
+        warn_non_finite_rotation_rejected(&m);
+        return NiMatrix3::default();
+    }
     if is_degenerate_rotation(&m) {
         // #3532 — classify BEFORE the scale/shear wording. A reflection is
         // orthonormal with det = -1: it trips `is_degenerate_rotation`
@@ -446,5 +525,79 @@ mod tests {
         r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
             - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
             + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0])
+    }
+
+    fn assert_identity(m: &NiMatrix3) {
+        let id = identity();
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(
+                    m.rows[i][j], id.rows[i][j],
+                    "cell [{i}][{j}] must be identity"
+                );
+            }
+        }
+    }
+
+    /// #4549 (NIFAL-D2-2026-09-21-01) — every classifier is an unordered
+    /// float comparison, and unordered comparisons are false for NaN: a
+    /// NaN cell previously passed `sanitize_rotation` unchanged and
+    /// reached `zup_matrix_to_yup_quat` → `Quat::from_xyzw` as NaN,
+    /// poisoning the entity's `GlobalTransform` (the #4396/#4397 chain,
+    /// static edition). The head gate collapses it to identity.
+    #[test]
+    fn a_nan_cell_collapses_the_rotation_to_identity() {
+        let mut nan = identity();
+        nan.rows[1][2] = f32::NAN;
+        let out = sanitize_rotation(nan);
+        assert_identity(&out);
+    }
+
+    /// #4549 — the infinite case previously took the degenerate branch
+    /// and then sailed through the SVD repair: singular values went NaN,
+    /// `max_sv < 0.01` is false for NaN, and the repair returned an
+    /// all-NaN matrix in violation of its own doc. Both the max_sv gate
+    /// and the output-cells gate must hold.
+    #[test]
+    fn an_infinite_entry_repairs_to_identity_not_nan() {
+        let mut inf = identity();
+        inf.rows[0][0] = f32::INFINITY;
+        let repaired = repair_rotation_svd_or_identity(&inf);
+        assert_identity(&repaired);
+
+        // And through the public sanitizer (the path a NIF reader takes):
+        let out = sanitize_rotation(inf);
+        assert_identity(&out);
+        assert!(
+            out.rows.iter().flatten().all(|v| v.is_finite()),
+            "whatever the branch shape, downstream sees finite cells only"
+        );
+    }
+
+    /// #4549 — the translation/scale gate: non-finite components zero /
+    /// reset, finite ones untouched.
+    #[test]
+    fn non_finite_translation_and_scale_are_neutralized() {
+        use crate::types::NiPoint3;
+        let mut translation = NiPoint3 {
+            x: 1.5,
+            y: f32::NAN,
+            z: f32::INFINITY,
+        };
+        let mut scale = f32::NEG_INFINITY;
+        crate::rotation::sanitize_transform_translation_and_scale(&mut translation, &mut scale);
+        assert_eq!((translation.x, translation.y, translation.z), (1.5, 0.0, 0.0));
+        assert_eq!(scale, 1.0);
+
+        // Clean values pass through bit-for-bit (the 99.9% path).
+        let mut clean = NiPoint3 {
+            x: 1.0,
+            y: -2.0,
+            z: 3.0,
+        };
+        let mut clean_scale = 0.75;
+        crate::rotation::sanitize_transform_translation_and_scale(&mut clean, &mut clean_scale);
+        assert_eq!((clean.x, clean.y, clean.z), (1.0, -2.0, 3.0));
+        assert_eq!(clean_scale, 0.75);
     }
 }
