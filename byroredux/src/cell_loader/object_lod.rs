@@ -126,7 +126,8 @@ fn quad_intersects_full_detail(
         .any(|&(gx, gy)| gx >= qx && gx < qx + level && gy >= qy && gy < qy + level)
 }
 
-/// Stream the distant **object** LOD bands around the player (Skyrim+/FO4).
+/// Stream the distant **object** LOD bands around the player
+/// (Skyrim+/FO4/FO76).
 /// Mirrors [`super::terrain_lod::stream_lod_blocks`]: quads entering the ring
 /// load their `.bto`, quads leaving unload. A quad loads whenever its authored
 /// footprint intersects no actually-resident full-detail cell, so the baked
@@ -141,9 +142,11 @@ fn quad_intersects_full_detail(
 /// hysteresis. Because the descent partitions the ring, two levels can never
 /// both claim the same ground.
 ///
-/// No-op only where [`object_lod_scheme`] returns `None` — today just
-/// Oblivion, which uses the `DistantLOD\*.lod` + `_far.nif` placement
-/// scheme instead (EXAL §5).
+/// No-op only where [`object_lod_scheme`] returns `None` — today Oblivion
+/// (which uses the `DistantLOD\*.lod` + `_far.nif` placement scheme
+/// instead, EXAL §5) and Starfield (#4488 re-verified its archives carry
+/// zero baked object LOD). FO76 is wired: its `.bto` family rides
+/// [`ObjectLodScheme::BakedBto`], terrain aside.
 /// Reclaims are immediate; entering quads consume [`LodWorkBudget`] units.
 /// Returns `true` when every desired quad is resident or represented by its
 /// known-missing sentinel.
@@ -652,11 +655,18 @@ pub(crate) enum ObjectLodScheme {
 /// draws nothing. See [`LodBandSelection::coarsen_to_available`].
 pub(crate) fn object_lod_scheme(game: GameKind) -> Option<ObjectLodScheme> {
     match game {
-        GameKind::Skyrim | GameKind::Fallout4 => Some(ObjectLodScheme::BakedBto),
+        // FO76 joins under #4488: `SeventySix - GeneratedMeshes01.ba2`
+        // carries 1007 `meshes\terrain\appalachia\objects\
+        // appalachia.<L>.<x>.<y>.bto` (level4 ×795 / level16 ×164 /
+        // level32 ×48; no level 8) — the same level-first BakedBto naming
+        // family Skyrim/FO4 use, one worldspace (appalachia).
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 => {
+            Some(ObjectLodScheme::BakedBto)
+        }
         GameKind::Fallout3NV => Some(ObjectLodScheme::FalloutLegacyBlocks),
         // Oblivion: `DistantLOD\*.lod` placement lists (`placement_lod`).
-        // FO76/Starfield: not yet exercised — add an arm with archive
-        // evidence rather than by lineage.
+        // Starfield: `LODMeshes.ba2` re-verified to carry zero `.bto`/`.btr`
+        // — `None` stands (AUDIT_EXTERIOR_2026-09-19, EXT-D6).
         _ => None,
     }
 }
@@ -1125,11 +1135,26 @@ mod tests {
             Some(FalloutLegacyBlocks),
             "FO3/FNV ship a systematic blocks\\ family — see #3321"
         );
+        assert_eq!(
+            object_lod_scheme(GameKind::Fallout76),
+            Some(BakedBto),
+            "FO76 ships the same .bto family over appalachia — see #4488's census"
+        );
         assert_eq!(object_lod_scheme(GameKind::Oblivion), None);
+        assert_eq!(
+            object_lod_scheme(GameKind::Starfield),
+            None,
+            "Starfield re-verified: zero .bto/.btr in LODMeshes.ba2 (#4488)"
+        );
         // A game with a scheme must also have a ladder, or its quads are
         // selected by nothing and the arm is silently dead — the exact shape
         // of the bug #3321 reported.
-        for game in [GameKind::Skyrim, GameKind::Fallout4, GameKind::Fallout3NV] {
+        for game in [
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout3NV,
+            GameKind::Fallout76,
+        ] {
             assert!(
                 LodBandLadder::for_object_game(game).is_some(),
                 "{game:?} declares an object-LOD scheme but has no band ladder"

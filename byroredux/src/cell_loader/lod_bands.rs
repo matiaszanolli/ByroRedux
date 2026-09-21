@@ -179,6 +179,26 @@ impl LodBandLadder {
         if matches!(game, GameKind::Fallout3NV) {
             return Some(Self::fallout_legacy());
         }
+        // #4488 — FO76's objects ARE Creation-format `.bto` (level4/16/32
+        // over appalachia), but its TERRAIN ships no `.btr` the Combined
+        // layout describes, so this arm deliberately bypasses
+        // [`Self::for_game`] (which the terrain-coupled
+        // `combined_lod_supported` predicate pins against). Refine
+        // distances reuse the FO4 authoring values: FO76 shares FO4's
+        // Creation LOD authoring family, no FO76-specific distances are
+        // published, and the ladder's missing level-8 band rides the
+        // #3502 coarsen-to-available escape exactly as the audit
+        // anticipated.
+        if matches!(game, GameKind::Fallout76) {
+            return Some(Self {
+                refine_cells: FALLOUT4_ULTRA_REFINE_BU
+                    .iter()
+                    .copied()
+                    .map(cells_from_bu)
+                    .collect(),
+                max_cells: cells_from_bu(ULTRA_MAX_DISTANCE_BU),
+            });
+        }
         Self::for_game(game)
     }
 
