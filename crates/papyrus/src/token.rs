@@ -102,10 +102,17 @@ fn parse_float(lex: &mut logos::Lexer<Token>) -> Result<f64, ()> {
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
-#[logos(skip r"[ \t\r]+")]
+// #4479 — `\r` is no longer skippable whitespace: it is a line terminator
+// (possibly half of CRLF). Keeping it in the skip set made a classic-Mac
+// (CR-only) file lex to ZERO Newline tokens — one line to the parser,
+// voiding the statement-terminator contract and the #4321 protection.
+#[logos(skip r"[ \t]+")]
 pub enum Token {
     // ── Newlines (significant for statement termination) ──
-    #[regex(r"\n")]
+    // #4479 — CRLF, bare CR, and LF all terminate a line. Longest-match
+    // makes a CRLF pair ONE Newline token (same token count as the old
+    // skip-CR-then-match-LF behaviour); a lone CR now yields Newline too.
+    #[regex(r"\r\n|\r|\n")]
     Newline,
 
     // ── Comments ──
@@ -241,6 +248,20 @@ pub enum Token {
     #[regex(r"0[xX][0-9a-fA-F]+", parse_int)]
     #[regex(r"[0-9]+", parse_int, priority = 2)]
     IntLit(i64),
+
+    // #4479 — digit-led shapes Papyrus does not have, which previously
+    // lexed silently as plausible-but-wrong token pairs (`0x` →
+    // IntLit(0) + Ident("x"); `1e5` → IntLit(1) + Ident("e5")). These
+    // patterns lose to the real literals on longest-match (0xAB, 1, 1.5
+    // all match longer), so they only ever fire on the malformed shapes —
+    // and `parse_int` errs on them, routing into `lex()`'s LexError path.
+    // The payload never carries a value: `parse_int` errs on every slice
+    // these patterns can match, which is the point — each one is a
+    // guaranteed LexError.
+    #[regex(r"0[xX]", parse_int)]
+    #[regex(r"[0-9]+[eE][0-9]+", parse_int)]
+    #[regex(r"[0-9]+\.[0-9]*[eE][0-9]+", parse_int)]
+    MalformedNumber(i64),
 
     #[regex(r"[0-9]+\.[0-9]*", parse_float, priority = 3)]
     #[regex(r"[0-9]*\.[0-9]+", parse_float, priority = 2)]
@@ -394,6 +415,10 @@ impl std::fmt::Display for Token {
             Token::KwFalse => write!(f, "'False'"),
             Token::KwNone => write!(f, "'None'"),
             Token::IntLit(v) => write!(f, "integer {v}"),
+            // Never constructed as an Ok token (see the variant's doc) —
+            // it exists only so the malformed-shape patterns have a
+            // callback target whose Err routes into the LexError path.
+            Token::MalformedNumber(_) => write!(f, "malformed number"),
             Token::FloatLit(v) => write!(f, "float {v}"),
             Token::StringLit(s) => write!(f, "string \"{s}\""),
             Token::Ident(s) => write!(f, "identifier '{s}'"),

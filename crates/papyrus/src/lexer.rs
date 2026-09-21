@@ -148,6 +148,67 @@ pub struct LexError {
 }
 
 #[cfg(test)]
+mod malformed_number_tests {
+    use super::*;
+    use crate::token::Token;
+
+    fn token_kinds(source: &str) -> Vec<Token> {
+        let (tokens, _) = lex(source);
+        tokens.into_iter().map(|t| t.token).collect()
+    }
+
+    /// #4479 (a) — `0x` with no hex digits is a LexError with a
+    /// placeholder token, not a silent IntLit(0) + Ident("x") pair.
+    #[test]
+    fn bare_0x_is_a_lex_error() {
+        let (tokens, errors) = lex("0x");
+        assert_eq!(errors.len(), 1, "bare 0x must surface a LexError");
+        assert!(matches!(tokens[0].token, Token::IntLit(0)), "the placeholder keeps the stream contiguous");
+        assert_eq!(tokens.len(), 1);
+    }
+
+    #[test]
+    fn a_real_hex_literal_still_lexes_cleanly() {
+        let (tokens, errors) = lex("0xAB");
+        assert!(errors.is_empty());
+        assert!(matches!(tokens[0].token, Token::IntLit(0xAB)));
+    }
+
+    /// #4479 (b) — Papyrus has no exponent notation; `1e5` is a LexError,
+    /// not IntLit(1) + Ident("e5"). The float-exponent shape (`1.5e3`)
+    /// joins the same net.
+    #[test]
+    fn exponent_shapes_are_lex_errors() {
+        for source in ["1e5", "1E5", "12e0", "1.5e3"] {
+            let (_, errors) = lex(source);
+            assert_eq!(errors.len(), 1, "{source} must surface a LexError");
+        }
+    }
+
+    /// #4479 (c) — a classic-Mac (CR-only) file produces Newline tokens,
+    /// so the statement-terminator contract and #4321's protection stay
+    /// live on such files. CRLF pairs are one Newline token each.
+    #[test]
+    fn bare_cr_is_a_newline_and_crlf_is_one_newline() {
+        let cr_only = token_kinds("SetStage(10)\r(akRef).Disable()");
+        assert!(
+            cr_only.iter().any(|t| matches!(t, Token::Newline)),
+            "a bare CR must produce a Newline token"
+        );
+
+        let crlf = token_kinds("a\r\nb");
+        let newlines = crlf.iter().filter(|t| matches!(t, Token::Newline)).count();
+        assert_eq!(newlines, 1, "CRLF is one Newline, not Newline + junk");
+
+        let crlf_file = token_kinds("a\r\nb\r\nc");
+        assert_eq!(
+            crlf_file.iter().filter(|t| matches!(t, Token::Newline)).count(),
+            2
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
