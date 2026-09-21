@@ -274,6 +274,7 @@ fn decode_dxt5(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
 // plus single-channel luminance/alpha forms.
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)] // the masks mirror the DDS BITMAPINFOHEADER channel layout 1:1 — a struct would not make the decode clearer
 fn decode_uncompressed(
     bytes: &[u8],
     width: u32,

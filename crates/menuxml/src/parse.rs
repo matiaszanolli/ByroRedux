@@ -470,12 +470,7 @@ impl Body {
 /// `depth` guards against pathological nesting; `seen_includes` breaks
 /// prefab include cycles (vanilla prefabs are acyclic, third-party ones
 /// are not guaranteed to be).
-fn parse_body(
-    scanner: &mut Scanner,
-    src: &mut dyn MenuFileSource,
-    seen_includes: &mut Vec<String>,
-    depth: usize,
-) -> Body {
+fn parse_body(scanner: &mut Scanner, depth: usize) -> Body {
     let mut text = String::new();
     let mut ops = Vec::new();
     if depth > 64 {
@@ -526,7 +521,7 @@ fn parse_body(
         } else if self_closing {
             OpArg::None
         } else {
-            parse_body(scanner, src, seen_includes, depth + 1).into_arg()
+            parse_body(scanner, depth + 1).into_arg()
         };
         ops.push(Op { kind, arg });
     }
@@ -629,7 +624,7 @@ fn parse_element_content(
             traits.insert(key, RawTrait::Num(0.0));
             continue;
         }
-        let body = parse_body(scanner, src, seen_includes, depth + 1);
+        let body = parse_body(scanner, depth + 1);
         traits.insert(key, body.into_trait());
     }
     ElementContent { traits, children }

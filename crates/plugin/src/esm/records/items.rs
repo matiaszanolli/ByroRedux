@@ -1003,8 +1003,7 @@ pub fn parse_alch_for_game(
     let mut valid_header = false;
     let mut medicine_flag = false;
     for sub in subs {
-        match &sub.sub_type {
-            b"ENIT" => {
+        if &sub.sub_type == b"ENIT" {
                 if sub.data.len() < 20 {
                     return item;
                 }
@@ -1024,8 +1023,6 @@ pub fn parse_alch_for_game(
                 valid_header = true;
                 medicine_flag = game == GameKind::Fallout3NV && flags & 4 != 0;
             }
-            _ => {}
-        }
     }
     if valid_header {
         if let ItemKind::Aid {

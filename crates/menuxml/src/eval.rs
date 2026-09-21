@@ -188,7 +188,7 @@ impl<'a> EvalState<'a> {
         let mut working: Option<Scalar> = None;
         for op in ops {
             let arg = self.eval_arg(tile, op, working.as_ref());
-            working = Some(self.apply(tile, op.kind, working, arg));
+            working = Some(self.apply(op.kind, working, arg));
         }
         working.unwrap_or(Scalar::Num(0.0))
     }
@@ -302,7 +302,7 @@ impl<'a> EvalState<'a> {
     }
 
     /// Apply one operator to (working, argument).
-    fn apply(&self, tile: usize, kind: OpKind, working: Option<Scalar>, arg: Scalar) -> Scalar {
+    fn apply(&self, kind: OpKind, working: Option<Scalar>, arg: Scalar) -> Scalar {
         use OpKind::*;
         // String flow: `copy` passes strings through untouched (region
         // text, filenames). Everything else coerces to numbers.
@@ -351,7 +351,7 @@ impl<'a> EvalState<'a> {
                     truthy_2(w == a)
                 }
             }
-            Neq => match self.apply(tile, Eq, working, arg.clone()) {
+            Neq => match self.apply(Eq, working, arg.clone()) {
                 Scalar::Num(n) => truthy_4(n == 0.0),
                 _ => Scalar::Num(2.0),
             },

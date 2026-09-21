@@ -11,6 +11,7 @@ use crate::eval::{EvalState, Overrides, ScreenTraits};
 use crate::layout::build_draw_list;
 use crate::menu::{MenuAssets, MenuRenderer};
 use crate::parse::{parse_document, MenuFileSource, RawTrait, Scalar, TileKind};
+use crate::raster::BlitStyle;
 
 /// File source over an in-memory map (synthetic fixtures).
 struct MapSource {
@@ -436,7 +437,7 @@ fn depth_sorts_siblings() {
 #[test]
 fn blit_scales_and_tints() {
     use crate::layout::Rect;
-    use crate::raster::Framebuffer;
+    use crate::raster::{Framebuffer, BlitStyle};
     use crate::tex::Rgba8;
 
     let mut tex = Rgba8::new(2, 2);
@@ -451,10 +452,8 @@ fn blit_scales_and_tints() {
         Rect { x: 0.0, y: 0.0, w: 4.0, h: 2.0 },
         (0.0, 0.0),
         -1.0,
-        [255.0, 255.0, 255.0],
-        255.0,
         false,
-        None,
+BlitStyle { tint: [255.0, 255.0, 255.0], alpha: 255.0, clip: None }      ,
     );
     // 2x horizontal stretch: columns 0-1 sample texel col 0 (alpha 0),
     // columns 2-3 sample col 1 (opaque red).
@@ -486,10 +485,8 @@ fn crop_selects_atlas_cell_at_stretch_zoom() {
         Rect { x: 0.0, y: 0.0, w: 32.0, h: 1.0 },
         (32.0, 0.0),
         -1.0,
-        [255.0, 255.0, 255.0],
-        255.0,
         false,
-        None,
+BlitStyle { tint: [255.0, 255.0, 255.0], alpha: 255.0, clip: None }      ,
     );
     // The white cell should now fill the first 32 display pixels…
     // clipped to the 8px framebuffer.
@@ -523,10 +520,8 @@ fn blit_default_zoom_draws_natural_size_clipped_to_tile() {
         Rect { x: 1.0, y: 0.0, w: 4.0, h: 1.0 },
         (0.0, 0.0),
         0.0,
-        [255.0, 255.0, 255.0],
-        255.0,
         false,
-        None,
+BlitStyle { tint: [255.0, 255.0, 255.0], alpha: 255.0, clip: None }      ,
     );
     for x in 0..8 {
         let o = x * 4;
@@ -544,10 +539,8 @@ fn blit_default_zoom_draws_natural_size_clipped_to_tile() {
         Rect { x: 0.0, y: 0.0, w: 8.0, h: 1.0 },
         (0.0, 0.0),
         100.0,
-        [255.0, 255.0, 255.0],
-        255.0,
         false,
-        None,
+BlitStyle { tint: [255.0, 255.0, 255.0], alpha: 255.0, clip: None }      ,
     );
     assert_eq!(&fb.pixels[0..4], &[255, 0, 0, 255]);
     assert_eq!(&fb.pixels[12..16], &[255, 0, 0, 255]);
@@ -591,7 +584,14 @@ fn text_line_advances_and_tints() {
         atlas,
     };
     let mut fb = Framebuffer::new(32, 8);
-    fb.text_line(&font, "AA", 0.0, 0.0, 0, [255.0, 0.0, 0.0], 255.0, None);
+    fb.text_line(
+        &font,
+        "AA",
+        0.0,
+        0.0,
+        0,
+        BlitStyle { tint: [255.0, 0.0, 0.0], alpha: 255.0, clip: None },
+    );
     // First glyph: x 0..4 red; pen then at 6 → second glyph x 6..10.
     let o = 0 * 4;
     assert_eq!(&fb.pixels[o..o + 4], &[255, 0, 0, 255]);
@@ -686,10 +686,8 @@ fn tiled_blit_repeats_and_scrolls_with_wrap() {
         Rect { x: 0.0, y: 0.0, w: 6.0, h: 1.0 },
         (0.0, 0.0),
         0.0,
-        [255.0, 255.0, 255.0],
-        255.0,
         true,
-        None,
+BlitStyle { tint: [255.0, 255.0, 255.0], alpha: 255.0, clip: None }      ,
     );
     for x in 0..6 {
         let o = x * 4;
@@ -703,10 +701,8 @@ fn tiled_blit_repeats_and_scrolls_with_wrap() {
         Rect { x: 0.0, y: 0.0, w: 6.0, h: 1.0 },
         (1.0, 0.0),
         0.0,
-        [255.0, 255.0, 255.0],
-        255.0,
         true,
-        None,
+BlitStyle { tint: [255.0, 255.0, 255.0], alpha: 255.0, clip: None }      ,
     );
     for x in 0..6 {
         let o = x * 4;

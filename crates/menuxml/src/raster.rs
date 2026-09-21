@@ -18,6 +18,16 @@ pub struct Framebuffer {
     pub pixels: Vec<u8>,
 }
 
+/// Shared trailing style of every raster draw (#4570): authored tint,
+/// alpha fade, and the optional clip window. Groups the three arguments
+/// that always travel together so the raster entry points stay under the
+/// arg-count lint while mirroring the XML trait grouping.
+pub struct BlitStyle {
+    pub tint: [f32; 3],
+    pub alpha: f32,
+    pub clip: Option<Rect>,
+}
+
 impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
@@ -46,13 +56,43 @@ impl Framebuffer {
         if out_a == 0 {
             return;
         }
-        for c in 0..3 {
-            let src_c = rgb[c] as u32 * src_a as u32;
+        for (c, &src_c) in rgb.iter().enumerate() {
+            let src_c = src_c as u32 * src_a as u32;
             let dst_c = self.pixels[o + c] as u32 * dst_a;
             self.pixels[o + c] = ((src_c + dst_c * (255 - src_a as u32) / 255) / out_a)
                 .clamp(0, 255) as u8;
         }
         self.pixels[o + 3] = out_a.clamp(0, 255) as u8;
+    }
+
+    /// Resolve the shared tint/alpha pair, or `None` when the whole draw
+    /// fades to nothing (#4570 — one home for the style math that `blit`,
+    /// `text_line` and `blit_sub` each used to repeat).
+    fn resolve_style(tint: [f32; 3], alpha: f32) -> Option<([u8; 3], f32)> {
+        if alpha <= 0.0 {
+            return None;
+        }
+        Some((tint_u8(tint), alpha.clamp(0.0, 255.0) / 255.0))
+    }
+
+    /// Tint + fade one texel and blend it — the per-pixel tail `blit` and
+    /// `blit_sub` both carried byte-identical copies of (#4570). The white
+    /// fast path replaces RGB only when the tint is not default-white, so
+    /// `blit_sub`'s glyph path takes it too (multiply-by-255/255 is
+    /// identical to the raw pass-through).
+    fn blend_texel(&mut self, px: i64, py: i64, p: [u8; 4], tint: [u8; 3], a_mod: f32) {
+        let [tr, tg, tb] = tint;
+        let rgb = if tr == 255 && tg == 255 && tb == 255 {
+            [p[0], p[1], p[2]]
+        } else {
+            [
+                ((p[0] as u16 * tr as u16) / 255) as u8,
+                ((p[1] as u16 * tg as u16) / 255) as u8,
+                ((p[2] as u16 * tb as u16) / 255) as u8,
+            ]
+        };
+        let src_a = (p[3] as f32 * a_mod) as u8;
+        self.blend(px, py, rgb, src_a);
     }
 
     /// Blit a texture into a tile rect.
@@ -88,11 +128,10 @@ impl Framebuffer {
         mut dst: Rect,
         crop: (f32, f32),
         zoom: f32,
-        tint: [f32; 3],
-        alpha: f32,
         tiled: bool,
-        clip: Option<Rect>,
+        style: BlitStyle,
     ) {
+        let BlitStyle { tint, alpha, clip } = style;
         // Zero extents mean "natural texture size" (TiImage default when
         // the XML authored no width/height) — the tile rect, which clips
         // the drawn image, then equals the full draw.
@@ -102,9 +141,12 @@ impl Framebuffer {
         if dst.h <= 0.0 {
             dst.h = tex.height as f32;
         }
-        if dst.w <= 0.0 || dst.h <= 0.0 || alpha <= 0.0 {
+        if dst.w <= 0.0 || dst.h <= 0.0 {
             return;
         }
+        let Some(([tr, tg, tb], a_mod)) = Self::resolve_style(tint, alpha) else {
+            return;
+        };
         // Draw extent: stretch and tile fill the tile; natural/zoom draws
         // the (scaled) texture, which the tile rect then clips.
         let (draw_w, draw_h) = if tiled || zoom < 0.0 {
@@ -132,8 +174,6 @@ impl Framebuffer {
         if clip.w <= 0.0 || clip.h <= 0.0 {
             return;
         }
-        let [tr, tg, tb] = tint_u8(tint);
-        let a_mod = alpha.clamp(0.0, 255.0) / 255.0;
 
         let x0 = (dst.x.max(clip.x)).floor() as i64;
         let y0 = (dst.y.max(clip.y)).floor() as i64;
@@ -170,23 +210,20 @@ impl Framebuffer {
                 let p = tex.pixel(tx, ty);
                 // Tint: menu art carries its own colour; authored tint
                 // replaces RGB only when it is not the default white.
-                let rgb = if tr == 255 && tg == 255 && tb == 255 {
-                    [p[0], p[1], p[2]]
-                } else {
-                    [
-                        ((p[0] as u16 * tr as u16) / 255) as u8,
-                        ((p[1] as u16 * tg as u16) / 255) as u8,
-                        ((p[2] as u16 * tb as u16) / 255) as u8,
-                    ]
-                };
-                let src_a = (p[3] as f32 * a_mod) as u8;
-                self.blend(px, py, rgb, src_a);
+                self.blend_texel(px, py, p, [tr, tg, tb], a_mod);
             }
         }
     }
 
     pub fn fill(&mut self, rect: Rect, tint: [f32; 3], alpha: f32, clip: Option<Rect>) {
-        self.blit(white_tex(), rect, (0.0, 0.0), -1.0, tint, alpha, false, clip);
+        self.blit(
+            white_tex(),
+            rect,
+            (0.0, 0.0),
+            -1.0,
+            false,
+            BlitStyle { tint, alpha, clip },
+        );
     }
 
     /// Draw one line of text with a bitmap font. Returns the line's
@@ -202,10 +239,9 @@ impl Framebuffer {
         x: f32,
         y: f32,
         justify: u8,
-        tint: [f32; 3],
-        alpha: f32,
-        clip: Option<Rect>,
+        style: BlitStyle,
     ) -> f32 {
+        let BlitStyle { tint, alpha, clip } = style;
         let width = font.measure_width(line);
         let x = match justify {
             1 => x - width / 2.0,
@@ -225,7 +261,13 @@ impl Framebuffer {
                     h: g.height,
                 };
                 let sub = texel_rect(font, g);
-                blit_sub(self, &font.atlas, sub, dst, tint, alpha, clip);
+                blit_sub(
+                    self,
+                    &font.atlas,
+                    sub,
+                    dst,
+                    BlitStyle { tint, alpha, clip },
+                );
             }
             pen += g.advance;
         }
@@ -235,15 +277,8 @@ impl Framebuffer {
 
 /// Blit an explicit texel sub-rect (glyph path — source rect comes from
 /// the font's UV metrics, not a crop).
-fn blit_sub(
-    fb: &mut Framebuffer,
-    tex: &Rgba8,
-    src: Rect,
-    dst: Rect,
-    tint: [f32; 3],
-    alpha: f32,
-    clip: Option<Rect>,
-) {
+fn blit_sub(fb: &mut Framebuffer, tex: &Rgba8, src: Rect, dst: Rect, style: BlitStyle) {
+    let BlitStyle { tint, alpha, clip } = style;
     if dst.w <= 0.0 || dst.h <= 0.0 || src.w <= 0.0 || src.h <= 0.0 || alpha <= 0.0 {
         return;
     }
@@ -253,8 +288,9 @@ fn blit_sub(
         w: fb.width as f32,
         h: fb.height as f32,
     });
-    let [tr, tg, tb] = tint_u8(tint);
-    let a_mod = alpha.clamp(0.0, 255.0) / 255.0;
+    let Some(([tr, tg, tb], a_mod)) = Framebuffer::resolve_style(tint, alpha) else {
+        return;
+    };
 
     let x0 = (dst.x.max(clip.x)).floor() as i64;
     let y0 = (dst.y.max(clip.y)).floor() as i64;
@@ -268,13 +304,7 @@ fn blit_sub(
             let u = (px as f32 - dst.x) / dst.w;
             let tx = (src.x + u * src.w) as i64;
             let p = tex.pixel(tx, ty);
-            let rgb = [
-                ((p[0] as u16 * tr as u16) / 255) as u8,
-                ((p[1] as u16 * tg as u16) / 255) as u8,
-                ((p[2] as u16 * tb as u16) / 255) as u8,
-            ];
-            let src_a = (p[3] as f32 * a_mod) as u8;
-            fb.blend(px, py, rgb, src_a);
+            fb.blend_texel(px, py, p, [tr, tg, tb], a_mod);
         }
     }
 }
@@ -336,7 +366,18 @@ impl Framebuffer {
         let lines = wrap(string, font, *wrap_width, *wrap_lines);
         let mut ly = *y;
         for line in lines {
-            self.text_line(font, &line, *x, ly, *justify, *tint, *alpha, *clip);
+            self.text_line(
+                font,
+                &line,
+                *x,
+                ly,
+                *justify,
+                BlitStyle {
+                    tint: *tint,
+                    alpha: *alpha,
+                    clip: *clip,
+                },
+            );
             ly += font.line_height();
         }
     }

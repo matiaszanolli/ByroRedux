@@ -665,16 +665,17 @@ fn parse_txst_group_inner(
                     // for them yet (SF-D3-01), so capture nothing but make
                     // the drop visible: warn once per FourCC rather than
                     // once per record.
-                    sub_type if sub_type.starts_with(b"TX") && sub_type.len() == 4 => {
-                        if warn_unmodelled_txst_slot(sub_type) {
-                            log::warn!(
-                                "TXST sub-record {} has no modelled slot; texture path \
-                                 dropped (Starfield PBR maps TX08 metal / TX09 rough / \
-                                 TX17 AO / TX19 opacity land here until SF-D3-01 gives \
-                                 them a canonical sink)",
-                                String::from_utf8_lossy(sub_type),
-                            );
-                        }
+                    sub_type if sub_type.starts_with(b"TX")
+                        && sub_type.len() == 4
+                        && warn_unmodelled_txst_slot(sub_type) =>
+                    {
+                        log::warn!(
+                            "TXST sub-record {} has no modelled slot; texture path \
+                             dropped (Starfield PBR maps TX08 metal / TX09 rough / \
+                             TX17 AO / TX19 opacity land here until SF-D3-01 gives \
+                             them a canonical sink)",
+                            String::from_utf8_lossy(sub_type),
+                        );
                     }
                     _ => {}
                 }

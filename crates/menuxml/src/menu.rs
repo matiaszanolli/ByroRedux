@@ -366,7 +366,18 @@ impl MenuRenderer {
                 } => {
                     if let Some(tex) = self.texture(assets, filename, *zoom) {
                         self.frame
-                            .blit(&tex, *rect, *crop, *zoom, *tint, *alpha, *tiled, *clip);
+                            .blit(
+                                &tex,
+                                *rect,
+                                *crop,
+                                *zoom,
+                                *tiled,
+                                crate::raster::BlitStyle {
+                                    tint: *tint,
+                                    alpha: *alpha,
+                                    clip: *clip,
+                                },
+                            );
                     }
                 }
                 DrawItem::Text { font, .. } => {
