@@ -146,6 +146,23 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
     let cam_pos = cam_global.translation;
     drop(gq);
 
+    // #4183 — snapshot the frame-global wave parameters BEFORE taking any
+    // water-storage guard ("resource-snapshot-before-storage", #3265 — the
+    // discipline player_water_state documents and the other three wave-
+    // parameter consumers follow). The old position computed this while the
+    // WaterPlane/WaterVolume guards were live, recording
+    // WaterPlane/WaterVolume -> TotalTime/WindField edges nothing else
+    // shares — a latent ABBA cycle the moment any site took the resources
+    // first.
+    let wave_adjustment = world
+        .try_resource::<byroredux_core::ecs::resources::TotalTime>()
+        .map(|time| {
+            (
+                time.0,
+                byroredux_physics::weather_wave_adjustment(world, time.0),
+            )
+        });
+
     // Snapshot every active water plane's volume + material. We
     // re-acquire GlobalTransform here only to confirm the plane's
     // world Y matches its volume `max.y` (defensive — `WaterVolume`
@@ -178,14 +195,6 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         }
         return;
     };
-    let wave_adjustment = world
-        .try_resource::<byroredux_core::ecs::resources::TotalTime>()
-        .map(|time| {
-            (
-                time.0,
-                byroredux_physics::weather_wave_adjustment(world, time.0),
-            )
-        });
     for (entity, plane) in wq.iter() {
         let Some(volume) = vq.get(entity) else {
             continue;
