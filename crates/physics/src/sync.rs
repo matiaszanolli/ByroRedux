@@ -470,6 +470,12 @@ pub struct SpawnCensusAuthoring {
     pub new_physics: u32,
     /// `BhkPCollisionObject` — Skyrim+ phantom / trigger volumes.
     pub phantom: u32,
+    /// `bhkPlaneShape` blocks — parsed, deliberately dropped with no
+    /// collider (#1334 / #4407: the one vanilla SSE instance's
+    /// alpha-tested render mesh is rejected by the trimesh fallback, so
+    /// nothing covers the placement). Folded into these totals so the
+    /// census can name that cause instead of the drop being invisible.
+    pub plane_shapes: u32,
 }
 
 /// Everything [`dump_spawn_collider_census`] needs about the spawn probe that
@@ -784,10 +790,10 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
         Some(a) if entries.is_empty() && a.classic + a.new_physics + a.phantom > 0 => {
             out.push(format!(
                 "#2874 …but the cell's NIFs DID author collision: classic={} new_physics={} \
-             phantom={} ⇒ the shapes were DROPPED IN TRANSLATION (decode/registration), not \
-             absent from the source. `new_physics>0` additionally means FO4+ packed Havok whose \
+             phantom={} plane={} ⇒ the shapes were DROPPED IN TRANSLATION (decode/registration), \
+             not absent from the source. `new_physics>0` additionally means FO4+ packed Havok whose \
              payload is still opaque — the compatibility proxy should have covered it.",
-                a.classic, a.new_physics, a.phantom,
+                a.classic, a.new_physics, a.phantom, a.plane_shapes,
             ))
         }
         Some(_) if entries.is_empty() => out.push(
@@ -797,8 +803,9 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
                 .to_string(),
         ),
         Some(a) => out.push(format!(
-            "#2874 cell collision authoring: classic={} new_physics={} phantom={}.",
-            a.classic, a.new_physics, a.phantom,
+            "#2874 cell collision authoring: classic={} new_physics={} phantom={} plane={} \
+             (plane = parsed bhkPlaneShape dropped with no collider, #1334/#4407).",
+            a.classic, a.new_physics, a.phantom, a.plane_shapes,
         )),
         None => out.push(
             "#2874 cell collision authoring unavailable (no NIF import cache) — `0 total` below \

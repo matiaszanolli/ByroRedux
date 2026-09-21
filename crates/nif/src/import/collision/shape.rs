@@ -94,11 +94,16 @@ fn resolve_shape_inner(
     // NiUnknown) but deliberately not mapped to a Rapier collider: there is
     // no half-space / `Plane` `CollisionShape` variant, and approximating
     // the bounded plane as a solid `Cuboid` from its AABB would fill the
-    // volume instead of presenting a surface. Returning `None` drops the one
-    // vanilla SSE instance (the slaughterfish egg-cluster ground plane) to
-    // the synthesized-trimesh fallback (`spawn.rs`) — its render-mesh
-    // surface, which is the correct ground anyway. A true half-space mapping
-    // is a follow-up.
+    // volume instead of presenting a surface. Returning `None` produces NO
+    // collider for the placement that carries it (#4407): the one vanilla
+    // SSE instance (the slaughterfish egg-cluster ground plane,
+    // slaughterfisheggcluster01_1.nif) is an alpha-tested BSTriShape
+    // (NiAlphaProperty 0x12EC), and the synthesized-trimesh fallback in
+    // mesh_instance.rs rejects `alpha_test` shapes — so the documented
+    // "falls back to the render-mesh surface" safety net never fires for
+    // it. The drop is counted in `CollisionAuthoringSummary::plane_shapes`
+    // (folded into the spawn-census authoring totals) so it stays visible.
+    // A true half-space mapping is a follow-up.
     if block.as_any().downcast_ref::<BhkPlaneShape>().is_some() {
         return None;
     }

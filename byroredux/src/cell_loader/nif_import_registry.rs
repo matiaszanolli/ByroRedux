@@ -499,6 +499,11 @@ impl NifImportRegistry {
             out.phantom = out
                 .phantom
                 .saturating_add(entry.collision_authoring.phantom);
+            // #4407 — the plane counter joins its three siblings so the
+            // deliberate `bhkPlaneShape` drop is visible at runtime.
+            out.plane_shapes = out
+                .plane_shapes
+                .saturating_add(entry.collision_authoring.plane_shapes);
         }
         out
     }
