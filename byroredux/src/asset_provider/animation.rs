@@ -1,7 +1,7 @@
 //! Skyrim IDLE record → HKX clip installation.
 
 use super::TextureProvider;
-use crate::components::HavokIdleCatalog;
+use crate::components::IdleClipCatalog;
 use byroredux_core::animation::{
     AnimationClip, AnimationClipRegistry, CycleType, KeyType, RotationKey, ScaleKey,
     TransformChannel, TranslationKey,
@@ -31,8 +31,8 @@ const SKYRIM_WALK_PATH: &str = r"meshes\actors\character\animations\1hm_walkforw
 ///
 /// This intentionally stops at that live startup surface instead of eagerly
 /// expanding all ~1,400 Skyrim IDLEs into frame keys. Repeated cell/runtime
-/// installation is idempotent through `HavokIdleCatalog`.
-pub(crate) fn populate_havok_idle_runtime(
+/// installation is idempotent through `IdleClipCatalog`.
+pub(crate) fn populate_idle_clip_runtime(
     world: &mut World,
     index: &EsmIndex,
     provider: &TextureProvider,
@@ -40,11 +40,11 @@ pub(crate) fn populate_havok_idle_runtime(
     if index.game != GameKind::Skyrim {
         return 0;
     }
-    if world.try_resource::<HavokIdleCatalog>().is_none() {
-        world.insert_resource(HavokIdleCatalog::default());
+    if world.try_resource::<IdleClipCatalog>().is_none() {
+        world.insert_resource(IdleClipCatalog::default());
     }
     let already_loaded: HashSet<u32> = world
-        .resource::<HavokIdleCatalog>()
+        .resource::<IdleClipCatalog>()
         .handles
         .keys()
         .copied()
@@ -134,7 +134,7 @@ pub(crate) fn populate_havok_idle_runtime(
                 .get_or_insert_by_path(path, || clip)
         };
         world
-            .resource_mut::<HavokIdleCatalog>()
+            .resource_mut::<IdleClipCatalog>()
             .handles
             .insert(idle.form_id, handle);
         installed += 1;
@@ -147,7 +147,7 @@ pub(crate) fn populate_havok_idle_runtime(
 
 /// M42.10 — decode the humanoid walk cycle into the `SkyrimWalkClip`
 /// resource, once per cell load where the archive provider is in hand
-/// (same shape as [`populate_havok_idle_runtime`], which the caller runs
+/// (same shape as [`populate_idle_clip_runtime`], which the caller runs
 /// beside this). The clip loops; its `NPC COM [COM ]` trajectory is bound
 /// as the accumulation root so the per-cycle forward drift becomes a
 /// `RootMotionDelta` (which ambient locomotion currently discards — it
@@ -839,14 +839,14 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(StringPool::new());
         world.insert_resource(AnimationClipRegistry::new());
-        world.insert_resource(HavokIdleCatalog::default());
+        world.insert_resource(IdleClipCatalog::default());
 
-        let installed = populate_havok_idle_runtime(&mut world, &index, &provider);
+        let installed = populate_idle_clip_runtime(&mut world, &index, &provider);
         assert!(
             installed >= 8,
             "only {installed} Skyrim cart IDLEs installed"
         );
-        let catalog = world.resource::<HavokIdleCatalog>();
+        let catalog = world.resource::<IdleClipCatalog>();
         for form_id in [
             0x000B_8C4F,
             0x000B_8C50,

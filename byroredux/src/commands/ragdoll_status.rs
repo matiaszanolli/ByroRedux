@@ -1,6 +1,6 @@
 //! Read-only live physics diagnostics; fixture-specific bounds belong to tests.
 use super::shared::*;
-use crate::components::HavokAnimationTarget;
+use crate::components::AnimationTarget;
 use byroredux_physics::{PhysicsWorld, Ragdoll};
 
 pub(crate) struct RagdollStatusCommand;
@@ -50,7 +50,7 @@ fn status(world: &World, args: &str) -> Result<String, &'static str> {
         .map(|t| t.translation)
         .ok_or("actor has no world placement")?;
     let skeleton = world
-        .get::<HavokAnimationTarget>(actor)
+        .get::<AnimationTarget>(actor)
         .map_or(actor, |target| target.skeleton_root);
     let rag = world
         .get::<Ragdoll>(skeleton)
@@ -91,7 +91,7 @@ mod tests {
     fn fixture() -> (World, EntityId, EntityId) {
         let mut world = World::new();
         world.register::<GlobalTransform>();
-        world.register::<HavokAnimationTarget>();
+        world.register::<AnimationTarget>();
         world.register::<Ragdoll>();
         let actor = world.spawn();
         let skeleton = world.spawn();
@@ -104,7 +104,7 @@ mod tests {
         );
         world.insert(
             actor,
-            HavokAnimationTarget {
+            AnimationTarget {
                 skeleton_root: skeleton,
                 consumed_idle_serial: 0,
             },

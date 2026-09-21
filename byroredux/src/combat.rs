@@ -14,7 +14,7 @@ use byroredux_core::ecs::components::{
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::{Resource, SparseSetStorage, World};
 
-use crate::components::HavokAnimationTarget;
+use crate::components::AnimationTarget;
 use crate::interaction::{camera_ray, ActionState, InputAction};
 use crate::systems::{PlayerEntity, PlayerMode};
 
@@ -69,7 +69,7 @@ impl Resource for CombatState {}
 /// block-held flag. #3709 (ECS-P2-06) — split out of [`CombatState`],
 /// which could only ever represent one combatant since it was a
 /// `Resource`. `SparseSetStorage` matches the sibling per-actor behavior
-/// components in `crate::components` (e.g. `HavokAnimationTarget`) — most
+/// components in `crate::components` (e.g. `AnimationTarget`) — most
 /// entities never fight, so a dense/packed storage would waste space.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct MeleeState {
@@ -553,7 +553,7 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     remove_component::<AnimationPlayer>(world, actor);
     remove_component::<byroredux_core::animation::AnimationStack>(world, actor);
     let Some(skeleton_root) = world
-        .get::<HavokAnimationTarget>(actor)
+        .get::<AnimationTarget>(actor)
         .map(|target| target.skeleton_root)
     else {
         return "; no ragdoll target".to_owned();
@@ -1161,7 +1161,7 @@ mod tests {
         world.register::<GlobalTransform>();
         world.register::<Parent>();
         world.register::<Children>();
-        world.register::<HavokAnimationTarget>();
+        world.register::<AnimationTarget>();
         world.register::<RagdollTemplate>();
         world.register::<Ragdoll>();
         world.register::<RagdollActive>();
@@ -1190,7 +1190,7 @@ mod tests {
         world.insert(actor, Children(vec![skeleton]));
         world.insert(
             actor,
-            HavokAnimationTarget {
+            AnimationTarget {
                 skeleton_root: skeleton,
                 consumed_idle_serial: 0,
             },

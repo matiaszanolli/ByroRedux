@@ -403,7 +403,7 @@ authoring — the corpus census found zero `bhk*Shape` blocks and 100% `BhkSyste
 per-submesh synthesized trimesh; `Clutter`/`Actor` get a conservative placement-
 following AABB proxy (`PackedAabbProxy`, added specifically to close the "no collider
 at all" gap the audit found for non-Architecture content) gated on
-`CollisionAuthoringSummary::needs_packed_havok_fallback()`. Per-cell counts of
+`CollisionAuthoringSummary::needs_packed_collision_fallback()`. Per-cell counts of
 approximated vs. unresolved placements log via `references/mod.rs`'s
 `packed_collision_fallbacks` / `unresolved_packed_collision` line. The real fix
 (decoding the `BhkSystemBinary` blob itself) remains future work tracked in the

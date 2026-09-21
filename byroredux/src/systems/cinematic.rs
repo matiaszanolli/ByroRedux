@@ -1,6 +1,6 @@
 //! App-side sinks for scripted cinematic requests.
 
-use crate::components::{HavokAnimationTarget, HavokIdleCatalog};
+use crate::components::{AnimationTarget, IdleClipCatalog};
 use byroredux_core::animation::{AnimationPlayer, RootMotionDelta};
 use byroredux_core::ecs::components::RigidBodyData;
 use byroredux_core::ecs::Transform;
@@ -18,15 +18,15 @@ const SCENE_TRIGGER_APPROACH_SPEED: f32 = 500.0;
 /// Consume queued Skyrim `PlayIdle` requests once their IDLE FormID has a
 /// decoded HKX clip. Unresolved requests remain pending, allowing a later cell
 /// load to install the relevant archive without losing the authored request.
-pub(crate) fn havok_idle_playback_system(world: &World, _dt: f32) {
+pub(crate) fn idle_clip_playback_system(world: &World, _dt: f32) {
     let requests: Vec<(EntityId, u64, EntityId, u32)> = {
-        let Some(catalog) = world.try_resource::<HavokIdleCatalog>() else {
+        let Some(catalog) = world.try_resource::<IdleClipCatalog>() else {
             return;
         };
         let Some(states) = world.query::<ActorCinematicState>() else {
             return;
         };
-        let Some(targets) = world.query::<HavokAnimationTarget>() else {
+        let Some(targets) = world.query::<AnimationTarget>() else {
             return;
         };
         states
@@ -70,7 +70,7 @@ pub(crate) fn havok_idle_playback_system(world: &World, _dt: f32) {
             root_motion.insert(*actor, RootMotionDelta(byroredux_core::math::Vec3::ZERO));
         }
     }
-    if let Some(mut targets) = world.query_mut::<HavokAnimationTarget>() {
+    if let Some(mut targets) = world.query_mut::<AnimationTarget>() {
         for (actor, serial, _, _) in requests {
             if let Some(target) = targets.get_mut(actor) {
                 target.consumed_idle_serial = serial;
@@ -863,13 +863,13 @@ mod tests {
     use byroredux_scripting::AnimationTextKeyEvent;
 
     #[test]
-    fn idle_request_starts_scoped_havok_player_once_per_serial() {
+    fn idle_request_starts_scoped_animation_player_once_per_serial() {
         let mut world = World::new();
         world.register::<ActorCinematicState>();
-        world.register::<HavokAnimationTarget>();
+        world.register::<AnimationTarget>();
         world.register::<AnimationPlayer>();
         world.register::<RootMotionDelta>();
-        let mut catalog = HavokIdleCatalog::default();
+        let mut catalog = IdleClipCatalog::default();
         catalog.handles.insert(0x0010_6AE3, 17);
         world.insert_resource(catalog);
 
@@ -885,13 +885,13 @@ mod tests {
         );
         world.insert(
             actor,
-            HavokAnimationTarget {
+            AnimationTarget {
                 skeleton_root: skeleton,
                 consumed_idle_serial: 0,
             },
         );
 
-        havok_idle_playback_system(&world, 0.0);
+        idle_clip_playback_system(&world, 0.0);
         let player = world.get::<AnimationPlayer>(actor).unwrap();
         assert_eq!(player.clip_handle, 17);
         assert_eq!(player.root_entity, Some(skeleton));
@@ -902,14 +902,14 @@ mod tests {
         );
         assert_eq!(
             world
-                .get::<HavokAnimationTarget>(actor)
+                .get::<AnimationTarget>(actor)
                 .unwrap()
                 .consumed_idle_serial,
             1
         );
 
         world.get_mut::<AnimationPlayer>(actor).unwrap().local_time = 0.25;
-        havok_idle_playback_system(&world, 0.0);
+        idle_clip_playback_system(&world, 0.0);
         assert_eq!(
             world.get::<AnimationPlayer>(actor).unwrap().local_time,
             0.25,

@@ -632,7 +632,7 @@ pub fn load_cell_with_masters(
     // Install them only after capturing/stamping the cell entity range so an
     // interior unload cannot despawn a running cross-cell scene.
     crate::asset_provider::populate_scene_runtime(world, &index);
-    crate::asset_provider::populate_havok_idle_runtime(world, &index, tex_provider);
+    crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
     crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
 
     // Capture the cell's editor_id BEFORE the `index.cells` move below
@@ -1011,7 +1011,7 @@ impl InteriorCellApplyJob {
         crate::components::spawn_navmesh_tiles(world, &cell.navmeshes);
         stamp_cell_root_range(world, cell_root, navmesh_first, world.next_entity_id());
         crate::asset_provider::populate_scene_runtime(world, &index);
-        crate::asset_provider::populate_havok_idle_runtime(world, &index, tex_provider);
+        crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
         crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
 
         let cell_name = cell.editor_id.clone();

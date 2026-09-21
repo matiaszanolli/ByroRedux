@@ -2092,13 +2092,13 @@ mod tests {
 
     fn prepare_test_ragdoll(world: &mut World, actor: EntityId, bone: EntityId) {
         use crate::ragdoll::{RagdollActive, RagdollTemplate, RagdollTemplateBody};
-        world.register::<crate::components::HavokAnimationTarget>();
+        world.register::<crate::components::AnimationTarget>();
         world.register::<RagdollTemplate>();
         world.register::<RagdollActive>();
         world.register::<byroredux_physics::Ragdoll>();
         world.insert(
             actor,
-            crate::components::HavokAnimationTarget {
+            crate::components::AnimationTarget {
                 skeleton_root: bone,
                 consumed_idle_serial: 0,
             },

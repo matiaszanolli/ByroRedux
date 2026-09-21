@@ -348,7 +348,7 @@ pub(super) fn parse_import_and_merge(
     // inside the shared extractor would.
     if imported.ragdoll.is_none() {
         let summary = byroredux_nif::import::collision::summarize_collision_authoring(&scene);
-        if summary.needs_packed_havok_fallback() {
+        if summary.needs_packed_collision_fallback() {
             log::info!(
                 "NIF '{}': {} packed-Havok collision object(s) authored but no ragdoll \
                  articulation was extracted — the constraint graph is inside an undecoded \

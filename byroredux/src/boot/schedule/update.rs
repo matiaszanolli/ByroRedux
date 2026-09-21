@@ -219,7 +219,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes_resource::<crate::combat::CombatState>()
             .reads::<byroredux_scripting::HitEvent>()
             .reads::<byroredux_core::ecs::components::ActorVitals>()
-            .reads::<crate::components::HavokAnimationTarget>()
+            .reads::<crate::components::AnimationTarget>()
             .writes::<byroredux_core::ecs::components::ActorValues>()
             .writes::<byroredux_core::ecs::components::Dead>()
             .writes::<byroredux_core::animation::AnimationPlayer>()
@@ -335,7 +335,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // Translate the resulting Skyrim PlayIdle FormID requests into decoded
     // HKX AnimationPlayers. The parallel animation batch observes a request
     // no later than the following frame, preserving deterministic restarts.
-    scheduler.add_exclusive(Stage::Update, crate::systems::havok_idle_playback_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::idle_clip_playback_system);
     // Apply Papyrus SetMotionType requests after both immediate and resumed
     // fragment effects, before the Physics stage consumes body state.
     scheduler.add_exclusive(Stage::Update, crate::systems::scripted_motion_type_system);

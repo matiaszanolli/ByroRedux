@@ -273,7 +273,7 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   snapshotted). Pattern-A `SceneEventBatch`/`SceneFragmentInvocationBatch` feed
   `scene_fragment_dispatch_system` (Dim 2 order guard). SCEN package `Activate` leaf ordering vs `ActivateEvent`
   consumers is pinned by the schedule tests.
-- **Playback lifecycle**: `havok_idle_playback_system` starts a scoped player once per serial and drains the
+- **Playback lifecycle**: `idle_clip_playback_system` starts a scoped player once per serial and drains the
   request (`idle_request_starts_scoped_havok_player_once_per_serial`); `cinematic_root_motion_system` applies
   then drains the delta (`cart_exit_root_motion_moves_and_orients_actor_then_drains_delta` — an undrained
   delta launches the actor); `cinematic_animation_event_system`/`behavior_completion_events` ignore unknown

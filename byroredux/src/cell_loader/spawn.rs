@@ -54,7 +54,7 @@ pub(super) struct PlacementSpawnTimings {
 /// `BhkSystemBinary` blob (see `crates/nif/src/import/collision/mod.rs`)
 /// spawned with **no collider at all** — not even an approximate one.
 /// `PackedAabbProxy` (below) closes that: any layer with
-/// `authoring.needs_packed_havok_fallback()` now gets a conservative
+/// `authoring.needs_packed_collision_fallback()` now gets a conservative
 /// AABB proxy instead of silently dropping collision. Bethesda containers
 /// built into the level (footlockers, vending machines) are classified
 /// `RenderLayer::Architecture` at spawn, so they already hit the more
@@ -85,7 +85,7 @@ fn missing_collision_fallback(
     if base_layer == RenderLayer::Architecture {
         return MissingCollisionFallback::ArchitectureTriMesh;
     }
-    if authoring.needs_packed_havok_fallback()
+    if authoring.needs_packed_collision_fallback()
         && matches!(base_layer, RenderLayer::Clutter | RenderLayer::Actor)
     {
         return MissingCollisionFallback::PackedAabbProxy;
@@ -142,7 +142,7 @@ fn transformed_mesh_aabb<'a>(
     (points > 0).then_some((min, max))
 }
 
-fn synthesize_packed_havok_proxy(
+fn synthesize_packed_collision_proxy(
     meshes: &[byroredux_nif::import::ImportedMesh],
     ref_scale: f32,
 ) -> Option<(Vec3, byroredux_core::ecs::components::CollisionShape)> {
@@ -260,7 +260,7 @@ fn synthesize_packed_havok_proxy(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_packed_havok_proxy(
+fn spawn_packed_collision_proxy(
     world: &mut World,
     cached: &CachedNifImport,
     placement_root: byroredux_core::ecs::EntityId,
@@ -273,7 +273,7 @@ fn spawn_packed_havok_proxy(
     use byroredux_core::ecs::components::{MotionType, PhysicsSourceForm, RigidBodyData};
     use byroredux_core::ecs::Parent;
 
-    let Some((local_center, shape)) = synthesize_packed_havok_proxy(&cached.meshes, ref_scale)
+    let Some((local_center, shape)) = synthesize_packed_collision_proxy(&cached.meshes, ref_scale)
     else {
         return false;
     };
@@ -730,7 +730,7 @@ pub(super) fn spawn_placed_instances(
     );
     let mut synthesized_collision_proxy = collision_fallback
         == MissingCollisionFallback::PackedAabbProxy
-        && spawn_packed_havok_proxy(
+        && spawn_packed_collision_proxy(
             world,
             cached,
             placement_root,
@@ -869,7 +869,7 @@ pub(super) fn spawn_placed_instances(
     // ordinary REFR callers discard it.
     let total_elapsed = total_started.elapsed();
     let packed_collision_authored =
-        collisions.is_empty() && cached.collision_authoring.needs_packed_havok_fallback();
+        collisions.is_empty() && cached.collision_authoring.needs_packed_collision_fallback();
     (
         placement_root,
         count,

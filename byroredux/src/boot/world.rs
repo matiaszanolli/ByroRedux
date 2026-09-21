@@ -152,7 +152,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // and future Papyrus `ObjectReference` lookups all resolve.
     world.insert_resource(byroredux_core::form_id::FormIdPool::new());
     world.insert_resource(AnimationClipRegistry::new());
-    world.insert_resource(crate::components::HavokIdleCatalog::default());
+    world.insert_resource(crate::components::IdleClipCatalog::default());
     world.insert_resource(NameIndex::new());
     world.insert_resource(SubtreeCache::new());
     world.insert_resource(CellRootIndex::new());
@@ -274,7 +274,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // `Some` even before the first emitter is inserted (e.g. on
     // startup with no scene loaded).
     world.register::<crate::components::FootstepEmitter>();
-    world.register::<crate::components::HavokAnimationTarget>();
+    world.register::<crate::components::AnimationTarget>();
     world.register::<byroredux_core::animation::AnimationPlayer>();
     world.register::<byroredux_core::animation::RootMotionDelta>();
 

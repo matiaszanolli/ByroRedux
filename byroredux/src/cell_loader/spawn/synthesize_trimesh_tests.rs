@@ -3,8 +3,8 @@
 //! Extracted from `spawn.rs`'s inline test module (#2410 / TD1-007).
 
 use super::{
-    missing_collision_fallback, spawn_packed_havok_proxy, spawn_trimesh_collider_ghost,
-    synthesize_packed_havok_proxy, synthesize_static_trimesh, transformed_mesh_aabb,
+    missing_collision_fallback, spawn_packed_collision_proxy, spawn_trimesh_collider_ghost,
+    synthesize_packed_collision_proxy, synthesize_static_trimesh, transformed_mesh_aabb,
     MissingCollisionFallback, ProxyMeshGeometry,
 };
 use byroredux_core::{
@@ -247,7 +247,7 @@ fn packed_proxy_keeps_half_extents_in_placement_local_units() {
     );
     mesh.translation = [4.0, 5.0, 6.0];
 
-    let (center, shape) = synthesize_packed_havok_proxy(&[mesh], 2.0)
+    let (center, shape) = synthesize_packed_collision_proxy(&[mesh], 2.0)
         .expect("finite render geometry must produce a packed-Havok proxy");
     assert_eq!(center, Vec3::new(4.0, 5.0, 6.0));
     match shape {
@@ -318,7 +318,7 @@ fn packed_proxy_placement_scale_is_applied_once_end_to_end() {
     world.insert(root, Transform::new(Vec3::ZERO, Quat::IDENTITY, 2.0));
     world.insert(root, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 2.0));
 
-    assert!(spawn_packed_havok_proxy(
+    assert!(spawn_packed_collision_proxy(
         &mut world,
         &cached,
         root,
@@ -375,7 +375,7 @@ fn packed_proxy_clamps_extreme_finite_extent() {
     // (~1e6) but nowhere near `f32::MAX` (~3.4e38), so the extent stays
     // finite — this is the "corrupt-but-finite" case the debug assert
     // alone can't catch in release builds.
-    let (_, shape) = synthesize_packed_havok_proxy(&[mesh], 1.0)
+    let (_, shape) = synthesize_packed_collision_proxy(&[mesh], 1.0)
         .expect("a finite (if extreme) extent must still produce a clamped proxy");
     match shape {
         CollisionShape::Cuboid { half_extents } => {
@@ -415,7 +415,7 @@ fn packed_proxy_rejects_non_finite_half_extents() {
     mesh.translation = [4.0, 5.0, 6.0];
 
     assert!(
-        synthesize_packed_havok_proxy(&[mesh], 1.0).is_none(),
+        synthesize_packed_collision_proxy(&[mesh], 1.0).is_none(),
         "an overflowing (non-finite) half-extents product must reject the proxy"
     );
 }
@@ -442,7 +442,7 @@ fn packed_proxy_uses_local_bound_not_bind_pose_positions_for_skinned_mesh() {
     mesh.local_bound_center = [0.0, 0.0, 0.0];
     mesh.local_bound_radius = 2.0;
 
-    let (center, shape) = synthesize_packed_havok_proxy(&[mesh], 1.0)
+    let (center, shape) = synthesize_packed_collision_proxy(&[mesh], 1.0)
         .expect("a skinned-only mesh set must still produce a proxy (not #2355's regression)");
     assert_eq!(center, Vec3::ZERO);
     match shape {
@@ -486,7 +486,7 @@ fn packed_proxy_unions_rigid_positions_and_skinned_local_bound() {
     skinned.local_bound_center = [0.0, 0.0, 0.0];
     skinned.local_bound_radius = 1.0;
 
-    let (_, shape) = synthesize_packed_havok_proxy(&[rigid, skinned], 1.0)
+    let (_, shape) = synthesize_packed_collision_proxy(&[rigid, skinned], 1.0)
         .expect("mixed rigid + skinned mesh set must produce a proxy");
     match shape {
         CollisionShape::Cuboid { half_extents } => {
@@ -549,7 +549,7 @@ fn packed_proxy_is_keyframed_and_parented_to_visual_placement() {
     world.insert(root, Transform::default());
     world.insert(root, GlobalTransform::default());
 
-    assert!(spawn_packed_havok_proxy(
+    assert!(spawn_packed_collision_proxy(
         &mut world,
         &cached,
         root,

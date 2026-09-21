@@ -25,7 +25,7 @@
 //!   cedes playback to it.
 //!
 //! Take protocol mirrors `walk_anim`'s take/restore: capture the pre-take
-//! `AnimationPlayer` (inserting one bound to `HavokAnimationTarget::
+//! `AnimationPlayer` (inserting one bound to `AnimationTarget::
 //! skeleton_root` when absent), swap the clip, restore verbatim when the
 //! take's duration expires. A mid-walk take relies on walk_anim's existing
 //! yield rule (someone else swapped the clip → walk loses ownership
@@ -41,7 +41,7 @@ use rustc_hash::FxHashMap;
 
 use crate::combat::CombatState;
 use crate::components::{
-    CombatTake, DraugrCombatAnim, DraugrCombatClips, HavokAnimationTarget, WalkAnimSnapshot,
+    CombatTake, DraugrCombatAnim, DraugrCombatClips, AnimationTarget, WalkAnimSnapshot,
 };
 use crate::systems::{PlayerEntity, PlayerMode};
 
@@ -366,7 +366,7 @@ fn read_player_snapshot(world: &World, actor: EntityId) -> Option<WalkAnimSnapsh
 
 fn read_skeleton_root(world: &World, actor: EntityId) -> Option<EntityId> {
     world
-        .query::<HavokAnimationTarget>()
+        .query::<AnimationTarget>()
         .and_then(|q| q.get(actor).map(|t| t.skeleton_root))
 }
 
@@ -472,7 +472,7 @@ mod tests {
         let mut world = World::new();
         world.register::<DraugrCombatAnim>();
         world.register::<AnimationPlayer>();
-        world.register::<HavokAnimationTarget>();
+        world.register::<AnimationTarget>();
         world.register::<GlobalTransform>();
         world.register::<byroredux_scripting::HitEvent>();
         world.register::<Dead>();
@@ -485,7 +485,7 @@ mod tests {
         world.insert(actor, GlobalTransform::default());
         world.insert(
             actor,
-            HavokAnimationTarget {
+            AnimationTarget {
                 skeleton_root: skeleton,
                 consumed_idle_serial: 0,
             },

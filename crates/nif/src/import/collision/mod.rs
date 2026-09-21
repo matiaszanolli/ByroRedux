@@ -50,7 +50,7 @@ use shape::resolve_shape;
 ///   [`CollisionAuthoringSummary`], the cell loader caches that on its
 ///   imported-NIF entry (`cell_loader::nif_import_registry`), and
 ///   `cell_loader::spawn`'s `missing_collision_fallback` branches on
-///   `needs_packed_havok_fallback()` to pick a `PackedAabbProxy` for
+///   `needs_packed_collision_fallback()` to pick a `PackedAabbProxy` for
 ///   opaque FO4+ packed Havok. So the NP and no-collision cases no longer
 ///   "fire identically" — that sentence described pre-#2355 behaviour.
 /// * [`examine_collision_kind`], the single-`BlockRef` probe, has **no**
@@ -105,7 +105,7 @@ pub struct CollisionAuthoringSummary {
 impl CollisionAuthoringSummary {
     /// Whether the scene contains at least one FO4+/FO76/Starfield packed
     /// collision object whose `BhkSystemBinary` payload is not decoded yet.
-    pub const fn needs_packed_havok_fallback(self) -> bool {
+    pub const fn needs_packed_collision_fallback(self) -> bool {
         self.new_physics > 0
     }
 
@@ -1097,7 +1097,7 @@ mod dispatch_tests {
             "no BhkPlaneShape in this scene — the counter must read 0, not \
              be indistinguishable from an untracked absence"
         );
-        assert!(summary.needs_packed_havok_fallback());
+        assert!(summary.needs_packed_collision_fallback());
     }
 
     /// Regression for #4163 — `BhkPlaneShape` parses fully but

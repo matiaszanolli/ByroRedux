@@ -1061,7 +1061,7 @@ fn advance_runtime_unit(
             if let Some(skeleton) = state.skel_root {
                 world.insert(
                     state.placement_root,
-                    crate::components::HavokAnimationTarget {
+                    crate::components::AnimationTarget {
                         skeleton_root: skeleton,
                         consumed_idle_serial: 0,
                     },
@@ -1554,7 +1554,7 @@ fn advance_prebaked_unit(
             if let Some(skeleton_root) = state.skel_root {
                 world.insert(
                     state.placement_root,
-                    crate::components::HavokAnimationTarget {
+                    crate::components::AnimationTarget {
                         skeleton_root,
                         consumed_idle_serial: 0,
                     },

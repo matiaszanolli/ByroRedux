@@ -18,7 +18,7 @@
 //!   (`WalkAnimSnapshot`) and install the walk clip at `local_time = 0`.
 //!   If the actor has *no* player — the Skyrim+ shape, where ambient
 //!   actors only gain one when an idle request plays — insert one bound to
-//!   `HavokAnimationTarget::skeleton_root` and remember `captured = None`.
+//!   `AnimationTarget::skeleton_root` and remember `captured = None`.
 //! - **Restore** (first stationary tick): write the snapshot back verbatim,
 //!   or remove the player we inserted when `captured` was `None`.
 //! - **Yield** (an outside writer swapped the clip mid-walk): drop the
@@ -80,7 +80,7 @@ struct WalkAnimDecision {
     /// Current player state read in Pass 1 (`None` when the actor has no
     /// `AnimationPlayer` — the Skyrim+ standing shape).
     player: Option<WalkAnimSnapshot>,
-    /// `HavokAnimationTarget::skeleton_root`, for inserting a player where
+    /// `AnimationTarget::skeleton_root`, for inserting a player where
     /// none existed. `None` when there is no skeleton to bind — an actor
     /// with a walk handle but no skeleton can't be animated at all.
     skeleton_root: Option<EntityId>,
@@ -120,7 +120,7 @@ fn npc_walk_animation_system_inner(world: &World, dt: f32, scratch: &mut WalkAni
             return;
         };
         let player_q = world.query::<AnimationPlayer>();
-        let havok_q = world.query::<crate::components::HavokAnimationTarget>();
+        let target_q = world.query::<crate::components::AnimationTarget>();
         let seated_q = world.query::<Seated>();
         let dead_q = world.query::<Dead>();
         let cinematic_q = world.query::<byroredux_scripting::ActorCinematicState>();
@@ -139,7 +139,7 @@ fn npc_walk_animation_system_inner(world: &World, dt: f32, scratch: &mut WalkAni
                 }
             });
             let skeleton_root =
-                havok_q
+                target_q
                     .as_ref()
                     .and_then(|q| q.get(entity))
                     .map(|t| t.skeleton_root);
@@ -347,7 +347,7 @@ pub(crate) fn npc_walk_animation_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::HavokAnimationTarget;
+    use crate::components::AnimationTarget;
 
     fn walk_component(handle: u32, last_pos: Vec3) -> WalkAnimation {
         WalkAnimation {
@@ -385,7 +385,7 @@ mod tests {
         world.register::<WalkAnimation>();
         world.register::<Transform>();
         world.register::<AnimationPlayer>();
-        world.register::<HavokAnimationTarget>();
+        world.register::<AnimationTarget>();
         world.register::<Seated>();
         world.register::<Dead>();
         world.register::<byroredux_scripting::ActorCinematicState>();
@@ -458,7 +458,7 @@ mod tests {
         world.insert(entity, Transform::from_translation(Vec3::ZERO));
         world.insert(
             entity,
-            HavokAnimationTarget {
+            AnimationTarget {
                 skeleton_root: skeleton,
                 consumed_idle_serial: 0,
             },

@@ -1872,12 +1872,12 @@ impl Resource for SandboxSitClip {}
 /// requests. The request serial makes repeated `PlayIdle` calls observable
 /// even when they target the same IDLE FormID.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct HavokAnimationTarget {
+pub(crate) struct AnimationTarget {
     pub(crate) skeleton_root: EntityId,
     pub(crate) consumed_idle_serial: u64,
 }
 
-impl Component for HavokAnimationTarget {
+impl Component for AnimationTarget {
     type Storage = SparseSetStorage<Self>;
 }
 
@@ -2026,11 +2026,11 @@ impl Component for DraugrCombatAnim {
 /// Clips live in `AnimationClipRegistry`; this small companion preserves the
 /// plugin-level identity used by Papyrus `PlayIdle` calls.
 #[derive(Default)]
-pub(crate) struct HavokIdleCatalog {
+pub(crate) struct IdleClipCatalog {
     pub(crate) handles: HashMap<u32, u32>,
 }
 
-impl Resource for HavokIdleCatalog {}
+impl Resource for IdleClipCatalog {}
 
 /// A resident navmesh tile — CPU-only pathing data, no GPU footprint.
 ///
