@@ -215,6 +215,7 @@ pub(crate) use world_setup::{
 };
 
 /// Called once after the renderer is ready — uploads meshes and spawns entities.
+#[allow(clippy::too_many_arguments)] // the arg list is the authored scene-setup surface (args, renderer, UI, content flags) — grouping would obscure the call sites
 pub(crate) fn setup_scene(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -934,6 +935,7 @@ fn spawn_initial_camera(
 /// the ground was unwalkable but the decision had already been made. That
 /// ordering lives inside this function so it cannot be separated by an edit
 /// to `setup_scene`.
+#[allow(clippy::too_many_arguments)] // the flags are the boot-mode decision inputs (diagnostic vs authored vs foreground-ready); a struct would move the decision flags out of sight at the single call site
 fn select_and_spawn_player_mode(
     world: &mut World,
     streaming_slot: &mut Option<WorldStreamingState>,
@@ -1403,10 +1405,14 @@ fn launch_archive_menu(
 mod character_spawn;
 mod nif_loader;
 pub(crate) use character_spawn::{
-    clear_spawn_near_door, plan_character_spawn, GroundProbe, CharacterSpawnPlan,
-    capsule_center_y_on_surface, select_door_spawn_position, character_spawn_center_y,
-    floor_probe_lift, min_walkable_normal_y, probe_walkable_floor_near,
-    FLOOR_PROBE_CLEARANCE_BU, FLOOR_PROBE_REACH_BELOW_DOOR_BU, SPAWN_CENSUS_RADIUS_BU,
+    plan_character_spawn, CharacterSpawnPlan, character_spawn_center_y, floor_probe_lift,
+    min_walkable_normal_y, probe_walkable_floor_near, FLOOR_PROBE_CLEARANCE_BU,
+    FLOOR_PROBE_REACH_BELOW_DOOR_BU, SPAWN_CENSUS_RADIUS_BU,
+};
+#[cfg(test)]
+pub(crate) use character_spawn::{
+    capsule_center_y_on_surface, clear_spawn_near_door, select_door_spawn_position,
+    GroundProbe,
 };
 use nif_loader::load_nif_from_args;
 pub(crate) use nif_loader::{load_nif_bytes, load_nif_bytes_with_skeleton};

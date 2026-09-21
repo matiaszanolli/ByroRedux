@@ -267,8 +267,6 @@ impl GroundProbe {
 /// right way — is the whole point: a shortest-arc quaternion also faces the
 /// right way and still snaps on the first mouse event, because it carries
 /// roll the driving system cannot represent.
-///
-
 /// Probe for walkable ground beneath `cam_pos`.
 ///
 /// Split from the spawn itself so the *decision* (may Character mode start?)
