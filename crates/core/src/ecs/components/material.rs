@@ -1067,12 +1067,25 @@ fn path_indicates_log(path: &str) -> bool {
     })
 }
 
+/// Glass-keyword signal for the material-KIND classifier (the
+/// `classify_glass_into_material` family).
+///
+/// Deliberately does NOT include [`path_indicates_ice`]: every ice match in
+/// the #4392 census is an opaque frozen solid, not glass — ice wraith,
+/// `dragon_snow`, ice floes (authored EnvironmentMap), and the Default-kind
+/// twins `dragon_icelake` / `icevine01*`. Real authored glass apparatus
+/// carries the literal material words (Skyrim's alchemy labs bind
+/// `plainglasstile01.dds`). Ice retains its dielectric PBR role inside
+/// [`classify_pbr_keyword`], which shapes roughness/metalness, not the
+/// refractive glass dispatch. Before #4392 the ice arm here is what made
+/// the shader-type guard look load-bearing: it was the false positives'
+/// only entry path, and blocking the whole EnvironmentMap kind to stop them
+/// split identical surfaces by shader variant instead.
 pub fn is_glass_keyword_path(path: &str) -> bool {
     contains_any_ci(
         path,
         &["glass", "crystal", "window", "bottle", "jar", "vial"],
-    ) || path_indicates_ice(path)
-        || contains_any_ci_word(path, &["gem"])
+    ) || contains_any_ci_word(path, &["gem"])
 }
 
 pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
@@ -2064,7 +2077,6 @@ mod tests {
         for path in [
             r"Textures\Clutter\Glass\GlassBottle01.dds",
             "textures/clutter/crystal/crystal01.dds",
-            "TEXTURES/SKY/ICE/SnowIce01.dds",
             r"textures\clutter\gem\ruby01.dds",
             "textures/architecture/whiterun/whiterunwindow01.dds",
             "textures/clutter/jars/winejar01.dds",
@@ -2076,6 +2088,15 @@ mod tests {
                 "expected '{path}' to be classified as glass-bearing",
             );
         }
+        // #4392 — ice is no longer a glass-KIND keyword. `SnowIce01` (the
+        // sky/mountain cap texture) and every other ice match in the census
+        // is an opaque frozen solid; it keeps the smooth-dielectric PBR
+        // look via `classify_pbr_keyword` but must not take the refractive
+        // glass path.
+        assert!(
+            !Material::path_indicates_glass(Some("TEXTURES/SKY/ICE/SnowIce01.dds")),
+            "ice must not be classified as glass-bearing (#4392)"
+        );
     }
 
     #[test]
@@ -2838,9 +2859,15 @@ mod tests {
                 0.1,
                 "{path} must resolve glass-smooth, not matte stone (#3359)"
             );
+            // #4392 — ice keeps the smooth-dielectric PBR look above but is
+            // NOT a glass-KIND keyword: every ice match in the 22,047-NIF
+            // census is an opaque frozen solid (ice wraith, `dragon_snow`,
+            // floes, `dragon_icelake`, `icevine01*`), and admitting them to
+            // the refractive glass dispatch is what once made guarding the
+            // whole EnvironmentMap shader kind look load-bearing.
             assert!(
-                is_glass_keyword_path(path),
-                "{path} must also register as a glass-keyword path"
+                !is_glass_keyword_path(path),
+                "{path} must not register as a glass-kind path (#4392)"
             );
         }
     }

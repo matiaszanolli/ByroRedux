@@ -106,17 +106,34 @@ pub(crate) fn classify_glass_into_material(
     // `0..=20` is the verbatim authored Skyrim `BSLightingShaderProperty.
     // shader_type` (0 = Default, no specific dispatch); `>= 100` is
     // engine-synthesized. The guard below already protects the synthesized
-    // range; a NON-DEFAULT authored lit shader type (1..=20 — EnvironmentMap,
-    // SkinTint, MultiLayerParallax, …) needs the identical protection, or a
-    // bare keyword match silently discards a real, specific dispatch with no
-    // way back. `from_bgsm` is the same provenance discriminator
-    // `effect_glass_carrier` already uses for the effect-shader carrier: an
-    // external `.bgsm` resolved for this material is an authoritative signal
-    // that can override an authored dispatch; a keyword alone on inline NIF
-    // data cannot. `material_kind == 0` (Default) is deliberately NOT
-    // protected — that is the intended keyword-glass path every ordinary
-    // Skyrim glass window/bottle takes, and always has.
-    let lit_carrier_authored_dispatch = (1..=20).contains(&material.material_kind) && !from_bgsm;
+    // range; a NON-DEFAULT authored lit shader type needs the identical
+    // protection, or a bare keyword match silently discards a real, specific
+    // dispatch with no way back. `from_bgsm` is the same provenance
+    // discriminator `effect_glass_carrier` already uses for the
+    // effect-shader carrier: an external `.bgsm` resolved for this material
+    // is an authoritative signal that can override an authored dispatch; a
+    // keyword alone on inline NIF data cannot. `material_kind == 0` (Default)
+    // is deliberately NOT protected — that is the intended keyword-glass path
+    // every ordinary Skyrim glass window/bottle takes, and always has.
+    //
+    // #4392 — Environment Map (1) is equally NOT protected, and must stay
+    // that way: it is how Skyrim authors ordinary glass apparatus. The
+    // pre-fix `1..=20` range split one physical surface by shader variant —
+    // the alchemy labs' `InnerGlass02`/`OuterGlass02`/`Liquid02` shells on
+    // `plainglasstile01.dds` are authored kind 1 and lost GLASS, while
+    // `alchemytolfdirsalembic01.nif` authors the same sub-meshes on the same
+    // texture as kind 0 and kept it. Census (Skyrim SE Meshes0/1, 22,047
+    // NIFs, glass-keyword population): kinds 0 (29), 1 (80 — the alchemy
+    // labs, load-screen/Hearthfire variants, `winterholdbookcase01`), 2 (1),
+    // 11 (7). Kinds 2..=20 stay guarded — their dispatches (Glow, Hair,
+    // Parallax, MultiLayerParallax, …) are specific rendering modes a
+    // keyword must not clobber, and only 2 and 11 actually co-occur with
+    // glass keywords in vanilla. The ice false positives that kind 1 shared
+    // (ice wraith, `dragon_snow`, ice floes — and the kind-0 twins
+    // `dragon_icelake`, `icevine01*`) are handled at the keyword list
+    // (`is_glass_keyword_path` no longer treats ice as glass), not by
+    // shader-type partition.
+    let lit_carrier_authored_dispatch = (2..=20).contains(&material.material_kind) && !from_bgsm;
 
     // Engine-synthesized behavior already selected — preserve it unless this
     // is the source-format effect carrier used to author an explicit glass
@@ -642,6 +659,84 @@ mod glass_classification_tests {
         assert_eq!(
             m.material_kind, MULTI_LAYER_PARALLAX,
             "an authored MultiLayerParallax ice surface must not be demoted to flat glass"
+        );
+    }
+
+    /// Regression for #4392 — Skyrim authors ordinary glass apparatus as
+    /// Environment Map (authored kind 1): the alchemy labs' `InnerGlass02` /
+    /// `OuterGlass02` / `Liquid02` shells on `plainglasstile01.dds`
+    /// (`alchemyworkstation.nif`, `alchemyworkbench.nif`, the workbench
+    /// variants, `winterholdbookcase01.nif` — 80 meshes in the census). The
+    /// pre-fix `1..=20` guard returned before the glass gates, so every
+    /// player-usable alchemy lab rendered its apparatus as an alpha-blended
+    /// env-mapped shell while `alchemytolfdirsalembic01.nif` — the same
+    /// sub-meshes on the same texture, authored kind 0 — classified as
+    /// refractive glass.
+    #[test]
+    fn environment_map_alchemy_glass_classifies_as_glass() {
+        let mut m = mat();
+        m.material_kind = 1; // authored Environment Map
+        m.roughness = 0.5;
+        classify_glass_into_material(
+            &mut m,
+            Some("InnerGlass02"),
+            Some("textures/clutter/plainglasstile01.dds"),
+            true,
+            false,
+            false,
+            false, // no external material — inline NIF authoring
+            false,
+        );
+        assert_eq!(
+            m.material_kind, GLASS,
+            "an authored Environment Map glass apparatus must classify as \
+             glass, not stay an env-mapped shell (#4392)"
+        );
+    }
+
+    /// #4392 parity case — the alembic: the same physical surface authored
+    /// as Default (0) must keep reaching GLASS through the same keyword, so
+    /// the two authoring variants of one asset family agree again.
+    #[test]
+    fn alembic_default_kind_matches_environment_map_glass() {
+        let mut m = mat();
+        m.material_kind = 0; // authored Default
+        m.roughness = 0.5;
+        classify_glass_into_material(
+            &mut m,
+            Some("InnerGlass02"),
+            Some("textures/clutter/plainglasstile01.dds"),
+            true,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(m.material_kind, GLASS);
+    }
+
+    /// #4392 — the ice false positives the kind-1 guard used to catch are
+    /// handled at the keyword list instead: ice wraith / `dragon_snow` /
+    /// ice floes are opaque frozen solids and must not take the refractive
+    /// glass dispatch even when authored Environment Map with coverage.
+    #[test]
+    fn environment_map_ice_is_not_glass_kind() {
+        let mut m = mat();
+        m.material_kind = 1; // authored Environment Map
+        classify_glass_into_material(
+            &mut m,
+            Some("IceWraithBody"),
+            Some("textures/actors/icewraith/icewraith01.dds"),
+            true,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            m.material_kind, 1,
+            "ice is smooth dielectric PBR, not glass kind — the keyword \
+             list owns this false-positive class (#4392)"
         );
     }
 
