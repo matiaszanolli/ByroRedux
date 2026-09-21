@@ -203,7 +203,9 @@ impl Parser {
         // Speculative parse_type — drops any spurious errors via
         // restore_errors on rewind.
         if let Ok(ty) = self.parse_type() {
-            if matches!(self.peek(), Some(Token::Ident(_))) {
+            // #4472 — raw: `Foo` ⏎ `bar = 1` must not become a VarDecl of
+            // type Foo named bar.
+            if matches!(self.peek_raw(), Some(Token::Ident(_))) {
                 // Commit to VarDecl path.
                 let name = self.expect_ident("variable name")?;
                 let initial_value = if matches!(self.peek(), Some(Token::Eq)) {
@@ -259,7 +261,8 @@ impl Parser {
     /// assignment operator. `Self.Foo()`, `x = 5`, `x += 1`.
     fn parse_expr_or_assign(&mut self) -> Result<Spanned<Stmt>, ParseError> {
         let lhs = self.parse_expr()?;
-        if let Some(op) = self.peek().and_then(Self::token_to_assign_op) {
+        // #4472 — raw: `x` ⏎ `= 5` must not glue into an Assign.
+        if let Some(op) = self.peek_raw().and_then(Self::token_to_assign_op) {
             self.advance().unwrap();
             let rhs = self.parse_expr()?;
             let span = lhs.span.merge(rhs.span);

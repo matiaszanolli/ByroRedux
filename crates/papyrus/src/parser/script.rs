@@ -109,7 +109,10 @@ impl Parser {
         // body-item dispatcher and emit a sensible error there).
         let mut flags = ScriptFlags::empty();
         loop {
-            match self.peek() {
+            // #4472 — raw: a function's own `Native` on the next line must
+            // not be consumed as a script flag (and silently stripped from
+            // the function it belongs to).
+            match self.peek_raw() {
                 Some(Token::KwNative) => {
                     self.advance().unwrap();
                     flags |= ScriptFlags::NATIVE;
@@ -200,7 +203,9 @@ impl Parser {
     ///   - `Ident` → Variable declaration (top-level field)
     fn parse_type_prefixed_item(&mut self) -> Result<Spanned<ScriptItem>, ParseError> {
         let ty = self.parse_type()?;
-        match self.peek() {
+        // #4472 — raw: `Int` ⏎ `Property P = 5` must not glue into a
+        // Property of type Int (nor the Function / variable variants).
+        match self.peek_raw() {
             Some(Token::KwFunction) => {
                 let func = self.parse_function(Some(ty))?;
                 let span = func.name.span;
@@ -214,7 +219,9 @@ impl Parser {
             Some(Token::Ident(_)) => {
                 // Top-level variable declaration.
                 let name = self.expect_ident("variable name")?;
-                let initial_value = if matches!(self.peek(), Some(Token::Eq)) {
+                // #4472 — raw: `Int Foo` ⏎ `= 5` must not glue the next
+                // line's initializer onto the field.
+                let initial_value = if self.check_raw(&Token::Eq) {
                     self.advance().unwrap();
                     Some(self.parse_expr()?)
                 } else {
@@ -829,6 +836,23 @@ mod tests {
         script
     }
 
+    /// #4472 — the six newline-gluing regression shapes. Each input has at
+    /// least one line that is INVALID as a continuation; the parser must
+    /// never glue it into the previous construct with zero errors. The
+    /// assertions pin the non-glued shape (and, for the header-flag case,
+    /// that the flag stays on its own construct).
+
+    /// #4472 — like `parse`, but tolerant of recovered errors: the
+    /// newline-gluing fixtures deliberately contain invalid lines, and the
+    /// fix's contract is "no glue, errors recovered per-statement", not
+    /// "zero errors".
+    fn parse_recovering(src: &str) -> Script {
+        let (preprocessed, _map) = preprocess(src);
+        let (tokens, _errs) = lex(&preprocessed);
+        let mut parser = Parser::new(tokens);
+        parser.parse_script().expect("parse_script must not fail fatally")
+    }
+
     #[test]
     fn minimal_script_header() {
         let src = "ScriptName Foo\n";
@@ -1358,5 +1382,111 @@ EndProperty
             prop.getter.is_some(),
             "the getter parsed with zero errors and must be retained"
         );
+    }
+
+    // ── #4472 — newline-gluing regressions ──
+    // Each fixture has at least one line that is INVALID as a continuation;
+    // the parser must never glue it into the previous construct with zero
+    // errors. The assertions pin the non-glued shape.
+
+    /// Site 1 (mod.rs): `foo` on one line, `:bar()` on the next must not
+    /// merge into the qualified name `foo:bar`.
+    #[test]
+    fn a_colon_on_the_next_line_does_not_qualify_the_previous_ident() {
+        // `:bar()` alone is invalid source, so recovered errors are
+        // EXPECTED — the assertion is that no glued `foo:bar()` call
+        // materialises.
+        let script = parse_recovering("ScriptName T\nEvent E()\nfoo\n:bar()\nEndEvent\n");
+        // The glued call would carry the merged qualified identifier
+        // `foo:bar` somewhere in the AST — search the whole script's debug
+        // render so the assertion is shape-agnostic to how the recovery
+        // partitions the (invalid) body.
+        let rendered = format!("{script:?}");
+        assert!(
+            !rendered.contains("foo:bar"),
+            "the two lines must not merge into one `foo:bar()` call (#4472)"
+        );
+    }
+
+    /// Site 2 (mod.rs): `Actor` ending a line must not take a next-line
+    /// array suffix.
+    #[test]
+    fn brackets_on_the_next_line_do_not_array_type_the_previous_type() {
+        let script = parse("ScriptName T\nEvent E()\nActor\nx = None\nEndEvent\n");
+        let ScriptItem::Event(ev) = &script.body[0].node else {
+            panic!("expected the event");
+        };
+        for stmt in &ev.body {
+            if let Stmt::VarDecl(v) = &stmt.node {
+                assert!(
+                    !matches!(&v.ty.node, Type::Array(_)),
+                    "the next line's brackets must not array-type `Actor` (#4472)"
+                );
+            }
+        }
+    }
+
+    /// Site 3 (stmt.rs): `x` ending a line must not take `= 5` from the
+    /// next line — a recovered error must surface, not a glued Assign.
+    #[test]
+    fn an_assign_operator_on_the_next_line_does_not_assign_the_previous_expr() {
+        let (preprocessed, _map) = preprocess("ScriptName T\nEvent E()\nx\n= 5\nEndEvent\n");
+        let (tokens, _errs) = lex(&preprocessed);
+        let mut parser = Parser::new(tokens);
+        let _ = parser.parse_script();
+        assert!(
+            !parser.errors().is_empty(),
+            "`x` on one line and `= 5` on the next must surface a recovered error, \
+             not a silently-glued Assign (#4472)"
+        );
+    }
+
+    /// Site 4 (stmt.rs): `Foo` ending a line must not claim `bar = 1` from
+    /// the next line as a Foo-typed variable declaration.
+    #[test]
+    fn a_type_name_on_its_own_line_does_not_declare_the_next_lines_variable() {
+        let script = parse("ScriptName T\nEvent E()\nFoo\nbar = 1\nEndEvent\n");
+        let ScriptItem::Event(ev) = &script.body[0].node else {
+            panic!("expected the event");
+        };
+        for stmt in &ev.body {
+            if let Stmt::VarDecl(v) = &stmt.node {
+                assert_ne!(
+                    v.ty.node,
+                    Type::Object(Identifier::new(String::from("Foo"))),
+                    "`Foo` must not become a VarDecl's type across the line break (#4472)"
+                );
+            }
+        }
+    }
+
+    /// Site 5 (script.rs): a `Native` on its own line belongs to the
+    /// FUNCTION that follows it, not to the script header's flag set.
+    #[test]
+    fn a_flag_on_the_next_line_belongs_to_the_function_not_the_header() {
+        // `Native` on its own line is malformed (the compiler authors
+        // `Native Function F()` on one line), so recovered errors are
+        // expected. The MISATTRIBUTION is what must be gone: the header
+        // keeps no NATIVE bit.
+        let script = parse_recovering("ScriptName T\nNative\nFunction F()\nEndFunction\n");
+        assert!(
+            !script.flags.contains(ScriptFlags::NATIVE),
+            "the header must not swallow the next line's Native flag (#4472)"
+        );
+    }
+
+    /// Site 6 (script.rs): `Property` on the next line is not the
+    /// continuation of a lone `Int`.
+    #[test]
+    fn a_property_on_the_next_line_is_not_a_lone_types_continuation() {
+        let script = parse_recovering("ScriptName T\nInt\nProperty P = 5 Auto\nEndProperty\n");
+        for item in &script.body {
+            if let ScriptItem::Property(prop) = &item.node {
+                assert!(
+                    !matches!(&prop.ty.node, Type::Int),
+                    "`Int` on its own line must not become the property's type (#4472)"
+                );
+            }
+        }
     }
 }

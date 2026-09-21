@@ -91,6 +91,18 @@ impl Parser {
         self.tokens.get(self.pos).map(|t| &t.token)
     }
 
+    /// `check`, but WITHOUT newline-skipping: false when the next raw
+    /// token is a Newline (or anything else). #4472 — construct-continuation
+    /// decisions (qualified names, array suffixes, assignment operators,
+    /// header flags) must not reach across a newline and glue the next
+    /// line into the previous construct; only the #4321 Pratt loop's
+    /// trailing-operator rule may do that, and it enforces it itself.
+    pub fn check_raw(&self, expected: &Token) -> bool {
+        self.peek_raw()
+            .map(|t| std::mem::discriminant(t) == std::mem::discriminant(expected))
+            .unwrap_or(false)
+    }
+
     /// Advance past the current token (skipping newlines) and return it.
     pub fn advance(&mut self) -> Option<(Token, Span)> {
         self.skip_newlines();
@@ -287,7 +299,9 @@ impl Parser {
         let start_span = first.span;
         let mut end_span = first.span;
 
-        while self.check(&Token::Colon) {
+        // #4472 — raw check: `foo` ⏎ `:bar()` must not glue into one
+        // qualified name.
+        while self.check_raw(&Token::Colon) {
             self.advance(); // consume ':'
             let next = self.expect_ident(context)?;
             name.push(':');
@@ -366,7 +380,9 @@ impl Parser {
         let base = self.parse_base_type()?;
 
         // Check for array suffix `[]` (empty brackets only — `[expr]` is not a type)
-        if self.check(&Token::LBracket) {
+        // #4472 — raw check: `Actor` ⏎ `[] props` must not glue into an
+        // array-typed declaration.
+        if self.check_raw(&Token::LBracket) {
             let saved = self.pos;
             self.advance(); // `[`
             if self.check(&Token::RBracket) {
