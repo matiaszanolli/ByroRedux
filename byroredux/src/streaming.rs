@@ -1341,6 +1341,21 @@ enum PreParseModelSkip {
     BatchDuplicate,
 }
 
+/// #4207 — per-cell memo of the per-REFR preflight decision, keyed on the
+/// raw model-path `&str` (stable: the strings live in the record index).
+/// The canonical key is computed at most once per DISTINCT path instead of
+/// per REFR — the loop's own comments document ~95% cache hits and heavy
+/// per-cell path duplication, so the old shape re-lowercased and
+/// re-formatted 2-3 throwaway strings for every duplicate reference.
+enum PreflightDecision {
+    /// SpeedTree `.spt` — never a NIF; skip before any key work (#3735).
+    SkipSpt,
+    /// Already cached / already batched — no new key needed.
+    Skip(PreParseModelSkip),
+    /// First sighting this cell — insert this canonical key.
+    Insert(String),
+}
+
 /// Apply the two cache layers in the same order as the production
 /// pre-parse filter. The request snapshot wins when a key is present in both
 /// sets; otherwise the worker memo suppresses a result already emitted by an
@@ -1427,6 +1442,7 @@ fn pre_parse_cell(
     let mut model_paths: HashSet<String> = HashSet::new();
     let mut skipped_cached = 0usize;
     let mut skipped_batch_duplicates = 0usize;
+    let mut decisions: std::collections::HashMap<&str, PreflightDecision> = HashMap::new();
     for refr in &cell.references {
         let Some(model_path) = wctx
             .record_index
@@ -1449,27 +1465,47 @@ fn pre_parse_cell(
         // skipped the REFR before its own resolver ran. On the exterior
         // path, which is where trees actually live, that made the fix on
         // the sync side unobservable.
-        if model_path.to_ascii_lowercase().ends_with(".spt") {
-            continue;
+        // #4207 — memoize the decision per raw path: identical strings
+        // (the shared-furniture case) compute once, so the lowercase /
+        // format! allocations run per UNIQUE model, not per REFR. The
+        // early-continue arms replay the memoized outcome.
+        if !decisions.contains_key(model_path) {
+            let d = if model_path.len() >= 4
+                && model_path[model_path.len() - 4..].eq_ignore_ascii_case(".spt")
+            {
+                // #3735 — SpeedTree `.spt` binaries are not NIFs; see the
+                // comment above for why prefetching them was actively
+                // harmful.
+                PreflightDecision::SkipSpt
+            } else {
+                // #3038 — must match the sync REFR loader's key exactly
+                // (`references/synth_child.rs`), or the same asset ends up
+                // cached under two different `NifImportRegistry` keys and
+                // gets parsed + imported twice. Both loaders route through
+                // the one shared normaliser.
+                let key = canonical_model_path_key(model_path);
+                match pre_parse_model_skip_reason(&key, cached_keys, batch_keys) {
+                    Some(skip) => PreflightDecision::Skip(skip),
+                    None => PreflightDecision::Insert(key),
+                }
+            };
+            decisions.insert(model_path, d);
         }
-        // #3038 — must match the sync REFR loader's key exactly
-        // (`references/synth_child.rs`), or the same asset ends up
-        // cached under two different `NifImportRegistry` keys and gets
-        // parsed + imported twice. Both loaders now route through the
-        // one shared normaliser.
-        let key = canonical_model_path_key(model_path);
-        match pre_parse_model_skip_reason(&key, cached_keys, batch_keys) {
-            Some(PreParseModelSkip::Cached) => {
+        match decisions.get(model_path) {
+            Some(PreflightDecision::SkipSpt) => continue,
+            Some(PreflightDecision::Skip(PreParseModelSkip::Cached)) => {
                 skipped_cached += 1;
                 continue;
             }
-            Some(PreParseModelSkip::BatchDuplicate) => {
+            Some(PreflightDecision::Skip(PreParseModelSkip::BatchDuplicate)) => {
                 skipped_batch_duplicates += 1;
                 continue;
             }
-            None => {}
+            Some(PreflightDecision::Insert(key)) => {
+                model_paths.insert(key.clone());
+            }
+            None => unreachable!("just inserted"),
         }
-        model_paths.insert(key);
     }
     if skipped_cached > 0 || skipped_batch_duplicates > 0 {
         log::debug!(
