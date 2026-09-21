@@ -13,6 +13,7 @@ on:
           - fnv
           - fo3
           - fo4
+          - oblivion
       gate:
         description: Gate to execute
         required: true
@@ -45,6 +46,7 @@ jobs:
           BYROREDUX_FNV_DATA: ${{ vars.BYROREDUX_FNV_DATA }}
           BYROREDUX_FO3_DATA: ${{ vars.BYROREDUX_FO3_DATA }}
           BYROREDUX_FO4_DATA: ${{ vars.BYROREDUX_FO4_DATA }}
+          BYROREDUX_OBLIVION_DATA: ${{ vars.BYROREDUX_OBLIVION_DATA }}
         run: |
           run_gate() {
             local gate="$1"; shift
@@ -59,12 +61,37 @@ jobs:
             fi
             return "$status"
           }
+          # The `all` bundle must respect each fixture's declared routes
+          # (#4547): fixtures/oblivion.env declares only p0, so a blanket
+          # run_gate of p1/p2 would exit 2 (unmeasured route) and go red
+          # forever. Undeclared gates skip with a notice, never silently.
+          # A fixture WITHOUT FIXTURE_GATES supports every gate — the same
+          # semantics scripts/check-playable-smoke-contracts.sh uses.
+          run_declared_gate() {
+            local gate="$1"; shift
+            local fixture="docs/smoke-tests/fixtures/$GAME.env"
+            if [[ -f "$fixture" ]]; then
+              # shellcheck disable=SC1090
+              source "$fixture" >/dev/null 2>&1 || true
+            fi
+            if [[ -n "${FIXTURE_GATES[@]+x}" ]]; then
+              local declared found=0
+              for declared in "${FIXTURE_GATES[@]}"; do
+                [[ "$declared" == "$gate" ]] && found=1
+              done
+              if (( found == 0 )); then
+                echo "::notice::$gate is not a measured route for $GAME (fixtures/$GAME.env FIXTURE_GATES) — skipped"
+                return 0
+              fi
+            fi
+            run_gate "$gate" "$@"
+          }
 
           case "${{ inputs.gate }}" in
             all)
-              run_gate p0-door-interaction "$GAME"
-              run_gate p1-character-traversal "$GAME"
-              run_gate p2-melee-core "$GAME"
+              run_declared_gate p0-door-interaction "$GAME"
+              run_declared_gate p1-character-traversal "$GAME"
+              run_declared_gate p2-melee-core "$GAME"
               ;;
             # EXT-D7-2026-09-19-05 / #4492 — the exterior harnesses see GPU
             # output that no cargo-test lane can. m-exteriors.sh takes the
