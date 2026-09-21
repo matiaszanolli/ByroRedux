@@ -384,6 +384,8 @@ fn parse_cell_skyrim_extended_subrecords() {
     push_form_sub(&mut sub_data, b"XCAS", 0x000C9ABC); // acoustic space
     push_form_sub(&mut sub_data, b"XCMO", 0x000DEF01); // music type
     push_form_sub(&mut sub_data, b"XLCN", 0x000E2345); // location
+    // #4173 — XEZN encounter zone: the CELL-side half of the ECZN pair.
+    push_form_sub(&mut sub_data, b"XEZN", 0x000F6789); // encounter zone
 
     // XCLR: variable-length packed FormID array — three entries.
     let regions = [0x111u32, 0x222u32, 0x333u32];
@@ -421,6 +423,11 @@ fn parse_cell_skyrim_extended_subrecords() {
     assert_eq!(cell.acoustic_space_form, Some(0x000C9ABC));
     assert_eq!(cell.music_type_form, Some(0x000DEF01));
     assert_eq!(cell.location_form, Some(0x000E2345));
+    assert_eq!(
+        cell.encounter_zone_form,
+        Some(0x000F6789),
+        "XEZN must populate the encounter-zone link (#4173)"
+    );
     assert_eq!(cell.regions, vec![0x111, 0x222, 0x333]);
     // Sanity: `water_height` stays None because no XCLW present.
     assert_eq!(cell.water_height, None);
