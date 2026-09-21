@@ -437,10 +437,35 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
 /// an allocation one. Only the per-frame *allocation* is amortised away.
 #[derive(Default)]
 pub(crate) struct SceneTriggerApproachScratch {
-    players: Vec<byroredux_scripting::ScenePlayer>,
+    /// #4190 — the three scalar fields the consumer passes read,
+    /// snapshotted per player instead of deep-cloning each ScenePlayer's
+    /// unused `active_actions` / `completed_actions` heap collections
+    /// every frame.
+    players: Vec<ScenePlayerSnapshot>,
     active_quests: std::collections::HashSet<u32>,
     awaited: std::collections::HashSet<(u32, u16)>,
     between_scenes: std::collections::HashSet<u32>,
+}
+
+/// #4190 — the `Copy` projection of [`byroredux_scripting::ScenePlayer`]
+/// the three consumer passes actually read: scene identity, playback
+/// state, and the current phase index.
+#[derive(Debug, Clone, Copy)]
+struct ScenePlayerSnapshot {
+    scene_form_id: u32,
+    state: byroredux_scripting::ScenePlaybackState,
+    current_phase: u32,
+}
+
+impl ScenePlayerSnapshot {
+    fn is_running(&self) -> bool {
+        matches!(
+            self.state,
+            byroredux_scripting::ScenePlaybackState::WaitingForStart
+                | byroredux_scripting::ScenePlaybackState::WaitingForPhaseStart
+                | byroredux_scripting::ScenePlaybackState::Playing
+        )
+    }
 }
 
 /// Build the scene-trigger approach system with persistent scratch.
@@ -476,7 +501,11 @@ fn scene_trigger_actor_approach_system_inner(
         let Some(query) = world.query::<byroredux_scripting::ScenePlayer>() else {
             return;
         };
-        players.extend(query.iter().map(|(_, player)| player.clone()));
+        players.extend(query.iter().map(|(_, player)| ScenePlayerSnapshot {
+            scene_form_id: player.scene_form_id,
+            state: player.state,
+            current_phase: player.current_phase,
+        }));
     }
     let Some(registry) = world.try_resource::<byroredux_scripting::SceneRegistry>() else {
         return;
