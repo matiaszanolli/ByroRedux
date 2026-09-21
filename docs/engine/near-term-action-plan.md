@@ -52,15 +52,16 @@ The roadmap's active spine. Sequenced so each step unblocks the next; two
 open tracker issues serve this wave directly and should be pulled into it
 rather than swept separately.
 
-### 2a. File the unfiled (pre-wave, ~30 min)
+### 2a. File the unfiled — **DONE 2026-09-21**
 
-Three known-but-untracked items from session memory — file issues so the
-slice route's own debt is on the board:
-
-1. walk_anim lock-order failures (pre-existing, character path).
-2. `p0[oblivion]` contract SKIP gap (smoke-test harness).
-3. FO4 facegeom BGSM `msn`-flag=false side finding (unfiled sibling of
-   #3922, see [[msn-basis-fix]] memory / `msn_basis_probe` example).
+1. walk_anim lock-order failures → **#4546** (reproduced: five walk_anim
+   tests panic under `BYRO_LOCK_ORDER_CHECK=1`, cycle
+   ActorCinematicState → Transform → AnimationPlayer).
+2. `p0[oblivion]` contract SKIP gap → **#4547** (fixture declares the
+   route; `playable-smoke.yml` can't dispatch it — game choices and
+   forwarded data-env both omit oblivion).
+3. FO4 facegeom BGSM `msn`-flag=false side finding → **#4548** (with the
+   verification steps the original finding deferred).
 
 ### 2b. P2 tail — combat feel + loot
 
