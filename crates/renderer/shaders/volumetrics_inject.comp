@@ -2536,7 +2536,24 @@ void main() {
         fog_chromaticity = vec3(1.0);
     }
     vec3 global_albedo = fog_chromaticity * clamp(params.medium_params.x, 0.0, 1.0);
-    vec3 scattering_coef = global_extinction * global_albedo + local_medium.scattering;
+    // Multiple-scattering energy compensation for the local medium. The
+    // in-scatter below is single-scatter: every order >= 2 is dropped, which
+    // makes optically thick smoke read too dark and too contrasty against its
+    // own emission and its light sources. Orders >= 2 are approximately
+    // isotropic and lose roughly one albedo per bounce, so two octaves of a
+    // geometric series in the local medium's spectral albedo recover a
+    // bounded share of that energy with no second march. This multiplies only
+    // the local-medium share of the scattering coefficient: extinction, the
+    // authored global fog term, and thermal emission are all untouched, so a
+    // fog-only scene is bit-identical and fire keeps its direct-emission look.
+    vec3 local_medium_albedo = local_medium.scattering
+        / max(vec3(local_medium.extinction), vec3(1.0e-6));
+    vec3 multiscatter_gain = vec3(1.0)
+        + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * local_medium_albedo
+        + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT
+            * local_medium_albedo * local_medium_albedo;
+    vec3 scattering_coef = global_extinction * global_albedo
+        + local_medium.scattering * multiscatter_gain;
 
     // CELL/WTHR fog colour is an apparent in-scattering colour, not merely a
     // hue for direct-light scattering. Treat it as the homogeneous medium's

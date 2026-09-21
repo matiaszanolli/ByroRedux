@@ -740,6 +740,17 @@ pub const COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G: f32 = 0.35;
 pub const COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G: f32 = -0.12;
 pub const COMBUSTION_LOCAL_LIGHT_PHASE_MIX: f32 = 0.65;
 
+// Multiple-scattering energy compensation for the froxel in-scatter. The
+// injector is single-scatter: every order >= 2 is dropped, which makes
+// optically thick smoke read too dark and too contrasty against its own
+// emission. Orders >= 2 are approximately isotropic and lose roughly one
+// albedo per bounce, so a two-octave geometric series in the local medium's
+// spectral single-scatter albedo recovers a bounded share of that energy
+// without a second march. Weights are renderer-local optics shaping, not
+// per-content authored values.
+pub const COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT: f32 = 0.6;
+pub const COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT: f32 = 0.3;
+
 // Transported-combustion -> surface-light reduction. The froxel injector
 // accumulates fixed-point radiant moments into this camera-centred grid; Rust
 // drains the exact same ABI after the frame-slot fence. Keep the dimensions,

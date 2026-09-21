@@ -580,6 +580,16 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT {COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT {COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K {COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K:?}"
     )
     .unwrap();
