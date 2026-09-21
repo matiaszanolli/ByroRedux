@@ -75,6 +75,10 @@ impl VulkanContext {
         water_commands: &[super::super::water::WaterDrawCommand],
         armed_selected_ray_probe_generation: &mut Option<u32>,
         t: &mut FrameTimings,
+        // Stage 1 — frame delta in seconds for the exposure meter's
+        // adaptation factor (precomputed host-side; see
+        // `exposure::adaptation_alpha`).
+        frame_delta_seconds: f32,
     ) -> BuildInstancesOutput {
         // ── Build instance SSBO + draw batches ────────────────────────
         //
@@ -1042,6 +1046,43 @@ impl VulkanContext {
                 // #3981 — the one reachable TAA failure. Everything the
                 // failure has to do lives in `latch_taa_failure`.
                 self.latch_taa_failure(&e);
+            }
+        }
+
+        // Exposure-meter UBO (Stage 1) — same bulk-barrier coverage as TAA
+        // above. The pass's one fallible step; a failure latches the meter
+        // off for the session (exposure freezes at the slots' last value —
+        // fixed and auto alike — rather than metering against stale params).
+        if !self.exposure_meter_failed {
+            let upload = self
+                .post
+                .exposure_meter
+                .as_mut()
+                .map(|meter| {
+                    meter.upload_params(
+                        &self.device,
+                        frame,
+                        super::super::exposure_meter::MeterParams {
+                            mode: [
+                                if self.exposure_auto { 1.0 } else { 0.0 },
+                                self.exposure_fixed,
+                                self.exposure_compensation_stops,
+                                super::super::exposure::adaptation_alpha(
+                                    frame_delta_seconds,
+                                    self.exposure_adaptation_seconds,
+                                ),
+                            ],
+                            limits: [
+                                super::super::exposure::MIN_AUTO_EXPOSURE,
+                                super::super::exposure::MAX_AUTO_EXPOSURE,
+                                0.0,
+                                0.0,
+                            ],
+                        },
+                    )
+                });
+            if let Some(Err(e)) = upload {
+                self.latch_exposure_meter_failure(&e);
             }
         }
 

@@ -400,13 +400,21 @@ struct PostChain {
     /// unwritten descriptor.
     sky_cube: Option<super::sky_cube::SkyCubePipeline>,
     ssao: Option<SsaoPipeline>,
-    /// FSR/presentation exposure producer — a persistent 1x1 `R32_SFLOAT`
-    /// texture holding the single fixed HDR exposure value. It is the source
-    /// of truth the FSR dispatch samples and the presentation tonemap reads,
-    /// so the two cannot drift into independent constants. `None` if
-    /// allocation failed; presentation falls back to
-    /// [`super::exposure::DEFAULT_EXPOSURE`].
-    exposure: Option<ExposureResource>,
+    /// Exposure producer — per-frame-in-flight 1x1 `R32_SFLOAT` textures
+    /// holding this frame's exposure (fixed constant or metered EV100).
+    /// Written by the metering pass each frame and sampled by BOTH the FSR
+    /// dispatch and `presentation.frag`'s `exposureTex`, so reconstruction
+    /// and the tone mapper agree by construction (the #2833 contract, now
+    /// structural). Non-optional since presentation's set-0 binding 2
+    /// requires it; `VulkanContext::new` hard-fails if allocation fails
+    /// (same policy as bloom's #1081 — a 1x1 image allocation failing means
+    /// the device is not usable).
+    exposure: ExposureResource,
+    /// Stage 1 exposure metering compute pass (`exposure_meter.comp`). Soft
+    /// `None` on init failure: a degraded mode genuinely exists (the slots
+    /// hold `DEFAULT_EXPOSURE`), unlike the exposure resource itself, so
+    /// failure logs a warn and freezes exposure rather than aborting boot.
+    exposure_meter: Option<super::exposure_meter::ExposureMeterPipeline>,
     /// Render-resolution scene → output-resolution HDR reconstruction.
     /// In TAA mode (and if FSR initialization fails), this records the native
     /// Vulkan bridge through the same explicit frame-graph seam.
@@ -1030,6 +1038,30 @@ pub struct VulkanContext {
     /// [`Self::signal_temporal_discontinuity`]. Schied 2017 §4 floor
     /// (0.2) takes over once the counter reaches 0. See #674 / DEN-4.
     pub svgf_recovery_frames: u32,
+    /// Stage 1 (RENDERING-PLAN.md) — exposure-meter failure latch, set from
+    /// the first `exposure_meter.upload_params` error via
+    /// `latch_exposure_meter_failure` (the #3981 discipline; the dispatch
+    /// itself records `ash` commands only). Milder degradation than the
+    /// TAA/SVGF siblings: presentation and FSR keep sampling the per-frame
+    /// exposure slots (cleared to `DEFAULT_EXPOSURE` at init), so the frame
+    /// stays correctly graded — exposure just stops tracking the scene or
+    /// the fixed setting. Not reset on resize: the failure is a mapped-write
+    /// fault, not a resource loss.
+    pub exposure_meter_failed: bool,
+    /// Stage 1 — exposure mode and tuning, pushed from the engine's
+    /// `ExposureTuning` resource each frame (console/CLI mutable). `auto`
+    /// meters the post-bloom scene (Frostbite EV100); `fixed` writes
+    /// `exposure_fixed` unchanged. Compensation is photographic stops
+    /// (positive = darker) applied inside the auto target; adaptation speed
+    /// is the exponential time constant in seconds (0 = snap).
+    pub exposure_auto: bool,
+    pub exposure_fixed: f32,
+    pub exposure_compensation_stops: f32,
+    pub exposure_adaptation_seconds: f32,
+    /// Stage 1 — active display transform (ACES default; AgX behind
+    /// `--tonemap agx` / the `tonemap` console command). Mirrors in
+    /// `tonemap.rs`; presentation dispatches on its `shader_value()`.
+    pub tonemap: crate::tonemap::TonemapOp,
     /// Same latch for the caustic scatter pass. Unlike SVGF/TAA's
     /// "keeps sampling stale content" degradation, the caustic skip path
     /// (this latch, or a frame with no TLAS yet) explicitly clears its

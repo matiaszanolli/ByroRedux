@@ -2,10 +2,12 @@
 //!
 //! Scene composition now produces render-resolution linear HDR. The frame
 //! upscaler reconstructs it into an output-resolution HDR target, and this
-//! final fullscreen pass applies IMAD lens/color curves, exposure, ACES, and
-//! underwater treatment before writing the sRGB swapchain. Keeping this pass
-//! after the upscale boundary is what makes the native-copy bridge and the
-//! FSR dispatch interchangeable.
+//! final fullscreen pass applies IMAD lens/color curves, the exposure texel
+//! (sampled from `exposureTex` — the same value the FSR dispatch normalized
+//! against, Stage 1 of RENDERING-PLAN.md), the selected display transform
+//! (ACES or AgX, `renderer::tonemap`), and underwater treatment before
+//! writing the sRGB swapchain. Keeping this pass after the upscale boundary
+//! is what makes the native-copy bridge and the FSR dispatch interchangeable.
 
 use super::descriptors::{
     write_combined_image_sampler, write_storage_buffer, DescriptorPoolBuilder,
@@ -18,10 +20,12 @@ use ash::vk;
 const PRESENTATION_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
 const PRESENTATION_FRAG_SPV: &[u8] = include_bytes!("../../shaders/presentation.frag.spv");
 
-/// Set 0 of the presentation pass: the upscaled scene sampler and, for
-/// EX-05 / #2736, the per-frame image-health counters the fragment shader
-/// increments atomically on a non-finite scene texel.
-fn presentation_set_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 2] {
+/// Set 0 of the presentation pass: the upscaled scene sampler, the per-frame
+/// exposure texel (`exposureTex`, Stage 1 — same value the FSR dispatch
+/// normalized against), and, for EX-05 / #2736, the per-frame image-health
+/// counters the fragment shader increments atomically on a non-finite scene
+/// texel.
+fn presentation_set_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 3] {
     [
         vk::DescriptorSetLayoutBinding::default()
             .binding(0)
@@ -31,6 +35,11 @@ fn presentation_set_bindings() -> [vk::DescriptorSetLayoutBinding<'static>; 2] {
         vk::DescriptorSetLayoutBinding::default()
             .binding(1)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(2)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT),
     ]
@@ -54,7 +63,13 @@ fn presentation_shaders() -> [ReflectedShader<'static>; 2] {
 #[derive(Debug, Clone, Copy)]
 struct PresentationPushConstants {
     underwater: [f32; 4],
-    exposure: f32,
+    /// Display-transform selection (`renderer::tonemap::TONEMAP_OP_*`).
+    /// `uint` lane per the #3578 idiom — an operator id is not a float. The
+    /// former `exposure` scalar lived here; exposure moved to the sampled
+    /// `exposureTex` (binding 2) so presentation and FSR share one texel.
+    tonemap_op: u32,
+    /// Layout padding only (keeps the 16..32 byte block scalar-aligned).
+    reserved: u32,
     // #3578 — `u32`, not `f32`. These are a bitfield and a small enum; the
     // pass used to write them as `f32::from_bits(...)` and recover them with
     // `floatBitsToUint`, which made the struct's correctness depend on float-
@@ -66,11 +81,10 @@ struct PresentationPushConstants {
     // `OpBitcast` is one — but it inverts the idiom `GpuCamera.render_debug`
     // (`[u32; 4]` / `uvec4`) uses two files away, where a float riding in a
     // uint lane is cast OUT with `uintBitsToFloat`, the safe direction. The
-    // fields sit in the same 16-byte block as `exposure` and `padding`, so
-    // the struct stays 128 B and every offset pin is unchanged.
+    // fields sit in the same 16-byte block as `tonemap_op` and `reserved`,
+    // so the struct stays 128 B and every offset pin is unchanged.
     render_debug_flags: u32,
     render_debug_mode: u32,
-    padding: f32,
     lens: [f32; 4],
     radial_curve: [f32; 4],
     grade: [f32; 4],
@@ -87,11 +101,12 @@ pub use byroredux_core::imagespace::ImageSpaceModifier;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PresentationFrame {
-    pub exposure: f32,
     pub underwater: [f32; 4],
     pub image_space: ImageSpaceModifier,
     pub render_debug_flags: u32,
     pub render_debug_mode: u32,
+    /// Display-transform selection — `renderer::tonemap::TONEMAP_OP_*`.
+    pub tonemap_op: u32,
 }
 
 /// One Scaleform overlay draw, recorded inside this pass immediately after
@@ -141,6 +156,11 @@ pub struct PresentationTargets<'a> {
     pub swapchain_views: &'a [vk::ImageView],
     /// Per-frame-in-flight upscaler outputs — the pipeline's sampled source.
     pub upscaled_views: &'a [vk::ImageView],
+    /// Per-frame-in-flight exposure texels (`ExposureResource::views()`),
+    /// bound as `exposureTex` (binding 2). Stable across a swapchain
+    /// recreate (1x1, resolution-independent), so the rebuild may rebind the
+    /// same slice.
+    pub exposure_views: &'a [vk::ImageView],
     /// Per-frame-in-flight image-health counter buffers (EX-05 / #2736).
     /// Handles only; the allocations are owned by `VulkanContext` because
     /// they must survive the swapchain recreate that rebuilds this pipeline.
@@ -186,10 +206,12 @@ impl PresentationPipeline {
             swapchain_format,
             swapchain_views,
             upscaled_views,
+            exposure_views,
             health_buffers,
             extent,
         } = targets;
         debug_assert_eq!(upscaled_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(exposure_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(health_buffers.len(), MAX_FRAMES_IN_FLIGHT);
         let mut pipeline = Self {
             render_pass: vk::RenderPass::null(),
@@ -214,6 +236,7 @@ impl PresentationPipeline {
             swapchain_format,
             swapchain_views,
             upscaled_views,
+            exposure_views,
         );
         if let Err(error) = result {
             unsafe {
@@ -233,6 +256,7 @@ impl PresentationPipeline {
         swapchain_format: vk::Format,
         swapchain_views: &[vk::ImageView],
         upscaled_views: &[vk::ImageView],
+        exposure_views: &[vk::ImageView],
     ) -> Result<()> {
         self.sampler = unsafe {
             // SAFETY: device is live; the returned sampler is stored for
@@ -277,7 +301,7 @@ impl PresentationPipeline {
             )
         }
         .context("allocate presentation descriptor sets")?;
-        self.write_inputs(device, upscaled_views);
+        self.write_inputs(device, upscaled_views, exposure_views);
 
         let color = vk::AttachmentDescription::default()
             .format(swapchain_format)
@@ -520,13 +544,25 @@ impl PresentationPipeline {
         Ok(())
     }
 
-    fn write_inputs(&self, device: &ash::Device, upscaled_views: &[vk::ImageView]) {
+    fn write_inputs(
+        &self,
+        device: &ash::Device,
+        upscaled_views: &[vk::ImageView],
+        exposure_views: &[vk::ImageView],
+    ) {
         debug_assert_eq!(upscaled_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(exposure_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(self.health_buffers.len(), MAX_FRAMES_IN_FLIGHT);
-        for (frame, &view) in upscaled_views.iter().enumerate() {
+        for (frame, (&view, &exposure_view)) in
+            upscaled_views.iter().zip(exposure_views.iter()).enumerate()
+        {
             let info = [vk::DescriptorImageInfo::default()
                 .sampler(self.sampler)
                 .image_view(view)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let exposure_info = [vk::DescriptorImageInfo::default()
+                .sampler(self.sampler)
+                .image_view(exposure_view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let buffer_info = [vk::DescriptorBufferInfo::default()
                 .buffer(self.health_buffers[frame])
@@ -535,6 +571,7 @@ impl PresentationPipeline {
             let writes = [
                 write_combined_image_sampler(self.descriptor_sets[frame], 0, &info),
                 write_storage_buffer(self.descriptor_sets[frame], 1, &buffer_info),
+                write_combined_image_sampler(self.descriptor_sets[frame], 2, &exposure_info),
             ];
             unsafe {
                 // SAFETY: descriptor set and sampler are owned by `self`; the
@@ -581,10 +618,10 @@ impl PresentationPipeline {
         };
         let constants = PresentationPushConstants {
             underwater: input.underwater,
-            exposure: input.exposure,
+            tonemap_op: input.tonemap_op,
+            reserved: 0,
             render_debug_flags: input.render_debug_flags,
             render_debug_mode: input.render_debug_mode,
-            padding: 0.0,
             lens: [
                 input.image_space.blur_radius_pixels,
                 input.image_space.double_vision_strength,
@@ -845,7 +882,7 @@ mod tests {
     fn presentation_push_constants_match_shader_alignment() {
         assert_eq!(std::mem::size_of::<PresentationPushConstants>(), 128);
         assert_eq!(
-            std::mem::offset_of!(PresentationPushConstants, exposure),
+            std::mem::offset_of!(PresentationPushConstants, tonemap_op),
             16
         );
         assert_eq!(std::mem::offset_of!(PresentationPushConstants, lens), 32);
@@ -900,7 +937,11 @@ mod tests {
         );
 
         let frag = include_str!("../../shaders/presentation.frag");
-        for field in ["uint renderDebugFlags;", "uint renderDebugMode;"] {
+        for field in [
+            "uint tonemapOp;",
+            "uint renderDebugFlags;",
+            "uint renderDebugMode;",
+        ] {
             assert!(
                 frag.contains(field),
                 "presentation.frag's PresentationParams must declare `{field}` to mirror \

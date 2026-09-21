@@ -1,0 +1,96 @@
+#version 450
+
+// Stage 1 (RENDERING-PLAN.md) — scene metering for the exposure pipeline.
+//
+// Single-workgroup compute pass: geometric-mean luminance of the post-bloom
+// composite scene -> EV100 (Frostbite photometry, Lagarde & de Rousiers,
+// "Moving Frostbite to Physically Based Rendering", SIGGRAPH 2014, sect.
+// 5.6) -> linear exposure written into this frame's 1x1 R32_SFLOAT slot of
+// the ExposureResource — the same texel the FSR dispatch normalizes against
+// and presentation.frag samples as `exposureTex`.
+//
+// Two modes via params.mode.x:
+//   0 (fixed) — write params.fixed_exposure; the scene is not sampled.
+//   1 (auto)  — EV100 = log2(L_avg * S / K), S=100, K=12.5 (the reflected-
+//               light meter calibration constant), exposure = 1.2 * 2^-EV100
+//               (0.15 / L_avg), then compensation stops and clamp, then
+//               exponential adaptation toward the target using the previous
+//               value of THIS frame-in-flight slot (written two frames ago —
+//               per-FIF slot ownership, same discipline as every other
+//               per-frame pass; adaptation simply lags MAX_FRAMES_IN_FLIGHT
+//               frames, which is negligible at the ~0.1-0.3 s speeds used).
+//
+// The host precomputes the adaptation blend factor from dt (1 - exp(-dt/tau))
+// and ships it as a plain alpha, so this shader needs no clock.
+//
+// Resolution independence: the extent comes from textureSize(sceneTex, 0),
+// so a swapchain resize does not rebuild this pipeline.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) uniform sampler2D sceneTex;
+layout(set = 0, binding = 1, r32f) uniform image2D dstExposure;
+
+layout(set = 0, binding = 2) uniform Params {
+    // x = mode (0 fixed, 1 auto), y = fixed exposure, z = compensation in
+    // stops (positive = darker), w = adaptation alpha for this frame.
+    vec4 mode;
+    // x = min exposure clamp, y = max exposure clamp, zw unused.
+    vec4 limits;
+} params;
+
+shared float shared_log_sum[64];
+
+// Log-average (geometric mean) luminance: robust against a few extreme
+// emissive texels dragging the arithmetic mean, standard for metering.
+void main() {
+    if (params.mode.x < 0.5) {
+        if (gl_LocalInvocationID.x == 0) {
+            imageStore(dstExposure, ivec2(0), vec4(params.mode.y, 0.0, 0.0, 1.0));
+        }
+        return;
+    }
+
+    ivec2 extent = textureSize(sceneTex, 0);
+    // ~64x64 grid over the frame = 4096 samples regardless of resolution.
+    int side = 64;
+    ivec2 step = max(extent / side, ivec2(1));
+
+    float log_sum = 0.0;
+    int count = 0;
+    for (int idx = int(gl_LocalInvocationID.x); idx < side * side; idx += 64) {
+        ivec2 texel = ivec2(idx % side, idx / side) * step;
+        if (texel.x >= extent.x || texel.y >= extent.y) {
+            continue;
+        }
+        vec3 rgb = texelFetch(sceneTex, texel, 0).rgb;
+        float l = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+        // Guard log2(0); a black frame still meters as a very dark scene
+        // rather than producing -inf.
+        log_sum += log2(max(l, 1.0e-6));
+        count += 1;
+    }
+
+    shared_log_sum[gl_LocalInvocationID.x] = log_sum;
+    barrier();
+    for (uint s = 32; s > 0; s >>= 1) {
+        if (gl_LocalInvocationID.x < s) {
+            shared_log_sum[gl_LocalInvocationID.x] += shared_log_sum[gl_LocalInvocationID.x + s];
+        }
+        barrier();
+    }
+
+    if (gl_LocalInvocationID.x == 0) {
+        float samples = max(float(count), 1.0);
+        float avg_luminance = exp2(shared_log_sum[0] / samples);
+        // EV100 = log2(L * S / K), S = 100, K = 12.5 -> log2(L * 8.0).
+        float ev100 = log2(max(avg_luminance, 1.0e-6) * 8.0);
+        float target = 1.2 * exp2(-ev100);
+        // Compensation in stops: positive darkens.
+        target *= exp2(-params.mode.z);
+        target = clamp(target, params.limits.x, params.limits.y);
+        float previous = imageLoad(dstExposure, ivec2(0)).r;
+        float adapted = mix(previous, target, clamp(params.mode.w, 0.0, 1.0));
+        imageStore(dstExposure, ivec2(0), vec4(adapted, 0.0, 0.0, 1.0));
+    }
+}

@@ -5,6 +5,14 @@
 
 layout(set = 0, binding = 0) uniform sampler2D upscaledScene;
 
+// Stage 1 (RENDERING-PLAN.md) — per-frame exposure, produced by the
+// exposure-meter compute pass (fixed or auto-EV100). A 1x1 R32_SFLOAT texel,
+// one image per frame in flight; the set is indexed per frame so this is the
+// same value the FSR dispatch of this frame normalized against. The old
+// push-constant scalar remains only as the `exposure`-lane reserved word —
+// see PresentationPushConstants on the host side.
+layout(set = 0, binding = 2) uniform sampler2D exposureTex;
+
 // EX-05 / #2736 — pre-tonemap image-health counters.
 //
 // This pass is the *last* place the scene exists in linear HDR: everything
@@ -23,12 +31,16 @@ layout(set = 0, binding = 1) buffer ImageHealth {
 
 layout(push_constant) uniform PresentationParams {
     vec4 underwater;
-    float exposure;
+    // Display-transform selection — ids from `tonemap.rs`
+    // (`renderer::tonemap::TONEMAP_OP_*`). `uint`, matching the host's
+    // `PresentationPushConstants` (#3578 idiom: no enum in float lanes).
+    uint tonemapOp;
+    // Layout padding only; keeps the 16-31 byte block scalar-aligned.
+    uint reserved;
     // #3578 — `uint`, matching `PresentationPushConstants`. See that struct
     // for why these must not ride in float lanes.
     uint renderDebugFlags;
     uint renderDebugMode;
-    float padding2;
     vec4 lens;
     vec4 radialCurve;
     vec4 grade;
@@ -47,6 +59,62 @@ vec3 aces(vec3 x) {
     const float d = 0.59;
     const float e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// AgX — Minimal AgX implementation (c) 2023 Benjamin Wrensch (IOLITE engine,
+// https://iolite-engine.com/blog_posts/minimal_agx_implementation), a compact
+// port of Troy Sobotka's AgX display transform. MIT licensed; notice in
+// THIRD_PARTY_NOTICES.md. Behavioural mirror + licence pin: renderer's
+// `tonemap.rs`.
+//
+// Output convention matches `aces()` above: LINEAR display-light — the
+// reference EOTF `pow(x, 2.2)` returns the AgX-encoded signal to linear, and
+// the B8G8R8A8_SRGB swapchain applies the sRGB OETF on write. Do not add an
+// sRGB encode here.
+// ---------------------------------------------------------------------------
+const mat3 AGX_MAT = mat3(
+  0.842479062253094,  0.0423282422610123, 0.0423756549057051,
+  0.0784335999999992, 0.878468636469772,  0.0784336,
+  0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+
+const mat3 AGX_INV_MAT = mat3(
+  1.19687900512017,   -0.0528968517574562, -0.0529716355144438,
+ -0.0980208811401368,  1.15190312990417,   -0.0980434501171241,
+ -0.0990297440797205, -0.0989611768448433,  1.15107367264116);
+
+// Polynomial fit of AgX's contrast S-curve (gist verbatim).
+vec3 agxDefaultContrastApprox(vec3 x) {
+    vec3 x2 = x * x;
+    vec3 x4 = x2 * x2;
+    return + 15.5     * x4 * x2
+           - 40.14    * x4 * x
+           + 31.96    * x4
+           - 6.868    * x2 * x
+           + 0.4298   * x2
+           + 0.1191   * x
+           - 0.00232;
+}
+
+vec3 agx(vec3 val) {
+    const float min_ev = -12.47393;
+    const float max_ev = 4.026069;
+    val = AGX_MAT * val;
+    val = clamp(val, 0.0, 1.0);
+    val = log2(val);
+    val = (val - min_ev) / (max_ev - min_ev);
+    val = agxDefaultContrastApprox(val);
+    val = AGX_INV_MAT * val;
+    // Reference EOTF back to linear; clamp absorbs the outset matrix's small
+    // negatives before pow() can turn them into NaN.
+    val = clamp(pow(max(val, 0.0), vec3(2.2)), 0.0, 1.0);
+    return val;
+}
+
+// Display-transform dispatch — ids from renderer `tonemap.rs`
+// (TONEMAP_OP_ACES = 0, TONEMAP_OP_AGX = 1).
+vec3 tonemap(vec3 x) {
+    return params.tonemapOp == 1u ? agx(x) : aces(x);
 }
 
 vec4 sampleImageSpace(vec2 uv) {
@@ -133,7 +201,7 @@ void main() {
     // The main/composite passes have already encoded the debug oracle in
     // display-linear [0,1]. Preserve categorical colours, scalar visibility,
     // and isolated lighting energy exactly: no lens kernels, grading,
-    // exposure, ACES, underwater treatment, or scripted fades.
+    // exposure, tone mapping, underwater treatment, or scripted fades.
     uint dbgFlags = params.renderDebugFlags;
     uint debugMode = params.renderDebugMode;
     // #2978 — the "which views are oracles" policy is generated into
@@ -159,14 +227,15 @@ void main() {
         graded * normalizedLegacyColor(params.tintColor.rgb),
         clamp(params.tintColor.a, 0.0, 1.0)
     );
-    vec3 presented = aces(graded * params.exposure);
+    float exposure = texelFetch(exposureTex, ivec2(0), 0).r;
+    vec3 presented = tonemap(graded * exposure);
 
     if (params.underwater.w > 0.0) {
         // The app packs the authored WATR fog ramp into this channel as a
         // Beer–Lambert extinction value. Do not apply a second fixed-distance
         // curve here: that erased per-water fog_near/fog_far differences.
         float extinction = clamp(params.underwater.w, 0.0, 0.85);
-        vec3 underwaterTone = aces(params.underwater.xyz * params.exposure);
+        vec3 underwaterTone = tonemap(params.underwater.xyz * exposure);
         presented = mix(presented, underwaterTone, extinction);
     }
 

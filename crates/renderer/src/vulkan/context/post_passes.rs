@@ -288,6 +288,10 @@ impl VulkanContext {
         // direct) instead of the pre-composite raw HDR that never
         // contained sky/GI/caustics. See `record_bloom_pass`'s doc.
         self.record_bloom_pass(cmd, frame);
+        // Stage 1 — meter the post-bloom scene this frame's FSR dispatch and
+        // presentation pass will both consume, so the exposure texel and the
+        // reconstruction agree by construction.
+        self.record_exposure_meter_pass(cmd, frame);
         // #3572 — TAA now resolves the SAME fully-composited, post-bloom
         // scene image FSR consumes, so sky / denoised indirect /
         // volumetrics / caustics / bloom are inside the resolved image on
@@ -925,6 +929,25 @@ impl VulkanContext {
         );
     }
 
+    /// The exposure meter's permanent-failure path, mirroring
+    /// `latch_taa_failure`'s discipline (#3981 / #2146): `upload_params`'s
+    /// mapped write is the pass's one reachable failure, and everything the
+    /// failure must do lives here so it cannot drift apart.
+    ///
+    /// Milder than the TAA sibling: presentation and FSR keep sampling the
+    /// per-frame exposure slots (cleared to `DEFAULT_EXPOSURE` at init), so
+    /// the frame stays correctly graded — exposure simply freezes at the
+    /// slots' last value instead of tracking the scene or the fixed setting.
+    /// No history flush is needed; the meter writes no temporal resource any
+    /// other pass reads.
+    pub(super) fn latch_exposure_meter_failure(&mut self, error: &anyhow::Error) {
+        log::error!(
+            "Exposure-meter parameter upload failed — exposure is frozen at the \
+             last written value for the rest of the session: {error}"
+        );
+        self.exposure_meter_failed = true;
+    }
+
     /// SSAO compute pass (#2258 / TD1-080, extracted from
     /// `record_post_passes`): reads depth buffer (now in READ_ONLY layout
     /// after render pass), writes this frame's slot of the per-FIF AO
@@ -982,6 +1005,50 @@ impl VulkanContext {
                     log::warn!("SSAO dispatch failed: {e}");
                 }
             }
+        }
+    }
+
+    /// Exposure metering (Stage 1, RENDERING-PLAN.md): reads the SAME
+    /// post-bloom composite scene image TAA and the upscaler consume,
+    /// reduces it to a geometric-mean luminance, and writes this frame's
+    /// exposure texel — the one both the FSR dispatch (compute, this
+    /// command buffer, later) and `presentation.frag` (`exposureTex`)
+    /// sample. Runs between `record_bloom_pass` and `record_taa_pass`;
+    /// bloom's outgoing `apply_to_scene` barrier already covers this
+    /// dispatch's compute read of the scene image, and the meter's own
+    /// post-write barrier publishes the texel to FSR + presentation.
+    ///
+    /// Fixed mode still dispatches (the shader writes the constant without
+    /// sampling), which keeps the slots authoritative for every consumer
+    /// instead of splitting fixed/auto across two code paths.
+    ///
+    /// # Safety
+    /// `cmd` is in the recording state — opened by `begin_command_buffer`
+    /// in `draw_frame` and not yet closed — and this runs once per frame
+    /// between the main render pass end and `end_command_buffer`, at the
+    /// fixed position `record_post_passes` calls it from.
+    fn record_exposure_meter_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        if self.exposure_meter_failed {
+            return;
+        }
+        // SAFETY: `cmd` is recording outside a render pass; the meter
+        // pipeline, this frame's exposure slot, and the composite scene view
+        // are live for this frame.
+        unsafe {
+            let (Some(ref mut meter), Some(ref composite)) =
+                (self.post.exposure_meter.as_mut(), self.post.composite.as_ref())
+            else {
+                return;
+            };
+            let exposure = &self.post.exposure;
+            meter.dispatch(
+                &self.device,
+                cmd,
+                frame,
+                composite.scene_view(frame),
+                exposure.image(frame),
+                exposure.view(frame),
+            );
         }
     }
 
@@ -1164,7 +1231,7 @@ impl VulkanContext {
                     gbuffer.transparency_image(frame),
                 )
             };
-            let exposure_image = self.post.exposure.as_ref().map(|exposure| exposure.image());
+            let exposure_image = Some(self.post.exposure.image(frame));
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_upscale_start(&self.device, cmd, frame);
             }
@@ -1244,13 +1311,6 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and presentation,
         // exposure, swapchain-image, and timer resources are live for this frame.
         unsafe {
-            // #2833 — when the resource is absent FSR is handed a null
-            // exposure and the SDK substitutes 1.0, so the tone mapper must
-            // use the same number or the two grade the frame differently.
-            let exposure = self.post.exposure.as_ref().map_or(
-                super::super::exposure::NO_EXPOSURE_RESOURCE_FALLBACK,
-                |value| value.value(),
-            );
             // #3426 — the Scaleform overlay composites inside the
             // presentation pass now, so its draw state is assembled here and
             // handed to `dispatch`. `None` (no UI texture this frame, no
@@ -1313,11 +1373,14 @@ impl VulkanContext {
                     frame,
                     img,
                     PresentationFrame {
-                        exposure,
                         underwater,
                         image_space: image_space_modifier,
                         render_debug_flags: self.render_debug_flags,
                         render_debug_mode: self.render_debug_mode.shader_value(),
+                        // Stage 1 — display-transform selection; the exposure
+                        // itself arrives via `exposureTex` (binding 2), the
+                        // same texel the FSR dispatch normalized against.
+                        tonemap_op: self.tonemap.shader_value(),
                     },
                     overlay,
                 );
@@ -1669,12 +1732,16 @@ mod tests {
         let body = &src[fn_start..];
         let composite = body.find("self.record_composite_pass(cmd, frame);").expect("composite call");
         let bloom = body.find("self.record_bloom_pass(cmd, frame);").expect("bloom call");
+        let meter = body
+            .find("self.record_exposure_meter_pass(cmd, frame);")
+            .expect("exposure meter call");
         let taa = body.find("self.record_taa_pass(cmd, frame);").expect("taa call");
         let upscale = body.find("self.record_upscale_pass(cmd, frame, fsr_frame);").expect("upscale call");
         assert!(
-            composite < bloom && bloom < taa && taa < upscale,
-            "the frame tail must order composite -> bloom -> TAA -> upscale: \
-             TAA resolves the same post-bloom scene tap FSR consumes (#3572)"
+            composite < bloom && bloom < meter && meter < taa && taa < upscale,
+            "the frame tail must order composite -> bloom -> exposure meter -> TAA -> \
+             upscale: the meter writes the exposure texel FSR normalizes against \
+             (#3572 sequencing, Stage 1 exposure)"
         );
         assert!(
             !body[..taa].contains("self.record_taa_pass(cmd, frame);"),
