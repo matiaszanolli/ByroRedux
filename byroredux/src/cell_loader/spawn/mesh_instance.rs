@@ -1050,33 +1050,17 @@ pub(super) fn spawn_mesh_instance(
         entity,
         GlobalTransform::new(final_pos, final_rot, final_scale),
     );
-    // #3231 — GPU morph-target deformation. v1-scoped to skinned
-    // meshes only (`mesh.skin.is_some()`), matching the `bone_offset
-    // != 0` gate both the draw-time `GpuInstance` lookup in
-    // `context/draw.rs` and the `skin_vertices.comp` dispatch in
-    // `skinned_blas_refit.rs` use — an unskinned mesh's DrawCommand
-    // always carries `bone_offset == 0`, so a slot created for one
-    // would never be read by either consumer. Created once here
-    // (not lazily per-frame like `SkinSlot`) because morph delta
-    // data is only known at NIF-import/mesh-spawn time — see
-    // `MorphSlot`'s own doc comment.
-    if mesh.skin.is_some() {
-        if let Some(morph_targets) = mesh.morph_targets.as_ref().filter(|t| !t.is_empty()) {
-            let vertex_count = mesh.positions.len() as u32;
-            let (deltas, target_count) = flatten_morph_targets(morph_targets, mesh.positions.len());
-            match ctx.create_morph_slot_for_mesh(mesh_handle, &deltas, target_count, vertex_count) {
-                Ok(slot) => {
-                    ctx.morph_slots.insert(entity, slot);
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Failed to create MorphSlot for entity {entity} ({:?}): {e:#}",
-                        mesh.name,
-                    );
-                }
-            }
-        }
-    }
+    // #3231 / #4399 — GPU morph-target slots are created only where the
+    // canonical read gate (`bone_offset != 0`, which requires a
+    // `SkinnedMesh` on the entity) can actually fire. This cell path
+    // attaches no `SkinnedMesh` (#2440 tracks that gap), so the slots it
+    // used to create behind the raw `mesh.skin.is_some()` gate were
+    // staged into by `AnimatedMorphWeights` yet read by no draw — dead
+    // GPU weight/delta buffers on arrival, kept warm by the #4294 LRU
+    // and #3661 residency work for nothing. Creation now lives in
+    // [`try_spawn_morph_slot`], called from the loose-NIF / NPC path in
+    // `scene/nif_loader.rs` where the `SkinnedMesh` is actually built;
+    // when #2440 lands a cell-path `SkinnedMesh`, call it there too.
     // #1213 / D1-NEW-02 — seed LocalBound from the mesh-local
     // bounding sphere (`ImportedMesh.local_bound_center`,
     // `.local_bound_radius`, both extracted by the NIF importer
@@ -1470,6 +1454,42 @@ fn flatten_morph_targets(
     (deltas, target_count)
 }
 
+/// #3231 / #4399 — create the GPU morph-target slot for one spawned skinned
+/// mesh entity. v1-scoped to entities that carry a canonical `SkinnedMesh`:
+/// the draw-time `GpuInstance` lookup in `context/draw.rs` and the
+/// `skin_vertices.comp` dispatch in `skinned_blas_refit.rs` both gate on
+/// `bone_offset != 0`, which only a `SkinnedMesh` produces — so callers must
+/// invoke this ONLY where a `SkinnedMesh` was actually attached (the
+/// loose-NIF / NPC path in `scene/nif_loader.rs`; the cell path cannot until
+/// #2440). Pre-#4399 the cell loader also created slots behind the raw
+/// `mesh.skin.is_some()` gate, which no read gate could ever reach. Created
+/// once at spawn (not lazily per-frame like `SkinSlot`) because morph delta
+/// data is only known at NIF-import/mesh-spawn time — see `MorphSlot`'s own
+/// doc comment.
+pub(crate) fn try_spawn_morph_slot(
+    ctx: &mut VulkanContext,
+    entity: byroredux_core::ecs::EntityId,
+    mesh: &byroredux_nif::import::ImportedMesh,
+    mesh_handle: u32,
+) {
+    let Some(morph_targets) = mesh.morph_targets.as_ref().filter(|t| !t.is_empty()) else {
+        return;
+    };
+    let vertex_count = mesh.positions.len() as u32;
+    let (deltas, target_count) = flatten_morph_targets(morph_targets, mesh.positions.len());
+    match ctx.create_morph_slot_for_mesh(mesh_handle, &deltas, target_count, vertex_count) {
+        Ok(slot) => {
+            ctx.morph_slots.insert(entity, slot);
+        }
+        Err(e) => {
+            log::warn!(
+                "Failed to create MorphSlot for entity {entity} ({:?}): {e:#}",
+                mesh.name,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1548,6 +1568,52 @@ mod tests {
         assert!(
             !production.contains("MorphSlot::create("),
             "spawn must not upload a delta buffer once per entity"
+        );
+    }
+
+    /// #4399 — the #3231 creation site and the `bone_offset != 0` read gate
+    /// used to live on paths that never intersect: creation was gated on the
+    /// raw `mesh.skin.is_some()` (cell loader, which attaches no
+    /// `SkinnedMesh` — #2440), while the read gate requires the canonical
+    /// `SkinnedMesh` only `scene/nif_loader.rs` builds. Driving either path
+    /// live needs a `VulkanContext`, so reachability is pinned at source
+    /// level — the same shape as `morph_spawn_uses_mesh_handle_shared_delta_cache`
+    /// above:
+    ///
+    /// * creation exists exactly ONCE, in the shared `try_spawn_morph_slot`
+    ///   helper, whose doc states the canonical gate;
+    /// * the loose-NIF / NPC path calls that helper only when the skin
+    ///   binding actually attached a `SkinnedMesh`;
+    /// * the cell path no longer creates slots (the raw `mesh.skin.is_some()`
+    ///   creation gate is gone from this file's production half).
+    #[test]
+    fn morph_slot_creation_is_reachable_end_to_end() {
+        let here = include_str!("mesh_instance.rs");
+        let production = &here[..here
+            .find("\n#[cfg(test)]")
+            .expect("mesh_instance.rs must retain its test module")];
+        let nif_loader = include_str!("../../scene/nif_loader.rs");
+
+        assert_eq!(
+            production.matches("create_morph_slot_for_mesh(").count(),
+            1,
+            "creation must live only in the shared try_spawn_morph_slot helper"
+        );
+        assert!(
+            production.contains("pub(crate) fn try_spawn_morph_slot("),
+            "the helper must stay crate-visible for the loose-NIF path to call"
+        );
+        assert!(
+            nif_loader.contains("if skin_attached {\n")
+                && nif_loader.contains("try_spawn_morph_slot(ctx, entity, mesh, mesh_handle);"),
+            "the loose-NIF path must create the slot exactly where its \
+             SkinnedMesh was attached (#4399)"
+        );
+        assert!(
+            !production.contains("if mesh.skin.is_some() {"),
+            "the cell path must not create slots behind the raw skin gate — \
+             it attaches no SkinnedMesh (#2440), so those slots are read by \
+             no draw (#4399)"
         );
     }
 

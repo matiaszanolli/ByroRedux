@@ -1430,7 +1430,17 @@ fn spawn_nif_mesh(
     }
 
     // Skinning binding, if the NIF authored one (#3858).
-    attach_nif_skin_binding(world, entity, mesh, external_skeleton, node_by_name);
+    let skin_attached = attach_nif_skin_binding(world, entity, mesh, external_skeleton, node_by_name);
+    // #3231 / #4399 — GPU morph-target slot. Created only when the
+    // canonical `SkinnedMesh` was actually attached: the read side gates on
+    // `bone_offset != 0` (`build_and_upload_instances`, `skin_vertices.comp`
+    // dispatch), which nothing else produces. Pre-#4399 the only creation
+    // site was the cell loader's raw `mesh.skin.is_some()` gate — a path
+    // that never builds a `SkinnedMesh` (#2440) — so the two conditions
+    // never met on any entity and the whole #3231 feature was inert.
+    if skin_attached {
+        crate::cell_loader::spawn::mesh_instance::try_spawn_morph_slot(ctx, entity, mesh, mesh_handle);
+    }
     // Set up parent relationship.
     if let Some(parent_idx) = mesh.parent_node {
         let parent_entity = node_entities[parent_idx];
@@ -1724,13 +1734,19 @@ fn spawn_nif_particle_emitters(
 /// NPC part loaded against an already-spawned body), falling back to this
 /// NIF's own `node_by_name`. Unresolved bones stay `None`; the palette system
 /// substitutes identity for them rather than dropping the mesh.
+///
+/// Returns whether a `SkinnedMesh` was actually attached — false when the
+/// NIF authored no skin, or when it exceeds `MAX_BONES_PER_MESH` and was
+/// skipped. #4399: the caller uses this as the canonical gate for GPU
+/// morph-slot creation, whose read side (`bone_offset != 0`) only a
+/// `SkinnedMesh` can satisfy.
 fn attach_nif_skin_binding(
     world: &mut World,
     entity: EntityId,
     mesh: &byroredux_nif::import::ImportedMesh,
     external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
     node_by_name: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
-) {
+) -> bool {
     // Attach skinning binding if present. Resolves each bone name to
     // the entity spawned for that node in Phase 1. Missing bones are
     // kept as `None`; the palette system substitutes identity for them.
@@ -1742,6 +1758,7 @@ fn attach_nif_skin_binding(
                 skin.bones.len(),
                 MAX_BONES_PER_MESH
             );
+            return false;
         } else {
             let mut bones: Vec<Option<EntityId>> = Vec::with_capacity(skin.bones.len());
             let mut binds: Vec<Mat4> = Vec::with_capacity(skin.bones.len());
@@ -1829,6 +1846,10 @@ fn attach_nif_skin_binding(
                     skin.skeleton_root,
                 );
             }
+            true
         }
+    } else {
+        // No authored skin — nothing attached (#4399's canonical gate).
+        false
     }
 }

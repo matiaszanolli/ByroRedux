@@ -1373,7 +1373,10 @@ fn spawn_collision_shapes(
 }
 
 // Per-sub-mesh instance spawn (#2410 / TD1-007).
-pub(super) mod mesh_instance;
+// `pub(crate)` (not `pub(super)`): the loose-NIF / NPC path in
+// `scene/nif_loader.rs` calls `mesh_instance::try_spawn_morph_slot` where
+// its `SkinnedMesh` is built (#4399).
+pub(crate) mod mesh_instance;
 use mesh_instance::{
     prepare_mesh_uploads, resolve_mesh_paths_with_pre_merge, spawn_mesh_instance, PlacementCtx,
 };
