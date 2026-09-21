@@ -47,6 +47,10 @@ fn legacy_window_env_mapping(shader_flags_1: u32) -> bool {
 const TEXTURING_BASE: u8 = 1 << 0;
 const TEXTURING_NORMAL: u8 = 1 << 1;
 const TEXTURING_GLOW: u8 = 1 << 2;
+/// #4401 — the parallax slot joins the claim scheme: a `BSShader*`'s
+/// authored-POM slot-3 texture displaces a legacy `NiTexturingProperty`
+/// slot-7 path the same way slots 0-2 displace the legacy base/normal/glow.
+const TEXTURING_PARALLAX: u8 = 1 << 3;
 
 /// #4235 — write a shader property's own texture into `slot`.
 ///
@@ -55,18 +59,28 @@ const TEXTURING_GLOW: u8 = 1 << 2;
 /// texture, so it outranks the legacy property for the same role wherever
 /// the two sit in the chain. An empty shader slot never displaces a bound
 /// path.
+///
+/// #4401 — returns whether this call *displaced* a legacy property's path
+/// (the only case where the caller must also re-latch every per-slot
+/// consumer the legacy write owned — today `texture_clamp_mode`, and for
+/// the parallax role the `parallax_max_passes`/`parallax_height_scale`
+/// pair). Pre-fix the displacement fixed the *path* but left those
+/// latched to the displaced legacy property, so the shader's texture was
+/// sampled with the legacy address mode.
 fn claim_shader_texture(
     slot: &mut Option<FixedString>,
     texturing_property_roles: &mut u8,
     role: u8,
     path: Option<FixedString>,
-) {
+) -> bool {
     if slot.is_none() {
         *slot = path;
     } else if *texturing_property_roles & role != 0 && path.is_some() {
         *slot = path;
         *texturing_property_roles &= !role;
+        return true;
     }
+    false
 }
 
 /// Whether a FO3/FNV `BSShaderPPLightingProperty` actually authors POM,
@@ -280,6 +294,13 @@ fn apply_texturing_property(
         if info.parallax_map.is_none() {
             info.parallax_map =
                 tex_desc_source_path(scene, tex_prop.parallax_texture.as_ref(), pool);
+            // #4401 — record the role so a co-bound `BSShaderPPLighting`'s
+            // authored-POM slot 3 can displace this path (and its default
+            // scalar pair) via the claim scheme, instead of this
+            // first-writer latch winning by chain order alone.
+            if info.parallax_map.is_some() {
+                info.texturing_property_roles |= TEXTURING_PARALLAX;
+            }
             // #725 / NIF-D4-06 — when a NiTexturingProperty parallax
             // slot binds WITHOUT a co-bound BSShaderPPLightingProperty
             // (rare on FO3 / FNV with an Oblivion-style property
@@ -474,6 +495,11 @@ fn apply_pp_lighting_property(
         // FO3-D1-02 / #2317 — computed once, shared by the slot-3 texture
         // bind below and the scalar-write gate further down.
         let parallax_authored = fo3_parallax_authored(shader.shader_flags_1());
+        // #4401 — set by the texture-set claims below when this shader
+        // displaces a legacy `NiTexturingProperty` path; read by the clamp
+        // and parallax-scalar writes further down.
+        let mut base_displaced_legacy = false;
+        let mut parallax_displaced_legacy = false;
         if let Some(ts_idx) = shader.texture_set_ref.index() {
             if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                 // #4235 — slots 0-2 outrank an `NiTexturingProperty`'s base,
@@ -489,7 +515,7 @@ fn apply_pp_lighting_property(
                         .and_then(|p| intern_texture_path(pool, p))
                 };
                 let base = slot_path(pool, 0);
-                claim_shader_texture(
+                base_displaced_legacy |= claim_shader_texture(
                     &mut info.texture_path,
                     &mut info.texturing_property_roles,
                     TEXTURING_BASE,
@@ -521,11 +547,30 @@ fn apply_pp_lighting_property(
                 // pre-fix, any mesh whose atlas happened to carry a slot-3
                 // path ran the shader's POM branch regardless of whether
                 // the material actually authored parallax.
-                if parallax_authored && info.parallax_map.is_none() {
+                //
+                // #4401 — same claim rule as slots 0-2: when the shader
+                // authors POM, its slot-3 texture displaces a legacy
+                // `NiTexturingProperty` slot-7 path (previously the two
+                // were independent first-writer latches, so a texturing
+                // property earlier in the chain pinned the height role and
+                // the normal/height pair could come from different
+                // sources).
+                let mut shader_parallax_displaced_legacy = false;
+                if parallax_authored {
                     if let Some(px) = tex_set.textures.get(3) {
-                        info.parallax_map = intern_texture_path(pool, px);
+                        let px = intern_texture_path(pool, px);
+                        if info.texturing_property_roles & TEXTURING_PARALLAX != 0
+                            && px.is_some()
+                        {
+                            info.parallax_map = px;
+                            info.texturing_property_roles &= !TEXTURING_PARALLAX;
+                            shader_parallax_displaced_legacy = true;
+                        } else if info.parallax_map.is_none() {
+                            info.parallax_map = px;
+                        }
                     }
                 }
+                parallax_displaced_legacy |= shader_parallax_displaced_legacy;
                 // Environment cubemap is textures[4]. Glass bottles,
                 // power armor, polished metal — pre-#452 the path was
                 // read and thrown away. env_map_scale was captured
@@ -560,11 +605,16 @@ fn apply_pp_lighting_property(
         // from a Skyrim+ BSLightingShaderProperty ParallaxOcc
         // variant — the shader-type capture path in
         // `apply_shader_type_data` keeps those values. #452.
+        //
+        // #4401 — displacement is the exception, same as the clamp
+        // latch: a displaced `NiTexturingProperty` slot-7 had installed
+        // only the generic engine defaults below, and the shader's
+        // authored pair must win now that its texture owns the role.
         if parallax_authored && info.parallax_map.is_some() {
-            if info.parallax_max_passes.is_none() {
+            if info.parallax_max_passes.is_none() || parallax_displaced_legacy {
                 info.parallax_max_passes = Some(shader.parallax_max_passes);
             }
-            if info.parallax_height_scale.is_none() {
+            if info.parallax_height_scale.is_none() || parallax_displaced_legacy {
                 info.parallax_height_scale =
                     Some(fo3_parallax_scale_to_height_scale(shader.parallax_scale));
             }
@@ -587,7 +637,15 @@ fn apply_pp_lighting_property(
         // unconditional write here let an inherited parent property
         // silently overwrite a value the shape's own direct property
         // already set on an earlier chain iteration.
-        if !info.texture_clamp_mode_consumed {
+        //
+        // #4401 — the one exception to that latch: when this shader's
+        // slot-0 texture just DISPLACED a legacy `NiTexturingProperty`'s
+        // base path (#4235), the legacy property's clamp latch must not
+        // outlive the path it was latched to — the shader now owns the
+        // sampled slot, so its address mode follows it. Without this, a
+        // texturing property earlier in the chain left the shader's
+        // texture sampling with the legacy TexDesc's wrap mode.
+        if base_displaced_legacy || !info.texture_clamp_mode_consumed {
             info.texture_clamp_mode = shader.texture_clamp_mode as u8;
             info.texture_clamp_mode_consumed = true;
         }
@@ -706,7 +764,7 @@ fn apply_no_lighting_property(
         // actually authored rather than assuming it.
         info.legacy_shader_type = Some(shader.shader.shader_type);
         let file_name = intern_texture_path(pool, &shader.file_name);
-        claim_shader_texture(
+        let base_displaced_legacy = claim_shader_texture(
             &mut info.texture_path,
             &mut info.texturing_property_roles,
             TEXTURING_BASE,
@@ -749,8 +807,9 @@ fn apply_no_lighting_property(
         // `apply_pp_lighting_property`'s comment for the rationale):
         // the shape's own direct property wins over an inherited
         // parent's, matching the documented precedence (#208) instead
-        // of last-writer-wins.
-        if !info.texture_clamp_mode_consumed {
+        // of last-writer-wins. #4401 — displacement re-latches the
+        // clamp, same exception as the PPLighting site.
+        if base_displaced_legacy || !info.texture_clamp_mode_consumed {
             info.texture_clamp_mode = shader.texture_clamp_mode as u8;
             info.texture_clamp_mode_consumed = true;
         }
@@ -826,13 +885,15 @@ fn apply_misc_shader_properties(
     // documented precedence (#208) instead of last-writer-wins.
     if let Some(shader) = scene.get_as::<TileShaderProperty>(idx) {
         let file_name = intern_texture_path(pool, &shader.file_name);
-        claim_shader_texture(
+        let base_displaced_legacy = claim_shader_texture(
             &mut info.texture_path,
             &mut info.texturing_property_roles,
             TEXTURING_BASE,
             file_name,
         );
-        if !info.texture_clamp_mode_consumed {
+        // #4401 — displacement re-latches the clamp (see the PPLighting
+        // site for the rationale).
+        if base_displaced_legacy || !info.texture_clamp_mode_consumed {
             info.texture_clamp_mode = shader.texture_clamp_mode as u8;
             info.texture_clamp_mode_consumed = true;
         }
@@ -851,13 +912,15 @@ fn apply_misc_shader_properties(
     }
     if let Some(shader) = scene.get_as::<SkyShaderProperty>(idx) {
         let file_name = intern_texture_path(pool, &shader.file_name);
-        claim_shader_texture(
+        let base_displaced_legacy = claim_shader_texture(
             &mut info.texture_path,
             &mut info.texturing_property_roles,
             TEXTURING_BASE,
             file_name,
         );
-        if !info.texture_clamp_mode_consumed {
+        // #4401 — displacement re-latches the clamp (see the PPLighting
+        // site for the rationale).
+        if base_displaced_legacy || !info.texture_clamp_mode_consumed {
             info.texture_clamp_mode = shader.texture_clamp_mode as u8;
             info.texture_clamp_mode_consumed = true;
         }

@@ -435,3 +435,240 @@ fn empty_texture_set_keeps_the_texturing_property_paths() {
         intern_texture_path(&mut pool, "textures\\legacy_n.dds")
     );
 }
+
+/// #4401 (NIFAL-D8-2026-09-14-03) — the #4235 displacement fixed the base
+/// *path* but left `texture_clamp_mode` latched to whichever property ran
+/// first: a `NiTexturingProperty` ahead of the shader in the chain set the
+/// latch, and the shader's own clamp never ran. When the shader's texture
+/// displaces the legacy base path, its address mode must follow it.
+#[test]
+fn displacing_the_base_path_re_latches_the_clamp_mode() {
+    use crate::blocks::properties::{NiTexturingProperty, TexDesc};
+
+    let desc = |source: u32, clamp: u8| TexDesc {
+        source_ref: BlockRef(source),
+        flags: 0,
+        clamp_mode: clamp,
+        transform: None,
+    };
+    let texturing = NiTexturingProperty {
+        net: empty_net(),
+        flags: 0,
+        apply_mode: 2,
+        texture_count: 7,
+        // Legacy base with CLAMP_S_WRAP_T (1) — the latch pre-#4401 kept.
+        base_texture: Some(desc(0, 1)),
+        dark_texture: None,
+        detail_texture: None,
+        gloss_texture: None,
+        glow_texture: None,
+        bump_texture: None,
+        normal_texture: Some(desc(1, 3)),
+        parallax_texture: None,
+        parallax_offset: 0.0,
+        decal_textures: Vec::new(),
+    };
+    let mut pp = pp_lighting_with_clamp_and_env(2, 1.0);
+    pp.texture_set_ref = BlockRef(3);
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(source_texture("textures\\legacy_d.dds")),
+        Box::new(source_texture("textures\\legacy_n.dds")),
+        Box::new(texturing),
+        Box::new(crate::blocks::shader::BSShaderTextureSet {
+            textures: vec![
+                "textures\\set_d.dds".to_string(),
+                "textures\\set_n.dds".to_string(),
+            ],
+        }),
+        Box::new(pp),
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    // Texturing property FIRST — the displacement direction.
+    let shape = make_tri_shape_with_props(vec![BlockRef(2), BlockRef(4)]);
+
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(
+        info.texture_path,
+        intern_texture_path(&mut pool, "textures\\set_d.dds"),
+        "fixture sanity: the shader's base texture must displace the legacy path"
+    );
+    assert_eq!(
+        info.texture_clamp_mode, 2,
+        "the clamp latch must follow the texture that won the slot — the \
+         shader's own WRAP_S_CLAMP_T (2), not the displaced legacy \
+         TexDesc's CLAMP_S_WRAP_T (1) (#4401)"
+    );
+}
+
+/// #4401 — the parallax role had the same split as base (two independent
+/// first-writer latches), plus a scalar half: the `NiTexturingProperty`
+/// slot-7 branch installs generic engine defaults
+/// (`DEFAULT_PARALLAX_MAX_PASSES` / `DEFAULT_PARALLAX_HEIGHT_SCALE`), which
+/// an authored-POM shader's own converted pair must be able to win when its
+/// slot-3 texture displaces the slot-7 path.
+#[test]
+fn authored_pom_displaces_a_texturing_property_height_map_and_its_default_scalars() {
+    use crate::blocks::properties::{NiTexturingProperty, TexDesc};
+
+    let desc = |source: u32, clamp: u8| TexDesc {
+        source_ref: BlockRef(source),
+        flags: 0,
+        clamp_mode: clamp,
+        transform: None,
+    };
+    let texturing = NiTexturingProperty {
+        net: empty_net(),
+        flags: 0,
+        apply_mode: 2,
+        texture_count: 7,
+        base_texture: Some(desc(0, 3)),
+        dark_texture: None,
+        detail_texture: None,
+        gloss_texture: None,
+        glow_texture: None,
+        bump_texture: None,
+        normal_texture: Some(desc(1, 3)),
+        // Slot-7 height map — the legacy path that used to win by chain
+        // order and pin the role plus its default scalar pair.
+        parallax_texture: Some(desc(5, 3)),
+        parallax_offset: 0.0,
+        decal_textures: Vec::new(),
+    };
+    let mut pp = pp_lighting_with_clamp_and_env(3, 1.0);
+    pp.texture_set_ref = BlockRef(3);
+    // Authored POM (bits 11/28 gate, FO3-D1-02 / #2317) with an authored
+    // scalar pair distinct from the generic defaults the slot-7 branch
+    // installs: 7.0 passes ≠ 4.0, and scale 2.0 → 0.08 ≠ 0.04.
+    pp.shader.shader_flags_1 = crate::shader_flags::fo3nv_f1::PARALLAX;
+    pp.parallax_max_passes = 7.0;
+    pp.parallax_scale = 2.0;
+    // Blocks: [0]/[1] legacy sources, [2] texturing property (base→0,
+    // normal→1, parallax slot-7→5), [3] texture set, [4] the shader (both
+    // are shape-direct chain properties), [5] the slot-7 source.
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(source_texture("textures\\legacy_d.dds")),
+        Box::new(source_texture("textures\\legacy_n.dds")),
+        Box::new(texturing),
+        Box::new(crate::blocks::shader::BSShaderTextureSet {
+            textures: vec![
+                "textures\\set_d.dds".to_string(),
+                "textures\\set_n.dds".to_string(),
+                String::new(),
+                "textures\\set_height.dds".to_string(),
+            ],
+        }),
+        Box::new(pp),
+        Box::new(source_texture("textures\\legacy_height.dds")),
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    // Texturing property FIRST — the displacement direction.
+    let shape = make_tri_shape_with_props(vec![BlockRef(2), BlockRef(4)]);
+
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(
+        info.parallax_map,
+        intern_texture_path(&mut pool, "textures\\set_height.dds"),
+        "an authored-POM shader's slot-3 height map must displace the \
+         texturing property's slot-7 path (#4401)"
+    );
+    assert_eq!(info.parallax_max_passes, Some(7.0));
+    assert_eq!(
+        info.parallax_height_scale,
+        Some(0.08),
+        "the shader's authored scale (2.0 → 0.08) must win over the generic \
+         0.04 default the displaced slot-7 branch installed (#4401)"
+    );
+}
+
+/// …and the control: a shader that does NOT author POM leaves the legacy
+/// slot-7 path and its default scalar pair alone — the FO3-D1-02/#2317
+/// gate must stay in front of the displacement claim.
+#[test]
+fn unauthored_pom_keeps_the_texturing_property_height_map() {
+    use crate::blocks::properties::{NiTexturingProperty, TexDesc};
+
+    let desc = |source: u32| TexDesc {
+        source_ref: BlockRef(source),
+        flags: 0,
+        clamp_mode: 3,
+        transform: None,
+    };
+    let texturing = NiTexturingProperty {
+        net: empty_net(),
+        flags: 0,
+        apply_mode: 2,
+        texture_count: 7,
+        base_texture: Some(desc(0)),
+        dark_texture: None,
+        detail_texture: None,
+        gloss_texture: None,
+        glow_texture: None,
+        bump_texture: None,
+        normal_texture: Some(desc(1)),
+        parallax_texture: Some(desc(5)),
+        parallax_offset: 0.0,
+        decal_textures: Vec::new(),
+    };
+    let mut pp = pp_lighting_with_clamp_and_env(3, 1.0);
+    pp.texture_set_ref = BlockRef(3);
+    // No PARALLAX/PARALLAX_OCCLUSION bit — slot 3 is present but the
+    // material does not author POM.
+    // Same block layout as the displacement test above: [5] is the
+    // slot-7 source the texturing property binds.
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(source_texture("textures\\legacy_d.dds")),
+        Box::new(source_texture("textures\\legacy_n.dds")),
+        Box::new(texturing),
+        Box::new(crate::blocks::shader::BSShaderTextureSet {
+            textures: vec![
+                "textures\\set_d.dds".to_string(),
+                "textures\\set_n.dds".to_string(),
+                String::new(),
+                "textures\\set_height.dds".to_string(),
+            ],
+        }),
+        Box::new(pp),
+        Box::new(source_texture("textures\\legacy_height.dds")),
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = make_tri_shape_with_props(vec![BlockRef(2), BlockRef(4)]);
+
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    // Fixture sanity: the shader must have applied (its base displaced
+    // the legacy path), so the control below is not vacuous.
+    assert_eq!(
+        info.texture_path,
+        intern_texture_path(&mut pool, "textures\\set_d.dds"),
+        "fixture sanity: the shader's base claim must still run"
+    );
+    assert_eq!(
+        info.parallax_map,
+        intern_texture_path(&mut pool, "textures\\legacy_height.dds"),
+        "without authored POM the slot-3 texture must not displace the \
+         legacy slot-7 height path (#2317 gate in front of the claim)"
+    );
+    assert_eq!(
+        info.parallax_max_passes,
+        Some(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES),
+        "the slot-7 branch's default pair stays"
+    );
+    assert_eq!(
+        info.parallax_height_scale,
+        Some(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE)
+    );
+}
