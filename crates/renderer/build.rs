@@ -557,7 +557,25 @@ fn main() {
     .unwrap();
     writeln!(
         out,
-        "#define COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO {COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO:?}"
+        "#define COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB vec3({:?}, {:?}, {:?})",
+        COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB[0],
+        COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB[1],
+        COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB[2]
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G {COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G {COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_LOCAL_LIGHT_PHASE_MIX {COMBUSTION_LOCAL_LIGHT_PHASE_MIX:?}"
     )
     .unwrap();
     writeln!(

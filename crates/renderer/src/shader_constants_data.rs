@@ -660,8 +660,8 @@ pub const COMBUSTION_RICH_SOOT_YIELD: f32 = byroredux_core::combustion::RICH_SOO
 pub const COMBUSTION_LEAN_SOOT_YIELD: f32 = byroredux_core::combustion::LEAN_SOOT_YIELD;
 pub const COMBUSTION_SOOT_OXIDATION_RATE_PER_SECOND: f32 =
     byroredux_core::combustion::SOOT_OXIDATION_RATE_PER_SECOND;
-pub const COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO: f32 =
-    byroredux_core::combustion::SOOT_SINGLE_SCATTER_ALBEDO;
+pub const COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB: [f32; 3] =
+    byroredux_core::combustion::SOOT_SINGLE_SCATTER_ALBEDO_RGB;
 pub const COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K: f32 =
     byroredux_core::combustion::SOOT_OXIDATION_START_TEMPERATURE_K;
 pub const COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K: f32 =
@@ -728,6 +728,17 @@ pub const FLAME_SOURCE_LATERAL_SPEED_MPS: f32 =
     byroredux_core::combustion::FLAME_SOURCE_LATERAL_SPEED_MPS;
 pub const FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND: f32 =
     byroredux_core::combustion::FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND;
+
+// Renderer-local medium-optics approximation for point/spot in-scattering in
+// the froxel injector. The sun path carries its dual-lobe asymmetry through
+// `VolumetricsParams` (authored per weather record); local lights have no
+// per-source phase authoring anywhere in the content, so these three replace
+// the former isotropic 1/4π with a fixed soot-like lobe. Mildly forward with
+// a backward back-lobe: firelit smoke glows brighter when the lamp shines
+// through it toward the viewer than when it is lit from the viewer's side.
+pub const COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G: f32 = 0.35;
+pub const COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G: f32 = -0.12;
+pub const COMBUSTION_LOCAL_LIGHT_PHASE_MIX: f32 = 0.65;
 
 // Transported-combustion -> surface-light reduction. The froxel injector
 // accumulates fixed-point radiant moments into this camera-centred grid; Rust

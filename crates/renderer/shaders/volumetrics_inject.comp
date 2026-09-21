@@ -2007,7 +2007,7 @@ void transportCombustion(
         float sootSigmaT = burnedFuel * sootYield;
         chemistry.z += sootSigmaT;
         optical.rgb += sootSigmaT
-            * vec3(COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO);
+            * COMBUSTION_SOOT_SINGLE_SCATTER_ALBEDO_RGB;
         float hotSootOxidation = smoothstep(
                 COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K,
                 COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K,
@@ -2644,7 +2644,6 @@ void main() {
         uint clusterIdx =
             tileX + tileY * CLUSTER_TILES_X + sliceZ * CLUSTER_TILES_X * CLUSTER_TILES_Y;
 
-        const float ISOTROPIC_PHASE = 1.0 / (4.0 * PI);
         ClusterEntry cluster = clusters[clusterIdx];
         uint adaptiveLightCap = uint(clamp(
             floor(params.fog_reference.z + 0.5), 1.0, float(MAX_FROXEL_LIGHTS)));
@@ -2661,6 +2660,25 @@ void main() {
             vec3 toLight = lights[li].position_radius.xyz - world_pos;
             float dist = length(toLight);
             vec3 toLightDir = toLight / max(dist, 0.001);
+            // Dual-lobe HG for local-light in-scattering — the soot-like
+            // asymmetry the sun path gets from VolumetricsParams, with no
+            // per-source phase authoring in any content. cos_theta follows
+            // the sun convention: propagation direction (from the source
+            // toward this sample, i.e. -toLightDir) dotted with the view
+            // direction, so a lamp shining through smoke toward the viewer
+            // picks up the forward lobe.
+            float localCosTheta = dot(-toLightDir, view_dir);
+            float localPhase = mix(
+                henyey_greenstein(
+                    localCosTheta,
+                    COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G
+                ),
+                henyey_greenstein(
+                    localCosTheta,
+                    COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G
+                ),
+                COMBUSTION_LOCAL_LIGHT_PHASE_MIX
+            );
             float shape = lights[li].params.x;
             float atten = froxelLightAtten(
                 dist,
@@ -2712,7 +2730,7 @@ void main() {
                     fract(jitter.z + float(ci) * 0.61803398875)
                 );
             }
-            inscatter += scattering_coef * ISOTROPIC_PHASE
+            inscatter += scattering_coef * localPhase
                 * lights[li].color_type.rgb * atten * localVisibility;
         }
     }

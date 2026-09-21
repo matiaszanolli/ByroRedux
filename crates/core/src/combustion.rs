@@ -31,11 +31,16 @@ pub const LEAN_SOOT_YIELD: f32 = 0.004;
 /// oxygen-rich, per second.
 pub const SOOT_OXIDATION_RATE_PER_SECOND: f32 = 0.15;
 
-/// Single-scatter albedo of transported soot aerosol. Soot remains strongly
-/// absorbing, but this non-zero scattering floor keeps a cooled plume visible
-/// against a neutral interior instead of collapsing into a featureless black
-/// hole.
-pub const SOOT_SINGLE_SCATTER_ALBEDO: f32 = 0.18;
+/// Spectral single-scatter albedo of transported soot aerosol, linear sRGB.
+///
+/// Soot remains strongly absorbing, but this non-zero scattering floor keeps a
+/// cooled plume visible against a neutral interior instead of collapsing into
+/// a featureless black hole. Fresh soot also absorbs the blue end of the
+/// visible spectrum more strongly than red, so the albedo is warm-weighted:
+/// both transmitted and scattered light shift warm, which is what makes smoke
+/// read as hydrocarbon aerosol rather than neutral gray dust. Ordering is
+/// channel-monotonic (red ≥ green ≥ blue) and every channel stays in (0, 1).
+pub const SOOT_SINGLE_SCATTER_ALBEDO_RGB: [f32; 3] = [0.22, 0.16, 0.12];
 
 /// Temperature at which soot oxidation begins, kelvin.
 pub const SOOT_OXIDATION_START_TEMPERATURE_K: f32 = 1100.0;
@@ -317,7 +322,13 @@ mod tests {
             assert!(RICH_SOOT_YIELD > LEAN_SOOT_YIELD);
             assert!(LEAN_SOOT_YIELD > 0.0);
             assert!(SOOT_OXIDATION_RATE_PER_SECOND > 0.0);
-            assert!(SOOT_SINGLE_SCATTER_ALBEDO > 0.0 && SOOT_SINGLE_SCATTER_ALBEDO < 1.0);
+            assert!(
+                SOOT_SINGLE_SCATTER_ALBEDO_RGB[0] >= SOOT_SINGLE_SCATTER_ALBEDO_RGB[1]
+                    && SOOT_SINGLE_SCATTER_ALBEDO_RGB[1] >= SOOT_SINGLE_SCATTER_ALBEDO_RGB[2]
+            );
+            assert!(SOOT_SINGLE_SCATTER_ALBEDO_RGB[0] > 0.0 && SOOT_SINGLE_SCATTER_ALBEDO_RGB[0] < 1.0);
+            assert!(SOOT_SINGLE_SCATTER_ALBEDO_RGB[1] > 0.0 && SOOT_SINGLE_SCATTER_ALBEDO_RGB[1] < 1.0);
+            assert!(SOOT_SINGLE_SCATTER_ALBEDO_RGB[2] > 0.0 && SOOT_SINGLE_SCATTER_ALBEDO_RGB[2] < 1.0);
             assert!(SOOT_OXIDATION_FULL_TEMPERATURE_K > SOOT_OXIDATION_START_TEMPERATURE_K);
             assert!(EXPLOSION_EXPANSION_TIME_SECONDS > 0.0);
             assert!(EXPLOSION_IMPULSE_DURATION_SECONDS > EXPLOSION_EXPANSION_TIME_SECONDS);
