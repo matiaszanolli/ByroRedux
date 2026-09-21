@@ -1970,6 +1970,57 @@ impl Component for WalkStuckTimer {
 pub(crate) struct SkyrimWalkClip(pub(crate) Option<u32>);
 impl Resource for SkyrimWalkClip {}
 
+/// P2 combat tail — the decoded Draugr combat clip family
+/// (`docs/engine/p2-combat-anim-sound-fixture.md`): the 2HM attack, the
+/// medium stagger (hit reaction) and the backward death take, all
+/// one-shot (`CycleType::Clamp`). Resolved once beside the walk-clip
+/// installation; `*_secs` are the clips' decoded durations and drive the
+/// take countdowns in `systems::combat_anim`. Absent for non-Skyrim
+/// games, missing archives, or decode failure — draugr actors then spawn
+/// without combat takes (a silent capability downgrade, same contract as
+/// [`SkyrimWalkClip`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DraugrCombatClips {
+    pub(crate) attack: u32,
+    pub(crate) hit: u32,
+    pub(crate) death: u32,
+    pub(crate) attack_secs: f32,
+    pub(crate) hit_secs: f32,
+}
+impl Resource for DraugrCombatClips {}
+
+/// Which combat take `DraugrCombatAnim` is currently playing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CombatTake {
+    Attack,
+    Hit,
+}
+
+/// P2 combat tail — one Draugr actor's combat-take playback state.
+/// Inserted at NPC spawn finalize for Draugr-race actors; presence IS the
+/// "this actor plays the Draugr combat family" marker. Drives the
+/// attack/hit/death clip takes in `systems::combat_anim`:
+///
+/// * `take` + `take_remaining` + `captured` + `inserted_player` mirror
+///   `WalkAnimation`'s take/restore protocol (capture the pre-take
+///   `AnimationPlayer`, write it back when the one-shot take ends);
+/// * death is terminal — `death_played` latches so the take and its
+///   voice one-shot fire exactly once, and no snapshot is kept (the
+///   `Dead` marker owns the pose from there, and walk_anim's abandon
+///   rule already cedes playback to it).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DraugrCombatAnim {
+    pub(crate) take: Option<CombatTake>,
+    pub(crate) take_remaining: f32,
+    pub(crate) captured: Option<WalkAnimSnapshot>,
+    pub(crate) inserted_player: bool,
+    pub(crate) death_played: bool,
+}
+
+impl Component for DraugrCombatAnim {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Process-lifetime IDLE FormID → decoded animation handle mapping.
 ///
 /// Clips live in `AnimationClipRegistry`; this small companion preserves the

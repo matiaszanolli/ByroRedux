@@ -129,6 +129,15 @@ pub(super) fn register_post_update_systems(scheduler: &mut Scheduler) {
             Stage::PostUpdate,
             crate::systems::make_npc_walk_animation_system(),
         );
+        // P2 combat tail — combat feedback (attack/hit/death clip takes +
+        // combat sounds), AFTER walk_anim: a death take must be installed
+        // after walk_anim's abandon pass (Dead cedes playback), and a
+        // mid-walk stagger relies on walk_anim's yield rule having already
+        // given up ownership this frame. See `systems::combat_anim` docs.
+        scheduler.add_exclusive(
+            Stage::PostUpdate,
+            crate::systems::make_combat_feedback_system(),
+        );
     }
     // PostUpdate ordering contract (#1375 invariant pin, revised by #3652):
     //   1. transform_propagation — BFS GlobalTransform composition

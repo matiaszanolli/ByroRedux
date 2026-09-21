@@ -223,6 +223,146 @@ pub(crate) fn populate_skyrim_walk_clip(world: &mut World, index: &EsmIndex, pro
     Some(handle)
 }
 
+// ── P2 combat tail — the Draugr combat clip family ──────────────────────
+// Asset paths pinned by `docs/engine/p2-combat-anim-sound-fixture.md`
+// (decode-verified 2026-09-21 against `Skyrim - Animations.bsa`): every
+// clip carries 84 tracks against the 84-bone `skeletonf` rig, so
+// `convert_hkx_clip`'s pairing applies unchanged. All three takes are
+// ONE-SHOT: the walk installer keeps its clip looping, this one forces
+// `CycleType::Clamp` after conversion so the sampler holds the final
+// pose instead of cycling back into the strike.
+
+const DRAUGR_SKELETON_PATH: &str = r"meshes\actors\draugr\character assets\skeletonf.hkx";
+const DRAUGR_ATTACK_PATH: &str = r"meshes\actors\draugr\animations\2hmattackforwardb.hkx";
+const DRAUGR_HIT_PATH: &str = r"meshes\actors\draugr\animations\mtstaggermedium.hkx";
+const DRAUGR_DEATH_PATH: &str = r"meshes\actors\draugr\animations\special_deathbackward.hkx";
+
+/// P2 combat tail — decode the Draugr combat takes (attack / hit / death)
+/// into the `AnimationClipRegistry` and publish the handle set as a
+/// [`crate::components::DraugrCombatClips`] resource, once per world
+/// beside [`populate_skyrim_walk_clip`] (same idempotence, same game gate,
+/// same "absent is a silent downgrade" contract). `hit` is the medium
+/// stagger the gate uses as its hit reaction; the death take is the
+/// backward special death. Returns the installed clip count (0 when the
+/// resource already exists, the game isn't Skyrim, or any asset is
+/// missing/undecodable — partial installs do not half-populate the
+/// resource, because a death take without its attack sibling is a worse
+/// inconsistency than no combat takes at all).
+pub(crate) fn populate_draugr_combat_clips(
+    world: &mut World,
+    index: &EsmIndex,
+    provider: &TextureProvider,
+) -> usize {
+    if index.game != GameKind::Skyrim {
+        return 0;
+    }
+    if world.try_resource::<crate::components::DraugrCombatClips>().is_some() {
+        return 0;
+    }
+    let Some(handle) = world
+        .resource::<AnimationClipRegistry>()
+        .get_by_path(DRAUGR_ATTACK_PATH)
+    else {
+        let Some(skeleton_bytes) = provider.extract_mesh(DRAUGR_SKELETON_PATH) else {
+            log::warn!(
+                "Draugr combat clips: '{DRAUGR_SKELETON_PATH}' is missing; \
+                 add Skyrim - Animations.bsa"
+            );
+            return 0;
+        };
+        let skeleton = match byroredux_hkx::decode_skeleton(&skeleton_bytes) {
+            Ok(skeleton) => skeleton,
+            Err(error) => {
+                log::warn!("Draugr combat clips: failed to decode rig HKX: {error}");
+                return 0;
+            }
+        };
+        let decode_one = |path: &'static str,
+                              event: &'static str,
+                              world: &mut World|
+         -> Option<(u32, f32)> {
+            if let Some(handle) = world.resource::<AnimationClipRegistry>().get_by_path(path) {
+                let secs = world
+                    .resource::<AnimationClipRegistry>()
+                    .get(handle)
+                    .map(|clip| clip.duration)
+                    .unwrap_or(0.0);
+                return Some((handle, secs));
+            }
+            let bytes = provider.extract_mesh(path)?;
+            let animation = match byroredux_hkx::decode_spline_animation(&bytes) {
+                Ok(animation) => animation,
+                Err(error) => {
+                    log::warn!("Draugr combat clips: HKX '{path}' is not usable: {error}");
+                    return None;
+                }
+            };
+            let mut clip = {
+                let mut pool = world.resource_mut::<StringPool>();
+                convert_hkx_clip(path, event, &skeleton, &animation, &mut pool)
+            };
+            clip.cycle_type = byroredux_core::animation::CycleType::Clamp;
+            let secs = clip.duration;
+            let handle = world
+                .resource_mut::<AnimationClipRegistry>()
+                .get_or_insert_by_path(path.to_owned(), || clip);
+            Some((handle, secs))
+        };
+        let Some((attack, attack_secs)) = decode_one(DRAUGR_ATTACK_PATH, "attackforward", world)
+        else {
+            return 0;
+        };
+        let Some((hit, hit_secs)) = decode_one(DRAUGR_HIT_PATH, "stagger", world) else {
+            return 0;
+        };
+        let Some((death, _)) = decode_one(DRAUGR_DEATH_PATH, "death", world) else {
+            return 0;
+        };
+        world.insert_resource(crate::components::DraugrCombatClips {
+            attack,
+            hit,
+            death,
+            attack_secs,
+            hit_secs,
+        });
+        log::info!(
+            "Draugr combat clips installed: attack={attack} hit={hit} death={death}"
+        );
+        return 3;
+    };
+    // The attack path is already registered but the resource is gone
+    // (world_setup rerun after a teardown): rebuild the resource from the
+    // registry without re-decoding.
+    let (Some(hit), Some(death)) = (
+        world
+            .resource::<AnimationClipRegistry>()
+            .get_by_path(DRAUGR_HIT_PATH),
+        world
+            .resource::<AnimationClipRegistry>()
+            .get_by_path(DRAUGR_DEATH_PATH),
+    ) else {
+        return 0;
+    };
+    let hit_secs = world
+        .resource::<AnimationClipRegistry>()
+        .get(hit)
+        .map(|clip| clip.duration)
+        .unwrap_or(0.0);
+    let attack_secs = world
+        .resource::<AnimationClipRegistry>()
+        .get(handle)
+        .map(|clip| clip.duration)
+        .unwrap_or(0.0);
+    world.insert_resource(crate::components::DraugrCombatClips {
+        attack: handle,
+        hit,
+        death,
+        attack_secs,
+        hit_secs,
+    });
+    3
+}
+
 fn idle_animation_candidates(event: &str) -> Vec<String> {    let event = event.trim_matches('\0').trim();
     let stem = event
         .get(..4)
@@ -759,6 +899,64 @@ mod tests {
                     .unwrap_or_else(|| panic!("{event_name} is missing {completion}"));
                 assert!((time - clip.duration).abs() < 1e-6, "{event_name}");
             }
+        }
+    }
+
+    /// P2 combat tail — the Draugr combat family decodes against the real
+    /// animations archive and installs as three one-shot (Clamp) clips.
+    /// Opt-in like the cart sibling: needs `Skyrim - Animations.bsa` on
+    /// disk (`docs/engine/p2-combat-anim-sound-fixture.md` pins the paths
+    /// and the decode evidence).
+    #[test]
+    #[ignore = "needs Skyrim SE game data on disk; ~1 GB resident"]
+    fn draugr_combat_clips_install_real_assets_when_available() {
+        let data_dir = std::env::var_os("BYROREDUX_SKYRIM_DATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(
+                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+                )
+            });
+        let esm_path = data_dir.join("Skyrim.esm");
+        let animations_path = data_dir.join("Skyrim - Animations.bsa");
+        if !esm_path.is_file() || !animations_path.is_file() {
+            return;
+        }
+
+        let index = byroredux_plugin::esm::parse_esm(&std::fs::read(esm_path).unwrap()).unwrap();
+        let provider = build_texture_provider(&[
+            "--bsa".to_owned(),
+            animations_path.to_string_lossy().into_owned(),
+        ]);
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        world.insert_resource(AnimationClipRegistry::new());
+
+        assert_eq!(
+            populate_draugr_combat_clips(&mut world, &index, &provider),
+            3,
+            "attack + hit + death must all install"
+        );
+        let clips = *world
+            .try_resource::<crate::components::DraugrCombatClips>()
+            .expect("the resource must exist after a successful install");
+        assert_ne!(clips.attack, clips.hit);
+        assert_ne!(clips.hit, clips.death);
+        assert!(clips.hit_secs > 1.0, "stagger is a multi-second take");
+        assert!(clips.attack_secs > 1.0, "attack is a multi-second take");
+
+        // Idempotence: a second population is a no-op.
+        assert_eq!(
+            populate_draugr_combat_clips(&mut world, &index, &provider),
+            0,
+            "re-population must short-circuit on the existing resource"
+        );
+
+        // Every combat take is Clamp — one-shot, never cycles.
+        let registry = world.resource::<AnimationClipRegistry>();
+        for handle in [clips.attack, clips.hit, clips.death] {
+            let clip = registry.get(handle).unwrap();
+            assert_eq!(clip.cycle_type, CycleType::Clamp, "handle {handle}");
         }
     }
 }

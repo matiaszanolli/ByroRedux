@@ -105,6 +105,13 @@ struct RuntimeNpcState {
     armor: Vec<RuntimeArmor>,
     equipped_armor_count: u32,
     phase: RuntimePhase,
+    /// P2 combat tail — this actor's race resolves to the Draugr family,
+    /// so finalize inserts `DraugrCombatAnim` and the combat-feedback
+    /// system plays the attack/hit/death takes on it
+    /// (`docs/engine/p2-combat-anim-sound-fixture.md`). Keyed on the
+    /// RACE editor id (`DraugrRace*`), the same discriminator the body
+    /// meshes follow; humans never set it.
+    combat_anim_draugr: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -624,6 +631,12 @@ fn prepare_runtime_state(
         equipped_weapon: equip.equipped_weapon,
         armor,
         equipped_armor_count: 0,
+        // P2 combat tail — the race editor id is the family discriminator
+        // (`DraugrRace…`); humans never match, so only draugr get combat
+        // takes. Case-insensitive because editor ids are authoring text.
+        combat_anim_draugr: race.is_some_and(|race| {
+            race.editor_id.to_ascii_lowercase().contains("draugr")
+        }),
         phase: RuntimePhase::Skeleton,
     }
 }
@@ -719,6 +732,8 @@ fn prepare_creature_state(
         equipped_weapon: equip.equipped_weapon,
         armor,
         equipped_armor_count: 0,
+        // CREA creatures don't use the humanoid Draugr clip family.
+        combat_anim_draugr: false,
         phase: RuntimePhase::Skeleton,
     }
 }
@@ -1051,6 +1066,18 @@ fn advance_runtime_unit(
                         consumed_idle_serial: 0,
                     },
                 );
+                // P2 combat tail — Draugr-race actors play the Draugr
+                // combat clip family (attack/hit/death takes) through
+                // `systems::combat_anim`; presence of this component is
+                // the family marker. Inserted only with a skeleton —
+                // without one there is nothing for a take to animate
+                // (`docs/engine/p2-combat-anim-sound-fixture.md`).
+                if state.combat_anim_draugr {
+                    world.insert(
+                        state.placement_root,
+                        crate::components::DraugrCombatAnim::default(),
+                    );
+                }
                 // #2567 — a creature animates off its own `idle.kf`, beside
                 // its skeleton. The shared per-cell pool holds the humanoid
                 // clip, whose bone names a creature rig doesn't have, so
