@@ -7,47 +7,47 @@ use crate::shader_constants::{GROUNDCOVER_HISTOGRAM_BUCKETS, GROUNDCOVER_MAX_CHU
 
 /// Per-frame scatter telemetry, harvested one pipelined cycle late.
 #[derive(Clone, Copy, Default, Debug)]
-pub(crate) struct GroundCoverStats {
-    pub(crate) chunks_dispatched: u32,
+pub struct GroundCoverStats {
+    pub chunks_dispatched: u32,
     /// Chunks lost to an explicit host cell-table capacity fault. A residency
     /// ring filling over several frames is deliberately not counted: the
     /// pending chunks remain queued and will be placed, rather than being
     /// discarded as the old per-frame cap did (#4338).
-    pub(crate) chunks_truncated: u32,
-    pub(crate) blades_accepted: u32,
+    pub chunks_truncated: u32,
+    pub blades_accepted: u32,
     /// Candidates dropped because their chunk's slice was already full.
     /// Non-zero is not a bug — §4 designs for it — but a large fraction means
     /// the cap is below what the density field is asking for.
-    pub(crate) blades_overflowed: u32,
+    pub blades_overflowed: u32,
     /// Accepted candidates dropped because placed geometry — a road, a
     /// flagstone path, a rock base — covers their root. Zero on open ground;
     /// a large share of `blades` on open ground would mean the test is
     /// hitting the terrain it is meant to stand above.
-    pub(crate) blades_covered: u32,
+    pub blades_covered: u32,
     /// §11.3's `d_ground` histogram over every candidate the field was
     /// evaluated at, accepted or not.
-    pub(crate) histogram: [u32; GROUNDCOVER_HISTOGRAM_BUCKETS as usize],
+    pub histogram: [u32; GROUNDCOVER_HISTOGRAM_BUCKETS as usize],
     /// Range of `d_ground` over the frame's candidates.
-    pub(crate) d_ground_min: f32,
-    pub(crate) d_ground_max: f32,
+    pub d_ground_min: f32,
+    pub d_ground_max: f32,
     /// Range of the view distance the fade was evaluated at. Reported because
     /// an all-bucket-0 histogram with an empty blade count has two completely
     /// different causes — a field that is genuinely near zero, or a field that
     /// is fine with every candidate past `GROUNDCOVER_DRAW_DISTANCE` — and
     /// these two numbers are what tell them apart.
-    pub(crate) view_dist_min: f32,
-    pub(crate) view_dist_max: f32,
+    pub view_dist_min: f32,
+    pub view_dist_max: f32,
     /// Largest value each of the five §3 factors reached this frame, in
     /// [`GROUNDCOVER_FACTOR_NAMES`] order. A zero here names the term that
     /// annihilated the product — which is the only way a pure product fails,
     /// and the one thing a histogram of the product cannot tell you.
-    pub(crate) factor_max: [f32; 5],
+    pub factor_max: [f32; 5],
 }
 
 impl GroundCoverStats {
     /// `groundcover:` summary row, in the same `key=value` shape as the rest
     /// of the bench output.
-    pub(crate) fn bench_line(&self) -> String {
+    pub fn bench_line(&self) -> String {
         let hist = self
             .histogram
             .iter()
