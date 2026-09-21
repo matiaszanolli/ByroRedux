@@ -144,10 +144,25 @@ pub struct VolumetricsParams {
     /// kept separate from the transported local velocity so changing weather
     /// cannot compound into an ever-growing field.
     pub wind_params: [f32; 4],
-    /// x = gust cycles per second. The remaining lanes are reserved so this
-    /// stays a std140 vec4 and can grow into height/shear parameters without
-    /// changing the preceding ABI.
+    /// x = gust cycles per second. y = BFECC advection error-correction
+    /// multiplier — 0.0 when `BYRO_BFECC=0` (see
+    /// [`bfecc_error_correction_multiplier`]), 1.0 otherwise. The remaining
+    /// lanes are reserved so this stays a std140 vec4 and can grow into
+    /// height/shear parameters without changing the preceding ABI.
     pub wind_gust: [f32; 4],
+}
+
+/// `BYRO_BFECC` same-binary A/B switch for the transported field's BFECC
+/// advection error correction (`BYRO_FIRE_VOLUMES` precedent). Read once per
+/// process; `BYRO_BFECC=0` returns 0.0, which the inject shader multiplies
+/// into `COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH` to reproduce plain
+/// semi-Lagrangian transport exactly.
+pub fn bfecc_error_correction_multiplier() -> f32 {
+    static MULTIPLIER: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *MULTIPLIER.get_or_init(|| match std::env::var("BYRO_BFECC") {
+        Ok(value) if value == "0" => 0.0,
+        _ => 1.0,
+    })
 }
 
 // SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
@@ -2149,6 +2164,13 @@ mod unit_tests {
             "COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT",
             "vec3 multiscatter_gain = vec3(1.0)",
             "+ local_medium.scattering * multiscatter_gain;",
+            "COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH",
+            "COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD",
+            "void applyBfeccErrorCorrection(",
+            "* params.wind_gust.y;",
+            "chemistry = clamp(",
+            "texelFetch(previousCombustionState, coord, 0)",
+            "applyBfeccErrorCorrection(\n                worldPos,",
             "float localCosTheta = dot(-toLightDir, view_dir);",
             "inscatter += scattering_coef * localPhase",
             "COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K",

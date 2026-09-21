@@ -198,6 +198,24 @@ pub const FLAME_SOURCE_LATERAL_SPEED_MPS: f32 = 0.38;
 /// First-order response rate toward the turbulent inlet velocity.
 pub const FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND: f32 = 6.0;
 
+/// Strength of the single-pass BFECC error correction applied to the
+/// transported chemistry and optics dye fields.
+///
+/// Semi-Lagrangian backtrace is unconditionally stable but low-pass filters
+/// the field every step; the correction differences the field against a
+/// forward/backward trace pair to recover that one-step dissipation. 1.0 is
+/// the full correction; 0.0 reproduces the plain semi-Lagrangian transport
+/// exactly (the renderer also exposes this lane as its `BYRO_BFECC`
+/// same-binary A/B switch). Velocity is never corrected — only the dye
+/// channels carry the visible dissipation, and feeding the error back into
+/// dynamics injects energy at curl discontinuities.
+pub const BFECC_ERROR_CORRECTION_STRENGTH: f32 = 1.0;
+
+/// Normalized error magnitude above which the correction pays a TLAS ray to
+/// verify its trace segment does not cross a solid boundary. Below this the
+/// limiter clamp alone bounds any wall bleed, so most cells never trace.
+pub const BFECC_ERROR_TRACE_THRESHOLD: f32 = 0.02;
+
 /// Canonical thermal-emitter regime produced at content/runtime boundaries.
 ///
 /// Keeping the radiance anchor beside temperature and soot albedo prevents

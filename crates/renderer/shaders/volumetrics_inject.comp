@@ -93,7 +93,10 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // xy = normalized horizontal wind direction in renderer X/Z space,
     // z = base speed and w = gust amplitude, in world units per second.
     vec4 wind_params;
-    // x = gust cycles per second. Remaining lanes are reserved.
+    // x = gust cycles per second. y = BFECC advection error-correction
+    // multiplier — the host's BYRO_BFECC same-binary A/B switch (1.0 on,
+    // 0.0 off; multiplied into COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH).
+    // Remaining lanes are reserved.
     vec4 wind_gust;
 } params;
 
@@ -1852,6 +1855,128 @@ vec3 atmosphericWindVelocity(vec3 worldPos) {
     return vec3(direction.x, 0.0, direction.y) * speed * shear;
 }
 
+// Single-pass BFECC (Selle et al. 2008) error correction for the transported
+// dye fields. Semi-Lagrangian backtrace is unconditionally stable but
+// dissipative: it low-pass filters chemistry and optics every step, which is
+// why the procedural curl forcing below has to re-inject the detail it smears
+// away. The correction estimates that one-step error by differencing the
+// field against a forward/backward trace pair,
+//   e = phi(x) - phi(y - v(y) dt),   y = x + v(x) dt,
+// and adds strength * e to the backtraced result. Every term is a previous-
+// grid sample, so this stays one dispatch over the existing frame-in-flight
+// pair — no intermediate image and no intra-dispatch hazard. The corrected
+// value is clamped to the min/max of the eight previous-grid texels feeding
+// the source-position trilinear tap, the classic limiter that keeps the
+// scheme unconditionally stable. Velocity is deliberately not corrected:
+// feeding the error back into dynamics injects energy at curl
+// discontinuities, while the dye channels carry all the visible dissipation.
+void applyBfeccErrorCorrection(
+    vec3 worldPos,
+    vec3 destinationVelocity,
+    vec3 destinationWind,
+    vec4 probeChemistry,
+    vec4 probeOptical,
+    vec3 sourcePosition,
+    inout vec4 chemistry,
+    inout vec4 optical,
+    float dt
+) {
+    float strength = COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH
+        * params.wind_gust.y;
+    if (strength <= 0.0) {
+        return;
+    }
+
+    // The error trace must land in active medium on both ends; an empty
+    // forward or error sample carries no dissipation estimate.
+    vec3 forwardPosition = worldPos
+        + (destinationVelocity + destinationWind) * dt;
+    vec4 forwardChemistry;
+    vec4 forwardDynamics;
+    vec4 forwardOptical;
+    if (!samplePreviousTransport(
+            forwardPosition,
+            forwardChemistry,
+            forwardDynamics,
+            forwardOptical)
+        || !carriesCombustion(forwardChemistry, forwardOptical)) {
+        return;
+    }
+    vec3 errorPosition = forwardPosition
+        - (forwardDynamics.xyz + atmosphericWindVelocity(forwardPosition)) * dt;
+    vec4 errorChemistry;
+    vec4 errorDynamics;
+    vec4 errorOptical;
+    if (!samplePreviousTransport(
+            errorPosition,
+            errorChemistry,
+            errorDynamics,
+            errorOptical)
+        || !carriesCombustion(errorChemistry, errorOptical)) {
+        return;
+    }
+
+    vec4 chemistryError = probeChemistry - errorChemistry;
+    vec4 opticalError = probeOptical - errorOptical;
+    // A significant error on a segment crossing a solid would reintroduce
+    // the wall bleed the source-side rejection in the caller prevents. The
+    // TLAS trace is paid only when the normalized error is large enough to
+    // matter; small bleeds are already bounded by the limiter clamp below.
+    vec4 chemistryScale = vec4(1.0, 1000.0, 0.10, 8.0);
+    vec3 opticalScale = vec3(0.10);
+    vec4 scaledChemistryError = abs(chemistryError) / chemistryScale;
+    vec3 scaledOpticalError = abs(opticalError.rgb) / opticalScale;
+    float normalizedError = max(
+        max(
+            max(scaledChemistryError.x, scaledChemistryError.y),
+            max(scaledChemistryError.z, scaledChemistryError.w)
+        ),
+        max(
+            max(scaledOpticalError.r, scaledOpticalError.g),
+            scaledOpticalError.b
+        )
+    );
+    if (normalizedError > COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD) {
+        vec3 crossingNormal;
+        if (combustionPathBlocked(errorPosition, forwardPosition, crossingNormal)) {
+            return;
+        }
+    }
+
+    // Limiter: the corrected value cannot leave the range of the eight
+    // previous-grid texels that feed the source-position trilinear tap.
+    vec3 sourceUvw;
+    if (!reprojectHistory(sourcePosition, sourceUvw)) {
+        return;
+    }
+    ivec3 size = textureSize(previousCombustionState, 0);
+    ivec3 base = ivec3(floor(sourceUvw * vec3(size) - vec3(0.5)));
+    vec4 chemistryMin = vec4(0.0, 1.0e9, 0.0, 0.0);
+    vec4 chemistryMax = vec4(0.0, -1.0e9, 0.0, 0.0);
+    vec4 opticalMin = vec4(1.0e9);
+    vec4 opticalMax = vec4(-1.0e9);
+    for (int corner = 0; corner < 8; ++corner) {
+        ivec3 offset = ivec3(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
+        ivec3 coord = clamp(base + offset, ivec3(0), size - ivec3(1));
+        vec4 cornerChemistry = texelFetch(previousCombustionState, coord, 0);
+        vec4 cornerOptical = texelFetch(previousCombustionOptical, coord, 0);
+        chemistryMin = min(chemistryMin, cornerChemistry);
+        chemistryMax = max(chemistryMax, cornerChemistry);
+        opticalMin = min(opticalMin, cornerOptical);
+        opticalMax = max(opticalMax, cornerOptical);
+    }
+    chemistry = clamp(
+        chemistry + strength * chemistryError,
+        chemistryMin,
+        chemistryMax
+    );
+    optical.rgb = clamp(
+        optical.rgb + strength * opticalError.rgb,
+        opticalMin.rgb,
+        opticalMax.rgb
+    );
+}
+
 // Advect in absolute world space even though storage is view-froxel aligned.
 // RK2 backtracing reduces the directional bias of first-order Euler transport:
 // sample velocity at the destination, estimate a midpoint, then use midpoint
@@ -1935,6 +2060,17 @@ void transportCombustion(
             chemistry = sourceChemistry;
             dynamics = sourceDynamics;
             optical = sourceOptical;
+            applyBfeccErrorCorrection(
+                worldPos,
+                destinationDynamics.xyz,
+                destinationWind,
+                probeChemistry,
+                probeOptical,
+                sourcePosition,
+                chemistry,
+                optical,
+                dt
+            );
         } else {
             chemistry = probeChemistry;
             dynamics = destinationDynamics;

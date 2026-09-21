@@ -748,6 +748,16 @@ fn main() {
         "#define FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND {FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND:?}"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH {COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH:?}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD {COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD:?}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "// Transported-combustion light-moment reduction").unwrap();
     writeln!(

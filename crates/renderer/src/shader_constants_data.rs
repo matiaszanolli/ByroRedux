@@ -728,6 +728,10 @@ pub const FLAME_SOURCE_LATERAL_SPEED_MPS: f32 =
     byroredux_core::combustion::FLAME_SOURCE_LATERAL_SPEED_MPS;
 pub const FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND: f32 =
     byroredux_core::combustion::FLAME_SOURCE_VELOCITY_RESPONSE_PER_SECOND;
+pub const COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH: f32 =
+    byroredux_core::combustion::BFECC_ERROR_CORRECTION_STRENGTH;
+pub const COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD: f32 =
+    byroredux_core::combustion::BFECC_ERROR_TRACE_THRESHOLD;
 
 // Renderer-local medium-optics approximation for point/spot in-scattering in
 // the froxel injector. The sun path carries its dual-lobe asymmetry through

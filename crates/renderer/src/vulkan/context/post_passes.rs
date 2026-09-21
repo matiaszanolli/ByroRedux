@@ -773,7 +773,15 @@ impl VulkanContext {
                                     0.0,
                                 ],
                                 wind_params,
-                                wind_gust,
+                                // Lane y carries the BYRO_BFECC kill-switch
+                                // into the inject shader's error correction.
+                                wind_gust: [
+                                    wind_gust[0],
+                                    super::super::volumetrics::
+                                        bfecc_error_correction_multiplier(),
+                                    wind_gust[2],
+                                    wind_gust[3],
+                                ],
                             };
                             if let Some(ref mut timers) = self.gpu_timers {
                                 timers.cmd_volumetrics_start(&self.device, cmd, frame);
