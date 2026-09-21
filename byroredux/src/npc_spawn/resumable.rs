@@ -47,6 +47,10 @@ pub(crate) struct NpcSpawnJob {
     work_wall: Duration,
 }
 
+// Runtime/Prebaked carry their whole scratch state by value; boxing them
+// would add an indirection to every spawn-phase advance for no memory win
+// (one spawner instance per in-flight NPC).
+#[allow(clippy::large_enum_variant)]
 enum NpcSpawnState {
     BeginRuntime,
     BeginPrebaked { plugin_name: String },

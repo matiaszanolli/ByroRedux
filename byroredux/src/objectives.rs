@@ -91,7 +91,7 @@ pub(crate) fn snapshot(world: &World) -> Option<Vec<byroredux_debug_ui::Objectiv
         }
     }
 
-    lines.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    lines.sort_by_key(|line| (line.0, line.1));
     lines.truncate(MAX_OBJECTIVE_LINES);
     (!lines.is_empty()).then(|| lines.into_iter().map(|(_, _, view)| view).collect())
 }

@@ -1758,7 +1758,7 @@ fn attach_nif_skin_binding(
                 skin.bones.len(),
                 MAX_BONES_PER_MESH
             );
-            return false;
+            false
         } else {
             let mut bones: Vec<Option<EntityId>> = Vec::with_capacity(skin.bones.len());
             let mut binds: Vec<Mat4> = Vec::with_capacity(skin.bones.len());

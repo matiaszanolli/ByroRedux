@@ -658,9 +658,7 @@ pub(crate) fn transfer_loot(
         let mut inventories = world.query_mut::<Inventory>()?;
         // One storage write guard covers both inventories; validate the
         // destination before taking anything so a missing player loses no loot.
-        if inventories.get_mut(player).is_none() {
-            return None;
-        }
+        inventories.get_mut(player)?;
         let source_inventory = inventories.get_mut(source)?;
         match selection {
             LootSelection::All => {

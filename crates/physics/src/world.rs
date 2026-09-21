@@ -682,7 +682,7 @@ impl PhysicsWorld {
                     .iter()
                     .filter_map(|(handle, body)| {
                         (body.body_type() == RigidBodyType::Dynamic && body_state_is_finite(body))
-                            .then(|| DynamicBodySnapshot {
+                            .then_some(DynamicBodySnapshot {
                                 handle,
                                 position: *body.position(),
                             })

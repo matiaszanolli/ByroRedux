@@ -22,7 +22,7 @@
 use byroredux_core::ecs::components::actor_state::Dead;
 use byroredux_core::ecs::components::actor_values::{ActorValues, ActorVitals};
 use byroredux_core::ecs::components::water::{
-    WaterContact, WaterCurrentVolume, WaterFlow, WaterKind, WaterPlane, WaterVolume,
+    WaterContact, WaterCurrentVolume, WaterFlow, WaterPlane, WaterVolume,
 };
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
@@ -1544,6 +1544,7 @@ pub(crate) fn resolve_ground_contact(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::ecs::components::water::WaterKind;
 
     /// #3260 — recreate the two established sides of the production lock
     /// triangle, then drive the real camera system. Under the CI lock-order

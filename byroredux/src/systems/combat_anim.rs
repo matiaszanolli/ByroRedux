@@ -96,7 +96,7 @@ struct FeedbackScratch {
     decisions: Vec<FeedbackDecision>,
 }
 
-pub(crate) fn combat_feedback_system_inner(
+fn combat_feedback_system_inner(
     world: &World,
     dt: f32,
     scratch: &mut FeedbackScratch,
