@@ -1,6 +1,7 @@
 //! CPU particle integration + spawn.
 
 use byroredux_core::ecs::{GlobalTransform, ParticleEmitter, ParticleForceField, TotalTime, World};
+use byroredux_core::math::Vec3;
 
 /// NIFAL particles slice — apply authored `NiPSysEmitter` base params
 /// over a name-heuristic preset's spawn fields, in place. Called from
@@ -398,19 +399,23 @@ pub(crate) fn particle_system(world: &World, dt: f32) {
     let total_time_secs = world.resource::<TotalTime>().0;
     let frame_seed = (total_time_secs * 1000.0) as u64;
 
-    // Read each emitter entity's world-space spawn origin from
-    // GlobalTransform. We only mutate ParticleEmitter (live SoA +
-    // accumulator), so the GlobalTransform query stays read-only and
-    // doesn't fight any other PostUpdate writer.
+    // Read each emitter entity's world-space spawn frame from
+    // GlobalTransform — translation AND rotation (#4398: the rotation was
+    // parsed all the way to the entity and then ignored here, so every
+    // cone was built around world +Y/+X). We only mutate ParticleEmitter
+    // (live SoA + accumulator), so the GlobalTransform query stays
+    // read-only and doesn't fight any other PostUpdate writer.
     let Some((gt_q, mut em_q)) = world.query_2_mut::<GlobalTransform, ParticleEmitter>() else {
         return;
     };
 
     for (entity, em) in em_q.iter_mut() {
-        let host_translation = match gt_q.get(entity) {
-            Some(g) => g.translation,
+        let host_frame = match gt_q.get(entity) {
+            Some(g) => *g,
             None => continue,
         };
+        let host_translation = host_frame.translation;
+        let host_rotation = host_frame.rotation;
 
         // Tiny xorshift32, seeded per-emitter per-frame. Avoids a `rand`
         // dependency and gives reproducible behavior under fixed-step
@@ -485,11 +490,20 @@ pub(crate) fn particle_system(world: &World, dt: f32) {
                 if em.particles.len() >= cap {
                     break;
                 }
+                // The shape offset is expressed in the emitter's local
+                // frame — rotate it into world by the composed placement ×
+                // NIF rotation (#4398; pre-fix it was added raw, so a
+                // rotated vent spawned its volume from an unrotated box).
                 let local_offset = em.shape.sample(&mut rng);
+                let world_offset = host_rotation * Vec3::new(
+                    local_offset[0],
+                    local_offset[1],
+                    local_offset[2],
+                );
                 let world_pos = [
-                    host_translation.x + local_offset[0],
-                    host_translation.y + local_offset[1],
-                    host_translation.z + local_offset[2],
+                    host_translation.x + world_offset.x,
+                    host_translation.y + world_offset.y,
+                    host_translation.z + world_offset.z,
                 ];
 
                 // Build a velocity vector inside the declination cone around
@@ -503,12 +517,22 @@ pub(crate) fn particle_system(world: &World, dt: f32) {
                 // `(sin dec · cos plan, cos dec, -sin dec · sin plan)`, which
                 // is the `dir` below with `phi = -plan`. Presets carry a
                 // `TAU` variation, the same uniform full circle as before.
+                //
+                // #4398 — the cone is the emitter's LOCAL frame (that is
+                // what "declination from the emitter's up axis" means);
+                // rotate it into world by the same host rotation as the
+                // offset above. Pre-fix the identity-host assumption was
+                // hard-coded, so every authored fan aimed at a fixed world
+                // direction on rotated placements. Force-field directions
+                // share this gap and stay world-space — see #984.
                 let plan = em.planar_angle + (rng() - 0.5) * em.planar_angle_variation;
                 let phi = -plan;
                 let dec = em.declination + (rng() - 0.5) * em.declination_variation;
                 let sin_dec = dec.sin();
                 let cos_dec = dec.cos();
-                let dir = [sin_dec * phi.cos(), cos_dec, sin_dec * phi.sin()];
+                let local_dir = Vec3::new(sin_dec * phi.cos(), cos_dec, sin_dec * phi.sin());
+                let dir = host_rotation * local_dir;
+                let dir = [dir.x, dir.y, dir.z];
                 let speed = em.speed + (rng() - 0.5) * em.speed_variation;
                 let vel = [dir[0] * speed, dir[1] * speed, dir[2] * speed];
 
@@ -540,13 +564,20 @@ mod tests {
     use byroredux_core::math::Vec3;
 
     fn world_with_emitter(em: ParticleEmitter, host_pos: Vec3) -> (World, u32) {
+        world_with_emitter_at(em, host_pos, byroredux_core::math::Quat::IDENTITY)
+    }
+
+    /// #4398 — the rotated-host variant of the azimuth pin: the spawn
+    /// frame, not just the origin, comes from `GlobalTransform`.
+    fn world_with_emitter_at(
+        em: ParticleEmitter,
+        host_pos: Vec3,
+        host_rot: byroredux_core::math::Quat,
+    ) -> (World, u32) {
         let mut world = World::new();
         world.insert_resource(TotalTime(0.0));
         let e = world.spawn();
-        world.insert(
-            e,
-            GlobalTransform::new(host_pos, byroredux_core::math::Quat::IDENTITY, 1.0),
-        );
+        world.insert(e, GlobalTransform::new(host_pos, host_rot, 1.0));
         world.insert(e, em);
         (world, e)
     }
@@ -1415,6 +1446,38 @@ mod tests {
             assert!(v[0].abs() < 1e-4, "x = {}", v[0]);
             assert!(v[1].abs() < 1e-4, "y = {}", v[1]);
             assert!((v[2] + 10.0).abs() < 1e-4, "z = {}", v[2]);
+        }
+    }
+
+    /// #4398 — the rotated-host variant of the azimuth pin above, the exact
+    /// case its identity-host fixture could not see: the same authored cone
+    /// (declination π/2, planar π/2 → local dir (0, 0, -1)) under a host
+    /// yawed +90° about the engine up axis must aim along the ROTATED
+    /// direction (-1, 0, 0), not the world-fixed one. Pre-fix the cone was
+    /// built around world axes and every authored fan ignored the
+    /// placement's facing — the error varied per placement, so in-world it
+    /// looked random.
+    #[test]
+    fn authored_planar_angle_follows_a_rotated_host() {
+        let mut em = ParticleEmitter::default();
+        em.rate = 8.0;
+        em.life = 100.0;
+        em.speed = 10.0;
+        em.speed_variation = 0.0;
+        em.declination = std::f32::consts::FRAC_PI_2;
+        em.declination_variation = 0.0;
+        em.planar_angle = std::f32::consts::FRAC_PI_2;
+        em.planar_angle_variation = 0.0;
+        let host_rot = byroredux_core::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let (world, e) = world_with_emitter_at(em, Vec3::ZERO, host_rot);
+        particle_system(&world, 1.0);
+        let q = world.query::<ParticleEmitter>().unwrap();
+        let em = q.get(e).unwrap();
+        assert!(!em.particles.is_empty());
+        for v in &em.particles.velocities {
+            assert!((v[0] + 10.0).abs() < 1e-4, "x = {}", v[0]);
+            assert!(v[1].abs() < 1e-4, "y = {}", v[1]);
+            assert!(v[2].abs() < 1e-4, "z = {}", v[2]);
         }
     }
 }

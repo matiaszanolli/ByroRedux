@@ -836,6 +836,126 @@ mod particle_local_transform_tests {
         assert_eq!(out[0].local_position, [10.0, 30.0, -20.0]);
     }
 
+    /// Z-up yaw by +90° about the up axis: x_new = y_old.
+    fn yaw90_zup() -> crate::types::NiMatrix3 {
+        crate::types::NiMatrix3 {
+            rows: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        }
+    }
+
+    /// #4398 — the flat walker must carry the composed NIF rotation, not
+    /// just the translation (#1333). A rotated host node with an
+    /// identity-local particle block, an identity host with a rotated
+    /// block, and both rotated (composing to a Z-up 180° yaw) must each
+    /// surface the converted composed rotation; pre-#4398 there was no
+    /// field at all and every cell-path emitter spawned world-axis
+    /// aligned.
+    #[test]
+    fn flat_walker_composes_the_emitter_rotation() {
+        use super::super::super::coord::zup_matrix_to_yup_quat;
+
+        let yaw180_zup = crate::types::NiMatrix3 {
+            rows: [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        let cases = [
+            // (host rotation, block rotation, expected composed)
+            (yaw90_zup(), crate::types::NiMatrix3::default(), yaw90_zup()),
+            (
+                crate::types::NiMatrix3::default(),
+                yaw90_zup(),
+                yaw90_zup(),
+            ),
+            (yaw90_zup(), yaw90_zup(), yaw180_zup),
+        ];
+        for (host_rot, block_rot, expected_composed) in cases {
+            // Local builders (not `host_node`/`particle_system`): the
+            // boxed `dyn NiObject` those return can't be downcast mutably,
+            // and this test needs per-case rotations on both blocks.
+            let host = NiNode {
+                av: NiAVObjectData {
+                    net: NiObjectNETData {
+                        name: Some(Arc::from("FireNode")),
+                        extra_data_refs: Vec::new(),
+                        controller_ref: BlockRef::NULL,
+                    },
+                    flags: 0,
+                    transform: NiTransform {
+                        rotation: host_rot,
+                        translation: NiPoint3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        scale: 1.0,
+                    },
+                    properties: Vec::new(),
+                    collision_ref: BlockRef::NULL,
+                },
+                children: vec![BlockRef(1)],
+                effects: Vec::new(),
+            };
+            let ps = NiParticleSystem {
+                original_type: "NiParticleSystem".to_string(),
+                transform: NiTransform {
+                    rotation: block_rot,
+                    translation: NiPoint3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    scale: 1.0,
+                },
+                properties: Vec::new(),
+                shader_property_ref: BlockRef::NULL,
+                alpha_property_ref: BlockRef::NULL,
+                modifier_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+                data_ref: BlockRef::NULL,
+            };
+            let scene = NifScene {
+                blocks: vec![Box::new(host), Box::new(ps)],
+                ..NifScene::default()
+            };
+
+            let mut out = Vec::new();
+            let mut inherited_props = Vec::new();
+            let mut pool = StringPool::new();
+            walk_node_particle_emitters_flat(
+                &scene,
+                0,
+                &NiTransform::default(),
+                None,
+                &mut inherited_props,
+                &mut pool,
+                &mut out,
+            );
+            assert_eq!(out.len(), 1);
+            assert_eq!(
+                out[0].local_rotation,
+                zup_matrix_to_yup_quat(&expected_composed),
+                "host {host_rot:?} × block {block_rot:?} must surface as the \
+                 composed, Y-up-converted rotation (#4398)"
+            );
+        }
+
+        // Control: an all-identity chain surfaces identity, so spawn-time
+        // behaviour on unrotated content is unchanged.
+        let scene = scene_with_offset_emitter();
+        let mut out = Vec::new();
+        let mut inherited_props = Vec::new();
+        let mut pool = StringPool::new();
+        walk_node_particle_emitters_flat(
+            &scene,
+            0,
+            &NiTransform::default(),
+            None,
+            &mut inherited_props,
+            &mut pool,
+            &mut out,
+        );
+        assert_eq!(out[0].local_rotation, [0.0, 0.0, 0.0, 1.0]);
+    }
+
     /// Hierarchical walker (loose-NIF path): `local_translation` must carry
     /// the block's own offset (Z-up → Y-up) so the scene builder anchors at
     /// host-world × block-local. Pre-#1333 the field did not exist.

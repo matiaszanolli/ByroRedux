@@ -2122,6 +2122,20 @@ pub struct ImportedEmitterParams {
 pub struct ImportedParticleEmitterFlat {
     /// Y-up local position of the emitter inside its source NIF.
     pub local_position: [f32; 3],
+    /// Y-up composed NIF rotation of the emitter (host chain × particle
+    /// block), glam `(x, y, z, w)` order, identity `[0, 0, 0, 1]`. #4398 —
+    /// Gamebryo's spawn direction is expressed in the emitter's own frame;
+    /// pre-fix only the translation half of #1333 survived this boundary,
+    /// so the cell loader spawned every emitter axis-aligned to the world
+    /// and the authored azimuth wedge (#4240) aimed at a fixed world
+    /// direction on any rotated placement. The cell spawn composes this
+    /// with the REFR rotation; `particle_system` rotates the sampled
+    /// offset and cone direction by the result. NB: for
+    /// `NiPSysVolumeEmitter` blocks the authored frame is technically the
+    /// discarded `Emitter Object` ref's node (see `blocks/particle.rs`);
+    /// this is the host-chain frame, identical wherever authors leave that
+    /// ref unset or self-pointing.
+    pub local_rotation: [f32; 4],
     /// Nearest named ancestor's name in the NIF hierarchy. Used by the
     /// heuristic preset selector (`torch`/`fire`/`flame`/`brazier`/
     /// `candle` → flame, `smoke`/`steam` → smoke, `magic`/`enchant`/

@@ -9,7 +9,7 @@
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiTransform};
 
-use super::super::coord::zup_point_to_yup;
+use super::super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
 use super::super::transform::compose_transforms;
 use super::{as_ni_node, switch_active_children};
 use byroredux_core::string::StringPool;
@@ -800,6 +800,10 @@ pub(crate) fn walk_node_particle_emitters_flat(
         let pmat = extract_particle_material(scene, ps, inherited_props, pool);
         out.push(crate::import::ImportedParticleEmitterFlat {
             local_position: zup_point_to_yup(&world_transform.translation),
+            // #4398 — the rotation half of #1333: carry the composed
+            // host-chain × block rotation so the cell spawn can aim the
+            // authored spawn cone with the placement's facing.
+            local_rotation: zup_matrix_to_yup_quat(&world_transform.rotation),
             host_name: parent_node_name,
             original_type: ps.original_type.clone(),
             texture_path: pmat.texture_path,

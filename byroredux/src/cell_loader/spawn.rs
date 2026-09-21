@@ -1188,6 +1188,20 @@ fn spawn_particle_emitters(
             em.local_position[2],
         );
         let world_pos = GlobalTransform::compose_translation(ref_pos, ref_rot, ref_scale, nif_pos);
+        // #4398 — the rotation half of #1333: compose the flat import's
+        // NIF-side rotation under the REFR rotation, the same parent×local
+        // order the mesh path uses. Pre-fix the billboard entity was
+        // spawned with `Quat::IDENTITY`, so `particle_system` (which reads
+        // `GlobalTransform`) built every spawn cone around world +Y/+X and
+        // the authored azimuth wedge aimed at a fixed world direction on
+        // any rotated placement.
+        let nif_rot = Quat::from_xyzw(
+            em.local_rotation[0],
+            em.local_rotation[1],
+            em.local_rotation[2],
+            em.local_rotation[3],
+        );
+        let em_rot = ref_rot * nif_rot;
         let host = em.host_name.as_deref().unwrap_or("").to_ascii_lowercase();
         let mut preset = crate::fog::particle_preset(&host, em.texture_path.as_deref());
         // #3590 — resolve the greyscale→palette LUT the `effect_shader_flags`
@@ -1240,13 +1254,15 @@ fn spawn_particle_emitters(
                 preset.texture_path,
             );
             let entity = world.spawn();
+            // #4398 — `em_rot` (REFR × NIF-local), not bare `ref_rot`: the
+            // volume's swept extent follows the composed emitter frame too.
             world.insert(
                 entity,
-                Transform::new(world_pos, ref_rot, ref_scale.abs().max(1.0e-4)),
+                Transform::new(world_pos, em_rot, ref_scale.abs().max(1.0e-4)),
             );
             world.insert(
                 entity,
-                GlobalTransform::new(world_pos, ref_rot, ref_scale.abs().max(1.0e-4)),
+                GlobalTransform::new(world_pos, em_rot, ref_scale.abs().max(1.0e-4)),
             );
             let now_seconds = { world.resource::<byroredux_core::ecs::TotalTime>().0 };
             let combustion_state =
@@ -1291,8 +1307,12 @@ fn spawn_particle_emitters(
             continue;
         }
         let entity = world.spawn();
-        world.insert(entity, Transform::from_translation(world_pos));
-        world.insert(entity, GlobalTransform::new(world_pos, Quat::IDENTITY, 1.0));
+        // #4398 — both the billboard and the volume carry the composed
+        // REFR × NIF rotation so spawn cones and swept ellipsoid extents
+        // follow the placement's facing (the volume branch used to carry
+        // only `ref_rot`, dropping the NIF-local half).
+        world.insert(entity, Transform::new(world_pos, em_rot, 1.0));
+        world.insert(entity, GlobalTransform::new(world_pos, em_rot, 1.0));
         world.insert(entity, TextureHandle(texture_handle));
         world.insert(entity, preset);
     }
