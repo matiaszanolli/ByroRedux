@@ -943,10 +943,11 @@ mod tests {
     fn depth_cap_accepts_legitimate_nesting() {
         // 200 parens < MAX_EXPR_DEPTH (256). A legitimate (if ugly)
         // expression at the same depth must parse without bailing.
-        // Each paren-pair contributes 2 to expr_depth (the outer
-        // parse_expr_bp + the inner parse_expr re-entry), so we cap
-        // the legitimate test at ~100 paren-pairs to stay under the
-        // cap with margin.
+        // Measured (AUDIT_PAPYRUS_2026-09-19 dim-4): each paren-pair
+        // contributes 1 to expr_depth (the value-position entry charge;
+        // the paren recursion re-enters parse_expr, not parse_expr_bp),
+        // so 200 pairs sit at depth ~200 — under the cap, with the cap
+        // admitting roughly 255 pairs.
         let depth: usize = 100;
         let mut src = String::with_capacity(depth * 2 + 2);
         for _ in 0..depth {

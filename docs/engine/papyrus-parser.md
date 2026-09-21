@@ -107,7 +107,10 @@ original source.
 
 **Newlines are significant.** `Token::Newline` is preserved and acts as the statement
 terminator. `Parser::peek()` transparently skips newlines; `peek_raw()` does not — the
-distinction is load-bearing for empty-`Return` detection (see [Pitfalls](#pitfalls)).
+distinction is load-bearing in two directions: empty-`Return` detection (see
+[Pitfalls](#pitfalls)), and, since #4321, the Pratt expression loop terminates at a
+`peek_raw()` newline — an operator ending a line still continues the expression, but the
+next LINE cannot become a continuation of it.
 
 **Namespaces (FO4+):** colon-delimited — `MyNamespace:MyScript:MyStruct`, parsed by
 `parse_qualified_ident` and folded into a single `Identifier` with embedded `:`.
@@ -223,17 +226,22 @@ functions are body-less — the header is the whole item, no `EndFunction`.
 ### Expression depth cap (`parser/expr.rs`, #1270)
 
 `parse_expr_bp` increments/decrements `Parser::expr_depth` around each recursion and bails
-with `ErrorKind::ExpressionTooDeep` once depth reaches `MAX_EXPR_DEPTH = 256`. This stops a
-pathologically nested `.psc` (e.g. `((((…))))` to arbitrary depth) from stack-overflowing
-the parser. Vanilla Skyrim/FO4 scripts nest at most a few levels, so 256 is generous; a
-512-paren input errors gracefully, a 200-paren input still parses. (#1270 /
-SAFE-DIM3-NEW-02.)
+with `ErrorKind::ExpressionTooDeep` once depth reaches `MAX_EXPR_DEPTH = 256`. Since #4320
+the cap ALSO charges `enter_chain_link` per iteration of the iterative postfix/binary
+chain loop (`a.b[0].c` builds depth iteratively, without recursion) — that charge is the
+load-bearing half now: a recursion-only cap let a ~200k-link chain build an AST that
+aborted the ECS transpiler at `expr_depth` 1. Vanilla Skyrim/FO4 scripts nest at most a
+few levels, so 256 is generous; a 512-paren input errors gracefully, a 200-paren input
+still parses (measured: one depth unit per paren-pair). (#1270 / SAFE-DIM3-NEW-02;
+chain-link charge #4320.)
 
 ## Pitfalls (load-bearing findings)
 
 - **`peek()` skips newlines, `peek_raw()` does not.** Empty-`Return` detection must use
   `peek_raw()` — otherwise a `Return` on its own line is treated as having a value (the
-  next statement / `EndEvent` on a later line). Fixed across `parser/stmt.rs`.
+  next statement / `EndEvent` on a later line). Fixed across `parser/stmt.rs`. Since
+  #4321 the Pratt loop is newline-terminating via `peek_raw()`; #4472 tracks the
+  remaining newline-skipping decision sites outside that loop.
 - **Array type vs index expression.** `parse_type` only treats `Base[]` (empty brackets)
   as an array; `Base[expr]` rewinds and the brackets are re-parsed as a postfix index.
 - **Some keywords are valid identifiers** in name positions (`Auto`, `Hidden`,
@@ -251,15 +259,18 @@ SAFE-DIM3-NEW-02.)
 | 5 | Console / runtime integration | Partial — `parse_expr` backs the debug-protocol query evaluator (`crates/debug-server/src/evaluator.rs`); a dedicated `psc` file-load command is not wired |
 | — | Depth-cap hardening | Done (#1270, commit `4ff28e8b`) |
 
-### Tests (73 total)
+### Tests
 
-- `parser/expr.rs` — 35 inline (literals, precedence, casts, calls, named args, member
-  access, indexing, `new`, depth cap)
-- `lexer.rs` — 13 inline (preprocess, case-insensitive keywords, operators, literals,
-  comments, newlines)
-- `parser/stmt.rs` — 12 inline (Return, VarDecl, Assign/compound-assign, If/ElseIf/Else,
+Counts drift; measure with `cargo test -p byroredux-papyrus` rather than trusting this
+list ( refreshed 2026-09-21: 108 unit + 4 round-trip). By module:
+
+- `parser/expr.rs` — 40 inline (literals, precedence, casts, calls, named args, member
+  access, indexing, `new`, depth cap incl. the #4320 chain-link charge)
+- `lexer.rs` — 25 inline (preprocess, case-insensitive keywords, operators, literals,
+  comments, newlines incl. the #4479 CR/exponent diagnostics)
+- `parser/stmt.rs` — 17 inline (Return, VarDecl, Assign/compound-assign, If/ElseIf/Else,
   While, nested blocks, type disambiguation)
-- `parser/script.rs` — 9 inline (header, Extends + flags, Event/Function bodies, Native
+- `parser/script.rs` — 21 inline (header, Extends + flags, Event/Function bodies, Native
   function, Auto property, State, Import, full R5 rumble script)
 - `tests/r5_round_trip.rs` — 4 integration round-trips
 
