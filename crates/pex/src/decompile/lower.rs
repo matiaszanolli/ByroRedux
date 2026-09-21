@@ -448,7 +448,21 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
         )?))));
     }
 
-    for state in &object.states {
+    // #4473 — at most ONE state is the auto state: the FIRST
+    // case-insensitive match of `auto_state_name`. `is_auto_state` matches
+    // case-insensitively (#3786, correctly), so a hostile/hand-assembled
+    // `.pex` carrying `waiting` + `WAITING` with `auto_state_name =
+    // "Waiting"` previously marked BOTH `is_auto: true` — an AST no
+    // Papyrus source can express (the compiler rejects duplicate
+    // case-insensitive state names). Champollion's case-sensitive compare
+    // marks at most one; the first match is the rule here.
+    let auto_state_index: Option<usize> = if object.auto_state_name.is_empty() {
+        None
+    } else {
+        object.states.iter().position(|s| is_auto_state(object, s))
+    };
+
+    for (state_index, state) in object.states.iter().enumerate() {
         // #4319 — the script-scope state is the one named `""`, always.
         // `auto_state_name` names the state the object *boots into*, which is
         // `""` only when the source declares no `Auto State`. Keying script
@@ -473,7 +487,8 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
             body.push(sp(ScriptItem::State(State {
                 name: ident(&state.name),
                 // #3786 — case-insensitive, through the shared predicate.
-                is_auto: is_auto_state(object, state),
+                // #4473 — first-match-only under a case collision.
+                is_auto: auto_state_index == Some(state_index),
                 body: items,
             })));
         }
@@ -727,6 +742,59 @@ mod tests {
         assert_eq!(state.body.len(), 1);
         assert!(
             matches!(&state.body[0].node, StateItem::Event(ev) if ev.name.node.0 == "OnActivate")
+        );
+    }
+
+    /// #4473 — a hand-assembled `.pex` whose states collide
+    /// case-insensitively (`waiting` + `WAITING`, `auto_state_name =
+    /// "Waiting"`): the FIRST match is the auto state, the duplicate stays
+    /// a plain `State`. No Papyrus source can express two auto states (the
+    /// compiler rejects duplicate case-insensitive state names), so
+    /// marking both produced an AST outside the language.
+    #[test]
+    fn case_colliding_state_names_mark_exactly_one_auto() {
+        let handler = |name: &str| PexFunction {
+            name: name.into(),
+            return_type_name: "None".into(),
+            instructions: vec![ins(OpCode::Return, vec![id("::NoneVar")])],
+            ..PexFunction::default()
+        };
+        let pex = Pex {
+            script_type: crate::ScriptType::Skyrim,
+            header: Default::default(),
+            string_table: Vec::new(),
+            debug_info: Default::default(),
+            user_flags: Vec::new(),
+            objects: vec![Object {
+                name: "MyScript".into(),
+                parent_class_name: "ObjectReference".into(),
+                auto_state_name: "Waiting".into(),
+                states: vec![
+                    PexState {
+                        name: "waiting".into(),
+                        functions: vec![handler("OnActivate")],
+                    },
+                    PexState {
+                        name: "WAITING".into(),
+                        functions: vec![handler("OnUpdate")],
+                    },
+                ],
+                ..Object::default()
+            }],
+        };
+        let script = decompile_script(&pex).unwrap();
+        let autos: Vec<&str> = script
+            .body
+            .iter()
+            .filter_map(|item| match &item.node {
+                ScriptItem::State(state) if state.is_auto => Some(&*state.name.node.0),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            autos,
+            ["waiting"],
+            "exactly the first case-insensitive match is the auto state (#4473)"
         );
     }
 
