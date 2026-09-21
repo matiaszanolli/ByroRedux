@@ -50,7 +50,37 @@ use std::process::Command;
 /// Where baseline PNGs live (relative to the test crate's manifest).
 const GOLDEN_DIR: &str = "tests/golden";
 
-/// The engine flags the baseline is captured with, and the single source of
+/// One golden baseline: a scene's baseline stem plus the flags that make its
+/// invocation unique. The shared `CAPTURE_ARGS` below are prepended by the
+/// harness; `scene_args` distinguish one case's frame from another's and are
+/// recorded in the per-case capture manifest so the staleness gate stays
+/// per-scene.
+struct GoldenCase {
+    /// Baseline PNG stem under `tests/golden/`.
+    name: &'static str,
+    /// Scene flags appended after the shared capture args.
+    scene_args: &'static [&'static str],
+}
+
+/// The default scene: spinning-cube demo, no extra flags.
+const CUBE_DEMO: GoldenCase = GoldenCase {
+    name: "cube_demo_60f",
+    scene_args: &[],
+};
+
+/// The combustion lab: a persistent 1850 K flame under a rigid hood plus the
+/// oil-explosion schedule, game-data independent. This is the durable gate
+/// for the volumetric fire/smoke look — soot spectrum, local-light phase,
+/// multiple-scatter gain, and BFECC advection all land on this frame, so a
+/// future change that quietly dims the fire or smears the plume fails here
+/// instead of waiting for a manual screenshot share (the failure mode this
+/// file's header describes for Phase 2c).
+const COMBUSTION_LAB: GoldenCase = GoldenCase {
+    name: "combustion_lab_60f",
+    scene_args: &["--combustion-lab"],
+};
+
+/// The engine flags every baseline is captured with, and the single source of
 /// truth for both the capture and the staleness check below.
 ///
 /// `--upscaler taa` is load-bearing, not cosmetic (#3849). `parse_args`
@@ -62,7 +92,10 @@ const GOLDEN_DIR: &str = "tests/golden";
 const CAPTURE_ARGS: &[&str] = &["--bench-mode", "renderer-static", "--upscaler", "taa"];
 
 /// Engine bench length. 60 frames is enough for SVGF + TAA history
-/// to converge from cold start while keeping the test fast.
+/// to converge from cold start while keeping the test fast. The simulation
+/// clock is frozen in `renderer-static`, so the combustion lab is captured
+/// with its flame mid-injection and the plume at the frame-1 transported
+/// state — a stable, repeatable slice of the fire look.
 const FRAMES: u32 = 60;
 
 /// Per-channel diff at or below this is treated as noise.
@@ -76,13 +109,23 @@ const MAX_CHANNEL_DELTA: u8 = 32;
 #[test]
 #[ignore = "requires Vulkan device + release build; opt-in via --ignored"]
 fn cube_demo_golden_frame() {
-    let baseline = manifest_relative(&format!("{GOLDEN_DIR}/cube_demo_60f.png"));
-    let actual = std::env::temp_dir().join("byroredux_golden_cube_demo.png");
+    golden_frame(&CUBE_DEMO);
+}
+
+#[test]
+#[ignore = "requires Vulkan device + release build; opt-in via --ignored"]
+fn combustion_lab_golden_frame() {
+    golden_frame(&COMBUSTION_LAB);
+}
+
+fn golden_frame(case: &GoldenCase) {
+    let baseline = manifest_relative(&format!("{GOLDEN_DIR}/{}.png", case.name));
+    let actual = std::env::temp_dir().join(format!("byroredux_golden_{}.png", case.name));
     if actual.exists() {
         let _ = std::fs::remove_file(&actual);
     }
 
-    run_engine_screenshot(&actual, FRAMES);
+    run_engine_screenshot(&actual, FRAMES, case.scene_args);
 
     let actual_bytes = std::fs::read(&actual)
         .unwrap_or_else(|e| panic!("screenshot file missing at {}: {e}", actual.display()));
@@ -102,7 +145,7 @@ fn cube_demo_golden_frame() {
         // Record what it was captured with, in the same breath. A baseline
         // whose invocation is not written down is the state #3849 describes:
         // unusable, and not visibly so.
-        std::fs::write(&manifest, capture_manifest_body()).expect("write capture manifest");
+        std::fs::write(&manifest, capture_manifest_body(case)).expect("write capture manifest");
         eprintln!(
             "regenerated baseline: {} ({} bytes)\n  capture manifest: {}",
             baseline.display(),
@@ -112,17 +155,24 @@ fn cube_demo_golden_frame() {
         return;
     }
 
-    assert_baseline_was_captured_with_the_current_invocation(&manifest);
+    assert_baseline_was_captured_with_the_current_invocation(&manifest, case);
 
     let baseline_bytes = std::fs::read(&baseline).unwrap_or_else(|_| {
         panic!(
             "baseline missing at {} — capture one with:\n  \
-             BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- --ignored cube_demo_golden_frame",
-            baseline.display()
+             BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- --ignored {}_golden_frame",
+            baseline.display(),
+            golden_test_name(case)
         )
     });
 
-    compare_or_fail(&baseline_bytes, &actual_bytes, &baseline, &actual);
+    compare_or_fail(&baseline_bytes, &actual_bytes, &baseline, &actual, case);
+}
+
+/// The `#[test]` name for a case — the stem plus the shared `_golden_frame`
+/// suffix used in every recovery hint.
+fn golden_test_name(case: &GoldenCase) -> String {
+    format!("{}_golden_frame", case.name)
 }
 
 /// Sidecar recording the invocation a baseline PNG was captured with.
@@ -133,14 +183,14 @@ fn capture_manifest_path(baseline: &Path) -> PathBuf {
 /// The manifest body: one flag per line, plus the frame count. `#` lines are
 /// provenance prose and are ignored by the comparison, so a hand-written
 /// manifest can say where its PNG came from.
-fn capture_manifest_body() -> String {
+fn capture_manifest_body(case: &GoldenCase) -> String {
     let mut body = String::from(
         "# Invocation the sibling golden PNG was captured with (#3849).\n\
          # Regenerate both together: BYROREDUX_REGEN_GOLDEN=1 cargo test --release \\\n\
-         #   -p byroredux -- --ignored cube_demo_golden_frame\n",
+         #   -p byroredux -- --ignored golden\n",
     );
     body.push_str(&format!("frames={FRAMES}\n"));
-    for arg in CAPTURE_ARGS {
+    for arg in CAPTURE_ARGS.iter().chain(case.scene_args.iter()) {
         body.push_str(arg);
         body.push('\n');
     }
@@ -171,14 +221,14 @@ fn manifest_significant(body: &str) -> Vec<&str> {
 /// actionable failure. It also makes the next flag addition visibly
 /// baseline-invalidating: add a flag to `CAPTURE_ARGS` without regenerating
 /// and this fires immediately, naming the drift.
-fn assert_baseline_was_captured_with_the_current_invocation(manifest: &Path) {
-    let expected = capture_manifest_body();
+fn assert_baseline_was_captured_with_the_current_invocation(manifest: &Path, case: &GoldenCase) {
+    let expected = capture_manifest_body(case);
     let recorded = std::fs::read_to_string(manifest).unwrap_or_else(|_| {
         panic!(
             "no capture manifest at {} — the baseline PNG beside it was captured with an \n\
              unrecorded invocation and cannot be trusted as a pixel reference (#3849).\n\
              Regenerate both:\n  \
-             BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- --ignored cube_demo_golden_frame",
+             BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- --ignored golden",
             manifest.display()
         )
     });
@@ -191,7 +241,7 @@ fn assert_baseline_was_captured_with_the_current_invocation(manifest: &Path) {
          captured with: {:?}\n  \
          running now:   {:?}\n\
          Review the change, then regenerate:\n  \
-         BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- --ignored cube_demo_golden_frame\n",
+         BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- --ignored golden",
         manifest_significant(&recorded),
         manifest_significant(&expected),
     );
@@ -212,7 +262,7 @@ fn manifest_relative(rel: &str) -> PathBuf {
 /// cares about the rendered frame, not the shutdown cleanliness; the
 /// shutdown crash is filed separately. If/when shutdown is fixed, this
 /// can be tightened to assert `status.success()`.
-fn run_engine_screenshot(out: &Path, frames: u32) {
+fn run_engine_screenshot(out: &Path, frames: u32, scene_args: &[&str]) {
     let frames_s = frames.to_string();
     let out_s = out
         .to_str()
@@ -237,7 +287,8 @@ fn run_engine_screenshot(out: &Path, frames: u32) {
                 out_s,
             ]
             .into_iter()
-            .chain(CAPTURE_ARGS.iter().copied()),
+            .chain(CAPTURE_ARGS.iter().copied())
+            .chain(scene_args.iter().copied()),
         )
         .status()
         .expect("spawning cargo run failed");
@@ -269,6 +320,7 @@ fn compare_or_fail(
     actual_bytes: &[u8],
     baseline_path: &Path,
     actual_path: &Path,
+    case: &GoldenCase,
 ) {
     let baseline_img = image::load_from_memory(baseline_bytes)
         .expect("baseline PNG decode failed")
@@ -317,9 +369,10 @@ fn compare_or_fail(
              baseline: {}\n  \
              actual saved at: {}\n  \
              to regenerate baseline (only if the change is intentional):\n    \
-             BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- --ignored cube_demo_golden_frame",
+             BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- --ignored {}",
             baseline_path.display(),
-            saved.display()
+            saved.display(),
+            golden_test_name(case)
         );
     }
 }
@@ -359,18 +412,21 @@ fn manifest_comparison_ignores_comments_and_blank_lines() {
 }
 
 /// The generated manifest names every flag the capture actually passes. If a
-/// flag is added to `CAPTURE_ARGS` but the manifest stops reflecting it, the
-/// gate silently stops detecting drift — the failure mode it exists to close.
+/// flag is added to `CAPTURE_ARGS` or a case's `scene_args` but the manifest
+/// stops reflecting it, the gate silently stops detecting drift — the failure
+/// mode it exists to close.
 #[test]
 fn generated_manifest_names_the_whole_invocation() {
-    let body = capture_manifest_body();
-    let lines = manifest_significant(&body);
-    assert!(
-        lines.contains(&format!("frames={FRAMES}").as_str()),
-        "frame count missing from {lines:?}"
-    );
-    for arg in CAPTURE_ARGS {
-        assert!(lines.contains(arg), "{arg} missing from {lines:?}");
+    for case in [&CUBE_DEMO, &COMBUSTION_LAB] {
+        let body = capture_manifest_body(case);
+        let lines = manifest_significant(&body);
+        assert!(
+            lines.contains(&format!("frames={FRAMES}").as_str()),
+            "frame count missing from {lines:?}"
+        );
+        for arg in CAPTURE_ARGS.iter().chain(case.scene_args.iter()) {
+            assert!(lines.contains(arg), "{arg} missing from {lines:?}");
+        }
     }
     assert!(
         CAPTURE_ARGS.contains(&"--upscaler") && CAPTURE_ARGS.contains(&"taa"),
@@ -384,48 +440,56 @@ fn generated_manifest_names_the_whole_invocation() {
 /// one that carries a flag the harness no longer passes.
 #[test]
 fn manifest_comparison_detects_drift_in_both_directions() {
-    let generated = capture_manifest_body();
+    let generated = capture_manifest_body(&COMBUSTION_LAB);
     let current = manifest_significant(&generated);
 
-    let predates_a_flag = "frames=60\n--bench-mode\nrenderer-static\n";
+    let predates_a_flag = "frames=60\n--bench-mode\nrenderer-static\n--combustion-lab\n";
     assert_ne!(
         manifest_significant(predates_a_flag),
         current,
         "a manifest missing --upscaler taa must read as stale"
     );
 
-    let carries_a_removed_flag = format!("{}--no-such-flag\n", capture_manifest_body());
+    let carries_a_removed_flag = format!("{}--no-such-flag\n", capture_manifest_body(&CUBE_DEMO));
     assert_ne!(
         manifest_significant(&carries_a_removed_flag),
-        current,
+        manifest_significant(&capture_manifest_body(&CUBE_DEMO)),
         "a manifest naming a flag the harness no longer passes must read as stale"
     );
 }
 
-/// The committed baseline was captured with the invocation the harness
-/// passes today (#4227). It was stale from `4376f7a6` (2026-06-04) until the
-/// regen, predating both `--bench-mode renderer-static` and FSR3 becoming
-/// the `--upscaler` default; #3849 pinned that known-stale state and told
-/// whoever regenerated it to flip this assertion, which is what happened.
+/// The committed baselines were captured with the invocations the harness
+/// passes today (#4227). The cube baseline was stale from `4376f7a6`
+/// (2026-06-04) until the #3849 regen, predating both `--bench-mode
+/// renderer-static` and FSR3 becoming the `--upscaler` default; that check
+/// pinned the known-stale state and told whoever regenerated it to flip this
+/// assertion, which is what happened.
 ///
 /// Keeping the check in the default lane — rather than only behind
 /// `--ignored` with a GPU — is what makes a future drift visible: change
-/// `CAPTURE_ARGS` or `FRAMES` without recapturing and this fails here,
-/// instead of the pixel comparison failing confusingly on a device.
+/// `CAPTURE_ARGS`, a case's `scene_args`, or `FRAMES` without recapturing and
+/// this fails here, instead of the pixel comparison failing confusingly on a
+/// device. Every case added to the corpus must land here with its baseline.
 #[test]
 fn committed_baseline_matches_the_current_invocation() {
-    let manifest = capture_manifest_path(&manifest_relative(&format!(
-        "{GOLDEN_DIR}/cube_demo_60f.png"
-    )));
-    let recorded = std::fs::read_to_string(&manifest)
-        .unwrap_or_else(|e| panic!("capture manifest missing at {}: {e}", manifest.display()));
-    assert_eq!(
-        manifest_significant(&recorded),
-        manifest_significant(&capture_manifest_body()),
-        "The committed baseline was captured with a different invocation than \
-         the harness passes now, so the pixel comparison would be measuring \
-         two different scenes. Recapture both together:\n  \
-         BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- \
-         --ignored cube_demo_golden_frame"
-    );
+    for case in [&CUBE_DEMO, &COMBUSTION_LAB] {
+        let manifest = capture_manifest_path(&manifest_relative(&format!(
+            "{GOLDEN_DIR}/{}.png",
+            case.name
+        )));
+        let recorded =
+            std::fs::read_to_string(&manifest).unwrap_or_else(|e| {
+                panic!("capture manifest missing at {}: {e}", manifest.display())
+            });
+        assert_eq!(
+            manifest_significant(&recorded),
+            manifest_significant(&capture_manifest_body(case)),
+            "The committed {} baseline was captured with a different invocation than \
+             the harness passes now, so the pixel comparison would be measuring \
+             two different scenes. Recapture both together:\n  \
+             BYROREDUX_REGEN_GOLDEN=1 cargo test --release -p byroredux -- \
+             --ignored golden",
+            case.name
+        );
+    }
 }

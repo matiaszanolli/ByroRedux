@@ -6,3 +6,4 @@ frames=60
 renderer-static
 --upscaler
 taa
+--combustion-lab
