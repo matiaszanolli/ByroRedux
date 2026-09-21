@@ -9,6 +9,21 @@
 //! text — compound-assign recovery, `ElseIf` flattening, name unmangling —
 //! are not applied; they don't affect recognizer matching, which keys on
 //! names, calls, and condition shape. `Copy` nodes are unwrapped inline.
+//!
+//! ## Deliberate Champollion departure (the third; #4477)
+//!
+//! **`a is T` lowers to `Expr::Cast`.** The shared AST has no `is`
+//! type-test operator, so opcode 36 lowers to the structurally closest
+//! `a as T` — which is ill-typed Papyrus in a condition position (`as`
+//! does not yield Bool). Departures 1 and 2 (the boolean pass's
+//! no-debug-line guard and termination guard) live in
+//! `super::boolean`'s module doc. Like them it is recognizer-irrelevant
+//! today: recognizers key on names/calls/condition shape, and ≈0 vanilla
+//! scripts contain opcode 36 (no `.psc` construct emits it). A future
+//! consumer that RENDERS the lower-only AST to source text, or evaluates
+//! it strictly, must add an `Is`-capable expression (or a condition-only
+//! `TypeTest` variant) first — if that happens, this lowering and its pin
+//! test are the two places to change.
 
 use byroredux_papyrus::ast::{
     self as past, BinaryOp, CallArg, Event, Expr, Function, Param, Property, PropertyFlags, Script,
@@ -110,7 +125,8 @@ fn lower_expr(node: &Node) -> Spanned<Expr> {
         NodeKind::BinaryOp { left, op, right } if op == "is" => {
             // Papyrus's `a is T` type-test has no BinaryOp counterpart in
             // the shared AST; lower to the structurally closest `a as T`.
-            // Rare and recognizer-irrelevant.
+            // Rare and recognizer-irrelevant. Bookkept as the third
+            // deliberate Champollion departure — see this module's doc.
             Expr::Cast {
                 expr: Box::new(lower_expr(left)),
                 target_type: sp(lower_type(&node_type_name(right))),
@@ -523,6 +539,58 @@ mod tests {
                 ..Object::default()
             }],
         }
+    }
+
+    /// #4477 — the opcode-36 (`Is`) lowering pin: `a is T` arrives as
+    /// `Expr::Cast { target_type: T }`, the documented third Champollion
+    /// departure (this module's doc). If the AST ever gains an `Is`-capable
+    /// expression, this is the test to flip.
+    #[test]
+    fn an_is_opcode_lowers_to_an_object_typed_cast() {
+        // ; a is Actor
+        // Is a Actor  (opcode 36, Bool result → ::NoneVar)
+        let func = PexFunction {
+            name: "Probe".into(),
+            return_type_name: "None".into(),
+            params: vec![],
+            instructions: vec![
+                ins_v(
+                    OpCode::Is,
+                    vec![id("::NoneVar"), id("a"), Value::Identifier("Actor".to_string())],
+                    vec![],
+                ),
+                ins(OpCode::Return, vec![Value::Identifier("None".to_string())]),
+            ],
+            ..PexFunction::default()
+        };
+        let script = crate::decompile::decompile_script(&pex_with_function(func))
+            .expect("decompile");
+
+        let body = script
+            .body
+            .first()
+            .and_then(|item| match &item.node {
+                ScriptItem::Function(f) => Some(f),
+                _ => None,
+            })
+            .map(|f| &f.body)
+            .expect("one function");
+        // Walk the statements looking for the Cast expression.
+        let mut cast: Option<&past::Type> = None;
+        for stmt in body {
+            if let Stmt::ExprStmt(expr) = &stmt.node {
+                if let Expr::Cast { target_type, .. } = &expr.node {
+                    cast = Some(&target_type.node);
+                }
+            }
+        }
+        let cast = cast.expect("the `is` must lower to a Cast");
+        assert_eq!(
+            cast,
+            &past::Type::Object(past::Identifier::new("Actor".to_string())),
+            "the type-test lowers to an object-typed cast — the documented \
+             third departure (this module's doc, #4477)"
+        );
     }
 
     #[test]
