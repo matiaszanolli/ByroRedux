@@ -439,7 +439,10 @@ So the divisor's whole perceptual cost is combustion, which is the argument for
 moving combustion local rather than for paying 4x globally. Note that neither a
 bilateral composite upsample nor a blue-noise march offset recovers this: both
 address sampling artifacts in the fog read, while this is advection diffusion in
-the transported field. Once they are local, the global grid is
+the transported field. The 2026-09-21 single-pass BFECC error correction
+reduced that per-step diffusion (cooled-smoke gradient energy +24% at `/8` at
+flat cost — see `procedural-volumetric-fog.md`), which relieves the symptom but
+does not change the argument. Once they are local, the global grid is
 two volumes at 24 B/froxel (~199 MB at native 4K) and its density stops being a
 fire question at all. Runtime work, tracked separately.
 

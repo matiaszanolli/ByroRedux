@@ -295,6 +295,30 @@ regime, not in a texture tint applied after transport.
   legitimately flips at shadow boundaries; using that flip as a generic
   disocclusion would suppress accumulation exactly at the god-ray edges
   M-LIGHT v2 added it to clean up.
+- Transport fidelity: the dye fields (chemistry + spectral optics) are advected
+  with a single-pass BFECC error correction (Selle et al. 2008) on top of the
+  RK2 backtrace. The correction differences the field against a
+  forward/backward trace pair to recover the one-step dissipation semi-
+  Lagrangian transport smears away, clamped to the eight previous-grid texels
+  feeding the source tap so the scheme stays unconditionally stable. It reads
+  only the previous frame-in-flight slot — no intermediate image — and is
+  gated to cells where advection actively imports medium. Velocity is never
+  corrected (a dynamics error term injects energy at curl discontinuities).
+  With recovered detail available, the curl-noise forcing scale and interface
+  vorticity confinement were turned down (1.6 → 1.1, 0.75 → 0.55 m/s) so
+  motion reads as emergent from transport. `BYRO_BFECC=0` reproduces plain
+  semi-Lagrangian transport in the same binary for A/B.
+- Optics: soot is spectral, not gray. The transported single-scatter albedo is
+  `[0.22, 0.16, 0.12]` — warm-weighted because fresh soot absorbs blue more
+  strongly — so cooled plumes scatter and transmit warm instead of reading as
+  neutral gray dust. Point/spot in-scattering uses a fixed soot-like
+  dual-lobe Henyey-Greenstein phase (forward 0.35 / backward −0.12, mix 0.65)
+  instead of isotropic 1/4π, matching the asymmetry the sun path gets from
+  authored weather. And the local-medium in-scatter carries a two-octave
+  multiple-scattering energy compensation (`1 + 0.6·ω + 0.3·ω²` in the
+  medium's spectral albedo) so optically thick media do not read as
+  single-scatter-dark; extinction, authored fog, and emission are untouched,
+  keeping fog-only scenes bit-identical.
 
 ### Game-data-independent lab
 
@@ -323,6 +347,19 @@ the final composite, verify that the delayed transported-field light moments
 warm nearby surfaces and then recede with cooling. The named `volume` view
 maps both radiance and opacity, so non-emissive soot remains inspectable.
 
+The lab is also a permanent regression gate: `combustion_lab_golden_frame`
+(`byroredux/tests/golden_frames.rs`) captures frame 60 of the frozen-clock
+scene and per-pixel compares it against `tests/golden/combustion_lab_60f.png`,
+so the fire look — soot spectrum, local-light phase, multiple-scatter gain,
+BFECC advection — cannot silently drift.
+
+The 2026-09-21 look A/Bs ran here (same binary, env-flipped): BFECC raised
+cooled-smoke gradient energy +23.6% (p90 +26%) with the smeared thin halo
+−19% and `gpu_volumetrics` flat at ~0.45 ms; after the forcing retune the
+plume still carries +14% detail over the pre-BFECC operating point with ~31%
+less curl forcing. The spectral-soot wave moved smoke R/B tint 3.086 → 3.165
+with flame energy within 0.2%.
+
 ### Open calibration
 
 `FLAME_REFERENCE_RADIANCE` is the one exposure choice in the chain; everything
@@ -343,6 +380,7 @@ final.
 --froxel-z-slices <16..256>   default 64
 --fog-grid-far-m <32..512>    default 128
 BYROREDUX_RENDER_DEBUG_MODE=volume   isolated raw integrated froxel field
+BYRO_BFECC=0                          plain semi-Lagrangian transport (A/B)
 ```
 
 Example:
@@ -363,6 +401,7 @@ The timer brackets inject plus integrate.
 |---|---:|---:|---:|---|
 | XY divisor | 4 | 214×120×64 | 0.17–0.20 ms | exact slab transport + emissive sidecar, Vulkan validation runtime |
 | XY divisor | 8 | 107×60×64 | — | **default**; allocation/dispatch smoke passed; timed warmup pending |
+| XY divisor | 8 (combustion) | 160×90×64 | 0.45–0.46 ms | `--combustion-lab` live, flame + post-explosion plume, 720p native TAA, 2026-09-21; BFECC on/off identical within 0.01 ms |
 | XY divisor | 12 | 72×40×64 | 0.10–0.11 ms | Perlin-Worley/detail volumes; repeated FNV warm frames |
 | XY divisor | 16 | 54×30×64 | — | pending |
 | Z slices | 32 | 72×40×32 | — | pending |
