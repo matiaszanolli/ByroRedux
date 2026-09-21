@@ -2333,7 +2333,7 @@ void transportCombustion(
         );
         vec3 turbulentAcceleration = (
             coarseCurl * 0.72 + detailCurl * 0.42
-        ) * (1.6 * WORLD_UNITS_PER_METER * activity);
+        ) * (1.1 * WORLD_UNITS_PER_METER * activity);
         dynamics.xyz += turbulentAcceleration * dt;
         dynamics.xyz *= exp(
             -COMBUSTION_VELOCITY_DAMPING_PER_SECOND * dt

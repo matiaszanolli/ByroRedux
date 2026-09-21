@@ -96,10 +96,12 @@ pub const MAX_DILUTION_RATE_PER_SECOND: f32 = 3.5;
 /// Velocity scale used by interface vorticity confinement, metres per second.
 ///
 /// Semi-Lagrangian transport is deliberately stable but numerically diffuses
-/// the rotational motion that rolls a flame or smoke boundary. This canonical
-/// scale restores that lost motion from the transported field itself; it is
+/// the rotational motion that rolls a flame or smoke boundary. BFECC error
+/// correction now recovers most of that one-step dissipation in the dye
+/// fields, so confinement only tops up the remainder rather than
+/// re-synthesizing the whole roll from the discretization curl; it is
 /// independent of the source profile and originating game.
-pub const VORTICITY_CONFINEMENT_SPEED_MPS: f32 = 0.75;
+pub const VORTICITY_CONFINEMENT_SPEED_MPS: f32 = 0.55;
 
 /// Numerical ceiling for interface-confinement acceleration, metres per
 /// second squared.
