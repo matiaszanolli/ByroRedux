@@ -9,11 +9,12 @@ use crate::scene::NifScene;
 
 // ── #1443 — mainline keyframe-stream finite/FLT_MAX sanitizer ────────
 //
-// The static-pose / B-spline paths already gate on `is_flt_max`; these
-// cover the previously-unguarded mainline converters (`convert_vec3_keys`,
-// `convert_quat_keys`, `convert_float_keys`, and the float/color channel
-// extractors). A corrupt value must be dropped before it reaches the
-// sampler and poisons a bone/shader uniform with NaN.
+// The static-pose / B-spline paths gate on the same predicates since
+// #4397 (`is_key_value_sane`) and #4396 (the rotation sanitizer); these
+// cover the mainline converters (`convert_vec3_keys`, `convert_quat_keys`,
+// `convert_float_keys`, and the float/color channel extractors). A corrupt
+// value must be dropped before it reaches the sampler and poisons a
+// bone/shader uniform with NaN.
 #[cfg(test)]
 mod sanitize_keyframe_streams {
     use super::*;
@@ -109,6 +110,69 @@ mod sanitize_keyframe_streams {
         let (keys, _) = convert_quat_keys(&data);
         assert_eq!(keys.len(), 1, "only the clean identity quaternion survives");
         assert_eq!(keys[0].time, 0.0);
+    }
+
+    /// #4396 (NIFAL-D7-2026-09-14-01) — the two holes the #1443
+    /// per-component sweep could not see, now closed by routing
+    /// `convert_quat_keys` through the shared
+    /// [`normalized_rotation_sample`] sanitizer:
+    ///
+    /// * a component that is individually sane but squares past
+    ///   `f32::MAX` (2e19): `zup_to_yup_quat`'s `normalize_quat` turned
+    ///   `len_sq == inf` into `inv == 0` and stored the ZERO quaternion;
+    /// * an authored all-zero quaternion: `normalize_quat` returns
+    ///   zero-length input unchanged, so the zero quat sailed through.
+    ///
+    /// Both skip now, and a surviving non-unit key is normalized at this
+    /// boundary instead of relying on the sampler's lazy normalize.
+    #[test]
+    fn convert_quat_keys_drops_overflow_and_zero_quaternions_and_normalizes() {
+        let data = NiTransformData {
+            rotation_type: Some(KeyType::Linear),
+            rotation_keys: vec![
+                QuatKey {
+                    time: 0.0,
+                    // Individually sane; squares to inf.
+                    value: [2.0e19, 0.0, 0.0, 0.0],
+                    tbc: None,
+                },
+                QuatKey {
+                    time: 1.0,
+                    // Authored all-zero — malformed, not a pose.
+                    value: [0.0, 0.0, 0.0, 0.0],
+                    tbc: None,
+                },
+                QuatKey {
+                    time: 2.0,
+                    // Ordinary non-unit quaternion: survives, normalized.
+                    value: [0.0, 3.0, 4.0, 0.0],
+                    tbc: None,
+                },
+            ],
+            xyz_rotations: None,
+            translations: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: vec![],
+            },
+            scales: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: vec![],
+            },
+        };
+        let (keys, _) = convert_quat_keys(&data);
+        assert_eq!(
+            keys.len(),
+            1,
+            "overflow (→ zero quat) and all-zero quaternions must skip (#4396)"
+        );
+        assert_eq!(keys[0].time, 2.0);
+        // zup_to_yup_quat of the normalized (0, 0.6, 0.8, 0) wxyz →
+        // glam (x, z, -y, w) = (0.6, 0, -0.8, 0). Asserting unit length
+        // pins the boundary normalization itself.
+        let v = keys[0].value;
+        let len_sq: f32 = v.iter().map(|c| c * c).sum();
+        assert!((len_sq - 1.0).abs() < 1e-5, "key must be unit length, got {len_sq}");
+        assert!((v[0] - 0.6).abs() < 1e-5 && v[1].abs() < 1e-5 && (v[2] + 0.8).abs() < 1e-5);
     }
 
     #[test]

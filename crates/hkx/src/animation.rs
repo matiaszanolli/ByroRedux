@@ -1050,6 +1050,14 @@ fn normalize_quaternion(mut value: [f32; 4]) -> Result<[f32; 4]> {
         .iter()
         .map(|component| component * component)
         .sum::<f32>();
+    // #4396 — individually-finite components past ~1.84e19 square past
+    // f32::MAX, so `length_squared` overflows to inf and `recip` yields 0:
+    // every component becomes `finite * 0.0 == 0.0` and this returned
+    // Ok([0,0,0,0]) — the zero quaternion — for the same input the NIF
+    // paths reject. Reject it like the zero-length case.
+    if !length_squared.is_finite() {
+        return Err(HkxError::InvalidData("quaternion length overflow"));
+    }
     if length_squared <= f32::EPSILON {
         return Err(HkxError::InvalidData("zero-length quaternion"));
     }
@@ -1087,6 +1095,29 @@ fn align_up(value: usize, alignment: usize) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #4396 (NIFAL-D7-2026-09-14-01) — individually-finite components
+    /// past ~1.84e19 square past f32::MAX: `length_squared` overflows to
+    /// inf, `recip()` yields 0, and this function used to return
+    /// Ok([0,0,0,0]) — the zero quaternion — for the same input the NIF
+    /// paths reject. The overflow arm now errors like the zero-length and
+    /// non-finite arms.
+    #[test]
+    fn normalize_quaternion_rejects_length_overflow() {
+        let huge = 2.0e19f32;
+        assert!((huge * huge).is_infinite(), "fixture sanity: squaring overflows");
+        assert!(
+            normalize_quaternion([huge, 0.0, 0.0, 0.0]).is_err(),
+            "an overflowing len_sq must error, not yield the zero quaternion (#4396)"
+        );
+        // The pre-existing arms stay: non-finite and zero-length reject,
+        // an ordinary non-unit quaternion still normalizes.
+        assert!(normalize_quaternion([f32::NAN, 0.0, 0.0, 0.0]).is_err());
+        assert!(normalize_quaternion([0.0, 0.0, 0.0, 0.0]).is_err());
+        let q = normalize_quaternion([0.0, 3.0, 4.0, 0.0]).expect("ordinary survives");
+        let len_sq: f32 = q.iter().map(|c| c * c).sum();
+        assert!((len_sq - 1.0).abs() < 1e-5);
+    }
 
     fn pack_three_component_40(values: [u16; 3], omitted: u8, negative: bool) -> [u8; 5] {
         let mut packed = u64::from(values[0])

@@ -228,6 +228,9 @@ fn bspline_rotation_sample_was_already_safe_against_nan_control_points() {
 
 /// Regression: #4166. The guard must not disturb ordinary content — a
 /// non-unit but well-scaled quaternion still normalizes as before.
+/// (#4396 — the near-zero arm moved from identity-substitution to skip
+/// when this sanitizer became the single rotation-key sanitizer; that
+/// case now has its own pin in `tests/sanitize.rs`.)
 #[test]
 fn bspline_rotation_sample_still_normalizes_ordinary_quaternions() {
     let q = normalized_rotation_sample([0.0, 3.0, 4.0, 0.0]).expect("ordinary sample must survive");
@@ -237,9 +240,88 @@ fn bspline_rotation_sample_still_normalizes_ordinary_quaternions() {
         (q[1] - 0.6).abs() < 1e-5 && (q[2] - 0.8).abs() < 1e-5,
         "{q:?}"
     );
-    // Near-zero stays identity, the pre-existing degenerate behaviour.
+    // #4396 — a near-zero (all-zero authored) quaternion skips like every
+    // other rejection: identity substitution was an invented pose, and
+    // `normalize_quat`'s zero-length pass-through let the raw zero quat
+    // sail through on the converter paths.
     assert_eq!(
         normalized_rotation_sample([0.0, 0.0, 0.0, 0.0]),
-        Some([1.0, 0.0, 0.0, 0.0])
+        None,
+        "near-zero must skip, not substitute identity (#4396)"
     );
+}
+
+/// #4396 / #4397 — the B-spline STATIC fallback pose (`n_cp < 4` →
+/// `static_transform_channel`, and the per-sample `else` arms) had the
+/// same two holes as the mainline converters: `is_flt_max`-only gates
+/// let NaN through, and the rotation was copied raw so overflow/zero
+/// quaternions reached keys. Both routes now share
+/// `normalized_rotation_sample` and the `is_key_value_sane` gates.
+#[test]
+fn bspline_static_pose_drops_nan_overflow_and_sentinel_components() {
+    use crate::blocks::interpolator::NiBSplineCompTransformInterpolator;
+    use crate::types::{NiPoint3, NiQuatTransform};
+
+    let interp_for = |pose: NiQuatTransform| NiBSplineCompTransformInterpolator {
+        start_time: 0.0,
+        stop_time: 1.0,
+        spline_data_ref: crate::types::BlockRef::NULL,
+        basis_data_ref: crate::types::BlockRef::NULL,
+        transform: pose,
+        translation_handle: u32::MAX,
+        rotation_handle: u32::MAX,
+        scale_handle: u32::MAX,
+        translation_offset: 0.0,
+        translation_half_range: 0.0,
+        rotation_offset: 0.0,
+        rotation_half_range: 0.0,
+        scale_offset: 0.0,
+        scale_half_range: 0.0,
+    };
+
+    // NaN pose — invisible to the old is_flt_max-only gates (#4397).
+    let nan = static_transform_channel(&interp_for(NiQuatTransform {
+        translation: NiPoint3 {
+            x: f32::NAN,
+            y: f32::NAN,
+            z: f32::NAN,
+        },
+        rotation: [f32::NAN, f32::NAN, f32::NAN, f32::NAN],
+        scale: f32::NAN,
+    }));
+    assert!(nan.translation_keys.is_empty(), "NaN translation drops");
+    assert!(nan.rotation_keys.is_empty(), "NaN rotation drops");
+    assert!(nan.scale_keys.is_empty(), "NaN scale drops");
+
+    // Individually-sane rotation squaring past f32::MAX (#4396); clean
+    // translation/scale on the same pose survive per-axis.
+    let overflow = static_transform_channel(&interp_for(NiQuatTransform {
+        translation: NiPoint3 {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        },
+        rotation: [2.0e19, 0.0, 0.0, 0.0],
+        scale: 0.75,
+    }));
+    assert_eq!(overflow.translation_keys.len(), 1);
+    assert!(
+        overflow.rotation_keys.is_empty(),
+        "overflow rotation must skip, not arrive as the zero quaternion (#4396)"
+    );
+    assert_eq!(overflow.scale_keys.len(), 1);
+
+    // The FLT_MAX sentinel keeps its "axis inactive" semantics.
+    let sentinel = static_transform_channel(&interp_for(NiQuatTransform {
+        translation: NiPoint3 {
+            x: f32::MAX,
+            y: f32::MAX,
+            z: f32::MAX,
+        },
+        rotation: [f32::MAX; 4],
+        scale: f32::MAX,
+    }));
+    assert!(sentinel.translation_keys.is_empty());
+    assert!(sentinel.rotation_keys.is_empty());
+    assert!(sentinel.scale_keys.is_empty());
 }

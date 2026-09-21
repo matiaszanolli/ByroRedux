@@ -263,8 +263,12 @@ pub fn sample_color_keys_bspline_point3(
 ) -> Vec<AnimColorKey> {
     // Single-key static fallback. FLT_MAX-encoded axes mean "no static
     // pose for this axis" — emit nothing if any axis is sentinel-valued.
+    // #4397 — gated on `is_key_value_sane`, not bare `is_flt_max`: NaN
+    // passes the sentinel check and would ride into a key.
     let static_fallback = || -> Vec<AnimColorKey> {
-        if is_flt_max(interp.value[0]) || is_flt_max(interp.value[1]) || is_flt_max(interp.value[2])
+        if [interp.value[0], interp.value[1], interp.value[2]]
+            .iter()
+            .any(|v| !is_key_value_sane(*v))
         {
             return Vec::new();
         }

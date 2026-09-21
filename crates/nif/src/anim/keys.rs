@@ -12,14 +12,66 @@ pub fn is_flt_max(v: f32) -> bool {
 }
 
 /// A keyframe-stream scalar is sane when it is finite and below the
-/// FLT_MAX sentinel. The static-pose / B-spline-fallback paths already
-/// gate on `is_flt_max` (`transform.rs`, `bspline.rs`); the mainline
-/// keyframe converters here copy raw NIF floats, so a corrupt value
-/// (NaN / ±inf / ±FLT_MAX) would otherwise reach the sampler and poison
-/// the bone/shader uniform — a NaN skinning matrix that vanishes the
-/// mesh (#1443, same finite-guard family as #772 / #1434 / #1409).
+/// FLT_MAX sentinel. The mainline keyframe converters here gate every
+/// copied float on it (#1443), and since #4397 the static-pose /
+/// B-spline-fallback paths gate on it too — the old `is_flt_max`-only
+/// gates were blind to NaN (`is_flt_max(NaN)` is false), letting a NaN
+/// pose reach the canonical clip.
 pub fn is_key_value_sane(v: f32) -> bool {
     v.is_finite() && !is_flt_max(v)
+}
+
+/// The single rotation-sample sanitizer at the NIF→canonical boundary
+/// (#4396): every rotation that enters a `RotationKey` — mainline KF
+/// keys, static poses, B-spline samples and B-spline static fallbacks —
+/// normalizes through here or is skipped, so the bone keeps its bind
+/// pose rather than receiving a poisoned key. Input and output are raw
+/// NIF `(w, x, y, z)` order; convert through [`zup_to_yup_quat`]
+/// afterwards (its re-normalize is idempotent on the unit result).
+///
+/// Returns `None` (skip the key / sample) when:
+///
+/// 1. any component fails [`is_key_value_sane`] — non-finite, or the
+///    FLT_MAX "axis inactive" sentinel;
+/// 2. `len_sq` overflowed to non-finite (#4406): individually-sane
+///    components past `~1.84e19` square past `f32::MAX`, and naive
+///    normalization then emits the **zero** quaternion (every component
+///    is finite, so `finite * 0.0 == 0.0`). A post-normalize
+///    `is_key_value_sane` check cannot see that failure — `[0, 0, 0, 0]`
+///    is finite — which is why the guard is on `len_sq` itself;
+/// 3. `len_sq <= EPSILON` — a genuinely near-zero (typically all-zero
+///    authored) quaternion (#4396: core's `normalize_quat` returns
+///    zero-length input unchanged, so such a key sailed through as the
+///    zero quaternion). Identity is NOT substituted: an invented pose is
+///    still fabrication, and the sampler interpolates across the gap or
+///    falls back to the bind pose like every other rejection. (Pre-#4396
+///    the B-spline path substituted identity here; that exception is
+///    retired with the unification.)
+///
+/// Blast radius if a poisoned value escaped: `GlobalTransform` → skinned
+/// vertex positions → BLAS refit / TLAS build with a non-finite AABB,
+/// which is undefined behaviour under Vulkan's acceleration-structure
+/// build contract rather than a visual glitch (#4166).
+///
+/// Worth recording because it inverts the intuition (#4166): a NaN
+/// control point was already safe before any guard existed — `len_sq`
+/// is NaN, `NaN > f32::EPSILON` is false. It is the *infinite* and the
+/// *merely huge* inputs that needed guarding, not the NaN ones.
+pub(crate) fn normalized_rotation_sample(raw: [f32; 4]) -> Option<[f32; 4]> {
+    if !raw.iter().all(|v| is_key_value_sane(*v)) {
+        return None;
+    }
+    let len_sq = raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2] + raw[3] * raw[3];
+    if !len_sq.is_finite() || len_sq <= f32::EPSILON {
+        return None;
+    }
+    let inv = 1.0 / len_sq.sqrt();
+    Some([
+        raw[0] * inv,
+        raw[1] * inv,
+        raw[2] * inv,
+        raw[3] * inv,
+    ])
 }
 
 /// Clamp a Hermite tangent component: a non-finite / sentinel tangent
@@ -64,14 +116,21 @@ pub fn convert_quat_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyType) 
     let keys = data
         .rotation_keys
         .iter()
-        // #1443 — drop keys whose quaternion has any non-finite / FLT_MAX
-        // component; a NaN rotation propagates straight into the bone
-        // matrix. Empty result → channel falls back to the bind pose.
-        .filter(|k| k.value.iter().all(|&c| is_key_value_sane(c)))
-        .map(|k| RotationKey {
-            time: k.time,
-            value: zup_to_yup_quat(k.value),
-            tbc: k.tbc,
+        // #1443 dropped keys with non-finite / FLT_MAX components. #4396 —
+        // the full [`normalized_rotation_sample`] sanitizer replaces the
+        // per-component check: an individually-sane quaternion whose
+        // components square past f32::MAX (which `normalize_quat` turned
+        // into the zero quaternion via `inf → inv 0`) and an authored
+        // all-zero quaternion (which `normalize_quat` returns unchanged)
+        // are skipped too, and surviving keys are normalized at this
+        // boundary instead of relying on the sampler's lazy normalize.
+        // Empty result → channel falls back to the bind pose.
+        .filter_map(|k| {
+            normalized_rotation_sample(k.value).map(|q| RotationKey {
+                time: k.time,
+                value: zup_to_yup_quat(q),
+                tbc: k.tbc,
+            })
         })
         .collect();
     (keys, rotation_type)

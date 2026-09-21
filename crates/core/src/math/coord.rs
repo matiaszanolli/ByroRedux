@@ -196,6 +196,14 @@ pub fn euler_zup_to_quat_yup_mode(mode: u8, rx: f32, ry: f32, rz: f32) -> Quat {
 /// `zup_to_yup_quat_wxyz` guards against it explicitly. Public so the
 /// NIF-matrix consumer in `nif::import::coord::zup_matrix_to_yup_quat`
 /// can share the same `#333` invariant. See #1044.
+///
+/// Known leniency (deliberate — this is a pure math helper): an input
+/// whose components square past `f32::MAX` yields the zero quaternion
+/// here (`len_sq` inf → `inv` 0), and zero-length input passes through
+/// unchanged. Animation keys never reach that — `nif::anim::keys::
+/// normalized_rotation_sample` (#4396) rejects both classes before any
+/// conversion calls this — but a new caller must not rely on this
+/// function alone to sanitize authored quaternions.
 #[inline]
 pub fn normalize_quat(q: [f32; 4]) -> [f32; 4] {
     let len_sq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];

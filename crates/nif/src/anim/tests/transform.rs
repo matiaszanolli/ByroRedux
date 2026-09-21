@@ -404,6 +404,90 @@ fn extract_transform_channel_drops_flt_max_pose_axes_for_lookat() {
     );
 }
 
+/// #4396 / #4397 (NIFAL-D7-2026-09-14-01/-02) — the NaN and zero-quat
+/// classes the FLT_MAX pins above could not see: `is_flt_max(NaN)` is
+/// false, so a NaN pose component passed every static-pose gate and rode
+/// the swizzle into a canonical key (NaN translation verbatim, rotation
+/// normalizing to all-NaN, scale copied), and a rotation that squares
+/// past f32::MAX became the zero quaternion through `normalize_quat`.
+/// The gates now read `is_key_value_sane` and the rotation normalizes
+/// through the shared sanitizer, so every class here drops to an empty
+/// key list — bind pose — while clean axes stay per-axis independent.
+#[test]
+fn constant_transform_channel_drops_nan_and_overflow_pose_components() {
+    use crate::types::{NiPoint3, NiQuatTransform};
+
+    // NaN on every axis — invisible to the old is_flt_max gates.
+    let nan_pose = NiQuatTransform {
+        translation: NiPoint3 {
+            x: f32::NAN,
+            y: f32::NAN,
+            z: f32::NAN,
+        },
+        rotation: [f32::NAN, f32::NAN, f32::NAN, f32::NAN],
+        scale: f32::NAN,
+    };
+    let channel = constant_transform_channel(&nan_pose);
+    assert!(channel.translation_keys.is_empty(), "NaN translation drops");
+    assert!(channel.rotation_keys.is_empty(), "NaN rotation drops");
+    assert!(channel.scale_keys.is_empty(), "NaN scale drops");
+
+    // Individually-sane rotation that squares to inf (→ zero quat), with
+    // clean translation/scale on the same pose: only rotation drops.
+    let overflow_rot = NiQuatTransform {
+        translation: NiPoint3 {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        },
+        rotation: [2.0e19, 0.0, 0.0, 0.0],
+        scale: 0.75,
+    };
+    let channel = constant_transform_channel(&overflow_rot);
+    assert_eq!(channel.translation_keys.len(), 1, "clean translation survives");
+    assert!(
+        channel.rotation_keys.is_empty(),
+        "a rotation that squares past f32::MAX must skip, not arrive as the \
+         zero quaternion (#4396)"
+    );
+    assert_eq!(channel.scale_keys.len(), 1);
+
+    // An authored all-zero quaternion is malformed, not a pose.
+    let zero_rot = NiQuatTransform {
+        translation: NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        rotation: [0.0, 0.0, 0.0, 0.0],
+        scale: 1.0,
+    };
+    let channel = constant_transform_channel(&zero_rot);
+    assert!(
+        channel.rotation_keys.is_empty(),
+        "an all-zero authored quaternion must skip (#4396)"
+    );
+    assert_eq!(channel.translation_keys.len(), 1);
+    assert_eq!(channel.scale_keys.len(), 1);
+
+    // A non-unit but well-scaled pose quaternion now arrives normalized
+    // (pre-#4396 it was stored raw and relied on the sampler's lazy
+    // normalize): (w,x,y,z) = (0,3,4,0) → glam (x,z,-y,w) = (0.6,0,-0.8,0).
+    let nonunit = NiQuatTransform {
+        translation: NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        rotation: [0.0, 3.0, 4.0, 0.0],
+        scale: 1.0,
+    };
+    let channel = constant_transform_channel(&nonunit);
+    assert_eq!(channel.rotation_keys.len(), 1);
+    let r = channel.rotation_keys[0].value;
+    assert!((r[0] - 0.6).abs() < 1e-5 && r[1].abs() < 1e-5 && (r[2] + 0.8).abs() < 1e-5);
+}
+
 /// #772 sibling — partial FLT_MAX (translation inactive, rotation
 /// authored). The translation axis must drop while rotation passes
 /// through. mtidle.kf for finger bones is exactly this shape: no

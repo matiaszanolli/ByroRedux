@@ -129,33 +129,40 @@ pub fn constant_transform_channel(t: &crate::types::NiQuatTransform) -> Transfor
     // FLT_MAX in any TRS axis means "no static pose for this axis";
     // emit an empty key list so the bone keeps its bind-pose value
     // for that axis. See FLT_MAX_SENTINEL above.
+    //
+    // #4397 — the gates below read [`is_key_value_sane`], not bare
+    // `is_flt_max`: the sentinel check alone is false for NaN, so a NaN
+    // pose component passed every gate and reached the canonical clip.
+    // `is_key_value_sane` keeps the sentinel semantics (it rejects
+    // FLT_MAX) and adds NaN / ±inf.
     let pose_t = [t.translation.x, t.translation.y, t.translation.z];
-    let translation_keys =
-        if is_flt_max(pose_t[0]) || is_flt_max(pose_t[1]) || is_flt_max(pose_t[2]) {
-            Vec::new()
-        } else {
-            vec![TranslationKey {
-                time: 0.0,
-                value: zup_to_yup_pos(pose_t),
-                forward: [0.0; 3],
-                backward: [0.0; 3],
-                tbc: None,
-            }]
-        };
-    let rotation_keys = if is_flt_max(t.rotation[0])
-        || is_flt_max(t.rotation[1])
-        || is_flt_max(t.rotation[2])
-        || is_flt_max(t.rotation[3])
+    let translation_keys = if [pose_t[0], pose_t[1], pose_t[2]]
+        .iter()
+        .any(|v| !is_key_value_sane(*v))
     {
         Vec::new()
     } else {
-        vec![RotationKey {
+        vec![TranslationKey {
             time: 0.0,
-            value: zup_to_yup_quat(t.rotation),
+            value: zup_to_yup_pos(pose_t),
+            forward: [0.0; 3],
+            backward: [0.0; 3],
             tbc: None,
         }]
     };
-    let scale_keys = if is_flt_max(t.scale) {
+    // #4396 — the shared sanitizer, not a raw copy: a non-unit raw pose
+    // quaternion now arrives normalized, and the zero/overflow/non-finite
+    // classes (invisible or mis-handled by the old `is_flt_max` gate)
+    // skip to an empty list — bind pose — like every other rejection.
+    let rotation_keys = match normalized_rotation_sample(t.rotation) {
+        None => Vec::new(),
+        Some(q) => vec![RotationKey {
+            time: 0.0,
+            value: zup_to_yup_quat(q),
+            tbc: None,
+        }],
+    };
+    let scale_keys = if !is_key_value_sane(t.scale) {
         Vec::new()
     } else {
         vec![ScaleKey {

@@ -175,10 +175,11 @@ pub fn extract_float_channel_bspline(
     // Single-key static fallback used by every "no usable spline data"
     // branch below (null refs, missing data blocks, under-defined basis,
     // invalid handle). Returns None when the fallback `value` is also
-    // FLT_MAX-sentinel, in which case the caller treats it as "no
-    // animation" and the channel stays at its bind value.
+    // FLT_MAX-sentinel or otherwise insane (#4397 — NaN is invisible to
+    // the bare sentinel check), in which case the caller treats it as
+    // "no animation" and the channel stays at its bind value.
     let static_fallback = || -> Option<FloatChannel> {
-        if is_flt_max(interp.value) {
+        if !is_key_value_sane(interp.value) {
             return None;
         }
         Some(FloatChannel {
@@ -254,80 +255,6 @@ pub fn extract_float_channel_bspline(
         return None;
     }
     Some(FloatChannel { target, keys })
-}
-
-/// Normalize one sampled B-spline rotation control point, or reject it.
-///
-/// Returns `None` when the sample must be skipped entirely — mirroring the
-/// "skip just that sample" behaviour the translation, scale and float
-/// sub-channels already had — so the bone falls back to its bind pose
-/// rather than receiving a poisoned key.
-///
-/// #4166. #3765 added an `is_key_value_sane` gate at three of the four
-/// B-spline sub-channel push sites and described itself as covering all
-/// four; rotation was left out. There are two distinct failure modes here
-/// and they need two distinct guards, which is why this is not simply the
-/// one-line `is_key_value_sane` sweep its siblings use:
-///
-/// 1. **A non-finite control point** (`±inf`). `len_sq` is `inf`, `inv` is
-///    `1.0 / inf == 0.0`, and the offending component becomes
-///    `inf * 0.0 == NaN`. Caught by the pre-normalize sweep, exactly like
-///    the siblings.
-///
-/// 2. **Individually-sane control points that overflow when squared.** Any
-///    `|v| > ~1.84e19` squares past `f32::MAX`, so `len_sq` is `inf` while
-///    every component remains finite and under the FLT_MAX sentinel. Each
-///    component then becomes `finite * 0.0 == 0.0`: the result is the
-///    **zero quaternion, not NaN**. That is why a post-normalize
-///    `is_key_value_sane` check is *not* the fix — `[0, 0, 0, 0]` is finite
-///    and passes it on all four components while still being a degenerate
-///    rotation that poisons the bone downstream. It is caught instead by
-///    requiring `len_sq` itself to be finite (#4406: skip the sample, like
-///    the siblings — a local identity would be an invented pose, not the
-///    bind pose this function's contract promises). Only the genuinely
-///    near-zero arm substitutes identity.
-///
-/// Worth recording because it inverts the intuition: a NaN control point
-/// was already safe before this fix. `len_sq` becomes NaN,
-/// `NaN > f32::EPSILON` is false, and the degenerate arm substitutes
-/// identity. It is the *infinite* and the *merely huge* inputs that needed
-/// guarding, not the NaN ones.
-///
-/// #4406 — the overflow arm used to fall through to the identity
-/// substitution, which contradicted this doc and the translation/scale/
-/// float siblings' skip behaviour. It now returns `None`; identity is
-/// reserved for the near-zero arm only.
-///
-/// Blast radius if this returns a poisoned value: `GlobalTransform` →
-/// skinned vertex positions → BLAS refit / TLAS build with a non-finite
-/// AABB, which is undefined behaviour under Vulkan's acceleration-structure
-/// build contract rather than a visual glitch.
-pub(crate) fn normalized_rotation_sample(raw: [f32; 4]) -> Option<[f32; 4]> {
-    if !raw.iter().all(|v| is_key_value_sane(*v)) {
-        return None;
-    }
-    let [mut w, mut x, mut y, mut z] = raw;
-    let len_sq = w * w + x * x + y * y + z * z;
-    // #4406 — overflow-to-inf on squaring skips the sample (see the doc
-    // above); identity is only for a genuinely near-zero quaternion.
-    if !len_sq.is_finite() {
-        return None;
-    }
-    if len_sq > f32::EPSILON {
-        let inv = 1.0 / len_sq.sqrt();
-        w *= inv;
-        x *= inv;
-        y *= inv;
-        z *= inv;
-    } else {
-        // Degenerate (near-zero): substitute identity rather than emitting
-        // a zero quaternion.
-        w = 1.0;
-        x = 0.0;
-        y = 0.0;
-        z = 0.0;
-    }
-    Some([w, x, y, z])
 }
 
 /// Extract a TransformChannel by sampling a NiBSplineCompTransformInterpolator.
@@ -427,7 +354,9 @@ pub fn extract_transform_channel_bspline(
                 interp.transform.translation.y,
                 interp.transform.translation.z,
             ];
-            if !(is_flt_max(pose[0]) || is_flt_max(pose[1]) || is_flt_max(pose[2])) {
+            // #4397 — sane, not bare is_flt_max: NaN passes the sentinel
+            // check and would ride the swizzle straight into a key.
+            if pose.iter().all(|v| is_key_value_sane(*v)) {
                 translation_keys.push(TranslationKey {
                     time: t,
                     value: zup_to_yup_pos(pose),
@@ -438,8 +367,9 @@ pub fn extract_transform_channel_bspline(
             }
         }
 
-        // Rotation. See [`normalized_rotation_sample`] for the guard and
-        // why it is shaped the way it is (#4166).
+        // Rotation. See [`normalized_rotation_sample`] (keys.rs — the
+        // single rotation sanitizer since #4396) for the guard and why it
+        // is shaped the way it is (#4166/#4406).
         if let Some(ref cps) = rot_q {
             let p = deboor_cubic(cps, n_cp, BSPLINE_ROT_STRIDE, u);
             if let Some(q) = normalized_rotation_sample([p[0], p[1], p[2], p[3]]) {
@@ -450,17 +380,21 @@ pub fn extract_transform_channel_bspline(
                 });
             }
         } else {
+            // #4397 — `is_key_value_sane`, not bare `is_flt_max`: NaN is
+            // invisible to the sentinel check. #4396 — the pose quaternion
+            // normalizes through the shared sanitizer, so the zero /
+            // overflow classes skip instead of reaching a key.
             let q = interp.transform.rotation;
-            if !(is_flt_max(q[0]) || is_flt_max(q[1]) || is_flt_max(q[2]) || is_flt_max(q[3])) {
+            if let Some(qn) = normalized_rotation_sample(q) {
                 rotation_keys.push(RotationKey {
                     time: t,
-                    value: zup_to_yup_quat(q),
+                    value: zup_to_yup_quat(qn),
                     tbc: None,
                 });
             }
         }
 
-        // Scale. Same FLT_MAX gate.
+        // Scale. Same gate. (#4397 — sane, not bare is_flt_max.)
         if let Some(ref cps) = scale_q {
             let p = deboor_cubic(cps, n_cp, BSPLINE_SCALE_STRIDE, u);
             // #3765 (SAFE-2026-08-30-D9-01) belt-and-braces — see the
@@ -474,7 +408,7 @@ pub fn extract_transform_channel_bspline(
                     tbc: None,
                 });
             }
-        } else if !is_flt_max(interp.transform.scale) {
+        } else if is_key_value_sane(interp.transform.scale) {
             scale_keys.push(ScaleKey {
                 time: t,
                 value: interp.transform.scale,
@@ -499,36 +433,38 @@ pub fn extract_transform_channel_bspline(
 /// Build a static single-key TransformChannel from an interpolator's
 /// fallback `NiQuatTransform`. FLT_MAX-encoded axes drop to empty key
 /// lists so the bone keeps its bind-pose value (see FLT_MAX_SENTINEL).
+/// #4397 — the gates read [`is_key_value_sane`] (NaN-inclusive), not bare
+/// `is_flt_max`; #4396 — the rotation normalizes through the shared
+/// sanitizer instead of a raw copy.
 pub fn static_transform_channel(interp: &NiBSplineCompTransformInterpolator) -> TransformChannel {
     let pose_t = [
         interp.transform.translation.x,
         interp.transform.translation.y,
         interp.transform.translation.z,
     ];
-    let translation_keys =
-        if is_flt_max(pose_t[0]) || is_flt_max(pose_t[1]) || is_flt_max(pose_t[2]) {
-            Vec::new()
-        } else {
-            vec![TranslationKey {
-                time: interp.start_time,
-                value: zup_to_yup_pos(pose_t),
-                forward: [0.0, 0.0, 0.0],
-                backward: [0.0, 0.0, 0.0],
-                tbc: None,
-            }]
-        };
-    let q = interp.transform.rotation;
-    let rotation_keys =
-        if is_flt_max(q[0]) || is_flt_max(q[1]) || is_flt_max(q[2]) || is_flt_max(q[3]) {
-            Vec::new()
-        } else {
-            vec![RotationKey {
-                time: interp.start_time,
-                value: zup_to_yup_quat(q),
-                tbc: None,
-            }]
-        };
-    let scale_keys = if is_flt_max(interp.transform.scale) {
+    let translation_keys = if [pose_t[0], pose_t[1], pose_t[2]]
+        .iter()
+        .any(|v| !is_key_value_sane(*v))
+    {
+        Vec::new()
+    } else {
+        vec![TranslationKey {
+            time: interp.start_time,
+            value: zup_to_yup_pos(pose_t),
+            forward: [0.0, 0.0, 0.0],
+            backward: [0.0, 0.0, 0.0],
+            tbc: None,
+        }]
+    };
+    let rotation_keys = match normalized_rotation_sample(interp.transform.rotation) {
+        None => Vec::new(),
+        Some(q) => vec![RotationKey {
+            time: interp.start_time,
+            value: zup_to_yup_quat(q),
+            tbc: None,
+        }],
+    };
+    let scale_keys = if !is_key_value_sane(interp.transform.scale) {
         Vec::new()
     } else {
         vec![ScaleKey {
@@ -561,8 +497,9 @@ pub fn static_transform_channel(interp: &NiBSplineCompTransformInterpolator) -> 
 /// NaN/±Inf in either poisons every dequantized control point, and
 /// `deboor_cubic` propagates it into the sampled channel unfiltered — the
 /// mainline keyframe converters are gated by `is_key_value_sane` (#1443)
-/// and the pose-fallback branches by `is_flt_max`, but this sampled path
-/// (the whole point of the block) had neither. This is the single choke
+/// and the pose-fallback branches too (#4397, sane-gates; #4396, the
+/// rotation sanitizer), but this sampled path (the whole point of the
+/// block) had neither. This is the single choke
 /// point all four callers (`extract_float_channel_bspline`'s scalar
 /// channel, `extract_transform_channel_bspline`'s translation/rotation/
 /// scale channels) funnel through, so gating here covers all of them —
