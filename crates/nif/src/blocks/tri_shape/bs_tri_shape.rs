@@ -1142,7 +1142,19 @@ pub(crate) fn decode_bs_vertex_stream(
     let mut uvs: Vec<[f32; 2]> = stream.allocate_vec(nv_u32)?;
     let mut normals: Vec<NiPoint3> = stream.allocate_vec(nv_u32)?;
     let mut vertex_colors: Vec<[f32; 4]> = stream.allocate_vec(nv_u32)?;
-    let mut tangents: Vec<[f32; 4]> = Vec::new();
+    // #4206 — pre-size when the descriptor guarantees a tangent quad on
+    // every vertex (VF_TANGENTS && VF_NORMALS, fixed for the whole call —
+    // the same conditional pre-size sse_recon.rs #559 applies to the
+    // sibling decoder). Left to push-doubling this cost log2(n)
+    // realloc+copy cycles per mesh block on every normal-mapped SE+/FO4+/
+    // Starfield mesh.
+    let mut tangents: Vec<[f32; 4]> = if vertex_attrs & VF_TANGENTS != 0
+        && vertex_attrs & VF_NORMALS != 0
+    {
+        stream.allocate_vec(nv_u32)?
+    } else {
+        Vec::new()
+    };
     let mut bone_weights: Vec<[f32; 4]> = Vec::new();
     let mut bone_indices: Vec<[u8; 4]> = Vec::new();
     if is_skinned {
