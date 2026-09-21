@@ -1419,11 +1419,18 @@ pub const DBG_VIZ_GLASS_PASSTHRU: u32 = 0x80;
 /// itself. Default-on; this bit is the opt-out.
 pub const DBG_DISABLE_SPECULAR_AA: u32 = 0x100;
 
-/// 0x200 — reserved. Formerly disabled the interior-only isotropic
-/// directional-fill path. Interior and exterior directionals now share
-/// the standard BRDF + RT-shadow contract, so keep the bit vacant rather
-/// than renumbering the externally visible debug flags above it.
-pub const DBG_RESERVED_200: u32 = 0x200;
+/// 0x200 — display the raw SSAO occlusion value the main pass samples,
+/// before the 0.2 floor, before DALC/ambient floors, and before it
+/// multiplies anything. White = no occlusion; dark = occluded. Recycled
+/// from the reserved slot (formerly the interior-only isotropic
+/// directional-fill disable, retired when interior and exterior
+/// directionals converged on the standard BRDF + RT-shadow contract).
+/// The instrument that answers "is SSAO finding occlusion at all" — a
+/// tone-diff A/B against `DBG_DISABLE_AO` cannot distinguish "AO applies
+/// but the texture is white everywhere" from "AO applies and changes
+/// nothing visible", which is exactly the ambiguity hit while auditing
+/// AO coverage on the Cornell scene.
+pub const DBG_VIZ_AO: u32 = 0x200;
 
 /// 0x400 — bypass the per-vertex color modulation of albedo
 /// (`albedo *= fragColor`). Bethesda bakes per-vertex lighting / AO into
@@ -1669,6 +1676,7 @@ pub const DBG_VIZ_RAW_OUTPUT_ANY: &[(&str, u32)] = &[
     ("DBG_VIZ_SELECTED_LIGHT", DBG_VIZ_SELECTED_LIGHT),
     ("DBG_VIZ_DIRECT", DBG_VIZ_DIRECT),
     ("DBG_VIZ_RAW_INDIRECT", DBG_VIZ_RAW_INDIRECT),
+    ("DBG_VIZ_AO", DBG_VIZ_AO),
 ];
 
 /// Correctness-oracle views keyed by an **exact compound**: every bit in the
@@ -1715,9 +1723,9 @@ pub const fn dbg_viz_raw_output_any_mask() -> u32 {
 /// is what catches that; the pre-existing count-parity guard cannot, because
 /// it compares entry counts, never values.
 ///
-/// Two slots are recyclable and exist for exactly this purpose:
-/// [`DBG_RESERVED_20`] (bit 5) and [`DBG_RESERVED_200`] (bit 9) — rename one
-/// in place rather than inventing a value. Past those two, future debug
+/// One recyclable slot remains for exactly this purpose:
+/// [`DBG_RESERVED_20`] (bit 5) — rename it in place rather than inventing a
+/// value. (Bit 9 was recycled into [`DBG_VIZ_AO`].) Past that, future debug
 /// expansion must coordinate with the history-dependent weather-surface
 /// payload already carried in `GpuCamera.render_debug.w`; that lane is no
 /// longer an unused flag word.
@@ -1734,7 +1742,7 @@ pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_VIZ_RENDER_LAYER", DBG_VIZ_RENDER_LAYER),
     ("DBG_VIZ_GLASS_PASSTHRU", DBG_VIZ_GLASS_PASSTHRU),
     ("DBG_DISABLE_SPECULAR_AA", DBG_DISABLE_SPECULAR_AA),
-    ("DBG_RESERVED_200", DBG_RESERVED_200),
+    ("DBG_VIZ_AO", DBG_VIZ_AO),
     ("DBG_BYPASS_VERTEX_COLOR", DBG_BYPASS_VERTEX_COLOR),
     ("DBG_DISABLE_AO", DBG_DISABLE_AO),
     ("DBG_LEGACY_LIGHT_ATTEN", DBG_LEGACY_LIGHT_ATTEN),

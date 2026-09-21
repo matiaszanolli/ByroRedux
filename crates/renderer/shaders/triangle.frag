@@ -4466,6 +4466,17 @@ void main() {
         outColor = vec4(indirect, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
+    } else if ((dbgFlags & DBG_VIZ_AO) != 0u) {
+        // Raw SSAO occlusion as sampled by this fragment — before the 0.2
+        // floor, before the DALC/ambient floors, before it multiplies
+        // anything. White = unoccluded, black = fully occluded; sky pixels
+        // write white from ssao.comp's background early-out. This is the
+        // instrument that separates "SSAO finds no occlusion (all white)"
+        // from "AO applies but nothing changes downstream", which a
+        // DBG_DISABLE_AO tone-diff A/B cannot distinguish.
+        outColor = vec4(vec3(ao), 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
     } else if (viewIndirectOnly) {
         // Route the single-frame, pre-SVGF signal through the direct
         // attachment so composite cannot temporally filter it or multiply it

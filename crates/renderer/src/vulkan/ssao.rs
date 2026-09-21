@@ -434,13 +434,23 @@ impl SsaoPipeline {
         let params = SsaoParams {
             view_proj: *view_proj,
             inv_view_proj: *inv_view_proj,
-            // radius=16px, normal-bias=0.1 (cosine), intensity=1.5.
+            // radius=16px, normal-bias=0.05 (cosine), intensity=2.2.
             // bias/intensity re-tuned for the world-space hemisphere AO test
             // (ssao.comp): bias now rejects coplanar self-occlusion by normal
             // cosine (was a raw non-linear-depth delta), intensity dropped
             // 2.0→1.5 since the hemisphere estimate no longer double-counts
             // flat-surface depth slope. Starting values — tune visually.
-            params: [16.0, 0.1, 1.5, 0.0],
+            //
+            // #ao-kernel-2026-09-20 — second retune, driven by measuring the
+            // raw AO texture through the DBG_VIZ_AO view on the Cornell box
+            // instead of eyeballing the tonemapped frame: with the falloff
+            // extension and the relative min-distance reject in ssao.comp,
+            // bias 0.1 / intensity 1.5 left flats at ao≈0.89 (noise tax) and
+            // the wall-floor junction band at only ≈0.79. Halving the bias
+            // (the near-ring reject now does the coplanar rejection work the
+            // bias was doing) and raising the intensity restores the junction
+            // bite while flats stay ≈1.0.
+            params: [16.0, 0.05, 2.2, 0.0],
             screen_size: [
                 self.width as f32,
                 self.height as f32,

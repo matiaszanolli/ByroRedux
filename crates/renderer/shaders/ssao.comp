@@ -100,6 +100,16 @@ void main() {
     radiusPx = clamp(radiusPx, 1.0, 32.0);
     vec3 edgeWorld = worldFromDepth(uv + vec2(radiusPx * screenSize.z, 0.0), depth, invVP);
     float worldRadius = max(length(edgeWorld - worldPos), 1.0e-4);
+    // #ao-kernel-2026-09-20 — cap the world-space falloff range. Viewed at a
+    // grazing angle (ground plane running to the horizon), the world offset
+    // of a 32-pixel step explodes superlinearly, and every coplanar sample
+    // then sits inside the falloff support with a small positive elevation
+    // from projection curvature — the whole horizon band accumulated to
+    // ao≈0 (measured as the black screen-edge strips in the Cornell far
+    // view via DBG_VIZ_AO). A contact-occlusion shell has no business
+    // spanning metres-to-infinity; 4 world units covers the largest
+    // meaningful crevice at any practical viewing range.
+    worldRadius = min(worldRadius, 4.0);
 
     float bias = params.y;        // normal/coplanar rejection (cosine offset)
     float intensity = params.z;
@@ -123,13 +133,31 @@ void main() {
         vec3 sampleWorld = worldFromDepth(sampleUV, sampleDepth, invVP);
         vec3 toSample = sampleWorld - worldPos;
         float d = length(toSample);
-        if (d < 1.0e-4) continue;
+        // #ao-kernel-2026-09-20 — the absolute 1e-4 reject let sub-millimetre
+        // depth-reconstruction noise through as full-strength occluders:
+        // flat surfaces read ao≈0.89 everywhere (a uniform contrast tax) and
+        // grazing screen-edge geometry collapsed to black. Reject anything
+        // inside a fraction of the kernel's own world footprint instead.
+        // 0.20 (tuned via DBG_VIZ_AO on the Cornell box): the inner fifth of
+        // the disc holds the reconstruction-noise-dominated near rings; real
+        // occluders at contact-shadow scale live beyond it, so this restores
+        // flats to ~1.0 without measurably weakening the junction band.
+        if (d < worldRadius * 0.20) continue;
 
         // Hemisphere occlusion: how far the sample rises above the tangent
         // plane, minus a coplanar-rejection bias. Flat surfaces → dot≈0 → no
         // AO. Distance falloff is in world units (distance-invariant).
+        //
+        // #ao-kernel-2026-09-20 — the falloff used to start at 0 and reach
+        // zero AT the disc footprint (worldRadius), so the samples that
+        // actually land on the occluder past a junction — the outer half of
+        // the spiral — were already attenuated to nothing. Corners could
+        // only ever reach ao≈0.85 (measured on the Cornell box from its
+        // centre camera via DBG_VIZ_AO). Hold full weight out to the
+        // footprint, then fade across a second footprint: same support
+        // bound, but the junction band gets the samples it needs.
         float ndl = dot(toSample / d, N);
-        float rangeFalloff = 1.0 - smoothstep(0.0, worldRadius, d);
+        float rangeFalloff = 1.0 - smoothstep(worldRadius, worldRadius * 2.0, d);
         occlusion += max(ndl - bias, 0.0) * rangeFalloff;
     }
 

@@ -159,8 +159,8 @@ mod tests {
                     0,
                     "{a_name} ({a:#010x}) and {b_name} ({b:#010x}) share a bit. The \
                      DBG_* u32 is fully allocated (bits 0-31), so a new view cannot be \
-                     given a fresh value — recycle DBG_RESERVED_20 (bit 5) or \
-                     DBG_RESERVED_200 (bit 9) by renaming it in place. The \
+                     given a fresh value — recycle DBG_RESERVED_20 (bit 5) by renaming \
+                     it in place (bit 9 already became DBG_VIZ_AO). The \
                      GpuCamera.render_debug.w lane carries weather-surface state and \
                      is not available for another debug payload. See #3563."
                 );
@@ -186,16 +186,17 @@ mod tests {
         }
 
         // Make the exhaustion visible rather than tribal knowledge: while no
-        // free bit remains, the two recyclable placeholders must stay in the
-        // catalog, because they are the entire allocation pool.
+        // free bit remains, the recyclable placeholders must stay in the
+        // catalog, because they are the entire allocation pool. Bit 9 was
+        // recycled into DBG_VIZ_AO, so DBG_RESERVED_20 is the one slot left.
         let free = (!union).count_ones();
         if free == 0 {
-            for slot in ["DBG_RESERVED_20", "DBG_RESERVED_200"] {
+            for slot in ["DBG_RESERVED_20"] {
                 assert!(
                     singles.iter().any(|(n, _)| *n == slot),
                     "{slot} was removed from DBG_BITS while the DBG_* u32 has 0 free \
-                     bits — it and DBG_RESERVED_200/20 are the only slots a new debug \
-                     view can be allocated from. See #3563."
+                     bits — it is the last slot a new debug view can be allocated \
+                     from. See #3563."
                 );
             }
         }
