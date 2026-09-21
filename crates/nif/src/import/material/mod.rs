@@ -1599,9 +1599,13 @@ impl MaterialInfo {
             // producer is what left the lit-path remap unreachable. The
             // `bgsm_`-prefixed names predate this second producer and are now
             // source-agnostic: the triple means "the palette remap is enabled,
-            // and in which channel", whoever authored it. `merge_external_material`
-            // may still set them later from a BGSM/BGEM — it ORs onto whatever
-            // the NIF already established rather than replacing it.
+            // and in which channel", whoever authored it. What the merge does
+            // with these depends on who wins the texture slot (#4402): the
+            // NIF-won-slot branch ORs onto them (neither side may silently
+            // disable the other's remap, #3898), while a BGSM that wins the
+            // slot outright is authoritative for the bit too, including OFF
+            // (#2108 — the FO4 named material file is the material, and the
+            // NIF's SLSF1 word is a cached copy).
             bgsm_greyscale_lut_is_alpha: self.palette_alpha,
             bgsm_greyscale_lut_color: self.palette_color,
             bgsm_greyscale_lut_enabled: self.palette_color || self.palette_alpha,

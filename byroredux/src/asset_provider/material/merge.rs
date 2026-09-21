@@ -650,7 +650,8 @@ fn merge_bgsm_arm(
         // BGSM asking for the remap was ignored. Split the two situations:
         //
         //   - this BGSM wins the slot  -> it is authoritative for both the
-        //     texture and the enable bit (assignment, unchanged)
+        //     texture and the enable bit (assignment, including OFF — #2108,
+        //     restored by #4402)
         //   - the NIF won the slot     -> the LUT sampled is the NIF's, but
         //     the BGSM still describes this material, so OR its enable bit
         //     in. OR, not assignment: neither source may silently disable
@@ -659,25 +660,25 @@ fn merge_bgsm_arm(
         //   - a closer BGSM won the slot -> unchanged: an ancestor's bit is
         //     irrelevant, which is why this keys on `nif_supplied_greyscale_lut`
         //     rather than on `is_some()`.
+        //
+        // #4402 — #4286 flipped the first branch to OR on the strength of a
+        // Skyrim-layout reachability argument. That argument does not hold:
+        // Skyrim's `Greyscale_To_PaletteColor` is an EffectShader-only flag
+        // (nif.xml annotates it "in EffectShaderProperty"), and the effect
+        // path merges BGEM, not this BGSM arm — so a Skyrim-layout lighting
+        // shader cannot forward the bit #4286 was protecting, and the branch
+        // is effectively FO4-only. On FO4 the named material file IS the
+        // material (the CK authors the remap there; the NIF's SLSF1 word is
+        // a cached copy), so the winner-takes-the-bit rule — #2108's
+        // original contract, and what the bullet above has said all along —
+        // is the sourced behaviour. Assignment restored; the OR stays in
+        // the NIF-won branch where #3898 put it.
         if !bgsm.greyscale_texture.is_empty() {
             if material.textures.greyscale_lut.is_none() {
-                // #4286 (SF-2026-09-11-D9-01) — OR, not assignment, same
-                // as the `nif_supplied_greyscale_lut` branch below and for
-                // the identical reason the comment above already states:
-                // by the time this merge runs, `Material` may already
-                // carry a true enable bit forwarded from the NIF's own
-                // SLSF1 authoring (#3897) at the `translate_material`
-                // boundary — independently of which side wins the
-                // *texture* slot. A plain assignment here silently
-                // cleared that NIF-authored bit whenever this BGSM's own
-                // `grayscale_to_palette_color` happened to be false,
-                // reachable on any Skyrim-layout BGSM mesh (wire slot 3 is
-                // Height there, never GreyscaleLut, so the NIF texture
-                // side can never win this slot and this branch always
-                // runs). #2643 — BGSM has no alpha-variant field, so the
-                // color bit is the only one this format can author.
-                material.bgsm_greyscale_lut_enabled |= bgsm.base.grayscale_to_palette_color;
-                material.bgsm_greyscale_lut_color |= bgsm.base.grayscale_to_palette_color;
+                // #2643 — BGSM has no alpha-variant field, so the color bit
+                // is the only one this format can author.
+                material.bgsm_greyscale_lut_enabled = bgsm.base.grayscale_to_palette_color;
+                material.bgsm_greyscale_lut_color = bgsm.base.grayscale_to_palette_color;
             } else if nif_supplied_greyscale_lut {
                 material.bgsm_greyscale_lut_enabled |= bgsm.base.grayscale_to_palette_color;
                 material.bgsm_greyscale_lut_color |= bgsm.base.grayscale_to_palette_color;

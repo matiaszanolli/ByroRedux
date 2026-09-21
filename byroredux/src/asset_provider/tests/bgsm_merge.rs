@@ -2319,6 +2319,15 @@ fn bgsm_without_palette_bit_does_not_disable_a_nif_enabled_remap() {
 /// authoritative for the enable bit, including authoring it OFF. The #3898
 /// OR-path keys on the NIF having supplied the LUT, not on `is_some()`, so it
 /// must not resurrect this case.
+///
+/// #4402 — the fixture now ALSO forwards the NIF's SLSF1 bit first (as
+/// `into_imported_material` does, #3897): pre-#4402 the merge OR'd in this
+/// branch, so this was exactly the content whose winning-slot BGSM could no
+/// longer turn the remap off. #4286's OR was justified by a Skyrim-layout
+/// scenario that cannot reach this arm (Skyrim's palette bit is
+/// EffectShader-only per nif.xml, and the effect path merges BGEM, not
+/// BGSM); on FO4 the named material file is the material, so the winner
+/// takes the bit.
 #[test]
 fn bgsm_winning_the_slot_still_authors_the_enable_bit_off() {
     let mut pool = byroredux_core::string::StringPool::new();
@@ -2338,62 +2347,34 @@ fn bgsm_winning_the_slot_still_authors_the_enable_bit_off() {
             parent: None,
         },
     );
-    // No NIF-supplied LUT this time — the BGSM wins the role outright.
-    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
-
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
-
-    assert!(
-        !mesh.material.bgsm_greyscale_lut_enabled,
-        "a BGSM that wins the slot and authors the bit OFF keeps the remap off (#2108)"
-    );
-}
-
-/// #4286 (SF-2026-09-11-D9-01) — the third case #3898 didn't cover: the
-/// BGSM wins the greyscale-LUT *texture* slot (`is_none()` branch, the
-/// only reachable branch on any Skyrim-layout mesh, where wire slot 3 is
-/// Height, never GreyscaleLut), but the NIF's own SLSF1 forwarding (#3897)
-/// already set the enable bit true on `Material` before this merge runs.
-/// A silent, unauthored-off BGSM must not clear that bit — the identical
-/// "neither source may silently disable the other's remap" invariant
-/// `bgsm_without_palette_bit_does_not_disable_a_nif_enabled_remap` already
-/// pins for the sibling `nif_supplied_greyscale_lut` branch.
-#[test]
-fn bgsm_winning_the_slot_does_not_clear_a_nif_enabled_remap() {
-    let mut pool = byroredux_core::string::StringPool::new();
-    let path = "materials/tests/bgsm_wins_slot_but_nif_enabled.bgsm";
-    let mut provider = MaterialProvider::new();
-    provider.insert_bgsm_for_test(
-        path,
-        ResolvedMaterial {
-            file: BgsmFile {
-                greyscale_texture: "textures\\bgsm_palette.dds".into(),
-                base: byroredux_bgsm::BaseMaterial {
-                    grayscale_to_palette_color: false,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            parent: None,
-        },
-    );
-    // No NIF-supplied LUT (Skyrim-layout: slot 3 is Height) — the BGSM
-    // wins the texture role outright, taking the `is_none()` branch.
+    // No NIF-supplied LUT — the BGSM wins the role outright.
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
     // As forwarded by `into_imported_material` from SLSF1 (#3897) before
-    // this merge runs.
+    // this merge runs — the precondition #4286 was protecting, which after
+    // #4402 loses to the winning-slot BGSM's authored OFF.
     mesh.material.bgsm_greyscale_lut_enabled = true;
     mesh.material.bgsm_greyscale_lut_color = true;
 
     assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
 
     assert!(
-        mesh.material.bgsm_greyscale_lut_enabled,
-        "a BGSM winning the texture slot with its own bit off must not silently \
-         clear a NIF-authored SLSF1 enable bit already on Material (#4286)"
+        !mesh.material.bgsm_greyscale_lut_enabled,
+        "a BGSM that wins the slot and authors the bit OFF keeps the remap off (#2108), \
+         even over a NIF-forwarded SLSF1 enable (#4402)"
     );
-    assert!(mesh.material.bgsm_greyscale_lut_color);
+    assert!(
+        !mesh.material.bgsm_greyscale_lut_color,
+        "the color-channel bit follows the same rule (#4402)"
+    );
 }
+
+// #4286's `bgsm_winning_the_slot_does_not_clear_a_nif_enabled_remap` pin was
+// removed by #4402: it asserted the OR behaviour in the winning-slot branch
+// that #4402 reversed back to #2108's assignment (see the strengthened
+// `bgsm_winning_the_slot_still_authors_the_enable_bit_off` above, which now
+// covers the same fixture with the NIF-forwarded bit set). The NIF-won-slot
+// OR behaviour #4286 also touched survives unchanged in
+// `bgsm_without_palette_bit_does_not_disable_a_nif_enabled_remap`.
 
 // ── #3899 (FO4-2026-09-05-D2-02) — peek_magic cache tiers ──────────
 //
