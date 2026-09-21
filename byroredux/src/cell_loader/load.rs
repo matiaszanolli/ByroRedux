@@ -634,6 +634,10 @@ pub fn load_cell_with_masters(
     crate::asset_provider::populate_scene_runtime(world, &index);
     crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
     crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
+    // P2 combat tail — the --cell route must install the combat family
+    // too: the P2 gate smoke drives exactly this route, and the spawn
+    // finalize inserts the DraugrCombatAnim marker regardless (#4551).
+    crate::asset_provider::populate_draugr_combat_clips(world, &index, tex_provider);
 
     // Capture the cell's editor_id BEFORE the `index.cells` move below
     // — `cell` borrows from `index.cells.cells`, so the borrow has to
@@ -1013,6 +1017,7 @@ impl InteriorCellApplyJob {
         crate::asset_provider::populate_scene_runtime(world, &index);
         crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
         crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
+        crate::asset_provider::populate_draugr_combat_clips(world, &index, tex_provider);
 
         let cell_name = cell.editor_id.clone();
         let entity_count = result.entity_count;
@@ -1298,6 +1303,31 @@ mod stamp_cell_root_range_tests {
 
 #[cfg(test)]
 mod tests {
+    /// #4551 — every route that installs the per-cell animation clip
+    /// families must install ALL of them: the `--cell` route carried only
+    /// the idle + walk installers, so the P2 combat takes silently no-op
+    /// on the route every smoke test drives (the spawn finalize inserts
+    /// the `DraugrCombatAnim` marker regardless). Source-level pin in the
+    /// established include_str! pattern — driving the installer live
+    /// needs real archives; counting the calls needs only this file.
+    #[test]
+    fn every_animation_route_installs_the_combat_family_too() {
+        let source = include_str!("load.rs");
+        let walk = source.matches("populate_skyrim_walk_clip(world, &index, tex_provider)").count();
+        let combat = source
+            .matches("populate_draugr_combat_clips(world, &index, tex_provider)")
+            .count();
+        assert_eq!(
+            walk, combat,
+            "each populate_skyrim_walk_clip install site must have the \
+             populate_draugr_combat_clips sibling (#4551) — a route that \
+             spawns the DraugrCombatAnim marker without the clip resource \
+             makes the P2 combat takes silently no-op"
+        );
+        assert!(walk >= 2, "the --cell route has two install sites; a \
+             dropped site is the bug this pin exists for");
+    }
+
     /// #3671 — the resumable interior path must use the existing reference
     /// cursor and stamp every yielded slice before returning it to App. The
     /// source check keeps this invariant CI-reachable without requiring a
