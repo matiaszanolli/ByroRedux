@@ -368,7 +368,12 @@ mod tests {
     }
 
     #[test]
-    fn backward_jmpt_builds_a_loop_edge() {
+    // #4476 — this guard was named `backward_jmpt_builds_a_loop_edge` but
+    // built its conditional from JmpF; the name now says what it pins, and
+    // the JmpT loop-head mirror lives in
+    // `backward_jmpt_builds_a_loop_edge` below.
+    #[test]
+    fn forward_jmpf_with_unconditional_backedge_builds_a_loop() {
         // 0: <loop head / cond compute>
         // 1: jmpf t, +3   -> 4 (exit loop when false)
         // 2: <body>
@@ -398,6 +403,39 @@ mod tests {
 
         // After-loop block [4,4] → exit(5).
         assert_eq!(cfg.block(4).unwrap().next, 5);
+    }
+
+    /// #4476 — the pin the old misnomer promised: a JmpT conditional whose
+    /// TRUE branch is the loop's backedge target. Complements the #2122
+    /// sibling (`backward_jmpt_target_inside_own_block…`, which pins
+    /// polarity inside a straight-line block, not a loop).
+    #[test]
+    fn backward_jmpt_builds_a_loop_edge() {
+        // 0: <body>
+        // 1: <cond compute>
+        // 2: jmpt t, -2   -> 0 (back to body while true)
+        // 3: return
+        let f = func(vec![
+            (OpCode::Assign, vec![id("x"), id("y")]),
+            (OpCode::CmpEq, vec![id("t"), id("i"), id("n")]),
+            (OpCode::JmpT, vec![id("t"), Value::Integer(-2)]),
+            (OpCode::Return, vec![id("x")]),
+        ]);
+        let cfg = build_cfg(&f).unwrap();
+
+        // The builder groups condition computation + conditional jump into
+        // one block keyed at its start (same shape as the JmpF loop above):
+        // head = [0..2], conditional on `t`.
+        let head = cfg.block(0).unwrap();
+        assert!(head.is_conditional());
+        assert_eq!(head.condition.as_deref(), Some("t"));
+        // JmpT polarity: TRUE is the jump target — the backedge to this
+        // block's own start (0), FALSE falls through to 3 (loop exit).
+        assert_eq!(head.on_true(), 0);
+        assert_eq!(head.on_false, 3);
+
+        // Exit block [3,3] → exit(4).
+        assert_eq!(cfg.block(3).unwrap().next, 4);
     }
 
     /// #2122 — a `jmpf` whose backward target lands strictly *inside* its
