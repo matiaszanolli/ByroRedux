@@ -189,6 +189,12 @@ impl Texture {
 
         let image = self.image;
         with_one_time_commands(device, queue, command_pool, |cmd| unsafe {
+            // SAFETY: `cmd` is the currently-recording one-shot command
+            // buffer handed to this closure; `image` is `self.image`, which
+            // outlives this submission (the copy target this barrier
+            // orders — undefined → transfer-dst — is created and owned by
+            // `self` before upload and destroyed after the fence in the
+            // same upload path).
             let barrier_to_dst =
                 image_barrier_undef_to_transfer_dst_layers(image, 1, 1);
             device.cmd_pipeline_barrier(

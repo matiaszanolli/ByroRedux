@@ -434,9 +434,7 @@ fn find_own_emitter_ctlr_interpolator(
     // by target instead. A NULL `controller_ref` means the system authors
     // no chain at all — matching it would claim ctlrs belonging to OTHER
     // chainless systems, so the fallback is gated on a real head.
-    if controller_ref.index().is_none() {
-        return None;
-    }
+    let controller_idx = controller_ref.index()?;
     scene.blocks.iter().find_map(|b| {
         b.as_any()
             .downcast_ref::<NiPSysEmitterCtlr>()
