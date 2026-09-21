@@ -581,6 +581,24 @@ pub(crate) fn translate_material(
     } else {
         None
     };
+    // #4548 — Bethesda's FaceGen pipeline swaps a generated head's normal
+    // slot to the per-NPC `<formid>_msn.dds` WITHOUT propagating the
+    // material's model-space-normals bool (verified: FO4 facegeom NIFs
+    // bind `FaceCustomization/.../<id>_msn.dds` in the normal slot while
+    // `basehumanskinhead.bgsm` authors the bool false). The `_msn`
+    // suffix IS the convention — Skyrim's `_msn` maps carry both — so a
+    // normal slot named `_msn` declares a model-space map at this
+    // canonical boundary, exactly where every spawn path resolves its
+    // effective textures.
+    let normal_names_a_model_space_map = textures
+        .normal
+        .as_deref()
+        .is_some_and(|path| path.to_ascii_lowercase().ends_with("_msn.dds"));
+    let msn_name_flag = if normal_names_a_model_space_map {
+        byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS
+    } else {
+        0
+    };
     let mut material = Material {
         water_shader_flags: source.water_shader_flags,
         is_water_shader: source.is_water_shader,
@@ -657,7 +675,8 @@ pub(crate) fn translate_material(
         effect_shader_flags: crate::cell_loader::pack_effect_shader_flags(
             source.effect_shader.as_ref(),
         ) | crate::cell_loader::pack_imported_material_flags(source)
-            | extra_material_flags,
+            | extra_material_flags
+            | msn_name_flag,
         // #1147 Phase 2b — BGSM v>=8 translucency suite; only meaningful
         // when `pack_imported_material_flags` set MAT_FLAG_BGSM_TRANSLUCENCY.
         translucency_subsurface_color: source.translucency_subsurface_color,
@@ -2718,6 +2737,43 @@ mod canonical_completeness_harness {
     /// dedicated siblings, because reaching their interesting arms requires
     /// a fixture this one deliberately is not.
     #[test]
+    /// #4548 (NIFAL-D7-2026-09-21-01 family / FO4 facegeom finding) — a
+    /// material whose BGSM authors `model_space_normals = false` but whose
+    /// normal slot names a `<...>_msn.dds` map is model-space: Bethesda's
+    /// FaceGen pipeline swaps the generated head's normal texture to the
+    /// per-NPC `_msn` without touching the shared skin material's bool.
+    /// Verified against the live install: `fallout4.esm\000f246a.nif`
+    /// binds `FaceCustomization/Fallout4.esm/000F246A_msn.dds` in its
+    /// normal slot while `basehumanskinhead.bgsm` authors the flag false.
+    #[test]
+    fn an_msn_named_normal_slot_declares_model_space_normals() {
+        let source = kitchen_sink_source();
+        let mut paths = kitchen_sink_paths();
+        paths.textures.normal = Some(
+            r"Data\Textures\Actors\Character\FaceCustomization\Fallout4.esm\000F246A_msn.dds"
+                .to_string(),
+        );
+        let material = translate_material(&source, None, paths, 0);
+        assert_ne!(
+            material.effect_shader_flags
+                & byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS,
+            0,
+            "a `_msn` normal slot must set MODEL_SPACE_NORMALS at the boundary (#4548)"
+        );
+
+        // The control: the same material with a tangent-space `_n` normal
+        // gains nothing from the name rule.
+        let mut paths = kitchen_sink_paths();
+        paths.textures.normal = Some(r"Textures\Test\normal_n.dds".to_string());
+        let material = translate_material(&source, None, paths, 0);
+        assert_eq!(
+            material.effect_shader_flags
+                & byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS,
+            0,
+            "a `_n` normal must not trip the name rule"
+        );
+    }
+
     fn translate_material_copies_every_canonical_field() {
         let source = kitchen_sink_source();
         let material = translate_material(&source, Some("TestMesh"), kitchen_sink_paths(), 0);

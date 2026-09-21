@@ -35,4 +35,5 @@ fn main() {
     println!("  normal_texture: '{}'", parsed.normal_texture);
     println!("  smooth_spec_texture: '{}'", parsed.smooth_spec_texture);
     println!("  root_material_path: {:?}", parsed.root_material_path);
+    println!("  model_space_normals: {}", parsed.model_space_normals);
 }
