@@ -507,12 +507,14 @@ mod tests {
             }],
         };
         // Asymmetric translation, a rotation that is not identity, and a
-        // non-uniform scale whose mean is an exact binary fraction.
+        // non-uniform scale whose mean is an exact binary fraction AND
+        // differs from every component (#4405: [1,2,3] averaged to 2 ==
+        // scale[1], so dropping the average passed).
         let sample = HkxTransform {
             translation: [1.0, 2.0, 3.0],
             // HKX stores (x, y, z, w); the converter must read [3] as w.
             rotation: [0.0, 0.6, 0.0, 0.8],
-            scale: [1.0, 2.0, 3.0],
+            scale: [1.0, 2.0, 6.0],
         };
         let animation = HkxAnimation {
             duration: 2.0,
@@ -581,8 +583,10 @@ mod tests {
         assert_eq!(ch.rotation_keys[1].value, Quat::from_array(expected_rot));
         assert_eq!(ch.rotation_keys[1].tbc, None);
 
-        // Three-axis scale collapsed to its mean: (1+2+3)/3 == 2.
-        assert_eq!(ch.scale_keys[1].value, 2.0);
+        // Three-axis scale collapsed to its mean: (1+2+6)/3 == 3 — equal to
+        // no component, so a dropped average that forwards scale[1] (2.0)
+        // or scale[2] (6.0) fails (#4405).
+        assert_eq!(ch.scale_keys[1].value, 3.0);
         assert_eq!(ch.scale_keys[1].forward, 0.0);
         assert_eq!(ch.scale_keys[1].backward, 0.0);
 

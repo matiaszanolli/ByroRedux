@@ -1137,30 +1137,63 @@ mod canonical_animation_completeness_harness {
         channels.insert(
             Arc::from(NODE),
             na::TransformChannel {
-                translation_keys: vec![na::TranslationKey {
-                    time: 0.25,
-                    value: [1.5, 2.5, 3.5],
-                    forward: [0.1, 0.2, 0.3],
-                    backward: [0.4, 0.5, 0.6],
-                    tbc: Some([0.7, 0.8, 0.9]),
-                }],
-                // Each of the three key types is distinct, so a converter
-                // that wires one channel's type into another's slot fails.
-                translation_type: NifKeyType::Linear,
-                rotation_keys: vec![na::RotationKey {
-                    time: 0.5,
-                    // Already glam order (x, y, z, w) at this tier.
-                    value: [0.0, 0.6, 0.0, 0.8],
-                    tbc: Some([1.1, 1.2, 1.3]),
-                }],
+                // #4405 — every channel carries TWO keys with distinct
+                // times/values/tangents, so a first-key-only copy fails the
+                // length assertions instead of passing against the surviving
+                // key. Pre-fix each channel had one key and only collection
+                // counts were asserted.
+                translation_keys: vec![
+                    na::TranslationKey {
+                        time: 0.25,
+                        value: [1.5, 2.5, 3.5],
+                        forward: [0.1, 0.2, 0.3],
+                        backward: [0.4, 0.5, 0.6],
+                        tbc: Some([0.7, 0.8, 0.9]),
+                    },
+                    na::TranslationKey {
+                        time: 1.25,
+                        value: [4.5, 5.5, 6.5],
+                        forward: [0.9, 1.0, 1.1],
+                        backward: [1.2, 1.3, 1.4],
+                        tbc: Some([1.7, 1.8, 1.9]),
+                    },
+                ],
+                // Each of the three key types is distinct, AND none is the
+                // `Linear` a hard-coded converter would produce (#4405 —
+                // translation used to be Linear, the exact value such a
+                // converter emits; `Constant` also exercises the #1441
+                // stepped-hold mapping arm).
+                translation_type: NifKeyType::Constant,
+                rotation_keys: vec![
+                    na::RotationKey {
+                        time: 0.5,
+                        // Already glam order (x, y, z, w) at this tier.
+                        value: [0.0, 0.6, 0.0, 0.8],
+                        tbc: Some([1.1, 1.2, 1.3]),
+                    },
+                    na::RotationKey {
+                        time: 1.5,
+                        value: [0.0, 0.8, 0.0, 0.6],
+                        tbc: Some([2.0, 2.1, 2.2]),
+                    },
+                ],
                 rotation_type: NifKeyType::Quadratic,
-                scale_keys: vec![na::ScaleKey {
-                    time: 0.75,
-                    value: 2.25,
-                    forward: 0.35,
-                    backward: 0.45,
-                    tbc: Some([1.4, 1.5, 1.6]),
-                }],
+                scale_keys: vec![
+                    na::ScaleKey {
+                        time: 0.75,
+                        value: 2.25,
+                        forward: 0.35,
+                        backward: 0.45,
+                        tbc: Some([1.4, 1.5, 1.6]),
+                    },
+                    na::ScaleKey {
+                        time: 1.75,
+                        value: 3.75,
+                        forward: 0.55,
+                        backward: 0.65,
+                        tbc: Some([2.3, 2.4, 2.5]),
+                    },
+                ],
                 scale_type: NifKeyType::Tbc,
                 priority: 7,
             },
@@ -1180,31 +1213,51 @@ mod canonical_animation_completeness_harness {
             float_channels: vec![(
                 Arc::from(NODE),
                 na::FloatChannel {
-                    target: na::FloatTarget::Alpha,
-                    keys: vec![na::AnimFloatKey {
-                        time: 0.125,
-                        value: 0.375,
-                    }],
+                    // #4405 — a non-first variant: `Alpha` is the first
+                    // `FloatTarget` variant, so a hard-coded target passed.
+                    target: na::FloatTarget::UvScaleV,
+                    keys: vec![
+                        na::AnimFloatKey {
+                            time: 0.125,
+                            value: 0.375,
+                        },
+                        na::AnimFloatKey {
+                            time: 1.125,
+                            value: 0.625,
+                        },
+                    ],
                 },
             )],
             color_channels: vec![(
                 Arc::from(NODE),
                 na::ColorChannel {
                     target: na::ColorTarget::Emissive,
-                    keys: vec![na::AnimColorKey {
-                        time: 0.25,
-                        value: [0.11, 0.22, 0.33],
-                    }],
+                    keys: vec![
+                        na::AnimColorKey {
+                            time: 0.25,
+                            value: [0.11, 0.22, 0.33],
+                        },
+                        na::AnimColorKey {
+                            time: 1.25,
+                            value: [0.44, 0.55, 0.66],
+                        },
+                    ],
                 },
             )],
             bool_channels: vec![(
                 Arc::from(NODE),
                 na::BoolChannel {
-                    keys: vec![na::AnimBoolKey {
-                        time: 0.375,
-                        // `true` because `false` is the bool default.
-                        value: true,
-                    }],
+                    keys: vec![
+                        na::AnimBoolKey {
+                            time: 0.375,
+                            // `true` because `false` is the bool default.
+                            value: true,
+                        },
+                        na::AnimBoolKey {
+                            time: 1.375,
+                            value: true,
+                        },
+                    ],
                 },
             )],
             texture_flip_channels: vec![(
@@ -1212,13 +1265,22 @@ mod canonical_animation_completeness_harness {
                 na::TextureFlipChannel {
                     texture_slot: 4, // GLOW_MAP, not the 0 default
                     source_paths: vec![Arc::from("textures/flip0.dds"), Arc::from("flip1.dds")],
-                    keys: vec![na::AnimFloatKey {
-                        time: 0.5,
-                        value: 1.0,
-                    }],
+                    keys: vec![
+                        na::AnimFloatKey {
+                            time: 0.5,
+                            value: 1.0,
+                        },
+                        na::AnimFloatKey {
+                            time: 1.5,
+                            value: 2.0,
+                        },
+                    ],
                 },
             )],
-            text_keys: vec![(0.9, "sound: wpn_swing".to_string())],
+            text_keys: vec![
+                (0.9, "sound: wpn_swing".to_string()),
+                (1.9, "sound: wpn_hit".to_string()),
+            ],
         }
     }
 
@@ -1262,9 +1324,16 @@ mod canonical_animation_completeness_harness {
             ch.priority, 7,
             "ControlledBlock priority gates layer blending"
         );
-        assert_eq!(ch.translation_type, KeyType::Linear);
+        assert_eq!(ch.translation_type, KeyType::Const);
         assert_eq!(ch.rotation_type, KeyType::Quadratic);
         assert_eq!(ch.scale_type, KeyType::Tbc);
+
+        // #4405 — two keys per channel: the length is asserted so a
+        // first-key-only copy fails here rather than passing against the
+        // survivor's values below.
+        assert_eq!(ch.translation_keys.len(), 2);
+        assert_eq!(ch.rotation_keys.len(), 2);
+        assert_eq!(ch.scale_keys.len(), 2);
 
         let t = ch.translation_keys.first().expect("translation key");
         assert_eq!(t.time, 0.25);
@@ -1272,6 +1341,12 @@ mod canonical_animation_completeness_harness {
         assert_eq!(t.forward, Vec3::new(0.1, 0.2, 0.3));
         assert_eq!(t.backward, Vec3::new(0.4, 0.5, 0.6));
         assert_eq!(t.tbc, Some([0.7, 0.8, 0.9]));
+        let t = ch.translation_keys.last().expect("second translation key");
+        assert_eq!(t.time, 1.25);
+        assert_eq!(t.value, Vec3::new(4.5, 5.5, 6.5));
+        assert_eq!(t.forward, Vec3::new(0.9, 1.0, 1.1));
+        assert_eq!(t.backward, Vec3::new(1.2, 1.3, 1.4));
+        assert_eq!(t.tbc, Some([1.7, 1.8, 1.9]));
 
         let r = ch.rotation_keys.first().expect("rotation key");
         assert_eq!(r.time, 0.5);
@@ -1280,6 +1355,10 @@ mod canonical_animation_completeness_harness {
         // silent quaternion bug.
         assert_eq!(r.value, Quat::from_xyzw(0.0, 0.6, 0.0, 0.8));
         assert_eq!(r.tbc, Some([1.1, 1.2, 1.3]));
+        let r = ch.rotation_keys.last().expect("second rotation key");
+        assert_eq!(r.time, 1.5);
+        assert_eq!(r.value, Quat::from_xyzw(0.0, 0.8, 0.0, 0.6));
+        assert_eq!(r.tbc, Some([2.0, 2.1, 2.2]));
 
         let s = ch.scale_keys.first().expect("scale key");
         assert_eq!(s.time, 0.75);
@@ -1287,6 +1366,12 @@ mod canonical_animation_completeness_harness {
         assert_eq!(s.forward, 0.35);
         assert_eq!(s.backward, 0.45);
         assert_eq!(s.tbc, Some([1.4, 1.5, 1.6]));
+        let s = ch.scale_keys.last().expect("second scale key");
+        assert_eq!(s.time, 1.75);
+        assert_eq!(s.value, 3.75);
+        assert_eq!(s.forward, 0.55);
+        assert_eq!(s.backward, 0.65);
+        assert_eq!(s.tbc, Some([2.3, 2.4, 2.5]));
     }
 
     #[test]
@@ -1297,20 +1382,29 @@ mod canonical_animation_completeness_harness {
 
         let (name, float_ch) = clip.float_channels.first().expect("float channel");
         assert_eq!(*name, sym);
-        assert_eq!(float_ch.target, FloatTarget::Alpha);
+        assert_eq!(float_ch.target, FloatTarget::UvScaleV);
+        assert_eq!(float_ch.keys.len(), 2);
         assert_eq!(float_ch.keys[0].time, 0.125);
         assert_eq!(float_ch.keys[0].value, 0.375);
+        assert_eq!(float_ch.keys[1].time, 1.125);
+        assert_eq!(float_ch.keys[1].value, 0.625);
 
         let (name, color_ch) = clip.color_channels.first().expect("color channel");
         assert_eq!(*name, sym);
         assert_eq!(color_ch.target, ColorTarget::Emissive);
+        assert_eq!(color_ch.keys.len(), 2);
         assert_eq!(color_ch.keys[0].time, 0.25);
         assert_eq!(color_ch.keys[0].value, Vec3::new(0.11, 0.22, 0.33));
+        assert_eq!(color_ch.keys[1].time, 1.25);
+        assert_eq!(color_ch.keys[1].value, Vec3::new(0.44, 0.55, 0.66));
 
         let (name, bool_ch) = clip.bool_channels.first().expect("bool channel");
         assert_eq!(*name, sym);
+        assert_eq!(bool_ch.keys.len(), 2);
         assert_eq!(bool_ch.keys[0].time, 0.375);
         assert!(bool_ch.keys[0].value);
+        assert_eq!(bool_ch.keys[1].time, 1.375);
+        assert!(bool_ch.keys[1].value);
 
         let (name, flip) = clip
             .texture_flip_channels
@@ -1327,18 +1421,27 @@ mod canonical_animation_completeness_harness {
             ["textures/flip0.dds", "flip1.dds"],
             "flipbook source order picks the frame; a reorder is silent"
         );
+        assert_eq!(flip.keys.len(), 2);
         assert_eq!(flip.keys[0].time, 0.5);
         assert_eq!(flip.keys[0].value, 1.0);
+        assert_eq!(flip.keys[1].time, 1.5);
+        assert_eq!(flip.keys[1].value, 2.0);
 
+        assert_eq!(clip.text_keys.len(), 2);
         let (time, label) = clip.text_keys.first().expect("text key");
         assert_eq!(*time, 0.9);
         assert_eq!(pool.resolve(*label), Some("sound: wpn_swing"));
+        let (time, label) = clip.text_keys.last().expect("second text key");
+        assert_eq!(*time, 1.9);
+        assert_eq!(pool.resolve(*label), Some("sound: wpn_hit"));
     }
 
     /// A whole *collection* silently ceasing to be copied is the other
     /// half of the drop class — a per-field assertion above would still
     /// pass if `.first()` were reading a collection that had one stray
-    /// entry. Pin the counts so an emptied collection fails here.
+    /// entry. Pin the counts so an emptied collection fails here. (#4405:
+    /// key counts within each channel are pinned in the field tests above;
+    /// these are the collection cardinalities.)
     #[test]
     fn no_channel_collection_is_dropped_wholesale() {
         let mut pool = StringPool::new();
@@ -1348,6 +1451,6 @@ mod canonical_animation_completeness_harness {
         assert_eq!(clip.color_channels.len(), 1, "color channels");
         assert_eq!(clip.bool_channels.len(), 1, "bool channels");
         assert_eq!(clip.texture_flip_channels.len(), 1, "texture flip channels");
-        assert_eq!(clip.text_keys.len(), 1, "text keys");
+        assert_eq!(clip.text_keys.len(), 2, "text keys");
     }
 }
