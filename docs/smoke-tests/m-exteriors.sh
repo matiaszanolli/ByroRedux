@@ -1063,6 +1063,20 @@ case "$GAME" in
     oblivion)  run_selected oblivion_run ;;
     skyrim)    run_selected skyrim_run ;;
     fo4)       run_selected fo4_run ;;
+    # #4507 — named-but-unsupported profiles: the exterior matrix is the
+    # acceptance harness the audit's Dim 1-6 verdicts lean on, so FO76 and
+    # Starfield must be VISIBLE policy skips, not silent absences. FO76's
+    # baked .bto object LOD is wired (#4488) but full exterior support —
+    # terrain streaming, WATAL traversal, a frozen fixture — is open scope
+    # (docs/engine/watal.md; env_translate terrain layout "none").
+    fo76)
+        echo "exterior-smoke[fo76]: SKIP (77) - FO76 exterior support is open scope: object .bto wired (#4488), terrain/water/fixtures not"
+        exit 77
+        ;;
+    starfield)
+        echo "exterior-smoke[starfield]: SKIP (77) - Starfield exterior support is open scope (zero baked LOD verified, #4488)"
+        exit 77
+        ;;
     all)
         run_selected fnv_run
         run_selected fo3_run
@@ -1072,6 +1086,7 @@ case "$GAME" in
         ;;
     *)
         echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary|soak|cycle|water]"
+        echo "       fo76/starfield are named policy skips until exterior support lands (#4507)"
         exit 2
         ;;
 esac
