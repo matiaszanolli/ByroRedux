@@ -67,6 +67,12 @@ pub enum OpCode {
 /// One past the last valid opcode byte (Champollion `MAX_OPCODE`).
 pub const MAX_OPCODE: u8 = 51;
 
+// #4475 — the `from_u8` transmute is sound only while the last variant's
+// discriminant is exactly `MAX_OPCODE - 1` (contiguous `0..MAX_OPCODE`).
+// The runtime pin lives in `discriminants_match_on_disk_order` below; this
+// compile-time assert survives that test being skipped or deleted.
+const _: () = assert!(OpCode::TryLockGuards as u8 == MAX_OPCODE - 1);
+
 /// `(mnemonic, fixed-arg count, has-varargs)` for every opcode, indexed by
 /// discriminant. A verbatim port of Champollion's `OPCODES` table — the
 /// arg counts are the reader's contract for how many operands to consume.
