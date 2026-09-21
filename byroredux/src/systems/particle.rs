@@ -736,7 +736,11 @@ mod tests {
             Some(33.0),
             &fields,
             &Some("textures/fx/smoke.dds".to_string()),
-            Some(6),
+            // #4404 — distinct from `torch_flame()`'s src_blend of 6 (the
+            // Gamebryo SRC_ALPHA the presets all carry): passing the
+            // preset's own value here meant deleting only the src_blend
+            // overlay passed both this test's eq and the structural guard.
+            Some(2),
             Some(7),
             Some(250),
             Some(&effect),
@@ -769,8 +773,9 @@ mod tests {
             preset.texture_path.as_deref(),
             Some("textures/fx/smoke.dds")
         );
-        // 6/7. blend modes
-        assert_eq!(preset.src_blend, 6);
+        // 6/7. blend modes (#4404 — src pinned to a value the preset does
+        // not carry, so a dropped overlay fails as a wrong value)
+        assert_eq!(preset.src_blend, 2);
         assert_eq!(preset.dst_blend, 7);
         // 8. max_particles (under the ceiling, so copied verbatim)
         assert_eq!(preset.max_particles, 250);
@@ -784,10 +789,13 @@ mod tests {
         assert_eq!(preset.greyscale_lut_index, 3);
 
         // Every assertion above must be a real change, or the test could
-        // pass against an overlay that never ran.
+        // pass against an overlay that never ran (#4404 — the blend modes
+        // join this list; src_blend used to equal the preset's own 6).
         assert_ne!(preset.start_color, before.start_color);
         assert_ne!(preset.speed, before.speed);
         assert_ne!(preset.rate, before.rate);
+        assert_ne!(preset.src_blend, before.src_blend);
+        assert_ne!(preset.dst_blend, before.dst_blend);
         assert_ne!(preset.max_particles, before.max_particles);
         assert_ne!(preset.effect_shader_flags, before.effect_shader_flags);
         assert_ne!(preset.greyscale_lut_index, before.greyscale_lut_index);
@@ -800,8 +808,21 @@ mod tests {
     /// on parameters it already knows exist.
     ///
     /// This reads the boundary's own source and requires every declared
-    /// parameter to appear at least once in the body, so a newly-added
-    /// overlay that nobody wired up fails here rather than shipping inert.
+    /// parameter to be READ in the body, so a newly-added overlay that
+    /// nobody wired up fails here rather than shipping inert.
+    ///
+    /// #4404 — the scan used to be a raw `body.contains(name)`, which the
+    /// audit's mutation replay defeated four ways: a parameter mentioned
+    /// only in a body comment counted, and most names also appear as
+    /// substrings of preset fields (`effect_shader` ⊂
+    /// `effect_shader_flags`, `greyscale_lut` ⊂ `greyscale_lut_index`) or as
+    /// `preset.<field>` member accesses. The scan now strips `//` line
+    /// comments first and matches whole identifiers that are not preceded
+    /// by a `.` (a member access names the preset's field, not the
+    /// parameter). Caveat: the strip is textual, so a `//` inside a string
+    /// literal would truncate that line's tail — the body's string literals
+    /// carry no `//` today and the assertion failure text names the
+    /// parameter, so a future drift fails loudly rather than silently.
     #[test]
     fn every_declared_overlay_parameter_is_read_by_the_body() {
         const SOURCE: &str = include_str!("particle.rs");
@@ -835,9 +856,36 @@ mod tests {
             params.len() >= 10,
             "parser sanity: expected the full overlay parameter list, got {params:?}"
         );
+
+        fn is_ident_char(c: u8) -> bool {
+            c.is_ascii_alphanumeric() || c == b'_'
+        }
+
+        // Strip line comments before scanning (#4404).
+        let scanned: String = body
+            .lines()
+            .map(|line| match line.find("//") {
+                Some(i) => &line[..i],
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
         for name in &params {
+            let read = scanned.match_indices(name).any(|(i, m)| {
+                let bytes = scanned.as_bytes();
+                // Whole identifier on both sides…
+                let start_ok = i == 0 || !is_ident_char(bytes[i - 1]);
+                let end = i + m.len();
+                let end_ok = end == bytes.len() || !is_ident_char(bytes[end]);
+                // …and not a member access: `.name` reads a field or
+                // method of something else (`preset.src_blend`), not this
+                // parameter.
+                let not_member = i == 0 || bytes[i - 1] != b'.';
+                start_ok && end_ok && not_member
+            });
             assert!(
-                body.contains(name),
+                read,
                 "overlay parameter `{name}` is declared but never read in \
                  apply_emitter_overlays — it was added to the boundary and \
                  not wired in, so every authored value for it is silently \
