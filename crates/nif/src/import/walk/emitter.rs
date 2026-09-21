@@ -354,12 +354,15 @@ pub(crate) fn extract_emitter_params(
 /// not the common case.
 pub(crate) fn extract_emitter_max_particles(scene: &NifScene, data_ref: BlockRef) -> Option<u32> {
     if let Some(idx) = data_ref.index() {
-        if let Some(budget) = scene
-            .get_as::<crate::blocks::particle::NiPSysBlock>(idx)
-            .and_then(|d| d.max_particles)
-            .filter(|m| *m > 0)
-        {
-            return Some(budget);
+        if let Some(block) = scene.get_as::<crate::blocks::particle::NiPSysBlock>(idx) {
+            // #4550 — the own block IS authoritative, including "authored
+            // 0 → None → keep the preset". Pre-fix the `> 0` filter made
+            // an authored-zero own budget fall through to the whole-scene
+            // scan, which on a multi-emitter NIF handed this system a
+            // SIBLING's budget. The scan is a fallback for refs that
+            // don't resolve at all, not for a resolved-but-empty own
+            // block, so a decisive downcast hit returns as-is.
+            return block.max_particles;
         }
     }
     // Find the first block that actually *carries* a budget, not the first

@@ -1767,11 +1767,48 @@ mod emitter_max_particles_tests {
         );
     }
 
+    /// #4550 — a resolved own-ref hit is DECISIVE, whatever it carries:
+    /// the own block's budget returns as-is (a synthetic `Some(0)` rides
+    /// through; `apply_emitter_overlays`' `> 0` filter keeps the preset
+    /// downstream). Pre-fix the `> 0` filter made a non-positive own
+    /// budget fall through to the sibling-stealing whole-scene scan.
     #[test]
-    fn zero_budget_is_rejected_same_as_the_whole_scene_fallback() {
+    fn own_ref_hit_is_decisive_even_when_the_budget_is_zero() {
         let mut scene = NifScene::default();
         scene.blocks.push(Box::new(budget_block(Some(0)))); // [0]
-        assert_eq!(extract_emitter_max_particles(&scene, BlockRef(0u32)), None);
+        assert_eq!(
+            extract_emitter_max_particles(&scene, BlockRef(0u32)),
+            Some(0),
+            "the own block is authoritative; the downstream > 0 filter \
+             keeps the preset (#4550)"
+        );
+        // The real authored-0 shape parses to None: same decisiveness.
+        scene.blocks[0] = Box::new(budget_block(None));
+        assert_eq!(
+            extract_emitter_max_particles(&scene, BlockRef(0u32)),
+            None,
+            "None must stay None — NOT fall through to a sibling's budget (#4550)"
+        );
+    }
+
+    /// #4550 (NIFAL-D5-2026-09-21-01) — the actual hazard shape: system A
+    /// authors budget 0 (None) while sibling B authors 5000. Pre-fix the
+    /// whole-scene scan handed A B's budget (block order = first
+    /// budget-bearing block); A must keep its preset.
+    #[test]
+    fn zero_own_budget_does_not_inherit_a_siblings_budget() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(budget_block(None))); // [0] system A: authored 0
+        scene.blocks.push(Box::new(budget_block(Some(5000)))); // [1] system B
+        assert_eq!(
+            extract_emitter_max_particles(&scene, BlockRef(0u32)),
+            None,
+            "A's authored-zero budget must keep the preset, not inherit B's (#4550)"
+        );
+        assert_eq!(
+            extract_emitter_max_particles(&scene, BlockRef(1u32)),
+            Some(5000)
+        );
     }
 
     #[test]

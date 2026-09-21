@@ -1041,7 +1041,9 @@ pub struct NiParticleSystem {
     /// [`NiPSysBlock`], so one field covers every version).
     /// `extract_emitter_max_particles` used to scan the whole scene for
     /// the first `NiPSysBlock` with a budget, so every emitter shared the
-    /// first system's particle count; this makes it exact per-instance.
+    /// first system's particle count; this makes it exact per-instance —
+    /// decisively, including an authored-zero (None) own budget, which
+    /// must NOT fall back to a sibling's (#4550).
     pub data_ref: BlockRef,
 }
 
