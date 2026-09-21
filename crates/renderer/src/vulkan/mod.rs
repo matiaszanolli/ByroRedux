@@ -17,6 +17,7 @@ pub mod frame_upscaler;
 pub mod gbuffer;
 pub mod gpu_timers;
 pub mod groundcover;
+pub(crate) mod groundcover_stats;
 pub mod groundcover_bench;
 pub mod image;
 pub mod instance;

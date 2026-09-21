@@ -242,6 +242,12 @@ struct BladePush {
 }
 
 /// Everything the host publishes for one frame of ground cover.
+pub use super::groundcover_stats::GroundCoverStats;
+use super::groundcover_stats::{
+    COUNTER_COVERED, COUNTER_EXTREMA_BASE, COUNTER_FACTOR_BASE, COUNTER_HIST_BASE,
+    COUNTER_OVERFLOW, COUNTER_SLOTS,
+};
+
 pub struct GroundCoverFrame<'a> {
     pub cells: &'a [GpuGroundCoverCell],
     pub chunks: &'a [GpuGroundCoverChunk],
@@ -284,96 +290,6 @@ pub struct GroundCoverFrame<'a> {
     pub chunks_truncated: u32,
 }
 
-/// Per-frame scatter telemetry, harvested one pipelined cycle late.
-#[derive(Clone, Copy, Default, Debug)]
-pub struct GroundCoverStats {
-    pub chunks_dispatched: u32,
-    /// Chunks lost to an explicit host cell-table capacity fault. A residency
-    /// ring filling over several frames is deliberately not counted: the
-    /// pending chunks remain queued and will be placed, rather than being
-    /// discarded as the old per-frame cap did (#4338).
-    pub chunks_truncated: u32,
-    pub blades_accepted: u32,
-    /// Candidates dropped because their chunk's slice was already full.
-    /// Non-zero is not a bug — §4 designs for it — but a large fraction means
-    /// the cap is below what the density field is asking for.
-    pub blades_overflowed: u32,
-    /// Accepted candidates dropped because placed geometry — a road, a
-    /// flagstone path, a rock base — covers their root. Zero on open ground;
-    /// a large share of `blades` on open ground would mean the test is
-    /// hitting the terrain it is meant to stand above.
-    pub blades_covered: u32,
-    /// §11.3's `d_ground` histogram over every candidate the field was
-    /// evaluated at, accepted or not.
-    pub histogram: [u32; GROUNDCOVER_HISTOGRAM_BUCKETS as usize],
-    /// Range of `d_ground` over the frame's candidates.
-    pub d_ground_min: f32,
-    pub d_ground_max: f32,
-    /// Range of the view distance the fade was evaluated at. Reported because
-    /// an all-bucket-0 histogram with an empty blade count has two completely
-    /// different causes — a field that is genuinely near zero, or a field that
-    /// is fine with every candidate past `GROUNDCOVER_DRAW_DISTANCE` — and
-    /// these two numbers are what tell them apart.
-    pub view_dist_min: f32,
-    pub view_dist_max: f32,
-    /// Largest value each of the five §3 factors reached this frame, in
-    /// [`GROUNDCOVER_FACTOR_NAMES`] order. A zero here names the term that
-    /// annihilated the product — which is the only way a pure product fails,
-    /// and the one thing a histogram of the product cannot tell you.
-    pub factor_max: [f32; 5],
-}
-
-impl GroundCoverStats {
-    /// `groundcover:` summary row, in the same `key=value` shape as the rest
-    /// of the bench output.
-    pub fn bench_line(&self) -> String {
-        let hist = self
-            .histogram
-            .iter()
-            .map(|c| c.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        format!(
-            "groundcover: chunks={} blades={} overflow={} d_ground={:.4}..{:.4} \
-             view_dist={:.0}..{:.0} factor_max={} d_ground_hist={} covered={} \
-             truncated={}",
-            self.chunks_dispatched,
-            self.blades_accepted,
-            self.blades_overflowed,
-            self.d_ground_min,
-            self.d_ground_max,
-            self.view_dist_min,
-            self.view_dist_max,
-            GROUNDCOVER_FACTOR_NAMES
-                .iter()
-                .zip(self.factor_max)
-                .map(|(name, value)| format!("{name}:{value:.3}"))
-                .collect::<Vec<_>>()
-                .join(","),
-            hist,
-            self.blades_covered,
-            self.chunks_truncated
-        )
-    }
-}
-
-/// Counter-buffer layout. `[0 .. MAX_CHUNKS)` are the per-chunk atomic append
-/// cursors; then the histogram buckets; then one overflow tally.
-const COUNTER_HIST_BASE: usize = GROUNDCOVER_MAX_CHUNKS as usize;
-const COUNTER_OVERFLOW: usize = COUNTER_HIST_BASE + GROUNDCOVER_HISTOGRAM_BUCKETS as usize;
-/// Four extrema slots after the overflow tally: `d_ground` min/max (fixed
-/// point ×1e6) and view-distance min/max (world units). See the scatter's own
-/// comment on why a histogram alone cannot separate "the field is uniformly
-/// low" from "the field is fine but everything is past the fade".
-const COUNTER_EXTREMA_BASE: usize = COUNTER_OVERFLOW + 1;
-/// Per-factor maxima, ×1e6, in `GroundCoverFactors` order.
-const COUNTER_FACTOR_BASE: usize = COUNTER_EXTREMA_BASE + 4;
-pub const GROUNDCOVER_FACTOR_NAMES: [&str; 5] =
-    ["affinity", "slope", "moisture", "shelter", "clump"];
-/// Accepted candidates the placed-geometry cover test rejected — the
-/// scatter's `SLOT_COVERED`.
-const COUNTER_COVERED: usize = COUNTER_FACTOR_BASE + GROUNDCOVER_FACTOR_NAMES.len();
-const COUNTER_SLOTS: usize = COUNTER_COVERED + 1;
 /// `atomicMin` seed. The clear fills the buffer with zero, which is the wrong
 /// identity for a minimum — so the host seeds the two `min` slots after the
 /// fill and before the dispatch.
@@ -2068,6 +1984,7 @@ fn blade_push_bytes(push: &BladePush) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vulkan::groundcover_stats::GROUNDCOVER_FACTOR_NAMES;
 
     /// Regression: #4181 / CONC-D2-01 — the scatter's publish barrier must
     /// cover the counter readback copy, not just the draw.
