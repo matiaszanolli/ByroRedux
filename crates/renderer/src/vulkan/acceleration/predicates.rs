@@ -976,7 +976,7 @@ pub(super) fn probe_blas_heap_bytes(
 pub(super) fn shadow_mask_for_instance(
     material_kind: u32,
     render_layer: byroredux_core::ecs::components::RenderLayer,
-    alpha_blend: bool,
+    _alpha_blend: bool,
     multi_layer_refraction_scale: f32,
 ) -> u8 {
     // Keep in lockstep with `context::draw::is_refractive_glass` — both
@@ -998,10 +998,21 @@ pub(super) fn shadow_mask_for_instance(
     // above and remain non-opaque.
     } else if render_layer == byroredux_core::ecs::components::RenderLayer::Actor {
         crate::shader_constants::VISIBILITY_LAYER_DYNAMIC_ACTOR as u8
-    } else if alpha_blend {
-        crate::shader_constants::VISIBILITY_LAYER_EFFECT as u8
     } else {
         use byroredux_core::ecs::components::RenderLayer;
+        // 2026-09-21 single-sided-wall light-leak fix: alpha-blended
+        // NON-actor meshes keep their render layer's opaque visibility
+        // bucket. The previous blanket `alpha_blend → EFFECT` divert made
+        // every blended kit piece — Nordic-ruin ice/frost wall panels,
+        // window and door planes — invisible to shadow rays of every light
+        // whose mask excludes EFFECT (all unflagged ESM room lights), so
+        // walls read as lit from lights behind them and far-side objects
+        // shadowed through (Bleak Falls Barrow 01 census: 636/5594
+        // instances shadow-invisible). True non-occluders are separated by
+        // MATERIAL KIND above (effect shader, fire refraction, refractive
+        // glass) — the authored "not solid" signal; blend state is not.
+        // `_alpha_blend` stays in the signature so call sites keep feeding
+        // `mask_divert_cause` unchanged.
         match render_layer {
             RenderLayer::Architecture => {
                 crate::shader_constants::VISIBILITY_LAYER_ARCHITECTURE as u8
@@ -1020,8 +1031,10 @@ pub(super) fn shadow_mask_for_instance(
 /// its [`RenderLayer`] alone would have chosen (#3305).
 ///
 /// The mask function tests refractive glass, then the effect family, then
-/// preserves ordinary actor meshes, and finally diverts non-actor alpha
-/// blends. These are ordered, mutually exclusive causes, not independent
+/// preserves ordinary actor meshes; every other instance — alpha-blended or
+/// not — keeps its render layer's bucket (the 2026-09-11 blend divert was
+/// removed 2026-09-21: it made blended wall/door kit pieces shadow-
+/// invisible). These are ordered, mutually exclusive causes, not independent
 /// flags. Returning the first match is what makes the census counters
 /// partition rather than double-count.
 ///
@@ -1031,7 +1044,6 @@ pub(super) fn shadow_mask_for_instance(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MaskDivertCause {
     RefractiveGlass,
-    AlphaBlend,
     EffectShader,
     FireRefraction,
 }
@@ -1041,28 +1053,23 @@ pub(super) enum MaskDivertCause {
 /// Deliberately re-derives [`shadow_mask_for_instance`]'s routing rather
 /// than having that function return a pair: the mask is on the
 /// per-instance hot path of every TLAS build and this is diagnostic-only.
-/// Since 84bbc44ed's blended-actor policy the two are equivalent foldings
-/// of one precedence chain, not the same predicates in the same order:
-/// the mask orders glass → effect family → actor preservation → non-actor
-/// alpha blends, while this spells the preservation arm out as an
-/// explicit `render_layer != Actor` guard on the alpha test. Both still
-/// land in the same bucket on every input, which
+/// The two are equivalent foldings of one precedence chain — glass →
+/// effect family → actor preservation → layer decides — which
 /// `divert_cause_matches_the_mask_it_explains` pins over the full render
 /// layer × material kind × alpha × refraction-scale space, so the
 /// duplication cannot drift into a lie.
 pub(super) fn mask_divert_cause(
     material_kind: u32,
     render_layer: byroredux_core::ecs::components::RenderLayer,
-    alpha_blend: bool,
+    _alpha_blend: bool,
     multi_layer_refraction_scale: f32,
 ) -> Option<MaskDivertCause> {
+    let _ = render_layer;
     let is_refractive_glass = material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_GLASS
         || (material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_MULTI_LAYER_PARALLAX
             && multi_layer_refraction_scale > 0.0);
     if is_refractive_glass {
         Some(MaskDivertCause::RefractiveGlass)
-    } else if alpha_blend && render_layer != byroredux_core::ecs::components::RenderLayer::Actor {
-        Some(MaskDivertCause::AlphaBlend)
     } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_EFFECT_SHADER {
         Some(MaskDivertCause::EffectShader)
     } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION {

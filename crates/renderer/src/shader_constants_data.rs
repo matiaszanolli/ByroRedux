@@ -1337,7 +1337,16 @@ pub const RENDER_DEBUG_WATER_TERM: u32 = 10;
 pub const RENDER_DEBUG_WATER_NORMAL: u32 = 11;
 pub const RENDER_DEBUG_TERRAIN_LOD: u32 = 12;
 pub const RENDER_DEBUG_WATER_REFL: u32 = 13;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_WATER_REFL;
+// Shadow-diagnostic views (2026-09-21 single-sided-wall light-leak
+// investigation). `FACING_RATIO` paints dot(geometricNormal, V): green-grey
+// where the geometric normal faces the camera, RED where it faces away —
+// the class where authored/inverted normals send shadow-ray origin offsets
+// behind the surface. `RESTIR_LIGHT` paints the per-pixel ReSTIR-selected
+// light index as a stable categorical hue (black = no selection) so leaks
+// name the light responsible.
+pub const RENDER_DEBUG_FACING_RATIO: u32 = 14;
+pub const RENDER_DEBUG_RESTIR_LIGHT: u32 = 15;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_RESTIR_LIGHT;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -1358,6 +1367,8 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_WATER_NORMAL", RENDER_DEBUG_WATER_NORMAL),
     ("RENDER_DEBUG_TERRAIN_LOD", RENDER_DEBUG_TERRAIN_LOD),
     ("RENDER_DEBUG_WATER_REFL", RENDER_DEBUG_WATER_REFL),
+    ("RENDER_DEBUG_FACING_RATIO", RENDER_DEBUG_FACING_RATIO),
+    ("RENDER_DEBUG_RESTIR_LIGHT", RENDER_DEBUG_RESTIR_LIGHT),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];

@@ -28,10 +28,12 @@ pub enum RenderDebugMode {
     WaterNormal = crate::shader_constants::RENDER_DEBUG_WATER_NORMAL,
     TerrainLod = crate::shader_constants::RENDER_DEBUG_TERRAIN_LOD,
     WaterRefl = crate::shader_constants::RENDER_DEBUG_WATER_REFL,
+    FacingRatio = crate::shader_constants::RENDER_DEBUG_FACING_RATIO,
+    RestirLight = crate::shader_constants::RENDER_DEBUG_RESTIR_LIGHT,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 14] = [
+    pub const USER_MODES: [Self; 16] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -46,6 +48,8 @@ impl RenderDebugMode {
         Self::WaterNormal,
         Self::TerrainLod,
         Self::WaterRefl,
+        Self::FacingRatio,
+        Self::RestirLight,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -65,6 +69,8 @@ impl RenderDebugMode {
             Self::WaterNormal => "water_normal",
             Self::TerrainLod => "terrain_lod",
             Self::WaterRefl => "water_refl",
+            Self::FacingRatio => "facing_ratio",
+            Self::RestirLight => "restir_light",
         }
     }
 
@@ -108,6 +114,8 @@ impl FromStr for RenderDebugMode {
             "water_normal" => Ok(Self::WaterNormal),
             "water_refl" | "water_reflection" => Ok(Self::WaterRefl),
             "terrain_lod" | "terrain-lod" => Ok(Self::TerrainLod),
+            "facing" | "facing_ratio" => Ok(Self::FacingRatio),
+            "restir" | "restir_light" => Ok(Self::RestirLight),
             _ => Err(format!(
                 "unknown render debug mode '{value}' (expected {})",
                 Self::user_mode_names()

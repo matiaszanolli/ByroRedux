@@ -827,6 +827,17 @@ impl ConsoleCommand for MatDumpCommand {
                 material.alpha_test_func,
                 material.env_map_scale,
             ),
+            // Raster-depth state exactly as `static_meshes.rs` reads it
+            // (#398): diagnosing through-wall / through-door geometry needs
+            // these visible from the console, not only in a debugger.
+            // `two_sided` is a separate marker component.
+            format!(
+                "  depth: z_test={} z_write={} z_function={} two_sided={}",
+                material.z_test,
+                material.z_write,
+                material.z_function,
+                world.get::<crate::components::TwoSided>(entity).is_some(),
+            ),
             format!(
                 "  material_path={}",
                 material.material_path.as_deref().unwrap_or("<none>")

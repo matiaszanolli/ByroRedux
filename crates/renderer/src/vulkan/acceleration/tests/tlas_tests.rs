@@ -431,10 +431,16 @@ fn shadow_mask_bucket_selection_is_pinned() {
         VISIBILITY_LAYER_FOLIAGE as u8,
     );
 
-    // Alpha/effect proxy geometry must not become a structural wall.
+    // 2026-09-21 leak fix INVERTS this pin: alpha-blended NON-actor
+    // architecture keeps the opaque architecture bucket. The previous
+    // blanket blend divert to EFFECT made blended wall/door kit pieces
+    // (Nordic ice panels, window/door planes) shadow-invisible to every
+    // unflagged room light — walls lit from behind, far-side objects
+    // shadowing through (Bleak Falls Barrow 01: 636/5594 instances).
     assert_eq!(
         shadow_mask_for_instance(0, RenderLayer::Architecture, true, 0.0),
-        VISIBILITY_LAYER_EFFECT as u8,
+        VISIBILITY_LAYER_ARCHITECTURE as u8,
+        "blend state alone must not de-structure a wall",
     );
     for kind in [MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION] {
         assert_eq!(
@@ -749,12 +755,12 @@ fn divert_cause_matches_the_mask_it_explains() {
         MATERIAL_KIND_EFFECT_SHADER,
         MATERIAL_KIND_FIRE_REFRACTION,
     ];
-    let mut saw_each = [false; 4];
+    let mut saw_each = [false; 3];
 
-    // 84bbc44ed: alpha diverts non-actor proxy geometry only. Blended
-    // actor draws sit inside this sweep and must fall through to `None`
-    // with their preserved dynamic-actor bucket — exactly what the two
-    // contract arms below enforce cell by cell.
+    // 2026-09-21: the alpha blend divert is gone — blend state no longer
+    // moves any instance out of its layer bucket; only the material-kind
+    // causes (glass / effect / fire) divert. The sweep keeps iterating
+    // alpha_blend so the pin PROVES blend state cannot change the mask.
     for layer in [
         RenderLayer::Architecture,
         RenderLayer::Clutter,
@@ -785,9 +791,9 @@ fn divert_cause_matches_the_mask_it_explains() {
                             );
                             let expected = match c {
                                 MaskDivertCause::RefractiveGlass => VISIBILITY_LAYER_GLASS as u8,
-                                MaskDivertCause::AlphaBlend
-                                | MaskDivertCause::EffectShader
-                                | MaskDivertCause::FireRefraction => VISIBILITY_LAYER_EFFECT as u8,
+                                MaskDivertCause::EffectShader | MaskDivertCause::FireRefraction => {
+                                    VISIBILITY_LAYER_EFFECT as u8
+                                }
                             };
                             assert_eq!(
                                 mask, expected,
@@ -796,9 +802,8 @@ fn divert_cause_matches_the_mask_it_explains() {
                             );
                             saw_each[match c {
                                 MaskDivertCause::RefractiveGlass => 0,
-                                MaskDivertCause::AlphaBlend => 1,
-                                MaskDivertCause::EffectShader => 2,
-                                MaskDivertCause::FireRefraction => 3,
+                                MaskDivertCause::EffectShader => 1,
+                                MaskDivertCause::FireRefraction => 2,
                             }] = true;
                         }
                     }
@@ -807,10 +812,10 @@ fn divert_cause_matches_the_mask_it_explains() {
         }
     }
 
-    // The sweep must actually exercise all four causes, or "they all agree"
+    // The sweep must actually exercise all three causes, or "they all agree"
     // is a statement about an input space that never reached them.
     assert_eq!(
-        saw_each, [true; 4],
+        saw_each, [true; 3],
         "the input sweep did not reach every divert cause"
     );
 }

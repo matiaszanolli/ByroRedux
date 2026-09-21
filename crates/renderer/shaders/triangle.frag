@@ -195,6 +195,8 @@ void main() {
         || (legacyDebugMode
             && (dbgFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES);
     bool viewMaterialRole = debugMode == RENDER_DEBUG_MATERIAL_ROLE;
+    bool viewFacingRatio = debugMode == RENDER_DEBUG_FACING_RATIO;
+    bool viewRestirLight = debugMode == RENDER_DEBUG_RESTIR_LIGHT;
     // The water oracles are drawn by water.frag; everything else recedes.
     bool viewWaterDebug = debugMode == RENDER_DEBUG_WATER_TERM
         || debugMode == RENDER_DEBUG_WATER_NORMAL
@@ -1837,6 +1839,24 @@ void main() {
                 ? vec3(1.00, 0.20, 0.65)
                 : vec3(0.45);
         outColor = vec4(roleColor, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+        return;
+    } else if (viewFacingRatio) {
+        // dot(geometricNormal, V): camera-facing surfaces green (scaled by
+        // the ratio), surfaces whose geometric normal faces AWAY from the
+        // camera solid red — the inverted-normal class, where a shadow
+        // ray's toward-camera origin offset would instead start behind the
+        // surface and leak lights through it. Uses the GEOMETRIC normal
+        // (winding-derived), not the normal-mapped shading N, so a red
+        // pixel means winding/authored normal inversion, not texture
+        // detail.
+        vec3 facingViewDir = normalize(cameraPos.xyz - fragWorldPos);
+        float facing = dot(geometricNormal, facingViewDir);
+        vec3 facingColor = facing < 0.0
+            ? vec3(1.0, 0.04, 0.04)
+            : vec3(0.05, 0.25 + 0.55 * facing, 0.08);
+        outColor = vec4(facingColor, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
         return;
@@ -3802,6 +3822,23 @@ void main() {
             rc.pad0 = uintBitsToFloat(
                 packSnorm2x16(octEncode(normalize(fragNormalEffective))));
             reservoirsCurr[pixelIdx] = rc;
+        }
+        // ReSTIR-selected light per pixel: stable categorical hue from the
+        // light index (IQ cosine palette over a golden-ratio hue walk), so
+        // a light-leak patch names the light responsible; near-black = no
+        // selection this pixel. Placed after finalize so `restirY` is the
+        // surviving selection.
+        if (viewRestirLight) {
+            vec3 lightColor = vec3(0.0);
+            if (useRestir && restirY != 0xFFFFFFFFu) {
+                float hue = fract(float(restirY) * 0.61803398875);
+                lightColor = 0.5 + 0.5 * cos(6.2831853 * (hue + vec3(0.0, 0.33, 0.67)));
+                lightColor = max(lightColor, vec3(0.15));
+            }
+            outColor = vec4(lightColor, 1.0);
+            outRawIndirect = vec4(0.0);
+            outAlbedo = vec4(1.0);
+            return;
         }
 #if ENABLE_LEGACY_WRS
         else {
