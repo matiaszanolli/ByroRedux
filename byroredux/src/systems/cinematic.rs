@@ -23,10 +23,15 @@ pub(crate) fn idle_clip_playback_system(world: &World, _dt: f32) {
         let Some(catalog) = world.try_resource::<IdleClipCatalog>() else {
             return;
         };
-        let Some(states) = world.query::<ActorCinematicState>() else {
+        // #4546 — AnimationTarget before ActorCinematicState: walk_anim's
+        // read pass holds AnimationTarget while acquiring ACState, so the
+        // reverse order here closed a cross-thread cycle
+        // (ACState → AnimationTarget vs AnimationTarget → … → ACState)
+        // once the Transform cycle below was broken.
+        let Some(targets) = world.query::<AnimationTarget>() else {
             return;
         };
-        let Some(targets) = world.query::<AnimationTarget>() else {
+        let Some(states) = world.query::<ActorCinematicState>() else {
             return;
         };
         states
@@ -88,13 +93,19 @@ pub(crate) fn cinematic_root_motion_system(world: &World, _dt: f32) {
         byroredux_core::math::Vec3,
         byroredux_core::math::Quat,
     )> = {
+        // #4546 — Transform before ActorCinematicState. Transform is
+        // canonical-early in the documented acquisition order
+        // (`docs/engine/ecs.md`), and this system held the ACState read
+        // while taking the Transform read, observing the ACState →
+        // Transform edge that closed the reported cross-thread cycle
+        // against walk_anim's Transform → AnimationPlayer → ACState.
+        let transforms = world.query::<Transform>();
         let Some(states) = world.query::<ActorCinematicState>() else {
             return;
         };
         let Some(root_motion) = world.query::<RootMotionDelta>() else {
             return;
         };
-        let transforms = world.query::<Transform>();
         root_motion
             .iter()
             .filter_map(|(actor, motion)| {
@@ -277,10 +288,14 @@ pub(crate) fn cinematic_horse_route_system(world: &World, dt: f32) {
         byroredux_core::math::Vec3,
         byroredux_core::math::Quat,
     )> = {
-        let Some(tethers) = world.query::<HorseTetherState>() else {
+        // #4546 — Transform (canonical-early) before HorseTetherState:
+        // vehicle_attachment_system observes Transform → ACState →
+        // …, so this system's old HorseTetherState → Transform read
+        // closed the three-hop cycle the checker reported.
+        let Some(transforms) = world.query::<Transform>() else {
             return;
         };
-        let Some(transforms) = world.query::<Transform>() else {
+        let Some(tethers) = world.query::<HorseTetherState>() else {
             return;
         };
         let candidates = world.query::<SceneAliasCandidate>();
@@ -747,11 +762,13 @@ pub(crate) fn vehicle_attachment_system(world: &World, _dt: f32) {
                 .collect()
         })
         .unwrap_or_default();
+    // #4546 — tuple order is acquisition order: Transform (canonical
+    // early) before ActorCinematicState.
     let driven_vehicles: Vec<_> = match (
-        world.query::<ActorCinematicState>(),
         world.query::<Transform>(),
+        world.query::<ActorCinematicState>(),
     ) {
-        (Some(states), Some(transforms)) => states
+        (Some(transforms), Some(states)) => states
             .iter()
             .filter(|(actor, _)| package_movers.contains(actor))
             .filter_map(|(actor, state)| {
@@ -782,11 +799,12 @@ pub(crate) fn vehicle_attachment_system(world: &World, _dt: f32) {
         byroredux_core::math::Vec3,
         byroredux_core::math::Quat,
     )> = {
+        // #4546 — tuple order is acquisition order: Transform first.
         match (
-            world.query::<HorseTetherState>(),
             world.query::<Transform>(),
+            world.query::<HorseTetherState>(),
         ) {
-            (Some(tethers), Some(transforms)) => tethers
+            (Some(transforms), Some(tethers)) => tethers
                 .iter()
                 .filter_map(|(cart, tether)| {
                     let horse = transforms.get(tether.horse)?;
@@ -815,10 +833,12 @@ pub(crate) fn vehicle_attachment_system(world: &World, _dt: f32) {
         byroredux_core::math::Vec3,
         byroredux_core::math::Quat,
     )> = {
-        let Some(states) = world.query::<ActorCinematicState>() else {
+        // #4546 — Transform (canonical-early) before ActorCinematicState,
+        // same as the driven-vehicles half above.
+        let Some(transforms) = world.query::<Transform>() else {
             return;
         };
-        let Some(transforms) = world.query::<Transform>() else {
+        let Some(states) = world.query::<ActorCinematicState>() else {
             return;
         };
         states

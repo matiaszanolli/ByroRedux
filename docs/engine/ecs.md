@@ -601,8 +601,19 @@ process-wide order every site follows (#313, #2388):
 ```
 CharacterController → RapierHandles → Transform → Parent → Children
                     → GlobalTransform → SkinnedMesh → MeshHandle
+                    → AnimationPlayer → AnimationTarget
                     → LocalBound → WorldBound → Name → StringPool
 ```
+
+Cinematic read-onlys (Seated / Dead / ActorCinematicState /
+HorseTetherState) sit after the animation cluster: walk_anim reads them
+last, and every cinematic system takes Transform (canonical-early)
+BEFORE ActorCinematicState / HorseTetherState. The #4546 cycle was
+exactly that rule violated — cinematic systems holding the state read
+while taking the Transform read closed
+`Transform → ActorCinematicState → HorseTetherState → Transform`
+against walk_anim's tail — so: **Transform before cinematic state,
+AnimationTarget before ActorCinematicState**, everywhere.
 
 Acquire a subset in that relative order; skipping types is fine, reordering
 them is not. `character_controller_system` establishes the physics prelude,
