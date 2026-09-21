@@ -1815,3 +1815,63 @@ mod gpu_material_size_claims {
         assert_eq!(bare_doc_block_claims(&attached), vec![(1, 431)]);
     }
 }
+
+/// #3922 — the model-space-normal texel must cross the source→renderer
+/// basis before the instance rotation.
+///
+/// The `_msn` texel is authored in the Gamebryo Z-up basis (green = up,
+/// blue = a signed horizontal), the same basis the vertex import flips
+/// with `zup_point_to_yup` `(x, y, z) → (x, z, −y)`. `inst.model` is
+/// renderer Y-up and cannot supply that flip. Pre-fix, the sampled normal
+/// was rotated into world space un-flipped, so every Skyrim FaceGen face
+/// and MSN armor piece was lit from a normal essentially uncorrelated
+/// with its own surface (measured +0.137/+0.078/+0.307 mean cosine on
+/// the vanilla male/khajiit/argonian heads; +0.885/+0.864/+0.691 with
+/// the flip — `byroredux/examples/msn_basis_probe.rs`, which reproduces
+/// the audit's numbers and extends the measurement to FO4's
+/// reconstructed-Z facecustomization class: +0.41/+0.48 flipped vs
+/// −0.42/−0.53 identity). This pins the flip's presence, its position
+/// AFTER the reconstruction arm (the arm produces the pre-flip slot
+/// value), and the reconstruction arm's own slot contract.
+#[cfg(test)]
+mod msn_basis_pin {
+    const SRC: &str = include_str!("../../shaders/triangle.frag");
+
+    #[test]
+    fn msn_texel_is_flipped_to_the_renderer_basis_before_the_model_rotation() {
+        let branch = SRC
+            .find("MAT_FLAG_MODEL_SPACE_NORMALS) != 0u")
+            .expect("triangle.frag lost its model-space-normal branch");
+        let flip = SRC
+            .find("mn.z = -mn.z;")
+            .expect("triangle.frag lost the #3922 source-basis flip");
+        let rotation = SRC
+            .find("mat3 model3 = mat3(inst.model);")
+            .expect("triangle.frag lost the MSN model rotation");
+        assert!(
+            branch < flip && flip < rotation,
+            "the #3922 flip must sit inside the MSN branch, after decode \
+             and before the instance rotation"
+        );
+        assert_eq!(
+            SRC.match_indices("mn.z = -mn.z;").count(),
+            1,
+            "exactly one source-basis flip — a second would double-negate"
+        );
+    }
+
+    #[test]
+    fn msn_reconstruction_stays_in_the_blue_slot_with_positive_sqrt() {
+        let reconstruction = SRC
+            .find("mn.z = sqrt(max(0.0, 1.0 - dot(mn.xy, mn.xy)));")
+            .expect("triangle.frag lost the no-authored-Z reconstruction");
+        let flip = SRC
+            .find("mn.z = -mn.z;")
+            .expect("flip pinned by the sibling test");
+        assert!(
+            reconstruction < flip,
+            "the reconstruction arm feeds the flip — it must run first \
+             (its output is the pre-flip slot value)"
+        );
+    }
+}

@@ -598,8 +598,32 @@ void main() {
             vec3 mn = texture(textures[nonuniformEXT(normalMapIdx)], sampleUV).rgb;
             mn = mn * 2.0 - 1.0;
             if ((mat.materialFlags & MAT_FLAG_MSN_HAS_AUTHORED_Z) == 0u) {
+                // #3922 — re-derived for the corrected basis. The missing
+                // blue slot is a SIGNED horizontal axis (half negative over
+                // any closed mesh — #2826's authored-Z finding), not an
+                // outward "height"; only its magnitude is recoverable from
+                // the authored (X, up) pair. Keep the + convention and let
+                // the basis flip below consume it: the constant-zero-blue
+                // facecustomization class reconstructs the flat outward
+                // axis either way, and FO4 measurement selects the flip
+                // through this exact arm (+0.41/+0.48 vs −0.42/−0.53
+                // identity).
                 mn.z = sqrt(max(0.0, 1.0 - dot(mn.xy, mn.xy)));
             }
+            // #3922 — the texel is authored in the source (Gamebryo
+            // Z-up) basis — green = up, blue = a signed horizontal — the
+            // same basis the vertex import flips with `zup_point_to_yup`
+            // `(x, y, z) → (x, z, −y)`. `inst.model` is renderer Y-up and
+            // cannot supply that flip (it is baked per-vertex at import,
+            // exactly like the cubemap path's source-basis inversion a
+            // thousand lines below). Apply the same import flip to the
+            // texel. Measured per-vertex correlation against each mesh's
+            // own imported normals: Skyrim authored-Z FaceGen heads
+            // (malehead/khajiit/argonian) +0.885/+0.864/+0.691 vs
+            // +0.137/+0.078/+0.307 identity; FO4 reconstructed-Z
+            // facecustomization faces +0.41/+0.48 vs −0.42/−0.53
+            // (byroredux/examples/msn_basis_probe.rs, #3922 evidence).
+            mn.z = -mn.z;
             mat3 model3 = mat3(inst.model);
             vec3 worldMn;
             if ((inst.flags & INSTANCE_FLAG_NON_UNIFORM_SCALE) != 0u) {
