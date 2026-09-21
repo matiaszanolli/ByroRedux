@@ -119,7 +119,9 @@ pub enum ColorTarget {
 }
 
 pub struct TextureFlipChannel {
-    pub texture_slot: u32,                 // raw TexType enum (0=BASE_MAP, 4=GLOW_MAP, ...)
+    pub role: FlipTextureRole,             // canonical material role (#3901) — BaseColor/Dark/Detail/
+                                           // SmoothSpec/Emissive/Normal/Height/Decal(n), resolved from the
+                                           // controller's raw TexType at convert time, NOT the raw slot
     pub source_paths: Vec<Arc<str>>,       // resolved at clip-load from NiFlipController.sources → NiSourceTexture.filename
     pub keys: Vec<AnimFloatKey>,           // cycle-position keys (typically a stepped 0..N ramp)
 }

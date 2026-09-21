@@ -901,9 +901,16 @@ every known CRITICAL / HIGH audit item. Known follow-ups:
   size is translated today; the bell-shaped curve needs a richer canonical
   size model, and multi-emitter NIFs are attributed scene-first rather than
   per-emitter.
-- **NiFlipController GPU sample** (#545 follow-up) — channel data is
-  captured into `AnimationClip::texture_flip_channels`; the renderer-side
-  sample-and-bind that drives `GpuInstance.albedo_texture` is deferred.
+- **NiFlipController per-role sample breadth** (#545 follow-up) — channel
+  data is captured into `AnimationClip::texture_flip_channels` and the
+  renderer-side sample-and-bind is LIVE, not deferred: `attach_animation_sinks`
+  resolves `source_paths` to bindless handles once at clip-attach
+  (`AnimatedTextureFlip`), `apply_texture_flip_channels`
+  (`byroredux::systems::animation`) advances `current_index` from the curve
+  each frame, and `render::static_meshes` replaces the role's spawn-time
+  handle with the active frame — base color since #2221, every
+  `FlipTextureRole` since #3901 (#4403 corrected this entry, which still
+  described the bind as deferred).
 - **NiLight FO4+ inheritance flip** (#156 follow-up) — FO4+ (BSVER
   ≥ 130) reparents `NiLight` directly onto `NiAVObject`. Not implemented
   until FO4 light rendering becomes a target.
