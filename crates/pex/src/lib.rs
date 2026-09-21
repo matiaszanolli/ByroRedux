@@ -883,6 +883,181 @@ mod tests {
     /// all of them mechanically, across all three dialects (Skyrim LE and BE,
     /// Starfield-with-guards, and the extender-dependent Skyrim BE sample).
     ///
+    /// #4474 — the four paths the four original samples never reach, in ONE
+    /// FO4-style sample: debug info PRESENT (so `skip_property_groups` /
+    /// `skip_struct_orders` actually consume wire bytes), a full
+    /// (non-auto) property with getter AND setter bodies on the wire,
+    /// a non-empty `struct_infos` section, and `Value::Float` operands.
+    /// A one-byte regression in any of those previously desynced the
+    /// stream silently; now every truncation prefix of this sample is
+    /// asserted rejected like the others.
+    fn build_sample_full_coverage() -> Vec<u8> {
+        let mut w = PexWriter::new();
+        for s in [
+            "Foo", "ObjectReference", "Full", "Int", "", "OnActivate", "::temp0", "Self",
+            "MyGroup", "MyStruct", "a", "MyProp", "Bar", "GetFull", "SetFull", "None",
+        ] {
+            w.intern(s);
+        }
+
+        // ── header ──
+        w.magic(0xFA57_C0DE);
+        w.u8(3);
+        w.u8(2);
+        w.u16(0); // game_id (FO4)
+        w.i64(1_700_000_000);
+        w.string("Foo.psc");
+        w.string("user");
+        w.string("computer");
+
+        // ── string table ──
+        let table = w.strings.clone();
+        w.u16(table.len() as u16);
+        for s in &table {
+            w.string(s);
+        }
+
+        // ── debug info: PRESENT (the gap) ──
+        w.u8(1);
+        w.i64(1_700_000_100); // modification time
+        // function_infos: one entry for OnActivate (type 0 = Method, 2 instrs)
+        w.u16(1);
+        w.sidx("Foo");
+        w.sidx(""); // state name
+        w.sidx("OnActivate");
+        w.u8(0);
+        w.u16(2); // line numbers per instruction
+        w.u16(1);
+        w.u16(2);
+        // property groups (FO4+): the skip_property_groups path
+        w.u16(1);
+        w.sidx("Foo");
+        w.sidx("MyGroup");
+        w.sidx(""); // doc
+        w.u32(0); // user flags
+        w.u16(1); // name count
+        w.sidx("MyProp");
+        // struct orders (FO4+): the skip_struct_orders path
+        w.u16(1);
+        w.sidx("Foo");
+        w.sidx("MyStruct");
+        w.u16(2); // member order count
+        w.sidx("a");
+        w.sidx("Full"); // (second member name — order lists, not type-checked)
+
+        // ── user flags: none ──
+        w.u16(0);
+
+        // ── objects: 1 ──
+        w.u16(1);
+        w.sidx("Foo");
+        w.u32(0); // size (ignored)
+        w.sidx("ObjectReference");
+        w.sidx(""); // doc
+        w.u8(0); // const flag
+        w.u32(0); // user flags
+        w.sidx(""); // auto-state name
+
+        // struct infos: NON-EMPTY (the gap) — one struct, one member with a
+        // Float default value (second Float coverage).
+        w.u16(1);
+        w.sidx("MyStruct");
+        w.u16(1); // member count
+        w.sidx("a");
+        w.sidx("Int");
+        w.u32(0); // member user flags
+        w.u8(4); // Value::Float (the gap)
+        w.u32(1.5f32.to_bits());
+        w.u8(0); // const flag
+        w.sidx(""); // member doc
+
+        // variables: 0
+        w.u16(0);
+
+        // properties: 1 FULL property with getter + setter BODIES (the gap)
+        w.u16(1);
+        w.sidx("Full");
+        w.sidx("Int");
+        w.sidx(""); // doc
+        w.u32(0); // user flags
+        w.u8(property_flag::READ | property_flag::WRITE); // no AUTOVAR → bodies follow
+        // getter body (read_function): Float operand in the instruction
+        w.sidx("Int"); // return type
+        w.sidx(""); // doc
+        w.u32(0); // user flags
+        w.u8(0); // flags
+        w.u16(0); // params
+        w.u16(0); // locals
+        w.u16(1); // instructions: fadd ::temp0, 1.5, 2 (args are VALUES —
+        // each begins with its tag byte)
+        w.u8(OpCode::FAdd as u8);
+        w.u8(1); // Value::Identifier tag
+        w.sidx("::temp0");
+        w.u8(4); // Value::Float (the gap, operand path)
+        w.u32(1.5f32.to_bits());
+        w.u8(3);
+        w.u32(2i32 as u32);
+        // setter body (write_function)
+        w.sidx("None"); // return type
+        w.sidx(""); // doc
+        w.u32(0); // user flags
+        w.u8(0); // flags
+        w.u16(0); // params
+        w.u16(0); // locals
+        w.u16(0); // instructions
+
+        // states: the empty default state with the one function
+        w.u16(1);
+        w.sidx("");
+        w.u16(1);
+        w.sidx("OnActivate");
+        w.sidx("None");
+        w.sidx("");
+        w.u32(0);
+        w.u8(0);
+        w.u16(0); // params
+        w.u16(0); // locals
+        w.u16(1); // instructions: iadd ::temp0, 1, 2
+        w.u8(OpCode::IAdd as u8);
+        w.u8(1); // Value::Identifier tag
+        w.sidx("::temp0");
+        w.u8(3);
+        w.u32(1i32 as u32);
+        w.u8(3);
+        w.u32(2i32 as u32);
+
+        w.buf
+    }
+
+
+    #[test]
+    fn parses_the_full_coverage_sample() {
+        let bytes = build_sample_full_coverage();
+        let pex = parse(&bytes).expect("the full-coverage sample parses");
+        assert!(pex.debug_info.present, "debug info must be present (#4474)");
+
+        let obj = pex.main_object().expect("one object");
+        // The full property with getter AND setter bodies.
+        assert_eq!(obj.properties.len(), 1);
+        let prop = &obj.properties[0];
+        assert_eq!(prop.name, "Full");
+        assert!(!prop.has_auto_var());
+        let getter = prop.read_function.as_ref().expect("getter body on the wire");
+        assert_eq!(getter.return_type_name, "Int");
+        assert_eq!(getter.instructions.len(), 1);
+        assert_eq!(
+            getter.instructions[0].args[1],
+            Value::Float(1.5),
+            "Value::Float must decode from an instruction operand (#4474)"
+        );
+        assert!(prop.write_function.as_ref().expect("setter body on the wire").instructions.is_empty());
+
+        // Non-empty struct info with a Float member default.
+        assert_eq!(obj.struct_infos.len(), 1, "struct_infos must survive (#4474)");
+        assert_eq!(obj.struct_infos[0].members.len(), 1);
+        assert_eq!(obj.struct_infos[0].members[0].value, Value::Float(1.5));
+    }
+
     /// The assertion is deliberately "errors", not "errors with
     /// `UnexpectedEof`": a truncation can legitimately surface as a different
     /// variant (a length prefix that now overruns, a bad opcode read out of
@@ -896,6 +1071,9 @@ mod tests {
             ("skyrim_be", build_sample_skyrim_be()),
             ("extender_skyrim_be", build_extender_dependent_skyrim_be()),
             ("starfield_guards", build_sample_starfield_with_guards()),
+            // #4474 — reaches debug-info skip paths, full getter/setter
+            // bodies, non-empty struct_infos, and Value::Float operands.
+            ("full_coverage", build_sample_full_coverage()),
         ];
         for (name, full) in samples {
             // The full buffer is the control: it must parse.
