@@ -27,14 +27,13 @@ use ash::vk;
 
 const EXPOSURE_METER_COMP_SPV: &[u8] = include_bytes!("../../shaders/exposure_meter.comp.spv");
 
-/// One 64-thread workgroup performs the whole reduction — no cross-workgroup
-/// sync exists or is needed; the dispatch is always (1, 1, 1).
-const METER_WORKGROUP_THREADS: u32 = 64;
+// One 64-thread workgroup performs the whole reduction — no cross-workgroup
+// sync exists or is needed; the dispatch is always (1, 1, 1).
 
 /// Host mirror of `exposure_meter.comp`'s `Params` UBO.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(crate) struct MeterParams {
+pub struct MeterParams {
     /// x = mode (0 fixed, 1 auto), y = fixed exposure, z = compensation in
     /// stops (positive = darker), w = adaptation alpha for this frame.
     pub mode: [f32; 4],
@@ -269,6 +268,10 @@ impl ExposureMeterPipeline {
             .new_layout(vk::ImageLayout::GENERAL)
             .image(exposure_image)
             .subresource_range(subresource);
+        // SAFETY: `cmd` is recording (fn contract); the exposure image is
+        // this frame's slot, in SHADER_READ_ONLY_OPTIMAL per the layout
+        // contract, and is not concurrently accessed by another in-flight
+        // command buffer.
         unsafe {
             device.cmd_pipeline_barrier(
                 cmd,
@@ -345,10 +348,16 @@ mod tests {
     use super::*;
 
     /// The reduction fits one workgroup by construction — a larger thread
-    /// count would need a second reduction stage that does not exist.
+    /// count would need a second reduction stage that does not exist. The
+    /// shader pins the same number in its `layout(local_size_x = 64)`.
     #[test]
     fn meter_fits_one_workgroup() {
-        assert_eq!(METER_WORKGROUP_THREADS, 64);
+        let shader = include_str!("../../shaders/exposure_meter.comp");
+        assert!(
+            shader.contains("layout(local_size_x = 64)"),
+            "exposure_meter.comp changed its workgroup size — the Rust side \
+             dispatches (1,1,1) and has no cross-workgroup reduction stage"
+        );
     }
 
     /// The params UBO is two vec4s (32 B) on both sides of the wire; std140

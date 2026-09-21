@@ -177,6 +177,13 @@ pub enum VolumetricsConfigError {
 pub struct RendererConfig {
     pub upscaler: UpscalerMode,
     pub volumetrics: VolumetricsConfig,
+    /// Stage 1 (RENDERING-PLAN.md) — active display transform at boot
+    /// (ACES default, AgX behind `--tonemap agx`); the `tonemap` console
+    /// command can flip it live afterwards.
+    pub tonemap: crate::tonemap::TonemapOp,
+    /// Stage 1 — start in auto-exposure mode (Frostbite EV100 metering of
+    /// the post-bloom scene). Fixed exposure otherwise.
+    pub auto_exposure: bool,
     /// Explicit diagnostic override for the static-BLAS residency budget.
     /// `None` derives the shipping budget from VRAM. The application only
     /// populates this through the unmistakable

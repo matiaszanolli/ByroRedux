@@ -24,6 +24,7 @@ pub(crate) mod deferred_destroy;
 pub mod mesh;
 pub mod shader_constants;
 pub mod texture_registry;
+pub mod tonemap;
 pub mod vertex;
 pub mod vulkan;
 
@@ -32,6 +33,7 @@ pub use mesh::{
     SceneMeshUpload,
 };
 pub use texture_registry::{TextureColorSpace, TextureRegistry};
+pub use tonemap::{aces, agx, tonemap, TonemapOp, TONEMAP_OP_ACES, TONEMAP_OP_AGX};
 pub use vertex::Vertex;
 
 /// Re-export of the `image` crate. The renderer links it as a hard

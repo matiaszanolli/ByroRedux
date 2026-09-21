@@ -1920,6 +1920,9 @@ impl VulkanContext {
             water_commands,
             &mut armed_selected_ray_probe_generation,
             &mut t,
+            // Stage 1 — seconds form of `frame_time_delta_ms` for the
+            // exposure meter's adaptation factor.
+            frame_time_delta_ms / 1000.0,
         );
 
         // #3837 — hand the lights Vec back to its field as soon as the borrow

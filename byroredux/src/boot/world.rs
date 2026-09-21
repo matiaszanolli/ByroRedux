@@ -83,6 +83,12 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
         light_tuning.legacy = legacy;
     }
     world.insert_resource(light_tuning);
+    // Stage 1 (RENDERING-PLAN.md) — color-pipeline tuning, mutated by the
+    // `exposure` / `tonemap` console commands and pushed into the renderer
+    // each frame. Defaults only: `App::new` re-seeds the auto/agx fields
+    // from the parsed `RendererConfig` so the CLI flags survive the first
+    // per-frame push.
+    world.insert_resource(crate::components::ExposureTuning::default());
     world.insert_resource(crate::components::RenderDebugControl::default());
     // CPU-side per-frame timings — fence_wait / submit_present /
     // etc. Filled by the binary's RedrawRequested handler after

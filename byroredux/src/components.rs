@@ -1804,6 +1804,39 @@ impl Default for LightTuning {
     }
 }
 
+/// Stage 1 (RENDERING-PLAN.md) — color-pipeline tuning, pushed into the
+/// renderer's exposure/tonemap state each frame (mirroring `LightTuning`'s
+/// REND-#1451 pattern) and mutated by the `exposure` / `tonemap` console
+/// commands. Boot state comes from `--auto-exposure` / `--tonemap` via
+/// `RendererConfig`; the resource defaults match the renderer's own.
+pub(crate) struct ExposureTuning {
+    /// EV100 metering of the post-bloom scene (Frostbite §5.6) vs the fixed
+    /// constant.
+    pub(crate) auto: bool,
+    /// Fixed-mode exposure (the historical 0.85).
+    pub(crate) fixed_exposure: f32,
+    /// Metering bias in photographic stops; positive = darker.
+    pub(crate) compensation_stops: f32,
+    /// Adaptation time constant in seconds (0 = snap).
+    pub(crate) adaptation_seconds: f32,
+    /// Display transform selection: AgX when true, ACES otherwise.
+    pub(crate) agx: bool,
+}
+
+impl Resource for ExposureTuning {}
+
+impl Default for ExposureTuning {
+    fn default() -> Self {
+        Self {
+            auto: false,
+            fixed_exposure: 0.85,
+            compensation_stops: 0.0,
+            adaptation_seconds: 0.2,
+            agx: false,
+        }
+    }
+}
+
 /// Deferred operator control for named renderer views and the one-record
 /// selected visibility-ray probe. Console commands mutate this resource;
 /// `render_one_frame` applies requests at the next frame boundary, where it

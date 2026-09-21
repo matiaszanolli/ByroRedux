@@ -458,6 +458,23 @@ impl App {
                 ctx.light_atten_knee = lt.knee_frac;
                 ctx.light_atten_legacy = lt.legacy;
             }
+            // Stage 1 — same push pattern for the color pipeline
+            // (ExposureTuning, mutated by `exposure` / `tonemap`). Absent
+            // resource → renderer keeps its config-seeded state.
+            if let Some(exposure) = self
+                .world
+                .try_resource::<crate::components::ExposureTuning>()
+            {
+                ctx.exposure_auto = exposure.auto;
+                ctx.exposure_fixed = exposure.fixed_exposure;
+                ctx.exposure_compensation_stops = exposure.compensation_stops;
+                ctx.exposure_adaptation_seconds = exposure.adaptation_seconds;
+                ctx.tonemap = if exposure.agx {
+                    byroredux_renderer::TonemapOp::Agx
+                } else {
+                    byroredux_renderer::TonemapOp::Aces
+                };
+            }
             let frame_time_delta_ms = self
                 .world
                 .try_resource::<DeltaTime>()

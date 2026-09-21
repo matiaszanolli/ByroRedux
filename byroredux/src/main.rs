@@ -775,6 +775,16 @@ impl App {
     fn new(debug_mode: bool, args: &[String], mut renderer_config: RendererConfig) -> Self {
         // Three-phase construction (#1670) — see the helpers in `boot`.
         let mut world = boot::build_world(debug_mode, args);
+        // Stage 1 — seed ExposureTuning from the parsed CLI config so the
+        // per-frame resource push (app_frame) does not clobber the
+        // `--auto-exposure` / `--tonemap` boot state with resource defaults
+        // on frame 1. The resource is the live truth afterwards; console
+        // commands mutate it, the context follows.
+        {
+            let mut tuning = world.resource_mut::<crate::components::ExposureTuning>();
+            tuning.auto = renderer_config.auto_exposure;
+            tuning.agx = matches!(renderer_config.tonemap, byroredux_renderer::TonemapOp::Agx);
+        }
         // Install the universal typed registry before extension initialization
         // so `initialize` observes the same persisted values as engine/UI code.
         install_universal_settings(&mut world, args, &mut renderer_config);

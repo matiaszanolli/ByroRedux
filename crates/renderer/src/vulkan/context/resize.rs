@@ -1215,6 +1215,9 @@ impl VulkanContext {
                     swapchain_format: self.swapchain.state.format.format,
                     swapchain_views: &self.swapchain.state.image_views,
                     upscaled_views: &upscaled_views,
+                    // 1x1, resolution-independent — the same slots survive
+                    // the recreate; only the descriptor rebind happens here.
+                    exposure_views: &self.post.exposure.views(),
                     health_buffers: &health_handles,
                     extent: self.frame_extents.output,
                 },

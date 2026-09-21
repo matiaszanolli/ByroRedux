@@ -74,6 +74,24 @@ import (`import_nif_lights`).
 
 ## Stage 1 — Color pipeline and physical camera
 
+**Progress (2026-09-21, increment 1 — code-complete, unit-gated, not yet
+GPU-measured):** tonemapper selection (Narkowicz ACES default, Minimal AgX
+behind `--tonemap agx` / `tonemap` console command) landed in
+`presentation.frag` with a host mirror + behavioural tests in
+`renderer::tonemap` (monotonicity, grey balance, bounds, GLSL constant pins);
+auto-exposure (Frostbite EV100 metering of the post-bloom scene, exponential
+adaptation, fixed mode, stops compensation) landed as
+`exposure_meter.comp` + `ExposureMeterPipeline`, writing per-frame-in-flight
+1×1 exposure slots that BOTH the FSR dispatch and presentation sample — the
+#2833 exposure-drift class is now structurally impossible. Live control via
+the `exposure` console command and `ExposureTuning` resource (LightTuning
+push pattern). MIT notice for AgX in `THIRD_PARTY_NOTICES.md`. Still open in
+this stage: LUT + `tools/lut-bake`, the lens stack (grain/CA/halation/
+vignette), the egui exposure/histogram panel, `m-color.sh` capture harness,
+the oracle-L6 *image* rung (needs minted references on a live GPU), and the
+frame-time delta measurement — the "no stage lands unmeasured" gate runs at
+the first GPU session.
+
 **Goal:** frames go through a simulated lens and sensor, not a monitor. Highest impact,
 lowest risk: pure post-process, no path tracer changes. All of it lands where ACES +
 fixed exposure already live (the presentation pass).

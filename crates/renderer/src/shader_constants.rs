@@ -1609,10 +1609,20 @@ mod tests {
         let presentation = include_str!("../shaders/presentation.frag");
 
         // Ground truth first — the doc sentence is only right while this holds.
+        // Stage 1 (RENDERING-PLAN.md): exposure is sampled from the per-frame
+        // `exposureTex` (the same texel FSR normalized against) and applied
+        // inside the display-transform dispatch, which selects ACES or AgX.
         assert!(
-            presentation.contains("aces(graded * params.exposure)"),
-            "presentation.frag no longer applies exposure inside aces(); the \
-             FSR plan's phase-3 attribution needs re-checking (#4026)",
+            presentation.contains("tonemap(graded * exposure)"),
+            "presentation.frag no longer applies the sampled exposure inside \
+             the display transform; the FSR plan's phase-3 attribution needs \
+             re-checking (#4026, Stage 1)",
+        );
+        assert!(
+            presentation.contains("texelFetch(exposureTex"),
+            "presentation.frag must source exposure from the per-frame \
+             exposure texture — a push-constant scalar would let the tone \
+             mapper and FSR reconstruction drift apart again (#2833 class)",
         );
         for absent in ["params.exposure", "aces("] {
             assert!(

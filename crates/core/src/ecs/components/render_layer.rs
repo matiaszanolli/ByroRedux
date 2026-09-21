@@ -68,23 +68,35 @@ pub enum RenderLayer {
 
 impl RenderLayer {
     /// The Vulkan `vkCmdSetDepthBias` triple `(constant_factor, clamp,
-    /// slope_factor)` per layer. Conservative ladder — `Decal` is the
-    /// proven anchor (`(-64, 0, -2)` from commit `0f13ff5`); the
-    /// intermediate layers ramp linearly between zero and the Decal
-    /// anchor.
+    /// slope_factor)` per layer.
     ///
-    /// The Vulkan formula is `bias = constant_factor × r + slope_factor
-    /// × |max_dz/dxy|` where `r ≈ 2⁻²⁴ ≈ 6e-8` for D32_SFLOAT at typical
-    /// depth values. With `Decal = (-64, 0, -2)` the offset works out to
-    /// roughly `4e-6` of normalised depth — same scale Bethesda's D3D
-    /// engines use for decal polygon offset, big enough to win every
-    /// coplanar tie, small enough that distant content doesn't poke
-    /// through occluders.
+    /// **Slope factors are zero for every layer except `Decal`.** The
+    /// slope term `slope_factor × max_dz/dxy` is NOT scaled by the depth
+    /// format's `r` the way the constant term is — it shifts normalized
+    /// depth by the raw per-pixel depth gradient, which grows without
+    /// bound at grazing view angles. A nonzero slope on world-scale
+    /// layers therefore *inverts depth ordering against unrelated
+    /// occluders*: observed live in Markarth SilverBloodInn, where
+    /// `Actor = -1.5` let an NPC's grazing cloak fragments depth-test
+    /// through a stone staircase and `Clutter = -1.0` let a
+    /// wall-mounted lantern's embedded rear half render through its
+    /// host wall. (The same failure mode was already documented for the
+    /// Decal `-2.0` slope on the FNV vault door; this applies that
+    /// lesson to the intermediate layers.)
+    ///
+    /// Coplanar z-fight resolution is carried by the constant terms
+    /// alone: `bias = constant × r + slope × |max_dz/dxy|` with
+    /// `r ≈ 2⁻²⁴ ≈ 6e-8` for D32_SFLOAT, so `Decal = (-64, 0, -2)`
+    /// offsets by roughly `4e-6` of normalised depth plus the slope
+    /// term — same scale Bethesda's D3D engines use for decal polygon
+    /// offset, big enough to win every coplanar tie, and the slope term
+    /// there is intentional: a decal that did not invert against its
+    /// own host surface would z-fight it.
     pub const fn depth_bias(self) -> (f32, f32, f32) {
         match self {
             RenderLayer::Architecture => (0.0, 0.0, 0.0),
-            RenderLayer::Clutter => (-16.0, 0.0, -1.0),
-            RenderLayer::Actor => (-32.0, 0.0, -1.5),
+            RenderLayer::Clutter => (-16.0, 0.0, 0.0),
+            RenderLayer::Actor => (-32.0, 0.0, 0.0),
             RenderLayer::Decal => (-64.0, 0.0, -2.0),
         }
     }
@@ -104,8 +116,9 @@ impl RenderLayer {
 ///    standalone architecture with cutout detail (vault doors with window
 ///    holes + stencil text, grates, fences, holed steel beams). Promote
 ///    these only to the **gentle** [`RenderLayer::Clutter`] bias
-///    `(-16, -1)` — enough for a coplanar rug to win its floor z-fight,
-///    but NOT the aggressive Decal `(-64, -2)` bias whose `-2.0` slope
+///    `(-16, slope 0)` — enough for a coplanar rug to win its floor
+///    z-fight via the constant term, but NOT the aggressive Decal
+///    `(-64, -2)` bias whose `-2.0` slope
 ///    term scales with polygon depth-gradient and **inverts the depth
 ///    ordering on large cutout meshes at grazing view angles** — the
 ///    "broken polygons that change with motion" z-fighting bug (the
@@ -243,6 +256,25 @@ mod tests {
         let s_actor = RenderLayer::Actor.depth_bias().2;
         let s_decal = RenderLayer::Decal.depth_bias().2;
         assert!(s_arch >= s_clutter && s_clutter >= s_actor && s_actor >= s_decal);
+    }
+
+    /// World-scale layers must carry **zero** slope bias. The slope term
+    /// of Vulkan's depth-bias formula is not scaled by the depth format's
+    /// `r`, so any nonzero factor grows without bound at grazing view
+    /// angles and inverts depth ordering against unrelated occluders —
+    /// observed live in Markarth SilverBloodInn (NPC cloak fragments
+    /// depth-testing through a stone staircase at `Actor = -1.5`, a
+    /// wall-mounted lantern's rear half through its host wall at
+    /// `Clutter = -1.0`). Only `Decal` keeps a slope, and deliberately:
+    /// a decal that did not invert against its own host surface would
+    /// z-fight it. Pin the zeros so the intermediate ladder can never
+    /// quietly grow slope terms again.
+    #[test]
+    fn non_decal_layers_carry_zero_slope_bias() {
+        assert_eq!(RenderLayer::Architecture.depth_bias().2, 0.0);
+        assert_eq!(RenderLayer::Clutter.depth_bias().2, 0.0);
+        assert_eq!(RenderLayer::Actor.depth_bias().2, 0.0);
+        assert_eq!(RenderLayer::Decal.depth_bias().2, -2.0);
     }
 
     /// `Architecture` is zero so absent-component fallback (via

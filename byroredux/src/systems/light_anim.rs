@@ -150,10 +150,11 @@ pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32)
 ///
 /// The behaviour this restores is not marginal. With the zero mask,
 /// `LightSource::from_legacy_world_units` computed
-/// `VisibilityMask::for_legacy_projection(false)` = `ARCHITECTURE` for
-/// **every** placed Starfield light, so props, actors, foliage, glass and
-/// effects cast no shadow from any of them — the whole-game version of the
-/// silent-flatness failure this default was written to prevent.
+/// `VisibilityMask::for_legacy_projection(false)` — the conservative
+/// architecture/props/actors set — for **every** placed Starfield light,
+/// so foliage, glass and effects cast no shadow from any of them: the
+/// whole-game version of the silent-flatness failure this default was
+/// written to prevent.
 ///
 /// The animation sibling stays at `0`, and the asymmetry is the documented
 /// one: an unverified bit must not create motion, but it may cast a shadow.
@@ -1015,9 +1016,9 @@ mod tests {
     }
 
     /// The consequence the zero mask had, pinned at the layer it was felt.
-    /// `VisibilityMask::for_legacy_projection(false)` is `ARCHITECTURE` alone,
-    /// so a Starfield light decoding no shadow bits cast nothing on props,
-    /// actors, foliage, glass or effects.
+    /// `VisibilityMask::for_legacy_projection(false)` is the conservative
+    /// architecture/props/actors set, so a Starfield light decoding no
+    /// shadow bits cast nothing on foliage, glass or effects.
     #[test]
     fn a_starfield_shadow_bit_survives_into_the_projection_mask() {
         use byroredux_core::ecs::LIGHT_FLAG_SHADOW_MASK;
@@ -1026,7 +1027,8 @@ mod tests {
             decoded, 0,
             "a Starfield LIGH carrying shadow bits must reach \
              LightSource::from_legacy_world_units with them intact — at zero it \
-             falls to for_legacy_projection(false), i.e. ARCHITECTURE only"
+             falls to for_legacy_projection(false), the conservative set \
+             without foliage/glass/effects"
         );
     }
 }

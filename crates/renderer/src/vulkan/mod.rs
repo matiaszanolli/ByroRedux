@@ -13,6 +13,7 @@ pub mod descriptors;
 pub mod device;
 pub mod egui_pass;
 pub mod exposure;
+pub mod exposure_meter;
 pub mod frame_upscaler;
 pub mod gbuffer;
 pub mod gpu_timers;

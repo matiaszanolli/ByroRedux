@@ -1035,7 +1035,7 @@ impl VulkanContext {
         // pipeline, this frame's exposure slot, and the composite scene view
         // are live for this frame.
         unsafe {
-            let (Some(ref mut meter), Some(ref composite)) =
+            let (Some(ref mut meter), Some(composite)) =
                 (self.post.exposure_meter.as_mut(), self.post.composite.as_ref())
             else {
                 return;

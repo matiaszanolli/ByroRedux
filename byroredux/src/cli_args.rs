@@ -5,7 +5,7 @@
 use std::sync::OnceLock;
 
 use anyhow::{bail, Result};
-use byroredux_renderer::{FsrQuality, RendererConfig, UpscalerMode, VolumetricsConfig};
+use byroredux_renderer::{FsrQuality, RendererConfig, TonemapOp, UpscalerMode, VolumetricsConfig};
 
 /// Process-wide effective args list. Phase 20 / 20.1 — main()
 /// computes the expanded args (after `--game <key>` expansion)
@@ -205,9 +205,20 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
             Ok(tier)
         })
         .transpose()?;
+    // Stage 1 (RENDERING-PLAN.md) — display transform + auto-exposure boot
+    // state; both stay live-tunable via the `tonemap` / `exposure` console
+    // commands afterwards.
+    let tonemap = match option("--tonemap")?.unwrap_or("aces") {
+        "aces" => TonemapOp::Aces,
+        "agx" => TonemapOp::Agx,
+        value => bail!("--tonemap requires 'aces' or 'agx', got '{value}'"),
+    };
+    let auto_exposure = args.iter().any(|arg| arg == "--auto-exposure");
     Ok(RendererConfig {
         upscaler,
         volumetrics,
+        tonemap,
+        auto_exposure,
         rt_test_blas_budget_bytes,
         rt_test_lod_scale_bits,
         rt_test_lod_telemetry,

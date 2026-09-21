@@ -991,20 +991,40 @@ impl VulkanContext {
             }
         };
 
-        // 14b. Exposure producer (1x1 R32_SFLOAT). Cleared to the fixed HDR
-        // exposure so presentation and the FSR dispatch share one value.
+        // 14b. Exposure producer (per-frame-in-flight 1x1 R32_SFLOAT).
+        // Hard-fail since Stage 1: presentation's set-0 binding 2 samples
+        // `exposureTex` unconditionally, so — like bloom's #1081 policy —
+        // there is no meaningful degraded mode without it. A 1x1 image
+        // allocation failing means the device is not usable anyway.
         let exposure =
             match ExposureResource::new(&device, &gpu_allocator, &graphics_queue, transfer_pool) {
-                Ok(e) => Some(e),
+                Ok(e) => e,
                 Err(e) => {
-                    log::warn!(
-                        "Exposure resource creation failed: {e} — presentation falls back to \
-                         NO_EXPOSURE_RESOURCE_FALLBACK (1.0), matching the SDK's \
-                         null-exposure substitution"
-                    );
-                    None
+                    return Err(anyhow::anyhow!(
+                        "Exposure resource failed to initialize — presentation \
+                         requires the exposure texel for binding 2 (Stage 1). \
+                         Check earlier WARN logs. ({e})"
+                    ));
                 }
             };
+
+        // 14b-bis. Exposure metering pass (Stage 1). Soft-fail: the
+        // exposure slots are cleared to DEFAULT_EXPOSURE, so a meter-less
+        // session degrades to frozen fixed exposure rather than aborting.
+        let exposure_meter = match super::super::exposure_meter::ExposureMeterPipeline::new(
+            &device,
+            &gpu_allocator,
+            pipeline_cache,
+        ) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                log::warn!(
+                    "Exposure meter pipeline creation failed: {e} — exposure is \
+                     frozen at the fixed default for this session"
+                );
+                None
+            }
+        };
 
         // Soft-particle depth-history descriptor (set 1, binding 15). The
         // image view is stable per swapchain generation, so it's written once
@@ -1504,6 +1524,7 @@ impl VulkanContext {
                 swapchain_format: swapchain_state.format.format,
                 swapchain_views: &swapchain_state.image_views,
                 upscaled_views: &frame_upscaler.output_views(),
+                exposure_views: &exposure.views(),
                 health_buffers: &health_handles,
                 extent: frame_extents.output,
             },
@@ -1668,6 +1689,7 @@ impl VulkanContext {
                 sky_cube,
                 ssao,
                 exposure,
+                exposure_meter,
                 frame_upscaler,
                 composite,
                 cloud_noise,
@@ -1688,6 +1710,15 @@ impl VulkanContext {
             taa_failed: false,
             svgf_failed: false,
             svgf_recovery_frames: 0,
+            // Stage 1 — exposure/tonemap runtime state, seeded from the
+            // application-parsed config (CLI flags) and live-mutable via the
+            // engine's ExposureTuning resource push each frame.
+            exposure_meter_failed: false,
+            exposure_auto: renderer_config.auto_exposure,
+            exposure_fixed: super::super::exposure::DEFAULT_EXPOSURE,
+            exposure_compensation_stops: 0.0,
+            exposure_adaptation_seconds: 0.2,
+            tonemap: renderer_config.tonemap,
             caustic_failed: false,
             caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
             volumetrics_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],

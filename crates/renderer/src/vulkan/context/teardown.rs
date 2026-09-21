@@ -175,6 +175,14 @@ impl VulkanContext {
         if let Some(ref mut p) = self.placeholder_caustic_sink {
             p.destroy(&self.device, alloc);
         }
+        // The exposure meter is destroyed BEFORE the exposure resource it
+        // writes each frame (reverse of construction order). Allocator-backed
+        // UBOs, so it must precede the `Arc::try_unwrap` below as well.
+        if let Some(ref mut meter) = self.post.exposure_meter {
+            // SAFETY: `device_wait_idle` ran at the top of Drop; no in-flight
+            // command buffer references the meter's handles.
+            unsafe { meter.destroy(&self.device, alloc) };
+        }
         // The exposure resource owns its own device + allocator (an
         // `Arc` clone of the shared allocator), so it self-frees via
         // stored handles rather than the `alloc` local. It MUST be
@@ -182,9 +190,7 @@ impl VulkanContext {
         // `Arc::try_unwrap` below — or its lingering allocator clone
         // trips the outstanding-reference leak guard (#665). `destroy`
         // is idempotent, so the field's own `Drop` later is a no-op.
-        if let Some(ref mut exposure) = self.post.exposure {
-            exposure.destroy();
-        }
+        self.post.exposure.destroy();
         // The output views must be retired after presentation
         // descriptors and before composed-scene inputs. The SDK
         // context half already ran in the allocator-independent block

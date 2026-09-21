@@ -104,7 +104,7 @@ impl ExposureResource {
                 device,
                 allocator,
                 &GpuImageDesc::color_2d(
-                    format!("exposure_f{frame}"),
+                    &format!("exposure_f{frame}"),
                     1,
                     1,
                     EXPOSURE_FORMAT,

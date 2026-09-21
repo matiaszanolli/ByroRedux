@@ -623,8 +623,18 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // (The fingerprint moved twice in this refresh: once for the new field,
     // once more once the `#[serde(default)]` attribute itself left the
     // struct's scanned span — both directions are the shape change.)
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xc71b_123b_1b58_c881;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x7b20_dc83_d4a3_ff27;
     // ---- earlier refresh history (kept for the false-positive record) ----
+    // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
+    // `VisibilityMask` tuple-struct sweep class as the two entries below:
+    // `for_legacy_projection`'s no-full-scene-shadow arm now returns
+    // `ARCHITECTURE | STATIC_PROP | DYNAMIC_ACTOR` (was
+    // `ARCHITECTURE | DYNAMIC_ACTOR`), so unflagged legacy room lights'
+    // shadow rays stop passing through props and furniture — the Markarth
+    // SilverBloodInn real-content A/B that W2.10 gated the flip on showed
+    // actor silhouettes cast through STATIC_PROP occluders. The type is
+    // still a plain `u8` newtype: no serialized field changed, and the
+    // runtime mask difference is a lighting-policy value, not a shape.
     // #4422 — refreshed WITH a major bump (v23 -> v24). `Material` gained
     // the required field `detail_neutral` (the encoded-space
     // detail-combine neutral declared at the NIFAL boundary — FaceTint

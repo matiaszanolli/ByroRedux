@@ -376,6 +376,189 @@ impl ConsoleCommand for LightAttenCommand {
         CommandOutput::lines(lines)
     }
 }
+
+/// `exposure [auto|fixed [<val>]|ev <stops>|speed <sec>]` — Stage 1
+/// (RENDERING-PLAN.md) live control of the color-pipeline exposure, for the
+/// controlled bench and A/B captures. With no args, prints the current
+/// state.
+///
+/// Mutates the `ExposureTuning` resource; the draw loop pushes it into the
+/// renderer before the next `draw_frame`, so changes land within a frame.
+/// Pair with `--bench-hold` + `byro-dbg`.
+pub(crate) struct ExposureCommand;
+impl ConsoleCommand for ExposureCommand {
+    fn name(&self) -> &str {
+        "exposure"
+    }
+    fn description(&self) -> &str {
+        "Color-pipeline exposure (Stage 1): exposure [auto|fixed [<val>]|ev <stops>|speed <sec>]"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use crate::components::ExposureTuning;
+
+        if world.try_resource::<ExposureTuning>().is_none() {
+            return CommandOutput::lines(vec![
+                "exposure: ExposureTuning resource not present (only available in a live render \
+                 session, not the offline --cmd path)."
+                    .to_string(),
+            ]);
+        }
+
+        let mut errors: Vec<String> = Vec::new();
+        let tokens: Vec<&str> = args.split_whitespace().collect();
+        let mut i = 0;
+        while i < tokens.len() {
+            match tokens[i].to_ascii_lowercase().as_str() {
+                "auto" => {
+                    world_resource_set::<ExposureTuning>(world, |e| e.auto = true);
+                    i += 1;
+                }
+                "fixed" => {
+                    // `fixed` alone keeps the current fixed value; `fixed
+                    // <val>` sets it. The [0.05, 8.0] window guards typos
+                    // while spanning the whole useful range.
+                    match tokens.get(i + 1).and_then(|s| s.parse::<f32>().ok()) {
+                        Some(v) if (0.05..=8.0).contains(&v) => {
+                            world_resource_set::<ExposureTuning>(world, |e| {
+                                e.auto = false;
+                                e.fixed_exposure = v;
+                            });
+                            i += 2;
+                        }
+                        _ if tokens.get(i + 1).is_none() => {
+                            world_resource_set::<ExposureTuning>(world, |e| e.auto = false);
+                            i += 1;
+                        }
+                        _ => {
+                            errors.push("fixed expects a value in [0.05, 8.0]".to_string());
+                            i += 2;
+                        }
+                    }
+                }
+                "ev" => match tokens.get(i + 1).and_then(|s| s.parse::<f32>().ok()) {
+                    Some(v) if (-6.0..=6.0).contains(&v) => {
+                        world_resource_set::<ExposureTuning>(world, |e| {
+                            e.compensation_stops = v;
+                        });
+                        i += 2;
+                    }
+                    _ => {
+                        errors.push("ev expects a compensation in stops, [-6.0, 6.0]".to_string());
+                        i += 2;
+                    }
+                },
+                "speed" => match tokens.get(i + 1).and_then(|s| s.parse::<f32>().ok()) {
+                    Some(v) if (0.0..=5.0).contains(&v) => {
+                        world_resource_set::<ExposureTuning>(world, |e| {
+                            e.adaptation_seconds = v;
+                        });
+                        i += 2;
+                    }
+                    _ => {
+                        errors.push("speed expects seconds in [0.0, 5.0]".to_string());
+                        i += 2;
+                    }
+                },
+                other => {
+                    errors.push(format!("unknown token `{other}`"));
+                    i += 1;
+                }
+            }
+        }
+
+        let (auto, fixed, ev, speed) = {
+            let e = world.try_resource::<ExposureTuning>().unwrap();
+            (
+                e.auto,
+                e.fixed_exposure,
+                e.compensation_stops,
+                e.adaptation_seconds,
+            )
+        };
+
+        let mut lines = Vec::new();
+        for e in &errors {
+            lines.push(format!("  ! {e}"));
+        }
+        lines.push("ExposureTuning (Stage 1, RENDERING-PLAN.md):".to_string());
+        lines.push(format!(
+            "  mode    = {}  ({})",
+            if auto { "auto" } else { "fixed" },
+            if auto {
+                "EV100 = log2(L·8), exposure = 1.2·2^-EV100 (Frostbite 5.6)"
+            } else {
+                "fixed constant"
+            }
+        ));
+        lines.push(format!("  fixed   = {fixed:.3}  (used in fixed mode)"));
+        lines.push(format!("  ev comp = {ev:+.2} stops  (positive = darker; auto mode)"));
+        lines.push(format!(
+            "  speed   = {speed:.2} s  (adaptation time constant; 0 = snap)"
+        ));
+        lines.push(
+            "  usage: exposure auto | exposure fixed 1.2 | exposure ev +0.5 | exposure speed 0.3"
+                .to_string(),
+        );
+
+        CommandOutput::lines(lines)
+    }
+}
+
+/// `tonemap [aces|agx]` — Stage 1 display-transform selection for the
+/// presentation pass. No args prints the current operator.
+pub(crate) struct TonemapCommand;
+impl ConsoleCommand for TonemapCommand {
+    fn name(&self) -> &str {
+        "tonemap"
+    }
+    fn description(&self) -> &str {
+        "Display transform (Stage 1): tonemap [aces|agx]"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use crate::components::ExposureTuning;
+
+        if world.try_resource::<ExposureTuning>().is_none() {
+            return CommandOutput::lines(vec![
+                "tonemap: ExposureTuning resource not present (only available in a live render \
+                 session, not the offline --cmd path)."
+                    .to_string(),
+            ]);
+        }
+
+        let mut error = None;
+        match args.split_whitespace().next() {
+            None => {}
+            Some("aces") => {
+                world_resource_set::<ExposureTuning>(world, |e| e.agx = false);
+            }
+            Some("agx") => {
+                world_resource_set::<ExposureTuning>(world, |e| e.agx = true);
+            }
+            Some(other) => {
+                error = Some(format!("unknown operator `{other}`; expected aces or agx"));
+            }
+        }
+
+        let agx = world.try_resource::<ExposureTuning>().unwrap().agx;
+        let mut lines = Vec::new();
+        if let Some(error) = error {
+            lines.push(format!("  ! {error}"));
+        }
+        lines.push(format!(
+            "tonemap = {}  ({})",
+            if agx { "agx" } else { "aces" },
+            if agx {
+                "Minimal AgX (Wrensch 2023, MIT) — desaturating highlights"
+            } else {
+                "Narkowicz ACES fit — historical default"
+            }
+        ));
+        lines.push("  usage: tonemap aces | tonemap agx".to_string());
+
+        CommandOutput::lines(lines)
+    }
+}
+
 /// `door.teleport <entity_id>` — fire a cell transition through a
 /// door's XTEL destination.
 ///

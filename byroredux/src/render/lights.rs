@@ -722,7 +722,10 @@ mod gi_light_priority_tests {
             .expect("fixture light with a legacy projection bit");
         assert_eq!(
             no_projection_bit.params[2],
-            (VisibilityMask::ARCHITECTURE | VisibilityMask::DYNAMIC_ACTOR).bits() as f32
+            (VisibilityMask::ARCHITECTURE
+                | VisibilityMask::STATIC_PROP
+                | VisibilityMask::DYNAMIC_ACTOR)
+                .bits() as f32
         );
         assert_eq!(no_projection_bit.params[3], 0.0);
         assert_eq!(
