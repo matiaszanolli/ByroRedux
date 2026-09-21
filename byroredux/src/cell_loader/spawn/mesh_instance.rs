@@ -186,8 +186,15 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                 });
             let material = swapped_material.as_ref().unwrap_or(&mesh.material);
 
-            let mut textures = mesh
-                .material
+            // #4400 — seed from the SWAPPED material, not the pre-swap
+            // `mesh.material`: every role `resolve_effective` covers below
+            // re-reads `material.textures.<role>` anyway, but the roles it
+            // does NOT (BGEM glass `glass_roughness_scratch` /
+            // `glass_dirt_overlay`) rode the initial seed and kept the
+            // source sidecar's maps while `sources` (seeded from the
+            // swapped material since #4290) reported the target's
+            // provenance.
+            let mut textures = material
                 .textures
                 .map_ref(|path| resolve_to_owned(&pool, *path));
             let mut sources =
@@ -2194,6 +2201,85 @@ mod tests {
         assert!(
             std::ptr::eq(resolved[0].material(&mesh), swapped),
             "spawn-side consumers must read the swapped material"
+        );
+    }
+
+    /// #4400 — the roles `resolve_effective` does NOT cover (the BGEM v21+
+    /// glass-overlay suite) ride the initial `textures` seed, which #4290
+    /// left on the pre-swap cached `mesh.material`: a swapped BGEM kept the
+    /// SOURCE sidecar's scratch/dirt overlay maps while `sources` (seeded
+    /// from the swapped material) reported the TARGET's provenance. The
+    /// seed must follow the swap like every covered role does.
+    #[test]
+    fn mswp_swap_seeds_the_glass_overlay_roles_from_the_swapped_material() {
+        use crate::asset_provider::MaterialProvider;
+        use byroredux_bgsm::{BaseMaterial, BgemFile};
+
+        let source_path = r"materials\tests\glass_source.bgem";
+        let target_path = r"materials\tests\glass_target.bgem";
+        let mut provider = MaterialProvider::new();
+        for (path, scratch, dirt) in [
+            (
+                source_path,
+                r"textures\glass\source_scratch.dds",
+                r"textures\glass\source_dirt.dds",
+            ),
+            (
+                target_path,
+                r"textures\glass\target_scratch.dds",
+                r"textures\glass\target_dirt.dds",
+            ),
+        ] {
+            provider.insert_bgem_for_test(
+                path,
+                BgemFile {
+                    base: BaseMaterial::default(),
+                    glass_enabled: true,
+                    glass_roughness_scratch: scratch.to_string(),
+                    glass_dirt_overlay: dirt.to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+
+        let mut pool = StringPool::new();
+        let mut mesh = empty_mesh();
+        mesh.material.material_path = Some(pool.intern(source_path));
+        let pre_merge = crate::cell_loader::nif_import_registry::merge_external_materials(
+            std::slice::from_mut(&mut mesh),
+            &mut provider,
+            &mut pool,
+        );
+        assert_eq!(
+            mesh.material.textures.glass_roughness_scratch,
+            Some(pool.intern(r"textures\glass\source_scratch.dds")),
+            "fixture: the cache-fill merge must have applied the source sidecar's overlays"
+        );
+        let mut world = World::new();
+        world.insert_resource(pool);
+
+        let overlay = RefrTextureOverlay {
+            material_swaps: vec![swap_entry(source_path, target_path)],
+            ..Default::default()
+        };
+        let resolved = resolve_mesh_paths_with_pre_merge(
+            &mut world,
+            std::slice::from_ref(&mesh),
+            &pre_merge,
+            Some(&overlay),
+            Some(&mut provider),
+            None,
+        );
+        assert_eq!(
+            resolved[0].textures.glass_roughness_scratch,
+            Some(r"textures\glass\target_scratch.dds".to_string()),
+            "the glass scratch overlay must follow the swap target, not ride the \
+             pre-swap cached material (#4400)"
+        );
+        assert_eq!(
+            resolved[0].textures.glass_dirt_overlay,
+            Some(r"textures\glass\target_dirt.dds".to_string()),
+            "same for the dirt overlay (#4400)"
         );
     }
 
