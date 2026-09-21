@@ -164,19 +164,24 @@ fn bspline_rotation_sample_rejects_infinite_control_points() {
     assert!(normalized_rotation_sample([f32::MAX, 0.0, 0.0, 0.0]).is_none());
 }
 
-/// Regression: #4166. The case the issue named as its headline hazard,
-/// with the correction that matters: control points that are individually
-/// sane but square past `f32::MAX` do **not** produce NaN — every
-/// component is finite, so `finite * 0.0 == 0.0` and the result is the
-/// *zero quaternion*.
+/// Regression: #4166 / #4406. The case the issue named as its headline
+/// hazard, with the correction that matters: control points that are
+/// individually sane but square past `f32::MAX` do **not** produce NaN —
+/// every component is finite, so `finite * 0.0 == 0.0` and the result is
+/// the *zero quaternion*.
 ///
-/// That is exactly why the fix is `len_sq.is_finite()` and not the
+/// That is exactly why the guard is `len_sq.is_finite()` and not the
 /// post-normalize `is_key_value_sane` check the issue prescribed:
 /// `[0, 0, 0, 0]` passes `is_key_value_sane` on all four components, so a
 /// post-normalize guard is blind to it. Asserted here so nobody
 /// "simplifies" the guard back to the sibling one-liner.
+///
+/// #4406 — the overflow arm originally substituted identity, contradicting
+/// the guard's own doc and the translation/scale/float siblings, which all
+/// skip the sample. It now returns `None` (skip → bind pose), matching
+/// them.
 #[test]
-fn bspline_rotation_sample_substitutes_identity_when_squaring_overflows() {
+fn bspline_rotation_sample_skips_when_squaring_overflows() {
     // sqrt(f32::MAX) ≈ 1.844e19 — just past it, so v*v is inf.
     let huge = 2.0e19f32;
     assert!(
@@ -188,15 +193,13 @@ fn bspline_rotation_sample_substitutes_identity_when_squaring_overflows() {
         "fixture sanity: squaring must overflow to inf"
     );
 
-    let q = normalized_rotation_sample([huge, 0.0, 0.0, 0.0])
-        .expect("individually-sane components must not skip the sample");
-    assert_eq!(
-        q,
-        [1.0, 0.0, 0.0, 0.0],
-        "an overflowing len_sq must fall to identity, never the zero quaternion"
+    assert!(
+        normalized_rotation_sample([huge, 0.0, 0.0, 0.0]).is_none(),
+        "an overflowing len_sq must skip the sample like the sibling \
+         sub-channels, not substitute an invented identity pose (#4406)"
     );
 
-    // The refutation of the prescribed fix, pinned: the zero quaternion
+    // The refutation of a post-normalize guard, pinned: the zero quaternion
     // the unguarded code produced would have passed a post-normalize check.
     assert!(
         [0.0f32, 0.0, 0.0, 0.0]
@@ -210,6 +213,8 @@ fn bspline_rotation_sample_substitutes_identity_when_squaring_overflows() {
 /// fix — `len_sq` is NaN, `NaN > f32::EPSILON` is false, and the
 /// degenerate arm substitutes identity. Pinned so the guard's docs and
 /// the code keep agreeing about which inputs were actually broken.
+/// (#4406 narrowed the identity arm to near-zero only; NaN was already
+/// rejected up front by the pre-normalize sweep and is unaffected.)
 #[test]
 fn bspline_rotation_sample_was_already_safe_against_nan_control_points() {
     for raw in [[f32::NAN; 4], [f32::NAN, 1.0, 0.0, 0.0]] {

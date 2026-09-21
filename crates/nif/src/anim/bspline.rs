@@ -282,13 +282,21 @@ pub fn extract_float_channel_bspline(
 ///    `is_key_value_sane` check is *not* the fix — `[0, 0, 0, 0]` is finite
 ///    and passes it on all four components while still being a degenerate
 ///    rotation that poisons the bone downstream. It is caught instead by
-///    requiring `len_sq` itself to be finite.
+///    requiring `len_sq` itself to be finite (#4406: skip the sample, like
+///    the siblings — a local identity would be an invented pose, not the
+///    bind pose this function's contract promises). Only the genuinely
+///    near-zero arm substitutes identity.
 ///
 /// Worth recording because it inverts the intuition: a NaN control point
 /// was already safe before this fix. `len_sq` becomes NaN,
 /// `NaN > f32::EPSILON` is false, and the degenerate arm substitutes
 /// identity. It is the *infinite* and the *merely huge* inputs that needed
 /// guarding, not the NaN ones.
+///
+/// #4406 — the overflow arm used to fall through to the identity
+/// substitution, which contradicted this doc and the translation/scale/
+/// float siblings' skip behaviour. It now returns `None`; identity is
+/// reserved for the near-zero arm only.
 ///
 /// Blast radius if this returns a poisoned value: `GlobalTransform` →
 /// skinned vertex positions → BLAS refit / TLAS build with a non-finite
@@ -300,15 +308,20 @@ pub(crate) fn normalized_rotation_sample(raw: [f32; 4]) -> Option<[f32; 4]> {
     }
     let [mut w, mut x, mut y, mut z] = raw;
     let len_sq = w * w + x * x + y * y + z * z;
-    if len_sq.is_finite() && len_sq > f32::EPSILON {
+    // #4406 — overflow-to-inf on squaring skips the sample (see the doc
+    // above); identity is only for a genuinely near-zero quaternion.
+    if !len_sq.is_finite() {
+        return None;
+    }
+    if len_sq > f32::EPSILON {
         let inv = 1.0 / len_sq.sqrt();
         w *= inv;
         x *= inv;
         y *= inv;
         z *= inv;
     } else {
-        // Degenerate (near-zero, or overflowed to `inf` on squaring):
-        // substitute identity rather than emitting a zero quaternion.
+        // Degenerate (near-zero): substitute identity rather than emitting
+        // a zero quaternion.
         w = 1.0;
         x = 0.0;
         y = 0.0;
