@@ -14,6 +14,10 @@ checkpoints; Wave 4 items are slotted when measurement is next needed.
 
 ## Wave 1 — Animation NaN-safety HIGHs (#4396, #4397)
 
+**STATUS: DONE 2026-09-20** — fixed in `d53be91be` (single rotation
+sanitizer + NaN-inclusive pose gates), both issues closed. Zero HIGHs
+remain open on the tracker.
+
 **Why now**: they are the last two open HIGHs, and both live in the same
 sanitizer family #4406 just touched (`crates/nif/src/anim/bspline.rs` →
 `normalized_rotation_sample`, NIFAL-D7-2026-09-14). #4396's own body points at
