@@ -186,9 +186,16 @@ pub fn probe() -> Result<Capabilities, Blocker> {
             .create_instance(&create_info, None)
             .map_err(|_| Blocker::NoVulkan)?;
 
-        let devices = instance
-            .enumerate_physical_devices()
-            .map_err(|_| Blocker::NoAdapter)?;
+        // #4598 — destroy the instance on EVERY exit path: the `?` below
+        // used to return between create and destroy, leaking the
+        // VkInstance when a driver creates one but fails enumeration.
+        let devices = match instance.enumerate_physical_devices() {
+            Ok(devices) => devices,
+            Err(_) => {
+                instance.destroy_instance(None);
+                return Err(Blocker::NoAdapter);
+            }
+        };
 
         let best = devices
             .into_iter()
