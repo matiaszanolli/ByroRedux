@@ -338,4 +338,5 @@ is not registered in the scheduler at all.
 | Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |
 | UV scroll animated materials | Animated terminals / displays | audited, not prioritised |
 | Per-material footsteps (FOOT) | Correct surface audio | M44 follow-up |
+| CHARAL: player actor-value seed | The player body carries `ActorValues` seeded from the base Player `NPC_` (#4458), with the ruleset's PlayerOnly rows (FO4/FO3/FNV Health + AP) evaluated for the player at stamping (#4674). Games: FO3/FNV/FO4/Skyrim yes, Oblivion no, FO76/Starfield partial | CHARAL (charal.md §7) |
 | CHARAL: Oblivion ruleset built but unwired; regen + affliction ticks inert everywhere | Derived Health/leveling formulas on Oblivion; passive Health/Magicka/Stamina regen and radiation/disease/addiction on all seven games | CHARAL (charal.md §8) |

@@ -404,10 +404,13 @@ user-provided tables or cited research (§9).
   submodules of it — they read `ActorValues` as inputs but evaluate against
   transient per-hit state that never lives there — and both are in scope for
   `/audit-character` Dimension 2 (CHAR-D6-05, #2962), not exempt from it.
-- **No player chargen yet.** There is still no stat-bearing player-actor entity
-  (`scene.rs`'s `player_entity` is an `AnimationPlayer`) — see
-  [[actor_value_population]]. CHARAL designs *where* player stats land (the same
-  canonical components) but player creation is a separate slice.
+- **Player chargen itself is still future work, but a stat-bearing player exists
+  (#4458, `eb3784309`).** The player body carries the `ActorValues` + `ActorVitals`
+  seed built from the base Player `NPC_` via `derive_npc_actor_values`
+  (`inventory.rs::build_player_character_template`), and since #4674 the ruleset's
+  `PlayerOnly` rows (Health/AP and friends) are evaluated for the player at
+  stamping instead of inheriting the NPC answer. Full chargen (authored stats,
+  race/session selection) remains a separate slice — see [[actor_value_population]].
 - **No Vulkan / render changes.** Like every sibling layer, CHARAL is pure ECS +
   parse; nothing touches the render pass or pipeline.
 

@@ -98,9 +98,14 @@ The `floor` costs ≤1 HP only when END and L are both even; otherwise exact.
    so this does **not** populate NPC health in the current
    `derive_npc_actor_values` — NPC health derivation is still open
    ([[actor_value_population]] derived-attribute deferral).
-2. **No player-actor entity yet.** There is still nowhere to apply a *player* health
-   formula (`scene.rs`'s `player_entity` is an `AnimationPlayer`) — same block noted
-   in [[actor_value_population]]. So this is locked **data**, application deferred.
+2. **Player application LANDED (#4674).** The player body carries a seed built
+   from the base Player `NPC_` (#4458), and `build_player_character_template`
+   now evaluates this player-only Health row for it at stamping — the carried
+   NPC-baked 150 is dropped and replaced by the formula answer (85,
+   pinned by the real-master leg `real_master_player_seed_evaluates_the_player_only_rows`
+   in `inventory.rs`).
+   Remaining block: [[actor_value_population]]'s derived-attribute deferral
+   still gates the NPC side.
 
 **Cross-game Health (same source — file into the sibling rulesets when opened):**
 
@@ -163,9 +168,10 @@ value, not a stored derived AV.
 - **Cross-game:** FO4 multiplies the Agility bonus by **×10**; FO3/FNV use **×2 or
   ×3** (the page notes the multiplier difference but not the FO3/FNV base) — PENDING
   for their rulesets.
-- **Application caveat:** AP (and its sprint-drain rate) is a player / V.A.T.S.
-  resource, so the Health §'s "no player-actor entity yet" gate applies equally —
-  locked data, application deferred.
+- **Application caveat (updated #4674):** AP (and its sprint-drain rate) is a
+  player / V.A.T.S. resource; the player-only row is now evaluated at player
+  stamping like Health (AP 70 authored, not the NPC-baked 100). The sprint-drain
+  consumer itself is still future work.
 
 **Independently re-confirmed 2026-07-03** on the Agility (FO4) page itself — same
 `AP = 60 + 10·AGI` and same `AP/second = (18 + 3·AGI)/5` formulas, same two GMST
