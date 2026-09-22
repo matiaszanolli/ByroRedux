@@ -614,19 +614,29 @@ void main() {
         // hit's SCREEN projection, but the surface that owns that pixel can
         // be anything nearer the camera — a bottle standing between the
         // camera and its own table pool, a wall over a corridor focus.
-        // Compare the hit's NDC depth against the scene depth at the
-        // landing pixel (same `viewProj` rasterized it, so the encodings
-        // are directly comparable): a receiver meaningfully in front of the
-        // caustic target occludes it and gets nothing. The slop band covers
-        // same-surface rasterization quantization and the ±8 px temporal
-        // jitter; real occlusion events are orders of magnitude larger in
-        // encoded depth. depthTex holds OPAQUE depth (the blended glass
-        // pipeline preserves it), so a pane between the camera and the pool
-        // does NOT reject — the caustic legitimately shows through glass.
+        // depthTex holds OPAQUE depth (the blended glass pipeline preserves
+        // it), so a pane between the camera and the pool does NOT reject —
+        // the caustic legitimately shows through glass.
+        //
+        // #4588 — the comparison is LINEAR (view-space) with a relative
+        // tolerance, not raw NDC with an absolute slop. Conventional-depth
+        // NDC z ~ 1 - near/d, so a fixed NDC slop is a view-space band
+        // growing ~d^2/near: at 300 BU with the 5-unit near plane the old
+        // gate tolerated occluders within ~23% of the receiver distance,
+        // and the motivating bottle case stopped rejecting past ~50-100 BU.
+        // Linearized (screen.zw carry the fog near/far ramp, the same
+        // linearization range composite.frag's depthLinearize call uses),
+        // reject when the pixel's surface sits meaningfully in FRONT of the
+        // hit: d_pixel < d_hit * (1 - eps), with eps covering same-surface
+        // rasterization quantization and the +/-8 px temporal jitter.
         float receiverZ = texelFetch(depthTex, hitPixel, 0).r;
-        float depthSlop = 1.0e-4 + ndc.z * 5.0e-3;
+        float nearPlane = max(screen.z, 1.0e-4);
+        float farPlane = max(screen.w, nearPlane + 1.0);
+        float dPixel = depthLinearize(receiverZ, nearPlane, farPlane);
+        float dHit = depthLinearize(ndc.z, nearPlane, farPlane);
+        const float OCCLUSION_EPS = 0.03; // 3% of the hit's view distance
         if (depthIsInFront(receiverZ, ndc.z)
-            && abs(receiverZ - ndc.z) > depthSlop) {
+            && dPixel < dHit * (1.0 - OCCLUSION_EPS)) {
             continue;
         }
 
