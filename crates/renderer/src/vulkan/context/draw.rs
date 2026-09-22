@@ -2099,6 +2099,36 @@ impl VulkanContext {
             let swapchain_image = self.swapchain.state.images[img];
             self.screenshot_record_copy(cmd, swapchain_image);
 
+            // #4602 — the device→host flush edge, as the LAST command
+            // before end_command_buffer. A fence's memory dependency
+            // covers only device access: making this frame's device
+            // writes visible to the host needs a memory dependency with
+            // HOST_READ in its destination scope (the device→host domain
+            // operation), paired with the host-side
+            // `invalidate_if_needed` each readback already performs
+            // (#2752). One global edge covers every host read of this
+            // submission: the ground-cover counter copy (`record_scatter`),
+            // the screenshot copy just above, the depth-capture copy, the
+            // bounded fragment-shader probe record's atomics, and the
+            // presentation pass's image-health atomicAdds (recorded after
+            // the probe's own FRAGMENT→HOST barrier below, which therefore
+            // could not cover them). Mirrors the in-tree precedents
+            // (`compute.rs` cluster telemetry, `volumetrics.rs`
+            // combustion, the probe barrier) — the four sites this
+            // backfills simply predated the rule. TRANSFER covers every
+            // `cmd_copy_buffer`/`cmd_copy_image_to_buffer`; FRAGMENT_SHADER
+            // covers the presentation atomics; SHADER_WRITE brings the
+            // compute-written counters' availability forward from their
+            // publish edge.
+            memory_barrier(
+                &self.device,
+                cmd,
+                vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::AccessFlags::TRANSFER_WRITE | vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::HOST,
+                vk::AccessFlags::HOST_READ,
+            );
+
             if let Err(e) = self
                 .device
                 .end_command_buffer(cmd)
@@ -3014,6 +3044,47 @@ mod is_caustic_source_tests {
 /// assertion mirrors the precedent set by
 /// `resize.rs::old_image_views_destroyed_between_new_swapchain_creation_and_old_destroy`
 /// (#654 ordering check).
+#[cfg(test)]
+mod host_readback_flush_edge_tests {
+    /// #4602 — the global device→host edge must be the LAST command before
+    /// `end_command_buffer`, so it covers every readback writer recorded
+    /// this frame (the ground-cover counter copy, the screenshot copy, the
+    /// depth-capture copy, the probe atomics, and the presentation pass's
+    /// image-health atomics, which the probe's own earlier FRAGMENT→HOST
+    /// barrier cannot cover). Needles composed at runtime (#3442) so this
+    /// test cannot match its own literals.
+    #[test]
+    fn the_host_flush_edge_precedes_end_command_buffer_and_follows_every_writer() {
+        let src = include_str!("draw.rs");
+        let edge = ("memory_barrier(\n                &self.device,\n                cmd,\n                vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::FRAGMENT_SHADER,").to_string();
+        let edge_pos = src
+            .find(&edge)
+            .expect("the #4602 device→host flush edge must stay in draw_frame's tail — a fence's dependency covers only device access; the host readbacks need HOST_READ in a memory dependency's destination scope");
+        // Every host-readback writer recorded in this tail must precede
+        // the edge (the presentation pass and the screenshot copy are the
+        // last two; the ground-cover and depth-capture copies record
+        // earlier in the buffer).
+        // Search only the production region BEFORE the edge, so the test's
+        // own literals (which sit after it) can't satisfy the ordering.
+        let production = &src[..edge_pos];
+        for writer in [
+            "self.screenshot_record_copy(cmd, swapchain_image)",
+            "presentation",
+        ] {
+            assert!(
+                production.contains(writer),
+                "`{writer}` must be recorded BEFORE the host flush edge (#4602)"
+            );
+        }
+        // And the edge must precede end_command_buffer.
+        let end = ".end_command_buffer(cmd)".to_string();
+        assert!(
+            src[edge_pos..].contains(&end),
+            "end_command_buffer must follow the host flush edge (#4602)"
+        );
+    }
+}
+
 #[cfg(test)]
 mod framebuffers_empty_guard_tests {
     /// #4604 — this test was vacuous since #3282 moved the wait and the
