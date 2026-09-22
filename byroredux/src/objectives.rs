@@ -259,7 +259,7 @@ mod tests {
         let world = World::new();
         assert!(snapshot(&world).is_none(), "no quest runtime at all");
 
-        let mut world = quest_world();
+        let world = quest_world();
         assert!(
             snapshot(&world).is_none(),
             "registered but untouched quest state draws nothing"

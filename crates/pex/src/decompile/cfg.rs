@@ -367,7 +367,6 @@ mod tests {
         assert_eq!(join.next, 5);
     }
 
-    #[test]
     // #4476 — this guard was named `backward_jmpt_builds_a_loop_edge` but
     // built its conditional from JmpF; the name now says what it pins, and
     // the JmpT loop-head mirror lives in

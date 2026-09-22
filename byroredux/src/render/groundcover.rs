@@ -44,7 +44,7 @@ const CHUNK_BOUND_RADIUS: f32 = GROUNDCOVER_CHUNK_UNITS * std::f32::consts::FRAC
 /// A chunk that survived the distance and behind-camera culls, before the
 /// per-frame caps are applied.
 #[derive(Clone, Copy)]
-struct ChunkCandidate {
+pub(crate) struct ChunkCandidate {
     /// Position in the cull walk — origin-sorted cell, then row, then column.
     /// Survivors are emitted in this order, so a frame that stays under the
     /// cap produces exactly the chunk list it always did.
@@ -514,7 +514,7 @@ const DEFAULT_DISTURBER_RADIUS: f32 = byroredux_physics::CharacterController::HU
 const MAX_DISTURBER_RADIUS: f32 = 256.0;
 
 /// A resident cell's scatter inputs, before chunking.
-struct EntityCell {
+pub(crate) struct EntityCell {
     origin_xz: [f32; 2],
     vertex_offset: u32,
     water_y: f32,
