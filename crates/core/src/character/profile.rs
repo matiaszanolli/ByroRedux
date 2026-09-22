@@ -98,6 +98,15 @@ pub struct CharacterRulesProfile {
     /// the seeding no-ops. #4447 — this is profile data, not a
     /// consumer-side `game ==` branch.
     body_condition_base: Option<f32>,
+    /// #4679 (CHAR-2026-09-21-D1-02) — the game's vital-pool roster as
+    /// `(console label, AVIF editor id)` pairs, in draw order. Profile
+    /// data, not a consumer-side `GameKind` match (same move #4447 made
+    /// for `body_condition_base`): a future family divergence or new game
+    /// is a profile-row edit. The editor ids resolve through
+    /// `EsmIndex::actor_value_form_id` — a pool the game does not author
+    /// (or a profile with no resolver yet, Oblivion pre-#3768) drops out
+    /// per candidate rather than erroring.
+    vital_pools: &'static [(&'static str, &'static str)],
     ruleset: RulesetBuilder,
 }
 
@@ -108,6 +117,7 @@ impl CharacterRulesProfile {
         npc_stats: NpcStatModel::None,
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
+        vital_pools: &[],
         ruleset: RulesetBuilder::None,
     };
 
@@ -117,6 +127,10 @@ impl CharacterRulesProfile {
         npc_stats: NpcStatModel::None,
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
+        // Oblivion authors no AVIF records, so every candidate drops out
+        // at resolution until #3768's pre-AVIF resolver lands — the
+        // roster states the intent, the resolver gates reality.
+        vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Fatigue", "Fatigue")],
         ruleset: RulesetBuilder::None,
     };
 
@@ -132,6 +146,7 @@ impl CharacterRulesProfile {
         },
         creature_stats: NpcStatModel::CreatureData,
         body_condition_base: Some(100.0),
+        vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
         ruleset: RulesetBuilder::Fallout3,
     };
 
@@ -148,6 +163,7 @@ impl CharacterRulesProfile {
         },
         creature_stats: NpcStatModel::CreatureData,
         body_condition_base: Some(100.0),
+        vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
         ruleset: RulesetBuilder::FalloutNewVegas,
     };
 
@@ -163,6 +179,7 @@ impl CharacterRulesProfile {
         // `RulesetBuilder::None` (Oblivion), so without this arm `with_gmst`
         // executed only inside its own unit test.
         body_condition_base: None,
+        vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Stamina", "Stamina")],
         ruleset: RulesetBuilder::Skyrim,
     };
 
@@ -172,6 +189,7 @@ impl CharacterRulesProfile {
         npc_stats: NpcStatModel::Stored,
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
+        vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
         ruleset: RulesetBuilder::Fallout4,
     };
 
@@ -181,6 +199,7 @@ impl CharacterRulesProfile {
         npc_stats: NpcStatModel::Stored,
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
+        vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
         ruleset: RulesetBuilder::None,
     };
 
@@ -190,12 +209,20 @@ impl CharacterRulesProfile {
         npc_stats: NpcStatModel::Stored,
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
+        vital_pools: &[("HP", "Health"), ("O2", "O2")],
         ruleset: RulesetBuilder::None,
     };
 
     #[must_use]
     pub const fn name(self) -> &'static str {
         self.name
+    }
+
+    /// #4679 — the vital-pool roster: `(console label, AVIF editor id)`
+    /// pairs in draw order. Empty for profiles with no pool model.
+    #[must_use]
+    pub const fn vital_pools(self) -> &'static [(&'static str, &'static str)] {
+        self.vital_pools
     }
 
     #[must_use]

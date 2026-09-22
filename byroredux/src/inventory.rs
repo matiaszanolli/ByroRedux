@@ -174,33 +174,16 @@ impl PlayerVitals {
 
 impl Resource for PlayerVitals {}
 
-/// (display label, AVIF editor id) candidates per game, in draw order.
-/// A vital the game does not author (or the resolver cannot find) drops out
-/// — an FO3/FNV player shows no Magicka bar rather than an empty one. The
-/// resolver matches both `Health` and Skyrim's `AVHealth` spelling, so the
-/// editor ids here are the canonical un-prefixed ones.
-fn vital_bar_candidates(game: GameKind) -> &'static [(&'static str, &'static str)] {
-    match game {
-        GameKind::Skyrim => &[
-            ("Health", "Health"),
-            ("Magicka", "Magicka"),
-            ("Stamina", "Stamina"),
-        ],
-        GameKind::Oblivion => &[
-            ("Health", "Health"),
-            ("Magicka", "Magicka"),
-            ("Fatigue", "Fatigue"),
-        ],
-        GameKind::Fallout3NV | GameKind::Fallout4 | GameKind::Fallout76 => {
-            &[("HP", "Health"), ("AP", "ActionPoints")]
-        }
-        GameKind::Starfield => &[("HP", "Health"), ("O2", "O2")],
-    }
-}
-
 fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
+    // #4679 — the roster is `CharacterRulesProfile` data (same move #4447
+    // made for `body_condition_base`), so a pool the game does not author
+    // — or an Oblivion profile whose pre-#3768 resolver cannot resolve
+    // any AVIF yet — drops out per candidate instead of the consumer
+    // guessing per GameKind.
     let mut by_editor_id = FxHashMap::default();
-    let bars = vital_bar_candidates(index.game)
+    let bars = index
+        .character_rules
+        .vital_pools()
         .iter()
         .filter_map(|&(label, editor_id)| {
             let avif = index.actor_value_form_id(editor_id)?;
@@ -3064,15 +3047,19 @@ mod tests {
 
     #[test]
     fn install_catalog_resolves_per_game_vital_keys() {
+        use byroredux_core::character::CharacterRulesProfile;
         use byroredux_plugin::esm::records::AvifRecord;
         let avif = |form_id: u32, editor_id: &str| AvifRecord {
             form_id,
             editor_id: editor_id.to_owned(),
             ..Default::default()
         };
-        let build = |game: GameKind| {
+        // #4679 — the roster comes from the CHARACTER RULES PROFILE now,
+        // not the GameKind match, so each fixture names its profile.
+        let build = |game: GameKind, profile: CharacterRulesProfile| {
             let mut index = EsmIndex {
                 game,
+                character_rules: profile,
                 ..Default::default()
             };
             index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
@@ -3083,7 +3070,10 @@ mod tests {
         };
 
         let mut world = World::new();
-        install_catalog(&mut world, &build(GameKind::Oblivion));
+        install_catalog(
+            &mut world,
+            &build(GameKind::Oblivion, CharacterRulesProfile::OBLIVION),
+        );
         let labels: Vec<_> = world
             .try_resource::<PlayerVitals>()
             .unwrap()
@@ -3094,7 +3084,10 @@ mod tests {
         assert_eq!(labels, vec!["Health", "Magicka", "Fatigue"]);
 
         let mut world = World::new();
-        install_catalog(&mut world, &build(GameKind::Fallout3NV));
+        install_catalog(
+            &mut world,
+            &build(GameKind::Fallout3NV, CharacterRulesProfile::FALLOUT_NEW_VEGAS),
+        );
         let labels: Vec<_> = world
             .try_resource::<PlayerVitals>()
             .unwrap()
