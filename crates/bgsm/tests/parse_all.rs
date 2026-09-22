@@ -168,6 +168,42 @@ fn fo4_data_dir() -> Option<PathBuf> {
     None
 }
 
+/// #4665 (PAR-D4-2026-09-21-03) — FO76's Data directory. Same binding
+/// override contract as `fo4_data_dir`.
+fn fo76_data_dir() -> Option<PathBuf> {
+    if let Some(v) = std::env::var("BYROREDUX_FO76_DATA")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let p = PathBuf::from(&v);
+        if p.is_dir() {
+            return Some(p);
+        }
+        panic!("BYROREDUX_FO76_DATA points to {v:?}, which is not a directory");
+    }
+    let p = PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout76/Data");
+    if p.is_dir() {
+        return Some(p);
+    }
+    require_game_data("BYROREDUX_FO76_DATA", &p);
+    None
+}
+
+fn open_archive_at(data: &PathBuf, name: &str) -> Option<Ba2Archive> {
+    let archive_path = data.join(name);
+    if !archive_path.is_file() {
+        eprintln!("skipping: {:?} not found", archive_path);
+        return None;
+    }
+    match Ba2Archive::open(&archive_path) {
+        Ok(a) => Some(a),
+        Err(e) => {
+            eprintln!("skipping: failed to open {:?}: {}", archive_path, e);
+            None
+        }
+    }
+}
+
 fn open_materials_archive() -> Option<Ba2Archive> {
     let data = fo4_data_dir()?;
     let archive_path = data.join("Fallout4 - Materials.ba2");
@@ -265,4 +301,89 @@ fn parse_rate_fo4_bgsm_corpus() {
 #[ignore = "needs FO4 game data on disk"]
 fn parse_rate_fo4_bgem_corpus() {
     run_variant(Variant::Bgem);
+}
+
+/// #4665 (PAR-D4-2026-09-21-03) — the FO76 sweep. Vanilla FO76 uses v22
+/// exclusively (25,888 BGSM + 4,101 BGEM measured 2026-09-21). Two files
+/// in the corpus are NOT the binary format at all:
+/// `materials\atx\setdressing\atx_plushie_mr.fuzzy_valentinesday\*.bgsm`
+/// are Material-Editor JSON text — allowed as a counted, named bucket
+/// (`json_not_binary`) rather than either a failure or a silent skip.
+/// Whether FO76's own runtime reads those is unverified; this test only
+/// pins that every REAL binary file parses.
+#[test]
+#[ignore = "needs FO76 game data on disk"]
+fn parse_rate_fo76_materials_corpus() {
+    let Some(data) = fo76_data_dir() else {
+        return;
+    };
+    let Some(archive) = open_archive_at(&data, "SeventySix - Materials.ba2") else {
+        return;
+    };
+
+    #[derive(Default)]
+    struct Stats {
+        total: usize,
+        clean: usize,
+        json_text: usize,
+        json_examples: Vec<String>,
+        failures: Vec<(String, String)>,
+    }
+    let mut stats = Stats::default();
+    for path in archive.list_files() {
+        let lower = path.to_ascii_lowercase();
+        if !(lower.ends_with(".bgsm") || lower.ends_with(".bgem")) {
+            continue;
+        }
+        stats.total += 1;
+        let bytes = match archive.extract(path) {
+            Ok(b) => b,
+            Err(e) => {
+                stats.failures.push((path.to_string(), format!("extract: {e}")));
+                continue;
+            }
+        };
+        // JSON allowlist: Material-Editor exports are UTF text starting
+        // with `{`; the binary magic is 4 raw ASCII bytes, never `{`.
+        if bytes.first() == Some(&b'{') {
+            stats.json_text += 1;
+            if stats.json_examples.len() < 5 {
+                stats.json_examples.push(path.to_string());
+            }
+            continue;
+        }
+        if parse(&bytes).is_ok() {
+            stats.clean += 1;
+        } else {
+            stats.failures.push((path.to_string(), "parse failed".to_string()));
+        }
+    }
+
+    eprintln!(
+        "[FO76] parsed {}/{} material files clean; {} JSON-text (allowed);          failures: {}",
+        stats.clean,
+        stats.total,
+        stats.json_text,
+        stats.failures.len(),
+    );
+    for (path, err) in stats.failures.iter().take(10) {
+        eprintln!("  FAIL {path}: {err}");
+    }
+    assert!(
+        stats.total > 0,
+        "expected FO76 material files in SeventySix - Materials.ba2"
+    );
+    // The audit measured 29,989/29,991 OK with exactly 2 known JSON files;
+    // both exceptions are accounted for above, so the remainder must be
+    // spotless.
+    assert!(
+        stats.failures.is_empty(),
+        "{} FO76 material file(s) failed to parse: {:?}",
+        stats.failures.len(),
+        &stats.failures[..stats.failures.len().min(5)]
+    );
+    assert!(
+        stats.clean + stats.json_text == stats.total,
+        "every file must be clean-parse or accounted JSON"
+    );
 }

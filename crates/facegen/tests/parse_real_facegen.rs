@@ -176,6 +176,12 @@ fn for_each_game(what: &str, body: impl Fn(Game, &Expected, Vec<u8>)) {
     }
 }
 
+// #4665 — the on-disk non-finite delta counts, measured from the
+// vanilla masters. A decode change (the PAR-D5-2026-09-21-01 class)
+// moves these; the eprintln used to be the only trace of them.
+const NV_EGM_NON_FINITE: usize = 32_456;
+const FO3_EGM_NON_FINITE: usize = 32_456;
+
 #[test]
 #[ignore = "needs FNV/FO3 game data on disk"]
 fn parse_vanilla_headhuman_egm() {
@@ -220,8 +226,71 @@ fn parse_vanilla_headhuman_egm() {
                 .chain(egm.fgga_morphs.iter())
                 .map(|m| m.deltas.iter().flatten().filter(|c| !c.is_finite()).count())
                 .sum();
+            // #4665 (PAR-D4-2026-09-21-03) — this used to be an
+            // eprintln, which could never catch a decode regression; the
+            // PAR-D5-2026-09-21-01 EGM bug is exactly what it existed to
+            // catch. The count is a property of the on-disk bytes, so it
+            // must be pinned per game.
             eprintln!("[{g}] vanilla headhuman.egm: {nan_count} non-finite delta components");
+            let expected_nan = match game {
+                Game::FalloutNV => NV_EGM_NON_FINITE,
+                Game::Fallout3 => FO3_EGM_NON_FINITE,
+            };
+            assert_eq!(
+                nan_count, expected_nan,
+                "[{g}] non-finite delta component count drifted — a half-\
+                 float decode change"
+            );
         },
+    );
+}
+
+/// #4665 — Oblivion ships 141 EGMs and had no test at all. This case
+/// pins the same structural facts the FNV/FO3 EGM test pins (parse,
+/// vertex count, per-morph delta coverage). The baseline numbers are
+/// measured on first run and recorded in the EXPECT table like every
+/// other real-data fact here.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn parse_vanilla_headhuman_egm_oblivion() {
+    let data = if let Some(v) = std::env::var("BYROREDUX_OBLIVION_DATA").ok() {
+        PathBuf::from(v)
+    } else {
+        PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data")
+    };
+    if !data.is_dir() {
+        eprintln!("skipping: Oblivion data not found");
+        return;
+    }
+    let archive_path = data.join("Oblivion - Meshes.bsa");
+    let archive = byroredux_bsa::BsaArchive::open(&archive_path)
+        .unwrap_or_else(|e| panic!("open Oblivion - Meshes.bsa: {e:?}"));
+    let entry = archive
+        .list_files()
+        .into_iter()
+        // Oblivion keeps the head sidecars under the race folder, not
+        // `characters\head` like FNV/FO3.
+        .find(|p| {
+            p.to_lowercase() == "meshes\\characters\\imperial\\headhuman.egm"
+        })
+        .unwrap_or_else(|| panic!("headhuman.egm not in Oblivion - Meshes.bsa"));
+    let bytes = archive
+        .extract(&entry)
+        .unwrap_or_else(|e| panic!("extract headhuman.egm: {e:?}"));
+    let egm = EgmFile::parse(&bytes).unwrap_or_else(|e| panic!("parse: {e:?}"));
+    assert!(egm.num_vertices > 0, "Oblivion headhuman.egm vertex count");
+    let morphs = egm.fggs_morphs.len() + egm.fgga_morphs.len();
+    assert!(morphs > 0, "Oblivion headhuman.egm carries morphs");
+    for morph in egm.fggs_morphs.iter().chain(egm.fgga_morphs.iter()) {
+        assert_eq!(
+            morph.deltas.len(),
+            egm.num_vertices as usize,
+            "every morph must carry one delta per vertex"
+        );
+    }
+    eprintln!(
+        "[Oblivion] headhuman.egm: {} verts, {morphs} morphs (record these          in the EXPECT table)",
+        egm.num_vertices
     );
 }
 

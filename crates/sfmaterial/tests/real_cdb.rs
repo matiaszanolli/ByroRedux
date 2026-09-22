@@ -82,10 +82,10 @@ fn parse_vanilla_materialsbeta_cdb() {
         info.class_count, info.value_count
     );
 
-    // Floor asserts — these should hold for any non-empty CDB.
-    assert_ne!(info.class_count, 0, "vanilla CDB must declare classes");
-    assert!(
-        info.value_count != 0,
-        "vanilla CDB must contain top-level values"
-    );
+    // #4665 (PAR-D4-2026-09-21-03) — the counts are pinned EXACTLY (the
+    // audit's measured 97 classes / 1,438,780 values), not floored: the
+    // CDB is versioned content shipped with the game, so a change is a
+    // format event worth failing on, not noise to absorb.
+    assert_eq!(info.class_count, 97, "vanilla CDB class count");
+    assert_eq!(info.value_count, 1_438_780, "vanilla CDB top-level values");
 }

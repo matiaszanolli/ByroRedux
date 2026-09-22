@@ -76,6 +76,20 @@ fn fo4_data_dir() -> Option<PathBuf> {
     )
 }
 
+fn fo76_data_dir() -> Option<PathBuf> {
+    data_dir(
+        "BYROREDUX_FO76_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout76/Data",
+    )
+}
+
+fn fo3_data_dir() -> Option<PathBuf> {
+    data_dir(
+        "BYROREDUX_FO3_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+    )
+}
+
 /// Pick an arbitrary entry from the archive's listing. Used by the
 /// real-data tests so a BA2 patch revision that renames Power Armor
 /// meshes doesn't silently fail to find a hardcoded path. We don't
@@ -650,4 +664,95 @@ fn starfield_constellation_textures_ba2_v2_dx10_extracts_zlib_dds() {
         "extracted '{entry}' lacks DDS magic; got {:?}",
         &dds[..4]
     );
+}
+
+// ── #4665 (PAR-D4-2026-09-21-03) — the missing corpus sweeps ─────────
+
+/// #4665 — every FO76 `.ba2` must open and yield a non-empty listing.
+/// FO76's Data holds 40 `.ba2` files after the 2026-09-20 archive
+/// rewrite (including the `SeventySix - GeneratedTextures0N.ba2` DX10
+/// family this crate had never exercised), and none had a test.
+#[test]
+#[ignore = "needs FO76 game data on disk"]
+fn fo76_ba2_corpus_opens_and_lists() {
+    let Some(data) = fo76_data_dir() else {
+        return;
+    };
+    let mut opened = 0usize;
+    let mut entries = 0u64;
+    for entry in std::fs::read_dir(&data).expect("read FO76 Data") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("ba2") {
+            continue;
+        }
+        let archive = Ba2Archive::open(&path)
+            .unwrap_or_else(|e| panic!("FO76 archive {:?} must open: {e}", path));
+        let count = archive.file_count();
+        assert!(count > 0, "FO76 archive {:?} lists no files", path);
+        entries += count as u64;
+        opened += 1;
+    }
+    assert!(
+        opened >= 40,
+        "FO76 Data held 40 .ba2 files at audit time (2026-09-21); found {opened}"
+    );
+    eprintln!("[FO76] opened {opened} BA2 archives, {entries} total entries");
+}
+
+/// #4665 — the FO76 DX10 path specifically: extract one DDS texture out
+/// of the GeneratedTextures family and require the DDS magic, so the
+/// DX10 header reconstruction runs against FO76-era format revisions.
+#[test]
+#[ignore = "needs FO76 game data on disk"]
+fn fo76_dx10_texture_extract_round_trips() {
+    let Some(data) = fo76_data_dir() else {
+        return;
+    };
+    let texture_archive = data.join("SeventySix - GeneratedTextures01.ba2");
+    if !texture_archive.is_file() {
+        eprintln!("skipping: {:?} not found", texture_archive);
+        return;
+    }
+    let archive = Ba2Archive::open(&texture_archive).expect("open FO76 textures");
+    let dds = pick_entry(&archive, ".dds").expect("at least one .dds entry");
+    let bytes = archive
+        .extract(&dds)
+        .unwrap_or_else(|e| panic!("extract {dds}: {e}"));
+    assert!(
+        bytes.len() > 4 && &bytes[0..4] == b"DDS ",
+        "the extracted FO76 texture must carry the DDS magic"
+    );
+}
+
+/// #4665 — the FO3 v104 BSA family gets its first test: every `.bsa`
+/// in FO3's Data must open and list entries (the v104 folder/file
+/// tables, string tables and the zlib extraction path are shared with
+/// FNV/Skyrim but had no FO3-content pin).
+#[test]
+#[ignore = "needs FO3 game data on disk"]
+fn fo3_bsa_corpus_opens_and_lists() {
+    let Some(data) = fo3_data_dir() else {
+        return;
+    };
+    use byroredux_bsa::BsaArchive;
+    let mut opened = 0usize;
+    for entry in std::fs::read_dir(&data).expect("read FO3 Data") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("bsa") {
+            continue;
+        }
+        let archive = BsaArchive::open(&path)
+            .unwrap_or_else(|e| panic!("FO3 archive {:?} must open: {e}", path));
+        assert!(
+            archive.file_count() > 0,
+            "FO3 archive {:?} lists no files",
+            path
+        );
+        opened += 1;
+    }
+    assert!(
+        opened >= 3,
+        "FO3 Data ships at least the Meshes/Textures/Sound triple; found {opened}"
+    );
+    eprintln!("[FO3] opened {opened} BSA archives");
 }
