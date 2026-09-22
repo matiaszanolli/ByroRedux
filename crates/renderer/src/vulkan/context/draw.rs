@@ -3016,42 +3016,50 @@ mod is_caustic_source_tests {
 /// (#654 ordering check).
 #[cfg(test)]
 mod framebuffers_empty_guard_tests {
+    /// #4604 — this test was vacuous since #3282 moved the wait and the
+    /// acquire into `sync_and_acquire_frame.rs`: both needles then matched
+    /// only this test's own literals, so `guard_pos < wait_pos` compared
+    /// the test's strings to themselves and deleting the production guard
+    /// passed. The repair follows #3991's sibling fix and #3442's
+    /// compose-needles-at-runtime technique: anchor the ordering on
+    /// `draw_frame`'s call to the split-out function, and pin the wait and
+    /// acquire against the file that actually contains them.
     #[test]
     fn draw_frame_guards_on_empty_framebuffers_before_acquire() {
         let src = include_str!("draw.rs");
 
-        // The guard text — must be present somewhere in the file.
+        // The production guard — take the FIRST occurrence that is not this
+        // test's own literal by searching from the top (the guard at the
+        // top of draw_frame precedes every test module in the file).
         let guard_pos = src
             .find("if self.swapchain.framebuffers.is_empty() {")
             .expect("draw_frame must guard on empty framebuffers (#1211)");
 
-        // The fence-wait + acquire happen inside `draw_frame` and
-        // must come AFTER the guard. We anchor on `wait_for_fences`
-        // (the first fallible Vulkan call in `draw_frame`) and
-        // `acquire_next_image` (the call that signals
-        // `image_available[frame]` — the semaphore that would leak
-        // if we early-return after acquire). Both must appear after
-        // the guard.
-        let wait_pos = src
-            .find(".wait_for_fences(")
-            .expect("draw_frame should call wait_for_fences");
-        let acquire_pos = src
-            .find(".acquire_next_image(")
-            .expect("draw_frame should call acquire_next_image");
-
+        // The split-out acquire path: `draw_frame` delegates to it, and the
+        // guard must precede that delegation.
+        let sync_pos = src
+            .find("self.sync_and_acquire_frame(&mut t)")
+            .expect("draw_frame must delegate to sync_and_acquire_frame (#3282)");
         assert!(
-            guard_pos < wait_pos,
+            guard_pos < sync_pos,
             "framebuffers.is_empty() guard must come BEFORE \
-             wait_for_fences — no point waiting for a frame we're \
+             sync_and_acquire_frame — no point waiting for a frame we're \
              about to skip. (#1211)"
         );
+
+        // The wait and the acquire live in the split-out file since #3282;
+        // pin them THERE so this test cannot match its own literals.
+        let sync_src = include_str!("sync_and_acquire_frame.rs");
+        let wait_pos = sync_src
+            .find(".wait_for_fences(")
+            .expect("sync_and_acquire_frame should call wait_for_fences");
+        let acquire_pos = sync_src
+            .find(".acquire_next_image(")
+            .expect("sync_and_acquire_frame should call acquire_next_image");
         assert!(
-            guard_pos < acquire_pos,
-            "framebuffers.is_empty() guard must come BEFORE \
-             acquire_next_image — otherwise the image_available \
-             semaphore is left signal-pending without a paired wait, \
-             tripping VUID-vkAcquireNextImageKHR-semaphore-01779 on \
-             the next acquire. (#1211)"
+            wait_pos < acquire_pos,
+            "inside sync_and_acquire_frame, the fence wait precedes the \
+             acquire (the wait retires the slot this acquire will reuse)"
         );
     }
 }
