@@ -548,6 +548,10 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     // which the #1979 pass is still using when this runs).
     let mut live_body_positions: Vec<Vec3> = Vec::new();
     let mut mesh_walk_queue: VecDeque<EntityId> = VecDeque::new();
+    // #4572 — visited sets for the two subtree BFS walks, reused with the
+    // queues they guard.
+    let mut mesh_walk_seen: HashSet<EntityId> = HashSet::new();
+    let mut descendant_seen: HashSet<EntityId> = HashSet::new();
     for (actor, ragdoll) in rq.iter() {
         if log::log_enabled!(log::Level::Trace) {
             if let Some((bone, handle, _)) = ragdoll.bodies.first() {
@@ -627,10 +631,18 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
                 children_q.as_ref(),
             ) {
                 mesh_walk_queue.clear();
+                mesh_walk_seen.clear();
                 if let Some(children) = cq.get(actor) {
                     mesh_walk_queue.extend(children.0.iter().copied());
                 }
                 while let Some(entity) = mesh_walk_queue.pop_front() {
+                    // #4572 — per-frame walk over a save-loaded hierarchy:
+                    // visited set + budget (the HierarchyTraversalGuard
+                    // rule), so a bidirectionally-consistent cycle a
+                    // corrupt save linked cannot spin this BFS.
+                    if !mesh_walk_seen.insert(entity) {
+                        continue;
+                    }
                     if let Some(children) = cq.get(entity) {
                         mesh_walk_queue.extend(children.0.iter().copied());
                     }
@@ -671,12 +683,17 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
         // Seed with the children of every body bone; body bones themselves keep
         // their simulated global (authoritative) and are only recursed through.
         queue.clear();
+        descendant_seen.clear();
         for tb in &template.bodies {
             if let Some(children) = cq.get(tb.bone) {
                 queue.extend(children.0.iter().copied());
             }
         }
         while let Some(entity) = queue.pop_front() {
+            // #4572 — same visited-set guard as the mesh walk above.
+            if !descendant_seen.insert(entity) {
+                continue;
+            }
             // A descendant that is itself a body keeps its simulated pose; do
             // not overwrite it, but still walk through to its own children.
             if !body_bones.contains(&entity) {

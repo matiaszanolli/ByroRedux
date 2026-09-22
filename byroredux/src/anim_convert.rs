@@ -37,7 +37,14 @@ pub(crate) fn build_subtree_name_map(
     let Some(ref cq) = children_q else { return map };
 
     let mut queue = vec![root];
+    // #4572 — visited set, the HierarchyTraversalGuard rule: a cycle a
+    // corrupt save linked (validate_hierarchy checks agreement, not
+    // acyclicity) would otherwise spin this DFS forever.
+    let mut seen = std::collections::HashSet::new();
     while let Some(entity) = queue.pop() {
+        if !seen.insert(entity) {
+            continue;
+        }
         if let Some(children) = cq.get(entity) {
             for &child in &children.0 {
                 if let Some(ref nq) = name_q {

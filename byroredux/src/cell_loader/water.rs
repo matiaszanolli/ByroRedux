@@ -736,7 +736,19 @@ pub(super) fn apply_placed_water_type(
         let flows = world.query::<WaterFlow>();
         let mut found = Vec::new();
         let mut stack = vec![placement_root];
+        // #4572 -- visited set + budget, the HierarchyTraversalGuard rule
+        // the three core walks follow: a corrupt save that links a cycle
+        // (validate_hierarchy checks Parent/Children agreement, not
+        // acyclicity) would otherwise loop this walk forever.
+        let mut seen = std::collections::HashSet::new();
+        let mut guard = byroredux_core::ecs::HierarchyTraversalGuard::new(
+            world.next_entity_id() as usize,
+            0,
+        );
         while let Some(entity) = stack.pop() {
+            if !seen.insert(entity) || !guard.step() {
+                break;
+            }
             if let Some(plane) = planes.get(entity) {
                 let flow = flows.as_ref().and_then(|q| q.get(entity)).copied();
                 found.push((entity, *plane, flow));
