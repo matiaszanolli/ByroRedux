@@ -100,6 +100,15 @@ base + tag it's the **complete player skill model** for FO3/FNV.
 | Poison Resistance | END | `(END−1)·5` (uncapped) | `(END−1)·5` (uncapped) | **LOCKED** (actor-general, hidden, `PoisonResist` AV) |
 | Pickpocket chance | **Sneak skill** | `floor(40+0.6·Sneak−ceil(V/2)−0.6·TargetSneak)`, clamped [5,85]% | same (FNV shares FO3's engine) | **LOCKED** (§below, gameplay input) |
 
+Body-condition AVs (7) — base **100**, GECK *Stats List*. FO3/FNV seed the seven
+limb-condition actor values at 100: `PerceptionCondition`, `EnduranceCondition`,
+`LeftAttackCondition`, `RightAttackCondition`, `LeftMobilityCondition`,
+`RightMobilityCondition`, `BrainCondition` (the AV-name list lives in
+`crates/plugin/src/consumables.rs::BODY_CONDITION_VALUES`). Consumed by the
+CHARAL profile as `body_condition_base: Some(100.0)` on the `FALLOUT3` and
+`FALLOUT_NEW_VEGAS` rows (`crates/core/src/character/profile.rs`, #4447 —
+Oblivion/Skyrim+ profiles leave it `None`).
+
 Health: `fAVDHealthLevelMult` = **10** (FO3) / **5** (FNV); base **90 → 100**. Player
 formulas (NPCs derive separately). Source: fandom *Hit Points*.
 
