@@ -38,7 +38,8 @@ fn fill(slot: &mut Option<String>, value: &str) -> bool {
 /// Walks a ResolvedMaterial chain child-first, filling the 6 slots
 /// the prod merge helper writes for BGSM files. The slot set mirrors
 /// `merge_external_material` exactly; the closure is inlined in prod
-/// for a single allocation-free pass.
+/// for a single allocation-free pass. The env row carries the #4428
+/// `environment_mapping` gate so the mirror tracks the prod rule.
 fn apply_bgsm_chain(
     resolved: &ResolvedMaterial,
     texture_path: &mut Option<String>,
@@ -53,7 +54,9 @@ fn apply_bgsm_chain(
         fill(normal_map, &step.file.normal_texture);
         fill(glow_map, &step.file.glow_texture);
         fill(gloss_map, &step.file.smooth_spec_texture);
-        fill(env_map, &step.file.envmap_texture);
+        if step.file.base.environment_mapping {
+            fill(env_map, &step.file.envmap_texture);
+        }
         fill(parallax_map, &step.file.displacement_texture);
     }
 }
@@ -1388,6 +1391,72 @@ fn bgem_merge_fills_envmap_when_env_mapping_enabled() {
     assert!(
         mesh.material.textures.environment_mask.is_some(),
         "env_mapping_enabled()==true must fill the environment mask (#2643)"
+    );
+}
+
+/// Regression for #4428 (FO4-D2-2026-09-16-02), real merge path: a BGSM
+/// authoring `envmap_texture` but leaving `environment_mapping` off must
+/// NOT fill `textures.environment`. Pre-fix the fill was unconditional —
+/// the BGSM sibling of #2643 — so `triangle.frag` saw a non-zero
+/// `envMapIndex`, classified the surface as explicit-environment, traced
+/// an RT reflection ray and scaled it by `env_map_scale` (0 for every
+/// non-Envmap shader type): wasted rays on 6,130+ vanilla shapes,
+/// conductors losing the implicit path, and 173 shapes gaining
+/// reflections the material disabled.
+#[test]
+fn bgsm_merge_skips_envmap_fill_when_env_mapping_disabled() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/envmap_disabled.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                base: byroredux_bgsm::BaseMaterial {
+                    environment_mapping: false,
+                    ..Default::default()
+                },
+                envmap_texture: "Shared/Cubemaps/mipblur_DefaultOutside1.dds".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(
+        mesh.material.textures.environment.is_none(),
+        "environment_mapping == false must skip the environment fill (#4428)"
+    );
+}
+
+/// Sibling with the enable bit ON — the legacy v<=2 cubemap still binds.
+#[test]
+fn bgsm_merge_fills_envmap_when_env_mapping_enabled() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/envmap_enabled.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                base: byroredux_bgsm::BaseMaterial {
+                    environment_mapping: true,
+                    ..Default::default()
+                },
+                envmap_texture: "Shared/Cubemaps/mipblur_DefaultOutside1.dds".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(
+        mesh.material.textures.environment.is_some(),
+        "environment_mapping == true must fill the environment texture (#4428)"
     );
 }
 

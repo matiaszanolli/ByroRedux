@@ -316,7 +316,15 @@ impl RefrTextureOverlay {
                     Some(f.specular_texture.as_str()),
                     pool,
                 );
-                Self::fill(&mut self.env, Some(f.envmap_texture.as_str()), pool);
+                // #4428 — gate on the authored `environment_mapping` bit,
+                // the same bit `forward_bgsm_env_map_scale` honours for the
+                // mask scale; mirrors `merge_external_material`'s BGSM arm
+                // and both BGEM arms (#2643, this file's own BGEM arm
+                // below). A disabled-but-bound cubemap switched the shader
+                // into explicit-environment with `env_map_scale` = 0.
+                if f.base.environment_mapping {
+                    Self::fill(&mut self.env, Some(f.envmap_texture.as_str()), pool);
+                }
                 Self::fill(&mut self.wrinkle, Some(f.wrinkles_texture.as_str()), pool);
                 // #4434 — the four BGSM roles below used to ride the
                 // wire-slot fields (`glow`, `height`, `inner`) and were

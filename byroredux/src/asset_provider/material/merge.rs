@@ -691,12 +691,25 @@ fn merge_bgsm_arm(
             pool,
         );
         // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
-        fill(
-            &mut material.textures.environment,
-            &bgsm.envmap_texture,
-            touched,
-            pool,
-        );
+        // #4428 (FO4-D2-2026-09-16-02) — gate the fill on the authored
+        // `environment_mapping` bit, the same bit `forward_bgsm_env_map_scale`
+        // honours for the mask scale and both BGEM arms honour since #2643.
+        // Unconditional binding switched `triangle.frag` into
+        // explicit-environment off a cubemap the material had disabled: the
+        // traced reflection ray is scaled by `env_map_scale` (0 for every
+        // non-Envmap shader type — 8,806 of the 8,979 affected vanilla shapes),
+        // so dielectrics paid an RT ray for a zeroed term, conductors lost the
+        // implicit strength-1.0 path, and 173 `shader_type = 1` shapes gained
+        // reflections the BGSM turned off. Per-step, like every `fill` here:
+        // each chain file's cubemap binds under that file's own enable bit.
+        if bgsm.base.environment_mapping {
+            fill(
+                &mut material.textures.environment,
+                &bgsm.envmap_texture,
+                touched,
+                pool,
+            );
+        }
         fill(
             &mut material.textures.height,
             &bgsm.displacement_texture,

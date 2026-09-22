@@ -599,6 +599,13 @@ fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
                 inner_layer_texture: r"textures\a\inner.dds".into(),
                 lighting_texture: r"textures\a\lighting.dds".into(),
                 flow_texture: r"textures\a\flow.dds".into(),
+                // #4428 — the env fill is gated on this bit; this fixture
+                // exercises role coverage, so it authors the bit ON. The
+                // gate itself has its own test below.
+                base: byroredux_bgsm::BaseMaterial {
+                    environment_mapping: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             parent: None,
@@ -660,6 +667,41 @@ fn fill_from_bgsm_forwards_every_bgsm_texture_role() {
         Some(r"textures\a\lighting.dds")
     );
     assert_eq!(resolved(&pool, ov.flow), Some(r"textures\a\flow.dds"));
+}
+
+/// #4428 (FO4-D2-2026-09-16-02) — `fill_from_bgsm`'s env fill is gated on
+/// the authored `environment_mapping` bit, mirroring both BGEM arms
+/// (#2643) and `merge_external_material`'s BGSM arm. A cubemap bound with
+/// the bit off switched the shader into explicit-environment with
+/// `env_map_scale` = 0: a wasted RT reflection ray, conductors losing
+/// their implicit path.
+#[test]
+fn fill_from_bgsm_skips_env_when_environment_mapping_disabled() {
+    let mut index = EsmCellIndex::default();
+    let path = "materials/tests/envmap_disabled.bgsm";
+    index.texture_sets.insert(0x0020_0001, mnam_only_txst(path));
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.alt_texture_ref = Some(0x0020_0001);
+
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                envmap_texture: r"textures\a\env.dds".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, Some(&mut provider), &mut pool)
+        .expect("overlay");
+    assert!(
+        resolved(&pool, ov.env).is_none(),
+        "environment_mapping == false must skip the env fill (#4428)"
+    );
 }
 
 /// `greyscale_texture` must reach the overlay as the GreyscaleLut role.
