@@ -65,8 +65,13 @@ First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include=
 - **PackedStorage**: `binary_search` keeps the sorted-by-entity invariant on insert/remove;
   `insert_bulk` is append + one sort and the result stays sorted AND deduplicated (#467);
   `World::insert_batch` still fires the per-item `entity < next_entity` `debug_assert`.
-- **Change tracking** (`Component::TRACK_CHANGES`, default `false`): ON for `Transform`,
-  `GlobalTransform`, `Parent`, `Children`. `PackedStorage` keeps a dirty set (may hold duplicates —
+- **Change tracking** (`Component::TRACK_CHANGES`, default `false`): ON for SEVEN
+  components — `Transform`, `GlobalTransform`, `Parent`, `Children`, plus `LocalBound`
+  (since `ad012f9d6`) and `Material` and `ParticleEmitter` (both since `1d56758ba` /
+  #3836). The last three use sparse storage, so they get only a
+  `structural_generation` bump and no dirty set — #3836's `SceneEffectSoftCache`
+  and the incremental world-bound propagation consume them.
+  `PackedStorage` keeps a dirty set (may hold duplicates —
   consumers tolerate that); `SparseSetStorage::structural_generation` bumps on insert/remove.
   `drain_dirty_into` preserves capacity (#1371); `take_dirty` hands it away. The `GlobalTransform`
   dirty set has ONE destructive drainer (`make_world_bound_propagation_system`,
@@ -162,7 +167,10 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   promoted to parallel): it matches only turbofish `query::<T>` / `query_mut` / `resource` /
   `resource_mut` (+ `try_`) — NOT `world.get::<T>` / `get_mut` / `has::<T>`, `query_2_mut::<A, B>`,
   `resource_2_mut`, or types inferred without a turbofish; it does not follow hops into a different file
-  unless listed in the table; closures and macro bodies are opaque. A same-session precedent: an
+  unless listed in the table; closures and macro bodies are opaque.
+  (#4573 closed the mode/substring/comment blind spots: read-vs-write IS compared, names match
+  whole declared types, and `//` lines in the registration block no longer satisfy the scan. The
+  forms gap above remains.) A same-session precedent: an
   undeclared same-frame `GlobalTransform` write added to `fly_camera_system` made the boot
   `known_conflict_count() == 0` proof unsound until the registration declared it (commit ac1d44f5c).
 - **Exclusive declarations are optional**: most `add_exclusive` registrations are undeclared by design

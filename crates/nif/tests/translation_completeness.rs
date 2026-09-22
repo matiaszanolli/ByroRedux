@@ -475,6 +475,7 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
                 );
                 assert_pbr_override_fill(s, label, 90.0);
+                assert_pbr_override_ceiling(s, label, 99.0);
                 // No normal_map floor: measured 0.0% across the stratified
                 // (multi-content-class) sample, not just the pre-#2213
                 // architecture-only one. `apply_texturing_property`
@@ -507,6 +508,7 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
                 assert_pbr_override_fill(s, label, 80.0);
+                assert_pbr_override_ceiling(s, label, 99.0);
             }),
         ),
         (
@@ -541,6 +543,7 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
                 assert_pbr_override_fill(s, label, 82.0);
+                assert_pbr_override_ceiling(s, label, 99.0);
             }),
         ),
         (
@@ -644,6 +647,7 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
                 assert_pbr_override_fill(s, label, 85.0);
+                assert_pbr_override_ceiling(s, label, 100.0);
             }),
         ),
         (
@@ -678,6 +682,7 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_normal_map, s.imported_meshes)
                 );
                 assert_pbr_override_fill(s, label, 8.0);
+                assert_pbr_override_ceiling(s, label, 20.0);
             }),
         ),
         (
@@ -703,6 +708,7 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
                 );
                 assert_pbr_override_fill(s, label, 1.0);
+                assert_pbr_override_ceiling(s, label, 10.0);
                 // No normal_map floor: BSGeometry resolves textures entirely
                 // through the CDB material file, which this raw-tier harness
                 // never merges in (#2214) — 0.0% here is structural, not a gap.
