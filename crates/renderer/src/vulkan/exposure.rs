@@ -296,6 +296,54 @@ mod tests {
     /// alpha grows monotonically with dt, saturates at 1, and a non-positive
     /// time constant snaps.
     #[test]
+    /// #4590 — simulate the shader's actual update pattern: N per-FIF
+    /// slots, each reading back ITS OWN texel N frames later with the
+    /// host alpha computed over the slot interval (N x frame dt). The
+    /// effective time constant must equal tau (not N x tau): after k
+    /// slot-updates the remaining gap to target is exp(-k*N*dt/tau),
+    /// identical to a single chain stepping at dt.
+    #[test]
+    fn per_slot_adaptation_runs_at_the_authored_tau() {
+        const N: usize = crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
+        let dt = 1.0 / 60.0;
+        let tau = 0.2_f32;
+        // The host's alpha after #4590.
+        let alpha = adaptation_alpha(dt * N as f32, tau);
+        // Pre-#4590 alpha (one frame's dt) — shown in the assert message.
+        let old_alpha = adaptation_alpha(dt, tau);
+
+        let mut slots = [0.0_f32; 8];
+        let target = 1.0_f32;
+        let mut frame = 0usize;
+        while frame < 240 {
+            let slot = frame % N;
+            let previous = slots[slot];
+            slots[slot] = previous + (target - previous) * alpha;
+            frame += 1;
+        }
+        let gap = target - slots[(frame - 1) % N];
+        let expected_gap = (-((frame / N) as f32 * (dt * N as f32)) / tau).exp();
+        assert!(
+            (gap - expected_gap).abs() < 5.0e-3,
+            "effective tau drifted: gap {gap:.4} vs single-chain {expected_gap:.4} \
+             (alpha {alpha:.4}; the pre-#4590 one-frame alpha was {old_alpha:.4})"
+        );
+        // And the old behaviour demonstrably ran at N x tau — pin the
+        // distinction so the multiplier cannot be silently dropped.
+        let mut slow = [0.0_f32; 8];
+        for f in 0..240usize {
+            let slot = f % N;
+            let previous = slow[slot];
+            slow[slot] = previous + (target - previous) * old_alpha;
+        }
+        let slow_gap = target - slow[239 % N];
+        assert!(
+            slow_gap > gap * 1.5,
+            "the pre-#4590 alpha must converge markedly slower ({slow_gap:.4} vs \
+             {gap:.4}) — if not, this test lost its discriminating power"
+        );
+    }
+
     fn adaptation_alpha_is_a_saturating_ramp() {
         assert_eq!(adaptation_alpha(0.0, 0.2), 0.0);
         assert_eq!(adaptation_alpha(0.016, 0.0), 1.0);

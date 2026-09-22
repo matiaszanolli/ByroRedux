@@ -1067,8 +1067,17 @@ impl VulkanContext {
                                 if self.exposure_auto { 1.0 } else { 0.0 },
                                 self.exposure_fixed,
                                 self.exposure_compensation_stops,
+                                // #4590 — alpha over THIS SLOT's update
+                                // interval, not one frame's dt: the meter
+                                // reads back the same per-FIF texel it last
+                                // wrote N frames ago, so each slot is its
+                                // own adaptation chain stepping once every N
+                                // frames. A one-frame alpha made the
+                                // effective time constant N·τ (0.4 s at the
+                                // 0.2 s default, N = 2).
                                 super::super::exposure::adaptation_alpha(
-                                    frame_delta_seconds,
+                                    frame_delta_seconds
+                                        * crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT as f32,
                                     self.exposure_adaptation_seconds,
                                 ),
                             ],

@@ -15,10 +15,13 @@
 //               light meter calibration constant), exposure = 1.2 * 2^-EV100
 //               (0.15 / L_avg), then compensation stops and clamp, then
 //               exponential adaptation toward the target using the previous
-//               value of THIS frame-in-flight slot (written two frames ago —
-//               per-FIF slot ownership, same discipline as every other
-//               per-frame pass; adaptation simply lags MAX_FRAMES_IN_FLIGHT
-//               frames, which is negligible at the ~0.1-0.3 s speeds used).
+//               value of THIS frame-in-flight slot (per-FIF slot ownership,
+//               same discipline as every other per-frame pass). #4590: each
+//               slot is therefore its own adaptation chain stepping once
+//               every MAX_FRAMES_IN_FLIGHT frames — the host compensates by
+//               computing alpha over the slot's full update interval
+//               (N x frame dt), so the effective time constant is the
+//               authored tau, not N x tau.
 //
 // The host precomputes the adaptation blend factor from dt (1 - exp(-dt/tau))
 // and ships it as a plain alpha, so this shader needs no clock.
