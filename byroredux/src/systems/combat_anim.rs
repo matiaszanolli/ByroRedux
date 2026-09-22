@@ -101,10 +101,17 @@ fn combat_feedback_system_inner(
     dt: f32,
     scratch: &mut FeedbackScratch,
 ) {
-    let Some(clips) = world.try_resource::<DraugrCombatClips>() else {
+    // #4605 — take the Copy in a scoped expression so the resource guard
+    // dies at the copy (the #3444 rule): holding it through the read,
+    // write and sound passes below recorded a spurious
+    // DraugrCombatClips-first edge against every storage this system
+    // touches.
+    let Some(clips) = world
+        .try_resource::<DraugrCombatClips>()
+        .map(|clips| *clips)
+    else {
         return;
     };
-    let clips = *clips;
 
     // ── Read pass: events + per-actor state → buffered decisions. Every
     // query here is read-only, so all borrows drop before the write pass.

@@ -58,6 +58,10 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
     // `(decision index, from, rotation, target_xz)` for each attacker still
     // closing the distance, stepped once the storage guards are gone.
     let mut steps = Vec::new();
+    // #4605 — per-attacker snapshot for the guard-free second pass:
+    // (entity, actor translation, actor rotation, target translation,
+    // distance², combat state).
+    let mut pending: Vec<(EntityId, Vec3, Quat, Vec3, f32, AiCombatState)> = Vec::new();
     {
         let Some(combat_q) = world.query::<AiCombatState>() else {
             return;
@@ -98,12 +102,45 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
             };
 
             let to_target = target_transform.translation - actor_transform.translation;
+            // #4605 — reach, damage and cooldown resolve in the SECOND pass
+            // (`resolve_pending_strikes` below): computing them here held
+            // the AiCombatState/Transform guards across the CHARAL chain
+            // (`attack_damage` → `MeleeDamageConfig` → `CharacterRuleset`
+            // → `ActorValues` → `CharacterLevel`), the five-deep hold stack
+            // #3473's fix removed from the callee — this caller re-created
+            // it one level up. The pending entry carries what the second
+            // pass needs; no storage guard is live there.
+            pending.push((
+                entity,
+                actor_transform.translation,
+                actor_transform.rotation,
+                target_transform.translation,
+                to_target.length_squared(),
+                *state,
+            ));
+        }
+    }
+
+    /// Second pass: with every storage guard dropped, resolve the per-
+    /// attacker questions the read pass deferred (#4605 — the #2270
+    /// "snapshot before you iterate" rule applied to the helpers that
+    /// walk the CHARAL chain).
+    fn resolve_pending_strikes(
+        world: &World,
+        dt: f32,
+        pending: &[(EntityId, Vec3, Quat, Vec3, f32, AiCombatState)],
+        decisions: &mut Vec<Decision>,
+        steps: &mut Vec<(usize, Vec3, Quat, Vec3, f32)>,
+    ) {
+        for &(entity, actor_translation, actor_rotation, target_translation, dist_sq, state) in
+            pending
+        {
             let reach = crate::combat::attack_reach_bu(world, entity);
-            if to_target.length_squared() > reach * reach {
+            if dist_sq > reach * reach {
                 let target_xz = Vec3::new(
-                    target_transform.translation.x,
-                    actor_transform.translation.y,
-                    target_transform.translation.z,
+                    target_translation.x,
+                    actor_translation.y,
+                    target_translation.z,
                 );
                 // M42.11 — chase at the actor's authored stride when a
                 // walk clip derived one; engine default otherwise.
@@ -115,23 +152,23 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
                     .unwrap_or(LOCOMOTION_WALK_SPEED);
                 steps.push((
                     decisions.len(),
-                    actor_transform.translation,
-                    actor_transform.rotation,
+                    actor_translation,
+                    actor_rotation,
                     target_xz,
                     speed,
                 ));
                 decisions.push(Decision {
                     entity,
-                    new_translation: actor_transform.translation,
+                    new_translation: actor_translation,
                     new_rotation: None,
-                    state: Some(*state),
+                    state: Some(state),
                     strike: None,
                 });
             } else if state.attack_cooldown_remaining <= 0.0 {
                 let damage = crate::combat::attack_damage(world, entity);
                 decisions.push(Decision {
                     entity,
-                    new_translation: actor_transform.translation,
+                    new_translation: actor_translation,
                     new_rotation: None,
                     state: Some(AiCombatState {
                         target: state.target,
@@ -144,7 +181,7 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
             } else {
                 decisions.push(Decision {
                     entity,
-                    new_translation: actor_transform.translation,
+                    new_translation: actor_translation,
                     new_rotation: None,
                     state: Some(AiCombatState {
                         target: state.target,
@@ -155,6 +192,9 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
             }
         }
     }
+
+    // #4605 — the second pass runs with NO storage guard live.
+    resolve_pending_strikes(world, dt, &pending, &mut decisions, &mut steps);
 
     if decisions.is_empty() {
         return;
