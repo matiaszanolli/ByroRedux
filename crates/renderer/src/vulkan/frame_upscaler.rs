@@ -626,12 +626,24 @@ impl FrameUpscaler {
                 // `fsr3_sys::vendored_sdk_contract_tests`, which fails an SDK
                 // bump that introduces an error return at or after recording.
                 self.record_fsr_depth_restore(device, cmd, inputs.depth);
+                // #4592 — the source layout is whatever the scene image
+                // actually arrived in (`inputs.scene_color_layout`;
+                // `SHADER_READ_ONLY_OPTIMAL` in FSR mode, where
+                // `record_fsr_barriers_before`'s read barrier keeps
+                // old == new, and `GENERAL` when TAA already resolved it).
+                // #3572's parameter insert left the old output-layout
+                // argument in the source slot: the blit recorded
+                // `oldLayout = GENERAL` on a `SHADER_READ_ONLY_OPTIMAL`
+                // image (VUID-VkImageMemoryBarrier-oldLayout-01197) and
+                // the restore barrier then stranded the image in GENERAL.
+                // Only `output_layout` stays GENERAL — the FSR barriers
+                // moved the output image there before the dispatch failed.
                 self.record_native_blit(
                     device,
                     cmd,
                     frame,
                     inputs.scene_color,
-                    vk::ImageLayout::GENERAL,
+                    inputs.scene_color_layout,
                     vk::ImageLayout::GENERAL,
                 );
             }
@@ -1613,5 +1625,48 @@ mod fsr_input_barrier_tests {
             .split_once("\n#[cfg(test)]")
             .expect("frame_upscaler.rs lost its test modules")
             .0
+    }
+}
+
+#[cfg(test)]
+mod fsr_recovery_layout_tests {
+    /// #4592 — the dispatch-failure recovery blit must pass the scene
+    /// image's ACTUAL layout as `source_layout`. #3572's parameter insert
+    /// left the old output-layout `GENERAL` in the source slot, so the blit
+    /// recorded `oldLayout = GENERAL` on a `SHADER_READ_ONLY_OPTIMAL` image
+    /// (VUID-VkImageMemoryBarrier-oldLayout-01197, undefined contents) and
+    /// the restore barrier stranded the image in GENERAL. Needles composed
+    /// at runtime (#3442) so this cannot match its own literals.
+    #[test]
+    fn the_recovery_blit_sources_from_the_scene_images_actual_layout() {
+        let src = include_str!("frame_upscaler.rs");
+        let recovery = "self.record_native_blit(".to_string();
+        // The recovery call is the THIRD record_native_blit in the file
+        // (bridge, params-absent, recovery). Find all three.
+        let mut positions = Vec::new();
+        let mut from = 0;
+        while let Some(at) = src[from..].find(&recovery) {
+            positions.push(from + at);
+            from = from + at + recovery.len();
+        }
+        assert!(
+            positions.len() >= 3,
+            "record_native_blit call sites changed ({}) — re-derive (#4592)",
+            positions.len()
+        );
+        let recovery_at = positions[2];
+        let call = &src[recovery_at..recovery_at + 400];
+        assert!(
+            call.contains("inputs.scene_color_layout,"),
+            "the recovery blit must pass inputs.scene_color_layout as \
+             source_layout, not a hard-coded GENERAL (#4592)"
+        );
+        // And the recovery call must not pass two hard-coded GENERALs.
+        let generics = call.matches("vk::ImageLayout::GENERAL").count();
+        assert_eq!(
+            generics, 1,
+            "the recovery blit must carry exactly ONE hard-coded GENERAL \
+             (output_layout); the source is the scene image's actual layout (#4592)"
+        );
     }
 }
