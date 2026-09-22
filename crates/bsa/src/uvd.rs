@@ -159,9 +159,16 @@ pub struct UvdHeader {
     /// corpus files; the one-slot-earlier alternative pairing holds in
     /// only 387, so this grouping is determined rather than assumed.
     ///
-    /// Not quantised to [`Self::tile_size`] — see the module doc's
-    /// "Rejected" list. It reads as a tight content bound, not a
-    /// grid-aligned cell volume.
+    /// Scope splits on the owning cell's interior bit (module doc,
+    /// 2026-09-15): on **exteriors** (1 095/1 095) the X/Y extents are
+    /// exactly a grid-aligned 3×3 block of 4 096-unit cells centred on
+    /// the owning `XCLC`; on **interiors** (318/318) it is a tight
+    /// content bound. The earlier "not grid-aligned" blanket claim this
+    /// field's doc once made held for interiors only and contradicted
+    /// the module doc it sits inside (#4669). Also not quantised to
+    /// [`Self::tile_size`] — that relation was tested against the wrong
+    /// unit (512, the tile, not 4 096, the cell); see the module doc's
+    /// "Rejected" list.
     pub bounds_min: [f32; 3],
     /// The `max` corner of [`Self::bounds_min`]'s box.
     pub bounds_max: [f32; 3],

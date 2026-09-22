@@ -85,7 +85,7 @@ First step: list `pub` fields of `BgsmFile` / `BgemFile` / `HkxAnimation` / `Egm
 - BGSM/BGEM fields vs `merge_external_material` (`byroredux/src/asset_provider/tests/bgsm_merge.rs`): classify unconsumed fields renderer-relevant (finding) vs editor-only. The merge takes `&mut ImportedMaterial`; a widened signature is a NIFAL violation (`/audit-nifal`).
 - CDB is presence-only (`MergeOutcome::PresenceOnly`); per-field extraction is Phase 2, #3398 (OPEN, verified 2026-09-19; spike `docs/audits/SF_CDB_PHASE2_SPIKE_2026-08-29.md`). Do not file "CDB fields unused" as new.
 - FaceGen `.egt` / `.tri` have no consumer — documented in `crates/facegen/src/lib.rs` (#3544, closed by doc correction); only EGM reaches `apply_morphs`. Re-file only if that claim changes.
-- UVD: envelope only, consumed in `cell_loader/precombined.rs`; payload undecoded by design.
+- UVD: envelope only, no consumer yet (`parse_uvd_header` has no production caller; `cell_loader/precombined.rs` owns the future previs consumer, #3810); payload undecoded by design.
 - Consumed-but-unparsed: a consumer `unwrap_or(default)` standing in for an unexposed field. ESM/NIF cases (TXST DecalData #3638, SkinAttach) go to `/audit-esm` / `/audit-nif`.
 
 ### Dimension 6: I/O and path robustness
