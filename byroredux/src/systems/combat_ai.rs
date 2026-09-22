@@ -74,10 +74,20 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
                 // The attacker itself died (e.g. to the player's own
                 // counter-swing) — drop its combat state rather than
                 // leaving a dead actor's AiCombatState to be iterated
-                // forever.
+                // forever. #4693: the decision carries the actor's
+                // CURRENT translation, not `Vec3::ZERO` — the write pass
+                // applies every decision unconditionally, and the zero
+                // teleported the corpse root to world origin, where the
+                // saved mutable delta persisted it across save/load.
+                // (Death teardown in `reconcile_dead_actor` removes the
+                // state itself now; this branch remains the fallback.)
+                let current = transform_q
+                    .get(entity)
+                    .map(|t| t.translation)
+                    .unwrap_or_default();
                 decisions.push(Decision {
                     entity,
-                    new_translation: Vec3::ZERO,
+                    new_translation: current,
                     new_rotation: None,
                     state: None,
                     strike: None,
@@ -393,7 +403,12 @@ mod tests {
         let mut world = fixture();
         let attacker = world.spawn();
         let target = world.spawn();
-        world.insert(attacker, Transform::from_translation(Vec3::ZERO));
+        // #4693 — away from the origin: the pre-fix dead-attacker decision
+        // wrote `Vec3::ZERO` unconditionally, teleporting the corpse root
+        // (a saved mutable delta) to world origin, and this test spawned
+        // the attacker AT the origin so the wrong write was unobservable.
+        let away = Vec3::new(-412.5, 0.0, 918.25);
+        world.insert(attacker, Transform::from_translation(away));
         world.insert(attacker, Dead);
         world.insert(target, Transform::from_translation(Vec3::new(10.0, 0.0, 0.0)));
         world.insert(
@@ -407,6 +422,34 @@ mod tests {
         npc_combat_ai_system(&world, 1.0);
 
         assert!(world.get::<AiCombatState>(attacker).is_none());
+        assert_eq!(
+            world.get::<Transform>(attacker).unwrap().translation,
+            away,
+            "a dead attacker's placement must be left exactly where it was \
+             — the zeroed write persisted the corpse at world origin in \
+             saves (#4693)"
+        );
+    }
+
+    /// #4693 SIBLING — the death teardown itself removes `AiCombatState`
+    /// (the system's own branch above is only the one-tick fallback), so
+    /// the state cannot survive past `reconcile_dead_actor`.
+    #[test]
+    fn reconcile_dead_actor_removes_ai_combat_state() {
+        let mut world = fixture();
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            AiCombatState {
+                target: actor,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+        world.insert(actor, Dead);
+
+        crate::combat::reconcile_dead_actor(&world, actor);
+
+        assert!(world.get::<AiCombatState>(actor).is_none());
     }
 
     fn hit_from(aggressor: EntityId) -> HitEvent {

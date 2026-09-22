@@ -547,6 +547,16 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     // reason: a corpse needs neither.
     remove_component::<crate::components::AmbientPackageRuntime>(world, actor);
     remove_component::<byroredux_scripting::EvaluatePackageRequest>(world, actor);
+    // #4693 (GAME-D4-2026-09-21-01) — `AiCombatState` was torn down only by
+    // `npc_combat_ai_system`'s own dead-attacker branch, so it survived one
+    // tick past death; that branch also wrote the corpse's `Transform` to
+    // world origin as a side effect of the unconditional decision apply,
+    // and `Transform` is a saved mutable delta — the corpse root landed at
+    // (0,0,0) in any save taken after the kill. Death teardown owns the
+    // removal now (same #3708 precedent as `AmbientPackageRuntime`), and
+    // the combat system keeps its own branch as the one-tick fallback for
+    // deaths its reconcile pass doesn't see.
+    remove_component::<byroredux_scripting::AiCombatState>(world, actor);
     // NPC playback can be owned by the placed actor, with root_entity
     // targeting the skeleton. Removing only the skeleton's player leaves
     // that controller sampling over the corpse every frame.
