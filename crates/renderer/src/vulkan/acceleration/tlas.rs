@@ -588,15 +588,24 @@ impl AccelerationManager {
             // is used because our BLAS is on-device (not host-built). The address was
             // obtained from get_acceleration_structure_device_address after BLAS creation.
             //
-            // Gate TRIANGLE_FACING_CULL_DISABLE on `draw_cmd.two_sided` so RT
-            // traversal matches what the rasterizer renders. Pre-#416 every
-            // instance disabled backface culling, so shadow / GI rays hit the
-            // interior backfaces of closed single-sided meshes (rooms,
-            // buildings) from outside — self-shadowing on far walls, ~2× ray
-            // cost on closed meshes. The `two_sided` bit already rides on
-            // `DrawCommand` (set from NiTriShape's NIF properties) and the
-            // rasterizer pipeline cache keys on it via `PipelineKey`; the RT
-            // path now honors the same bit.
+            // Set TRIANGLE_FACING_CULL_DISABLE on `draw_cmd.two_sided`, so
+            // the AS INSTANCE records the same two-sided intent the
+            // rasterizer's cull-mode pipeline key carries (PipelineKey).
+            // #4580 — the bit is bookkeeping, not behaviour, today: it only
+            // matters to rays that request facing culling
+            // (gl_RayFlagsCullBackFacingTrianglesEXT /
+            // gl_RayFlagsCullFrontFacingTrianglesEXT), and no query in the
+            // shader tree sets either — every ray uses gl_RayFlagsOpaqueEXT
+            // (+ TerminateOnFirstHit where applicable), so every ray already
+            // sees both faces of every triangle regardless of this flag.
+            // Consequences worth knowing: (a) closed single-sided meshes
+            // still self-shadow from inside (both faces are hit) — this is
+            // the mechanism behind single-sided walls blocking light from
+            // behind; (b) any future facing-cull ray MUST revisit this gate,
+            // because cull-off raster + facing-cull rays would then diverge.
+            // (The pre-#416 "~2x ray cost" claim in the old comment was
+            // part of the same wrong premise: the flag never changed what
+            // rays hit.)
             let instance_flags = if draw_cmd.two_sided {
                 vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw()
             } else {
