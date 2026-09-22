@@ -268,10 +268,30 @@ pub(crate) fn attach_animation_sinks(
             if channel.source_paths.is_empty() || already_flipping.contains(&e) {
                 continue;
             }
+            // #4426 — resolve frames through the per-role table, the same
+            // rules the static spawn path applies to the slot this flip
+            // replaces: the entity's authored `texture_clamp_mode` (the
+            // vanilla Oblivion gate flipbooks author CLAMP and used to
+            // sample WRAP), the role's colour space, and collapse-to-0 for
+            // an authored-but-missing non-base frame. Sharing the static
+            // path's `(path, clamp)` cache key also drops the duplicate
+            // VRAM copy the fixed-REPEAT resolve created.
+            let clamp_mode = world
+                .get::<Material>(e)
+                .map(|m| m.texture_clamp_mode)
+                .unwrap_or(3);
             let handles: Vec<u32> = channel
                 .source_paths
                 .iter()
-                .map(|path| crate::asset_provider::resolve_texture(ctx, tex_provider, Some(path)))
+                .map(|path| {
+                    crate::asset_provider::resolve_flip_texture_for_role(
+                        ctx,
+                        tex_provider,
+                        path,
+                        channel.role,
+                        clamp_mode,
+                    )
+                })
                 .collect();
             // #4301 — record each frame's alpha presence with its handle:
             // the draw path gates alpha-channel reads on it and has no
@@ -440,6 +460,37 @@ mod flip_role_tests {
             assert_eq!(flip_role_from_tex_type(tex_type as u32), Some(role));
         }
         assert_eq!(flip_role_from_tex_type(12), None);
+    }
+
+    /// #4426 — the flipbook frame resolve must go through the per-role
+    /// resolver with the target entity's authored clamp mode, never the
+    /// fixed REPEAT/sRGB `resolve_texture` shortcut (the audit's live bug:
+    /// the vanilla Oblivion gate flipbooks author CLAMP and their portal
+    /// surfaces sampled with WRAP edge bleed). The per-role colour-space
+    /// and fallback rules are pinned lockstep against the static table in
+    /// `asset_provider::texture`'s `flip_role_profiles_match_the_static_role_table`.
+    #[test]
+    fn flip_frames_resolve_through_the_per_role_resolver() {
+        let src = include_str!("anim_convert.rs");
+        // Line-anchored: a doc comment above the first test module mentions
+        // `#[cfg(test)]` as prose, and a bare split_once would truncate the
+        // production half at that line.
+        let prod = src
+            .split_once("\n#[cfg(test)]\n")
+            .map(|(p, _)| p)
+            .unwrap_or(src);
+        assert!(
+            prod.contains("resolve_flip_texture_for_role"),
+            "the flipbook frame resolve must route through the per-role resolver (#4426)"
+        );
+        assert!(
+            prod.contains(".map(|m| m.texture_clamp_mode)"),
+            "the resolve must pass the entity's authored clamp mode (#4426)"
+        );
+        assert!(
+            !prod.contains("resolve_texture(ctx, tex_provider, Some(path))"),
+            "the fixed REPEAT/sRGB shortcut must not come back (#4426)"
+        );
     }
 }
 

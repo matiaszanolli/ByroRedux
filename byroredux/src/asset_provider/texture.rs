@@ -826,14 +826,143 @@ fn map_secondary_texture_handles(
     }
 }
 
+/// #4426 — the per-role texture profile a flipbook frame must resolve
+/// under: `(colour space, is the base role)`. This is the single-role
+/// entry into `map_secondary_texture_handles`' decision table, kept beside
+/// it so the two cannot drift — the lockstep test below drives both from
+/// the same role list.
+///
+/// `is_base` carries the missing-texture rule: the base keeps the magenta
+/// checker diagnostic on a miss (the static base path's rule), while every
+/// secondary role collapses an authored-but-missing texture to `0` so the
+/// shader treats that contribution as absent.
+pub(crate) fn flip_role_texture_profile(
+    role: byroredux_core::ecs::components::FlipTextureRole,
+) -> (TextureColorSpace, bool) {
+    use byroredux_core::ecs::components::FlipTextureRole;
+    match role {
+        FlipTextureRole::BaseColor => (TextureColorSpace::Srgb, true),
+        FlipTextureRole::Dark | FlipTextureRole::Emissive | FlipTextureRole::Decal(_) => {
+            (TextureColorSpace::Srgb, false)
+        }
+        // Data textures — the latent half of the audit: a mod-authored
+        // Normal/Height/SmoothSpec flipbook uploaded through the sRGB
+        // curve would decode a flat 125/255 normal texel to ≈0.21.
+        FlipTextureRole::Detail | FlipTextureRole::SmoothSpec | FlipTextureRole::Normal
+        | FlipTextureRole::Height => (TextureColorSpace::Linear, false),
+    }
+}
+
+/// #4426 — resolve one flipbook frame under the same per-role rules the
+/// static spawn path applies to the slot this flip replaces: the material's
+/// authored `clamp_mode` (not the fixed REPEAT the old
+/// `resolve_texture` call hardcoded — the vanilla Oblivion gates author
+/// CLAMP and their portal surfaces bled opposite-edge texels along the UV
+/// border, exactly what #610's clamp plumbling exists to prevent), the
+/// role's colour space, and the missing-role fallback rule. No flip role
+/// is an environment cubemap.
+pub(crate) fn resolve_flip_texture_for_role(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    path: &str,
+    role: byroredux_core::ecs::components::FlipTextureRole,
+    clamp_mode: u8,
+) -> u32 {
+    let (color_space, is_base) = flip_role_texture_profile(role);
+    let handle = resolve_texture_with_clamp_and_color_space(
+        ctx,
+        tex_provider,
+        Some(path),
+        clamp_mode,
+        color_space,
+    );
+    if is_base {
+        handle
+    } else {
+        let fallback = ctx.texture_registry.fallback();
+        if handle == fallback { 0 } else { handle }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        map_secondary_texture_handles, missing_archive_errors, FOOTSTEP_CANDIDATES,
-        WATER_SPLASH_CANDIDATES,
+        flip_role_texture_profile, map_secondary_texture_handles, missing_archive_errors,
+        FOOTSTEP_CANDIDATES, WATER_SPLASH_CANDIDATES,
     };
+    use byroredux_core::ecs::components::FlipTextureRole;
     use byroredux_nif::import::MaterialTextureSet;
     use byroredux_renderer::TextureColorSpace;
+
+    /// #4426 — for every role a flipbook can replace, the flip resolve's
+    /// colour-space profile must equal what the static spawn path's
+    /// per-role table applies to that same slot. This is the lockstep that
+    /// makes `resolve_flip_texture_for_role` a single-role entry into
+    /// `map_secondary_texture_handles` rather than a second table that can
+    /// drift: before the fix, frames went through `resolve_texture`, which
+    /// fixed every role to sRGB (a mod-authored Normal/Height/SmoothSpec
+    /// flip would decode a flat 125/255 normal texel to ≈0.21) and REPEAT
+    /// (the vanilla Oblivion gate flipbooks author CLAMP).
+    #[test]
+    fn flip_role_profiles_match_the_static_role_table() {
+        for role in [
+            FlipTextureRole::Dark,
+            FlipTextureRole::Detail,
+            FlipTextureRole::SmoothSpec,
+            FlipTextureRole::Emissive,
+            FlipTextureRole::Normal,
+            FlipTextureRole::Height,
+            FlipTextureRole::Decal(2),
+        ] {
+            let mut textures = MaterialTextureSet::<Option<String>>::default();
+            let probe = "textures/probe.dds".to_string();
+            match role {
+                FlipTextureRole::Dark => textures.dark = Some(probe),
+                FlipTextureRole::Detail => textures.detail = Some(probe),
+                FlipTextureRole::SmoothSpec => textures.smooth_spec = Some(probe),
+                FlipTextureRole::Emissive => textures.emissive = Some(probe),
+                FlipTextureRole::Normal => textures.normal = Some(probe),
+                FlipTextureRole::Height => textures.height = Some(probe),
+                FlipTextureRole::Decal(i) => textures.decals[i as usize] = Some(probe),
+                FlipTextureRole::BaseColor => unreachable!("handled below"),
+            }
+            let mut static_profile = None;
+            let resolved = map_secondary_texture_handles(&textures, 7, |_, cubemap, cs| {
+                assert!(!cubemap, "no flip role is an environment cubemap");
+                static_profile = Some(cs);
+                9
+            });
+            // The probe must land in exactly the slot the role names, so
+            // the colour space observed is genuinely that slot's.
+            let filled = [
+                resolved.dark,
+                resolved.detail,
+                resolved.smooth_spec,
+                resolved.emissive,
+                resolved.normal,
+                resolved.height,
+                resolved.decals[2],
+            ]
+            .iter()
+            .filter(|&&h| h == 9)
+            .count();
+            assert_eq!(filled, 1, "probe landed in {resolved:?} for role {role:?}");
+
+            let (flip_cs, is_base) = flip_role_texture_profile(role);
+            assert!(!is_base, "{role:?} is not the base role");
+            assert_eq!(
+                Some(flip_cs),
+                static_profile,
+                "flip role {role:?} must use the static table's colour space"
+            );
+        }
+
+        // Base keeps the static base rule: sRGB, and the magenta checker
+        // diagnostic on a miss (not the secondary roles' collapse-to-0).
+        let (cs, is_base) = flip_role_texture_profile(FlipTextureRole::BaseColor);
+        assert_eq!(cs, TextureColorSpace::Srgb);
+        assert!(is_base);
+    }
 
     /// #3913 — every default-sound candidate must exist, by exact key, in
     /// the vanilla sound archive of each game it is tagged with, and every
@@ -850,7 +979,7 @@ mod tests {
     /// BYROREDUX_SKYRIMSE_DATA=<path> BYROREDUX_OBLIVION_DATA=<path> \
     ///     cargo test -p byroredux --bin byroredux \
     ///     default_sound_candidates_hit_their_tagged_game_archive -- --ignored --nocapture
-    /// ```
+
     #[test]
     #[ignore = "needs vanilla game sound archives on disk"]
     fn default_sound_candidates_hit_their_tagged_game_archive() {
