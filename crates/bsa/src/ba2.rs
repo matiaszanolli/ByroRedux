@@ -192,6 +192,26 @@ impl Ba2Archive {
         let file_count_raw = u32::from_le_bytes(hdr[12..16].try_into().unwrap());
         let file_count = checked_entry_count(file_count_raw, "BA2 file_count")?;
         let name_table_offset = u64::from_le_bytes(hdr[16..24].try_into().unwrap());
+        // #4670 (PAR-D6-2026-09-21-01) — name the field BEFORE anything
+        // seeks to it, mirroring the BSA sibling's folders_offset check
+        // (#3368, `archive/open.rs`). A truncated download (measured:
+        // `cuwp - textures.ba2` declaring 1,250,980,735 in a
+        // 214,135,265-byte file) used to seek past EOF and fail the
+        // subsequent name-table `read_exact` with a bare "failed to fill
+        // whole buffer" that named neither the offset nor the file size —
+        // indistinguishable from a reader bug.
+        {
+            let len = reader.get_ref().metadata()?.len();
+            if name_table_offset > len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "BA2 name_table_offset {name_table_offset} is past end of file ({len} bytes) \
+                         — truncated or corrupt archive"
+                    ),
+                ));
+            }
+        }
 
         let variant = match type_tag {
             MAGIC_GNRL => Ba2Variant::General,
@@ -1122,6 +1142,48 @@ mod tests {
             "meshes\\interiors\\test.nif"
         );
         assert_eq!(normalize_path("MESHES\\foo.NIF"), "meshes\\foo.nif");
+    }
+
+    /// #4670 (PAR-D6-2026-09-21-01) — a truncated BA2 whose
+    /// `name_table_offset` points past EOF must fail with a NAMED error
+    /// carrying the offset and the file size, not the bare
+    /// "failed to fill whole buffer" the unchecked seek+read_exact
+    /// produced. Measured real case: `cuwp - textures.ba2` declaring
+    /// 1,250,980,735 in a 214,135,265-byte file.
+    #[test]
+    fn truncated_ba2_names_the_name_table_offset() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"BTDX");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"GNRL");
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // file_count
+        bytes.extend_from_slice(&1_000_000_000u64.to_le_bytes()); // name_table_offset
+        bytes.extend_from_slice(&[0u8; 36]); // one GNRL record (zero hashes/sizes)
+        assert_eq!(bytes.len(), 60);
+
+        let path = std::env::temp_dir().join(format!(
+            "byroredux_truncated_ba2_{}_{}.ba2",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::write(&path, &bytes).expect("write temp BA2");
+        let err = match Ba2Archive::open(&path) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("the truncated archive must not open"),
+        };
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            err.contains("name_table_offset"),
+            "the error must name the field: {err}"
+        );
+        assert!(
+            err.contains("past end of file") && err.contains("60 bytes"),
+            "the error must carry the offset and the real file size: {err}"
+        );
     }
 
     #[test]
