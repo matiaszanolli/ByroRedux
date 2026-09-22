@@ -21,8 +21,9 @@ fn main() {
 
     println!("# {} (BSVER {})", path, bsver);
     println!(
-        "{:>5} {:>6} {:>5} {:>6} {:>5} {:>6}  {:<22}  host/type",
-        "speed", "spdVar", "decl", "declVar", "life", "lifeVar", "initColor(rgba)",
+        "{:>5} {:>6} {:>5} {:>6} {:>5} {:>6} {:>6} {:>8}  {:<22}  host/type",
+        "speed", "spdVar", "decl", "declVar", "life", "lifeVar", "planar", "planarVar",
+        "initColor(rgba)",
     );
     let mut any = false;
     for e in &imported.particle_emitters {
@@ -53,13 +54,17 @@ fn main() {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "-".to_string());
         println!(
-            "{:>5.2} {:>6.2} {:>5.2} {:>6.2} {:>5.2} {:>6.2}  [{:.2},{:.2},{:.2},{:.2}]  {} / {}",
+            "{:>5.2} {:>6.2} {:>5.2} {:>6.2} {:>5.2} {:>6.2} {:>6.2} {:>8.2}  [{:.2},{:.2},{:.2},{:.2}]  {} / {}",
             p.speed,
             p.speed_variation,
             p.declination,
             p.declination_variation,
             p.life_span,
             p.life_span_variation,
+            p.planar_angle,
+            // The dump shows the AUTHORED half-spread; the canonical
+            // translate doubles it (#4240 convention, see nifal.md §2).
+            p.planar_angle_variation,
             p.initial_color[0],
             p.initial_color[1],
             p.initial_color[2],

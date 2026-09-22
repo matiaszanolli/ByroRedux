@@ -320,7 +320,12 @@ params now **override** the preset's guesses where they are genuinely authored:
   precedent).
 - Translate: `systems::particle::apply_emitter_params` (one shared helper, both
   load-path sites) applies the **kinematic + lifetime** fields (speed,
-  speed_variation, declination, declination_variation, life, life_variation).
+  speed_variation, declination, declination_variation, life, life_variation)
+  plus the **planar** pair (`planar_angle`, `planar_angle_variation` — #4240).
+  Variation convention: NIF authors a **half-spread**, the canonical field is a
+  **full width**, so the translate doubles it (`× 2.0`) and the spawn sampler
+  draws `angle + (rand − 0.5) × variation` — fog-volume sizing must use the
+  doubled value (`fog.rs`'s emitter extent).
   Verified against FNV + Oblivion content (these are authored and distinctive —
   oasis torch `speed 24 / var 45.6 / life 1.33±0.67`). `initial_color` (shipped as
   the white nif.xml default) is **intentionally not applied** — colour stays owned by
@@ -329,12 +334,27 @@ params now **override** the preset's guesses where they are genuinely authored:
   "Particle **size** is authored too" paragraph below, which owns that contract.
 
 Spawn **rate** (particles/sec) is also authored now: `NiPSysEmitterCtlr` is a typed
-block carrying its `interpolator_ref`; `extract_emitter_rate` follows it to the
-`NiFloatInterpolator` constant value or its `NiFloatData` first key (legacy fallback:
-`NiPSysEmitterCtlrData` first birth-rate key), and the translate sets `preset.rate`
-when present. Verified authored + sane on FNV/Oblivion (oasis torch 15.0, Oblivion
-torch smoke 13.3); legacy `NiParticleSystemController` content has no controller →
-keeps the preset rate.
+block carrying its `interpolator_ref`; `extract_emitter_rate` resolves it through
+four tiers, in order (verified authored + sane on FNV/Oblivion — oasis torch 15.0,
+Oblivion torch smoke 13.3; legacy `NiParticleSystemController` content has no
+controller and keeps the preset rate):
+
+1. **Constant / keyed curve** — the `NiFloatInterpolator`'s constant value, or its
+   `NiFloatData` keys reduced by their **time-weighted trapezoid mean** (#3754:
+   the mean, not the peak — Tenpenny's gate authors a 0.13 s 600/s spike inside a
+   2 s clip; the peak would run it 30× hot against an authored ~20/s average).
+   Negative keys clamp to zero; a non-finite/sentinel key rejects the curve.
+2. **Legacy fallback** — `NiPSysEmitterCtlrData`'s first birth-rate key.
+3. **Blend interpolator** — a `NiBlendFloatInterpolator` target's highest-weight
+   sub-interpolator via `resolve_blend_interpolator_target` (#2548: 78% of real
+   FO3 emitter-controller targets are blends, which tier 1 never followed), then
+   the blend's own constant `value`.
+4. **Embedded sequence** (#3329) — when the blend is manager-driven (`items`
+   empty; 168 of 307 emitter-bearing FNV meshes), the rate lives on the sibling
+   `NiControllerSequence`'s controlled block; sequences are scanned with
+   steady-state (`Idle`-family) names preferred over transitions.
+
+The translate sets `preset.rate` when any tier resolves.
 
 Particle **size** is authored too: the `NiPSysGrowFadeModifier` is a typed block
 capturing `base_scale`, and the translate sets a **constant** `start_size = end_size
@@ -352,10 +372,18 @@ and that size stayed owned by the preset — the opposite of both this paragraph
 A change that "restored the documented invariant" by dropping the size override would
 regress FNV oasis smoke back to ~7× oversized.
 
+**Attribution (multi-emitter NIFs).** #4261 made the emitter base params, the
+`color_curve` override, the emitter budget and the modern (tiers 1–3) rate
+per-instance: each emitter in a multi-emitter NIF resolves its own controller
+chain instead of a whole-scene first-match handing one emitter's values to
+every emitter. Still whole-scene: the legacy `NiParticleSystemController`
+fallback and the #3329 sequence tier (a sequence's controlled block names an
+emitter controller, not an emitter instance).
+
 **Still pending (follow-ups):** size-over-life *curve* (the grow/fade bell shape needs
-a richer canonical size model), and per-emitter (vs scene-first) attribution for
-multi-emitter NIFs. Tooling: `crates/nif/examples/emitter_dump.rs`
-(`rate / radius / bscale / speed / declination / life / initColor`).
+a richer canonical size model). Tooling: `crates/nif/examples/emitter_dump.rs`
+(`rate / radius / bscale / speed / spdVar / decl / declVar / life / lifeVar /
+planar / planarVar / initColor(rgba)`).
 
 **Starfield: particle slice N/A** (#2354 / SF-D8-03, 2026-08-03 audit). This
 whole slice — `extract_emitter_params`/`extract_emitter_rate` dispatching on
