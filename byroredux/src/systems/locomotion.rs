@@ -112,12 +112,15 @@ pub(crate) const LOCOMOTION_STUCK_REPICK_SECS: f32 = 2.5;
 ///
 /// With a `PhysicsWorld` present, the XZ move is driven through Rapier's
 /// `KinematicCharacterController` via `PhysicsWorld::move_character`
-/// (collide-and-slide against fixed *and* dynamic colliders, autostep up
-/// stair treads, ground snap on terrain rolls) — the same body the player
-/// controller uses, parameterized for NPCs. This is the "active physics"
-/// half of NPC locomotion: an NPC can no longer ghost through walls or
-/// shoveless through clutter, and its own keyframed ragdoll bones are
-/// masked out of the sweep via [`ACTOR_BONE_GROUP`] (`byroredux_physics::
+/// (collide-and-slide against fixed colliders, autostep up stair treads,
+/// ground snap on terrain rolls) — the same body the player controller
+/// uses, parameterized for NPCs. This is the "active physics" half of
+/// NPC locomotion: an NPC no longer ghosts through walls. What the sweep
+/// does NOT do (#4690 — the old doc overclaimed both): it does not SHOVE
+/// dynamic clutter (blocked, but no collision impulses, and autostep
+/// refuses dynamic bodies), and the `ACTOR_BONE_GROUP` mask excludes
+/// EVERY actor's bones, so NPC-vs-NPC contact is ghosted by design
+/// (`byroredux_physics::
 /// actor_move_interaction_groups`), the multi-body analogue of the
 /// `cast_ray_down` self-hit fix (#2873). When the KCC reports the actor
 /// airborne after the step, a downward ray (clamped to

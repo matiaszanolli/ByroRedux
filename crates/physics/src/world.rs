@@ -98,14 +98,32 @@ fn ground_probe_groups() -> rapier3d::prelude::InteractionGroups {
     InteractionGroups::new(Group::ALL, Group::ALL & !ACTOR_BONE_GROUP)
 }
 
-/// M42.10 — the interaction-group mask a *walking actor's* KCC sweep must
-/// use: collide with the whole world (fixed **and** dynamic — an NPC should
-/// be blocked by walls and shove clutter) except its own keyframed ragdoll
-/// bones, which all carry [`ACTOR_BONE_GROUP`] and can't be excluded
-/// individually (#2873's multi-body self-hit problem, KCC edition). Passed
-/// as [`CharacterMoveParams::filter_groups`] by NPC locomotion; identical
-/// to the ground-probe mask because "the actor's own bones are not the
-/// world" is the same statement in both query shapes.
+/// M42.10 — the interaction-group mask a *walking actor's* KCC sweep
+/// uses. What it ACTUALLY does (#4690 / PHYS-D4-2026-09-21-02 — the old
+/// doc claimed "own bones" and "shoves clutter", neither of which a
+/// group mask or this query can deliver):
+///
+/// - **Every actor's bones are masked, not just the walker's own.** All
+///   bone colliders carry [`ACTOR_BONE_GROUP`] and the filter excludes
+///   the group wholesale — a group mask cannot distinguish "mine" from
+///   "anyone else's", so walking NPCs ghost through each other and
+///   through FO4 fallback capsules. Genuine NPC-vs-NPC blocking needs a
+///   `QueryFilter` predicate keyed on [`ACTOR_BONE_GROUP`]'s owner
+///   (`ActorColliderOwner`), which does not exist yet.
+/// - **Dynamic clutter blocks but is never shoved**: `move_character`
+///   passes a no-op collision callback and never applies
+///   character-collision impulses, and autostep runs with
+///   `include_dynamic_bodies: false`, so a dynamic body tall enough to
+///   exceed the climb limit blocks a walker outright. Wander/Patrol
+///   recover via the stuck re-pick; Travel/Follow/Escort/Guard do not
+///   (their gameplay routing is /audit-gameplay's).
+///
+/// Passed as [`CharacterMoveParams::filter_groups`] by NPC locomotion;
+/// identical to the ground-probe mask because the group semantics are
+/// the same statement in both query shapes. If own-bones-only exclusion
+/// or impulse shoving is ever wanted, both this doc and
+/// `CharacterMoveParams::filter_groups`'s doc are part of the contract
+/// to update together.
 pub fn actor_move_interaction_groups() -> rapier3d::prelude::InteractionGroups {
     ground_probe_groups()
 }
@@ -1026,13 +1044,14 @@ pub struct CharacterMoveParams {
     pub exclude_collider: Option<rapier3d::prelude::ColliderHandle>,
     /// Optional interaction-group mask for the shapecast. `None` keeps the
     /// default (collide with everything not excluded otherwise). M42.10 —
-    /// NPC locomotion passes [`ground_probe_groups`] here so a walking
-    /// actor's KCC sweep skips its *own* keyframed ragdoll bones: like the
-    /// `cast_ray_down` self-hit problem (#2873), each bone is a separate
-    /// body, so a single `exclude_collider` can never cover them — they
-    /// all carry [`ACTOR_BONE_GROUP`] and are masked wholesale instead.
-    /// Unlike `solid_probe_filter`, dynamics stay included on purpose: a
-    /// walking NPC must collide-and-slide against movable clutter.
+    /// NPC locomotion passes [`actor_move_interaction_groups`] here: like
+    /// the `cast_ray_down` self-hit problem (#2873), each bone is a
+    /// separate body, so a single `exclude_collider` can never cover the
+    /// walker's own bones — they all carry [`ACTOR_BONE_GROUP`] and the
+    /// group is masked wholesale, which masks EVERY actor's bones (NPCs
+    /// ghost through NPCs; #4690). Dynamics stay included in the sweep,
+    /// but `move_character` applies no collision impulses to them: a
+    /// walker is blocked by clutter it cannot push or step over.
     pub filter_groups: Option<rapier3d::prelude::InteractionGroups>,
     /// `KinematicCharacterController.offset` distance in BU. Sourced
     /// from `ContactConfig::kcc_offset_bu` by the controller system;
