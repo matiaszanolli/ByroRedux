@@ -93,7 +93,7 @@ to it), `reader::tests::bounded_group_content_end_clamps_to_parent_end`, and the
 - `GameKind::from_header(variant, hedr_version, record_version)` uses **banded** float
   compares plus the TES4 record version as a second key (Skyrim LE and FO3 GOTY both stamp
   HEDR 0.94 → record version 40 vs 2; FO4 DLC 0.95 → 131). Vanilla HEDR: FO3 0.94, FO4 1.0,
-  Starfield 0.96, FNV 1.34, Skyrim SE 1.71, **FO76 266.0** (floor 60.0). A mis-band is not
+  Starfield 0.96, FNV 1.34, Skyrim SE 1.71, **FO76 — a live-service value that drifts with patches** (68.0 → 266.0 → 279.0 as of 2026-09-20; floor 60.0). A mis-band is not
   latent: FO4-only arms in `items.rs` (`ARMO DATA` swaps value/weight/health order at the
   same 12-byte length, `WEAP DATA` empty, `BOOK` 8-byte) would silently swap armor stats
   and zero every weapon. Any new per-game schema split widens this blast radius — check.
@@ -215,7 +215,7 @@ map is a `categories()` row or a reasoned exclusion); `cell::plugin_loading_doc_
 - Settled decodes — verify they hold, do not re-derive: `INAM` is one FormID array (#3356);
   `CREA CNAM` is not a class (#3383); `FACT` rank ladder (#3338); `ARMO` contributes every
   race-matching `ARMA` (#3357), `MOD3` is the female mesh (#3414); a `REFR` tombstone
-  removes the placement wherever it lives (#3362); FO76 `HEDR` is 266.0 (#3405).
+  removes the placement wherever it lives (#3362); FO76 `HEDR` is patch-dependent — 279.0 on the 2026-09-20 patch, never pin it (#3405, #4643).
 - `equip.rs::main_body_bit` FO76/Starfield arms are a **provisional inference**
   (`PROVISIONAL (#4074)`, pinned by `fo76_and_starfield_arms_are_marked_provisional`) —
   known and marked; report only if the marker is removed without an xEdit citation.

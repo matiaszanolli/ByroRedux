@@ -2323,24 +2323,30 @@ fn scol_grup_skipped_for_skyrim_too() {
     );
 }
 
-/// FO76 (HEDR 266.0) is FO4+ — should parse. Pins the upper end of the
+/// FO76 is FO4+ — should parse. Pins the upper end of the
 /// `is_fo4_plus` predicate against drift.
 #[test]
 fn scol_grup_parsed_for_fo76() {
-    // #3405 — the real value off `SeventySix.esm` / `NW.esm`. This test
-    // used 68.0, which no shipped master carries.
-    let mut esm = tes4_with_hedr(266.0); // FO76
-    esm.extend_from_slice(&wrap_group(b"SCOL", &minimal_record(b"SCOL", 0x0001_2345)));
-    let index = parse_esm(&esm).expect("parse_esm");
-    assert!(
-        matches!(index.game, GameKind::Fallout76),
-        "sanity: HEDR 266.0 routes to Fallout76",
-    );
-    assert_eq!(
-        index.cells.scols.len(),
-        1,
-        "FO76 plugin's SCOL GRUP must be parsed, but the gate dropped it",
-    );
+    // #4643 — FO76's HEDR is a live-service value that drifts with
+    // patches (68.0 → 266.0 → 279.0 over the project's history; the
+    // installed `SeventySix.esm` / `NW.esm` read 279.0 on 2026-09-22,
+    // rec_ver 209). Probe the current value plus one historical one —
+    // the classification floor (>= 60.0), not the sample, is what
+    // routes FO76.
+    for hedr in [279.0f32, 266.0] {
+        let mut esm = tes4_with_hedr(hedr);
+        esm.extend_from_slice(&wrap_group(b"SCOL", &minimal_record(b"SCOL", 0x0001_2345)));
+        let index = parse_esm(&esm).expect("parse_esm");
+        assert!(
+            matches!(index.game, GameKind::Fallout76),
+            "sanity: HEDR {hedr} routes to Fallout76",
+        );
+        assert_eq!(
+            index.cells.scols.len(),
+            1,
+            "FO76 plugin's SCOL GRUP must be parsed, but the gate dropped it",
+        );
+    }
 }
 
 /// `merge_from` must carry `magic_effects_by_code` across DLC merges

@@ -182,8 +182,10 @@ pub enum GameKind {
     Skyrim,
     /// Fallout 4 (HEDR 0.95). SCOL/PKIN/TXST and yet another item schema.
     Fallout4,
-    /// Fallout 76 (HEDR 266.0 — unusually large; see the sampled-values
-    /// table in [`GameKind::from_header`]).
+    /// Fallout 76 (HEDR is a **live-service value that drifts with game
+    /// patches** — 68.0 → 266.0 → 279.0 over this project's history; see
+    /// the sampled-values table in [`GameKind::from_header`]). The band
+    /// floor, not the sampled value, is what classifies it.
     Fallout76,
     /// Starfield (HEDR 0.96).
     Starfield,
@@ -199,7 +201,8 @@ impl GameKind {
             EsmVariant::Oblivion => Self::Oblivion,
             EsmVariant::Tes5Plus => {
                 // HEDR versions sampled from real vanilla masters at
-                // 2026-04-19, FO76 re-read from disk 2026-08-28 (#3405):
+                // 2026-04-19, FO76 re-read from disk twice (#3405,
+                // #4643):
                 //   FO3 (GOTY) = 0.94    (bytes d7 a3 70 3f)
                 //   FO4        = 1.0     (bytes 00 00 80 3f)
                 //   Starfield  = 0.96    (bytes 8f c2 75 3f)
@@ -207,17 +210,26 @@ impl GameKind {
                 //   Skyrim LE  = 0.94    (bytes d7 a3 70 3f, record version 40;
                 //                         the 2011 release, read 2026-09-13)
                 //   Skyrim SE  = 1.71    (bytes 48 e1 da 3f)
-                //   FO76       = 266.0   (bytes 00 00 85 43)
+                //   FO76       = 266.0   (bytes 00 00 85 43) on 2026-08-28;
+                //             = 279.0   (bytes 00 80 8b 43) on 2026-09-20 —
+                //                         a live-service value that moves with
+                //                         game patches (68.0 → 266.0 → 279.0
+                //                         over the project's history). Never pin
+                //                         it as a constant.
                 // Exact float equality is unsafe — match on small bands
                 // that leave clear gaps between the known values.
                 //
                 // #3405 — this table read `FO76 = 68.0` until 2026-08-28.
-                // Both installed FO76 masters (`SeventySix.esm`, `NW.esm`)
-                // ship 266.0 / TES4 record version 209. The band below is
-                // unaffected — `>= 60.0` is a deliberately low floor, not a
-                // tight fit around the sampled value — but this table is the
-                // evidence every band gap is reasoned from, so a wrong entry
-                // here is what misplaces the *next* band.
+                // #4643 — it read `FO76 = 266.0` ("the real value") until
+                // 2026-09-22, when the installed masters (both
+                // `SeventySix.esm` and `NW.esm`, TES4 record version 209,
+                // mtime 2026-09-20) were re-read at 279.0. Both installed
+                // FO76 masters always agree with each other. The band
+                // below is unaffected either way — `>= 60.0` is a
+                // deliberately low floor, not a tight fit around any
+                // sampled value — but this table is the evidence every
+                // band gap is reasoned from, so a wrong entry here is what
+                // misplaces the *next* band.
                 //
                 // Pre-fix the FO3 band (0.94..=0.955) routed every FO3
                 // master to Fallout4 — and FO4's real 1.0 fell through
@@ -1449,6 +1461,83 @@ mod tests {
         assert!(both.localized && both.light_master);
     }
 
+    /// #4639 — the light/medium-master bits are per-game. Pre-fix, every
+    /// game tested `0x0200`, which mis-filed Starfield's *Update* bit as
+    /// ESL and left the real Starfield small-master bit (`0x100`, on 16
+    /// official masters) and medium bit (`0x400`) unread — while an
+    /// Oblivion/FO3/FNV/Skyrim-LE/FO76 plugin carrying `0x0200` (a bit
+    /// those games never define as ESL) was wrongly packed into 0xFE
+    /// light space with 12-bit object ids.
+    #[test]
+    fn tes4_master_flags_decode_per_game() {
+        fn tes4(hedr: f32, rec_ver: u16, flags: u32) -> FileHeader {
+            let mut hedr_data = Vec::new();
+            hedr_data.extend_from_slice(&hedr.to_le_bytes());
+            hedr_data.extend_from_slice(&0u32.to_le_bytes());
+            hedr_data.extend_from_slice(&0u32.to_le_bytes());
+            let mut subs = Vec::new();
+            subs.extend_from_slice(b"HEDR");
+            subs.extend_from_slice(&(hedr_data.len() as u16).to_le_bytes());
+            subs.extend_from_slice(&hedr_data);
+            let mut buf = Vec::new();
+            buf.extend_from_slice(b"TES4");
+            buf.extend_from_slice(&(subs.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&flags.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes());
+            // Tes5Plus trailer: the u16 at offset 20 is the record version.
+            buf.extend_from_slice(&[0u8; 4]);
+            buf.extend_from_slice(&rec_ver.to_le_bytes());
+            buf.extend_from_slice(&[0u8; 2]);
+            buf.extend_from_slice(&subs);
+            let mut reader = EsmReader::with_variant(&buf, EsmVariant::Tes5Plus);
+            reader.read_file_header().unwrap()
+        }
+
+        // Starfield: 0x100 = small master (Constellation.esm ships 0x181),
+        // 0x200 = Update (ignore), 0x400 = medium (SFBGS003 et al.).
+        let sf_small = tes4(0.96, 581, 0x0181);
+        assert!(sf_small.light_master && !sf_small.medium_master);
+        let sf_update = tes4(0.96, 581, 0x0200);
+        assert!(
+            !sf_update.light_master && !sf_update.medium_master,
+            "Starfield 0x200 is Update, not ESL"
+        );
+        let sf_medium = tes4(0.96, 581, 0x0400);
+        assert!(!sf_medium.light_master && sf_medium.medium_master);
+        let sf_both = tes4(0.96, 581, 0x0500);
+        assert!(sf_both.light_master && sf_both.medium_master);
+
+        // SSE + FO4 keep the 0x200 meaning.
+        assert!(tes4(1.71, 44, 0x0200).light_master);
+        assert!(tes4(1.0, 131, 0x0200).light_master);
+        // No medium-master bit outside Starfield.
+        assert!(!tes4(1.71, 44, 0x0400).medium_master);
+        assert!(!tes4(1.0, 131, 0x0400).medium_master);
+
+        // No light-master support at all: FO3, FNV, FO76, Skyrim LE.
+        assert!(!tes4(0.94, 2, 0x0200).light_master, "FO3");
+        assert!(!tes4(1.34, 2, 0x0200).light_master, "FNV");
+        assert!(!tes4(279.0, 209, 0x0200).light_master, "FO76");
+        assert!(!tes4(0.94, 40, 0x0200).light_master, "Skyrim LE");
+        // Oblivion's 20-byte-header variant never enters the Tes5Plus
+        // table (variant-dispatched to GameKind::Oblivion).
+    }
+
+    /// #4639 — `GlobalSlot::Medium` composes into the 0xFD space:
+    /// 8-bit sub-index at bits 16..23, 16-bit object id preserved,
+    /// higher object bits masked off exactly like Light's 12-bit window.
+    #[test]
+    fn global_slot_compose_decodes_medium() {
+        assert_eq!(GlobalSlot::Medium(3).compose(0x0001_2345), 0xFD03_2345);
+        // Object space is 16 bits — anything above 0xFFFF is masked.
+        assert_eq!(GlobalSlot::Medium(0).compose(0x0001_2345), 0xFD00_2345);
+        // Max sub-index fills its 8-bit window.
+        assert_eq!(
+            GlobalSlot::Medium(0xFF).compose(0x0000_00FF),
+            0xFDFF_00FF
+        );
+    }
+
     #[test]
     fn game_kind_from_header_maps_real_master_hedr_values() {
         // FO3 GOTY — bytes d7 a3 70 3f → f32 0.94.
@@ -1489,20 +1578,26 @@ mod tests {
             GameKind::Starfield,
             "Starfield (HEDR=0.96) must classify as Starfield",
         );
-        // FO76 — SeventySix.esm and NW.esm both ship HEDR bytes
-        // 00 00 85 43 (266.0) with TES4 record version 209, read off disk
-        // 2026-08-28. The old assertion used 68.0, a value no installed
-        // master carries; keep a second probe at that height so the band
-        // floor stays pinned well below the real value (#3405).
+        // FO76 — HEDR is a live-service value that drifts with game
+        // patches: 68.0 → 266.0 (read 2026-08-28) → 279.0 (read
+        // 2026-09-22 off `SeventySix.esm` / `NW.esm`, TES4 record
+        // version 209 both times). Keep probes at several observed
+        // heights so the band floor stays pinned well below whatever
+        // the current patch ships (#3405, #4643).
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 279.0, 209),
+            GameKind::Fallout76,
+            "FO76 (HEDR=279.0 as of 2026-09-20, rec_ver=209) must classify as Fallout76",
+        );
         assert_eq!(
             GameKind::from_header(EsmVariant::Tes5Plus, 266.0, 209),
             GameKind::Fallout76,
-            "FO76 (real HEDR=266.0, rec_ver=209) must classify as Fallout76",
+            "FO76 (HEDR=266.0, the 2026-08-28 patch level) must classify as Fallout76",
         );
         assert_eq!(
             GameKind::from_header(EsmVariant::Tes5Plus, 68.0, 155),
             GameKind::Fallout76,
-            "the >=60.0 FO76 floor must stay far below the real 266.0",
+            "the >=60.0 FO76 floor must stay far below every observed value",
         );
         // Oblivion — variant-dispatched regardless of HEDR.
         assert_eq!(

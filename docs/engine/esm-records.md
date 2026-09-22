@@ -225,7 +225,7 @@ pub enum GameKind {
     Fallout3NV,  // FO3 (0.85) + FNV (1.34) — shared DATA/DNAM layouts; default
     Skyrim,      // LE + SE (1.7)
     Fallout4,    // 0.95
-    Fallout76,   // 266.0 (SeventySix.esm / NW.esm; rec_ver 209)
+    Fallout76,   // live-service HEDR: 68.0 → 266.0 → 279.0 (2026-09-20 patch; rec_ver 209 throughout)
     Starfield,   // 0.96
 }
 ```
