@@ -1046,10 +1046,12 @@ impl super::buffers::SceneBuffers {
             allocator.clone(),
         );
 
-        // SAFETY: GpuTerrainTile is #[repr(C)] with u32-only fields
-        // matching std430. The pool acquisition is sized to the high-water
-        // prefix, so the mapped range below always fits even when only a
-        // small number of terrain slots is live.
+        // SAFETY: GpuTerrainTile is #[repr(C)] with u32 and f32 lanes
+        // (the #4057 cover-affinity rows and cell-origin floats) — a POD
+        // whose std430 size `gpu_terrain_tile_is_160_bytes` pins. The pool
+        // acquisition is sized to the high-water prefix, so the mapped range
+        // below always fits even when only a small number of terrain slots
+        // is live.
         let mapped = staging.mapped_slice_mut()?;
         unsafe {
             // SAFETY: `mapped` is the host-visible staging slice fetched just

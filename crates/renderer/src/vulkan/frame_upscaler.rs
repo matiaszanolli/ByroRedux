@@ -690,14 +690,16 @@ impl FrameUpscaler {
     ///
     /// # Safety
     ///
-    /// `cmd` must be recording outside a render pass. `scene_color` must be
-    /// in `SHADER_READ_ONLY_OPTIMAL` (composition's output layout) and
-    /// `self.outputs[frame].image` must currently be in `output_layout`
-    /// (the caller-declared parameter — `SHADER_READ_ONLY_OPTIMAL` on the
-    /// steady-state bridge path, `GENERAL` on the dispatch-failure recovery
-    /// path). Both images must remain live through submission. This is the
-    /// same contract as `record`'s own `# Safety` doc; every call site
-    /// shares it (see the `// SAFETY:` comment at each).
+    /// `cmd` must be recording outside a render pass. `scene_color` must
+    /// currently be in `source_layout` — the caller-declared parameter,
+    /// `SHADER_READ_ONLY_OPTIMAL` on composition's output path or `GENERAL`
+    /// on the TAA path (#3572) — and `self.outputs[frame].image` must
+    /// currently be in `output_layout` (the caller-declared parameter —
+    /// `SHADER_READ_ONLY_OPTIMAL` on the steady-state bridge path, `GENERAL`
+    /// on the dispatch-failure recovery path). Both images must remain live
+    /// through submission. This is the same contract as `record`'s own
+    /// `# Safety` doc; every call site shares it (see the `// SAFETY:`
+    /// comment at each).
     unsafe fn record_native_blit(
         &self,
         device: &ash::Device,
@@ -744,8 +746,9 @@ impl FrameUpscaler {
         ];
         unsafe {
             // SAFETY: caller guarantees `cmd` is recording outside a render
-            // pass; scene composition left `scene_color` shader-readable and
-            // the output is in the layout the caller declared.
+            // pass; `scene_color` is in the caller-declared `source_layout`
+            // (SHADER_READ_ONLY_OPTIMAL or GENERAL, #3572) and the output is
+            // in the caller-declared `output_layout`.
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT

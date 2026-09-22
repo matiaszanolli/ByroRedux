@@ -497,7 +497,7 @@ impl VulkanContext {
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_skin_dispatch_start(&self.device, cmd, frame);
                         }
-                        // SAFETY: `cmd` is recording; `skin_pipeline`, each `slot`'s descriptors, and the global vertex / bone input buffers are live for this frame. Each `dispatch` binds the compute pipeline + slot set at the COMPUTE bind point; the loop records sequentially with no concurrent use of `cmd`.
+                        // SAFETY: `cmd` is recording; `skin_pipeline`, each `slot`'s descriptors, and the global vertex / bone input buffers are live for this frame. The pipeline is bound ONCE for the whole batch below (#4205, `SkinComputePipeline::bind`); each `dispatch` binds only that entity's slot descriptor set at the COMPUTE bind point (pinned by `slot_dispatch_does_not_rebind_the_pipeline_per_entity`). The loop records sequentially with no concurrent use of `cmd`.
                         unsafe {
                             // #4205 — one pipeline bind for the whole batch,
                             // taken lazily so a frame whose every entity hits
