@@ -938,6 +938,29 @@ fn merge_bgsm_arm(
         //   * `external_emittance`
         // No runtime effect today; flagging so the next completeness
         // sweep can tell "not yet wired" from "overlooked".
+        //
+        // #4667 (PAR-D5-2026-09-21-03) — the ledger extends to the fields
+        // the audit's `bgsm-fields` probe measured as authored-but-dropped
+        // beyond the eleven above. Same bucket: decoded on the parser
+        // side, no sink here, no per-field visual claim made (the runtime
+        // semantics are unverified against a reference renderer). Counts
+        // are vanilla files authoring a non-default value:
+        //   * FO76 v22 emissive model — `lum_emittance != 0`: 25,813 BGSM;
+        //     `use_adaptive_emissive`: 3,272; BGEM
+        //     `adaptive_emissive_final_exposure_max`: 4,101
+        //   * FO76 `base.depth_bias`: 230; `base.mask_writes != ALL`: 57
+        //     (the two with clear renderer sinks — stencil/depth control
+        //     — so they are the first candidates to WIRE, not just record)
+        //   * FO4 `decal_no_fade`: 356; `dissolve_fade`: 23;
+        //     `glowmap`: 154 (FO4) / 289 (FO76) — see #4430, which tracks
+        //     the glowmap FLAG from the NIF side
+        //   * BGEM `falloff_color_enabled`: 2 / 107; `envmap_min_lod`: 11/19
+        //   * `cast_shadows=false`: 327 / 778 — the NIF-side
+        //     `Cast_Shadows` equivalent is equally unread
+        // Correctly NOT in this ledger: `receive_shadows=false` appears on
+        // 6,552/6,616 FO4 and 25,888/25,888 FO76 BGSMs, so it cannot
+        // plausibly mean "unshadowed" and is rightly left alone (#2704's
+        // original note already declined it).
     }
     // #3639 — `smoothness == 1.0` lowers `roughness` to the 0.04 clamp
     // floor above (near-mirror dielectric). `triangle.frag` only
