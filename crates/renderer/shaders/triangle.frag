@@ -3841,7 +3841,14 @@ void main() {
             return;
         }
 #if ENABLE_LEGACY_WRS
-        else {
+        // #4582 — an explicit pass-1 skip flag, NOT an `else` on the block
+        // above: the RESTIR_LIGHT view block (which `return`s) sat between
+        // pass 1's `if (useRestir)` and this arm, so the preprocessor's
+        // `else` bound to the VIEW block and legacy pass 2 ran on every
+        // non-view pixel — including ReSTIR pixels, whose empty reservoirs
+        // made it 16 wasted iterations per pixel in the A/B build.
+        bool legacyArm = !useRestir && !viewRestirLight;
+        if (legacyArm) {
         // ── Pass 2: shadow rays for sampled reservoirs ─────────────
         // #1799 / PERF-D5-NEW-01 — this whole arm (and the resLight /
         // resWSel storage it reads) is preprocessed out when
@@ -3979,7 +3986,7 @@ void main() {
                     vec3(0.0));
             }
         }
-        } // end legacy WRS pass-2 (else of useRestir)
+        } // end legacy WRS pass-2 (legacyArm: !useRestir && !viewRestirLight)
 #endif
 
     // ── Bounded path-traced ambient GI ──────────────────────────────

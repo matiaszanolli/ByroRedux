@@ -2038,6 +2038,16 @@ mod tests {
             "resLight[NUM_RESERVOIRS] must be declared strictly inside the \
              FIRST #if ENABLE_LEGACY_WRS / #endif block (#1799 / PERF-D5-NEW-01)"
         );
+        // #4582 — pass 2 must not bind as the `else` of the RESTIR_LIGHT
+        // view block that sits between pass 1 and the preprocessor gate
+        // (the view block `return`s, so the else bound to it and legacy
+        // pass 2 ran on every non-view pixel, including ReSTIR pixels).
+        // The arm is now guarded by its own explicit skip flag.
+        let skip_pos = src[gate_pos..]
+            .find("bool legacyArm = !useRestir && !viewRestirLight;")
+            .map(|i| gate_pos + i)
+            .expect("legacy pass 2 must carry the explicit legacyArm skip flag (#4582)");
+        assert!(skip_pos > gate_pos, "the legacyArm flag belongs inside the gate");
     }
 
     /// The renderer-evaluation suite relies on these switches representing
