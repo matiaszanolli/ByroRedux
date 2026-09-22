@@ -167,8 +167,15 @@ jobs:
       - name: cargo check (byroredux with dhat-heap)
         run: cargo check -p byroredux --features dhat-heap
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
+      # #4595 — clippy MUST run even when tests are red: the renderer's
+      # #![deny(clippy::undocumented_unsafe_blocks)] is a Clippy tool-lint,
+      # inert under cargo test, and this step sat after an unconditioned
+      # `cargo test` — weeks of red tests skipped it, so dc306a6a0 landed
+      # an undocumented unsafe with no signal. `success() || failure()` runs
+      # clippy whenever the job got that far.
       - name: cargo clippy
+        if: success() || failure()
         run: cargo clippy --workspace -- -D warnings
 
   # ──────────────────────────────────────────────────────────────────────────

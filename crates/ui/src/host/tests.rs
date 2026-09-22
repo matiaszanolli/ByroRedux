@@ -687,6 +687,10 @@ fn installed_fallout4_representative_menus_obey_host_object_lifecycle() {
     ];
 
     for (label, path, expected_state) in cases {
+        if !crate::player::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
         let mut player = crate::SwfPlayer::from_resource_provider(
             archive.clone(),
             path,

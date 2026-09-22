@@ -864,6 +864,10 @@ mod tests {
             ("interface\\fonts_en.swf".to_string(), imported),
         ])));
 
+        if !crate::player::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
         let mut player = SwfPlayer::from_resource_provider(
             provider,
             "interface\\hudmenu.swf",
@@ -898,6 +902,10 @@ mod tests {
             root,
         )])));
 
+        if !crate::player::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
         let player = SwfPlayer::from_resource_provider(
             provider,
             "interface\\hudmenu.swf",
@@ -938,6 +946,10 @@ mod tests {
             ("interface\\fonts_en.swf".to_string(), imported),
         ])));
 
+        if !crate::player::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
         let mut player = SwfPlayer::from_resource_provider(
             provider,
             "interface\\hudmenu.swf",
@@ -990,6 +1002,10 @@ mod tests {
             root,
         )])));
 
+        if !crate::player::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
         let mut player = SwfPlayer::from_resource_provider(
             provider,
             "interface\\hudmenu.swf",
@@ -1049,6 +1065,10 @@ mod tests {
                 FileAttributes::IS_ACTION_SCRIPT_3,
             )]),
         )])));
+        if !crate::player::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
         let mut player = SwfPlayer::from_resource_provider(
             provider,
             "interface\\hudmenu.swf",

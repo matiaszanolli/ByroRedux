@@ -91,6 +91,30 @@ const MAX_RECORDED_RESOURCE_LOADS: usize = 64;
 /// call, the loser drops its device and adopts the winner's; menus are built
 /// on the main thread, so this is a correctness guard rather than a live
 /// path.
+/// #4595 — true when a Vulkan wgpu adapter exists in this process.
+/// CI's ubuntu-latest runners have no GPU, and the eight SwfPlayer tests
+/// that build a real Ruffle device panic with "Ruffle requires hardware
+/// acceleration" there — a red `cargo test` that (pre-#4595) also skipped
+/// the clippy gate. Adapter-dependent tests early-return through this
+/// probe: skipped-with-a-message on headless CI, fully live on any GPU
+/// machine.
+#[cfg(test)]
+pub(crate) fn vulkan_adapter_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let instance =
+            create_wgpu_instance(wgpu::Backends::VULKAN, wgpu::BackendOptions::default());
+        futures::executor::block_on(request_adapter_and_device(
+            wgpu::Backends::VULKAN,
+            &instance,
+            None,
+            wgpu::PowerPreference::HighPerformance,
+        ))
+        .is_ok()
+    })
+}
+
 fn shared_descriptors() -> Result<Arc<Descriptors>> {
     static SHARED: OnceLock<Arc<Descriptors>> = OnceLock::new();
 
@@ -816,6 +840,10 @@ mod resource_loads_tests {
     /// hand `record_resource_loads` — must merge into one.
     #[test]
     fn repeated_fetches_of_the_same_path_bump_a_hit_counter_not_the_list() {
+        if !super::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
         let mut player = SwfPlayer::new(&minimal_swf(), 4, 4).unwrap();
 
         player.record_resource_loads(vec![load("interface\\fonts_en.swf")]);
@@ -831,6 +859,10 @@ mod resource_loads_tests {
     /// must hold at the cap rather than grow the list forever.
     #[test]
     fn distinct_paths_stop_growing_at_the_cap() {
+        if !super::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
         let mut player = SwfPlayer::new(&minimal_swf(), 4, 4).unwrap();
 
         let overflow = 10usize;
@@ -866,6 +898,10 @@ mod render_failure_tests {
     /// never retry.
     #[test]
     fn render_leaves_dirty_set_and_returns_none_on_a_size_mismatch() {
+        if !super::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
         let mut player = SwfPlayer::new(&minimal_swf(), 4, 4).unwrap();
         assert!(player.dirty, "a freshly constructed player starts dirty");
         // `capture_frame()` will still produce a real 4x4 RGBA buffer from
