@@ -884,15 +884,16 @@ fn tick_hud_overlay(
     if !control.visible {
         return None;
     }
-    // `render` borrows the renderer's frame buffer; `upload_frame` needs
-    // the exclusive borrow back. Copy on change — one 3.5 MB memcpy per
-    // *changed* frame, noise next to the staging upload itself.
-    let changed = hud.render(world, cam_forward, control).map(<[u8]>::to_vec);
+    // #4608 — render + upload in one call: the raster crosses through the
+    // HUD's persistent upload buffer instead of a fresh swapchain-sized
+    // Vec per changed tick (the old `.to_vec()` here), and the staging
+    // upload's pool-return is fixed at the overwrite site.
+    let changed = hud.render_and_upload(ctx, world, cam_forward, control);
     match changed {
         // Unchanged — keep compositing the previously uploaded buffer of
-        // the rotation.
+        // the rotation; changed — the handle render_and_upload advanced to.
         None => Some(hud.current_texture()),
-        Some(pixels) => Some(hud.upload_frame(ctx, &pixels)),
+        Some(handle) => Some(handle),
     }
 }
 

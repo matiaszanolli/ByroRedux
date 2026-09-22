@@ -271,6 +271,12 @@ impl Default for HudControl {
 /// `HudControl` is the command surface).
 pub(crate) struct MenuXmlHud {
     renderer: MenuRenderer,
+    /// #4608 — persistent staging for the render→upload handoff. The raster
+    /// framebuffer borrows `self.renderer` immutably while `upload_frame`
+    /// needs `&mut self` for the rotation, so the pixels cross through this
+    /// owned buffer — retained across refreshes instead of a fresh
+    /// swapchain-sized Vec per changed tick.
+    upload_buffer: Vec<u8>,
     assets: HudAssets,
     profile: HudGameProfile,
     /// Compass strip texels per degree of heading (0 = strip unknown —
@@ -516,6 +522,7 @@ pub(crate) fn launch_hud(
                     ];
                     world.insert_resource(control);
                     Some(MenuXmlHud {
+                        upload_buffer: Vec::new(),
                         renderer,
                         assets,
                         profile,
@@ -664,6 +671,38 @@ impl MenuXmlHud {
         }
         self.current = target;
         self.texture_handles[self.current]
+    }
+
+    /// #4608 — render + upload in one `&mut self` call so the caller never
+    /// copies the frame out to release a borrow: on change, the raster
+    /// crosses through the persistent [`Self::upload_buffer`] (one copy
+    /// into retained memory, not a fresh allocation), then the rotation
+    /// advances. `None` = unchanged (or rate-limited) — keep compositing
+    /// the current texture.
+    pub fn render_and_upload(
+        &mut self,
+        ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
+        world: &World,
+        camera_forward: [f32; 3],
+        control: &HudControl,
+    ) -> Option<u32> {
+        if self.render(world, camera_forward, control).is_none() {
+            return None;
+        }
+        // Split borrow: fill the persistent buffer while only `renderer`
+        // is borrowed, then hand upload_frame the filled buffer — the
+        // method takes &mut self for the rotation, so the pixel source
+        // must be self-owned by then.
+        {
+            let pixels = self.renderer.frame_pixels();
+            let upload = &mut self.upload_buffer;
+            upload.clear();
+            upload.extend_from_slice(pixels);
+        }
+        let upload = std::mem::take(&mut self.upload_buffer);
+        let handle = self.upload_frame(ctx, &upload);
+        self.upload_buffer = upload;
+        Some(handle)
     }
 }
 

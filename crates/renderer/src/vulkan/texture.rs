@@ -140,7 +140,7 @@ impl Texture {
         width: u32,
         height: u32,
         pixels: &[u8],
-        staging_pool: Option<&mut StagingPool>,
+        mut staging_pool: Option<&mut StagingPool>,
     ) -> Result<()> {
         validate_rgba_upload(self.creation_extent, width, height, pixels.len())?;
         let GpuUploadCtx {
@@ -151,7 +151,7 @@ impl Texture {
         } = ctx;
         let image_size = pixels.len() as vk::DeviceSize;
 
-        let (staging_buffer, staging_alloc) = if let Some(pool) = staging_pool {
+        let (staging_buffer, staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
             pool.acquire(image_size)?
         } else {
             super::buffer::create_staging_buffer(
@@ -168,6 +168,13 @@ impl Texture {
             allocator.clone(),
         );
         staging.mapped_slice_mut()?[..pixels.len()].copy_from_slice(pixels);
+        // #4608 — remember whether this came from the pool so the tail can
+        // RETURN it there instead of letting `StagingGuard::drop` destroy
+        // the buffer and free the allocation. Pre-fix every pooled
+        // overwrite (the HUD's per-refresh swapchain-sized upload) paid a
+        // fresh host-visible create + allocate + destroy + free once any
+        // large-enough pooled buffer had been used up.
+        let pooled = staging_pool.is_some();
 
         let region = vk::BufferImageCopy {
             buffer_offset: 0,
@@ -188,6 +195,7 @@ impl Texture {
         };
 
         let image = self.image;
+        let mut staging_holder: Option<StagingGuard> = None;
         with_one_time_commands(device, queue, command_pool, |cmd| unsafe {
             // SAFETY: `cmd` is the currently-recording one-shot command
             // buffer handed to this closure; `image` is `self.image`, which
@@ -224,10 +232,23 @@ impl Texture {
                 &[],
                 &[barrier_to_read],
             );
+            staging_holder = Some(staging);
             Ok(())
         })?;
         // `with_one_time_commands` fence-waits its own submission, so the
-        // staging buffer can go back to the pool now (StagingGuard::drop).
+        // GPU is done reading the staging buffer HERE — the moment it can
+        // #4608: actually go back to the pool. `StagingGuard::drop`
+        // DESTROYS; `release_to` is what returns it. Capacity is the
+        // requested `image_size`, not the allocation footprint — #4593's
+        // rule (the pool sizes buckets by useful capacity; a footprint
+        // sized entry re-files the #4512 overrun the guard was built on).
+        if pooled {
+            if let Some(staging) = staging_holder {
+                if let Some(pool) = staging_pool {
+                    staging.release_to(pool, image_size);
+                }
+            }
+        }
         Ok(())
     }
 

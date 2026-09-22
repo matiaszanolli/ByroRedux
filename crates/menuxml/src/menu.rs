@@ -339,6 +339,13 @@ impl MenuRenderer {
 
     /// Evaluate, lay out, and rasterize one frame. Returns the RGBA
     /// pixels (`width * height * 4`, top-down).
+    /// The last `render_frame` raster, without re-evaluating — for callers
+    /// that need the pixels after the `&mut self` render call has returned
+    /// (#4608's HUD handoff).
+    pub fn frame_pixels(&self) -> &[u8] {
+        &self.frame.pixels
+    }
+
     pub fn render_frame(&mut self, assets: &dyn MenuAssets) -> &[u8] {
         let mut eval = EvalState::new(&self.doc, self.screen, &self.strings, &self.overrides);
         eval.resolve_all();
