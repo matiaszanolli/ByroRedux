@@ -912,6 +912,17 @@ pub(crate) fn pickup_loot(
     // exist — `boot/world.rs` pre-registers `PickedUp` for exactly this.
     if let Some(mut markers) = world.query_mut::<PickedUp>() {
         markers.insert(target, PickedUp);
+        // #4571 — the marker hides the placement's MESHES, but the meshes
+        // are descendants: the root never carries a MeshHandle
+        // (spawn_placement_root), and both render skips read the marker on
+        // the mesh/skinned entity itself. Stamp the subtree like the
+        // NpcAppearanceHidden sibling does, so the consumers see it without
+        // a per-frame ancestor walk.
+        for entity in
+            crate::npc_spawn::loot_appearance::mesh_entities_under(world, target)
+        {
+            markers.insert(entity, PickedUp);
+        }
     }
     crate::cell_loader::reference_state::mark_picked_up(world, target);
     let name = world
@@ -1309,6 +1320,46 @@ fn reconcile_equipped_weapon(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use byroredux_core::ecs::components::{Children, MeshHandle, Parent};
+
+    /// #4571 — pickup_loot's marker must reach the placement's MESH
+    /// entities, not just the root: the root never carries a MeshHandle
+    /// (spawn_placement_root), and both render skips read `PickedUp` on the
+    /// mesh/skinned entity itself, so a root-only marker never hid anything.
+    /// The two test asserts the render skips' own docs claimed ("will hide
+    /// the placement's meshes") were testing the mesh entity directly and
+    /// could not see the placement-root shape.
+    #[test]
+    fn pickup_stamps_the_subtree_meshes_not_just_the_root() {
+        let mut world = World::new();
+        world.register::<PickedUp>();
+        world.register::<MeshHandle>();
+        world.register::<Parent>();
+        world.register::<Children>();
+        // placement root -> mesh child (the cell-loader shape).
+        let root = world.spawn();
+        let mesh = world.spawn();
+        world.insert(mesh, Parent(root));
+        crate::helpers::add_child(&mut world, root, mesh);
+        world.insert(mesh, MeshHandle(7));
+
+        if let Some(mut markers) = world.query_mut::<PickedUp>() {
+            markers.insert(root, PickedUp);
+            for entity in crate::npc_spawn::loot_appearance::mesh_entities_under(&world, root) {
+                markers.insert(entity, PickedUp);
+            }
+        }
+
+        let q = world.query::<PickedUp>().unwrap();
+        assert!(q.get(root).is_some(), "the root keeps its marker");
+        assert!(
+            q.get(mesh).is_some(),
+            "the mesh descendant must carry the marker too — the render skips \
+             read it there (#4571)"
+        );
+    }
+
     use super::*;
 
     fn restoration(

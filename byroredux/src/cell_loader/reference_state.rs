@@ -214,11 +214,20 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     }
     if state.picked_up {
         // The item left with the player in a previous session/visit; the
-        // respawned placement must not restock it. The marker hides the
-        // meshes and bars interaction; the row is consumed exactly like
-        // every other restore because eviction re-captures the marker
-        // (see `capture`).
+        // respawned placement must not restock it. The marker bars
+        // interaction and hides the placement's meshes; the row is consumed
+        // exactly like every other restore because eviction re-captures the
+        // marker (see `capture`). #4571 — the meshes are descendants, so
+        // the marker lands on the subtree's mesh entities too (the render
+        // skips read it there, not on this root).
         world.insert(entity, crate::inventory::PickedUp);
+        if let Some(mut markers) = world.query_mut::<crate::inventory::PickedUp>() {
+            for mesh in
+                crate::npc_spawn::loot_appearance::mesh_entities_under(world, entity)
+            {
+                markers.insert(mesh, crate::inventory::PickedUp);
+            }
+        }
     }
     true
 }

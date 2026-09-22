@@ -102,7 +102,7 @@ pub(crate) fn status(world: &World, actor: EntityId) -> String {
 /// Mesh entities at or under `root`, cycle-safe. `NpcAppearanceHidden` is
 /// consumed by the render passes per mesh entity, so hiding a root means
 /// marking every mesh in its subtree.
-fn mesh_entities_under(world: &World, root: EntityId) -> Vec<EntityId> {
+pub(crate) fn mesh_entities_under(world: &World, root: EntityId) -> Vec<EntityId> {
     let mut pending = vec![root];
     let mut seen = HashSet::new();
     let mut meshes = Vec::new();
