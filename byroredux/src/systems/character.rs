@@ -1093,31 +1093,52 @@ fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<Player
             continue;
         }
         let distance = (surface_y - pos.y).abs();
-        // #3974 — mirror the dynamic path's placed-current arm
-        // (#3114/#3268): when the plane itself carries no `WaterFlow`, a
-        // placed `WaterCurrentVolume` marker (XWCU + XPRM rapids/currents)
-        // containing the capsule centre supplies the drift. Pre-fix this
-        // sampler queried `WaterPlane`/`WaterVolume`/`WaterFlow` only, so a
-        // swimmer in authored rapids felt nothing while a dropped barrel
-        // next to them drifted downstream. Plane flow wins when present —
-        // same precedence the dynamic path's `current_flow.or(plane flow)`
-        // resolution lands on.
-        let flow = flow_q
-            .as_ref()
-            .and_then(|q| q.get(entity).copied())
-            .or_else(|| {
-                let cq = world.query::<WaterCurrentVolume>()?;
-                let marker = cq.iter().find(|(_, current)| {
-                    let v = &current.volume;
-                    pos.x >= v.min[0]
-                        && pos.x <= v.max[0]
-                        && pos.y >= v.min[1]
-                        && pos.y <= v.max[1]
-                        && pos.z >= v.min[2]
-                        && pos.z <= v.max[2]
-                });
-                marker.map(|(_, current)| current.flow)
+        // #3974 — a placed `WaterCurrentVolume` marker (XWCU + XPRM
+        // rapids/currents) containing the capsule centre supplies drift.
+        // Pre-fix this sampler queried `WaterPlane`/`WaterVolume`/
+        // `WaterFlow` only, so a swimmer in authored rapids felt nothing
+        // while a dropped barrel next to them drifted downstream.
+        //
+        // #4691 (PHYS-D5-2026-09-21-01) — COMPOSITION parity with the
+        // dynamic path: there a co-located plane and marker BOTH apply
+        // (plane drag × submerged fraction, then marker drag — "so a
+        // co-located water plane's force does not discard the marker's
+        // current", water.rs). The old `or_else` here made the plane's
+        // flow win, so in rapids a swimmer felt only the plane while the
+        // barrel beside them felt both. Both sources now contribute as
+        // velocity vectors; a single-source case stays verbatim.
+        let plane_flow = flow_q.as_ref().and_then(|q| q.get(entity).copied());
+        let marker_flow = {
+            let cq = world.query::<WaterCurrentVolume>()?;
+            let marker = cq.iter().find(|(_, current)| {
+                let v = &current.volume;
+                pos.x >= v.min[0]
+                    && pos.x <= v.max[0]
+                    && pos.y >= v.min[1]
+                    && pos.y <= v.max[1]
+                    && pos.z >= v.min[2]
+                    && pos.z <= v.max[2]
             });
+            marker.map(|(_, current)| current.flow)
+        };
+        let flow = match (plane_flow, marker_flow) {
+            (Some(a), Some(b)) => {
+                let x = a.direction[0] * a.speed + b.direction[0] * b.speed;
+                let y = a.direction[1] * a.speed + b.direction[1] * b.speed;
+                let z = a.direction[2] * a.speed + b.direction[2] * b.speed;
+                let mag = (x * x + y * y + z * z).sqrt();
+                if mag <= f32::EPSILON {
+                    None
+                } else {
+                    Some(WaterFlow {
+                        direction: [x / mag, y / mag, z / mag],
+                        speed: mag,
+                    })
+                }
+            }
+            (only, None) => only,
+            (None, Some(marker)) => Some(marker),
+        };
         if best.as_ref().is_none_or(|candidate| distance < candidate.1) {
             best = Some((
                 PlayerWaterState {
@@ -1621,12 +1642,12 @@ mod tests {
     }
     use byroredux_core::ecs::components::water::WaterMaterial;
 
-    /// #3974 — the kinematic player's sampler mirrors the dynamic path's
-    /// placed-current arm (#3114/#3268): when the containing plane carries
-    /// no `WaterFlow`, a `WaterCurrentVolume` marker containing the
-    /// capsule centre supplies the drift; a plane-authored flow still
-    /// wins; and water outside the marker stays calm. Pre-fix the swimmer
-    /// in authored rapids felt nothing while a dropped barrel drifted.
+    /// #3974 — the kinematic player's sampler reads a placed
+    /// `WaterCurrentVolume` marker containing the capsule centre
+    /// (#3114/#3268); water outside the marker stays calm. #4691 — when a
+    /// plane ALSO authors a flow, the two compose ADDITIVELY (velocity
+    /// vectors summed), the same both-sources composition the dynamic
+    /// path applies; a single-source case stays verbatim.
     #[test]
     fn player_water_state_falls_back_to_a_placed_current_volume() {
         use byroredux_core::ecs::components::water::WaterCurrentVolume;
@@ -1680,7 +1701,10 @@ mod tests {
             player_water_state(&world, Vec3::new(8.0, -2.5, 0.0), 40.0).expect("submerged");
         assert!(outside.flow.is_none());
 
-        // Precedence: a plane-authored flow wins over the marker.
+        // #4691 — plane flow + marker flow compose additively: plane
+        // (0,0,1)×1 plus marker (1,0,0)×3 = vector (3,0,1). The dynamic
+        // path applies both sources to the barrel beside the swimmer;
+        // the swimmer must feel both too.
         world.insert(
             lake,
             WaterFlow {
@@ -1689,7 +1713,28 @@ mod tests {
             },
         );
         let state = player_water_state(&world, pos, 40.0).expect("submerged");
-        assert_eq!(state.flow.map(|f| f.speed), Some(1.0));
+        let flow = state.flow.expect("both sources must reach the player");
+        let expected = (3.0f32 * 3.0 + 1.0).sqrt();
+        assert!(
+            (flow.speed - expected).abs() < 1e-4,
+            "summed magnitude {expected}, got {}",
+            flow.speed
+        );
+        assert!(
+            (flow.direction[0] - 3.0 / expected).abs() < 1e-4
+                && (flow.direction[2] - 1.0 / expected).abs() < 1e-4,
+            "the summed direction must lean marker-ward: {:?}",
+            flow.direction
+        );
+
+        // Outside the marker the plane flows alone — verbatim, not summed.
+        let outside = player_water_state(&world, Vec3::new(8.0, -2.5, 0.0), 40.0)
+            .expect("submerged");
+        let outside_flow = outside.flow.expect("the plane's own flow");
+        assert_eq!(
+            (outside_flow.speed, outside_flow.direction),
+            (1.0, [0.0, 0.0, 1.0])
+        );
     }
 
     #[test]
