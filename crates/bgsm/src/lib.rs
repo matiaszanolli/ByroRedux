@@ -152,13 +152,38 @@ pub fn parse_bgsm(bytes: &[u8]) -> Result<BgsmFile> {
     parse_bgsm_diag(bytes).0
 }
 
-/// Like [`parse_bgsm`], but also reports whether any string field needed
-/// lossy UTF-8 replacement (#4672). Diagnostic-only surface so this
-/// dependency-free crate needs no logger: the production caller logs.
-pub fn parse_bgsm_diag(bytes: &[u8]) -> (Result<BgsmFile>, bool) {
+/// The newest BGSM/BGEM layout this crate decodes: 22 (FO76). Vanilla
+/// uses only v2 (FO4) and v22 (FO76); a higher version means a layout
+/// this crate has never seen and silently decoded wrong (#4664).
+pub const NEWEST_KNOWN_VERSION: u32 = 22;
+
+/// Post-parse diagnostics (#4672, #4664) — everything the caller may
+/// want to warn about once, with the path it owns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParseDiagnostics {
+    /// A string field decoded with UTF-8 replacement (#4672).
+    pub lossy_strings: bool,
+    /// Bytes left over after the parse finished — layout drift, or a
+    /// version this crate decoded against the wrong shape (#4664).
+    pub unconsumed_bytes: usize,
+    /// The file's version when it exceeds the newest layout this crate
+    /// knows (22, FO76). `None` at or below the ceiling.
+    pub version_over_ceiling: Option<u32>,
+}
+
+/// Parse a file whose magic is known to be `"BGSM"` (0x4d534742).
+pub fn parse_bgsm_diag(bytes: &[u8]) -> (Result<BgsmFile>, ParseDiagnostics) {
     let mut r = reader::Reader::new(bytes);
     let file = BgsmFile::parse(&mut r);
-    (file, r.had_replacement())
+    let version = file.as_ref().ok().map(|f| f.base.version);
+    (
+        file,
+        ParseDiagnostics {
+            lossy_strings: r.had_replacement(),
+            unconsumed_bytes: r.remaining(),
+            version_over_ceiling: version.filter(|&v| v > NEWEST_KNOWN_VERSION),
+        },
+    )
 }
 
 /// Parse a file whose magic is known to be `"BGEM"` (0x4d454742).
@@ -166,11 +191,20 @@ pub fn parse_bgem(bytes: &[u8]) -> Result<BgemFile> {
     parse_bgem_diag(bytes).0
 }
 
-/// Like [`parse_bgem`]; see [`parse_bgsm_diag`] (#4672).
-pub fn parse_bgem_diag(bytes: &[u8]) -> (Result<BgemFile>, bool) {
+/// Like [`parse_bgem`]; see [`parse_bgsm_diag`] and
+/// [`ParseDiagnostics`] (#4672, #4664).
+pub fn parse_bgem_diag(bytes: &[u8]) -> (Result<BgemFile>, ParseDiagnostics) {
     let mut r = reader::Reader::new(bytes);
     let file = BgemFile::parse(&mut r);
-    (file, r.had_replacement())
+    let version = file.as_ref().ok().map(|f| f.base.version);
+    (
+        file,
+        ParseDiagnostics {
+            lossy_strings: r.had_replacement(),
+            unconsumed_bytes: r.remaining(),
+            version_over_ceiling: version.filter(|&v| v > NEWEST_KNOWN_VERSION),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -195,6 +229,46 @@ mod tests {
             MaterialFile::Bgem(m) => assert_eq!(m.base.version, 2),
             MaterialFile::Bgsm(_) => panic!("dispatched to BGSM for BGEM magic"),
         }
+    }
+
+    /// #4664 (PAR-D3-2026-09-21-01) — both silent-drift signals: a file
+    /// whose version exceeds the newest known layout (22) reports it, and
+    /// a file that leaves bytes unconsumed reports the count. The
+    /// vanilla sweep (0/36,888 leaving bytes, only v2/v22 in use) makes
+    /// both signals zero-noise on real content.
+    #[test]
+    fn parse_diagnostics_flag_unknown_version_and_unconsumed_bytes() {
+        // Trailing junk: fully-consumed v2 plus extra bytes — the
+        // unconsumed half of the signal, driven through the real parse.
+        let mut bytes = bgsm::tests::minimal_v2_bytes();
+        bytes.extend_from_slice(&[0xAB; 7]);
+        let (_, diag) = parse_bgsm_diag(&bytes);
+        assert_eq!(diag.version_over_ceiling, None, "v2 is at the ceiling");
+        assert_eq!(diag.unconsumed_bytes, 7);
+
+        // Version past the ceiling: a post-v22 layout is unconstructable
+        // here without reimplementing the format's forks, but a FAILED
+        // parse must not claim a ceiling breach either way — the signal
+        // only fires for a file that actually decoded to the end.
+        let mut bytes = bgsm::tests::minimal_v2_bytes();
+        bytes[4..8].copy_from_slice(&23u32.to_le_bytes());
+        let (result, diag) = parse_bgsm_diag(&bytes);
+        assert!(result.is_err(), "v23 bytes do not fit the v>2 layout");
+        assert_eq!(diag.version_over_ceiling, None);
+    }
+
+    /// #4664 — the ceiling value itself, pinned so a future "bump the
+    /// constant" edit is a reviewed decision (22 = FO76; vanilla uses
+    /// only v2 and v22).
+    #[test]
+    fn newest_known_version_is_fo76_22() {
+        assert_eq!(NEWEST_KNOWN_VERSION, 22);
+        let d = ParseDiagnostics {
+            lossy_strings: false,
+            unconsumed_bytes: 3,
+            version_over_ceiling: Some(23),
+        };
+        assert_eq!(d.version_over_ceiling, Some(23));
     }
 
     #[test]

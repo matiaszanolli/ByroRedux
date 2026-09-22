@@ -390,17 +390,34 @@ impl MaterialProvider {
                 // mod / DLC content that authors >16-deep chains.
                 // See audit AUDIT_INCREMENTAL_2026-05-22 ID-5.
                 let bytes = reader.read(&key)?;
-                // #4672 — surface lossy string replacement; the bgsm crate
-                // has no logger of its own.
-                let (parsed, replaced) = byroredux_bgsm::parse_bgsm_diag(&bytes);
+                // #4672/#4664 — surface the parse diagnostics; the bgsm
+                // crate has no logger of its own.
+                let (parsed, diag) = byroredux_bgsm::parse_bgsm_diag(&bytes);
                 let file = match parsed {
                     Ok(f) => {
-                        if replaced {
+                        if diag.lossy_strings {
                             log::warn!(
                                 "BGSM '{}': one or more string fields contained \
                                  non-UTF-8 bytes and decoded with replacement (lossy, \
                                  matching the reference Material-Editor)",
                                 key
+                            );
+                        }
+                        if diag.unconsumed_bytes > 0 {
+                            log::warn!(
+                                "BGSM '{}': {} byte(s) left unconsumed after parse — \
+                                 layout drift or a version decoded against the wrong \
+                                 shape (#4664)",
+                                key,
+                                diag.unconsumed_bytes
+                            );
+                        }
+                        if let Some(version) = diag.version_over_ceiling {
+                            log::warn!(
+                                "BGSM '{}': version {version} exceeds the newest layout \
+                                 this crate knows ({}); fields may be wrong (#4664)",
+                                key,
+                                byroredux_bgsm::NEWEST_KNOWN_VERSION
                             );
                         }
                         f
@@ -602,16 +619,32 @@ impl MaterialProvider {
             }
             return None;
         };
-        // #4672 — same lossy-replacement surface as the BGSM arm.
-        let (parsed, replaced) = byroredux_bgsm::parse_bgem_diag(&bytes);
+        // #4672/#4664 — same diagnostic surface as the BGSM arm.
+        let (parsed, diag) = byroredux_bgsm::parse_bgem_diag(&bytes);
         match parsed {
             Ok(parsed) => {
-                if replaced {
+                if diag.lossy_strings {
                     log::warn!(
                         "BGEM '{}': one or more string fields contained non-UTF-8 \
                          bytes and decoded with replacement (lossy, matching the \
                          reference Material-Editor)",
                         path
+                    );
+                }
+                if diag.unconsumed_bytes > 0 {
+                    log::warn!(
+                        "BGEM '{}': {} byte(s) left unconsumed after parse — layout \
+                         drift or a version decoded against the wrong shape (#4664)",
+                        path,
+                        diag.unconsumed_bytes
+                    );
+                }
+                if let Some(version) = diag.version_over_ceiling {
+                    log::warn!(
+                        "BGEM '{}': version {version} exceeds the newest layout this \
+                         crate knows ({}); fields may be wrong (#4664)",
+                        path,
+                        byroredux_bgsm::NEWEST_KNOWN_VERSION
                     );
                 }
                 let arc = Arc::new(parsed);
