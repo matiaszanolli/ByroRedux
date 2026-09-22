@@ -18,7 +18,11 @@
 //! `player_only` as a conservative, unsourced choice (#2937): the capture
 //! document locks the FO3/FNV AP *formula* but never states its scope, and
 //! FO4's "NPCs ship baked values" evidence is FO4-specific. See
-//! [`fallout3_ruleset`]'s AP row for the reasoning.
+//! [`fallout3_ruleset`]'s AP row for the reasoning. Critical Chance / Melee
+//! Damage / Unarmed Damage are likewise an explicit, UNsourced `ActorGeneral`
+//! choice (#4450) — the capture states no scope for them either, and the
+//! choice is pinned by
+//! `fo3_fnv_crit_melee_unarmed_scopes_are_actor_general_pending_a_source`.
 //!
 //! FO3/FNV attach both the [`AttributeSet::FALLOUT`] SPECIAL roster and their
 //! distinct [`SkillSet::FALLOUT3`] / [`SkillSet::FALLOUT_NV`] skill roster +
