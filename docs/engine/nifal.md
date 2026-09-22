@@ -563,6 +563,31 @@ format-specific guesswork at the supposedly game-agnostic boundary. Generic
 `values()` / `secondary_values()` traversal is the exhaustive lifecycle contract;
 cell unload uses it directly rather than maintaining a separate role list.
 
+**Starfield single-channel PBR kinds — parked by name (SF-2026-09-16-D3-01,
+#4429, recorded 2026-09-22).** Starfield authors separate single-channel maps
+with five first-class suffix kinds — `_rough`, `_metal`, `_ao`, `_opacity`,
+`_transmissive` — and its own TXST records carry them in dedicated slots
+(TX09 → `_rough`, TX08 → `_metal`, TX17 → `_ao`, TX19 → `_opacity`; measured
+over `Starfield.esm`'s 23 TXST records). A 45,756-file texture-archive census
+put 17,998 files (39%) on these five kinds. **`MaterialTextureSet`'s 22 roles
+have no destination for any of them**, and the near-miss roles are wrong, not
+merely imperfect: `smooth_spec` is consumed as *gloss* (`roughness = mix(1.0,
+roughness, glossTexel.r)` in `triangle.frag`), so routing `_rough` there is a
+silent sign flip, and `specular` is a colour map, not metalness. Until CDB
+Phase 2 (#3398 — the loose `.mat` JSON resolver #4277 needs the same roles)
+lands its per-texture extraction, zero Starfield texture roles are produced,
+so the gap is latent; the parked vocabulary is recorded here so Phase 2
+cannot quietly misroute 39% of the game's textures into semantically wrong
+slots. The Phase-2 contract: each kind lands as a **named** `MaterialTextureSet`
+role with documented channel semantics, a `GpuMaterial` lane (lockstep
+`bindings.glsl` change against the 428 B pin) and a `triangle.frag` consumer —
+never a CDB slot index, never a reuse of `smooth_spec`/`specular`. When the
+first role lands, `starfield_single_channel_kinds_are_parked_by_name_or_canonical`
+(the XOR guard beside the zero-forwarding pin in `asset_provider/tests/starfield_mat.rs`)
+forces this table and the struct to move together, and
+`mat_path_forwards_no_texture_roles_until_cdb_phase_2_lands` gets rewritten
+to assert the new named roles.
+
 ### Passthroughs — parked / dropped inventory (surveyed 2026-06-02)
 
 The 2026-06-02 coverage sweep traced every `ImportedScene`/`ImportedNode`/`ImportedMesh`

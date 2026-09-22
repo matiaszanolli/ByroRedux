@@ -208,6 +208,54 @@ fn mat_path_forwards_no_texture_roles_until_cdb_phase_2_lands() {
     );
 }
 
+/// #4429 (SF-2026-09-16-D3-01) — the guard that survives Phase 2.
+///
+/// Starfield's five single-channel kinds must be EITHER canonical
+/// `MaterialTextureSet` roles OR rows in nifal.md's parked table — never
+/// both (a landed role still listed as parked rots the spec) and never
+/// neither (a kind dropped from the parked table without a struct field is
+/// the silent-drop NIFAL forbids). Today all five are parked: the struct
+/// has no roughness/metalness/AO/opacity/transmission destination, and
+/// routing `_rough` into the gloss-consuming `smooth_spec` slot would be a
+/// silent sign flip. When Phase 2 (#3398) lands the first role, the XOR
+/// below fails until the parked table is updated in the same change.
+#[test]
+fn starfield_single_channel_kinds_are_parked_by_name_or_canonical() {
+    // (canonical role name, Starfield's on-disk suffix)
+    const KINDS: [(&str, &str); 5] = [
+        ("roughness", "_rough"),
+        ("metalness", "_metal"),
+        ("ambient_occlusion", "_ao"),
+        ("opacity", "_opacity"),
+        ("transmissive", "_transmissive"),
+    ];
+    const TYPES_SRC: &str = include_str!("../../../../crates/nif/src/import/types.rs");
+    let struct_body = TYPES_SRC
+        .split_once("pub struct MaterialTextureSet<T> {")
+        .expect("MaterialTextureSet must still be declared here")
+        .1
+        .split_once("\n}")
+        .expect("unterminated struct")
+        .0;
+    const NIFAL_SRC: &str = include_str!("../../../../docs/engine/nifal.md");
+
+    for (kind, suffix) in KINDS {
+        let in_struct = struct_body.contains(&format!("pub {kind}: T,"));
+        let parked = NIFAL_SRC.contains(&format!("`{suffix}`"));
+        assert!(
+            in_struct ^ parked,
+            "Starfield kind `{suffix}` is {} — when CDB Phase 2 lands a role it \
+             must arrive as a named `MaterialTextureSet` field AND move out of \
+             nifal.md's parked table in the same change (#4429); the near-miss \
+             misroutes (`_rough` → gloss-consuming `smooth_spec`) are forbidden",
+            match (in_struct, parked) {
+                (true, true) => "both a struct role and still parked in nifal.md",
+                _ => "neither a struct role nor parked in nifal.md",
+            }
+        );
+    }
+}
+
 /// CDB-presence gate: a `.mat` path against a non-Starfield archive
 /// set (no CDB loaded) must NOT flip `is_pbr`. Modded `.mat` paths
 /// on FO4 / FNV / Skyrim cells shouldn't accidentally route to
