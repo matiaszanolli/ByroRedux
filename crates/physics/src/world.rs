@@ -204,6 +204,20 @@ pub struct PhysicsWorld {
     /// defers this O(all colliders) work until after the physics step so a
     /// streaming frame does not rebuild the BVH twice (#2864).
     colliders_dirty: bool,
+    /// Index of dynamic-body handles for the per-substep recovery snapshot
+    /// (#4682 / PHYS-D2-2026-09-21-01). Maintained at the three production
+    /// mutation points — newcomer registration (`physics_sync_system`),
+    /// ragdoll body construction, [`Self::set_motion_type`] — so the
+    /// snapshot can iterate ~N dynamics instead of the whole body arena
+    /// (measured 1.77 ms/substep on a 95 k-fixed world, ~10× the solver it
+    /// protects). The index MAY hold stale handles (a removed body's slot
+    /// or a body since flipped to kinematic/fixed via
+    /// [`Self::set_motion_type`] / the ragdoll root pin): the snapshot
+    /// re-checks liveness and type per entry and compacts the vector, so
+    /// staleness costs a get() miss, never a wrong snapshot. Direct
+    /// `bodies.insert` calls that bypass these points (test fixtures) are
+    /// not indexed — production code has none.
+    pub(crate) dynamic_bodies: Vec<RigidBodyHandle>,
 }
 
 /// A dynamic body's state immediately before one Rapier substep.
@@ -301,6 +315,7 @@ impl PhysicsWorld {
             // settle / populate the island state.
             pending_wake: true,
             colliders_dirty: false,
+            dynamic_bodies: Vec::new(),
         }
     }
 
@@ -555,7 +570,28 @@ impl PhysicsWorld {
         if wake_up {
             self.wake();
         }
+        // #4682 — keep the recovery-snapshot index informed. A flip TO
+        // dynamic must be indexed or the body loses snapshot coverage; a
+        // flip AWAY can stay listed (the snapshot's per-entry type check
+        // filters it). The `contains` guard keeps repeated
+        // dynamic↔kinematic toggling from growing the index without bound.
+        if body_type == RigidBodyType::Dynamic && !self.dynamic_bodies.contains(&handle) {
+            self.dynamic_bodies.push(handle);
+        }
         true
+    }
+
+    /// Live dynamic bodies tracked by the recovery-snapshot index (#4682).
+    /// Diagnostic only; a stale handle not yet compacted out is excluded.
+    pub fn dynamic_body_count(&self) -> usize {
+        self.dynamic_bodies
+            .iter()
+            .filter(|h| {
+                self.bodies
+                    .get(**h)
+                    .is_some_and(|b| b.body_type() == RigidBodyType::Dynamic)
+            })
+            .count()
     }
 
     /// Read a dynamic body's mass (BU³ × density). Buoyancy derives the
@@ -676,16 +712,27 @@ impl PhysicsWorld {
         while self.accumulator >= PHYSICS_DT && steps < MAX_SUBSTEPS {
             // Newly activated ragdolls are absent from Rapier's active
             // islands until *after* their first pipeline step. Snapshot all
-            // dynamics so their first solve is recoverable too.
+            // dynamics so their first solve is recoverable too. #4682 — the
+            // dynamics come from the maintained index, not an arena walk:
+            // iterating every slot (fixed bodies included) cost 1.77 ms per
+            // substep on a 95 k-body world, ~10× the solver it protects.
+            // The per-entry liveness + type re-check keeps the index's
+            // staleness tolerance honest (see the field doc), and waking by
+            // contact mid-step needs no index update — the body was indexed
+            // at insert regardless of sleep state.
+            self.dynamic_bodies
+                .retain(|h| self.bodies.get(*h).is_some());
             let snapshots: Vec<_> =
-                self.bodies
+                self.dynamic_bodies
                     .iter()
-                    .filter_map(|(handle, body)| {
-                        (body.body_type() == RigidBodyType::Dynamic && body_state_is_finite(body))
-                            .then_some(DynamicBodySnapshot {
-                                handle,
-                                position: *body.position(),
-                            })
+                    .filter_map(|&handle| {
+                        let body = self.bodies.get(handle)?;
+                        (body.body_type() == RigidBodyType::Dynamic
+                            && body_state_is_finite(body))
+                        .then_some(DynamicBodySnapshot {
+                            handle,
+                            position: *body.position(),
+                        })
                     })
                     .collect();
             self.pipeline.step(
@@ -1952,6 +1999,60 @@ mod tests {
             // And the world must still be steppable afterwards.
             assert_eq!(w.step(PHYSICS_DT), 1, "recovers on the next good frame");
         }
+    }
+
+    /// #4682 (PHYS-D2-2026-09-21-01) — the recovery snapshot draws from the
+    /// maintained dynamic-body index, not an arena walk. Timing is too
+    /// flaky to pin directly, so this pins the SHAPE the cost follows:
+    /// the index tracks dynamics only (30 k fixed bodies cost nothing),
+    /// and set_motion_type keeps it informed in both directions.
+    #[test]
+    fn recovery_snapshot_index_tracks_dynamics_not_the_arena() {
+        let mut w = PhysicsWorld::new();
+        for i in 0..2000 {
+            let body = RigidBodyBuilder::fixed()
+                .translation(Vector::new(i as f32, 0.0, 0.0))
+                .build();
+            let h = w.bodies.insert(body);
+            w.colliders.insert_with_parent(
+                ColliderBuilder::cuboid(1.0, 1.0, 1.0).build(),
+                h,
+                &mut w.bodies,
+            );
+        }
+        let d1 = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        let d2 = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        w.dynamic_bodies.push(d1);
+        w.dynamic_bodies.push(d2);
+        assert_eq!(
+            w.dynamic_body_count(),
+            2,
+            "2000 fixed bodies must not enter the snapshot index"
+        );
+
+        // A keyframed flip takes the body out of the effective set (stale
+        // entry tolerated, filtered by the type check), and back — the
+        // flip back re-indexes without duplicating (the `contains` guard
+        // keeps dynamic↔kinematic toggling from growing the index).
+        assert!(w.set_motion_type(d1, MotionType::CharacterKinematic, false));
+        assert_eq!(w.dynamic_body_count(), 1);
+        assert!(w.set_motion_type(d1, MotionType::Dynamic, false));
+        assert_eq!(w.dynamic_body_count(), 2);
+
+        // Removal leaves a stale entry that compaction (step's retain)
+        // drops, never a wrong snapshot.
+        assert!(w.remove_body(d2));
+        assert_eq!(
+            w.dynamic_body_count(),
+            1,
+            "the count filters the removed body's handle via get() == None"
+        );
+        w.step(PHYSICS_DT);
+        assert_eq!(
+            w.dynamic_body_count(),
+            1,
+            "compaction drops the removed handle; d1 remains indexed"
+        );
     }
 
     #[test]

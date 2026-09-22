@@ -1029,6 +1029,10 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         }
         let body = body_builder.build();
         let body_handle = pw.bodies.insert(body);
+        // #4682 — index dynamics for the per-substep recovery snapshot.
+        if matches!(body_type, RigidBodyType::Dynamic) {
+            pw.dynamic_bodies.push(body_handle);
+        }
 
         // Split-borrow: destructure to avoid "&mut pw twice" through field access.
         let PhysicsWorld {

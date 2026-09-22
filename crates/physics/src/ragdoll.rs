@@ -291,6 +291,10 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
             .angular_damping(effective_angular_damping)
             .build();
         let h = pw.bodies.insert(body);
+        // #4682 — ragdoll bodies are dynamic; index them for the per-substep
+        // recovery snapshot (a freshly activated ragdoll's first solve is
+        // exactly the case the snapshot exists to cover).
+        pw.dynamic_bodies.push(h);
 
         // #1540 — substitute a convex hull for any TriMesh on this *dynamic*
         // ragdoll body; a raw trimesh gives Rapier a degenerate inertia
