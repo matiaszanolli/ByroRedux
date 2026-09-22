@@ -304,6 +304,14 @@ fn archive_with_payload(
     ));
     std::fs::write(&path, payload).expect("write temp BSA payload");
     let file = File::open(&path).expect("open temp BSA");
+    // #4666 (PAR-D4-2026-09-21-04) — unlink immediately: the open handle
+    // keeps the bytes readable for the archive's whole lifetime on Unix,
+    // so no `byroredux-bsa-#352-*` litter accumulates in the temp dir
+    // across runs (the audit counted 30 files from 5 runs). The ignored
+    // result is the Windows story — an open file cannot be unlinked
+    // there, which degrades to exactly the pre-fix behaviour instead of
+    // failing the test.
+    let _ = std::fs::remove_file(&path);
     let mut files = HashMap::new();
     files.insert(normalize_path(entry_path), entry);
     BsaArchive {
