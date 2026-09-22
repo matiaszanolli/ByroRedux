@@ -49,32 +49,43 @@ pub(crate) const LOCOMOTION_GROUND_RAY_UP_OFFSET: f32 = 256.0;
 /// M42.10 — NPC KCC capsule half-height (BU, excludes caps), matching the
 /// shape-less-actor fallback collider (`npc_spawn.rs::install_fallback_
 /// actor_collider`) so every walking NPC sweeps with the same body the
-/// combat ray targeting already assumes.
-pub(crate) const LOCOMOTION_NPC_CAPSULE_HALF_HEIGHT: f32 = 32.0;
+/// combat ray targeting already assumes. Derived from the shared const
+/// pair, not copied (#4689 — a retune of the fallback body now moves the
+/// KCC with it instead of silently diverging).
+pub(crate) const LOCOMOTION_NPC_CAPSULE_HALF_HEIGHT: f32 =
+    crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_HALF_HEIGHT;
 /// M42.10 — NPC KCC capsule radius (BU). Total height
 /// `2 * (32 + 20) = 104` BU ≈ 1.5 m at the 70 BU/m Havok scale.
-pub(crate) const LOCOMOTION_NPC_CAPSULE_RADIUS: f32 = 20.0;
+pub(crate) const LOCOMOTION_NPC_CAPSULE_RADIUS: f32 =
+    crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_RADIUS;
 /// M42.10 — autostep ceiling (BU). The KCC default 32 BU (~46 cm at 70
 /// BU/m) is sized to canonical Bethesda stair treads; NPC locomotion has
-/// no reason to diverge from the player controller's step.
-pub(crate) const LOCOMOTION_NPC_STEP_HEIGHT: f32 = 32.0;
+/// no reason to diverge from the player controller's step, so this reads
+/// `CharacterController::HUMAN` directly (#4689).
+pub(crate) const LOCOMOTION_NPC_STEP_HEIGHT: f32 =
+    byroredux_physics::CharacterController::HUMAN.step_height;
 /// M42.10 — autostep minimum platform width (BU). 8 BU handles FNV
 /// doorsteps whose treads are often 8-16 BU deep (same rationale as the
-/// player's `CharacterController::step_min_width`).
-pub(crate) const LOCOMOTION_NPC_STEP_MIN_WIDTH: f32 = 8.0;
+/// player's `CharacterController::step_min_width`, shared by derivation).
+pub(crate) const LOCOMOTION_NPC_STEP_MIN_WIDTH: f32 =
+    byroredux_physics::CharacterController::HUMAN.step_min_width;
 /// M42.10 — ground-snap distance (BU) the KCC may pull the capsule down
 /// after a horizontal step, holding actors onto terrain rolls without
 /// bouncing. Must stay well under [`LOCOMOTION_MAX_DROP`]: snap is for
 /// staying grounded on gentle downslopes, not for ledges.
 pub(crate) const LOCOMOTION_NPC_SNAP_TO_GROUND: f32 = 64.0;
 /// M42.10 — max climbable slope (degrees). KCC default 50°, shared with
-/// the player controller.
-pub(crate) const LOCOMOTION_NPC_MAX_SLOPE_DEG: f32 = 50.0;
-/// M42.10 — KCC contact skin offset (BU). Matches `ContactConfig::
-/// kcc_offset_bu`'s default (4 BU ≈ 5.7 cm at the Havok scale); NPC
+/// the player controller by derivation (#4689).
+pub(crate) const LOCOMOTION_NPC_MAX_SLOPE_DEG: f32 =
+    byroredux_physics::CharacterController::HUMAN.max_slope_climb_deg;
+/// M42.10 — KCC contact skin offset (BU). Derived from `ContactConfig::
+/// DEFAULT.kcc_offset_bu` (4 BU ≈ 5.7 cm at the Havok scale); NPC
 /// locomotion reads no resource, so the default is pinned as a constant
-/// and the invariant `> 2 * contact skin` from #2885 is inherited.
-pub(crate) const LOCOMOTION_NPC_KCC_OFFSET_BU: f32 = 4.0;
+/// and the invariant `> 2 * contact skin` from #2885 is inherited. A
+/// retune of the resource default now reaches NPCs in the same commit
+/// (#4689 — the copy previously aged independently).
+pub(crate) const LOCOMOTION_NPC_KCC_OFFSET_BU: f32 =
+    byroredux_physics::ContactConfig::DEFAULT.kcc_offset_bu;
 /// M42.10 — when the KCC reports the actor airborne after a step (walked
 /// off a ledge, or spawned over a hole), the legacy downward ray may only
 /// relocate the actor this far before it is judged to be genuinely
@@ -337,5 +348,49 @@ mod stuck_tests {
         assert!(!advance_stuck_repick(&mut secs, false, 0.1));
         assert_eq!(secs, 0.0);
         assert!(!advance_stuck_repick(&mut secs, true, 2.4));
+    }
+
+    /// #4689 (PHYS-D4-2026-09-21-01) — the NPC locomotion constants are
+    /// DERIVED from their sources (`ContactConfig::DEFAULT`,
+    /// `CharacterController::HUMAN`, the fallback-capsule const pair), not
+    /// copied. The const initializers make divergence structurally
+    /// impossible today; this pin survives a future revert-to-literal and
+    /// fails on a one-sided retune (#2885 moved these values once and the
+    /// copies would have silently aged, the #2193
+    /// blocked-but-never-grounded shape).
+    #[test]
+    fn npc_locomotion_constants_match_their_sources() {
+        use super::{
+            LOCOMOTION_NPC_CAPSULE_HALF_HEIGHT, LOCOMOTION_NPC_CAPSULE_RADIUS,
+            LOCOMOTION_NPC_KCC_OFFSET_BU, LOCOMOTION_NPC_MAX_SLOPE_DEG,
+            LOCOMOTION_NPC_STEP_HEIGHT, LOCOMOTION_NPC_STEP_MIN_WIDTH,
+        };
+        use byroredux_physics::{CharacterController, ContactConfig};
+
+        assert_eq!(
+            LOCOMOTION_NPC_CAPSULE_HALF_HEIGHT,
+            crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_HALF_HEIGHT
+        );
+        assert_eq!(
+            LOCOMOTION_NPC_CAPSULE_RADIUS,
+            crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_RADIUS
+        );
+        assert_eq!(LOCOMOTION_NPC_STEP_HEIGHT, CharacterController::HUMAN.step_height);
+        assert_eq!(
+            LOCOMOTION_NPC_STEP_MIN_WIDTH,
+            CharacterController::HUMAN.step_min_width
+        );
+        assert_eq!(
+            LOCOMOTION_NPC_MAX_SLOPE_DEG,
+            CharacterController::HUMAN.max_slope_climb_deg
+        );
+        assert_eq!(LOCOMOTION_NPC_KCC_OFFSET_BU, ContactConfig::DEFAULT.kcc_offset_bu);
+        // The #2885 invariant the derivation inherits, restated here so a
+        // retuned `ContactConfig::DEFAULT` that violates it fails on the
+        // consumer side too, not just in the physics crate's own pin.
+        assert!(
+            LOCOMOTION_NPC_KCC_OFFSET_BU > 2.0 * ContactConfig::DEFAULT.default_contact_skin_bu,
+            "KCC offset must clear the combined contact skin (#2885)"
+        );
     }
 }

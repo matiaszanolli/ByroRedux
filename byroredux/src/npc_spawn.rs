@@ -347,6 +347,17 @@ fn keyframe_live_ragdoll_bones(
     }
 }
 
+/// The shape-less-actor fallback capsule's half-height (BU, excludes caps).
+/// `pub(crate)`: the NPC KCC (`systems/locomotion.rs`) derives its sweep
+/// capsule from the same pair so walking NPCs sweep with the body the
+/// combat ray targeting already assumes (#4689 — the values were copied
+/// twice with only doc comments tying them together; #2885 already moved
+/// them once and the copies silently aged).
+pub(crate) const FALLBACK_ACTOR_CAPSULE_HALF_HEIGHT: f32 = 32.0;
+/// See [`FALLBACK_ACTOR_CAPSULE_HALF_HEIGHT`] — total height
+/// `2 * (32 + 20) = 104` BU ≈ 1.5 m at the 70 BU/m Havok scale.
+pub(crate) const FALLBACK_ACTOR_CAPSULE_RADIUS: f32 = 20.0;
+
 /// Give an otherwise shape-less live actor one conservative, targetable body.
 ///
 /// FO4's shipped skeletons can contain no bhk bone bodies at all.  Their
@@ -368,8 +379,8 @@ fn install_fallback_actor_collider(world: &mut World, actor_root: EntityId) -> E
     world.insert(
         collider,
         CollisionShape::Capsule {
-            half_height: 32.0,
-            radius: 20.0,
+            half_height: FALLBACK_ACTOR_CAPSULE_HALF_HEIGHT,
+            radius: FALLBACK_ACTOR_CAPSULE_RADIUS,
         },
     );
     world.insert(
