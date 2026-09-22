@@ -152,13 +152,22 @@ resolving each bone name against a per-placement `node_by_name` map the
 loose-NIF loader builds while spawning the full NiNode hierarchy as entities.
 The cell loader (`cell_loader/spawn.rs`) has no equivalent per-placement node
 map at all — it flattens each NIF to a mesh list (see the "Nodes" entry above
-for the same structural split re: `billboard_mode`/#2206) and reads
-`mesh.skin` exactly once, as a boolean negative filter for the
-architecture-trimesh collider fallback. Any cell-placed REFR with skinned
-geometry (Skyrim/FO4 wind-animated cloth banners, chains, hanging/moveable
-statics using `NiSkinInstance`) spawns with skin data parsed and per-vertex
-weights uploaded, but no palette binding — it renders frozen in bind pose.
-NPC actors are unaffected; they always route through the loose-NIF path.
+for the same structural split re: `billboard_mode`/#2206). It reads
+`mesh.skin` several times, and not only as the boolean negative filter for
+the architecture-trimesh collider fallbacks (`spawn.rs:175` proxy-AABB rigid
+filter, `mesh_instance.rs:1349` per-submesh trimesh gate): the proxy walk
+also consumes it **positively** (`spawn.rs:197`) — skinned submeshes
+contribute their bind-pose bounding spheres to the placement proxy instead of
+being skipped. (A second positive consumer the 2026-09-14 audit counted —
+cell-path `MorphSlot` creation — is gone since #4399: slots are created only
+on the loose-NIF / NPC path where the `SkinnedMesh` actually exists, because
+the cell path's raw `mesh.skin.is_some()` gate staged GPU buffers no draw
+read.) What the cell loader still never does is build a palette: any
+cell-placed REFR with skinned geometry (Skyrim/FO4 wind-animated cloth
+banners, chains, hanging/moveable statics using `NiSkinInstance`) spawns with
+skin data parsed and per-vertex weights uploaded, but no `SkinnedMesh`
+binding — it renders frozen in bind pose. NPC actors are unaffected; they
+always route through the loose-NIF path.
 
 Not fixed inline: building `SkinnedMesh` correctly on the cell-loader path
 needs bone nodes to exist as entities in the first place, which requires the
@@ -187,11 +196,24 @@ in-file skins with known ground truth — a unique solve on 239 (69%), and of th
 bones with identical binds), and ZERO wrong**. That asymmetry is the design: the
 failure mode is "no better than before", never "confidently mis-bound".
 
-Open follow-up: **#3930** proposes `SkinAttach` as a better *input* to the same
-solve — it carries the authored names for 100% of the skins #3549 recovers
-geometrically, which would make the match exact by construction rather than by
-bind-pose coincidence. Read the two together; the geometric solve is the
-fallback that #3930 would demote, not duplicate.
+**`SkinAttach` is the primary input now (#3930, closed; #4270).** The former
+"open follow-up" below landed: Starfield `BSGeometry` skins read their
+authored `SkinAttach` bone-name list first (`import/mesh/skin.rs`), with a
+per-entry contract — a `SkinAttach` of the wrong length is evidence the block
+means something else and is declined, restoring the geometric path. The
+geometric solve (#3549) is the **fallback**, and since #4270 it is skipped
+entirely when the resolved `SkinAttach` names cover every bone
+(`attach_names_cover_every_bone`) — exact by construction where the authored
+names exist, bind-pose coincidence only where they do not.
+
+<details><summary>Historical framing (pre-#3930, superseded)</summary>
+
+#3930 proposed `SkinAttach` as a better *input* to the #3549 solve — it
+carries the authored names for 100% of the skins the geometric solve recovers,
+which would make the match exact by construction rather than by bind-pose
+coincidence.
+
+</details>
 
 **Residual note (#2441 / NIFAL-D2-03):** `SkinnedMesh.bones` /
 `skeleton_root` carry `Option`s past the translation boundary
