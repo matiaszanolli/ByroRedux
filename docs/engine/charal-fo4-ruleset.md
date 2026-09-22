@@ -546,6 +546,16 @@ produce the *player's* live HP/AP, while NPCs ship a precomputed `Calculated Hea
 This **retires the "NPC health uses a different path" caveat** — the path is *read
 DNAM*, no formula.
 
+**PRPS/DNAM collision census (#4677, Fallout4.esm, 3 015 `NPC_` records).** PRPS
+also authors Health/AP for most NPCs, so both sources frequently carry the same key:
+PRPS authors Health on 2 848 (2 525 of which also carry DNAM calc_health > 0, and
+**2 490 disagree**), and ActionPoints on 2 800 (2 415 with DNAM AP > 0, **799
+disagree**). Colliding PRPS Health values include 100.0 ×611, 0.0 ×350 (dead on
+spawn if it won), and **−10.0 ×185** (undamageable if it won). The engine's
+precedence is **DNAM wins** — `derive_stored_actor_values` drops the colliding PRPS
+pair rather than relying on push order — pinned by
+`baked_dnam_beats_a_colliding_prps_pair_regardless_of_order`.
+
 ### Implementation path (unblocks FO4 NPC population)
 
 `parse_npc` today reads RNAM/CNAM/TPLT/ACBS + facegen but **not `PRPS`/`DNAM`**. FO4

@@ -377,8 +377,16 @@ fn derive_stored_actor_values(
     )
     .unwrap_or(&[]);
     let mut out = Vec::with_capacity(props.len() + 2);
-    out.extend_from_slice(props);
-    for (avif_editor_id, baked) in [
+    // #4677 (CHAR-2026-09-21-D4-02) — when a baked DNAM value exists, the
+    // PRPS pair for the same key is DROPPED rather than overridden by push
+    // order. The collision is not hypothetical: on `Fallout4.esm`, PRPS
+    // authors Health on 2,848 of 3,015 NPCs (values include 0.0 ×350 and
+    // −10.0 ×185) and DNAM carries a positive calc_health on 2,525 of them
+    // — 2,490 disagreeing pairs kept correct only by the DNAM push coming
+    // second and `from_pairs` being last-write-wins. Making the precedence
+    // explicit means a reorder, sort-by-key or dedup cannot silently
+    // resurrect dead-on-spawn (0) or undamageable (−10) base Health.
+    let baked_pairs: Vec<(u32, f32)> = [
         (
             "Health",
             inherited(|r| r.calculated_health > 0, |r| r.calculated_health),
@@ -390,13 +398,24 @@ fn derive_stored_actor_values(
                 |r| r.calculated_action_points,
             ),
         ),
-    ] {
-        if baked > 0 {
-            if let Some(fid) = index.actor_value_form_id(avif_editor_id) {
-                out.push((fid, f32::from(baked)));
-            }
-        }
-    }
+    ]
+    .into_iter()
+    .filter_map(|(avif_editor_id, baked)| {
+        (baked > 0).then_some(avif_editor_id).and_then(|id| {
+            index
+                .actor_value_form_id(id)
+                .map(|fid| (fid, f32::from(baked)))
+        })
+    })
+    .collect();
+    out.extend_from_slice(
+        &props
+            .iter()
+            .filter(|(fid, _)| !baked_pairs.iter().any(|(baked_fid, _)| baked_fid == fid))
+            .copied()
+            .collect::<Vec<_>>(),
+    );
+    out.extend(baked_pairs);
     out
 }
 
@@ -1298,6 +1317,54 @@ mod tests {
             "Calculated AP → ActionPoints AVIF"
         );
         assert_eq!(pairs.len(), 4, "2 PRPS + 2 baked derived");
+    }
+
+    /// #4677 (CHAR-2026-09-21-D4-02) — the PRPS/DNAM collision is now
+    /// EXPLICIT precedence, not push-order luck. The audit censused
+    /// Fallout4.esm: 2,490 NPCs whose PRPS Health disagrees with a
+    /// positive DNAM calc_health, 185 authoring −10.0 (undamageable if
+    /// it ever won) and 350 authoring 0.0 (dead on spawn). DNAM wins,
+    /// by dropping the colliding PRPS pair rather than by ordering.
+    #[test]
+    fn baked_dnam_beats_a_colliding_prps_pair_regardless_of_order() {
+        let mut index = EsmIndex::default();
+        index.character_rules = CharacterRulesProfile::FALLOUT4;
+        index
+            .actor_values
+            .insert(0x900, avif(0x900, "Health"));
+        index
+            .actor_values
+            .insert(0x901, avif(0x901, "ActionPoints"));
+
+        let npc = NpcRecord {
+            // PRPS authors the collision: negative Health, zero AP — both
+            // would be fatal if the pair outlived the baked push.
+            actor_value_props: vec![(0x900, -10.0), (0x901, 0.0), (0x2A0, 7.0)],
+            calculated_health: 150,
+            calculated_action_points: 100,
+            ..Default::default()
+        };
+        let pairs = derive_npc_actor_values(&npc, &index);
+
+        assert!(
+            !pairs.contains(&(0x900, -10.0)),
+            "the colliding PRPS Health pair must be dropped, not overridden"
+        );
+        assert!(
+            !pairs.contains(&(0x901, 0.0)),
+            "the colliding PRPS AP pair must be dropped"
+        );
+        assert_eq!(
+            pairs.iter().find(|&&(fid, _)| fid == 0x900),
+            Some(&(0x900, 150.0)),
+            "the baked DNAM Health is the one survivor"
+        );
+        assert_eq!(
+            pairs.iter().find(|&&(fid, _)| fid == 0x901),
+            Some(&(0x901, 100.0))
+        );
+        assert!(pairs.contains(&(0x2A0, 7.0)), "non-colliding props stay");
+        assert_eq!(pairs.len(), 3, "1 PRPS + 2 baked");
     }
 
     #[test]
