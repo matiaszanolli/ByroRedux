@@ -2416,6 +2416,49 @@ mod tests {
         })
     }
 
+    /// Concatenate only the bodies of functions carrying a `#[test]`
+    /// attribute (#4411 closing facet, NIFAL-D6 supplement): the guard must
+    /// count assertions that RUN, not assertion text that exists. A pin
+    /// inside a never-called test-module helper (or a `#[cfg(disabled)]`
+    /// experiment) is exactly the dead-`assert!` class #4579 exposed — the
+    /// structural companion catches the orphaned-attribute shape; this
+    /// scopes the scan itself to registered test bodies so the remaining
+    /// helper-fn shape cannot satisfy it either.
+    pub(super) fn test_fn_bodies(bodies: &str) -> String {
+        let mut out = String::with_capacity(bodies.len());
+        let mut rest = bodies;
+        while let Some(at) = rest.find("\n    #[test]") {
+            let after = &rest[at..];
+            // The signature may carry doc comments / other attributes
+            // between the marker and `fn`; skip to the fn keyword.
+            let Some(fn_at) = after.find("fn ") else { break };
+            let Some(brace) = after[fn_at..].find('{') else {
+                break;
+            };
+            let open = fn_at + brace;
+            let mut depth = 0i32;
+            let mut end = None;
+            for (i, ch) in after[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(open + i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(end) = end else { break };
+            out.push_str(&after[open + 1..end]);
+            out.push(';');
+            rest = &after[end + 1..];
+        }
+        out
+    }
+
     /// #3465 — keep the two hand-written texture-role lists in the docs
     /// honest against the struct they describe.
     ///
@@ -2759,7 +2802,8 @@ mod tests {
 mod canonical_completeness_harness {
     use super::*;
     use super::tests::{
-        pins_field, strip_comments_and_literals, strip_inline_test_modules, test_module_bodies,
+        pins_field, strip_comments_and_literals, strip_inline_test_modules, test_fn_bodies,
+        test_module_bodies,
     };
     use byroredux_core::ecs::components::material::EmissiveSource;
     use byroredux_nif::import::{BsEffectShaderData, MaterialTextureSet, NoLightingFalloff};
@@ -3194,8 +3238,16 @@ mod canonical_completeness_harness {
         );
         // Comments and string literals are blanked before any needle is
         // matched (#4411): this guard's own rationale comment used to pin
-        // `alpha` and `alpha_threshold` on its own prose.
-        let tests_code = strip_comments_and_literals(&bodies);
+        // `alpha` and `alpha_threshold` on its own prose. And only
+        // `#[test]`-registered fn bodies feed the scan (#4411 closing
+        // facet): a pin inside an uncalled helper is the dead-`assert!`
+        // class #4579 exposed, in helper form.
+        let tests_code = strip_comments_and_literals(&test_fn_bodies(&bodies));
+        assert!(
+            tests_code.contains("assert"),
+            "the #[test] body extraction found no assertions — the scan's \
+             parse broke, not the tests"
+        );
 
         let start = prod
             .find("let mut material = Material {")
