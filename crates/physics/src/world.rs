@@ -251,9 +251,9 @@ fn restore_invalid_dynamic_bodies(
     bodies: &mut RigidBodySet,
     multibody_joints: &mut MultibodyJointSet,
     snapshots: impl IntoIterator<Item = DynamicBodySnapshot>,
-) -> usize {
+) -> (usize, Vec<RigidBodyHandle>) {
     let mut restored = 0;
-    let mut invalid_articulation_member = None;
+    let mut detached_articulations: Vec<RigidBodyHandle> = Vec::new();
     for snapshot in snapshots {
         let Some(body) = bodies.get_mut(snapshot.handle) else {
             continue;
@@ -266,16 +266,24 @@ fn restore_invalid_dynamic_bodies(
         // island rather than changing its motion type, which would turn a
         // recoverable solver error into a structural multibody panic.
         body.sleep();
-        invalid_articulation_member.get_or_insert(snapshot.handle);
+        // #4687(c) — collect EVERY invalid handle instead of only the
+        // first. `remove_multibody_articulations` detaches the single
+        // articulation containing its argument, so the old
+        // `get_or_insert(first)` left every OTHER simultaneously-invalidated
+        // articulation intact: its un-invalidated links stayed awake and
+        // re-emitted the corrupt pose next substep (a second error log and
+        // one more forfeited backlog per extra articulation). A repeat
+        // handle is a no-op — removal is per-articulation and idempotent.
+        detached_articulations.push(snapshot.handle);
         restored += 1;
     }
-    if let Some(handle) = invalid_articulation_member {
-        // Detach a broken articulation through Rapier's supported API. This
+    for handle in &detached_articulations {
+        // Detach broken articulations through Rapier's supported API. This
         // keeps the restored bodies as sleeping dynamics instead of letting
         // the next contact solve re-enter the known-bad constraint graph.
-        multibody_joints.remove_multibody_articulations(handle, false);
+        multibody_joints.remove_multibody_articulations(*handle, false);
     }
-    restored
+    (restored, detached_articulations)
 }
 
 impl PhysicsWorld {
@@ -594,6 +602,66 @@ impl PhysicsWorld {
             .count()
     }
 
+    /// #4687(b) (PHYS-D2-2026-09-21-02) — `set_position` defers collider
+    /// sync to the next pipeline step, so straight after a restore the
+    /// query pipeline (just advanced incrementally by the step above)
+    /// indexes the restored bodies' colliders at their EXPLODED or NaN
+    /// pose: one frame of ray/shape queries against geometry that was
+    /// already rolled back. Propagate the restored poses into the
+    /// colliders and refresh exactly those leaves. Exposed as a method so
+    /// the same-frame-visibility contract is testable without forcing a
+    /// real solver explosion.
+    fn refresh_query_geometry_after_restore(&mut self, invalid_handles: &[RigidBodyHandle]) {
+        self.bodies
+            .propagate_modified_body_positions_to_colliders(&mut self.colliders);
+        let mut touched_colliders: Vec<ColliderHandle> = Vec::new();
+        for &h in invalid_handles {
+            if let Some(body) = self.bodies.get(h) {
+                touched_colliders.extend(body.colliders().iter().copied());
+            }
+        }
+        self.query_pipeline
+            .update_incremental(&self.colliders, &touched_colliders, &[], false);
+    }
+
+    /// #4687(a) (PHYS-D2-2026-09-21-02) — put dynamics that are ALREADY
+    /// non-finite before any substep to sleep. The per-substep recovery
+    /// snapshot filters such a body out (it has no valid prior pose to
+    /// roll back to), and its NaN coordinates also fail every comparison
+    /// against the kill plane — so pre-#4687 it stayed in the active set
+    /// forever, kept the static-scene fast path permanently off, and was
+    /// recoverable by nothing. Zeroing the velocities and sleeping it
+    /// parks the corruption in place (the same terminal state the
+    /// restore path produces) instead of paying for it every frame.
+    /// Called at the top of `step`, before the fast-path gate, from the
+    /// cheap dynamic index (#4682).
+    fn recover_pre_broken_bodies(&mut self) {
+        let mut parked = 0usize;
+        for &handle in &self.dynamic_bodies {
+            let Some(body) = self.bodies.get_mut(handle) else {
+                continue;
+            };
+            if body.body_type() != RigidBodyType::Dynamic
+                || body_state_is_finite(body)
+                || body.is_sleeping()
+            {
+                continue;
+            }
+            body.set_linvel(Vector::zeros(), false);
+            body.set_angvel(Vector::zeros(), false);
+            body.sleep();
+            parked += 1;
+        }
+        if parked > 0 {
+            log::error!(
+                "physics: parked {parked} dynamic body/bodies whose state was \
+                 already non-finite before the step (corrupt seed or contact); \
+                 they were zeroed and put to sleep — the recovery snapshot has \
+                 no prior pose to roll them back to"
+            );
+        }
+    }
+
     /// Read a dynamic body's mass (BU³ × density). Buoyancy derives the
     /// gravity-cancelling force from this; exposed so the water systems
     /// stay in engine types without reaching into `RigidBodySet`.
@@ -694,6 +762,7 @@ impl PhysicsWorld {
         // keyframed clutter — testing it would defeat the fast path entirely.
         // Real kinematic *motion* is captured by `pending_wake` instead
         // (`push_kinematic` / `set_kinematic_translation` call `wake()`).
+        self.recover_pre_broken_bodies();
         if self.islands.active_dynamic_bodies().is_empty() && !self.pending_wake {
             if self.colliders_dirty {
                 self.query_pipeline.update(&self.colliders);
@@ -770,7 +839,7 @@ impl PhysicsWorld {
                 &(),
             );
             self.accumulator -= PHYSICS_DT;
-            let restored = restore_invalid_dynamic_bodies(
+            let (restored, invalid_handles) = restore_invalid_dynamic_bodies(
                 &mut self.bodies,
                 &mut self.multibody_joints,
                 snapshots,
@@ -780,6 +849,7 @@ impl PhysicsWorld {
                     "physics: restored {restored} dynamic body/bodies after an invalid solve; \
                      affected bodies were put to sleep at their prior pose"
                 );
+                self.refresh_query_geometry_after_restore(&invalid_handles);
                 // Do not spend further catch-up substeps on the same
                 // freshly-invalidated contact island this frame.
                 self.accumulator = 0.0;
@@ -2149,7 +2219,8 @@ mod tests {
         assert!(!body_state_is_finite(&bodies[handle]));
 
         assert_eq!(
-            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot]),
+            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot])
+                .0,
             1
         );
         let body = &bodies[handle];
@@ -2174,11 +2245,169 @@ mod tests {
         );
 
         assert_eq!(
-            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot]),
+            restore_invalid_dynamic_bodies(&mut bodies, &mut MultibodyJointSet::new(), [snapshot])
+                .0,
             1
         );
         assert_eq!(bodies[handle].translation(), &Vector::zeros());
         assert!(bodies[handle].is_sleeping());
+    }
+
+    /// #4687(a) — a dynamic body that is already non-finite when a substep
+    /// starts is zeroed and put to sleep at the top of `step`, instead of
+    /// staying in the active set forever (its NaN also fails every
+    /// kill-plane comparison, so nothing else would ever park it).
+    #[test]
+    fn pre_broken_dynamic_body_is_parked_not_pinned_awake() {
+        let mut w = PhysicsWorld::new();
+        let h = w
+            .bodies
+            .insert(RigidBodyBuilder::dynamic().translation(vector![5.0, 6.0, 7.0]).build());
+        w.dynamic_bodies.push(h);
+        w.bodies
+            .get_mut(h)
+            .unwrap()
+            .set_linvel(vector![f32::NAN, 0.0, 0.0], true);
+        w.wake();
+        assert!(w.step(PHYSICS_DT) >= 1);
+        let body = w.bodies.get(h).unwrap();
+        assert!(
+            body.linvel().iter().all(|v| v.is_finite()),
+            "the NaN velocity must be zeroed: {:?}",
+            body.linvel()
+        );
+        assert!(
+            body.is_sleeping(),
+            "the pre-broken body must be asleep — pre-#4687 it stayed in the \
+             active set forever with the fast path permanently off"
+        );
+    }
+
+    /// #4687(b) — after a restore, the query pipeline must reflect the
+    /// RESTORED pose within the same frame, not the exploded pose the step
+    /// itself had just indexed.
+    #[test]
+    fn restored_pose_is_visible_to_ray_queries_same_frame() {
+        let mut w = PhysicsWorld::new();
+        let h = w
+            .bodies
+            .insert(RigidBodyBuilder::dynamic().translation(vector![100.0, 50.0, 0.0]).build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::ball(2.0).build(),
+            h,
+            &mut w.bodies,
+        );
+        w.update_query_pipeline();
+
+        // Explode (what the corrupt solve did), and let the step's
+        // incremental query-pipeline advance index the exploded pose.
+        w.bodies
+            .get_mut(h)
+            .unwrap()
+            .set_translation(vector![100.0, 5000.0, 0.0], true);
+        w.bodies
+            .propagate_modified_body_positions_to_colliders(&mut w.colliders);
+        let exploded_colliders: Vec<_> = w
+            .bodies
+            .get(h)
+            .unwrap()
+            .colliders()
+            .iter()
+            .copied()
+            .collect();
+        w.query_pipeline.update_incremental(
+            &w.colliders,
+            &exploded_colliders,
+            &[],
+            false,
+        );
+
+        // Restore to the snapshot pose (what restore_invalid_dynamic_bodies
+        // did), then run the post-restore sync under test.
+        w.bodies
+            .get_mut(h)
+            .unwrap()
+            .set_position(
+                rapier3d::math::Isometry::translation(100.0, 50.0, 0.0),
+                false,
+            );
+        w.refresh_query_geometry_after_restore(&[h]);
+
+        let hit = w
+            .cast_ray(
+                byroredux_core::math::Vec3::new(100.0, 60.0, 0.0),
+                byroredux_core::math::Vec3::new(0.0, -1.0, 0.0),
+                100.0,
+                None,
+            )
+            .expect("the restored ball must be hit");
+        let hit_y = 60.0 - hit.distance;
+        assert!(
+            (hit_y - 52.0).abs() < 0.5,
+            "the ray must meet the ball at its RESTORED crown (~52), got \
+             {hit_y} — the pre-#4687 stale tree answered with the exploded \
+             pose (~5002)"
+        );
+    }
+
+    /// #4687(c) — every simultaneously-invalidated body's articulation is
+    /// detached, not just the first invalid body's. Both roots here are
+    /// corrupted past the displacement bound; the returned detach list
+    /// must contain BOTH of them.
+    #[test]
+    fn two_simultaneously_invalidated_articulations_are_both_detached() {
+        use rapier3d::dynamics::JointAxesMask;
+
+        let mut bodies = RigidBodySet::new();
+        let mut multibody_joints = MultibodyJointSet::new();
+        let mk = |bodies: &mut RigidBodySet| {
+            bodies.insert(RigidBodyBuilder::dynamic().build())
+        };
+        let (a, b, c, d) = (mk(&mut bodies), mk(&mut bodies), mk(&mut bodies), mk(&mut bodies));
+        let fixed = || -> GenericJoint {
+            GenericJointBuilder::new(
+                JointAxesMask::LIN_X
+                    | JointAxesMask::LIN_Y
+                    | JointAxesMask::LIN_Z
+                    | JointAxesMask::ANG_X
+                    | JointAxesMask::ANG_Y
+                    | JointAxesMask::ANG_Z,
+            )
+            .into()
+        };
+        multibody_joints.insert(a, b, fixed(), true);
+        multibody_joints.insert(c, d, fixed(), true);
+
+        // Corrupt one body per articulation past the displacement bound.
+        bodies.get_mut(a).unwrap().set_translation(
+            Vector::new(MAX_DYNAMIC_SUBSTEP_DISPLACEMENT + 10.0, 0.0, 0.0),
+            false,
+        );
+        bodies.get_mut(c).unwrap().set_translation(
+            Vector::new(0.0, MAX_DYNAMIC_SUBSTEP_DISPLACEMENT + 10.0, 0.0),
+            false,
+        );
+        let snapshots = [a, c].map(|handle| DynamicBodySnapshot {
+            handle,
+            position: Isometry::identity(),
+        });
+
+        let (restored, detached) =
+            restore_invalid_dynamic_bodies(&mut bodies, &mut multibody_joints, snapshots);
+        assert_eq!(restored, 2);
+        assert!(
+            detached.contains(&a) && detached.contains(&c),
+            "both articulations must be scheduled for detach: {detached:?}"
+        );
+        // And the removals actually detached both articulations: no live
+        // multibody survives (the same cascade assertion shape the ragdoll
+        // release tests use).
+        assert_eq!(
+            multibody_joints.multibodies().count(),
+            0,
+            "both articulations must be detached — pre-#4687 the second one \
+             survived and re-emitted its corrupt pose next substep"
+        );
     }
 
     /// A falling dynamic body is awake, so the fast path must NOT skip it —
