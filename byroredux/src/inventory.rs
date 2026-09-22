@@ -136,6 +136,15 @@ impl Resource for PlayerInventoryTemplate {}
 pub(crate) struct PlayerCharacterTemplate {
     values: Option<byroredux_core::ecs::components::ActorValues>,
     vitals: Option<byroredux_core::ecs::components::ActorVitals>,
+    /// #4678 (CHAR-2026-09-21-D4-03) — the Player record's own level. The
+    /// same derivation that produced `values` is keyed on it, so a player
+    /// without a `CharacterLevel` read 0 in `GetLevel` /
+    /// `GetXPForNextLevel` while its Health assumed level 1.
+    level: Option<u16>,
+    /// #4678 — race/class provenance straight off the resolved Player
+    /// record: exactly what `derive_npc_actor_values` already consumed,
+    /// which is the honest value the old note claimed didn't exist.
+    background: Option<byroredux_core::character::Background>,
 }
 
 impl Resource for PlayerCharacterTemplate {}
@@ -261,6 +270,14 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
     if pairs.is_empty() {
         return PlayerCharacterTemplate::default();
     }
+    // #4678 — level + Background ride the same resolved Player record the
+    // derivation just consumed, so the stamps can't disagree with the
+    // values they sit beside.
+    let level = byroredux_plugin::esm::records::effective_actor_level(player);
+    let background = Some(byroredux_core::character::Background {
+        race_form_id: player.race_form_id,
+        class_form_id: player.class_form_id,
+    });
     // The ruleset is optional (profiles that build none); without it the
     // derivation stays the NPC answer, the pre-#4674 behaviour, rather
     // than an invented empty seed.
@@ -274,7 +291,7 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 .filter(|(id, _)| !player_only.contains(id))
                 .collect();
             let mut values = byroredux_core::ecs::components::ActorValues::from_pairs(seed);
-            let level = byroredux_plugin::esm::records::effective_actor_level(player).max(0) as u16;
+            let level = level.max(0) as u16;
             for &key in &player_only {
                 // Same #2933 contract `GetActorValue` enforces: only
                 // Absolute rows are actor-value readings; a Multiplier
@@ -299,6 +316,8 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 vitals: health.map(|health| byroredux_core::ecs::components::ActorVitals {
                     health,
                 }),
+                level: Some(level),
+                background,
             }
         }
         None => {
@@ -312,6 +331,8 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 vitals: health.map(|health| byroredux_core::ecs::components::ActorVitals {
                     health,
                 }),
+                level: Some(level.max(0) as u16),
+                background,
             }
         }
     }
@@ -607,6 +628,22 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
     }
     if let Some(vitals) = character.vitals {
         world.insert(player, vitals);
+    }
+    // #4678 — the level the Health derivation assumed, and the race/class
+    // provenance from the same record: `GetLevel`/`GetXPForNextLevel` and
+    // the loot/melee level-1 defaults now read real data instead of
+    // divergent fallbacks (0 in one consumer, 1 in the next).
+    if let Some(level) = character.level {
+        world.insert(
+            player,
+            byroredux_core::character::CharacterLevel {
+                level,
+                xp: 0,
+            },
+        );
+    }
+    if let Some(background) = character.background {
+        world.insert(player, background);
     }
 }
 
@@ -2891,6 +2928,7 @@ mod tests {
             PLAYER_NPC_FORM_ID,
             NpcRecord {
                 class_form_id: 0x2000,
+                race_form_id: 0x0007,
                 level: 1,
                 ..Default::default()
             },
@@ -2913,6 +2951,21 @@ mod tests {
             world.get::<ActorVitals>(player).map(|v| *v),
             Some(ActorVitals {
                 health: index.health_actor_value_key().unwrap()
+            })
+        );
+        // #4678 — level + Background ride the same attach, off the same
+        // Player record the derivation consumed: GetLevel reads 1 (not 0),
+        // GetXPForNextLevel computes for L1 (not L0), and the race/class
+        // provenance is the record the values actually came from.
+        assert_eq!(
+            world.get::<byroredux_core::character::CharacterLevel>(player).map(|l| l.level),
+            Some(1)
+        );
+        assert_eq!(
+            world.get::<byroredux_core::character::Background>(player).map(|b| *b),
+            Some(byroredux_core::character::Background {
+                race_form_id: 0x0007,
+                class_form_id: 0x2000,
             })
         );
     }

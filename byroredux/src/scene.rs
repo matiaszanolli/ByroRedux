@@ -1120,17 +1120,16 @@ fn spawn_player_body(
         // representable and gives a future `AddPerk` effect somewhere to
         // write.
         //
-        // SIBLING (#3158's completeness box, updated by #4458):
-        // `ActorValues` + `ActorVitals` are now stamped by
+        // SIBLING (#3158's completeness box, updated by #4458, then
+        // #4674/#4678): `ActorValues` + `ActorVitals` are stamped by
         // `inventory::attach_to_player` from the base Player `NPC_` record
-        // via the same `derive_npc_actor_values` path every NPC takes — a
-        // populated set, never the empty one this note used to warn about
-        // (an empty set would flip `melee_damage_charal_bonus` onto a
-        // zero-SPECIAL computation). `CharacterLevel` and `Background`
-        // remain deliberately absent: they still have the single-writer
-        // shape (`NpcSpawnJob` only), and `Background` has no honest value
-        // until the player has a real race/class. Populating those is
-        // CHARAL work (#3004 / #2986), not a component stub.
+        // via the same `derive_npc_actor_values` path every NPC takes, the
+        // ruleset's PlayerOnly rows (Health/AP) are evaluated for the
+        // player at stamping, and `CharacterLevel` + `Background` ride the
+        // same attach (level + race/class straight off the resolved Player
+        // record — the exact provenance the derivation itself consumed).
+        // The old withhold note's deferral pointed at #3004/#2986, both
+        // closed and about NPC derivation; there was no live tracker.
         world.insert(body, byroredux_core::character::Perks::default());
         crate::inventory::attach_to_player(world, body);
         // The player participates in QUST aliases exactly like an authored
