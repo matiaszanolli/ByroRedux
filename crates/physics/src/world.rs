@@ -218,6 +218,19 @@ pub struct PhysicsWorld {
     /// `bodies.insert` calls that bypass these points (test fixtures) are
     /// not indexed — production code has none.
     pub(crate) dynamic_bodies: Vec<RigidBodyHandle>,
+    /// Lifetime count of solver-explosion recoveries (`restored > 0` in
+    /// `step`). #4683 (PHYS-D3-2026-09-21-01): the recovery used to report
+    /// itself only through one `log::error!`, invisible to every ragdoll
+    /// stability gate — the FO3 P2 pass certified a corpse whose
+    /// articulation the recovery itself had detached. Surfaced via
+    /// [`Self::recovery_counts`], `phys.stats` and `ragdoll.status`.
+    recoveries_total: u64,
+    /// Recoveries during the most recent `step` call (reset at entry).
+    recoveries_last_frame: u32,
+    /// Lifetime count of pre-broken bodies parked by
+    /// [`Self::recover_pre_broken_bodies`] (#4687a) — the same
+    /// non-finite-state class, one step earlier in its lifetime.
+    bodies_parked_total: u64,
 }
 
 /// A dynamic body's state immediately before one Rapier substep.
@@ -324,6 +337,9 @@ impl PhysicsWorld {
             pending_wake: true,
             colliders_dirty: false,
             dynamic_bodies: Vec::new(),
+            recoveries_total: 0,
+            recoveries_last_frame: 0,
+            bodies_parked_total: 0,
         }
     }
 
@@ -589,6 +605,19 @@ impl PhysicsWorld {
         true
     }
 
+    /// #4683 (PHYS-D3-2026-09-21-01) — solver-explosion recovery counts:
+    /// `(lifetime total, recoveries in the most recent `step` call,
+    /// pre-broken bodies parked at step entry)`. The recovery's only
+    /// pre-#4683 signal was one `log::error!`; every ragdoll stability
+    /// gate read post-recovery state and could not see it happen.
+    pub fn recovery_counts(&self) -> (u64, u32, u64) {
+        (
+            self.recoveries_total,
+            self.recoveries_last_frame,
+            self.bodies_parked_total,
+        )
+    }
+
     /// Live dynamic bodies tracked by the recovery-snapshot index (#4682).
     /// Diagnostic only; a stale handle not yet compacted out is excluded.
     pub fn dynamic_body_count(&self) -> usize {
@@ -659,6 +688,7 @@ impl PhysicsWorld {
                  they were zeroed and put to sleep — the recovery snapshot has \
                  no prior pose to roll them back to"
             );
+            self.bodies_parked_total = self.bodies_parked_total.saturating_add(parked as u64);
         }
     }
 
@@ -762,6 +792,7 @@ impl PhysicsWorld {
         // keyframed clutter — testing it would defeat the fast path entirely.
         // Real kinematic *motion* is captured by `pending_wake` instead
         // (`push_kinematic` / `set_kinematic_translation` call `wake()`).
+        self.recoveries_last_frame = 0;
         self.recover_pre_broken_bodies();
         if self.islands.active_dynamic_bodies().is_empty() && !self.pending_wake {
             if self.colliders_dirty {
@@ -849,6 +880,8 @@ impl PhysicsWorld {
                     "physics: restored {restored} dynamic body/bodies after an invalid solve; \
                      affected bodies were put to sleep at their prior pose"
                 );
+                self.recoveries_total = self.recoveries_total.saturating_add(1);
+                self.recoveries_last_frame = self.recoveries_last_frame.saturating_add(restored as u32);
                 self.refresh_query_geometry_after_restore(&invalid_handles);
                 // Do not spend further catch-up substeps on the same
                 // freshly-invalidated contact island this frame.
@@ -2281,6 +2314,41 @@ mod tests {
             "the pre-broken body must be asleep — pre-#4687 it stayed in the \
              active set forever with the fast path permanently off"
         );
+        // #4683 — the parking is counted, so a gate can assert on it.
+        assert_eq!(w.recovery_counts().2, 1);
+    }
+
+    /// #4683 — the recovery counter increments through a REAL substep
+    /// explosion (a 1e9 BU/s solve jumps the body past the displacement
+    /// bound in one tick), `last_frame` resets on the next step, and the
+    /// total persists.
+    #[test]
+    fn recovery_counter_counts_a_real_substep_explosion() {
+        let mut w = PhysicsWorld::new();
+        let h = w
+            .bodies
+            .insert(RigidBodyBuilder::dynamic().translation(vector![0.0, 10.0, 0.0]).build());
+        w.dynamic_bodies.push(h);
+        w.bodies
+            .get_mut(h)
+            .unwrap()
+            .set_linvel(vector![1.0e9, 0.0, 0.0], true);
+        w.wake();
+        assert_eq!(w.recovery_counts(), (0, 0, 0));
+
+        assert!(w.step(PHYSICS_DT) >= 1);
+        assert_eq!(
+            w.recovery_counts(),
+            (1, 1, 0),
+            "the exploding substep must count exactly one recovery"
+        );
+        let body = w.bodies.get(h).unwrap();
+        assert!(body.is_sleeping() && body.translation().x.is_finite());
+
+        // A later step reports no recovery of its own; the total persists.
+        w.wake();
+        w.step(PHYSICS_DT);
+        assert_eq!(w.recovery_counts(), (1, 0, 0));
     }
 
     /// #4687(b) — after a restore, the query pipeline must reflect the

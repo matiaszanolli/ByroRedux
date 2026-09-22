@@ -80,7 +80,23 @@ fn status(world: &World, args: &str) -> Result<String, &'static str> {
         max_speed = max_speed.max(speed);
     }
     let complete = !rag.bodies.is_empty() && live == rag.bodies.len();
-    Ok(format!("ragdoll.status: actor={actor} skeleton={skeleton} bodies={} live={live} complete={complete} finite={finite} max_distance={max_distance:.3} max_speed={max_speed:.3}", rag.bodies.len()))
+    // #4683 — every state above is read AFTER the recovery may have rolled
+    // bodies back, so an exploded-then-restored ragdoll reports complete/
+    // finite and passes the p2 gate. Surface the recovery counter and the
+    // LIVE multibody/joint counts: a recovery detaches the ragdoll's
+    // articulation, so joints below `joints` (and any nonzero recovery
+    // count) is the tell that stability here was bought by the recovery.
+    let (recoveries_total, recoveries_last_frame, parked) = physics.recovery_counts();
+    let live_joints = rag
+        .joints
+        .iter()
+        .filter(|jh| physics.multibody_joints.get(**jh).is_some())
+        .count();
+    Ok(format!(
+        "ragdoll.status: actor={actor} skeleton={skeleton} bodies={} live={live} complete={complete} finite={finite} max_distance={max_distance:.3} max_speed={max_speed:.3} joints={} live_joints={live_joints} recoveries_total={recoveries_total} recoveries_last_frame={recoveries_last_frame} parked_pre_broken={parked}",
+        rag.bodies.len(),
+        rag.joints.len(),
+    ))
 }
 
 #[cfg(test)]

@@ -194,6 +194,9 @@ impl ConsoleCommand for PhysStatsCommand {
         let (awake_dynamic, live_kinematic) = pw.active_island_counts();
         let statics = pw.static_colliders_aabb();
         let pending = pw.pending_wake();
+        // #4683 — solver-explosion recovery is invisible in post-recovery
+        // state; the counter is the only signal a gate or operator can read.
+        let (recoveries_total, recoveries_last_frame, parked) = pw.recovery_counts();
         drop(pw);
 
         let mut lines = vec![
@@ -201,6 +204,10 @@ impl ConsoleCommand for PhysStatsCommand {
             format!(
                 "  awake dynamic={awake_dynamic} · kinematic bodies={live_kinematic} \
                  pending_wake={pending}"
+            ),
+            format!(
+                "  recoveries: total={recoveries_total} last_frame={recoveries_last_frame} \
+                 parked_pre_broken={parked}"
             ),
         ];
         // `awake_dynamic == 0 && !pending_wake` is exactly the static-scene
