@@ -580,7 +580,7 @@ pub(crate) fn plan_character_spawn(
         let probe_lift = floor_probe_lift(controller);
         let authoring = world
             .try_resource::<crate::cell_loader::NifImportRegistry>()
-            .map(|registry| registry.collision_authoring_totals());
+            .map(|registry| registry.collision_authoring_totals_registry_wide());
         byroredux_physics::dump_spawn_collider_census(
             world,
             byroredux_physics::SpawnCensusProbe {

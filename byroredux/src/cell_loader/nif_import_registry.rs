@@ -484,7 +484,27 @@ impl NifImportRegistry {
     /// arm the census was mis-reporting.
     ///
     /// [`CollisionAuthoringSummary`]: byroredux_nif::import::collision::CollisionAuthoringSummary
-    pub(crate) fn collision_authoring_totals(&self) -> byroredux_physics::SpawnCensusAuthoring {
+    /// #4684 — test-only seeding so other modules' tests can populate the
+    /// registry's authoring totals without duplicating the field-by-field
+    /// literal or reaching through `pub(super)` fields.
+    #[cfg(test)]
+    pub(crate) fn test_support_seed_authoring(&mut self, key: &str, classic: u32, new_physics: u32) {
+        let mut entry = crate::cell_loader::nif_import_registry_tests::dummy_cached();
+        let e = std::sync::Arc::get_mut(&mut entry).unwrap();
+        e.collision_authoring.classic = classic;
+        e.collision_authoring.new_physics = new_physics;
+        self.insert(key.to_string(), Some(entry));
+    }
+
+    /// #4684 (PHYS-D6-2026-09-21-01) — the name states the scope the old
+    /// name hid: this sums EVERY cached NIF in the process (up to the LRU
+    /// cap, across all cells visited), not any particular cell or column.
+    /// The census verdict must not read it as column-scoped authoring. A
+    /// column-scoped sum needs a placement→cache-key join on spawned
+    /// entities, which does not exist yet.
+    pub(crate) fn collision_authoring_totals_registry_wide(
+        &self,
+    ) -> byroredux_physics::SpawnCensusAuthoring {
         let mut out = byroredux_physics::SpawnCensusAuthoring::default();
         for key in self.core.keys() {
             let Some(Some(entry)) = self.core.get(key) else {

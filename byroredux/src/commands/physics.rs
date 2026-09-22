@@ -138,7 +138,7 @@ impl ConsoleCommand for PhysCensusCommand {
         // three-way split #2874 built specifically for this command.
         let authoring = world
             .try_resource::<crate::cell_loader::NifImportRegistry>()
-            .map(|registry| registry.collision_authoring_totals());
+            .map(|registry| registry.collision_authoring_totals_registry_wide());
 
         // Same capsule and walkability threshold the spawn rungs sweep with,
         // so a live census is directly comparable with the boot-time one.
@@ -239,6 +239,40 @@ impl ConsoleCommand for PhysStatsCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #4684 (PHYS-D6-2026-09-21-01) — the verdict must not claim a
+    /// translation drop from registry-wide totals. A registry populated by
+    /// an UNRELATED NIF (nonzero classic/new_physics/phantom totals) plus
+    /// a genuinely empty probed column describes a terrain gap, an
+    /// unstreamed cell, or interior void just as well as a drop — the
+    /// pre-#4684 arm printed "DROPPED IN TRANSLATION" for exactly that
+    /// shape.
+    #[test]
+    fn empty_column_with_registry_wide_totals_does_not_claim_a_translation_drop() {
+        let mut world = World::new();
+        world.register::<GlobalTransform>();
+        world.insert_resource(PhysicsWorld::new());
+        let mut registry = crate::cell_loader::NifImportRegistry::new();
+        registry.test_support_seed_authoring("meshes\\unrelated\\somewhere_else.nif", 4, 2);
+        world.insert_resource(registry);
+
+        let out = PhysCensusCommand.execute(&world, "0 0");
+        let joined = out.lines.join("\n");
+        assert!(
+            !joined.contains("DROPPED IN TRANSLATION"),
+            "registry-wide totals next to an empty column must not be read as \
+             a column-scoped translation drop (#4684); got: {joined}"
+        );
+        assert!(
+            joined.contains("NOT scoped to this column"),
+            "the totals line must state its (registry-wide) scope (#4684); \
+             got: {joined}"
+        );
+        assert!(
+            joined.contains("classic=4 new_physics=2"),
+            "the populated totals must still be reported: {joined}"
+        );
+    }
 
     /// Regression for #3966 (PHYS-D7-2026-09-06-02). `phys.census` used to
     /// hard-code `authoring: None` with a comment claiming "the live path

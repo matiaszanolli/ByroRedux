@@ -16,7 +16,7 @@
 use super::*;
 use crate::parsed_nif_cache::ParsedNifCache;
 
-fn dummy_cached() -> Arc<CachedNifImport> {
+pub(crate) fn dummy_cached() -> Arc<CachedNifImport> {
     Arc::new(CachedNifImport {
         meshes: Vec::new(),
         geometry_dedup: Vec::new(),

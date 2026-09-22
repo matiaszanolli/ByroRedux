@@ -454,12 +454,16 @@ fn dump_awake_fallers(world: &World) {
 /// landing while the spawn-height geometry landed in the "omitted" tail.
 const SPAWN_CENSUS_DETAIL_CAP: usize = 24;
 
-/// Cell-wide collision-authoring totals, forwarded into the census so a
-/// `0 total` column can name its cause (#2874).
+/// Collision-authoring totals, forwarded into the census so a `0 total`
+/// column can name its cause (#2874).
 ///
-/// Summed by the caller over the cell's `CachedNifImport` entries — the same
-/// `CollisionAuthoringSummary` counts the spawn path already uses to pick the
-/// packed-Havok proxy. Without them the census's `0 total` bucket conflates
+/// Summed by the caller over a scope it chooses. Today's live callers feed
+/// the PROCESS-LIFETIME import registry (every cached NIF this session, up
+/// to the LRU cap — `collision_authoring_totals_registry_wide`), NOT the
+/// probed column: #4684. The census wording reflects that scope and no
+/// longer claims a column-level drop from it. A column-scoped sum — over
+/// placement roots whose bounds intersect the probe, joined to their cache
+/// keys — is what would license the strong verdict again. Without them the census's `0 total` bucket conflates
 /// "nothing was authored" with "N classic shapes were authored and every one
 /// was dropped in translation", which is exactly the distinction that summary
 /// was built to remove (`docs/engine/physics.md`).
@@ -784,27 +788,38 @@ pub fn spawn_collider_census_report(world: &World, probe: SpawnCensusProbe) -> V
         )),
     }
     // #2874 — split `0 total` into "nothing authored" vs "authored, dropped
-    // in translation". `CollisionAuthoringSummary` already computes the
-    // discriminator; the pre-fix census read the Rapier side only and so
-    // re-introduced the exact conflation that summary exists to remove.
+    // in translation". #4684 (PHYS-D6-2026-09-21-01): the totals the live
+    // callers feed are REGISTRY-WIDE (every cached NIF this session, up to
+    // the LRU cap), not scoped to the probed column — so a nonzero total
+    // next to an empty column used to be reported as an asserted
+    // translation drop when it is equally an unstreamed cell, a terrain
+    // gap, or the void outside an interior shell. The verdict now states
+    // both numbers and their scope and refuses the drop claim; a
+    // column-scoped sum (placement roots intersecting the column joined to
+    // their cache keys) is what would earn it back.
     match authoring {
         Some(a) if entries.is_empty() && a.classic + a.new_physics + a.phantom > 0 => {
             out.push(format!(
-                "#2874 …but the cell's NIFs DID author collision: classic={} new_physics={} \
-             phantom={} plane={} ⇒ the shapes were DROPPED IN TRANSLATION (decode/registration), \
-             not absent from the source. `new_physics>0` additionally means FO4+ packed Havok whose \
-             payload is still opaque — the compatibility proxy should have covered it.",
+                "#2874 …the column holds NO collider-bearing entities. Registry-wide authoring \
+             totals (every cached NIF this session, NOT scoped to this column, #4684): \
+             classic={} new_physics={} phantom={} plane={}. A translation drop in this column is \
+             neither confirmed nor excluded by these numbers — an empty column is also what an \
+             unstreamed cell, a terrain gap, or the void outside an interior shell looks like. \
+             Check whether placements exist in this column before blaming translation. \
+             (`new_physics>0` anywhere means FO4+ packed Havok whose payload is still opaque.)",
                 a.classic, a.new_physics, a.phantom, a.plane_shapes,
             ))
         }
         Some(_) if entries.is_empty() => out.push(
-            "#2874 …and the cell's NIFs authored NO collision at all (classic=0 new_physics=0 \
-             phantom=0) ⇒ genuinely non-colliding content or a REFR-level gap, NOT a \
+            "#2874 …the column holds NO collider-bearing entities, and this session's \
+             registry-wide authoring totals are zero (no cached NIF authored collision anywhere \
+             this session) ⇒ genuinely non-colliding content or a REFR-level gap, NOT a \
              translation drop."
                 .to_string(),
         ),
         Some(a) => out.push(format!(
-            "#2874 cell collision authoring: classic={} new_physics={} phantom={} plane={} \
+            "#2874 registry-wide collision authoring totals (every cached NIF this session, NOT \
+             column-scoped, #4684): classic={} new_physics={} phantom={} plane={} \
              (plane = parsed bhkPlaneShape dropped with no collider, #1334/#4407).",
             a.classic, a.new_physics, a.phantom, a.plane_shapes,
         )),
