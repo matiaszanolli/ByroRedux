@@ -2,6 +2,7 @@
 //! lighting templates, image-space adapters, activators, terminals.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
+use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use std::collections::HashMap;
@@ -1494,6 +1495,33 @@ pub struct TerminalMenuItem {
     /// layout was found for them, and the observed values are not
     /// self-explanatory. Captured verbatim rather than guessed at.
     pub flags: u8,
+    /// #4641 — `UNAM` — the "Display Text" an `ANAM = 8` menu item
+    /// actually shows in-game, distinct from [`Self::text`]. 1 804 of
+    /// FO4's 1 818 `ANAM = 8` items carry their text here; FO3/FNV
+    /// author no UNAM, leaving this empty.
+    pub display_text: String,
+    /// #4641 — `CTDA`/`CTDT` conditions authored inside this item's
+    /// sub-record group (the xEdit FO4 `TERM` menu-item struct ends in a
+    /// conditions array). Empty on FO3/FNV.
+    pub conditions: ConditionList,
+}
+
+/// One `BTXT`/`DESC` body block, with the conditions that gate it.
+///
+/// #4641 — xEdit's FO4 `TERM` lays the body out as a `BSIZ`-counted
+/// array of `{BTXT, Conditions}` structs: 82 `Fallout4.esm` terminals
+/// author 2–7 conditional bodies. The pre-fix single `body_text` field
+/// kept only the last `BTXT` and discarded every condition. FO3/FNV's
+/// `DESC` opens a body through the same struct, giving one shape for
+/// both eras.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TerminalBody {
+    /// `BTXT` (FO4) or `DESC` (FO3/FNV) — this body's text, routed
+    /// through the lstring reader.
+    pub text: String,
+    /// Conditions authored between this body and the next structural
+    /// opener (a following `BTXT`/`DESC` or the first `ITXT`).
+    pub conditions: ConditionList,
 }
 
 /// `TERM` terminal record — FO3/FNV computer consoles. Carries a
@@ -1523,9 +1551,21 @@ pub struct TermRecord {
     /// scripts on successful hack). Live since M47.0 via
     /// `EsmIndex::base_record_script` + `cell_loader::references::attach`.
     pub script_form_id: u32,
-    /// The terminal's displayed body text — `DESC` on FO3/FNV, `BTXT` on
-    /// FO4. Routed through the lstring reader, so FO4's 4-byte table id
-    /// resolves instead of being read as a 3-character cstring (#4171).
+    /// #4641 — `NAM0` — the terminal's header text (lstring). Authored
+    /// by 291 of FO4's 778 terminals; absent (empty) on FO3/FNV and the
+    /// rest.
+    pub header_text: String,
+    /// #4641 — `WNAM` — the welcome text shown on first access
+    /// (lstring). Authored by 467 of FO4's 778 terminals; absent
+    /// (empty) on FO3/FNV.
+    pub welcome_text: String,
+    /// Every authored body block — `DESC` on FO3/FNV, the `BSIZ`-counted
+    /// `{BTXT, Conditions}` array on FO4 — in authored order (#4641).
+    /// Pre-fix this collapsed to a single last-wins `BTXT`.
+    pub bodies: Vec<TerminalBody>,
+    /// The terminal's displayed body text — every [`Self::bodies`]
+    /// entry's `text`, joined with `"\n"` (#4641). Single-body records
+    /// (all of FO3/FNV, 696 of 778 FO4) read exactly as before.
     pub body_text: String,
     /// BSIZ — body-text size. FO4-only and a **u32**, not the u8 this
     /// field used to be: all 778 `Fallout4.esm` terminals ship a 4-byte
@@ -1577,11 +1617,33 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     // left unread: their payloads are measured but their field layouts
     // are unsourced, and inventing a decode is what produced this bug the
     // first time.
+    //
+    // #4641 — the structural openers are `BTXT`/`DESC` (bodies) and
+    // `ITXT` (menu items). A `CTDA` attaches to whichever element opened
+    // most recently — the xEdit FO4 layout ends both the body struct and
+    // the menu-item struct with a conditions array.
+    let mut current_body: Option<TerminalBody> = None;
+    // `true` when the last structural opener was a menu item, `false`
+    // when it was a body, `None` before any opener.
+    let mut in_menu_item = None::<bool>;
     for sub in subs {
         match &sub.sub_type {
-            // Body text: DESC on FO3/FNV, BTXT on FO4. No shipped record
-            // carries both, so a single sink is correct.
-            b"DESC" | b"BTXT" => out.body_text = read_lstring_or_zstring(&sub.data),
+            // Body openers: DESC on FO3/FNV, BTXT on FO4. No shipped
+            // record carries both, and #4641 models the FO4 body as a
+            // BSIZ-counted array — each opener starts a fresh body.
+            b"DESC" | b"BTXT" => {
+                if let Some(finished) = current_body.take() {
+                    out.bodies.push(finished);
+                }
+                current_body = Some(TerminalBody {
+                    text: read_lstring_or_zstring(&sub.data),
+                    conditions: ConditionList::default(),
+                });
+                in_menu_item = Some(false);
+            }
+            // #4641 — header / welcome text (lstrings), FO4-only.
+            b"NAM0" => out.header_text = read_lstring_or_zstring(&sub.data),
+            b"WNAM" => out.welcome_text = read_lstring_or_zstring(&sub.data),
             b"BSIZ" => {
                 out.body_size = match sub.data.len() {
                     4 => u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
@@ -1589,14 +1651,20 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     _ => 0,
                 };
             }
-            // ITXT opens a new menu item; RNAM / ANAM / ITID attach to the
-            // one it opened. Bare RNAM/ANAM before any ITXT cannot occur
-            // in shipped content and is dropped rather than synthesizing a
-            // textless item.
-            b"ITXT" => out.menu_items.push(TerminalMenuItem {
-                text: read_lstring_or_zstring(&sub.data),
-                ..Default::default()
-            }),
+            // ITXT opens a new menu item; RNAM / ANAM / ITID / UNAM
+            // attach to the one it opened. Bare RNAM/ANAM before any ITXT
+            // cannot occur in shipped content and is dropped rather than
+            // synthesizing a textless item.
+            b"ITXT" => {
+                if let Some(finished) = current_body.take() {
+                    out.bodies.push(finished);
+                }
+                out.menu_items.push(TerminalMenuItem {
+                    text: read_lstring_or_zstring(&sub.data),
+                    ..Default::default()
+                });
+                in_menu_item = Some(true);
+            }
             b"RNAM" => {
                 if let Some(item) = out.menu_items.last_mut() {
                     item.result_text = read_lstring_or_zstring(&sub.data);
@@ -1612,9 +1680,41 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     item.item_id = u16::from_le_bytes([sub.data[0], sub.data[1]]);
                 }
             }
+            // #4641 — `UNAM` — the text an `ANAM = 8` ("Display Text")
+            // menu item actually shows in-game (1 804 of 1 818 such FO4
+            // items carry it).
+            b"UNAM" => {
+                if let Some(item) = out.menu_items.last_mut() {
+                    item.display_text = read_lstring_or_zstring(&sub.data);
+                }
+            }
+            // #4641 — conditions attach to the most recently opened
+            // element (body or menu item), matching the xEdit FO4
+            // struct layout. `CTDT` is the legacy encoding; see
+            // `push_ctda`'s doc.
+            b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2" => match (in_menu_item, &mut current_body) {
+                (Some(false), Some(body)) => push_ctda(sub, remap, &mut body.conditions),
+                (Some(true), _) => {
+                    if let Some(item) = out.menu_items.last_mut() {
+                        push_ctda(sub, remap, &mut item.conditions);
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
+    if let Some(finished) = current_body.take() {
+        out.bodies.push(finished);
+    }
+    // #4641 — derive the flat convenience field from the full sequence,
+    // the same shape `parse_info` uses for its multi-segment texts.
+    out.body_text = out
+        .bodies
+        .iter()
+        .map(|b| b.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     out
 }
 
@@ -2033,6 +2133,82 @@ mod tests {
         assert_eq!(t.menu_items[1].item_id, 2);
         // FO4 authors RNAM on only 545 of 2 227 entries; absent is empty.
         assert!(t.menu_items.iter().all(|i| i.result_text.is_empty()));
+    }
+
+    /// #4641 — the FO4 TERM residual #4171 left: `NAM0`/`WNAM` header and
+    /// welcome text, the multi-`BTXT` body array with per-body conditions,
+    /// and `UNAM` display text on `ANAM = 8` menu items. 82 shipped FO4
+    /// terminals author 2–7 conditional bodies; 1 804 of 1 818 `ANAM = 8`
+    /// items carry their shown text in UNAM.
+    #[test]
+    fn fo4_term_decodes_nam0_wnam_unam_and_conditional_btxt_bodies() {
+        // 24-byte CTDA (FO4 shape): comparator byte 0 (Eq), unused[3],
+        // comparand f32, function u32, param_1 u32, param_2 u32, run-on
+        // u32 — same layout `dialogue.rs`'s fixtures build.
+        let ctda = |function: u32, param_1: u32| {
+            let mut d = Vec::with_capacity(24);
+            d.push(0u8);
+            d.extend_from_slice(&[0, 0, 0]);
+            d.extend_from_slice(&1.0f32.to_le_bytes());
+            d.extend_from_slice(&function.to_le_bytes());
+            d.extend_from_slice(&param_1.to_le_bytes());
+            d.extend_from_slice(&0u32.to_le_bytes());
+            d.extend_from_slice(&0u32.to_le_bytes());
+            d
+        };
+        let subs = vec![
+            sub(b"EDID", b"DungeonTerminalWithLogs\0"),
+            sub(b"NAM0", b"ROBCO TERMLINK\0"),
+            sub(b"WNAM", b"Welcome to RobCo Industries\0"),
+            sub(b"BSIZ", &2u32.to_le_bytes()),
+            sub(b"BTXT", b"Log entry 1: unconditionally shown.\0"),
+            sub(b"BTXT", b"Log entry 2: locked until the safe is opened.\0"),
+            // The second body's condition — must land on body 2, not the
+            // menu item that follows it.
+            sub(b"CTDA", &ctda(72, 0x0002_0ABC)),
+            sub(b"ISIZ", &1u32.to_le_bytes()),
+            sub(b"ITXT", b"Ignore\0"),
+            sub(b"ANAM", &[0x08]),
+            sub(b"ITID", &1u16.to_le_bytes()),
+            sub(b"UNAM", b"Open the safe.\0"),
+            // The item's own condition — must land on the item.
+            sub(b"CTDA", &ctda(72, 0x0002_0DEF)),
+        ];
+        let t = parse_term(0x0002_6001, &subs, &None);
+        assert_eq!(t.header_text, "ROBCO TERMLINK");
+        assert_eq!(t.welcome_text, "Welcome to RobCo Industries");
+
+        assert_eq!(t.bodies.len(), 2, "each BTXT opens its own body");
+        assert_eq!(t.bodies[0].text, "Log entry 1: unconditionally shown.");
+        assert!(
+            t.bodies[0].conditions.is_empty(),
+            "body 1 authored no conditions"
+        );
+        assert_eq!(t.bodies[1].text, "Log entry 2: locked until the safe is opened.");
+        assert_eq!(
+            t.bodies[1].conditions.len(),
+            1,
+            "body 2's CTDA must stay on body 2"
+        );
+        assert_eq!(t.bodies[1].conditions[0].param_1, 0x0002_0ABC);
+        assert_eq!(
+            t.body_text,
+            "Log entry 1: unconditionally shown.\nLog entry 2: locked until the safe is opened.",
+            "the flat convenience field joins every body"
+        );
+
+        assert_eq!(t.menu_items.len(), 1);
+        assert_eq!(t.menu_items[0].text, "Ignore");
+        assert_eq!(
+            t.menu_items[0].display_text, "Open the safe.",
+            "UNAM carries the text an ANAM=8 item actually shows"
+        );
+        assert_eq!(
+            t.menu_items[0].conditions.len(),
+            1,
+            "the item's CTDA must land on the item, not a body"
+        );
+        assert_eq!(t.menu_items[0].conditions[0].param_1, 0x0002_0DEF);
     }
 
     /// Regression: #4171. The three sub-records the old parser mined for
