@@ -83,6 +83,8 @@ pub enum VdfError {
     Unexpected { found: char, at: usize },
     #[error("unclosed block opened at byte {0}")]
     UnclosedBlock(usize),
+    #[error("VDF nesting exceeds the {0}-block depth cap at byte {1} — tampered or pathological input")]
+    DepthLimit(usize, usize),
 }
 
 /// Parse a whole KeyValues document into its implicit root object.
@@ -92,9 +94,15 @@ pub enum VdfError {
 pub fn parse(text: &str) -> Result<Value, VdfError> {
     let bytes: Vec<char> = text.chars().collect();
     let mut cursor = Cursor { bytes, at: 0 };
-    let entries = cursor.parse_entries(None)?;
+    let entries = cursor.parse_entries(None, 0)?;
     Ok(Value::Object(entries))
 }
+
+/// #4673 (PAR-D6-2026-09-21-04) — `parse_entries` recursed once per `{`
+/// block with no cap, so a pathological (tampered) VDF could overflow
+/// the stack. Real Steam files nest a handful deep; 32 is far beyond
+/// anything genuine and bounds the recursion.
+const MAX_VDF_DEPTH: usize = 32;
 
 struct Cursor {
     bytes: Vec<char>,
@@ -107,7 +115,11 @@ impl Cursor {
     fn parse_entries(
         &mut self,
         opened_at: Option<usize>,
+        depth: usize,
     ) -> Result<Vec<(String, Value)>, VdfError> {
+        if depth > MAX_VDF_DEPTH {
+            return Err(VdfError::DepthLimit(MAX_VDF_DEPTH, self.at));
+        }
         let mut entries = Vec::new();
         loop {
             self.skip_trivia();
@@ -135,7 +147,7 @@ impl Cursor {
                         Some('{') => {
                             let opened = self.at;
                             self.at += 1;
-                            let nested = self.parse_entries(Some(opened))?;
+                            let nested = self.parse_entries(Some(opened), depth + 1)?;
                             entries.push((key, Value::Object(nested)));
                         }
                         Some('"') => {
@@ -303,5 +315,17 @@ mod tests {
             parse("}"),
             Err(VdfError::Unexpected { found: '}', .. })
         ));
+    }
+
+    /// #4673 (PAR-D6-2026-09-21-04) — pathological `{` nesting must hit
+    /// the depth cap instead of recursing until the stack overflows.
+    /// Real Steam files nest a handful of blocks deep.
+    #[test]
+    fn pathological_nesting_hits_the_depth_cap() {
+        let text: String = "\"k\"\n{\n".repeat(64);
+        match super::parse(&text) {
+            Err(super::VdfError::DepthLimit(cap, _)) => assert_eq!(cap, 32),
+            other => panic!("expected DepthLimit, got {other:?}"),
+        }
     }
 }

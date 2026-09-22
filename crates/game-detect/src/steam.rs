@@ -80,6 +80,9 @@ pub fn library_paths(steam_root: &Path) -> Vec<PathBuf> {
     for relative in ["steamapps/libraryfolders.vdf", "config/libraryfolders.vdf"] {
         let path = steam_root.join(relative);
         let Ok(text) = std::fs::read_to_string(&path) else {
+            // #4673 — match the parse-error path: an unreadable or
+            // non-UTF-8 manifest should not vanish without a trace.
+            log::debug!("game-detect: could not read {} (absent or unreadable)", path.display());
             continue;
         };
         let root = match vdf::parse(&text) {
@@ -137,6 +140,8 @@ pub fn installs_in_library(library: &Path) -> Vec<SteamInstall> {
     for app in catalog::STEAM_APPS {
         let manifest = steamapps.join(format!("appmanifest_{}.acf", app.appid));
         let Ok(text) = std::fs::read_to_string(&manifest) else {
+            // #4673 — same visibility rule as above.
+            log::debug!("game-detect: could not read {} (absent or unreadable)", manifest.display());
             continue;
         };
         let parsed = match vdf::parse(&text) {
@@ -155,6 +160,25 @@ pub fn installs_in_library(library: &Path) -> Vec<SteamInstall> {
         // Trust the manifest's `installdir` over the catalog's: it is what
         // Steam actually did on this machine.
         let install_dir = state.get_str("installdir").unwrap_or(app.install_dir);
+        // #4673 — containment. `Path::join` with an ABSOLUTE right-hand
+        // side replaces the base entirely, so a tampered manifest's
+        // `installdir` would be reported as a detected install anywhere
+        // on disk; `..` components escape more quietly. Steam writes a
+        // bare directory name, so anything absolute or climbing is
+        // rejected outright.
+        let authored = std::path::Path::new(install_dir);
+        if authored.is_absolute()
+            || authored
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            log::warn!(
+                "game-detect: {} manifest authors suspicious installdir {:?} — skipped",
+                app.profile,
+                install_dir
+            );
+            continue;
+        }
         let install_path = steamapps.join("common").join(install_dir);
         if !install_path.is_dir() {
             log::debug!(
@@ -284,5 +308,62 @@ mod tests {
         fs::create_dir_all(root.join("steamapps")).unwrap();
         fs::write(root.join("steamapps/libraryfolders.vdf"), "\"unterminated").unwrap();
         assert_eq!(library_paths(&root), vec![root]);
+    }
+
+    /// #4673 (PAR-D6-2026-09-21-04) — `steamapps/common/`.join(installdir)
+    /// with an ABSOLUTE right-hand side replaces the base entirely, and
+    /// `..` escapes it quietly; a tampered manifest must not be reported
+    /// as a detected install. A benign relative installdir still detects.
+    #[test]
+    fn absolute_or_escaping_installdir_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("Steam");
+        let steamapps = library.join("steamapps");
+        let app = catalog::STEAM_APPS
+            .iter()
+            .find(|a| a.appid == 22380)
+            .expect("the FNV catalog entry the fixture uses");
+
+        // Control: authored bare name with the directory present detects.
+        fs::create_dir_all(steamapps.join("common").join(app.install_dir)).unwrap();
+        fs::write(
+            steamapps.join(format!("appmanifest_{}.acf", app.appid)),
+            format!(
+                "\"AppState\"\n{{\n\t\"installdir\"\t\"{}\"\n}}\n",
+                app.install_dir
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            installs_in_library(&library).len(),
+            1,
+            "the benign manifest must still detect"
+        );
+
+        // Absolute: join would discard the common/ base entirely.
+        let absolute = dir.path().join("elsewhere");
+        fs::write(
+            steamapps.join(format!("appmanifest_{}.acf", app.appid)),
+            format!(
+                "\"AppState\"\n{{\n\t\"installdir\"\t\"{}\"\n}}\n",
+                absolute.display()
+            ),
+        )
+        .unwrap();
+        assert!(
+            installs_in_library(&library).is_empty(),
+            "an absolute installdir must be skipped, not joined"
+        );
+
+        // Traversal via `..` components.
+        fs::write(
+            steamapps.join(format!("appmanifest_{}.acf", app.appid)),
+            "\"AppState\"\n{\n\t\"installdir\"\t\"..\\..\\evil\"\n}\n",
+        )
+        .unwrap();
+        assert!(
+            installs_in_library(&library).is_empty(),
+            "an escaping installdir must be skipped"
+        );
     }
 }
