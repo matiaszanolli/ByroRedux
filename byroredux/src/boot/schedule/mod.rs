@@ -615,9 +615,15 @@ mod system_access_declaration_tests {
     /// Every storage/resource type acquired inside `body`.
     fn acquired_in(body: &str, types: &mut Vec<String>) {
         // `.query_mut::<crate::Foo>()` -> `Foo`. Needle composed at runtime.
+        // #4573 — mode is part of the record: a WRITE acquisition
+        // (query_mut / resource_mut / try_resource_mut) must be declared
+        // with `.writes::<T>()` specifically, not merely named.
         let open = format!("{}{}", "::", "<");
         for (index, _) in body.match_indices(open.as_str()) {
             let before = &body[..index];
+            let is_write = before.ends_with("query_mut")
+                || before.ends_with("resource_mut")
+                || before.ends_with("try_resource_mut");
             let is_acquire = ["query", "query_mut", "resource", "resource_mut"]
                 .iter()
                 .any(|form| before.ends_with(form) || before.ends_with(&format!("try_{form}")));
@@ -634,8 +640,26 @@ mod system_access_declaration_tests {
                 continue;
             }
             let short = path.rsplit("::").next().unwrap_or(path).to_owned();
-            if !types.contains(&short) {
-                types.push(short);
+            // #4573 — a write subsumes a read of the same type; record the
+            // strongest mode. ("write" sorts after "read" lexicographically
+            // is NOT relied on; explicit check.)
+            let entry = if is_write {
+                format!("{short}=write")
+            } else {
+                format!("{short}=read")
+            };
+            let read_form = format!("{short}=read");
+            let write_form = format!("{short}=write");
+            if types.contains(&entry)
+                || (!is_write && types.contains(&write_form))
+            {
+                continue;
+            }
+            if is_write && types.contains(&read_form) {
+                let at = types.iter().position(|t| *t == read_form).unwrap();
+                types[at] = entry;
+            } else {
+                types.push(entry);
             }
         }
     }
@@ -699,16 +723,70 @@ mod system_access_declaration_tests {
              extraction broke, not the declaration"
         );
         let declared = declaration(system);
-        let missing: Vec<&String> = types.iter().filter(|ty| !declared.contains(*ty)).collect();
+        // #4573 — strip `//` comment lines before matching, match whole
+        // identifiers (a `Transform` acquisition is no longer satisfied by
+        // `.reads::<GlobalTransform>()`), and require a WRITE acquisition
+        // to be declared with `.writes::<T>()` specifically.
+        let declared_code: Vec<&str> = declared
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect();
+        let declared_code = declared_code.join("\n");
+        let missing: Vec<&String> = types
+            .iter()
+            .filter(|ty| {
+                let (name, mode) = ty
+                    .split_once('=')
+                    .unwrap_or((ty.as_str(), "read"));
+                // Both checks are path-suffix aware: a declaration may
+                // spell the type as a full path
+                // (`.writes::<byroredux_physics::CharacterController>()`),
+                // so match on the line's last path segment.
+                let named = declared_code
+                    .lines()
+                    .any(|line| line.contains("::<") && {
+                        let t = line.trim();
+                        let inner = t
+                            .trim_start_matches(".reads_resource")
+                            .trim_start_matches(".writes_resource")
+                            .trim_start_matches(".reads")
+                            .trim_start_matches(".writes")
+                            .trim_start_matches("::<")
+                            .trim_end_matches(',')
+                            .trim_end_matches(">()");
+                        inner.rsplit("::").next() == Some(name)
+                    });
+                let write_declared = declared_code
+                    .lines()
+                    .any(|line| {
+                        let t = line.trim();
+                        if !t.starts_with(".writes_resource") && !t.starts_with(".writes") {
+                            return false;
+                        }
+                        let inner = t
+                            .trim_start_matches(".writes_resource")
+                            .trim_start_matches(".writes")
+                            .trim_start_matches("::<")
+                            .trim_end_matches(',')
+                            .trim_end_matches(">()");
+                        inner.rsplit("::").next() == Some(name)
+                    });
+                match mode {
+                    "write" => !named || !write_declared,
+                    _ => !named,
+                }
+            })
+            .collect();
         assert!(
             missing.is_empty(),
-            "{system} acquires {missing:?} without declaring them. For a \
+            "{system} acquires {missing:?} without declaring them (name=mode; \
+             a `=write` entry also requires a .writes::<T> declaration). For a \
              parallel system this makes `install_runtime_registries`'s \
              `known_conflict_count() == 0` unsound — the analyzer cannot see \
              a conflict on a type nobody declared. For an exclusive it is the \
              comparison basis for promoting the system to a parallel lane, \
              and an under-declaration makes that promotion look safe when it \
-             is not (#3951/#3473/#4064)"
+             is not (#3951/#3473/#4064/#4573)"
         );
     }
 
