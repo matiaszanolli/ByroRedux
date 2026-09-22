@@ -447,7 +447,7 @@ pub(crate) fn parse_ltex_group(
     end: usize,
     ltex_to_txst: &mut HashMap<u32, u32>,
     direct_paths: &mut HashMap<u32, String>,
-    ltex_to_grass: &mut HashMap<u32, u32>,
+    ltex_to_grass: &mut HashMap<u32, Vec<u32>>,
 ) -> Result<()> {
     parse_ltex_group_inner(reader, end, ltex_to_txst, direct_paths, ltex_to_grass, 0)
 }
@@ -457,7 +457,7 @@ fn parse_ltex_group_inner(
     end: usize,
     ltex_to_txst: &mut HashMap<u32, u32>,
     direct_paths: &mut HashMap<u32, String>,
-    ltex_to_grass: &mut HashMap<u32, u32>,
+    ltex_to_grass: &mut HashMap<u32, Vec<u32>>,
     depth: u32,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
@@ -498,11 +498,18 @@ fn parse_ltex_group_inner(
                         ]));
                         ltex_to_txst.insert(header.form_id, txst_id);
                     }
-                    // FO3/FNV/Skyrim: GNAM → GRAS form ID.  As with TNAM,
-                    // the record header is already remapped but the reference
-                    // inside the payload must be mapped through this plugin's
-                    // master table before the ground-cover consumer can look
-                    // it up in `EsmIndex::grasses`.
+                    // FO3/FNV/Skyrim/FO4: GNAM → GRAS form ID. As with
+                    // TNAM, the record header is already remapped but the
+                    // reference inside the payload must be mapped through
+                    // this plugin's master table before the ground-cover
+                    // consumer can look it up in `EsmIndex::grasses`.
+                    //
+                    // #4642 — xEdit defines LTEX grasses as an *array*
+                    // (`wbRArrayS('Grasses', wbFormIDCk(GNAM, ...))`):
+                    // 151 of 184 grass-bearing vanilla LTEXs author 2–4
+                    // GNAMs. The old `HashMap::insert` kept only the
+                    // last-authored grass per LTEX; the map now holds
+                    // every grass in authored order.
                     b"GNAM" if sub.data.len() >= 4 => {
                         let grass_id = reader.remap_form_id(u32::from_le_bytes([
                             sub.data[0],
@@ -511,7 +518,10 @@ fn parse_ltex_group_inner(
                             sub.data[3],
                         ]));
                         if grass_id != 0 {
-                            ltex_to_grass.insert(header.form_id, grass_id);
+                            ltex_to_grass
+                                .entry(header.form_id)
+                                .or_default()
+                                .push(grass_id);
                         }
                     }
                     // Oblivion: ICON → direct texture path.

@@ -432,7 +432,9 @@ impl Component for TerrainCellOrigin {
 /// water height (§3's `moisture` term). Sitting on the terrain entity beside
 /// [`TerrainCellOrigin`] means the per-frame chunk collection reads one
 /// entity per cell rather than re-walking the plugin index every frame.
-#[derive(Debug, Clone, Copy)]
+// Not `Copy` since #4642: `authored_grass` carries per-lane `Vec<u32>`
+// grass arrays.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct TerrainCoverInputs {
     /// `cover_affinity` per LAND splat layer, in the same layer order the
     /// vertex splat lanes use. Unpainted slots hold the default rather than
@@ -448,15 +450,17 @@ pub(crate) struct TerrainCoverInputs {
     /// would be an entire high-desert worldspace with no ground cover and
     /// nothing in the log to say why.
     pub(crate) water_y: f32,
-    /// Authored `GRAS` FormIDs associated with the same eight LAND splat
-    /// lanes as `layer_affinity`. `None` means the layer has no `LTEX.GNAM`
-    /// link (or is the executable's default land texture). The IDs stay on
-    /// the terrain entity because authored-model residency is a streaming
-    /// concern, not a parameter for the procedural density shader.
+    /// Authored `GRAS` FormID lists associated with the same eight LAND
+    /// splat lanes as `layer_affinity` — each lane carries its LTEX's
+    /// full `GNAM` array in authored order (#4642), empty when the layer
+    /// has no `LTEX.GNAM` link (or is the executable's default land
+    /// texture). The lists stay on the terrain entity because
+    /// authored-model residency is a streaming concern, not a parameter
+    /// for the procedural density shader.
     // Kept at the terrain/streaming boundary for the authored-card tier;
     // procedural ground-cover intentionally does not consume these IDs.
     #[allow(dead_code)]
-    pub(crate) authored_grass: [Option<u32>; 8],
+    pub(crate) authored_grass: [Vec<u32>; 8],
 }
 impl Component for TerrainCoverInputs {
     type Storage = SparseSetStorage<Self>;

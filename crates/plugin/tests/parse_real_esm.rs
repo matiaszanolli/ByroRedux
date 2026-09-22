@@ -3816,9 +3816,11 @@ fn skyrim_ltex_grass_links_resolve_to_real_gras_records() {
         !links.is_empty(),
         "Skyrim authored LTEX.GNAM grass links, but none were retained"
     );
+    // #4642 — each value is the LTEX's full authored GNAM array; every
+    // entry of every array must resolve through EsmIndex::grasses.
     let resolved = links
         .values()
-        .filter(|grass_id| index.grasses.contains_key(grass_id))
+        .filter(|grass_ids| grass_ids.iter().all(|g| index.grasses.contains_key(g)))
         .count();
     assert_eq!(
         resolved,

@@ -248,7 +248,7 @@ pub struct EsmCellIndex {
     pub statics:                     HashMap<u32, StaticObject>,                       // FormID → base form
     pub landscape_textures:          HashMap<u32, String>,                             // LTEX → texture path
     pub landscape_texture_sets:      HashMap<u32, TextureSet>,                         // LTEX → its TXST bundle
-    pub landscape_grasses:           HashMap<u32, u32>,                                // LTEX → authored GRAS FormID
+    pub landscape_grasses:           HashMap<u32, Vec<u32>>,                          // LTEX → authored GRAS FormIDs (GNAM array, authored order — #4642)
     pub worldspaces:                 HashMap<String, WorldspaceRecord>,
     pub worldspace_climates:         HashMap<String, u32>,                             // worldspace → CLMT FormID
     pub texture_sets:                HashMap<u32, TextureSet>,                         // TXST → 8-slot bundle

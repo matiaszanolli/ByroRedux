@@ -695,3 +695,64 @@ fn starfield_pbr_slots_parse_without_dropping_the_record() {
     assert!(warn_unmodelled_txst_slot(b"TX17"));
     assert!(!warn_unmodelled_txst_slot(b"TX17"));
 }
+
+/// #4642 — `LTEX.GNAM` is an *array* of grass references (xEdit
+/// `wbRArrayS('Grasses', wbFormIDCk(GNAM, 'Grass', [GRAS]))`): 151 of 184
+/// grass-bearing vanilla LTEXs author 2–4 of them. The old
+/// `HashMap::insert` kept only the last-authored grass; the map must now
+/// hold every grass in authored order.
+#[test]
+fn ltex_gnam_array_survives_decode_in_authored_order() {
+    use super::super::support::parse_ltex_group;
+
+    // One LTEX with three GNAMs (the FNV-heavy 3-grass shape) + a second
+    // LTEX with one.
+    let mut buf = Vec::new();
+    for (form_id, grasses) in [
+        (0x0000_2001u32, vec![0xA1u32, 0xA2, 0xA3]),
+        (0x0000_2002, vec![0xB7u32]),
+    ] {
+        let mut sub_data = Vec::new();
+        for g in grasses {
+            sub_data.extend_from_slice(b"GNAM");
+            sub_data.extend_from_slice(&4u16.to_le_bytes());
+            sub_data.extend_from_slice(&g.to_le_bytes());
+        }
+        buf.extend_from_slice(b"LTEX");
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&form_id.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&sub_data);
+    }
+    // Wrap in a top-level LTEX GRUP (24-byte header).
+    let mut group = Vec::new();
+    group.extend_from_slice(b"GRUP");
+    group.extend_from_slice(&((buf.len() + 24) as u32).to_le_bytes());
+    group.extend_from_slice(b"LTEX");
+    group.extend_from_slice(&0u32.to_le_bytes());
+    group.extend_from_slice(&[0u8; 8]);
+    group.extend_from_slice(&buf);
+
+    let mut reader = EsmReader::new(&group);
+    let header = reader.read_group_header().expect("group header");
+    let end = reader.group_content_end(&header);
+    let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
+    let mut direct_paths: HashMap<u32, String> = HashMap::new();
+    let mut ltex_to_grass: HashMap<u32, Vec<u32>> = HashMap::new();
+    parse_ltex_group(
+        &mut reader,
+        end,
+        &mut ltex_to_txst,
+        &mut direct_paths,
+        &mut ltex_to_grass,
+    )
+    .expect("parse must succeed");
+
+    assert_eq!(
+        ltex_to_grass.get(&0x0000_2001),
+        Some(&vec![0xA1, 0xA2, 0xA3]),
+        "all three authored grasses must survive, in authored order"
+    );
+    assert_eq!(ltex_to_grass.get(&0x0000_2002), Some(&vec![0xB7]));
+}

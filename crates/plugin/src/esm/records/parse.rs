@@ -158,7 +158,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let mut txst_textures: HashMap<u32, String> = HashMap::new();
     let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
     let mut ltex_to_txst: HashMap<u32, u32> = HashMap::new();
-    let mut landscape_grasses: HashMap<u32, u32> = HashMap::new();
+    let mut landscape_grasses: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut scols: HashMap<u32, ScolRecord> = HashMap::new();
     let mut packins: HashMap<u32, PkinRecord> = HashMap::new();
     let mut movables: HashMap<u32, MovableStaticRecord> = HashMap::new();

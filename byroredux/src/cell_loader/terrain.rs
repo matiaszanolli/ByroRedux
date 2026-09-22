@@ -338,21 +338,32 @@ fn resolve_cell_splat_layer(
     }
 }
 
-/// Resolve the authored `LTEX.GNAM` association in GPU splat-lane order.
+/// Resolve the authored `LTEX.GNAM` grass association in GPU splat-lane
+/// order.
 ///
 /// The terrain shader sees only the texture/weight lanes, while the future
 /// authored-card tier needs the originating vegetation form. Keeping this as
 /// a pure mapping makes that order explicit and testable without a Vulkan
 /// context or an on-disk archive.
+///
+/// #4642 — `GNAM` is an *array*: 151 of 184 grass-bearing vanilla LTEXs
+/// author 2–4 grasses, so each lane carries the full authored species
+/// list in authored order (empty = no `LTEX.GNAM` link, or the
+/// executable's default land texture). The authored-card consumer tier
+/// (#4413) picks its species mix per lane from this list instead of the
+/// single last-wins grass the pre-fix map kept.
 pub(super) fn authored_grass_for_splat_layers(
     layers: &[CellSplatLayer],
-    landscape_grasses: &HashMap<u32, u32>,
-) -> [Option<u32>; 8] {
-    let mut out = [None; 8];
+    landscape_grasses: &HashMap<u32, Vec<u32>>,
+) -> [Vec<u32>; 8] {
+    let mut out: [Vec<u32>; 8] = Default::default();
     for (slot, layer) in out.iter_mut().zip(layers.iter()) {
-        *slot = layer
+        if let Some(grasses) = layer
             .ltex_form_id
-            .and_then(|ltex_id| landscape_grasses.get(&ltex_id).copied());
+            .and_then(|ltex_id| landscape_grasses.get(&ltex_id))
+        {
+            *slot = grasses.clone();
+        }
     }
     out
 }
@@ -661,7 +672,7 @@ pub(super) struct TerrainSpawnCtx<'a> {
     pub landscape_textures: &'a HashMap<u32, String>,
     pub landscape_texture_sets: &'a HashMap<u32, TextureSet>,
     /// LTEX.GNAM associations keyed by the LAND layer's LTEX form ID.
-    pub landscape_grasses: &'a HashMap<u32, u32>,
+    pub landscape_grasses: &'a HashMap<u32, Vec<u32>>,
     pub blas_specs: &'a mut Vec<(u32, u32, u32)>,
     /// Y-up water-plane height for this cell, or `None` when it has none.
     ///

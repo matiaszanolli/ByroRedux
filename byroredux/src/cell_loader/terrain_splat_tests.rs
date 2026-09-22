@@ -30,11 +30,38 @@ fn authored_grass_binding_follows_the_packed_splat_lane_order() {
     let mut second = mk_layer(alpha.clone());
     second.ltex_form_id = Some(0x20);
     let third = mk_layer(alpha);
-    let map = std::collections::HashMap::from([(0x10, 0xA0), (0x20, 0xB0)]);
+    let map = std::collections::HashMap::from([(0x10, vec![0xA0]), (0x20, vec![0xB0])]);
 
     assert_eq!(
         authored_grass_for_splat_layers(&[first, second, third], &map),
-        [Some(0xA0), Some(0xB0), None, None, None, None, None, None]
+        [
+            vec![0xA0],
+            vec![0xB0],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new()
+        ]
+    );
+}
+
+/// #4642 — `LTEX.GNAM` is an array (151 of 184 grass-bearing vanilla
+/// LTEXs author 2–4 species). The per-lane binding must carry the whole
+/// authored list in authored order, not the last-wins single grass the
+/// pre-#4642 map kept.
+#[test]
+fn authored_grass_binding_carries_the_full_gnam_array_in_order() {
+    let alpha = [None, None, None, None];
+    let mut layer = mk_layer(alpha);
+    layer.ltex_form_id = Some(0x30);
+    let map = std::collections::HashMap::from([(0x30, vec![0x111, 0x222, 0x333])]);
+    let bound = authored_grass_for_splat_layers(&[layer], &map);
+    assert_eq!(bound[0], vec![0x111, 0x222, 0x333]);
+    assert!(
+        bound[1..].iter().all(|l| l.is_empty()),
+        "lanes with no LTEX link stay empty"
     );
 }
 

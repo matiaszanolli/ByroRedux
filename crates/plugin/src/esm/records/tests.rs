@@ -592,8 +592,8 @@ fn ltex_gnam_maps_landscape_layer_to_authored_grass() {
     let index = parse_esm(&esm).expect("synthetic Skyrim LTEX parses");
     assert_eq!(
         index.cells.landscape_grasses.get(&ltex_id),
-        Some(&grass_id),
-        "LTEX.GNAM must survive as the layer's authored GRAS reference"
+        Some(&vec![grass_id]),
+        "LTEX.GNAM must survive as the layer's authored GRAS reference (#4642: as a 1-entry array)"
     );
 }
 
