@@ -1031,6 +1031,21 @@ impl VulkanContext {
         if self.exposure_meter_failed {
             return;
         }
+        // #4591 — the raw-debug gate every later post pass carries. In auto
+        // mode the meter would otherwise meter the debug image (false
+        // colour, raw AO, …) and adapt the persistent per-slot exposure
+        // toward it; presentation bypasses exposure for raw views, so the
+        // damage shows as a pop + re-adaptation from the wrong starting
+        // value when the view is dismissed. Fixed mode (the default) just
+        // re-writes its constant, so the gate is only load-bearing in auto
+        // mode — but skipping both keeps the slot untouched by debug
+        // frames, matching the siblings' unconditional shape.
+        if crate::shader_constants::render_debug_requires_raw_output(
+            self.render_debug_flags,
+            self.render_debug_mode.shader_value(),
+        ) {
+            return;
+        }
         // SAFETY: `cmd` is recording outside a render pass; the meter
         // pipeline, this frame's exposure slot, and the composite scene view
         // are live for this frame.
@@ -1758,6 +1773,18 @@ mod tests {
             "the TAA dispatch must respect the shared raw-output policy — \
              post-move it filters the final image and would temporally \
              smooth raw correctness views otherwise"
+        );
+        // #4591 — the exposure meter carries the same gate: in auto mode it
+        // would adapt the persistent per-slot exposure toward the debug
+        // image, and dismissing the view pops + re-adapts from the wrong
+        // starting value.
+        let meter_fn_start = src
+            .find("fn record_exposure_meter_pass(")
+            .expect("record_exposure_meter_pass must exist");
+        let meter_body = &src[meter_fn_start..];
+        assert!(
+            meter_body.contains("render_debug_requires_raw_output("),
+            "the exposure meter must respect the shared raw-output policy (#4591)"
         );
         assert!(
             src.contains("scene_color_layout: source_layout,"),
