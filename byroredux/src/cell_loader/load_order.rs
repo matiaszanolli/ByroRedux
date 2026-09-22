@@ -159,6 +159,8 @@ impl GlobalFormIdResolver {
             let local = match slot {
                 esm::reader::GlobalSlot::Regular(_) => form_id & 0x00ff_ffff,
                 esm::reader::GlobalSlot::Light(_) => form_id & 0x0000_0fff,
+                // #4639 — Starfield medium masters keep a 16-bit object id.
+                esm::reader::GlobalSlot::Medium(_) => form_id & 0x0000_ffff,
             };
             records[position].push((local, *record_type));
         }
@@ -170,6 +172,8 @@ impl GlobalFormIdResolver {
                 let kind = match slot {
                     esm::reader::GlobalSlot::Regular(_) => PluginKind::Regular,
                     esm::reader::GlobalSlot::Light(_) => PluginKind::Light,
+                    // #4639 — Starfield medium masters.
+                    esm::reader::GlobalSlot::Medium(_) => PluginKind::Medium,
                 };
                 PluginInfo::new(name, plugin.0.to_be_bytes(), kind)
             })
@@ -267,6 +271,8 @@ impl GlobalFormIdResolver {
         let local = match slot {
             esm::reader::GlobalSlot::Regular(_) => form_id & 0x00FF_FFFF,
             esm::reader::GlobalSlot::Light(_) => form_id & 0x0000_0FFF,
+            // #4639 — Starfield medium masters keep a 16-bit object id.
+            esm::reader::GlobalSlot::Medium(_) => form_id & 0x0000_FFFF,
         };
         Some(FormIdPair {
             plugin,
@@ -281,6 +287,8 @@ impl GlobalFormIdResolver {
         let valid = match slot {
             esm::reader::GlobalSlot::Regular(_) => local != 0 && local <= 0x00ff_ffff,
             esm::reader::GlobalSlot::Light(_) => local != 0 && local <= 0x0000_0fff,
+            // #4639 — Starfield medium masters keep a 16-bit object id.
+            esm::reader::GlobalSlot::Medium(_) => local != 0 && local <= 0x0000_ffff,
         };
         valid.then(|| slot.compose(local))
     }
@@ -317,12 +325,16 @@ pub(super) fn plugin_for_form_id(form_id: u32, load_order: &LoadOrder) -> Option
 }
 
 /// Inverse of [`esm::reader::GlobalSlot::compose`]: which slot owns this global
-/// FormID. `0xFE` is the light-master space, where the owner is the 12 bits
-/// below the top byte; anything else is a full-byte regular slot.
+/// FormID. `0xFE` is the light-master space (12-bit sub-index below the top
+/// byte), `0xFD` the Starfield medium-master space (8-bit sub-index, #4639);
+/// anything else is a full-byte regular slot.
 fn global_slot_of(form_id: u32) -> esm::reader::GlobalSlot {
     const LIGHT_MASTER_BYTE: u32 = 0xFE;
+    const MEDIUM_MASTER_BYTE: u32 = 0xFD;
     if (form_id >> 24) == LIGHT_MASTER_BYTE {
         esm::reader::GlobalSlot::Light(((form_id >> 12) & 0x0FFF) as u16)
+    } else if (form_id >> 24) == MEDIUM_MASTER_BYTE {
+        esm::reader::GlobalSlot::Medium(((form_id >> 16) & 0x00FF) as u16)
     } else {
         esm::reader::GlobalSlot::Regular((form_id >> 24) as u8)
     }
@@ -569,14 +581,16 @@ where
 
     let mut merged = esm::records::EsmIndex::default();
     // #1554 — global-slot assignment. Regular plugins consume a full
-    // top-byte slot (0x00–0xFD); ESL / light-master plugins (TES4 0x0200)
-    // share the 0xFE byte via a 12-bit sub-index. Masters precede their
+    // top-byte slot (0x00–0xFD); ESL / light-master plugins share the
+    // 0xFE byte via a 12-bit sub-index; Starfield medium masters (#4639)
+    // share the 0xFD byte via an 8-bit sub-index. Masters precede their
     // dependents, so a single forward pass assigns every slot before it's
     // referenced.
     let mut slots: Vec<esm::reader::GlobalSlot> = Vec::with_capacity(plugin_paths.len());
     let mut dependencies: Vec<Vec<u32>> = Vec::with_capacity(plugin_paths.len());
     let mut next_regular: u16 = 0;
     let mut next_light: u16 = 0;
+    let mut next_medium: u16 = 0;
 
     for (idx, path) in plugin_paths.iter().enumerate() {
         let bytes = std::fs::read(path)
@@ -600,8 +614,13 @@ where
                 .map_err(|e| anyhow::anyhow!("Failed to read TES4 header for '{}': {}", path, e))?
         };
 
-        let plugin_slot =
-            allocate_global_slot(header.light_master, &mut next_regular, &mut next_light)?;
+        let plugin_slot = allocate_global_slot(
+            header.light_master,
+            header.medium_master,
+            &mut next_regular,
+            &mut next_light,
+            &mut next_medium,
+        )?;
         slots.push(plugin_slot);
 
         let remap = build_remap_for_plugin(path, &header, plugin_slot, &load_order, &slots)?;
@@ -640,14 +659,48 @@ where
 
 /// Allocate one global load-order slot without ever entering reserved or
 /// truncated FormID space. Regular plugins own `0x00..=0xFD`; light masters
-/// share `0xFE` through a 12-bit `0x000..=0xFFF` sub-index.
+/// share `0xFE` through a 12-bit `0x000..=0xFFF` sub-index; Starfield
+/// medium masters (#4639) share `0xFD` through an 8-bit sub-index.
+///
+/// A medium master's `0xFD` space collides with a regular plugin at byte
+/// `0xFD`, so once any medium master is in the order, regular allocation
+/// stops one slot earlier (`0xFC`). On games without medium masters
+/// (everything but Starfield) behaviour is byte-identical to the pre-#4639
+/// 254-slot cap.
 fn allocate_global_slot(
     light_master: bool,
+    medium_master: bool,
     next_regular: &mut u16,
     next_light: &mut u16,
+    next_medium: &mut u16,
 ) -> anyhow::Result<esm::reader::GlobalSlot> {
+    const MAX_LIGHT_SLOT: u16 = 0x0FFF;
+    const MAX_MEDIUM_SLOT: u16 = 0x00FF;
+    const MAX_REGULAR_SLOT_FULL: u16 = 0x00FD;
+    const MAX_REGULAR_SLOT_WITH_MEDIUM: u16 = 0x00FC;
+
+    // Medium and light are mutually exclusive on the wire (a plugin is
+    // one or the other); medium wins if a malformed file sets both.
+    if medium_master {
+        if *next_medium > MAX_MEDIUM_SLOT {
+            return Err(anyhow::anyhow!(
+                "Load order exceeds the 256 medium-master slot limit"
+            ));
+        }
+        if *next_regular > MAX_REGULAR_SLOT_WITH_MEDIUM {
+            return Err(anyhow::anyhow!(
+                "a regular plugin already holds the 0xFD byte the \
+                 medium-master space needs — reorder the medium master \
+                 earlier in the load order"
+            ));
+        }
+        let slot = esm::reader::GlobalSlot::Medium(*next_medium);
+        *next_medium = next_medium
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Medium-master slot counter overflow"))?;
+        return Ok(slot);
+    }
     if light_master {
-        const MAX_LIGHT_SLOT: u16 = 0x0FFF;
         if *next_light > MAX_LIGHT_SLOT {
             return Err(anyhow::anyhow!(
                 "Load order exceeds the 4096 light-master slot limit"
@@ -657,20 +710,26 @@ fn allocate_global_slot(
         *next_light = next_light
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("Light-master slot counter overflow"))?;
-        Ok(slot)
-    } else {
-        const MAX_REGULAR_SLOT: u16 = 0x00FD;
-        if *next_regular > MAX_REGULAR_SLOT {
-            return Err(anyhow::anyhow!(
-                "Load order exceeds the 254 regular-plugin slot limit"
-            ));
-        }
-        let slot = esm::reader::GlobalSlot::Regular(*next_regular as u8);
-        *next_regular = next_regular
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("Regular-plugin slot counter overflow"))?;
-        Ok(slot)
+        return Ok(slot);
     }
+    // #4639 — 0xFD belongs to the medium-master space once any medium
+    // master has been allocated; shrink the regular ceiling accordingly.
+    let max_regular = if *next_medium > 0 {
+        MAX_REGULAR_SLOT_WITH_MEDIUM
+    } else {
+        MAX_REGULAR_SLOT_FULL
+    };
+    if *next_regular > max_regular {
+        return Err(anyhow::anyhow!(
+            "Load order exceeds the {} regular-plugin slot limit",
+            max_regular + 1
+        ));
+    }
+    let slot = esm::reader::GlobalSlot::Regular(*next_regular as u8);
+    *next_regular = next_regular
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("Regular-plugin slot counter overflow"))?;
+    Ok(slot)
 }
 
 #[cfg(test)]
@@ -946,13 +1005,14 @@ mod tests {
     fn regular_slot_allocator_rejects_the_255th_plugin() {
         let mut next_regular = 0;
         let mut next_light = 0;
+        let mut next_medium = 0;
         for expected in 0u16..254 {
             assert_eq!(
-                allocate_global_slot(false, &mut next_regular, &mut next_light).unwrap(),
+                allocate_global_slot(false, false, &mut next_regular, &mut next_light, &mut next_medium).unwrap(),
                 esm::reader::GlobalSlot::Regular(expected as u8),
             );
         }
-        let err = allocate_global_slot(false, &mut next_regular, &mut next_light)
+        let err = allocate_global_slot(false, false, &mut next_regular, &mut next_light, &mut next_medium)
             .expect_err("0xFE is reserved for light masters");
         assert!(err.to_string().contains("254 regular-plugin"));
     }
@@ -961,13 +1021,14 @@ mod tests {
     fn light_slot_allocator_rejects_the_4097th_plugin() {
         let mut next_regular = 0;
         let mut next_light = 0;
+        let mut next_medium = 0;
         for expected in 0u16..4096 {
             assert_eq!(
-                allocate_global_slot(true, &mut next_regular, &mut next_light).unwrap(),
+                allocate_global_slot(true, false, &mut next_regular, &mut next_light, &mut next_medium).unwrap(),
                 esm::reader::GlobalSlot::Light(expected),
             );
         }
-        let err = allocate_global_slot(true, &mut next_regular, &mut next_light)
+        let err = allocate_global_slot(true, false, &mut next_regular, &mut next_light, &mut next_medium)
             .expect_err("light sub-index is 12-bit");
         assert!(err.to_string().contains("4096 light-master"));
     }
@@ -1404,4 +1465,63 @@ mod tests {
              pins today's whole-record WRLD replace (item 6, flagged not fixed)"
         );
     }
+}
+
+/// #4639 — medium masters (Starfield TES4 `0x400`) allocate from the
+/// `0xFD` space with an 8-bit sub-index, and their presence shrinks the
+/// regular ceiling so no regular plugin can collide with the `0xFD` byte.
+/// Light and regular allocation are unaffected on a medium-free order.
+#[test]
+fn allocate_global_slot_partitions_medium_light_and_regular() {
+    let mut regular = 0;
+    let mut light = 0;
+    let mut medium = 0;
+
+    // A medium-free order keeps the historical 254 regular slots.
+    let mut r = regular.clone();
+    let mut l = light.clone();
+    let mut m = medium.clone();
+    assert!(allocate_global_slot(false, false, &mut r, &mut l, &mut m).is_ok());
+    assert_eq!(r, 1);
+
+    // Mixed order: regular, medium, light, medium, regular.
+    let mut r = 0;
+    let mut l = 0;
+    let mut m = 0;
+    assert_eq!(
+        allocate_global_slot(false, false, &mut r, &mut l, &mut m).unwrap(),
+        esm::reader::GlobalSlot::Regular(0)
+    );
+    assert_eq!(
+        allocate_global_slot(false, true, &mut r, &mut l, &mut m).unwrap(),
+        esm::reader::GlobalSlot::Medium(0)
+    );
+    assert_eq!(
+        allocate_global_slot(true, false, &mut r, &mut l, &mut m).unwrap(),
+        esm::reader::GlobalSlot::Light(0)
+    );
+    assert_eq!(
+        allocate_global_slot(false, true, &mut r, &mut l, &mut m).unwrap(),
+        esm::reader::GlobalSlot::Medium(1)
+    );
+    // The medium masters hold 0xFD, so regular tops out at 0xFC (253).
+    r = 0x00FC;
+    assert_eq!(
+        allocate_global_slot(false, false, &mut r, &mut l, &mut m).unwrap(),
+        esm::reader::GlobalSlot::Regular(0xFC)
+    );
+    assert!(
+        allocate_global_slot(false, false, &mut r, &mut l, &mut m).is_err(),
+        "0xFD is medium-master space once a medium master allocated"
+    );
+
+    // A medium master arriving after a regular plugin already took 0xFD
+    // is refused loudly rather than silently colliding.
+    let mut r = 0x00FD; // 253 allocated — a regular plugin holds 0xFD
+    let mut l = 0;
+    let mut m = 0;
+    assert!(
+        allocate_global_slot(false, true, &mut r, &mut l, &mut m).is_err(),
+        "medium allocation must refuse when 0xFD is already a regular slot"
+    );
 }

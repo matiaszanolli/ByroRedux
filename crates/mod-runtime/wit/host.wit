@@ -222,6 +222,9 @@ interface content-catalog {
     enum plugin-kind {
         regular,
         light,
+        // Starfield medium masters (TES4 flag 0x400): the 0xFD
+        // load-order space with an 8-bit sub-index and 16-bit object id.
+        medium,
     }
 
     record plugin-info {

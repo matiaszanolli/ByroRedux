@@ -24,6 +24,7 @@ impl content_catalog::Host for HostState {
                 kind: match plugin.kind() {
                     PluginKind::Regular => content_catalog::PluginKind::Regular,
                     PluginKind::Light => content_catalog::PluginKind::Light,
+                    PluginKind::Medium => content_catalog::PluginKind::Medium,
                 },
             }
         }))

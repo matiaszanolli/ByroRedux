@@ -406,18 +406,25 @@ pub struct FormIdRemap {
 /// A plugin's resolved position in the global load order.
 ///
 /// Regular plugins occupy a full top-byte slot (`0x00`–`0xFD`) with a
-/// 24-bit object-id space. ESL / light-master plugins (TES4 flag `0x0200`)
-/// all share the `0xFE` top byte and are distinguished by a 12-bit
-/// load-order sub-index, leaving only a 12-bit (`0x000`–`0xFFF`) object-id
-/// space. Modelling the slot as a sum type lets [`FormIdRemap::remap`]
-/// decode both kinds — and references *to* an ESL master — uniformly.
-/// See the Creation Engine light-master spec / SK-D4-03 / #1554.
+/// 24-bit object-id space. ESL / light-master plugins share the `0xFE`
+/// top byte and are distinguished by a 12-bit load-order sub-index,
+/// leaving only a 12-bit (`0x000`–`0xFFF`) object-id space. Starfield
+/// medium masters (TES4 flag `0x400`, #4639) share `0xFD` with an 8-bit
+/// sub-index and a 16-bit object id. Modelling the slot as a sum type
+/// lets [`FormIdRemap::remap`] decode all kinds — and references *to* an
+/// ESL/medium master — uniformly. See the Creation Engine light-master
+/// spec / SK-D4-03 / #1554, and #4639 for the per-game flag bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlobalSlot {
-    /// Full-byte load-order index (`0x00`–`0xFD`).
+    /// Full-byte load-order index (`0x00`–`0xFC`; `0xFD` is reserved for
+    /// the medium-master space below).
     Regular(u8),
     /// `0xFE` light-master space; the `u16` is the 12-bit sub-index.
     Light(u16),
+    /// #4639 — `0xFD` medium-master space (Starfield TES4 flag `0x400`);
+    /// the `u16` is the 8-bit sub-index. Composes as
+    /// `0xFD | (sub << 16) | 16-bit object id`.
+    Medium(u16),
 }
 
 impl GlobalSlot {
@@ -428,11 +435,16 @@ impl GlobalSlot {
     /// byte index into the top byte. `Light` packs the 12-bit sub-index
     /// into the `0xFE` space and keeps only the bottom 12 bits — the ESL
     /// object-id range — because an ESL's object space is 12 bits, not 24.
+    /// `Medium` packs the 8-bit sub-index into the `0xFD` space and keeps
+    /// the bottom 16 bits (xEdit `wbDefinitionsSF1` / #4639).
     pub fn compose(self, raw: u32) -> u32 {
         match self {
             GlobalSlot::Regular(byte) => ((byte as u32) << 24) | (raw & 0x00FF_FFFF),
             GlobalSlot::Light(sub) => {
                 0xFE00_0000 | (((sub as u32) & 0x0FFF) << 12) | (raw & 0x0000_0FFF)
+            }
+            GlobalSlot::Medium(sub) => {
+                0xFD00_0000 | (((sub as u32) & 0x00FF) << 16) | (raw & 0x0000_FFFF)
             }
         }
     }
@@ -585,21 +597,37 @@ pub struct FileHeader {
     /// 4-byte payload becomes a `"<lstring 0xNNNNNNNN>"` placeholder
     /// instead of 3-character UTF-8 garbage. See audit S6-03 / #348.
     pub localized: bool,
-    /// TES4 record flag bit `0x0200` (Light Master / ESL). When set, this
-    /// plugin shares the `0xFE` top-byte load-order space with every other
-    /// ESL: its forms are addressed as `0xFE` + a 12-bit load-order
-    /// sub-index + a 12-bit object id, rather than a full-byte mod-index +
-    /// 24-bit object id. The load-order builder turns this into a
-    /// [`GlobalSlot::Light`] so [`FormIdRemap`] decodes the plugin's forms
-    /// (and references to ESL masters) correctly. No vanilla Skyrim SE /
-    /// FO4 / Starfield **master** (`.esm`) is ESL-flagged — but the decode
-    /// path is exercised on stock content anyway: a stock Anniversary
+    /// TES4 record flag for "Light Master" (ESL) — **which bit that is
+    /// depends on the game** (#4639, decoded per game in
+    /// [`Self::read_file_header`]'s per-game table):
+    ///
+    /// - Skyrim SE & FO4: `0x0200`. When set, this plugin shares the
+    ///   `0xFE` top-byte load-order space with every other ESL: its forms
+    ///   are addressed as `0xFE` + a 12-bit load-order sub-index + a
+    ///   12-bit object id, rather than a full-byte mod-index + 24-bit
+    ///   object id. The load-order builder turns this into a
+    ///   [`GlobalSlot::Light`] so [`FormIdRemap`] decodes the plugin's
+    ///   forms (and references to ESL masters) correctly.
+    /// - Starfield: `0x0100` is the small-master bit (16 official masters
+    ///   carry it, e.g. Constellation.esm at 0x181); `0x0200` is *Update*
+    ///   and must NOT be read as ESL there.
+    /// - Oblivion, FO3/FNV, Skyrim LE, FO76: no light-master support at
+    ///   all (xEdit `wbIsLightSupported` = SSE / FO4 / SF1) — the flag is
+    ///   never set for them, whatever the bits say.
+    ///
+    /// The decode path is exercised on stock content: a stock Anniversary
     /// Edition install ships three ESL-flagged plugins, one of them
     /// (`_ResourcePack.esl`, 374 records, 3-entry MAST list) base-game
     /// content rather than third-party or Creation Club (measured
     /// 2026-08-30, SK-D4-02). This is not a mod-only code path.
     /// See SK-D4-03 / #1554.
     pub light_master: bool,
+    /// #4639 — TES4 record flag `0x0400` on **Starfield only**: the
+    /// medium-master bit (SFBGS003/SFBGS006/kgcdoom/neonvertigo carry it).
+    /// A medium master shares the `0xFD` top-byte space with an 8-bit
+    /// load-order sub-index + a 16-bit object id ([`GlobalSlot::Medium`]).
+    /// On every other game `0x400` is unrelated and this stays false.
+    pub medium_master: bool,
 }
 
 impl<'a> EsmReader<'a> {
@@ -1037,10 +1065,6 @@ impl<'a> EsmReader<'a> {
         // route string decoding through the lstring helper. See
         // audit S6-03 / #348.
         let localized = header.flags & 0x80 != 0;
-        // Bit 0x0200 is the Light Master (ESL) flag — see
-        // `FileHeader::light_master`. Captured here so the load-order
-        // builder can place the plugin in the 0xFE light space (#1554).
-        let light_master = header.flags & 0x0200 != 0;
         let record_version = if self.variant == EsmVariant::Tes5Plus {
             u16::from_le_bytes([self.data[header_start + 20], self.data[header_start + 21]])
         } else {
@@ -1069,6 +1093,36 @@ impl<'a> EsmReader<'a> {
             }
         }
 
+        // #4639 — the light/medium-master bits are per-game, not a
+        // lineage-wide `0x0200` (xEdit `wbInterface.pas:20575-20592`:
+        // `IsLight` tests $100 on Starfield, $200 otherwise, and
+        // `IsUpdate` is $200 on Starfield; `wbIsLightSupported` =
+        // SSE / FO4 / SF1 only). The decode therefore runs AFTER the
+        // HEDR walk above — `GameKind::from_header` needs the version
+        // the sub-records just supplied.
+        //
+        // Pre-fix, every game tested `0x0200`, which (a) mis-filed every
+        // Starfield "Update" plugin into 0xFE light space with its object
+        // ids truncated to 12 bits, and (b) left the real Starfield
+        // small-master bit (`0x100`, carried by 16 official masters)
+        // unread — each took one of the 254 regular slots instead, and
+        // `allocate_global_slot` hard-errors past `0xFD`.
+        let game = GameKind::from_header(self.variant, hedr_version, record_version);
+        // Skyrim SE supports ESL (0x0200); Skyrim LE does not. The two
+        // are one GameKind, so SE-ness keys on HEDR: only SE stamps
+        // 1.6+ (the `from_header` SE band), LE is 0.94.
+        let se_era_skyrim = game == GameKind::Skyrim && hedr_version >= 1.6;
+        let light_master = match game {
+            GameKind::Starfield => header.flags & 0x0100 != 0,
+            GameKind::Fallout4 => header.flags & 0x0200 != 0,
+            GameKind::Skyrim => se_era_skyrim && header.flags & 0x0200 != 0,
+            // Oblivion / FO3 / FNV / FO76: no light-master support.
+            _ => false,
+        };
+        // Starfield-only medium-master bit; `0x400` means something
+        // unrelated on every other game.
+        let medium_master = game == GameKind::Starfield && header.flags & 0x0400 != 0;
+
         Ok(FileHeader {
             master_files: masters,
             record_count,
@@ -1076,6 +1130,7 @@ impl<'a> EsmReader<'a> {
             record_version,
             localized,
             light_master,
+            medium_master,
         })
     }
 

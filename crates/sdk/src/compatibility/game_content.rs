@@ -15,6 +15,10 @@ pub fn adapt_papyrus_game_get_mod_by_name(catalog: &ContentCatalog, plugin: &str
     match kind {
         PluginKind::Regular => index,
         PluginKind::Light => PAPYRUS_GAME_LIGHT_MOD_OFFSET.saturating_add(index),
+        // #4639 — Starfield medium masters. SKSE's GetModByName offset
+        // scheme predates them and defines no offset for the 0xFD space;
+        // report the raw catalog index rather than fabricating one.
+        PluginKind::Medium => index,
     }
 }
 

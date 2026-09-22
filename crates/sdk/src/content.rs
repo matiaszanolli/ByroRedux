@@ -19,6 +19,9 @@ pub const MAX_RECORD_METADATA: usize = 4_000_000;
 pub enum PluginKind {
     Regular,
     Light,
+    /// #4639 — Starfield medium masters (TES4 flag `0x400`): the 0xFD
+    /// load-order space with an 8-bit sub-index and a 16-bit object id.
+    Medium,
 }
 
 /// One loaded content source in deterministic load-order position.
@@ -172,6 +175,7 @@ impl ContentCatalog {
                     && match plugin.kind {
                         PluginKind::Regular => local <= 0x00ff_ffff,
                         PluginKind::Light => local <= 0x0000_0fff,
+                        PluginKind::Medium => local <= 0x0000_ffff,
                     };
                 let valid_type = record_type.iter().all(|byte| {
                     byte.is_ascii_uppercase() || byte.is_ascii_digit() || *byte == b'_'
@@ -253,6 +257,7 @@ impl ContentCatalog {
         let valid = match plugin.kind {
             PluginKind::Regular => local <= 0x00ff_ffff,
             PluginKind::Light => local <= 0x0000_0fff,
+            PluginKind::Medium => local <= 0x0000_ffff,
         };
         valid.then(|| FormRef::new(plugin.source, local))
     }
