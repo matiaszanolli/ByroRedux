@@ -976,7 +976,8 @@ pub(super) fn probe_blas_heap_bytes(
 pub(super) fn shadow_mask_for_instance(
     material_kind: u32,
     render_layer: byroredux_core::ecs::components::RenderLayer,
-    _alpha_blend: bool,
+    alpha_blend: bool,
+    dst_blend: u8,
     multi_layer_refraction_scale: f32,
 ) -> u8 {
     // Keep in lockstep with `context::draw::is_refractive_glass` — both
@@ -988,6 +989,16 @@ pub(super) fn shadow_mask_for_instance(
         crate::shader_constants::VISIBILITY_LAYER_GLASS as u8
     } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_EFFECT_SHADER
         || material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION
+        // #4576 — the pre-Skyrim effect families author "not an occluder"
+        // through kind 102 (BSShaderNoLightingProperty, the FO3/FNV effect
+        // import — kind 102 is NOT in the Skyrim effect family) and through
+        // additive blending (Oblivion's kind-0 beam/glow cards). Without
+        // these arms, f97775ca8's blend-divert removal put ground fog,
+        // light beams and glow shells in opaque shadow buckets: 4,699 FNV /
+        // 2,119 FO3 / 1,011 Oblivion census instances shadowing the floor
+        // and cutting volumetric in-scatter at every card.
+        || material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_NO_LIGHTING
+        || (alpha_blend && dst_blend == GAMEBRYO_DST_BLEND_ONE)
     {
         crate::shader_constants::VISIBILITY_LAYER_EFFECT as u8
     // Character meshes frequently carry a blended hair, lashes, or clothing
@@ -1010,9 +1021,10 @@ pub(super) fn shadow_mask_for_instance(
         // shadowed through (Bleak Falls Barrow 01 census: 636/5594
         // instances shadow-invisible). True non-occluders are separated by
         // MATERIAL KIND above (effect shader, fire refraction, refractive
-        // glass) — the authored "not solid" signal; blend state is not.
-        // `_alpha_blend` stays in the signature so call sites keep feeding
-        // `mask_divert_cause` unchanged.
+        // glass, no-lighting) — the authored "not solid" signals — and by
+        // ADDITIVE blending, the one blend state that never represents a
+        // surface (#4576). Ordinary alpha-over blends reach here and keep
+        // their opaque bucket.
         match render_layer {
             RenderLayer::Architecture => {
                 crate::shader_constants::VISIBILITY_LAYER_ARCHITECTURE as u8
@@ -1058,10 +1070,17 @@ pub(super) enum MaskDivertCause {
 /// `divert_cause_matches_the_mask_it_explains` pins over the full render
 /// layer × material kind × alpha × refraction-scale space, so the
 /// duplication cannot drift into a lie.
+/// Gamebryo `DstBlendMode::ONE` — additive destination. The engine's own
+/// sort slot treats `dst_blend == 0` as the additive branch
+/// (`byroredux/src/render/mod.rs`, `blend_pipeline_slot`); 0 is ONE in
+/// the Gamebryo enum, not "disabled".
+const GAMEBRYO_DST_BLEND_ONE: u8 = 0;
+
 pub(super) fn mask_divert_cause(
     material_kind: u32,
     render_layer: byroredux_core::ecs::components::RenderLayer,
-    _alpha_blend: bool,
+    alpha_blend: bool,
+    dst_blend: u8,
     multi_layer_refraction_scale: f32,
 ) -> Option<MaskDivertCause> {
     let _ = render_layer;
@@ -1074,6 +1093,13 @@ pub(super) fn mask_divert_cause(
         Some(MaskDivertCause::EffectShader)
     } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION {
         Some(MaskDivertCause::FireRefraction)
+    } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_NO_LIGHTING
+        || (alpha_blend && dst_blend == GAMEBRYO_DST_BLEND_ONE)
+    {
+        // #4576 — same fold as shadow_mask_for_instance's EFFECT arm; the
+        // legacy non-occluder signals. Labelled EffectShader: kind 102 and
+        // additive cards ARE effect-family content on their games.
+        Some(MaskDivertCause::EffectShader)
     } else {
         None
     }

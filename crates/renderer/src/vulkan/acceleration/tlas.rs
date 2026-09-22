@@ -659,6 +659,7 @@ impl AccelerationManager {
                 draw_cmd.material_kind,
                 draw_cmd.render_layer,
                 draw_cmd.alpha_blend,
+                draw_cmd.dst_blend,
                 draw_cmd.multi_layer_refraction_scale,
             );
             // #3305 — census the assignment. `VISIBILITY_LAYER_EFFECT` and
@@ -682,6 +683,7 @@ impl AccelerationManager {
                     draw_cmd.material_kind,
                     draw_cmd.render_layer,
                     draw_cmd.alpha_blend,
+                    draw_cmd.dst_blend,
                     draw_cmd.multi_layer_refraction_scale,
                 ) {
                     // #4518 note retired with the 2026-09-21 blend-divert

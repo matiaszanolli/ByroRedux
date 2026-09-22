@@ -379,7 +379,7 @@ fn shadow_mask_bucket_selection_is_pinned() {
 
     // Glass → glass bucket regardless of layer.
     assert_eq!(
-        shadow_mask_for_instance(MATERIAL_KIND_GLASS, RenderLayer::Architecture, true, 0.0),
+        shadow_mask_for_instance(MATERIAL_KIND_GLASS, RenderLayer::Architecture, true, 0, 0.0),
         VISIBILITY_LAYER_GLASS as u8,
         "glass material must select the glass shadow bucket",
     );
@@ -392,7 +392,7 @@ fn shadow_mask_bucket_selection_is_pinned() {
         shadow_mask_for_instance(
             MATERIAL_KIND_MULTI_LAYER_PARALLAX,
             RenderLayer::Architecture,
-            false,
+            false, 0,
             0.3,
         ),
         VISIBILITY_LAYER_GLASS as u8,
@@ -406,7 +406,7 @@ fn shadow_mask_bucket_selection_is_pinned() {
         shadow_mask_for_instance(
             MATERIAL_KIND_MULTI_LAYER_PARALLAX,
             RenderLayer::Architecture,
-            false,
+            false, 0,
             0.0,
         ),
         VISIBILITY_LAYER_ARCHITECTURE as u8,
@@ -414,20 +414,20 @@ fn shadow_mask_bucket_selection_is_pinned() {
 
     // Solid architecture has exactly the architecture category.
     assert_eq!(
-        shadow_mask_for_instance(0, RenderLayer::Architecture, false, 0.0),
+        shadow_mask_for_instance(0, RenderLayer::Architecture, false, 0, 0.0),
         VISIBILITY_LAYER_ARCHITECTURE as u8,
     );
 
     assert_eq!(
-        shadow_mask_for_instance(0, RenderLayer::Clutter, false, 0.0),
+        shadow_mask_for_instance(0, RenderLayer::Clutter, false, 0, 0.0),
         VISIBILITY_LAYER_STATIC_PROP as u8,
     );
     assert_eq!(
-        shadow_mask_for_instance(0, RenderLayer::Actor, false, 0.0),
+        shadow_mask_for_instance(0, RenderLayer::Actor, false, 0, 0.0),
         VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
     );
     assert_eq!(
-        shadow_mask_for_instance(0, RenderLayer::Decal, false, 0.0),
+        shadow_mask_for_instance(0, RenderLayer::Decal, false, 0, 0.0),
         VISIBILITY_LAYER_FOLIAGE as u8,
     );
 
@@ -437,27 +437,54 @@ fn shadow_mask_bucket_selection_is_pinned() {
     // (Nordic ice panels, window/door planes) shadow-invisible to every
     // unflagged room light — walls lit from behind, far-side objects
     // shadowing through (Bleak Falls Barrow 01: 636/5594 instances).
+    // dst_blend 7 = INV_SRC_ALPHA: ordinary alpha-over. (dst_blend 0 would
+    // be additive and legitimately diverts — #4576's Oblivion beam arm.)
     assert_eq!(
-        shadow_mask_for_instance(0, RenderLayer::Architecture, true, 0.0),
+        shadow_mask_for_instance(0, RenderLayer::Architecture, true, 7, 0.0),
         VISIBILITY_LAYER_ARCHITECTURE as u8,
-        "blend state alone must not de-structure a wall",
+        "ordinary alpha-over blend state alone must not de-structure a wall",
+    );
+    // #4576 — the legacy authored non-occluder signals the kind arm missed:
+    // FO3/FNV's effect family imports as NO_LIGHTING (102), and Oblivion's
+    // beam/glow cards are kind 0 + additive (dst_blend == ONE). Both must
+    // reach the EFFECT layer or ground fog/beam/glow cards shadow the floor
+    // and cut volumetric in-scatter at every card.
+    assert_eq!(
+        shadow_mask_for_instance(
+            crate::vulkan::scene_buffer::MATERIAL_KIND_NO_LIGHTING,
+            RenderLayer::Architecture,
+            false,
+            7,
+            0.0,
+        ),
+        VISIBILITY_LAYER_EFFECT as u8,
+        "FO3/FNV NoLighting FX cards (kind 102) must not occlude (#4576)",
+    );
+    assert_eq!(
+        shadow_mask_for_instance(0, RenderLayer::Architecture, true, 0, 0.0),
+        VISIBILITY_LAYER_EFFECT as u8,
+        "Oblivion additive beam/glow cards (dst_blend ONE) must not occlude (#4576)",
+    );
+    // And the control: an ordinary alpha-over kind-0 card (dst_blend 7)
+    // stays opaque — that is the Bleak Falls Barrow ice-panel class.
+    assert_eq!(
+        shadow_mask_for_instance(0, RenderLayer::Architecture, true, 7, 0.0),
+        VISIBILITY_LAYER_ARCHITECTURE as u8,
+        "ordinary alpha-over cards keep their opaque bucket (#4576 control)",
     );
     for kind in [MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION] {
         assert_eq!(
-            shadow_mask_for_instance(kind, RenderLayer::Architecture, false, 0.0),
+            shadow_mask_for_instance(kind, RenderLayer::Architecture, false, 0, 0.0),
             VISIBILITY_LAYER_EFFECT as u8,
             "effect proxy kind {kind} must select the effect layer",
         );
     }
-    assert_eq!(
-        shadow_mask_for_instance(
-            MATERIAL_KIND_NO_LIGHTING,
-            RenderLayer::Architecture,
-            false,
-            0.0,
-        ),
-        VISIBILITY_LAYER_ARCHITECTURE as u8,
-    );
+    // #4576 -- this pin used to expect ARCHITECTURE for kind 102, encoding
+    // the post-f97775ca8 state the audit overturned: FO3/FNV's effect
+    // family imports as NO_LIGHTING, so opaque-bucketing them made ground
+    // fog and mist cards shadow the floor. The #4576 fixtures above pin
+    // the EFFECT routing.
+
 
     const {
         assert!(VISIBILITY_MASK_FULL <= 0xFF);
@@ -483,7 +510,7 @@ fn ordinary_alpha_blended_actor_keeps_the_opaque_shadow_mask() {
     // The premise the #3305 investigation relied on — true only for an
     // opaque, non-effect actor draw.
     assert_eq!(
-        shadow_mask_for_instance(0, RenderLayer::Actor, false, 0.0),
+        shadow_mask_for_instance(0, RenderLayer::Actor, false, 0, 0.0),
         VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
     );
     assert!(
@@ -492,7 +519,9 @@ fn ordinary_alpha_blended_actor_keeps_the_opaque_shadow_mask() {
     );
 
     // Ordinary blended actor meshes must not lose their contact shadow.
-    let blended_actor = shadow_mask_for_instance(0, RenderLayer::Actor, true, 0.0);
+    // dst_blend 7 = INV_SRC_ALPHA (ordinary alpha-over); 0 = ONE would be
+    // additive and legitimately diverts to EFFECT (#4576).
+    let blended_actor = shadow_mask_for_instance(0, RenderLayer::Actor, true, 7, 0.0);
     assert_eq!(
         blended_actor, VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
         "ordinary alpha-blended actor meshes keep the dynamic-actor bucket"
@@ -508,7 +537,7 @@ fn ordinary_alpha_blended_actor_keeps_the_opaque_shadow_mask() {
     for kind in [MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION] {
         assert_eq!(
             VisibilityMask::ALL_OPAQUE.bits()
-                & shadow_mask_for_instance(kind, RenderLayer::Actor, false, 0.0),
+                & shadow_mask_for_instance(kind, RenderLayer::Actor, false, 0, 0.0),
             0,
             "actor draw with material kind {kind} also bypasses render_layer",
         );
@@ -769,9 +798,12 @@ fn divert_cause_matches_the_mask_it_explains() {
     ] {
         for kind in kinds {
             for alpha_blend in [false, true] {
-                for scale in [0.0f32, 1.0] {
-                    let mask = shadow_mask_for_instance(kind, layer, alpha_blend, scale);
-                    let cause = mask_divert_cause(kind, layer, alpha_blend, scale);
+                for dst_blend in [0u8, 1, 5, 7] {
+                    for scale in [0.0f32, 1.0] {
+                    let mask = shadow_mask_for_instance(
+                        kind, layer, alpha_blend, dst_blend, scale);
+                    let cause = mask_divert_cause(
+                        kind, layer, alpha_blend, dst_blend, scale);
 
                     match cause {
                         None => assert_eq!(
@@ -806,6 +838,7 @@ fn divert_cause_matches_the_mask_it_explains() {
                                 MaskDivertCause::FireRefraction => 2,
                             }] = true;
                         }
+                    }
                     }
                 }
             }
@@ -845,11 +878,12 @@ fn every_actor_instance_is_either_bucketed_or_diverted_exactly_once() {
     ] {
         for alpha_blend in [false, true] {
             for scale in [0.0f32, 1.0] {
-                let bucketed =
-                    shadow_mask_for_instance(kind, RenderLayer::Actor, alpha_blend, scale)
-                        == VISIBILITY_LAYER_DYNAMIC_ACTOR as u8;
-                let diverted =
-                    mask_divert_cause(kind, RenderLayer::Actor, alpha_blend, scale).is_some();
+                let bucketed = shadow_mask_for_instance(
+                    kind, RenderLayer::Actor, alpha_blend, 7, scale)
+                    == VISIBILITY_LAYER_DYNAMIC_ACTOR as u8;
+                let diverted = mask_divert_cause(
+                    kind, RenderLayer::Actor, alpha_blend, 7, scale)
+                .is_some();
                 assert!(
                     bucketed ^ diverted,
                     "exactly one of bucketed/diverted must hold                      (kind={kind} alpha_blend={alpha_blend} scale={scale}):                      bucketed={bucketed} diverted={diverted}"
