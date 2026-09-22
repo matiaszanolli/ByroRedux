@@ -363,6 +363,32 @@ mod tests {
     /// The params UBO is two vec4s (32 B) on both sides of the wire; std140
     /// places no padding surprises at that shape, but pin it so a field added
     /// later must consciously re-check the GLSL block.
+    /// #4597 — the shader must divide the tree-reduced log sum by the
+    /// tree-reduced TOTAL sample count, not invocation 0's own count
+    /// (~64 of ~4096): the old divisor produced exp2(64 × the geometric
+    /// mean) — bang-bang metering pinned at the clamp limits. The shared
+    /// `shared_count` reduction is the fix; this pin fails if the shader's
+    /// divisor reverts to a per-invocation count or the count reduction
+    /// disappears.
+    #[test]
+    fn the_exposure_average_divides_by_the_total_reduced_count() {
+        let src = include_str!("../../shaders/exposure_meter.comp");
+        // The count reduction rides the same tree loop as the log sum.
+        assert!(
+            src.contains("shared_count[gl_LocalInvocationID.x] += shared_count[gl_LocalInvocationID.x + s];"),
+            "shared_count must reduce in the same tree loop as shared_log_sum (#4597)"
+        );
+        // The divisor is the reduced total, not the per-invocation count.
+        assert!(
+            src.contains("float samples = max(float(shared_count[0]), 1.0);"),
+            "the average must divide by the reduced total count (#4597)"
+        );
+        assert!(
+            !src.contains("float samples = max(float(count), 1.0);"),
+            "the per-invocation `count` must not be the divisor (#4597)"
+        );
+    }
+
     #[test]
     fn meter_params_are_two_vec4s() {
         assert_eq!(std::mem::size_of::<MeterParams>(), 32);

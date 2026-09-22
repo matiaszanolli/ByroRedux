@@ -43,6 +43,7 @@ layout(set = 0, binding = 2) uniform Params {
 } params;
 
 shared float shared_log_sum[64];
+shared int shared_count[64];
 
 // Log-average (geometric mean) luminance: robust against a few extreme
 // emissive texels dragging the arithmetic mean, standard for metering.
@@ -75,16 +76,23 @@ void main() {
     }
 
     shared_log_sum[gl_LocalInvocationID.x] = log_sum;
+    // #4597 — the TOTAL sample count reduces alongside the log sum. The
+    // old code divided the tree-reduced total (all 64 invocations' log
+    // sums) by invocation 0's OWN count (~64 of ~4096 samples), producing
+    // exp2(64 x the geometric mean) — bang-bang metering pinned at the
+    // clamp limits for nearly every scene.
+    shared_count[gl_LocalInvocationID.x] = count;
     barrier();
     for (uint s = 32; s > 0; s >>= 1) {
         if (gl_LocalInvocationID.x < s) {
             shared_log_sum[gl_LocalInvocationID.x] += shared_log_sum[gl_LocalInvocationID.x + s];
+            shared_count[gl_LocalInvocationID.x] += shared_count[gl_LocalInvocationID.x + s];
         }
         barrier();
     }
 
     if (gl_LocalInvocationID.x == 0) {
-        float samples = max(float(count), 1.0);
+        float samples = max(float(shared_count[0]), 1.0);
         float avg_luminance = exp2(shared_log_sum[0] / samples);
         // EV100 = log2(L * S / K), S = 100, K = 12.5 -> log2(L * 8.0).
         float ev100 = log2(max(avg_luminance, 1.0e-6) * 8.0);
