@@ -615,6 +615,41 @@ mod tests {
         );
     }
 
+    /// #4686 (PHYS-D1-2026-09-21-01) — the #2543 clamp was pinned only by
+    /// the release-only test above, which no CI lane compiles. This
+    /// debug-lane twin unit-tests `clamp_shape_extent` directly (the
+    /// clamp is the only non-finite backstop and every primitive arm
+    /// routes through it) and drives NaN/±Inf through the Ball, Capsule
+    /// and Cylinder constructors, so a NaN-transparent "simplification"
+    /// (the `value.clamp(…)` shape — `f32::clamp` does not reliably
+    /// clamp NaN) fails the default-profile CI instead of shipping green.
+    #[test]
+    fn non_finite_extents_clamp_in_the_debug_lane_too() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(clamp_shape_extent(bad), 1e-3, "clamp_shape_extent({bad})");
+        }
+        assert_eq!(clamp_shape_extent(5.0), 5.0);
+
+        let ball = parts(&CollisionShape::Ball {
+            radius: f32::NAN,
+        });
+        assert!(ball[0].1.as_ball().unwrap().radius.is_finite());
+
+        let capsule = parts(&CollisionShape::Capsule {
+            half_height: f32::INFINITY,
+            radius: f32::NAN,
+        });
+        let capsule = capsule[0].1.as_capsule().unwrap();
+        assert!(capsule.half_height().is_finite() && capsule.radius.is_finite());
+
+        let cylinder = parts(&CollisionShape::Cylinder {
+            half_height: f32::NEG_INFINITY,
+            radius: f32::NAN,
+        });
+        let cylinder = cylinder[0].1.as_cylinder().unwrap();
+        assert!(cylinder.half_height.is_finite() && cylinder.radius.is_finite());
+    }
+
     #[test]
     fn capsule_maps_to_one_rapier_capsule() {
         let parts = parts(&CollisionShape::Capsule {
