@@ -2206,6 +2206,10 @@ mod tests {
             },
         );
         let target_file = BgsmFile {
+            // #4654 — the fixture authors a specular_mult it expects to be
+            // forwarded, so the specular block must be authored ON (the
+            // bool default false now means "disabled", which zeroes it).
+            specular_enabled: true,
             specular_mult: 0.25,
             ..Default::default()
         };

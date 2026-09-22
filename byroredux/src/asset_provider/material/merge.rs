@@ -573,7 +573,16 @@ fn merge_bgsm_arm(
     };
     let roughness = (1.0 - leaf.smoothness).clamp(NEAR_MIRROR_ROUGHNESS_FLOOR, 1.0);
     material.metalness_override = Some(metalness);
-    material.roughness_override = Some(roughness);
+    // #4654 (PAR-D5-2026-09-21-02) — a BGSM that authored
+    // `specular_enabled = false` keeps the matte roughness DEFAULT: the
+    // audit measured those files carrying authoring-default
+    // smoothness 1.0 (paintings, magazines, signage), so
+    // `1 - smoothness` would fabricate a near-mirror finish the
+    // specular-off choice exists to prevent. Mirrors walker.rs's
+    // NiSpecularProperty handling (#696) on the NIF side.
+    if leaf.specular_enabled {
+        material.roughness_override = Some(roughness);
+    }
     // #2609 — the flag whose meaning is "authoritative PBR scalars were
     // merged", set at the exact site that merges them. `from_bgsm` above
     // cannot serve that role: the BGEM arm sets it too while leaving both
@@ -803,22 +812,42 @@ fn merge_bgsm_arm(
             *touched = true;
         }
         if !set_specular {
-            material.specular_color = bgsm.specular_color;
-            material.specular_strength = bgsm.specular_mult;
+            // #4654 — honour the authored `specular_enabled` bit (the
+            // first chain step to carry the block decides, child-first
+            // like every sentinel here). Disabled zeroes BOTH fields the
+            // way walker.rs's disabled-NiSpecularProperty arm does
+            // (#696), so nothing downstream can re-promote specular:
+            // the audit counted 467 FO4 + 653 FO76 BGSMs authored off —
+            // paintings, magazines, signage — currently rendering with
+            // full-strength white specular from their left-in-place
+            // authoring defaults.
+            if bgsm.specular_enabled {
+                material.specular_color = bgsm.specular_color;
+                material.specular_strength = bgsm.specular_mult;
+            } else {
+                material.specular_color = [0.0, 0.0, 0.0];
+                material.specular_strength = 0.0;
+            }
             set_specular = true;
             *touched = true;
         }
         if !set_glossiness {
-            // BGSM authors `smoothness` 0–1 (Bethesda Material Editor
-            // convention); `Material::glossiness` is on the 0–100 NIF
-            // scale (`classify_pbr_keyword` divides by 100). Multiply
-            // by 100 to normalize — without this, BGSM-driven FO4
-            // materials that don't keyword-match the metal/wood/glass
-            // arms in `classify_pbr_keyword` fall through to the
-            // glossiness fallback
-            // with `roughness=0.95`, killing direct specular and the
-            // RT-reflection metalness/roughness gate (Med-Tek floors).
-            material.glossiness = bgsm.smoothness * 100.0;
+            if !bgsm.specular_enabled {
+                // #4654 — smoothness rode the specular block the artist
+                // disabled; a matte material must not derive glossiness
+                // (or, via `1 - smoothness`, roughness) from it.
+            } else {
+                // BGSM authors `smoothness` 0–1 (Bethesda Material Editor
+                // convention); `Material::glossiness` is on the 0–100 NIF
+                // scale (`classify_pbr_keyword` divides by 100). Multiply
+                // by 100 to normalize — without this, BGSM-driven FO4
+                // materials that don't keyword-match the metal/wood/glass
+                // arms in `classify_pbr_keyword` fall through to the
+                // glossiness fallback
+                // with `roughness=0.95`, killing direct specular and the
+                // RT-reflection metalness/roughness gate (Med-Tek floors).
+                material.glossiness = bgsm.smoothness * 100.0;
+            }
             set_glossiness = true;
             *touched = true;
         }

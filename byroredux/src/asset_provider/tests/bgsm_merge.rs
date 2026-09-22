@@ -977,6 +977,7 @@ fn bgsm_merge_sets_the_scalar_authored_flag_alongside_the_overrides() {
         path,
         ResolvedMaterial {
             file: BgsmFile {
+                specular_enabled: true,
                 smoothness: 0.8,
                 specular_color: [1.0, 1.0, 1.0],
                 specular_mult: 1.0,
@@ -1058,6 +1059,9 @@ fn bgsm_merge_keeps_the_floor_when_smoothness_is_one_and_a_gloss_map_resolves() 
         path,
         ResolvedMaterial {
             file: BgsmFile {
+                // #4654 — a near-mirror finish is only authored when the
+                // specular block is ON (vanilla: 6,149 of 6,616 FO4 BGSMs).
+                specular_enabled: true,
                 smoothness: 1.0,
                 specular_color: [1.0, 1.0, 1.0],
                 specular_mult: 1.0,
@@ -1391,6 +1395,70 @@ fn bgem_merge_fills_envmap_when_env_mapping_enabled() {
     assert!(
         mesh.material.textures.environment_mask.is_some(),
         "env_mapping_enabled()==true must fill the environment mask (#2643)"
+    );
+}
+
+/// #4654 (PAR-D5-2026-09-21-02) — `specular_enabled = false` zeroes the
+/// forwarded specular colour and strength, keeps smoothness from
+/// deriving glossiness, and leaves the roughness override unset (matte
+/// default) instead of `1 - smoothness` — mirroring the NIF-side
+/// disabled-NiSpecularProperty handling (#696). The audit measured 467
+/// FO4 + 653 FO76 BGSMs authored off, mostly paintings/signage whose
+/// specular fields sit at full-strength defaults.
+#[test]
+fn bgsm_specular_disabled_zeroes_specular_and_keeps_matte_roughness() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/specular_disabled.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                specular_enabled: false,
+                specular_color: [1.0, 1.0, 1.0],
+                specular_mult: 1.0,
+                smoothness: 1.0,
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    let glossiness_before = mesh.material.glossiness;
+
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert_eq!(
+        mesh.material.specular_color,
+        [0.0, 0.0, 0.0],
+        "specular colour must be zeroed, not the authored default white (#4654)"
+    );
+    assert_eq!(
+        mesh.material.specular_strength, 0.0,
+        "specular strength must be zeroed (#4654)"
+    );
+    assert_ne!(
+        mesh.material.glossiness, 100.0,
+        "smoothness 1.0 must not derive glossiness when specular is off"
+    );
+    assert_eq!(
+        mesh.material.glossiness, glossiness_before,
+        "glossiness must keep whatever the NIF side authored — the disabled \
+         specular block contributes nothing"
+    );
+    // The matte default: the #3905 neutral roughness (0.5 — the same
+    // "no data" convention `classify_pbr_keyword` uses), NOT the
+    // near-mirror `1 - smoothness` = 0.04 the disabled specular block's
+    // left-in-place smoothness 1.0 used to fabricate.
+    assert_ne!(
+        mesh.material.roughness_override,
+        Some(0.04),
+        "1 - smoothness must not fabricate a near-mirror roughness when \
+         the artist disabled specular (#4654)"
+    );
+    assert_eq!(
+        mesh.material.roughness_override,
+        Some(crate::asset_provider::material::NEAR_MIRROR_NEUTRAL_ROUGHNESS),
+        "roughness stays at the matte neutral default (#4654)"
     );
 }
 
