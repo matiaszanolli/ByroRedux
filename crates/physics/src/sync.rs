@@ -25,8 +25,9 @@
 //! The system early-returns when no `PhysicsWorld` resource is present. That
 //! covers test fixtures and embedders that omit it — **not** a loose-NIF
 //! viewer opt-out: the shipping binary inserts `PhysicsWorld`
-//! unconditionally (`byroredux/src/boot/schedule/`), so every path including
-//! `cargo run -- mesh.nif` runs the full tick (#2880).
+//! unconditionally (`byroredux/src/boot/world.rs`; `boot/schedule/` only
+//! registers this system), so every path including `cargo run -- mesh.nif`
+//! runs the full tick (#2880).
 
 use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
 use byroredux_core::ecs::components::{
