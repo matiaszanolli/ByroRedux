@@ -1597,12 +1597,12 @@ impl GpuBuffer {
         //    each "pooled" acquire was followed by a destroy. See the
         //    #239 investigation for the full premise verification.
         if let Some(pool) = staging_pool {
-            let capacity = staging
-                .allocation
-                .as_ref()
-                .map(|a| a.size())
-                .unwrap_or(size);
-            staging.release_to(pool, capacity);
+            // #4593 — the requested `size`, never the allocation footprint
+            // (the driver-rounded slack sits ABOVE the VkBuffer's create
+            // size; a footprint entry lets a later best-fit acquire hand
+            // out a buffer smaller than the request — the #4512 overrun
+            // class, unfixed sibling on the mesh path).
+            staging.release_to(pool, size);
         } else {
             staging.destroy();
         }
@@ -1756,12 +1756,9 @@ impl GpuBuffer {
             Ok(())
         })?;
 
-        let capacity = staging
-            .allocation
-            .as_ref()
-            .map(|a| a.size())
-            .unwrap_or(size);
-        staging.release_to(staging_pool, capacity);
+        // #4593 — requested size, not the footprint (#4512's rule; see
+        // the pooled arm above).
+        staging.release_to(staging_pool, size);
 
         Ok(())
     }
@@ -2363,6 +2360,45 @@ mod staging_release_capacity_tests {
              the allocator rounds the footprint up above the buffer create \
              size, and acquire's best-fit then serves a buffer smaller than \
              a later upload's budget"
+        );
+        // #4593 — the `.map(|a| a.size())` short spelling dodged the scan
+        // above (it forbade only the long form). Both buffer.rs sites are
+        // gone; forbid the short one too so neither returns.
+        assert!(
+            !production.contains(".map(|a| a.size())"),
+            "the short `.map(|a| a.size())` footprint release is the same \
+             #4512 defect under a different spelling (#4593)"
+        );
+        // And the two reformed sites must release at the requested size.
+        assert!(
+            production.contains("staging.release_to(pool, size);"),
+            "create_device_local_buffer's pooled arm must release at the \
+             requested `size` (#4593)"
+        );
+        assert!(
+            production.contains("staging.release_to(staging_pool, size);"),
+            "copy_bytes_range must release at the requested `size` (#4593)"
+        );
+    }
+
+    /// #4593 — the terrain ring's previous-slot release lives in another
+    /// file, outside the scan above.
+    #[test]
+    fn terrain_ring_releases_staging_at_the_requested_size() {
+        let src = include_str!("scene_buffer/upload.rs");
+        let production = src
+            .split_once("\n#[cfg(test)]")
+            .unwrap_or(src);
+        assert!(
+            !production.contains(".map(|allocation| allocation.size())"),
+            "the terrain ring must not release pooled staging at the \
+             allocation footprint (#4593 / #4512)"
+        );
+        assert!(
+            production
+                .contains("previous.release_to(&mut self.terrain_tile_staging_pool, byte_size);"),
+            "the terrain ring's previous-slot release must carry the \
+             requested `byte_size` (#4593)"
         );
     }
 }

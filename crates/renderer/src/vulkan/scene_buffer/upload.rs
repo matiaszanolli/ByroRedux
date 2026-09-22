@@ -1031,12 +1031,12 @@ impl super::buffers::SceneBuffers {
         // fence retires, so the staging source cannot be overwritten while
         // the GPU is still consuming it.
         if let Some(previous) = self.terrain_tile_staging_buffers[frame_index].take() {
-            let capacity = previous
-                .allocation
-                .as_ref()
-                .map(|allocation| allocation.size())
-                .unwrap_or(byte_size);
-            previous.release_to(&mut self.terrain_tile_staging_pool, capacity);
+            // #4593 — the REQUESTED byte_size, not the allocation footprint
+            // (#4512's rule): a footprint entry can exceed the VkBuffer's
+            // create size by the driver's rounding slack, and the pool's
+            // best-fit then hands a later acquire a too-small buffer whose
+            // vkCmdCopyBuffer region overruns it.
+            previous.release_to(&mut self.terrain_tile_staging_pool, byte_size);
         }
         let (staging_buffer, staging_alloc) = self.terrain_tile_staging_pool.acquire(byte_size)?;
         let mut staging = super::super::buffer::StagingGuard::new(
