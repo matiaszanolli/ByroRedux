@@ -33,15 +33,36 @@ const FLAG_COMPRESSED: u32 = 0x00040000;
 pub(crate) const FLAG_DELETED: u32 = 0x0000_0020;
 
 /// Largest inflation multiple a compressed record may claim over its own
-/// compressed byte count (#3399).
+/// compressed byte count (#3399, recalibrated #4640).
 ///
-/// Census over every compressed record in four shipped masters — 33 179
-/// in `FalloutNV.esm`, 44 153 in `Skyrim.esm`, 56 399 in `Fallout4.esm`,
-/// 0 in `Oblivion.esm`, which compresses nothing — puts the worst real
-/// ratio at **102.1:1** (an FNV `LAND` inflating 75 bytes to 7 658). 512
-/// is 5× that, so no vanilla or vanilla-shaped mod record is anywhere
-/// near it, while DEFLATE's practical ~1000:1 bomb ratio is cut off.
-const MAX_RECORD_INFLATION_RATIO: usize = 512;
+/// Census (2026-09-22, header-only scan over all seven installed
+/// masters, worst real ratio per file):
+///
+/// | master | compressed records | worst ratio |
+/// |---|---:|---:|
+/// | `Oblivion.esm` | 41 789 | 100.8:1 |
+/// | `Fallout3.esm` | 41 903 | 74.6:1 |
+/// | `FalloutNV.esm` | 33 179 | 102.1:1 |
+/// | `Skyrim.esm` (SE) | 44 153 | 94.5:1 |
+/// | `Fallout4.esm` | 56 399 | 75.6:1 |
+/// | `SeventySix.esm` | 74 834 | 18.9:1 |
+/// | `Starfield.esm` | 91 149 | **785.9:1** |
+///
+/// The Starfield outlier is `SFTR` record `0x00167A07` (834 bytes
+/// inflating to 655 482 — near-uniform tables DEFLATE loves); 82 vanilla
+/// SFTRs exceeded the old 512:1 bound and were rejected as "corrupt or
+/// hostile", silently dropping the whole plugin through the load-order
+/// builder's `EsmIndex::default()` fallback.
+///
+/// 785.9:1 already sits within 76% of DEFLATE's ~1032:1 theoretical
+/// ceiling, so the original "5× worst observed" margin is unattainable —
+/// any bound clearing vanilla with headroom is within a small factor of
+/// the compressor's best case. 2048:1 is 2.6× the worst observed shape;
+/// the *real* bomb guards are the absolute cap
+/// ([`MAX_RECORD_INFLATED_BYTES`]) and the exact-length `take(declared +
+/// 1)` decode limit below, which bound what a small payload can claim
+/// regardless of this ratio.
+const MAX_RECORD_INFLATION_RATIO: usize = 2048;
 
 /// Floor under [`MAX_RECORD_INFLATION_RATIO`], so a tiny compressed
 /// payload is not held to a tiny ceiling (#3399). The worst observed
@@ -2138,14 +2159,21 @@ mod tests {
     }
 
     /// The ceiling is a function of the compressed length, and must clear
-    /// every shape vanilla actually ships. Census over the four masters
-    /// that compress anything: 133 731 records, worst real ratio 102.1:1
-    /// (an FNV `LAND`, 75 compressed bytes to 7 658), largest real
+    /// every shape vanilla actually ships. Census over all seven masters
+    /// (#4640, table on [`MAX_RECORD_INFLATION_RATIO`]): 383 406
+    /// compressed records, worst real ratio 785.9:1 (Starfield `SFTR`
+    /// `0x00167A07`, 834 compressed bytes to 655 482), largest real
     /// inflated record 225 433 bytes (FO4). None is rejected.
     #[test]
     fn inflation_ceiling_clears_every_observed_vanilla_shape() {
         // The worst observed ratio, at the compressed length it occurred at.
         assert!(record_inflation_ceiling(75) >= 7_658);
+        // The Starfield SFTR worst-ratio record — the shape that exceeded
+        // the old 512:1 bound (#4640): 834 bytes → 655 482 (785.9:1).
+        assert!(
+            record_inflation_ceiling(834) >= 655_482,
+            "the vanilla Starfield SFTR record 0x00167A07 must clear the ceiling"
+        );
         // The largest observed inflated record — even if it had been the
         // worst-ratio record too, which it is not.
         assert!(record_inflation_ceiling(225_433 / 102) >= 225_433);
