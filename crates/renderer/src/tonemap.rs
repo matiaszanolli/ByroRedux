@@ -114,10 +114,14 @@ fn agx_contrast_approx(x: f32) -> f32 {
 /// negatives that `powf(2.2)` would turn into NaN.
 pub fn agx(val: [f32; 3]) -> [f32; 3] {
     let mut v = row_vec_times_mat(val, AGX_MAT);
+    // #4578 — log-space clamp (reference behaviour), NOT the linear [0,1]
+    // clamp the old comment claimed was "reference": clamping before log2
+    // capped the encode at 0 EV and flattened everything >= 1.0 to one
+    // value. max() guards log2(0).
     for item in &mut v {
-        *item = item.clamp(0.0, 1.0);
+        *item = item.max(1.0e-10).log2().clamp(AGX_MIN_EV, AGX_MAX_EV);
     }
-    let v = [v[0].log2(), v[1].log2(), v[2].log2()];
+    let v = [v[0], v[1], v[2]];
     let window = AGX_MAX_EV - AGX_MIN_EV;
     let mut v = [
         agx_contrast_approx((v[0] - AGX_MIN_EV) / window),
@@ -159,8 +163,13 @@ mod tests {
                 let out = tonemap(op, [grey; 3]);
                 let spread = out.iter().fold(0.0f32, |a, c| a.max(*c))
                     - out.iter().fold(f32::MAX, |a, c| a.min(*c));
+                // #4578 — 5e-4 was calibrated under the flattened curve,
+                // where the top of the ramp never rendered. The log-space
+                // clamp lets grey=64 through the outset matrix, whose
+                // per-channel rounding spreads ~5.05e-4 at that extreme —
+                // a property of the reference transform, not a regression.
                 assert!(
-                    spread < 5.0e-4,
+                    spread < 1.0e-3,
                     "{op:?} broke grey balance at input {grey}: {out:?} (spread {spread})"
                 );
             }
@@ -247,6 +256,42 @@ mod tests {
                     "{op:?} out of [0,1] at input {x}: {out:?}"
                 );
             }
+        }
+    }
+
+    /// #4578 — the old linear [0,1] clamp flattened every AgX input >= 1.0
+    /// to one value (0.590 display-linear); the log-space clamp must keep
+    /// increasing through the highlights. Grey-ramp figures from the audit
+    /// (reference column): 1.5 -> 0.683, 2.0 -> 0.743, 4.0 -> 0.861,
+    /// 16 -> 0.995.
+    #[test]
+    fn agx_highlights_keep_increasing_and_match_the_reference_ramp() {
+        let at = |x: f32| agx([x, x, x])[0];
+        // Strictly increasing through and above 1.0 linear.
+        let mut prev = at(1.0);
+        for x in [1.5_f32, 2.0, 4.0, 16.0, 64.0] {
+            let out = at(x);
+            assert!(
+                out > prev + 1.0e-3,
+                "AgX must keep increasing above 1.0 linear: at({x}) = {out}, \
+                 after {prev} — a flat tail is the linear-clamp regression (#4578)"
+            );
+            prev = out;
+        }
+        // And the audit's reference-ramp values within a display-linear band.
+        for (x, expected) in [
+            (0.5_f32, 0.425_f32),
+            (1.0, 0.590),
+            (1.5, 0.683),
+            (2.0, 0.743),
+            (4.0, 0.861),
+            (16.0, 0.995),
+        ] {
+            let out = at(x);
+            assert!(
+                (out - expected).abs() < 0.02,
+                "AgX({x}) = {out}, reference {expected} (#4578)"
+            );
         }
     }
 

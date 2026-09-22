@@ -100,8 +100,13 @@ vec3 agx(vec3 val) {
     const float min_ev = -12.47393;
     const float max_ev = 4.026069;
     val = AGX_MAT * val;
-    val = clamp(val, 0.0, 1.0);
-    val = log2(val);
+    // #4578 — clamp in LOG space (Wrensch 2023 minimal AgX, and three.js's
+    // port): the old linear [0,1] clamp meant log2 never exceeded 0, the
+    // 4.03-EV headroom was dead, and every texel >= 1.0 flattened to
+    // ~0.59 display-linear. max() before log2 also avoids log2(0) = -inf,
+    // whose inf-inf NaN propagated through the contrast polynomial on
+    // exactly-black channels (GLSL FMax's NaN result is undefined).
+    val = clamp(log2(max(val, 1.0e-10)), min_ev, max_ev);
     val = (val - min_ev) / (max_ev - min_ev);
     val = agxDefaultContrastApprox(val);
     val = AGX_INV_MAT * val;
