@@ -652,23 +652,26 @@ impl PhysicsWorld {
         // measured is removed forty lines below (`None` is passed for the
         // query pipeline).
         //
-        // WHERE THE COST ACTUALLY IS, today: the single post-loop
-        // `QueryPipeline::update`, which is a full QBVH `clear_and_rebuild`
-        // over every collider — not the solver. Synthetic in-crate proxy,
-        // release build, 30 000 fixed cuboids + 1 awake dynamic body, 20
-        // iterations after warmup:
-        //
-        //     PhysicsWorld::step (1 substep + the post-loop QP update) ≈ 2.1-2.4 ms
-        //     bare QueryPipeline::update(&colliders)                   ≈ 2.1 ms
-        //
-        // i.e. the rebuild accounts for essentially all of it and
-        // `pipeline.step()` itself sits below the run-to-run noise floor on
-        // this collider mix. Caveat, stated plainly: all-cuboid with one
-        // moving body is not a real cell — real content is TriMesh-heavy
-        // (whose QBVH rebuild is more expensive still) and has real contact
-        // work for the solver, so both sides go up. What the proxy
-        // establishes is the *attribution*: budget from the rebuild, not from
-        // the step.
+        // WHERE THE COST ACTUALLY IS, today: nowhere near here — #4685
+        // (PHYS-D6-2026-09-21-02). The design used to pass `None` for the
+        // query pipeline inside the step and pay ONE full
+        // `QueryPipeline::update` (a QBVH `clear_and_rebuild` over every
+        // collider) after the substep loop; on a 95 k-collider world that
+        // rebuild measured 9.6 ms/frame against 0.10 ms for the
+        // incremental path, because rapier 0.22's `PhysicsPipeline::step`
+        // never performs a full update on a pipeline it is handed — it
+        // calls `update_incremental` (dirty leaves only) once per step.
+        // The step now receives `Some(&mut self.query_pipeline)` and the
+        // post-loop full rebuild runs only on collider-dirty frames that
+        // step nothing. Historical attribution, kept for its method: the
+        // `6e55b492`-era proxy (release build, 30 000 fixed cuboids + 1
+        // awake dynamic body, 20 iterations after warmup) measured the
+        // then-design at ≈ 2.1-2.4 ms/frame with ≈ 2.1 ms of it the bare
+        // post-loop rebuild — the same "the rebuild, not the solver"
+        // conclusion the incremental handoff now removes entirely.
+        // Caveat, still true: all-cuboid with one moving body is not a
+        // real cell — real content is TriMesh-heavy with real contact
+        // work, so solver costs go up on both designs.
         //
         // Skip conditions:
         //
@@ -746,17 +749,23 @@ impl PhysicsWorld {
                 &mut self.impulse_joints,
                 &mut self.multibody_joints,
                 &mut self.ccd_solver,
-                // Do NOT rebuild the query pipeline inside each substep:
-                // `QueryPipeline::update` is O(all colliders) — a full QBVH
-                // `clear_and_rebuild`, NOT an incremental refit
-                // (rapier3d-0.22.0 `query_pipeline/mod.rs`; #2890) — so
-                // passing it here rebuilt the whole tree up to 5× per frame
-                // over ~30 k static colliders, and it remains the dominant
-                // per-frame physics cost even at once per frame. The raycast/overlap accelerator only needs to reflect
-                // the post-step collider poses *once* per frame; we refresh it
-                // after the loop instead. (Explicit `update_query_pipeline`
-                // call sites — e.g. the spawn ground-snap — are unaffected.)
-                None,
+                // #4685 (PHYS-D6-2026-09-21-02) — hand the pipeline our
+                // query pipeline so it advances INCREMENTALLY inside the
+                // step: rapier 0.22's `PhysicsPipeline::step` never calls
+                // the O(all-colliders) `QueryPipeline::update`; it calls
+                // `update_incremental` once per step (on the last substep),
+                // re-inserting only the colliders this step marked
+                // modified/removed. The old `None` here was defending
+                // against a full-rebuild-per-substep cost that does not
+                // exist — and forced the O(all-colliders) full rebuild in
+                // the post-loop below instead (measured 9.6 ms/frame on a
+                // 95 k-collider world vs 0.10 ms incremental). #2890's
+                // real history (a genuine in-substep full rebuild at every
+                // substep) was fixed by `6e55b492` removing that design,
+                // not by starving the pipeline of incremental updates.
+                // Explicit `update_query_pipeline` call sites — e.g. the
+                // spawn ground-snap — are unaffected.
+                Some(&mut self.query_pipeline),
                 &(),
                 &(),
             );
@@ -833,10 +842,16 @@ impl PhysicsWorld {
             }
         }
 
-        // One QBVH rebuild per frame after all substeps, only when something
-        // actually stepped (the fast-path early-return above skips this when
-        // the scene is asleep and colliders haven't moved).
-        if steps > 0 || self.colliders_dirty {
+        // Query-pipeline refresh, post-substeps. #4685 — a frame that
+        // stepped needs NO full rebuild here: `pipeline.step` already
+        // advanced the query pipeline incrementally (it drains rapier's
+        // modified/removed collider sets once per step). Only a frame that
+        // mutated colliders but ran no substep — the static-scene fast
+        // path with fresh registration (#2864's deferred rebuild) — still
+        // pays the full O(all-colliders) `clear_and_rebuild`.
+        if steps > 0 {
+            self.colliders_dirty = false;
+        } else if self.colliders_dirty {
             self.query_pipeline.update(&self.colliders);
             self.colliders_dirty = false;
         }
@@ -2055,6 +2070,62 @@ mod tests {
         );
     }
 
+    /// #4685 (PHYS-D6-2026-09-21-02) — with the query pipeline advanced
+    /// incrementally inside `pipeline.step` (no post-loop full rebuild on
+    /// stepped frames), a post-step ray must still find a dynamic body at
+    /// its MOVED pose, not where a stale tree would leave it. A stale QP
+    /// fails the discriminating assertion: the ball drops ~34 BU from its
+    /// spawn, so a ray through its XZ would first hit nothing near the top
+    /// (spawn-pose tree has no collider up there) or the FLOOR at ~1 BU
+    /// depth instead of the ball's crown.
+    #[test]
+    fn post_step_ray_finds_a_moved_dynamic_body_with_the_incremental_query_path() {
+        let mut w = PhysicsWorld::new();
+        let fh = w
+            .bodies
+            .insert(RigidBodyBuilder::fixed().translation(vector![0.0, -1.0, 0.0]).build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(500.0, 1.0, 500.0).build(),
+            fh,
+            &mut w.bodies,
+        );
+        let bh = w
+            .bodies
+            .insert(RigidBodyBuilder::dynamic().translation(vector![0.0, 40.0, 0.0]).build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::ball(2.0).build(),
+            bh,
+            &mut w.bodies,
+        );
+        w.update_query_pipeline();
+
+        w.wake();
+        for _ in 0..30 {
+            assert_eq!(w.step(PHYSICS_DT), 1);
+        }
+        let y = w.bodies.get(bh).unwrap().translation().y;
+        assert!(y < 10.0, "the ball must have fallen well below spawn: {y}");
+
+        // Straight down through the ball's XZ from high above: the first
+        // hit must be the BALL (crown at y + 2), not the floor at 0 —
+        // proving the incremental updates tracked the moved body.
+        let hit = w
+            .cast_ray(
+                byroredux_core::math::Vec3::new(0.0, 100.0, 0.0),
+                byroredux_core::math::Vec3::new(0.0, -1.0, 0.0),
+                200.0,
+                None,
+            )
+            .expect("the falling ball or the floor must be hit");
+        let hit_y = 100.0 - hit.distance;
+        assert!(
+            (hit_y - (y + 2.0)).abs() < 3.0,
+            "the ray must first meet the ball near its current pose (ball y \
+             {y}, hit at {hit_y}) — a stale query tree would return the spawn \
+             pose (~42) or the floor (0)"
+        );
+    }
+
     #[test]
     fn invalid_dynamic_body_reverts_to_its_last_valid_substep_pose() {
         let mut bodies = RigidBodySet::new();
@@ -2261,27 +2332,31 @@ mod tests {
             "the rationale must attribute its historical numbers to the \
              commit they came from, so the next reader can date them"
         );
+        // #4685 — the step hands the query pipeline to rapier so the tree
+        // advances INCREMENTALLY; the full rebuild is reserved for
+        // collider-dirty frames that step nothing.
         assert!(
-            rationale.contains("QueryPipeline::update"),
-            "the rationale must name the current cost centre — a reader \
-             budgeting physics from this comment needs the rebuild, not the \
-             solver"
+            src.contains("Some(&mut self.query_pipeline),"),
+            "the step must pass the query pipeline to rapier's incremental \
+             update path (#4685) — passing `None` forced the post-loop full \
+             rebuild the audit measured at 9.6 ms on a 95 k world"
         );
-
-        // "refit" implies an incremental cost that is not there.
-        for (site, needle) in [
-            (
-                "in-substep note",
-                "clear_and_rebuild`, NOT an incremental refit",
-            ),
-            ("post-loop note", "One QBVH rebuild per frame"),
-        ] {
-            assert!(
-                src.contains(needle),
-                "{site}: QueryPipeline::update is a full QBVH rebuild, not a \
-                 refit (#2890)"
-            );
-        }
+        assert!(
+            rationale.contains("update_incremental"),
+            "the rationale must name the incremental path the step now uses \
+             (#4685)"
+        );
+        assert!(
+            src.contains("} else if self.colliders_dirty {"),
+            "the full QueryPipeline rebuild must be reserved for collider-dirty \
+             frames that ran no substep (#2864's deferred registration; #4685 \
+             removed it from stepped frames)"
+        );
+        assert!(
+            !rationale.contains("the rebuild accounts for essentially all of it"),
+            "that attribution described the pre-#4685 design; leaving it in the \
+             present tense would misdirect the next budgeting exercise"
+        );
     }
 
     /// Regression for #3975. `active_island_counts`'s doc and the
