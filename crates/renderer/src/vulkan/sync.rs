@@ -71,6 +71,26 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //      only two frames ("two, per the renderer's frames-in-flight") can
 //      be sampling at once. A bump must re-derive that premise at the
 //      new slot count, not inherit it from this list.
+//   7. `draw.rs`'s post-present TLAS scratch shrink of the *next* slot
+//      (#4601) — after `current_frame` advances, `shrink_tlas_to_fit` /
+//      `shrink_tlas_scratch_to_fit` destroy the new slot's scratch
+//      immediately (`acceleration/memory.rs`). At N = 2 the next slot's
+//      last user is frame N-1, which only the all-slots wait has
+//      retired; a per-slot wait on frame N's own slot never covers it.
+//   8. `groundcover.rs`'s `prepare` on `current_frame` (#4601) — runs
+//      from the app BEFORE this frame's `draw_frame`: it harvests
+//      `counter_readback[frame]`, host-writes six per-slot buffers and
+//      rewrites that slot's descriptor sets. Its "must be called after
+//      slot `frame`'s fence has been waited" contract holds only through
+//      the PREVIOUS `draw_frame`'s all-slots wait.
+//
+// #4601 — the wait's own argument is now pinned: the all-slots spelling
+// `wait_for_fences(&self.frame_sync.in_flight, true, u64::MAX)` is
+// asserted by `the_all_slots_wait_argument_is_pinned` in this file. The
+// textbook per-slot form (`&[in_flight[frame]]`) is exactly the
+// nine-site use-after-free riders 1-8 above exist to warn about; if the
+// wait is ever narrowed (#4606's throughput work), every rider must be
+// made per-FIF or defer-destroyed FIRST.
 //
 // `FrameSync::images_in_flight` (below) carries its own version of the
 // warning and is the seventh. So option (b) — or per-FIF-ing every one
@@ -679,6 +699,40 @@ mod tests {
             "hud.rs's rotation doc must keep naming the frames-in-flight \
              count its overwrite margin presumes — that sentence is what \
              a MAX_FRAMES_IN_FLIGHT bump invalidates first (#4516)",
+        );
+    }
+
+    /// #4601 — the all-slots ARGUMENT of the top-of-frame wait is the only
+    /// safety argument for every rider above, and nothing else pinned it:
+    /// the #3442 pin rejects only the `(f + 1) % MAX_FRAMES_IN_FLIGHT`
+    /// spelling, and the seven `include_str!` tests over
+    /// `sync_and_acquire_frame.rs` check presence or ordering, never the
+    /// argument. The textbook per-slot form — `&[self.frame_sync
+    /// .in_flight[frame]]` — passed every one of them, which is also a
+    /// plausible perf change (#4606). Needles composed at runtime per
+    /// #3442: a literal in THIS test would match its own source.
+    #[test]
+    fn the_all_slots_wait_argument_is_pinned() {
+        let src = include_str!("context/sync_and_acquire_frame.rs");
+        let wait = "wait_for_fences(&self.frame_sync.in_flight, true, u64::MAX)".to_string();
+        assert!(
+            src.contains(&wait),
+            "sync_and_acquire_frame's fence wait must stay ALL-SLOTS — \
+             `wait_for_fences(&self.frame_sync.in_flight, true, u64::MAX)`. \
+             Narrowing it to a per-slot wait is the nine-site hazard the \
+             #870/#3643/#4601 rider list exists for: immediate BLAS/TLAS \
+             scratch destroys, host writes into in-use mapped buffers, and \
+             in-use descriptor rewrites all lose their only guarantee. \
+             Migrate every rider per-FIF (or defer-destroy) FIRST (#4606's \
+             plan), and validate with BYRO_VALIDATION=1 before narrowing."
+        );
+        // And the per-slot spelling must NOT appear — composed likewise,
+        // so this test cannot match its own mention of it.
+        let per_slot = "&[self.frame_sync.in_flight[frame]]".to_string();
+        assert!(
+            !src.contains(&per_slot),
+            "a per-slot wait spelling landed without migrating the riders \
+             — see the rider list above (#4601)"
         );
     }
 }

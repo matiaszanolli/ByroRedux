@@ -26,8 +26,12 @@ use gpu_allocator::vulkan as vk_alloc;
 ///   submitted copy has retired. That both-slots wait is the real invariant
 ///   here; see the `#870` remediation block in `vulkan/sync.rs`, which lists
 ///   `screenshot_staging` and `depth_capture_staging` among the resources
-///   whose safety rests on it. That wait is itself pinned since `ac48ab63`
-///   (#3442) — both #4039 and its sibling audit note describe it as the one
+///   whose safety rests on it. That wait's all-slots ARGUMENT is pinned
+///   by `the_all_slots_wait_argument_is_pinned` in `sync.rs` (#4601) —
+///   #3442 landed the all-slots spelling, but its pin only rejects the
+///   `(f + 1) % MAX_FRAMES_IN_FLIGHT` form, so "pinned since ac48ab63"
+///   overstated it until #4601. Both #4039 and its sibling audit note
+///   describe it as the one
 ///   correct reason that nothing guards, which stopped being true the day
 ///   after they were written.
 /// - Shutdown teardown, after `device_wait_idle`.
