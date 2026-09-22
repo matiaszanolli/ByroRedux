@@ -31,9 +31,7 @@
 //! `headhuman.egt` (9 830 664 bytes) into
 //! `64 + 50 morphs × (4 + 256 × 256 × 3)`.
 //!
-//! No `unsafe`. No external deps beyond `thiserror` for the error
-//! type. Half-float decoding is hand-rolled (`half_to_f32` below)
-//! to avoid pulling in the `half` crate for a 30-line algorithm.
+//! No `unsafe`. No external deps beyond `thiserror` for the error type.
 
 pub mod egm;
 pub mod egt;
@@ -76,47 +74,6 @@ pub enum FaceGenError {
     InconsistentHeader(String),
 }
 
-/// Decode an IEEE 754 binary16 ("half-float") into f32.
-///
-/// Mirrors `byroredux_nif::import::mesh::half_to_f32` — re-declared
-/// here so this crate doesn't depend on `byroredux-nif`'s internals
-/// (the canonical impl is `pub(crate)` there, and this crate is
-/// deliberately dependency-light). Subnormals are normalised; NaN
-/// payloads are preserved.
-///
-/// #2599 — the two copies are pinned bit-for-bit across all 65_536
-/// `u16` inputs by `facegen_half_to_f32_copy_matches_canonical_bit_for_bit`
-/// in `byroredux-nif`'s `import::mesh::decode_half_float_tests`. Any
-/// edit here that changes behaviour fails that test until the canonical
-/// decoder is updated to match (and vice versa).
-#[inline]
-pub fn half_to_f32(h: u16) -> f32 {
-    let sign = ((h >> 15) & 1) as u32;
-    let exp = ((h >> 10) & 0x1F) as i32;
-    let mant = (h & 0x3FF) as u32;
-    let bits = if exp == 0 {
-        if mant == 0 {
-            sign << 31
-        } else {
-            // Subnormal — normalise.
-            let mut m = mant;
-            let mut e = -14_i32;
-            while m & 0x400 == 0 {
-                m <<= 1;
-                e -= 1;
-            }
-            m &= 0x3FF;
-            (sign << 31) | (((e + 127) as u32) << 23) | (m << 13)
-        }
-    } else if exp == 31 {
-        // Inf / NaN — preserve mantissa for NaN payloads.
-        (sign << 31) | (0xFFu32 << 23) | (mant << 13)
-    } else {
-        (sign << 31) | (((exp - 15 + 127) as u32) << 23) | (mant << 13)
-    };
-    f32::from_bits(bits)
-}
-
 /// Read a little-endian `u32` at `offset` from `bytes`. Returns
 /// `Truncated` when the read would run past the buffer end.
 pub(crate) fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32, FaceGenError> {
@@ -142,26 +99,6 @@ pub(crate) fn read_f32_le(bytes: &[u8], offset: usize) -> Result<f32, FaceGenErr
 
 #[cfg(test)]
 mod tests {
-    use super::half_to_f32;
-
-    #[test]
-    fn half_to_f32_canonical_values() {
-        // 0x3C00 = 1.0
-        assert_eq!(half_to_f32(0x3C00), 1.0);
-        // 0xC000 = -2.0
-        assert_eq!(half_to_f32(0xC000), -2.0);
-        // 0x0000 = +0.0
-        assert_eq!(half_to_f32(0x0000), 0.0);
-        // 0x8000 = -0.0
-        assert_eq!(half_to_f32(0x8000).to_bits(), (-0.0_f32).to_bits());
-        // 0x7C00 = +inf
-        assert!(half_to_f32(0x7C00).is_infinite() && half_to_f32(0x7C00).is_sign_positive());
-        // 0xFC00 = -inf
-        assert!(half_to_f32(0xFC00).is_infinite() && half_to_f32(0xFC00).is_sign_negative());
-        // Smallest subnormal: 0x0001 = 2^-24 ≈ 5.96e-8
-        let subnormal = half_to_f32(0x0001);
-        assert!(subnormal > 0.0 && subnormal < 1e-7);
-    }
 
     /// #3544 (SK-D3-02) — `EgtFile`/`EgtMorph`/`TriHeader` have no
     /// consumer anywhere in the workspace; the crate doc used to claim

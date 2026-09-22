@@ -176,11 +176,11 @@ fn for_each_game(what: &str, body: impl Fn(Game, &Expected, Vec<u8>)) {
     }
 }
 
-// #4665 — the on-disk non-finite delta counts, measured from the
-// vanilla masters. A decode change (the PAR-D5-2026-09-21-01 class)
-// moves these; the eprintln used to be the only trace of them.
-const NV_EGM_NON_FINITE: usize = 32_456;
-const FO3_EGM_NON_FINITE: usize = 32_456;
+// #4653 — the EGM deltas are scaled INT16s, so a correct decode yields
+// ZERO non-finite components (the audit's 32,456-per-game NaN count was
+// the f16 mis-decode's own artifact). Asserted in the test below.
+const NV_EGM_NON_FINITE: usize = 0;
+const FO3_EGM_NON_FINITE: usize = 0;
 
 #[test]
 #[ignore = "needs FNV/FO3 game data on disk"]
@@ -226,6 +226,24 @@ fn parse_vanilla_headhuman_egm() {
                 .chain(egm.fgga_morphs.iter())
                 .map(|m| m.deltas.iter().flatten().filter(|c| !c.is_finite()).count())
                 .sum();
+            // #4653 — int16 deltas are always finite, and the SDK's
+            // full-range quantisation means every morph peaks at |m|
+            // near 32767 (relative to the morph's own scale).
+            let mut max_raw = 0.0f32;
+            for morph in egm
+                .fggs_morphs
+                .iter()
+                .chain(egm.fgga_morphs.iter())
+            {
+                for d in morph.deltas.iter().flatten() {
+                    max_raw = max_raw.max(d.abs());
+                }
+            }
+            assert!(
+                (30_000.0..=32_768.0).contains(&max_raw),
+                "[{g}] every morph should quantise to near-full-range int16 \
+                 (expected peak ~32767, got {max_raw})"
+            );
             // #4665 (PAR-D4-2026-09-21-03) — this used to be an
             // eprintln, which could never catch a decode regression; the
             // PAR-D5-2026-09-21-01 EGM bug is exactly what it existed to

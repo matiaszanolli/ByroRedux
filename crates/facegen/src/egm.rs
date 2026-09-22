@@ -12,30 +12,39 @@
 //! ```text
 //! struct Header {                  // 64 bytes total
 //!     magic: [u8; 8],              // "FREGM002"
-//!     num_vertices:    u32,        //   verified == base head NIF's vertex count
+//!     num_vertices:    u32,        //   = TRI V + K (vanilla 1211 + 238 = 1449)
 //!     num_sym_morphs:  u32,        //   == FGGS slot count (50 vanilla)
 //!     num_asym_morphs: u32,        //   == FGGA slot count (30 vanilla)
 //!     geometry_basis: f32,         //   morph-space basis radius (FaceGen-internal)
 //!     padding:        [u8; 40],    //   zero
 //! }
 //! struct Morph {
-//!     scale:  f32,                 //   delta = scale * normalized_f16
-//!     deltas: [Vec3<f16>; num_vertices],
+//!     scale:  f32,                 //   per-morph normalisation x
+//!     deltas: [Vec3<i16>; num_vertices],  // raw m; value = m * x
 //! }
 //! file = Header
 //!      ++ [Morph; num_sym_morphs]
 //!      ++ [Morph; num_asym_morphs]
 //! ```
 //!
+//! Per the FaceGen SDK manual, each delta component is a **signed 16-bit
+//! integer** and "the actual morph values should be m * x" — NOT IEEE
+//! half-floats (#4653 / PAR-D5-2026-09-21-01). Both are 2 bytes, so the
+//! exact-size check never caught the mis-typing; the vanilla signature
+//! does: all 80 morphs peak at |int16| = 32767 (full-range int16
+//! quantisation) and 9.3% of components landed on f16 NaN/Inf. The old
+//! "FaceGen used NaN as a no-displacement sentinel" rationale described
+//! this mis-decode's symptom, not authoring intent.
+//!
 //! Verified against vanilla FNV `headhuman.egm` (695 904 bytes,
 //! 1449 verts, 50 sym + 30 asym): exact match for
 //! `64 + 80 × (4 + 1449 × 6) = 695 904`.
 
-use crate::{half_to_f32, read_f32_le, read_u32_le, FaceGenError};
+use crate::{read_f32_le, read_u32_le, FaceGenError};
 
 const EGM_MAGIC: &[u8; 8] = b"FREGM002";
 const HEADER_BYTES: usize = 64;
-/// Bytes per vertex delta — 3 × half-float.
+/// Bytes per vertex delta — 3 × i16.
 const DELTA_BYTES: usize = 6;
 /// Defensive caps. Vanilla FNV has 1449 vertices and 50+30 morphs;
 /// these limits leave plenty of headroom for modded base heads while
@@ -47,9 +56,10 @@ const MAX_MORPHS: u32 = 1024;
 ///
 /// Rendering applies the morph to a vertex `v_i` as
 /// `v_i' = v_i + scale * deltas[i] * weight`, summed across every
-/// active morph at the slider value `weight`. The `scale` is a
-/// per-morph normalisation that lets the f16 deltas stay in a
-/// compact range without losing precision.
+/// active morph at the slider value `weight`. The `scale` is the
+/// per-morph normalisation `x` from the SDK ("the actual morph values
+/// should be m * x"); `deltas[i]` holds the raw signed-integer `m`
+/// widened to f32 (always finite — #4653).
 #[derive(Debug, Clone)]
 pub struct EgmMorph {
     /// Per-morph scale (multiplies the f16 delta before adding to
@@ -143,10 +153,13 @@ impl EgmFile {
             offset += 4;
             let mut deltas = Vec::with_capacity(nv);
             for _ in 0..nv {
-                // Three half-floats per vertex, little-endian.
-                let dx = half_to_f32(u16::from_le_bytes([bytes[offset], bytes[offset + 1]]));
-                let dy = half_to_f32(u16::from_le_bytes([bytes[offset + 2], bytes[offset + 3]]));
-                let dz = half_to_f32(u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]]));
+                // Three SIGNED 16-BIT integers per vertex, little-endian
+                // (#4653 — the old half-float decode was wrong: i16 and
+                // f16 are both 2 bytes, so only the value distribution
+                // gave the mis-typing away).
+                let dx = i16::from_le_bytes([bytes[offset], bytes[offset + 1]]) as f32;
+                let dy = i16::from_le_bytes([bytes[offset + 2], bytes[offset + 3]]) as f32;
+                let dz = i16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]]) as f32;
                 deltas.push([dx, dy, dz]);
                 offset += DELTA_BYTES;
             }
@@ -172,8 +185,8 @@ mod tests {
     use super::*;
 
     /// Build a synthetic `.egm` byte buffer for tests. Each morph's
-    /// scale is `1.0` and every delta is the f16 representation of
-    /// `0.5` so the parser's f16→f32 path is exercised.
+    /// scale is `2.0` and every raw delta component is the i16 `100`,
+    /// so the parser's int16→f32 path is exercised.
     fn synth_egm(num_vertices: u32, num_sym: u32, num_asym: u32) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"FREGM002");
@@ -183,15 +196,13 @@ mod tests {
         out.extend_from_slice(&1.0f32.to_le_bytes()); // basis
         out.extend_from_slice(&[0u8; 40]); // padding to 64
 
-        // f16 0.5 = 0x3800 (sign 0, exp 14, mant 0).
-        let half_05: u16 = 0x3800;
         let total_morphs = (num_sym + num_asym) as usize;
         for _ in 0..total_morphs {
             out.extend_from_slice(&2.0f32.to_le_bytes()); // scale
             for _ in 0..num_vertices {
-                out.extend_from_slice(&half_05.to_le_bytes());
-                out.extend_from_slice(&half_05.to_le_bytes());
-                out.extend_from_slice(&half_05.to_le_bytes());
+                out.extend_from_slice(&100i16.to_le_bytes());
+                out.extend_from_slice(&100i16.to_le_bytes());
+                out.extend_from_slice(&100i16.to_le_bytes());
             }
         }
         out
@@ -206,7 +217,9 @@ mod tests {
         assert_eq!(egm.fgga_morphs.len(), 0);
         assert_eq!(egm.fggs_morphs[0].scale, 2.0);
         assert_eq!(egm.fggs_morphs[0].deltas.len(), 2);
-        assert_eq!(egm.fggs_morphs[0].deltas[0], [0.5, 0.5, 0.5]);
+        // Raw int16 100 widened to f32; the scale stays separate
+        // (the evaluator applies it with the slider weight).
+        assert_eq!(egm.fggs_morphs[0].deltas[0], [100.0, 100.0, 100.0]);
     }
 
     #[test]

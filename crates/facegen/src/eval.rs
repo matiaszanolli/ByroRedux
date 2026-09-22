@@ -18,17 +18,14 @@
 //! `weights[j]` is the matching slider value from
 //! `NpcRecord.runtime_facegen.fggs[j]` / `.fgga[j]`.
 //!
-//! ## NaN guard
+//! ## Non-finite guard
 //!
-//! Vanilla FNV `headhuman.egm` carries non-finite half-float bit
-//! patterns on some delta entries — verified empirically on
-//! 2026-04-29 (see the `parse_real_facegen` integration test).
-//! Multiplying any non-finite component by a slider weight propagates
-//! NaN to the deformed vertex, then to the GPU. The evaluator skips
-//! non-finite contributions silently — the assumption is that
-//! FaceGen used NaN as a "no displacement" sentinel rather than
-//! authoring intent. If a delta entry is finite, it gets applied
-//! verbatim.
+//! The old rationale called FaceGen's NaN bit patterns a "no
+//! displacement" sentinel; #4653 showed they were a SYMPTOM of decoding
+//! scaled int16 deltas as half-floats (small negative int16s reinterpreted
+//! as NaN). With the i16 decode the deltas are always finite and this
+//! guard is defensive only — it stays so one future bad byte cannot
+//! propagate NaN to the deformed vertex and the GPU.
 
 use crate::EgmMorph;
 
