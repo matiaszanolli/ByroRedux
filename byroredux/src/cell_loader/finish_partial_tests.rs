@@ -210,7 +210,7 @@ fn finish_partial_import_reinterns_worker_material_symbols() {
         .resource_mut::<StringPool>()
         .intern("world/preexisting-symbol");
 
-    finish_partial_import(&mut world, None, "worker.nif", partial);
+    finish_partial_import(&mut world, None, "worker.nif", partial, &|_| false);
 
     let (material_path, base_color) = {
         let reg = world.resource::<NifImportRegistry>();
@@ -255,7 +255,7 @@ fn finish_partial_import_early_outs_on_already_cached_positive_entry() {
     assert_eq!(world.resource::<NifImportRegistry>().len(), 1);
     assert_eq!(world.resource::<AnimationClipRegistry>().len(), 0);
 
-    finish_partial_import(&mut world, None, "test.nif", dummy_partial());
+    finish_partial_import(&mut world, None, "test.nif", dummy_partial(), &|_| false);
 
     // Cache entry preserved (same Arc pointer — the early-out didn't
     // rebuild and overwrite).
@@ -290,7 +290,7 @@ fn finish_partial_import_early_outs_on_already_cached_negative_entry() {
     }
     assert_eq!(world.resource::<NifImportRegistry>().len(), 1);
 
-    finish_partial_import(&mut world, None, "broken.nif", dummy_partial());
+    finish_partial_import(&mut world, None, "broken.nif", dummy_partial(), &|_| false);
 
     // Cache entry stays negative — the worker's payload (which would
     // have produced a positive entry) is dropped silently.
@@ -317,12 +317,7 @@ fn finish_partial_import_early_outs_with_mixed_case_model_path() {
             Some(dummy_cached()),
         );
     }
-    finish_partial_import(
-        &mut world,
-        None,
-        "Meshes/Clutter/Rock_Cliff.NIF",
-        dummy_partial(),
-    );
+    finish_partial_import(&mut world, None, "Meshes/Clutter/Rock_Cliff.NIF", dummy_partial(), &|_| false);
     let reg = world.resource::<NifImportRegistry>();
     assert_eq!(
         reg.len(),
@@ -342,7 +337,7 @@ fn finish_partial_import_fo4_bsx_bit5_is_not_editor_marker() {
     let mut world = world_with_registries();
     let partial = dummy_partial_with(0xA2);
 
-    finish_partial_import(&mut world, None, "hitfloorsolidfull01.nif", partial);
+    finish_partial_import(&mut world, None, "hitfloorsolidfull01.nif", partial, &|_| false);
 
     let reg = world.resource::<NifImportRegistry>();
     let entry = reg
@@ -363,7 +358,7 @@ fn finish_partial_import_marker_only_scene_imports_empty() {
     let mut world = world_with_registries();
     let partial = partial_with_marker_scene(false);
 
-    finish_partial_import(&mut world, None, "xmarkerheading.nif", partial);
+    finish_partial_import(&mut world, None, "xmarkerheading.nif", partial, &|_| false);
 
     let reg = world.resource::<NifImportRegistry>();
     let entry = reg
@@ -382,7 +377,7 @@ fn finish_partial_import_bsx_bit5_keeps_real_geometry_sibling() {
     let mut world = world_with_registries();
     let partial = partial_with_marker_scene(true);
 
-    finish_partial_import(&mut world, None, "stool01.nif", partial);
+    finish_partial_import(&mut world, None, "stool01.nif", partial, &|_| false);
 
     let reg = world.resource::<NifImportRegistry>();
     let cached = reg
@@ -482,7 +477,7 @@ fn finish_partial_import_populates_furniture_and_flame_offset() {
         embedded_clip: None,
     };
 
-    finish_partial_import(&mut world, None, "furnace01.nif", partial);
+    finish_partial_import(&mut world, None, "furnace01.nif", partial, &|_| false);
 
     let reg = world.resource::<NifImportRegistry>();
     let cached = reg

@@ -287,7 +287,14 @@ pub(super) fn parse_import_and_merge(
         for mesh in &mut imported.meshes {
             // #2709 (SF-D9-03) — outcome discarded deliberately; the
             // loose-NIF path has no per-cell material tally to feed.
-            let _ = merge_external_material(&mut mesh.material, provider, &mut pool);
+            // #4636 — dead-path probe through the texture provider the
+            // import above already resolved meshes with.
+            let _ = merge_external_material(
+                &mut mesh.material,
+                provider,
+                &mut pool,
+                &|p| tex_provider.has_texture(p),
+            );
         }
     }
     // #1215 / D2 FIND-1 — sibling of the cell-loader zero-contribution

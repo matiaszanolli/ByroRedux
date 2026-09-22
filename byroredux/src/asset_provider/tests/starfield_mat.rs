@@ -136,7 +136,7 @@ fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
         "fresh ImportedMesh defaults to is_pbr=false"
     );
 
-    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
 
     // #2709 (SF-D9-03) — this is the exact case the old `bool` return
     // could not name: the sidecar resolved, but the arm forwarded only
@@ -192,7 +192,7 @@ fn mat_path_forwards_no_texture_roles_until_cdb_phase_2_lands() {
 
     let mut mesh =
         imported_mesh_with_material_path(&mut pool, "materials/setpieces/reactor_core.mat");
-    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
 
     assert_eq!(
         outcome,
@@ -268,7 +268,7 @@ fn merge_skips_mat_path_when_cdb_absent() {
     assert!(!provider.has_starfield_cdb());
 
     let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/modded.mat");
-    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
 
     // Falls through past the .mat arm; bgsm/bgem dispatch fails
     // because the path doesn't match either suffix; `Unresolved`
@@ -386,7 +386,7 @@ fn mat_arm_does_not_steal_bgsm_dispatch() {
 
     let mut mesh =
         imported_mesh_with_material_path(&mut pool, "materials/setdressing/metallocker01.bgsm");
-    let _ = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let _ = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
 
     // Starfield NIFs use `.bgsm` names without shipping BGSM payloads. The
     // CDB capability gate routes them through Disney PBR instead of silently
@@ -400,7 +400,7 @@ fn starfield_bgem_named_reference_gets_pbr_fallback() {
     let mut provider = MaterialProvider::new();
     register_probed(&mut provider, &minimal_cdb_bytes());
     let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/common/glowwhite.bgem");
-    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
     assert_eq!(outcome, MergeOutcome::PresenceOnly);
     assert!(mesh.material.is_pbr);
 }
@@ -442,7 +442,7 @@ fn registered_cdb_does_not_shadow_a_resolvable_bgsm() {
     );
 
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
-    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
 
     assert!(
         outcome.merged(),
@@ -486,7 +486,7 @@ fn unresolvable_bgsm_still_falls_back_to_cdb_pbr() {
 
     let mut mesh =
         imported_mesh_with_material_path(&mut pool, "materials/setdressing/nopayload.bgsm");
-    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
 
     assert_eq!(
         outcome,

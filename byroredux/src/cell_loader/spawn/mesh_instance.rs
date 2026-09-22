@@ -181,6 +181,10 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                         &mut material,
                         provider,
                         &mut pool,
+                        // #4636 — a swapped sidecar's dead NIF path yields
+                        // to its own resolvable chain path, same rule as
+                        // the cache-fill merge.
+                        &|p| tex_provider.is_some_and(|t| t.has_texture(p)),
                     );
                     Some(material)
                 });
@@ -2228,6 +2232,7 @@ mod tests {
             std::slice::from_mut(&mut mesh),
             &mut provider,
             &mut pool,
+            &|_| false, // #4636: no texture archive in this unit-test fixture
         );
         assert!(
             mesh.material.two_sided && mesh.material.alpha_test,
@@ -2319,6 +2324,7 @@ mod tests {
             std::slice::from_mut(&mut mesh),
             &mut provider,
             &mut pool,
+            &|_| false, // #4636: no texture archive in this unit-test fixture
         );
         assert_eq!(
             mesh.material.textures.glass_roughness_scratch,

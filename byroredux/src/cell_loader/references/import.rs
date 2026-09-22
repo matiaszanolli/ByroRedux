@@ -37,8 +37,10 @@ pub(crate) fn parse_and_import_nif_pub(
     mat_provider: Option<&mut MaterialProvider>,
     pool: &mut byroredux_core::string::StringPool,
     mesh_resolver: Option<&dyn byroredux_nif::import::MeshResolver>,
+    // #4636 — texture-existence probe for the merge's dead-path repair.
+    texture_exists: &dyn Fn(&str) -> bool,
 ) -> Option<Arc<CachedNifImport>> {
-    parse_and_import_nif(nif_data, label, mat_provider, pool, mesh_resolver)
+    parse_and_import_nif(nif_data, label, mat_provider, pool, mesh_resolver, texture_exists)
 }
 
 pub(super) fn parse_and_import_nif(
@@ -47,6 +49,8 @@ pub(super) fn parse_and_import_nif(
     mat_provider: Option<&mut MaterialProvider>,
     pool: &mut byroredux_core::string::StringPool,
     mesh_resolver: Option<&dyn byroredux_nif::import::MeshResolver>,
+    // #4636 — texture-existence probe for the merge's dead-path repair.
+    texture_exists: &dyn Fn(&str) -> bool,
 ) -> Option<Arc<CachedNifImport>> {
     let scene = match byroredux_nif::parse_nif(nif_data) {
         Ok(s) => {
@@ -90,7 +94,12 @@ pub(super) fn parse_and_import_nif(
     // REFR material swap can merge its target onto the NIF-authored state.
     let pre_merge_materials = match mat_provider {
         Some(provider) => {
-            super::super::nif_import_registry::merge_external_materials(&mut meshes, provider, pool)
+            super::super::nif_import_registry::merge_external_materials(
+                &mut meshes,
+                provider,
+                pool,
+                texture_exists,
+            )
         }
         None => Vec::new(),
     };

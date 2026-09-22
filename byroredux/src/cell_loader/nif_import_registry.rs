@@ -171,13 +171,21 @@ pub(super) fn merge_external_materials(
     meshes: &mut [byroredux_nif::import::ImportedMesh],
     provider: &mut crate::asset_provider::MaterialProvider,
     pool: &mut byroredux_core::string::StringPool,
+    // #4636 — spawn-time texture-existence probe for the merge's
+    // dead-path repair (`fill`): a NIF slot whose path resolves in no
+    // loaded archive yields to the sidecar chain's resolvable path.
+    texture_exists: &dyn Fn(&str) -> bool,
 ) -> Vec<Option<byroredux_nif::import::ImportedMaterial>> {
     meshes
         .iter_mut()
         .map(|mesh| {
             let pre_merge = mesh.material.material_path.map(|_| mesh.material.clone());
-            let _ =
-                crate::asset_provider::merge_external_material(&mut mesh.material, provider, pool);
+            let _ = crate::asset_provider::merge_external_material(
+                &mut mesh.material,
+                provider,
+                pool,
+                texture_exists,
+            );
             pre_merge
         })
         .collect()

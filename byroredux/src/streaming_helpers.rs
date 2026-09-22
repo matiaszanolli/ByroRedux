@@ -615,6 +615,10 @@ fn finish_streaming_import(
                 Some(&mut state.mat_provider),
                 &model_path,
                 partial,
+                // #4636 — the streaming state carries the texture
+                // provider alongside the material one; route the merge's
+                // dead-path probe through it.
+                &|p| state.tex_provider.has_texture(p),
             );
         }
         None => {

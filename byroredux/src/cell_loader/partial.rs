@@ -22,6 +22,8 @@ pub(crate) fn finish_partial_import(
     mat_provider: Option<&mut MaterialProvider>,
     model_path: &str,
     partial: crate::streaming::PartialNifImport,
+    // #4636 — texture-existence probe for the merge's dead-path repair.
+    texture_exists: &dyn Fn(&str) -> bool,
 ) {
     let cache_key = canonical_model_path_key(model_path);
     // Already-cached early-out (#864). The streaming worker
@@ -78,7 +80,12 @@ pub(crate) fn finish_partial_import(
     let pre_merge_materials = match mat_provider {
         Some(provider) => {
             let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-            super::nif_import_registry::merge_external_materials(&mut meshes, provider, &mut pool)
+            super::nif_import_registry::merge_external_materials(
+                &mut meshes,
+                provider,
+                &mut pool,
+                texture_exists,
+            )
         }
         None => Vec::new(),
     };

@@ -114,11 +114,15 @@ fn record_external_texture_sources(
     before: &MaterialTextureSet<Option<byroredux_core::string::FixedString>>,
     source: ImportedTextureSource,
 ) {
-    // A role counts as externally sourced only if the merge is what filled
-    // it: empty before, populated after. A slot the NIF already carried keeps
+    // A role counts as externally sourced only if the merge is what put its
+    // CURRENT path there: different path before vs after. That covers both a
+    // fill (empty before, populated after) and #4636's dead-path repair
+    // (populated before with a dead NIF path, populated after with the
+    // sidecar chain's) — a repaired slot now reports the sidecar that
+    // actually supplied the resolvable texture. An untouched NIF slot keeps
     // its existing `NifTextureSet` provenance.
     let newly_filled = before.zip_map_ref(&material.textures, |was, now| {
-        was.is_none() && now.is_some()
+        was != now
     });
     material.texture_sources =
         newly_filled.zip_map_ref(&material.texture_sources, |filled, existing| {
@@ -136,27 +140,82 @@ fn record_external_texture_sources(
 // None and the incoming value is non-empty. Routes through the
 // engine's `StringPool` so the BGSM/BGEM-resolved paths share the
 // same intern table as the NIF-side paths (#609 / D6-NEW-01).
+//
+// #4636 — a non-empty slot is no longer an unconditional veto. When the
+// NIF-authored path and the sidecar chain's value disagree AND the
+// texture-existence probe positively shows the NIF path resolves to
+// nothing in any loaded archive while the chain's does resolve, the
+// chain's path takes the slot: the NIF-first rule keeps precedence only
+// for paths that actually load. This closes the dead-path sub-case
+// (three FO4 first-person body meshes bind
+// `textures\actors\character\basehumanfemale\femalebody_msn.dds`,
+// absent from all 52 vanilla BA2s, while their BGSM names a
+// `FemaleBody_n.DDS` that IS present — the shape got no normal map at
+// all) without taking a side on which source FO4's runtime honours when
+// both resolve. The probe needs *positive* evidence on both sides, so a
+// caller with no texture archives (empty probe, always false) changes
+// nothing.
 fn fill(
     slot: &mut Option<byroredux_core::string::FixedString>,
     value: &str,
     touched: &mut bool,
     pool: &mut byroredux_core::string::StringPool,
+    texture_exists: &dyn Fn(&str) -> bool,
 ) {
     if slot.is_none() && !value.is_empty() {
         *slot = Some(pool.intern(value));
         *touched = true;
+    } else if let Some(current) = slot.as_ref() {
+        let nif_path = pool.resolve(*current).unwrap_or_default();
+        if !nif_path.is_empty()
+            && !value.is_empty()
+            && !nif_path.eq_ignore_ascii_case(value)
+            && !texture_exists(nif_path)
+            && texture_exists(value)
+        {
+            log::debug!(
+                "material merge: NIF texture '{nif_path}' resolves in no loaded \
+                 archive; using the sidecar chain's '{value}' instead (#4636)"
+            );
+            *slot = Some(pool.intern(value));
+            *touched = true;
+        }
     }
 }
 
 /// Merge a BGSM, BGEM, or Starfield `.mat` sidecar into the
 /// source-normalized NIF material payload.
 ///
-/// NIF fields take precedence — only empty slots are filled from the
-/// resolved material chain, matching Bethesda's runtime behaviour where
-/// the shader property overrides template defaults per-material. For BGSM
-/// the template chain is walked child-first (first non-empty value for a
-/// given field wins); BGEM has no inheritance (the format carries no
-/// `root_material_path`) so the single parsed file is read.
+/// **Texture precedence (#4636).** NIF-authored slots win over the
+/// resolved material chain — but that is an engine choice, not a sourced
+/// runtime fact. The doc this replaces asserted it "matche[d] Bethesda's
+/// runtime behaviour" with no citation; the citable community evidence
+/// points the other way for a BGSM-named `BSLightingShaderProperty` —
+/// FO4 modding practice is unanimous that editing the NIF's
+/// `BSShaderTextureSet` alone does not retexture a mesh whose BGSM names
+/// the same role (retextures go through the BGSM or a material swap;
+/// fallout.wiki's Material Swap guide, Nexus conversion threads), i.e.
+/// the runtime reads the material file's texture when both exist. No
+/// in-repo primary source (CK export, disassembly, nifly) settles it, so
+/// the rule stays NIF-first here and the disagreement is handled by
+/// evidence instead of by claim:
+///
+/// - Both paths agree on 55 923 of the 56 560 FO4 shapes that carry both
+///   a NIF normal slot and a leaf-BGSM `normal_texture`; 637 (1.1%) name
+///   different files — kept NIF-first, matching today's behaviour.
+/// - When the NIF path provably resolves to nothing in any loaded
+///   texture archive while the chain's path does resolve, the chain's
+///   path takes the slot regardless ([`fill`]'s dead-path repair). The
+///   hard sub-case: `clothes\vaulttecsalesman\fcoat1stperson{,postwar}
+///   .nif` and `armor\raiderunderarmor\raiderunderarmorf1stperson.nif`
+///   bind NIF-slot `femalebody_msn.dds` (absent from all 52 vanilla FO4
+///   BA2s) while their `basehumanfemaleskin.bgsm` names
+///   `FemaleBody_n.DDS` (present) — the NIF-first rule kept the dead
+///   path and the shape rendered with no normal map at all.
+///
+/// For BGSM the template chain is walked child-first (first non-empty
+/// value for a given field wins); BGEM has no inheritance (the format
+/// carries no `root_material_path`) so the single parsed file is read.
 ///
 /// This boundary deliberately accepts [`ImportedMaterial`] rather than an
 /// [`byroredux_nif::import::ImportedMesh`]: external formats can patch material
@@ -172,6 +231,7 @@ pub(crate) fn merge_external_material(
     material: &mut ImportedMaterial,
     provider: &mut MaterialProvider,
     pool: &mut byroredux_core::string::StringPool,
+    texture_exists: &dyn Fn(&str) -> bool,
 ) -> MergeOutcome {
     let textures_before = material.textures;
     let Some(path_sym) = material.material_path else {
@@ -308,6 +368,7 @@ pub(crate) fn merge_external_material(
             &path,
             cdb_pbr_fallback,
             &mut touched,
+            texture_exists,
         ) {
             return outcome;
         }
@@ -319,6 +380,7 @@ pub(crate) fn merge_external_material(
             &path,
             cdb_pbr_fallback,
             &mut touched,
+            texture_exists,
         ) {
             return outcome;
         }
@@ -411,6 +473,7 @@ fn merge_bgsm_arm(
     path: &str,
     cdb_pbr_fallback: bool,
     touched: &mut bool,
+    texture_exists: &dyn Fn(&str) -> bool,
 ) -> Option<MergeOutcome> {
     // BGSM/BGEM scalar-override state. The `Option<String>` slots use
     // `is_none()` to detect "NIF left this empty", but scalar PBR fields
@@ -614,18 +677,21 @@ fn merge_bgsm_arm(
             &bgsm.diffuse_texture,
             touched,
             pool,
+            texture_exists,
         );
         fill(
             &mut material.textures.normal,
             &bgsm.normal_texture,
             touched,
             pool,
+            texture_exists,
         );
         fill(
             &mut material.textures.emissive,
             &bgsm.glow_texture,
             touched,
             pool,
+            texture_exists,
         );
         // Smoothness/spec mask — .r encodes per-texel specular
         // strength in the engine's existing gloss_map slot. #453.
@@ -634,6 +700,7 @@ fn merge_bgsm_arm(
             &bgsm.smooth_spec_texture,
             touched,
             pool,
+            texture_exists,
         );
         // #1353 / FO4-D8-07 — BGSM greyscale-to-palette LUT path
         // (`SLSF1::Greyscale_To_PaletteColor`, used by FO4 NPC /
@@ -698,6 +765,7 @@ fn merge_bgsm_arm(
             &bgsm.greyscale_texture,
             touched,
             pool,
+            texture_exists,
         );
         // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
         // #4428 (FO4-D2-2026-09-16-02) — gate the fill on the authored
@@ -717,6 +785,7 @@ fn merge_bgsm_arm(
                 &bgsm.envmap_texture,
                 touched,
                 pool,
+                texture_exists,
             );
         }
         fill(
@@ -724,6 +793,7 @@ fn merge_bgsm_arm(
             &bgsm.displacement_texture,
             touched,
             pool,
+            texture_exists,
         );
         // #2627 / SF-D9-2026-08-07-02 — the v<=2 legacy texture list
         // reads envmap, glow, inner_layer, wrinkles, displacement (see
@@ -740,6 +810,7 @@ fn merge_bgsm_arm(
             &bgsm.inner_layer_texture,
             touched,
             pool,
+            texture_exists,
         );
         // #1076 / FO4-D6-002 — BGSM v>2 standalone slots that
         // pre-fix were parsed but dropped on the floor. Each is
@@ -751,24 +822,28 @@ fn merge_bgsm_arm(
             &bgsm.specular_texture,
             touched,
             pool,
+            texture_exists,
         );
         fill(
             &mut material.textures.lighting,
             &bgsm.lighting_texture,
             touched,
             pool,
+            texture_exists,
         );
         fill(
             &mut material.textures.flow,
             &bgsm.flow_texture,
             touched,
             pool,
+            texture_exists,
         );
         fill(
             &mut material.textures.wrinkle,
             &bgsm.wrinkles_texture,
             touched,
             pool,
+            texture_exists,
         );
         // #2642 (SF-D9-2026-08-07-03) — `bgsm.distance_field_alpha_texture`
         // (v>=17, FO76/Starfield-era) is deliberately NOT forwarded here.
@@ -1039,6 +1114,7 @@ fn merge_bgem_arm(
     path: &str,
     cdb_pbr_fallback: bool,
     touched: &mut bool,
+    texture_exists: &dyn Fn(&str) -> bool,
 ) -> Option<MergeOutcome> {
     let Some(bgem) = provider.resolve_bgem(path) else {
         // #3230 — sibling of the BGSM arm's fallback above.
@@ -1071,18 +1147,21 @@ fn merge_bgem_arm(
         &bgem.base_texture,
         touched,
         pool,
+        texture_exists,
     );
     fill(
         &mut material.textures.normal,
         &bgem.normal_texture,
         touched,
         pool,
+        texture_exists,
     );
     fill(
         &mut material.textures.emissive,
         &bgem.glow_texture,
         touched,
         pool,
+        texture_exists,
     );
     // #1453 — BGEM's grayscale_texture is the palette/gradient LUT for
     // effect materials (fire-gradient, electricity-gradient, magic VFX).
@@ -1138,12 +1217,14 @@ fn merge_bgem_arm(
             &bgem.envmap_texture,
             touched,
             pool,
+            texture_exists,
         );
         fill(
             &mut material.textures.environment_mask,
             &bgem.envmap_mask_texture,
             touched,
             pool,
+            texture_exists,
         );
     }
     // #1076 / FO4-D6-002 SIBLING — BGEM also exposes
@@ -1157,12 +1238,14 @@ fn merge_bgem_arm(
         &bgem.specular_texture,
         touched,
         pool,
+        texture_exists,
     );
     fill(
         &mut material.textures.lighting,
         &bgem.lighting_texture,
         touched,
         pool,
+        texture_exists,
     );
 
     // BGEM has no inheritance so there's no child-first chain.
@@ -1245,12 +1328,14 @@ fn merge_bgem_arm(
             &bgem.glass_roughness_scratch,
             touched,
             pool,
+            texture_exists,
         );
         fill(
             &mut material.textures.glass_dirt_overlay,
             &bgem.glass_dirt_overlay,
             touched,
             pool,
+            texture_exists,
         );
         //
         // #2608 correction: `environment_mapping_mask_scale` was listed

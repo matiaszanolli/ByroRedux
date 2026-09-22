@@ -653,6 +653,10 @@ pub(super) fn spawn_synth_child(
                                 mat_provider.as_deref_mut(),
                                 &mut pool,
                                 Some(tex_provider),
+                                // #4636 — dead-path probe; `tex_provider`
+                                // is the same resolver this branch hands
+                                // the importer.
+                                &|p| tex_provider.has_texture(p),
                             )
                         }
                     }

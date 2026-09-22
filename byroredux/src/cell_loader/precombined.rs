@@ -350,6 +350,9 @@ impl PrecombinedSpawnJob {
                                             &mut mesh.material,
                                             provider,
                                             &mut pool,
+                                            // #4636 — same dead-path probe as
+                                            // the resolver arm below.
+                                            &|p| tex_provider.has_texture(p),
                                         );
                                         (
                                             mesh.material.has_alpha,
@@ -381,6 +384,9 @@ impl PrecombinedSpawnJob {
                             mat_provider.as_deref_mut(),
                             &mut pool,
                             Some(tex_provider as &dyn MeshResolver),
+                            // #4636 — dead-path probe through the same
+                            // provider the resolver arm already holds.
+                            &|p| tex_provider.has_texture(p),
                         )
                     }
                 };

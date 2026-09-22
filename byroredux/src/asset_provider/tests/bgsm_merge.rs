@@ -225,7 +225,7 @@ fn bgsm_merge_forwards_inner_layer_texture() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     let handle = mesh
         .material
         .textures
@@ -253,7 +253,7 @@ fn external_merge_records_only_the_roles_it_filled() {
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
     mesh.material.textures.base_color = Some(pool.intern("inline_diffuse.dds"));
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert_eq!(
         mesh.material.texture_sources.base_color,
         byroredux_nif::import::ImportedTextureSource::NifTextureSet,
@@ -281,7 +281,7 @@ fn bgem_merge_records_effect_texture_provenance() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert_eq!(
         mesh.material.texture_sources.base_color,
         byroredux_nif::import::ImportedTextureSource::Bgem
@@ -845,7 +845,7 @@ fn vanilla_bgsm_resolve_promotes_imported_material_to_pbr() {
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
     assert!(!mesh.material.is_pbr);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert!(
         mesh.material.is_pbr,
         "any successful BGSM resolve must promote is_pbr regardless of the bgsm.pbr bit \
@@ -875,7 +875,7 @@ fn bgem_effect_pbr_specular_promotes_imported_material_to_pbr() {
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
     assert!(!mesh.material.is_pbr);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert!(
         mesh.material.is_pbr,
         "BGEM effect_pbr_specular=true must promote ImportedMaterial.is_pbr"
@@ -908,7 +908,7 @@ fn bgem_merge_leaves_palette_disabled_when_neither_enable_bit_is_authored() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert!(
         mesh.material.textures.greyscale_lut.is_some(),
         "the LUT texture slot must still fill — this fix does not touch texture forwarding"
@@ -938,7 +938,7 @@ fn bgem_merge_sets_provenance_but_not_the_scalar_authored_flag() {
     provider.insert_bgem_for_test(path, BgemFile::default());
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     assert!(
         mesh.material.from_bgsm,
@@ -988,7 +988,7 @@ fn bgsm_merge_sets_the_scalar_authored_flag_alongside_the_overrides() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     assert!(mesh.material.from_bgsm, "provenance");
     assert!(
@@ -1035,7 +1035,7 @@ fn bgsm_merge_falls_back_to_neutral_roughness_when_smoothness_is_one_with_no_glo
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     assert_eq!(
         mesh.material.roughness_override,
@@ -1073,7 +1073,7 @@ fn bgsm_merge_keeps_the_floor_when_smoothness_is_one_and_a_gloss_map_resolves() 
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     let roughness = mesh
         .material
@@ -1117,7 +1117,7 @@ fn bgsm_merge_forwards_rim_subsurface_and_env_scale_end_to_end() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     assert_eq!(mesh.material.rimlight_power, 3.5);
     assert_eq!(mesh.material.backlight_power, 0.5);
@@ -1147,7 +1147,7 @@ fn bgem_merge_forwards_color_enable_bit_via_real_merge() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert!(
         mesh.material.bgsm_greyscale_lut_enabled,
         "grayscale_to_palette_color=true must forward to bgsm_greyscale_lut_enabled"
@@ -1184,7 +1184,7 @@ fn bgem_merge_forwards_both_palette_bits_when_both_authored() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert!(
         mesh.material.bgsm_greyscale_lut_enabled,
         "either enable bit alone must already enable the remap"
@@ -1249,7 +1249,7 @@ fn bgem_merge_keeps_nif_effect_palette_bits_and_packs_the_remap() {
     let mut mesh = inline_effect_mesh_with_nif_palette(&mut pool, path);
     let nif_lut = mesh.material.textures.greyscale_lut;
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     let effect = mesh.material.effect_shader.as_ref().expect("effect payload kept");
     assert!(effect.effect_palette_color && effect.effect_palette_alpha);
@@ -1297,7 +1297,7 @@ fn bgem_palette_bits_survive_a_nif_supplied_greyscale_lut() {
         effect.effect_palette_alpha = false;
     }
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     let flags = crate::cell_loader::pack_effect_shader_flags(mesh.material.effect_shader.as_ref())
         | crate::cell_loader::pack_imported_material_flags(&mesh.material);
@@ -1322,7 +1322,7 @@ fn bgem_merge_without_nif_effect_payload_builds_one() {
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
     assert!(mesh.material.effect_shader.is_none());
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     let effect = mesh.material.effect_shader.as_ref().expect("payload built");
     assert!(effect.effect_soft);
@@ -1355,7 +1355,7 @@ fn bgem_merge_skips_envmap_fill_when_env_mapping_disabled() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert!(
         mesh.material.textures.environment.is_none(),
         "env_mapping_enabled()==false must skip the environment texture fill (#2643)"
@@ -1387,7 +1387,7 @@ fn bgem_merge_fills_envmap_when_env_mapping_enabled() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert!(
         mesh.material.textures.environment.is_some(),
         "env_mapping_enabled()==true must fill the environment texture (#2643)"
@@ -1426,7 +1426,7 @@ fn bgsm_specular_disabled_zeroes_specular_and_keeps_matte_roughness() {
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
     let glossiness_before = mesh.material.glossiness;
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert_eq!(
         mesh.material.specular_color,
         [0.0, 0.0, 0.0],
@@ -1492,7 +1492,7 @@ fn bgsm_merge_skips_envmap_fill_when_env_mapping_disabled() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert!(
         mesh.material.textures.environment.is_none(),
         "environment_mapping == false must skip the environment fill (#4428)"
@@ -1521,7 +1521,7 @@ fn bgsm_merge_fills_envmap_when_env_mapping_enabled() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool,).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert!(
         mesh.material.textures.environment.is_some(),
         "environment_mapping == true must fill the environment texture (#4428)"
@@ -1563,7 +1563,7 @@ fn bgem_glass_forwards_authored_optics_and_overlay_roles() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert_eq!(mesh.material.glass_fresnel_color, [0.2, 0.4, 0.8]);
     assert_eq!(mesh.material.glass_refraction_scale, 0.09);
     assert_eq!(mesh.material.glass_blur_scale, 0.25);
@@ -1882,7 +1882,7 @@ fn merge_external_material_records_bgsm_resolve_failure() {
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
     assert!(provider.failed_paths.is_empty());
-    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
     assert_eq!(outcome, MergeOutcome::Unresolved);
     assert!(
         !provider.failed_paths.is_empty(),
@@ -1901,7 +1901,7 @@ fn merge_external_material_records_bgem_resolve_failure() {
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
     assert!(provider.failed_paths.is_empty());
-    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
     assert_eq!(outcome, MergeOutcome::Unresolved);
     assert!(
         !provider.failed_paths.is_empty(),
@@ -1920,7 +1920,7 @@ fn merge_external_material_no_material_path_does_not_record_a_failure() {
     let mut material = ImportedMaterial::default();
     assert!(material.material_path.is_none());
 
-    let outcome = merge_external_material(&mut material, &mut provider, &mut pool);
+    let outcome = merge_external_material(&mut material, &mut provider, &mut pool, &|_| false);
     assert_eq!(outcome, MergeOutcome::Unresolved);
     assert!(
         provider.failed_paths.is_empty(),
@@ -2234,7 +2234,7 @@ fn bgem_merge_gates_emissive_source_on_authored_contribution() {
     let mut provider = MaterialProvider::new();
     provider.insert_bgem_for_test(unauthored, BgemFile::default());
     let mut mesh = imported_mesh_with_material_path(&mut pool, unauthored);
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert_eq!(
         mesh.material.emissive_source,
         EmissiveSource::None,
@@ -2252,7 +2252,7 @@ fn bgem_merge_gates_emissive_source_on_authored_contribution() {
         },
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, authored);
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert_eq!(
         mesh.material.emissive_source,
         EmissiveSource::Effect,
@@ -2300,7 +2300,7 @@ fn bgsm_merge_forwards_tile_flags_to_texture_clamp_mode() {
          default, #610 / #3515) — distinct from the CLAMP_S_WRAP_T the BGSM authors"
     );
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert_eq!(
         mesh.material.texture_clamp_mode, 1,
         "tile_u=false (S clamped), tile_v=true (T wraps) must map to \
@@ -2329,7 +2329,7 @@ fn bgem_merge_forwards_tile_flags_to_texture_clamp_mode() {
     );
     let mut mesh = imported_mesh_with_material_path(&mut pool, path);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
     assert_eq!(
         mesh.material.texture_clamp_mode, 2,
         "tile_u=true (S wraps), tile_v=false (T clamped) must map to \
@@ -2400,7 +2400,7 @@ fn bgsm_palette_enable_survives_a_nif_supplied_greyscale_lut() {
     let nif_lut = pool.intern("textures\\nif_slot3_palette.dds");
     mesh.material.textures.greyscale_lut = Some(nif_lut);
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     assert!(
         mesh.material.bgsm_greyscale_lut_enabled,
@@ -2443,7 +2443,7 @@ fn bgsm_without_palette_bit_does_not_disable_a_nif_enabled_remap() {
     mesh.material.bgsm_greyscale_lut_enabled = true;
     mesh.material.bgsm_greyscale_lut_color = true;
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     assert!(
         mesh.material.bgsm_greyscale_lut_enabled,
@@ -2492,7 +2492,7 @@ fn bgsm_winning_the_slot_still_authors_the_enable_bit_off() {
     mesh.material.bgsm_greyscale_lut_enabled = true;
     mesh.material.bgsm_greyscale_lut_color = true;
 
-    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool).merged());
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
     assert!(
         !mesh.material.bgsm_greyscale_lut_enabled,
@@ -2657,5 +2657,103 @@ fn push_archive_drops_the_magic_memo() {
          (\"in no loaded archive\" memoises as None), and a new archive can turn \
          one into a real kind. Both the map and its order tracker must be \
          cleared or the eviction bookkeeping drifts (#3899)"
+    );
+}
+
+/// #4636 — a NIF-authored texture slot whose path resolves in no loaded
+/// archive yields to the sidecar chain's resolvable path at the merge.
+/// The real sub-case: FO4 first-person body meshes bind
+/// `femalebody_msn.dds` (absent from all 52 vanilla BA2s) while their
+/// `basehumanfemaleskin.bgsm` names `FemaleBody_n.DDS` (present) — the
+/// NIF-first rule kept the dead path and the shape rendered with no
+/// normal map at all.
+#[test]
+fn dead_nif_texture_path_yields_to_resolvable_bgsm_chain_path() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/basehumanfemaleskin.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                normal_texture: "FemaleBody_n.DDS".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    let dead_nif_path = r"textures\actors\character\basehumanfemale\femalebody_msn.dds";
+    mesh.material.textures.normal = Some(pool.intern(dead_nif_path));
+
+    // Probe: only the BGSM's path resolves (case-insensitively, as
+    // `TextureProvider::has_texture` normalizes).
+    let probe = |p: &str| p.eq_ignore_ascii_case("FemaleBody_n.DDS");
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &probe).merged());
+    let handle = mesh
+        .material
+        .textures
+        .normal
+        .expect("the normal slot must stay populated");
+    assert_eq!(
+        pool.resolve(handle),
+        Some("femalebody_n.dds"),
+        "the dead NIF path must have yielded to the resolvable BGSM path"
+    );
+    assert_eq!(
+        mesh.material.texture_sources.normal,
+        byroredux_nif::import::ImportedTextureSource::Bgsm,
+        "a repaired slot reports the sidecar that supplied the texture (#4636)"
+    );
+}
+
+/// #4636 — the repair needs *positive* evidence on both sides. When both
+/// paths resolve, the NIF-first precedence stands unchanged (the 637
+/// disagreeing-but-resolvable FO4 shapes keep today's behaviour); when
+/// neither resolves (an empty probe — e.g. no texture archives loaded),
+/// the NIF slot is kept rather than swapped on no evidence.
+#[test]
+fn nif_first_precedence_stands_when_the_probe_cannot_flip_it() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/disagreeing_normal.bgsm";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgsm_for_test(
+        path,
+        ResolvedMaterial {
+            file: BgsmFile {
+                normal_texture: "concrete01a_n.dds".into(),
+                ..Default::default()
+            },
+            parent: None,
+        },
+    );
+
+    // Both resolvable → NIF wins.
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    mesh.material.textures.normal = Some(pool.intern("default_n.dds"));
+    let both_alive = |_: &str| true;
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &both_alive).merged());
+    let handle = mesh.material.textures.normal.unwrap();
+    assert_eq!(
+        pool.resolve(handle),
+        Some("default_n.dds"),
+        "a resolvable NIF path keeps precedence over a disagreeing BGSM path"
+    );
+    assert_eq!(
+        mesh.material.texture_sources.normal,
+        byroredux_nif::import::ImportedTextureSource::NifTextureSet
+    );
+
+    // Neither resolvable (empty provider) → NIF still wins: the repair
+    // never fires on absence of evidence.
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    mesh.material.textures.normal = Some(pool.intern("default_n.dds"));
+    let none_alive = |_: &str| false;
+    assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &none_alive).merged());
+    let handle = mesh.material.textures.normal.unwrap();
+    assert_eq!(
+        pool.resolve(handle),
+        Some("default_n.dds"),
+        "no probe evidence → keep the NIF-authored path"
     );
 }
