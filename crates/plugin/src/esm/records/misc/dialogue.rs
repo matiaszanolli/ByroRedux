@@ -148,6 +148,18 @@ pub struct ResponseSegment {
     pub text: String,
     /// `NAM2` — designer notes / voice-actor direction.
     pub designer_notes: String,
+    /// #4645 — `TRDA` (FO4 / FO76 / Starfield) emotion keyword FormID,
+    /// remapped into global space. From FO4 on the emotion is a KYWD
+    /// reference, not TES5's u32 enum, so it cannot land in
+    /// [`Self::emotion_type`]; 0 on TRDT-era games.
+    pub emotion_keyword: u32,
+    /// #4645 — `TRDA` (FO4 / FO76) sound FormID at payload offset 5,
+    /// remapped. 0 on TRDT-era games and Starfield (whose 12-byte TRDA
+    /// carries no sound field).
+    pub sound_form_id: u32,
+    /// #4645 — `TRDA` (Starfield) WEM file id at payload offset 4. 0 on
+    /// every other game.
+    pub wem_file: u32,
 }
 
 pub fn parse_dial(
@@ -232,24 +244,45 @@ pub fn parse_info(
                 current_response = Some(segment);
             }
             // #4068 (ESM-2026-09-09-D4-01) — FO4 and Starfield rename the
-            // per-segment opener from `TRDT` to `TRDA` (20-byte payload on
-            // FO4, 12-byte on Starfield — two different layouts, and
-            // deliberately NOT decoded here: no cited xEdit/UESP source for
-            // either, and guessing one is exactly what `feedback_no_guessing`
-            // forbids). Without this arm, a TRDA-only record never opens a
-            // fresh segment, so every `NAM1`/`NAM2` keeps assigning into the
-            // same lazily-created one for the whole record — the exact
-            // pre-#3616 collapse-to-one-segment bug, just still live on two
-            // newer titles. The segment-SPLITTING half of the fix needs no
-            // layout knowledge at all: finalize whatever's open, start a
-            // fresh empty one. `emotion_type`/`response_number` stay at
-            // `ResponseSegment::default()` for a TRDA-opened segment until a
-            // cited layout lands.
+            // per-segment opener from `TRDT` to `TRDA`, and #4645
+            // (ESM-2026-09-21-D4-01) supplies the payload layouts the
+            // earlier "no cited source" comment deferred to. The two
+            // shapes are distinguished by length:
+            //
+            // * FO4 / FO76, 20 bytes (`wbDefinitionsFO4.pas:9732-9740`,
+            //   `wbDefinitionsFO76.pas:12045`): Emotion FormID [KYWD]
+            //   u32 @0, Response number u8 @4, Sound FormID u32 @5,
+            //   unknown u8 @9, Interrupt u16 @10, two alias s32 @12/@16.
+            // * Starfield, 12 bytes (`wbDefinitionsSF1.pas:12815`):
+            //   Emotion KYWD u32 @0, WEM file u32 @4, Emotion Out f32
+            //   @8. SF1 drops the response number entirely.
+            //
+            // From FO4 on the emotion is a keyword FormID that must ride
+            // `remap_fid`, not a TES5-style u32 enum — `emotion_type`
+            // (the TRDT enum byte) stays 0 for TRDA-opened segments and
+            // the remapped FormID lands in `emotion_keyword` instead.
+            // Any other length keeps the #4068 split-only contract.
             b"TRDA" => {
                 if let Some(finished) = current_response.take() {
                     out.responses.push(finished);
                 }
-                current_response = Some(ResponseSegment::default());
+                let mut segment = ResponseSegment::default();
+                match sub.data.len() {
+                    len if len >= 20 => {
+                        segment.emotion_keyword =
+                            remap_fid(SubReader::new(&sub.data[0..4]).u32_or_default(), remap);
+                        segment.response_number = sub.data[4];
+                        segment.sound_form_id =
+                            remap_fid(SubReader::new(&sub.data[5..9]).u32_or_default(), remap);
+                    }
+                    len if len >= 12 => {
+                        segment.emotion_keyword =
+                            remap_fid(SubReader::new(&sub.data[0..4]).u32_or_default(), remap);
+                        segment.wem_file = SubReader::new(&sub.data[4..8]).u32_or_default();
+                    }
+                    _ => {}
+                }
+                current_response = Some(segment);
             }
             b"TCLT" if sub.data.len() >= 4 => {
                 if let Ok(t) = SubReader::new(&sub.data).u32() {
@@ -776,13 +809,13 @@ mod tests {
     /// each segment instead of `TRDT`. Pre-fix, `TRDA` had no arm at all, so
     /// every `NAM1` assigned into the same lazily-created segment for the
     /// whole record — exactly the pre-#3616 collapse, on the two newest
-    /// titles this time. `TRDA`'s own payload is deliberately NOT decoded
-    /// (no cited layout for either game), so this only pins that segments
-    /// split correctly; emotion/response_number stay at their defaults.
+    /// titles this time. Payloads are zeroed here so this pins only the
+    /// segment-splitting contract; the #4645 decode tests below pin the
+    /// field extraction.
     #[test]
     fn parse_info_trda_opens_a_new_segment_like_trdt() {
         let subs = vec![
-            sub(b"TRDA", &[0u8; 20]), // FO4 shape — payload untouched
+            sub(b"TRDA", &[0u8; 20]), // FO4 shape — zero payload
             sub(b"NAM1", b"First line.\0"),
             sub(b"NAM2", b"cheerfully\0"),
             sub(b"TRDA", &[0u8; 12]), // Starfield shape — different width
@@ -805,6 +838,86 @@ mod tests {
             info.response_text, "First line.\nSecond line.",
             "flat convenience field must carry every segment, not just the last"
         );
+    }
+
+    /// #4645 — the FO4 20-byte TRDA payload decodes: emotion KYWD @0
+    /// (remapped), response number u8 @4 (the `<INFO>_<n>` voice-file
+    /// key), sound FormID @5 (remapped). Layout cited from xEdit
+    /// `wbDefinitionsFO4.pas:9732-9740`; FO76 shares it.
+    #[test]
+    fn fo4_trda_payload_decodes_response_number_and_emotion_keyword() {
+        use crate::esm::reader::FormIdRemap;
+        // Plugin slot 1, master slot 0 — a DLC-authored INFO referencing
+        // a base-game emotion keyword.
+        let remap = FormIdRemap::regular(1, vec![0]);
+        let mut fo4 = Vec::with_capacity(20);
+        fo4.extend_from_slice(&0x0007_1122u32.to_le_bytes()); // emotion KYWD (master)
+        fo4.push(3); // response number
+        fo4.extend_from_slice(&0x0100_3344u32.to_le_bytes()); // sound (self)
+        fo4.push(0); // unknown
+        fo4.extend_from_slice(&0u16.to_le_bytes()); // interrupt
+        fo4.extend_from_slice(&0i32.to_le_bytes()); // alias 1
+        fo4.extend_from_slice(&0i32.to_le_bytes()); // alias 2
+        assert_eq!(fo4.len(), 20);
+
+        let subs = vec![
+            sub(b"TRDA", &fo4),
+            sub(b"NAM1", b"One.\0"),
+            // A second, zeroed FO4 segment: defaults must not leak from
+            // the first.
+            sub(b"TRDA", &[0u8; 20]),
+        ];
+        let info = parse_info(0x99, &subs, &Some(remap));
+        assert_eq!(info.responses.len(), 2);
+        let seg = &info.responses[0];
+        assert_eq!(seg.emotion_keyword, 0x0007_1122, "master KYWD remaps through the load order");
+        assert_eq!(seg.response_number, 3);
+        assert_eq!(seg.sound_form_id, 0x0100_3344, "self sound ref remaps to the plugin slot");
+        assert_eq!(seg.emotion_type, 0, "TRDA segments keep the TRDT enum field at 0");
+        assert_eq!(
+            info.response_number, 3,
+            "flat convenience field carries the first segment's number"
+        );
+        assert_eq!(info.responses[1].response_number, 0);
+        assert_eq!(info.responses[1].emotion_keyword, 0);
+    }
+
+    /// #4645 — the Starfield 12-byte TRDA payload decodes: emotion KYWD
+    /// @0 (remapped) and WEM file u32 @4. SF1 has no response number and
+    /// no sound field — both must stay 0. Layout cited from xEdit
+    /// `wbDefinitionsSF1.pas:12815`.
+    #[test]
+    fn starfield_trda_payload_decodes_emotion_keyword_and_wem() {
+        use crate::esm::reader::FormIdRemap;
+        let remap = FormIdRemap::regular(0, Vec::new());
+        let mut sf = Vec::with_capacity(12);
+        sf.extend_from_slice(&0x000A_BCDEu32.to_le_bytes()); // emotion KYWD
+        sf.extend_from_slice(&0x0001_2345u32.to_le_bytes()); // WEM file
+        sf.extend_from_slice(&0.5f32.to_le_bytes()); // emotion out
+        assert_eq!(sf.len(), 12);
+
+        let subs = vec![sub(b"TRDA", &sf), sub(b"NAM1", b"Hello.\0")];
+        let info = parse_info(0x77, &subs, &Some(remap));
+        let seg = &info.responses[0];
+        assert_eq!(seg.emotion_keyword, 0x000A_BCDE);
+        assert_eq!(seg.wem_file, 0x0001_2345);
+        assert_eq!(seg.response_number, 0, "SF1 TRDA carries no response number");
+        assert_eq!(seg.sound_form_id, 0, "SF1 TRDA carries no sound FormID");
+    }
+
+    /// #4645 — an unrecognized TRDA width (neither >= 20 nor >= 12 with
+    /// the two known shapes) keeps the #4068 split-only contract instead
+    /// of guessing a decode.
+    #[test]
+    fn unknown_width_trda_still_splits_without_decoding() {
+        let subs = vec![
+            sub(b"TRDA", &[0xEEu8; 7]),
+            sub(b"NAM1", b"Split me.\0"),
+        ];
+        let info = parse_info(0x55, &subs, &None);
+        assert_eq!(info.responses.len(), 1);
+        assert_eq!(info.responses[0].text, "Split me.");
+        assert_eq!(info.responses[0].emotion_keyword, 0);
     }
 
     #[test]
