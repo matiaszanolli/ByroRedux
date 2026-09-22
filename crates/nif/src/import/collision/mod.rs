@@ -766,7 +766,10 @@ mod dispatch_coverage_tests {
     /// objects, constraints). Handles the 2-line `bhkTransformShape |
     /// bhkConvexTransformShape` alias arm by probing the following lines.
     fn dispatched_shape_structs() -> HashSet<String> {
+        // #4411 — production prefix only: `blocks/mod.rs`'s `#[cfg(test)]`
+        // modules (and comments) must not be able to satisfy this scan.
         let src = include_str!("../../blocks/mod.rs");
+        let src = src.split_once("#[cfg(test)]").map(|(prod, _)| prod).unwrap_or(src);
         let lines: Vec<&str> = src.lines().collect();
         let mut out = HashSet::new();
         for (i, line) in lines.iter().enumerate() {
@@ -789,11 +792,21 @@ mod dispatch_coverage_tests {
 
     /// Every `Bhk…Shape` struct that has a `downcast_ref::<…>` resolve arm.
     fn resolved_shape_structs() -> HashSet<String> {
-        // Shape resolve arms all live in the sibling `shape.rs` after the
-        // #1876 split (`resolve_shape_inner`'s `downcast_ref::<Bhk…Shape>`
-        // chain); the collision-object downcasts that remain here are not
-        // `…Shape` types, so this scan targets `shape.rs` exclusively.
-        let src = include_str!("shape.rs");
+        resolved_shape_structs_in(include_str!("shape.rs"))
+    }
+
+    /// The scan of [`resolved_shape_structs`], on caller-supplied source so
+    /// the #4411 regression test can drive synthetic input.
+    ///
+    /// Shape resolve arms all live in the sibling `shape.rs` after the
+    /// #1876 split (`resolve_shape_inner`'s `downcast_ref::<Bhk…Shape>`
+    /// chain); the collision-object downcasts that remain here are not
+    /// `…Shape` types, so the scan targets `shape.rs` exclusively.
+    /// #4411 — production prefix only, same rule as the dispatch scan:
+    /// `shape.rs`'s test module names `Bhk…Shape` types in comments and
+    /// fixtures and must not satisfy this scan.
+    fn resolved_shape_structs_in(src: &str) -> HashSet<String> {
+        let src = src.split_once("#[cfg(test)]").map(|(prod, _)| prod).unwrap_or(src);
         src.split("downcast_ref::<")
             .skip(1)
             .filter_map(|part| {
@@ -832,6 +845,23 @@ mod dispatch_coverage_tests {
             missing.is_empty(),
             "these bhk*Shape blocks are parse-dispatched but have NO resolve arm in \
              resolve_shape_inner — authored collision silently drops: {missing:?}"
+        );
+    }
+
+    /// #4411 — the resolve scan reads production code only. A
+    /// `downcast_ref::<BhkFooShape>` mention inside a `#[cfg(test)]`
+    /// module must not mark the shape resolved; before the
+    /// production-prefix split it could.
+    #[test]
+    fn resolve_scan_ignores_test_module_mentions() {
+        let src = "pub fn f() {\n    x.downcast_ref::<BhkBoxShape>();\n}\n\
+                   #[cfg(test)]\nmod t {\n    fn g(b: &dyn std::any::Any) {\n\
+                   b.downcast_ref::<BhkFakeTestShape>();\n    }\n}\n";
+        let resolved = resolved_shape_structs_in(src);
+        assert!(resolved.contains("BhkBoxShape"));
+        assert!(
+            !resolved.contains("BhkFakeTestShape"),
+            "a #[cfg(test)] mention must not count as a resolve arm: {resolved:?}"
         );
     }
 }

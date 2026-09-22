@@ -246,7 +246,13 @@ mod light_dispatch_coverage_tests {
     /// different files for different identifier shapes, and a shared helper
     /// parameterised on both would be longer than either.
     fn dispatched_light_structs() -> HashSet<String> {
+        // #4411 — scan the production prefix only. The whole-file scan used
+        // to let a test module (or a comment) naming a `"Ni…Light"` arm with
+        // a nearby `Box::new(` satisfy this extractor even if the production
+        // arm were deleted. All `#[cfg(test)]` blocks in `blocks/mod.rs` are
+        // file-terminal, so the prefix is the whole production half.
         let src = include_str!("../../blocks/mod.rs");
+        let src = src.split_once("#[cfg(test)]").map(|(prod, _)| prod).unwrap_or(src);
         let lines: Vec<&str> = src.lines().collect();
         let mut out = HashSet::new();
         for (i, line) in lines.iter().enumerate() {
@@ -288,7 +294,18 @@ mod light_dispatch_coverage_tests {
 
     /// Every `Ni…Light` struct with a `downcast_ref::<…>` arm in this module.
     fn resolved_light_structs() -> HashSet<String> {
-        let src = include_str!("lights.rs");
+        resolved_light_structs_in(include_str!("lights.rs"))
+    }
+
+    /// The scan of [`resolved_light_structs`], on caller-supplied source so
+    /// the #4411 regression test can drive synthetic input.
+    ///
+    /// #4411 — production prefix only, same rule as the dispatch scan: the
+    /// doc comments inside this test module name `Ni…Light` types and used
+    /// to be part of the scanned text, so a comment (or a test) could mark a
+    /// light resolved whose production arm was gone.
+    fn resolved_light_structs_in(src: &str) -> HashSet<String> {
+        let src = src.split_once("#[cfg(test)]").map(|(prod, _)| prod).unwrap_or(src);
         src.split("downcast_ref::<")
             .skip(1)
             .filter_map(|part| {
@@ -327,6 +344,24 @@ mod light_dispatch_coverage_tests {
             missing.is_empty(),
             "these Ni*Light blocks are parse-dispatched but never reach a \
              LightKind arm — the authored light is silently dropped: {missing:?}"
+        );
+    }
+
+    /// #4411 — the resolve scan reads production code only. A
+    /// `downcast_ref::<NiFooLight>` mention that lives inside a
+    /// `#[cfg(test)]` module (or a comment, which the same rule removes as
+    /// everything after the marker) must not mark the light resolved;
+    /// before the production-prefix split it could.
+    #[test]
+    fn resolve_scan_ignores_test_module_mentions() {
+        let src = "pub fn f() {\n    downcast_ref::<NiPointLight>();\n}\n\
+                   #[cfg(test)]\nmod t {\n    fn g(b: &dyn std::any::Any) {\n\
+                   b.downcast_ref::<NiFakeTestLight>();\n    }\n}\n";
+        let resolved = resolved_light_structs_in(src);
+        assert!(resolved.contains("NiPointLight"));
+        assert!(
+            !resolved.contains("NiFakeTestLight"),
+            "a #[cfg(test)] mention must not count as a resolve arm: {resolved:?}"
         );
     }
 }

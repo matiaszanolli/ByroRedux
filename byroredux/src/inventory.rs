@@ -1360,8 +1360,6 @@ mod tests {
         );
     }
 
-    use super::*;
-
     fn restoration(
         actor_value: u32,
         magnitude: f32,

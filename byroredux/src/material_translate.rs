@@ -2245,7 +2245,9 @@ mod tests {
     /// its test module and `terrain_lod.rs` a `#[cfg(test)]` helper before
     /// its own — and either mistake silently drops a real spawner from the
     /// scan.
-    fn strip_inline_test_modules(src: &str) -> String {
+    /// `pub(super)`: also used by the `canonical_completeness_harness`
+    /// module's pin guard (#4411).
+    pub(super) fn strip_inline_test_modules(src: &str) -> String {
         let mut out = String::with_capacity(src.len());
         let mut rest = src;
         while let Some(start) = rest.find("\n#[cfg(test)]\nmod ") {
@@ -2258,6 +2260,160 @@ mod tests {
         }
         out.push_str(rest);
         out
+    }
+
+    /// The inverse of [`strip_inline_test_modules`]: concatenate the bodies
+    /// of every top-level `#[cfg(test)] mod … { … }` block, so a scan that
+    /// should only see test code cannot be satisfied by production between
+    /// the modules (#4411 — this file has four of them).
+    ///
+    /// Same block-end rule as its inverse: the first `}` in column 0, which
+    /// holds for rustfmt-formatted top-level items.
+    pub(super) fn test_module_bodies(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src;
+        while let Some(start) = rest.find("\n#[cfg(test)]\nmod ") {
+            let after = &rest[start + 1..];
+            match after.find("\n}\n") {
+                Some(end) => {
+                    out.push_str(&after[..end]);
+                    rest = &after[end + 3..];
+                }
+                None => {
+                    out.push_str(after);
+                    return out;
+                }
+            }
+        }
+        out
+    }
+
+    /// Blank out `//`-line, `///`-doc and `/*…*/` comments plus the contents
+    /// of string, raw-string and char literals, leaving code only (#4411).
+    ///
+    /// Prose used to satisfy the pin scan below: the scan's own rationale
+    /// comment contained both `material.alpha` needles and the substring
+    /// "assert", so those two fields were pinned by a comment for two audit
+    /// cycles — deleting both real assertions left the guard green (the
+    /// audit's scratch-copy evidence). Byte-level scanning is safe here
+    /// because every delimiter (`"`, `/`, `'`) is ASCII and no ASCII byte
+    /// occurs inside a multi-byte UTF-8 sequence.
+    pub(super) fn strip_comments_and_literals(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0usize;
+        while i < text.len() {
+            let b = bytes[i];
+            // Raw strings `r"…"`, `r#"…"#`. A lone `r` identifier falls
+            // through to the copy arm.
+            if b == b'r' {
+                let mut j = i + 1;
+                while bytes.get(j) == Some(&b'#') {
+                    j += 1;
+                }
+                if bytes.get(j) == Some(&b'"') {
+                    let hashes = j - i - 1;
+                    let closing = format!("\"{}", "#".repeat(hashes));
+                    let mut k = j + 1;
+                    let mut end = text.len();
+                    while k < text.len() {
+                        if text[k..].starts_with(&closing) {
+                            end = (k + closing.len()).min(text.len());
+                            break;
+                        }
+                        k += 1;
+                    }
+                    for _ in i..end {
+                        out.push(' ');
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+            if b == b'"' {
+                let mut j = i + 1;
+                while j < text.len() {
+                    match bytes[j] {
+                        b'\\' => j += 2,
+                        b'"' => break,
+                        _ => j += 1,
+                    }
+                }
+                let end = (j + 1).min(text.len());
+                for _ in i..end {
+                    out.push(' ');
+                }
+                i = end;
+                continue;
+            }
+            if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+                let end = text[i..].find('\n').map(|p| i + p).unwrap_or(text.len());
+                for _ in i..end {
+                    out.push(' ');
+                }
+                i = end;
+                continue;
+            }
+            if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                let mut j = i + 2;
+                while j + 1 < text.len() && !(bytes[j] == b'*' && bytes[j + 1] == b'/') {
+                    j += 1;
+                }
+                let end = (j + 2).min(text.len());
+                for _ in i..end {
+                    out.push(' ');
+                }
+                i = end;
+                continue;
+            }
+            // Char literals `'x'`, `'\n'`, `'\u{…}'` (byte literals arrive
+            // at their quote too). A lifetime `'a` has no closing quote on
+            // the short scan and falls through untouched.
+            if b == b'\'' {
+                let mut j = i + 1;
+                let mut closed = None;
+                while j < text.len() && j <= i + 10 {
+                    if bytes[j] == b'\\' {
+                        j += 2;
+                        continue;
+                    }
+                    if bytes[j] == b'\'' {
+                        closed = Some(j);
+                        break;
+                    }
+                    j += 1;
+                }
+                if let Some(close) = closed {
+                    let end = close + 1;
+                    for _ in i..end {
+                        out.push(' ');
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+            let ch = text[i..].chars().next().expect("i is on a char boundary");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+        out
+    }
+
+    /// #4411's scanner: does some `;`-terminated statement in `tests_code`
+    /// (already comment- and literal-stripped) read `material.<field>` and
+    /// carry an `assert*!` or `.expect(` that can fail?
+    pub(super) fn pins_field(tests_code: &str, field: &str) -> bool {
+        let needle = format!("material.{field}");
+        tests_code.split(';').any(|stmt| {
+            stmt.match_indices(&needle).any(|(i, _)| {
+                let after = stmt[i + needle.len()..].bytes().next();
+                // Word boundary, so a check on `alpha_threshold` does not
+                // count as one on `alpha`. This rule is stated on a code
+                // needle and cannot self-match now that comments are
+                // stripped before matching.
+                !matches!(after, Some(b) if b.is_ascii_alphanumeric() || b == b'_')
+            }) && (stmt.contains("assert") || stmt.contains(".expect("))
+        })
     }
 
     /// #3465 — keep the two hand-written texture-role lists in the docs
@@ -2602,6 +2758,9 @@ mod tests {
 #[cfg(test)]
 mod canonical_completeness_harness {
     use super::*;
+    use super::tests::{
+        pins_field, strip_comments_and_literals, strip_inline_test_modules, test_module_bodies,
+    };
     use byroredux_core::ecs::components::material::EmissiveSource;
     use byroredux_nif::import::{BsEffectShaderData, MaterialTextureSet, NoLightingFalloff};
 
@@ -3022,9 +3181,21 @@ mod canonical_completeness_harness {
     #[test]
     fn every_source_derived_material_field_is_pinned_by_a_test() {
         let src = include_str!("material_translate.rs");
-        let (prod, tests) = src
-            .split_once("#[cfg(test)]")
-            .expect("material_translate.rs must have a test module");
+        // #4411 — split by *stripping* the test modules rather than
+        // truncating at the first `#[cfg(test)]`: this file carries four of
+        // them, so the old split both cut production short (anything after
+        // the first module) and fed mid-file production to the pin scan as
+        // "test code".
+        let prod = strip_inline_test_modules(src);
+        let bodies = test_module_bodies(src);
+        assert!(
+            !bodies.is_empty(),
+            "material_translate.rs must have a test module"
+        );
+        // Comments and string literals are blanked before any needle is
+        // matched (#4411): this guard's own rationale comment used to pin
+        // `alpha` and `alpha_threshold` on its own prose.
+        let tests_code = strip_comments_and_literals(&bodies);
 
         let start = prod
             .find("let mut material = Material {")
@@ -3082,17 +3253,9 @@ mod canonical_completeness_harness {
         // file's test code both reads it off `material` and can fail:
         // `assert*!` or a panicking `.expect(` (the shape the `Option`
         // fields — `effect_falloff`, `shader_type_fields` — are read with).
-        let pinned = |field: &str| {
-            let needle = format!("material.{field}");
-            tests.split(';').any(|stmt| {
-                stmt.match_indices(&needle).any(|(i, _)| {
-                    let after = stmt[i + needle.len()..].bytes().next();
-                    // Word boundary, so `material.alpha` is not satisfied by
-                    // an assertion on `material.alpha_threshold`.
-                    !matches!(after, Some(b) if b.is_ascii_alphanumeric() || b == b'_')
-                }) && (stmt.contains("assert") || stmt.contains(".expect("))
-            })
-        };
+        // `pins_field` is the shared scanner so #4411's prose test can drive
+        // it directly on synthetic input.
+        let pinned = |field: &str| pins_field(&tests_code, field);
 
         // #4579 -- the pin counts ASSERTIONS, and an assertion that never
         // RUNS still counts: c0b740ce7 orphaned translate_material_copies_
@@ -3102,9 +3265,9 @@ mod canonical_completeness_harness {
         // Structural companion: no #[test] in this module may sit above a
         // doc-comment chain that ends at ANOTHER attribute (the orphan shape).
         let needle = "\n    #[test]";
-        let test_attrs: Vec<usize> = tests.match_indices(needle).map(|(i, _)| i).collect();
+        let test_attrs: Vec<usize> = bodies.match_indices(needle).map(|(i, _)| i).collect();
         for at in &test_attrs {
-            let mut probe = &tests[at + needle.len()..];
+            let mut probe = &bodies[at + needle.len()..];
             while probe.starts_with("    ///") || probe.starts_with("    //") {
                 probe = &probe[probe.find(char::from(10)).map(|i| i + 1).unwrap_or(probe.len())..];
             }
@@ -3124,6 +3287,35 @@ mod canonical_completeness_harness {
              leaves the whole suite green, which is exactly the contract \
              `translate_material_copies_every_canonical_field` claims to hold (#3462)"
         );
+    }
+
+    /// #4411 — the pin scan must see code, not prose. Before the comment and
+    /// literal stripping, this file's own rationale comment ("…`material.alpha`
+    /// is not satisfied by an assertion on `material.alpha_threshold`…")
+    /// contained both needles plus the substring "assert", so both fields
+    /// were pinned by a comment: the audit's scratch-copy run deleted the two
+    /// real assertions and the guard still passed.
+    #[test]
+    fn pin_scan_requires_code_not_prose() {
+        let real = strip_comments_and_literals(
+            "assert_eq!(material.alpha, 0.65, \"msg\");\nassert_eq!(material.alpha_threshold, 0.72);",
+        );
+        assert!(pins_field(&real, "alpha"));
+        assert!(pins_field(&real, "alpha_threshold"));
+
+        // The pre-#4411 rationale comment, verbatim in shape, plus a string
+        // message carrying the needle: neither prose vector may pin.
+        let prose = strip_comments_and_literals(concat!(
+            "// Word boundary, so `material.alpha` is not satisfied by an assertion\n",
+            "// on `material.alpha_threshold`.\n",
+            "assert_eq!(material.roughness, 0.58, \"material.alpha pinned elsewhere\");\n",
+        ));
+        assert!(!pins_field(&prose, "alpha"), "comment prose must not pin");
+        assert!(
+            !pins_field(&prose, "alpha_threshold"),
+            "string-literal prose must not pin"
+        );
+        assert!(pins_field(&prose, "roughness"), "the real assertion still pins");
     }
 
     /// A `BsEffectShaderData` falloff must win over `no_lighting_falloff`
