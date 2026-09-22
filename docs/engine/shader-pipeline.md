@@ -30,7 +30,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `ui.frag` | UI bindless texture sampling — no shading, straight texel output |
 | `composite.vert` | Fullscreen triangle via `gl_VertexIndex` — no vertex buffer; reused unmodified as `presentation.frag`'s vertex stage |
 | `composite.frag` | HDR compose — direct + SVGF-denoised indirect + dual caustic accumulator (glass/water), bloom add, volumetric froxel sample. Emits linear HDR to an intermediate image (no tone-map, no swapchain write — see `presentation.frag`) |
-| `presentation.frag` | FSR 3.1 presentation pass — samples the upscaled (or native-blit-fallback) scene, applies ACES tone-mapping and underwater extinction, writes the swapchain (`PRESENT_SRC_KHR`) |
+| `presentation.frag` | FSR 3.1 presentation pass — samples the upscaled (or native-blit-fallback) scene, applies `tonemap(graded * exposureTex)` (the exposure meter's per-FIF texel; ACES\|AgX display-transform switch) and underwater extinction, writes the swapchain (`PRESENT_SRC_KHR`) |
 
 ### Compute
 
@@ -45,6 +45,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `taa.comp` | TAA resolve — Halton(2,3) jitter, YCoCg variance-clamp, history reproject |
 | `bloom_downsample.comp` | Gaussian + downsample pyramid (bright content) |
 | `bloom_upsample.comp` | Upsample + blur stages of bloom pyramid |
+| `exposure_meter.comp` | Stage-1 auto-exposure meter — EV100 average of the post-bloom scene, per-FIF-slot exponential adaptation, writes the 1×1 exposure texel FSR and presentation sample (`exposure_meter.rs`; fixed mode writes the authored constant) |
 | `caustic_splat.comp` | Per-refractive-surface scatter of refracted-light contributions into caustic accumulator |
 | `volumetrics_inject.comp` | Inject sun-light into froxel grid (HG-phase scattered radiance) |
 | `volumetrics_integrate.comp` | Integrate transmittance over froxel grid |
@@ -204,6 +205,15 @@ it where that is not `draw_frame` itself.
                            `bloom_apply.comp` reads composite's HDR output
                            back as a storage image and adds `up_mips[0]` in
                            place (`BLOOM_INTENSITY = 0.15`)
+17b exposure_meter.comp  ─  auto-exposure meter (Stage 1,
+                           `record_exposure_meter_pass`): averages the
+                           post-bloom scene (EV100 = log2(L·8)), adapts
+                           the per-FIF 1×1 exposure texel toward the target
+                           (alpha over the slot's full N-frame update
+                           interval, #4590), writes the texel FSR and
+                           presentation read. Fixed mode (the default)
+                           writes the authored constant; raw debug views
+                           skip the dispatch (#4591).
 18 taa.comp              ─  TAA resolve — runs AFTER composite + bloom
                            (#3572): it resolves the SAME fully-composited,
                            post-bloom scene image the upscale consumes, so
@@ -218,7 +228,9 @@ it where that is not `draw_frame` itself.
                            resolution HDR → output-resolution HDR. Raw
                            correctness debug views force the native path.
 20 [Presentation pass]    ─  raster: composite.vert / presentation.frag —
-                           exposure + ACES tone-map + underwater extinction,
+                           `tonemap(graded * exposureTex)` (the meter's
+                           exposure; ACES|AgX via `tonemap.rs`), underwater
+                           extinction,
                            writes the swapchain (`PRESENT_SRC_KHR`); then,
                            in the same subpass, `PresentationPipeline::
                            record_overlay` draws the Scaleform/Ruffle UI
@@ -239,7 +251,9 @@ it where that is not `draw_frame` itself.
 ```
 
 Steps 19–20 are the FSR 3.1 tail added 2026-07-22→24 (`crates/fsr3-sys`,
-`vulkan/frame_upscaler.rs`, `vulkan/presentation.rs`, `vulkan/exposure.rs`);
+`vulkan/frame_upscaler.rs`, `vulkan/presentation.rs`, `vulkan/exposure.rs`,
+plus Stage 1's `vulkan/exposure_meter.rs` + `exposure_meter.comp`, the
+per-frame meter between bloom and TAA);
 the split moves ACES tone-mapping out of `composite.frag` (which now emits
 un-tonemapped linear HDR) and into `presentation.frag`, which runs at output
 resolution after the upscale so tone-mapping sees full-resolution detail.

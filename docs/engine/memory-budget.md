@@ -340,7 +340,11 @@ cluster-grid or per-cluster-light-budget change has a baseline to move from.
 ### FSR 3.1 Upscaler (default, `5c7acfe2`)
 
 [`frame_upscaler.rs`](../../crates/renderer/src/vulkan/frame_upscaler.rs),
-`presentation.rs`, `exposure.rs`, `crates/fsr3-sys`. Unlike every other entry
+`presentation.rs`, `exposure.rs`, `crates/fsr3-sys` — plus the Stage-1
+exposure meter (`exposure_meter.rs` + `exposure_meter.comp`): 2 per-FIF
+1×1 R32F exposure texels (~8 B), 2 per-FIF 32 B MeterParams UBOs, one
+compute pipeline and descriptor pool — negligible next to every neighbour,
+ledgered for completeness. Unlike every other entry
 in this section, FSR 3.1 Quality (the shipped default) renders at a **lower
 internal resolution** and upscales to the swapchain's **output resolution** —
 the two axes are no longer the same, so figures below are split accordingly.
