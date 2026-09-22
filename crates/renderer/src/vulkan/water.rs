@@ -1143,6 +1143,33 @@ mod tests {
         assert!(src.contains("push.underwater.rgb"));
     }
 
+    /// #4589 — the #4545 camera-visibility ray must mask to the
+    /// opaque-only layers, not 0xFF: glass and effect cards must not
+    /// occlude (the compute twin shows caustics through glass; spray and
+    /// mist cards sit exactly in the viewing path). Source-shape pin,
+    /// same family as the neighbours above.
+    #[test]
+    fn caustic_visibility_ray_masks_to_opaque_layers() {
+        let src = include_str!("../../shaders/water.frag");
+        let ray = src
+            .split_once("rayQueryInitializeEXT(")
+            .and_then(|(_, rest)| rest.split_once("VISIBILITY_MASK_ALL_OPAQUE"))
+            .expect("the #4545 occlusion ray must initialize with a named mask");
+        // The mask argument sits in the same call as the first-hit flags.
+        let call = format!("rayQueryInitializeEXT(");
+        let _ = call;
+        assert!(
+            src.contains("gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,\n                        VISIBILITY_MASK_ALL_OPAQUE,"),
+            "the occlusion ray must combine terminate-on-first-hit with \
+             VISIBILITY_MASK_ALL_OPAQUE (excludes GLASS and EFFECT, #4589)"
+        );
+        assert!(
+            !src.contains("gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,\n                        0xFF,"),
+            "the 0xFF full-layers mask reappeared on a visibility ray (#4589)"
+        );
+        let _ = ray;
+    }
+
     #[test]
     fn waterfall_uv_motion_uses_downward_water_flow_not_mesh_tangent() {
         let src = include_str!("../../shaders/water.frag");

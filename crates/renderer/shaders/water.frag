@@ -1399,11 +1399,23 @@ void main() {
                     vec3 toCamera = cameraPos.xyz - floorWorld;
                     float cameraDist = length(toCamera);
                     toCamera /= max(cameraDist, 1.0e-4);
+                    // #4589 — the mask excludes GLASS and EFFECT layers:
+                    // the compute twin (caustic_splat.comp's depth gate)
+                    // deliberately lets caustics show through glass because
+                    // depthTex is opaque-only, so this ray must not decide
+                    // the opposite; and effect cards (spray, mist, splash)
+                    // sit between the bed and the camera precisely where
+                    // the water is being viewed through them. Whole-quad
+                    // alpha-tested foliage (reeds, lily pads) remains a
+                    // documented approximation: a coverage-aware candidate
+                    // loop (shadow_transport.glsl's rayHitHasCoverage shape)
+                    // would cost the cheap boolean query its
+                    // terminate-on-first-hit form for a marginal gain.
                     rayQueryEXT occlRq;
                     rayQueryInitializeEXT(
                         occlRq, topLevelAS,
                         gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-                        0xFF,
+                        VISIBILITY_MASK_ALL_OPAQUE,
                         floorWorld + toCamera * 1.0, 0.0, toCamera,
                         max(cameraDist - 2.0, 0.0)
                     );
