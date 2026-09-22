@@ -1473,14 +1473,10 @@ mod tests {
 /// Light and regular allocation are unaffected on a medium-free order.
 #[test]
 fn allocate_global_slot_partitions_medium_light_and_regular() {
-    let mut regular = 0;
-    let mut light = 0;
-    let mut medium = 0;
-
     // A medium-free order keeps the historical 254 regular slots.
-    let mut r = regular.clone();
-    let mut l = light.clone();
-    let mut m = medium.clone();
+    let mut r = 0;
+    let mut l = 0;
+    let mut m = 0;
     assert!(allocate_global_slot(false, false, &mut r, &mut l, &mut m).is_ok());
     assert_eq!(r, 1);
 
