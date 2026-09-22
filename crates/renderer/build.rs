@@ -493,6 +493,10 @@ fn main() {
         "#define MATERIAL_KIND_FIRE_REFRACTION {MATERIAL_KIND_FIRE_REFRACTION}u"
     )
     .unwrap();
+    // #4584 — presentation display-transform operator ids (push constant).
+    // Authoritative consumer: tonemap.rs.
+    writeln!(out, "#define TONEMAP_OP_ACES {TONEMAP_OP_ACES}u").unwrap();
+    writeln!(out, "#define TONEMAP_OP_AGX {TONEMAP_OP_AGX}u").unwrap();
     for (name, value) in [
         (
             "VISIBILITY_LAYER_ARCHITECTURE",

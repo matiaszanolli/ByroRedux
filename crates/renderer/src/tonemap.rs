@@ -24,9 +24,11 @@
 //! therefore kept — it returns the signal to linear, it does not encode it.
 
 /// Push-constant operator ids, shared with `presentation.frag`'s
-/// `params.tonemapOp` (uint lane, #3578 idiom).
-pub const TONEMAP_OP_ACES: u32 = 0;
-pub const TONEMAP_OP_AGX: u32 = 1;
+/// `params.tonemapOp` (uint lane, #3578 idiom). #4584 — declared in
+/// `shader_constants_data.rs` (the single source of truth) so build.rs
+/// emits them into the generated `shader_constants.glsl`, and the shader
+/// compares against `TONEMAP_OP_AGX` instead of a hand-typed literal.
+pub use crate::shader_constants::{TONEMAP_OP_ACES, TONEMAP_OP_AGX};
 
 /// Display-transform selection. `RendererConfig` carries this (an `Eq` enum,
 /// not a float — see that struct's docs for why), the console can flip it
@@ -312,5 +314,15 @@ mod tests {
         assert_eq!(TONEMAP_OP_AGX, 1);
         assert_eq!(TonemapOp::Aces.shader_value(), TONEMAP_OP_ACES);
         assert_eq!(TonemapOp::Agx.shader_value(), TONEMAP_OP_AGX);
+        // #4584 — the generated header must carry the same ids, and the
+        // shader must compare against the define, not a hand-typed literal.
+        let header = include_str!("../shaders/include/shader_constants.glsl");
+        assert!(header.contains("#define TONEMAP_OP_ACES 0u"));
+        assert!(header.contains("#define TONEMAP_OP_AGX 1u"));
+        let frag = include_str!("../shaders/presentation.frag");
+        assert!(
+            frag.contains("params.tonemapOp == TONEMAP_OP_AGX"),
+            "presentation.frag must dispatch on the generated define (#4584)"
+        );
     }
 }

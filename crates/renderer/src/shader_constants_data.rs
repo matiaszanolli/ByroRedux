@@ -618,6 +618,13 @@ pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
 pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
 pub const MATERIAL_KIND_FIRE_REFRACTION: u32 = 103;
 
+// #4584 — presentation display-transform operator ids (`params.tonemapOp`,
+// push constant). The authoritative consumer contract lives in
+// `tonemap.rs`, which re-exports these; presentation.frag compares
+// against the generated `#define`s.
+pub const TONEMAP_OP_ACES: u32 = 0;
+pub const TONEMAP_OP_AGX: u32 = 1;
+
 // Explicit geometry visibility layers shared with the ECS emitter contract.
 // Each TLAS instance carries exactly one category bit. `GpuLight.params.z`
 // stores any union of these bits as an exactly representable f32 integer.

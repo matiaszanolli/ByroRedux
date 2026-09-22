@@ -114,7 +114,7 @@ vec3 agx(vec3 val) {
 // Display-transform dispatch — ids from renderer `tonemap.rs`
 // (TONEMAP_OP_ACES = 0, TONEMAP_OP_AGX = 1).
 vec3 tonemap(vec3 x) {
-    return params.tonemapOp == 1u ? agx(x) : aces(x);
+    return params.tonemapOp == TONEMAP_OP_AGX ? agx(x) : aces(x); // TONEMAP_OP_AGX from shader_constants.glsl
 }
 
 vec4 sampleImageSpace(vec2 uv) {
