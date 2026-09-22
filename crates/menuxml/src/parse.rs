@@ -497,8 +497,21 @@ fn parse_body(scanner: &mut Scanner, depth: usize) -> Body {
             break;
         }
         let Some((name, attrs, self_closing)) = scanner.take_element() else {
-            // Stray `<` that did not parse as an element; drop one byte to
-            // guarantee progress.
+            // #4651 — stray text after a comment span: consume it with
+            // take_text (char-boundary safe; a bare `pos += 1` advanced
+            // one BYTE, split multi-byte characters and panicked the next
+            // skip_ws slice). While the value is still accumulating the
+            // stray text is KEPT — the source engine concatenated it, and
+            // dropping bytes corrupted the trait ("plainascii" arrived as
+            // "plainscii"). A literal stray `<` consumes nothing here;
+            // skip its single byte.
+            let stray = scanner.take_text();
+            if !stray.is_empty() {
+                if ops.is_empty() {
+                    text.push_str(stray);
+                }
+                continue;
+            }
             scanner.pos += 1;
             continue;
         };
@@ -564,11 +577,21 @@ struct ElementContent {
 }
 
 /// Parse the content of a tile/menu element until its close tag.
+/// #4650 (PAR-D1-2026-09-21-04) — total `<include>` splices allowed per
+/// top-level parse. Include nesting previously bypassed the tile-depth
+/// cap entirely (spliced content re-entered `parse_element_content` with
+/// the SAME depth), so a fragment DAG with fan-out f and depth d expanded
+/// to f^d splices — each an archive fetch + inflate in production — and a
+/// fragment that self-includes under K spellings re-entered ~K! times.
+/// 256 bounds every vanilla document (the corpora splice a handful each).
+const MAX_INCLUDE_SPLICES: usize = 256;
+
 fn parse_element_content(
     scanner: &mut Scanner,
     src: &mut dyn MenuFileSource,
     seen_includes: &mut Vec<String>,
     depth: usize,
+    splice_budget: &mut usize,
 ) -> ElementContent {
     let mut traits = BTreeMap::new();
     let mut children: Vec<TileSeed> = Vec::new();
@@ -593,7 +616,14 @@ fn parse_element_content(
             break;
         }
         let Some((name, attrs, self_closing)) = scanner.take_element() else {
-            scanner.pos += 1;
+            // Stray text between elements (e.g. `été` right after a
+            // comment span): consume char-safely via take_text instead of
+            // dropping one BYTE, which split multi-byte characters and
+            // panicked the next slice (#4651). A literal stray `<`
+            // consumes nothing — skip its single byte.
+            if scanner.take_text().is_empty() {
+                scanner.pos += 1;
+            }
             continue;
         };
         // `<include src="..."/>` splices a prefab fragment into this tile.
@@ -606,14 +636,22 @@ fn parse_element_content(
                     &mut traits,
                     &mut children,
                     depth,
+                    splice_budget,
                 );
             }
             continue;
         }
         if TileKind::from_element(&name).is_some() {
-            if let Some(seed) =
-                parse_tile_element(&name, &attrs, self_closing, scanner, src, seen_includes, depth)
-            {
+            if let Some(seed) = parse_tile_element(
+                &name,
+                &attrs,
+                self_closing,
+                scanner,
+                src,
+                seen_includes,
+                depth,
+                splice_budget,
+            ) {
                 children.push(seed);
             }
             continue;
@@ -642,12 +680,8 @@ fn splice_include(
     traits: &mut BTreeMap<String, RawTrait>,
     children: &mut Vec<TileSeed>,
     depth: usize,
+    splice_budget: &mut usize,
 ) {
-    let norm = path.replace('/', "\\").to_lowercase();
-    if seen_includes.iter().any(|p| p == &norm) {
-        log::warn!("menuxml: include cycle on '{path}' — splice skipped");
-        return;
-    }
     // Vanilla authors prefab includes relative to `menus\prefabs\`
     // (`<include src="button_long.xml"/>` from menus\dialog\*.xml).
     // Also accept a menus\-relative form and a raw archive path.
@@ -656,21 +690,43 @@ fn splice_include(
         format!("menus\\{path}"),
         path.to_string(),
     ];
-    let bytes = candidates.iter().find_map(|p| src.menu_xml(p));
-    let Some(bytes) = bytes else {
+    // #4650 — cycle detection keys on the RESOLVED archive path, not the
+    // authored spelling: `x.xml`, `prefabs\x.xml` and
+    // `menus\prefabs\x.xml` all reach the same entry, and a fragment
+    // self-including under K spellings used to re-enter ~K! times.
+    let Some((resolved, bytes)) = candidates.iter().find_map(|p| {
+        src.menu_xml(p)
+            .map(|b| (p.replace('/', "\\").to_lowercase(), b))
+    }) else {
         log::warn!("menuxml: include '{path}' not found");
         return;
     };
+    if seen_includes.iter().any(|p| p == &resolved) {
+        log::warn!("menuxml: include cycle on '{path}' — splice skipped");
+        return;
+    }
+    if *splice_budget == 0 {
+        log::warn!(
+            "menuxml: include splice budget ({MAX_INCLUDE_SPLICES}) exhausted \
+             at '{path}' — further splices truncated"
+        );
+        return;
+    }
+    *splice_budget -= 1;
     let Ok(text) = String::from_utf8(bytes) else {
         log::warn!("menuxml: include '{path}' is not UTF-8");
         return;
     };
-    seen_includes.push(norm);
+    seen_includes.push(resolved);
     let mut scanner = Scanner::new(&text);
     // A prefab fragment opens with a comment naming its intended host
     // shape (`<!-- image name="button_long" -->`); skip_trivia eats it
     // and the remainder parses as the host tile's own content.
-    let content = parse_element_content(&mut scanner, src, seen_includes, depth);
+    //
+    // #4650 — `depth + 1`, not `depth`: include nesting IS nesting, and
+    // the old same-depth re-entry let the 48-tile cap never see it.
+    let content =
+        parse_element_content(&mut scanner, src, seen_includes, depth + 1, splice_budget);
     seen_includes.pop();
     for (k, v) in content.traits {
         traits.insert(k, v);
@@ -698,6 +754,7 @@ fn parse_tile_element(
     src: &mut dyn MenuFileSource,
     seen_includes: &mut Vec<String>,
     depth: usize,
+    splice_budget: &mut usize,
 ) -> Option<TileSeed> {
     let kind = TileKind::from_element(name)?;
     let tile_name = attr_value(attrs, "name");
@@ -710,7 +767,8 @@ fn parse_tile_element(
             children: Vec::new(),
         });
     }
-    let content = parse_element_content(scanner, src, seen_includes, depth + 1);
+    let content =
+        parse_element_content(scanner, src, seen_includes, depth + 1, splice_budget);
     // `<id>` may arrive before or after other traits; both spellings
     // appear in vanilla (`<id>` in HUD, `<ID>` in prefabs).
     let id = ["id"]
@@ -735,17 +793,28 @@ fn parse_tile_element(
 pub fn parse_document(text: &str, src: &mut dyn MenuFileSource) -> Document {
     let mut scanner = Scanner::new(text);
     let mut includes: Vec<String> = Vec::new();
+    let mut splice_budget: usize = MAX_INCLUDE_SPLICES;
     // Locate the root element, skipping the leading file comment.
     let root_seed = {
         scanner.skip_trivia();
         if let Some((name, attrs, self_closing)) = scanner.take_element() {
             if TileKind::from_element(&name).is_some() {
-                parse_tile_element(&name, &attrs, self_closing, &mut scanner, src, &mut includes, 0)
-                    .unwrap_or_else(TileSeed::default_root)
+                parse_tile_element(
+                    &name,
+                    &attrs,
+                    self_closing,
+                    &mut scanner,
+                    src,
+                    &mut includes,
+                    0,
+                    &mut splice_budget,
+                )
+                .unwrap_or_else(TileSeed::default_root)
             } else {
                 // First element is not a tile (should not happen); parse
                 // the rest as a synthetic rect root.
-                let content = parse_element_content(&mut scanner, src, &mut includes, 0);
+                let content =
+                    parse_element_content(&mut scanner, src, &mut includes, 0, &mut splice_budget);
                 TileSeed {
                     name: attr_value(&attrs, "name"),
                     id: None,

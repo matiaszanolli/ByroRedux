@@ -185,7 +185,12 @@ impl MenuRenderer {
                 // The .fnt names its atlas; resolve through the profile's
                 // candidate paths (Oblivion: `fonts\<name>.tex`; FO3 ships
                 // `.tex` and `.dds` beside each `.fnt`).
-                let name = String::from_utf8_lossy(&fnt[12..])
+                // #4652 (PAR-D2-2026-09-21-03) — `&fnt[12..]` panicked on
+                // any .fnt shorter than 12 bytes, BEFORE Font::parse's own
+                // TruncatedHeader check could route the file through the
+                // warn-and-None degrade path. `get` yields an empty name
+                // for a short font, which Font::parse then rejects.
+                let name = String::from_utf8_lossy(fnt.get(12..).unwrap_or_default())
                     .split('\0')
                     .next()
                     .unwrap_or("")

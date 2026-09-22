@@ -147,6 +147,168 @@ fn include_splices_prefab_traits_and_children() {
     assert_eq!(doc.tiles[text].parent, Some(host));
 }
 
+/// #4651 (PAR-D1-2026-09-21-05) — the three probe strings. A non-ASCII
+/// character right after a comment span used to panic: the stray-arm
+/// `pos += 1` advanced one BYTE into a multi-byte character and the next
+/// `&src[pos..]` slice hit a non-char boundary. With an ASCII character
+/// the byte was silently dropped instead, corrupting the trait value
+/// ("plainascii" arrived as "plainscii").
+#[test]
+fn trait_text_after_a_comment_survives_multibyte_characters() {
+    // Multi-byte: must not panic, must keep both halves.
+    let files = src(&[(
+        "menus\\main\\hud_main_menu.xml",
+        r#"<menu name="M"><string>abc<!-- note -->été</string></menu>"#,
+    )]);
+    let mut s = files;
+    let root_xml = s.files.get("menus\\main\\hud_main_menu.xml").unwrap().clone();
+    let doc = parse_document(&root_xml, &mut s);
+    let value = doc
+        .tiles
+        .iter()
+        .find_map(|t| t.traits.get("string"))
+        .and_then(|t| match t {
+            RawTrait::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("string trait present");
+    assert!(value.contains("abc"), "leading text kept: {value:?}");
+    assert!(value.contains('é'), "the multi-byte tail must survive: {value:?}");
+
+    // ASCII: no byte dropped — "plain" + "ascii" concatenate whole.
+    let files = src(&[(
+        "menus\\main\\hud_main_menu.xml",
+        r#"<menu name="M"><string>plain<!-- note -->ascii</string></menu>"#,
+    )]);
+    let mut s = files;
+    let root_xml = s.files.get("menus\\main\\hud_main_menu.xml").unwrap().clone();
+    let doc = parse_document(&root_xml, &mut s);
+    let value = doc
+        .tiles
+        .iter()
+        .find_map(|t| t.traits.get("string"))
+        .and_then(|t| match t {
+            RawTrait::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("string trait present");
+    assert_eq!(value, "plainascii", "no ASCII byte may be dropped");
+}
+
+/// #4651 sibling — stray text between tiles after a comment (the
+/// `<rect>junk<!-- note --> über<x>1</x>` probe): parses without
+/// panicking; the stray debris stays discarded by design.
+#[test]
+fn stray_text_between_tiles_after_a_comment_does_not_panic() {
+    let files = src(&[(
+        "menus\\main\\hud_main_menu.xml",
+        r#"<menu name="M"><rect name="R">junk<!-- note --> über<x>1</x></rect></menu>"#,
+    )]);
+    let mut s = files;
+    let root_xml = s.files.get("menus\\main\\hud_main_menu.xml").unwrap().clone();
+    let _ = parse_document(&root_xml, &mut s);
+}
+
+/// #4650 (PAR-D1-2026-09-21-04) — include nesting counts toward the
+/// tile-depth cap: the spliced content used to re-enter
+/// `parse_element_content` with the SAME depth, so the 48 cap never saw
+/// include chains. A 60-level chain must truncate, not recurse freely.
+#[test]
+fn include_chain_hits_the_tile_depth_cap() {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for i in 0..60 {
+        entries.push((
+            format!("menus\\prefabs\\chain{i}.xml"),
+            format!(
+                r#"<rect name="level{i}"><include src="chain{}.xml"/><width> 4 </width></rect>"#,
+                i + 1
+            ),
+        ));
+    }
+    entries.push(("menus\\prefabs\\chain60.xml".to_string(), r#"<rect name="leaf"/>"#.to_string()));
+    entries.push((
+        "menus\\main\\hud_main_menu.xml".to_string(),
+        r#"<menu name="M"><include src="chain0.xml"/></menu>"#.to_string(),
+    ));
+    let mut s = src(
+        &entries
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    let root_xml = s
+        .menu_xml("menus\\main\\hud_main_menu.xml")
+        .map(|b| String::from_utf8(b).unwrap())
+        .unwrap();
+    let doc = parse_document(&root_xml, &mut s);
+    let named = doc.name_index.len();
+    assert!(
+        named <= 50,
+        "the 48-tile depth cap must truncate a 60-level include chain \
+         (got {named} named tiles)"
+    );
+}
+
+/// #4650 — the splice budget bounds fan-out: a 300-level chain (each
+/// file splicing exactly one deeper file) must stop at the budget
+/// instead of materialising 300 archive fetches + inflates.
+#[test]
+fn include_splice_budget_bounds_total_splices() {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for i in 0..300 {
+        entries.push((
+            format!("menus\\prefabs\\deep{i}.xml"),
+            format!(
+                r#"<rect name="deep{i}"><include src="deep{}.xml"/></rect>"#,
+                i + 1
+            ),
+        ));
+    }
+    entries.push(("menus\\prefabs\\deep300.xml".to_string(), r#"<rect name="leaf"/>"#.to_string()));
+    entries.push((
+        "menus\\main\\hud_main_menu.xml".to_string(),
+        r#"<menu name="M"><include src="deep0.xml"/></menu>"#.to_string(),
+    ));
+    let mut s = src(
+        &entries
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    let root_xml = s
+        .menu_xml("menus\\main\\hud_main_menu.xml")
+        .map(|b| String::from_utf8(b).unwrap())
+        .unwrap();
+    let doc = parse_document(&root_xml, &mut s);
+    assert!(
+        doc.tiles.len() <= 270,
+        "the splice budget must bound total splices (got {} tiles)",
+        doc.tiles.len()
+    );
+}
+
+/// #4650 — cycle detection keys on the RESOLVED archive path, not the
+/// authored spelling: two files that self-include each other under
+/// different spellings of the same entry terminated pre-fix only by
+/// luck; a K-spelling self-include re-entered ~K! times.
+#[test]
+fn include_self_reference_under_two_spellings_terminates() {
+    let body = r#"<include src="b.xml"/><include src="prefabs/b.xml"/><width> 5 </width>"#;
+    let files = src(&[
+        (
+            "menus\\a.xml",
+            r#"<menu name="A"><image name="x"><include src="b.xml"/></image></menu>"#,
+        ),
+        ("menus\\b.xml", body),
+        ("menus\\prefabs\\b.xml", body),
+    ]);
+    let mut s = files;
+    let root_xml = s.files.get("menus\\a.xml").unwrap().clone();
+    let doc = parse_document(&root_xml, &mut s);
+    let x = doc.name_index["x"];
+    assert_eq!(doc.tiles[x].traits.get("width"), Some(&RawTrait::Num(5.0)));
+}
+
 /// Include cycles must terminate with a warning, not a stack overflow.
 #[test]
 fn include_cycles_terminate() {
