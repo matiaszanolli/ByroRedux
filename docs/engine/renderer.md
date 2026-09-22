@@ -41,9 +41,11 @@ Source: `crates/renderer/src/vulkan/`
   mesh-id disocclusion, albedo-demodulated accumulation
 - **Composite pass**: direct + denoised indirect reassembly (multiplies
   indirect by local albedo per #268's invariant) + water/glass caustic
-  accumulators + sky, with ACES tone mapping. Bloom's own pyramid now
-  dispatches AFTER this pass and adds itself back onto composite's output
-  in place (#2796 / REN-D16-01) — see the Bloom bullet below.
+  accumulators + sky, emitting **linear HDR** — tone mapping moved to the
+  presentation pass when the render/output resolution split landed (#4202).
+  Bloom's own pyramid dispatches AFTER this pass and adds itself back onto
+  composite's output in place (#2796 / REN-D16-01) — see the Bloom bullet
+  below.
 - **TAA** (M37.5): `taa.comp` with Halton(2,3) projection jitter (period 16
   per #1093), motion-vector reprojection, Catmull-Rom 9-tap history resample,
   3×3 YCoCg neighborhood variance clamp (γ = 1.25), mesh-id disocclusion,
@@ -213,7 +215,7 @@ crates/renderer/src/vulkan/
     ├── draw.rs         draw_frame() — per-frame command recording + submission
     ├── resize.rs       recreate_swapchain() — atomic handoff on window resize
     ├── resources.rs    register_ui_quad, log_memory_usage,
-    │                   swapchain_extent, rebind_hdr_views
+    │                   swapchain_extent
     ├── helpers.rs      find_depth_format, create_render_pass, create_framebuffers
     └── screenshot.rs   ScreenshotBridge / readback copy for debug captures
 ```
@@ -320,31 +322,37 @@ the allocator fires after the logical device has already been destroyed.
 16. Dispatch `caustic_splat.comp` to project refracted-light splats for
     glass / MultiLayerParallax into the scalar caustic accumulator (skipped
     when no TLAS handle is available — #640).
-17. Dispatch the volumetric inject + integrate passes (M55 — scaffold; the
-    output is multiplied by 0.0 in composite until Phase 2 lands).
-18. Dispatch `taa.comp` for temporal AA; ping-pong history images. **Skipped
-    entirely under `--upscaler fsr3`** — FSR owns temporal reconstruction and
-    the two are mutually exclusive (the TAA pipeline is not even created).
-19. Dispatch `ssao.comp` for screen-space ambient occlusion.
-20. Dispatch the bloom down/up pyramid over the active HDR view.
-21. Dispatch the **scene-composition** pass to assemble
-    `direct + indirect * albedo + caustic + bloom` into a
+17. Dispatch the volumetric inject + integrate passes (M55 — live:
+    `VOLUMETRIC_OUTPUT_CONSUMED` is true, composite applies the froxel
+    transmittance + in-scatter unconditionally, #3573).
+18. Dispatch `ssao.comp` for screen-space ambient occlusion.
+19. Dispatch the **scene-composition** pass to assemble
+    `direct + indirect * albedo + caustics + volumetrics + sky` into a
     **render-resolution linear-HDR** image. This pass no longer tone-maps and
     no longer writes the swapchain — both moved downstream when the
     render/output resolution split landed.
-22. Record the **frame upscale**: the FSR 3.1 dispatch, or a native blit
+20. Dispatch the bloom down/up pyramid over composite's HDR output; `bloom_
+    apply.comp` adds `up_mips[0]` back in place (#2796).
+21. Dispatch `exposure_meter.comp` (Stage 1): meters the post-bloom scene
+    and adapts the per-FIF 1×1 exposure texel FSR and presentation read.
+22. Dispatch `taa.comp` for temporal AA; resolves the post-bloom scene
+    (#3572). **Skipped entirely under `--upscaler fsr3`** — FSR owns
+    temporal reconstruction and the two are mutually exclusive (the TAA
+    pipeline is not even created).
+23. Record the **frame upscale**: the FSR 3.1 dispatch, or a native blit
     under `--upscaler taa` (where render and output extents are equal). Either
     way the result is an output-resolution HDR image, which gives FSR one
     explicit frame-graph slot instead of letting a later pass silently
     bilinear-scale its inputs.
-23. Dispatch the **presentation** pass: exposure + ACES tone map from that
+24. Dispatch the **presentation** pass: `tonemap(graded * exposureTex)`
+    (the meter's per-FIF exposure; ACES|AgX switch) from that
     output-resolution HDR image into the swapchain image. This is the first
     pass that runs at output resolution, and the part of the frame an FSR
     preset does *not* shrink.
-24. If the egui overlay is active, record its LOAD-op render pass over the
+25. If the egui overlay is active, record its LOAD-op render pass over the
     swapchain image.
-25. Record the optional screenshot copy.
-26. End command buffer, submit to the graphics queue with semaphore sync
+26. Record the optional screenshot copy.
+27. End command buffer, submit to the graphics queue with semaphore sync
     (`reset_fences` moved to immediately-before-submit per #952), present
     to the swapchain.
 
@@ -505,9 +513,12 @@ Per-frame flow:
    current-frame 3×3 YCoCg neighborhood min/max (γ = 1.25), rejects it
    outright when mesh IDs disagree, and blends with α = 0.1 weighted by luma
    to damp bright-pixel ghosting.
-3. `CompositePipeline::rebind_hdr_views()` swaps composite's input to the
-   active TAA output each frame. On a TAA dispatch error, composite falls
-   back to the raw HDR view (`fall_back_to_raw_hdr`).
+3. TAA writes its resolve into its own history image; the upscale and
+   presentation passes consume that output when TAA is active
+   (`scene_color_layout = GENERAL`), or composite's HDR directly otherwise
+   (`SHADER_READ_ONLY_OPTIMAL`). The retired
+   *`CompositePipeline::rebind_hdr_views`* / *`fall_back_to_raw_hdr`*
+   pair no longer exists — #4524 swept the code-comment sites.
 
 ## Composite pass
 
