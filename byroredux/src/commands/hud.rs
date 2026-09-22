@@ -151,12 +151,24 @@ impl ConsoleCommand for HudStatusCommand {
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         match world.try_resource::<HudControl>() {
             Some(control) => {
-                let fmt = |v: Option<f32>| match v {
+                // #4675 — the auto arm reports the LIVE derived fraction
+                // (the driver writes `live` every frame) instead of a
+                // constant "1.00 (auto)" no observable could read.
+                let fmt = |pinned: Option<f32>, live: Option<f32>| match pinned {
                     Some(pinned) => format!("{pinned:.2} (pinned)"),
-                    None => "1.00 (auto)".to_string(),
+                    None => match live {
+                        Some(live) => format!("{live:.2} (auto)"),
+                        None => "1.00 (auto)".to_string(),
+                    },
                 };
                 let bars = (0..control.bar_count as usize)
-                    .map(|i| format!("{}={}", control.bar_labels[i], fmt(control.bars[i])))
+                    .map(|i| {
+                        format!(
+                            "{}={}",
+                            control.bar_labels[i],
+                            fmt(control.bars[i], control.live[i])
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(" ");
                 // `backend` goes last so the m48-4/m48-5 gates' grep

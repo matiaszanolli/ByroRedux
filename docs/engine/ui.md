@@ -853,9 +853,11 @@ source engine's C++ assembly: `meter.xml` grafted under
 `HitPoints`/`ActionPoints` (anchored bottom-left/-right),
 `template_compass_window` instantiated at the root, then driven
 per frame via `_Value` (0..1 fill) and `cropx` (heading × strip
-texels/degree). FO3 bar values read the character-module AVIF
-keys (HP `0x2C9`, AP `0x2D0`); Oblivion still reads the
-Skyrim-keyed values the playable slice stamps. The driver
+texels/degree). FO3 bar values resolve the canonical AVIF editor
+ids (`Health` / `ActionPoints`) through `PlayerVitals` each load —
+#4675: the original literals here (`0x2C9` / `0x2D0`) were
+`fallout.rs`'s unit-test fixture ids, not real AVIFs, so no
+real-content entity carried them and the bars always drew full. The driver
 registers **three**
 overlay textures, and rotates uploads across them
 (`Texture::overwrite_rgba_pixels` / `write_rgba_inplace` — in-place mip-0
@@ -863,8 +865,9 @@ copies, no image/view/descriptor churn; `TextureRegistry::update_rgba`
 reallocates all three per call and is not viable per frame). A change
 signature (bar bits + heading×10 + visibility) plus a 33 ms cadence cap
 keeps a static HUD at zero raster cost. Bar values come from pinned
-console values or Skyrim-keyed `ActorValues` — the vanilla playable slice
-already feeds them live from NPCs. Console surface: `hud.on`, `hud.off`,
+console values or the PLAYER's `ActorValues` (resolved through
+`PlayerVitals`, #4675); the playable slice stamps the player from the
+base `NPC_` with the PlayerOnly formulas evaluated (#4674). Console surface: `hud.on`, `hud.off`,
 `hud.values <f0> <f1> [<f2>]` — one fraction per the game's bars, 2 for FO3 (or `auto`), `hud.heading <deg>`, `hud.status`;
 `tex.dump <bsa-path> <texture-path> [out.png]` (in the `tex.*` family)
 extracts and decodes any archive texture — including menu sets and font
@@ -954,9 +957,11 @@ transparent stage lets the world legitimately contribute brightness.
 `interface\hudmenu.swf` out of `Fallout4 - Interface.ba2` through the
 injected BGSCodeObj forwarding adapter — the `hud: loaded` line now
 carries `profile=` and `state=` (FO4 greps
-`state=Some(AdapterInjected)`). FO4 drives 2 bars (health `0x2C9` /
-ap `0x2D0`, the global AVIF space `derive_stored_actor_values` stamps
-FO4 NPCs with); the SkyUI poll handlers are Skyrim-gated (FO4's
+`state=Some(AdapterInjected)`). FO4 drives 2 bars (health / ap —
+canonical editor ids resolved per load through `PlayerVitals`; the
+original literals `0x2C9` / `0x2D0` were fallout.rs fixture ids, not
+FO4's real `Health 0x2D4` / `ActionPoints 0x2D5`, #4675); the SkyUI
+poll handlers are Skyrim-gated (FO4's
 BGSCodeObj catalog has no meter-shaped queries and none are fabricated),
 and the push table skips the adapter's `__byro*` lifecycle hooks — which
 `hud.debug` mirrors as the runtime AdapterInjected observable. Protocol

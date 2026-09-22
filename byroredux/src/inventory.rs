@@ -148,6 +148,19 @@ impl Resource for PlayerCharacterTemplate {}
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PlayerVitals {
     bars: Vec<(&'static str, u32)>,
+    /// #4675 — canonical AVIF editor id → resolved FormID, from the same
+    /// `vital_bar_candidates` table. The HUD drivers' bar tables carry
+    /// editor ids (never literal FormIDs — the old hardcoded 0x2C9/0x2D0
+    /// were fallout.rs's unit-test fixture ids, not real AVIFs) and
+    /// resolve through this once per lookup instead of embedding ids.
+    by_editor_id: FxHashMap<&'static str, u32>,
+}
+
+impl PlayerVitals {
+    /// The resolved key for a canonical AVIF editor id (#4675).
+    pub(crate) fn resolved(&self, editor_id: &str) -> Option<u32> {
+        self.by_editor_id.get(editor_id).copied()
+    }
 }
 
 impl Resource for PlayerVitals {}
@@ -177,14 +190,16 @@ fn vital_bar_candidates(game: GameKind) -> &'static [(&'static str, &'static str
 }
 
 fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
-    PlayerVitals {
-        bars: vital_bar_candidates(index.game)
-            .iter()
-            .filter_map(|&(label, editor_id)| {
-                index.actor_value_form_id(editor_id).map(|avif| (label, avif))
-            })
-            .collect(),
-    }
+    let mut by_editor_id = FxHashMap::default();
+    let bars = vital_bar_candidates(index.game)
+        .iter()
+        .filter_map(|&(label, editor_id)| {
+            let avif = index.actor_value_form_id(editor_id)?;
+            by_editor_id.insert(editor_id, avif);
+            Some((label, avif))
+        })
+        .collect();
+    PlayerVitals { bars, by_editor_id }
 }
 
 /// Compose the player's vitals bars from canonical `ActorValues`. Returns
@@ -2946,6 +2961,11 @@ mod tests {
         world.insert_resource(PlayerEntity(Some(player)));
         world.insert_resource(PlayerVitals {
             bars: vec![("Health", 1000), ("Magicka", 1001), ("Fatigue", 1002)],
+            by_editor_id: FxHashMap::from_iter([
+                ("Health", 1000),
+                ("Magicka", 1001),
+                ("Fatigue", 1002),
+            ]),
         });
         let mut values = byroredux_core::ecs::components::ActorValues::new();
         values.set_base(1000, 100.0);
@@ -3078,5 +3098,68 @@ mod tests {
             80.0,
             "FNV player AP = 65 + 3·AGI(5) — pre-#4674 it was never seeded"
         );
+    }
+
+    /// #4675 — the HUD's bar keys resolve through `PlayerVitals` (real
+    /// FNV AVIF ids `AVHealth 0x450` / `AVActionPoints 0x44C` here, not
+    /// the fallout.rs test-fixture 0x2C9/0x2D0 the drivers used to
+    /// hardcode), and `fraction` reads the PLAYER only: an NPC inserted
+    /// first — whose values the old first-hit storage scan would have
+    /// reported — must not move the bar.
+    #[test]
+    fn hud_bars_resolve_through_player_vitals_and_read_the_player_only() {
+        use crate::hud::fraction;
+        use byroredux_core::character::CharacterRulesProfile;
+        use byroredux_core::ecs::components::ActorValues;
+        use byroredux_plugin::esm::records::AvifRecord;
+
+        let mut index = EsmIndex {
+            character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            game: GameKind::Fallout3NV,
+            ..EsmIndex::default()
+        };
+        for (fid, name) in [(0x450u32, "AVHealth"), (0x44C, "AVActionPoints")] {
+            index.actor_values.insert(
+                fid,
+                AvifRecord {
+                    form_id: fid,
+                    editor_id: name.to_owned(),
+                    ..Default::default()
+                },
+            );
+        }
+        let vitals = build_player_vitals(&index);
+        assert_eq!(vitals.resolved("Health"), Some(0x450));
+        assert_eq!(vitals.resolved("ActionPoints"), Some(0x44C));
+        assert_eq!(vitals.resolved("Magicka"), None, "FNV authors no Magicka");
+
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        // An NPC carrying Health, inserted FIRST — the pre-#4675 scan
+        // would have taken this dense-slot-first entry.
+        let npc = world.spawn();
+        let mut npc_values = ActorValues::new();
+        npc_values.set_base(0x450, 10.0);
+        world.insert(npc, npc_values);
+        // The player, at half health.
+        let player = world.spawn();
+        let mut player_values = ActorValues::new();
+        player_values.set_base(0x450, 100.0);
+        player_values.apply_damage(0x450, 50.0);
+        player_values.set_base(0x44C, 80.0);
+        world.insert(player, player_values);
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(vitals);
+
+        let health = index.actor_value_form_id("Health").unwrap();
+        assert_eq!(
+            fraction(&world, Some(health), None),
+            0.5,
+            "the bar must read the player's 50/100, not the first-scanned \
+             NPC's 10/10"
+        );
+        // Unpinned absent key → full bar; pins still win.
+        assert_eq!(fraction(&world, Some(0x999), None), 1.0);
+        assert_eq!(fraction(&world, Some(health), Some(0.3)), 0.3);
     }
 }

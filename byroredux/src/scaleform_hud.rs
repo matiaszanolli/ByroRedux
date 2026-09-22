@@ -40,6 +40,7 @@ use byroredux_ui::{ScaleformHostBridge, ScaleformValue, UiManager};
 
 use crate::asset_provider::Archive;
 use crate::hud::{fraction, HudBackend, HudControl, HUD_REFRESH_INTERVAL};
+use crate::inventory::PlayerVitals;
 
 /// Which Scaleform game's HUD this driver serves. Selection is
 /// structural: whichever vanilla interface archive sits beside `--esm`.
@@ -52,11 +53,14 @@ pub(crate) enum ScaleformGame {
     Fallout4,
 }
 
-/// One driven bar: console label + the global-space AVIF key the
-/// fraction derives from when not pinned.
+/// One driven bar: console label + the canonical AVIF **editor id** the
+/// fraction derives from when not pinned, resolved per load through
+/// `PlayerVitals::resolved` (#4675 — the literal FormIDs this table used
+/// to carry were fallout.rs's unit-test fixture ids; FO4's 0x2C9 is
+/// *Experience*, so the real bars could never move).
 struct ScaleformBar {
     label: &'static str,
-    av: u32,
+    av: &'static str,
 }
 
 impl ScaleformGame {
@@ -76,15 +80,15 @@ impl ScaleformGame {
     /// The driven bars, in `hud.values` order.
     fn bars(self) -> &'static [ScaleformBar] {
         const SKYRIM: &[ScaleformBar] = &[
-            ScaleformBar { label: "health", av: 0x3E8 },
-            ScaleformBar { label: "magicka", av: 0x3E9 },
-            ScaleformBar { label: "stamina", av: 0x3EA },
+            ScaleformBar { label: "health", av: "Health" },
+            ScaleformBar { label: "magicka", av: "Magicka" },
+            ScaleformBar { label: "stamina", av: "Stamina" },
         ];
-        // FO4 keys per `crates/core/src/character/fallout.rs` — the same
-        // global space `derive_stored_actor_values` stamps FO4 NPCs with.
+        // Canonical editor ids, resolved through PlayerVitals at frame
+        // time (#4675) — see the field doc for why these are not FormIDs.
         const FALLOUT4: &[ScaleformBar] = &[
-            ScaleformBar { label: "health", av: 0x2C9 },
-            ScaleformBar { label: "ap", av: 0x2D0 },
+            ScaleformBar { label: "health", av: "Health" },
+            ScaleformBar { label: "ap", av: "ActionPoints" },
         ];
         match self {
             Self::Skyrim => SKYRIM,
@@ -340,11 +344,17 @@ impl ScaleformHudDriver {
             ui.visible = control.visible;
         }
 
-        // The shared snapshot the response handlers read.
+        // The shared snapshot the response handlers read. #4675 — editor
+        // ids resolve through the per-load `PlayerVitals` table.
+        let vitals = world.try_resource::<PlayerVitals>();
         let bars = self.game.bars();
         let mut fractions = [1.0f32; 3];
         for (i, bar) in bars.iter().enumerate() {
-            fractions[i] = fraction(world, Some(bar.av), control.bars[i]);
+            let key = vitals.as_ref().and_then(|v| v.resolved(bar.av));
+            fractions[i] = fraction(world, key, control.bars[i]);
+        }
+        if let Some(mut control_mut) = world.try_resource_mut::<HudControl>() {
+            control_mut.live = fractions.map(Some);
         }
         let heading = control.heading.unwrap_or_else(|| {
             f32::atan2(cam_forward[0], -cam_forward[2])

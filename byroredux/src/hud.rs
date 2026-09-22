@@ -34,22 +34,28 @@ use byroredux_menuxml::tex::Rgba8;
 use byroredux_menuxml::{MenuRenderer, ScreenTraits};
 
 use crate::asset_provider::Archive;
+use crate::inventory::PlayerVitals;
+use crate::systems::PlayerEntity;
 
 /// Skyrim-profile AVIF keys the engine already stamps (`0x3E8` Health,
 /// `0x3E9` Magicka, `0x3EA` Stamina). Oblivion's index-based actor
 /// values are not yet stamped onto the player capsule, so the Oblivion
 /// HUD reads these opportunistically and falls back to full bars.
 ///
-/// FO3/FNV use their own AVIF keys from
-/// `crates/core/src/character/fallout.rs` (`Health 0x2C9`,
-/// `ActionPoints 0x2D0`).
+/// Bar keys are canonical AVIF **editor ids** (`"Health"`,
+/// `"ActionPoints"`, …) resolved per load through `PlayerVitals` —
+/// #4675: the old literal FormIDs here (0x2C9 / 0x2D0) were
+/// `crates/core/src/character/fallout.rs`'s unit-test fixture ids, not
+/// real AVIFs (FO4's 0x2C9 is *Experience*), so no real-content entity
+/// ever carried them and the bars always drew full.
 #[derive(Clone, Copy)]
 pub(crate) struct HudBar {
     /// Console/debug label (`hud.status`, `hud.values` usage).
     label: &'static str,
-    /// Global-space AVIF key the fraction derives from. `None` — pin or
+    /// Canonical AVIF editor id the fraction derives from, resolved
+    /// through `PlayerVitals::resolved` at frame time. `None` — pin or
     /// full bar; no actor-value source wired yet.
-    av: Option<u32>,
+    av: Option<&'static str>,
 }
 
 /// How a game's HUD content is assembled from its corpus.
@@ -95,26 +101,26 @@ pub(crate) struct HudGameProfile {
 static OBLIVION_BARS: &[HudBar] = &[
     HudBar {
         label: "health",
-        av: Some(0x3E8),
+        av: Some("Health"),
     },
     HudBar {
         label: "magicka",
-        av: Some(0x3E9),
+        av: Some("Magicka"),
     },
     HudBar {
         label: "fatigue",
-        av: Some(0x3EA),
+        av: Some("Fatigue"),
     },
 ];
 
 static FALLOUT_BARS: &[HudBar] = &[
     HudBar {
         label: "hp",
-        av: Some(0x2C9),
+        av: Some("Health"),
     },
     HudBar {
         label: "ap",
-        av: Some(0x2D0),
+        av: Some("ActionPoints"),
     },
     // No third bar: FO3's XP meter is a level-up popup (authored
     // `visible &false;`), not a persistent bar.
@@ -249,6 +255,11 @@ pub struct HudControl {
     pub bar_labels: [&'static str; 3],
     /// Pinned compass heading in degrees. `None` = follow the camera.
     pub heading: Option<f32>,
+    /// #4675 — the last auto-derived fraction per bar, written by the
+    /// driver every frame (before the change-signature skip) so
+    /// `hud.status` reports the LIVE value instead of a constant
+    /// "1.00 (auto)" no gate could read.
+    pub live: [Option<f32>; 3],
 }
 
 impl byroredux_core::ecs::Resource for HudControl {}
@@ -262,6 +273,7 @@ impl Default for HudControl {
             bar_count: 3,
             bar_labels: ["health", "magicka", "fatigue"],
             heading: None,
+            live: [None; 3],
         }
     }
 }
@@ -716,9 +728,21 @@ impl MenuXmlHud {
 /// `hud.values` drives everything deterministically for smokes either
 /// way.
 fn bar_fractions(world: &World, control: &HudControl, profile: &HudGameProfile) -> [f32; 3] {
+    // #4675 — editor ids resolve through the per-load `PlayerVitals`
+    // table (the same resolution `build_player_vitals` performs), never
+    // embedded literal FormIDs.
+    let vitals = world.try_resource::<PlayerVitals>();
     let mut out = [1.0f32; 3];
     for (slot, bar) in profile.bars.iter().enumerate() {
-        out[slot] = fraction(world, bar.av, control.bars[slot]);
+        let key = bar
+            .av
+            .and_then(|id| vitals.as_ref().and_then(|v| v.resolved(id)));
+        out[slot] = fraction(world, key, control.bars[slot]);
+    }
+    // hud.status's auto arm reports these; the driver computes them
+    // every frame, before the change-signature skip.
+    if let Some(mut control_mut) = world.try_resource_mut::<HudControl>() {
+        control_mut.live = out.map(Some);
     }
     out
 }
@@ -732,25 +756,26 @@ pub(crate) fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f
             Some(av) => av,
             None => return 1.0,
         };
-        let mut found = None;
-        if let Some(query) = world.query::<ActorValues>() {
-            for (_, values) in query.iter() {
-                if let Some(av) = values.get(av) {
-                    found = Some(*av);
-                    break;
-                }
-            }
-        }
-        match found {
-            Some(av) => {
-                let max = av.base + av.permanent_mod + av.temporary_mod;
-                if max > 0.0 {
-                    (av.current() / max).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                }
-            }
-            None => 1.0,
+        // #4675 — the PLAYER's values only. The old "first stamped actor"
+        // fallback scanned the whole `ActorValues` storage in insertion
+        // (swap-remove perturbed) order, so the bar could track any NPC
+        // that happened to carry the key — and it ran per bar per frame
+        // before the change-signature check. `PlayerEntity` is the
+        // contract the native vitals path already uses.
+        let Some(player) = world.try_resource::<PlayerEntity>().and_then(|r| r.0) else {
+            return 1.0;
+        };
+        let Some(values) = world.get::<ActorValues>(player) else {
+            return 1.0;
+        };
+        let Some(entry) = values.get(av) else {
+            return 1.0;
+        };
+        let max = entry.base + entry.permanent_mod + entry.temporary_mod;
+        if max > 0.0 {
+            (entry.current() / max).clamp(0.0, 1.0)
+        } else {
+            1.0
         }
     })
 }
