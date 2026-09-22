@@ -333,7 +333,8 @@ jobs:
             vulkan-validationlayers \
             libvulkan-dev \
             libasound2-dev \
-            xvfb
+            xvfb \
+            libxkbcommon-x11-0
 
       - name: Build debug binary
         run: cargo build -p byroredux
@@ -343,6 +344,10 @@ jobs:
           # Route validation layer to lavapipe (CPU Vulkan — no GPU needed).
           export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+          # #4596 — lavapipe enumerates as a CPU device; admit it so this
+          # lane actually reaches Vulkan (the hardware rejection is a
+          # production-budget policy, not a correctness one).
+          export BYRO_ALLOW_CPU_VULKAN_DEVICE=1
           # Only capture error-level messages; every [Vulkan] line at this
           # level is a real validation error from the debug messenger callback.
           export RUST_LOG=error
@@ -386,4 +391,5 @@ jobs:
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           BYROREDUX_BENCH_RUNNER: xvfb-run --auto-servernum
+          BYRO_ALLOW_CPU_VULKAN_DEVICE: 1
         run: scripts/check-bench-determinism.sh target/debug/byroredux 5

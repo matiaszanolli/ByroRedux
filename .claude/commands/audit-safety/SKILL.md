@@ -143,7 +143,7 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
 
 ### 5. Vulkan Spec Compliance (HIGH — flag what `cargo test` can't see)
 Paths: `crates/renderer/src/vulkan/`
-First step: CI job `vulkan-validation` (lavapipe, `.github/workflows/ci.yml`) fails on any `[Vulkan]` ERROR line; locally `BYRO_VALIDATION=1`
+First step: CI job `vulkan-validation` (lavapipe, `.github/workflows/ci.yml`) fails on any `[Vulkan]` ERROR line; locally `BYRO_VALIDATION=1`. #4596 — the lane reached Vulkan only after its fixes (libxkbcommon-x11-0 + BYRO_ALLOW_CPU_VULKAN_DEVICE admitting lavapipe); a lane-red-from-boot means it is inert again, and findings cannot claim lane coverage
 
 Render-pass / barrier / pipeline-state claims invisible to `cargo test` are "needs validation-layer or RenderDoc
 verification" (`/audit-concurrency` guardrail); report emitted validation errors verbatim.

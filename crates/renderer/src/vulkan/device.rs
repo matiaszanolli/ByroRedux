@@ -309,6 +309,13 @@ fn device_preference_key(
 /// playable memory or latency budget. Integrated GPUs remain supported: their
 /// DEVICE_LOCAL heap is system memory, but their work is hardware accelerated.
 fn is_hardware_render_device(device_type: vk::PhysicalDeviceType) -> bool {
+    // #4596 — opt-in CPU-device admission for the headless validation lane:
+    // lavapipe is a CPU device, so the lavapipe boot can never pick a device
+    // without this. Production keeps the rejection (a CPU implementation
+    // cannot run the RT-heavy frame within a playable budget).
+    if std::env::var_os("BYRO_ALLOW_CPU_VULKAN_DEVICE").is_some() {
+        return true;
+    }
     device_type != vk::PhysicalDeviceType::CPU
 }
 
