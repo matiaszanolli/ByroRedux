@@ -455,6 +455,54 @@ mod tests {
         );
     }
 
+    /// #4694 (GAME-D5-2026-09-21-01) — `target_form_id: Some(0x14)` is
+    /// the PlayerRef sentinel, and the shared resolver now resolves it to
+    /// the `PapyrusPlayerEntity` body: the follower must start closing on
+    /// the player instead of going terminal-idle (the pre-#4694 behaviour,
+    /// since no entity carries local 0x14).
+    #[test]
+    fn follow_system_follows_the_playerref_sentinel() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<FollowBehavior>();
+        world.register::<FollowState>();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<FormIdComponent>();
+
+        // The player body, somewhere the follower can walk toward.
+        let player = spawn_target(&mut world, 0x0000_0007, Vec3::new(600.0, 0.0, 0.0));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            actor,
+            FollowBehavior {
+                // The sentinel, NOT the player's real FormID — that is the
+                // entire point of the sentinel contract.
+                target_form_id: Some(0x14),
+                follow_distance: Some(50.0),
+            },
+        );
+
+        follow_system(&world, 0.1);
+
+        let sq = world
+            .query::<FollowState>()
+            .expect("FollowState registered");
+        assert_eq!(
+            sq.get(actor).unwrap().target_entity,
+            Some(player),
+            "0x14 must resolve to the PapyrusPlayerEntity body"
+        );
+        let tq = world.query::<Transform>().expect("Transform registered");
+        assert!(
+            tq.get(actor).unwrap().translation.x > 0.0,
+            "the follower must start closing on the player, not idle"
+        );
+    }
+
     #[test]
     fn follow_system_tracks_a_moving_target_live() {
         // The behavior that actually distinguishes Follow from Travel:

@@ -359,14 +359,11 @@ fn reference_position(
     world: &World,
     targets: &PackageTargetRegistry,
     reference_form_id: u32,
-    player: Option<EntityId>,
 ) -> Option<Vec3> {
     targets.position(reference_form_id).or_else(|| {
-        let entity = if reference_form_id == 0x14 {
-            player
-        } else {
-            resolve_entity_by_global_form_id(world, reference_form_id)
-        }?;
+        // #4694 — the shared resolver covers PlayerRef (0x14) now; no
+        // local special-case.
+        let entity = resolve_entity_by_global_form_id(world, reference_form_id)?;
         entity_position(world, entity)
     })
 }
@@ -385,12 +382,11 @@ fn input_destination(
     targets: &PackageTargetRegistry,
     world: &World,
     actor: EntityId,
-    player: Option<EntityId>,
 ) -> Option<Vec3> {
     match input.value {
         PackDataValue::Location(location) => match location.target {
             PackLocationTarget::NearReference(form_id) => {
-                reference_position(world, targets, form_id, player)
+                reference_position(world, targets, form_id)
             }
             // Type 2 is Near Package Start Location. Type 3 is Near Editor
             // Location; without a separate editor-location payload the live
@@ -408,7 +404,7 @@ fn input_destination(
         PackDataValue::Target(target) => match target.target {
             PackDataTargetKind::SpecificReference(form_id)
             | PackDataTargetKind::LinkedReference(form_id) => {
-                reference_position(world, targets, form_id, player)
+                reference_position(world, targets, form_id)
             }
             PackDataTargetKind::ReferenceAlias(alias_id) => {
                 alias_position(world, package, alias_id)
@@ -425,7 +421,6 @@ fn input_target_entity(
     package: &PackRecord,
     world: &World,
     actor: EntityId,
-    player: Option<EntityId>,
 ) -> Option<EntityId> {
     let PackDataValue::Target(target) = &input.value else {
         return None;
@@ -433,11 +428,8 @@ fn input_target_entity(
     match target.target {
         PackDataTargetKind::SpecificReference(form_id)
         | PackDataTargetKind::LinkedReference(form_id) => {
-            if form_id == 0x14 {
-                player
-            } else {
-                resolve_entity_by_global_form_id(world, form_id)
-            }
+            // #4694 — shared resolver covers PlayerRef (0x14).
+            resolve_entity_by_global_form_id(world, form_id)
         }
         PackDataTargetKind::ReferenceAlias(alias_id) => {
             let quest = QuestFormId(package.owner_quest_form_id?);
@@ -456,7 +448,6 @@ fn resolve_command(
     targets: &PackageTargetRegistry,
     world: &World,
     actor: EntityId,
-    player: Option<EntityId>,
 ) -> ScenePackageCommand {
     let procedure = template
         .procedures
@@ -482,7 +473,7 @@ fn resolve_command(
                 inputs.iter().find_map(|input| {
                     matches!(input.value, PackDataValue::Location(_))
                         .then(|| {
-                            input_destination(input, package, targets, world, actor, player).map(
+                            input_destination(input, package, targets, world, actor).map(
                                 |destination| {
                                     (
                                         destination,
@@ -498,7 +489,7 @@ fn resolve_command(
             .flatten();
         let destination = preferred_location.or_else(|| {
             inputs.iter().find_map(|input| {
-                input_destination(input, package, targets, world, actor, player).map(
+                input_destination(input, package, targets, world, actor).map(
                     |destination| {
                         (
                             destination,
@@ -524,7 +515,7 @@ fn resolve_command(
     ) {
         let target = inputs
             .iter()
-            .find_map(|input| input_target_entity(input, package, world, actor, player));
+            .find_map(|input| input_target_entity(input, package, world, actor));
         return ScenePackageCommand::TimedInteraction {
             procedure_type,
             remaining_seconds: INTERACTION_FALLBACK_SECONDS,
@@ -739,7 +730,6 @@ pub fn scene_package_system(world: &World, dt: f32) {
                                 &targets,
                                 world,
                                 actor,
-                                player_entity,
                             ),
                         };
                         output.push(ScenePackageEvent::Started(active.clone()));
@@ -793,7 +783,6 @@ pub fn scene_package_system(world: &World, dt: f32) {
                 &targets,
                 world,
                 action.actor,
-                player_entity,
             );
             output.push(ScenePackageEvent::Reevaluated(action.clone()));
         }
@@ -1059,7 +1048,6 @@ mod tests {
                     world
                 },
                 EntityId::default(),
-                None,
             ),
             ScenePackageCommand::AwaitExternal { .. }
         ));

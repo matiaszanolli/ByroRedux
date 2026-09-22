@@ -440,6 +440,22 @@ pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<E
     use byroredux_core::form_id::FormIdPool;
     // FormIdComponent before FormIdPool — matches the order established
     // elsewhere (save registry/driver, physics sync) for this pair (#313).
+    // #4694 (GAME-D5-2026-09-21-01) — PlayerRef (`0x14`) is Bethesda's
+    // "the player" sentinel, not a placed reference: no cell authors an
+    // `0x14` ACHR, and the player body's `FormIdComponent` resolves to
+    // `PLAYER_FORM_ID_PAIR` (local 1), so the scan below could never
+    // return the player. Every caller of this function needs PlayerRef to
+    // mean the player — the ambient movers' Follow/Escort/Travel/Guard
+    // targeting, `GetDistance`, `RunOn::Reference`, fragment object
+    // properties, quest stages — so the special case lives here (the same
+    // identity `package.rs` used to special-case locally at two sites).
+    // Bethesda's conventional PlayerRef sentinel (never a placed record).
+    const PLAYER_REF_SENTINEL: u32 = 0x14;
+    if form_id == PLAYER_REF_SENTINEL {
+        return world
+            .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+            .map(|player| player.0);
+    }
     let q = world.query::<FormIdComponent>()?;
     let pool = world.try_resource::<FormIdPool>()?;
     let found = q
