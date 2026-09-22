@@ -123,6 +123,11 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads_resource::<ActionState>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
+            // #4574 — collider_belongs_to_target reads the source form
+            // (reached through target_has_line_of_sight); the same
+            // helper's FormIdComponent and ActorColliderOwner are declared
+            // above.
+            .reads::<byroredux_core::ecs::components::PhysicsSourceForm>()
             .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
             .reads_resource::<crate::cell_loader::LoadedCellIndex>()
             .reads_resource::<crate::cell_loader::LoadedPluginSet>()
@@ -156,6 +161,11 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::ActivateEvent>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
             .reads::<byroredux_core::ecs::components::Locked>()
+            // #4574 — pickup_loot stamps PickedUp on the target and its
+            // subtree meshes; transfer_is_theft reads ownership.
+            .writes::<crate::inventory::PickedUp>()
+            .reads::<byroredux_core::ecs::components::Owned>()
+            .reads::<byroredux_core::ecs::components::FactionRanks>()
             .writes::<byroredux_core::ecs::components::Inventory>(),
     );
     // Combat follows the same producer-before-consumer event contract as
@@ -182,6 +192,11 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::ActorValues>()
             .reads::<byroredux_core::character::CharacterLevel>()
             .reads::<byroredux_core::ecs::components::Dead>()
+            // #4574 — the cooldown arm's own query_mut/query on MeleeState
+            // (#3709) and attack_damage's CreatureAttack read.
+            .reads::<crate::combat::MeleeState>()
+            .writes::<crate::combat::MeleeState>()
+            .reads::<byroredux_core::ecs::components::CreatureAttack>()
             .writes::<byroredux_scripting::HitEvent>(),
     );
     // MQ101's dragon-attack/keep-escape combat gate (stages 270+, ROADMAP.md
@@ -207,6 +222,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::character::CharacterLevel>()
             .reads::<byroredux_scripting::AiCombatState>()
             .writes::<byroredux_scripting::AiCombatState>()
+            // #4574 — the chase arm reads the authored stride (M42.11).
+            .reads::<crate::components::WalkSpeed>()
             .writes::<byroredux_scripting::HitEvent>(),
     );
     scheduler.add_exclusive_with_access(

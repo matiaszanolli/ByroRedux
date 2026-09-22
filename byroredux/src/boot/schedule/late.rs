@@ -197,6 +197,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::EquippedWeapon>()
             .writes_resource::<crate::combat::PendingDeathReconciliations>()
             .reads::<byroredux_core::ecs::components::Dead>()
+            // #4574 — reconcile_dead_actor reads the target before the
+            // ragdoll activation clears it.
+            .reads::<crate::components::AnimationTarget>()
             .writes::<byroredux_core::animation::AnimationPlayer>()
             .writes::<byroredux_core::animation::AnimationStack>(),
     );
