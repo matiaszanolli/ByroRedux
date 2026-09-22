@@ -192,6 +192,11 @@ pub fn parse_leveled_list_for_game(
         entries: Vec::new(),
     };
     let mut split_entry = None;
+    // #4638 — bit 7 of `LVLD` seen on this record (post-loop it is OR'd
+    // into `flags` as bit 0). Tracked separately rather than folded into
+    // the `LVLD` arm so an `LVLF` that arrives *after* the `LVLD` cannot
+    // overwrite the synthesized bit with its assignment.
+    let mut lvld_all_levels_bit = false;
     for sub in subs {
         // Even a malformed LVLO begins a new entry; its companions must
         // never overwrite the preceding valid entry.
@@ -200,7 +205,19 @@ pub fn parse_leveled_list_for_game(
         }
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"LVLD" if !sub.data.is_empty() => record.chance_none = sub.data[0],
+            // #4638 — xEdit's TES4 `wbLVLAfterLoad` (wbDefinitionsTES4.pas)
+            // treats bit 7 of the LVLD byte as the legacy "Calculate from
+            // all levels" flag: it masks the bit off the chance and ORs
+            // `0x01` into LVLF. Storing the raw 128 made `chance_none`
+            // read as >= 100, which `equip.rs`'s expansion treats as
+            // always-empty — 11 `Oblivion.esm` lists collapsed to nothing.
+            // Other masters never author LVLD above 100, so the mask is
+            // applied unconditionally.
+            b"LVLD" if !sub.data.is_empty() => {
+                let chance = sub.data[0];
+                record.chance_none = chance & 0x7F;
+                lvld_all_levels_bit |= chance & 0x80 != 0;
+            }
             b"LVLF" if !sub.data.is_empty() => record.flags = sub.data[0],
             b"LVLO" if game == GameKind::Fallout76 && sub.data.len() == 4 => {
                 split_entry = Some(record.entries.len());
@@ -231,13 +248,27 @@ pub fn parse_leveled_list_for_game(
                     record.chance_none = value.clamp(0.0, 100.0) as u8;
                 }
             }
-            // LVLO: level(u16) + pad(u16) + form_id(u32) + count(u16) + pad(u16)
-            b"LVLO" if sub.data.len() >= 12 => {
+            // LVLO: level(u16) + pad(u16) + form_id(u32) + count(u16) + pad(u16).
+            // #4638 — xEdit's shared `wbLeveledListEntry`
+            // (wbDefinitionsCommon.pas:9062-9076) makes `Count` optional
+            // (`SetOptionalFrom(3)`, default 1), so a TES4 row may be just
+            // 8 bytes (Level, pad, Reference) with no trailing Count:
+            // 94 such rows across 14 `Oblivion.esm` lists (FGC03Thief*
+            // gear, Arena combatant outfits, Dark Brotherhood rewards,
+            // Oblivion-gate containers) matched neither this arm nor the
+            // FO76 split arm and decoded to an empty list. Accept >= 8
+            // and default Count to 1 when the row carries no count field
+            // (< 10 bytes).
+            b"LVLO" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 let level = r.u16_or_default();
                 r.skip_or_eof(2); // pad u16 at offset 2..4
                 let entry_form = remap_fid(r.u32_or_default(), remap);
-                let count = r.u16_or_default();
+                let count = if sub.data.len() >= 10 {
+                    r.u16_or_default()
+                } else {
+                    1
+                };
                 record.entries.push(LeveledEntry {
                     level,
                     form_id: entry_form,
@@ -246,6 +277,9 @@ pub fn parse_leveled_list_for_game(
             }
             _ => {}
         }
+    }
+    if lvld_all_levels_bit {
+        record.flags |= 0x01;
     }
     record
 }
@@ -372,6 +406,91 @@ mod tests {
         assert_eq!(r.entries[1].level, 10);
         assert_eq!(r.entries[1].form_id, 0x200);
         assert_eq!(r.entries[1].count, 3);
+    }
+
+    /// #4638 (a) — Oblivion's legacy 8-byte LVLO row (Level, pad,
+    /// Reference — Count omitted, xEdit `wbLeveledListEntry` marks it
+    /// optional with default 1) must decode instead of being dropped.
+    /// Real shape: `Oblivion.esm` ships 94 such rows over 14 lists
+    /// (FGC03ThiefWeapons, Arena combatant outfits, Dark Brotherhood
+    /// rewards, …), every one of which decoded to `entries = []`.
+    #[test]
+    fn oblivion_8byte_lvlo_rows_decode_with_default_count() {
+        let mut row = Vec::new();
+        row.extend_from_slice(&1u16.to_le_bytes()); // level
+        row.extend_from_slice(&0u16.to_le_bytes()); // pad
+        row.extend_from_slice(&0x0001_2345u32.to_le_bytes()); // reference
+        assert_eq!(row.len(), 8);
+        let subs = vec![
+            sub(b"EDID", b"FGC03ThiefWeapons\0"),
+            sub(b"LVLO", &row),
+            sub(b"LVLO", &row),
+        ];
+        let r = parse_leveled_list_for_game(0x1234, &subs, &None, GameKind::Oblivion);
+        assert_eq!(
+            r.entries.len(),
+            2,
+            "8-byte LVLO rows must not be silently dropped"
+        );
+        assert_eq!(r.entries[0].level, 1);
+        assert_eq!(r.entries[0].form_id, 0x0001_2345);
+        assert_eq!(r.entries[0].count, 1, "omitted Count defaults to 1");
+    }
+
+    /// #4638 (a) sibling — a 10-byte row (Count present, trailing pad
+    /// omitted) still reads its authored count.
+    #[test]
+    fn lvlo_row_with_count_but_no_trailing_pad_reads_count() {
+        let mut row = Vec::new();
+        row.extend_from_slice(&5u16.to_le_bytes()); // level
+        row.extend_from_slice(&0u16.to_le_bytes()); // pad
+        row.extend_from_slice(&0x0000_0ABCu32.to_le_bytes()); // reference
+        row.extend_from_slice(&3u16.to_le_bytes()); // count, no trailing pad
+        assert_eq!(row.len(), 10);
+        let subs = vec![sub(b"LVLO", &row)];
+        let r = parse_leveled_list(0x5678, &subs, &None);
+        assert_eq!(r.entries.len(), 1);
+        assert_eq!(r.entries[0].count, 3);
+    }
+
+    /// #4638 (b) — bit 7 of LVLD is the legacy "Calculate from all
+    /// levels" flag (xEdit `wbLVLAfterLoad`), not chance-none. Real shape:
+    /// 11 `Oblivion.esm` lists author `LVLD = 128`; the raw byte made
+    /// `chance_none = 128 >= 100`, which the leveled-expansion treats as
+    /// always-empty.
+    #[test]
+    fn lvld_high_bit_is_flag_not_chance_none() {
+        let subs = vec![
+            sub(b"EDID", b"ArenaLeveledGoldGrandRecur\0"),
+            sub(b"LVLD", &[128u8]), // 0x80, no LVLF authored
+        ];
+        let r = parse_leveled_list(0xABCD, &subs, &None);
+        assert_eq!(r.chance_none, 0, "bit 7 must be masked off the chance");
+        assert_eq!(
+            r.flags & 0x01,
+            0x01,
+            "bit 7 must synthesize LVLF's calculate-from-all-levels bit"
+        );
+    }
+
+    /// #4638 (b) ordering — an LVLF that arrives AFTER the LVLD must not
+    /// clobber the synthesized flag with its plain assignment, and an
+    /// LVLD that arrives after the LVLF still ORs the bit in.
+    #[test]
+    fn lvld_flag_synthesis_survives_lvlf_ordering_both_ways() {
+        // LVLF first, LVLD second.
+        let subs = vec![sub(b"LVLF", &[0x02u8]), sub(b"LVLD", &[0x80 | 10u8])];
+        let r = parse_leveled_list(1, &subs, &None);
+        assert_eq!(r.chance_none, 10);
+        assert_eq!(r.flags, 0x03, "synthesized bit ORs onto authored LVLF");
+
+        // LVLD first, LVLF second — the pre-fix assignment shape.
+        let subs = vec![sub(b"LVLD", &[0x80u8]), sub(b"LVLF", &[0x02u8])];
+        let r = parse_leveled_list(2, &subs, &None);
+        assert_eq!(
+            r.flags, 0x03,
+            "a later LVLF must not overwrite the synthesized all-levels bit"
+        );
     }
 
     #[test]
