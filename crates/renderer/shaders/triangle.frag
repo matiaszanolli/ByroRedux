@@ -1851,11 +1851,20 @@ void main() {
         // (winding-derived), not the normal-mapped shading N, so a red
         // pixel means winding/authored normal inversion, not texture
         // detail.
+        //
+        // #4583 — on two-sided draws (cull off) every BACK face has its
+        // geometric normal pointing away from the camera by construction;
+        // those pixels are not leak candidates. Shadow rays offset with the
+        // DIRECTION-aware normal (offsetRayOriginForDirection flips the
+        // offset normal to the ray), so back faces offset correctly and
+        // must not read red. The view's red class is therefore gated on
+        // FRONT-facing fragments only.
         vec3 facingViewDir = normalize(cameraPos.xyz - fragWorldPos);
         float facing = dot(geometricNormal, facingViewDir);
-        vec3 facingColor = facing < 0.0
+        bool frontFacing = gl_FrontFacing;
+        vec3 facingColor = facing < 0.0 && frontFacing
             ? vec3(1.0, 0.04, 0.04)
-            : vec3(0.05, 0.25 + 0.55 * facing, 0.08);
+            : vec3(0.05, 0.25 + 0.55 * max(facing, 0.0), 0.08);
         outColor = vec4(facingColor, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
