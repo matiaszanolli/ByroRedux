@@ -318,6 +318,10 @@ impl BsaArchive {
 
         // -- File Name Table ----------------------------------------------------
         let mut files = HashMap::with_capacity(file_count);
+        // #4671 (PAR-D6-2026-09-21-02) — count duplicate keys instead of
+        // letting `HashMap::insert` silently make them last-wins; logged
+        // once per archive below (the #3637 shadow-count precedent).
+        let mut duplicate_keys = 0usize;
 
         for raw in &raw_files {
             // Read null-terminated file name
@@ -356,16 +360,43 @@ impl BsaArchive {
                 }
             }
 
-            let full_path = format!("{}\\{}", raw.folder_name, file_name);
+            let full_path = crate::ba2::normalize_path(&format!(
+                "{}\\{}",
+                raw.folder_name, file_name
+            ));
 
-            files.insert(
-                full_path,
-                FileEntry {
-                    offset: raw.offset as u64,
-                    size: raw.size,
-                    compression_toggle: raw.compression_toggle,
-                    unknown_size_flag: raw.unknown_size_flag,
-                },
+            // #4671 — normalize_path (lowercase + '/'→'\\') replaces the
+            // folder-name-only `to_lowercase`: a third-party BSA storing
+            // '/' inside a folder name used to produce keys no normalised
+            // query could reach, while BA2 keys were already normalised.
+            if files
+                .insert(
+                    full_path,
+                    FileEntry {
+                        offset: raw.offset as u64,
+                        size: raw.size,
+                        compression_toggle: raw.compression_toggle,
+                        unknown_size_flag: raw.unknown_size_flag,
+                    },
+                )
+                .is_some()
+            {
+                duplicate_keys += 1;
+            }
+        }
+
+        // #4671 — surface collisions once per archive. `HashMap::insert`
+        // is last-wins, so the survivor is deterministic, but an archive
+        // with duplicate names is unusual enough to name (the audit's
+        // dup-scan found zero on 441 installed archives across eight
+        // titles — this is hand-crafted-content hygiene).
+        if duplicate_keys > 0 {
+            log::warn!(
+                "BSA: {} duplicate file name(s) — last record wins. Distinct \
+                 files: {} of {} declared.",
+                duplicate_keys,
+                files.len(),
+                file_count,
             );
         }
 

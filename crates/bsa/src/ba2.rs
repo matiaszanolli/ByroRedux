@@ -341,8 +341,23 @@ impl Ba2Archive {
         }
 
         let mut map = HashMap::with_capacity(file_count);
+        // #4671 — count duplicate names instead of silently letting
+        // `HashMap::insert` make them last-wins; logged once per archive
+        // (the #3637 shadow-count precedent, mirrored on the BSA side).
+        let mut duplicate_names = 0usize;
         for (name, entry) in names.into_iter().zip(files) {
-            map.insert(name, entry);
+            if map.insert(name, entry).is_some() {
+                duplicate_names += 1;
+            }
+        }
+        if duplicate_names > 0 {
+            log::warn!(
+                "BA2: {} duplicate file name(s) — last record wins. Distinct \
+                 files: {} of {} declared.",
+                duplicate_names,
+                map.len(),
+                file_count,
+            );
         }
 
         // Take ownership of the file handle for reuse across extracts
@@ -1127,7 +1142,9 @@ fn pitch_or_linear_size_for(
 }
 
 /// Normalize a path for case-insensitive, slash-agnostic lookup.
-fn normalize_path(path: &str) -> String {
+/// `pub(crate)`: the BSA side reuses it for its assembled keys so both
+/// archive formats answer the same queries (#4671).
+pub(crate) fn normalize_path(path: &str) -> String {
     path.to_lowercase().replace('/', "\\")
 }
 
@@ -1142,6 +1159,59 @@ mod tests {
             "meshes\\interiors\\test.nif"
         );
         assert_eq!(normalize_path("MESHES\\foo.NIF"), "meshes\\foo.nif");
+    }
+
+    /// #4671 (PAR-D6-2026-09-21-02) — two records whose names normalise
+    /// to the same key must open successfully with the collision counted
+    /// (warn-logged) and last-wins, exactly like the pre-fix behaviour —
+    /// the fix makes the collision VISIBLE, not fatal. The dup-scan
+    /// census found zero duplicates on 441 installed archives across
+    /// eight titles, so this is hand-crafted-content hygiene.
+    #[test]
+    fn duplicate_ba2_names_open_last_wins_with_a_distinct_count() {
+        let names = ["Meshes/a.nif", "meshes/a.nif"];
+        let name_table_offset = 24u64 + 2 * 36;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"BTDX");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"GNRL");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&name_table_offset.to_le_bytes());
+        for i in 0..2u32 {
+            let mut rec = [0u8; 36];
+            rec[0..4].copy_from_slice(&i.to_le_bytes()); // distinct hashes
+            rec[8..12].copy_from_slice(&i.to_le_bytes());
+            rec[24..28].copy_from_slice(&0u32.to_le_bytes());
+            rec[28..32].copy_from_slice(&0u32.to_le_bytes());
+            rec[32..36].copy_from_slice(&0xBAADF00Du32.to_le_bytes());
+            bytes.extend_from_slice(&rec);
+        }
+        for name in names {
+            bytes.extend_from_slice(&[name.len() as u8, 0]);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "byroredux_dup_ba2_{}_{}.ba2",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::write(&path, &bytes).expect("write temp BA2");
+        let archive = Ba2Archive::open(&path).expect("duplicate names must still open");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            archive.file_count(),
+            1,
+            "two names normalising to one key collapse to one map entry"
+        );
+        assert!(
+            archive.contains("meshes\\a.nif"),
+            "the survivor must be reachable under the normalised key"
+        );
     }
 
     /// #4670 (PAR-D6-2026-09-21-01) — a truncated BA2 whose
