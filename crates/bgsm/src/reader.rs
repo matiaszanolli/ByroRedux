@@ -9,11 +9,25 @@ use crate::{Error, Result};
 pub(crate) struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
+    /// #4672 — set when a string decoded with UTF-8 replacement
+    /// (lossy, matching the reference Material-Editor's
+    /// replacement-fallback decoder). The parse entry logs once per
+    /// file instead of failing the whole material over one bad byte.
+    had_replacement: bool,
 }
 
 impl<'a> Reader<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
+        Self {
+            bytes,
+            pos: 0,
+            had_replacement: false,
+        }
+    }
+
+    /// #4672 — did any string need lossy replacement?
+    pub(crate) fn had_replacement(&self) -> bool {
+        self.had_replacement
     }
 
     #[cfg(test)]
@@ -91,12 +105,18 @@ impl<'a> Reader<'a> {
 
         // Drop the trailing NUL if present.
         let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-        let s =
-            String::from_utf8(slice[..end].to_vec()).map_err(|source| Error::InvalidString {
-                offset: start,
-                source,
-            })?;
-        Ok(s)
+        // #4672 — decode LOSSILY, matching the reference Material-Editor
+        // (.NET BinaryReader.ReadChars under a replacement-fallback UTF-8
+        // decoder) and this workspace's own BSA/BA2 name tables. The old
+        // strict `String::from_utf8` dropped an otherwise-valid material
+        // over one non-UTF-8 byte in any string field. `from_utf8_lossy`
+        // borrows for valid input, so the Owned arm is the exact
+        // "replacement happened" signal.
+        let cow = String::from_utf8_lossy(&slice[..end]);
+        if matches!(cow, std::borrow::Cow::Owned(_)) {
+            self.had_replacement = true;
+        }
+        Ok(cow.into_owned())
     }
 }
 
@@ -128,6 +148,31 @@ mod tests {
         bytes.push(0);
         let mut r = Reader::new(&bytes);
         assert_eq!(r.read_string().unwrap(), "");
+    }
+
+    /// #4672 — one non-UTF-8 byte must not fail the string read: the
+    /// decode is lossy (replacement char), the reader flags it, and the
+    /// rest of the field still parses. Byte-level framing (the length
+    /// prefix) is unaffected by the replacement, so `pos` advances by
+    /// the stored length either way.
+    #[test]
+    fn read_string_decodes_lossily_and_flags_replacement() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&6u32.to_le_bytes());
+        // "ab" + one invalid 0xCD byte + "ef" + NUL; length 6 counts the NUL.
+        bytes.extend_from_slice(&[b'a', b'b', 0xCD, b'e', b'f', 0x00]);
+        let mut r = Reader::new(&bytes);
+        let s = r.read_string().expect("a non-UTF-8 byte must not fail the read");
+        assert!(s.contains('\u{FFFD}'), "lossy replacement marker expected: {s:?}");
+        assert!(r.had_replacement());
+
+        // Clean string: no flag.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(b"abc\0");
+        let mut r = Reader::new(&bytes);
+        assert_eq!(r.read_string().unwrap(), "abc");
+        assert!(!r.had_replacement());
     }
 
     #[test]

@@ -149,14 +149,28 @@ pub fn parse(bytes: &[u8]) -> Result<MaterialFile> {
 
 /// Parse a file whose magic is known to be `"BGSM"` (0x4d534742).
 pub fn parse_bgsm(bytes: &[u8]) -> Result<BgsmFile> {
+    parse_bgsm_diag(bytes).0
+}
+
+/// Like [`parse_bgsm`], but also reports whether any string field needed
+/// lossy UTF-8 replacement (#4672). Diagnostic-only surface so this
+/// dependency-free crate needs no logger: the production caller logs.
+pub fn parse_bgsm_diag(bytes: &[u8]) -> (Result<BgsmFile>, bool) {
     let mut r = reader::Reader::new(bytes);
-    BgsmFile::parse(&mut r)
+    let file = BgsmFile::parse(&mut r);
+    (file, r.had_replacement())
 }
 
 /// Parse a file whose magic is known to be `"BGEM"` (0x4d454742).
 pub fn parse_bgem(bytes: &[u8]) -> Result<BgemFile> {
+    parse_bgem_diag(bytes).0
+}
+
+/// Like [`parse_bgem`]; see [`parse_bgsm_diag`] (#4672).
+pub fn parse_bgem_diag(bytes: &[u8]) -> (Result<BgemFile>, bool) {
     let mut r = reader::Reader::new(bytes);
-    BgemFile::parse(&mut r)
+    let file = BgemFile::parse(&mut r);
+    (file, r.had_replacement())
 }
 
 #[cfg(test)]

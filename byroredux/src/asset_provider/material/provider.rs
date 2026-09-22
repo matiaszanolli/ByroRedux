@@ -390,8 +390,21 @@ impl MaterialProvider {
                 // mod / DLC content that authors >16-deep chains.
                 // See audit AUDIT_INCREMENTAL_2026-05-22 ID-5.
                 let bytes = reader.read(&key)?;
-                let file = match byroredux_bgsm::parse_bgsm(&bytes) {
-                    Ok(f) => f,
+                // #4672 — surface lossy string replacement; the bgsm crate
+                // has no logger of its own.
+                let (parsed, replaced) = byroredux_bgsm::parse_bgsm_diag(&bytes);
+                let file = match parsed {
+                    Ok(f) => {
+                        if replaced {
+                            log::warn!(
+                                "BGSM '{}': one or more string fields contained \
+                                 non-UTF-8 bytes and decoded with replacement (lossy, \
+                                 matching the reference Material-Editor)",
+                                key
+                            );
+                        }
+                        f
+                    }
                     Err(parse_err) => {
                         // #1430 — half-eviction: keep the newer half resident.
                         half_evict(
@@ -589,8 +602,18 @@ impl MaterialProvider {
             }
             return None;
         };
-        match byroredux_bgsm::parse_bgem(&bytes) {
+        // #4672 — same lossy-replacement surface as the BGSM arm.
+        let (parsed, replaced) = byroredux_bgsm::parse_bgem_diag(&bytes);
+        match parsed {
             Ok(parsed) => {
+                if replaced {
+                    log::warn!(
+                        "BGEM '{}': one or more string fields contained non-UTF-8 \
+                         bytes and decoded with replacement (lossy, matching the \
+                         reference Material-Editor)",
+                        path
+                    );
+                }
                 let arc = Arc::new(parsed);
                 // #951 / SAFE-26 / #1430 — half-eviction on cap: remove the
                 // oldest N/2 entries by insertion order so the recent
