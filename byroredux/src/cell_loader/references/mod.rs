@@ -638,7 +638,8 @@ pub(super) fn load_references_budgeted(
             // job with an unlimited budget through `load_references`.
             // #2567 (OBL-D3-01) — `record_index.actor` covers `NPC_` **and**
             // `CREA`. This site used to read the `npcs` map alone, so every
-            // placed creature (Oblivion `ACRE`, and `ACHR`→`CREA` from FO3 on)
+            // placed creature (a placed `ACRE` — Oblivion/FO3/FNV — or an
+            // `ACHR`→`CREA`)
             // missed the actor pipeline entirely and fell through to the
             // static-mesh path below — which rendered the creature's MODL, i.e.
             // its bare skeleton, and never animated it.

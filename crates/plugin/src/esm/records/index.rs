@@ -520,8 +520,8 @@ impl EsmIndex {
     /// #2567 (OBL-D3-01) — `NPC_` and `CREA` parse into two disjoint maps of
     /// the same `NpcRecord` type, and every "is this REFR an actor?" test in
     /// the cell loader consulted **only** `npcs`. `creatures` had zero readers
-    /// anywhere under `byroredux/src/`, so a placed `ACRE` (Oblivion) or
-    /// `ACHR`→`CREA` (FO3+) fell through to the generic static-mesh path: it
+    /// anywhere under `byroredux/src/`, so a placed `ACRE` (Oblivion/FO3/FNV)
+    /// or `ACHR`→`CREA` fell through to the generic static-mesh path: it
     /// rendered its MODL — which for a creature is the *skeleton* — and never
     /// animated. Route both through this one accessor so the two maps cannot
     /// drift apart again at a call site.
