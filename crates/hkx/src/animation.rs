@@ -352,6 +352,15 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         || num_blocks == 0
         || num_blocks > 4096
         || max_frames_per_block < 2
+        || max_frames_per_block > 4096
+        // #4655 (PAR-D1-2026-09-21-02) — frames must fit in the blocks the
+        // file ACTUALLY carries: each block's frames cost real bytes on
+        // disk, so `num_frames <= num_blocks * (max_frames_per_block - 1)
+        // + 1` ties decoded output size to file size. The absolute
+        // MAX_TRANSFORM_SAMPLES cap stays as the final backstop; alone it
+        // admitted a 17 KB file claiming 4096 tracks x 3906 frames
+        // (610 MiB decoded, ~2 GB retained as keys).
+        || num_frames as u64 > num_blocks as u64 * (max_frames_per_block as u64 - 1) + 1
         || mask_size != transform_count * 4 + float_count
     {
         return Err(HkxError::InvalidData("unsupported spline clip dimensions"));
@@ -1423,6 +1432,44 @@ mod tests {
             "a transform_count * num_frames product past MAX_TRANSFORM_SAMPLES must be \
              rejected, not handed to Vec::with_capacity (#3011)",
         );
+        assert_eq!(
+            err,
+            HkxError::InvalidData("unsupported spline clip dimensions")
+        );
+    }
+
+    /// #4655 (PAR-D1-2026-09-21-02) — the sample cap is now RELATIVE to
+    /// the blocks the file carries, not only absolute. A 17 KB clip
+    /// claiming 4096 tracks x 3906 frames (under the old absolute cap at
+    /// 15,998,976 samples) decoded to 610 MiB transient and ~2 GB of
+    /// retained keys; with num_blocks small the relative check rejects
+    /// it because the frames do not fit the block data on disk.
+    #[test]
+    fn decode_spline_animation_rejects_frames_beyond_the_declared_blocks() {
+        use crate::packfile::fixtures::PackfileBuilder;
+
+        let mut data = vec![0u8; 0x60];
+        data[0x10..0x14].copy_from_slice(&5u32.to_le_bytes()); // spline-compressed
+        data[0x14..0x18].copy_from_slice(&1.0f32.to_le_bytes()); // duration
+        data[0x18..0x1c].copy_from_slice(&8u32.to_le_bytes()); // transform_count
+        data[0x38..0x3c].copy_from_slice(&3906u32.to_le_bytes()); // num_frames
+        data[0x3c..0x40].copy_from_slice(&2u32.to_le_bytes()); // num_blocks (tiny)
+        data[0x40..0x44].copy_from_slice(&16u32.to_le_bytes()); // max_frames_per_block
+        data[0x50..0x54].copy_from_slice(&(1.0f32 / 30.0).to_le_bytes()); // frame_duration
+
+        let mut builder = PackfileBuilder {
+            data,
+            ..Default::default()
+        };
+        let class = builder.class("hkaSplineCompressedAnimation");
+        builder.virtual_fixups.push((0, 0, class));
+        let bytes = builder.build();
+
+        // 8 tracks x 3906 frames = 31,248 samples: far below the absolute
+        // cap, so ONLY the relative check can reject it — 2 blocks x 15
+        // frames cannot carry 3906 frames.
+        let err = decode_spline_animation(&bytes)
+            .expect_err("frames beyond the declared block capacity must be rejected");
         assert_eq!(
             err,
             HkxError::InvalidData("unsupported spline clip dimensions")

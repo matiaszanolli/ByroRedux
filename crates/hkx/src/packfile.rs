@@ -24,7 +24,13 @@ pub(crate) struct Packfile<'a> {
     data_section: usize,
     local_fixups: Vec<(usize, usize)>,
     global_fixups: Vec<(usize, usize, usize)>,
-    objects: Vec<(usize, String)>,
+    /// `(source pointer, class-name start, class-name length)` — the
+    /// class names are NOT materialised per entry (#4648/#4649,
+    /// PAR-D1-2026-09-21-01): N virtual fixups pointing at one M-byte
+    /// shared string used to cost N·M owned bytes (quadratic in file
+    /// size — the audit measured 322 MB of VmHWM from a 256 KB file).
+    /// The name lives in `bytes` and is compared in place at lookup.
+    objects: Vec<(usize, usize, u32)>,
 }
 
 impl<'a> Packfile<'a> {
@@ -187,8 +193,8 @@ impl<'a> Packfile<'a> {
                 .start
                 .checked_add(class_offset as usize)
                 .ok_or(HkxError::InvalidData("class-name offset overflow"))?;
-            let name = read_cstr(bytes, name_start, "class name")?.to_owned();
-            objects.push((source as usize, name));
+            let name = read_cstr(bytes, name_start, "class name")?;
+            objects.push((source as usize, name_start, name.len() as u32));
             cursor += 12;
         }
 
@@ -211,7 +217,10 @@ impl<'a> Packfile<'a> {
     pub(crate) fn object(&self, class_name: &'static str) -> Result<usize> {
         self.objects
             .iter()
-            .find_map(|(offset, class)| (class == class_name).then_some(*offset))
+            .find_map(|(offset, start, len)| {
+                (self.bytes.get(*start..*start + *len as usize) == Some(class_name.as_bytes()))
+                    .then_some(*offset)
+            })
             .ok_or(HkxError::MissingClass(class_name))
     }
 
@@ -291,12 +300,22 @@ fn read_u32(bytes: &[u8], offset: usize, label: &'static str) -> Result<u32> {
     Ok(u32::from_le_bytes(raw.try_into().unwrap()))
 }
 
+/// #4648/#4649 — Havok class/bone/track names and annotation texts are
+/// short (a few dozen bytes); 256 is a generous ceiling. Without it the
+/// existing object-count caps bound the number of strings, not the
+/// bytes each owns, and one oversized string per pointer is the
+/// quadratic-memory shape the audit measured.
+pub(crate) const MAX_STRING_BYTES: usize = 256;
+
 fn read_cstr<'a>(bytes: &'a [u8], offset: usize, label: &'static str) -> Result<&'a str> {
     let rest = bytes.get(offset..).ok_or(HkxError::Truncated(label))?;
     let len = rest
         .iter()
         .position(|byte| *byte == 0)
         .ok_or(HkxError::Truncated(label))?;
+    if len > MAX_STRING_BYTES {
+        return Err(HkxError::InvalidData("string exceeds the 256-byte cap"));
+    }
     std::str::from_utf8(&rest[..len]).map_err(|_| HkxError::InvalidData("non-UTF-8 string"))
 }
 
