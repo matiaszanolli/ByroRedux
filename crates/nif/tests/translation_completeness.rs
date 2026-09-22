@@ -890,6 +890,14 @@ fn stratification_bucket_strips_shared_meshes_root() {
 /// `NiTexturingProperty` blocks; 36,890 FO4/FO76 BGSM/BGEM files, no dark
 /// slot in the format. Runtime is dominated by archive decompression of
 /// every mesh archive (minutes).
+///
+/// #4637 — the assertions are per-game, not global: the entire population
+/// of 8 comes from Oblivion alone, so a run on a machine whose only
+/// installed data is another game's saw `total_dark == 0` fail the old
+/// unconditional `== 8` pin — a false "population drift" pointing at a
+/// regression that never happened. The `== 8` pin now evaluates only when
+/// Oblivion's archives actually resolved, and every *resolved* non-Oblivion
+/// game is individually asserted to zero.
 #[test]
 #[ignore = "walks every mesh archive of every installed game; needs game data on disk"]
 fn dark_texture_role_population_matches_the_documented_census() {
@@ -900,7 +908,8 @@ fn dark_texture_role_population_matches_the_documented_census() {
     );
 
     let mut total_dark = 0usize;
-    let mut oblivion_dark = 0usize;
+    // `None` = Oblivion's archives didn't resolve (SKIP, not failure).
+    let mut oblivion_dark: Option<usize> = None;
     let mut probed = 0usize;
     for &game in &Game::ALL {
         let Some(archives) = open_all_mesh_archives(game) else {
@@ -952,10 +961,20 @@ fn dark_texture_role_population_matches_the_documented_census() {
             meshes,
             dark_set
         );
-        total_dark += dark_set;
         if game == Game::Oblivion {
-            oblivion_dark = dark_set;
+            oblivion_dark = Some(dark_set);
+        } else {
+            // Per-game zero pin: any resolved non-Oblivion game must stay
+            // at zero regardless of which other games resolved (#4637).
+            assert_eq!(
+                dark_set, 0,
+                "the dark role is documented zero on {}'s shipped corpus — \
+                 a hit contradicts the #4523 census; check the DARK HIT lines \
+                 above and MaterialTextureSet::dark's doc",
+                game.label(),
+            );
         }
+        total_dark += dark_set;
     }
 
     if probed == 0 {
@@ -963,20 +982,30 @@ fn dark_texture_role_population_matches_the_documented_census() {
         return; // Treat as skip rather than failure.
     }
 
-    // The census pin: Oblivion is the one shipped corpus where the role is
-    // live (8 dark-set meshes; the hits above name the files), and every
-    // other game must stay at zero.
+    // The census pin proper: Oblivion is the one shipped corpus where the
+    // role is live (8 dark-set meshes; the hits above name the files).
+    // Evaluated only when Oblivion resolved — an Oblivion-less machine
+    // reports a SKIP line, not a false drift failure (#4637).
+    match oblivion_dark {
+        Some(8) => {}
+        Some(n) => panic!(
+            "the dark role's Oblivion population drifted from the #4523 census \
+             (expected 8 meshes in 6 files, found {n}) — check the DARK HIT lines \
+             above and MaterialTextureSet::dark's doc before treating either \
+             direction as progress"
+        ),
+        None => eprintln!(
+            "  SKIP: Oblivion data absent — the == 8 population pin was not \
+             evaluated (#4637: partial data is a skip, not a drift)"
+        ),
+    }
+    // Everything that resolved agrees: only Oblivion contributes dark hits.
     assert_eq!(
-        total_dark, 8,
-        "the dark role's shipped population drifted from the #4523 census \
-         (Oblivion: 8 meshes in 6 files, all other games zero) — check the \
-         DARK HIT lines above and MaterialTextureSet::dark's doc before \
-         treating either direction as progress"
-    );
-    assert_eq!(
-        oblivion_dark, 8,
-        "all 8 dark-set meshes must come from Oblivion — a hit in any other \
-         game contradicts the role's documented population"
+        total_dark,
+        oblivion_dark.unwrap_or(0),
+        "every dark hit must come from Oblivion — a hit elsewhere fails the \
+         per-game zero pin above first, so a mismatch here means the tally \
+         and the per-game pins disagree (a harness bug, not a content drift)"
     );
 }
 
