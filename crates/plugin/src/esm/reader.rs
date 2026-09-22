@@ -382,8 +382,8 @@ pub struct RecordTypeTrace {
 /// MASTERS array (or to itself if the top byte equals the master
 /// count). At load time every FormID needs to be rewritten to point
 /// into the GLOBAL load order so references and map keys stay
-/// collision-free across plugins. See `FormIdPair` in
-/// `crates/plugin/src/legacy/mod.rs` for the dual-index form.
+/// collision-free across plugins. See `byroredux_core::form_id::FormIdPair`
+/// for the dual-index form.
 ///
 /// Single-plugin load (the default) uses `plugin_index = 0` and an
 /// empty `master_indices`, which makes the remap a no-op (a file's

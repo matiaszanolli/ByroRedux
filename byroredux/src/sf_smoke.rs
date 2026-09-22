@@ -314,8 +314,8 @@ fn print_cell_report(
     } else {
         println!("low resolve rate — Starfield's schema has diverged enough from FO4");
         println!("that the dispatch route mostly drops base forms. Milestone B will");
-        println!("need a `crates/plugin/src/legacy/starfield.rs` from-scratch parser,");
-        println!("not a delta on FO4.");
+        println!("need a from-scratch Starfield parser beside the live");
+        println!("`crates/plugin/src/esm/records/dispatch_*.rs` tier, not a delta on FO4.");
     }
 }
 
