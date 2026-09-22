@@ -1030,6 +1030,31 @@ mod tests {
         );
     }
 
+    /// #4577 — #3120's pin covered only triangle; composite.frag compiles
+    /// the SAME generated constants (RENDER_DEBUG_MODE_MAX and the raw-output
+    /// viz mask) through its own debug-guard, and shipped stale for two
+    /// consecutive constant bumps (DBG_VIZ_AO, modes 14/15) with the magenta
+    /// failure #3120 already described. Mirror the pin on composite's
+    /// binary: the largest OpUGreaterThan RHS must equal
+    /// RENDER_DEBUG_MODE_MAX.
+    #[test]
+    fn composite_frag_spv_debug_mode_guard_matches_render_debug_mode_max() {
+        use crate::shader_constants::RENDER_DEBUG_MODE_MAX;
+        let spv = include_bytes!("../../shaders/composite.frag.spv");
+        let max = max_u_greater_than_rhs_constant(spv)
+            .expect("reflect composite.frag.spv")
+            .expect("composite.frag.spv has no OpUGreaterThan comparison");
+        assert_eq!(
+            max, RENDER_DEBUG_MODE_MAX,
+            "composite.frag.spv's largest OpUGreaterThan RHS constant is {max}, but \
+             RENDER_DEBUG_MODE_MAX is {RENDER_DEBUG_MODE_MAX} — the shipped composite \
+             binary is stale against shader_constants_data.rs (both new debug views \
+             render magenta through the out-of-range guard); recompile it \
+             (glslangValidator -V composite.frag -o composite.frag.spv from \
+             crates/renderer/shaders). See #4577 / #3120."
+        );
+    }
+
     #[test]
     fn reflect_ssao_bindings() {
         // ssao.comp:
