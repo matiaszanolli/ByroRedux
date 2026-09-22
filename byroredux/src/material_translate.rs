@@ -2736,7 +2736,6 @@ mod canonical_completeness_harness {
     /// through the same way. `ior` and the flag union are pinned by
     /// dedicated siblings, because reaching their interesting arms requires
     /// a fixture this one deliberately is not.
-    #[test]
     /// #4548 (NIFAL-D7-2026-09-21-01 family / FO4 facegeom finding) — a
     /// material whose BGSM authors `model_space_normals = false` but whose
     /// normal slot names a `<...>_msn.dds` map is model-space: Bethesda's
@@ -2774,6 +2773,11 @@ mod canonical_completeness_harness {
         );
     }
 
+    /// (#4579 restored this test's `#[test]`: c0b740ce7's insert landed
+    /// between the attribute and this fn's signature, orphaning the
+    /// attribute onto the #4548 test below-turned-above and leaving this
+    /// body a plain fn that never ran for two audit cycles.)
+    #[test]
     fn translate_material_copies_every_canonical_field() {
         let source = kitchen_sink_source();
         let material = translate_material(&source, Some("TestMesh"), kitchen_sink_paths(), 0);
@@ -3089,6 +3093,28 @@ mod canonical_completeness_harness {
                 }) && (stmt.contains("assert") || stmt.contains(".expect("))
             })
         };
+
+        // #4579 -- the pin counts ASSERTIONS, and an assertion that never
+        // RUNS still counts: c0b740ce7 orphaned translate_material_copies_
+        // every_canonical_field's #[test] onto the #4548 test above it
+        // (which then carried two #[test] attributes and ran twice) while
+        // this guard stayed green over a test that had become a plain fn.
+        // Structural companion: no #[test] in this module may sit above a
+        // doc-comment chain that ends at ANOTHER attribute (the orphan shape).
+        let needle = "\n    #[test]";
+        let test_attrs: Vec<usize> = tests.match_indices(needle).map(|(i, _)| i).collect();
+        for at in &test_attrs {
+            let mut probe = &tests[at + needle.len()..];
+            while probe.starts_with("    ///") || probe.starts_with("    //") {
+                probe = &probe[probe.find(char::from(10)).map(|i| i + 1).unwrap_or(probe.len())..];
+            }
+            let t = probe.trim_start();
+            assert!(
+                t.starts_with("fn ") || t.starts_with("pub fn "),
+                "a #[test] in material_translate's test module is not bound to a fn -- an orphaned attribute shadowing the next test's, the #4579 shape"
+            );
+        }
+        assert!(test_attrs.len() >= 10);
 
         let unpinned: Vec<&String> = fields.iter().filter(|f| !pinned(f)).collect();
         assert!(
