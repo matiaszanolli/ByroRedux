@@ -14,27 +14,31 @@
 //! this crate's own tests. SIBLING note to `egt`'s doc — same shape,
 //! filed together.
 //!
-//! ## Format (FRTRI003 — header only)
+//! ## Format (FRTRI003 — header only, per the FaceGen SDK)
+//!
+//! The SDK names the ten header words, in order:
+//! `V, T, Q, LV, LS, X, ext, Md, Ms, K`. We keep those letters as the
+//! field names and assert only the meanings the vanilla data pins
+//! down — `V` matches headhuman.nif's vertex count, `T` its triangle
+//! count, and `Q` (quad faces) is 0 on faces. The remaining letters
+//! are stored verbatim; fabricating semantics for them was exactly
+//! the pre-#4668 bug (X was being read as "modifier vertices", Md as
+//! "uv coords", Ms as "quards", ext as "modifiers").
 //!
 //! ```text
-//! struct Header {                  // ≥ 64 bytes
+//! struct Header {                  // 64 bytes read; body deferred
 //!     magic: [u8; 8],              // "FRTRI003"
-//!     num_vertices:    u32,        //   matches base mesh
-//!     num_triangles:   u32,
-//!     unknown_a: [u32; 3],         //   zero on vanilla
-//!     num_quads:       u32,        //   typically 0 on faces (tri-only)
-//!     num_modifiers:   u32,        //   number of named morph categories
-//!     num_modifier_verts: u32,     //   verts driven by modifiers
-//!     num_uv_coords:   u32,
-//!     unknown_b:       u32,
-//!     // ... more fields, then the body (vertices, faces,
-//!     //     modifier blocks, …) — deferred to a future milestone
+//!     V: u32, T: u32, Q: u32,
+//!     LV: u32, LS: u32, X: u32,
+//!     ext: u32, Md: u32, Ms: u32, K: u32,
+//!     // 24 further bytes, then the body (vertices, faces,
+//!     // modifier blocks, …) — deferred to a future milestone
 //! }
 //! ```
 //!
-//! Header verified on vanilla FNV `headhuman.tri` (359 972 bytes,
-//! `num_vertices = 1211`, `num_triangles = 2294` — matching
-//! headhuman.nif's geometry exactly).
+//! Vanilla FNV `headhuman.tri` words (359 972 bytes):
+//! `1211, 2294, 0, 0, 0, 1211, 1, 38, 8, 238` — V/T match
+//! headhuman.nif's geometry exactly.
 
 use crate::{read_u32_le, FaceGenError};
 
@@ -44,19 +48,30 @@ const HEADER_BYTES: usize = 64;
 /// Parsed header of a `.tri` file. Stops at byte 64 — the body
 /// (per-vertex data, modifier blocks, named morph targets) will be
 /// extracted by a follow-up milestone when lip-sync / expression
-/// animation lands.
+/// animation lands. Fields carry the SDK's own letters (#4668); only
+/// V/T/Q have documented meanings, pinned by the vanilla words.
 #[derive(Debug, Clone)]
 pub struct TriHeader {
+    /// `V` — vertices in the base mesh (vanilla 1211).
     pub num_vertices: u32,
+    /// `T` — triangles (vanilla 2294).
     pub num_triangles: u32,
+    /// `Q` — quad faces; 0 on vanilla faces (tri-only).
     pub num_quads: u32,
-    pub num_modifiers: u32,
-    pub num_modifier_vertices: u32,
-    pub num_uv_coords: u32,
-    /// Trailing header fields kept opaque so future parser work
-    /// doesn't have to decode them retroactively. Indexed by their
-    /// little-endian u32 offset.
-    pub unknown_words: [u32; 9],
+    /// `LV` — SDK letter, meaning not pinned (vanilla 0).
+    pub lv: u32,
+    /// `LS` — SDK letter, meaning not pinned (vanilla 0).
+    pub ls: u32,
+    /// `X` — SDK letter, meaning not pinned (vanilla 1211).
+    pub x: u32,
+    /// `ext` — SDK letter, meaning not pinned (vanilla 1).
+    pub ext: u32,
+    /// `Md` — SDK letter, meaning not pinned (vanilla 38).
+    pub md: u32,
+    /// `Ms` — SDK letter, meaning not pinned (vanilla 8).
+    pub ms: u32,
+    /// `K` — SDK letter, meaning not pinned (vanilla 238).
+    pub k: u32,
 }
 
 impl TriHeader {
@@ -77,34 +92,27 @@ impl TriHeader {
             });
         }
 
-        let num_vertices = read_u32_le(bytes, 8)?;
-        let num_triangles = read_u32_le(bytes, 12)?;
-        // Bytes 16..28 are three opaque u32s (zero on vanilla).
-        let unk_a0 = read_u32_le(bytes, 16)?;
-        let unk_a1 = read_u32_le(bytes, 20)?;
-        let unk_a2 = read_u32_le(bytes, 24)?;
-        // 28..32 = num_modifier_vertices (vanilla headhuman.tri = 1211, same as num_vertices).
-        let num_modifier_vertices = read_u32_le(bytes, 28)?;
-        let num_modifiers = read_u32_le(bytes, 32)?;
-        let num_uv_coords = read_u32_le(bytes, 36)?;
-        let num_quads = read_u32_le(bytes, 40)?;
-        // Trailing words (44..64) are also opaque on vanilla.
-        let unk_b0 = read_u32_le(bytes, 44)?;
-        let unk_b1 = read_u32_le(bytes, 48)?;
-        let unk_b2 = read_u32_le(bytes, 52)?;
-        let unk_b3 = read_u32_le(bytes, 56)?;
-        let unk_b4 = read_u32_le(bytes, 60)?;
+        // The ten SDK words, in order: V T Q LV LS X ext Md Ms K (#4668).
+        let words: [u32; 10] = {
+            let mut out = [0u32; 10];
+            for (i, word) in out.iter_mut().enumerate() {
+                *word = read_u32_le(bytes, 8 + i * 4)?;
+            }
+            out
+        };
+        let [num_vertices, num_triangles, num_quads, lv, ls, x, ext, md, ms, k] = words;
 
         Ok(Self {
             num_vertices,
             num_triangles,
             num_quads,
-            num_modifiers,
-            num_modifier_vertices,
-            num_uv_coords,
-            unknown_words: [
-                unk_a0, unk_a1, unk_a2, unk_b0, unk_b1, unk_b2, unk_b3, unk_b4, 0,
-            ],
+            lv,
+            ls,
+            x,
+            ext,
+            md,
+            ms,
+            k,
         })
     }
 }
@@ -113,38 +121,45 @@ impl TriHeader {
 mod tests {
     use super::*;
 
-    fn synth_tri_header(num_vertices: u32, num_triangles: u32) -> Vec<u8> {
+    fn synth_tri_header(words: [u32; 10]) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_BYTES);
         out.extend_from_slice(b"FRTRI003");
-        out.extend_from_slice(&num_vertices.to_le_bytes());
-        out.extend_from_slice(&num_triangles.to_le_bytes());
-        out.extend_from_slice(&[0u8; 12]); // unknown_a triple
-        out.extend_from_slice(&num_vertices.to_le_bytes()); // modifier_verts
-        out.extend_from_slice(&1u32.to_le_bytes()); // num_modifiers
-        out.extend_from_slice(&38u32.to_le_bytes()); // num_uv_coords
-        out.extend_from_slice(&8u32.to_le_bytes()); // num_quads
-                                                    // Pad trailing 5 × u32 unknowns to 64 bytes.
-        out.extend_from_slice(&238u32.to_le_bytes());
+        for word in words {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        // The ten words end at byte 48; pad the remaining 16 header bytes.
         out.extend_from_slice(&[0u8; 16]);
         debug_assert_eq!(out.len(), HEADER_BYTES);
         out
     }
 
+    /// The vanilla `headhuman.tri` header words, verbatim from the audit.
+    const VANILLA_WORDS: [u32; 10] = [1211, 2294, 0, 0, 0, 1211, 1, 38, 8, 238];
+
+    /// #4668 — the SDK field order is V T Q LV LS X ext Md Ms K, and the
+    /// vanilla words must land in exactly those fields. The old parser
+    /// read the same bytes but named them num_modifier_vertices (X),
+    /// num_modifiers (ext), num_uv_coords (Md) and num_quads (Ms) —
+    /// fabricated semantics, with the real Q/LV/LS/K words discarded.
     #[test]
-    fn parses_synthetic_header() {
-        let bytes = synth_tri_header(1211, 2294);
+    fn vanilla_words_land_in_the_sdk_order() {
+        let bytes = synth_tri_header(VANILLA_WORDS);
         let hdr = TriHeader::parse(&bytes).expect("parse");
         assert_eq!(hdr.num_vertices, 1211);
         assert_eq!(hdr.num_triangles, 2294);
-        assert_eq!(hdr.num_modifier_vertices, 1211);
-        assert_eq!(hdr.num_modifiers, 1);
-        assert_eq!(hdr.num_uv_coords, 38);
-        assert_eq!(hdr.num_quads, 8);
+        assert_eq!(hdr.num_quads, 0);
+        assert_eq!(hdr.lv, 0);
+        assert_eq!(hdr.ls, 0);
+        assert_eq!(hdr.x, 1211);
+        assert_eq!(hdr.ext, 1);
+        assert_eq!(hdr.md, 38);
+        assert_eq!(hdr.ms, 8);
+        assert_eq!(hdr.k, 238);
     }
 
     #[test]
     fn rejects_bad_magic() {
-        let mut bytes = synth_tri_header(2, 2);
+        let mut bytes = synth_tri_header([2, 2, 0, 0, 0, 2, 1, 8, 0, 238]);
         bytes[0] = b'Z';
         let err = TriHeader::parse(&bytes).unwrap_err();
         assert!(matches!(err, FaceGenError::BadMagic { .. }));
