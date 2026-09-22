@@ -2386,9 +2386,12 @@ mod staging_release_capacity_tests {
     #[test]
     fn terrain_ring_releases_staging_at_the_requested_size() {
         let src = include_str!("scene_buffer/upload.rs");
-        let production = src
-            .split_once("\n#[cfg(test)]")
-            .unwrap_or(src);
+        // upload.rs has an early `#[cfg(test)]` import block (line ~31);
+        // cut at the first named test module instead.
+        let production = match src.split_once("\n#[cfg(test)]\nmod bone_world_promotion_tests") {
+            Some((prod, _)) => prod,
+            None => src,
+        };
         assert!(
             !production.contains(".map(|allocation| allocation.size())"),
             "the terrain ring must not release pooled staging at the \

@@ -747,6 +747,7 @@ mod tests {
         use crate::vulkan::bloom::{DownsampleParams, UpsampleParams};
         use crate::vulkan::caustic::CausticParams;
         use crate::vulkan::composite::CompositeParams;
+        use crate::vulkan::exposure_meter::MeterParams;
         use crate::vulkan::ssao::SsaoParams;
         use crate::vulkan::svgf::SvgfTemporalParams;
         use crate::vulkan::taa::TaaParams;
@@ -794,6 +795,15 @@ mod tests {
                 include_bytes!("../../shaders/bloom_upsample.comp.spv"),
                 "Params",
                 std::mem::size_of::<UpsampleParams>() as u32,
+            ),
+            // #4585 — the Stage-1 exposure meter's UBO joined the table:
+            // meter_params_are_two_vec4s pins only the Rust size, so a
+            // GLSL-side Params change or a stale .spv passed every test.
+            (
+                "exposure_meter.comp",
+                include_bytes!("../../shaders/exposure_meter.comp.spv"),
+                "Params",
+                std::mem::size_of::<MeterParams>() as u32,
             ),
         ];
         for (name, spv, block, expected) in cases {
