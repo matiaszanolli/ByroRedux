@@ -193,11 +193,16 @@ fn parse_cell_group_inner(
                             cell.deleted_refs.extend(deleted);
                         }
                     } else {
-                        reader.skip_group(&sub_group);
+                        // #4644 — seek to the parent-clamped sub_end, not
+                        // the child's own declared size: an overrunning
+                        // child GRUP landing in a skip arm must not move
+                        // the cursor past this walker's bound.
+                        reader.seek_to(sub_end);
                     }
                 }
                 _ => {
-                    reader.skip_group(&sub_group);
+                    // #4644 — same clamp as the arm above.
+                    reader.seek_to(sub_end);
                 }
             }
         } else {

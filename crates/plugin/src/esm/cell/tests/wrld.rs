@@ -941,3 +941,64 @@ fn world_children_group_cannot_overrun_its_top_level_parent() {
         .expect("A's own CELL must still be indexed");
     assert_eq!(own.form_id, cell_a);
 }
+
+/// #4644 — the skip arms of `parse_wrld_group` used to call the unclamped
+/// `skip_group`, so an overrunning child GRUP landing in the `_` (unexpected
+/// type) arm moved the cursor past the parent's own end. The clamp must
+/// land exactly on the parent end, keeping the top-level dispatcher in
+/// sync — and the skip arm must not swallow the WRLD record that follows
+/// within the parent.
+#[test]
+fn overrunning_child_grup_in_a_skip_arm_seeks_to_parent_end() {
+    // A WRLD record to index, then an unexpected-type child GRUP whose
+    // declared total_size claims far more than the parent has left.
+    let wrld = build_wrld_record(
+        0x0003_0405,
+        &[(b"EDID", b"SkipArmClampWorld".to_vec())],
+    );
+    // Child GRUP, group_type 99 (no arm), total_size deliberately
+    // overruns the enclosing group: header (24) + declared content.
+    let mut child = Vec::new();
+    child.extend_from_slice(b"GRUP");
+    child.extend_from_slice(&50_000u32.to_le_bytes()); // total_size — lies
+    child.extend_from_slice(&0xDEAD_u32.to_le_bytes()); // label
+    child.extend_from_slice(&99u32.to_le_bytes()); // group_type — unexpected
+    child.extend_from_slice(&[0u8; 8]);
+
+    let mut group = Vec::new();
+    let content_len = wrld.len() + child.len();
+    group.extend_from_slice(b"GRUP");
+    group.extend_from_slice(&((24 + content_len) as u32).to_le_bytes());
+    group.extend_from_slice(b"WRLD");
+    group.extend_from_slice(&0u32.to_le_bytes());
+    group.extend_from_slice(&[0u8; 8]);
+    group.extend_from_slice(&wrld);
+    group.extend_from_slice(&child);
+
+    let mut reader = EsmReader::new(&group);
+    let gh = reader.read_group_header().expect("WRLD group header");
+    let end = reader.group_content_end(&gh);
+    let mut exterior = HashMap::new();
+    let mut worldspaces = HashMap::new();
+    let mut climates = HashMap::new();
+    let mut persistent = HashMap::new();
+    super::super::wrld::parse_wrld_group(
+        &mut reader,
+        end,
+        &mut exterior,
+        &mut persistent,
+        &mut worldspaces,
+        &mut climates,
+    )
+    .expect("parse_wrld_group");
+
+    assert_eq!(
+        reader.position(),
+        end,
+        "the skip arm must clamp to the parent end, not the child's declared size"
+    );
+    assert!(
+        worldspaces.contains_key("skiparmclampworld"),
+        "the WRLD preceding the overrunning child must still be indexed"
+    );
+}

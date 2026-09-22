@@ -1005,8 +1005,27 @@ impl<'a> EsmReader<'a> {
     /// header includes the (20- or 24-byte) header that the caller has
     /// already read, so subtract the variant's header size to get the
     /// remaining content length.
+    ///
+    /// **Unclamped by construction** — it advances by the child's own
+    /// declared size with no reference to any parent bound. A walker
+    /// that already holds a parent-clamped end for the group (the
+    /// `sub_end` every `bounded_group_content_end` caller computes)
+    /// must seek there with [`Self::seek_to`] instead, so a crafted
+    /// child GRUP declaring more bytes than its parent has left cannot
+    /// move the cursor past the parent's boundary. #4644 — the recurse
+    /// arms were clamped by #3721/#4076; the skip arms are this issue's.
     pub fn skip_group(&mut self, header: &GroupHeader) {
         self.pos += self.group_content_len(header);
+    }
+
+    /// Advance to an absolute byte offset, saturating at the buffer end.
+    /// The clamp-aware sibling of [`Self::skip_group`] for walkers that
+    /// hold a parent-bounded `sub_end` (#4644). Callers pass a
+    /// monotonically forward offset (a `pos + content_len` clamped to a
+    /// parent end that the caller's own loop condition guarantees is
+    /// past `pos`), so this never seeks backward.
+    pub fn seek_to(&mut self, pos: usize) {
+        self.pos = pos.min(self.data.len());
     }
 
     /// Remaining content length for a group the caller has just read.
@@ -1074,7 +1093,11 @@ impl<'a> EsmReader<'a> {
                 depth.saturating_add(1),
                 MAX_GRUP_NESTING_DEPTH,
             );
-            self.skip_group(header);
+            // #4644 — clamp the skip to the parent's own bound, matching
+            // the `Some` branch's `.min(parent_end)`: refusing to descend
+            // into a child must not let its declared size move the cursor
+            // past the parent's boundary either.
+            self.seek_to((self.pos + self.group_content_len(header)).min(parent_end));
             None
         } else {
             Some(self.group_content_end(header).min(parent_end))
@@ -1928,6 +1951,54 @@ mod tests {
             Some(natural_end),
             "a group that fits inside its parent must not be shrunk by the clamp"
         );
+    }
+
+    /// #4644 — the depth-cap arm of `bounded_group_content_end` used to
+    /// call the unclamped `skip_group`, so an overrunning child GRUP that
+    /// hit the nesting ceiling moved the cursor past the parent's own end
+    /// — the same defect #3721 fixed for the recurse arm, living on in
+    /// the skip arm. The skip must land on `parent_end`, not on
+    /// `pos + declared content`.
+    #[test]
+    fn bounded_group_content_end_depth_cap_skip_is_parent_clamped() {
+        let mut reader = EsmReader::with_variant(&[0u8; 4096], EsmVariant::Tes5Plus);
+        reader.skip(100); // simulate having just read a nested group header at offset 100
+
+        // Declares 10 000 bytes of content from offset 100; the parent
+        // only extends to 200.
+        let overrunning = GroupHeader {
+            label: *b"CELL",
+            group_type: 0,
+            total_size: 10000,
+        };
+        let parent_end = 200;
+        assert_eq!(
+            reader.bounded_group_content_end(
+                &overrunning,
+                MAX_GRUP_NESTING_DEPTH,
+                parent_end,
+                "test",
+            ),
+            None,
+            "the depth-cap arm signals skip via None"
+        );
+        assert_eq!(
+            reader.position(),
+            parent_end,
+            "the depth-cap skip must land on the parent's end, not the child's declared size"
+        );
+    }
+
+    /// #4644 — `seek_to` saturates at the buffer end so a lying top-level
+    /// `total_size` cannot push `pos` past the data (the loops key off
+    /// `remaining()`, which saturates — but a past-end `pos` would make
+    /// any subsequent absolute arithmetic wrong).
+    #[test]
+    fn seek_to_saturates_at_the_buffer_end() {
+        let mut reader = EsmReader::with_variant(&[0u8; 64], EsmVariant::Tes5Plus);
+        reader.seek_to(1000);
+        assert_eq!(reader.position(), 64);
+        assert_eq!(reader.remaining(), 0);
     }
 
     #[test]

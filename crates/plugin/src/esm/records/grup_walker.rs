@@ -246,7 +246,12 @@ fn walk_info_records(
             // recursing further; the runtime consumer doesn't need
             // the deeper tiers today.
             let inner = reader.read_group_header()?;
-            reader.skip_group(&inner);
+            // #4644 — clamp the wholesale skip to this tier's own end:
+            // a crafted inner GRUP declaring more bytes than the Topic
+            // Children group has left must not move the cursor past the
+            // parent bound into the next DIAL's records.
+            let inner_end = reader.group_content_end(&inner).min(end);
+            reader.seek_to(inner_end);
             continue;
         }
         let header = reader.read_record_header()?;

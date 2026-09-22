@@ -54,11 +54,14 @@ pub(crate) fn parse_wrld_group(
                             all_persistent_cells.insert(key, cell);
                         }
                     } else {
-                        reader.skip_group(&sub_group);
+                        // #4644 — seek to the parent-clamped sub_end, not
+                        // the child's own declared size.
+                        reader.seek_to(sub_end);
                     }
                 }
                 _ => {
-                    reader.skip_group(&sub_group);
+                    // #4644 — same clamp as the arm above.
+                    reader.seek_to(sub_end);
                 }
             }
         } else {
@@ -344,11 +347,14 @@ fn parse_wrld_children_inner(
                             }
                         }
                     } else {
-                        reader.skip_group(&sub_group);
+                        // #4644 — seek to the parent-clamped sub_end, not
+                        // the child's own declared size.
+                        reader.seek_to(sub_end);
                     }
                 }
                 _ => {
-                    reader.skip_group(&sub_group);
+                    // #4644 — same clamp as the arm above.
+                    reader.seek_to(sub_end);
                 }
             }
         } else {
