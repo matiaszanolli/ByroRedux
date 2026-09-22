@@ -500,8 +500,11 @@ pub fn evaluate_function(
             // Absent → if this game *derives* the stat actor-generally (Carry
             // Weight / Melee Damage / Crit Chance / Unarmed Damage from
             // SPECIAL/skills), compute it from the per-game `CharacterRuleset`.
-            // Player-only stats (Health/AP) stay at the absent default for an
-            // arbitrary actor — NPCs bake them, the player isn't modelled yet.
+            // Player-only stats (Health/AP) are evaluated once at player
+            // stamping (#4674) and therefore arrive here as CARRIED values,
+            // taken by the fast path above; for any other actor they stay at
+            // the absent default — NPCs bake them, and the derived player
+            // answer must not leak onto an NPC that happens to lack the key.
             if let Some(rs) = world.try_resource::<CharacterRuleset>() {
                 // Scope from the first row; value is the sum of all rows for
                 // this stat (multi-row stats like TES Fatigue — see

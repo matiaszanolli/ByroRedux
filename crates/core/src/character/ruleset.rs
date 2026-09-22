@@ -7,7 +7,7 @@
 //! `docs/engine/charal.md`).
 
 use super::attribute::AttributeSet;
-use super::derived::DerivedStatFormula;
+use super::derived::{DerivedScope, DerivedStatFormula};
 use super::leveling::LevelingModel;
 use super::skill::SkillSet;
 use crate::ecs::components::ActorValues;
@@ -99,6 +99,24 @@ impl CharacterRuleset {
             .iter()
             .find(|(id, _)| *id == output_avif)
             .map(|(_, f)| f)
+    }
+
+    /// #4674 (CHAR-2026-09-21-D4-01) — the distinct output AVIFs of every
+    /// `PlayerOnly`-scoped derived row (Health, Action Points, Oblivion's
+    /// pools, …). The player stamper drops the NPC-baked carried pairs for
+    /// these keys — the NPC path answers them by construction the player
+    /// must not inherit — and re-evaluates them through
+    /// [`Self::derived_value`] so the player's own formulas finally apply.
+    pub fn player_only_output_avifs(&self) -> Vec<u32> {
+        let mut out: Vec<u32> = self
+            .derived
+            .iter()
+            .filter(|(_, f)| f.scope == DerivedScope::PlayerOnly)
+            .map(|(id, _)| *id)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// Compute derived stat `output_avif` for an actor — the **sum** of every

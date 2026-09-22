@@ -224,7 +224,21 @@ pub(crate) fn vitals_snapshot(
 /// never the placed reference (`0x14`) — mirroring `stamp_actor_values`
 /// (`npc_spawn.rs`) line for line: `derive_npc_actor_values`, then vitals
 /// keyed by the resolved Health AVIF only when Health actually landed.
+///
+/// #4674 (CHAR-2026-09-21-D4-01) — with one difference from the NPC path:
+/// the ruleset's `PlayerOnly` rows (FO3/FNV/FO4 Health + AP, Skyrim Light
+/// Armor, Oblivion's pools) are evaluated HERE, for the player, against
+/// the remaining seed — and the NPC-baked carried answers for those same
+/// keys are dropped first. The NPC path answers Health/AP by baked values
+/// or an NPC curve; the captures state the player's live values come from
+/// the player formulas (FO4: Health 85 / AP 70, not the carried 150/100
+/// the PRPS-then-DNAM push order was leaving). Stamping the evaluated
+/// values means every consumer — `GetActorValue`'s carried fast path,
+/// `vitals_snapshot`, combat damage, drowning — reads them without
+/// needing player identity.
 fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate {
+    use byroredux_core::character::{DerivedOutput, DerivedScope};
+
     let Some(player) = index.npcs.get(&player_npc_form_id(index.game)) else {
         return PlayerCharacterTemplate::default();
     };
@@ -232,14 +246,59 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
     if pairs.is_empty() {
         return PlayerCharacterTemplate::default();
     }
-    let health = index
-        .health_actor_value_key()
-        .filter(|health| pairs.iter().any(|(form_id, _)| form_id == health));
-    PlayerCharacterTemplate {
-        values: Some(byroredux_core::ecs::components::ActorValues::from_pairs(pairs)),
-        vitals: health.map(|health| byroredux_core::ecs::components::ActorVitals {
-            health,
-        }),
+    // The ruleset is optional (profiles that build none); without it the
+    // derivation stays the NPC answer, the pre-#4674 behaviour, rather
+    // than an invented empty seed.
+    match crate::npc_spawn::build_character_ruleset(index) {
+        Some(ruleset) => {
+            let player_only = ruleset.player_only_output_avifs();
+            // Drop the NPC path's answers for player-only stats, then
+            // evaluate the rows against the remaining SPECIAL/skills seed.
+            let seed: Vec<_> = pairs
+                .into_iter()
+                .filter(|(id, _)| !player_only.contains(id))
+                .collect();
+            let mut values = byroredux_core::ecs::components::ActorValues::from_pairs(seed);
+            let level = byroredux_plugin::esm::records::effective_actor_level(player).max(0) as u16;
+            for &key in &player_only {
+                // Same #2933 contract `GetActorValue` enforces: only
+                // Absolute rows are actor-value readings; a Multiplier
+                // row's eval is a ratio no consumer may read as a value.
+                let Some(formula) = ruleset.derived_formula(key) else {
+                    continue;
+                };
+                if formula.scope != DerivedScope::PlayerOnly
+                    || formula.kind != DerivedOutput::Absolute
+                {
+                    continue;
+                }
+                if let Some(value) = ruleset.derived_value(key, &values, level) {
+                    values.set_base(key, value);
+                }
+            }
+            let health = index.health_actor_value_key().filter(|health| {
+                values.get(*health).is_some()
+            });
+            PlayerCharacterTemplate {
+                values: Some(values),
+                vitals: health.map(|health| byroredux_core::ecs::components::ActorVitals {
+                    health,
+                }),
+            }
+        }
+        None => {
+            let health = index
+                .health_actor_value_key()
+                .filter(|health| pairs.iter().any(|(form_id, _)| form_id == health));
+            PlayerCharacterTemplate {
+                values: Some(byroredux_core::ecs::components::ActorValues::from_pairs(
+                    pairs,
+                )),
+                vitals: health.map(|health| byroredux_core::ecs::components::ActorVitals {
+                    health,
+                }),
+            }
+        }
     }
 }
 
@@ -2728,6 +2787,7 @@ mod tests {
             (0x105, "AVAgility"),
             (0x106, "AVLuck"),
             (0x2C9, "AVHealth"),
+            (0x2D1, "AVActionPoints"),
         ] {
             index.actor_values.insert(
                 fid,
@@ -2765,6 +2825,13 @@ mod tests {
              record's class derives"
         );
         assert_eq!(values.current(index.actor_value_form_id("Luck").unwrap()), 5.0);
+        // #4674 — AP is PlayerOnly and was never seeded pre-fix (read 0.0);
+        // the player formula 65 + 3·AGI(6) now applies at stamping.
+        assert_eq!(
+            values.current(index.actor_value_form_id("AVActionPoints").unwrap()),
+            83.0,
+            "FNV player AP = 65 + 3·AGI(6), evaluated from the PlayerOnly row"
+        );
         assert_eq!(template.vitals, Some(ActorVitals { health }));
 
         // Degradation: no Player NPC_ in the index → no seed, never an
@@ -2966,6 +3033,50 @@ mod tests {
             labels,
             vec!["HP", "AP"],
             "FO3/FNV vocabulary, and the Magicka/Fatigue AVIFs this game does not use drop out"
+        );
+    }
+
+    /// #4674 (CHAR-2026-09-21-D4-01) — the real-master leg. Reads the
+    /// actual Player `NPC_` 0x7 records: FO4's PRPS authors Health 40 /
+    /// ActionPoints 0 and DNAM pushes calc_health 150 / calc_ap 100 after
+    /// them, so the pre-fix stamp (NPC answer verbatim) left the player at
+    /// Health 150 / AP 100 — 1.76×/1.43× off the capture's player formulas
+    /// (85 / 70). FNV's ActionPoints was never seeded at all (read 0.0;
+    /// the capture gives 80 at AGI 5). Run with
+    /// `cargo test -p byroredux --bin byroredux
+    ///  real_master_player_seed -- --ignored`.
+    #[test]
+    #[ignore = "requires installed Fallout 4 and New Vegas masters"]
+    fn real_master_player_seed_evaluates_the_player_only_rows() {
+        let fo4 = "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/Fallout4.esm";
+        let index = byroredux_plugin::esm::parse_esm(&std::fs::read(fo4).unwrap()).unwrap();
+        let template = build_player_character_template(&index);
+        let values = template.values.expect("FO4 player seed");
+        let health = index.actor_value_form_id("Health").expect("Health AVIF");
+        let ap = index.actor_value_form_id("ActionPoints").expect("AP AVIF");
+        assert_eq!(
+            values.current(health),
+            85.0,
+            "FO4 player Health must come from the capture's player formula, \
+             not the NPC-baked 150 the PRPS/DNAM push order produced"
+        );
+        assert_eq!(
+            values.current(ap),
+            70.0,
+            "FO4 player AP must come from the capture's player formula, \
+             not the NPC-baked 100"
+        );
+
+        let fnv =
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/FalloutNV.esm";
+        let index = byroredux_plugin::esm::parse_esm(&std::fs::read(fnv).unwrap()).unwrap();
+        let template = build_player_character_template(&index);
+        let values = template.values.expect("FNV player seed");
+        let ap = index.actor_value_form_id("ActionPoints").expect("AP AVIF");
+        assert_eq!(
+            values.current(ap),
+            80.0,
+            "FNV player AP = 65 + 3·AGI(5) — pre-#4674 it was never seeded"
         );
     }
 }

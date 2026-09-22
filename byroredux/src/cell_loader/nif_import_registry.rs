@@ -493,7 +493,9 @@ impl NifImportRegistry {
         let e = std::sync::Arc::get_mut(&mut entry).unwrap();
         e.collision_authoring.classic = classic;
         e.collision_authoring.new_physics = new_physics;
-        self.insert(key.to_string(), Some(entry));
+        // Test seeding: no clip handles exist to release, so the eviction
+        // return is deliberately dropped.
+        let _ = self.insert(key.to_string(), Some(entry));
     }
 
     /// #4684 (PHYS-D6-2026-09-21-01) — the name states the scope the old
