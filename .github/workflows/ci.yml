@@ -194,8 +194,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install native build headers
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2-dev libvulkan-dev
+      # #4603 — the lane must be able to go green on its own, and a lock
+      # failure must be distinguishable from any other red. Three changes:
+      #   * --exclude byroredux-ui: its 8 SwfPlayer tests need a Vulkan
+      #     adapter ubuntu-latest doesn't have, and that constant red is
+      #     what blinded this lane for 18 days (the FormIdPool cycle and
+      #     the #4546 walk_anim cycle both landed behind it). The real fix
+      #     is an adapter probe on those tests (SAFE-D4-2026-09-21-01,
+      #     #4595); until then this lane scopes to the binaries whose
+      #     lock graph it exists to check.
+      #   * --no-fail-fast: every binary runs under the detector, so a
+      #     cycle in a late crate (save, scripting, …) is not masked by
+      #     an early unrelated failure.
+      #   * the log is grepped for "lock-order cycle" so a detector abort
+      #     is named as such in the job summary, not buried in test noise.
       - name: cargo test (lock-order detector enabled)
-        run: cargo test --workspace
+        run: |
+          set +e
+          cargo test --workspace --no-fail-fast --exclude byroredux-ui 2>&1 | tee /tmp/lockorder_test.log
+          status=$?
+          set -e
+          if grep -q "lock-order cycle" /tmp/lockorder_test.log; then
+            echo "::error::BYRO_LOCK_ORDER_CHECK aborted on a real lock-order cycle — see the panic in the log above (#4603)"
+            exit 1
+          fi
+          exit $status
 
   # ──────────────────────────────────────────────────────────────────────────
   # ECS cached-pointer aliasing under Stacked Borrows (SAFE-2026-08-03-01 / #2271)

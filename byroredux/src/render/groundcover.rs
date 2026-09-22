@@ -11,7 +11,11 @@
 //! texture) and the registry compacts, so a cached offset would silently point
 //! into another mesh's vertices and grow grass out of a rock.
 
-use std::collections::{HashMap, HashSet};
+// #4607 — this file is the per-frame render path: every hashed collection
+// here is FxHash end to end per the #2923 hot-path rule, and the
+// per-frame intermediates live in caller/`GroundCoverResidency`-owned
+// scratch (cleared, not reallocated) instead of fresh locals.
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use byroredux_core::ecs::components::groundcover::{GroundCoverDimmer, GroundCoverPalette};
 use byroredux_core::ecs::{MeshHandle, World};
@@ -76,10 +80,16 @@ impl ChunkKey {
 /// Keeping a chunk in the same slot while it remains in the ring therefore
 /// keeps its slab ownership stable; only eviction releases a slab.  The ring
 /// itself is host-side because terrain-cell streaming is host-side too.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct GroundCoverResidency {
     slots: Vec<Option<ChunkKey>>,
     entry_progress: Vec<f32>,
+    /// #4607 — reconcile's intermediates, cleared on entry each frame so
+    /// their allocations persist instead of rebuilding per exterior frame.
+    desired: FxHashMap<ChunkKey, ChunkCandidate>,
+    wanted: FxHashSet<ChunkKey>,
+    resident: FxHashSet<ChunkKey>,
+    pending: Vec<(ChunkKey, ChunkCandidate)>,
 }
 
 impl GroundCoverResidency {
@@ -113,11 +123,17 @@ impl GroundCoverResidency {
         const PLACEMENTS_PER_FRAME: usize = 24;
 
         self.ensure_slot_count();
-        let desired: HashMap<ChunkKey, ChunkCandidate> = candidates
-            .iter()
-            .map(|candidate| (ChunkKey::from_base(candidate.base_xz), *candidate))
-            .collect();
-        let wanted: HashSet<ChunkKey> = desired.keys().copied().collect();
+        // #4607 — scratch fields, cleared (not reallocated) each frame.
+        let desired = &mut self.desired;
+        let wanted = &mut self.wanted;
+        desired.clear();
+        desired.extend(
+            candidates
+                .iter()
+                .map(|candidate| (ChunkKey::from_base(candidate.base_xz), *candidate)),
+        );
+        wanted.clear();
+        wanted.extend(desired.keys().copied());
 
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.is_some_and(|key| !wanted.contains(&key)) {
@@ -136,19 +152,24 @@ impl GroundCoverResidency {
             }
         }
 
-        let resident: HashSet<ChunkKey> = self.slots.iter().flatten().copied().collect();
-        let mut pending: Vec<(ChunkKey, ChunkCandidate)> = desired
-            .iter()
-            .filter(|(key, _)| !resident.contains(key))
-            .map(|(key, candidate)| (*key, *candidate))
-            .collect();
+        let resident = &mut self.resident;
+        resident.clear();
+        resident.extend(self.slots.iter().flatten().copied());
+        let pending = &mut self.pending;
+        pending.clear();
+        pending.extend(
+            desired
+                .iter()
+                .filter(|(key, _)| !resident.contains(key))
+                .map(|(key, candidate)| (*key, *candidate)),
+        );
         pending.sort_by(|a, b| {
             a.1.horizontal
                 .total_cmp(&b.1.horizontal)
                 .then(a.1.order.cmp(&b.1.order))
         });
 
-        let mut pending = pending.into_iter();
+        let mut pending = pending.iter().copied();
         let mut placed = 0usize;
         for (slot_index, slot) in self.slots.iter_mut().enumerate() {
             if placed == PLACEMENTS_PER_FRAME {
@@ -208,6 +229,27 @@ fn keep_nearest_chunks(candidates: &mut Vec<ChunkCandidate>, cap: usize) -> u32 
     dropped as u32
 }
 
+/// #4607 — the per-frame collection intermediates, caller-owned and
+/// cleared on entry so their allocations persist across exterior frames
+/// (the same pattern the output Vecs already follow).
+pub(crate) struct GroundCoverCollectScratch {
+    pub(crate) resident_cells: Vec<(EntityCell, [f32; 2])>,
+    pub(crate) candidates: Vec<ChunkCandidate>,
+    pub(crate) emitted: FxHashMap<usize, u32>,
+    pub(crate) disturber_found: Vec<(f32, GpuGroundCoverDisturber)>,
+}
+
+impl Default for GroundCoverCollectScratch {
+    fn default() -> Self {
+        Self {
+            resident_cells: Vec::new(),
+            candidates: Vec::new(),
+            emitted: FxHashMap::default(),
+            disturber_found: Vec::new(),
+        }
+    }
+}
+
 /// Collect this frame's ground-cover scatter input.
 ///
 /// `cells` and `chunks` are caller-owned scratch, cleared on entry so their
@@ -225,11 +267,16 @@ pub(crate) fn collect_groundcover_frame(
     _camera_forward: Vec3,
     delta_seconds: f32,
     residency: &mut GroundCoverResidency,
+    scratch: &mut GroundCoverCollectScratch,
     cells: &mut Vec<GpuGroundCoverCell>,
     chunks: &mut Vec<GpuGroundCoverChunk>,
 ) -> u32 {
     cells.clear();
     chunks.clear();
+    let resident = &mut scratch.resident_cells;
+    let candidates = &mut scratch.candidates;
+    resident.clear();
+    candidates.clear();
 
     let (Some(origin_q), Some(cover_q), Some(mesh_q)) = (
         world.query::<TerrainCellOrigin>(),
@@ -244,7 +291,6 @@ pub(crate) fn collect_groundcover_frame(
     // re-key every chunk whenever the resident set changed — which is
     // invisible in a still frame and shows up as the whole field reshuffling
     // when a cell streams in.
-    let mut resident: Vec<(EntityCell, [f32; 2])> = Vec::new();
     for (entity, origin) in origin_q.iter() {
         let (Some(cover), Some(mesh)) = (cover_q.get(entity), mesh_q.get(entity)) else {
             continue;
@@ -265,7 +311,6 @@ pub(crate) fn collect_groundcover_frame(
     resident.sort_by(|a, b| a.1[0].total_cmp(&b.1[0]).then(a.1[1].total_cmp(&b.1[1])));
 
     let max_dist = GROUNDCOVER_DRAW_DISTANCE + CHUNK_BOUND_RADIUS;
-    let mut candidates: Vec<ChunkCandidate> = Vec::new();
     for (cell_ordinal, (cell, _)) in resident.iter().enumerate() {
         for cz in 0..GROUNDCOVER_CHUNKS_PER_CELL_SIDE {
             for cx in 0..GROUNDCOVER_CHUNKS_PER_CELL_SIDE {
@@ -308,9 +353,12 @@ pub(crate) fn collect_groundcover_frame(
     // A cell contributes nothing if none of its chunks survive, so the cell
     // record is only emitted once one does — otherwise a 49-cell ring would
     // fill the 128-cell cap with cells whose chunks are all a kilometre behind
-    // the camera. Survivors arrive in walk order, so one cell's chunks are
-    // contiguous and only the last emitted cell can match.
-    let mut emitted: HashMap<usize, u32> = HashMap::new();
+    // the camera. #4607 — survivors arrive in SLOT order (reconcile walks
+    // the residency ring, not the candidates), so one cell's chunks are NOT
+    // contiguous and any earlier emitted cell can match: a real map, not the
+    // last-cell fast path the pre-ring comment described.
+    let emitted = &mut scratch.emitted;
+    emitted.clear();
     // Preserve the residency slot as the GPU record index.  Compacting this
     // list would make a hole at (say) slot 3 move slot 4's chunk into slab 3,
     // defeating the ring's no-move ownership guarantee.  Inactive records
@@ -401,6 +449,7 @@ pub(crate) fn collect_groundcover_frame(
 pub(crate) fn collect_groundcover_disturbers(
     world: &World,
     camera_pos: Vec3,
+    scratch: &mut GroundCoverCollectScratch,
     out: &mut Vec<GpuGroundCoverDisturber>,
 ) {
     use byroredux_core::ecs::components::{ActorValues, GlobalTransform};
@@ -415,7 +464,8 @@ pub(crate) fn collect_groundcover_disturbers(
     // Anything past this cannot reach a texel of the field, so it would cost a
     // per-texel loop iteration to contribute exactly zero.
     let reach = GROUNDCOVER_INTERACTION_UNITS * 0.5 + MAX_DISTURBER_RADIUS;
-    let mut found: Vec<(f32, GpuGroundCoverDisturber)> = Vec::new();
+    let found = &mut scratch.disturber_found;
+    found.clear();
     for (entity, _) in actor_q.iter() {
         let Some(xform) = xform_q.get(entity) else {
             continue;
@@ -450,9 +500,9 @@ pub(crate) fn collect_groundcover_disturbers(
     found.sort_by(|a, b| a.0.total_cmp(&b.0));
     out.extend(
         found
-            .into_iter()
+            .iter()
             .take(GROUNDCOVER_INTERACTION_MAX_DISTURBERS as usize)
-            .map(|(_, d)| d),
+            .map(|(_, d)| *d),
     );
 }
 
@@ -1073,7 +1123,12 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        collect_groundcover_disturbers(&world, Vec3::ZERO, &mut out);
+        collect_groundcover_disturbers(
+            &world,
+            Vec3::ZERO,
+            &mut GroundCoverCollectScratch::default(),
+            &mut out,
+        );
         assert_eq!(out.len(), 3, "the prop must not disturb anything");
         assert_eq!(out[0].world_xz[0], 100.0);
         assert_eq!(out[1].world_xz[0], 400.0);
@@ -1113,7 +1168,12 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        collect_groundcover_disturbers(&world, Vec3::ZERO, &mut out);
+        collect_groundcover_disturbers(
+            &world,
+            Vec3::ZERO,
+            &mut GroundCoverCollectScratch::default(),
+            &mut out,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].world_xz, [64.0, 0.0]);
     }

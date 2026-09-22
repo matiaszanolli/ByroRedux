@@ -55,9 +55,25 @@ impl VulkanContext {
         // remedy (b) from `sync.rs` and is N-agnostic, so the premise holds
         // however the sync tier is later raised.
         //
-        // Identical behaviour at today's `N == 2` (both slots, same order).
-        // Cost stays zero in practice — the GPU is rarely more than 1 frame
-        // behind the CPU, so the other fences are almost always signaled.
+        // Identical safety at today's `N == 2` (both slots, same order).
+        // #4606 — the cost is NOT zero, and the old claim here was
+        // backwards: on a GPU-bound frame the "other" fence belongs to
+        // frame N-1, the submission the GPU is STILL executing, so this
+        // wait drains the queue before the CPU records anything. The
+        // frame period becomes max(T_pre, GPU) + T_post instead of
+        // max(T_pre + T_post, GPU); the engine keeps one frame in flight
+        // at this boundary, not two. Bench-of-record medians
+        // (`BENCH_stepped-camera_4c9a5b36`): fence_ms / wall_ms =
+        // 10.59/13.08 (Prospector TAA), 7.53/10.74 (Whiterun TAA),
+        // 16.12/37.64 (MedTek TAA) — the wait dominates. Narrowing to
+        // `in_flight[frame]` alone is the fix, but ONLY after every rider
+        // on the all-slots wait is migrated per-FIF or defer-destroyed
+        // (the nine-entry #870/#3643/#4601 list; the argument is pinned
+        // by `the_all_slots_wait_argument_is_pinned` in `sync.rs`) and
+        // the SVGF previous-slot G-buffer read (#282) carries an
+        // in-command-buffer barrier — then validated with
+        // `BYRO_VALIDATION=1` on both upscaler modes per the
+        // speculative-Vulkan rule.
         let fence_t0 = Instant::now();
         // SAFETY: every entry of `in_flight` is a live fence — the vec is built with exactly `MAX_FRAMES_IN_FLIGHT` `create_fence` calls and `recreate_in_flight_for_frame` replaces rather than nulls (only `images_in_flight` is ever `Fence::null()`). All were signal-targets of prior `queue_submit`s or created pre-signaled, so the wait cannot deadlock. This frame's `cmd` is not re-recorded until this wait returns, so the GPU is done with the prior recording.
         unsafe {

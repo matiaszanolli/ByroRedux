@@ -372,6 +372,7 @@ impl App {
                 &frame,
                 GroundCoverScratch {
                     residency: &mut self.groundcover_residency,
+                    collect: &mut self.groundcover_collect_scratch,
                     cells: &mut self.groundcover_cells,
                     chunks: &mut self.groundcover_chunks,
                     species: &mut self.groundcover_species,
@@ -706,6 +707,7 @@ impl App {
 /// subject, not this one's.
 struct GroundCoverScratch<'a> {
     residency: &'a mut crate::render::groundcover::GroundCoverResidency,
+    collect: &'a mut crate::render::groundcover::GroundCoverCollectScratch,
     cells: &'a mut Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverCell>,
     chunks: &'a mut Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverChunk>,
     species: &'a mut Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverSpecies>,
@@ -739,6 +741,7 @@ fn collect_and_prepare_groundcover(
             byroredux_core::math::Vec3::from_array(frame.cam_forward),
             groundcover_dt,
             gc.residency,
+            gc.collect,
             gc.cells,
             gc.chunks,
         );
@@ -779,6 +782,7 @@ fn collect_and_prepare_groundcover(
         crate::render::groundcover::collect_groundcover_disturbers(
             world,
             byroredux_core::math::Vec3::from_array(frame.camera_pos),
+            gc.collect,
             gc.disturbers,
         );
         let frame_dt = world.try_resource::<DeltaTime>().map_or(0.0, |dt| dt.0);

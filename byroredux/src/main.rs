@@ -535,6 +535,7 @@ struct App {
     /// the app, not rebuilt in the render collector, so a chunk retains its
     /// blade-arena slot until it genuinely leaves the residency ring.
     groundcover_residency: crate::render::groundcover::GroundCoverResidency,
+    groundcover_collect_scratch: crate::render::groundcover::GroundCoverCollectScratch,
     /// One-shot warning latch for an actual ground-cover capacity fault. Ring
     /// fill-in is normal and is never logged as truncation.
     groundcover_truncation_logged: bool,
@@ -900,6 +901,7 @@ impl App {
             groundcover_cells: Vec::new(),
             groundcover_chunks: Vec::new(),
             groundcover_residency: Default::default(),
+            groundcover_collect_scratch: Default::default(),
             groundcover_truncation_logged: false,
             groundcover_detail_atlas: None,
             groundcover_species: Vec::new(),
