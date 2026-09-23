@@ -95,12 +95,20 @@ impl AfflictionTable {
     /// penalty). Band order is intentionally ignored.
     #[inline]
     pub fn band_for(&self, pool_value: f32) -> Option<usize> {
-        self.bands
+        // #4456 — on a tie (duplicate thresholds — malformed authored
+        // data) the FIRST band with the maximal `min_pool` wins, so
+        // classification agrees with `band_by_key`, which
+        // `reevaluate_affliction` uses to apply and reverse the chosen
+        // band's penalties. The old `max_by` picked the LAST maximal band,
+        // letting penalties come from a different band than the
+        // classification selected.
+        let reached_max = self
+            .bands
             .iter()
-            .enumerate()
-            .filter(|(_, b)| pool_value >= b.min_pool)
-            .max_by(|(_, a), (_, b)| a.min_pool.total_cmp(&b.min_pool))
-            .map(|(index, _)| index)
+            .filter(|b| pool_value >= b.min_pool)
+            .map(|b| b.min_pool)
+            .reduce(f32::max)?;
+        self.bands.iter().position(|b| b.min_pool == reached_max)
     }
 
     /// Look up a band by its `min_pool` — the order-stable identity
@@ -310,6 +318,50 @@ mod tests {
 
         assert_eq!(table.band_for(250.0), Some(1));
         assert_eq!(table.band_for(650.0), Some(0));
+    }
+
+    /// Regression for #4456 (D4-02) — duplicate `min_pool` thresholds are
+    /// malformed authored data, but the mechanism must still classify and
+    /// penalize via the SAME band: `band_for` (classification) and
+    /// `band_by_key` (penalty apply/reverse in `reevaluate_affliction`)
+    /// both resolve ties to the first band in table order. The old
+    /// `max_by` picked the LAST maximal band, so the applied penalties
+    /// could come from a different band than the classification selected.
+    #[test]
+    fn band_for_agrees_with_band_by_key_on_duplicate_thresholds() {
+        let mut table = stand_in_radiation_table();
+        // Duplicate the 600-rads threshold with a different penalty set.
+        table.bands.push(AfflictionBand {
+            min_pool: 600.0,
+            penalties: vec![AvPenalty {
+                avif_form_id: AGI,
+                delta: -4.0,
+            }],
+        });
+
+        let classified = table.band_for(650.0).expect("a band is reached");
+        assert_eq!(classified, 1, "first band with the maximal min_pool wins");
+        let applied = table.band_by_key(table.bands[classified].min_pool);
+        assert_eq!(
+            applied.map(|band| &band.penalties),
+            Some(&table.bands[1].penalties),
+            "classification and penalty application select the same band"
+        );
+
+        // The stateful path nets to zero through the same agreement: the
+        // duplicate-threshold band applies first-listed penalties and
+        // reverses exactly those.
+        let mut status = AfflictionStatus::default();
+        let mut avs = ActorValues::new();
+        avs.apply_damage(RADS, 650.0); // into the duplicated 600 band
+        reevaluate_affliction(&mut status, &mut avs, &table);
+        assert_eq!(avs.current(STR), -1.0, "band 1's STR penalty applied");
+        assert_eq!(avs.current(AGI), -1.0, "band 1's AGI penalty applied");
+        avs.restore(RADS, 650.0); // back to healthy
+        reevaluate_affliction(&mut status, &mut avs, &table);
+        assert_eq!(avs.current(STR), 0.0, "penalties net to zero");
+        assert_eq!(avs.current(AGI), 0.0, "penalties net to zero");
+        assert_eq!(status.band_of(RADS), None, "healthy again");
     }
 
     /// Regression for #4103 (D4-01) — the *stateful* half `band_for_ignores_
