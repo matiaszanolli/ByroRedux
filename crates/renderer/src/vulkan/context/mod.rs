@@ -1497,6 +1497,7 @@ mod render_debug;
 mod resize;
 mod resources;
 mod screenshot;
+mod shrink_frame_scratch;
 mod skinned_blas_refit;
 mod sync_and_acquire_frame;
 mod teardown;

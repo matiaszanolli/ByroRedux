@@ -2371,45 +2371,7 @@ impl VulkanContext {
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
         self.frame_counter = self.frame_counter.wrapping_add(1);
 
-        // Restore the scratch buffers to the context so their capacity
-        // amortizes across frames (#243), then shrink them back toward
-        // the working set after a past peak frame. Same policy as the
-        // `tlas_instances_scratch` in #504 — scratch Vecs behave as
-        // "grow fast, shrink on pressure": working-set × 2 keeps a
-        // slack band against frame-to-frame variance, and the 512
-        // floor avoids reallocations on common-case small scenes.
-        // #3837 — all four scratch Vecs are restored above, each right after
-        // its last use, so none of them is vacated across the error paths
-        // between here and there. The shrink policy below is unchanged; it
-        // just reads its working-set lengths from the fields now.
-        let working_instances = self.scratch.gpu_instances_scratch.len();
-        let working_lights = self.scratch.frame_lights_scratch.len();
-        let working_previous = self.scratch.previous_models_scratch.len();
-        let working_batches = self.scratch.batches_scratch.len();
-        super::super::acceleration::shrink_scratch_if_oversized(
-            &mut self.scratch.gpu_instances_scratch,
-            working_instances,
-            512,
-        );
-        super::super::acceleration::shrink_scratch_if_oversized(
-            &mut self.scratch.frame_lights_scratch,
-            working_lights,
-            128,
-        );
-        // #2486 / D5-01 — `previous_models_scratch` was restored here but
-        // never shrunk, so it pinned its peak (~16 MB at `MAX_INSTANCES`) for
-        // the session. It grows one entry per instance, so its own `len()` is
-        // the working set.
-        super::super::acceleration::shrink_scratch_if_oversized(
-            &mut self.scratch.previous_models_scratch,
-            working_previous,
-            512,
-        );
-        super::super::acceleration::shrink_scratch_if_oversized(
-            &mut self.scratch.batches_scratch,
-            working_batches,
-            512,
-        );
+        let working_instances = self.shrink_frame_scratch();
 
         // #645 / MEM-2-3 — TLAS instance buffer mirrored shrink. The
         // slot we just incremented to (`current_frame` after the line
@@ -3669,5 +3631,39 @@ mod should_use_indirect_draws_tests {
     #[test]
     fn true_for_an_empty_batch_list() {
         assert!(should_use_indirect_draws(true, true, true, 0));
+    }
+}
+
+#[cfg(test)]
+mod draw_frame_size_budget_tests {
+    /// Headroom over `draw_frame`'s length after #4767's extraction (704
+    /// lines). Raise it only alongside a deliberate decision, not to absorb
+    /// an inline addition.
+    const DRAW_FRAME_LINE_BUDGET: usize = 720;
+
+    /// #4767 / TD1-2026-09-22-01 — `draw_frame` has been split and regrown
+    /// past the file's 2000-production-LOC line at least six times (#1052,
+    /// #1748, #1857, #2197, #2255, #3282, #4767): each fix moved a phase
+    /// into a sibling, and the next features were inlined back. The file
+    /// budget is only measured by the tech-debt audit; this budgets the
+    /// orchestrator itself, so the next inline addition fails here and gets
+    /// its own phase file (`context/<phase>.rs`) instead.
+    #[test]
+    fn draw_frame_stays_within_its_line_budget() {
+        let src = include_str!("draw.rs");
+        let start = src
+            .find("\n    pub fn draw_frame(")
+            .expect("draw_frame must still exist under this signature");
+        let end = start
+            + src[start..]
+                .find("\n    }\n")
+                .expect("draw_frame's closing brace at impl indentation");
+        let lines = src[start..end].matches('\n').count() + 1;
+        assert!(
+            lines <= DRAW_FRAME_LINE_BUDGET,
+            "draw_frame is {lines} lines (budget {DRAW_FRAME_LINE_BUDGET}); move the new \
+             work into a context/<phase>.rs sibling like sync_and_acquire_frame.rs or \
+             shrink_frame_scratch.rs rather than raising the budget (#4767)"
+        );
     }
 }
