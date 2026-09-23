@@ -197,7 +197,7 @@ does it name a milestone now complete per ROADMAP.md; a `// TODO: implement` on 
 promotes (severity table).
 **False positives**: `XXXX`, the ESM extended-size sub-record tag (key on comment content — "references the ESM `XXXX`
 escape" — not a file list; `reader.rs`, `cell/wrld.rs`, the `b"XXXX"` test sentinels in `records/misc/magic.rs` and the
-FourCC table doc in `sdk/src/compatibility/storage_util.rs` all qualify); a `// FIXME` quoting a reference implementation's
+FourCC table doc in `sdk/src/compatibility/storage_util/mod.rs` all qualify); a `// FIXME` quoting a reference implementation's
 own FIXME (`crates/bgsm/src/bgem.rs`, `bs_geometry.rs`) documents upstream; a `TBD` that records an unresolved format
 semantic together with its own resolution (the FNV `WEAP` `DNAM` arm in `crates/plugin/src/esm/records/items.rs`) is a
 documented unknown, not a stale marker.
