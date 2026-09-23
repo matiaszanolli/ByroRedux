@@ -7,7 +7,9 @@
 //! transition. Transient HitEvent cleanup remains in the scripting Late stage.
 
 use byroredux_core::animation::AnimationPlayer;
-use byroredux_core::character::{CharacterLevel, CharacterRuleset, MeleeDamageConfig};
+use byroredux_core::character::{
+    CharacterLevel, CharacterRuleset, DerivedOutput, DerivedScope, MeleeDamageConfig,
+};
 use byroredux_core::ecs::components::{
     ActorValues, ActorVitals, CreatureAttack, Dead, EquippedWeapon,
 };
@@ -454,6 +456,22 @@ fn melee_damage_charal_bonus(world: &World, aggressor: EntityId) -> f32 {
     let level = world
         .get::<CharacterLevel>(aggressor)
         .map_or(1, |level| level.level);
+    // #4452 — DerivedScope's consumer contract, the same both-fields check
+    // `GetActorValue` runs (`condition.rs`): this helper evaluates the row
+    // for an *arbitrary* aggressor, so a `PlayerOnly` row must not leak its
+    // player formula onto an NPC, and a `Multiplier` row's raw ratio must
+    // not be added to weapon damage (#2933's leak shape). Tautologically
+    // false for every shipped MeleeDamage row (FO3/FNV's is
+    // ActorGeneral + Absolute) — the check exists so a future row cannot
+    // silently violate the contract a copy of this helper would skip.
+    let Some(formula) = ruleset.derived_formula(melee_damage_avif) else {
+        return 0.0;
+    };
+    if formula.scope != DerivedScope::ActorGeneral
+        || formula.kind != DerivedOutput::Absolute
+    {
+        return 0.0;
+    }
     ruleset
         .derived_value(melee_damage_avif, &avs, level)
         .unwrap_or(0.0)
@@ -630,6 +648,49 @@ mod tests {
     use byroredux_core::ecs::components::InventoryIndex;
     use byroredux_core::ecs::components::{FollowBehavior, FollowState};
     use byroredux_scripting::EvaluatePackageRequest;
+
+    /// #4452 — the melee-damage helper honours DerivedScope's consumer
+    /// contract (same both-fields check as `GetActorValue`): only an
+    /// ActorGeneral + Absolute row may contribute weapon damage for an
+    /// arbitrary aggressor. PlayerOnly rows must not leak their player
+    /// formula, and a Multiplier row's raw ratio is not a damage addend.
+    #[test]
+    fn melee_charal_bonus_honors_scope_and_output_contracts() {
+        use byroredux_core::character::{DerivedInput, DerivedStatFormula, LevelingModel};
+        const STR: u32 = 0x05;
+        const MELEE: u32 = 0x2E0;
+        let world_with = |formula: DerivedStatFormula| {
+            let mut world = World::new();
+            world.insert_resource(MeleeDamageConfig {
+                melee_damage_avif: MELEE,
+            });
+            world.insert_resource(
+                CharacterRuleset::new(LevelingModel::FO4).with_derived(MELEE, formula),
+            );
+            let actor = world.spawn();
+            world.insert(actor, ActorValues::from_pairs([(STR, 6.0)]));
+            world.insert(actor, CharacterLevel { level: 3, xp: 0 });
+            (world, actor)
+        };
+        let affine = || DerivedStatFormula::affine(DerivedInput::actor_value(STR), 0.5, 2.0);
+
+        let (world, actor) = world_with(affine());
+        assert_eq!(melee_damage_charal_bonus(&world, actor), 5.0);
+
+        let (world, actor) = world_with(affine().player_only());
+        assert_eq!(
+            melee_damage_charal_bonus(&world, actor),
+            0.0,
+            "PlayerOnly MeleeDamage row must not apply to an arbitrary aggressor"
+        );
+
+        let (world, actor) = world_with(affine().as_multiplier());
+        assert_eq!(
+            melee_damage_charal_bonus(&world, actor),
+            0.0,
+            "a Multiplier row's raw ratio is not a damage addend"
+        );
+    }
 
     fn damage_fixture(
         health: f32,
