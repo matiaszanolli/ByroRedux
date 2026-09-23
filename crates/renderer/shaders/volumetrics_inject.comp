@@ -2003,6 +2003,7 @@ void transportCombustion(
     vec3 neighborStepY,
     vec3 neighborStepZ,
     float dt,
+    bool expired,
     out vec4 chemistry,
     out vec4 dynamics,
     out vec4 optical
@@ -2010,7 +2011,10 @@ void transportCombustion(
     vec4 probeChemistry;
     vec4 destinationDynamics;
     vec4 probeOptical;
-    bool hadHistory = samplePreviousTransport(
+    // #4775 — once transport has lapsed the residual is dropped, not
+    // carried: `dt == 0` alone would freeze the ≤ 3 % tail the linger
+    // window was sized to cut, as a permanent world-anchored haze.
+    bool hadHistory = !expired && samplePreviousTransport(
         worldPos,
         probeChemistry,
         destinationDynamics,
@@ -2602,6 +2606,8 @@ void main() {
     ) - field_world_pos;
     vec3 neighbor_step_z = field_segment_end - field_segment_start;
     float simulationDt = clamp(params.fog_reference.w, 0.0, 1.0 / 15.0);
+    // TRANSPORT_EXPIRED_DT (volumetrics.rs) — negative w = transport lapsed.
+    bool transportExpired = params.fog_reference.w < 0.0;
     vec4 chemistry;
     vec4 combustion_dynamics;
     vec4 combustion_optical;
@@ -2613,6 +2619,7 @@ void main() {
         neighbor_step_y,
         neighbor_step_z,
         simulationDt,
+        transportExpired,
         chemistry,
         combustion_dynamics,
         combustion_optical

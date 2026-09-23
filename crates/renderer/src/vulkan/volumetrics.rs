@@ -136,7 +136,8 @@ pub struct VolumetricsParams {
     /// [`DEFAULT_EMISSIVE_HISTORY_WEIGHT`]). z = adaptive maximum local
     /// lights evaluated per froxel. w = simulation delta seconds, filled and
     /// clamped by [`VolumetricsPipeline::dispatch`] after successful-history
-    /// time accounting.
+    /// time accounting, or [`TRANSPORT_EXPIRED_DT`] once combustion transport
+    /// has lapsed (#4775).
     pub fog_reference: [f32; 4],
     /// xy = normalized horizontal wind direction in renderer X/Z space,
     /// z = base wind speed and w = gust amplitude, both in world units per
@@ -244,12 +245,32 @@ fn has_transport_emitter(volumes: &[GpuFogVolume]) -> bool {
 /// neighbour gather gated in-shader on `dt > 0.0` — should run this frame.
 /// True while an emitter is present, or while transported soot from a
 /// recently-removed emitter is still within its linger window; false once
-/// both conditions lapse, in which case the caller zeroes `simulationDt` and
-/// the shader's whole RK2 block collapses to a no-op. See #3131 (PERF-D5-01):
+/// both conditions lapse, in which case the caller sends
+/// [`TRANSPORT_EXPIRED_DT`]: the shader's whole RK2 block collapses to a
+/// no-op and the residual field is dropped (#4775). See #3131 (PERF-D5-01):
 /// without this the stencil ran unconditionally, and its most expensive
 /// branch (`incomingDynamicsFromNeighbors`) is itself gated on *low*
 /// combustion activity — so the quiet majority of froxels in every
 /// fog-bearing cell paid the full 18-fetch cost for a uniformly-zero field.
+/// `fog_reference.w` sentinel for "combustion transport has lapsed" (#4775).
+/// A zero `dt` alone means *hold* — a paused frame must not move or decay
+/// the field — so expiry needs its own signal. The inject shader reads any
+/// negative `w` as expired and writes the empty transport state instead of
+/// carrying the ≤ 3 % residual `AEROSOL_LINGER_SECONDS` was sized to drop;
+/// its `simulationDt` clamps the sentinel to 0.
+pub(crate) const TRANSPORT_EXPIRED_DT: f32 = -1.0;
+
+/// The `fog_reference.w` the inject shader receives: the history-accounted
+/// step while transport is active — including `0.0` on a paused frame, which
+/// holds the field — and [`TRANSPORT_EXPIRED_DT`] once it has lapsed.
+fn transport_simulation_dt(combustion_active: bool, simulation_dt: f32) -> f32 {
+    if combustion_active {
+        simulation_dt
+    } else {
+        TRANSPORT_EXPIRED_DT
+    }
+}
+
 fn combustion_transport_active(
     fog_volumes: &[GpuFogVolume],
     simulation_time: f32,
@@ -1175,18 +1196,15 @@ impl VolumetricsPipeline {
         // *quiet* case, so the expensive neighbour gather fires precisely
         // on the froxels with no combustion. `combustion_active_until_seconds`
         // is exactly the CPU-side "combustion is (or was recently) active"
-        // signal `requires_dispatch` already maintains — reuse it to zero
-        // `dt` and skip the stencil outright when nothing is transporting.
+        // signal `requires_dispatch` already maintains — reuse it to skip
+        // the stencil outright when nothing is transporting, and (#4775) to
+        // drop the lapsed residual rather than freeze it.
         let combustion_active = combustion_transport_active(
             fog_volumes,
             simulation_time,
             self.combustion_active_until_seconds,
         );
-        frame_params.fog_reference[3] = if combustion_active {
-            simulation_dt
-        } else {
-            0.0
-        };
+        frame_params.fog_reference[3] = transport_simulation_dt(combustion_active, simulation_dt);
         self.pending_simulation_time_seconds = Some(simulation_time);
         let camera_position = [
             frame_params.camera_pos[0],
@@ -2528,6 +2546,39 @@ mod unit_tests {
             10.0,
             f32::NEG_INFINITY
         ));
+    }
+
+    /// Regression: #4775 / REN-D8-2026-09-23-03. After the linger window the
+    /// host sent `dt = 0` while the pass kept dispatching (any fogged
+    /// exterior or dusty interior), and the shader carried the ≤ 3 % soot
+    /// residual forward undecayed forever. Expiry now has its own signal,
+    /// distinct from a paused frame's hold, and the shader drops the field.
+    #[test]
+    fn lapsed_transport_drops_its_residual_while_a_pause_holds_it() {
+        assert!(TRANSPORT_EXPIRED_DT < 0.0);
+        assert_eq!(
+            transport_simulation_dt(false, 1.0 / 60.0),
+            TRANSPORT_EXPIRED_DT
+        );
+        // A paused frame while transport is live: hold, not expire.
+        assert_eq!(transport_simulation_dt(true, 0.0), 0.0);
+        assert_eq!(transport_simulation_dt(true, 1.0 / 60.0), 1.0 / 60.0);
+
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        for contract in [
+            // The sentinel never reaches the physics as a negative step…
+            "float simulationDt = clamp(params.fog_reference.w, 0.0, 1.0 / 15.0);",
+            // …but is read as expiry…
+            "bool transportExpired = params.fog_reference.w < 0.0;",
+            // …which skips the history probe, so the no-history arm writes
+            // the empty transport state.
+            "bool hadHistory = !expired && samplePreviousTransport(",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "inject shader lost `{contract}` (#4775)"
+            );
+        }
     }
 
     #[test]
