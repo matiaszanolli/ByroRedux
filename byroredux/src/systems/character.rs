@@ -22,7 +22,7 @@
 use byroredux_core::ecs::components::actor_state::Dead;
 use byroredux_core::ecs::components::actor_values::{ActorValues, ActorVitals};
 use byroredux_core::ecs::components::water::{
-    WaterContact, WaterCurrentVolume, WaterFlow, WaterPlane, WaterVolume,
+    WaterContact, WaterCurrentVolume, WaterFlow, WaterPlane, WaterSurfaceMesh, WaterVolume,
 };
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
@@ -1059,6 +1059,7 @@ fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<Player
         return None;
     };
     let flow_q = world.query::<WaterFlow>();
+    let surface_q = world.query::<WaterSurfaceMesh>();
     let bottom = pos.y - half_span;
     let top = pos.y + half_span;
     let mut best: Option<(PlayerWaterState, f32)> = None;
@@ -1066,13 +1067,10 @@ fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<Player
         let Some(volume) = vq.get(entity) else {
             continue;
         };
-        if pos.x < volume.min[0]
-            || pos.x > volume.max[0]
-            || pos.z < volume.min[2]
-            || pos.z > volume.max[2]
-        {
+        let surface_mesh = surface_q.as_ref().and_then(|q| q.get(entity));
+        let Some(static_surface_y) = volume.surface_y_at(surface_mesh, pos.x, pos.z, pos.y) else {
             continue;
-        }
+        };
         let wave_height = time_secs
             .map(|time| {
                 byroredux_physics::authored_wave_height_with_weather(
@@ -1084,7 +1082,7 @@ fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<Player
                 )
             })
             .unwrap_or(0.0);
-        let surface_y = volume.max[1] + wave_height;
+        let surface_y = static_surface_y + wave_height;
         if top < volume.min[1] || bottom > surface_y {
             continue;
         }

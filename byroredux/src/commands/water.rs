@@ -7,7 +7,7 @@
 
 use super::shared::*;
 use byroredux_core::ecs::components::water::{
-    SubmersionState, WaterContact, WaterFlow, WaterPlane, WaterVolume,
+    SubmersionState, WaterContact, WaterFlow, WaterPlane, WaterSurfaceMesh, WaterVolume,
 };
 
 fn active_camera_position(world: &World) -> Option<(EntityId, Vec3)> {
@@ -53,6 +53,7 @@ impl ConsoleCommand for WaterDumpCommand {
         let plane_q = world.query::<WaterPlane>();
         let volume_q = world.query::<WaterVolume>();
         let flow_q = world.query::<WaterFlow>();
+        let surface_q = world.query::<WaterSurfaceMesh>();
         let plane_count = plane_q.as_ref().map_or(0, |query| query.len());
         let camera_material = camera_state
             .and_then(|state| state.surface_entity)
@@ -104,12 +105,11 @@ impl ConsoleCommand for WaterDumpCommand {
             let flow = flow_q.as_ref().and_then(|query| query.get(entity).copied());
             let contains_camera = match (camera, volume) {
                 (Some((_, position)), Some(volume)) => {
-                    position.x >= volume.min[0]
-                        && position.x <= volume.max[0]
-                        && position.y >= volume.min[1]
-                        && position.y <= volume.max[1]
-                        && position.z >= volume.min[2]
-                        && position.z <= volume.max[2]
+                    let surface = surface_q.as_ref().and_then(|query| query.get(entity));
+                    position.y >= volume.min[1]
+                        && volume
+                            .surface_y_at(surface, position.x, position.z, position.y)
+                            .is_some_and(|surface_y| position.y <= surface_y)
                 }
                 _ => false,
             };

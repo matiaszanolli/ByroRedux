@@ -40,6 +40,7 @@
 
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
+use std::sync::Arc;
 
 /// Canonical sentinel values for water records that omit authored wave data.
 /// Parser defaults, ECS defaults, and shader normalization all derive from
@@ -586,6 +587,80 @@ impl Component for WaterVolume {
     type Storage = SparseSetStorage<Self>;
 }
 
+impl WaterVolume {
+    /// Static (wave-free) surface height over the `(x, z)` column, or `None`
+    /// when the column lies outside this water's footprint.
+    ///
+    /// Without a [`WaterSurfaceMesh`] the surface is the planar `max.y`. With
+    /// one, the surface is the authored triangles themselves; `reference_y`
+    /// picks the nearest layer where the mesh overlaps itself in XZ. Every
+    /// submersion / swim / buoyancy consumer resolves the surface through
+    /// this one function so the three cannot disagree about where water is.
+    pub fn surface_y_at(
+        &self,
+        surface: Option<&WaterSurfaceMesh>,
+        x: f32,
+        z: f32,
+        reference_y: f32,
+    ) -> Option<f32> {
+        if x < self.min[0] || x > self.max[0] || z < self.min[2] || z > self.max[2] {
+            return None;
+        }
+        match surface {
+            None => Some(self.max[1]),
+            Some(mesh) => mesh.surface_y_at(x, z, reference_y),
+        }
+    }
+}
+
+/// World-space surface triangles of a mesh-bound water body that authors no
+/// phantom volume.
+///
+/// [`WaterVolume`] alone models a flat surface at `max.y`, which a water mesh
+/// need not be: Skyrim's `markarthwatersystemstream.nif` descends ~1800 BU
+/// through the city, so a single plane at its placement origin put the
+/// Markarth gate — 237 BU from the nearest stream vertex — 393 BU
+/// "underwater". The rendered triangles are the only authored description of
+/// where that surface is, so they are the surface
+/// ([`WaterVolume::surface_y_at`]); the volume stays the coarse AABB reject.
+#[derive(Debug, Clone)]
+pub struct WaterSurfaceMesh {
+    pub triangles: Arc<[[[f32; 3]; 3]]>,
+}
+
+impl Component for WaterSurfaceMesh {
+    type Storage = SparseSetStorage<Self>;
+}
+
+impl WaterSurfaceMesh {
+    /// Height of the triangle surface over `(x, z)` nearest to
+    /// `reference_y`, or `None` when no triangle covers the column.
+    pub fn surface_y_at(&self, x: f32, z: f32, reference_y: f32) -> Option<f32> {
+        // Barycentric slack so a column exactly on a shared edge or vertex
+        // is not lost to rounding between the two triangles that own it.
+        const EDGE_EPSILON: f32 = 1.0e-4;
+        let mut best: Option<f32> = None;
+        for [a, b, c] in self.triangles.iter() {
+            let det = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
+            // Vertical (edge-on in XZ) triangles cover no column.
+            if det.abs() <= f32::EPSILON {
+                continue;
+            }
+            let l1 = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / det;
+            let l2 = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / det;
+            let l3 = 1.0 - l1 - l2;
+            if l1 < -EDGE_EPSILON || l2 < -EDGE_EPSILON || l3 < -EDGE_EPSILON {
+                continue;
+            }
+            let y = l1 * a[1] + l2 * b[1] + l3 * c[1];
+            if best.is_none_or(|prev| (y - reference_y).abs() < (prev - reference_y).abs()) {
+                best = Some(y);
+            }
+        }
+        best
+    }
+}
+
 /// Non-rendering current volume authored by a placed water-current marker
 /// (`REFR.XWCU` + spatial bounds). Unlike [`WaterPlane`], this component
 /// never participates in submersion or buoyancy surface selection; it only
@@ -674,4 +749,58 @@ pub struct WaterContact {
 
 impl Component for WaterContact {
     type Storage = SparseSetStorage<Self>;
+}
+
+#[cfg(test)]
+mod surface_mesh_tests {
+    use super::{WaterSurfaceMesh, WaterVolume};
+
+    /// Two triangles forming a strip over x∈[0,100], z∈[0,10] that descends
+    /// from y=50 at x=0 to y=0 at x=100 — a stream segment.
+    fn sloped_strip() -> WaterSurfaceMesh {
+        let (a, b) = ([0.0, 50.0, 0.0], [100.0, 0.0, 0.0]);
+        let (c, d) = ([100.0, 0.0, 10.0], [0.0, 50.0, 10.0]);
+        WaterSurfaceMesh {
+            triangles: vec![[a, b, c], [a, c, d]].into(),
+        }
+    }
+
+    #[test]
+    fn sloped_surface_is_sampled_not_taken_from_the_highest_point() {
+        let mesh = sloped_strip();
+        let y = mesh
+            .surface_y_at(75.0, 5.0, 0.0)
+            .expect("column over strip");
+        assert!((y - 12.5).abs() < 1e-4, "{y}");
+        // Shared diagonal edge still resolves.
+        assert!(mesh.surface_y_at(50.0, 5.0, 0.0).is_some());
+    }
+
+    #[test]
+    fn column_beside_the_triangles_is_outside_the_water() {
+        let mesh = sloped_strip();
+        assert_eq!(mesh.surface_y_at(50.0, 40.0, 0.0), None);
+        let volume = WaterVolume {
+            min: [0.0, -200.0, 0.0],
+            max: [100.0, 50.0, 60.0],
+        };
+        // Inside the AABB, but no triangle covers the column.
+        assert_eq!(volume.surface_y_at(Some(&mesh), 50.0, 40.0, 0.0), None);
+        // Planar volumes keep the flat `max.y` surface.
+        assert_eq!(volume.surface_y_at(None, 50.0, 40.0, 0.0), Some(50.0));
+        assert_eq!(volume.surface_y_at(None, 150.0, 40.0, 0.0), None);
+    }
+
+    #[test]
+    fn overlapping_layers_resolve_to_the_nearest_surface() {
+        let low = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 0.0, 10.0]];
+        let high = [[0.0, 30.0, 0.0], [10.0, 30.0, 0.0], [0.0, 30.0, 10.0]];
+        // Vertical sheet: edge-on in XZ, covers no column.
+        let sheet = [[0.0, 0.0, 1.0], [10.0, 0.0, 1.0], [10.0, 30.0, 1.0]];
+        let mesh = WaterSurfaceMesh {
+            triangles: vec![low, high, sheet].into(),
+        };
+        assert_eq!(mesh.surface_y_at(2.0, 2.0, 5.0), Some(0.0));
+        assert_eq!(mesh.surface_y_at(2.0, 2.0, 25.0), Some(30.0));
+    }
 }

@@ -49,6 +49,7 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::ActorVitals>()
             .reads::<byroredux_core::ecs::components::water::WaterPlane>()
             .reads::<byroredux_core::ecs::components::water::WaterVolume>()
+            .reads::<byroredux_core::ecs::components::water::WaterSurfaceMesh>()
             .reads::<byroredux_core::ecs::components::water::WaterFlow>()
             // #3974 — `player_water_state` falls back to a placed
             // `WaterCurrentVolume` marker when the plane has no flow of

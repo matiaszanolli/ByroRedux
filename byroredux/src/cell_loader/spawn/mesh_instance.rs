@@ -1278,6 +1278,7 @@ pub(super) fn spawn_mesh_instance(
             crate::material_translate::MeshWaterSource {
                 name: mesh.name.as_deref(),
                 positions: &mesh.positions,
+                indices: &mesh.indices,
                 position: final_pos,
                 rotation: final_rot,
                 scale: final_scale,

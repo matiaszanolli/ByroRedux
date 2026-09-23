@@ -37,8 +37,8 @@
 use byroredux_core::ecs::components::collision::{MotionType, RigidBodyData};
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
-    WaterContact, WaterCurrentVolume, WaterFlow, WaterMaterial, WaterPlane, WaterVolume,
-    WATERLINE_HYSTERESIS,
+    WaterContact, WaterCurrentVolume, WaterFlow, WaterMaterial, WaterPlane, WaterSurfaceMesh,
+    WaterVolume, WATERLINE_HYSTERESIS,
 };
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::resources::TotalTime;
@@ -269,7 +269,8 @@ pub fn wind_force(
 ///
 /// - `aabb_min_y` / `aabb_max_y` — the body collider AABB's world-space
 ///   vertical extent (`aabb_max_y >= aabb_min_y`).
-/// - `surface_y` — the water plane height (the `WaterVolume`'s `max.y`).
+/// - `surface_y` — the water surface height over the body
+///   ([`WaterVolume::surface_y_at`]).
 ///
 /// Returns `0.0` when the whole body is above the surface, `1.0` when the
 /// whole body is under it, and the partial fraction in between.
@@ -287,7 +288,8 @@ pub fn submerged_fraction(aabb_min_y: f32, aabb_max_y: f32, surface_y: f32) -> f
 struct WaterSurface {
     entity: EntityId,
     volume: WaterVolume,
-    surface_y: f32,
+    /// Non-planar mesh-water surface; `None` means the planar `volume.max.y`.
+    surface: Option<WaterSurfaceMesh>,
     material: WaterMaterial,
     flow: Option<WaterFlow>,
     damage_per_second: f32,
@@ -425,6 +427,7 @@ fn collect_water_surfaces(world: &World, out: &mut Vec<WaterSurface>) {
         return;
     };
     let flow_q = world.query::<WaterFlow>();
+    let surface_q = world.query::<WaterSurfaceMesh>();
     for (entity, plane) in wq.iter() {
         let Some(volume) = vq.get(entity) else {
             continue;
@@ -433,7 +436,7 @@ fn collect_water_surfaces(world: &World, out: &mut Vec<WaterSurface>) {
         out.push(WaterSurface {
             entity,
             volume: *volume,
-            surface_y: volume.max[1],
+            surface: surface_q.as_ref().and_then(|q| q.get(entity).cloned()),
             material: plane.material,
             flow,
             damage_per_second: plane.damage_per_second,
@@ -871,15 +874,15 @@ fn apply_buoyancy_with_scratch(
                     surfaces
                         .iter()
                         .filter_map(|s| {
-                            let v = &s.volume;
-                            if !(reference_point.x >= v.min[0]
-                                && reference_point.x <= v.max[0]
-                                && reference_point.z >= v.min[2]
-                                && reference_point.z <= v.max[2]
-                                && max_y >= v.min[1])
-                            {
+                            if max_y < s.volume.min[1] {
                                 return None;
                             }
+                            let static_surface_y = s.volume.surface_y_at(
+                                s.surface.as_ref(),
+                                reference_point.x,
+                                reference_point.z,
+                                center_y,
+                            )?;
                             let surface_y = time_secs
                                 .map(|time| {
                                     authored_wave_height_with_weather(
@@ -891,7 +894,7 @@ fn apply_buoyancy_with_scratch(
                                     )
                                 })
                                 .unwrap_or(0.0)
-                                + s.surface_y;
+                                + static_surface_y;
                             (min_y <= surface_y + WATERLINE_HYSTERESIS).then_some((s, surface_y))
                         })
                         .min_by(|a, b| {
@@ -1164,7 +1167,7 @@ mod tests {
                 min: [-10.0, -10.0, -10.0],
                 max: [10.0, 0.0, 10.0],
             },
-            surface_y: 0.0,
+            surface: None,
             material: WaterMaterial::default(),
             flow: None,
             damage_per_second: 0.0,

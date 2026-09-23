@@ -44,6 +44,7 @@ pub(super) fn register_physics_systems(scheduler: &mut Scheduler) {
             // components and writes per-body `WaterContact`.
             .reads::<byroredux_core::ecs::components::water::WaterPlane>()
             .reads::<byroredux_core::ecs::components::water::WaterVolume>()
+            .reads::<byroredux_core::ecs::components::water::WaterSurfaceMesh>()
             .reads::<byroredux_core::ecs::components::water::WaterFlow>()
             .reads::<byroredux_core::ecs::components::water::WaterCurrentVolume>()
             .writes::<byroredux_core::ecs::components::water::WaterContact>()

@@ -1480,6 +1480,7 @@ fn spawn_nif_mesh(
                 name: mesh.name.as_deref(),
                 positions: &mesh.positions,
                 position: translation,
+                indices: &mesh.indices,
                 rotation: quat,
                 scale: mesh.scale,
                 local_bound_center: Vec3::new(

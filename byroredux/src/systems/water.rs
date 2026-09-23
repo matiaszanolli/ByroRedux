@@ -2,7 +2,7 @@
 
 use crate::components::WaterDisturbanceScratch;
 use byroredux_core::ecs::components::water::{
-    SubmersionState, WaterContact, WaterPlane, WaterVolume, WATERLINE_HYSTERESIS,
+    SubmersionState, WaterContact, WaterPlane, WaterSurfaceMesh, WaterVolume, WATERLINE_HYSTERESIS,
 };
 use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, ParticleEmitter};
 use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
@@ -195,11 +195,18 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         }
         return;
     };
+    let surface_q = world.query::<WaterSurfaceMesh>();
     for (entity, plane) in wq.iter() {
         let Some(volume) = vq.get(entity) else {
             continue;
         };
-        let surface_y = volume.max[1]
+        let surface_mesh = surface_q.as_ref().and_then(|q| q.get(entity));
+        let Some(static_surface_y) =
+            volume.surface_y_at(surface_mesh, cam_pos.x, cam_pos.z, cam_pos.y)
+        else {
+            continue;
+        };
+        let surface_y = static_surface_y
             + wave_adjustment
                 .map(|(time, (weather_scroll, wind_wave_scale))| {
                     byroredux_physics::authored_wave_height_with_weather(
@@ -251,6 +258,7 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
             _ => {}
         }
     }
+    drop(surface_q);
     drop(wq);
     drop(vq);
 
@@ -620,7 +628,8 @@ mod tests {
         DISTURBANCE_RADIUS, WATERLINE_HYSTERESIS,
     };
     use byroredux_core::ecs::components::water::{
-        SubmersionState, WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+        SubmersionState, WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterSurfaceMesh,
+        WaterVolume,
     };
     use byroredux_core::ecs::components::ParticleEmitter;
     use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, FollowBehavior};
@@ -1141,6 +1150,69 @@ mod tests {
             .expect("camera state");
         assert_eq!(state.depth, 1.0);
         assert_eq!(state.surface_entity, expected_surface);
+    }
+
+    /// Markarth regression: `markarthwatersystemstream.nif` descends ~1800 BU
+    /// through the city, and the old planar mesh-water volume (surface = the
+    /// placement origin, footprint = the bound sphere) put the gate spawn,
+    /// 237 BU from the nearest stream vertex, 393 BU "underwater". A camera
+    /// inside the stream's AABB but beside its triangles must stay dry; one
+    /// over the triangles is submerged against the local surface height.
+    #[test]
+    fn camera_beside_sloped_mesh_water_stays_dry() {
+        let run = |camera_pos: Vec3| {
+            let mut world = World::new();
+            let camera = world.spawn();
+            world.insert_resource(ActiveCamera(camera));
+            world.insert(
+                camera,
+                GlobalTransform::new(camera_pos, byroredux_core::math::Quat::IDENTITY, 1.0),
+            );
+            world.insert(camera, SubmersionState::default());
+            let water = world.spawn();
+            world.insert(
+                water,
+                WaterPlane {
+                    kind: WaterKind::River,
+                    material: WaterMaterial::default(),
+                    damage_per_second: 0.0,
+                },
+            );
+            world.insert(
+                water,
+                WaterVolume {
+                    min: [0.0, -500.0, 0.0],
+                    max: [100.0, 50.0, 100.0],
+                },
+            );
+            let (a, b) = ([0.0, 50.0, 0.0], [100.0, 0.0, 0.0]);
+            let (c, d) = ([100.0, 0.0, 10.0], [0.0, 50.0, 10.0]);
+            world.insert(
+                water,
+                WaterSurfaceMesh {
+                    triangles: vec![[a, b, c], [a, c, d]].into(),
+                },
+            );
+            submersion_system(&world, 0.016);
+            let state = world
+                .query::<SubmersionState>()
+                .expect("submersion storage")
+                .get(camera)
+                .copied()
+                .expect("camera state");
+            (state, water)
+        };
+
+        // Beside the stream: inside the AABB, 40 BU below its highest point.
+        let (dry, _) = run(Vec3::new(50.0, 10.0, 80.0));
+        assert!(!dry.head_submerged);
+        assert_eq!(dry.surface_entity, None);
+
+        // Over the stream where its surface is at y=12.5.
+        let (wet, water) = run(Vec3::new(75.0, 2.5, 5.0));
+        assert!(wet.head_submerged);
+        assert_eq!(wet.surface_entity, Some(water));
+        assert!((wet.depth - 10.0).abs() < 1e-3, "{}", wet.depth);
     }
 
     /// #3115 — the two `SplashEvent` producers disagreed with each other and

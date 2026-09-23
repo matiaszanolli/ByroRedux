@@ -91,7 +91,7 @@ use crate::components::{
 };
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
 use byroredux_core::ecs::components::water::{
-    WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+    WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterSurfaceMesh, WaterVolume,
 };
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -424,31 +424,62 @@ pub(crate) fn water_volume_from_phantom(
     })
 }
 
-/// Derive a conservative physics volume for a mesh-bound water surface that
-/// authors no phantom (`water_volume_from_phantom` takes precedence);
-/// the rendered surface is the entity's transformed Y plane, while imported
-/// bounds provide coverage/depth.
+/// Derive the physics volume + surface for a mesh-bound water body that
+/// authors no phantom (`water_volume_from_phantom` takes precedence).
+///
+/// The surface is the placed triangles themselves ([`WaterSurfaceMesh`]):
+/// mesh water need not be planar (Skyrim's Markarth stream drops ~1800 BU
+/// across the city), so neither the placement origin nor any single height
+/// is its surface. The volume is the tight world AABB of those vertices,
+/// extended below the lowest one for coverage/depth. A mesh with no usable
+/// triangles falls back to the planar bound-sphere slab at the placement
+/// origin with no surface mesh.
 pub(crate) fn water_volume_from_mesh(
-    position: Vec3,
-    rotation: Quat,
-    scale: f32,
-    local_center: Vec3,
-    local_radius: f32,
-) -> WaterVolume {
-    let center = position + rotation * (local_center * scale);
+    positions: &[[f32; 3]],
+    indices: &[u32],
+    (position, rotation, scale): (Vec3, Quat, f32),
+    (local_center, local_radius): (Vec3, f32),
+) -> (WaterVolume, Option<WaterSurfaceMesh>) {
     let radius = (local_radius * scale.abs()).max(1.0);
     // Conservative, unmeasured gameplay volume depth used only when a NIF
     // water surface has no CELL/XCLW bounds. Named so a future mesh census or
     // authored volume source can replace it without ABI churn (#3185).
     const MESH_WATER_VOLUME_DEPTH_RADII: f32 = 4.0;
-    WaterVolume {
-        min: [
-            center.x - radius,
-            position.y - radius * MESH_WATER_VOLUME_DEPTH_RADII,
-            center.z - radius,
-        ],
-        max: [center.x + radius, position.y, center.z + radius],
+    let depth = radius * MESH_WATER_VOLUME_DEPTH_RADII;
+
+    let to_world = |p: [f32; 3]| position + rotation * (Vec3::from_array(p) * scale);
+    let triangles: Vec<[[f32; 3]; 3]> = indices
+        .chunks_exact(3)
+        .filter_map(|tri| {
+            let corner = |i: u32| positions.get(i as usize).copied().map(to_world);
+            let (a, b, c) = (corner(tri[0])?, corner(tri[1])?, corner(tri[2])?);
+            (a.is_finite() && b.is_finite() && c.is_finite())
+                .then(|| [a.to_array(), b.to_array(), c.to_array()])
+        })
+        .collect();
+    if !triangles.is_empty() {
+        let mut world_min = Vec3::splat(f32::INFINITY);
+        let mut world_max = Vec3::splat(f32::NEG_INFINITY);
+        for corner in triangles.iter().flatten() {
+            world_min = world_min.min(Vec3::from_array(*corner));
+            world_max = world_max.max(Vec3::from_array(*corner));
+        }
+        let volume = WaterVolume {
+            min: [world_min.x, world_min.y - depth, world_min.z],
+            max: world_max.to_array(),
+        };
+        let surface = WaterSurfaceMesh {
+            triangles: triangles.into(),
+        };
+        return (volume, Some(surface));
     }
+
+    let center = position + rotation * (local_center * scale);
+    let volume = WaterVolume {
+        min: [center.x - radius, position.y - depth, center.z - radius],
+        max: [center.x + radius, position.y, center.z + radius],
+    };
+    (volume, None)
 }
 
 /// Placement data needed to translate and attach one mesh-bound water
@@ -458,6 +489,7 @@ pub(crate) fn water_volume_from_mesh(
 pub(crate) struct MeshWaterSource<'a> {
     pub name: Option<&'a str>,
     pub positions: &'a [[f32; 3]],
+    pub indices: &'a [u32],
     pub position: Vec3,
     pub rotation: Quat,
     pub scale: f32,
@@ -497,19 +529,22 @@ pub(crate) fn attach_mesh_water(
         world.insert(entity, flow);
     }
     if kind != WaterKind::Waterfall {
-        let volume = source
+        let authored = source
             .phantom_bounds
-            .and_then(|bounds| water_volume_from_phantom(bounds, source.root_transform))
-            .unwrap_or_else(|| {
-                water_volume_from_mesh(
-                    source.position,
-                    source.rotation,
-                    source.scale,
-                    source.local_bound_center,
-                    source.local_bound_radius,
-                )
-            });
+            .and_then(|bounds| water_volume_from_phantom(bounds, source.root_transform));
+        let (volume, surface) = match authored {
+            Some(volume) => (volume, None),
+            None => water_volume_from_mesh(
+                source.positions,
+                source.indices,
+                (source.position, source.rotation, source.scale),
+                (source.local_bound_center, source.local_bound_radius),
+            ),
+        };
         world.insert(entity, volume);
+        if let Some(surface) = surface {
+            world.insert(entity, surface);
+        }
     }
 }
 
@@ -1611,6 +1646,7 @@ mod tests {
             MeshWaterSource {
                 name: Some("RiverSegment01"),
                 positions: &positions,
+                indices: &[0, 1, 2],
                 position: Vec3::new(10.0, 20.0, 30.0),
                 rotation: Quat::IDENTITY,
                 scale: 1.0,
@@ -1646,6 +1682,7 @@ mod tests {
             MeshWaterSource {
                 name: None,
                 positions: &positions,
+                indices: &[0, 1, 2],
                 position: placement,
                 rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
                 scale: 2.0,
@@ -1685,18 +1722,56 @@ mod tests {
     }
 
     #[test]
-    fn mesh_water_volume_top_matches_rendered_surface() {
-        let volume = water_volume_from_mesh(
-            Vec3::new(10.0, 25.0, -4.0),
-            Quat::IDENTITY,
-            2.0,
-            Vec3::new(1.0, 7.0, -2.0),
-            3.0,
+    fn mesh_water_without_triangles_falls_back_to_the_planar_slab() {
+        let (volume, surface) = water_volume_from_mesh(
+            &[],
+            &[],
+            (Vec3::new(10.0, 25.0, -4.0), Quat::IDENTITY, 2.0),
+            (Vec3::new(1.0, 7.0, -2.0), 3.0),
         );
+        assert!(surface.is_none());
         assert_eq!(volume.max[1], 25.0);
         assert_eq!(volume.min[1], 1.0);
         assert_eq!(volume.min[0], 6.0);
         assert_eq!(volume.max[2], -2.0);
+    }
+
+    /// The Markarth stream shape: a surface descending along X. The volume
+    /// is the tight vertex AABB (not the bound sphere), and the surface is
+    /// sampled from the placed triangles — a column beside the stream, inside
+    /// its AABB and below its highest point, is not water.
+    #[test]
+    fn sloped_mesh_water_surface_follows_the_placed_triangles() {
+        let positions = [
+            [0.0, 50.0, 0.0],
+            [100.0, 0.0, 0.0],
+            [100.0, 0.0, 10.0],
+            [0.0, 50.0, 10.0],
+        ];
+        let indices = [0, 1, 2, 0, 2, 3];
+        let (volume, surface) = water_volume_from_mesh(
+            &positions,
+            &indices,
+            (Vec3::new(1000.0, -200.0, 500.0), Quat::IDENTITY, 1.0),
+            (Vec3::new(50.0, 25.0, 5.0), 60.0),
+        );
+        let surface = surface.expect("triangle surface");
+        assert_eq!(volume.max, [1100.0, -150.0, 510.0]);
+        assert_eq!(volume.min[0], 1000.0);
+        assert_eq!(volume.min[2], 500.0);
+        assert_eq!(volume.min[1], -200.0 - 60.0 * 4.0);
+        let y = volume
+            .surface_y_at(Some(&surface), 1075.0, 505.0, -200.0)
+            .expect("over the stream");
+        assert!((y - (-187.5)).abs() < 1e-3, "{y}");
+        // Out-of-range indices are dropped rather than panicking.
+        let (_, partial) = water_volume_from_mesh(
+            &positions,
+            &[0, 1, 9],
+            (Vec3::ZERO, Quat::IDENTITY, 1.0),
+            (Vec3::ZERO, 60.0),
+        );
+        assert!(partial.is_none());
     }
 
     #[test]
