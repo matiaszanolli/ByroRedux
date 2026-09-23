@@ -1441,6 +1441,76 @@ fn skip_clear_decision(ran: bool, already_cleared: bool) -> (bool, bool) {
 mod tests {
     use super::skip_clear_decision;
 
+    /// Regression: #4773 / REN-D8-2026-09-23-01 — `draw_frame` passed
+    /// `fog_coverage, fog_scale_height_meters` into parameters declared
+    /// `fog_scale_height_meters, fog_coverage`. Both are `f32`, so it
+    /// compiled, and the froxel medium collapsed to a ~1 m ground layer.
+    ///
+    /// `record_post_passes` takes ~30 positional arguments, most of them
+    /// same-typed scalars, and the call site names nearly every local after
+    /// its parameter. Pin that convention: every argument spelled as a
+    /// parameter's name must sit in that parameter's position.
+    #[test]
+    fn record_post_passes_named_arguments_match_parameter_positions() {
+        fn ident(token: &str) -> &str {
+            let token = token.trim().trim_end_matches(',').trim_start_matches('&');
+            token.strip_prefix("self.").unwrap_or(token)
+        }
+
+        let post = include_str!("post_passes.rs");
+        let sig_at = post
+            .find("fn record_post_passes(")
+            .expect("record_post_passes must still exist under this name");
+        let sig = &post[sig_at..];
+        let sig = &sig[..sig.find(") {").expect("signature end")];
+        let params: Vec<&str> = sig
+            .lines()
+            .skip(1)
+            .filter_map(|line| line.trim().split_once(':').map(|(name, _)| name.trim()))
+            .filter(|name| *name != "&mut self" && *name != "&self")
+            .collect();
+
+        let draw = include_str!("draw.rs");
+        let call_at = draw
+            .find("self.record_post_passes(")
+            .expect("draw_frame must still call record_post_passes");
+        let call = &draw[call_at..];
+        let call = &call[..call.find(");").expect("call end")];
+        let args: Vec<&str> = call
+            .lines()
+            .skip(1)
+            .map(ident)
+            .filter(|arg| !arg.is_empty())
+            .collect();
+
+        assert_eq!(
+            args.len(),
+            params.len(),
+            "argument/parameter count drifted: args {args:?} params {params:?}"
+        );
+        let mut pinned = 0;
+        for (position, arg) in args.iter().enumerate() {
+            if params.contains(arg) {
+                assert_eq!(
+                    *arg, params[position],
+                    "argument `{arg}` is passed in the `{}` slot (position {position})",
+                    params[position]
+                );
+                pinned += 1;
+            }
+        }
+        assert!(
+            pinned >= 20,
+            "only {pinned} arguments share a parameter name; pin is vacuous"
+        );
+        let fog_scale = params.iter().position(|p| *p == "fog_scale_height_meters");
+        let fog_coverage = params.iter().position(|p| *p == "fog_coverage");
+        assert!(
+            fog_scale.is_some() && fog_coverage.is_some(),
+            "fog params renamed"
+        );
+    }
+
     /// A real dispatch running must never trigger a clear, and must reset
     /// the latch so a later skip streak clears fresh.
     #[test]
