@@ -880,12 +880,21 @@ impl VulkanContext {
             .allocator
             .as_ref()
             .expect("allocator missing during resize");
+        let max_image_dimension_3d = unsafe {
+            // SAFETY: `self.physical_device` was selected from `self.instance`
+            // and both remain live for the context lifetime.
+            self.instance
+                .get_physical_device_properties(self.physical_device)
+                .limits
+                .max_image_dimension3_d
+        };
         let mut new_volumetrics = super::super::volumetrics::VolumetricsPipeline::new(
             &self.device,
             allocator,
             self.pipeline_cache,
             self.frame_extents.render,
             volumetrics_config,
+            max_image_dimension_3d,
         )
         .context("recreate render-resolution froxel volume")?;
         // SAFETY: `new_volumetrics` exclusively owns freshly-created images;

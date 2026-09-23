@@ -675,6 +675,31 @@ pub fn froxel_extent(render_extent: vk::Extent2D, config: VolumetricsConfig) -> 
     }
 }
 
+/// #4781 / SAFE-D5-2026-09-23-01 — the froxel grid's X/Y are 3D-image
+/// dimensions, bounded by `maxImageDimension3D` (2048 on Mesa ANV and
+/// lavapipe), not by the 2D limit the render extent itself is checked
+/// against. Returns `config` with the XY divisor raised to the smallest value
+/// whose grid fits `max_image_dimension_3d`; unchanged when it already fits.
+/// The default divisor of 8 covers a 16384-wide render at a 2048 limit, so
+/// this only raises an explicit `--froxel-xy-divisor` below 8 at very large
+/// render extents. A result past the 2..=32 range is left for
+/// [`VolumetricsConfig::validate`] to reject by name.
+pub fn fit_froxel_divisor_to_device(
+    render_extent: vk::Extent2D,
+    config: VolumetricsConfig,
+    max_image_dimension_3d: u32,
+) -> VolumetricsConfig {
+    let needed = render_extent
+        .width
+        .max(render_extent.height)
+        .div_ceil(max_image_dimension_3d.max(1))
+        .max(1);
+    VolumetricsConfig {
+        froxel_xy_divisor: config.froxel_xy_divisor.max(needed),
+        ..config
+    }
+}
+
 /// RGB scattered radiance (HDR) + alpha transmittance. RGBA16F
 /// matches Frostbite's reference layout — 8 bytes per froxel,
 /// half-float precision is ample for both scattering ([0, ~10]) and
@@ -2735,6 +2760,74 @@ mod unit_tests {
             },
         );
         assert_eq!([explicit.width, explicit.height], [320, 180]);
+    }
+
+    /// #4781 / SAFE-D5-2026-09-23-01 — the froxel grid's X/Y are 3D-image
+    /// dimensions. `maxImageDimension3D` is 2048 on Mesa ANV and lavapipe,
+    /// the 2D limit a render extent can reach is 16384, and only
+    /// `--froxel-xy-divisor` guarded the gap between them.
+    #[test]
+    fn froxel_divisor_is_raised_to_fit_the_device_3d_limit() {
+        const MESA_MAX_3D: u32 = 2048;
+        const MAX_2D: u32 = 16384;
+        let largest = vk::Extent2D {
+            width: MAX_2D,
+            height: MAX_2D,
+        };
+
+        // The shipped default already fits the largest 2D render extent.
+        let default = VolumetricsConfig::default();
+        assert_eq!(
+            fit_froxel_divisor_to_device(largest, default, MESA_MAX_3D),
+            default,
+            "default divisor × 2048 must cover a 16384-wide render"
+        );
+
+        // Divisor 2 at a 5120-wide render would be a 2560-wide 3D image.
+        let fine = VolumetricsConfig {
+            froxel_xy_divisor: 2,
+            ..default
+        };
+        let wide = vk::Extent2D {
+            width: 5120,
+            height: 2880,
+        };
+        let fitted = fit_froxel_divisor_to_device(wide, fine, MESA_MAX_3D);
+        assert_eq!(fitted.froxel_xy_divisor, 3);
+        assert_eq!(
+            [fitted.froxel_z_slices, fitted.grid_far_meters],
+            [fine.froxel_z_slices, fine.grid_far_meters]
+        );
+        let extent = froxel_extent(wide, fitted);
+        assert!(extent.width <= MESA_MAX_3D && extent.height <= MESA_MAX_3D);
+
+        // The taller axis is bounded too.
+        let tall = vk::Extent2D {
+            width: 1080,
+            height: 8192,
+        };
+        let fitted = fit_froxel_divisor_to_device(tall, fine, MESA_MAX_3D);
+        assert_eq!(fitted.froxel_xy_divisor, 4);
+        assert!(froxel_extent(tall, fitted).height <= MESA_MAX_3D);
+
+        // Every divisor at every render extent up to the 2D limit fits.
+        for divisor in 2..=32 {
+            let config = VolumetricsConfig {
+                froxel_xy_divisor: divisor,
+                ..default
+            };
+            let fitted = fit_froxel_divisor_to_device(largest, config, MESA_MAX_3D);
+            assert!(
+                fitted.froxel_xy_divisor >= divisor,
+                "never lowers the request"
+            );
+            assert!(fitted.validate().is_ok());
+            let extent = froxel_extent(largest, fitted);
+            assert!(extent.width <= MESA_MAX_3D && extent.height <= MESA_MAX_3D);
+        }
+
+        // A device with a larger 3D limit keeps the fine request.
+        assert_eq!(fit_froxel_divisor_to_device(wide, fine, MAX_2D), fine);
     }
 
     #[test]

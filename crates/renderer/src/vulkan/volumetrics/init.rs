@@ -30,9 +30,33 @@ impl VolumetricsPipeline {
         pipeline_cache: vk::PipelineCache,
         render_extent: vk::Extent2D,
         config: VolumetricsConfig,
+        max_image_dimension_3d: u32,
     ) -> Result<Self> {
         let config = config.validate()?;
-        let result = Self::new_inner(device, allocator, pipeline_cache, render_extent, config);
+        // #4781 — size the images from a divisor the device's 3D limit can
+        // hold, but keep reporting the requested config through `config()`:
+        // resize rebuilds from it, so a later smaller render extent gets the
+        // finer requested grid back.
+        let fitted =
+            super::fit_froxel_divisor_to_device(render_extent, config, max_image_dimension_3d)
+                .validate()?;
+        if fitted != config {
+            log::warn!(
+                "Froxel XY divisor {} would exceed maxImageDimension3D {} at render {}x{}; \
+                 using {} for this extent",
+                config.froxel_xy_divisor,
+                max_image_dimension_3d,
+                render_extent.width,
+                render_extent.height,
+                fitted.froxel_xy_divisor,
+            );
+        }
+        let result = Self::new_inner(device, allocator, pipeline_cache, render_extent, fitted).map(
+            |mut pipeline| {
+                pipeline.config = config;
+                pipeline
+            },
+        );
         if let Err(ref e) = result {
             log::debug!("Volumetrics pipeline creation failed at: {e}");
         }

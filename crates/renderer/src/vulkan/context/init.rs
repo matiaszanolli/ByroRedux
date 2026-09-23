@@ -1042,12 +1042,21 @@ impl VulkanContext {
         // 14a-bis. Procedural volumetrics. Froxel XY derives from the render
         // extent after FSR sizing; Z/reach come from the validated renderer
         // config. Each FIF slot owns raw V-buffer + integrated RGBA16F volumes.
+        let max_image_dimension_3d = unsafe {
+            // SAFETY: `physical_device` was selected from `vk_instance` and
+            // both remain live for the duration of context construction.
+            vk_instance
+                .get_physical_device_properties(physical_device)
+                .limits
+                .max_image_dimension3_d
+        };
         let mut volumetrics = match VolumetricsPipeline::new(
             &device,
             &gpu_allocator,
             pipeline_cache,
             render_extent,
             renderer_config.volumetrics,
+            max_image_dimension_3d,
         ) {
             Ok(v) => Some(v),
             Err(e) => {
