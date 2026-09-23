@@ -180,7 +180,9 @@ pub enum GameKind {
     /// Skyrim LE + SE (HEDR 0.94 / record version 40 on the 2011 master,
     /// 1.71 / 44 on SE). New ARMO/WEAP/AMMO sub-record schemas.
     Skyrim,
-    /// Fallout 4 (HEDR 0.95). SCOL/PKIN/TXST and yet another item schema.
+    /// Fallout 4 (HEDR 1.0 on `Fallout4.esm`; 0.95 on five of the seven
+    /// DLC masters and CK-saved plugins, told apart from FO3 by TES4
+    /// record version 131). SCOL/PKIN/TXST and yet another item schema.
     Fallout4,
     /// Fallout 76 (HEDR is a **live-service value that drifts with game
     /// patches** — 68.0 → 266.0 → 279.0 over this project's history; see

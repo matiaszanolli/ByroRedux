@@ -941,6 +941,12 @@ pub(super) fn spawn_terrain_mesh(
             return None;
         }
     };
+    ctx.mesh_registry.note_mesh_provenance(
+        mesh_handle,
+        byroredux_renderer::MeshUploadSource::Terrain,
+        false,
+        Some(&format!("land({grid_x},{grid_y})")),
+    );
 
     // Resolve terrain base texture: pick the first available BTXT from
     // any quadrant, resolve via LTEX → texture path. Per-quadrant BTXT

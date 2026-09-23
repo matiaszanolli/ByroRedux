@@ -64,8 +64,8 @@ use byroredux_core::string::StringPool;
 use byroredux_nif::import::ImportedMaterial;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{
-    MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS, RenderDebugMode, VulkanContext,
-    box_vertices_colored, uv_sphere,
+    MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS, RenderDebugMode, SceneMeshUpload,
+    VulkanContext, box_vertices_colored, uv_sphere,
 };
 use byroredux_sdk::studio::CornellFit;
 
@@ -329,6 +329,10 @@ pub(crate) enum CornellOracleRung {
     /// L1/L2 with a bone-posed receiver and model-space normal map.
     L1Skinned,
     L2Skinned,
+    /// Two independently posed skinned receivers sharing ONE source mesh
+    /// through the exact acquire/register flow the NPC loader uses, with
+    /// a blocker shadowing only one of them.
+    L1SkinnedShared,
     L1Point,
     L1SkinnedPoint,
     /// Local spot cone, with rigid/posed receivers and a posed blocker.
@@ -444,6 +448,11 @@ pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleM
         };
         return manifest;
     }
+    if matches!(rung, CornellOracleRung::L1SkinnedShared) {
+        let mut manifest = cornell_oracle_manifest(CornellOracleRung::L1);
+        manifest.name = "l1_skinned_shared_pair";
+        return manifest;
+    }
     let (
         name,
         directional_radiance,
@@ -494,6 +503,7 @@ pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleM
             "material_lobe",
         ),
         CornellOracleRung::L1Skinned
+        | CornellOracleRung::L1SkinnedShared
         | CornellOracleRung::L2Skinned
         | CornellOracleRung::L1Point
         | CornellOracleRung::L1SkinnedPoint
@@ -538,7 +548,7 @@ pub(crate) fn cornell_oracle_rung(args: &[String]) -> Result<Option<CornellOracl
         return Ok(None);
     };
     let value = args.get(index + 1).ok_or_else(|| {
-        "--cornell-oracle requires one of: l0, l1, l2, l3, l4, l5, l1-skinned, l2-skinned, l1-point, l1-skinned-point, l1-spot, l1-skinned-spot, l2-skinned-spot, l2-cache-pressure, l2-cache-pressure-large, l3-mirrored, l4-mirrored"
+        "--cornell-oracle requires one of: l0, l1, l2, l3, l4, l5, l1-skinned, l1-skinned-shared, l2-skinned, l1-point, l1-skinned-point, l1-spot, l1-skinned-spot, l2-skinned-spot, l2-cache-pressure, l2-cache-pressure-large, l3-mirrored, l4-mirrored"
             .to_string()
     })?;
     let rung = match value.to_ascii_lowercase().as_str() {
@@ -549,6 +559,7 @@ pub(crate) fn cornell_oracle_rung(args: &[String]) -> Result<Option<CornellOracl
         "l4" => CornellOracleRung::L4,
         "l5" => CornellOracleRung::L5,
         "l1-skinned" => CornellOracleRung::L1Skinned,
+        "l1-skinned-shared" => CornellOracleRung::L1SkinnedShared,
         "l2-skinned" => CornellOracleRung::L2Skinned,
         "l1-point" => CornellOracleRung::L1Point,
         "l1-skinned-point" => CornellOracleRung::L1SkinnedPoint,
@@ -561,7 +572,7 @@ pub(crate) fn cornell_oracle_rung(args: &[String]) -> Result<Option<CornellOracl
         "l4-mirrored" => CornellOracleRung::L4Mirrored,
         _ => {
             return Err(format!(
-                "unknown Cornell oracle rung '{value}'; expected one of: l0, l1, l2, l3, l4, l5, l1-skinned, l2-skinned, l1-point, l1-skinned-point, l1-spot, l1-skinned-spot, l2-skinned-spot, l2-cache-pressure, l2-cache-pressure-large, l3-mirrored, l4-mirrored"
+                "unknown Cornell oracle rung '{value}'; expected one of: l0, l1, l2, l3, l4, l5, l1-skinned, l1-skinned-shared, l2-skinned, l1-point, l1-skinned-point, l1-spot, l1-skinned-spot, l2-skinned-spot, l2-cache-pressure, l2-cache-pressure-large, l3-mirrored, l4-mirrored"
             ));
         }
     };
@@ -672,6 +683,10 @@ pub(crate) fn setup_cornell_oracle_scene(
         fresnel_power: None,
         inheritance_flags: None,
     });
+
+    if matches!(rung, CornellOracleRung::L1SkinnedShared) {
+        return setup_shared_skin_pair_scene(world, ctx, world_offset, &manifest);
+    }
 
     if matches!(
         rung,
@@ -982,9 +997,105 @@ pub(crate) fn setup_cornell_oracle_scene(
     )
 }
 
+/// `l1-skinned-shared` — two skinned receivers that share ONE source mesh
+/// through the NPC loader's acquire/register flow (`MeshBuilder::
+/// upload_shared_pair`), independently posed (net identity vs net +45°
+/// yaw), plus an opaque blocker centred on the light ray through the
+/// second receiver's face so only it is shadowed.
+///
+/// Expected analytic values (albedo 1, unit radiance, IOR 1 / no
+/// specular): receiver A, N=(0,0,1), N·L = 2/√6 — the same value as the
+/// single-actor L1 gates; receiver B, N=(sin45°, 0, cos45°), N·L = √3/2.
+/// A leaked pose between the pair (palette or slot aliasing) reproduces
+/// A's value on B, and a shared/merged shadow state would darken A's
+/// unobstructed control field.
+fn setup_shared_skin_pair_scene(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    world_offset: Vec3,
+    manifest: &CornellOracleManifest,
+) -> (Vec3, Vec3) {
+    let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
+    let mut builder = MeshBuilder::new(ctx);
+    let (vertices, indices) = oracle_skinned_box_vertices([2.0, 4.0, 0.05]);
+    let (mesh_a, mesh_b) = builder.upload_shared_pair(&vertices, &indices);
+    let mut oracle_matte = matte([1.0; 3]);
+    oracle_matte.ior = 1.0;
+    oracle_matte.specular_strength = 0.0;
+
+    // Receiver A: bone -90° yaw cancels the +90° bind pose → net identity.
+    let receiver_a = spawn_object(
+        world,
+        mesh_a,
+        neutral,
+        Vec3::new(-3.0, 4.0, 0.0) + world_offset,
+        Quat::IDENTITY,
+        oracle_matte.clone(),
+        "oracle_shared_receiver_a",
+    );
+    attach_oracle_skin_with_pose(
+        world,
+        receiver_a,
+        Vec3::new(-3.0, 4.0, 0.0) + world_offset,
+        Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2),
+    );
+
+    // Receiver B: same source handle, bone -45° yaw → net +45° yaw.
+    let receiver_b = spawn_object(
+        world,
+        mesh_b,
+        neutral,
+        Vec3::new(3.0, 4.0, 0.0) + world_offset,
+        Quat::IDENTITY,
+        oracle_matte.clone(),
+        "oracle_shared_receiver_b",
+    );
+    attach_oracle_skin_with_pose(
+        world,
+        receiver_b,
+        Vec3::new(3.0, 4.0, 0.0) + world_offset,
+        Quat::from_rotation_y(-std::f32::consts::FRAC_PI_4),
+    );
+
+    // Blocker centred on the light ray through B's face centre: only B is
+    // shadowed; receiver A's field stays an unobstructed control.
+    let blocker_mesh = builder.box_mesh([0.75; 3]);
+    spawn_object(
+        world,
+        blocker_mesh,
+        neutral,
+        Vec3::new(3.0, 4.0, 0.0) + world_offset
+            + Vec3::from_array(manifest.direction_toward_source) * 2.5,
+        Quat::IDENTITY,
+        oracle_matte,
+        "oracle_shared_blocker",
+    );
+    builder.finish();
+
+    log::info!(
+        "Cornell oracle {} ready: two posed receivers share one source mesh; \
+         blocker shadows only receiver B",
+        manifest.name,
+    );
+    (
+        manifest.camera_position + world_offset,
+        manifest.camera_target + world_offset,
+    )
+}
+
 /// Inverse-pose geometry so a -90° bone yaw restores the L1/L2 world geometry.
 /// Unlike a root rotation, this forces both raster and RT to consume the skin.
 fn oracle_skinned_box(builder: &mut MeshBuilder<'_>, half: [f32; 3]) -> MeshHandle {
+    let (vertices, indices) = oracle_skinned_box_vertices(half);
+    builder.upload(&vertices, &indices)
+}
+
+/// Vertex prep shared by the single-receiver rungs and the shared-source
+/// pair: positions/normals/tangents pre-rotated +90° yaw (the inverse of
+/// the standard -90° bone pose), every vertex bound to bone 0.
+fn oracle_skinned_box_vertices(
+    half: [f32; 3],
+) -> (Vec<byroredux_renderer::Vertex>, Vec<u32>) {
     let (mut vertices, indices) = box_vertices_colored(half, [1.0; 3]);
     let inverse_pose = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
     for vertex in &mut vertices {
@@ -996,15 +1107,31 @@ fn oracle_skinned_box(builder: &mut MeshBuilder<'_>, half: [f32; 3]) -> MeshHand
         vertex.bone_indices = [0; 4];
         vertex.bone_weights = [1.0, 0.0, 0.0, 0.0];
     }
-    builder.upload(&vertices, &indices)
+    (vertices, indices)
 }
 
 fn attach_oracle_skin(world: &mut World, entity: byroredux_core::ecs::EntityId, position: Vec3) {
+    attach_oracle_skin_with_pose(
+        world,
+        entity,
+        position,
+        Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2),
+    );
+}
+
+/// Single-bone skin binding with an explicit bone pose. The standard rungs
+/// cancel the bind pose's +90° yaw with -90°; the shared-source pair also
+/// uses -45° so the second receiver keeps a visibly different orientation.
+fn attach_oracle_skin_with_pose(
+    world: &mut World,
+    entity: byroredux_core::ecs::EntityId,
+    position: Vec3,
+    bone_rotation: Quat,
+) {
     use byroredux_core::ecs::{RenderLayer, SkinnedMesh};
     let bone = world.spawn();
-    let rotation = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
-    world.insert(bone, Transform::new(position, rotation, 1.0));
-    world.insert(bone, GlobalTransform::new(position, rotation, 1.0));
+    world.insert(bone, Transform::new(position, bone_rotation, 1.0));
+    world.insert(bone, GlobalTransform::new(position, bone_rotation, 1.0));
     world.insert(
         entity,
         SkinnedMesh {
@@ -2222,6 +2349,59 @@ impl<'a> MeshBuilder<'a> {
         MeshHandle(handle)
     }
 
+    /// Upload the same immutable source geometry twice through the NPC
+    /// loader's acquire/register flow. The second upload must alias the
+    /// first handle instead of allocating a second buffer pair. Only the
+    /// representative enters the BLAS batch — re-entering an alias would
+    /// drop and rebuild the same handle's BLAS (mirrors `spawn_nif_mesh`'s
+    /// fresh-source-only spec push).
+    fn upload_shared_pair(
+        &mut self,
+        verts: &[byroredux_renderer::Vertex],
+        idxs: &[u32],
+    ) -> (MeshHandle, MeshHandle) {
+        let alloc = self.ctx.allocator.as_ref().unwrap();
+        let rt = self.ctx.device_caps.ray_query_supported;
+        let probe = SceneMeshUpload {
+            vertices: verts,
+            indices: idxs,
+            rt_enabled: rt,
+            cache_key: None,
+        };
+        let first = match self.ctx.mesh_registry.acquire_matching_scene_mesh(&probe) {
+            Some(handle) => handle,
+            None => {
+                let upload_ctx = GpuUploadCtx {
+                    device: &self.ctx.device,
+                    allocator: alloc,
+                    queue: &self.ctx.graphics_queue,
+                    command_pool: self.ctx.transfer_pool,
+                };
+                let handle = self
+                    .ctx
+                    .mesh_registry
+                    .upload_scene_mesh(upload_ctx, verts, idxs, rt, None)
+                    .expect("Cornell shared scene-mesh upload failed");
+                self.ctx
+                    .mesh_registry
+                    .register_scene_geometry_for_sharing(handle);
+                handle
+            }
+        };
+        let second = self
+            .ctx
+            .mesh_registry
+            .acquire_matching_scene_mesh(&probe)
+            .expect("second identical upload must alias the shared source mesh");
+        assert_eq!(
+            first, second,
+            "shared-pair fixture stopped sharing its source mesh"
+        );
+        self.pending
+            .push((first, verts.len() as u32, idxs.len() as u32));
+        (MeshHandle(first), MeshHandle(second))
+    }
+
     /// Build BLAS for every uploaded mesh in one batched call.
     fn finish(self) {
         self.ctx.build_blas_batched(&self.pending);
@@ -2292,6 +2472,7 @@ mod tests {
         );
         for (name, rung) in [
             ("l1-skinned", CornellOracleRung::L1Skinned),
+            ("l1-skinned-shared", CornellOracleRung::L1SkinnedShared),
             ("l2-skinned", CornellOracleRung::L2Skinned),
             ("l1-point", CornellOracleRung::L1Point),
             ("l1-skinned-point", CornellOracleRung::L1SkinnedPoint),

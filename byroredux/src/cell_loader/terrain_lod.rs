@@ -844,6 +844,12 @@ fn spawn_lod_block(
             return None;
         }
     };
+    ctx.mesh_registry.note_mesh_provenance(
+        mesh_handle,
+        byroredux_renderer::MeshUploadSource::Lod,
+        false,
+        Some(&format!("lod-terrain({bx0},{by0})")),
+    );
 
     let entity = world.spawn();
     world.insert(entity, Transform::IDENTITY);

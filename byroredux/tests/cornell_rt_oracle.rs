@@ -181,6 +181,60 @@ fn cornell_actor_and_object_receive_the_same_local_light() {
     }
 }
 
+/// Two receivers share ONE source mesh through the NPC loader's exact
+/// acquire/register flow but keep independent poses (net identity vs net
+/// +45° yaw) and independent shadow state (a blocker shadows only the
+/// second). If the share leaked pose or visibility, B would reproduce A's
+/// analytic value or A's field would darken.
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_shared_source_geometry_poses_light_and_shadow_independently() {
+    let workdir = OracleArtifacts::new("shared-actor-lighting");
+    let direct = capture(
+        workdir.path(),
+        "l1-skinned-shared",
+        DIRECT_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=3",
+        &[],
+    );
+    // Receiver A (left half): net-identity pose, N=(0,0,1), N·L = 2/√6 —
+    // the same analytic value as the single-actor L1 gate. Unshadowed by
+    // construction: the blocker sits on B's light ray only.
+    let expected_a = linear_to_srgb_u8(2.0 / 6.0_f32.sqrt());
+    for (x, y) in normalized_probes(&direct, &[(0.3125, 0.50), (0.25, 0.35), (0.375, 0.68)]) {
+        assert_greyscale_near(&direct, x, y, expected_a, 3, "shared receiver A control field");
+    }
+    // Receiver B (right half): same source handle, net +45° yaw,
+    // N=(sin45°, 0, cos45°), N·L = √3/2 on its unobstructed face. A
+    // leaked pose would show A's 2/√6 instead. Probe coordinates are
+    // calibrated against the actual projection: B's face plane sits at
+    // z≈1.2 (closer to the camera than A's z=0), and the blocker's shadow
+    // splits the face into two lit runs — probe the left run's centre.
+    let expected_b = linear_to_srgb_u8(3.0_f32.sqrt() / 2.0);
+    let lit = normalized_probes(&direct, &[(0.645, 0.50)])[0];
+    assert_greyscale_near(
+        &direct,
+        lit.0,
+        lit.1,
+        expected_b,
+        3,
+        "shared receiver B independent pose",
+    );
+    // B's face centre lies on the blocker's light ray: the shadow band
+    // between the two lit runs is black while A's probes above stay at
+    // full analytic radiance.
+    let shadowed = normalized_probes(&direct, &[(0.7005, 0.50)])[0];
+    assert_greyscale_near(
+        &direct,
+        shadowed.0,
+        shadowed.1,
+        0,
+        3,
+        "shared receiver B independent shadow",
+    );
+}
+
 /// FO4's non-shadow spotlight translates through the game boundary. Both
 /// receivers must obey the same cone and the posed blocker must still cast
 /// a material-aware RT shadow despite the source format's "NonShadow" name.

@@ -29,8 +29,8 @@ pub mod vertex;
 pub mod vulkan;
 
 pub use mesh::{
-    box_vertices_colored, cube_vertices, quad_vertices, triangle_vertices, uv_sphere, MeshRegistry,
-    SceneMeshUpload,
+    box_vertices_colored, cube_vertices, quad_vertices, triangle_vertices, uv_sphere,
+    MeshProvenance, MeshRegistry, MeshUploadSource, SceneMeshUpload,
 };
 pub use texture_registry::{TextureColorSpace, TextureRegistry};
 pub use tonemap::{aces, agx, tonemap, TonemapOp, TONEMAP_OP_ACES, TONEMAP_OP_AGX};

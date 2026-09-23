@@ -363,6 +363,12 @@ pub(crate) fn spawn_btr_block(
             return None;
         }
     };
+    ctx.mesh_registry.note_mesh_provenance(
+        mesh_handle,
+        byroredux_renderer::MeshUploadSource::Lod,
+        false,
+        Some(path.as_str()),
+    );
 
     let entity = world.spawn();
     // Positions are already baked to world space → identity transform.

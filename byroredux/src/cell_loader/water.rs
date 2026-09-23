@@ -439,6 +439,12 @@ pub(super) fn spawn_water_plane(
             return None;
         }
     };
+    ctx.mesh_registry.note_mesh_provenance(
+        mesh_handle,
+        byroredux_renderer::MeshUploadSource::Water,
+        false,
+        None,
+    );
 
     // #3733 (NIFAL-2026-08-30-D1-02) — clone before the texture-resolve
     // `if let` below consumes `normal_texture_path` by value. This is the
@@ -948,6 +954,12 @@ pub(crate) fn spawn_lod_water_plane(
             return None;
         }
     };
+    ctx.mesh_registry.note_mesh_provenance(
+        mesh_handle,
+        byroredux_renderer::MeshUploadSource::Water,
+        false,
+        None,
+    );
 
     // #3733 (NIFAL-2026-08-30-D1-02) — clone before the `if let` below
     // consumes `normal_texture_path` by value; see `spawn_water_plane`'s

@@ -647,6 +647,29 @@ struct FreshMeshUpload {
     shareable: bool,
 }
 
+/// Census-only provenance for a freshly uploaded cell-placement mesh: names
+/// the model asset + submesh so duplicate-geometry attribution can separate
+/// cell placements from the NPC / loose-NIF path. Skinning is derived from
+/// the vertex bytes by the census itself; morphs are stated here because
+/// morph deltas live outside the vertex buffer.
+fn note_cell_upload_provenance(
+    ctx: &mut VulkanContext,
+    pc: &PlacementCtx,
+    mesh: &byroredux_nif::import::ImportedMesh,
+    sub_mesh_index: usize,
+    handle: u32,
+) {
+    let label = pc
+        .mesh_cache_key
+        .map(|key| format!("{key}#{sub_mesh_index}"));
+    ctx.mesh_registry.note_mesh_provenance(
+        handle,
+        MeshUploadSource::CellLoader,
+        mesh.morph_targets.as_ref().is_some_and(|t| !t.is_empty()),
+        label.as_deref(),
+    );
+}
+
 /// Resolve cache hits up front, then upload every fresh submesh through one
 /// packed transfer submission. Entity creation remains in the original
 /// submesh order after this preparation step, preserving hierarchy and stable
@@ -789,6 +812,13 @@ pub(super) fn prepare_mesh_uploads(
                     ctx.mesh_registry
                         .register_scene_geometry_for_sharing(handle);
                 }
+                note_cell_upload_provenance(
+                    ctx,
+                    pc,
+                    &imported[fresh_mesh.sub_mesh_index],
+                    fresh_mesh.sub_mesh_index,
+                    handle,
+                );
                 prepared[fresh_mesh.sub_mesh_index] = PreparedMeshUpload::Ready {
                     handle,
                     fresh_for_rt: fresh_mesh.for_rt,
@@ -845,6 +875,13 @@ pub(super) fn prepare_mesh_uploads(
                             ctx.mesh_registry
                                 .register_scene_geometry_for_sharing(handle);
                         }
+                        note_cell_upload_provenance(
+                            ctx,
+                            pc,
+                            &imported[fresh_mesh.sub_mesh_index],
+                            fresh_mesh.sub_mesh_index,
+                            handle,
+                        );
                         prepared[fresh_mesh.sub_mesh_index] = PreparedMeshUpload::Ready {
                             handle,
                             fresh_for_rt: fresh_mesh.for_rt,

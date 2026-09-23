@@ -533,6 +533,12 @@ fn spawn_placement_lod_cell(
                     continue;
                 }
             };
+            ctx.mesh_registry.note_mesh_provenance(
+                handle,
+                byroredux_renderer::MeshUploadSource::Lod,
+                false,
+                Some(far.as_str()),
+            );
             mesh_handles.push(handle);
 
             // Diffuse texture from the `_far.nif`'s own shader texture set.

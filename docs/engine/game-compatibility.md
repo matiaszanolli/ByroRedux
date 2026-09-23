@@ -20,6 +20,57 @@ and 99.99% aggregate on Starfield (MeshesPatch's populated-`BSWeakReferenceNode`
 truncation tail, fixed by #2105; a residual 6/29,849 files with a distinct,
 still-unexplained cause remain truncated — see #1900 / NIF-D3-02).
 
+## Format identification
+
+What each title stamps on disk, and therefore what the parsers key on to
+tell them apart. Plugin and archive values were re-read from the installed
+retail masters / archives on 2026-09-23 (TES4 header + a full record-header
+walk of each master); NIF ranges are from the corpus sweeps behind
+[`crates/nif/src/version.rs`](../../crates/nif/src/version.rs)'s `bsver`
+constants. Anything not observed on disk is marked *unverified*.
+
+| Game | Year | Engine | NIF file version / user ver / BS ver | Archive | Plugin format | HEDR version | Form version (TES4 hdr / records) | Scripting |
+|---|---|---|---|---|---|---|---|---|
+| Oblivion | 2006 | Gamebryo 2.x | 20.0.0.4 (most) / 20.0.0.5, uv 10–11, BS 11; plus a v10.x tail (e.g. `_1stperson\skeleton.nif` at 10.1.0.106) and 6 pre-Gamebryo v3.3.0.13 markers | BSA v103, zlib | TES4, 20-byte record header, no form version | 1.0 | — | Oblivion script, compiled into the plugin (SCPT) |
+| Fallout 3 | 2008 | Gamebryo (Bethesda-modified) | 20.2.0.7 / 11 / 34 | BSA v104, zlib | TES4, 24-byte record header | 0.94 (GOTY); 0.85 pre-GOTY (*unverified*) | 2 / ≤ 15 | GECK script (Oblivion script family) |
+| Fallout: New Vegas | 2010 | Gamebryo (Bethesda-modified) | 20.2.0.7 / 11 / 34 | BSA v104, zlib | TES4, 24-byte record header | 1.34 | 2 / ≤ 15 | GECK script |
+| Skyrim (LE) | 2011 | Creation Engine 1 | 20.2.0.7 / 12 / 83 | BSA v104, zlib | TES4 + localized `.STRINGS`; no ESL | 0.94 | 40 / ≤ 40 on the 2011 master (43 in later LE patches — *unverified*) | Papyrus (`.pex`) |
+| Skyrim Special Edition | 2016 | Creation Engine 1 (64-bit, DX11) | 20.2.0.7 / 12 / 100 | BSA v105, LZ4 **frame** | TES4 + ESL (flag `0x200`, from 2017) | 1.71 (extended ESL range; 1.70 earlier — *unverified*) | 44 / ≤ 44 | Papyrus (`.pex`) |
+| Fallout 4 | 2015 | Creation Engine 1 (PBR, deferred) | 20.2.0.7 / 12 / 130 (DLC up to 139) | BA2 GNRL + DX10, zlib: v1 at launch, v7 / v8 after the 2024 update (installs mix all three) | TES4 + ESL (flag `0x200`, from 2017) | 1.0 (`Fallout4.esm`, `DLCRobot`, `DLCworkshop01`); 0.95 (other 5 DLC masters, CK-saved plugins) | 131 / ≤ 131 | Papyrus, extended (structs, namespaces, `Var`) |
+| Fallout 76 | 2018 | Creation Engine 1 (online, server-authoritative) | 20.2.0.7 / 12 / 155–167 | BA2 v1 GNRL + DX10, zlib | `SeventySix.esm` + `NW.esm`, no mod support | live-service value that drifts with patches: 68.0 → 266.0 → 279.0 (2026-09-20) | 209 / ≤ 209 (drifts with patches) | Papyrus (server-side) |
+| Starfield | 2023 | Creation Engine 2 (DX12 only) | 20.2.0.7 / 12 / 172–175; geometry in external `.mesh` files | BA2 v2 GNRL + DX10; v3 DX10 with LZ4 **block** (compression field 3) | TES4 + light (flag `0x100`, not `0x200`) + medium plugins (2024) | 0.96 | 581 / ≤ 581 (current patch; likely drifts) | Papyrus, further extended |
+| The Elder Scrolls VI / Fallout 5 | TBA | Creation Engine 3 | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown |
+
+Notes:
+
+- **BS version** is Bethesda's own version field in the NIF header
+  (`BSStreamHeader`) and changes far more often than the Gamebryo file
+  version, but it is not a unique game key on its own: FO3 and FNV both ship
+  BS 34 (retail FO3 NIFs detect as `FalloutNV`), and Skyrim needs the
+  `(user_version, bsver)` pair. See `NifVariant::detect`.
+- **HEDR is not a unique game key either.** Skyrim LE and FO3 GOTY both stamp
+  0.94, and FO4's 0.95 sits beside them. `GameKind::from_header`
+  ([`reader.rs`](../../crates/plugin/src/esm/reader.rs)) breaks those ties with
+  the TES4 header record's version word (FO3/FNV 2, Skyrim LE 40, SE 44,
+  FO4 131). FO76 is classified by a `HEDR >= 60` floor, never a pinned value.
+- **Form version** has two readings: the TES4 header record's own version
+  word (what the classifier reads) and the per-record version at header
+  offset 20 (what xEdit reports as form version). They agree from Skyrim on;
+  on FO3/FNV the TES4 header carries 2 while the records carry up to 15.
+- **Materials:** up to Skyrim SE, shader and material data live inside the
+  NIF. Fallout 4 and Fallout 76 add external `.bgsm` / `.bgem` files, named by
+  the NIF's shader property and merged over its in-NIF values rather than
+  replacing them. Starfield moves materials into a single layered-material
+  database (`materialsbeta.cdb`).
+- **FormID layout:** the high byte is the load-order index. Light plugins use
+  the `0xFE` prefix with a sub-index; Starfield's medium plugins use `0xFD`.
+  The plugin-header flag bit differs per game (#4639): Starfield marks light
+  masters with `0x100`, SSE / FO4 with `0x200`.
+- **Oblivion Remastered (2025)** still runs the original Gamebryo game logic
+  and data formats underneath, with Unreal Engine 5 handling rendering only.
+- **Creation Engine 3** is confirmed for The Elder Scrolls VI and Fallout 5,
+  but Bethesda has published no technical details as of September 2026.
+
 ## Parse-rate matrix
 
 Clean = no `NiUnknown` placeholders + no truncation. Recoverable = file

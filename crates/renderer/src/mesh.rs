@@ -165,6 +165,51 @@ fn mesh_cache_key(model_path: &str, sub_mesh_index: u32) -> MeshCacheKey {
     (path, sub_mesh_index)
 }
 
+/// Which engine path uploaded a mesh. Census-only diagnostic — never
+/// consulted by admission, sharing, compaction, or drawing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MeshUploadSource {
+    /// Cell placements (`prepare_mesh_uploads`): REFR/STAT model submeshes.
+    CellLoader,
+    /// Loose-NIF / NPC actor path (`spawn_nif_mesh`).
+    NifLoader,
+    Terrain,
+    Water,
+    /// Global-SSBO-only distant terrain/object LOD blocks.
+    Lod,
+    /// Synthetic fixtures (Cornell) and anything unannotated.
+    Other,
+}
+
+impl MeshUploadSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CellLoader => "cell_loader",
+            Self::NifLoader => "nif_loader",
+            Self::Terrain => "terrain",
+            Self::Water => "water",
+            Self::Lod => "lod",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Opt-in diagnostic record attached to a mesh handle after upload so the
+/// geometry census can attribute duplicates to an upload path and asset.
+/// Skinning is NOT recorded here: the census derives it from the vertex
+/// bytes (`bone_weights` non-zero), which is the ground truth for what
+/// sharing would have to match. Morphs cannot be derived from bytes — the
+/// mesh-handle-keyed morph-delta cache lives outside the vertex buffer —
+/// so the uploader states whether the imported mesh carried targets.
+#[derive(Debug, Clone)]
+pub struct MeshProvenance {
+    pub source: MeshUploadSource,
+    pub morphs: bool,
+    /// Asset label: NIF mesh name (loose/NPC path) or normalized
+    /// `model_path#submesh` (cell path).
+    pub label: Option<String>,
+}
+
 /// One scene mesh participating in a shared upload submission.
 ///
 /// The destination buffers remain per-mesh (BLAS and lifetime ownership are
@@ -324,6 +369,17 @@ pub struct MeshRegistry {
     /// `ash::Device` Arc fields whose validity invariants forbid
     /// zero-initialisation). See #879 / CELL-PERF-01.
     mesh_ref_counts: Vec<u32>,
+    /// Census-only upload provenance, keyed by mesh handle. Sparsely
+    /// populated: upload call sites opt in via
+    /// [`Self::note_mesh_provenance`]; unannotated meshes census as
+    /// `MeshUploadSource::Other`. A map rather than a parallel vec so
+    /// the three slot-creation sites (`upload`,
+    /// `upload_scene_mesh_global_only`, `upload_scene_meshes_batched`)
+    /// stay untouched — provenance is attached after a successful
+    /// upload, exactly where the asset identity is known. Cleared in
+    /// lockstep with `meshes` in [`Self::destroy_all`] so a
+    /// post-shutdown handle reuse can never inherit stale labels.
+    mesh_provenance: HashMap<u32, MeshProvenance>,
     /// Staging pool reused across global-geometry-SSBO builds and
     /// rebuilds. Lazy-initialised on the first `build_geometry_ssbo`
     /// call because `MeshRegistry::new()` runs before the device is
@@ -393,6 +449,7 @@ impl MeshRegistry {
             mesh_cache: HashMap::new(),
             geometry_cache: HashMap::new(),
             mesh_ref_counts: Vec::new(),
+            mesh_provenance: HashMap::new(),
             geometry_staging_pool: None,
             geometry_rebuild_ns: 0,
             geometry_rebuild: None,
@@ -923,6 +980,32 @@ impl MeshRegistry {
         Ok(handles)
     }
 
+    /// Attach census-only provenance to a live mesh handle. Silently
+    /// ignored for unknown/dead handles — annotation never extends a
+    /// mesh's lifetime or alters its identity.
+    pub fn note_mesh_provenance(
+        &mut self,
+        handle: u32,
+        source: MeshUploadSource,
+        morphs: bool,
+        label: Option<&str>,
+    ) {
+        if self
+            .meshes
+            .get(handle as usize)
+            .is_some_and(|slot| slot.is_some())
+        {
+            self.mesh_provenance.insert(
+                handle,
+                MeshProvenance {
+                    source,
+                    morphs,
+                    label: label.map(str::to_owned),
+                },
+            );
+        }
+    }
+
     /// Live refcount for `handle`, or `None` if the slot is empty
     /// (never allocated or already freed — refcount == 0). Read-only
     /// — used by the cell-unload pre-pass (#879) to decide whether
@@ -1092,6 +1175,7 @@ impl MeshRegistry {
         // `acquire_cached` can't hand out a dangling handle. See #879.
         self.mesh_cache.clear();
         self.geometry_cache.clear();
+        self.mesh_provenance.clear();
         // Drain deferred-destroy list. #732 factored the body into
         // `drain_deferred_destroy` so the App-level shutdown sweep can
         // call the same drain explicitly before `Drop`.

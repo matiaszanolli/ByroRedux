@@ -20,7 +20,7 @@ use byroredux_core::ecs::{
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_renderer::vulkan::GpuUploadCtx;
-use byroredux_renderer::{Vertex, VulkanContext};
+use byroredux_renderer::{SceneMeshUpload, Vertex, VulkanContext};
 
 use crate::asset_provider::{
     build_material_provider, build_material_texture_handles, build_texture_provider,
@@ -891,6 +891,37 @@ mod tests {
     }
 
     #[test]
+    fn npc_sharing_gate_excludes_only_morph_bearing_meshes() {
+        use super::npc_source_geometry_shareable;
+        use byroredux_nif::import::ImportedMorphTarget;
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![[1.0; 4]; 3],
+            vec![[0.0, 1.0, 0.0]; 3],
+            vec![[0.0; 4]; 3],
+            vec![[0.0; 2]; 3],
+            vec![0, 1, 2],
+        );
+        // Rigid and skinned sources both share: bone indices/weights are
+        // part of the byte identity, everything else about skinning is
+        // entity-owned (bind matrices, palette slot, per-entity BLAS).
+        assert!(npc_source_geometry_shareable(&mesh));
+        mesh.skin = Some(byroredux_nif::import::ImportedSkin::default());
+        assert!(npc_source_geometry_shareable(&mesh));
+        // Morph targets are the one exclusion: the morph-delta cache is
+        // keyed by mesh handle, so an alias would reuse another mesh's
+        // morph payload. Empty target sets stay shareable.
+        mesh.morph_targets = Some(Vec::new());
+        assert!(npc_source_geometry_shareable(&mesh));
+        mesh.morph_targets = Some(vec![ImportedMorphTarget {
+            original_index: 0,
+            name: None,
+            deltas: vec![[0.0; 3]; 3],
+        }]);
+        assert!(!npc_source_geometry_shareable(&mesh));
+    }
+
+    #[test]
     fn malformed_loose_spt_still_imports_placeholder() {
         let mut world = World::new();
         world.insert_resource(StringPool::new());
@@ -917,6 +948,23 @@ mod tests {
             Some("meshes/probe.nif")
         );
     }
+}
+
+/// NPC-path source-geometry sharing gate. Morph-bearing meshes keep a
+/// dedicated handle: the morph-delta cache is keyed by mesh handle
+/// (`create_morph_slot_for_mesh`), so an alias would let one mesh reuse
+/// another's morph payload. Skin data does NOT block sharing — the bone
+/// indices/weights are part of the shared vertex bytes (byte comparison is
+/// the identity), and everything else about skinning is per-entity:
+/// `SkinnedMesh` bind matrices and bone lists live on the entity, palette
+/// slots are entity-keyed, and each entity's bone indices resolve against
+/// its own palette in its own list order, exactly as an unshared upload
+/// would. This is deliberately narrower than the cell loader's gate
+/// (`mesh.skin.is_none() && morphs empty`) because Cydonia's census
+/// attributed 100% of remaining duplicates (271 meshes / 213 MB) to
+/// byte-identical SKINNED body/outfit sources on this path.
+pub(crate) fn npc_source_geometry_shareable(mesh: &byroredux_nif::import::ImportedMesh) -> bool {
+    mesh.morph_targets.as_ref().is_none_or(|t| t.is_empty())
 }
 
 /// Spawn one `ImportedMesh` from a loaded NIF: GPU upload, texture-role
@@ -1097,36 +1145,87 @@ fn spawn_nif_mesh(
     let for_rt = ctx.device_caps.ray_query_supported
         && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
         && !mesh.material.is_decal;
-    // upload_scene_mesh registers the vertices/indices into the global
-    // geometry SSBO that RT ray queries sample for reflection UVs.
-    // See #371.
-    let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
-        upload_ctx,
-        &vertices,
-        &mesh.indices,
-        for_rt,
-        None,
-    ) {
-        Ok(h) => h,
-        Err(e) => {
-            // #3406 — `{:#}` prints anyhow's full source chain. With
-            // `{}` this reported only the outermost context ("Failed to
-            // allocate buffer_staging staging memory") and swallowed the
-            // `InvalidAllocationCreateDesc` underneath that names the real
-            // cause, which is why #3402 needed an instrumented build.
-            log::warn!(
-                "Failed to upload NIF mesh '{}': {:#}",
-                mesh.name.as_deref().unwrap_or("?"),
-                e
-            );
-            return false;
+    // Exact-content source-geometry sharing. Cydonia's census attributed
+    // every remaining duplicate (271 meshes / 213 MB) to this path: every
+    // NPC wearing the same outfit re-uploaded byte-identical body/gear
+    // source vertices. Only the immutable vertex/index bytes are shared —
+    // skeleton bindings (SkinnedMesh), palette slots, per-entity skin
+    // output buffers, per-entity skinned BLAS, materials and transforms
+    // stay entity-owned. skin_vertices.comp reads the bind-pose source
+    // from the global geometry SSBO by the mesh's offsets, which an alias
+    // inherits unchanged. Morph-bearing meshes are excluded: the
+    // morph-delta cache is keyed by mesh handle, so an alias could reuse
+    // another mesh's morph payload. Sharing also runs after the scene
+    // admission cap closes — an exact hit allocates nothing, which is
+    // what lets duplicated NPC gear in past the pool limit instead of
+    // failing its upload.
+    let shareable = npc_source_geometry_shareable(mesh);
+    let shared_handle = shareable.then(|| {
+        ctx.mesh_registry.acquire_matching_scene_mesh(&SceneMeshUpload {
+            vertices: &vertices,
+            indices: &mesh.indices,
+            rt_enabled: for_rt,
+            cache_key: None,
+        })
+    });
+    let (mesh_handle, fresh_source) = match shared_handle.flatten() {
+        Some(handle) => (handle, false),
+        None => {
+            // upload_scene_mesh registers the vertices/indices into the
+            // global geometry SSBO that RT ray queries sample for
+            // reflection UVs. See #371.
+            let handle = match ctx.mesh_registry.upload_scene_mesh(
+                upload_ctx,
+                &vertices,
+                &mesh.indices,
+                for_rt,
+                None,
+            ) {
+                Ok(h) => h,
+                Err(e) => {
+                    // #3406 — `{:#}` prints anyhow's full source chain. With
+                    // `{}` this reported only the outermost context ("Failed
+                    // to allocate buffer_staging staging memory") and swallowed
+                    // the `InvalidAllocationCreateDesc` underneath that names
+                    // the real cause, which is why #3402 needed an instrumented
+                    // build.
+                    log::warn!(
+                        "Failed to upload NIF mesh '{}': {:#}",
+                        mesh.name.as_deref().unwrap_or("?"),
+                        e
+                    );
+                    return false;
+                }
+            };
+            if shareable {
+                ctx.mesh_registry
+                    .register_scene_geometry_for_sharing(handle);
+            }
+            (handle, true)
         }
     };
 
-    // Collect BLAS specs for ray-visible surfaces.
-    if for_rt {
+    // Collect BLAS specs for ray-visible surfaces. A shared hit reuses the
+    // representative's handle-keyed static BLAS (or the spec the
+    // representative pushes into this same batch) — pushing the aliased
+    // handle again would queue a redundant rebuild that drops and
+    // re-creates a valid BLAS. Mirrors the cell loader's
+    // `fresh_for_rt: false` on cache hits.
+    if for_rt && fresh_source {
         blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
     }
+
+    // Census-only provenance: name the asset class behind every NPC /
+    // loose-NIF upload so duplicate-geometry attribution can separate this
+    // path from cell placements. Skinning is derived from the vertex bytes
+    // by the census itself; morphs are stated here because morph deltas
+    // live outside the vertex buffer.
+    ctx.mesh_registry.note_mesh_provenance(
+        mesh_handle,
+        byroredux_renderer::MeshUploadSource::NifLoader,
+        mesh.morph_targets.as_ref().is_some_and(|t| !t.is_empty()),
+        mesh.name.as_deref(),
+    );
 
     // Mesh paths are interned `FixedString` handles (#609). Resolve
     // each populated slot to an owned `String` once for the
