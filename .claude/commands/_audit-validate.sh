@@ -118,8 +118,12 @@ command_files=(
     .claude/commands/audit-*/SKILL.md
     .claude/commands/_audit-*.md
 )
+# #4771 — the audit-baseline READMEs are audit infrastructure too: the
+# runtime one cited the pre-split `audit-runtime.md` skill path for weeks
+# with this gate green, because no glob reached it.
 reference_docs=(
     docs/engine/*.md
+    .claude/audit-baselines/*/README.md
 )
 skill_files=("${command_files[@]}" "${reference_docs[@]}")
 shopt -u nullglob

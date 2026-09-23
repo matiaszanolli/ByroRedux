@@ -88,7 +88,7 @@ move there is reported, never raised as a regression. Only the structural
 metrics gate. See `.claude/commands/audit-runtime/SKILL.md` §Phase 3 (the
 advisory note) + §Phase 4.
 
-See `.claude/commands/audit-runtime.md` §Phase 3 for the canonical metric
+See `.claude/commands/audit-runtime/SKILL.md` §Phase 3 for the canonical metric
 list and direction rules.
 
 ## What NOT to commit here
