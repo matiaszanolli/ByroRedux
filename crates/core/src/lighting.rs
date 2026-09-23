@@ -155,52 +155,17 @@ impl VisibilityMask {
         (self.0 & other.0) == other.0
     }
 
-    /// Compatibility mapping performed once by a legacy importer.
-    ///
-    /// Legacy lights without an authored projection bit are still real local
-    /// emitters. They need structure for room occlusion, static props so
-    /// furniture and kit walls block them (W2.10, flipped 2026-09-21 — see
-    /// [`Self::for_legacy_local_light`]'s table for the evidence), and
-    /// dynamic actors for visible contact shadows. Foliage, glass, and
-    /// effects stay outside that fallback until the source explicitly
-    /// requests a full-scene projection: alpha-card foliage combs, glass is
-    /// transmissive, effects are not solid.
-    pub const fn for_legacy_projection(casts_full_scene_shadows: bool) -> Self {
-        if casts_full_scene_shadows {
-            Self::FULL
-        } else {
-            Self(Self::ARCHITECTURE.0 | Self::STATIC_PROP.0 | Self::DYNAMIC_ACTOR.0)
-        }
+    /// All imported lights use the same material-aware visibility query.
+    /// Shadow-map allocation in a source engine is not a physical property
+    /// of its light. Alpha cutouts and glass transmission are resolved by the
+    /// shared transport shader; effect cards remain non-occluding there.
+    pub const fn for_legacy_projection(_casts_full_scene_shadows: bool) -> Self {
+        Self::FULL
     }
 
-    /// W2.10 (light & shadow correctness campaign) — THE shadow-visibility
-    /// policy for legacy local emitters, stated as a decision table instead
-    /// of an inline bool. Every legacy producer routes through this via
-    /// [`crate::ecs::components::LightSource::from_legacy_world_units`]:
-    ///
-    /// | source class | shadow_flags in | mask out |
-    /// |---|---|---|
-    /// | NIF-direct `NiLight` (in-mesh flame/fixture) | `SHADOW_OMNIDIRECTIONAL` (set by the spawn boundary) | `FULL` — authored surface intent |
-    /// | ESM LIGH, authored projection bit (SPOTLIGHT / HEMISPHERE / OMNIDIRECTIONAL) | that bit | `FULL` — authored intent |
-    /// | ESM LIGH, FO3/FNV zero-authoring | `SHADOW_OMNIDIRECTIONAL` (`canonical_light_shadow_flags` correction) | `FULL` |
-    /// | ESM LIGH, Starfield Light Type 1 (Shadow Spotlight) | `SHADOW_SPOTLIGHT` | `FULL` |
-    /// | ESM LIGH, Starfield Light Type 2 (NonShadow Spotlight) | `0` | conservative — the source engine traces no spot shadows from it |
-    /// | ESM LIGH, no authored projection (the common room light) | `0` | conservative: `ARCHITECTURE \| STATIC_PROP \| DYNAMIC_ACTOR` |
-    ///
-    /// The conservative row **includes `STATIC_PROP` as of 2026-09-21**
-    /// (W2.10's open question, resolved). The pre-flip mask
-    /// (`ARCHITECTURE | DYNAMIC_ACTOR`, props untraced) produced
-    /// real-content shadow leaks on the live Markarth SilverBloodInn
-    /// real-content A/B the flip was gated on: unflagged room lights'
-    /// shadow rays passed through every STATIC_PROP occluder, so actors
-    /// standing behind kit walls and furniture cast visible silhouettes
-    /// *through* them ("objects visible through walls as shadows"). The
-    /// Cornell L2/L5 oracle captures ran green post-flip; foliage, glass
-    /// and effects remain outside the fallback for the reasons the
-    /// previous conservative choice documented (alpha-card combing,
-    /// transmission, non-solid emitters). This table remains the single
-    /// home of the policy; any further change happens HERE, not in a
-    /// producer.
+    /// Single import policy for NIF lights and ESM LIGH records in every
+    /// game. Projection flags are preserved on `LightSource` for diagnostics
+    /// but cannot remove objects or actors from a light's visibility query.
     pub const fn for_legacy_local_light(shadow_flags: u32) -> Self {
         Self::for_legacy_projection(shadow_flags != 0)
     }
@@ -400,8 +365,9 @@ mod tests {
             LIGHT_FLAG_SHADOW_HEMISPHERE, LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
             LIGHT_FLAG_SHADOW_SPOTLIGHT,
         };
-        // Every authored projection class -> FULL.
+        // An absent projection bit must behave just like every authored one.
         for flags in [
+            0,
             LIGHT_FLAG_SHADOW_SPOTLIGHT,
             LIGHT_FLAG_SHADOW_HEMISPHERE,
             LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
@@ -409,33 +375,14 @@ mod tests {
             assert_eq!(
                 VisibilityMask::for_legacy_local_light(flags),
                 VisibilityMask::FULL,
-                "flags {flags:#06x} are authored projection intent"
+                "flags {flags:#06x} must not change physical visibility"
             );
         }
-        // No authored projection -> the conservative fallback.
         assert_eq!(
-            VisibilityMask::for_legacy_local_light(0),
-            VisibilityMask::for_legacy_projection(false)
+            VisibilityMask::for_legacy_projection(false),
+            VisibilityMask::FULL
         );
-        let conservative = VisibilityMask::for_legacy_local_light(0);
-        assert!(conservative.contains(VisibilityMask::ARCHITECTURE));
-        assert!(conservative.contains(VisibilityMask::DYNAMIC_ACTOR));
-        // Static props are IN the conservative row since 2026-09-21: the
-        // pre-flip mask let unflagged room lights' shadow rays pass through
-        // every STATIC_PROP occluder, casting actor silhouettes through kit
-        // walls and furniture on the Markarth SilverBloodInn real-content
-        // A/B that W2.10 gated the flip on. Foliage/glass/effects stay out.
-        assert!(
-            conservative.contains(VisibilityMask::STATIC_PROP),
-            "removing STATIC_PROP from the unflagged fallback reintroduces \
-             the through-wall/through-furniture shadow leaks (W2.10, \
-             Markarth SilverBloodInn 2026-09-21)"
-        );
-        assert!(!conservative.contains(VisibilityMask::FOLIAGE));
-        assert!(!conservative.contains(VisibilityMask::GLASS));
-        assert!(!conservative.contains(VisibilityMask::EFFECT));
     }
-
 
     #[test]
     fn bethesda_scale_round_trips_through_metres() {
@@ -528,12 +475,8 @@ mod tests {
         );
         assert!(fill.visibility.contains(VisibilityMask::ARCHITECTURE));
         assert!(fill.visibility.contains(VisibilityMask::DYNAMIC_ACTOR));
-        // W2.10 flip (2026-09-21): props/furniture now block unflagged room
-        // lights too — the pre-flip mask cast actor silhouettes through
-        // STATIC_PROP kit walls and furniture on the Markarth real-content
-        // A/B.
         assert!(fill.visibility.contains(VisibilityMask::STATIC_PROP));
-        assert!(!fill.visibility.contains(VisibilityMask::GLASS));
+        assert!(fill.visibility.contains(VisibilityMask::GLASS));
 
         let shadowed = Emitter {
             visibility: VisibilityMask::for_legacy_projection(true),
@@ -542,5 +485,6 @@ mod tests {
         assert!(shadowed.visibility.contains(VisibilityMask::STATIC_PROP));
         assert!(shadowed.visibility.contains(VisibilityMask::DYNAMIC_ACTOR));
         assert!(shadowed.visibility.contains(VisibilityMask::GLASS));
+        assert_eq!(fill.visibility, shadowed.visibility);
     }
 }

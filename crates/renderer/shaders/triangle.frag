@@ -52,6 +52,7 @@ layout(location = 9) in vec4 fragSplat1; // layers 4-7
 // bitangent sign (w). Zero magnitude (xyz < epsilon) signals "no
 // authored tangent — fall back to screen-space derivative TBN."
 layout(location = 10) in vec4 fragTangent;
+layout(location = 11) in mat3 fragNormalTransform;
 
 // Main render pass has 7 color attachments (Phase 2).
 layout(location = 0) out vec4 outColor;        // HDR color (direct light only)
@@ -626,16 +627,9 @@ void main() {
             // facecustomization faces +0.41/+0.48 vs −0.42/−0.53
             // (byroredux/examples/msn_basis_probe.rs, #3922 evidence).
             mn.z = -mn.z;
-            mat3 model3 = mat3(inst.model);
-            vec3 worldMn;
-            if ((inst.flags & INSTANCE_FLAG_NON_UNIFORM_SCALE) != 0u) {
-                float det = determinant(model3);
-                worldMn = abs(det) > 1e-6
-                    ? transpose(inverse(model3)) * mn
-                    : mn;
-            } else {
-                worldMn = model3 * mn;
-            }
+            // The root model is not a skin transform. Follow the same posed
+            // frame as the visible geometry so heads/bodies turn in the light.
+            vec3 worldMn = fragNormalTransform * mn;
             N = dot(worldMn, worldMn) > 0.0
                 ? normalize(worldMn)
                 : N;
@@ -3294,9 +3288,8 @@ void main() {
             // Accumulate as if unshadowed (legacy subtractive estimator
             // only — ReSTIR adds the single shadowed sample after the loop).
             // A source with neither visibility bit contributes directly.
-            // Physical cell lights set structural visibility even when their
-            // authored full-shadow bit is clear, so dungeon walls still gate
-            // their radiance without clutter/actors becoming prop casters.
+            // Imported cell lights use full material-aware visibility, so
+            // walls, objects and actors all participate in the same query.
             if (!useRestir || !needsVisibility) {
                 Lo += shadowableRadiance;
             }

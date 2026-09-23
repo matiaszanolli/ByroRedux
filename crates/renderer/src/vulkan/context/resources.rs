@@ -437,27 +437,21 @@ impl VulkanContext {
         // pre-/mid-batch budget checks can select eviction candidates.
         accel.mark_static_blas_used(&handles);
         let visible = handles.len();
+        let required_bytes = accel.required_static_blas_bytes(&handles);
         handles.retain(|&handle| !accel.has_blas(handle));
 
         if handles.is_empty() {
             return 0;
         }
 
-        // #3540 — bound the recovery. `build_blas_batched` evicts to stay
-        // inside the static-BLAS budget, so this pass is only coherent while
-        // the whole visible rigid set fits that budget; past it, every BLAS
-        // restored displaces another one the same frame still needs and the
-        // next frame rebuilds those instead — a cycle that never converges.
-        // Starfield's `citycydoniamainlevel` (~95 k static draws) is the
-        // observed case: single-threaded on frame 0 for over ten minutes,
-        // RSS oscillating 12 -> 20.6 GB. `plan_static_blas_restore` skips
-        // the pass when the set cannot fit and otherwise caps how many BLAS
-        // one frame may rebuild.
+        // Bound recovery using actual protected residency. A cache-wide
+        // average incorrectly prices small missing casters like large unused
+        // meshes and can prevent eviction/recovery entirely. Working-set
+        // protection above prevents the old #3540 rebuild/evict cycle;
+        // count/deadline limits and the builder's admission guard still apply.
         let restore_count = crate::vulkan::acceleration::plan_static_blas_restore(
             handles.len(),
-            visible,
-            accel.static_blas_bytes(),
-            accel.live_static_blas_count(),
+            required_bytes,
             accel.blas_budget_bytes(),
             crate::vulkan::acceleration::MAX_STATIC_BLAS_RESTORES_PER_FRAME,
         );
@@ -467,12 +461,11 @@ impl VulkanContext {
             static OVER_BUDGET_WARNED: std::sync::Once = std::sync::Once::new();
             OVER_BUDGET_WARNED.call_once(|| {
                 log::warn!(
-                    "Static BLAS recovery skipped: {visible} rigid draws project past the \
-                     {:.1} MB BLAS budget ({} resident, {:.1} MB). Ray-traced shadows / \
+                    "Static BLAS recovery skipped: required residency for {visible} rigid draws fills the \
+                     {:.1} MB BLAS budget ({:.1} MB required). Ray-traced shadows / \
                      reflections / GI will miss the over-budget tail; raster is unaffected.",
                     accel.blas_budget_bytes() as f64 / (1024.0 * 1024.0),
-                    accel.live_static_blas_count(),
-                    accel.static_blas_bytes() as f64 / (1024.0 * 1024.0),
+                    required_bytes as f64 / (1024.0 * 1024.0),
                 );
             });
             return 0;
@@ -506,7 +499,7 @@ impl VulkanContext {
                         // global-buffer range appended since the last GPU
                         // rebuild would index past the bound buffer's end.
                         (None, None) if !self.mesh_registry.is_geometry_resident(handle) => {
-                            return None
+                            return None;
                         }
                         (None, None) => (
                             global_vertex_buffer?,
@@ -553,7 +546,17 @@ impl VulkanContext {
                 Some(&self.transfer_fence),
                 &sources[next..end],
             ) {
-                Ok(count) => restored += count,
+                Ok(count) => {
+                    restored += count;
+                    if count < end - next {
+                        // Admission could not finish even this chunk. Let
+                        // deferred frees retire before retrying next frame;
+                        // do not spend the remaining deadline on larger
+                        // batches against the same exhausted allocation pool.
+                        next = end;
+                        break;
+                    }
+                }
                 Err(e) => {
                     // Stop rather than retry this frame: the next frame starts
                     // from whatever is still missing.
@@ -833,6 +836,10 @@ mod tests {
         let missing_filter = body
             .find("handles.retain(|&handle| !accel.has_blas(handle))")
             .expect("only missing BLAS should enter the recovery batch");
+        let required_bytes = body
+            .find("accel.required_static_blas_bytes(&handles)")
+            .expect("the plan must use actual current caster residency, not a cache-wide mean");
+        assert!(protect < required_bytes && required_bytes < missing_filter);
         let build = body
             .find("accel.build_blas_batched(")
             .expect("missing static BLAS must be rebuilt before TLAS");

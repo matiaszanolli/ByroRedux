@@ -11,7 +11,7 @@ use super::*;
 use byroredux_core::ecs::SpeedTreeWind;
 use byroredux_core::string::FixedString;
 use byroredux_nif::import::{
-    slot_to_colocated_role, slot_to_role, TextureRole, TextureSlotContext,
+    TextureRole, TextureSlotContext, slot_to_colocated_role, slot_to_role,
 };
 
 /// Effective per-mesh texture-slot paths, resolved in one StringPool
@@ -347,9 +347,7 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
             // matching the old first-wins fill order between an XATO/XTXR
             // override and the MNAM BGSM chain.
             (textures.emissive, sources.emissive) = resolve_effective(
-                ov.and_then(|o| {
-                    pick(2, o.glow, TextureRole::Emissive).or(o.bgsm_emissive)
-                }),
+                ov.and_then(|o| pick(2, o.glow, TextureRole::Emissive).or(o.bgsm_emissive)),
                 material.textures.emissive,
                 sources.emissive,
             );
@@ -426,9 +424,7 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                 sources.environment_mask,
             );
             (textures.inner_layer, sources.inner_layer) = resolve_effective(
-                ov.and_then(|o| {
-                    pick(6, o.inner, TextureRole::InnerLayer).or(o.bgsm_inner_layer)
-                }),
+                ov.and_then(|o| pick(6, o.inner, TextureRole::InnerLayer).or(o.bgsm_inner_layer)),
                 material.textures.inner_layer,
                 sources.inner_layer,
             );
@@ -648,6 +644,7 @@ struct FreshMeshUpload {
     sub_mesh_index: usize,
     vertices: Vec<byroredux_renderer::Vertex>,
     for_rt: bool,
+    shareable: bool,
 }
 
 /// Resolve cache hits up front, then upload every fresh submesh through one
@@ -661,7 +658,9 @@ pub(super) fn prepare_mesh_uploads(
     paths: &[ResolvedMeshPaths],
 ) -> Vec<PreparedMeshUpload> {
     let mut prepared = vec![PreparedMeshUpload::Failed; imported.len()];
-    let mut fresh = Vec::new();
+    let mut fresh: Vec<FreshMeshUpload> = Vec::new();
+    let mut fresh_by_content: std::collections::HashMap<u64, Vec<usize>> = Default::default();
+    let mut content_aliases = Vec::new();
     // #3510 — indices whose geometry belongs to an earlier mesh. They are
     // resolved after the batch upload below, by acquiring the
     // representative's cache entry, so N instances of one FO4 precombine
@@ -696,21 +695,59 @@ pub(super) fn prepare_mesh_uploads(
             };
             continue;
         }
-        if !ctx.mesh_registry.scene_geometry_admission_open() {
-            // The registry has already reached its bounded resident geometry
-            // allowance. Keep cache hits above usable, but do not decode,
-            // batch, and fail every remaining fresh mesh in this cell.
-            continue;
-        }
-
         let material = paths[sub_mesh_index].material(mesh);
         let for_rt = ctx.device_caps.ray_query_supported
             && material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
             && !material.is_decal;
+        // Deformation has identity outside the vertex buffer (notably the
+        // mesh-handle-keyed morph-delta cache). Only immutable geometry enters
+        // cross-path sharing; skin/morph owners retain their existing path key.
+        let shareable = mesh.skin.is_none()
+            && mesh.morph_targets.as_ref().is_none_or(Vec::is_empty);
+        let vertices = super::super::lod_support::imported_mesh_to_vertices(mesh);
+        if shareable {
+            let upload = SceneMeshUpload {
+                vertices: &vertices,
+                indices: &mesh.indices,
+                rt_enabled: for_rt,
+                cache_key: pc.mesh_cache_key.map(|key| (key, sub_mesh_index_u32)),
+            };
+            if let Some(handle) = ctx.mesh_registry.acquire_matching_scene_mesh(&upload) {
+                prepared[sub_mesh_index] = PreparedMeshUpload::Ready {
+                    handle,
+                    fresh_for_rt: false,
+                };
+                continue;
+            }
+            let bucket = fresh_by_content
+                .entry(upload.geometry_fingerprint())
+                .or_default();
+            if let Some(&representative) = bucket.iter().find(|&&index| {
+                let candidate = &fresh[index];
+                upload.same_geometry(&SceneMeshUpload {
+                    vertices: &candidate.vertices,
+                    indices: &imported[candidate.sub_mesh_index].indices,
+                    rt_enabled: candidate.for_rt,
+                    cache_key: None,
+                })
+            }) {
+                content_aliases.push((sub_mesh_index, fresh[representative].sub_mesh_index));
+                continue;
+            }
+            if ctx.mesh_registry.scene_geometry_admission_open() {
+                bucket.push(fresh.len());
+            }
+        }
+        if !ctx.mesh_registry.scene_geometry_admission_open() {
+            // Exact-content and path hits remain usable without growing the
+            // pool. Unseen geometry still obeys the unchanged admission cap.
+            continue;
+        }
         fresh.push(FreshMeshUpload {
             sub_mesh_index,
-            vertices: super::super::lod_support::imported_mesh_to_vertices(mesh),
+            vertices,
             for_rt,
+            shareable,
         });
     }
 
@@ -748,6 +785,10 @@ pub(super) fn prepare_mesh_uploads(
     ) {
         Ok(handles) => {
             for (fresh_mesh, handle) in fresh.iter().zip(handles) {
+                if fresh_mesh.shareable {
+                    ctx.mesh_registry
+                        .register_scene_geometry_for_sharing(handle);
+                }
                 prepared[fresh_mesh.sub_mesh_index] = PreparedMeshUpload::Ready {
                     handle,
                     fresh_for_rt: fresh_mesh.for_rt,
@@ -800,6 +841,10 @@ pub(super) fn prepare_mesh_uploads(
                 };
                 match upload_result {
                     Ok(handle) => {
+                        if fresh_mesh.shareable {
+                            ctx.mesh_registry
+                                .register_scene_geometry_for_sharing(handle);
+                        }
                         prepared[fresh_mesh.sub_mesh_index] = PreparedMeshUpload::Ready {
                             handle,
                             fresh_for_rt: fresh_mesh.for_rt,
@@ -813,6 +858,19 @@ pub(super) fn prepare_mesh_uploads(
         }
     }
 
+    for (alias, representative) in content_aliases {
+        if let PreparedMeshUpload::Ready { handle, .. } = prepared[representative] {
+            if let Some(handle) = ctx
+                .mesh_registry
+                .acquire_mesh_alias(handle, pc.mesh_cache_key.map(|key| (key, alias as u32)))
+            {
+                prepared[alias] = PreparedMeshUpload::Ready {
+                    handle,
+                    fresh_for_rt: false,
+                };
+            }
+        }
+    }
     resolve_shared_geometry(ctx, pc, &shared, &mut prepared);
     prepared
 }
@@ -1688,13 +1746,17 @@ mod tests {
              canonicalizer (#4514)"
         );
         assert_eq!(
-            synth.matches("LightSource::from_legacy_world_units(").count(),
+            synth
+                .matches("LightSource::from_legacy_world_units(")
+                .count(),
             2,
             "the synth_child site census drifted — re-classify any new \
              ESM-light spawn site before extending this guard (#4514)"
         );
         assert_eq!(
-            spawn.matches("LightSource::from_legacy_world_units(").count(),
+            spawn
+                .matches("LightSource::from_legacy_world_units(")
+                .count(),
             1,
             "spawn.rs must keep exactly the non-ESM NIF-light site (#4514)"
         );
@@ -1733,13 +1795,17 @@ mod tests {
         // `build_material_texture_handles(` can only match the call, not
         // either file's import line.
         assert_eq!(
-            production.matches("build_material_texture_handles(").count(),
+            production
+                .matches("build_material_texture_handles(")
+                .count(),
             1,
             "the cell-loader spawn path must construct MaterialTextureHandles \
              through the shared producer (#4529)"
         );
         assert_eq!(
-            nif_loader.matches("build_material_texture_handles(").count(),
+            nif_loader
+                .matches("build_material_texture_handles(")
+                .count(),
             1,
             "the loose-NIF spawn path must construct MaterialTextureHandles \
              through the shared producer (#4529)"

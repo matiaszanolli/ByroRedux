@@ -109,6 +109,153 @@ fn cornell_l0_l2_transport_ladder_matches_analytic_probes() {
     assert_l2_shadow_transport(&l2);
 }
 
+/// Same final geometry and light as L1/L2, reached through a rotated bone.
+/// Pins model-space normal response and skinned actor BLAS shadow coverage.
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_skinned_actor_receives_light_and_casts_shadows() {
+    let workdir = OracleArtifacts::new("skinned-lighting");
+    let lit = capture(
+        workdir.path(),
+        "l1-skinned",
+        DIRECT_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=1",
+        &[],
+    );
+    let expected = linear_to_srgb_u8(2.0 / 6.0_f32.sqrt());
+    for (x, y) in normalized_probes(&lit, &[(0.35, 0.25), (0.50, 0.50), (0.65, 0.75)]) {
+        assert_greyscale_near(&lit, x, y, expected, 3, "posed actor Lambert response");
+    }
+    let shadow = capture(
+        workdir.path(),
+        "l2-skinned",
+        SHADOW_VISIBILITY_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=2",
+        &[],
+    );
+    assert_l2_shadow_transport(&shadow);
+}
+
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_actor_and_object_receive_the_same_local_light() {
+    let workdir = OracleArtifacts::new("local-actor-lighting");
+    let rigid = capture(
+        workdir.path(),
+        "l1-point",
+        DIRECT_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=1",
+        &[],
+    );
+    let actor = capture(
+        workdir.path(),
+        "l1-skinned-point",
+        DIRECT_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=1",
+        &[],
+    );
+    // At the centre, N.L=2/sqrt(6), d²=24, authored radius=8.
+    let expected = linear_to_srgb_u8((2.0 / 6.0_f32.sqrt()) / (1.0 + 24.0 / 64.0));
+    let centre = normalized_probes(&actor, &[(0.5, 0.5)])[0];
+    assert_greyscale_near(
+        &actor,
+        centre.0,
+        centre.1,
+        expected,
+        3,
+        "posed actor point-light attenuation",
+    );
+    for (x, y) in normalized_probes(&rigid, &[(0.35, 0.25), (0.50, 0.50), (0.65, 0.75)]) {
+        assert_greyscale_near(
+            &actor,
+            x,
+            y,
+            rigid.get_pixel(x, y).0[0],
+            3,
+            "actor/object local light parity",
+        );
+    }
+}
+
+/// FO4's non-shadow spotlight translates through the game boundary. Both
+/// receivers must obey the same cone and the posed blocker must still cast
+/// a material-aware RT shadow despite the source format's "NonShadow" name.
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_spot_cone_lights_actors_and_objects_and_casts_actor_shadows() {
+    let workdir = OracleArtifacts::new("spot-actor-lighting");
+    let rigid = capture(
+        workdir.path(),
+        "l1-spot",
+        DIRECT_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=1",
+        &[],
+    );
+    let actor = capture(
+        workdir.path(),
+        "l1-skinned-spot",
+        DIRECT_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=1",
+        &[],
+    );
+    let blocked = capture(
+        workdir.path(),
+        "l2-skinned-spot",
+        DIRECT_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=2",
+        &[],
+    );
+
+    // The cone axis passes through the receiver centre. Angular weight=1;
+    // its Lambert/distance term must match the point-light analytic oracle.
+    let expected = linear_to_srgb_u8((2.0 / 6.0_f32.sqrt()) / (1.0 + 24.0 / 64.0));
+    for image in [&rigid, &actor] {
+        let centre = normalized_probes(image, &[(0.5, 0.5)])[0];
+        assert_greyscale_near(image, centre.0, centre.1, expected, 3, "spot axis radiance");
+        // These are visible receiver points outside the 20-degree half cone,
+        // not sky/background. A mistaken Point translation lights both.
+        for (x, y) in normalized_probes(image, &[(0.30, 0.30), (0.70, 0.70)]) {
+            assert_greyscale_near(image, x, y, 0, 2, "outside authored spot cone");
+        }
+    }
+    for (x, y) in normalized_probes(&rigid, &[(0.48, 0.45), (0.50, 0.50), (0.52, 0.55)]) {
+        assert_greyscale_near(
+            &actor,
+            x,
+            y,
+            rigid.get_pixel(x, y).0[0],
+            3,
+            "actor/object spot-light parity",
+        );
+    }
+    // Visible receiver below the blocker, inside the spot cone. Matched
+    // open/blocked direct light prevents a cone miss from faking a shadow.
+    let shadow = normalized_probes(&actor, &[(0.484_375, 0.638_889)])[0];
+    assert!(
+        actor
+            .get_pixel(shadow.0, shadow.1)
+            .0
+            .iter()
+            .all(|v| *v > 64),
+        "spot shadow control must be illuminated"
+    );
+    assert_greyscale_near(
+        &blocked,
+        shadow.0,
+        shadow.1,
+        0,
+        2,
+        "posed actor casts spot shadow",
+    );
+}
+
 /// L3 is an unobstructed point-lit local medium. L4 changes exactly one thing:
 /// a thin opaque partition separates its left half from the light. Besides
 /// testing ray-query visibility, the narrow edge band catches any later XY
@@ -125,6 +272,14 @@ fn cornell_l3_l4_volumetric_partition_does_not_leak() {
         "tlas_emitted=1",
         &[],
     );
+    let l3_mirrored = capture(
+        workdir.path(),
+        "l3-mirrored",
+        COMPOSITE_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=1",
+        &[],
+    );
     let l4 = capture(
         workdir.path(),
         "l4",
@@ -134,32 +289,54 @@ fn cornell_l3_l4_volumetric_partition_does_not_leak() {
         "tlas_emitted=2",
         &[],
     );
+    let l4_mirrored = capture(
+        workdir.path(),
+        "l4-mirrored",
+        COMPOSITE_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=2",
+        &[],
+    );
 
-    let left = [0.30, 0.25, 0.43, 0.75];
-    let right = [0.575, 0.25, 0.70, 0.75];
-    let edge_left = [0.490_625, 0.25, 0.493_75, 0.75];
-    let l3_left = mean_linear_luma(&l3, left);
-    let l3_right = mean_linear_luma(&l3, right);
-    let l4_left = mean_linear_luma(&l4, left);
-    let l4_right = mean_linear_luma(&l4, right);
-    let l4_edge_left = mean_linear_luma(&l4, edge_left);
-
-    assert!(
-        (l3_left - l3_right).abs() <= 0.01,
-        "L3 open medium must be balanced: left={l3_left:.6}, right={l3_right:.6}"
-    );
-    assert!(
-        (l4_right - l3_right).abs() <= 0.01,
-        "L4 lit control changed when only the partition was added: L3={l3_right:.6}, L4={l4_right:.6}"
-    );
-    assert!(
-        l4_left <= l3_left * 0.08,
-        "L4 broad shadow leaked: shadow={l4_left:.6}, open={l3_left:.6}"
-    );
-    assert!(
-        l4_edge_left <= l4_right * 0.18,
-        "L4 wall-adjacent froxel leaked: edge={l4_edge_left:.6}, lit={l4_right:.6}"
-    );
+    // Neither equal left/right brightness nor exact reflection is physical
+    // here: the source is off-centre, HG scattering is directional, and the
+    // canonical "Homogeneous" profile includes spatial density noise. Hold
+    // each source/medium fixed and add only the partition. Repeat from the
+    // other side to guard against a hard-coded dark half or one-sided blocker.
+    // The original partition/leakage thresholds remain unchanged.
+    for (open, blocked, mirrored) in [(&l3, &l4, false), (&l3_mirrored, &l4_mirrored, true)] {
+        let region = |r: [f32; 4]| {
+            if mirrored {
+                [1.0 - r[2], r[1], 1.0 - r[0], r[3]]
+            } else {
+                r
+            }
+        };
+        let shadow = region([0.30, 0.25, 0.43, 0.75]);
+        let lit = region([0.575, 0.25, 0.70, 0.75]);
+        let edge = region([0.490_625, 0.25, 0.493_75, 0.75]);
+        let open_shadow = mean_linear_luma(open, shadow);
+        let open_lit = mean_linear_luma(open, lit);
+        let blocked_shadow = mean_linear_luma(blocked, shadow);
+        let blocked_lit = mean_linear_luma(blocked, lit);
+        let blocked_edge = mean_linear_luma(blocked, edge);
+        assert!(
+            open_shadow > 0.01 && open_lit > 0.01,
+            "L3 controls must exceed the comparison tolerance: shadow={open_shadow:.6}, lit={open_lit:.6}, mirrored={mirrored}"
+        );
+        assert!(
+            (blocked_lit - open_lit).abs() <= 0.01,
+            "L4 lit control changed when only the partition was added: L3={open_lit:.6}, L4={blocked_lit:.6}, mirrored={mirrored}"
+        );
+        assert!(
+            blocked_shadow <= open_shadow * 0.08,
+            "L4 broad shadow leaked: shadow={blocked_shadow:.6}, open={open_shadow:.6}, mirrored={mirrored}"
+        );
+        assert!(
+            blocked_edge <= blocked_lit * 0.18,
+            "L4 wall-adjacent froxel leaked: edge={blocked_edge:.6}, lit={blocked_lit:.6}, mirrored={mirrored}"
+        );
+    }
 }
 
 #[test]
@@ -213,6 +390,40 @@ fn cornell_forced_low_blas_budget_preserves_rt_shadows() {
         "lights_uploaded=1",
         "tlas_emitted=2",
         &["--rt-test-blas-budget-bytes", "1"],
+    );
+    assert_l2_shadow_transport(&l2);
+}
+
+/// A viable active set must recover from a budget occupied by unused cache.
+/// Unlike the one-byte exhaustion case, this exercises actual LRU eviction
+/// while retaining enough space for both active casters. Neither the budget
+/// guard nor the analytic visibility thresholds are bypassed.
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_cache_pressure_recovers_visible_shadows() {
+    let workdir = OracleArtifacts::new("cache-blas-pressure");
+    let l2 = capture(
+        workdir.path(),
+        "l2-cache-pressure",
+        SHADOW_VISIBILITY_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=2",
+        &["--rt-test-blas-budget-bytes", "4096"],
+    );
+    assert_l2_shadow_transport(&l2);
+}
+
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_large_unused_cache_does_not_starve_small_shadow_casters() {
+    let workdir = OracleArtifacts::new("mixed-cache-blas-pressure");
+    let l2 = capture(
+        workdir.path(),
+        "l2-cache-pressure-large",
+        SHADOW_VISIBILITY_DEBUG,
+        "lights_uploaded=1",
+        "tlas_emitted=2",
+        &[],
     );
     assert_l2_shadow_transport(&l2);
 }
@@ -346,7 +557,11 @@ fn capture(
         Command::new(env!("CARGO"))
     };
     command
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", if rung.starts_with("l2-cache-pressure") {
+            "warn,byroredux_renderer::vulkan::acceleration=info,byroredux_renderer::vulkan::context::resources=debug"
+        } else {
+            "warn"
+        })
         .env("BYROREDUX_RENDER_DEBUG", debug_flags)
         .args([
             "run",
@@ -382,6 +597,34 @@ fn capture(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    if rung == "l2-cache-pressure" {
+        assert!(
+            stderr.contains("Static BLAS batch declined"),
+            "pressure fixture never exhausted admission:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("BLAS eviction: freed"),
+            "pressure fixture never evicted unused entries:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("Restored "),
+            "pressure fixture never exercised missing-BLAS recovery:\n{stderr}"
+        );
+    }
+    if rung == "l2-cache-pressure-large" {
+        assert!(
+            stderr.contains("RT TEST mixed-cache recovery:"),
+            "missing measured cache fixture: {stderr}"
+        );
+        assert!(
+            stderr.contains("Restored 2/2") || stderr.contains("Restored 1/"),
+            "small caster recovery never made progress: {stderr}"
+        );
+        assert!(
+            !stderr.contains("BLAS eviction: freed"),
+            "unused cache should remain below budget: eviction would mask the mean-size regression: {stderr}"
+        );
+    }
     assert!(
         output.status.success(),
         "Cornell {rung} exited with {}\nstdout:\n{stdout}\nstderr:\n{stderr}",

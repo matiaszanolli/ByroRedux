@@ -180,11 +180,13 @@ fn validate_refit_counts_rejects_full_mesh_swap() {
 #[test]
 fn validate_refit_flags_accepts_matching_flags() {
     use ash::vk::BuildAccelerationStructureFlagsKHR as F;
-    assert!(validate_refit_flags(
-        F::PREFER_FAST_BUILD | F::ALLOW_UPDATE,
-        F::PREFER_FAST_BUILD | F::ALLOW_UPDATE
-    )
-    .is_ok());
+    assert!(
+        validate_refit_flags(
+            F::PREFER_FAST_BUILD | F::ALLOW_UPDATE,
+            F::PREFER_FAST_BUILD | F::ALLOW_UPDATE
+        )
+        .is_ok()
+    );
     assert!(validate_refit_flags(F::empty(), F::empty()).is_ok());
 }
 
@@ -272,10 +274,10 @@ fn should_evict_mid_batch_fires_at_ninety_percent() {
 #[test]
 fn evict_predicate_uses_static_bytes_not_total_post_920() {
     let budget: vk::DeviceSize = 1_000_000_000; // 1 GB
-                                                // Realistic post-M41 NPC-heavy scene:
-                                                // - Static interior-cell BLAS resident: 700 MB (under 90%).
-                                                // - 50 skinned NPCs at ~10 MB each: 500 MB skinned residency.
-                                                // - Total: 1200 MB (over budget!).
+    // Realistic post-M41 NPC-heavy scene:
+    // - Static interior-cell BLAS resident: 700 MB (under 90%).
+    // - 50 skinned NPCs at ~10 MB each: 500 MB skinned residency.
+    // - Total: 1200 MB (over budget!).
     let static_bytes: vk::DeviceSize = 700_000_000;
     let pending_static_bytes: vk::DeviceSize = 0;
     // Pre-#920 the caller passed (static + skinned). Verify that
@@ -1176,19 +1178,25 @@ fn blas_budget_derives_from_the_compatible_allocation_heap() {
 
 // ── #3540 — per-frame static-BLAS recovery bound ──────────────
 
+#[test]
+fn unused_large_mesh_must_not_make_a_small_shadow_set_unrecoverable() {
+    // Resident: one unused 7 KiB mesh and one required 1 KiB mesh.
+    // Missing: two required 1 KiB meshes. After retiring the unused entry,
+    // the complete working set is only 3 KiB under this 8 KiB budget.
+    // The old cache-wide mean projects 4 KiB * 3 and refuses all recovery.
+    assert_eq!(plan_static_blas_restore(2, 1024, 8 * 1024, 256), 2);
+}
+
 /// The ordinary case: a handful of meshes came back into view after
 /// eviction, and the visible set is nowhere near the budget. Restore
 /// all of them in one frame — the cap must be inert here.
 #[test]
 fn small_recovery_inside_budget_restores_everything() {
-    // 1000 resident entries totalling 100 MB → 100 KB mean; 1200 visible
-    // draws project to ~117 MB against a 4 GB budget.
+    // The required resident entries occupy 100 MiB under a 4 GiB budget.
     assert_eq!(
         plan_static_blas_restore(
             12,
-            1200,
             100 * 1024 * 1024,
-            1000,
             4 * 1024 * 1024 * 1024,
             MAX_STATIC_BLAS_RESTORES_PER_FRAME,
         ),
@@ -1203,9 +1211,7 @@ fn large_fittable_recovery_is_capped_per_frame() {
     assert_eq!(
         plan_static_blas_restore(
             5_000,
-            8_000,
             100 * 1024 * 1024,
-            1000,
             4 * 1024 * 1024 * 1024,
             MAX_STATIC_BLAS_RESTORES_PER_FRAME,
         ),
@@ -1213,19 +1219,14 @@ fn large_fittable_recovery_is_capped_per_frame() {
     );
 }
 
-/// The #3540 hang: Starfield `citycydoniamainlevel` scale. ~95 k visible
-/// rigid draws at a 100 KB mean project to ~9 GB against a 4 GB budget,
-/// so every restore displaces a mesh the same frame still needs. The
-/// pass must decline entirely instead of rebuild/evict thrashing — that
-/// cycle is what pinned one core at frame 0 for over ten minutes.
+/// Actual required residency already exceeds the budget. No unused-cache
+/// eviction can free room, so don't repeatedly attempt more allocations.
 #[test]
 fn visible_set_larger_than_budget_declines_the_whole_pass() {
     assert_eq!(
         plan_static_blas_restore(
             40_000,
-            95_095,
-            100 * 1024 * 1024,
-            1000,
+            5 * 1024 * 1024 * 1024,
             4 * 1024 * 1024 * 1024,
             MAX_STATIC_BLAS_RESTORES_PER_FRAME,
         ),
@@ -1233,29 +1234,21 @@ fn visible_set_larger_than_budget_declines_the_whole_pass() {
     );
 }
 
-/// Exactly at the budget still fits — the projection declines only on a
-/// strict breach, matching `blas_over_budget`'s `>` line.
+/// Unlike an estimated final footprint, actual occupied bytes equal to the
+/// budget leave no room for a missing allocation.
 #[test]
-fn visible_set_exactly_at_budget_still_restores() {
-    // 10 resident entries × 1 MB mean, 4096 visible → 4096 MB projected
-    // against a 4096 MB budget.
+fn required_residency_at_budget_does_not_attempt_another_allocation() {
     let budget = 4096 * 1024 * 1024;
-    assert_eq!(
-        plan_static_blas_restore(1, 4096, 10 * 1024 * 1024, 10, budget, 256),
-        1
-    );
-    assert_eq!(
-        plan_static_blas_restore(1, 4097, 10 * 1024 * 1024, 10, budget, 256),
-        0
-    );
+    assert_eq!(plan_static_blas_restore(1, budget - 1, budget, 256), 1);
+    assert_eq!(plan_static_blas_restore(1, budget, budget, 256), 0);
 }
 
-/// With nothing resident there is no measured mean to project from, so
-/// only the cap applies. It alone still bounds the frame.
+/// With no required residency, allow bounded recovery even if unused cached
+/// geometry occupies the pool. The builder still enforces real residency.
 #[test]
 fn no_resident_entries_falls_back_to_the_cap_alone() {
     assert_eq!(
-        plan_static_blas_restore(100_000, 100_000, 0, 0, 4 * 1024 * 1024 * 1024, 256),
+        plan_static_blas_restore(100_000, 0, 4 * 1024 * 1024 * 1024, 256),
         256
     );
 }
@@ -1264,15 +1257,12 @@ fn no_resident_entries_falls_back_to_the_cap_alone() {
 /// a zero cap, and a zero budget all resolve to "do nothing".
 #[test]
 fn degenerate_recovery_inputs_do_nothing() {
-    assert_eq!(plan_static_blas_restore(0, 5000, 1024, 1, 1 << 30, 256), 0);
-    assert_eq!(plan_static_blas_restore(10, 5000, 1024, 1, 1 << 30, 0), 0);
-    assert_eq!(plan_static_blas_restore(10, 5000, 1024, 1, 0, 256), 0);
-    // Saturating projection: a huge mean over a huge visible count must
-    // clamp rather than wrap into a false "fits".
-    assert_eq!(
-        plan_static_blas_restore(10, usize::MAX, u64::MAX, 1, u64::MAX - 1, 256),
-        0
-    );
+    assert_eq!(plan_static_blas_restore(0, 1024, 1 << 30, 256), 0);
+    assert_eq!(plan_static_blas_restore(10, 1024, 1 << 30, 0), 0);
+    assert_eq!(plan_static_blas_restore(10, 1024, 0, 256), 0);
+    assert_eq!(plan_static_blas_restore(10, 0, 0, 256), 0);
+    // An overflow-saturated required-byte sum cannot become free headroom.
+    assert_eq!(plan_static_blas_restore(10, u64::MAX, u64::MAX - 1, 256), 0);
 }
 
 /// #3839 — the BLAS budget must be taken from what the resolution-scaled
@@ -1321,7 +1311,7 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
         use crate::vulkan::svgf::SVGF_BYTES_PER_PIXEL;
         use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
         use crate::vulkan::taa::TAA_BYTES_PER_PIXEL;
-        use crate::vulkan::volumetrics::{froxel_extent, FROXEL_BYTES_PER_SLOT};
+        use crate::vulkan::volumetrics::{FROXEL_BYTES_PER_SLOT, froxel_extent};
 
         // Named here INDEPENDENTLY of the production helper. Deriving both
         // sides from `render_extent_bytes_per_pixel_x1024` would make this a
@@ -1414,7 +1404,7 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
 #[test]
 fn the_reservation_covers_both_extents_and_the_upscaler_sdk() {
     use super::super::predicates::screen_scaled_reservation_bytes;
-    use crate::vulkan::frame_upscaler::{upscale_output_bytes, UPSCALE_OUTPUT_BYTES_PER_PIXEL};
+    use crate::vulkan::frame_upscaler::{UPSCALE_OUTPUT_BYTES_PER_PIXEL, upscale_output_bytes};
     use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
     use crate::vulkan::upscaling::{FrameExtentSet, VolumetricsConfig};
 

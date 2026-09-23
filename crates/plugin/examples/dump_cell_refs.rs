@@ -127,18 +127,23 @@ fn main() -> anyhow::Result<()> {
         for (reference, base, light) in light_refs {
             println!(
                 "  REFR {:08X} base={:08X} {} pos=({:+.0}, {:+.0}, {:+.0}) \\
-                 radius={:.0} color=({:.2}, {:.2}, {:.2}) flags={:#010X}",
+                 rot={:?} radius={:.0} color=({:.2}, {:.2}, {:.2}) flags={:#010X} \\
+                 sf_type={} fov={} model={:?}",
                 reference.form_id,
                 reference.base_form_id,
                 base.editor_id,
                 reference.position[0],
                 reference.position[1],
                 reference.position[2],
+                reference.rotation,
                 light.radius,
                 light.color[0],
                 light.color[1],
                 light.color[2],
                 light.flags,
+                light.starfield_light_type,
+                light.fov_degrees,
+                base.model_path,
             );
         }
     }

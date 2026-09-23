@@ -170,6 +170,11 @@ layout(location = 9) out vec4 fragSplat1;
 // + normal. Zero (length < epsilon) signals "no authored tangent;
 // fragment shader falls back to screen-space derivative TBN."
 layout(location = 10) out vec4 fragTangent;
+// The same posed frame as fragNormal, including the per-vertex skin blend.
+// Model-space normal maps need this frame rather than the entity root model.
+layout(location = 11) out mat3 fragNormalTransform;
+
+#include "include/normal_transform.glsl"
 
 void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
@@ -264,13 +269,9 @@ void main() {
     // (~40 ALU ops: determinant + cofactors + transpose). The CPU sets
     // flags bit 0 when column lengths differ. See #273.
     mat3 m3 = mat3(xform);
-    vec3 n;
-    if ((inst.flags & INSTANCE_FLAG_NON_UNIFORM_SCALE) != 0u) {
-        float det = determinant(m3);
-        n = (abs(det) > 1e-6) ? transpose(inverse(m3)) * inNormal : inNormal;
-    } else {
-        n = m3 * inNormal;
-    }
+    fragNormalTransform = surfaceNormalTransform(m3,
+        wsum >= 0.001 || (inst.flags & INSTANCE_FLAG_NON_UNIFORM_SCALE) != 0u);
+    vec3 n = fragNormalTransform * inNormal;
     fragNormal = (dot(n, n) > 0.0) ? normalize(n) : vec3(0.0, 1.0, 0.0);
     // #markarth-precision / #1496 — `worldPos` is in render-origin-relative
     // space in BOTH branches (rigid: the model translation was rebased on

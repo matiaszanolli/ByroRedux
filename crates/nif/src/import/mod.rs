@@ -13,6 +13,7 @@ mod material;
 pub(crate) mod mesh;
 pub mod precombine;
 mod transform;
+pub(crate) mod units;
 mod walk;
 
 // Re-export the public material capture types so `ImportedMesh`'s
@@ -89,6 +90,14 @@ pub fn import_nif_particle_emitters(scene: &NifScene) -> Vec<ImportedParticleEmi
         &mut pool,
         &mut out,
     );
+    let scale = units::length_scale(scene);
+    if scale != 1.0 {
+        for emitter in &mut out {
+            units::scale_vec(&mut emitter.local_position, scale);
+            units::emitter_params(&mut emitter.emitter_params, scale);
+            units::force_fields(&mut emitter.force_fields, scale);
+        }
+    }
     out
 }
 
@@ -238,6 +247,7 @@ fn import_nif_scene_impl(
     imported.attach_points = extract_attach_points(scene);
     imported.child_attach_connections = extract_child_attach_connections(scene);
 
+    units::hierarchy(scene, &mut imported);
     imported
 }
 
@@ -279,7 +289,8 @@ pub fn extract_attach_points(scene: &NifScene) -> Option<Vec<ImportedAttachPoint
                             parent: cp.parent.clone(),
                             name: cp.name.clone(),
                             rotation: [g[3], g[0], g[1], g[2]],
-                            translation: zup_to_yup_pos(cp.translation),
+                            translation: zup_to_yup_pos(cp.translation)
+                                .map(|v| v * units::length_scale(scene)),
                             scale: cp.scale,
                         }
                     })
@@ -339,6 +350,12 @@ pub fn extract_furniture_markers(scene: &NifScene) -> Vec<ImportedFurnitureMarke
             continue;
         };
         out.extend(marker.positions.iter().map(imported_furniture_marker));
+    }
+    let scale = units::length_scale(scene);
+    if scale != 1.0 {
+        for marker in &mut out {
+            units::scale_vec(&mut marker.offset, scale);
+        }
     }
     out
 }
@@ -424,6 +441,7 @@ fn import_nif_impl(
         inherited_billboard: None,
     };
     walk::walk_node_flat(&mut flat_ctx, root_idx, &NiTransform::default(), 0);
+    units::meshes(scene, &mut meshes);
     meshes
 }
 
@@ -494,6 +512,13 @@ pub fn import_nif_lights(scene: &NifScene) -> Vec<ImportedLight> {
         return lights;
     };
     walk::walk_node_lights(scene, root_idx, &NiTransform::default(), &mut lights);
+    let scale = units::length_scale(scene);
+    if scale != 1.0 {
+        for light in &mut lights {
+            units::scale_vec(&mut light.translation, scale);
+            light.radius *= scale;
+        }
+    }
     lights
 }
 
@@ -519,6 +544,12 @@ pub fn import_nif_texture_effects(
         return effects;
     };
     walk::walk_node_texture_effects(scene, root_idx, &NiTransform::default(), pool, &mut effects);
+    let scale = units::length_scale(scene);
+    if scale != 1.0 {
+        for effect in &mut effects {
+            units::scale_vec(&mut effect.translation, scale);
+        }
+    }
     effects
 }
 
@@ -570,6 +601,13 @@ fn import_nif_with_collision_impl(
         inherited_billboard: None,
     };
     walk::walk_node_flat(&mut flat_ctx, root_idx, &NiTransform::default(), 0);
+    units::meshes(scene, &mut meshes);
+    let scale = units::length_scale(scene);
+    if scale != 1.0 {
+        for collision in &mut collisions {
+            units::scale_vec(&mut collision.translation, scale);
+        }
+    }
     (meshes, collisions)
 }
 

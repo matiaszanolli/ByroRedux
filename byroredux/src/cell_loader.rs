@@ -60,6 +60,7 @@ use crate::components::{
 mod euler;
 mod exterior;
 mod index;
+mod interior_spawn;
 mod load;
 pub(crate) mod load_order;
 mod lod_bands;
@@ -85,6 +86,7 @@ mod water;
 mod work_budget;
 
 pub use index::LoadedCellIndex;
+pub use interior_spawn::SpawnPose;
 pub use transition::{
     log_transition_header, position_zup_to_yup, queue_door_transition, reposition_camera,
     rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CellTransitionInFlight, CurrentCellContext,
@@ -568,6 +570,8 @@ mod attach_points_spawn_tests;
 mod euler_zup_to_quat_yup_tests;
 #[cfg(test)]
 mod finish_partial_tests;
+#[cfg(test)]
+mod interior_spawn_tests;
 #[cfg(test)]
 mod inventory_release_tests;
 #[cfg(test)]

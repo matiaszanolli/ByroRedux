@@ -553,7 +553,7 @@ pipeline. Defined in
 | 1 | 0 | `STORAGE_BUFFER` | Light buffer (`u32 count` + `GpuLight[]`) | triangle, cluster_cull |
 | 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (368 B) | triangle, water, cluster_cull |
 | 1 | 2 | `ACCELERATION_STRUCTURE` | TLAS | triangle, water |
-| 1 | 3 | `STORAGE_BUFFER` | Bone palette (current frame) | triangle |
+| 1 | 3 | `STORAGE_BUFFER` | Bone palette (current frame; vertex + fragment visibility) | triangle; water/groundcover secondary-hit frames |
 | 1 | 4 | `STORAGE_BUFFER` | `GpuInstance[]` | triangle, ui, water |
 | 1 | 5 | `STORAGE_BUFFER` | Cluster grid (`ClusterEntry[]`) | triangle |
 | 1 | 6 | `STORAGE_BUFFER` | Cluster light index list | triangle |

@@ -623,7 +623,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // (The fingerprint moved twice in this refresh: once for the new field,
     // once more once the `#[serde(default)]` attribute itself left the
     // struct's scanned span — both directions are the shape change.)
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x7b20_dc83_d4a3_ff27;
+    // Lighting unification: VisibilityMask is still a u8 newtype; only its
+    // import policy changed. The tuple-struct scanner also includes its impl
+    // (same false positive as W2.10 below). No serialized field changed.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0c2b_78cc_d92b_2a84;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

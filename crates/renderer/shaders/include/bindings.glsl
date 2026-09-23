@@ -95,6 +95,12 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
     GpuInstance instances[];
 };
 
+// Current posed bone palette, also consumed by triangle.vert. Secondary-hit
+// normal/tangent reconstruction must use the same pose as the skinned BLAS.
+layout(std430, set = 1, binding = 3) readonly buffer BoneBuffer {
+    mat4 bones[];
+};
+
 // ── R1 Phase 4: deduplicated material table ─────────────────────────
 //
 // Mirrors the Rust `GpuMaterial` (432 B std430) defined

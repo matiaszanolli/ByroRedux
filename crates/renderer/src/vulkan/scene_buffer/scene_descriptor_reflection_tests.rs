@@ -36,6 +36,26 @@ fn rt_enabled_layout_matches_triangle_shaders() {
     .expect("scene descriptor layout (rt=on) must match triangle shaders");
 }
 
+#[test]
+fn bone_palette_is_visible_to_primary_and_secondary_hit_shading() {
+    for rt_enabled in [false, true] {
+        let bindings = build_scene_descriptor_bindings(rt_enabled);
+        let palette = bindings
+            .iter()
+            .find(|binding| binding.binding == 3)
+            .unwrap();
+        assert_eq!(
+            palette.descriptor_type,
+            ash::vk::DescriptorType::STORAGE_BUFFER
+        );
+        assert!(
+            palette
+                .stage_flags
+                .contains(ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT)
+        );
+    }
+}
+
 /// RT-disabled path: TLAS binding (2) is intentionally absent from
 /// the layout but still declared in the shader, gated at runtime by
 /// the per-fragment `rayQuery` uniform flag. The validator must list

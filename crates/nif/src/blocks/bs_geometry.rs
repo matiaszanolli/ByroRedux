@@ -276,7 +276,8 @@ pub struct BSGeometryMeshData {
     /// Number of bone weights stored per vertex. `0` means no skin
     /// weights are serialised.
     pub weights_per_vert: u32,
-    /// Decoded vertex positions in mesh-local Y-up units (havok-scaled).
+    /// Decoded vertex positions in source mesh-local Z-up units (havok-scaled).
+    /// The NIF importer performs the basis and engine-unit conversion.
     pub vertices: Vec<[f32; 3]>,
     /// Primary UV channel (decoded from half-floats).
     pub uvs0: Vec<[f32; 2]>,

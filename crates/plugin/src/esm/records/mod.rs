@@ -142,6 +142,7 @@ mod dispatch_world_placement;
 // file can be the pure re-export barrel it mostly already was. Both
 // public entry points are re-exported here, so no caller's path moved.
 mod parse;
+mod spatial_units;
 
 pub use parse::{parse_esm, parse_esm_with_load_order, DISPATCH_HANDLED_FOURCCS};
 

@@ -64,8 +64,8 @@ use byroredux_core::string::StringPool;
 use byroredux_nif::import::ImportedMaterial;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{
-    box_vertices_colored, uv_sphere, RenderDebugMode, VulkanContext, MATERIAL_KIND_FIRE_REFRACTION,
-    MATERIAL_KIND_GLASS,
+    MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS, RenderDebugMode, VulkanContext,
+    box_vertices_colored, uv_sphere,
 };
 use byroredux_sdk::studio::CornellFit;
 
@@ -326,6 +326,22 @@ pub(crate) enum CornellOracleRung {
     L3,
     L4,
     L5,
+    /// L1/L2 with a bone-posed receiver and model-space normal map.
+    L1Skinned,
+    L2Skinned,
+    L1Point,
+    L1SkinnedPoint,
+    /// Local spot cone, with rigid/posed receivers and a posed blocker.
+    L1Spot,
+    L1SkinnedSpot,
+    L2SkinnedSpot,
+    /// L2 after warming unused mesh BLAS, for real cache-pressure recovery.
+    L2CachePressure,
+    /// Same tiny visible set, but the unused cache contains one large mesh.
+    L2MixedCachePressure,
+    /// L3/L4 with the source reflected across the camera's X plane.
+    L3Mirrored,
+    L4Mirrored,
 }
 
 /// Data contract shared by scene construction, analytic tests, and capture
@@ -362,6 +378,72 @@ const ORACLE_CAMERA_TARGET: Vec3 = Vec3::new(0.0, 4.0, 0.0);
 const ORACLE_VOLUMETRIC_SCALE: f32 = 100.0;
 
 pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleManifest {
+    if matches!(
+        rung,
+        CornellOracleRung::L3Mirrored | CornellOracleRung::L4Mirrored
+    ) {
+        let blocked = rung == CornellOracleRung::L4Mirrored;
+        let mut manifest = cornell_oracle_manifest(if blocked {
+            CornellOracleRung::L4
+        } else {
+            CornellOracleRung::L3
+        });
+        manifest.name = if blocked {
+            "l4_point_fog_partition_mirrored"
+        } else {
+            "l3_point_fog_mirrored"
+        };
+        return manifest;
+    }
+    if matches!(
+        rung,
+        CornellOracleRung::L2CachePressure | CornellOracleRung::L2MixedCachePressure
+    ) {
+        let mut manifest = cornell_oracle_manifest(CornellOracleRung::L2);
+        manifest.name = if rung == CornellOracleRung::L2MixedCachePressure {
+            "l2_mixed_cache_pressure"
+        } else {
+            "l2_cache_pressure"
+        };
+        return manifest;
+    }
+    if matches!(
+        rung,
+        CornellOracleRung::L1Point
+            | CornellOracleRung::L1SkinnedPoint
+            | CornellOracleRung::L1Spot
+            | CornellOracleRung::L1SkinnedSpot
+            | CornellOracleRung::L2SkinnedSpot
+    ) {
+        let mut manifest = cornell_oracle_manifest(CornellOracleRung::L1);
+        manifest.directional_radiance = [0.0; 3];
+        manifest.blocker = rung == CornellOracleRung::L2SkinnedSpot;
+        manifest.name = match rung {
+            CornellOracleRung::L1Point => "l1_point_lambert",
+            CornellOracleRung::L1SkinnedPoint => "l1_skinned_point_lambert",
+            CornellOracleRung::L1Spot => "l1_spot_lambert",
+            CornellOracleRung::L1SkinnedSpot => "l1_skinned_spot_lambert",
+            CornellOracleRung::L2SkinnedSpot => "l2_skinned_spot_blocker",
+            _ => unreachable!(),
+        };
+        return manifest;
+    }
+    if matches!(
+        rung,
+        CornellOracleRung::L1Skinned | CornellOracleRung::L2Skinned
+    ) {
+        let mut manifest = cornell_oracle_manifest(if rung == CornellOracleRung::L1Skinned {
+            CornellOracleRung::L1
+        } else {
+            CornellOracleRung::L2
+        });
+        manifest.name = if rung == CornellOracleRung::L1Skinned {
+            "l1_skinned_lambert"
+        } else {
+            "l2_skinned_blocker"
+        };
+        return manifest;
+    }
     let (
         name,
         directional_radiance,
@@ -411,6 +493,17 @@ pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleM
             true,
             "material_lobe",
         ),
+        CornellOracleRung::L1Skinned
+        | CornellOracleRung::L2Skinned
+        | CornellOracleRung::L1Point
+        | CornellOracleRung::L1SkinnedPoint
+        | CornellOracleRung::L1Spot
+        | CornellOracleRung::L1SkinnedSpot
+        | CornellOracleRung::L2SkinnedSpot
+        | CornellOracleRung::L2CachePressure
+        | CornellOracleRung::L2MixedCachePressure
+        | CornellOracleRung::L3Mirrored
+        | CornellOracleRung::L4Mirrored => unreachable!(),
     };
     CornellOracleManifest {
         name,
@@ -438,15 +531,16 @@ pub(crate) fn cornell_oracle_manifest(rung: CornellOracleRung) -> CornellOracleM
     }
 }
 
-/// Parse `--cornell-oracle l0|l1|l2|l3|l4|l5` without silently falling back
+/// Parse `--cornell-oracle` (l0-l5 and actor/local-light variants) without silently falling back
 /// to the demo scene on a typo.
 pub(crate) fn cornell_oracle_rung(args: &[String]) -> Result<Option<CornellOracleRung>, String> {
     let Some(index) = args.iter().position(|arg| arg == "--cornell-oracle") else {
         return Ok(None);
     };
-    let value = args
-        .get(index + 1)
-        .ok_or_else(|| "--cornell-oracle requires one of: l0, l1, l2, l3, l4, l5".to_string())?;
+    let value = args.get(index + 1).ok_or_else(|| {
+        "--cornell-oracle requires one of: l0, l1, l2, l3, l4, l5, l1-skinned, l2-skinned, l1-point, l1-skinned-point, l1-spot, l1-skinned-spot, l2-skinned-spot, l2-cache-pressure, l2-cache-pressure-large, l3-mirrored, l4-mirrored"
+            .to_string()
+    })?;
     let rung = match value.to_ascii_lowercase().as_str() {
         "l0" => CornellOracleRung::L0,
         "l1" => CornellOracleRung::L1,
@@ -454,9 +548,20 @@ pub(crate) fn cornell_oracle_rung(args: &[String]) -> Result<Option<CornellOracl
         "l3" => CornellOracleRung::L3,
         "l4" => CornellOracleRung::L4,
         "l5" => CornellOracleRung::L5,
+        "l1-skinned" => CornellOracleRung::L1Skinned,
+        "l2-skinned" => CornellOracleRung::L2Skinned,
+        "l1-point" => CornellOracleRung::L1Point,
+        "l1-skinned-point" => CornellOracleRung::L1SkinnedPoint,
+        "l1-spot" => CornellOracleRung::L1Spot,
+        "l1-skinned-spot" => CornellOracleRung::L1SkinnedSpot,
+        "l2-skinned-spot" => CornellOracleRung::L2SkinnedSpot,
+        "l2-cache-pressure" => CornellOracleRung::L2CachePressure,
+        "l2-cache-pressure-large" => CornellOracleRung::L2MixedCachePressure,
+        "l3-mirrored" => CornellOracleRung::L3Mirrored,
+        "l4-mirrored" => CornellOracleRung::L4Mirrored,
         _ => {
             return Err(format!(
-                "unknown Cornell oracle rung '{value}'; expected one of: l0, l1, l2, l3, l4, l5"
+                "unknown Cornell oracle rung '{value}'; expected one of: l0, l1, l2, l3, l4, l5, l1-skinned, l2-skinned, l1-point, l1-skinned-point, l1-spot, l1-skinned-spot, l2-skinned-spot, l2-cache-pressure, l2-cache-pressure-large, l3-mirrored, l4-mirrored"
             ));
         }
     };
@@ -526,6 +631,14 @@ pub(crate) fn setup_cornell_oracle_scene(
     world_offset: Vec3,
 ) -> (Vec3, Vec3) {
     let manifest = cornell_oracle_manifest(rung);
+    let skinned = matches!(
+        rung,
+        CornellOracleRung::L1Skinned
+            | CornellOracleRung::L2Skinned
+            | CornellOracleRung::L1SkinnedPoint
+            | CornellOracleRung::L1SkinnedSpot
+            | CornellOracleRung::L2SkinnedSpot
+    );
     if manifest.volumetric_probe {
         // Include the volumetric integral but bypass presentation exposure,
         // grading and stochastic dither. The capture then remains a direct
@@ -560,6 +673,27 @@ pub(crate) fn setup_cornell_oracle_scene(
         inheritance_flags: None,
     });
 
+    if matches!(
+        rung,
+        CornellOracleRung::L2CachePressure | CornellOracleRung::L2MixedCachePressure
+    ) {
+        // Model a previous cell's cached BLAS, not extra visible casters.
+        // Unique handles prevent deduplication. With a small (but viable)
+        // residency budget this leaves too little space for the active pair;
+        // ordinary frame-driven eviction/recovery must bring them back.
+        let mut cache = MeshBuilder::new(ctx);
+        if rung == CornellOracleRung::L2MixedCachePressure {
+            // A cache-wide mean wrongly prices both tiny current casters as
+            // this unused high-detail mesh and refuses recovery forever.
+            let (vertices, indices) = uv_sphere(1.0, [1.0; 3], 32, 48);
+            cache.upload(&vertices, &indices);
+        } else {
+            for index in 0..64 {
+                cache.box_mesh([0.5 + index as f32 * 0.01; 3]);
+            }
+        }
+        cache.finish();
+    }
     let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
     let mut builder = MeshBuilder::new(ctx);
     let oracle_scale = if manifest.volumetric_probe {
@@ -567,7 +701,12 @@ pub(crate) fn setup_cornell_oracle_scene(
     } else {
         1.0
     };
-    let receiver_mesh = builder.box_mesh([4.0, 4.0, 0.05].map(|v| v * oracle_scale));
+    let receiver_half = [4.0, 4.0, 0.05].map(|v| v * oracle_scale);
+    let receiver_mesh = if skinned {
+        oracle_skinned_box(&mut builder, receiver_half)
+    } else {
+        builder.box_mesh(receiver_half)
+    };
     // L3/L4 use a black surface so the final capture contains only
     // in-scattered volumetric radiance; direct and indirect surface terms
     // cannot masquerade as a fog visibility result.
@@ -579,7 +718,7 @@ pub(crate) fn setup_cornell_oracle_scene(
     let mut oracle_matte = matte(receiver_color);
     oracle_matte.ior = 1.0;
     oracle_matte.specular_strength = 0.0;
-    spawn_object(
+    let receiver = spawn_object(
         world,
         receiver_mesh,
         neutral,
@@ -588,10 +727,53 @@ pub(crate) fn setup_cornell_oracle_scene(
         oracle_matte.clone(),
         "oracle_receiver",
     );
+    if skinned {
+        attach_oracle_skin(world, receiver, Vec3::new(0.0, 4.0, -0.05) + world_offset);
+        // The visible face points +X in the bind pose and +Z after posing.
+        // A root-only model-space normal transform incorrectly lights +X.
+        let normal_map = builder
+            .ctx
+            .texture_registry
+            .register_rgba(
+                GpuUploadCtx {
+                    device: &builder.ctx.device,
+                    allocator: builder.ctx.allocator.as_ref().unwrap(),
+                    queue: &builder.ctx.graphics_queue,
+                    command_pool: builder.ctx.transfer_pool,
+                },
+                // register_rgba uses an sRGB view; encode 0.5 as 188 so the
+                // sampled vector is +X (normal DDS views normally use UNORM).
+                1,
+                1,
+                &[255, 188, 188, 255],
+            )
+            .expect("oracle model-space normal upload");
+        let mut material = oracle_matte.clone();
+        material.effect_shader_flags |=
+            byroredux_renderer::shader_constants::MAT_FLAG_MODEL_SPACE_NORMALS;
+        world.insert(receiver, material);
+        world.insert(
+            receiver,
+            MaterialTextureHandles {
+                textures: byroredux_nif::import::MaterialTextureSet {
+                    normal: normal_map,
+                    ..Default::default()
+                },
+                normal_has_alpha: false,
+                tint_has_alpha: false,
+                parallax_height_scale: 0.0,
+                parallax_max_passes: 0.0,
+            },
+        );
+    }
 
     if manifest.blocker && !manifest.volumetric_probe {
-        let blocker_mesh = builder.box_mesh([0.75, 0.75, 0.75]);
-        spawn_object(
+        let blocker_mesh = if skinned {
+            oracle_skinned_box(&mut builder, [0.75; 3])
+        } else {
+            builder.box_mesh([0.75; 3])
+        };
+        let blocker = spawn_object(
             world,
             blocker_mesh,
             neutral,
@@ -600,6 +782,9 @@ pub(crate) fn setup_cornell_oracle_scene(
             oracle_matte.clone(),
             "oracle_blocker",
         );
+        if skinned {
+            attach_oracle_skin(world, blocker, Vec3::new(0.0, 4.0, 0.75) + world_offset);
+        }
     }
 
     if manifest.volumetric_probe {
@@ -619,7 +804,19 @@ pub(crate) fn setup_cornell_oracle_scene(
         );
         spawn_point_light(
             world,
-            Vec3::new(2.5, 4.0, 5.0) * oracle_scale + world_offset,
+            Vec3::new(
+                if matches!(
+                    rung,
+                    CornellOracleRung::L3Mirrored | CornellOracleRung::L4Mirrored
+                ) {
+                    -2.5
+                } else {
+                    2.5
+                },
+                4.0,
+                5.0,
+            ) * oracle_scale
+                + world_offset,
             20.0 * oracle_scale,
             [2.0; 3],
             "oracle_point_light",
@@ -683,6 +880,90 @@ pub(crate) fn setup_cornell_oracle_scene(
     }
     builder.finish();
 
+    if rung == CornellOracleRung::L2MixedCachePressure {
+        let handles: Vec<u32> = world
+            .query::<MeshHandle>()
+            .unwrap()
+            .iter()
+            .map(|(_, handle)| handle.0)
+            .collect();
+        if let Some(accel) = ctx.accel_manager.as_mut() {
+            let required_bytes = accel.required_static_blas_bytes(&handles);
+            let unused_bytes = accel.static_blas_bytes() - required_bytes;
+            // Device-specific build sizes vary. Keep the unused mesh below
+            // budget while its cache-wide mean would overprice the pair.
+            let budget = unused_bytes + unused_bytes / 2;
+            assert!(
+                unused_bytes > required_bytes * 8,
+                "mixed-cache fixture needs a genuinely larger unused mesh"
+            );
+            accel.override_blas_budget_for_test(budget);
+            // Model a returned mesh whose BLAS was previously reclaimed.
+            // Retain source geometry, and respect normal deferred retirement.
+            for handle in handles {
+                accel.drop_blas(handle);
+            }
+            log::warn!(
+                "RT TEST mixed-cache recovery: unused_bytes={unused_bytes} required_bytes={required_bytes} budget={budget}"
+            );
+        }
+    }
+
+    if matches!(
+        rung,
+        CornellOracleRung::L1Point
+            | CornellOracleRung::L1SkinnedPoint
+            | CornellOracleRung::L1Spot
+            | CornellOracleRung::L1SkinnedSpot
+            | CornellOracleRung::L2SkinnedSpot
+    ) {
+        let entity = world.spawn();
+        let position = Vec3::new(2.0, 6.0, 4.0) + world_offset;
+        world.insert(entity, Transform::from_translation(position));
+        world.insert(entity, GlobalTransform::new(position, Quat::IDENTITY, 1.0));
+        let spot = matches!(
+            rung,
+            CornellOracleRung::L1Spot
+                | CornellOracleRung::L1SkinnedSpot
+                | CornellOracleRung::L2SkinnedSpot
+        );
+        // Exercise the actual game boundary: FO4's NonShadow Spotlight is
+        // a cone with FULL material-aware RT visibility, despite its name.
+        let geometry = if spot {
+            crate::systems::translate_light(
+                &byroredux_plugin::esm::cell::LightData {
+                    radius: 8.0,
+                    color: [1.0; 3],
+                    flags: 0x4000,
+                    fov_degrees: 40.0,
+                    period_secs: 0.0,
+                    intensity_amplitude: 0.0,
+                    movement_amplitude: 0.0,
+                    falloff_exponent: 1.0,
+                    xpwr_form_id: None,
+                    starfield_light_type: 0,
+                },
+                byroredux_plugin::esm::reader::GameKind::Fallout4,
+                Quat::from_rotation_arc(Vec3::X, -Vec3::from_array(ORACLE_LIGHT_DIRECTION)),
+            )
+        } else {
+            crate::systems::LightGeometry::default()
+        };
+        let mut light = LightSource::from_legacy_world_units(
+            8.0,
+            [1.0; 3],
+            0,
+            1.0,
+            geometry.kind,
+            geometry.direction,
+            geometry.outer_angle,
+            0,
+        );
+        // A punctual source gives a deterministic analytic attenuation.
+        light.emitter.source_radius = byroredux_core::lighting::Meters::ZERO;
+        world.insert(entity, light);
+    }
+
     log::info!(
         "Cornell oracle {} ready: blocker={}, volumetric={}, material_probes={}, debug={}, world_offset={:?}, \
          expected unshadowed direct={:?}, linear tolerance={:.4}",
@@ -699,6 +980,41 @@ pub(crate) fn setup_cornell_oracle_scene(
         manifest.camera_position + world_offset,
         manifest.camera_target + world_offset,
     )
+}
+
+/// Inverse-pose geometry so a -90° bone yaw restores the L1/L2 world geometry.
+/// Unlike a root rotation, this forces both raster and RT to consume the skin.
+fn oracle_skinned_box(builder: &mut MeshBuilder<'_>, half: [f32; 3]) -> MeshHandle {
+    let (mut vertices, indices) = box_vertices_colored(half, [1.0; 3]);
+    let inverse_pose = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    for vertex in &mut vertices {
+        vertex.position = (inverse_pose * Vec3::from(vertex.position)).to_array();
+        vertex.normal = (inverse_pose * Vec3::from(vertex.normal)).to_array();
+        let tangent =
+            inverse_pose * Vec3::new(vertex.tangent[0], vertex.tangent[1], vertex.tangent[2]);
+        vertex.tangent[..3].copy_from_slice(&tangent.to_array());
+        vertex.bone_indices = [0; 4];
+        vertex.bone_weights = [1.0, 0.0, 0.0, 0.0];
+    }
+    builder.upload(&vertices, &indices)
+}
+
+fn attach_oracle_skin(world: &mut World, entity: byroredux_core::ecs::EntityId, position: Vec3) {
+    use byroredux_core::ecs::{RenderLayer, SkinnedMesh};
+    let bone = world.spawn();
+    let rotation = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+    world.insert(bone, Transform::new(position, rotation, 1.0));
+    world.insert(bone, GlobalTransform::new(position, rotation, 1.0));
+    world.insert(
+        entity,
+        SkinnedMesh {
+            skeleton_root: Some(bone),
+            bones: vec![Some(bone)],
+            bind_inverses: vec![byroredux_core::math::Mat4::IDENTITY],
+            global_skin_transform: byroredux_core::math::Mat4::IDENTITY,
+        },
+    );
+    world.insert(entity, RenderLayer::Actor);
 }
 
 /// Whether the separate native-scale Skyrim glass-dragon experiment was
@@ -1974,8 +2290,68 @@ mod tests {
             cornell_oracle_rung(&args(&["--cornell-oracle", "L5"])).unwrap(),
             Some(CornellOracleRung::L5)
         );
+        for (name, rung) in [
+            ("l1-skinned", CornellOracleRung::L1Skinned),
+            ("l2-skinned", CornellOracleRung::L2Skinned),
+            ("l1-point", CornellOracleRung::L1Point),
+            ("l1-skinned-point", CornellOracleRung::L1SkinnedPoint),
+            ("l1-spot", CornellOracleRung::L1Spot),
+            ("l1-skinned-spot", CornellOracleRung::L1SkinnedSpot),
+            ("l2-skinned-spot", CornellOracleRung::L2SkinnedSpot),
+            ("l2-cache-pressure", CornellOracleRung::L2CachePressure),
+            (
+                "l2-cache-pressure-large",
+                CornellOracleRung::L2MixedCachePressure,
+            ),
+            ("l3-mirrored", CornellOracleRung::L3Mirrored),
+            ("l4-mirrored", CornellOracleRung::L4Mirrored),
+        ] {
+            assert_eq!(
+                cornell_oracle_rung(&args(&["--cornell-oracle", name])).unwrap(),
+                Some(rung)
+            );
+        }
         assert!(cornell_oracle_rung(&args(&["--cornell-oracle"])).is_err());
         assert!(cornell_oracle_rung(&args(&["--cornell-oracle", "l6"])).is_err());
+    }
+
+    #[test]
+    fn cache_pressure_oracle_keeps_the_l2_visible_scene_unchanged() {
+        let reference = cornell_oracle_manifest(CornellOracleRung::L2);
+        let pressure = cornell_oracle_manifest(CornellOracleRung::L2CachePressure);
+        assert_eq!(pressure.blocker, reference.blocker);
+        assert_eq!(
+            pressure.directional_radiance,
+            reference.directional_radiance
+        );
+        assert_eq!(
+            pressure.direction_toward_source,
+            reference.direction_toward_source
+        );
+        assert_eq!(pressure.camera_position, reference.camera_position);
+        assert_eq!(pressure.camera_target, reference.camera_target);
+        assert_eq!(pressure.primary_debug_view, reference.primary_debug_view);
+        assert!(!pressure.volumetric_probe && !pressure.material_probes);
+    }
+
+    #[test]
+    fn mirrored_fog_oracle_keeps_the_medium_partition_and_camera() {
+        for (reference, mirrored) in [
+            (CornellOracleRung::L3, CornellOracleRung::L3Mirrored),
+            (CornellOracleRung::L4, CornellOracleRung::L4Mirrored),
+        ] {
+            let reference = cornell_oracle_manifest(reference);
+            let mirrored = cornell_oracle_manifest(mirrored);
+            assert_eq!(mirrored.blocker, reference.blocker);
+            assert_eq!(
+                mirrored.directional_radiance,
+                reference.directional_radiance
+            );
+            assert_eq!(mirrored.camera_position, reference.camera_position);
+            assert_eq!(mirrored.camera_target, reference.camera_target);
+            assert_eq!(mirrored.primary_debug_view, reference.primary_debug_view);
+            assert!(mirrored.volumetric_probe && !mirrored.material_probes);
+        }
     }
 
     #[test]
@@ -2005,11 +2381,10 @@ mod tests {
             Vec3::new(1_000_000.0, 0.0, -1_000_000.0)
         );
         for invalid in ["1,2", "1,2,3,4", "1,NaN,3", "far,0,0"] {
-            assert!(cornell_oracle_world_offset(&args(&[
-                "--cornell-oracle-world-offset",
-                invalid,
-            ]))
-            .is_err());
+            assert!(
+                cornell_oracle_world_offset(&args(&["--cornell-oracle-world-offset", invalid,]))
+                    .is_err()
+            );
         }
         assert!(cornell_oracle_world_offset(&args(&["--cornell-oracle-world-offset"])).is_err());
     }

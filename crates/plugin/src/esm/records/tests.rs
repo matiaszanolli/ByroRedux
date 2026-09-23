@@ -9,6 +9,9 @@ use super::parse::character_rules_profile;
 use crate::esm::reader::FormIdRemap;
 use byroredux_core::character::CharacterRulesProfile;
 
+#[path = "spatial_units_tests.rs"]
+mod spatial_units;
+
 #[test]
 fn esm_header_selects_one_canonical_character_profile() {
     assert_eq!(

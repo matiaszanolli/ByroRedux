@@ -232,6 +232,12 @@ pub(crate) fn setup_scene(
     let content = load_scene_content(world, ctx, streaming_slot, &args);
     start_cli_animation(world, ctx, &args, content.nif_root);
     spawn_demo_primitives(world, ctx, content.has_nif_content);
+    let (camera_pos_override, camera_forward_override) = authored_spawn_camera(
+        world,
+        content.authored_spawn,
+        camera_pos_override,
+        camera_forward_override,
+    );
     let (cam_pos, forward) = spawn_initial_camera(
         world,
         camera_pos_override,
@@ -296,6 +302,38 @@ struct SceneContent {
     /// A harness's own declared camera, which wins over the NIF-oriented
     /// fallback offset.
     harness_cam: Option<(Vec3, Vec3)>,
+    /// The interior's authored `coc` pose (`COCMarkerHeading`, else a linked
+    /// door's arrival `XTEL`), which wins over the NIF-oriented fallback
+    /// offset the same way. `None` for every non-interior scene.
+    authored_spawn: Option<cell_loader::SpawnPose>,
+}
+
+/// Turn an interior's authored `coc` pose into the initial camera pose.
+///
+/// The pose is floor level (feet), so the eye goes where the character
+/// controller will hold it: capsule centre on that floor plus `eye_height` —
+/// the exact inverse of the explicit-column spawn in `plan_character_spawn`,
+/// which the returned position then feeds. Explicit `--camera-pos` /
+/// `--camera-forward` still win, each independently.
+fn authored_spawn_camera(
+    world: &World,
+    authored_spawn: Option<cell_loader::SpawnPose>,
+    camera_pos_override: Option<(f32, f32, f32)>,
+    camera_forward_override: Option<(f32, f32, f32)>,
+) -> (Option<(f32, f32, f32)>, Option<(f32, f32, f32)>) {
+    let Some(pose) = authored_spawn else {
+        return (camera_pos_override, camera_forward_override);
+    };
+    let controller = byroredux_physics::CharacterController::HUMAN;
+    let eye = Vec3::new(
+        pose.position.x,
+        character_spawn_center_y(world, pose.position.y, controller) + controller.eye_height,
+        pose.position.z,
+    );
+    (
+        camera_pos_override.or(Some(eye.into())),
+        camera_forward_override.or(Some(pose.forward().into())),
+    )
 }
 
 /// Phase 1 — decode the harness flags and load the content source: Cornell /
@@ -347,6 +385,7 @@ fn load_scene_content(
         || cornell_sun.is_some()
         || studio_mode;
     let mut harness_cam: Option<(Vec3, Vec3)> = None;
+    let mut authored_spawn: Option<cell_loader::SpawnPose> = None;
 
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
     if combustion_lab {
@@ -482,6 +521,7 @@ fn load_scene_content(
             ) {
                 Ok(result) => {
                     cam_center = result.center;
+                    authored_spawn = result.spawn_pose;
                     has_nif_content = true;
                     // Store cell lighting for the renderer. Shared with
                     // the door-walk transition + `cell.load` debug paths
@@ -646,6 +686,7 @@ fn load_scene_content(
         nif_root,
         diagnostic_scene,
         harness_cam,
+        authored_spawn,
     }
 }
 
@@ -1208,11 +1249,15 @@ fn spawn_player_body(
     // Initialize fly camera yaw/pitch from the initial look direction.
     // Even in Character mode the InputState yaw/pitch drives the
     // camera + WASD alignment — there's no separate character-mode
-    // input path.
+    // input path. Must be the exact inverse of `camera_look_rotation`
+    // (`yaw_pitch_from_forward`): this seed used `atan2(x, -z)`, which
+    // mirrored every non-axis-aligned spawn heading east↔west and undid
+    // `spawn_initial_camera`'s correct seed one phase earlier.
     {
+        let (yaw, pitch) = yaw_pitch_from_forward(forward);
         let mut input = world.resource_mut::<InputState>();
-        input.yaw = forward.x.atan2(-forward.z);
-        input.pitch = forward.y.asin();
+        input.yaw = yaw;
+        input.pitch = pitch;
     }
 
     // Build the global geometry SSBO for RT reflection ray UV lookups.
@@ -1507,6 +1552,23 @@ mod spawn_orientation_tests {
                  {round_tripped:?} does not reproduce the input"
             );
         }
+    }
+
+    /// `spawn_player_body` re-seeds `InputState` after `spawn_initial_camera`
+    /// does, and its hand-rolled `atan2(x, -z)` yaw was the
+    /// mirror of `camera_look_rotation`: FO4 Dugout Inn's COCMarkerHeading
+    /// (heading 274°, facing into the inn) spawned facing the entrance door.
+    /// That seed needs a `World` + Vulkan to run, so pin its source instead:
+    /// every yaw seed must come from the one inverse the round trip above
+    /// proves.
+    #[test]
+    fn spawn_yaw_seeds_share_the_round_tripped_inverse() {
+        let source = include_str!("scene.rs");
+        assert!(
+            !source.contains(&["forward.x", ".atan2(-forward.z)"].concat()),
+            "a spawn yaw seed bypasses `yaw_pitch_from_forward` with the \
+             mirrored `atan2(x, -z)` form"
+        );
     }
 
     /// The defect itself: a shortest-arc rotation faces the right way but is

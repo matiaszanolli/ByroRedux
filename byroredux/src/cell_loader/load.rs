@@ -102,7 +102,13 @@ pub struct CellLoadResult {
     /// every placed REFR, which has no such guarantee and could land inside
     /// a wall, a stairwell void, or outside the interior shell entirely for
     /// L-shaped/multi-wing cells. See `references::load_references`.
+    /// When [`Self::spawn_pose`] is `Some`, this is its position.
     pub center: Vec3,
+    /// The authored floor-level pose a direct load (`coc`) places the player
+    /// on — the cell's `COCMarkerHeading`, else a linked door's arrival
+    /// `XTEL`. `None` when the cell authors neither; `center` then carries
+    /// the loader's heuristic point. See `interior_spawn`.
+    pub spawn_pose: Option<super::interior_spawn::SpawnPose>,
     /// Interior cell lighting (ambient + directional).
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
     /// Resolved REGN ambient-sound directive (EX-16 item 1, #2372) — the
@@ -644,7 +650,12 @@ pub fn load_cell_with_masters(
     // end before the move consumes the parent map.
     let cell_name = cell.editor_id.clone();
     let entity_count = result.entity_count;
-    let center = result.center;
+    let (center, spawn_pose) = super::interior_spawn::resolve_interior_spawn(
+        &cell.references,
+        &index.cells,
+        result.center,
+        &cell_name,
+    );
     // EX-16 item 1 (#2372) — same "capture before the move" constraint as
     // `cell_name` above: `cell.regions` borrows from `index.cells`, and
     // `index.regions` (a sibling field, untouched by the move) is what
@@ -748,6 +759,7 @@ pub fn load_cell_with_masters(
         cell_name,
         entity_count,
         center,
+        spawn_pose,
         lighting: resolved_lighting,
         region_ambient,
         phases,
@@ -1021,7 +1033,12 @@ impl InteriorCellApplyJob {
 
         let cell_name = cell.editor_id.clone();
         let entity_count = result.entity_count;
-        let center = result.center;
+        let (center, spawn_pose) = super::interior_spawn::resolve_interior_spawn(
+            &cell.references,
+            &index.cells,
+            result.center,
+            &cell_name,
+        );
         let region_ambient =
             crate::components::RegionAmbientRes::resolve(&cell.regions, &index.regions);
         let previous_music_form = world
@@ -1077,6 +1094,7 @@ impl InteriorCellApplyJob {
             cell_name,
             entity_count,
             center,
+            spawn_pose,
             lighting: resolved_lighting,
             region_ambient,
             phases,

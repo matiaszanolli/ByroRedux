@@ -1131,7 +1131,7 @@ impl SkinPaletteComputePipeline {
     ///     `bone_world_buffer` (every frame) and on
     ///     `bind_inverse_buffer` (frames with pending first-sight
     ///     uploads only) BEFORE this dispatch.
-    ///   - COMPUTE_SHADER_WRITE → (COMPUTE_SHADER_READ | VERTEX_SHADER_READ)
+    ///   - COMPUTE_SHADER_WRITE → (COMPUTE | VERTEX | FRAGMENT) SHADER_READ
     ///     barrier on `palette_buffer` AFTER this dispatch.
     ///
     /// # Safety

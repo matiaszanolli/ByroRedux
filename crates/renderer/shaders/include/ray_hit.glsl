@@ -6,6 +6,7 @@
 // generated material/instance flag constants.
 
 #include "ray_origin.glsl"
+#include "normal_transform.glsl"
 
 // Look up UV coordinates at a ray hit point using barycentrics + vertex data.
 vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
@@ -90,14 +91,8 @@ float getHitVertexAlpha(
 // numbering `skin_vertices.comp`'s output buffer uses — so no offset
 // subtraction is needed, only no `+ vOff`.
 //
-// Residual limitation: this fixes the GEOMETRIC (face) normal/tangent
-// reconstruction, which only needs positions. The INTERPOLATED smooth
-// normal/tangent in `getRayHitTangentFrame` still reads authored
-// per-vertex attributes from the bind-pose buffer — `skin_vertices.comp`
-// writes position only, so a deformed smooth normal/tangent isn't
-// available without either widening that output buffer or re-deriving
-// the skin transform per-vertex from the bone palette in this shader,
-// neither of which this fix attempts.
+// Smooth attributes are posed separately from the same bone palette below;
+// the BLAS output stays position-only.
 void getHitTriWorldPositions(
     uint instanceIdx,
     uint primitiveIdx,
@@ -155,6 +150,26 @@ vec2 transformRayHitUV(GpuMaterial mat, vec2 uv) {
          + vec2(mat.uvOffsetU, mat.uvOffsetV);
 }
 
+// Vertex ABI matches skin_vertices.comp: bone indices at floats 12..15,
+// weights at 16..19. Unweighted vertices retain the rigid model transform.
+mat3 getHitVertexTransform(GpuInstance inst, uint base) {
+    vec4 weights = vec4(vertexData[base + 16u], vertexData[base + 17u],
+                        vertexData[base + 18u], vertexData[base + 19u]);
+    if (dot(weights, vec4(1.0)) < 0.001) return mat3(inst.model);
+    uvec4 indices = min(floatBitsToUint(vec4(
+        vertexData[base + 12u], vertexData[base + 13u],
+        vertexData[base + 14u], vertexData[base + 15u])),
+        uvec4(MAX_BONES_PER_MESH - 1u));
+    return mat3(weights.x * bones[inst.boneOffset + indices.x]
+              + weights.y * bones[inst.boneOffset + indices.y]
+              + weights.z * bones[inst.boneOffset + indices.z]
+              + weights.w * bones[inst.boneOffset + indices.w]);
+}
+
+vec3 normalizeHitDirection(vec3 direction) {
+    return dot(direction, direction) > 1e-8 ? normalize(direction) : vec3(0.0);
+}
+
 // Reconstruct the same view-facing tangent frame used by primary POM, but
 // from committed-hit barycentrics instead of fragment derivatives. Authored
 // tangents are preferred; the triangle UV gradient is the fallback for
@@ -192,19 +207,19 @@ bool getRayHitTangentFrame(
         vertexData[b2 + VERTEX_NORMAL_OFFSET_FLOATS],
         vertexData[b2 + VERTEX_NORMAL_OFFSET_FLOATS + 1],
         vertexData[b2 + VERTEX_NORMAL_OFFSET_FLOATS + 2]);
-    vec3 localN = w * n0 + barycentrics.x * n1 + barycentrics.y * n2;
-
-    mat3 model3 = mat3(hitInst.model);
+    mat3 frame0 = getHitVertexTransform(hitInst, b0);
+    mat3 frame1 = getHitVertexTransform(hitInst, b1);
+    mat3 frame2 = getHitVertexTransform(hitInst, b2);
+    bool inverseNormal = hitInst.boneOffset != 0u
+        || (hitInst.flags & INSTANCE_FLAG_NON_UNIFORM_SCALE) != 0u;
+    n0 = normalizeHitDirection(surfaceNormalTransform(frame0, inverseNormal) * n0);
+    n1 = normalizeHitDirection(surfaceNormalTransform(frame1, inverseNormal) * n1);
+    n2 = normalizeHitDirection(surfaceNormalTransform(frame2, inverseNormal) * n2);
     vec3 worldN;
     if ((hitInst.flags & INSTANCE_FLAG_FLAT_SHADING) != 0u) {
         worldN = getHitTriNormal(instanceIdx, primitiveIdx);
-    } else if ((hitInst.flags & INSTANCE_FLAG_NON_UNIFORM_SCALE) != 0u) {
-        float det = determinant(model3);
-        worldN = abs(det) > 1e-6
-            ? transpose(inverse(model3)) * localN
-            : model3 * localN;
     } else {
-        worldN = model3 * localN;
+        worldN = w * n0 + barycentrics.x * n1 + barycentrics.y * n2;
     }
     if (dot(worldN, worldN) < 1e-8) {
         worldN = getHitTriNormal(instanceIdx, primitiveIdx);
@@ -232,7 +247,9 @@ bool getRayHitTangentFrame(
     vec4 localTangent = w * t0
         + barycentrics.x * t1
         + barycentrics.y * t2;
-    vec3 worldT = model3 * localTangent.xyz;
+    vec3 worldT = w * normalizeHitDirection(frame0 * t0.xyz)
+        + barycentrics.x * normalizeHitDirection(frame1 * t1.xyz)
+        + barycentrics.y * normalizeHitDirection(frame2 * t2.xyz);
     float tangentSign = localTangent.w < 0.0 ? -1.0 : 1.0;
 
     if (dot(worldT, worldT) < 1e-8) {

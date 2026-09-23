@@ -70,9 +70,8 @@ impl LightSource {
         outer_angle: f32,
         shadow_flags: u32,
     ) -> Self {
-        // W2.10 — the shadow-visibility policy lives in
-        // `VisibilityMask::for_legacy_local_light` (the named decision
-        // table); this constructor is one of its two routing sites.
+        // One visibility contract for every legacy game. Projection flags
+        // remain diagnostic data; the transport shader resolves coverage.
         let visibility = VisibilityMask::for_legacy_local_light(shadow_flags);
         Self {
             emitter: Emitter::from_legacy_world_units(
@@ -121,27 +120,19 @@ pub const LIGHT_FLAG_PULSE: u32 = 0x0000_0080;
 /// definitions — see `LightFlicker::animation_flags` below.)
 pub const LIGHT_FLAG_PULSE_SLOW: u32 = 0x0000_0100;
 
-/// #2439 (NIFAL-D2-01) — the light-SHAPE bit: this LIGH is authored as a
-/// cone-emitting spotlight, independent of whether it casts a shadow.
-/// Verified directly against xEdit's `Core/wbDefinitionsTES5.pas`
-/// (dev-4.1.6): bit 9 is named `'Spot Light'`, bit 10 (0x400,
-/// [`LIGHT_FLAG_SHADOW_SPOTLIGHT`] below) is the DISTINCT
-/// `'Shadow Spotlight'` bit — a shadow-projection-technique choice, not
-/// a light-shape signal. The two are easy to conflate (a shadow-casting
-/// spotlight sets both), but treating 0x400 as "is this a spotlight" —
-/// the mistake `translate_light`'s predecessor state made by never
-/// deriving `LightKind::Spot` at all — would also misclassify any
-/// non-cone light some content sets 0x400 on for shadow-technique
-/// reasons alone. `byroredux/src/systems/light_anim.rs::translate_light`
-/// is the sole consumer.
+/// Raw Oblivion/FO3/FNV/Skyrim "Spot Light" flag (xEdit dev-4.1.6).
+/// Not a universal shape bit: these games also use 0x400 alone for shadow
+/// spotlights. FO4/FO76 reserve 0x200 and use 0x400/0x4000 for cones;
+/// Starfield stores the shape in DAT2's Light Type enum. Decode at the ESM
+/// boundary; renderers consume the canonical [`LightSource::emitter`].
 pub const LIGHT_FLAG_SPOT: u32 = 0x0000_0200;
 
 // ── Skyrim/Fallout shadow behavior bits ─────────────────────────────
 //
 // These are raw LIGH DATA flags, not animation behaviors. xEdit's TES5
-// definitions identify the three mutually-compatible shadow projections
-// at 0x400/0x800/0x1000; a light with none of them is intentionally
-// unshadowed (often paired with Portal-strict at 0x2000).
+// definitions identify shadow projections at 0x400/0x800/0x1000. They
+// describe the source engine's projection/allocation, not runtime RT
+// visibility: all translated emitters use full material-aware visibility.
 
 /// Authored cone/spotlight shadow projection.
 pub const LIGHT_FLAG_SHADOW_SPOTLIGHT: u32 = 0x0000_0400;
@@ -149,7 +140,7 @@ pub const LIGHT_FLAG_SHADOW_SPOTLIGHT: u32 = 0x0000_0400;
 pub const LIGHT_FLAG_SHADOW_HEMISPHERE: u32 = 0x0000_0800;
 /// Authored omnidirectional shadow projection.
 pub const LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL: u32 = 0x0000_1000;
-/// Any authored shadow projection accepted by the renderer.
+/// Legacy authored shadow-projection mask, retained for diagnostics.
 pub const LIGHT_FLAG_SHADOW_MASK: u32 =
     LIGHT_FLAG_SHADOW_SPOTLIGHT | LIGHT_FLAG_SHADOW_HEMISPHERE | LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL;
 

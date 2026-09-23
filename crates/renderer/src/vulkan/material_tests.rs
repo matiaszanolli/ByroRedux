@@ -1838,7 +1838,7 @@ mod msn_basis_pin {
     const SRC: &str = include_str!("../../shaders/triangle.frag");
 
     #[test]
-    fn msn_texel_is_flipped_to_the_renderer_basis_before_the_model_rotation() {
+    fn msn_texel_is_flipped_to_the_renderer_basis_before_the_posed_rotation() {
         let branch = SRC
             .find("MAT_FLAG_MODEL_SPACE_NORMALS) != 0u")
             .expect("triangle.frag lost its model-space-normal branch");
@@ -1846,12 +1846,12 @@ mod msn_basis_pin {
             .find("mn.z = -mn.z;")
             .expect("triangle.frag lost the #3922 source-basis flip");
         let rotation = SRC
-            .find("mat3 model3 = mat3(inst.model);")
-            .expect("triangle.frag lost the MSN model rotation");
+            .find("vec3 worldMn = fragNormalTransform * mn;")
+            .expect("triangle.frag lost the MSN posed normal transform");
         assert!(
             branch < flip && flip < rotation,
             "the #3922 flip must sit inside the MSN branch, after decode \
-             and before the instance rotation"
+             and before the posed rotation"
         );
         assert_eq!(
             SRC.match_indices("mn.z = -mn.z;").count(),

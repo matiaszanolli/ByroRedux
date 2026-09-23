@@ -24,6 +24,7 @@ mod furniture;
 mod material_texture;
 mod particle;
 mod transform;
+mod units;
 
 /// Helper: build a minimal NifScene with the given blocks.
 fn scene_from_blocks(blocks: Vec<Box<dyn crate::blocks::NiObject>>) -> NifScene {

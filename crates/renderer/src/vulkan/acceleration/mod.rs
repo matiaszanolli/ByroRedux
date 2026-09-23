@@ -28,6 +28,7 @@ mod blas_static;
 mod constants;
 mod memory;
 mod predicates;
+mod static_working_set;
 mod tlas;
 mod types;
 
@@ -103,6 +104,9 @@ pub struct AccelerationManager {
     pub(super) accel_loader: ash::khr::acceleration_structure::Device,
     /// One BLAS per mesh in MeshRegistry (indexed by mesh handle).
     pub(super) blas_entries: Vec<Option<BlasEntry>>,
+    /// Explicit upcoming rigid TLAS membership, unaffected by build-clock
+    /// advances during streaming/recovery. Replaced before each draw's recovery.
+    static_working_set: static_working_set::StaticBlasWorkingSet,
     /// Per-frame-in-flight TLAS state. Each slot is independently
     /// created/resized when that frame slot first needs it.
     pub tlas: [Option<TlasState>; MAX_FRAMES_IN_FLIGHT],
@@ -400,6 +404,7 @@ impl AccelerationManager {
         Ok(Self {
             accel_loader,
             blas_entries: Vec::new(),
+            static_working_set: static_working_set::StaticBlasWorkingSet::default(),
             tlas: [None, None],
             scratch_buffers: [None, None],
             tlas_shrink_pending: [false; MAX_FRAMES_IN_FLIGHT],

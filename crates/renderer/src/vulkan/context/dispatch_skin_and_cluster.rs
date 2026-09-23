@@ -158,8 +158,8 @@ impl VulkanContext {
         // raster (`triangle.vert:147-204` inline-skinning, set 1
         // binding 3 + binding 12) and `skin_vertices.comp` (set 0
         // binding 1 in SkinComputePipeline) read. Emits the
-        // COMPUTE_SHADER_WRITE → (COMPUTE_SHADER_READ | VERTEX_SHADER_READ)
-        // barrier on the palette buffer after the dispatch so both
+        // COMPUTE_SHADER_WRITE → (COMPUTE | VERTEX | FRAGMENT) SHADER_READ
+        // barrier on the palette buffer after the dispatch so all
         // downstream consumers see well-defined data.
         if let Some(ref mut skin_palette) = self.skin_palette {
             let bone_dispatch_bytes = self.scene_buffers.bone_world_dispatch_bytes(frame);
@@ -210,7 +210,7 @@ impl VulkanContext {
                 let bind_inverse_size = self.scene_buffers.bone_buffer_size();
                 let palette_buf = self.scene_buffers.bone_buffers()[frame].buffer;
                 let palette_size = self.scene_buffers.bone_buffer_size();
-                // SAFETY: `cmd` is recording (begin_command_buffer succeeded above); the bone-world / bind-inverse / palette buffers are live SSBOs for this frame and `bone_count > 0`. The COMPUTE_SHADER_WRITE -> SHADER_READ buffer barrier afterward sequences the palette write before its compute + vertex consumers; no concurrent recording of this buffer.
+                // SAFETY: `cmd` is recording (begin_command_buffer succeeded above); the bone-world / bind-inverse / palette buffers are live SSBOs for this frame and `bone_count > 0`. The COMPUTE_SHADER_WRITE -> SHADER_READ buffer barrier afterward sequences the palette write before its compute, vertex and fragment consumers; no concurrent recording of this buffer.
                 unsafe {
                     skin_palette.dispatch(
                         &self.device,
@@ -227,10 +227,10 @@ impl VulkanContext {
                         &palette_plan,
                     );
                     // COMPUTE_SHADER_WRITE → SHADER_READ barrier on the
-                    // palette buffer covers both downstream consumers:
+                    // palette buffer covers all downstream consumers:
                     // `skin_vertices.comp` (compute read in this same
-                    // command buffer below) and `triangle.vert` (vertex
-                    // read during the raster pass).
+                    // command buffer below), `triangle.vert` and the shared
+                    // secondary-hit frame (fragment read during raster).
                     let palette_barrier = vk::BufferMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::SHADER_WRITE)
                         .dst_access_mask(vk::AccessFlags::SHADER_READ)
@@ -243,7 +243,8 @@ impl VulkanContext {
                         cmd,
                         vk::PipelineStageFlags::COMPUTE_SHADER,
                         vk::PipelineStageFlags::COMPUTE_SHADER
-                            | vk::PipelineStageFlags::VERTEX_SHADER,
+                            | vk::PipelineStageFlags::VERTEX_SHADER
+                            | vk::PipelineStageFlags::FRAGMENT_SHADER,
                         vk::DependencyFlags::empty(),
                         &[],
                         &[palette_barrier],

@@ -69,11 +69,12 @@ pub(super) fn complete_reference_load(
 
     let bbox_center = (bounds_min + bounds_max) * 0.5;
     let dims = bounds_max - bounds_min;
-    // Spawn-point precedence: first door in this cell (walkable threshold,
-    // guaranteed) > bounding-box centroid (best-effort, can land inside
-    // geometry or outside the shell) > world origin (empty cell — no
-    // placements accumulated into bounds at all, matching vanilla `coc`'s
-    // local-origin fallback when nothing else applies).
+    // Heuristic spawn point, used only where the game authored none: first
+    // door in this cell > bounding-box centroid (best-effort, can land inside
+    // geometry or outside the shell) > world origin (empty cell). A direct
+    // interior load first tries the authored `coc` pose — `COCMarkerHeading`,
+    // then a linked door's arrival XTEL — in `interior_spawn`, and only falls
+    // back to this point when the cell authors neither.
     let center = door_pos.unwrap_or(if bbox_center.x.is_finite() {
         bbox_center
     } else {

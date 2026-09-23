@@ -148,7 +148,7 @@ impl MeshRegistry {
     /// Production callers choose their own publish point: synchronous paths
     /// publish immediately, the chunked rebuild defers to swap-in.
     #[cfg(test)]
-    fn compact_pending_geometry(&mut self) {
+    pub(super) fn compact_pending_geometry(&mut self) {
         if let Some(plan) = self.plan_geometry_compaction() {
             self.apply_compaction_plan(&plan);
         }
@@ -258,6 +258,8 @@ impl MeshRegistry {
         if self.pending_vertices.is_empty() {
             return Ok(());
         }
+
+        self.log_geometry_residency_if_requested();
 
         let vertex_size =
             (std::mem::size_of::<Vertex>() * self.pending_vertices.len()) as vk::DeviceSize;

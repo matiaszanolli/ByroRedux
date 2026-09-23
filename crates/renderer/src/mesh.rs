@@ -82,6 +82,8 @@ fn scene_geometry_resident(
 }
 
 mod geometry_ssbo;
+mod geometry_residency;
+mod geometry_sharing;
 use geometry_ssbo::{CompactionPlan, GeometryRebuildInProgress};
 
 static VERTEX_POOL_SOFT_WARNED: Once = Once::new();
@@ -301,6 +303,9 @@ pub struct MeshRegistry {
     /// placements share one upload + one BLAS build, and unloads
     /// only free the GPU resources when the last placement releases.
     mesh_cache: HashMap<MeshCacheKey, u32>,
+    /// Exact immutable geometry shared across different model-path keys.
+    /// Handles, not offsets, survive global-pool compaction.
+    geometry_cache: HashMap<(u64, bool), Vec<u32>>,
     /// Live reference counts, parallel-indexed by mesh handle (slot
     /// `i` of `mesh_ref_counts` holds the refcount for the entry at
     /// `meshes[i]`). Each placement holding a mesh through
@@ -386,6 +391,7 @@ impl MeshRegistry {
             ssbo_index_count: 0,
             deferred_destroy: DeferredDestroyQueue::new(),
             mesh_cache: HashMap::new(),
+            geometry_cache: HashMap::new(),
             mesh_ref_counts: Vec::new(),
             geometry_staging_pool: None,
             geometry_rebuild_ns: 0,
@@ -954,6 +960,7 @@ impl MeshRegistry {
             return false;
         }
         self.mesh_cache.retain(|_, &mut h| h != handle);
+        self.prune_shared_geometry(|h| h == handle);
         true
     }
 
@@ -973,6 +980,7 @@ impl MeshRegistry {
         }
         if !freed.is_empty() {
             self.mesh_cache.retain(|_, h| !freed.contains(h));
+            self.prune_shared_geometry(|h| freed.contains(&h));
         }
         freed.len()
     }
@@ -1083,6 +1091,7 @@ impl MeshRegistry {
         // `mesh.destroy` loop above. Clear the map so a post-shutdown
         // `acquire_cached` can't hand out a dangling handle. See #879.
         self.mesh_cache.clear();
+        self.geometry_cache.clear();
         // Drain deferred-destroy list. #732 factored the body into
         // `drain_deferred_destroy` so the App-level shutdown sweep can
         // call the same drain explicitly before `Drop`.

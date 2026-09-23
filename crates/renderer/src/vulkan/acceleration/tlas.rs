@@ -462,6 +462,10 @@ impl AccelerationManager {
         let mut instances = std::mem::take(&mut self.tlas_instances_scratch);
         instances.clear();
         instances.reserve(draw_commands.len());
+        // Recovery protects the previous draw set between frames. Refresh
+        // ownership from these actual draws in the existing gather, so newly
+        // visible casters are protected during subsequent streaming too.
+        self.static_working_set.clear();
         // Diagnostic counter for the warn-rate-limited log below
         // (#678 / AS-8-6). Counts ONLY draws that opted into TLAS
         // inclusion but couldn't get an instance emitted — i.e.
@@ -539,6 +543,9 @@ impl AccelerationManager {
                 entry.last_used_frame = self.frame_counter;
                 entry.device_address
             } else {
+                // Missing entries must also be protected once recovery builds
+                // them; their eligibility does not depend on residency.
+                self.static_working_set.insert(draw_cmd.mesh_handle);
                 let mesh_handle = draw_cmd.mesh_handle as usize;
                 let Some(Some(blas)) = self.blas_entries.get_mut(mesh_handle) else {
                     // The app-frame prepass normally restores an evicted

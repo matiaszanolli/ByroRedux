@@ -352,7 +352,7 @@ fn authored_bounding_sphere_is_converted_to_decoded_position_units() {
     let mesh = extract_bs_geometry(&scene, &shape, &shape.av.transform, &mut pool, None)
         .expect("populated Internal slot must import");
 
-    assert_eq!(mesh.local_bound_center, [0.25 * k, -0.5 * k, 1.0 * k]);
+    assert_eq!(mesh.local_bound_center, [0.25 * k, 1.0 * k, 0.5 * k]);
     assert_eq!(
         mesh.local_bound_radius,
         2.0 * k,

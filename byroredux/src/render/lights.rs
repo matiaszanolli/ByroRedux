@@ -17,7 +17,7 @@ use byroredux_core::lighting::{AttenuationModel, Emitter, VisibilityMask};
 
 use crate::components::{CellLightingRes, SkyParamsRes};
 
-use super::{compute_directional_upload, SUN_INTENSITY_PEAK};
+use super::{SUN_INTENSITY_PEAK, compute_directional_upload};
 
 /// LIGH `radius` → renderer **cull radius** multiplier.
 ///
@@ -686,13 +686,10 @@ mod gi_light_priority_tests {
         );
     }
 
-    /// Legacy fill lights need structural occlusion and dynamic-actor contact
-    /// shadows, while static clutter remains outside their conservative mask.
-    /// Dense interiors contain many broad fill proxies; promoting them all to
-    /// full-scene visibility produces stable comb-like projections through
-    /// railings that no amount of extra sampling fixes.
+    /// The source engine's shadow-map allocation flags cannot make objects
+    /// disappear from a physical emitter's material-aware visibility query.
     #[test]
-    fn collect_lights_preserves_authored_local_shadow_classification() {
+    fn collect_lights_uses_one_visibility_policy_for_legacy_sources() {
         let mut world = World::new();
         spawn_point_light_with_flags(
             &mut world,
@@ -722,10 +719,7 @@ mod gi_light_priority_tests {
             .expect("fixture light with a legacy projection bit");
         assert_eq!(
             no_projection_bit.params[2],
-            (VisibilityMask::ARCHITECTURE
-                | VisibilityMask::STATIC_PROP
-                | VisibilityMask::DYNAMIC_ACTOR)
-                .bits() as f32
+            VisibilityMask::FULL.bits() as f32
         );
         assert_eq!(no_projection_bit.params[3], 0.0);
         assert_eq!(
@@ -733,6 +727,35 @@ mod gi_light_priority_tests {
             VisibilityMask::FULL.bits() as f32
         );
         assert_eq!(authored_projection.params[3], 0.0);
+    }
+
+    #[test]
+    fn every_game_uploads_the_same_object_and_actor_visibility() {
+        use byroredux_plugin::esm::reader::GameKind;
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            for (flags, light_type) in [(0, 0), (0x400, 0), (0x800, 0), (0x1000, 0), (0, 1), (0, 2)]
+            {
+                let projection =
+                    crate::systems::canonical_light_shadow_flags(game, flags, light_type);
+                let mut world = World::new();
+                spawn_point_light_with_flags(&mut world, [0.0; 3], [1.0; 3], 256.0, projection);
+                let mut lights = Vec::new();
+                collect_lights(&world, &mut lights, &mut Vec::new());
+                assert_eq!(lights.len(), 1);
+                assert_eq!(
+                    lights[0].params[2],
+                    VisibilityMask::FULL.bits() as f32,
+                    "{game:?} flags={flags:#x} type={light_type}"
+                );
+            }
+        }
     }
 
     /// Integration-level regression: three point lights inserted in an

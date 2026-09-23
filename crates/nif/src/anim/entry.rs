@@ -79,6 +79,9 @@ pub fn import_kf(scene: &NifScene) -> Vec<AnimationClip> {
         }
     }
 
+    for clip in &mut clips {
+        crate::import::units::animation(scene, clip);
+    }
     clips
 }
 
@@ -782,6 +785,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
     }
     clip.duration = if max_time > 0.0 { max_time } else { 1.0 };
 
+    crate::import::units::animation(scene, &mut clip);
     Some(clip)
 }
 

@@ -243,8 +243,16 @@ pub fn extract_bs_geometry(
         );
     }
 
-    // Positions are already Y-up (decoded by the BSGeometryMeshData parser).
-    let positions: Vec<[f32; 3]> = mesh_data.vertices.to_vec();
+    // The packed decoder preserves source XYZ (nifly Geometry.cpp,
+    // BSGeometryMeshData::Sync); it does not rotate Starfield's Z-up frame.
+    // Mesh vectors must use the same basis change as NiAVObject and binds.
+    use byroredux_core::math::coord::zup_to_yup_pos;
+    let positions: Vec<[f32; 3]> = mesh_data
+        .vertices
+        .iter()
+        .copied()
+        .map(zup_to_yup_pos)
+        .collect();
 
     let indices: Vec<u32> = mesh_data
         .triangles
@@ -252,7 +260,7 @@ pub fn extract_bs_geometry(
         .flat_map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32])
         .collect();
 
-    // Unpack UDEC3 normals from raw u32 (10:10:10:2 unsigned-fixed). Y-up already.
+    // Unpack source Z-up UDEC3 normals, then apply the geometry basis change.
     // Keep authorship separate from the populated fallback vector: synthesized
     // tangents require real normals, not the renderer-safe placeholder below
     // (#2363).
@@ -263,7 +271,7 @@ pub fn extract_bs_geometry(
             .iter()
             .map(|&raw| {
                 let xyzw = unpack_udec3_xyzw(raw);
-                [xyzw[0], xyzw[1], xyzw[2]]
+                zup_to_yup_pos([xyzw[0], xyzw[1], xyzw[2]])
             })
             .collect()
     } else {
@@ -285,9 +293,7 @@ pub fn extract_bs_geometry(
     let uvs = mesh_data.uvs0.clone();
 
     // Authored tangents from the UDEC3-packed `tangents_raw` channel.
-    // BSGeometry is Starfield-native Y-up — no Z-up → Y-up axis swap is
-    // needed (unlike the Oblivion/Skyrim NiBinaryExtraData path, which
-    // is Z-up and requires `bs_tangents_zup_to_yup`). The 2-bit W
+    // Apply the same Z-up → Y-up rotation as positions and normals. The 2-bit W
     // channel from `unpack_udec3_xyzw` carries the bitangent sign.
     // Without this decode, every Starfield mesh fell through to the
     // shader's screen-space derivative Path-2 in `perturbNormal`,
@@ -312,7 +318,8 @@ pub fn extract_bs_geometry(
                 // shouldn't be the only thing standing between an
                 // off-nominal packed value and a wrong tangent frame.
                 let bitangent_sign = clamp_sign(xyzw[3]);
-                [xyzw[0], xyzw[1], xyzw[2], bitangent_sign]
+                let [x, y, z] = zup_to_yup_pos([xyzw[0], xyzw[1], xyzw[2]]);
+                [x, y, z, bitangent_sign]
             })
             .collect()
     } else if normals_authored && !uvs.is_empty() && !positions.is_empty() {
@@ -327,7 +334,7 @@ pub fn extract_bs_geometry(
         // rendering, so testing `normals.is_empty()` here was vacuous and
         // synthesized a tangent basis from fabricated `[0, 1, 0]` normals.
         // `mesh_data.triangles` is already `Vec<[u16; 3]>`, so no index
-        // conversion is needed (BSGeometry is Starfield-native Y-up).
+        // conversion is needed here (positions/normals were converted above).
         synthesize_tangents_yup(&positions, &normals, &uvs, &mesh_data.triangles)
     } else {
         Vec::new()
@@ -371,8 +378,8 @@ pub fn extract_bs_geometry(
     let t = &world_transform.translation;
     let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
 
-    // BSGeometry bounding sphere shares the decoded vertices' basis
-    // (Starfield-native Y-up), but NOT their units: it is authored in the
+    // BSGeometry bounding sphere shares the source vertices' Z-up basis,
+    // but NOT their decoder units: it is authored in the
     // `.mesh` format's normalised units, while `BSGeometryMeshData` decodes
     // every position ×`HAVOK_SCALE`. #4394 — the sphere used to be taken
     // verbatim, leaving `local_bound_*` ~70× too small (frustum pop, every
@@ -382,7 +389,7 @@ pub fn extract_bs_geometry(
     // vertex centroid when no sphere is authored.
     let (local_bound_center, local_bound_radius) = {
         let k = BSGeometryMeshData::HAVOK_SCALE;
-        let [cx, cy, cz] = shape.bounding_sphere.0.map(|c| c * k);
+        let [cx, cy, cz] = zup_to_yup_pos(shape.bounding_sphere.0.map(|c| c * k));
         let r = shape.bounding_sphere.1 * k;
         if r > 0.0 {
             // #2098 (SF2D2-01) — cross-check that the (now unit-converted)

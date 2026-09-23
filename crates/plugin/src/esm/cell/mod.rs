@@ -1601,20 +1601,39 @@ impl EsmCellIndex {
     /// `HashMap<u32, CellRef>` reverse index built once at plugin-load
     /// so the F-key path stays cheap.
     pub fn cell_for_refr_form_id(&self, refr_form_id: u32) -> Option<CellRef<'_>> {
+        self.locate_refr(refr_form_id).map(|(cell, _)| cell)
+    }
+
+    /// Locate a placed REFR by its placement-level FormID, returning both
+    /// its parent cell (same assignment rules as
+    /// [`Self::cell_for_refr_form_id`]) and the placement record itself.
+    ///
+    /// The interior spawn ladder reads a door's *partner* through this: the
+    /// partner's own `XTEL` is the floor-level pose the engine places the
+    /// player at when they walk through it into the door's cell.
+    pub fn locate_refr(&self, refr_form_id: u32) -> Option<(CellRef<'_>, &PlacedRef)> {
         for cell in self.cells.values() {
-            if cell.references.iter().any(|r| r.form_id == refr_form_id) {
-                return Some(CellRef::Interior {
-                    editor_id: &cell.editor_id,
-                });
+            if let Some(reference) = cell.references.iter().find(|r| r.form_id == refr_form_id) {
+                return Some((
+                    CellRef::Interior {
+                        editor_id: &cell.editor_id,
+                    },
+                    reference,
+                ));
             }
         }
         for (worldspace, grids) in &self.exterior_cells {
             for ((gx, gy), cell) in grids {
-                if cell.references.iter().any(|r| r.form_id == refr_form_id) {
-                    return Some(CellRef::Exterior {
-                        worldspace,
-                        grid: (*gx, *gy),
-                    });
+                if let Some(reference) =
+                    cell.references.iter().find(|r| r.form_id == refr_form_id)
+                {
+                    return Some((
+                        CellRef::Exterior {
+                            worldspace,
+                            grid: (*gx, *gy),
+                        },
+                        reference,
+                    ));
                 }
             }
         }
@@ -1628,7 +1647,7 @@ impl EsmCellIndex {
                     (reference.position[0] / EXTERIOR_CELL_UNITS).floor() as i32,
                     (reference.position[1] / EXTERIOR_CELL_UNITS).floor() as i32,
                 );
-                return Some(CellRef::Exterior { worldspace, grid });
+                return Some((CellRef::Exterior { worldspace, grid }, reference));
             }
         }
         None

@@ -66,13 +66,10 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
 
 /// Parse an entire ESM/ESP file in a single pass.
 ///
-/// First fills the cell index using the existing `parse_esm_cells` walker
-/// (which already handles CELL/WRLD/MODL extraction), then walks the file
-/// a second time to pull the M24 record categories. This is a deliberate
-/// trade-off: a single combined walker would be more efficient but would
-/// require restructuring `cell.rs`. For now, two passes over a 100 MB
-/// file run in well under a second on a real ESM, and keeping the cell
-/// pipeline untouched preserves the renderer behaviour we already trust.
+/// Scene placements, light ranges and decoded navigation geometry in the
+/// returned index use common Bethesda units (70/m), including Starfield's
+/// metric source data. Rotations and authored object scales are unchanged.
+/// Individual record readers retain their source-format values.
 pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
     parse_esm_with_load_order(data, None)
 }
@@ -543,6 +540,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         movables,
         material_swaps,
     };
+    super::spatial_units::normalize(&mut index);
 
     // Single source of truth — both this line and `index.total()` walk
     // the same `EsmIndex::categories` table so adding a new record

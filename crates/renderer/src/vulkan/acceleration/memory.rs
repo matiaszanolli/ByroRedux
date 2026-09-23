@@ -4,13 +4,13 @@
 
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
+use super::AccelerationManager;
 use super::constants::WORKING_SET_FLOOR;
 use super::predicates::{
     blas_budget_for_heap, scratch_alignment_padding, scratch_should_shrink,
     screen_scaled_reservation_bytes, shared_blas_scratch_peak, tlas_instance_should_shrink,
     tlas_scratch_should_shrink,
 };
-use super::AccelerationManager;
 use crate::deferred_destroy::DEFAULT_COUNTDOWN;
 use ash::vk;
 
@@ -446,14 +446,21 @@ impl AccelerationManager {
     /// `evict_unused_blas` reclaims against and `should_evict_mid_batch`
     /// measures its 90% early warning from.
     ///
-    /// Exposed (#3540) so the per-frame recovery pass can tell a
-    /// transient miss ("this mesh was evicted while off-screen, restore
-    /// it") from a structural one ("the visible set is larger than the
-    /// budget, so restoring anything only displaces something else this
-    /// frame needs"). Without that distinction the pass rebuild/evict
-    /// thrashes forever. See `plan_static_blas_restore`.
+    /// Recovery compares this with actual required residency; working-set
+    /// protection prevents rebuild/evict cycles. Missing meshes still pass
+    /// through the normal live-plus-deferred admission guard.
     pub fn blas_budget_bytes(&self) -> vk::DeviceSize {
         self.blas_budget_bytes
+    }
+
+    /// Explicit laboratory-only counterpart of the startup RT test override.
+    /// Lets a fixture choose pressure relative to measured device-specific
+    /// BLAS sizes. Normal rendering continues to use `recompute_blas_budget`.
+    pub fn override_blas_budget_for_test(&mut self, bytes: vk::DeviceSize) {
+        assert!(bytes > 0, "RT test BLAS budget must be nonzero");
+        self.blas_budget_override = Some(bytes);
+        self.blas_budget_bytes = bytes;
+        log::warn!("RT TEST measured BLAS memory budget override active: {bytes} bytes");
     }
 
     /// Re-derive `blas_budget_bytes` for a render extent, subtracting what the

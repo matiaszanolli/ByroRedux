@@ -86,9 +86,9 @@ pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32)
     source_flags & source_animation_mask
 }
 
-/// Decode a game's raw LIGH flags into the shared runtime shadow-projection
-/// behavior (#2250 / REN-D22-01), mirroring [`canonical_light_animation_flags`]
-/// above.
+/// Decode legacy projection flags for diagnostics. Runtime visibility is
+/// always material-aware and full-scene, independent of this word; the
+/// shadow-policy discussion below records the historical decoding rationale.
 ///
 /// `LIGHT_FLAG_SHADOW_MASK` (`0x400`/`0x800`/`0x1000`) is directly verified
 /// against TES5's LIGH layout (`light.rs`'s doc comment), and against
@@ -215,43 +215,22 @@ pub(crate) fn translate_light(
     game: GameKind,
     ref_rot: byroredux_core::math::Quat,
 ) -> LightGeometry {
-    // `LIGHT_FLAG_SPOT` (bit 9, 0x200, xEdit's `'Spot Light'`) is the
-    // light-SHAPE signal — distinct from `LIGHT_FLAG_SHADOW_SPOTLIGHT`
-    // (bit 10, 0x400, `canonical_light_shadow_flags` above), which is a
-    // shadow-projection-TECHNIQUE choice. See `LIGHT_FLAG_SPOT`'s own doc
-    // for why conflating the two (as this boundary's absence previously
-    // let every producer implicitly do, by deriving no `kind` signal at
-    // all) is wrong.
-    //
-    // `GameKind::Starfield` stays excluded, and #3987 narrowed the reason
-    // rather than removing it. The old justification — "an undifferentiated
-    // `wbUnknown` block" — was wrong: `DAT2+12` is a real, populated u16
-    // bitfield (see `canonical_light_shadow_flags`'s doc for the measurement).
-    // What is missing is the bit legend, and `LIGHT_FLAG_SPOT` is a bit
-    // position, not a policy. `0x200` IS observed in the shipped data — 160 of
-    // 1,575 records carry it, and Skyrim names that bit Spot Light — but
-    // "the same bit index means the same thing in a restructured subrecord"
-    // is precisely the transfer this arm exists to refuse, and the Starfield
-    // word demonstrably does NOT share Skyrim's layout (Skyrim's 0x02/0x04/
-    // 0x08 never appear; an unnamed 0x10 does). Emitting a cone on a
-    // suggestive bit would be a guess with a visible, wrong-looking result.
-    // `Point` until the legend is evidenced.
-    //
-    // The legend is now evidenced (2026-09-18): xEdit's
-    // `wbDefinitionsSF1.pas` (dev-4.1.6, the same cited reference the
-    // FOV/CTDA work used) publishes the full DAT2 layout, and it
-    // vindicates the refusal — Starfield's `0x200` is "Focus Spotlight
-    // Beam", not a spot-shape bit. The shape signal moved into a
-    // dedicated enum byte at `DAT2+56` ("Light Type": 0 = Omnidirectional,
-    // 1 = Shadow Spotlight, 2 = NonShadow Spotlight), decoded as
-    // `LightData::starfield_light_type`. A Starfield LIGH is a spotlight
-    // when that byte is 1 or 2; the shadow-projection split (1 vs 2)
-    // feeds `canonical_light_shadow_flags`. `FOV` at `DAT2+20` shares the
-    // Skyrim DATA semantics this fn already translates.
-    let is_spot = if game == GameKind::Starfield {
-        ld.starfield_light_type >= 1
-    } else {
-        ld.flags & LIGHT_FLAG_SPOT != 0
+    // xEdit dev-4.1.6 Core/wbDefinitions{TES4,FNV,TES5,FO4,FO76,SF1}.pas:
+    // "Shadow Spotlight" (0x400) is itself a cone; vanilla Skyrim/FO4 do
+    // NOT also set 0x200. FO4/FO76 call 0x200 "Unknown 9" and move the
+    // non-shadow cone to 0x4000. Starfield uses DAT2+56's explicit enum;
+    // its 0x200 means "Focus Spotlight Beam", not the emitter's shape.
+    // Keep these raw-format differences here. "NonShadow" describes the
+    // source engine's shadow allocation, not our material-aware visibility.
+    let is_spot = match game {
+        GameKind::Starfield => matches!(ld.starfield_light_type, 1 | 2),
+        GameKind::Fallout4 | GameKind::Fallout76 => {
+            const NON_SHADOW_SPOTLIGHT: u32 = 0x4000;
+            ld.flags & (LIGHT_FLAG_SHADOW_SPOTLIGHT | NON_SHADOW_SPOTLIGHT) != 0
+        }
+        GameKind::Oblivion | GameKind::Fallout3NV | GameKind::Skyrim => {
+            ld.flags & (LIGHT_FLAG_SPOT | LIGHT_FLAG_SHADOW_SPOTLIGHT) != 0
+        }
     };
     if !is_spot {
         return LightGeometry {
@@ -507,7 +486,11 @@ mod tests {
     /// The fixture with the Starfield DAT2+56 Light Type enum set
     /// (`wbDefinitionsSF1.pas`: 0 = Omnidirectional, 1 = Shadow Spotlight,
     /// 2 = NonShadow Spotlight).
-    fn light_data_typed(flags: u32, fov_degrees: f32, light_type: u8) -> byroredux_plugin::esm::cell::LightData {
+    fn light_data_typed(
+        flags: u32,
+        fov_degrees: f32,
+        light_type: u8,
+    ) -> byroredux_plugin::esm::cell::LightData {
         byroredux_plugin::esm::cell::LightData {
             starfield_light_type: light_type,
             ..light_data(flags, fov_degrees)
@@ -524,6 +507,51 @@ mod tests {
         assert_eq!(geom.kind, LightKind::Point);
         assert_eq!(geom.direction, [0.0, 0.0, 0.0]);
         assert_eq!(geom.outer_angle, 0.0);
+    }
+
+    #[test]
+    fn translate_light_shadow_spot_flag_alone_is_a_cone() {
+        // Vanilla Skyrim uses 0x400 without 0x200. The shadow projection
+        // flag also describes the emitter's shape, not just its old budget.
+        for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Skyrim] {
+            let ld = light_data(0x400, 60.0);
+            let geom = translate_light(&ld, game, Quat::IDENTITY);
+            assert_eq!(geom.kind, LightKind::Spot, "{game:?}");
+            assert_eq!(geom.outer_angle, 30.0f32.to_radians());
+        }
+    }
+
+    #[test]
+    fn translate_light_fallout_spot_flags_do_not_reuse_skyrim_bit_nine() {
+        // xEdit FO4/FO76: 0x200 is Unknown 9; 0x400 Shadow Spotlight;
+        // 0x4000 NonShadow Spotlight. Both named types emit cones.
+        for game in [GameKind::Fallout4, GameKind::Fallout76] {
+            for flags in [0x400, 0x4000, 0x4001, 0x4009] {
+                let geom = translate_light(&light_data(flags, 70.0), game, Quat::IDENTITY);
+                assert_eq!(geom.kind, LightKind::Spot, "{game:?} flags={flags:#x}");
+                assert_eq!(geom.outer_angle, 35.0f32.to_radians());
+            }
+            for flags in [0, 0x200, 0x800, 0x1000, 0x20000] {
+                let geom = translate_light(&light_data(flags, 70.0), game, Quat::IDENTITY);
+                assert_eq!(geom.kind, LightKind::Point, "{game:?} flags={flags:#x}");
+                assert_eq!(geom.direction, [0.0; 3]);
+            }
+        }
+        // Do not transfer FO4's non-shadow cone bit back to Skyrim.
+        let geom = translate_light(&light_data(0x4000, 70.0), GameKind::Skyrim, Quat::IDENTITY);
+        assert_eq!(geom.kind, LightKind::Point);
+    }
+
+    #[test]
+    fn translate_light_starfield_unknown_types_are_not_invented_cones() {
+        for light_type in [3, 255] {
+            let geom = translate_light(
+                &light_data_typed(0, 90.0, light_type),
+                GameKind::Starfield,
+                Quat::IDENTITY,
+            );
+            assert_eq!(geom.kind, LightKind::Point, "type={light_type}");
+        }
     }
 
     /// The core regression: `LIGHT_FLAG_SPOT` set must produce
@@ -621,7 +649,10 @@ mod tests {
             );
         }
         let omni = light_data_typed(0, 90.0, 0);
-        assert_eq!(translate_light(&omni, GameKind::Starfield, Quat::IDENTITY).kind, LightKind::Point);
+        assert_eq!(
+            translate_light(&omni, GameKind::Starfield, Quat::IDENTITY).kind,
+            LightKind::Point
+        );
     }
 
     /// And the enum's shadow split maps onto the canonical technique bits:
@@ -632,14 +663,11 @@ mod tests {
     #[test]
     fn starfield_shadow_technique_follows_the_light_type_enum() {
         use byroredux_core::ecs::LIGHT_FLAG_SHADOW_MASK;
-        let shadowed =
-            canonical_light_shadow_flags(GameKind::Starfield, 0, 1);
+        let shadowed = canonical_light_shadow_flags(GameKind::Starfield, 0, 1);
         assert_eq!(shadowed, LIGHT_FLAG_SHADOW_SPOTLIGHT);
-        let non_shadow =
-            canonical_light_shadow_flags(GameKind::Starfield, 0, 2);
+        let non_shadow = canonical_light_shadow_flags(GameKind::Starfield, 0, 2);
         assert_eq!(non_shadow, 0);
-        let omni =
-            canonical_light_shadow_flags(GameKind::Starfield, LIGHT_FLAG_SHADOW_MASK, 0);
+        let omni = canonical_light_shadow_flags(GameKind::Starfield, LIGHT_FLAG_SHADOW_MASK, 0);
         assert_eq!(omni, LIGHT_FLAG_SHADOW_MASK);
     }
 
@@ -655,9 +683,15 @@ mod tests {
             canonical_light_falloff_exponent(GameKind::Fallout3NV, 0.0),
             2.0
         );
-        assert_eq!(canonical_light_falloff_exponent(GameKind::Oblivion, 0.0), 2.0);
+        assert_eq!(
+            canonical_light_falloff_exponent(GameKind::Oblivion, 0.0),
+            2.0
+        );
         assert_eq!(canonical_light_falloff_exponent(GameKind::Skyrim, 0.0), 1.0);
-        assert_eq!(canonical_light_falloff_exponent(GameKind::Starfield, 0.0), 1.0);
+        assert_eq!(
+            canonical_light_falloff_exponent(GameKind::Starfield, 0.0),
+            1.0
+        );
         // Authored values pass through on every game.
         for game in [
             GameKind::Oblivion,

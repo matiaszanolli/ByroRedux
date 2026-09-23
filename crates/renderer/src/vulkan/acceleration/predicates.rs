@@ -13,8 +13,8 @@ use super::constants::{
 use crate::vulkan::bloom::BLOOM_BYTES_PER_PIXEL_X1024;
 use crate::vulkan::caustic::{CAUSTIC_BYTES_PER_PIXEL, WATER_BYTES_PER_PIXEL};
 use crate::vulkan::composite::COMPOSITE_BYTES_PER_PIXEL;
-use crate::vulkan::context::DrawCommand;
 use crate::vulkan::context::DEPTH_BYTES_PER_PIXEL;
+use crate::vulkan::context::DrawCommand;
 use crate::vulkan::frame_upscaler::upscale_output_bytes;
 use crate::vulkan::gbuffer::GBUFFER_BYTES_PER_PIXEL;
 use crate::vulkan::restir::RESERVOIR_STRIDE;
@@ -23,7 +23,7 @@ use crate::vulkan::svgf::SVGF_BYTES_PER_PIXEL;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::vulkan::taa::TAA_BYTES_PER_PIXEL;
 use crate::vulkan::upscaling::{FrameExtentSet, VolumetricsConfig};
-use crate::vulkan::volumetrics::{froxel_extent, FROXEL_BYTES_PER_SLOT};
+use crate::vulkan::volumetrics::{FROXEL_BYTES_PER_SLOT, froxel_extent};
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -1105,57 +1105,27 @@ pub(super) fn mask_divert_cause(
     }
 }
 
-/// How many missing static BLAS the per-frame recovery pass should
-/// rebuild this frame. #3540.
+/// Bound the number of missing static BLAS recovery may attempt this frame.
 ///
-/// `restore_missing_static_blas_for_draws` rebuilds BLAS that eviction
-/// reclaimed but the current draw set needs again. `build_blas_batched`
-/// evicts to stay inside `blas_budget_bytes`, so the pass is only
-/// coherent while the *whole* visible rigid set fits that budget. When
-/// it doesn't, every BLAS restored displaces another one the same frame
-/// still needs; the next frame finds those missing and rebuilds them,
-/// and the cycle never converges. Starfield's `citycydoniamainlevel`
-/// (~95 k static draws, far past a 4 GB budget) is the observed case:
-/// the engine sat single-threaded on frame 0 for over ten minutes with
-/// RSS oscillating between 12 and 20.6 GB.
+/// Required resident entries are protected by `StaticBlasWorkingSet` before
+/// recovery. Restoring one can therefore no longer evict another required
+/// caster, which caused the #3540 rebuild/evict cycle. The build admission
+/// guard still counts all live and deferred allocations; only unused cache
+/// entries may be retired to make room. A failed batch stops this frame.
 ///
-/// Two bounds, in order:
-///
-/// 1. **Fit projection.** Estimate the visible set's BLAS footprint from
-///    the mean size of the currently-resident entries. If that projects
-///    past the budget the pass is futile — return `0` and let the frame
-///    render. Raster is unaffected; RT loses the over-budget tail, which
-///    eviction was going to take regardless.
-/// 2. **Per-frame cap.** Otherwise rebuild at most `per_frame_cap`, so
-///    a large but fittable recovery is spread across frames rather than
-///    stalling one on a single fence-waiting batch.
-///
-/// `resident_count == 0` means there is no measured BLAS size to project
-/// from (first recovery after a full evict, or an RT-less context). The
-/// projection is skipped in that case and only the cap applies — the cap
-/// alone already bounds the frame.
-///
-/// Pure so the policy can be pinned without a live Vulkan device.
+/// Stop when required residency itself fills the budget, otherwise allow a
+/// bounded attempt. Do NOT estimate missing meshes from the cache-wide mean:
+/// a large unused mesh can make an affordable small working set look too
+/// expensive and strand its shadows forever without ever attempting eviction.
+/// Missing sizes are resolved by the actual builder, not this scheduling gate.
 pub fn plan_static_blas_restore(
     missing: usize,
-    visible: usize,
-    static_blas_bytes: vk::DeviceSize,
-    resident_count: usize,
+    required_resident_bytes: vk::DeviceSize,
     budget_bytes: vk::DeviceSize,
     per_frame_cap: usize,
 ) -> usize {
-    if missing == 0 || per_frame_cap == 0 {
+    if required_resident_bytes >= budget_bytes {
         return 0;
-    }
-    if resident_count > 0 {
-        let mean = static_blas_bytes / resident_count as vk::DeviceSize;
-        // `visible` is the full draw set; `missing` can't exceed it, but
-        // take the max so a caller that passes only the missing subset
-        // still gets a projection rather than an under-estimate.
-        let projected = mean.saturating_mul(visible.max(missing) as vk::DeviceSize);
-        if projected > budget_bytes {
-            return 0;
-        }
     }
     missing.min(per_frame_cap)
 }

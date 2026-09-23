@@ -271,13 +271,13 @@ pub(crate) fn build_scene_descriptor_bindings(
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         );
     }
-    // Binding 3: bone palette SSBO (vertex shader — skinning).
+    // Binding 3: bone palette for raster skinning and secondary-hit frames.
     bindings.push(
         vk::DescriptorSetLayoutBinding::default()
             .binding(3)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX),
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
     );
     // Binding 4: instance data SSBO (vertex + fragment — instanced drawing + PBR materials).
     bindings.push(
