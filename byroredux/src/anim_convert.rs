@@ -6,7 +6,9 @@ use byroredux_core::animation::{
     TransformChannel, TranslationKey,
 };
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{Children, FlipTextureRole, Material, Name, World};
+use byroredux_core::ecs::{
+    Children, FlipTextureRole, HierarchyTraversalGuard, Material, Name, World,
+};
 use byroredux_core::math::{Quat, Vec2, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_renderer::VulkanContext;
@@ -37,13 +39,17 @@ pub(crate) fn build_subtree_name_map(
     let Some(ref cq) = children_q else { return map };
 
     let mut queue = vec![root];
-    // #4572 — visited set, the HierarchyTraversalGuard rule: a cycle a
-    // corrupt save linked (validate_hierarchy checks agreement, not
-    // acyclicity) would otherwise spin this DFS forever.
+    // #4572 / #4769 — visited set + budget, the HierarchyTraversalGuard
+    // rule: a cycle a corrupt save linked (validate_hierarchy checks
+    // agreement, not acyclicity) would otherwise spin this DFS forever.
     let mut seen = std::collections::HashSet::new();
+    let mut guard = HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
     while let Some(entity) = queue.pop() {
         if !seen.insert(entity) {
             continue;
+        }
+        if !guard.step() {
+            break;
         }
         if let Some(children) = cq.get(entity) {
             for &child in &children.0 {

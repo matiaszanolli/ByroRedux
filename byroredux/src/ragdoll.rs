@@ -23,7 +23,8 @@ use byroredux_core::ecs::components::{CollisionShape, RigidBodyData};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{
-    Children, EntityId, GlobalTransform, LocalBound, Parent, Transform, World, WorldBound,
+    Children, EntityId, GlobalTransform, HierarchyTraversalGuard, LocalBound, Parent, Transform,
+    World, WorldBound,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_nif::import::{ImportedJointKind, ImportedRagdoll};
@@ -549,7 +550,8 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     let mut live_body_positions: Vec<Vec3> = Vec::new();
     let mut mesh_walk_queue: VecDeque<EntityId> = VecDeque::new();
     // #4572 — visited sets for the two subtree BFS walks, reused with the
-    // queues they guard.
+    // queues they guard; each walk pairs its set with a fresh
+    // HierarchyTraversalGuard budget (#4769).
     let mut mesh_walk_seen: HashSet<EntityId> = HashSet::new();
     let mut descendant_seen: HashSet<EntityId> = HashSet::new();
     for (actor, ragdoll) in rq.iter() {
@@ -632,6 +634,8 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
             ) {
                 mesh_walk_queue.clear();
                 mesh_walk_seen.clear();
+                let mut mesh_walk_guard =
+                    HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
                 if let Some(children) = cq.get(actor) {
                     mesh_walk_queue.extend(children.0.iter().copied());
                 }
@@ -642,6 +646,9 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
                     // corrupt save linked cannot spin this BFS.
                     if !mesh_walk_seen.insert(entity) {
                         continue;
+                    }
+                    if !mesh_walk_guard.step() {
+                        break;
                     }
                     if let Some(children) = cq.get(entity) {
                         mesh_walk_queue.extend(children.0.iter().copied());
@@ -684,15 +691,19 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
         // their simulated global (authoritative) and are only recursed through.
         queue.clear();
         descendant_seen.clear();
+        let mut descendant_guard = HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
         for tb in &template.bodies {
             if let Some(children) = cq.get(tb.bone) {
                 queue.extend(children.0.iter().copied());
             }
         }
         while let Some(entity) = queue.pop_front() {
-            // #4572 — same visited-set guard as the mesh walk above.
+            // #4572 — same visited set + budget as the mesh walk above.
             if !descendant_seen.insert(entity) {
                 continue;
+            }
+            if !descendant_guard.step() {
+                break;
             }
             // A descendant that is itself a body keeps its simulated pose; do
             // not overwrite it, but still walk through to its own children.
