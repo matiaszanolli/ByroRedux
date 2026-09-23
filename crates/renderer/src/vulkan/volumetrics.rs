@@ -1124,7 +1124,8 @@ impl VolumetricsPipeline {
     /// Must be called AFTER the main render pass ends (so caustic /
     /// SVGF have already scheduled their reads against the G-buffer)
     /// and BEFORE composite (so the integrated volume is ready to
-    /// sample). Natural slot: between caustic and TAA in `draw.rs`.
+    /// sample). Recorded by `record_volumetrics_pass` in
+    /// `context/post_passes.rs`: caustic → volumetrics → SSAO → composite.
     ///
     /// # Safety
     ///
@@ -1716,8 +1717,9 @@ impl VolumetricsPipeline {
     /// — the TLAS is rebuilt each frame, so this MUST be called every
     /// frame from `draw_frame` before `dispatch`. If the caller has no
     /// TLAS available for this frame (RT unsupported, scene not yet
-    /// built), they should skip both `write_tlas` AND `dispatch`;
-    /// composite will reuse the prior frame's integrated volume.
+    /// built), they should skip both `write_tlas` AND `dispatch` and let the
+    /// skip latch record [`Self::record_neutral_frame`] — composite then
+    /// samples an empty medium rather than a stale volume (#3685).
     pub fn write_tlas(
         &mut self,
         device: &ash::Device,

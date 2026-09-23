@@ -1304,9 +1304,10 @@ impl VulkanContext {
         // binding 6 is `sampler3D`, so a None volumetrics pipeline
         // can't be papered over with a 2D fallback view. If pipeline
         // creation failed earlier, refuse to build composite. The
-        // 14 MiB × 2 / slot 3D-image allocation is universally
-        // supported on RT-class GPUs, so this only fires under exotic
-        // hardware / driver pathologies.
+        // 3D-image allocation (`FROXEL_BYTES_PER_SLOT` = 44 B per froxel
+        // per slot, ~87 MiB/slot for 1080p's 240×135×64 grid) is supported
+        // on RT-class GPUs, so this only fires under exotic hardware /
+        // driver pathologies.
         let volumetric_views: Vec<vk::ImageView> = match volumetrics.as_ref() {
             Some(v) => v.integrated_views(),
             None => {

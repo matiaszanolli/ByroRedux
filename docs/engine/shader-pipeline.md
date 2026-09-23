@@ -32,7 +32,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `ui.vert` | UI quad passthrough — position already in NDC [-1, 1] |
 | `ui.frag` | UI bindless texture sampling — no shading, straight texel output |
 | `composite.vert` | Fullscreen triangle via `gl_VertexIndex` — no vertex buffer; reused unmodified as `presentation.frag`'s vertex stage |
-| `composite.frag` | HDR compose — direct + SVGF-denoised indirect + dual caustic accumulator (glass/water), bloom add, volumetric froxel sample. Emits linear HDR to an intermediate image (no tone-map, no swapchain write — see `presentation.frag`) |
+| `composite.frag` | HDR compose — direct + SVGF-denoised indirect + dual caustic accumulator (glass/water), volumetric froxel sample (bloom is added afterwards, in place, by `bloom_apply.comp`). Emits linear HDR to an intermediate image (no tone-map, no swapchain write — see `presentation.frag`) |
 | `presentation.frag` | FSR 3.1 presentation pass — samples the upscaled (or native-blit-fallback) scene, applies `tonemap(graded * exposureTex)` (the exposure meter's per-FIF texel; ACES\|AgX display-transform switch) and underwater extinction, writes the swapchain (`PRESENT_SRC_KHR`) |
 
 ### Compute
@@ -55,7 +55,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `bloom_upsample.comp` | Upsample + blur stages of bloom pyramid |
 | `exposure_meter.comp` | Stage-1 auto-exposure meter — EV100 average of the post-bloom scene, per-FIF-slot exponential adaptation, writes the 1×1 exposure texel FSR and presentation sample (`exposure_meter.rs`; fixed mode writes the authored constant) |
 | `caustic_splat.comp` | Per-refractive-surface scatter of refracted-light contributions into caustic accumulator |
-| `volumetrics_inject.comp` | Inject sun-light into froxel grid (HG-phase scattered radiance) |
+| `volumetrics_inject.comp` | Inject the froxel medium: sun and clustered local lights (HG-phase scattered radiance), authored fog volumes, and combustion transport |
 | `volumetrics_integrate.comp` | Integrate transmittance over froxel grid |
 
 All SPIR-V binaries are pre-compiled and embedded via `include_bytes!` in
@@ -651,8 +651,8 @@ relying on this table for a new binding):
 | 9 | `STORAGE_BUFFER` | Fog-volume cluster index list |
 | 10 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | Base density noise |
 | 11 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | Detail density noise |
-| 12 | `STORAGE_IMAGE` (`r32f`, write-only) | `emissionHistory` — transported emission field, current slot (#2809) |
-| 13 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | `previousEmissionHistory` — prior frame-in-flight slot, for semi-Lagrangian backtrace |
+| 12 | `STORAGE_IMAGE` (`r32f`, write-only) | `emissionHistory` — per-froxel emissive-source share of the current source term, current slot (#2809) |
+| 13 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | `previousEmissionHistory` — prior frame-in-flight slot, sampled for temporal reprojection (`sampleEmissionHistoryColumn`) |
 | 14 | `STORAGE_IMAGE` (`rgba16f`, write-only) | `combustionState` — (fuel mass fraction, temperature K, extinction σ_t, visible-radiance calibration), current slot |
 | 15 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | `previousCombustionState` — prior frame-in-flight slot |
 | 16 | `STORAGE_IMAGE` (`rgba16f`, write-only) | `combustionDynamics` — (world-space velocity xyz, specific overpressure), current slot |

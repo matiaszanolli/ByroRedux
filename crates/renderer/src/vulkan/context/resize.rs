@@ -1251,9 +1251,10 @@ impl VulkanContext {
         // the needed clear on the first post-resize frame that skips.
         self.caustic_cleared_on_skip = [false; MAX_FRAMES_IN_FLIGHT];
         // #3685 — same reasoning as the caustic latch above: the froxel
-        // volume isn't resize-dependent (fixed grid, not screen-sized), but
-        // resetting here is cheap and keeps both latches' invariants
-        // identical rather than leaving one asymmetric special case.
+        // grid is derived from the render extent and rebuilt by
+        // `recreate_bloom_and_volumetrics` in this same resize, so its slot
+        // images are fresh and a stale latch would skip the first
+        // post-resize skip frame's needed clear.
         self.volumetrics_cleared_on_skip = [false; MAX_FRAMES_IN_FLIGHT];
 
         // Command buffers are per frame-in-flight (fixed count), so they

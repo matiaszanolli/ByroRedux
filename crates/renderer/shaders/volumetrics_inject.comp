@@ -1337,7 +1337,7 @@ float henyey_greenstein(float cos_theta, float g) {
     // already-present `max(denom, 1e-4)` floor — producing 0/very-small
     // = 0 rather than a NaN, but conceptually broken. Clamp here turns
     // that into a soft cap right at the phase-function boundary so
-    // host bugs degrade gracefully. Current host default g = 0.4
+    // host bugs degrade gracefully. Current host default g = 0.8
     // (DEFAULT_PHASE_G in volumetrics.rs) is well inside the band, so
     // the clamp is a no-op on the hot path. See #1021 / REN-D18-002.
     return medium_henyey_greenstein(cos_theta, g);

@@ -475,13 +475,13 @@ impl VulkanContext {
     /// and integrate dispatches are live GPU work, not dead weight; do not
     /// "optimize" them away as unused work. See #928 / 977eb95a.
     ///
-    /// Gated on TLAS being available, mirroring the same `tlas_handle`
-    /// check in `record_caustic_pass` / the caustic dispatch. When no
-    /// TLAS exists (RT unsupported, scene not yet
-    /// built, accel_manager absent) we skip BOTH the descriptor write and
-    /// the dispatch — composite reads the prior frame's integrated
-    /// volume, which retains its last valid contents (or the
-    /// post-`initialize_layouts` zero-init on the very first frame).
+    /// Gated on this frame's TLAS having built (`ray_query_tlas`, #4779)
+    /// plus the cluster and geometry inputs. When any is missing (RT
+    /// unsupported, scene not yet built, build failed, accel_manager
+    /// absent) we skip BOTH the descriptor write and the dispatch, and the
+    /// shared `skip_clear_decision` latch (#3685) records a neutral clear of
+    /// the slot on the first skipped frame — composite then samples an
+    /// empty medium, never a prior cell's stale fog.
     ///
     /// Sun direction + radiance are plumbed from `SkyParams::sun_direction`
     /// / `sun_color` / `sun_intensity` (#1022 / REN-D18-008). Below-horizon

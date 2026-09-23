@@ -552,7 +552,7 @@ impl VolumetricsPipeline {
             pipeline_cache,
             VOLUMETRICS_INJECT_COMP_SPV,
             partial.pipeline_layout,
-            "Volumetrics clear",
+            "Volumetrics injection",
         ));
 
         // ── 5. Descriptor pool + sets ─────────────────────────────────
