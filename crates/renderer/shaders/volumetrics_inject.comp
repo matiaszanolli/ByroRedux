@@ -1362,20 +1362,29 @@ float blueNoiseRank(ivec2 pixel, int channel) {
     return blueNoiseRankAt(pixel + ivec2(channel * 3, channel * 5));
 }
 
+// #4776 — R3 Cranley-Patterson rotation constants (0.754877666,
+// 0.569840296, 0.438289) in 0.32 fixed point. `frame * c` as a float32
+// product loses fractional resolution as the frame count grows (1/8 by
+// ~1.4 M frames, none at 2^23) and lands exactly on integers, so the
+// rotation is formed from the exact integer frame index instead: uint
+// multiplication wraps mod 2^32, which *is* `fract(frame * c)`, and its top
+// 24 bits keep a constant 2^-24 resolution for the whole session.
+const uvec3 R3_ROTATION_FIXED_0_32 = uvec3(3242174888u, 2447445435u, 1882436921u);
+
 vec3 froxelJitter(ivec3 coord) {
-    float frame = params.volume_params.w;
+    uint frame = uint(params.volume_params.w);
     ivec2 p = coord.xy + ivec2(coord.z * 17, coord.z * 29);
     vec3 rank = vec3(
         blueNoiseRank(p, 0),
         blueNoiseRank(p.yx, 1),
         blueNoiseRank(p + ivec2(37, 11), 2)
     );
-    return fract(rank + frame * vec3(0.754877666, 0.569840296, 0.438289));
+    vec3 rotation = vec3((frame * R3_ROTATION_FIXED_0_32) >> 8u) * (1.0 / 16777216.0);
+    return fract(rank + rotation);
 }
 
-// Reconstruct world position at a jittered froxel sample.
-// uv ∈ [0,1] is screen space; t is along-ray distance from camera.
-vec3 froxel_to_world(vec2 uv, float t) {
+// World-space unit ray from the camera through screen-space uv ∈ [0,1].
+vec3 froxel_ray_dir(vec2 uv) {
     // Get the world-space ray through this froxel column by inverting
     // the projection at the far plane (Vulkan default NDC z = 1 = far).
     vec4 ndc_far = vec4(uv * 2.0 - 1.0, 1.0, 1.0);
@@ -1386,8 +1395,13 @@ vec3 froxel_to_world(vec2 uv, float t) {
     // rays cast from them) share the absolute TLAS space. camera_pos is
     // already absolute.
     world_far.xyz += params.render_origin.xyz;
-    vec3 ray_dir = normalize(world_far.xyz - params.camera_pos.xyz);
-    return params.camera_pos.xyz + ray_dir * t;
+    return normalize(world_far.xyz - params.camera_pos.xyz);
+}
+
+// Reconstruct world position at a jittered froxel sample.
+// uv ∈ [0,1] is screen space; t is along-ray distance from camera.
+vec3 froxel_to_world(vec2 uv, float t) {
+    return params.camera_pos.xyz + froxel_ray_dir(uv) * t;
 }
 
 bool reprojectHistory(vec3 worldPos, out vec3 previousUvw) {
@@ -2612,7 +2626,11 @@ void main() {
     imageStore(combustionOptical, coord, combustion_optical);
 
     // View direction points FROM the sample point TOWARD the camera.
-    vec3 view_dir = normalize(params.camera_pos.xyz - world_pos);
+    // #4776 — exactly `normalize(camera_pos - world_pos)` for every t > 0,
+    // without the 0/0 a zero-jitter slice-0 sample (t == 0, world_pos at
+    // the eye) produced: `normalize(vec3(0))` is NaN on drivers that do not
+    // flush it, and the temporal history would carry it forever.
+    vec3 view_dir = -froxel_ray_dir(sampleUv);
 
     // params.sun_dir.xyz points TO the sun; the light's propagation
     // (incoming) direction at the sample is the opposite, -sun_dir.

@@ -344,6 +344,12 @@ mod tests {
         // The two-triangles-from-four-corners index table, consumed by the
         // line below it. Topology, not tuning.
         ("groundcover_blade.vert", "QUAD"),
+        // ── #4776 ────────────────────────────────────────────────────
+        // The R3 low-discrepancy rotation in 0.32 fixed point, consumed only
+        // by `froxelJitter` in the stage that declares it. The volumetrics
+        // test `froxel_jitter_rotation_keeps_full_resolution_over_a_session`
+        // parses it back out of the shader and checks it against R3.
+        ("volumetrics_inject.comp", "R3_ROTATION_FIXED_0_32"),
     ];
 
     fn shader_constant_data_names() -> std::collections::HashSet<&'static str> {

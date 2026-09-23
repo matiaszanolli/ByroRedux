@@ -2762,6 +2762,67 @@ mod unit_tests {
         assert_eq!([explicit.width, explicit.height], [320, 180]);
     }
 
+    /// #4776 / REN-D8-2026-09-23-04 — the inject shader's temporal jitter
+    /// was `fract(rank + frame * R3)` in float32, whose fractional resolution
+    /// coarsens with the frame count (8 levels by ~1.4 M frames, none at
+    /// 2^23), and the eye-point `view_dir` was `normalize(camera - world)`,
+    /// a 0/0 for a zero-jitter slice-0 sample. Mirrors the shader's
+    /// fixed-point rotation from its own source so the two cannot drift.
+    #[test]
+    fn froxel_jitter_rotation_keeps_full_resolution_over_a_session() {
+        const R3: [f64; 3] = [0.754877666, 0.569840296, 0.438289];
+        let src = include_str!("../../shaders/volumetrics_inject.comp");
+        let decl = src
+            .split("const uvec3 R3_ROTATION_FIXED_0_32 = uvec3(")
+            .nth(1)
+            .expect("the fixed-point R3 rotation constant must stay in the shader (#4776)");
+        let fixed: Vec<u32> = decl[..decl.find(')').unwrap()]
+            .split(',')
+            .map(|c| c.trim().trim_end_matches('u').parse().unwrap())
+            .collect();
+        assert_eq!(fixed.len(), 3);
+        for (fixed, c) in fixed.iter().zip(R3) {
+            assert_eq!(
+                *fixed,
+                (c * 4294967296.0).round() as u32,
+                "constant for R3 {c}"
+            );
+        }
+
+        let rotation = |frame: u32, lane: usize| {
+            (frame.wrapping_mul(fixed[lane]) >> 8) as f32 * (1.0 / 16777216.0)
+        };
+        // Early frames agree with the float formula it replaces.
+        for frame in [1u32, 2, 17, 1000] {
+            for lane in 0..3 {
+                let old = (frame as f32 * R3[lane] as f32).fract();
+                assert!((rotation(frame, lane) - old).abs() < 1.0e-4);
+            }
+        }
+        // Late in a session every consecutive frame still gets a distinct
+        // rotation; the float32 product has collapsed to a handful of values.
+        let late = (1u32 << 23) - 256..(1u32 << 23);
+        let distinct = |values: Vec<f32>| {
+            let mut bits: Vec<u32> = values.into_iter().map(f32::to_bits).collect();
+            bits.sort_unstable();
+            bits.dedup();
+            bits.len()
+        };
+        let fixed_distinct = distinct(late.clone().map(|f| rotation(f, 0)).collect());
+        let float_distinct = distinct(late.map(|f| (f as f32 * R3[0] as f32).fract()).collect());
+        assert_eq!(fixed_distinct, 256);
+        assert!(
+            float_distinct <= 2,
+            "float32 baseline lost its collapse: {float_distinct}"
+        );
+
+        assert!(
+            src.contains("vec3 view_dir = -froxel_ray_dir(sampleUv);"),
+            "view_dir must come from the froxel ray, not normalize(camera - world) (#4776)"
+        );
+        assert!(!src.contains("normalize(params.camera_pos.xyz - world_pos)"));
+    }
+
     /// #4781 / SAFE-D5-2026-09-23-01 — the froxel grid's X/Y are 3D-image
     /// dimensions. `maxImageDimension3D` is 2048 on Mesa ANV and lavapipe,
     /// the 2D limit a render extent can reach is 16384, and only
