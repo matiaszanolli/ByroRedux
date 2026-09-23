@@ -410,16 +410,21 @@ hitch/load stall can't dump an unbounded batch of regen into one frame; the
 constant `FATIGUE_REGEN_PER_SEC = 10.0` is applied via `ActorValues::restore`
 (which already floors damage at `0.0`, so no separate max-pool clamp is
 needed). `pool_regen_tick_system(world, frame_dt)` is registered in
-`byroredux/src/main.rs`'s `Stage::Update` (`add_exclusive`, same lane as
-`recurring_update_tick_system`) — it no-ops today because `PoolRegenConfig`
-(the per-game resolved AVIF ids, built by the new
-`oblivion_pool_regen_config` in `tes.rs`) isn't inserted anywhere yet:
-Oblivion's live `CharacterRuleset` wiring hasn't landed
-(`build_character_ruleset` in `npc_spawn.rs` still returns `None` for it), so
-the tick is wired and tested but has no live consumer to act on until that
-larger rollout milestone lands. 5 new tests (formula match, 60 Hz tick
-counting, fractional-time carry-over across frames, substep cap, and a
-full ECS integration test proving both Fatigue and Magicka regen end-to-end).
+`Stage::Update` via `add_exclusive_with_access`
+(`byroredux/src/boot/schedule/update.rs` — the registration moved out of
+`main.rs` under #3170's boot split; #4109 swept the stale `main.rs`/
+`boot.rs` references) — it no-ops today because `PoolRegenConfig`
+(the per-game resolved AVIF ids) is inserted only by unit tests: the
+`oblivion_pool_regen_config` constructor that once lived in `tes.rs` was
+deleted under #3848 (`git show e13985dfc` recovers it), and re-adding it
+is gated on Oblivion's ruleset actually being wired — deliberately
+blocked on the pre-AVIF actor-value resolver (#3768), not on "a live
+`CharacterRuleset` landing" (four games have one since #3170/#3848 with
+no config following, because the config is Oblivion-shaped). So the tick
+is wired and tested but has no live consumer until that resolver lands. 5
+new tests (formula match, 60 Hz tick counting, fractional-time carry-over
+across frames, substep cap, and a full ECS integration test proving both
+Fatigue and Magicka regen end-to-end).
 
 **2. Oblivion Remastered ships a wholesale-different Fatigue model — a
 *second* confirmed "remaster patches original mechanical math" instance**

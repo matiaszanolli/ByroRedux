@@ -185,28 +185,37 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 ///
 /// [`ActorValues::from_pairs`]: byroredux_core::ecs::components::ActorValues::from_pairs
 pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
-    // #3381 / #3382 — `TPLT` + ACBS "Use Stats" inheritance is resolved for
-    // EVERY stat model, not just auto-calc. `template_flags` is parsed on all
-    // three families and `stamp_character_components` already resolves the
-    // same chain for `CharacterLevel`/`Background` on the same entity, so
-    // deriving actor values off the unresolved shell contradicted the
-    // components sitting beside them. Resolving once here also keeps the arms
-    // from drifting apart again — the gap arose because only one of three
-    // resolved.
-    let level = effective_actor_level(npc);
-    let stats = crate::equip::resolve_inherited_stats(npc, level, index);
+    derive_resolved_actor_values(&crate::equip::ResolvedNpc::resolve(npc, index), index)
+}
+
+/// #4457 — the population-boundary form of [`derive_npc_actor_values`]:
+/// the caller resolves the record once ([`crate::equip::ResolvedNpc`])
+/// and hands it to every stamp, so the TPLT chain walks once per spawn
+/// instead of once per consuming helper. The two-argument form remains
+/// for callers outside a spawn boundary (the player template, tests).
+///
+/// #3381 / #3382 — `TPLT` + ACBS "Use Stats" inheritance is applied for
+/// EVERY stat model, not just auto-calc. `template_flags` is parsed on all
+/// three families and `stamp_character_components` consumes the same
+/// resolved records for `CharacterLevel`/`Background` on the same entity, so
+/// deriving actor values off the unresolved shell contradicted the
+/// components sitting beside them.
+pub fn derive_resolved_actor_values(
+    resolved: &crate::equip::ResolvedNpc<'_>,
+    index: &EsmIndex,
+) -> Vec<(u32, f32)> {
+    let stats = resolved.stats;
     // #3480 — race is NOT a stat. It rides the independently-set "Use
-    // Traits" bit (`TEMPLATE_FLAG_USE_TRAITS`), which the same codebase
-    // resolves with `resolve_inherited_traits` and which
-    // `stamp_character_components` already uses for the `Background` it
-    // writes on this same entity. Reading `race_form_id` off the *stats*
-    // record made 1,180 vanilla Skyrim NPCs contradict their own
-    // `Background`, 118 of them landing on a different `RACE.DATA` triple
-    // (and `00109C7C`, one of the wrong races, authors no starting Magicka
-    // at all — those actors lost the pool outright). The two chains are
-    // resolved separately here and each arm is handed the record whose
-    // fields it actually reads.
-    let traits = crate::equip::resolve_inherited_traits(npc, level, index);
+    // Traits" bit (`TEMPLATE_FLAG_USE_TRAITS`), which `ResolvedNpc`
+    // resolves on its own chain and which `stamp_character_components`
+    // uses for the `Background` it writes on this same entity. Reading
+    // `race_form_id` off the *stats* record made 1,180 vanilla Skyrim
+    // NPCs contradict their own `Background`, 118 of them landing on a
+    // different `RACE.DATA` triple (and `00109C7C`, one of the wrong
+    // races, authors no starting Magicka at all — those actors lost the
+    // pool outright). The two chains are resolved separately and each arm
+    // is handed the record whose fields it actually reads.
+    let traits = resolved.r#traits;
     // #3390 — creatures and NPCs are different stat models *within* one
     // game, so the model is chosen by record kind and the profile still
     // owns which model that is. Consumers never branch on game identity.
@@ -216,7 +225,7 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
         index.character_rules.npc_stat_model()
     };
     let mut values = match model {
-        NpcStatModel::Stored => derive_stored_actor_values(npc, level, index),
+        NpcStatModel::Stored => derive_stored_actor_values(resolved, index),
         NpcStatModel::RaceBaseOffsets => derive_skyrim_actor_values(stats, traits, index),
         NpcStatModel::ClassAutoCalc { health } => {
             derive_autocalc_actor_values(stats, index, index.character_rules, health)
@@ -289,6 +298,16 @@ fn derive_creature_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, 
 /// TES5 NPC resource pools are authored as race starting values plus signed
 /// actor offsets. Each resolves independently through its authored AVIF.
 ///
+/// **Documented gap (#4454)**: the capture's Magicka composition is
+/// three-part — race base + per-NPC fixed adjustment + **0–10/level from
+/// class** (`charal-skyrim-ruleset.md`'s derived table) — and this fn
+/// implements only the first two. A level-40 NPC therefore derives the same
+/// pools as a level-1 NPC with the same race and offsets. The per-class
+/// pool-growth numbers are captured nowhere, so coding a guess here would
+/// violate no-guessing; before any leveled-NPC gameplay lands, capture the
+/// CK class data (the `Skill Weight`-adjacent pool-growth fields) and add
+/// the third term. Same documented-gap style as regen.rs's blocked wiring.
+///
 /// #3480 — the two inputs come off **different** `TPLT` chains and the
 /// caller resolves both: `stats` (the "Use Stats" record) carries the signed
 /// `ACBS` offsets, which really are stats, while `traits` (the "Use Traits"
@@ -329,27 +348,26 @@ fn derive_skyrim_actor_values(
 /// path's contract for an index missing an `AVIF`. One allocation; the
 /// `PRPS` slice is `memcpy`'d, the ≤2 baked stats pushed.
 fn derive_stored_actor_values(
-    shell: &NpcRecord,
-    actor_level: i16,
+    resolved: &crate::equip::ResolvedNpc<'_>,
     index: &EsmIndex,
 ) -> Vec<(u32, f32)> {
     // #3481 — template precedence is only correct for a field the template
     // actually carries. `0` is the documented "absent" sentinel on both baked
     // `DNAM` values (`NpcRecord::calculated_health`), and an empty `PRPS` is
     // the same statement for the property array, so an absent value must fall
-    // back down the chain exactly the way `resolve_inherited_record` falls
+    // back down the chain exactly the way the terminal resolution falls
     // back to the shell when the flag or the template is missing. Taking the
     // resolved record unconditionally cost 54 vanilla FO4 actors their own
     // authored Health — and `stamp_actor_values` only inserts `ActorVitals`
     // when the Health key is present, so those actors spawned undamageable.
     //
     // #4086 — and the fallback has to consult the whole chain, not its two
-    // ends. `resolve_inherited_record` returns the *terminal*, so an
-    // intermediate `NPC_` that authors Health while the terminal leaves it at
-    // the sentinel was invisible: the value fell all the way back to the
-    // shell, which is very likely `0` as well, reproducing the exact
-    // undamageable-actor symptom #3481 was filed for. Each field now asks for
-    // the deepest record that authors it.
+    // ends. The terminal leaves an intermediate `NPC_` that authors Health
+    // invisible: the value fell all the way back to the shell, which is very
+    // likely `0` as well, reproducing the exact undamageable-actor symptom
+    // #3481 was filed for. Each field asks for the deepest record that
+    // authors it — #4457 folds that walk behind the resolved record's
+    // cached Use-Stats chain, so it cannot drift from the terminal walk.
     //
     // What "authors it" means per field: `0` on a baked `DNAM` stat means
     // *absent*, not zero — no live FO4 actor has 0 base Health or 0 base
@@ -357,25 +375,15 @@ fn derive_stored_actor_values(
     // `NpcRecord` skip an `Option` discriminant. An empty `PRPS` says the same
     // thing for the property array.
     let inherited = |authored: fn(&NpcRecord) -> bool, pick: fn(&NpcRecord) -> u16| {
-        crate::equip::resolve_inherited_field(
-            shell,
-            actor_level,
-            index,
-            crate::equip::TEMPLATE_FLAG_USE_STATS,
-            |record| authored(record).then(|| pick(record)),
-        )
-        .unwrap_or(0)
+        resolved
+            .authored_stat_field(|record| authored(record).then(|| pick(record)))
+            .unwrap_or(0)
     };
-    let props = crate::equip::resolve_inherited_field(
-        shell,
-        actor_level,
-        index,
-        crate::equip::TEMPLATE_FLAG_USE_STATS,
-        |record| {
+    let props = resolved
+        .authored_stat_field(|record| {
             (!record.actor_value_props.is_empty()).then_some(record.actor_value_props.as_slice())
-        },
-    )
-    .unwrap_or(&[]);
+        })
+        .unwrap_or(&[]);
     let mut out = Vec::with_capacity(props.len() + 2);
     // #4677 (CHAR-2026-09-21-D4-02) — when a baked DNAM value exists, the
     // PRPS pair for the same key is DROPPED rather than overridden by push
@@ -1406,8 +1414,8 @@ mod tests {
             };
             assert_eq!(
                 derive_npc_actor_values(&npc, &index),
-                vec![(0x2A0, 7.0)],
-                "{} must keep the stored PRPS path",
+                Vec::new(),
+                "{} claims no NPC stat model until its wire layout is captured (#4453)",
                 profile.name()
             );
         }

@@ -170,6 +170,11 @@ impl CharacterRulesProfile {
     pub const SKYRIM: Self = Self {
         name: "Skyrim",
         skills: SkillSet::SKYRIM,
+        // #4454 — `RaceBaseOffsets` implements 2 of the capture's 3 pool
+        // composition terms (race base + ACBS offset); the "0–10/level
+        // from class" term is uncaptured in detail and uncoded, so leveled
+        // NPCs get flat pools until the CK per-class growth table is
+        // sourced. See `derive_skyrim_actor_values`'s documented gap.
         npc_stats: NpcStatModel::RaceBaseOffsets,
         creature_stats: NpcStatModel::None,
         // #3170 / #3848 — the cheapest step that makes

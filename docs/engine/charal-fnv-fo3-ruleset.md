@@ -91,13 +91,13 @@ base + tag it's the **complete player skill model** for FO3/FNV.
 | Stat | Gov | FO3 formula | FNV formula | Status |
 |---|---|---|---|---|
 | Health | END + level | `90 + END·20 + Level·10` | `100 + END·20 + (Level−1)·5` | **BUILT** (player ruleset + NPC auto-calc seed) |
-| Action Points | AGI | `65 + 2·AGI` (cap 85) | `65 + 3·AGI` (cap 95) | **LOCKED** (formula only — NPC scope unsourced, #2937; code conservatively treats it player-only) |
-| Carry Weight | STR | `150 + 10·STR` | `150 + 10·STR` | **LOCKED** (actor-general) |
+| Action Points | AGI | `65 + 2·AGI` (cap 85) | `65 + 3·AGI` (cap 95) | **BUILT** (formula sourced; NPC scope unsourced, #2937; code conservatively treats it player-only) |
+| Carry Weight | STR | `150 + 10·STR` | `150 + 10·STR` | **BUILT** (actor-general) |
 | Critical Chance | Luck | `Luck × 1%` (cap 10%) | `Luck × 1%` (Luck>10 inert) | **BUILT** (formula LOCKED, `critchance` AV; **scope unsourced** — no capture line states whether NPCs derive it, code explicitly ships ActorGeneral pending a per-stat citation, #4450 / pinned by `fo3_fnv_crit_melee_unarmed_scopes_are_actor_general_pending_a_source`) |
 | Melee Damage | STR | `STR × 0.5` | `STR × 0.5` | **BUILT** (formula LOCKED, additive bonus; **scope unsourced** — explicit ActorGeneral choice pending a citation, #4450, same pin) |
 | Unarmed Damage | **Unarmed skill** | `ceil((10 + Unarmed)/20)` | same | **BUILT** (formula LOCKED, skill-governed; **scope unsourced** — explicit ActorGeneral choice pending a citation, #4450, same pin) |
-| Radiation Resistance | END | `(END−1)·2` (cap 85%) | `(END−1)·2` (cap 85%) | **LOCKED** (actor-general, `RadResist` AV) |
-| Poison Resistance | END | `(END−1)·5` (uncapped) | `(END−1)·5` (uncapped) | **LOCKED** (actor-general, hidden, `PoisonResist` AV) |
+| Radiation Resistance | END | `(END−1)·2` (cap 85%) | `(END−1)·2` (cap 85%) | **BUILT** (actor-general, `RadResist` AV) |
+| Poison Resistance | END | `(END−1)·5` (uncapped) | `(END−1)·5` (uncapped) | **BUILT** (actor-general, hidden, `PoisonResist` AV) |
 | Pickpocket chance | **Sneak skill** | `floor(40+0.6·Sneak−ceil(V/2)−0.6·TargetSneak)`, clamped [5,85]% | same (FNV shares FO3's engine) | **LOCKED** (§below, gameplay input) |
 
 Body-condition AVs (7) — base **100**, GECK *Stats List*. FO3/FNV seed the seven

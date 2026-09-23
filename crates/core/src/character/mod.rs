@@ -35,7 +35,8 @@
 //!   [`PoolRegenAccumulator`] (the fixed-step clock, mirrors
 //!   `crates/physics`'s accumulator) + [`PoolRegenConfig`] (per-game resolved
 //!   AVIF ids) + [`pool_regen_tick_system`] (the driver).
-//! * [`components`] — [`CharacterLevel`] / [`Perks`] / [`Background`], the
+//! * [`components`] — [`CharacterLevel`] / [`Perks`] / [`Background`] /
+//!   [`FactionReputation`] / [`FactionStanding`] / [`PerkRank`], the
 //!   structural per-actor ECS components.
 //! * [`attribute`] — [`Attribute`] / [`AttributeSet`]: the per-family
 //!   attribute roster (`FALLOUT` SPECIAL, `TES_CLASSIC`, and Skyrim's
@@ -61,8 +62,8 @@
 //! `CharacterRulesProfile::build_ruleset`, reached from
 //! `build_character_ruleset` (`byroredux/src/npc_spawn.rs`) — so "is game X
 //! wired?" is answered there, not by whether a `*_ruleset()` builder exists
-//! (Oblivion's and Skyrim's do, and are not yet reachable: #2961's matrix
-//! row).
+//! (Oblivion's does and is deliberately blocked on the pre-AVIF actor-value
+//! resolver, #3768; Skyrim's is wired, #3848).
 //!
 //! See also [`crate::combat`] and [`crate::stealth`] — CHARAL-*adjacent*
 //! siblings (not submodules of this module) that read `ActorValues` as
@@ -160,6 +161,27 @@ mod tests {
                  it while re-exported eleven lines below."
             );
         }
+    }
+
+    /// #4459 — the docstring once said Skyrim's builder was "not yet
+    /// reachable" months after #3848 wired it, because the claim was
+    /// test-invisible. Ban the stale phrasing outright: reachability
+    /// claims now name the blocking issue ("deliberately blocked on …,
+    /// #NNNN"), so the phrase reappearing means someone reintroduced an
+    /// unversioned assertion of unreachability.
+    #[test]
+    fn mod_docstring_makes_no_unversioned_unreachable_claims() {
+        let src = include_str!("mod.rs");
+        let docstring: String = src
+            .lines()
+            .take_while(|line| line.starts_with("//!"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !docstring.contains("not yet reachable"),
+            "an unversioned 'not yet reachable' claim crept back into the \
+             entry docstring — name the blocker and its issue instead"
+        );
     }
 
     /// Regression for CHAR-D6-05 / #2962. `combat.rs` and `stealth.rs` held

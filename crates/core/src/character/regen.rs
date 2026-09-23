@@ -151,8 +151,11 @@ impl Resource for PoolRegenConfig {}
 /// Gated on **two** resources, not one (#2950), and — since #3483 — on
 /// exactly those two:
 ///
-/// * [`PoolRegenConfig`] — per-game resolved AVIF ids, inserted when a live
-///   [`CharacterRuleset`] lands (absent until Oblivion's wiring arrives).
+/// * [`PoolRegenConfig`] — per-game resolved AVIF ids, arriving only with
+///   Oblivion's wiring (blocked on the pre-AVIF actor-value resolver,
+///   #3768). Not "when a live [`CharacterRuleset`] lands" — four games
+///   have carried one since #3170/#3848 with no config following, because
+///   the config is Oblivion-shaped (#4460).
 /// * [`PoolRegenAccumulator`] — the cross-frame clock, inserted unconditionally
 ///   at boot (`byroredux/src/boot/world.rs`, `build_world`).
 ///

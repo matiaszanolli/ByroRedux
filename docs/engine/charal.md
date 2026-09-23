@@ -262,8 +262,11 @@ out of scope):
 **Mechanism BUILT, registered, and no-op.** `pool_regen_tick_system` is registered in
 `Stage::Update` (`byroredux/src/boot/schedule/update.rs`) and runs every frame, but early-returns
 forever: its required `PoolRegenConfig` is inserted only by unit tests, never by a
-live per-game path (`oblivion_pool_regen_config` builds one, nothing calls it at
-load). Same shape as §4.6 — mechanism ahead of its wiring. Stunted Magicka is
+live per-game path. (The `oblivion_pool_regen_config` builder that once made one was
+deleted under #3848 — `git show e13985dfc` recovers it; re-adding it is blocked on
+Oblivion's own wiring, #3768, not on "a live `CharacterRuleset` landing", which four
+games already have. #4460.) Same shape as §4.6 — mechanism ahead of its wiring.
+Stunted Magicka is
 modelled in the formula (`magicka_regen_per_sec`'s `stunted` parameter) but always
 passed `false`, because no status-effect component exists to carry the flag.
 
@@ -345,7 +348,7 @@ level (path-dependent, so a per-level event, not a stateless formula). **Classic
 (2006 Gamebryo) only** — the live UESP *Oblivion:Health* page now documents the 2024 UE5
 *Remastered* formula, which is out of scope. **The Oblivion ruleset builder is complete —
 it is unwired.** `CharacterRulesProfile::OBLIVION` carries `ruleset: RulesetBuilder::None`
-(`crates/core/src/character/profile.rs:82-87`), so `build_ruleset` never constructs an
+(in `crates/core/src/character/profile.rs`, cited by symbol — line ranges rot, #4455), so `build_ruleset` never constructs an
 Oblivion `CharacterRuleset` at load, and more fundamentally `Oblivion.esm` authors no `AVIF`
 records at all (the record type postdates Oblivion) — so a legacy actor-value index resolver
 is needed before wiring can even start, not just a `RulesetBuilder` arm (`docs/feature-matrix.md`'s

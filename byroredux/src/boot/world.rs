@@ -38,8 +38,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // resource degrades to the old per-frame scan, so this is an optimisation,
     // not a requirement.
     world.insert_resource(crate::render::SceneEffectSoftCache::default());
-    // #2950 — `pool_regen_tick_system` needs BOTH `PoolRegenConfig` (per-game,
-    // inserted when a live `CharacterRuleset` lands) and this accumulator.
+    // #2950 — `pool_regen_tick_system` needs BOTH `PoolRegenConfig`
+    // (per-game, arrives only with Oblivion's wiring — blocked on the
+    // pre-AVIF resolver, #3768; four games already carry a live
+    // `CharacterRuleset` with no config following, because the config is
+    // Oblivion-shaped, #4460) and this accumulator.
     // `try_resource_mut` does not default-insert, so leaving the accumulator to
     // the same future wiring commit would have left the tick returning at its
     // second line forever — registered, declared in `sys.accesses`, and silently
