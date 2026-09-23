@@ -26,6 +26,9 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `triangle.frag` | Main PBR fragment shader — Disney BSDF, RT ray-query shadows / reflections / bounded material-aware path-traced GI, glass RT refraction, terrain splatting, terrain blend |
 | `water.vert` | Water quad vertex — flat local-space mesh (no per-frame BLAS rebuild) |
 | `water.frag` | Water surface — RT reflection/refraction, Fresnel mix, caustic accumulator `imageAtomicAdd`, shoreline foam RT ray |
+| `groundcover_blade.vert` | EXAL blade ribbon vertex — consumes the scatter's indirect list + blade buffer (step 6) |
+| `groundcover_blade.frag` | EXAL blade shading — palette-driven (no `Material`/`GpuMaterial`; see `nifal.md` §3's recorded exemption), sky-diffuse + sun |
+| `groundcover_debug.frag` | EXAL debug view of the same field (density/height/coverage overlays) |
 | `ui.vert` | UI quad passthrough — position already in NDC [-1, 1] |
 | `ui.frag` | UI bindless texture sampling — no shading, straight texel output |
 | `composite.vert` | Fullscreen triangle via `gl_VertexIndex` — no vertex buffer; reused unmodified as `presentation.frag`'s vertex stage |
@@ -39,6 +42,11 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `skin_palette.comp` | Build per-slot bone-matrix palette from world transforms + bind inverses |
 | `skin_vertices.comp` | Deform skinned vertex **positions only** (`SKIN_OUTPUT_STRIDE_FLOATS` = 3 since #2170 — the skinned normal/tangent writes were dropped with their unread consumers); output drives per-entity BLAS refit |
 | `cluster_cull.comp` | Build per-froxel light lists (clustered shading) |
+| `sky_cube.comp` | SKYAL sky bake — cubemap from the same parameters composite draws its background with (step 5a) |
+| `sky_prefilter.comp` | GGX prefilter mips of the baked sky cubemap (step 5a) |
+| `sky_irradiance.comp` | SH irradiance projection of the baked sky (step 5a) |
+| `groundcover_interaction.comp` | EXAL §12.4 wind/disturber field update (step 5c) |
+| `groundcover_scatter.comp` | EXAL blade scatter — TLAS-traced placement, writes the blade buffer + indirect draw list (step 5c) |
 | `ssao.comp` | Screen-space ambient occlusion texture generation |
 | `svgf_temporal.comp` | Temporal denoiser — motion-vector reprojection + color/moments accumulation for indirect lighting |
 | `svgf_atrous.comp` | Spatial denoiser — edge-stopping à-trous wavelet filter, `ATROUS_ITERATIONS` = 3 ping-pong passes after the temporal dispatch; final slot feeds composite (Dugout ablation capped the footprint at 14 render pixels) |
@@ -116,6 +124,26 @@ it where that is not `draw_frame` itself.
                            triangle.frag fragment shader AND
                            volumetrics_inject (same per-frame buffers,
                            #977eb95a)
+5c groundcover_         ─  EXAL ground cover (#4054/#4308), recorded in
+   interaction.comp        `dispatch_skin_and_cluster.rs` right after the
+   groundcover_scatter.comp cluster cull — in submission order this runs
+                            BEFORE the 5a sky bake (the letter is for
+                            cross-reference stability, not order; this
+                            file records ahead of
+                            `build_and_upload_instances`). §12.4's field
+                            update dispatch + its COMPUTE→COMPUTE barrier
+                            (the persistent shared field alternates halves
+                            per frame, #4177/#4293); a zero `cmd_fillBuffer`
+                            on the indirect counters plus the seed fills,
+                            sequenced by TRANSFER→COMPUTE barriers; the
+                            scatter dispatch itself — it traces the TLAS
+                            step 4 just published (via `tlas_handle(frame)`,
+                            not a pre-build handle) to keep blades off
+                            placed geometry; the publish barrier
+                            COMPUTE_SHADER → DRAW_INDIRECT / VERTEX_SHADER /
+                            TRANSFER, whose TRANSFER_READ half exists for
+                            the `vkCmdCopyBuffer` readback the EXAL tuning
+                            telemetry reads (#4181 / CONC-D2-01).
 5a sky_cube.comp        ─  SKYAL sky bake (`SkyCubePipeline::record_bake`, in
    sky_prefilter.comp       `build_and_upload_instances`, only when the
    sky_irradiance.comp      pipeline exists): bakes this slot's cubemap from
@@ -149,6 +177,13 @@ it where that is not `draw_frame` itself.
 6  [Main render pass]   ─  raster (BEGIN → END):
      triangle.vert / .frag  geometry + RT ray-queries
      water.vert / .frag     water + caustic imageAtomicAdd
+     groundcover_blade.vert /
+     .frag (+ debug)        blade ribbons consume step 5c's indirect
+                            list — opaque, depth-write, two-sided STATIC
+                            state restored after water's dynamic depth
+                             (`GroundCoverPipeline::record_draw` in
+                             `geometry_pass.rs`); the debug variant renders
+                             the same field through `groundcover_debug.frag`
 6b [Barrier]            ─  FRAGMENT_SHADER / SHADER_WRITE → HOST / HOST_READ,
                            publishing the bounded selected-ray probe record
                            `triangle.frag` wrote during step 6. The matching

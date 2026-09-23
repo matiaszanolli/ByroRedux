@@ -136,7 +136,9 @@ const CAUSTIC_DECAY_MAX: f32 = 0.995;
 /// `taa.comp` use, so with a camera-only gate the cap held up to
 /// `1/(1 - 0.995) = 200` frames (~3 s at 60 fps) of stale pool at up to
 /// 99.5% weight. The host now folds a scene-dirty signal in — see
-/// `context::draw`'s `caustic_history_valid`.
+/// `build_and_upload_instances.rs`'s `caustic_history_valid` (the
+/// host-side history gate lives in the instance build, not
+/// `context::draw`).
 fn advance_parked_visits(
     parked: &mut [u32; MAX_FRAMES_IN_FLIGHT],
     frame: usize,
@@ -996,8 +998,12 @@ impl CausticPipeline {
 
         // ── Splat dispatch ────────────────────────────────────────────
         // decay_factor drives the EMA new-sample weight (1 - decay_factor)
-        // in the shader: 0.15 of this frame while parked, full energy while
-        // moving (decay_factor == 0).
+        // in the shader: while parked the weight is `1/(N+1)` of this
+        // frame (0.5 on the first parked visit, falling to a floor of
+        // `1 - CAUSTIC_DECAY_MAX` = 0.005 — a running average over the
+        // parked visit count, not a fixed 0.15; see
+        // `advance_parked_visits`), and full energy while moving
+        // (decay_factor == 0).
         device.cmd_push_constants(
             cmd,
             self.pipeline_layout,

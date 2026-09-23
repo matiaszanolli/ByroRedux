@@ -127,6 +127,9 @@ float cloud_height_gradient(float height_fraction, float storm) {
     // and thunder make a deeper deck: a lower base and a higher, slower
     // falloff turn the same density field into a broad storm mass rather
     // than merely making fair-weather puffs more opaque.
+    // #4314: the 0.15/0.06 and 0.55/0.78 breakpoints are engine-tuned,
+    // not from Schneider & Vos (the paper states no breakpoints) — see
+    // skyal.md §2.3 "Still open".
     float bottom_end = mix(0.15, 0.06, storm);
     float top_start = mix(0.55, 0.78, storm);
     float bottom = cloud_remap(height_fraction, 0.0, bottom_end, 0.0, 1.0);

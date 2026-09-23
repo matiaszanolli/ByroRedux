@@ -943,20 +943,24 @@ pub const THREADS_PER_CLUSTER: u32 = 32;
 // `bloom_upsample.comp`'s #1275 note) — that additive, non-renormalised
 // up-chain carries an inherent ~5× DC gain at mip 0 for a
 // spatially-uniform bright source. The two effects compose rather than
-// cancel: effective contribution to `composite.frag`'s `combined` = 5×
-// (pyramid) × 0.15 (this constant) = 0.75× the local blurred average per
-// pixel — about 19× Frostbite SIGGRAPH 2015's own 0.04 reference, which
-// assumes a renormalised (unit-gain) pyramid this one isn't. Absorbing
-// the 5× gain down to Frostbite's reference would take ≈0.008, not 0.15
-// — this constant is doing LDR-authoring compensation, not gain
-// cancellation. `bloom_downsample.comp`'s `DownsampleParams` carries no
-// bright-pass threshold or Karis average, so this is a broadband lift on
-// the local average, not a highlight-only glow.
+// cancel: the 5× (pyramid) × 0.15 (this constant) = 0.75× figure below
+// is the UN-THRESHOLDED DC bound; since `62a09fd9`,
+// `bloom_downsample.comp`'s `DownsampleParams::bright_pass` applies
+// `BLOOM_THRESHOLD`'s soft knee first, so the intensity multiplies the
+// knee-filtered pyramid — a highlight-selective glow, with the measured
+// effective sky contribution ~1.01× post-knee (see `BLOOM_THRESHOLD`
+// below). Absorbing the 5× gain down to Frostbite SIGGRAPH 2015's 0.04
+// reference (which assumes a renormalised, unit-gain pyramid) would take
+// ≈0.008, not 0.15 — this constant is doing LDR-authoring compensation,
+// not gain cancellation.
 //
-// Consumed by `composite.frag` via the `#include`d `#define`; mirrored
-// here so Rust-side `bloom::DEFAULT_BLOOM_INTENSITY` stays in lockstep.
-// See `feedback_color_space.md` for why we don't HDR-boost emissives
-// globally instead.
+// Consumed by `bloom_apply.comp` (`scene.rgb + bloom * BLOOM_INTENSITY`)
+// via the `#include`d `#define`; `composite.frag` mentions it in
+// comments only. Mirrored here so Rust-side
+// `bloom::DEFAULT_BLOOM_INTENSITY` stays in lockstep. The global HDR
+// emissive boost that would make this compensation unnecessary is named
+// once, in `BLOOM_THRESHOLD`'s note below — see
+// `feedback_color_space.md` for the policy discussion.
 pub const BLOOM_INTENSITY: f32 = 0.15;
 
 // M58 / sky-overdrive fix — bloom bright-pass knee.
@@ -1004,10 +1008,14 @@ pub const BLOOM_INTENSITY: f32 = 0.15;
 // `feedback_color_space.md` and `BLOOM_INTENSITY`'s note above both
 // already name. Compensating for it here by dropping the threshold would
 // only reinstate the sky gain this constant exists to remove.
-// SKYAL volumetric cloud layer (`include/clouds.glsl`). Method and every
-// value below follow Schneider & Vos, "The Real-Time Volumetric
-// Cloudscapes of Horizon: Zero Dawn", SIGGRAPH 2015 Advances in Real-Time
-// Rendering — not tuned by eye, per the no-guessing policy.
+// SKYAL volumetric cloud layer (`include/clouds.glsl`). Method follows
+// Schneider & Vos, "The Real-Time Volumetric Cloudscapes of Horizon:
+// Zero Dawn", SIGGRAPH 2015 Advances in Real-Time Rendering. Each value
+// below is cited per constant (Schneider & Vos unless noted; the MS
+// falloffs cite Skybolt as a secondary reference with owner sign-off) —
+// the in-shader shape literals that are NOT here (height-gradient
+// breakpoints, erosion strengths, advection/wind scales) are uncited and
+// recorded as such in skyal.md §2.3 "Still open" (#4314).
 //
 // Shell altitudes in metres. The reference layer is 1.5 km base / 5 km
 // top, which is the ordinary cumulus band.

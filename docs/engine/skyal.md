@@ -273,6 +273,21 @@ Still open:
   with the texture-alpha provenance recorded here as its citation.
 * **Noise shape frequencies** (`0.00008` / `0.0009` per metre) predate the
   sourced pass and are not yet justified.
+* **In-shader cloud-shape literals are uncited** (#4314, 2026-09-14 audit
+  D18-03; re-confirmed 2026-09-23). New with the SKYAL volumetric pass and
+  sourced nowhere — Schneider & Vos's height-gradient discussion states no
+  breakpoints:
+  * `cloud_height_gradient` remap breakpoints `0.15`/`0.06` (bottom end)
+    and `0.55`/`0.78` (top start, fair/storm mix);
+  * erosion strength `erosion * 0.45` and the erosion height blend
+    `height_fraction * 5.0`;
+  * detail-noise advection `wind_offset * 3.0`;
+  * cloud-march wind scale `time * 0.00002`.
+  These shape silhouettes and drift speed; treat them as engine-tuned
+  values pending a citation, not as reference values from the paper. The
+  carried-over 2D literals (tint `0.45`/`0.08`, alpha `0.78`/`0.96`,
+  horizon fade `0.015/0.16`) ARE verbatim from the pre-volumetric
+  `composite.frag` body and stay cited by that provenance.
 * **Rendered-march acceptance is manual** (2026-09-19): unit tests pin the
   coverage → density source shape and `m-exteriors.sh cycle` only image-healths
   its PNGs — no gate checks a cloud invariant in pixels, so the cloudscape

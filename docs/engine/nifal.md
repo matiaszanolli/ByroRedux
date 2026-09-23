@@ -713,6 +713,16 @@ The material slice was executed this session as the template. Mechanics:
      finish the three texture-dependent fields once `MaterialTextureHandles` is
      attached — the second phase, below.
 
+- **Drawn-surface exemptions, recorded** (#4304). "Every drawn surface's
+  canonical material is produced at one boundary" has exactly three
+  deliberate exemptions — Cornell's synthetic fixtures, `crates/save`'s
+  reconstructed materials, and **EXAL ground cover**: blades shade from
+  `GroundCoverPalette` (`groundcover_translate.rs`) with no `Material`,
+  no `GpuMaterial` row and no `MaterialTable` intern. That is the correct
+  shape (no `Imported*` tier, no renderer per-game branch — the palette IS
+  the canonical translation of the species table), recorded here so the
+  next audit does not re-derive it. See `exal-groundcover.md`.
+
 - **Two-phase boundary** (#2330). `translate_material` runs *before* texture
   handles exist, so any field whose value depends on which textures actually
   resolved cannot be finished there. Three are (#4228 — this table previously

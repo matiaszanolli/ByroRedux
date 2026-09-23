@@ -1042,6 +1042,8 @@ now encoded in the script instead of only in audit prose (#4482, #4509):
    *fibres* and a part that is a property of the *plant*, and only the second
    varies:
 
+**Material-boundary exemption (#4304):** ground-cover blades are a drawn surface with no canonical `Material` — no `GpuMaterial` row, no `MaterialTable` intern. Shading input is the engine-canonical `GroundCoverPalette` this document specifies, which IS the parser→canonical translation for the species table (no `Imported*` tier, no renderer per-game branch). Recorded as a deliberate exemption in `nifal.md` §3 alongside Cornell and `crates/save`.
+
    * `GROUNDCOVER_SHEEN_F0 = 0.034` is derived, not chosen — plant cuticular
      wax has a refractive index of ~1.45, so `((1.45−1)/(1.45+1))²`. It is a
      property of the wax and therefore species-independent.
