@@ -6,7 +6,7 @@
 //! [`EvaluatePackageRequest`], replacing behavior state only when the winning
 //! PACK FormID actually changes.
 
-use super::{EsmIndex, NpcRecord};
+use super::EsmIndex;
 use crate::components::{AmbientPackageRuntime, GameTimeRes, NavPath, SeatReservations};
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
@@ -523,19 +523,16 @@ fn game_minute(game_hour: f32) -> u16 {
 pub(super) fn apply_ai_package_behavior(
     world: &mut World,
     placement_root: EntityId,
-    npc: &NpcRecord,
+    resolved: &byroredux_plugin::equip::ResolvedNpc<'_>,
     index: &EsmIndex,
 ) {
-    // #4093 (D5-02) — resolve `Use AI Packages` before reading the
-    // candidate list, the same pattern `stamp_character_components`
-    // already applies to `Use Stats`/`Use Traits`. `npc.form_id` stays the
-    // shell's own identity throughout (this actor's placement, not the
-    // template's) — only the package *list* comes from the resolved record.
-    let packages_npc = byroredux_plugin::equip::resolve_inherited_ai_packages(
-        npc,
-        crate::npc_spawn::effective_actor_level(npc),
-        index,
-    );
+    // #4093 (D5-02) / #4457 — the "Use AI Packages" terminal arrives
+    // through the resolved record, so this consumer cannot read the
+    // shell's own (possibly empty or stale) `PKID` list by accident.
+    // `npc.form_id` stays the shell's own identity throughout (this
+    // actor's placement, not the template's) — only the package *list*
+    // comes from the resolved terminal.
+    let packages_npc = resolved.ai_packages;
     if packages_npc.ai_packages.is_empty() || world.get::<Dead>(placement_root).is_some() {
         return;
     }
@@ -559,7 +556,7 @@ pub(super) fn apply_ai_package_behavior(
             .package_template_form_id
             .and_then(|form_id| index.packages.get(&form_id))
             .unwrap_or(package);
-        AmbientBehavior::from_package(package, template, npc.form_id)
+        AmbientBehavior::from_package(package, template, resolved.shell.form_id)
     });
 
     world.insert(
@@ -567,7 +564,7 @@ pub(super) fn apply_ai_package_behavior(
         AmbientPackageRuntime {
             package_candidates: packages_npc.ai_packages.clone(),
             active_package_form_id,
-            actor_form_id: npc.form_id,
+            actor_form_id: resolved.shell.form_id,
             // Force a first-tick confirmation after the cell loader installs
             // PACK, quest, and restored game-time resources.
             last_evaluated_game_minute: None,
@@ -721,6 +718,8 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_plugin::equip::ResolvedNpc;
+    use byroredux_plugin::esm::records::NpcRecord;
     use byroredux_core::ecs::components::wander::WanderPhase;
     use byroredux_core::math::Vec3;
     use byroredux_plugin::esm::records::condition::{
@@ -879,7 +878,7 @@ mod tests {
         for package in all_packages.iter().cloned() {
             index.packages.insert(package.form_id, package);
         }
-        apply_ai_package_behavior(&mut world, actor, &npc, &index);
+        apply_ai_package_behavior(&mut world, actor, &ResolvedNpc::resolve(&npc, &index), &index);
         install_package_records(&mut world, all_packages);
         ambient_ai_package_system(&world, 0.0);
         (world, actor)
@@ -1220,7 +1219,12 @@ mod tests {
         index.npcs.insert(TEMPLATE, template_npc);
         index.packages.insert(wander.form_id, wander.clone());
 
-        apply_ai_package_behavior(&mut world, actor, &shell_npc, &index);
+        apply_ai_package_behavior(
+            &mut world,
+            actor,
+            &ResolvedNpc::resolve(&shell_npc, &index),
+            &index,
+        );
         install_package_records(&mut world, vec![wander]);
         ambient_ai_package_system(&world, 0.0);
 
@@ -1583,7 +1587,7 @@ mod tests {
             }
             with_packages += 1;
             let actor = world.spawn();
-            apply_ai_package_behavior(&mut world, actor, npc, &index);
+            apply_ai_package_behavior(&mut world, actor, &ResolvedNpc::resolve(npc, &index), &index);
             if world.has::<SandboxBehavior>(actor) {
                 resolved_any_behavior += 1;
                 if world

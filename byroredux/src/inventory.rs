@@ -249,7 +249,11 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
     let Some(player) = index.npcs.get(&player_npc_form_id(index.game)) else {
         return PlayerCharacterTemplate::default();
     };
-    let pairs = byroredux_plugin::esm::records::derive_npc_actor_values(player, index);
+    // #4457 — resolve once, derive through the resolved view.
+    let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values(
+        &byroredux_plugin::equip::ResolvedNpc::resolve(player, index),
+        index,
+    );
     if pairs.is_empty() {
         return PlayerCharacterTemplate::default();
     }
@@ -459,6 +463,9 @@ fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -> PlayerInv
         return PlayerInventoryTemplate::default();
     };
     let actor_level = effective_actor_level(player);
+    // #4457 — the player path resolves the TPLT view once and reads both
+    // the derivation and the CNTO carry list through it.
+    let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(player, index);
     let mut inventory = Inventory::new();
     let mut equipment = EquipmentSlots::new();
     let mut equipped_weapon = None;
@@ -486,7 +493,7 @@ fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -> PlayerInv
     }
 
     let equip_carried_armor = player.default_outfit.is_none();
-    for entry in byroredux_plugin::equip::resolve_inherited_inventory(player, actor_level, index) {
+    for entry in &resolved.inventory.inventory {
         let count = entry.count.max(0) as u32;
         if count == 0 {
             continue;

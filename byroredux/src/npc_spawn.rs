@@ -34,7 +34,7 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::helpers::add_child;
 use crate::scene::load_nif_bytes_with_skeleton;
 
-use byroredux_plugin::equip::Gender;
+use byroredux_plugin::equip::{Gender, ResolvedNpc};
 
 /// Path inside the meshes archive for the default humanoid skeleton.
 ///
@@ -79,21 +79,18 @@ use byroredux_plugin::equip::Gender;
 /// for `Use Stats`/`Use Traits`: a templated shell with `Use Factions` set
 /// and its own (typically empty) `FACT` list previously never inherited
 /// the template's membership.
-fn stamp_faction_ranks(
-    world: &mut World,
-    placement_root: EntityId,
-    npc: &NpcRecord,
-    index: &EsmIndex,
-) {
-    let shell_level = effective_actor_level(npc);
-    let factions_npc = byroredux_plugin::equip::resolve_inherited_factions(npc, shell_level, index);
-    if factions_npc.factions.is_empty() {
+fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, resolved: &ResolvedNpc<'_>) {
+    // #4457 — the "Use Factions" terminal arrives pre-resolved from the
+    // population boundary (`spawn_placement_root`); this stamp cannot read
+    // the shell's own list by accident.
+    if resolved.factions.factions.is_empty() {
         return;
     }
     world.insert(
         placement_root,
         FactionRanks::from_pairs(
-            factions_npc
+            resolved
+                .factions
                 .factions
                 .iter()
                 .map(|f| (f.faction_form_id, f.rank)),
@@ -108,10 +105,10 @@ fn stamp_faction_ranks(
 fn stamp_actor_values(
     world: &mut World,
     placement_root: EntityId,
-    npc: &NpcRecord,
+    resolved: &ResolvedNpc<'_>,
     index: &EsmIndex,
 ) {
-    let pairs = byroredux_plugin::esm::records::derive_npc_actor_values(npc, index);
+    let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values(resolved, index);
     if pairs.is_empty() {
         return;
     }
@@ -161,12 +158,16 @@ fn stamp_actor_values(
 fn stamp_creature_attack(
     world: &mut World,
     placement_root: EntityId,
-    npc: &NpcRecord,
-    index: &EsmIndex,
+    resolved: &ResolvedNpc<'_>,
 ) {
-    let shell_level = effective_actor_level(npc);
-    let stats_npc = byroredux_plugin::equip::resolve_inherited_stats(npc, shell_level, index);
-    let Some(stats) = stats_npc.creature_stats else {
+    // #4091 (D1-01) — the "Use Stats" terminal arrives pre-resolved
+    // (#4457). `CREA.DATA` (SPECIAL/Health/damage) rides the same `Use
+    // Stats` (`0x0002`) bit as the rest of the creature's stat block;
+    // reading the raw shell here would let one entity get its
+    // SPECIAL/Health from the template and its attack damage from the
+    // shell — the fifth instance of this exact defect class (#2956,
+    // #3381, #3382, #3480 were the first four).
+    let Some(stats) = resolved.stats.creature_stats else {
         return;
     };
     if stats.damage <= 0 {
@@ -203,21 +204,14 @@ pub(crate) use byroredux_plugin::esm::records::effective_actor_level;
 /// inherit them.
 ///
 /// [`resolve_inherited_inventory`]: byroredux_plugin::equip::resolve_inherited_inventory
-fn stamp_character_components(
-    world: &mut World,
-    placement_root: EntityId,
-    npc: &NpcRecord,
-    index: &EsmIndex,
-) {
+fn stamp_character_components(world: &mut World, placement_root: EntityId, resolved: &ResolvedNpc<'_>) {
     use byroredux_core::character::{Background, CharacterLevel, PerkRank, Perks};
-    use byroredux_plugin::equip::{resolve_inherited_stats, resolve_inherited_traits};
 
-    // The shell's own level gates which `LVLN` tier a chained template
-    // resolves to — same contract `resolve_inherited_inventory` already
-    // uses at its own call site below.
-    let shell_level = effective_actor_level(npc);
-    let stats_npc = resolve_inherited_stats(npc, shell_level, index);
-    let traits_npc = resolve_inherited_traits(npc, shell_level, index);
+    // #4457 — both terminals arrive pre-resolved from the population
+    // boundary; the #2956 `Use Stats`/`Use Traits` resolution cannot be
+    // skipped or re-walked here.
+    let stats_npc = resolved.stats;
+    let traits_npc = resolved.r#traits;
 
     // Level: the resolved stats source's level (its own when `Use Stats`
     // isn't set or doesn't resolve). NPCs carry no XP.
@@ -244,11 +238,13 @@ fn stamp_character_components(
         },
     );
     // Perks (FO4+ `PRKR`) — skip the component entirely when the NPC has none.
-    if !npc.perks.is_empty() {
+    // Perks ride no template flag, so they come from the shell.
+    if !resolved.shell.perks.is_empty() {
         world.insert(
             placement_root,
             Perks {
-                entries: npc
+                entries: resolved
+                    .shell
                     .perks
                     .iter()
                     .map(|&(perk_form_id, rank)| PerkRank { perk_form_id, rank })
@@ -1089,19 +1085,20 @@ impl NpcEquipState<'_> {
 /// yet in `humanoid_skeleton_path`) still leaves the equip data
 /// inspectable on the placement root.
 ///
-/// `race_form_id` is the caller's responsibility, not `npc.race_form_id`
-/// directly (#4092 / D5-01): it must be the `Use Traits`-resolved race —
-/// `resolve_inherited_traits(npc, ..).race_form_id` — the same source
-/// `stamp_character_components`'s `Background` already uses, so the race
-/// default skin and every `resolve_armor_meshes` race match agree with the
-/// rest of the actor's resolved traits instead of the raw shell's.
+/// Race comes from the resolved record's "Use Traits" terminal (#4457 —
+/// formerly the caller's responsibility, #4092 / D5-01): the same source
+/// `stamp_character_components`' `Background` uses, so the race default
+/// skin and every `resolve_armor_meshes` race match agree with the rest
+/// of the actor's resolved traits instead of the raw shell's. Inventory
+/// comes from the resolved "Use Inventory" terminal.
 fn build_npc_equip_state<'a>(
-    npc: &NpcRecord,
-    race_form_id: u32,
+    resolved: &ResolvedNpc<'a>,
     index: &'a EsmIndex,
     game: GameKind,
     gender: Gender,
 ) -> NpcEquipState<'a> {
+    let npc = resolved.shell;
+    let race_form_id = resolved.r#traits.race_form_id;
     struct ExpandedEquip {
         form_id: u32,
         source_form_id: u32,
@@ -1184,15 +1181,15 @@ fn build_npc_equip_state<'a>(
         }
     }
 
-    // CNTO inventory entries, resolved through the TPLT chain. #1658 —
-    // route through the same game-agnostic `resolve_inherited_inventory`
-    // helper the kf-era path uses (`:498`): it returns the NPC's own
-    // inventory when no template applies, or walks `template_form_id`
-    // (NPC_ or LVLN) when `template_flags & TEMPLATE_FLAG_USE_INVENTORY`
-    // is set. Without it, templated Skyrim NPCs with an empty own CNTO
-    // (leveled actors that inherit gear via TPLT) spawned naked. Negative
-    // counts are remove-from-inventory deltas; clamp at runtime.
-    for entry in byroredux_plugin::equip::resolve_inherited_inventory(npc, actor_level, index) {
+    // CNTO inventory entries, from the resolved "Use Inventory" terminal
+    // (#4457; the TPLT walk itself is `ResolvedNpc::resolve`'s). #1658 —
+    // the helper returns the NPC's own inventory when no template
+    // applies, or walks `template_form_id` (NPC_ or LVLN) when
+    // `template_flags & TEMPLATE_FLAG_USE_INVENTORY` is set. Without it,
+    // templated Skyrim NPCs with an empty own CNTO (leveled actors that
+    // inherit gear via TPLT) spawned naked. Negative counts are
+    // remove-from-inventory deltas; clamp at runtime.
+    for entry in &resolved.inventory.inventory {
         let count = entry.count.max(0) as u32;
         if count == 0 {
             continue;

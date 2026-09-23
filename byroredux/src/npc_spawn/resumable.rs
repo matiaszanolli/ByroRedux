@@ -443,7 +443,7 @@ fn prepare_runtime_state(
     ref_scale: f32,
     index: &EsmIndex,
 ) -> RuntimeNpcState {
-    let placement_root = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
+    let (placement_root, resolved) = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
     log::info!(
         "NPC {:08X} ({}) spawning at world [{:.0},{:.0},{:.0}] scale={:.2}",
         npc.form_id,
@@ -463,16 +463,14 @@ fn prepare_runtime_state(
     // Return early with the creature shape rather than threading `if
     // is_creature` through every lookup.
     if npc.is_creature {
-        return prepare_creature_state(world, npc, game, index, placement_root);
+        return prepare_creature_state(world, npc, game, index, placement_root, &resolved);
     }
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
-    // #4092 (D5-01) — resolve `Use Traits` before reading race, the same
-    // source `stamp_character_components`'s `Background` already uses.
-    let race_form_id =
-        byroredux_plugin::equip::resolve_inherited_traits(npc, effective_actor_level(npc), index)
-            .race_form_id;
-    let equip = build_npc_equip_state(npc, race_form_id, index, game, gender);
+    // #4092 (D5-01) — the "Use Traits" terminal off the spawn boundary's
+    // one resolution (#4457), the same source `stamp_character_components`'s
+    // `Background` uses.
+    let equip = build_npc_equip_state(&resolved, index, game, gender);
     let mut appearance = NpcLootAppearance::default();
     appearance.parts = equip
         .restore_skin_paths
@@ -660,6 +658,7 @@ fn prepare_creature_state(
     game: GameKind,
     index: &EsmIndex,
     placement_root: EntityId,
+    resolved: &byroredux_plugin::equip::ResolvedNpc<'_>,
 ) -> RuntimeNpcState {
     let (skeleton_path, dir) = creature_skeleton_and_dir(&npc.model_path).unwrap_or_default();
     let body_paths = creature_body_paths(&dir, &npc.body_part_models);
@@ -684,13 +683,11 @@ fn prepare_creature_state(
     let walk_kf_path = (!dir.is_empty()).then(|| creature_walk_kf_path(&dir));
 
     let gender = Gender::from_acbs_flags(npc.acbs_flags);
-    // #4092 (D5-01) — same resolution as the humanoid path; a no-op for
-    // creatures in practice (`CREA` references no `RACE`) but keeps this
-    // call site correct without an is_creature special case.
-    let race_form_id =
-        byroredux_plugin::equip::resolve_inherited_traits(npc, effective_actor_level(npc), index)
-            .race_form_id;
-    let equip = build_npc_equip_state(npc, race_form_id, index, game, gender);
+    // #4092 (D5-01) — the "Use Traits" terminal off the spawn boundary's
+    // one resolution, handed in by `prepare_runtime_state` (#4457); a
+    // no-op for creatures in practice (`CREA` references no `RACE`) but
+    // keeps this call site correct without an is_creature special case.
+    let equip = build_npc_equip_state(resolved, index, game, gender);
     let armor = equip
         .armor_to_spawn
         .into_iter()
@@ -1154,7 +1151,12 @@ fn advance_runtime_unit(
                 );
                 world.insert(state.placement_root, crate::components::WalkSpeed(walk_speed));
             }
-            apply_ai_package_behavior(world, state.placement_root, npc, index);
+            apply_ai_package_behavior(
+                world,
+                state.placement_root,
+                &byroredux_plugin::equip::ResolvedNpc::resolve(npc, index),
+                index,
+            );
             // Eviction state restores in stamp_quest_reference after the caller
             // assigns the placed ACHR identity. npc.form_id is only the shared
             // base record and cannot identify a particular actor's snapshot.
@@ -1331,14 +1333,13 @@ fn prepare_prebaked_state(
     ref_scale: f32,
     index: &EsmIndex,
 ) -> PrebakedNpcState {
-    let placement_root = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
-    // #4092 (D5-01) — same resolution as the runtime-FaceGen path.
-    let traits =
-        byroredux_plugin::equip::resolve_inherited_traits(npc, effective_actor_level(npc), index);
-    let race_form_id = traits.race_form_id;
+    let (placement_root, resolved) = spawn_placement_root(world, npc, ref_pos, ref_rot, ref_scale, index);
+    // #4092 (D5-01) — the "Use Traits" terminal off the spawn boundary's
+    // one resolution (#4457).
+    let traits = resolved.r#traits;
     let gender = Gender::from_acbs_flags(traits.acbs_flags);
     let skeleton_path = npc_skeleton_path(game, traits, index);
-    let equip = build_npc_equip_state(npc, race_form_id, index, game, gender);
+    let equip = build_npc_equip_state(&resolved, index, game, gender);
     let facegen_hidden_mask = equip.facegen_hidden_mask;
     let mut appearance = NpcLootAppearance::default();
     appearance.parts = equip
@@ -1588,7 +1589,12 @@ fn advance_prebaked_unit(
                     world.insert(state.placement_root, crate::components::WalkSpeed(walk_speed));
                 }
             }
-            apply_ai_package_behavior(world, state.placement_root, npc, index);
+            apply_ai_package_behavior(
+                world,
+                state.placement_root,
+                &byroredux_plugin::equip::ResolvedNpc::resolve(npc, index),
+                index,
+            );
             // The caller restores eviction state after stamping the placed
             // ACHR identity, shared with the runtime-mesh spawn path above.
             tag_descendants_as_actor(world, state.placement_root);
@@ -1620,14 +1626,19 @@ fn hide_skin_partitions(scene: &mut byroredux_nif::import::ImportedScene, hidden
     }
 }
 
-fn spawn_placement_root(
+/// #4457 — the population boundary. Resolves every TPLT template category
+/// ONCE (`ResolvedNpc::resolve`) and hands the result to each stamp, so a
+/// stamp cannot read the shell's raw fields by accident and a new consumer
+/// must go through the resolved type. Returns the placement root with the
+/// resolved records so the caller's equip/AI work reuses the same view.
+fn spawn_placement_root<'a>(
     world: &mut World,
-    npc: &NpcRecord,
+    npc: &'a NpcRecord,
     ref_pos: Vec3,
     ref_rot: Quat,
     ref_scale: f32,
-    index: &EsmIndex,
-) -> EntityId {
+    index: &'a EsmIndex,
+) -> (EntityId, byroredux_plugin::equip::ResolvedNpc<'a>) {
     let placement_root = world.spawn();
     world.insert(placement_root, Transform::new(ref_pos, ref_rot, ref_scale));
     world.insert(
@@ -1641,11 +1652,12 @@ fn spawn_placement_root(
         };
         world.insert(placement_root, Name(symbol));
     }
-    stamp_faction_ranks(world, placement_root, npc, index);
-    stamp_actor_values(world, placement_root, npc, index);
-    stamp_creature_attack(world, placement_root, npc, index);
-    stamp_character_components(world, placement_root, npc, index);
-    placement_root
+    let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, index);
+    stamp_faction_ranks(world, placement_root, &resolved);
+    stamp_actor_values(world, placement_root, &resolved, index);
+    stamp_creature_attack(world, placement_root, &resolved);
+    stamp_character_components(world, placement_root, &resolved);
+    (placement_root, resolved)
 }
 
 fn parent_equipment_part(world: &mut World, part_root: EntityId, ownership: NpcEquipmentPart) {

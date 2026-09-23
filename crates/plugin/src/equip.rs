@@ -604,6 +604,116 @@ fn walk_inherited_records<'a>(
     npc
 }
 
+/// #4457 (D5-06) — the TPLT-resolved view of one NPC record, computed
+/// **once at the population boundary** and handed to every consumer, so
+/// "which record supplies this category?" is a compile-time question
+/// instead of a fresh `resolve_inherited_*` walk per site. This is the
+/// structural remedy for the fix-by-addition recurrence the audits kept
+/// filing (#2956, #3381, #3382, #3480, #4091, #4092, #4093, #4086): each
+/// instance was correct on inspection, but nothing stopped the next
+/// population-boundary read from taking `npc.<field>` directly.
+///
+/// Each field is the chain *terminal* for its template flag — the record
+/// a whole category (SPECIAL, race, factions, AI packages, CNTO) comes
+/// from. The one exception with different semantics is a single field an
+/// intermediate record authors while the terminal leaves it at its
+/// "absent" sentinel (#4086's deepest-authored rule); that walk is folded
+/// in as [`Self::authored_stat_field`] over the cached Use-Stats chain so
+/// it cannot drift from the terminal walk either.
+///
+/// Category flags are independent (#2956 measured real disagreement
+/// rates), so the five terminals are resolved separately — never assume
+/// two fields of a record came from the same source. Identity fields
+/// (`form_id`, placement, editor id) always come from [`Self::shell`].
+pub struct ResolvedNpc<'a> {
+    /// The spawning record itself — identity fields and everything not
+    /// governed by a template flag.
+    pub shell: &'a crate::esm::records::actor::NpcRecord,
+    /// "Use Stats" chain terminal: SPECIAL / class / level / ACBS offsets /
+    /// `creature_stats`.
+    pub stats: &'a crate::esm::records::actor::NpcRecord,
+    /// "Use Traits" chain terminal: race, ACBS gender flags, skeleton.
+    pub r#traits: &'a crate::esm::records::actor::NpcRecord,
+    /// "Use Factions" chain terminal: the `FACT` membership list.
+    pub factions: &'a crate::esm::records::actor::NpcRecord,
+    /// "Use AI Packages" chain terminal: the `PKID` candidate list.
+    pub ai_packages: &'a crate::esm::records::actor::NpcRecord,
+    /// "Use Inventory" chain terminal: the `CNTO` carry list.
+    pub inventory: &'a crate::esm::records::actor::NpcRecord,
+    /// The Use-Stats chain shell-first including the terminal, cached so
+    /// [`Self::authored_stat_field`] needs no second traversal.
+    stats_chain: Vec<&'a crate::esm::records::actor::NpcRecord>,
+}
+
+impl<'a> ResolvedNpc<'a> {
+    /// Resolve every template category for `shell` in one pass. Each
+    /// terminal walk is flag-gated and returns the shell itself when the
+    /// bit is unset or the template can't be resolved, so a plain record
+    /// costs five immediate returns and nothing more.
+    pub fn resolve(shell: &'a crate::esm::records::actor::NpcRecord, index: &'a EsmIndex) -> Self {
+        let shell_level = crate::esm::records::effective_actor_level(shell);
+        let mut stats_chain = Vec::new();
+        let stats = walk_inherited_records(
+            shell,
+            shell_level,
+            index,
+            TEMPLATE_FLAG_USE_STATS,
+            0,
+            &mut |record| stats_chain.push(record),
+        );
+        Self {
+            shell,
+            stats,
+            r#traits: resolve_inherited_record(
+                shell,
+                shell_level,
+                index,
+                TEMPLATE_FLAG_USE_TRAITS,
+                0,
+            ),
+            factions: resolve_inherited_record(
+                shell,
+                shell_level,
+                index,
+                TEMPLATE_FLAG_USE_FACTIONS,
+                0,
+            ),
+            ai_packages: resolve_inherited_record(
+                shell,
+                shell_level,
+                index,
+                TEMPLATE_FLAG_USE_AI_PACKAGES,
+                0,
+            ),
+            inventory: resolve_inherited_record(
+                shell,
+                shell_level,
+                index,
+                TEMPLATE_FLAG_USE_INVENTORY,
+                0,
+            ),
+            stats_chain,
+        }
+    }
+
+    /// #4086's deepest-authored field walk, folded behind the resolved
+    /// record: visits the cached Use-Stats chain shell-first and keeps the
+    /// last `Some` — identical semantics to [`resolve_inherited_field`]
+    /// with `TEMPLATE_FLAG_USE_STATS`, without re-walking the chain.
+    pub fn authored_stat_field<T>(
+        &self,
+        authored: impl Fn(&'a crate::esm::records::actor::NpcRecord) -> Option<T>,
+    ) -> Option<T> {
+        let mut deepest = None;
+        for record in &self.stats_chain {
+            if let Some(value) = authored(record) {
+                deepest = Some(value);
+            }
+        }
+        deepest
+    }
+}
+
 /// Name the record class of a leaf that `expand_leveled_inner` is about to
 /// drop, when that leaf *is* indexed — just not in `index.items` (#3341).
 ///
@@ -1917,6 +2027,79 @@ mod tests {
             stats.class_form_id, 0x0000_C1A5,
             "Use Stats not set on this NPC → own class, unaffected by Use Traits"
         );
+    }
+
+    /// #4457 — `ResolvedNpc` must agree with the per-category helpers it
+    /// folds, field for field, so the hoist is a pure refactor of WHERE
+    /// the chains walk, never of what they answer.
+    #[test]
+    fn resolved_npc_matches_the_per_category_terminals() {
+        let mut npc = npc_with(0x0010_0070, "LvlMixedShell");
+        npc.class_form_id = 0x0000_C1A5;
+        npc.race_form_id = 0xBAD_2ACE;
+        npc.template_form_id = 0x0010_0071;
+        npc.template_flags = TEMPLATE_FLAG_USE_STATS
+            | TEMPLATE_FLAG_USE_TRAITS
+            | TEMPLATE_FLAG_USE_FACTIONS
+            | TEMPLATE_FLAG_USE_AI_PACKAGES
+            | TEMPLATE_FLAG_USE_INVENTORY;
+        let mut base = npc_with(0x0010_0071, "BaseMixed");
+        base.class_form_id = 0x000C_1A55;
+        base.race_form_id = 0x0000_2ACE;
+        let mut idx = empty_index();
+        idx.npcs.insert(base.form_id, base.clone());
+
+        let resolved = ResolvedNpc::resolve(&npc, &idx);
+        assert_eq!(resolved.shell.form_id, npc.form_id, "identity stays the shell");
+        assert_eq!(
+            resolved.stats.class_form_id,
+            resolve_inherited_stats(&npc, 1, &idx).class_form_id
+        );
+        assert_eq!(
+            resolved.r#traits.race_form_id,
+            resolve_inherited_traits(&npc, 1, &idx).race_form_id
+        );
+        assert_eq!(
+            resolved.factions.form_id,
+            resolve_inherited_factions(&npc, 1, &idx).form_id
+        );
+        assert_eq!(
+            resolved.ai_packages.form_id,
+            resolve_inherited_ai_packages(&npc, 1, &idx).form_id
+        );
+        assert_eq!(resolved.inventory.form_id, base.form_id);
+    }
+
+    /// #4457 — the #4086 deepest-authored walk folded onto the resolved
+    /// record must answer exactly like `resolve_inherited_field` over the
+    /// same chain, including the intermediate-record case that motivated
+    /// #4086 (an intermediate authors the field; the terminal does not).
+    #[test]
+    fn resolved_npc_authored_stat_field_matches_resolve_inherited_field() {
+        // shell → mid (authors Health) → base (terminal, leaves Health at 0)
+        let mut npc = npc_with(0x0010_0080, "Shell");
+        npc.calculated_health = 0;
+        npc.template_form_id = 0x0010_0081;
+        npc.template_flags = TEMPLATE_FLAG_USE_STATS;
+        let mut mid = npc_with(0x0010_0081, "Mid");
+        mid.calculated_health = 77;
+        mid.template_form_id = 0x0010_0082;
+        mid.template_flags = TEMPLATE_FLAG_USE_STATS;
+        let mut base = npc_with(0x0010_0082, "Base");
+        base.calculated_health = 0;
+        let mut idx = empty_index();
+        idx.npcs.insert(mid.form_id, mid);
+        idx.npcs.insert(base.form_id, base);
+
+        let resolved = ResolvedNpc::resolve(&npc, &idx);
+        let via_resolved = resolved.authored_stat_field(|record| {
+            (record.calculated_health > 0).then_some(record.calculated_health)
+        });
+        let via_helper = resolve_inherited_field(&npc, 1, &idx, TEMPLATE_FLAG_USE_STATS, |record| {
+            (record.calculated_health > 0).then_some(record.calculated_health)
+        });
+        assert_eq!(via_resolved, via_helper);
+        assert_eq!(via_resolved, Some(77), "the intermediate's authored value wins");
     }
 }
 

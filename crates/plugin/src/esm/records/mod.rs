@@ -56,7 +56,7 @@ pub use actor::{
     CreatureStats, FactionMembership, FactionRecord, FactionRelation, NpcInventoryEntry, NpcRecord,
     RaceRecord, ACBS_PC_LEVEL_MULT, CREATURE_DATA_LEN,
 };
-pub use actor_value_derive::derive_npc_actor_values;
+pub use actor_value_derive::{derive_npc_actor_values, derive_resolved_actor_values};
 pub use climate::{parse_clmt, ClimateRecord, ClimateWeather};
 pub use common::StringsTableGuard;
 pub use container::{

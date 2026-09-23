@@ -137,7 +137,7 @@ fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {
     };
 
     let target = world.spawn();
-    stamp_actor_values(&mut world, target, &npc, &index);
+    stamp_actor_values(&mut world, target, &ResolvedNpc::resolve(&npc, &index), &index);
     assert_eq!(world.get::<ActorVitals>(target).unwrap().health, health);
     assert_eq!(
         world.get::<ActorValues>(target).unwrap().current(health),
@@ -232,7 +232,7 @@ fn fnv_spawned_creature_gets_actor_vitals_from_its_own_data() {
     };
 
     let target = world.spawn();
-    stamp_actor_values(&mut world, target, &crea, &index);
+    stamp_actor_values(&mut world, target, &ResolvedNpc::resolve(&crea, &index), &index);
 
     assert_eq!(
         world.get::<ActorVitals>(target).map(|v| v.health),
@@ -287,7 +287,7 @@ fn templated_creature_gets_attack_damage_from_the_use_stats_template() {
     index.creatures.insert(template.form_id, template);
 
     let target = world.spawn();
-    stamp_creature_attack(&mut world, target, &shell, &index);
+    stamp_creature_attack(&mut world, target, &ResolvedNpc::resolve(&shell, &index));
 
     assert_eq!(
         world.get::<CreatureAttack>(target).map(|c| c.damage),
@@ -329,7 +329,7 @@ fn templated_npc_gets_faction_ranks_from_the_use_factions_template() {
     index.npcs.insert(template.form_id, template);
 
     let target = world.spawn();
-    stamp_faction_ranks(&mut world, target, &shell, &index);
+    stamp_faction_ranks(&mut world, target, &ResolvedNpc::resolve(&shell, &index));
 
     let ranks = world
         .get::<FactionRanks>(target)
@@ -856,13 +856,7 @@ fn prebaked_equip_state_selects_one_highest_damage_weapon() {
     index.items.insert(BATTLEAXE, weapon_item(BATTLEAXE, 18));
     index.items.insert(GREATSWORD, weapon_item(GREATSWORD, 17));
 
-    let state = build_npc_equip_state(
-        &npc,
-        npc.race_form_id,
-        &index,
-        GameKind::Skyrim,
-        Gender::Male,
-    );
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
     let equipped = state.equipped_weapon.expect("one weapon must be equipped");
     assert_eq!(equipped.base_form_id, BATTLEAXE);
     assert_eq!(equipped.damage, 18.0);
@@ -907,13 +901,7 @@ fn prebaked_equip_state_inherits_templated_inventory() {
     index.npcs.insert(BASE, base);
     index.items.insert(GEAR, misc_item(GEAR));
 
-    let state = build_npc_equip_state(
-        &templated,
-        templated.race_form_id,
-        &index,
-        GameKind::Skyrim,
-        Gender::Male,
-    );
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&templated, &index), &index, GameKind::Skyrim, Gender::Male);
 
     assert_eq!(
         state.inventory.len(),
@@ -955,13 +943,7 @@ fn prebaked_equip_state_uses_own_inventory_without_template() {
     };
     index.items.insert(GEAR, misc_item(GEAR));
 
-    let state = build_npc_equip_state(
-        &npc,
-        npc.race_form_id,
-        &index,
-        GameKind::Skyrim,
-        Gender::Male,
-    );
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
     assert_eq!(
         state
             .inventory
@@ -1008,7 +990,7 @@ fn stamp_character_components_follows_use_stats_and_use_traits_templates() {
     world.register::<CharacterLevel>();
     world.register::<Background>();
     let target = world.spawn();
-    stamp_character_components(&mut world, target, &shell, &index);
+    stamp_character_components(&mut world, target, &ResolvedNpc::resolve(&shell, &index));
 
     assert_eq!(
         world.get::<CharacterLevel>(target).unwrap().level,
@@ -1055,7 +1037,7 @@ fn stamp_character_components_uses_own_values_without_template_flags() {
     world.register::<CharacterLevel>();
     world.register::<Background>();
     let target = world.spawn();
-    stamp_character_components(&mut world, target, &npc, &index);
+    stamp_character_components(&mut world, target, &ResolvedNpc::resolve(&npc, &index));
 
     assert_eq!(world.get::<CharacterLevel>(target).unwrap().level, 7);
     let background = world.get::<Background>(target).unwrap();
@@ -1153,13 +1135,7 @@ fn unified_equip_state_covers_fallout_runtime_body_and_preserves_count() {
         legacy_armor_item(ARMOR, UPPER_BODY, r"armor\vaultsuit.nif"),
     );
 
-    let state = build_npc_equip_state(
-        &npc,
-        npc.race_form_id,
-        &index,
-        GameKind::Fallout3NV,
-        Gender::Female,
-    );
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Fallout3NV, Gender::Female);
 
     assert!(state.main_body_covered(GameKind::Fallout3NV));
     assert_eq!(state.armor_to_spawn.len(), 1);
@@ -1242,13 +1218,7 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
         .armor_addons
         .insert(FEET_ARMA, arma(FEET_ARMA, r"armor\boots\boots.nif"));
 
-    let state = build_npc_equip_state(
-        &npc,
-        npc.race_form_id,
-        &index,
-        GameKind::Skyrim,
-        Gender::Male,
-    );
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
 
     assert_eq!(
         state.armor_to_spawn.len(),
@@ -1334,7 +1304,7 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
             item_form_id: SKIN,
             count: 1,
         });
-    let explicit = build_npc_equip_state(&npc, RACE, &index, GameKind::Skyrim, Gender::Male);
+    let explicit = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
     assert_eq!(explicit.inventory.len(), 2);
     assert_eq!(explicit.inventory.items[1].base_form_id, SKIN);
     assert!(explicit.armor_to_spawn.iter().any(|part| {
@@ -1349,7 +1319,7 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
             count: 1,
         });
     index.items.insert(WEAPON, weapon_item(WEAPON, 18));
-    let armed = build_npc_equip_state(&npc, RACE, &index, GameKind::Skyrim, Gender::Male);
+    let armed = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
     let weapon = armed.equipped_weapon.unwrap();
     assert_eq!(weapon.inventory_index, InventoryIndex(1));
     assert_eq!(
@@ -1397,6 +1367,13 @@ fn prebaked_equip_state_uses_the_passed_race_form_id_not_the_shells_own() {
 
     let mut npc = test_npc(0x0100_0034, "WrongRaceOnShellNpc");
     npc.race_form_id = SHELL_RACE; // deliberately the WRONG race
+    // #4457 — the equip state takes its race from the resolved record's
+    // "Use Traits" terminal, so model the actual mechanism: the shell
+    // inherits traits from a base whose race is the resolved one.
+    npc.template_form_id = 0x0100_0035;
+    npc.template_flags = byroredux_plugin::equip::TEMPLATE_FLAG_USE_TRAITS;
+    let mut traits_base = test_npc(0x0100_0035, "TraitsBase");
+    traits_base.race_form_id = RESOLVED_RACE;
 
     let mut index = EsmIndex {
         game: GameKind::Skyrim,
@@ -1404,6 +1381,7 @@ fn prebaked_equip_state_uses_the_passed_race_form_id_not_the_shells_own() {
     };
     index.races.insert(SHELL_RACE, shell_race);
     index.races.insert(RESOLVED_RACE, resolved_race);
+    index.npcs.insert(traits_base.form_id, traits_base);
     index
         .items
         .insert(SKIN, skyrim_armor_item(SKIN, TORSO_HANDS, vec![SKIN_ARMA]));
@@ -1412,9 +1390,9 @@ fn prebaked_equip_state_uses_the_passed_race_form_id_not_the_shells_own() {
         arma(SKIN_ARMA, r"actors\character\resolved_skin.nif"),
     );
 
-    // Pass the RESOLVED race, not `npc.race_form_id` — exactly what
-    // every production call site now does via `resolve_inherited_traits`.
-    let state = build_npc_equip_state(&npc, RESOLVED_RACE, &index, GameKind::Skyrim, Gender::Male);
+    // Resolve through the "Use Traits" chain — exactly what the spawn
+    // boundary hands the equip state in production.
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
 
     assert!(
         state
@@ -1494,13 +1472,7 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         .armor_addons
         .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
 
-    let state = build_npc_equip_state(
-        &npc,
-        npc.race_form_id,
-        &index,
-        GameKind::Skyrim,
-        Gender::Male,
-    );
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
     assert_eq!(state.armor_to_spawn.len(), 2);
     let skin = state
         .armor_to_spawn
@@ -1569,13 +1541,7 @@ fn prebaked_equip_state_keeps_zero_mask_race_skin() {
         arma(SKIN_ARMA, r"actors\draugr\character assets\draugr.nif"),
     );
 
-    let state = build_npc_equip_state(
-        &npc,
-        npc.race_form_id,
-        &index,
-        GameKind::Skyrim,
-        Gender::Male,
-    );
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
     assert_eq!(
         state.armor_to_spawn.len(),
         1,
@@ -1657,13 +1623,7 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
         .armor_addons
         .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
 
-    let state = build_npc_equip_state(
-        &npc,
-        npc.race_form_id,
-        &index,
-        GameKind::Skyrim,
-        Gender::Male,
-    );
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
     assert!(
         !state
             .armor_to_spawn
@@ -1743,13 +1703,7 @@ fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
         .armor_addons
         .insert(HELM_ARMA, arma(HELM_ARMA, r"armor\iron\helmet.nif"));
 
-    build_npc_equip_state(
-        &npc,
-        npc.race_form_id,
-        &index,
-        GameKind::Skyrim,
-        Gender::Male,
-    )
+    build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male)
     .facegen_hidden_mask
 }
 
@@ -1867,13 +1821,7 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
         .armor_addons
         .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
 
-    let state = build_npc_equip_state(
-        &npc,
-        npc.race_form_id,
-        &index,
-        GameKind::Skyrim,
-        Gender::Male,
-    );
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
 
     assert_eq!(
         state.armor_to_spawn.len(),
@@ -1925,7 +1873,12 @@ fn apply_ai_package_behavior_tags_sandbox_from_active_package() {
         ),
     );
 
-    apply_ai_package_behavior(&mut world, placement_root, &npc, &index);
+    apply_ai_package_behavior(
+        &mut world,
+        placement_root,
+        &ResolvedNpc::resolve(&npc, &index),
+        &index,
+    );
 
     assert!(
         world.get::<SandboxBehavior>(placement_root).is_some(),
@@ -1956,7 +1909,12 @@ fn apply_ai_package_behavior_tags_travel_with_location_from_active_package() {
     let mut index = EsmIndex::default();
     index.packages.insert(0xBBBB, pk);
 
-    apply_ai_package_behavior(&mut world, placement_root, &npc, &index);
+    apply_ai_package_behavior(
+        &mut world,
+        placement_root,
+        &ResolvedNpc::resolve(&npc, &index),
+        &index,
+    );
 
     let travel = world
         .get::<TravelBehavior>(placement_root)
@@ -1978,7 +1936,12 @@ fn apply_ai_package_behavior_tags_nothing_without_ai_packages() {
     let npc = NpcRecord::default(); // ai_packages: vec![]
     let index = EsmIndex::default();
 
-    apply_ai_package_behavior(&mut world, placement_root, &npc, &index);
+    apply_ai_package_behavior(
+        &mut world,
+        placement_root,
+        &ResolvedNpc::resolve(&npc, &index),
+        &index,
+    );
 
     assert!(world.get::<SandboxBehavior>(placement_root).is_none());
     assert!(world.get::<WanderBehavior>(placement_root).is_none());
@@ -2272,7 +2235,7 @@ fn skyrim_parsed_npc_perk_reaches_the_hasperk_condition() {
     world.register::<Perks>();
     let index = EsmIndex::default();
     let actor = world.spawn();
-    stamp_character_components(&mut world, actor, &npc, &index);
+    stamp_character_components(&mut world, actor, &ResolvedNpc::resolve(&npc, &index));
     assert!(
         world.get::<Perks>(actor).is_some(),
         "link 2: a Skyrim NPC with perks must receive the Perks component"
@@ -2383,7 +2346,7 @@ fn bannered_mare_npcs_resolve_a_full_equip_state_on_real_skyrim_data() {
             .get(&form_id)
             .unwrap_or_else(|| panic!("{name} ({form_id:08X}) must be present in Skyrim.esm"));
 
-        let state = build_npc_equip_state(npc, npc.race_form_id, &index, GameKind::Skyrim, gender);
+        let state = build_npc_equip_state(&ResolvedNpc::resolve(npc, &index), &index, GameKind::Skyrim, gender);
 
         assert!(
             !state.inventory.is_empty(),
@@ -2443,13 +2406,7 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
             .npcs
             .get(&form_id)
             .unwrap_or_else(|| panic!("{name} ({form_id:08X}) must be present in Skyrim.esm"));
-        let state = build_npc_equip_state(
-            npc,
-            npc.race_form_id,
-            &index,
-            GameKind::Skyrim,
-            Gender::Male,
-        );
+        let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
         assert!(
             !state.armor_to_spawn.is_empty(),
             "{name} ({form_id:08X}) resolved no mesh at all — its race skin \
@@ -2475,13 +2432,7 @@ fn creature_race_npcs_keep_their_skin_mesh_on_real_skyrim_data() {
             continue;
         };
         zero_mask_race_npcs += 1;
-        let state = build_npc_equip_state(
-            npc,
-            npc.race_form_id,
-            &index,
-            GameKind::Skyrim,
-            Gender::Male,
-        );
+        let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
         if state
             .armor_to_spawn
             .iter()
@@ -2533,13 +2484,7 @@ fn helmeted_npcs_get_a_facegen_hide_mask_on_real_skyrim_data() {
     let mut closed_helm = 0usize;
     let mut open_helm = 0usize;
     for npc in index.npcs.values() {
-        let mask = build_npc_equip_state(
-            npc,
-            npc.race_form_id,
-            &index,
-            GameKind::Skyrim,
-            Gender::Male,
-        )
+        let mask = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male)
         .facegen_hidden_mask;
         if mask & HEAD_FAMILY == 0 {
             continue;
@@ -2688,6 +2633,7 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
         .map(|(production, _)| production)
         .expect("actor_value_derive.rs must still carry a #[cfg(test)] mod tests block");
 
+    const INVENTORY_RS: &str = include_str!("../inventory.rs");
     let counts = [
         ("npc_spawn.rs", count_calls(NPC_SPAWN_RS, &call_names)),
         (
@@ -2706,31 +2652,34 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
             "esm/records/actor_value_derive.rs",
             count_calls(actor_value_derive_production, &call_names),
         ),
+        ("inventory.rs", count_calls(INVENTORY_RS, &call_names)),
     ];
 
-    // npc_spawn.rs: stamp_faction_ranks (factions) + stamp_creature_attack
-    //   (stats) + stamp_character_components (stats + traits) = 4.
-    // resumable.rs: prepare_runtime_state, prepare_creature_state,
-    //   prepare_prebaked_state each resolve traits for race = 3.
-    // ai_package.rs: apply_ai_package_behavior resolves ai_packages = 1.
+    // #4457 landed the D5-06 hoist: the population boundary
+    // (`spawn_placement_root`) resolves every category once through
+    // `ResolvedNpc::resolve`, and every consumer — the four stamps,
+    // build_npc_equip_state, apply_ai_package_behavior, the three prepare
+    // paths, the plugin-side derivation (now
+    // `derive_resolved_actor_values`) and the player inventory templates —
+    // reads through the resolved type. A production `resolve_inherited_*`
+    // call is therefore only legitimate where a spawn boundary genuinely
+    // does not exist yet:
     // cell_loader/references/mod.rs: load_references_budgeted resolves
-    //   traits for race = 1.
-    // actor_value_derive.rs: derive_npc_actor_values resolves stats + traits
-    //   independently again, inside the plugin crate = 2.
-    // Total = 11, one more than #4133's own count of nine (it didn't count
-    // the plugin-crate site).
-    let expected: [(&str, usize); 5] = [
-        ("npc_spawn.rs", 4),
-        ("npc_spawn/resumable.rs", 3),
-        ("npc_spawn/ai_package.rs", 1),
+    //   traits for race BEFORE the async spawn job starts = 1.
+    let expected: [(&str, usize); 6] = [
+        ("npc_spawn.rs", 0),
+        ("npc_spawn/resumable.rs", 0),
+        ("npc_spawn/ai_package.rs", 0),
         ("cell_loader/references/mod.rs", 1),
-        ("esm/records/actor_value_derive.rs", 2),
+        ("esm/records/actor_value_derive.rs", 0),
+        ("inventory.rs", 0),
     ];
 
     assert_eq!(
         counts, expected,
-        "resolve_inherited_* call-site count drifted from the #4133-pinned \
-         baseline — a new independent site (or a deliberate reduction via \
-         the hoist #4133 proposes) must update this test's enumerated list: {counts:?}"
+        "resolve_inherited_* call-site count drifted from the #4457-hoisted \
+         baseline — a new independent site must go through ResolvedNpc at a \
+         spawn boundary instead, or update this test's enumerated list with \
+         the boundary that genuinely cannot host the resolution: {counts:?}"
     );
 }
