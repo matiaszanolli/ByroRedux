@@ -550,6 +550,11 @@ fn merge_bgsm_arm(
     // branch); the substantive work happens in the spec-glossiness
     // → metallic-roughness translation below.
     material.from_bgsm = true;
+    // #4283 — both meanings this flag used to overload: the FO4
+    // spec-glossiness convention, and "an external material resolved"
+    // (the glass-promotion provenance `classify_glass_into_material`
+    // reads).
+    material.external_material_resolved = true;
     *touched = true;
     // #1352 — any successful BGSM resolve routes the material through
     // the Disney/PBR diffuse lobe, unconditionally. #2700 (FO4-D2-01):
@@ -1137,6 +1142,9 @@ fn merge_bgem_arm(
     // runs the keyword classifier. glass_enabled surfaces get the glass
     // roughness override from classify_glass_into_material downstream.
     material.from_bgsm = true;
+    // #4283 — same split as the BGSM arm above: both the FO4-format
+    // convention and the external-material-resolved provenance hold.
+    material.external_material_resolved = true;
     // #2366 — v20+ BGEMs can explicitly opt into the PBR specular
     // workflow. Preserve an existing true value and promote false only
     // when the parsed effect-material flag requests it.

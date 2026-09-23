@@ -498,6 +498,12 @@ pub(super) struct MaterialInfo {
     /// side drop, a future skin-SSS/sky-fullbright/water-dispatch branch
     /// is the consumer.
     pub legacy_shader_type: Option<u32>,
+    /// #4282 — FO4+ wetness envelope / FO76+ luminance quad off the
+    /// bound `BSLightingShaderProperty`, in the core-owned canonical
+    /// shapes. Capture-only: forwarded to `ImportedMaterial` and then
+    /// `Material`; no renderer consumer yet.
+    pub(super) wetness: Option<byroredux_core::ecs::components::material::WetnessShading>,
+    pub(super) luminance: Option<byroredux_core::ecs::components::material::LuminanceShading>,
     /// Game-specific texture-slot vocabulary used for this material.
     pub texture_slot_layout: TextureSlotLayout,
     /// Whether slot 2 is explicitly enabled as a glow map. Skyrim multiplexes
@@ -1200,6 +1206,8 @@ impl Default for MaterialInfo {
             greyscale_lut_map: None,
             shader_type: 0,
             legacy_shader_type: None,
+            wetness: None,
+            luminance: None,
             texture_slot_layout: TextureSlotLayout::default(),
             slot2_glow_enabled: false,
             tint_map: None,
@@ -1521,6 +1529,11 @@ impl MaterialInfo {
             water_shader_flags: self.water_shader_flags,
             is_water_shader: self.is_water_shader,
             material_path: self.material_path,
+            // #4282 — the FO4+/FO76+ wetness/luminance captures cross the
+            // boundary here; `translate_material` forwards them to the
+            // canonical `Material`.
+            wetness: self.wetness,
+            luminance: self.luminance,
             // #4422 — producer-declared detail-combine neutral (FaceTint
             // route vs the classic MODULATE2X default).
             detail_neutral: self.detail_neutral,
@@ -1537,6 +1550,7 @@ impl MaterialInfo {
             has_translucency: false,
             model_space_normals: self.model_space_normals,
             from_bgsm: false,
+            external_material_resolved: false,
             bgem_glass: false,
             thin_glass: false,
             glass_fresnel_color: [1.0; 3],

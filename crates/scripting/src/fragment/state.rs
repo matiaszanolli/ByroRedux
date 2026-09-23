@@ -133,6 +133,53 @@ impl ReferenceEnableState {
     }
 }
 
+/// #4334 — references whose attached once-only Papyrus script has parked
+/// itself in a terminal state via `GotoState` (vanilla
+/// `defaultSetStageTRIGSpecificActor`'s `onlyOnce` →
+/// `GotoState("hasBeenTriggered")`, an empty state that keeps the
+/// reference enabled). Recording `Disable()` here would be wrong —
+/// vanilla never disables the reference — so this ledger exists
+/// separately from [`ReferenceEnableState`]. Keyed by the same
+/// local form id, for the same reason: the state must outlive the cell
+/// unload that despawns the entity, and the attach path consults it so
+/// the recognizer does not re-arm an already-fired trigger on the next
+/// cell load or save load.
+///
+/// Deliberately coarse (per reference, not per (reference, script)
+/// pair): the once-only family attaches exactly one trigger script per
+/// reference. A reference carrying several scripts where only one parks
+/// would need a keyed refinement — the consult site
+/// (`recognize_specific_actor_trigger`'s spawn closure) is the place to
+/// tighten if that content ever lands.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct ReferenceScriptState {
+    script_parked: HashSet<u32>,
+}
+
+impl Resource for ReferenceScriptState {}
+
+impl ReferenceScriptState {
+    /// Record that this reference's once-only script reached its
+    /// terminal state — the trigger must not re-arm on reload.
+    pub fn park(&mut self, reference_form_id: u32) {
+        self.script_parked.insert(reference_form_id);
+    }
+
+    /// Whether this reference's script already reached its terminal
+    /// state. Consulted by the attach path before re-inserting a
+    /// once-only recognizer's component.
+    pub fn is_parked(&self, reference_form_id: u32) -> bool {
+        self.script_parked.contains(&reference_form_id)
+    }
+
+    /// Clear the parked record (a script explicitly returning to its
+    /// auto state would call this; no vanilla content does).
+    pub fn rearm(&mut self, reference_form_id: u32) {
+        self.script_parked.remove(&reference_form_id);
+    }
+}
+
 /// Lowered quest-stage fragments, keyed by `(quest, stage)`. Populated at
 /// cell load by [`populate_quest_fragments_from_pex`] from the QUST `VMAD`
 /// fragment bindings the decoder recovers; consumed by

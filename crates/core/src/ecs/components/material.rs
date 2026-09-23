@@ -273,6 +273,17 @@ pub struct Material {
     /// MATERIAL_KIND_EFFECT_SHADER` (101) branch consumes these via
     /// `GpuInstance.{falloff_*, soft_falloff_depth}`. See #620 / #451.
     pub effect_falloff: Option<EffectFalloff>,
+    /// #4282 — FO4+ `BSSPWetnessParams` captured off the bound
+    /// `BSLightingShaderProperty`. Capture-only: no
+    /// `GpuMaterial`/`triangle.frag` consumer yet (same tier as
+    /// `lighting_effect_1/2`); the field exists so authored wetness
+    /// crosses the NIFAL boundary instead of being discarded at the
+    /// parse tier. `None` on pre-FO4 content and on meshes with no
+    /// lighting-shader property.
+    pub wetness: Option<WetnessShading>,
+    /// #4282 — FO76+ `BSSPLuminanceParams` quad off the same property.
+    /// Same capture-only contract as [`Self::wetness`].
+    pub luminance: Option<LuminanceShading>,
     /// Packed `BSEffectShaderProperty` flag bits captured from
     /// `BsEffectShaderData.effect_{soft,palette_color,palette_alpha,lit}`
     /// at importer ingestion. Bit layout matches
@@ -544,6 +555,83 @@ pub struct EffectFalloff {
     pub soft_falloff_depth: f32,
 }
 
+/// FO4+ `BSSPWetnessParams` — the authored wet-surface
+/// specular/fresnel envelope on `BSLightingShaderProperty`. Core-owned
+/// canonical shape so importers populate it directly (the
+/// `ShaderTypeFields` pattern); #4282 made the sink exist — the parsed
+/// block previously had no `ImportedMaterial`/`Material` destination at
+/// all. Deliberately excludes the FO4-family `metalness`/trailing
+/// unknowns: their Starfield wire positions hold the luminance quad
+/// instead (#2622 / SF-D6-02), so copying them verbatim would
+/// misattribute data.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct WetnessShading {
+    pub spec_scale: f32,
+    pub spec_power: f32,
+    pub min_var: f32,
+    /// FO4-only (BSVER == 130); `0.0` on FO76+/Starfield.
+    pub env_map_scale: f32,
+    pub fresnel_power: f32,
+}
+
+/// FO76+ `BSSPLuminanceParams` — the HDR-emittance / exposure-clamp
+/// envelope. Same core-owned capture-only contract as
+/// [`WetnessShading`]; #4282.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct LuminanceShading {
+    pub lum_emittance: f32,
+    pub exposure_offset: f32,
+    pub final_exposure_min: f32,
+    pub final_exposure_max: f32,
+}
+
+impl WetnessShading {
+    /// Reset non-finite fields to the type default (`0.0`), matching
+    /// `Material::sanitize_finite`'s per-field repair. Returns whether
+    /// anything was non-finite.
+    pub fn sanitize_finite(&mut self) -> bool {
+        let default = Self::default();
+        let mut changed = false;
+        macro_rules! fix {
+            ($field:ident) => {
+                if !self.$field.is_finite() {
+                    self.$field = default.$field;
+                    changed = true;
+                }
+            };
+        }
+        fix!(spec_scale);
+        fix!(spec_power);
+        fix!(min_var);
+        fix!(env_map_scale);
+        fix!(fresnel_power);
+        changed
+    }
+}
+
+impl LuminanceShading {
+    /// Per-field non-finite repair — see [`WetnessShading::sanitize_finite`].
+    pub fn sanitize_finite(&mut self) -> bool {
+        let default = Self::default();
+        let mut changed = false;
+        macro_rules! fix {
+            ($field:ident) => {
+                if !self.$field.is_finite() {
+                    self.$field = default.$field;
+                    changed = true;
+                }
+            };
+        }
+        fix!(lum_emittance);
+        fix!(exposure_offset);
+        fix!(final_exposure_min);
+        fix!(final_exposure_max);
+        changed
+    }
+}
+
 impl EffectFalloff {
     /// Reset every non-finite (NaN / ±inf) field to its
     /// [`EffectFalloff::default()`] value. Returns `true` if any field was
@@ -701,6 +789,8 @@ impl Default for Material {
             z_function: 3, // LESSEQUAL — Gamebryo default
             shader_type_fields: None,
             effect_falloff: None,
+            wetness: None,
+            luminance: None,
             effect_shader_flags: 0,
             // #1147 Phase 2b — BGSM translucency suite defaults
             // (zeros; no SSS contribution when the gating flag is unset).
@@ -1500,6 +1590,14 @@ impl Material {
         }
         if let Some(fields) = self.shader_type_fields.as_mut() {
             changed |= fields.sanitize_finite();
+        }
+        // #4282 — capture-only wetness/luminance envelopes get the same
+        // descent: they ride to `Material` on the same render path.
+        if let Some(wetness) = self.wetness.as_mut() {
+            changed |= wetness.sanitize_finite();
+        }
+        if let Some(luminance) = self.luminance.as_mut() {
+            changed |= luminance.sanitize_finite();
         }
 
         changed

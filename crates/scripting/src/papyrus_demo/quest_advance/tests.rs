@@ -289,6 +289,50 @@ fn disable_when_done_records_the_reference_but_only_once_does_not() {
     );
 }
 
+/// #4334 — the reload leg for the `onlyOnce` half: both fire-once options
+/// park the script's terminal state in `ReferenceScriptState`, the ledger
+/// the attach path consults so a cell reload does not re-arm the
+/// trigger. `disableWhenDone` parks too (vanilla's script moves to
+/// `hasBeenTriggered` before its `Disable()`), while the reference
+/// itself stays enabled for the `onlyOnce` case.
+#[test]
+fn fire_once_advances_park_the_reference_script_state() {
+    const DISABLING_REF: u32 = 0x0008_4068;
+    const ONCE_REF: u32 = 0x0008_4069;
+    let (mut world, player, disabling) = setup_da10_world();
+    world.insert_resource(crate::ReferenceScriptState::default());
+    let once = world.spawn();
+    for (entity, reference_form_id, disable_reference) in
+        [(disabling, DISABLING_REF, true), (once, ONCE_REF, false)]
+    {
+        let mut component = da10_main_door(DA10_QUEST_FORM_ID);
+        component.disable_after_advance = true;
+        component.disable_reference_after_advance = disable_reference;
+        world.insert(entity, component);
+        world.insert(
+            entity,
+            crate::scene::SceneAliasCandidate {
+                reference_form_id,
+                ..Default::default()
+            },
+        );
+    }
+    world
+        .resource_mut::<QuestStageState>()
+        .set_stage(DA10_QUEST_FORM_ID, 37);
+
+    fire_trigger_enter(&world, disabling, player);
+    fire_trigger_enter(&world, once, player);
+    quest_advance_system(&world);
+
+    let scripts = world.resource::<crate::ReferenceScriptState>();
+    assert!(
+        scripts.is_parked(DISABLING_REF) && scripts.is_parked(ONCE_REF),
+        "both fire-once options reach the terminal script state; the \
+         parked ledger is what keeps them inert across a reload (#4334)"
+    );
+}
+
 /// The activator gate applies on the trigger path too: a `PlayerOnly`
 /// volume ignores a non-player triggerer (an NPC patrol crossing it).
 #[test]

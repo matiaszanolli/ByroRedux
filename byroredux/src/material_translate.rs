@@ -639,6 +639,10 @@ pub(crate) fn translate_material(
         z_test: source.z_test,
         z_write: source.z_write,
         z_function: source.z_function,
+        // #4282 — FO4+/FO76+ wetness/luminance envelopes cross here,
+        // capture-only (no GpuMaterial consumer yet).
+        wetness: source.wetness,
+        luminance: source.luminance,
         shader_type_fields: if source.shader_type_fields.is_empty() {
             None
         } else {
@@ -792,11 +796,14 @@ pub(crate) fn translate_material(
         source.has_alpha || source.alpha_test,
         source.is_decal,
         source.bgem_glass,
-        // #2710 — external-material provenance. Gates the glass-keyword
-        // promotion of an effect-shader carrier to FO4+ content, where a
-        // `.bgem` exists beside the mesh; Skyrim's inline effect shaders
-        // never set it, so their keyword-sharing haze layers stay effects.
-        source.from_bgsm,
+        // #2710 / #4283 — external-material provenance, whatever the
+        // format: the `.bgsm`/`.bgem` merge arms and Starfield's CDB
+        // fallback all set `external_material_resolved`. Gates the
+        // glass-keyword promotion of an effect-shader carrier to
+        // external-material content (FO4+ `.bgem` beside the mesh,
+        // Starfield's CDB record); Skyrim's inline effect shaders never
+        // set it, so their keyword-sharing haze layers stay effects.
+        source.external_material_resolved,
         // #4237 / FO3-D1-2026-09-11-02 — authored FO3/FNV window/eye
         // environment-mapping bit: a positive glass signal independent of
         // the keyword/mesh-name match, for windows whose filename doesn't
@@ -917,6 +924,11 @@ pub(crate) fn attach_blend_and_facing_markers(
 /// or from `resolve_pbr`'s classifier, the same one `translate_material`
 /// calls, so terrain now classifies by the same rules as the architecture
 /// standing on it.
+///
+/// #4304 — for completeness: the one *drawn* surface family that
+/// legitimately bypasses this whole boundary is EXAL ground cover (no
+/// `Material` at all; shaded from `GroundCoverPalette`). That exemption is
+/// recorded in `nifal.md` §3.
 pub(crate) fn translate_texture_only_material(texture_path: Option<String>) -> Material {
     let mut material = Material {
         texture_path,
@@ -1988,6 +2000,69 @@ mod tests {
         assert_eq!(material.rimlight_power, 2.50);
         assert_eq!(material.backlight_power, 1.75);
         assert_eq!(material.fresnel_power, 3.5);
+    }
+
+    /// #4282 — the FO4+/FO76+ wetness envelope and luminance quad cross
+    /// the canonical boundary with the other capture-only scalars.
+    #[test]
+    fn translate_material_copies_wetness_and_luminance_envelopes() {
+        use byroredux_core::ecs::components::material::{LuminanceShading, WetnessShading};
+        let source = ImportedMaterial {
+            wetness: Some(WetnessShading {
+                spec_scale: 1.5,
+                spec_power: 24.0,
+                min_var: 0.02,
+                env_map_scale: 3.0,
+                fresnel_power: 4.5,
+            }),
+            luminance: Some(LuminanceShading {
+                lum_emittance: 100.0,
+                exposure_offset: 13.5,
+                final_exposure_min: 0.5,
+                final_exposure_max: 2.0,
+            }),
+            ..ImportedMaterial::default()
+        };
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet::default(),
+            material_path: None,
+            source_base_color: None,
+        };
+        let material = translate_material(&source, None, paths, 0);
+        assert_eq!(material.wetness, source.wetness);
+        assert_eq!(material.luminance, source.luminance);
+    }
+
+    /// #4283 — the Starfield CDB shape: an external material WAS resolved
+    /// (`external_material_resolved`), but it is not a BGSM spec-glossiness
+    /// file (`from_bgsm` deliberately clear, per the CDB fallback's own
+    /// contract). Pre-split the glass keyword promotion read `from_bgsm`,
+    /// so this effect-shader glass carrier could never take the dielectric
+    /// path FO4's identical authoring does through the `.bgem` arm.
+    #[test]
+    fn cdb_resolved_effect_glass_is_promoted_without_the_bgsm_convention() {
+        let source = ImportedMaterial {
+            material_kind: byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER,
+            external_material_resolved: true,
+            from_bgsm: false,
+            has_alpha: true,
+            ..ImportedMaterial::default()
+        };
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet {
+                base_color: Some("textures/glass/sf_displaycase_glass.dds".to_owned()),
+                ..MaterialTextureSet::default()
+            },
+            material_path: None,
+            source_base_color: None,
+        };
+        let material = translate_material(&source, Some("SFDisplayGlass:0"), paths, 0);
+        assert_eq!(
+            material.material_kind, byroredux_renderer::MATERIAL_KIND_GLASS,
+            "a keyword-matched effect carrier with ANY resolved external \
+             material description is glass — the CDB is as corroborating \
+             as a .bgem"
+        );
     }
 
     /// Regression for #4391 — the FO3/FNV window/eye environment-mapping

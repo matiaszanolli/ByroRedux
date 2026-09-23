@@ -466,9 +466,14 @@ pub fn quest_advance_system(world: &World) {
         // alone lasted only until the cell reloaded: the attach chain
         // re-inserted an armed component, and the trigger could `SetStage`
         // again — moving the stage backward and re-running its fragment.
-        // `onlyOnce` is left out: it parks the script in `hasBeenTriggered`
-        // without disabling anything, and no persistent Papyrus script-state
-        // ledger exists to record that in yet.
+        // `onlyOnce` is left out of the *disable* ledger: it parks the
+        // script in `hasBeenTriggered` without disabling anything.
+        //
+        // #4334 — but it IS recorded in `ReferenceScriptState`: the
+        // in-session component removal alone lasted exactly one cell
+        // load, because the attach chain re-inserts a freshly armed
+        // component on every reload. The parked-state ledger is what the
+        // recognizer's spawn closure consults to keep it disarmed.
         let disabled_references: Vec<u32> = disable_sources
             .iter()
             .filter(|(_, disable_reference)| *disable_reference)
@@ -482,6 +487,25 @@ pub fn quest_advance_system(world: &World) {
             if let Some(mut enable) = world.try_resource_mut::<crate::ReferenceEnableState>() {
                 for form_id in disabled_references {
                     enable.set_enabled(form_id, false);
+                }
+            }
+        }
+        // #4334 — every advanced once-only trigger parked its script in a
+        // terminal state (`disableWhenDone` via its Disable, `onlyOnce`
+        // via GotoState); both stay inert across reloads through this
+        // ledger even when the reference itself stays enabled.
+        let parked_references: Vec<u32> = disable_sources
+            .iter()
+            .filter_map(|(entity, _)| {
+                world
+                    .get::<crate::scene::SceneAliasCandidate>(*entity)
+                    .map(|identity| identity.reference_form_id)
+            })
+            .collect();
+        if !parked_references.is_empty() {
+            if let Some(mut scripts) = world.try_resource_mut::<crate::ReferenceScriptState>() {
+                for form_id in parked_references {
+                    scripts.park(form_id);
                 }
             }
         }

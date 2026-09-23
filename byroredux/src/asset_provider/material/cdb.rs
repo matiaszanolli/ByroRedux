@@ -236,6 +236,12 @@ pub(super) fn apply_cdb_pbr_fallback(material: &mut ImportedMaterial, path: &str
     material.is_pbr = true;
     // `from_bgsm` deliberately NOT set — that flag gates BGSM
     // spec-glossiness translation (an FO4-specific format convention).
+    // #4283 — but the CDB IS a resolved external material description, so
+    // the format-agnostic provenance the glass classifier reads is set:
+    // Starfield effect-shader glass takes the dielectric path FO4's
+    // identical authoring does, instead of being locked out by the FO4
+    // convention the flag now exclusively carries.
+    material.external_material_resolved = true;
     if !path.ends_with(".mat") {
         static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
             std::sync::OnceLock::new();

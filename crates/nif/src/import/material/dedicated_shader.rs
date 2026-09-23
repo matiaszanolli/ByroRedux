@@ -155,6 +155,32 @@ fn apply_bs_lighting_shader(
         if shader.material_reference {
             return;
         }
+        // #4282 — capture the FO4+/FO76+ wetness envelope and FO76+
+        // luminance quad into the canonical core-owned shapes. Pre-fix
+        // these were parsed onto the block and discarded: no
+        // `ImportedMaterial` sink existed. Deliberately excludes the
+        // FO4-family `metalness`/trailing unknowns — their Starfield
+        // wire positions hold the luminance quad instead (#2622 /
+        // SF-D6-02), so copying verbatim would misattribute data.
+        // Capture-only: no `GpuMaterial` consumer yet (same tier as
+        // `lighting_effect_1/2`).
+        info.wetness = shader.wetness.as_ref().map(|w| {
+            byroredux_core::ecs::components::material::WetnessShading {
+                spec_scale: w.spec_scale,
+                spec_power: w.spec_power,
+                min_var: w.min_var,
+                env_map_scale: w.env_map_scale,
+                fresnel_power: w.fresnel_power,
+            }
+        });
+        info.luminance = shader.luminance.as_ref().map(|l| {
+            byroredux_core::ecs::components::material::LuminanceShading {
+                lum_emittance: l.lum_emittance,
+                exposure_offset: l.exposure_offset,
+                final_exposure_min: l.final_exposure_min,
+                final_exposure_max: l.final_exposure_max,
+            }
+        });
         use crate::shader_flags::bs_shader_crc32::{contains_any, MODELSPACENORMALS};
         let msn_bit = slsf1_bit(
             slot_layout,

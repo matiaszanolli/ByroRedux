@@ -166,7 +166,11 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
 /// mistake for `ItemInstancePool`, and is the reason this is an explicit
 /// allowlist (mirroring [`MUTABLE_DELTA_COLUMNS`]'s pattern) rather than
 /// "everything except a denylist".
-const PRE_RELOAD_RESOURCES: &[&str] = &["ReferenceEnableState", "ReferenceLockState"];
+const PRE_RELOAD_RESOURCES: &[&str] = &[
+    "ReferenceEnableState",
+    "ReferenceLockState",
+    "ReferenceScriptState",
+];
 
 /// The player's standing position + look direction at save time, so a
 /// live `load` can put the player back where they were rather than at the
@@ -355,7 +359,8 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_scripting::{
         ActorCinematicState, ActorControlState, CinematicPresentationState, FragmentExecutionQueue,
         Globals, HorseTetherState, PapyrusProviderContinuationQueue, PlayerControlState,
-        QuestAliasInjectionState, ReferenceEnableState, ReferenceLockState, ScriptTimer, ScriptVariables,
+        QuestAliasInjectionState, ReferenceEnableState, ReferenceLockState, ReferenceScriptState,
+        ScriptTimer, ScriptVariables,
         TwoStateActivator,
     };
 
@@ -550,6 +555,13 @@ pub fn build_save_registry() -> SaveRegistry {
         // one. Plain `u8` / `Option<u32>` payloads, no session-local
         // handles.
         .register_resource::<ReferenceLockState>("ReferenceLockState")
+        // #4334 — the once-only-script ledger, third sibling of the same
+        // shape: `onlyOnce` triggers park their script in a terminal
+        // `GotoState` without disabling the reference, and the parked
+        // state must survive both a save/load and an in-session cell
+        // revisit so the attach path does not re-arm them. Plain local
+        // FormID keys, no session-local handles.
+        .register_resource::<ReferenceScriptState>("ReferenceScriptState")
         // #2380 / SAVE-D1-15 — MQ101 cinematic presentation state
         // (sitting rotation, animation-event registrations, active IMAD
         // applications). No `EntityId`/`FixedString` anywhere.

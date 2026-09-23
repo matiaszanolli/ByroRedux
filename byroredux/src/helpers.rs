@@ -74,15 +74,20 @@ pub(crate) fn classify_glass_into_material(
     has_transparent_coverage: bool,
     is_decal: bool,
     bgem_glass: bool,
-    from_bgsm: bool,
+    external_material_resolved: bool,
     window_env_mapping: bool,
 ) {
     let keyword_match = texture_path.is_some_and(is_glass_keyword_path)
         || mesh_name.is_some_and(is_glass_keyword_path);
-    // #2710 — the effect-shader carrier is promoted to glass by an
+    // #2710 / #4283 — the effect-shader carrier is promoted to glass by an
     // authored BGEM glass flag, or by a glass keyword **on external-material
-    // content only**. `from_bgsm` is the provenance discriminator, not a
-    // game check: an external `.bgsm`/`.bgem` resolved for this material.
+    // content only**. `external_material_resolved` is the provenance
+    // discriminator ("an external material description was resolved",
+    // whatever its format: `.bgsm`/`.bgem` merge, Starfield CDB), not a
+    // game check. Pre-#4283 this read `from_bgsm`, which the CDB fallback
+    // deliberately leaves clear (that flag is the FO4 spec-glossiness
+    // convention), so Starfield's 748 effect-shader glass blocks could
+    // never take the dielectric path FO4's identical authoring does.
     // That is what separates the two real cases, both of which are
     // effect-shader carriers with a glass keyword:
     //
@@ -100,7 +105,7 @@ pub(crate) fn classify_glass_into_material(
     // whose BGEM misses `bgem_uses_glass_behavior`'s heuristic.
     let effect_glass_carrier = material.material_kind
         == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
-        && (bgem_glass || (keyword_match && from_bgsm));
+        && (bgem_glass || (keyword_match && external_material_resolved));
 
     // #4255 (SKY-D7-2026-09-11-01) — `material_kind` is an overloaded union:
     // `0..=20` is the verbatim authored Skyrim `BSLightingShaderProperty.
@@ -108,11 +113,14 @@ pub(crate) fn classify_glass_into_material(
     // engine-synthesized. The guard below already protects the synthesized
     // range; a NON-DEFAULT authored lit shader type needs the identical
     // protection, or a bare keyword match silently discards a real, specific
-    // dispatch with no way back. `from_bgsm` is the same provenance
-    // discriminator `effect_glass_carrier` already uses for the
-    // effect-shader carrier: an external `.bgsm` resolved for this material
-    // is an authoritative signal that can override an authored dispatch; a
-    // keyword alone on inline NIF data cannot. `material_kind == 0` (Default)
+    // dispatch with no way back. The provenance discriminator is the same
+    // "an external `.bgsm` was resolved for this material" signal
+    // `effect_glass_carrier` uses — kept on `from_bgsm` here because this
+    // gate asks specifically "did a BGSM re-specify the shader type",
+    // which the CDB fallback does not (it patches scalars, and effect
+    // carriers sit at kind 0/101 outside this 2..=20 range anyway, so
+    // #4283's split changes nothing for this gate); a keyword alone on
+    // inline NIF data cannot. `material_kind == 0` (Default)
     // is deliberately NOT protected — that is the intended keyword-glass path
     // every ordinary Skyrim glass window/bottle takes, and always has.
     //
@@ -133,7 +141,12 @@ pub(crate) fn classify_glass_into_material(
     // `dragon_icelake`, `icevine01*`) are handled at the keyword list
     // (`is_glass_keyword_path` no longer treats ice as glass), not by
     // shader-type partition.
-    let lit_carrier_authored_dispatch = (2..=20).contains(&material.material_kind) && !from_bgsm;
+    //
+    // The bgsm-provenance read is taken from the parameter the caller
+    // forwards; `external_material_resolved` cannot substitute here — see
+    // the note above.
+    let lit_carrier_authored_dispatch = (2..=20).contains(&material.material_kind)
+        && !external_material_resolved;
 
     // Engine-synthesized behavior already selected — preserve it unless this
     // is the source-format effect carrier used to author an explicit glass

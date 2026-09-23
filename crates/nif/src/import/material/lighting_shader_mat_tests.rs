@@ -363,3 +363,97 @@ fn bslighting_env_map_scale_is_captured_and_marks_consumed() {
          can't clobber the dedicated-shader env_map_scale value (#4251)"
     );
 }
+
+/// #4282 — the FO4+/FO76+ wetness envelope and FO76+ luminance quad on
+/// `BSLightingShaderProperty` must cross into `MaterialInfo` (and from
+/// there `ImportedMaterial` → `Material`): pre-fix they were parsed onto
+/// the block and discarded, with no sink existing at all. The capture
+/// deliberately drops the FO4-family `metalness`/trailing unknowns —
+/// their Starfield wire positions hold the luminance quad instead
+/// (#2622), so only the five unambiguous wetness fields map.
+#[test]
+fn bslighting_wetness_and_luminance_cross_the_boundary() {
+    use crate::blocks::shader::{LuminanceParams, WetnessParams};
+    use byroredux_core::ecs::components::material::{LuminanceShading, WetnessShading};
+
+    let mut shader = lighting_shader_with_name("");
+    shader.wetness = Some(WetnessParams {
+        spec_scale: 1.5,
+        spec_power: 24.0,
+        min_var: 0.02,
+        env_map_scale: 3.0,
+        fresnel_power: 4.5,
+        // Starfield's wire position for this pair holds the luminance
+        // quad; the canonical sink must not carry it as metalness.
+        metalness: 9.9,
+        unknown_1: 8.8,
+        unknown_2: 7.7,
+    });
+    shader.luminance = Some(LuminanceParams {
+        lum_emittance: 100.0,
+        exposure_offset: 13.5,
+        final_exposure_min: 0.5,
+        final_exposure_max: 2.0,
+    });
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = tri_shape_with_shader_ref(0);
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(
+        info.wetness,
+        Some(WetnessShading {
+            spec_scale: 1.5,
+            spec_power: 24.0,
+            min_var: 0.02,
+            env_map_scale: 3.0,
+            fresnel_power: 4.5,
+        }),
+        "the five unambiguous wetness fields cross the boundary"
+    );
+    assert_eq!(
+        info.luminance,
+        Some(LuminanceShading {
+            lum_emittance: 100.0,
+            exposure_offset: 13.5,
+            final_exposure_min: 0.5,
+            final_exposure_max: 2.0,
+        }),
+        "the luminance quad crosses the boundary"
+    );
+
+    // …and the full pipeline forwards them onto `ImportedMaterial`.
+    let imported = info.into_imported_material(&mut pool, None);
+    assert_eq!(imported.wetness, Some(WetnessShading {
+        spec_scale: 1.5,
+        spec_power: 24.0,
+        min_var: 0.02,
+        env_map_scale: 3.0,
+        fresnel_power: 4.5,
+    }));
+    assert_eq!(
+        imported.luminance,
+        Some(LuminanceShading {
+            lum_emittance: 100.0,
+            exposure_offset: 13.5,
+            final_exposure_min: 0.5,
+            final_exposure_max: 2.0,
+        })
+    );
+}
+
+/// #4282 — absent blocks stay `None`; the sink must not fabricate a
+/// default envelope for the 97.9% of content that authors neither.
+#[test]
+fn bslighting_wetness_and_luminance_default_to_none() {
+    let (info, mut pool) = extract_for_shader_name("plain.nif");
+    assert_eq!(info.wetness, None);
+    assert_eq!(info.luminance, None);
+    let imported = info.into_imported_material(&mut pool, None);
+    assert_eq!(imported.wetness, None);
+    assert_eq!(imported.luminance, None);
+}

@@ -686,6 +686,14 @@ pub struct ImportedMaterial {
     /// both arms. For "authoritative PBR scalars were merged" use
     /// [`Self::bgsm_pbr_scalars_authored`] instead (#2609).
     pub from_bgsm: bool,
+    /// #4283 — "an external material file was resolved for this
+    /// material", whatever its format: the `.bgsm`/`.bgem` merge arms
+    /// AND Starfield's CDB fallback all set it. Distinct from
+    /// [`Self::from_bgsm`], which stays the FO4 BGSM
+    /// spec-glossiness-convention signal (and is deliberately clear on
+    /// the CDB path). Read by the glass keyword promotion in
+    /// `classify_glass_into_material`.
+    pub external_material_resolved: bool,
     pub bgem_glass: bool,
     pub thin_glass: bool,
     /// BGEM v21+ artist tint for the dielectric reflection/Fresnel lobe.
@@ -805,6 +813,15 @@ pub struct ImportedMaterial {
     pub z_write: bool,
     pub z_function: u8,
     pub effect_shader: Option<BsEffectShaderData>,
+    /// #4282 — FO4+ `BSSPWetnessParams` envelope captured off the bound
+    /// `BSLightingShaderProperty`, in the core-owned canonical shape.
+    /// Forwarded by `translate_material` to `Material::wetness`.
+    /// Capture-only (no renderer consumer yet) — the sink exists so
+    /// authored values are no longer discarded at the parse tier.
+    pub wetness: Option<byroredux_core::ecs::components::material::WetnessShading>,
+    /// #4282 — FO76+ `BSSPLuminanceParams` quad off the same property;
+    /// same capture-only contract as [`Self::wetness`].
+    pub luminance: Option<byroredux_core::ecs::components::material::LuminanceShading>,
     pub material_kind: u32,
     /// Normalised `BSLightingShaderType` this material's texture slots were
     /// resolved with (#2695). The REFR texture overlay reads it back so an
@@ -849,6 +866,7 @@ impl Default for ImportedMaterial {
             rim_lighting: false,
             back_lighting: false,
             from_bgsm: false,
+            external_material_resolved: false,
             bgem_glass: false,
             thin_glass: false,
             glass_fresnel_color: [1.0; 3],
@@ -903,6 +921,8 @@ impl Default for ImportedMaterial {
             z_write: true,
             z_function: 3,
             effect_shader: None,
+            wetness: None,
+            luminance: None,
             material_kind: 0,
             shader_type: 0,
             texture_slot_layout: crate::import::TextureSlotLayout::default(),

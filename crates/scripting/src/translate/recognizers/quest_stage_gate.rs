@@ -227,6 +227,33 @@ fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> 
     Some(Recognized::new(
         format!("quest_stage_gate@{}", script.name.node),
         move |world, entity| {
+            // #4334 — the reload consult. Removing the live component in
+            // `quest_advance_system` lasted only until the cell reloaded:
+            // this spawn closure ran again off the re-decompiled script and
+            // re-armed the trigger, letting an `onlyOnce` placement fire
+            // `SetStage` a second time (the stage can move backward and the
+            // fragment re-runs). A reference whose script already parked in
+            // its terminal `GotoState` — recorded in the persistent
+            // `ReferenceScriptState` ledger — stays disarmed here, exactly
+            // as vanilla's empty `hasBeenTriggered` state disarms its
+            // handlers. The reference itself stays enabled either way;
+            // `disableWhenDone`'s separate Disable-ledger handling is
+            // untouched.
+            let already_parked = world
+                .get::<crate::scene::SceneAliasCandidate>(entity)
+                .and_then(|identity| {
+                    world
+                        .try_resource::<crate::ReferenceScriptState>()
+                        .map(|scripts| scripts.is_parked(identity.reference_form_id))
+                })
+                .unwrap_or(false);
+            if already_parked {
+                log::debug!(
+                    "quest_stage_gate: reference already parked in its terminal script \
+                     state — not re-arming the once-only trigger (#4334)"
+                );
+                return;
+            }
             if let Some(mut query) = world.query_mut::<QuestAdvanceOnActivate>() {
                 query.insert(entity, component.clone());
             }
@@ -658,6 +685,44 @@ mod tests {
             .expect("quest stage trigger component");
         assert!(component.disable_after_advance);
         assert!(!component.disable_reference_after_advance);
+    }
+
+    /// #4334 — the reload leg the test above can't reach: after the advance
+    /// parked the script's terminal state in `ReferenceScriptState`, a cell
+    /// reload runs this spawn closure again on a fresh entity for the SAME
+    /// reference — exactly what `attach_vmad_scripts` produces from the
+    /// re-decompiled `.pex` — and it must not re-arm the trigger. This is
+    /// the failure the issue was filed on: `SetStage` firing a second time
+    /// could move the stage backward and re-run its fragment.
+    #[test]
+    fn parked_only_once_trigger_does_not_rearm_on_reload() {
+        let script = specific_actor_source();
+        let instance = specific_actor_instance(Some(("onlyOnce", PropertyValue::Bool(true))));
+        let source = ScriptSource::PapyrusSource(&script);
+        let recognized = translate_script(&source, GameKind::Skyrim, Some(&instance), None)
+            .expect("onlyOnce trigger recognized");
+
+        let mut world = byroredux_core::ecs::world::World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            crate::scene::SceneAliasCandidate {
+                reference_form_id: 0x0008_4070,
+                ..Default::default()
+            },
+        );
+        // The earlier advance already parked the script's terminal state.
+        world
+            .resource_mut::<crate::ReferenceScriptState>()
+            .park(0x0008_4070);
+
+        (recognized.spawn)(&mut world, entity);
+        assert!(
+            world.get::<QuestAdvanceOnActivate>(entity).is_none(),
+            "a reload must not re-arm an onlyOnce trigger whose script is \
+             parked in its terminal state (#4334)"
+        );
     }
 
     /// #3940 — build the `defaultSetStageTRIGSpecificActor` VMAD shape with

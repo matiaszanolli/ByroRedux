@@ -612,7 +612,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 25;
+    const BASELINE_MAJOR: u16 = 26;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -626,7 +626,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // Lighting unification: VisibilityMask is still a u8 newtype; only its
     // import policy changed. The tuple-struct scanner also includes its impl
     // (same false positive as W2.10 below). No serialized field changed.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0c2b_78cc_d92b_2a84;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xfdf5_4cba_8b94_555f;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
@@ -669,6 +669,16 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // fn delegating to `for_legacy_projection`) moved the scan span. The
     // type's serialized shape is still a plain `u8` newtype — no field
     // added, removed, or retyped — so no snapshot decodes differently.
+    //
+    // v25 -> v26 (#4282/#4334) — refreshed WITH a major bump, both
+    // directions at once: `Material` gained the optional capture-only
+    // `wetness`/`luminance` fields (the NIFAL sink for the
+    // BSSPWetnessParams/BSSPLuminanceParams envelopes; `sanitize_finite`
+    // descends into both, so a poisoned value cannot survive a restore),
+    // and `ReferenceScriptState` joined the saved registry as a NEW
+    // resource (the once-only-script ledger) — its absence in pre-v26
+    // snapshots is what keeps an `onlyOnce` trigger re-armed across a
+    // load from being possible.
     assert_eq!(
         byroredux_save::FORMAT_MAJOR,
         BASELINE_MAJOR,

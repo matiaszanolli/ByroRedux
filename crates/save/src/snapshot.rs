@@ -215,7 +215,17 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// exact masked intra-type change SAVE-D2-01 (#1714) exists to prevent;
 /// per the blanket rule the default is removed and a pre-v25 save is
 /// rejected by the version check rather than silently default-filled.
-pub const FORMAT_MAJOR: u16 = 25;
+///
+/// v25 -> v26 (#4282/#4334): `Material` gained the optional capture-only
+/// `wetness`/`luminance` envelope fields (the NIFAL sink for
+/// `BSSPWetnessParams`/`BSSPLuminanceParams`), changing the registered
+/// `Material` column's serialized shape the same way v19/v21/v24's field
+/// additions did — optional or not, the blanket rule takes the bump.
+/// `ReferenceScriptState` joins the saved registry the same frame (the
+/// once-only-script ledger, #4334): a newly saved resource, not a shape
+/// change to an existing column; pre-v26 snapshots are rejected by the
+/// version check so a re-armed trigger cannot survive a load.
+pub const FORMAT_MAJOR: u16 = 26;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
