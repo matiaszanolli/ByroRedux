@@ -262,6 +262,121 @@ pub fn average_rgb(meta: &DdsMetadata, data: &[u8]) -> Option<[f32; 3]> {
     }
 }
 
+/// Mean RGB of a small texture region around `uv`, in the raw stored
+/// (monitor-space) encoding, sampled at the first mip no wider than
+/// `target_width` texels: the 3×3 blocks (BC) or 12×12 pixels
+/// (uncompressed) centred on `uv`, fully decoded. Used by spawn-time NPC
+/// seam blending to compare skin tone on either side of a mesh cut, which
+/// needs the local colour rather than [`average_rgb`]'s whole-texture mean.
+/// UVs wrap. Returns `None` for formats [`average_rgb`] also declines, for
+/// CPU-expanded uncompressed formats, and for a truncated payload.
+pub fn sample_region_rgb(
+    meta: &DdsMetadata,
+    data: &[u8],
+    uv: [f32; 2],
+    target_width: u32,
+) -> Option<[f32; 3]> {
+    if meta.expand.is_some() || meta.width == 0 || meta.height == 0 {
+        return None;
+    }
+    let mut mip = 0;
+    while mip + 1 < meta.mip_count && mip_dimension(meta.width, mip) > target_width.max(4) {
+        mip += 1;
+    }
+    let mut offset = meta.data_offset;
+    for m in 0..mip {
+        offset += mip_size(meta.width, meta.height, m, meta.block_size, meta.compressed) as usize;
+    }
+    let w = mip_dimension(meta.width, mip) as usize;
+    let h = mip_dimension(meta.height, mip) as usize;
+    let wrap = |t: f32| t - t.floor();
+    let (px, py) = (
+        (wrap(uv[0]) * w as f32) as usize % w,
+        (wrap(uv[1]) * h as f32) as usize % h,
+    );
+    let bs = meta.block_size as usize;
+    let mut acc = [0.0f32; 3];
+    let mut n = 0u32;
+    if meta.compressed {
+        let (color_off, bc1) = match meta.format {
+            vk::Format::BC1_RGB_SRGB_BLOCK
+            | vk::Format::BC1_RGB_UNORM_BLOCK
+            | vk::Format::BC1_RGBA_SRGB_BLOCK
+            | vk::Format::BC1_RGBA_UNORM_BLOCK => (0, true),
+            vk::Format::BC2_SRGB_BLOCK
+            | vk::Format::BC2_UNORM_BLOCK
+            | vk::Format::BC3_SRGB_BLOCK
+            | vk::Format::BC3_UNORM_BLOCK => (8, false),
+            _ => return None,
+        };
+        let (bw, bh) = (w.div_ceil(4), h.div_ceil(4));
+        for dy in -1i64..=1 {
+            for dx in -1i64..=1 {
+                let bx = ((px / 4) as i64 + dx).rem_euclid(bw as i64) as usize;
+                let by = ((py / 4) as i64 + dy).rem_euclid(bh as i64) as usize;
+                let base = offset + (by * bw + bx) * bs + color_off;
+                let block = data.get(base..base + 8)?;
+                let raw0 = u16::from_le_bytes([block[0], block[1]]);
+                let raw1 = u16::from_le_bytes([block[2], block[3]]);
+                let (c0, c1) = (rgb565(raw0), rgb565(raw1));
+                let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+                // BC1 with c0 <= c1 is the 3-colour + transparent-black mode;
+                // BC2/BC3 colour blocks are always 4-colour.
+                let three_colour = bc1 && raw0 <= raw1;
+                let palette: [Option<[f32; 3]>; 4] = if three_colour {
+                    [
+                        Some(c0),
+                        Some(c1),
+                        Some([0, 1, 2].map(|i| lerp(c0[i], c1[i], 0.5))),
+                        None,
+                    ]
+                } else {
+                    [
+                        Some(c0),
+                        Some(c1),
+                        Some([0, 1, 2].map(|i| lerp(c0[i], c1[i], 1.0 / 3.0))),
+                        Some([0, 1, 2].map(|i| lerp(c0[i], c1[i], 2.0 / 3.0))),
+                    ]
+                };
+                let indices = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
+                for texel in 0..16 {
+                    if let Some(colour) = palette[((indices >> (2 * texel)) & 3) as usize] {
+                        for i in 0..3 {
+                            acc[i] += colour[i];
+                        }
+                        n += 1;
+                    }
+                }
+            }
+        }
+        (n > 0).then(|| acc.map(|c| c / n as f32))
+    } else {
+        let swap_rb = match meta.format {
+            vk::Format::R8G8B8A8_SRGB | vk::Format::R8G8B8A8_UNORM => false,
+            vk::Format::B8G8R8A8_SRGB | vk::Format::B8G8R8A8_UNORM => true,
+            _ => return None,
+        };
+        for dy in -6i64..6 {
+            for dx in -6i64..6 {
+                let x = (px as i64 + dx).rem_euclid(w as i64) as usize;
+                let y = (py as i64 + dy).rem_euclid(h as i64) as usize;
+                let o = offset + (y * w + x) * bs;
+                let texel = data.get(o..o + 3)?;
+                let rgb = if swap_rb {
+                    [texel[2], texel[1], texel[0]]
+                } else {
+                    [texel[0], texel[1], texel[2]]
+                };
+                for i in 0..3 {
+                    acc[i] += rgb[i] as f32 / 255.0;
+                }
+                n += 1;
+            }
+        }
+        (n > 0).then(|| acc.map(|c| c / n as f32))
+    }
+}
+
 /// Parse a DDS file header and return metadata.
 pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
     ensure!(
@@ -1239,6 +1354,48 @@ mod tests {
         data[128..130].copy_from_slice(&0xF800u16.to_le_bytes()); // color0 = red
         data[130..132].copy_from_slice(&0x001Fu16.to_le_bytes()); // color1 = blue
         approx(average_rgb(&meta, &data).unwrap(), [0.5, 0.0, 0.5]);
+    }
+
+    /// The seam sampler fully decodes the 3×3 blocks around `uv` (with
+    /// wrap), so the result is the true texel mean of that region — not the
+    /// endpoint mean `average_rgb` uses — and BC1's transparent-black texels
+    /// are excluded.
+    #[test]
+    fn sample_region_rgb_decodes_the_blocks_around_the_uv() {
+        // 16×4 BC1 = four blocks in a row: red, red, blue, blue. Every texel
+        // uses index 0 (colour0) in 4-colour mode (colour0 > colour1).
+        let mut data = make_dds_header(16, 4, 1, b"DXT1");
+        let meta = parse_dds(&data).unwrap();
+        for (block, colour0) in [0xF800u16, 0xF800, 0x001F, 0x001F].iter().enumerate() {
+            let base = 128 + block * 8;
+            data[base..base + 2].copy_from_slice(&colour0.to_le_bytes());
+            data[base + 2..base + 4].copy_from_slice(&0x0000u16.to_le_bytes());
+            data[base + 4..base + 8].copy_from_slice(&0u32.to_le_bytes());
+        }
+        // Block 0's neighbourhood (wrapping) is blocks 3, 0, 1: blue, red, red.
+        approx(
+            sample_region_rgb(&meta, &data, [0.05, 0.5], 256).unwrap(),
+            [2.0 / 3.0, 0.0, 1.0 / 3.0],
+        );
+        // Block 2's neighbourhood is blocks 1, 2, 3: red, blue, blue.
+        approx(
+            sample_region_rgb(&meta, &data, [0.6, 0.5], 256).unwrap(),
+            [1.0 / 3.0, 0.0, 2.0 / 3.0],
+        );
+
+        // 3-colour BC1 (colour0 <= colour1): index 3 is transparent black and
+        // must not darken the mean.
+        let mut data = make_dds_header(4, 4, 1, b"DXT1");
+        let meta = parse_dds(&data).unwrap();
+        data[128..130].copy_from_slice(&0x001Fu16.to_le_bytes()); // blue
+        data[130..132].copy_from_slice(&0xF800u16.to_le_bytes()); // red (> blue)
+        data[132..136].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // all index 3
+        assert_eq!(sample_region_rgb(&meta, &data, [0.5, 0.5], 256), None);
+        data[132..136].copy_from_slice(&0x5555_5555u32.to_le_bytes()); // all index 1
+        approx(
+            sample_region_rgb(&meta, &data, [0.5, 0.5], 256).unwrap(),
+            [1.0, 0.0, 0.0],
+        );
     }
 
     #[test]

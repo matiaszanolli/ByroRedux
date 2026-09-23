@@ -27,6 +27,7 @@ pub(crate) use ai_package::ambient_ai_package_system;
 use ai_package::apply_ai_package_behavior;
 pub(crate) mod loot_appearance;
 mod resumable;
+mod seam_blend;
 pub(crate) use resumable::{NpcSpawnJob, NpcSpawnProgress};
 
 use crate::anim_convert::convert_nif_clip;

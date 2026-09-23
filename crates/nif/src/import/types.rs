@@ -1183,6 +1183,46 @@ mod skin_partition_hiding_tests {
         assert_eq!(mesh.skin.unwrap().triangle_body_parts, vec![33]);
     }
 
+    /// Regression: FO3 outfit NIFs name their neck/torso caps `headmeat` /
+    /// `bodymeat` (measured on `wastelandclothing01/outfitf.nif`: body parts
+    /// 101 and 201), which the old name list missed — a gore band rendered
+    /// under every clothed NPC's chin. Caps are identified by body part.
+    #[test]
+    fn dismemberment_caps_are_identified_by_body_part_not_name() {
+        let with_parts = |parts: Vec<u16>| {
+            let mut mesh = ImportedMesh::from_geometry(
+                vec![[0.0; 3]; 3],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![0, 1, 2],
+            );
+            mesh.skin = Some(ImportedSkin {
+                triangle_body_parts: parts,
+                ..Default::default()
+            });
+            mesh
+        };
+        // outfitf.nif's headmeat / bodymeat, and the body NIF caps.
+        assert!(with_parts(vec![101]).is_dismemberment_cap());
+        assert!(with_parts(vec![201]).is_dismemberment_cap());
+        assert!(with_parts(vec![103, 105, 107, 110]).is_dismemberment_cap());
+        assert!(with_parts(vec![203, 205, 207, 210]).is_dismemberment_cap());
+        // Visible body/outfit geometry mixes anatomical and torso-section parts.
+        assert!(!with_parts(vec![0, 7, 10, 7000, 10000]).is_dismemberment_cap());
+        // A mesh with any non-cap triangle is not a cap.
+        assert!(!with_parts(vec![0, 101]).is_dismemberment_cap());
+        // Skyrim biped slots in the same numeric neighbourhood are not caps.
+        assert!(!with_parts(vec![130, 131, 143]).is_dismemberment_cap());
+        assert!(!with_parts(vec![230]).is_dismemberment_cap());
+        // No body-part data, or no skin at all: never a cap.
+        assert!(!with_parts(Vec::new()).is_dismemberment_cap());
+        let mut unskinned = with_parts(vec![101]);
+        unskinned.skin = None;
+        assert!(!unskinned.is_dismemberment_cap());
+    }
+
     #[test]
     fn fo3_anatomical_parts_are_not_misread_as_biped_slots() {
         assert_eq!(dismember_body_part_to_biped_bit(0), None);
@@ -1372,7 +1412,28 @@ pub fn dismember_body_part_to_biped_bit(body_part: u16) -> Option<u8> {
     u8::try_from(slot - 30).ok()
 }
 
+/// FO3 / FNV dismemberment-cap body parts: nif.xml `BP_SECTIONCAP_*`
+/// (101..=113) and `BP_TORSOCAP_*` (201..=213). Skyrim's 130..=161 /
+/// 230..=261 biped slots are deliberately outside both ranges.
+pub fn is_dismemberment_cap_body_part(body_part: u16) -> bool {
+    matches!(body_part, 101..=113 | 201..=213)
+}
+
 impl ImportedMesh {
+    /// Whether this mesh is a dismemberment cap: skinned geometry whose every
+    /// triangle belongs to a cap body part. The legacy engine shows these
+    /// gore sub-meshes (`limbcaps`, `bodycaps`, `headmeat`, `meatneck01`, …)
+    /// only once the matching body part is severed.
+    pub fn is_dismemberment_cap(&self) -> bool {
+        self.skin.as_ref().is_some_and(|skin| {
+            !skin.triangle_body_parts.is_empty()
+                && skin
+                    .triangle_body_parts
+                    .iter()
+                    .all(|&part| is_dismemberment_cap_body_part(part))
+        })
+    }
+
     /// Remove indexed triangles belonging to body partitions covered by
     /// `hidden_biped_mask`. Supports both classic
     /// `BSDismemberSkinInstance` triangle associations and

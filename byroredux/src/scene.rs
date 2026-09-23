@@ -1459,7 +1459,7 @@ pub(crate) use character_spawn::{
     GroundProbe,
 };
 use nif_loader::load_nif_from_args;
-pub(crate) use nif_loader::{load_nif_bytes, load_nif_bytes_with_skeleton};
+pub(crate) use nif_loader::{load_nif_bytes, load_nif_bytes_with_skeleton, peek_or_parse_scene};
 
 #[cfg(test)]
 mod cloud_tile_scale_tests;

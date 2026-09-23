@@ -191,6 +191,28 @@ pub(crate) fn load_nif_bytes(
     (count, root)
 }
 
+/// The imported scene for `path`, for read-only inspection: the shared
+/// import cache's entry when one exists, otherwise a fresh parse that is
+/// **not** inserted. Inspection-only callers (spawn-time NPC seam blending
+/// reads neighbouring body / outfit meshes before those parts spawn) must
+/// not populate the cache with an import made without the caller's
+/// material provider. `None` when the archive lacks the path or it fails to
+/// parse.
+pub(crate) fn peek_or_parse_scene(
+    world: &mut World,
+    path: &str,
+    tex_provider: &TextureProvider,
+) -> Option<std::sync::Arc<byroredux_nif::import::ImportedScene>> {
+    let cached = world
+        .resource::<crate::scene_import_cache::SceneImportCache>()
+        .peek(&path.to_ascii_lowercase());
+    if cached.is_some() {
+        return cached;
+    }
+    let data = tex_provider.extract_mesh(path)?;
+    parse_import_and_merge(world, &data, path, tex_provider, None).map(std::sync::Arc::new)
+}
+
 /// Parse + import + BGSM-merge a NIF scene from raw bytes. Shared
 /// helper for [`load_nif_bytes_with_skeleton`]'s cache-miss path
 /// (where the result is wrapped in `Arc` and inserted into
@@ -994,26 +1016,19 @@ fn spawn_nif_mesh(
     phantom_bounds: Option<([f32; 3], [f32; 3])>,
     blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> bool {
-    // M41.0 Phase 1b.x temp gate — vanilla FNV / FO3 actor body NIFs
-    // ship 4 dismemberment-cap sub-meshes alongside the visible body
-    // (`bodycaps`, `limbcaps`, `meatneck01`, `meathead01`). The
-    // legacy engine hides them via `BSDismemberSkinInstance.partitions
-    // [i].part_flag` until a body part is actually dismembered; we
-    // don't honour that flag yet, so they render as inside-the-body
-    // bloody geometry that looks like dark ribbons / spikes spilling
-    // from the actor. Skipping by name keeps NPCs visually coherent
-    // until the partition-flag visibility pipeline lands as its own
-    // followup. Match-arm naming is conservative — these are exact
-    // vanilla mesh-name conventions and won't false-positive on
-    // anything else.
+    // M41.0 Phase 1b.x — FO3 / FNV actor body and outfit NIFs ship
+    // dismemberment-cap sub-meshes alongside the visible geometry. The
+    // legacy engine shows them only once a body part is severed; with no
+    // dismemberment system yet, they would render as bloody geometry at
+    // the joints and neck. Identified by their body-part data rather than
+    // by name: the old name list (`bodycaps` / `limbcaps` / `meatneck01` /
+    // `meathead01`) missed outfit caps such as `outfitf.nif`'s
+    // `headmeat` / `bodymeat`, which drew a gore band under every clothed
+    // NPC's chin.
     let mesh_name = mesh.name.as_deref().unwrap_or("");
-    if matches!(
-        mesh_name,
-        "bodycaps" | "limbcaps" | "meatneck01" | "meathead01"
-    ) {
+    if mesh.is_dismemberment_cap() {
         log::debug!(
-            "Phase 1b.x: skipping dismemberment cap '{}' until BSDismemberSkinInstance \
-             partition flags are wired",
+            "Phase 1b.x: skipping dismemberment cap '{}' until dismemberment exists",
             mesh_name,
         );
         return false;

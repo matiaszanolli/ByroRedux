@@ -67,9 +67,9 @@ pub struct EgmMorph {
     pub scale: f32,
     /// Per-vertex displacement, decoded to f32. `deltas.len() ==
     /// EgmFile::num_vertices`. Each entry is `[dx, dy, dz]` in the
-    /// same coordinate frame as the base mesh (NIF Z-up; the engine
-    /// converts to Y-up downstream the same way it does for the NIF
-    /// vertices themselves).
+    /// NIF's Z-up frame, as authored. The engine converts them to its Y-up
+    /// vertex frame (`zup_to_yup_pos`) before applying them to imported
+    /// vertices, which the NIF importer has already converted.
     pub deltas: Vec<[f32; 3]>,
 }
 

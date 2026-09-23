@@ -1621,6 +1621,45 @@ fn race_head_parts_stop_at_the_body_section_marker() {
     );
 }
 
+/// Each head part's `ICON` follows its `MODL` under the same `INDX`, per
+/// gender section, and an ear slot may author an `ICON` with no `MODL`.
+/// Layout from FO3 `Caucasian` (`INDX 0` → `MODL HeadHuman.NIF` →
+/// `ICON Characters\Male\HeadHuman.dds`; `FNAM` → `ICON
+/// Characters\Female\HeadHuman.dds`). Body-section ICONs past `NAM1` are
+/// a different vocabulary and must not be collected.
+#[test]
+fn race_head_part_textures_follow_their_part_per_gender() {
+    let subs = vec![
+        sub(b"EDID", b"Caucasian\0"),
+        sub(b"NAM0", b""),
+        sub(b"MNAM", b""),
+        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"MODL", b"Characters\\Head\\HeadHuman.NIF\0"),
+        sub(b"ICON", b"Characters\\Male\\HeadHuman.dds\0"),
+        sub(b"INDX", &1u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Head\\EarsHuman.dds\0"),
+        sub(b"INDX", &6u32.to_le_bytes()),
+        sub(b"MODL", b"Characters\\Head\\EyeLeftHuman.NIF\0"),
+        sub(b"FNAM", b""),
+        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"MODL", b"Characters\\Head\\HeadHuman.NIF\0"),
+        sub(b"ICON", b"Characters\\Female\\HeadHuman.dds\0"),
+        sub(b"NAM1", b""),
+        sub(b"MNAM", b""),
+        sub(b"INDX", &0u32.to_le_bytes()),
+        sub(b"ICON", b"Characters\\Male\\UpperBodyMale.dds\0"),
+    ];
+    let race = parse_race(0x00000019, &subs, GameKind::Fallout3NV, &None);
+    assert_eq!(
+        race.head_part_textures,
+        vec![
+            (0, "Characters\\Male\\HeadHuman.dds".to_string(), Some(0)),
+            (1, "Characters\\Head\\EarsHuman.dds".to_string(), Some(0)),
+            (0, "Characters\\Female\\HeadHuman.dds".to_string(), Some(1)),
+        ],
+    );
+}
+
 /// Oblivion authors one ungendered head run (`NAM0` with no MNAM /
 /// FNAM at all) and a body section whose `INDX` entries carry only
 /// `ICON`. The section gate must leave that arm's entries untagged —

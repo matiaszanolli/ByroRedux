@@ -44,11 +44,11 @@ use crate::EgmMorph;
 ///
 /// ## Coordinate frame
 ///
-/// Deltas in the `.egm` file live in the same NIF-local coordinate
-/// frame as the base vertices. The Z-up→Y-up conversion that the
-/// renderer applies happens at the placement-root level
-/// (`cell_loader.rs:864-877`), not at the vertex level — so this
-/// evaluator does not touch axis ordering.
+/// This evaluator does not touch axis ordering: `base_positions` and the
+/// morph deltas must already share a frame. Deltas parsed from an `.egm`
+/// are in Gamebyro's Z-up frame, while the NIF importer converts vertices
+/// to Y-up per vertex, so the engine's head-morph hook converts the deltas
+/// (`zup_to_yup_pos`) before calling this.
 ///
 /// ## Performance
 ///

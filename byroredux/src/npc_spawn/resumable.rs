@@ -86,6 +86,9 @@ struct RuntimeNpcState {
     is_child: bool,
     body_paths: Vec<String>,
     head_path: Option<String>,
+    /// The race / gender head `ICON` (e.g. FO3 `Characters\Female\HeadHuman.dds`),
+    /// replacing the head NIF's own (male default) base texture.
+    head_texture: Option<String>,
     hair_path: Option<String>,
     /// Per-NPC HCLR colour in the renderer's normalized RGB convention.
     /// Classic hair textures are palettes rather than a final actor colour.
@@ -95,7 +98,11 @@ struct RuntimeNpcState {
     /// same FaceGen record fields but its hair NIFs already carry their own
     /// actor-space placement; mounting those below `Bip01 Head` applies the
     /// head's rotated basis a second time.
-    hair_uses_head_bone_mount: bool,
+    head_parts_use_head_bone_mount: bool,
+    /// Fallout 3 / New Vegas hair is lit by the `HairTint` lighting-shader
+    /// variants, whose vertex colour is a tint mask rather than a colour
+    /// (see [`fallout_hair_tint_factor`]).
+    hair_uses_fallout_tint_mask: bool,
     brow_path: Option<String>,
     eye_paths: Vec<String>,
     /// Mouth / teeth / tongue (and, on Oblivion, ears) — the head
@@ -108,6 +115,11 @@ struct RuntimeNpcState {
     equipped_weapon: Option<EquippedWeapon>,
     armor: Vec<RuntimeArmor>,
     equipped_armor_count: u32,
+    /// Blend the head / hand cuts into the neighbouring skin at spawn
+    /// (Oblivion / FO3 / FNV runtime-assembled actors — see `seam_blend`).
+    blend_skin_seams: bool,
+    /// Built once after the skeleton phase when `blend_skin_seams`.
+    seam_context: Option<std::sync::Arc<super::seam_blend::SeamContext>>,
     phase: RuntimePhase,
     /// P2 combat tail — this actor's race resolves to the Draugr family,
     /// so finalize inserts `DraugrCombatAnim` and the combat-feedback
@@ -404,11 +416,35 @@ fn head_part_paths(
     roles: &[head_part::Role],
     want_gender_tag: u8,
 ) -> Vec<String> {
+    head_part_entries(&race.head_parts, game, roles, want_gender_tag)
+}
+
+/// The race / gender base texture (`ICON`) for head-part `role`.
+fn head_part_texture(
+    race: &RaceRecord,
+    game: GameKind,
+    role: head_part::Role,
+    want_gender_tag: u8,
+) -> Option<String> {
+    head_part_entries(&race.head_part_textures, game, &[role], want_gender_tag)
+        .into_iter()
+        .next()
+}
+
+/// Shared filter behind [`head_part_paths`] / [`head_part_texture`]: the
+/// entries of an `(INDX, path, gender section)` list matching `roles`, in
+/// role order.
+fn head_part_entries(
+    entries: &[(u32, String, Option<u8>)],
+    game: GameKind,
+    roles: &[head_part::Role],
+    want_gender_tag: u8,
+) -> Vec<String> {
     roles
         .iter()
         .filter_map(|role| head_part::index_of(game, *role))
         .flat_map(|want_idx| {
-            race.head_parts
+            entries
                 .iter()
                 .filter(move |(part_idx, path, section)| {
                     *part_idx == want_idx
@@ -525,6 +561,9 @@ fn prepare_runtime_state(
                 .or_else(|| race.body_models.first().cloned())
         })
         .map(|path| normalize_mesh_path(&path).into_owned());
+    let head_texture = race
+        .and_then(|race| head_part_texture(race, game, head_part::Role::Head, want_gender_tag))
+        .filter(|path| !path.is_empty());
     if head_path.is_none() {
         log::debug!(
             "NPC {:08X} ({}): race {:08X} has no head MODL — skipping head mesh",
@@ -621,9 +660,11 @@ fn prepare_runtime_state(
         walk_kf_path: None,
         body_paths,
         head_path,
+        head_texture,
         hair_path,
         hair_tint,
-        hair_uses_head_bone_mount: hair_uses_head_bone_mount(game),
+        head_parts_use_head_bone_mount: head_parts_use_head_bone_mount(game),
+        hair_uses_fallout_tint_mask: matches!(game, GameKind::Fallout3NV),
         brow_path,
         eye_paths,
         head_sub_paths,
@@ -633,6 +674,8 @@ fn prepare_runtime_state(
         equipped_weapon: equip.equipped_weapon,
         armor,
         equipped_armor_count: 0,
+        blend_skin_seams: matches!(game, GameKind::Oblivion | GameKind::Fallout3NV),
+        seam_context: None,
         // P2 combat tail — the race editor id is the family discriminator
         // (`DraugrRace…`); humans never match, so only draugr get combat
         // takes. Case-insensitive because editor ids are authoring text.
@@ -721,9 +764,11 @@ fn prepare_creature_state(
         is_child: false,
         body_paths,
         head_path: None,
+        head_texture: None,
         hair_path: None,
         hair_tint: None,
-        hair_uses_head_bone_mount: false,
+        head_parts_use_head_bone_mount: false,
+        hair_uses_fallout_tint_mask: false,
         brow_path: None,
         eye_paths: Vec::new(),
         head_sub_paths: Vec::new(),
@@ -733,6 +778,8 @@ fn prepare_creature_state(
         equipped_weapon: equip.equipped_weapon,
         armor,
         equipped_armor_count: 0,
+        blend_skin_seams: false,
+        seam_context: None,
         // CREA creatures don't use the humanoid Draugr clip family.
         combat_anim_draugr: false,
         phase: RuntimePhase::Skeleton,
@@ -799,6 +846,13 @@ fn advance_runtime_unit(
             }
             state.skel_root = skel_root;
             state.skel_map = skel_map;
+            if state.blend_skin_seams && state.skel_root.is_some() {
+                state.seam_context = Some(std::sync::Arc::new(build_seam_context(
+                    state,
+                    world,
+                    tex_provider,
+                )));
+            }
             state.phase = RuntimePhase::Body(0);
             UnitOutcome::Continue
         }
@@ -809,6 +863,45 @@ fn advance_runtime_unit(
             };
             match tex_provider.extract_mesh(body_path) {
                 Some(body_data) => {
+                    // Hands carry the wrist cut; they are the only body part
+                    // blended (per NPC, so this bypasses the import cache for
+                    // them). The torso / legs stay shared and untouched.
+                    let hand_seams = state
+                        .seam_context
+                        .clone()
+                        .filter(|_| is_hand_part(body_path));
+                    let mut tone_sampler = super::seam_blend::ToneSampler::new(tex_provider);
+                    let mut blend_hand = |scene: &mut byroredux_nif::import::ImportedScene| {
+                        let Some(context) = hand_seams.as_deref() else {
+                            return;
+                        };
+                        let source = body_path.to_ascii_lowercase();
+                        for (index, mesh) in scene.meshes.iter_mut().enumerate() {
+                            let own_texture =
+                                context.textures.get(&(source.clone(), index)).cloned();
+                            let stats = super::seam_blend::blend_part_seams(
+                                mesh,
+                                &source,
+                                own_texture.as_deref(),
+                                context,
+                                &mut |texture, uv| tone_sampler.sample(texture, uv),
+                            );
+                            log::debug!(
+                                "NPC {:08X}: '{}' seam blend matched {} edge vertices, toned {}",
+                                npc.form_id,
+                                source,
+                                stats.matched_vertices,
+                                stats.toned_vertices,
+                            );
+                        }
+                    };
+                    let pre_spawn: Option<
+                        &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
+                    > = if state.seam_context.is_some() && is_hand_part(body_path) {
+                        Some(&mut blend_hand)
+                    } else {
+                        None
+                    };
                     let (_, body_root, _) = load_nif_bytes_with_skeleton(
                         world,
                         ctx,
@@ -818,7 +911,7 @@ fn advance_runtime_unit(
                         mat_provider,
                         Some(&state.skel_map),
                         None,
-                        None,
+                        pre_spawn,
                     );
                     if let Some(root) = body_root {
                         parent_part(world, state.placement_root, root);
@@ -858,8 +951,11 @@ fn advance_runtime_unit(
             if state.skel_root.is_some() {
                 if let Some(path) = state.hair_path.as_deref() {
                     let tint = state.hair_tint;
+                    let fallout_mask = state.hair_uses_fallout_tint_mask;
                     let mut apply_hair_tint = |scene: &mut byroredux_nif::import::ImportedScene| {
-                        if let Some(tint) = tint {
+                        if fallout_mask {
+                            bake_fallout_hair_tint(&mut scene.meshes, tint);
+                        } else if let Some(tint) = tint {
                             for mesh in &mut scene.meshes {
                                 for (channel, tint_channel) in
                                     mesh.material.diffuse_color.iter_mut().zip(tint)
@@ -878,7 +974,7 @@ fn advance_runtime_unit(
                         "hair",
                         tex_provider,
                         mat_provider,
-                        tint.is_some().then_some(&mut apply_hair_tint),
+                        (fallout_mask || tint.is_some()).then_some(&mut apply_hair_tint),
                     );
                 }
             }
@@ -1210,34 +1306,59 @@ fn spawn_runtime_head(
                     None
                 }
             });
-    let mut hook_state = match (recipe, egm_file.as_ref()) {
-        (Some(recipe), Some(egm)) => Some((egm, recipe.fggs, recipe.fgga, npc.form_id)),
+    // The EGM deltas are in Gamebyro's Z-up frame, but the importer converts
+    // every NiTriShape vertex to Y-up (`zup_point_to_yup`) before this hook
+    // sees it. Adding them raw applied forward/back deltas as up/down — most
+    // visibly across the nose, the most heavily morphed region.
+    let yup_morphs = egm_file.as_ref().map(|egm| {
+        (
+            yup_egm_morphs(&egm.fggs_morphs),
+            yup_egm_morphs(&egm.fgga_morphs),
+        )
+    });
+    let mut hook_state = match (recipe, egm_file.as_ref(), yup_morphs.as_ref()) {
+        (Some(recipe), Some(egm), Some(morphs)) => {
+            Some((egm, morphs, recipe.fggs, recipe.fgga, npc.form_id))
+        }
         _ => None,
     };
-    let has_hook = hook_state.is_some();
+    // The race / gender head texture replaces the head NIF's own base
+    // texture, which is the male default: FO3 / FNV female heads otherwise
+    // rendered with male skin against a female body, the worst of the neck
+    // seams.
+    let head_texture = state.head_texture.as_ref().map(|texture| {
+        let mut pool = world.resource_mut::<StringPool>();
+        pool.intern(texture)
+    });
+    // Seam blending runs after the morph, on the head as it will render.
+    let seam_context = state.seam_context.clone();
+    let own_head_texture = state.head_texture.clone();
+    let mut tone_sampler = super::seam_blend::ToneSampler::new(tex_provider);
+    let has_hook = hook_state.is_some() || head_texture.is_some() || seam_context.is_some();
     let mut hook = |scene: &mut byroredux_nif::import::ImportedScene| {
-        let Some((egm, fggs, fgga, form_id)) = hook_state.take() else {
-            return;
-        };
-        let mut deformed_meshes = 0;
-        for mesh in &mut scene.meshes {
-            if mesh.positions.is_empty() {
-                continue;
+        if let Some(texture) = head_texture {
+            for mesh in &mut scene.meshes {
+                mesh.material.textures.base_color = Some(texture);
             }
-            let after_sym =
-                byroredux_facegen::apply_morphs(&mesh.positions, &egm.fggs_morphs, &fggs);
-            mesh.positions = byroredux_facegen::apply_morphs(&after_sym, &egm.fgga_morphs, &fgga);
-            deformed_meshes += 1;
         }
-        log::debug!(
-            "M41.0 Phase 3b/3c: NPC {:08X} applied FGGS+FGGA morphs to {} head mesh(es) \
-             (EGM {} verts × {} sym + {} asym; best-effort prefix until Phase 3b.x parses .tri remap)",
-            form_id,
-            deformed_meshes,
-            egm.num_vertices,
-            egm.fggs_morphs.len(),
-            egm.fgga_morphs.len(),
-        );
+        apply_head_morphs(scene, hook_state.take());
+        if let Some(context) = seam_context.as_deref() {
+            for mesh in &mut scene.meshes {
+                let stats = super::seam_blend::blend_part_seams(
+                    mesh,
+                    head_path,
+                    own_head_texture.as_deref(),
+                    context,
+                    &mut |texture, uv| tone_sampler.sample(texture, uv),
+                );
+                log::debug!(
+                    "NPC {:08X}: head seam blend matched {} edge vertices, toned {}",
+                    npc.form_id,
+                    stats.matched_vertices,
+                    stats.toned_vertices,
+                );
+            }
+        }
     };
     let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
         if has_hook { Some(&mut hook) } else { None };
@@ -1257,10 +1378,55 @@ fn spawn_runtime_head(
     }
 }
 
+/// Apply the NPC's FaceGen FGGS / FGGA morphs to every head mesh.
+fn apply_head_morphs(
+    scene: &mut byroredux_nif::import::ImportedScene,
+    morphs: Option<(
+        &byroredux_facegen::EgmFile,
+        &(
+            Vec<byroredux_facegen::EgmMorph>,
+            Vec<byroredux_facegen::EgmMorph>,
+        ),
+        [f32; 50],
+        [f32; 30],
+        u32,
+    )>,
+) {
+    let Some((egm, (fggs_morphs, fgga_morphs), fggs, fgga, form_id)) = morphs else {
+        return;
+    };
+    let mut deformed_meshes = 0;
+    for mesh in &mut scene.meshes {
+        if mesh.positions.is_empty() {
+            continue;
+        }
+        let after_sym = byroredux_facegen::apply_morphs(&mesh.positions, fggs_morphs, &fggs);
+        mesh.positions = byroredux_facegen::apply_morphs(&after_sym, fgga_morphs, &fgga);
+        deformed_meshes += 1;
+    }
+    log::debug!(
+            "M41.0 Phase 3b/3c: NPC {:08X} applied FGGS+FGGA morphs to {} head mesh(es) \
+             (EGM {} verts × {} sym + {} asym; best-effort prefix until Phase 3b.x parses .tri remap)",
+            form_id,
+            deformed_meshes,
+            egm.num_vertices,
+            egm.fggs_morphs.len(),
+            egm.fgga_morphs.len(),
+        );
+}
+
+/// Whether a body-part NIF is a hand (`lefthand.nif`, `femalerighthand.nif`,
+/// …), whose wrist cut the seam pass blends.
+fn is_hand_part(path: &str) -> bool {
+    path.rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|file| file.to_ascii_lowercase().contains("hand"))
+}
+
 /// Resolve the shared humanoid head node used by the classic runtime-hair
 /// assets. `Bip01 Head` is the vanilla FO3/FNV spelling; the alternate name
 /// keeps the mount compatible with later Creation skeleton conventions.
-fn shared_hair_mount(
+fn shared_head_mount(
     skeleton: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
 ) -> Option<EntityId> {
     ["Bip01 Head", "NPC Head [Head]"]
@@ -1302,23 +1468,258 @@ fn spawn_shared_skeleton_part(
         pre_spawn,
     );
     if let Some(root) = root {
-        // Fallout 3 / New Vegas hair NIFs are ordinary, unskinned meshes.
-        // Their vertices are authored around the head but their sole Scene
-        // Root sits at actor-local origin, so only that format mounts beneath
-        // the shared head bone. Oblivion hair has its own actor-space root
-        // transform; applying the head's rotated basis again turns it 90°.
-        // Body and head NIFs remain placement-root children because their
-        // skin palettes already resolve against the shared skeleton.
-        let mount = if label == "hair" && state.hair_uses_head_bone_mount {
-            shared_hair_mount(&state.skel_map).unwrap_or(state.placement_root)
-        } else {
-            state.placement_root
-        };
-        parent_part(world, mount, root);
+        // Fallout 3 / New Vegas head parts — hair, brows, eyes, mouth,
+        // teeth, tongue — are unskinned meshes whose vertices sit around the
+        // head pivot in the *actor's* axes (measured: `hairmessy02.nif`
+        // X/Z ±8, Y 0..16; `eyelefthuman.nif` 6-8 above the pivot, in front).
+        // They mount beneath the shared head bone, which supplies the head
+        // position and follows head animation. Oblivion head parts carry
+        // their own actor-space placement and stay on the placement root, as
+        // do skinned parts (body, head), whose palettes already resolve
+        // against the shared skeleton.
+        let head = (state.head_parts_use_head_bone_mount
+            && HEAD_MOUNTED_PART_LABELS.contains(&label)
+            && !subtree_has_skinned_mesh(world, root))
+        .then(|| shared_head_mount(&state.skel_map))
+        .flatten();
+        match head {
+            Some(head) => {
+                // `Bip01 Head`'s bind basis is rotated 90° (its local X points
+                // up). Eye / mouth / teeth roots author the inverse of that
+                // basis themselves; hair and brow roots are identity. Setting
+                // the root to the inverse head bind rotation serves both, so
+                // every part keeps the actor's axes at bind pose while still
+                // inheriting head animation.
+                if let Some(bind) = bind_transform_relative_to(world, head, state.placement_root) {
+                    align_part_root_to_actor_axes(world, root, bind);
+                }
+                parent_part(world, head, root);
+            }
+            None => parent_part(world, state.placement_root, root),
+        }
     }
 }
 
-fn hair_uses_head_bone_mount(game: GameKind) -> bool {
+/// Resolve everything the head / hand seam passes need while the world is
+/// still reachable: the skeleton's bind transforms (relative to the
+/// placement root, read before any animation attaches) and the skin meshes
+/// of every body and armour NIF this actor will wear, with their resolved
+/// diffuse textures. Neighbour scenes come from the shared import cache, or
+/// a parse that is not inserted (`peek_or_parse_scene`), so spawn order —
+/// the outfit loads after the head — does not matter.
+fn build_seam_context(
+    state: &RuntimeNpcState,
+    world: &mut World,
+    tex_provider: &TextureProvider,
+) -> super::seam_blend::SeamContext {
+    let mut context = super::seam_blend::SeamContext::default();
+    for (name, &bone) in &state.skel_map {
+        if let Some(bind) = bind_transform_relative_to(world, bone, state.placement_root) {
+            context.bone_binds.insert(
+                name.to_ascii_lowercase(),
+                byroredux_core::math::Mat4::from_scale_rotation_translation(
+                    Vec3::splat(bind.scale),
+                    bind.rotation,
+                    bind.translation,
+                ),
+            );
+        }
+    }
+    let sources = state
+        .body_paths
+        .iter()
+        .chain(state.armor.iter().map(|armor| &armor.model_path));
+    for path in sources {
+        let Some(scene) = crate::scene::peek_or_parse_scene(world, path, tex_provider) else {
+            continue;
+        };
+        let source = path.to_ascii_lowercase();
+        let pool = world.resource::<StringPool>();
+        for (index, mesh) in scene.meshes.iter().enumerate() {
+            let Some(texture) = mesh
+                .material
+                .textures
+                .base_color
+                .and_then(|symbol| pool.resolve(symbol))
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if let Some(neighbor) =
+                super::seam_blend::neighbor_from_mesh(mesh, &source, &texture, &context.bone_binds)
+            {
+                context.neighbors.push(neighbor);
+            }
+            context.textures.insert((source.clone(), index), texture);
+        }
+    }
+    log::debug!(
+        "seam context: {} of {} skeleton bones bound, {} skin neighbour mesh(es): {:?}",
+        context.bone_binds.len(),
+        state.skel_map.len(),
+        context.neighbors.len(),
+        context
+            .neighbors
+            .iter()
+            .map(|n| (
+                n.source.rsplit('\\').next().unwrap_or(""),
+                n.positions.len()
+            ))
+            .collect::<Vec<_>>(),
+    );
+    context
+}
+
+/// `spawn_shared_skeleton_part` labels for the unskinned FO3 / FNV head parts
+/// that mount beneath the shared head bone.
+const HEAD_MOUNTED_PART_LABELS: [&str; 4] = ["hair", "eyebrow HDPT", "eye mesh", "head sub-part"];
+
+/// Whether any entity in `root`'s subtree carries a skinned mesh.
+fn subtree_has_skinned_mesh(world: &World, root: EntityId) -> bool {
+    let (Some(skinned), children) = (
+        world.query::<byroredux_core::ecs::SkinnedMesh>(),
+        world.query::<byroredux_core::ecs::Children>(),
+    ) else {
+        return false;
+    };
+    let mut guard =
+        byroredux_core::ecs::HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![root];
+    while let Some(entity) = stack.pop() {
+        if !seen.insert(entity) {
+            continue;
+        }
+        if !guard.step() {
+            break;
+        }
+        if skinned.get(entity).is_some() {
+            return true;
+        }
+        if let Some(kids) = children.as_ref().and_then(|q| q.get(entity)) {
+            stack.extend(kids.0.iter().copied());
+        }
+    }
+    false
+}
+
+/// `entity`'s bind-pose transform expressed in `ancestor`'s space, composed
+/// from the local `Transform`s along the `Parent` chain. `None` if `ancestor`
+/// is not reached or a link has no `Transform`. Read during spawn, before the
+/// actor's animation player attaches, so the locals are still the skeleton
+/// NIF's rest pose.
+fn bind_transform_relative_to(
+    world: &World,
+    entity: EntityId,
+    ancestor: EntityId,
+) -> Option<Transform> {
+    let transforms = world.query::<Transform>()?;
+    let parents = world.query::<Parent>()?;
+    let mut guard =
+        byroredux_core::ecs::HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
+    let mut relative = *transforms.get(entity)?;
+    let mut cursor = parents.get(entity)?.0;
+    while cursor != ancestor {
+        if !guard.step() {
+            return None;
+        }
+        let parent = transforms.get(cursor)?;
+        relative = Transform::new(
+            parent.translation + parent.rotation * (relative.translation * parent.scale),
+            parent.rotation * relative.rotation,
+            parent.scale * relative.scale,
+        );
+        cursor = parents.get(cursor)?.0;
+    }
+    Some(relative)
+}
+
+/// Set `part_root`'s rotation to the inverse of `bind`'s and divide out its
+/// scale, so a part authored in the placement root's axes and parented under
+/// a bone whose bind transform is `bind` keeps those axes at bind pose. The
+/// authored root rotation is replaced, not composed: on FO3 / FNV head parts
+/// it is either identity (hair, brows) or already this same inverse (eyes,
+/// mouth, teeth), so composing would double-cancel the latter. The authored
+/// translation is kept as an offset in the placement root's axes.
+fn align_part_root_to_actor_axes(world: &mut World, part_root: EntityId, bind: Transform) {
+    let inverse_rotation = bind.rotation.inverse();
+    let inverse_scale = if bind.scale.abs() > f32::EPSILON {
+        1.0 / bind.scale
+    } else {
+        1.0
+    };
+    if let Some(mut transforms) = world.query_mut::<Transform>() {
+        if let Some(local) = transforms.get_mut(part_root) {
+            *local = Transform::new(
+                inverse_rotation * (local.translation * inverse_scale),
+                inverse_rotation,
+                inverse_scale * local.scale,
+            );
+        }
+    }
+}
+
+/// The FO3 / FNV `HairTint` lighting-shader tint factor for one vertex.
+///
+/// Decoded from the shipped pixel shaders (`shaderpackage003.sdp`
+/// `SM3002.pso` and its `HairTint` siblings, identical in both games):
+///
+/// ```text
+/// add r1.xyz, r0.x(-0.5), c2(HairTint)   ; HairTint - 0.5
+/// mad r1.xyz, v0.y, r1, 0.5              ; lerp(0.5, HairTint, vertexColor.g)
+/// add r1.xyz, r1, r1                     ; x2
+/// mul r1.xyz, r1, layered_diffuse
+/// ```
+///
+/// So the vertex colour's green channel masks the tint, 0.5 is neutral and
+/// the result is an x2 overlay — the other vertex-colour channels are not a
+/// colour at all (the vanilla hair meshes author R 0.3-0.55, G = B = 1).
+fn fallout_hair_tint_factor(hair_tint: [f32; 3], mask: f32) -> [f32; 3] {
+    hair_tint.map(|channel| 2.0 * (0.5 + mask * (channel - 0.5)))
+}
+
+/// Replace each Fallout hair mesh's vertex colours (a tint mask the lit
+/// path would otherwise multiply into the albedo, turning hair teal) with
+/// the per-vertex [`fallout_hair_tint_factor`], which the lit path's
+/// `albedo *= vertexColor` then applies exactly. A mesh without vertex
+/// colours reads as an all-white mask, as a missing colour stream does in
+/// Gamebryo. Without an authored HCLR the tint is the neutral 0.5 — an
+/// engine choice, not a measured FO3 default — which leaves the texture as
+/// authored.
+fn bake_fallout_hair_tint(
+    meshes: &mut [byroredux_nif::import::ImportedMesh],
+    hair_tint: Option<[f32; 3]>,
+) {
+    let tint = hair_tint.unwrap_or([0.5; 3]);
+    for mesh in meshes {
+        if mesh.colors.len() != mesh.positions.len() {
+            mesh.colors = vec![[1.0; 4]; mesh.positions.len()];
+        }
+        for color in &mut mesh.colors {
+            let [r, g, b] = fallout_hair_tint_factor(tint, color[1]);
+            *color = [r, g, b, color[3]];
+        }
+    }
+}
+
+/// Convert parsed EGM morphs from Gamebyro's Z-up frame into the importer's
+/// Y-up vertex frame, with the same mapping the NIF importer applies to the
+/// base vertices they deform.
+fn yup_egm_morphs(morphs: &[byroredux_facegen::EgmMorph]) -> Vec<byroredux_facegen::EgmMorph> {
+    morphs
+        .iter()
+        .map(|morph| byroredux_facegen::EgmMorph {
+            scale: morph.scale,
+            deltas: morph
+                .deltas
+                .iter()
+                .map(|&delta| byroredux_core::math::coord::zup_to_yup_pos(delta))
+                .collect(),
+        })
+        .collect()
+}
+
+fn head_parts_use_head_bone_mount(game: GameKind) -> bool {
     matches!(game, GameKind::Fallout3NV)
 }
 
@@ -1685,19 +2086,230 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shared_hair_mount_resolves_classic_head_case_insensitively() {
+    fn shared_head_mount_resolves_classic_head_case_insensitively() {
         let mut world = World::new();
         let head = world.spawn();
         let skeleton =
             std::collections::HashMap::from([(std::sync::Arc::<str>::from("bIp01 hEaD"), head)]);
-        assert_eq!(shared_hair_mount(&skeleton), Some(head));
+        assert_eq!(shared_head_mount(&skeleton), Some(head));
+    }
+
+    /// Regression: FO3/FNV hair was parented under `Bip01 Head` with the
+    /// bone's full bind basis, which the vanilla skeleton rotates 90° about
+    /// the vertical axis (measured on FO3 `skeleton.nif`: head at Y 112.8,
+    /// 90° about +Y in engine space). Hair meshes are authored in the
+    /// actor's axes around the head pivot, so the hair rendered rotated 90°
+    /// and dropped onto the neck. The mount must cancel the bind rotation.
+    #[test]
+    fn head_mounted_hair_keeps_actor_axes_at_the_head_pivot() {
+        use byroredux_core::ecs::{Children, GlobalTransform};
+        use byroredux_core::math::{Quat, Vec3};
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<Parent>();
+        world.register::<Children>();
+
+        let placement = world.spawn();
+        let placement_rotation = Quat::from_rotation_y(0.6);
+        world.insert(
+            placement,
+            Transform::new(Vec3::new(500.0, 20.0, -300.0), placement_rotation, 1.0),
+        );
+        let spine = world.spawn();
+        world.insert(
+            spine,
+            Transform::new(Vec3::new(0.0, 90.0, 0.0), Quat::from_rotation_z(0.4), 1.0),
+        );
+        world.insert(spine, Parent(placement));
+        add_child(&mut world, placement, spine);
+        let head = world.spawn();
+        world.insert(
+            head,
+            Transform::new(
+                Vec3::new(0.0, 22.8, 0.0),
+                Quat::from_rotation_z(-0.4) * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                1.0,
+            ),
+        );
+        world.insert(head, Parent(spine));
+        add_child(&mut world, spine, head);
+        let hair = world.spawn();
+        world.insert(hair, Transform::IDENTITY);
+
+        let bind =
+            bind_transform_relative_to(&world, head, placement).expect("head reaches placement");
+        align_part_root_to_actor_axes(&mut world, hair, bind);
+        world.insert(hair, Parent(head));
+        add_child(&mut world, head, hair);
+        for entity in [placement, spine, head, hair] {
+            world.insert(entity, GlobalTransform::IDENTITY);
+        }
+        byroredux_core::ecs::make_transform_propagation_system()(&world, 0.0);
+
+        let placement_global = *world.get::<GlobalTransform>(placement).unwrap();
+        let head_global = *world.get::<GlobalTransform>(head).unwrap();
+        let hair_global = *world.get::<GlobalTransform>(hair).unwrap();
+        assert!(
+            hair_global
+                .rotation
+                .angle_between(placement_global.rotation)
+                < 1.0e-4,
+            "hair must keep the actor's axes, not the head bone's rotated basis"
+        );
+        assert!((hair_global.translation - head_global.translation).length() < 1.0e-3);
+        // Without the counter-rotation the hair inherits the 90° bind basis.
+        assert!(
+            head_global
+                .rotation
+                .angle_between(placement_global.rotation)
+                > 1.0
+        );
+
+        // Eyes / mouth / teeth author the inverse head basis on their own
+        // root. Replacing (not composing) keeps them in the actor's axes too.
+        let eye = world.spawn();
+        world.insert(
+            eye,
+            Transform::new(Vec3::ZERO, bind.rotation.inverse(), 1.0),
+        );
+        world.insert(eye, GlobalTransform::IDENTITY);
+        align_part_root_to_actor_axes(&mut world, eye, bind);
+        world.insert(eye, Parent(head));
+        add_child(&mut world, head, eye);
+        byroredux_core::ecs::make_transform_propagation_system()(&world, 0.0);
+        let eye_global = *world.get::<GlobalTransform>(eye).unwrap();
+        assert!(
+            eye_global.rotation.angle_between(placement_global.rotation) < 1.0e-4,
+            "a root that already cancels the head basis must not be cancelled twice"
+        );
+    }
+
+    /// Regression: FO3 / FNV female heads rendered with the head NIF's male
+    /// default skin against a female body. The race `ICON` for the head role
+    /// is selected per gender; Oblivion's untagged entry serves both.
+    #[test]
+    fn head_texture_follows_the_race_icon_for_the_actors_gender() {
+        let fallout = RaceRecord {
+            head_part_textures: vec![
+                (0, "Characters\\Male\\HeadHuman.dds".into(), Some(0)),
+                (1, "Characters\\Head\\EarsHuman.dds".into(), Some(0)),
+                (0, "Characters\\Female\\HeadHuman.dds".into(), Some(1)),
+            ],
+            ..Default::default()
+        };
+        let head = |race: &RaceRecord, game, tag| {
+            head_part_texture(race, game, head_part::Role::Head, tag)
+        };
+        assert_eq!(
+            head(&fallout, GameKind::Fallout3NV, 1).as_deref(),
+            Some("Characters\\Female\\HeadHuman.dds")
+        );
+        assert_eq!(
+            head(&fallout, GameKind::Fallout3NV, 0).as_deref(),
+            Some("Characters\\Male\\HeadHuman.dds")
+        );
+        let oblivion = RaceRecord {
+            head_part_textures: vec![(0, "Characters\\Imperial\\HeadHuman.dds".into(), None)],
+            ..Default::default()
+        };
+        for tag in [0, 1] {
+            assert_eq!(
+                head(&oblivion, GameKind::Oblivion, tag).as_deref(),
+                Some("Characters\\Imperial\\HeadHuman.dds")
+            );
+        }
+    }
+
+    /// The FO3 / FNV `HairTint` shader formula (`2 * lerp(0.5, tint, mask)`).
+    #[test]
+    fn fallout_hair_tint_is_a_masked_x2_overlay_around_neutral_grey() {
+        // Neutral HairTint leaves the texture as authored.
+        assert_eq!(fallout_hair_tint_factor([0.5; 3], 1.0), [1.0; 3]);
+        // A masked-out vertex ignores the tint entirely.
+        assert_eq!(fallout_hair_tint_factor([0.9, 0.1, 0.3], 0.0), [1.0; 3]);
+        // MegatonMoriartysCustomer01's HCLR (7, 6, 5): twice the plain
+        // multiply the old path applied.
+        let tint = [7.0 / 255.0, 6.0 / 255.0, 5.0 / 255.0];
+        let factor = fallout_hair_tint_factor(tint, 1.0);
+        for (f, t) in factor.iter().zip(tint) {
+            assert!((f - 2.0 * t).abs() < 1.0e-6);
+        }
+    }
+
+    /// Regression: FO3 hair rendered teal. Its vertex colours are a tint mask
+    /// (measured on `hairmessy02.nif`: R 0.30-0.55, G = B = 1), which the lit
+    /// path multiplied into the albedo as a colour. The bake replaces them
+    /// with the shader's per-vertex tint factor, which is grey for a grey
+    /// HCLR regardless of the mask's other channels.
+    #[test]
+    fn fallout_hair_bake_replaces_the_mask_colours_with_the_tint_factor() {
+        use byroredux_nif::import::ImportedMesh;
+        let mesh = |positions: usize, colors: Vec<[f32; 4]>| {
+            ImportedMesh::from_geometry(
+                vec![[0.0; 3]; positions],
+                colors,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        };
+        let mut meshes = vec![
+            mesh(2, vec![[0.3, 1.0, 1.0, 1.0], [0.55, 1.0, 1.0, 0.5]]),
+            mesh(3, Vec::new()),
+        ];
+        bake_fallout_hair_tint(&mut meshes, Some([0.25; 3]));
+        assert_eq!(
+            meshes[0].colors,
+            vec![[0.5, 0.5, 0.5, 1.0], [0.5, 0.5, 0.5, 0.5]]
+        );
+        assert_eq!(meshes[1].colors, vec![[0.5, 0.5, 0.5, 1.0]; 3]);
+
+        let mut neutral = vec![mesh(1, vec![[0.3, 1.0, 1.0, 1.0]])];
+        bake_fallout_hair_tint(&mut neutral, None);
+        assert_eq!(neutral[0].colors, vec![[1.0, 1.0, 1.0, 1.0]]);
+    }
+
+    /// Regression: FaceGen noses rendered broken. EGM deltas are Z-up (as
+    /// authored), the importer's head vertices are Y-up, and the deltas were
+    /// added raw — so a Gamebyro up/down delta moved vertices forward/back and
+    /// vice versa. They must go through the importer's own mapping first.
+    #[test]
+    fn egm_deltas_are_applied_in_the_imported_vertex_frame() {
+        use byroredux_core::math::coord::zup_to_yup_pos;
+        let morph = |delta: [f32; 3]| byroredux_facegen::EgmMorph {
+            scale: 1.0,
+            deltas: vec![delta],
+        };
+        // A vertex imported from Gamebyro (1, 2, 3).
+        let base = [zup_to_yup_pos([1.0, 2.0, 3.0])];
+        for delta in [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [0.5, -0.25, 2.0]] {
+            let morphs = yup_egm_morphs(&[morph(delta)]);
+            let got = byroredux_facegen::apply_morphs(&base, &morphs, &[1.0])[0];
+            // Same result as morphing in Gamebyro space, then importing.
+            let want = zup_to_yup_pos([1.0 + delta[0], 2.0 + delta[1], 3.0 + delta[2]]);
+            for (g, w) in got.iter().zip(want) {
+                assert!(
+                    (g - w).abs() < 1.0e-6,
+                    "delta {delta:?}: {got:?} vs {want:?}"
+                );
+            }
+        }
+        // Gamebyro up (+Z) is engine up (+Y).
+        let up = byroredux_facegen::apply_morphs(
+            &base,
+            &yup_egm_morphs(&[morph([0.0, 0.0, 1.0])]),
+            &[1.0],
+        )[0];
+        assert!(up[1] > base[0][1]);
     }
 
     #[test]
     fn only_fallout_runtime_hair_uses_the_shared_head_bone_basis() {
-        assert!(hair_uses_head_bone_mount(GameKind::Fallout3NV));
-        assert!(!hair_uses_head_bone_mount(GameKind::Oblivion));
-        assert!(!hair_uses_head_bone_mount(GameKind::Skyrim));
+        assert!(head_parts_use_head_bone_mount(GameKind::Fallout3NV));
+        assert!(!head_parts_use_head_bone_mount(GameKind::Oblivion));
+        assert!(!head_parts_use_head_bone_mount(GameKind::Skyrim));
     }
 
     #[test]

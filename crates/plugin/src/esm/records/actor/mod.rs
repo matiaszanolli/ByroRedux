@@ -542,6 +542,16 @@ pub struct RaceRecord {
     /// stays a flat append-ordered list of every `MODL` in the record
     /// and therefore also carries `.egt` texture paths.
     pub head_parts: Vec<(u32, String, Option<u8>)>,
+    /// Head-section `ICON` texture per head part: `(INDX, path, gender
+    /// section)`, the same shape as [`Self::head_parts`]. Each part's `ICON`
+    /// follows its `MODL` under the same `INDX` (measured on FO3
+    /// `Caucasian`: `INDX 0` → `MODL Characters\Head\HeadOld.NIF` →
+    /// `ICON Characters\Old\HeadHuman.dds`; the female section's head
+    /// names `Characters\OldFemale\HeadHuman.dds`), and an ear slot may
+    /// author an `ICON` with no `MODL`. This is the race / gender base skin
+    /// texture for the head — the head NIF's own texture is the male
+    /// default, so without it female heads rendered with male skin.
+    pub head_part_textures: Vec<(u32, String, Option<u8>)>,
     /// Default body height per gender, from DATA — `(male, female)`.
     /// Vanilla values run ~0.8..1.2 (Skyrim `NordRace` is 1.03; FO4
     /// `HumanChildRace` is 0.825). Decoded for Oblivion / FO3 / FNV
@@ -1461,6 +1471,7 @@ pub fn parse_race(
         body_models: Vec::new(),
         skeleton_models: Default::default(),
         head_parts: Vec::new(),
+        head_part_textures: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
         race_flags: 0,
@@ -1503,6 +1514,10 @@ pub fn parse_race(
     // author neither marker (none in vanilla, but a mod could) keep
     // the pre-#3419 behaviour of treating everything as head data.
     let mut pending_indx: Option<u32> = None;
+    // The head-part `INDX` a following `ICON` belongs to. Unlike
+    // `pending_indx` it survives the part's `MODL`, which precedes the
+    // `ICON`, and covers ICON-only slots (the FO3 / FNV ear).
+    let mut icon_indx: Option<u32> = None;
     let mut gender_section: Option<u8> = None;
     let mut in_head_section = true;
     let mut in_skeleton_section = true;
@@ -1665,6 +1680,14 @@ pub fn parse_race(
             // spawner can pick gender-appropriate variants.
             b"INDX" if sub.data.len() >= 4 => {
                 pending_indx = Some(SubReader::new(&sub.data).u32_or_default());
+                icon_indx = pending_indx;
+            }
+            b"ICON" if in_head_section => {
+                if let Some(idx) = icon_indx.take() {
+                    record
+                        .head_part_textures
+                        .push((idx, read_zstring(&sub.data), gender_section));
+                }
             }
             b"MNAM" => {
                 gender_section = Some(0); // Male
@@ -1689,6 +1712,7 @@ pub fn parse_race(
                 in_head_section = true;
                 gender_section = None;
                 pending_indx = None;
+                icon_indx = None;
             }
             // Body-data marker: closes the head section. Its INDX run
             // restarts at 0 for a different vocabulary (upper body /
@@ -1699,6 +1723,7 @@ pub fn parse_race(
                 in_head_section = false;
                 gender_section = None;
                 pending_indx = None;
+                icon_indx = None;
             }
             b"MODL" => {
                 let path = read_zstring(&sub.data);
