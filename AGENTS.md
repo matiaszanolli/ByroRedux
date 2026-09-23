@@ -150,7 +150,8 @@ crates/
       descriptors.rs         write_ao_texture / geometry_buffers / cluster_buffers / tlas + destroy
     src/vulkan/gbuffer.rs    GBuffer — normal, motion vector, mesh ID, raw indirect, albedo attachments
     src/vulkan/svgf.rs       SvgfPipeline — temporal accumulation denoiser for indirect lighting
-    src/vulkan/composite.rs  CompositePipeline — direct + denoised indirect reassembly, ACES tone mapping
+    src/vulkan/composite.rs  CompositePipeline — direct + denoised indirect + caustics + volumetrics reassembly, linear HDR out (tone map lives in presentation.rs)
+    src/vulkan/presentation.rs Presentation pass — output-res tonemap(graded × exposureTex), ACES|AgX switch, underwater extinction, swapchain write
     src/vulkan/ssao.rs       SSAO compute pipeline (noise texture, kernel, screen-space AO)
     src/vulkan/descriptors.rs Descriptor set/pool management
     src/vulkan/compute.rs    Compute pipeline utilities
@@ -163,7 +164,8 @@ crates/
       triangle.vert/frag     Main geometry pass — PBR + RT ray queries (shadows, reflections, GI)
       svgf_temporal.comp     SVGF temporal accumulation with motion vector reprojection
       taa.comp               TAA resolve (Halton jitter + YCoCg variance clamp, M37.5)
-      composite.vert/frag    Fullscreen quad — direct + denoised indirect + ACES tone mapping
+      composite.vert/frag    Fullscreen quad — direct + denoised indirect + caustics + volumetrics, linear HDR out (bloom + tone map live downstream)
+      presentation.frag      Output-resolution presentation — exposure × tonemap (ACES|AgX) + underwater extinction → swapchain
       ssao.comp              Screen-space ambient occlusion compute
       cluster_cull.comp      Clustered lighting frustum assignment
       skin_vertices.comp     GPU pre-skinning (M29)
@@ -171,6 +173,8 @@ crates/
       caustic_splat.comp     Caustic splat compute (water under-side lighting)
       volumetrics_inject.comp / _integrate.comp  Volumetric froxel grid (M55)
       bloom_downsample.comp / _upsample.comp     Bloom pyramid (M58)
+      bloom_apply.comp       Adds the bloom pyramid's top mip back into composite's HDR output, in place (after composite)
+      exposure_meter.comp    Stage-1 auto-exposure meter — EV100 average + per-FIF adaptation, 1×1 exposure texel
       ui.vert/frag           UI overlay (Scaleform/SWF)
   bsa/                       BSA + BA2 archive readers (Bethesda Softworks Archive)
     src/archive/             BsaArchive: BSA v103/v104/v105 (Oblivion → Skyrim SE)

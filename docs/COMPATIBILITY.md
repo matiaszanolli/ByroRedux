@@ -126,12 +126,12 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 
 | ✔ | Feature | Original baseline | Notes |
 |:-:|---------|-------------------|-------|
-| `[x]` | ACES tone mapping | Reinhard-ish / none | Composite pass |
+| `[x]` | ACES tone mapping | Reinhard-ish / none | Output-resolution presentation pass (`presentation.frag`), after upscaling; ACES\|AgX switch |
 | `[x]` | **TAA** | FXAA (Skyrim) / TAA (FO4) | Halton(2,3) jitter + YCoCg variance clamp + mesh-ID disocclusion |
 | `[x]` | **FSR 3.1.4 upscaling** | ✖ 🔺 | Engine default at Quality; 4 presets, reactive + T&C masks, runtime `r.upscaler` switch |
 | `[x]` | FSR dispatch-failure fallback | ✖ | Falls back cleanly, telemetry-reported |
 | `[x]` | Bloom | Creation Engine bloom | Dual-filter downsample/upsample pyramid |
-| `[x]` | Fog — display-space blend | HDR-space fog | Fixed post-ACES (LIGHT-N2); removes interior yellow wash |
+| `[x]` | Fog blend | HDR-space fog | Physical froxel medium blended linear-HDR in `composite.frag`, pre-tonemap (LIGHT-N2, #784); removes interior yellow wash |
 | `[x]` | Motion vectors / G-buffer | — | Normal, motion, mesh-ID, albedo, raw indirect |
 | `[x]` | SSIM quality fence | ✖ 🔺 | 5 deterministic camera paths gate every upscaler preset |
 | `[~]` | Imagespace modifiers (IMGS) | Creation Engine IMAD/IMGS | Record dispatched; runtime application partial |

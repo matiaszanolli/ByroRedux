@@ -383,6 +383,13 @@ BYROREDUX_RENDER_DEBUG_MODE=volume   isolated raw integrated froxel field
 BYRO_BFECC=0                          plain semi-Lagrangian transport (A/B)
 ```
 
+An explicit `--froxel-xy-divisor` below what the device can store is raised to
+the smallest fitting value at pipeline init and on resize (#4781): the grid's
+X/Y are 3D-image dimensions bounded by `maxImageDimension3D` (2048 on Mesa ANV
+and lavapipe), not by the 2D limit the render extent is checked against. The
+default 8 already covers a 16384-wide render at that limit, so this only
+raises sub-8 divisors at very large render extents, with a warning.
+
 Example:
 
 ```bash

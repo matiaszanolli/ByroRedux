@@ -185,13 +185,16 @@ RT ray queries for shadows, reflections, and bounded material-aware
 path-traced GI) →
 `record_post_passes(...)`, which records, in fixed order per its own doc
 comment: water-caustic barrier → SVGF temporal + à-trous denoise →
-caustic splat → volumetrics → TAA resolve (FSR mode skips this) → SSAO →
-bloom → scene composition → frame upscale → presentation →
+caustic splat → volumetrics → SSAO → scene composition (linear HDR out —
+no tone map) → bloom (`bloom_apply.comp` adds the pyramid back in place
+after composite, #2796) → exposure meter → TAA resolve (the TAA pipeline
+is not created under `--upscaler fsr3`; FSR owns temporal reconstruction) →
+frame upscale → presentation →
 `queue_submit` → `queue_present`.
 
 Everything up to and including scene composition runs at **render**
 resolution; the upscale reconstructs to **output** resolution and
-presentation (exposure + ACES → swapchain) runs there. Under
+presentation (exposure + ACES|AgX → swapchain) runs there. Under
 `--upscaler taa` the two extents are equal and the upscale slot records a
 native blit, so the graph has one shape regardless of the selected
 upscaler.

@@ -392,6 +392,14 @@ which the boot log and a regression test both read):
 
 Formula: `ceil(width / 8) × ceil(height / 8) × 64 froxels × 44 B × 2 FIF`
 
+One device-limit wrinkle (#4781): the grid's X/Y are 3D-image dimensions,
+bounded by `maxImageDimension3D` (2048 on Mesa ANV and lavapipe), not by the
+2D limit the render extent itself is checked against. When an explicit
+`--froxel-xy-divisor` below what fits would create an over-limit image,
+`fit_froxel_divisor_to_device` raises the divisor to the smallest value whose
+grid fits (with a warning), so the tables above are ceilings on such devices —
+the default 8 already covers a 16384-wide render at a 2048 limit.
+
 | Render extent | Grid (W×H×64) | Froxels | Total (6 volumes, 2 FIF) |
 |---|---|---:|---:|
 | 1920×1080 | 240×135×64 | 2 073 600 | **~183 MB** |
@@ -420,8 +428,9 @@ was **~4.51 GB — over the ceiling before any content loaded** — at the previ
 Four of the six volumes — the three combustion transport fields and the
 emission-history sidecar — are allocated unconditionally with the pipeline
 (`context/mod.rs`), so they are resident in every session including scenes that
-never light a fire. That is 20 B of the 22 B/froxel/FIF that fog alone does not
-need: **~133 MB of the 183 MB at 1080p, ~531 MB of the 730 MB at native 4K.**
+never light a fire. That is 28 B of the 44 B/froxel/slot that fog alone does
+not need: **~116 MB of the 183 MB at 1080p, ~464 MB of the 730 MB at native
+4K.**
 
 The end state is to move them into local high-density volumes attached to the
 effect, which is where compact fire belongs anyway — advection is numerically

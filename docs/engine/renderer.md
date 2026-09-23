@@ -194,12 +194,20 @@ crates/renderer/src/vulkan/
 ├── water_caustic.rs    Per-FIF R32_UINT accumulator for water-side caustics
 │                       (#1255 / Phase C of #1210), cleared before the render pass
 ├── composite.rs        CompositePipeline — direct + denoised indirect +
-│                       caustic + volumetrics reassembly, ACES tone mapping
-│                       (bloom is added AFTER this pass, see bloom.rs)
+│                       caustic + volumetrics reassembly into render-res
+│                       linear HDR; no tone map here (presentation.rs owns
+│                       it) and no bloom (bloom_apply.comp adds it AFTER,
+│                       see bloom.rs)
 ├── ssao.rs             SSAO compute pipeline (noise texture, kernel)
 ├── bloom.rs            Bloom pyramid (M58) — separable down/up compute
 │                       passes plus bloom_apply.comp, which adds the result
 │                       to composite's HDR output in place, after composite
+├── exposure_meter.rs   Stage-1 auto-exposure meter — EV100 average of the
+│                       post-bloom scene, per-FIF adaptation, writes the
+│                       1×1 exposure texel FSR and presentation sample
+├── presentation.rs     Output-resolution presentation pass —
+│                       `tonemap(graded * exposureTex)` (ACES|AgX switch),
+│                       underwater extinction, swapchain write
 ├── volumetrics.rs      Froxel volumetric pipeline (M55) — 3D-texture
 │                       allocation + inject/integrate dispatch, output
 │                       consumed by composite
@@ -526,12 +534,14 @@ Located in [`vulkan/composite.rs`](../../crates/renderer/src/vulkan/composite.rs
 with `shaders/composite.vert` + `shaders/composite.frag`.
 
 Fullscreen scene-composition pass. Reads the direct HDR, the SVGF-denoised
-indirect, the albedo attachment, the glass and water caustic accumulators, and
-the bloom output; computes `direct + indirect * albedo + caustic + bloom`
-(re-applying the #268 demodulation invariant) into a render-resolution
-linear-HDR image. Upscaling/native resolve and the output-resolution
-presentation pass run afterward; presentation owns exposure, ACES tone
-mapping, and the swapchain write. The volumetric term is folded in via
+indirect, the albedo attachment, and the glass and water caustic accumulators;
+computes `direct + indirect * albedo + caustics` (re-applying the #268
+demodulation invariant) into a render-resolution linear-HDR image. Bloom is
+not part of that sum — since #2796 the pyramid runs after composite and
+`bloom_apply.comp` adds `up_mips[0]` back in place (see
+[Bloom](#bloom-m58)). Upscaling/native resolve and the output-resolution
+presentation pass run afterward; presentation owns the exposure tap, ACES|AgX
+tone mapping, and the swapchain write. The volumetric term is folded in via
 `combined = combined * vol.a + vol.rgb` (`VOLUMETRIC_OUTPUT_CONSUMED = true`):
 the M55 inject/integrate passes produce real scattering and composite
 consumes it every frame.
