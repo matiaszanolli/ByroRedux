@@ -33,42 +33,95 @@ fn collect_tmp_examples(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>
     }
 }
 
-/// #3749 (TD9-2026-08-30-01) — recursively collect every source file
-/// under `dir` whose bare `#[ignore]` line (no `= "reason"`) makes a gated
-/// test's skip condition undiscoverable without reading the function body.
-/// Only exact `#[ignore]` attribute lines count — doc-comment prose that
-/// merely *mentions* `` `#[ignore]` `` (there are ~20 of these, explaining
-/// the convention to a reader) is deliberately excluded by requiring the
-/// trimmed line to equal the attribute token itself, not just contain it.
-fn collect_bare_ignores(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, usize)>) {
+/// Visit every `.rs` file under `dir` with its contents, skipping `target/`
+/// (generated + vendored sources — build scripts, proc-macro expansions —
+/// that dwarf the real tree by orders of magnitude) and `.git/`.
+fn visit_workspace_rs_files(dir: &std::path::Path, visit: &mut dyn FnMut(&std::path::Path, &str)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries {
-        let path = entry.expect("ignore-reason guard: unreadable dir entry").path();
+        let path = entry
+            .expect("workspace hygiene scan: unreadable dir entry")
+            .path();
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            // `target/` holds generated + vendored sources (build scripts,
-            // proc-macro expansions) this guard has no business scanning,
-            // and it dwarfs the real tree by orders of magnitude.
             if name == "target" || name == ".git" {
                 continue;
             }
-            collect_bare_ignores(&path, out);
+            visit_workspace_rs_files(&path, visit);
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
             continue;
         }
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        for (idx, line) in contents.lines().enumerate() {
-            if line.trim() == "#[ignore]" {
-                out.push((path.clone(), idx + 1));
-            }
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            visit(&path, &contents);
         }
     }
+}
+
+/// #3749 (TD9-2026-08-30-01) — collect every source file line whose bare
+/// `#[ignore]` (no `= "reason"`) makes a gated test's skip condition
+/// undiscoverable without reading the function body. Only exact
+/// `#[ignore]` attribute lines count — doc-comment prose that merely
+/// *mentions* `` `#[ignore]` `` (there are ~20 of these, explaining the
+/// convention to a reader) is deliberately excluded by requiring the
+/// trimmed line to equal the attribute token itself, not just contain it.
+fn collect_bare_ignores(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, usize)>) {
+    visit_workspace_rs_files(dir, &mut |path, contents| {
+        for (idx, line) in contents.lines().enumerate() {
+            if line.trim() == "#[ignore]" {
+                out.push((path.to_path_buf(), idx + 1));
+            }
+        }
+    });
+}
+
+/// #4766 (TD9-2026-09-22-01) — collect every `#[test]` attribute line that
+/// follows another `#[test]` with only comments, blank lines or other
+/// attributes in between. That shape is what a new test inserted *between*
+/// an existing test's attribute and its `fn` produces: the new function
+/// gets two `#[test]`s (harmless) and the old one loses its attribute and
+/// silently leaves the test registry. rustc only warns
+/// (`duplicate_macro_attributes`), and the CI clippy gate never builds
+/// `#[cfg(test)]` code.
+fn collect_stacked_test_attributes(
+    dir: &std::path::Path,
+    out: &mut Vec<(std::path::PathBuf, usize)>,
+) {
+    visit_workspace_rs_files(dir, &mut |path, contents| {
+        let mut open_test_attribute = false;
+        for (idx, line) in contents.lines().enumerate() {
+            let line = line.trim();
+            if line == "#[test]" {
+                if open_test_attribute {
+                    out.push((path.to_path_buf(), idx + 1));
+                }
+                open_test_attribute = true;
+            } else if !(line.is_empty() || line.starts_with("//") || line.starts_with("#[")) {
+                open_test_attribute = false;
+            }
+        }
+    });
+}
+
+#[test]
+fn no_test_attribute_is_stacked_on_another() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    collect_stacked_test_attributes(&manifest.join(".."), &mut found);
+    assert!(
+        found.is_empty(),
+        "found {} `#[test]` attribute(s) stacked on another `#[test]` — the \
+         function that lost its attribute is no longer a test (#4766):\n{}",
+        found.len(),
+        found
+            .iter()
+            .map(|(p, line)| format!("{}:{line}", p.display()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
 }
 
 /// #3749 — the fix *is* the test: TD9-2026-08-30-01 found 80% of

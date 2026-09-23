@@ -292,10 +292,6 @@ mod tests {
         assert_eq!(auto_exposure(0.0, 0.0), MAX_AUTO_EXPOSURE);
     }
 
-    /// Adaptation: alpha(0) = 0 (a paused frame holds the previous exposure),
-    /// alpha grows monotonically with dt, saturates at 1, and a non-positive
-    /// time constant snaps.
-    #[test]
     /// #4590 — simulate the shader's actual update pattern: N per-FIF
     /// slots, each reading back ITS OWN texel N frames later with the
     /// host alpha computed over the slot interval (N x frame dt). The
@@ -344,6 +340,10 @@ mod tests {
         );
     }
 
+    /// Adaptation: alpha(0) = 0 (a paused frame holds the previous exposure),
+    /// alpha grows monotonically with dt, saturates at 1, and a non-positive
+    /// time constant snaps.
+    #[test]
     fn adaptation_alpha_is_a_saturating_ramp() {
         assert_eq!(adaptation_alpha(0.0, 0.2), 0.0);
         assert_eq!(adaptation_alpha(0.016, 0.0), 1.0);
