@@ -330,7 +330,6 @@
 #define WATER_LAVA 4u
 #define DEFAULT_WATER_WAVE_AMPLITUDE 0.05
 #define DEFAULT_WATER_WAVE_FREQUENCY 0.6
-#define STARFIELD_WATER_CONCENTRATION_REFERENCE 20.0
 #define WATER_COLUMN_ABSORPTION_SHAPE 2.0
 
 // BGEM v21+ glass neutral pivots — `triangle.frag` divides the

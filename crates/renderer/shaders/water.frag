@@ -532,15 +532,12 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist, bool cameraUnderwa
             - exp(-WATER_COLUMN_ABSORPTION_SHAPE))
         / (1.0 - exp(-WATER_COLUMN_ABSORPTION_SHAPE));
     vec3 authoredCoefficients = max(push.absorption.rgb, vec3(0.0));
-    // Starfield's authored concentrations increase the optical density of
-    // the corresponding water column without replacing its RGB palette.
-    // This preserves the zero sentinel and keeps legacy records unchanged.
-    vec3 pigmentConcentration = clamp(
-        max(push.concentration.rgb, vec3(0.0))
-            / STARFIELD_WATER_CONCENTRATION_REFERENCE,
-        vec3(0.0),
-        vec3(1.0)
-    );
+    // Canonical pigment fractions, 0..1 — #4285 normalized Starfield's
+    // authored concentrations (divided by its upper authoring bound) at
+    // the WATAL translate boundary, so the shader carries no per-game
+    // unit constant. Zero stays the legacy sentinel; pre-Starfield
+    // records are unchanged.
+    vec3 pigmentConcentration = clamp(push.concentration.rgb, vec3(0.0), vec3(1.0));
     float concentrationDensity = clamp(
         dot(pigmentConcentration, vec3(0.25, 0.50, 0.25))
             // Starfield's fourth concentration is "oceanness": unlike

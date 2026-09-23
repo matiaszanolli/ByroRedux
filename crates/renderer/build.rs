@@ -1171,11 +1171,6 @@ fn main() {
     .unwrap();
     writeln!(
         out,
-        "#define STARFIELD_WATER_CONCENTRATION_REFERENCE {STARFIELD_WATER_CONCENTRATION_REFERENCE:?}"
-    )
-    .unwrap();
-    writeln!(
-        out,
         "#define WATER_COLUMN_ABSORPTION_SHAPE {WATER_COLUMN_ABSORPTION_SHAPE:?}"
     )
     .unwrap();

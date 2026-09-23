@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use byroredux_core::ecs::components::groundcover::GroundCoverDimmer;
 use byroredux_core::ecs::components::water::{
     SubmersionState, WaterFlow, WaterKind, WaterMaterial,
+    STARFIELD_WATER_CONCENTRATION_REFERENCE,
 };
 use byroredux_plugin::esm;
 use byroredux_plugin::esm::cell::WorldspaceRecord;
@@ -819,9 +820,16 @@ fn resolve_water_noise_and_rain(rec: &esm::records::misc::WatrRecord, mat: &mut 
             *dst = src.clamp(0.01, 100_000.0);
         }
     }
+    // #4285 — Starfield's authored pigment concentrations (RGB lanes)
+    // are normalized to the canonical 0..1 pigment fraction HERE, at the
+    // WATAL translate boundary, not in `water.frag`: per-game unit
+    // conventions belong at the parser→canonical boundary. The fourth
+    // `oceanness` lane is authored natively in 0..1, so the division is
+    // a no-op for it in practice; the zero sentinel is preserved
+    // (0 / reference = 0).
     for (dst, src) in mat.concentration.iter_mut().zip(rec.params.concentration) {
         if src.is_finite() && src > 0.0 {
-            *dst = src;
+            *dst = (src / STARFIELD_WATER_CONCENTRATION_REFERENCE).clamp(0.0, 1.0);
         }
     }
 }
@@ -2811,7 +2819,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_water_material_carries_starfield_optical_controls_without_clamping() {
+    fn resolve_water_material_carries_starfield_optical_controls_with_canonical_concentration() {
         let rec = calm_watr(
             0x000A_0008,
             "StarfieldOcean",
@@ -2828,7 +2836,20 @@ mod tests {
         waters.insert(rec.form_id, rec);
         let (mat, _, _, _, _) = resolve_water_material(&waters, Some(0x000A_0008));
         assert_eq!(mat.absorption_coefficients, [0.16558, 0.09624, 0.07627]);
-        assert_eq!(mat.concentration, [8.840, 6.594, 4.710, 0.514]);
+        // #4285 — pigment concentrations are normalized to canonical 0..1
+        // fractions at this boundary (RGB lanes ÷ the Starfield authoring
+        // upper bound; the natively-0..1 `oceanness` lane passes through
+        // the same division unchanged up to float rounding). The shader no
+        // longer carries a per-game unit constant.
+        assert_eq!(
+            mat.concentration,
+            [
+                8.840 / 20.0,
+                6.594 / 20.0,
+                4.710 / 20.0,
+                0.514 / 20.0
+            ]
+        );
         assert_eq!(mat.noise_falloff, 300.0);
         assert_eq!(mat.normal_falloff, [0.9, 0.7, 0.8]);
         assert_eq!(mat.displacement, [0.05, 0.985, 10.0]);

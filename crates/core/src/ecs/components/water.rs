@@ -47,9 +47,13 @@ use crate::ecs::storage::{Component, EntityId};
 pub const DEFAULT_WATER_WAVE_AMPLITUDE: f32 = 0.05;
 pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 = 0.6;
 /// Upper bound authored by vanilla Starfield for each RGB water-column
-/// concentration lane. The shader normalizes pigment concentrations against
-/// this shared reference while preserving the fourth `oceanness` lane's
-/// native 0..1 scale.
+/// concentration lane. The WATAL translate boundary
+/// (`byroredux/src/env_translate.rs`) normalizes authored pigment
+/// concentrations against this shared reference into the canonical 0..1
+/// pigment fraction; the fourth `oceanness` lane is authored natively in
+/// 0..1 and passes through. #4285 moved this normalization out of
+/// `water.frag` — per-game unit conventions belong at the
+/// parser→canonical boundary, never in shader source.
 pub const STARFIELD_WATER_CONCENTRATION_REFERENCE: f32 = 20.0;
 
 /// Canonical half-width of the waterline acceptance/hysteresis band, in
@@ -316,7 +320,12 @@ pub struct WaterMaterial {
     /// scalar fog response unchanged.
     pub absorption_coefficients: [f32; 3],
     /// Starfield water-column concentrations: phytoplankton, sediment,
-    /// yellow matter, and oceanness. Zero is the legacy sentinel.
+    /// yellow matter, and oceanness, each stored as the **canonical
+    /// 0..1 pigment fraction** — the WATAL translate boundary divides the
+    /// authored RGB lanes by
+    /// [`STARFIELD_WATER_CONCENTRATION_REFERENCE`] (#4285; the fourth
+    /// `oceanness` lane is authored natively in 0..1 and passes through).
+    /// Zero is the legacy sentinel.
     pub concentration: [f32; 4],
     /// Foam intensity multiplier. Calm water uses a moderate shoreline
     /// baseline; the cell loader raises it for river/rapids whitewater.

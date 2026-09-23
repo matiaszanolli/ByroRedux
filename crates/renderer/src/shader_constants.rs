@@ -818,7 +818,6 @@ mod tests {
             ("WATER_LAVA", format!("#define WATER_LAVA {WATER_LAVA}u")),
             ("DEFAULT_WATER_WAVE_AMPLITUDE", format!("#define DEFAULT_WATER_WAVE_AMPLITUDE {DEFAULT_WATER_WAVE_AMPLITUDE:?}")),
             ("DEFAULT_WATER_WAVE_FREQUENCY", format!("#define DEFAULT_WATER_WAVE_FREQUENCY {DEFAULT_WATER_WAVE_FREQUENCY:?}")),
-            ("STARFIELD_WATER_CONCENTRATION_REFERENCE", format!("#define STARFIELD_WATER_CONCENTRATION_REFERENCE {STARFIELD_WATER_CONCENTRATION_REFERENCE:?}")),
             ("WATER_COLUMN_ABSORPTION_SHAPE", format!("#define WATER_COLUMN_ABSORPTION_SHAPE {WATER_COLUMN_ABSORPTION_SHAPE:?}")),
             ("DEFAULT_GLASS_BLUR_SCALE", format!("#define DEFAULT_GLASS_BLUR_SCALE {DEFAULT_GLASS_BLUR_SCALE:?}")),
             ("DEFAULT_GLASS_REFRACTION_SCALE", format!("#define DEFAULT_GLASS_REFRACTION_SCALE {DEFAULT_GLASS_REFRACTION_SCALE:?}")),
@@ -1391,7 +1390,6 @@ mod tests {
     fn water_wave_sentinels_flow_from_core_into_glsl() {
         use byroredux_core::ecs::components::water::{
             WaterMaterial, DEFAULT_WATER_WAVE_AMPLITUDE, DEFAULT_WATER_WAVE_FREQUENCY,
-            STARFIELD_WATER_CONCENTRATION_REFERENCE,
         };
 
         let default = WaterMaterial::default();
@@ -1401,15 +1399,19 @@ mod tests {
         let header = include_str!("../shaders/include/shader_constants.glsl");
         assert!(header.contains("#define DEFAULT_WATER_WAVE_AMPLITUDE 0.05"));
         assert!(header.contains("#define DEFAULT_WATER_WAVE_FREQUENCY 0.6"));
-        assert_eq!(STARFIELD_WATER_CONCENTRATION_REFERENCE, 20.0);
-        assert!(header.contains("#define STARFIELD_WATER_CONCENTRATION_REFERENCE 20.0"));
-
         let shader = include_str!("../shaders/water.frag");
         assert!(shader.contains("push.tune.w / DEFAULT_WATER_WAVE_AMPLITUDE"));
         assert!(shader.contains("push.misc.y / DEFAULT_WATER_WAVE_FREQUENCY"));
         assert!(!shader.contains("push.tune.w / 0.05"));
         assert!(!shader.contains("push.misc.y / 0.6"));
-        assert!(shader.contains("/ STARFIELD_WATER_CONCENTRATION_REFERENCE"));
+        // #4285 — the Starfield concentration reference was the one
+        // per-game token in any shader source; the WATAL boundary
+        // normalizes now, so it must stay out of GLSL entirely.
+        assert!(
+            !shader.contains("STARFIELD"),
+            "water.frag grew a per-game token — per-game unit conventions \
+             belong at the parser→canonical translate boundary (#4285)"
+        );
     }
 
     /// TD4-206 / #1162 — `triangle.frag` must NOT redeclare any of the

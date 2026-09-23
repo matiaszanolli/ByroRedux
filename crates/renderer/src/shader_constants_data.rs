@@ -1260,8 +1260,6 @@ pub const DEFAULT_GLASS_REFRACTION_SCALE: f32 =
     byroredux_core::ecs::components::material::DEFAULT_GLASS_REFRACTION_SCALE;
 pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 =
     byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_FREQUENCY;
-pub const STARFIELD_WATER_CONCENTRATION_REFERENCE: f32 =
-    byroredux_core::ecs::components::water::STARFIELD_WATER_CONCENTRATION_REFERENCE;
 // Exponent of `water.frag`'s `absorbWaterColumn` transmission curve,
 // normalised so the column reaches exactly the deep tint at the end of the
 // authored fog ramp. Empirical shape; the saturation is the contract.

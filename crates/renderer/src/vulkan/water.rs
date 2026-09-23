@@ -2067,11 +2067,10 @@ mod absorption_ramp_tests {
         assert!(
             src.contains("vec3 authoredCoefficients = max(push.absorption.rgb, vec3(0.0));")
                 && src.contains("float concentrationDensity = clamp(")
-                && src.contains("/ STARFIELD_WATER_CONCENTRATION_REFERENCE")
                 && src.contains("clamp(push.concentration.a, 0.0, 1.0) * 0.25")
                 && src.contains("float oceanScatter = 1.0 + clamp(push.concentration.a")
                 && src.contains("-hitDist * authoredCoefficients * (1.0 + concentrationDensity)"),
-            "Starfield extinction coefficients and concentrations must feed the Beer-Lambert and scattering paths"
+            "Starfield extinction coefficients and canonical concentrations must feed the Beer-Lambert and scattering paths (#4285: the per-unit normalization lives at the WATAL boundary, not in the shader)"
         );
         assert!(
             src.contains("float surfaceRoughness = clamp(push.noise_falloff.z, 0.0, 1.0)")
