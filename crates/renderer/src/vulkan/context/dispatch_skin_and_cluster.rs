@@ -382,14 +382,14 @@ impl VulkanContext {
                     //
                     // Clearing `rt_flag` on the failure arm is not
                     // sufficient cover. `rt_flag` gates the FRAGMENT
-                    // consumers; the volumetrics inject dispatch gates on
-                    // `accel.tlas_handle(frame)` instead
-                    // (`post_passes.rs::record_volumetrics_pass`), and
-                    // post-#2673 a failed build deliberately keeps the
-                    // previous AS alive — so `tlas_handle` is still `Some`,
-                    // volumetrics still ray-queries from COMPUTE, and
-                    // without this barrier it reads skinned BLAS whose
-                    // refit writes were never made visible.
+                    // consumers; post-#2673 a failed build deliberately
+                    // keeps the previous AS alive, so `tlas_handle` is still
+                    // `Some`. #4779 routes the compute tracers (volumetrics
+                    // inject, ground-cover scatter) through
+                    // `ray_query_tlas`, which withholds that stale handle,
+                    // but the barrier stays unconditional: any COMPUTE
+                    // consumer that does read the AS this frame must see the
+                    // skinned refit writes.
                     //
                     // An extra barrier on a path that only runs when a TLAS
                     // build has already failed costs nothing measurable;
@@ -500,19 +500,36 @@ impl VulkanContext {
         // EXAL ground cover (#4054). Outside the render pass and before it:
         // the scatter writes the blade buffer and the indirect draw list the
         // geometry pass then consumes.
+        // The TLAS this frame's build just published (above). The scatter
+        // traces it to keep ground cover off placed geometry — roads,
+        // flagstones, rock bases — so it must read this slot's structure,
+        // not a handle resolved before the build could resize it, and never
+        // the stale one a failed build leaves behind (#4779).
+        let tlas = self.ray_query_tlas(frame);
         if let Some(ref mut gc) = self.groundcover {
-            // The TLAS this frame's build just published (above). The scatter
-            // traces it to keep ground cover off placed geometry — roads,
-            // flagstones, rock bases — so it must read this slot's structure,
-            // not a handle resolved before the build could resize it.
-            let tlas = self
-                .accel_manager
-                .as_ref()
-                .and_then(|accel| accel.tlas_handle(frame));
             gc.record_scatter(&self.device, cmd, frame, tlas, self.gpu_timers.as_mut());
         }
 
         self.record_groundcover_bench(cmd, frame);
+    }
+
+    /// This frame's TLAS for a compute pass that ray-queries it
+    /// unconditionally, or `None` when this frame's `build_tlas` failed.
+    ///
+    /// #4779 / CONC-D1-2026-09-23-01 — post-#2673 a failed build keeps the
+    /// slot's previous AS alive, so `tlas_handle(frame)` stays `Some`. That
+    /// stale TLAS still references BLAS which eviction only protects for the
+    /// *current* frame's draws and `deferred_destroy` frees two frames later,
+    /// so tracing it can dereference a freed BLAS (GPU page fault / device
+    /// loss). Fragment consumers are covered by `rt_flag = 0` and
+    /// `caustic_splat.comp` by its `sceneFlags.x` early-out; the volumetrics
+    /// inject and the ground-cover scatter trace without either gate, so they
+    /// take their handle from here and skip the frame on `None` instead.
+    pub(super) fn ray_query_tlas(&self, frame: usize) -> Option<vk::AccelerationStructureKHR> {
+        self.accel_manager
+            .as_ref()
+            .and_then(|accel| accel.tlas_handle(frame))
+            .filter(|_| self.tlas_build_succeeded_last_frame)
     }
 
     /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
@@ -771,6 +788,64 @@ mod palette_dirty_plan_tests {
         assert!(
             compact.contains(".chain(pending_slots.iter().map("),
             "this frame's palette plan must include the slots whose bind-inverse just landed"
+        );
+    }
+}
+
+#[cfg(test)]
+mod stale_tlas_compute_gate_tests {
+    /// Regression: #4779 / CONC-D1-2026-09-23-01 — after a failed
+    /// `build_tlas`, the slot's previous AS stays alive (#2673), so
+    /// `tlas_handle(frame)` is still `Some` while the BLAS it references can
+    /// already be in `deferred_destroy`. The compute passes that trace
+    /// without an `rt_flag` / `sceneFlags.x` gate — the volumetrics inject
+    /// and the ground-cover scatter — must take their handle from
+    /// `ray_query_tlas`, which withholds it on a failed-build frame.
+    ///
+    /// A source-shape pin for the same reason as the barrier test above: no
+    /// Vulkan device in unit tests, and the hazard is a freed-BLAS read that
+    /// no CPU-side assertion can observe.
+    #[test]
+    fn compute_ray_query_passes_take_the_build_gated_tlas() {
+        let this = include_str!("dispatch_skin_and_cluster.rs");
+        let this = &this[..this
+            .find("mod stale_tlas_compute_gate_tests")
+            .expect("this test module must still exist under its own name")];
+
+        let helper_at = this
+            .find("pub(super) fn ray_query_tlas(")
+            .expect("the build-gated TLAS accessor must exist (#4779)");
+        let helper = &this[helper_at..];
+        let helper = &helper[..helper.find("\n    }\n").expect("helper body end")];
+        assert!(
+            helper.contains(".filter(|_| self.tlas_build_succeeded_last_frame)"),
+            "ray_query_tlas must withhold the handle when this frame's build failed"
+        );
+
+        let scatter_at = this
+            .find("gc.record_scatter(")
+            .expect("the ground-cover scatter call must still exist under this spelling");
+        let scatter_tlas_at = this[..scatter_at]
+            .rfind("let tlas = self.ray_query_tlas(frame);")
+            .expect("the ground-cover scatter must trace the build-gated TLAS (#4779)");
+        assert!(
+            !this[scatter_tlas_at..scatter_at].contains("tlas_handle("),
+            "no raw tlas_handle between the gated resolve and the scatter call"
+        );
+
+        let post = include_str!("post_passes.rs");
+        let vol_at = post
+            .find("fn record_volumetrics_pass(")
+            .expect("the volumetrics recorder must still exist under this name");
+        let vol = &post[vol_at..];
+        let vol = &vol[..vol[1..].find("\n    fn ").map_or(vol.len(), |i| i + 1)];
+        assert!(
+            vol.contains("let vol_tlas = self.ray_query_tlas(frame);"),
+            "the volumetrics inject must trace the build-gated TLAS (#4779)"
+        );
+        assert!(
+            !vol.contains("tlas_handle("),
+            "the volumetrics recorder must not resolve the raw, possibly stale TLAS"
         );
     }
 }

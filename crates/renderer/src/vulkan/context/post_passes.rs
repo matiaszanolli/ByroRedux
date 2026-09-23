@@ -534,6 +534,9 @@ impl VulkanContext {
             wind_gust,
             fog_volumes,
         } = inputs;
+        // #4779 — never the stale AS a failed build leaves alive: `None` takes
+        // the not-ready arm below. Resolved before `vol` borrows `self.post`.
+        let vol_tlas = self.ray_query_tlas(frame);
         // SAFETY: `cmd` is recording outside a render pass, and all volumetric,
         // cluster, TLAS, and timer resources belong to this live context/frame.
         unsafe {
@@ -572,10 +575,6 @@ impl VulkanContext {
                     ) {
                         false
                     } else {
-                        let vol_tlas = self
-                            .accel_manager
-                            .as_ref()
-                            .and_then(|accel| accel.tlas_handle(frame));
                         // Phase 2b point/spot light injection needs the SAME
                         // per-frame cluster grid / light-index buffers the
                         // fragment shader reads — reused rather than building a
