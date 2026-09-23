@@ -709,12 +709,24 @@ fn parse_txst_group_inner(
 /// #4438 — first-sighting gate for unmodelled TXST `TX*` slots. Returns
 /// `true` the first time a given FourCC is seen this process, `false`
 /// after — so the parse warns once per slot kind instead of once per
-/// record. The bool return is the test seam: a caller can pin the
-/// first-true / then-false contract without capturing logs.
+/// record.
 pub(super) fn warn_unmodelled_txst_slot(fourcc: &[u8]) -> bool {
     static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<[u8; 4]>>> =
         std::sync::OnceLock::new();
-    let seen = SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    first_txst_slot_sighting(
+        SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new())),
+        fourcc,
+    )
+}
+
+/// The warn-once contract over a caller-owned seen-set. #4770 — the bool
+/// return is the test seam, and it must not be exercised against the
+/// process-global set above: a "first sighting" assertion there depends on
+/// no other test in the process ever having parsed that FourCC.
+pub(super) fn first_txst_slot_sighting(
+    seen: &std::sync::Mutex<std::collections::HashSet<[u8; 4]>>,
+    fourcc: &[u8],
+) -> bool {
     let mut key = [0u8; 4];
     key.copy_from_slice(&fourcc[..4]);
     seen.lock()

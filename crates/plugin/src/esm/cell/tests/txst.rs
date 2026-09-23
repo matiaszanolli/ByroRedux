@@ -653,7 +653,7 @@ fn decal_data_doc_does_not_claim_a_nonexistent_m28_decal_milestone() {
 /// the first-sighting warn gate (first call true, repeat false).
 #[test]
 fn starfield_pbr_slots_parse_without_dropping_the_record() {
-    use super::super::support::warn_unmodelled_txst_slot;
+    use super::super::support::{first_txst_slot_sighting, warn_unmodelled_txst_slot};
 
     let record = build_txst_record(
         0x0000_1000,
@@ -688,12 +688,18 @@ fn starfield_pbr_slots_parse_without_dropping_the_record() {
         "the modelled TX00 must survive"
     );
 
-    // The warn gate: first sighting of a FourCC warns, repeats do not.
-    // (The parse above already saw TX08/TX09 once each, so those two now
-    // report false; TX17 is fresh and must report true first.)
+    // The parse routed TX08 through the process-global warn gate, so it
+    // now reports false. Order-independent: whichever test saw TX08
+    // first, this one's parse has seen it by now.
     assert!(!warn_unmodelled_txst_slot(b"TX08"));
-    assert!(warn_unmodelled_txst_slot(b"TX17"));
-    assert!(!warn_unmodelled_txst_slot(b"TX17"));
+
+    // #4770 — the first-true / then-false contract itself is pinned on a
+    // test-owned set; asserting a *first* sighting on the global one
+    // depends on no other test in the process having parsed that FourCC.
+    let seen = std::sync::Mutex::new(std::collections::HashSet::new());
+    assert!(first_txst_slot_sighting(&seen, b"TX17"));
+    assert!(!first_txst_slot_sighting(&seen, b"TX17"));
+    assert!(first_txst_slot_sighting(&seen, b"TX08"));
 }
 
 /// #4642 — `LTEX.GNAM` is an *array* of grass references (xEdit
