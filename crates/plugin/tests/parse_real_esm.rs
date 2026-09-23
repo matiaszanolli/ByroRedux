@@ -978,14 +978,14 @@ fn fo4_ruleset_uses_only_authored_avif_outputs() {
     assert_eq!(index.actor_value_form_id("MeleeDamage"), None);
 }
 
-// #4094 (D1-02) — `NpcStatModel::Stored` is shared by FO4, FO76 and
-// Starfield (`derive_stored_actor_values` resolves the same two EditorIDs,
-// "Health" and "ActionPoints", for all three), but only FO4 had a test
-// falsifying that resolution against its own master. The other two ride on
-// no ROSTER_CASES entry either — neither carries a `RulesetBuilder` arm or a
-// `LevelingModel` const, so they don't fit that table's shape; these are
-// narrower siblings of `fo4_ruleset_uses_only_authored_avif_outputs` that
-// check the one thing `Stored` actually depends on.
+// #4094 (D1-02) — `NpcStatModel::Stored` is FO4's sourced model. FO76 and
+// Starfield resolve the same two EditorIDs ("Health" and "ActionPoints")
+// through `derive_stored_actor_values`'s AVIF lookups, but #4453 flipped
+// their profiles to `NpcStatModel::None`: no capture line says their
+// `NPC_` records carry FO4's PRPS/DNAM wire layout, so the Stored decoder
+// must not run on their masters. These narrower siblings of
+// `fo4_ruleset_uses_only_authored_avif_outputs` pin the AVIF facts a
+// future capture-backed wiring will need either way.
 #[test]
 #[ignore = "needs FO76 game data on disk"]
 fn fo76_stored_avif_outputs_resolve_on_shipped_master() {

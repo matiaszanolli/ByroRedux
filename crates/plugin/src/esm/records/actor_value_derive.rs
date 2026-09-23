@@ -1383,8 +1383,15 @@ mod tests {
         assert_eq!(pairs, vec![(0x2A0, 7.0)]);
     }
 
+    /// #4453 — inverted: FO76/Starfield no longer inherit FO4's `Stored`
+    /// PRPS/DNAM decoder on presumption. No capture line says their
+    /// `NPC_` records carry that wire layout, so their profiles claim
+    /// `NpcStatModel::None` and the derivation must yield nothing — the
+    /// AVIF facts a future capture-backed wiring will need stay pinned by
+    /// the `fo76/starfield_stored_avif_outputs_resolve_on_shipped_master`
+    /// corpus tests.
     #[test]
-    fn later_creation_profiles_retain_stored_actor_value_population() {
+    fn later_creation_profiles_claim_no_population_until_captured() {
         for profile in [
             CharacterRulesProfile::FALLOUT76,
             CharacterRulesProfile::STARFIELD,

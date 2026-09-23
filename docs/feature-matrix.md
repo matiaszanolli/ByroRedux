@@ -259,10 +259,10 @@ scheduler registration), not just present as a buildable function.
 | Feature | Oblivion | FO3 | FNV | Skyrim SE | FO4 | FO76 | Starfield |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Ruleset wired (`CharacterRuleset`: derived-stat formulas + leveling model) | ~ built, unwired | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
-| NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ✓ Health+Magicka+Stamina | ✓ stored `PRPS`+`DNAM` | ~ stored, unverified | ~ stored, unverified |
+| NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ✓ Health+Magicka+Stamina | ✓ stored `PRPS`+`DNAM` | ✗ wire layout uncaptured (#4453) | ✗ wire layout uncaptured (#4453) |
 | Creature (`CREA`) actor-value population at spawn | ✗ `CREA.DATA` layout unsourced | ✓ SPECIAL + Health | ✓ SPECIAL + Health | n/a (no `CREA`) | n/a | n/a | n/a |
 | Runtime leveling (XP grant / level-up) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| Pool regen tick (Health/Magicka/Stamina) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
+| Pool regen tick (Fatigue/Magicka — Health deliberately unmodelled, Stamina has no row; #4463) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 | Affliction tick (radiation/disease/addiction) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 
 `oblivion_ruleset()` (`crates/core/src/character/tes.rs`) builds a real

@@ -196,7 +196,15 @@ impl CharacterRulesProfile {
     pub const FALLOUT76: Self = Self {
         name: "Fallout 76",
         skills: SkillSet::NONE,
-        npc_stats: NpcStatModel::Stored,
+        // #4453 — blocked, not forgotten: no capture line says FO76's
+        // NPC_ records carry FO4's `Stored` PRPS/DNAM wire layout (FO76's
+        // record formats restructure FO4's; the FO76 capture's NPC-stat
+        // storage row reads "not researched"). Reading `Stored` here let
+        // a FO76 master route NPCs through `derive_stored_actor_values`
+        // on a presumption inherited from FO4's sourced row. `None` until
+        // a source lands (xEdit wbDefinitionsFO76.pas NPC_ properties
+        // layout).
+        npc_stats: NpcStatModel::None,
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
         vital_pools: &[("HP", "Health"), ("AP", "ActionPoints")],
@@ -206,7 +214,11 @@ impl CharacterRulesProfile {
     pub const STARFIELD: Self = Self {
         name: "Starfield",
         skills: SkillSet::NONE,
-        npc_stats: NpcStatModel::Stored,
+        // #4453 — same shape as FO76 above: the Starfield capture makes no
+        // NPC-stat-storage claim at all, and Starfield's record formats
+        // diverge from FO4's further than FO76's do. `None` until an
+        // authoritative source for the NPC_ stat layout lands.
+        npc_stats: NpcStatModel::None,
         creature_stats: NpcStatModel::None,
         body_condition_base: None,
         vital_pools: &[("HP", "Health"), ("O2", "O2")],
@@ -299,12 +311,12 @@ mod tests {
         };
         assert_eq!(fo3_health.evaluate(5.0, 2.0), 210.0);
         assert_eq!(fnv_health.evaluate(5.0, 2.0), 205.0);
+        // #4453 — FO4 is the only sourced `Stored` profile; FO76 and
+        // Starfield are `None` until their NPC_ stat wire layouts are
+        // captured (pinned separately by
+        // `fo76_and_starfield_claim_no_npc_stat_model_until_captured`).
         assert_eq!(
-            CharacterRulesProfile::FALLOUT76.npc_stat_model(),
-            NpcStatModel::Stored
-        );
-        assert_eq!(
-            CharacterRulesProfile::STARFIELD.npc_stat_model(),
+            CharacterRulesProfile::FALLOUT4.npc_stat_model(),
             NpcStatModel::Stored
         );
     }
@@ -444,5 +456,23 @@ mod tests {
             "Oblivion is blocked on a pre-AVIF actor-value resolver (#3768); if it \
              now builds one, wire it deliberately rather than letting this pass",
         );
+    }
+
+    /// #4453 — FO76 and Starfield claim no NPC stat model until a capture
+    /// sources their `NPC_` stat-storage wire layout. `Stored` here was a
+    /// presumption inherited from FO4's sourced row: it silently routed
+    /// FO76/Starfield masters through the FO4 `PRPS`/`DNAM` decoder with
+    /// no capture line saying their records carry that layout.
+    #[test]
+    fn fo76_and_starfield_claim_no_npc_stat_model_until_captured() {
+        for profile in [CharacterRulesProfile::FALLOUT76, CharacterRulesProfile::STARFIELD] {
+            assert_eq!(
+                profile.npc_stat_model(),
+                NpcStatModel::None,
+                "{} NPC stat storage is uncaptured (#4453); wire it from a source, \
+                 not by inheriting FO4's Stored row",
+                profile.name()
+            );
+        }
     }
 }
