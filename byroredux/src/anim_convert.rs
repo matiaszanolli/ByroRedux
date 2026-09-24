@@ -1185,7 +1185,9 @@ mod clip_duration_weight_tests {
 /// untouched (finite, positive duration/frequency), mirroring how the
 /// Material fixture picks values that keep the glass/PBR classifiers
 /// no-op: this harness tests the copy boundary, not the sanitizers, which
-/// have their own tests in `unsanitized_clip_scalar_tests` above.
+/// have their own tests in `clip_frequency_tests`, `clip_phase_tests` and
+/// `clip_duration_weight_tests` above (#4565 — the old pointer named a
+/// `unsanitized_clip_scalar_tests` module that never existed).
 #[cfg(test)]
 mod canonical_animation_completeness_harness {
     use super::*;
