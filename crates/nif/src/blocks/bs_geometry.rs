@@ -233,7 +233,7 @@ impl BSGeometryMesh {
 
         let kind = if internal {
             BSGeometryMeshKind::Internal {
-                mesh_data: Box::new(BSGeometryMeshData::parse(stream)?),
+                mesh_data: Box::new(BSGeometryMeshData::parse(stream, MeshTrailer::Required)?),
             }
         } else {
             // `meshName.Sync(stream, 4)` in nifly — a u32 length-prefixed
@@ -250,6 +250,19 @@ impl BSGeometryMesh {
             kind,
         })
     }
+}
+
+/// Whether a mesh body may end after its LOD array (#3777, #4269).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MeshTrailer {
+    /// A standalone `.mesh` file: the stream is exactly the body, so
+    /// "nothing follows the LODs" is observable and means no trailer
+    /// (Starfield's facegen bodies).
+    OptionalAtEnd,
+    /// An inline body inside the NIF stream: nifly always writes the
+    /// meshlet + cull-data trailer, and the stream's remainder belongs to
+    /// whatever follows the body, so the trailer is read unconditionally.
+    Required,
 }
 
 /// Inline mesh body. Mirrors `nifly::BSGeometryMeshData` — the
@@ -373,10 +386,10 @@ impl BSGeometryMeshData {
         use crate::version::NifVersion;
         let header = NifHeader::detached(NifVersion::V20_2_0_7, 12, 172);
         let mut stream = NifStream::new(bytes, &header);
-        Self::parse(&mut stream)
+        Self::parse(&mut stream, MeshTrailer::OptionalAtEnd)
     }
 
-    fn parse(stream: &mut NifStream) -> io::Result<Self> {
+    fn parse(stream: &mut NifStream, trailer: MeshTrailer) -> io::Result<Self> {
         let version = stream.read_u32_le()?;
         // nifly: `if (version > 2) return;` — leave every body field
         // empty so the parent record can still finalise.
@@ -550,7 +563,17 @@ impl BSGeometryMeshData {
         // EOF error from the reads themselves: a body that ends *mid*-trailer
         // is corrupt and must still fail, and both arrays remain fully
         // bounds-checked when they are present.
-        let (meshlets, cull_data) = if stream.remaining() == 0 {
+        //
+        // #4269 — the test is only meaningful for a standalone `.mesh`
+        // body, whose stream IS the body. An inline (Stage A, flag 0x200)
+        // body is read from the NIF stream itself, where `remaining()`
+        // counts every byte after it (further slots, blocks, the footer)
+        // and says nothing about this body. There the trailer follows
+        // nifly's `BSGeometryMeshData::Sync`, which reads and writes it
+        // unconditionally: `MeshTrailer::Required`.
+        let trailer_absent =
+            matches!(trailer, MeshTrailer::OptionalAtEnd) && stream.remaining() == 0;
+        let (meshlets, cull_data) = if trailer_absent {
             (Vec::new(), Vec::new())
         } else {
             let n_meshlets = stream.read_u32_le()?;
@@ -676,6 +699,71 @@ mod tests {
 
         let neg = unpack_norm_i16(-32768, 1.0, BSGeometryMeshData::HAVOK_SCALE);
         assert!((neg + BSGeometryMeshData::HAVOK_SCALE).abs() < 1e-3);
+    }
+
+    /// The facegen-shaped body (ends after its LODs) with an optional
+    /// trailer appended, as the bytes of one `BSGeometryMeshData`.
+    fn minimal_body(trailer: bool) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // version
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_tri_indices
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // weights_per_vert
+        for _ in 0..7 {
+            bytes.extend_from_slice(&0u32.to_le_bytes()); // the seven count fields
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_lods = 0
+        if trailer {
+            bytes.extend_from_slice(&1u32.to_le_bytes()); // n_meshlets = 1
+            bytes.extend_from_slice(&[0u8; 16]);
+            bytes.extend_from_slice(&1u32.to_le_bytes()); // n_cull_data = 1
+            bytes.extend_from_slice(&[0u8; 24]);
+        }
+        bytes
+    }
+
+    /// Parse one inline (Stage A) mesh slot — `tri_size`, `num_verts`,
+    /// `flags`, then the body — from `body` followed by `tail`, the bytes
+    /// of whatever comes next in the NIF. Returns the slot and how many
+    /// bytes it consumed.
+    fn parse_inline(body: &[u8], tail: &[u8]) -> (io::Result<BSGeometryMesh>, usize) {
+        use crate::header::NifHeader;
+        use crate::version::NifVersion;
+        let mut bytes = vec![0u8; 12];
+        bytes.extend_from_slice(body);
+        bytes.extend_from_slice(tail);
+        let header = NifHeader::detached(NifVersion::V20_2_0_7, 12, 172);
+        let mut stream = NifStream::new(&bytes, &header);
+        let slot = BSGeometryMesh::parse(&mut stream, 0, true);
+        (slot, stream.position() as usize)
+    }
+
+    /// #4269 — on the inline path the trailer is read whatever follows the
+    /// body: `remaining()` counts the rest of the NIF there, so it cannot
+    /// signal the end of this body. The slot stops exactly after its
+    /// trailer, leaving the following bytes for the next reader.
+    #[test]
+    fn an_inline_body_reads_its_trailer_and_stops_after_it() {
+        let body = minimal_body(true);
+        let (slot, consumed) = parse_inline(&body, &[0xAB; 32]);
+        let slot = slot.expect("an inline body with its trailer parses");
+        let BSGeometryMeshKind::Internal { mesh_data } = slot.kind else {
+            panic!("flag 0x200 selects the inline body");
+        };
+        assert_eq!((mesh_data.meshlets.len(), mesh_data.cull_data.len()), (1, 1));
+        assert_eq!(consumed, 12 + body.len(), "the next block's bytes are untouched");
+    }
+
+    /// #4269 — the facegen "ends after the LODs" shape is a `.mesh`-file
+    /// property only. An inline body without its trailer is truncated,
+    /// as it is to nifly, even at the very end of the stream where the
+    /// `.mesh` rule would have accepted it.
+    #[test]
+    fn an_inline_body_missing_its_trailer_is_an_error() {
+        let body = minimal_body(false);
+        assert!(BSGeometryMeshData::parse_from_bytes(&body).is_ok(), "the .mesh shape");
+        let (slot, _) = parse_inline(&body, &[]);
+        assert!(slot.is_err(), "inline bodies always carry the trailer (nifly Sync)");
     }
 
     /// Regression for #768 / NIF-D3-13. A hostile `weights_per_vert =
