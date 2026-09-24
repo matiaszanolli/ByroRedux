@@ -1286,7 +1286,7 @@ impl PhysicsWorld {
     ) -> Option<(f32, f32)> {
         use rapier3d::parry::query::ShapeCastOptions;
         use rapier3d::prelude::*;
-        let shape = SharedShape::capsule_y(capsule_half_height.max(1e-3), capsule_radius.max(1e-3));
+        let shape = character_capsule(capsule_half_height, capsule_radius);
         let pos = Isometry::translation(origin.x, origin.y, origin.z);
         let mut filter = solid_probe_filter();
         if let Some(body) = excluded_body {
@@ -1298,7 +1298,7 @@ impl PhysicsWorld {
                 &self.colliders,
                 &pos,
                 &-Vector::y_axis(),
-                shape.as_ref(),
+                &shape,
                 ShapeCastOptions {
                     target_distance: 0.0,
                     stop_at_penetration: false,
@@ -1327,14 +1327,14 @@ impl PhysicsWorld {
         radius: f32,
         excluded_body: Option<RigidBodyHandle>,
     ) -> bool {
-        let shape = SharedShape::capsule_y(half_height.max(1e-3), radius.max(1e-3));
+        let shape = character_capsule(half_height, radius);
         let pos = Isometry::translation(center.x, center.y, center.z);
         let mut filter = solid_probe_filter();
         if let Some(body) = excluded_body {
             filter = filter.exclude_rigid_body(body);
         }
         self.query_pipeline
-            .intersection_with_shape(&self.bodies, &self.colliders, &pos, shape.as_ref(), filter)
+            .intersection_with_shape(&self.bodies, &self.colliders, &pos, &shape, filter)
             .is_some()
     }
 
@@ -1506,10 +1506,7 @@ impl PhysicsWorld {
             ..Default::default()
         };
 
-        let shape = SharedShape::capsule_y(
-            params.capsule_half_height.max(1e-3),
-            params.capsule_radius.max(1e-3),
-        );
+        let shape = character_capsule(params.capsule_half_height, params.capsule_radius);
         let pos = Isometry::translation(params.position.x, params.position.y, params.position.z);
         let desired = Vector::new(
             params.desired_translation.x,
@@ -1542,7 +1539,7 @@ impl PhysicsWorld {
             &self.bodies,
             &self.colliders,
             &self.query_pipeline,
-            shape.as_ref(),
+            &shape,
             &pos,
             desired,
             filter,
@@ -1561,12 +1558,44 @@ impl PhysicsWorld {
     }
 }
 
+/// The character / ground-probe capsule, by value. #4614 — the sweep and
+/// overlap queries only need `&dyn Shape`, so the stack `Capsule` replaces
+/// `SharedShape::capsule_y`, whose `Arc` was one heap allocation + free per
+/// call: per walking NPC per tick since M42.10, plus the player and every
+/// ground probe. Also the one place the degenerate-extent floor lives, for
+/// #4134's clamp to extend.
+fn character_capsule(half_height: f32, radius: f32) -> rapier3d::parry::shape::Capsule {
+    rapier3d::parry::shape::Capsule::new_y(half_height.max(1e-3), radius.max(1e-3))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::convert::{collision_shape_to_parts, iso_from_trs};
     use byroredux_core::ecs::components::collision::CollisionShape;
     use byroredux_core::math::{Quat, Vec3};
+
+    /// #4614 — the stack capsule is the same shape the `SharedShape` form
+    /// built (same segment and radius, same `1e-3` floor for degenerate
+    /// extents), and no production query goes back to the per-call `Arc`.
+    #[test]
+    fn character_capsule_matches_the_shared_shape_it_replaced() {
+        for (half_height, radius) in [(46.0, 18.0), (0.0, 0.0), (-3.0, 12.5)] {
+            let stack = character_capsule(half_height, radius);
+            let shared = SharedShape::capsule_y(half_height.max(1e-3), radius.max(1e-3));
+            let shared = shared.as_capsule().expect("capsule");
+            assert_eq!(stack.segment.a, shared.segment.a);
+            assert_eq!(stack.segment.b, shared.segment.b);
+            assert_eq!(stack.radius, shared.radius);
+        }
+
+        let src = include_str!("world.rs");
+        let production = &src[..src.find("#[cfg(test)]\nmod tests {").expect("tests module")];
+        assert!(
+            !production.contains("SharedShape::capsule_y("),
+            "character sweeps and ground probes must use character_capsule, not a per-call Arc"
+        );
+    }
 
     /// Test helper: legacy single-`SharedShape` API. Assumes the input
     /// produces exactly one part (every primitive variant does; the
