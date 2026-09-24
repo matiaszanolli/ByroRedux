@@ -255,6 +255,7 @@ impl App {
             let frame = build_render_data(
                 &self.world,
                 &mut self.draw_commands,
+                &mut self.cover_template_draws,
                 &mut self.water_commands,
                 &mut self.gpu_lights,
                 &mut self.gpu_fog_volumes,
@@ -389,6 +390,18 @@ impl App {
                     debug_points: self.groundcover_debug_points,
                     off: self.groundcover_off,
                 },
+            );
+
+            // #4413 — the authored-model tier, fed the template draws
+            // `build_render_data` just built (their materials are interned in
+            // this frame's table, which `draw_frame` has not uploaded yet).
+            prepare_groundcover_models(
+                &self.world,
+                ctx,
+                &mut self.cover_template_draws,
+                &mut self.groundcover_model_records,
+                &mut self.groundcover_model_table,
+                self.groundcover_off,
             );
 
             // Tick and render the UI overlay. The Oblivion MenuXml HUD
@@ -723,6 +736,51 @@ struct GroundCoverScratch<'a> {
     truncation_logged: &'a mut bool,
     debug_points: bool,
     off: bool,
+}
+
+/// #4413 — hand the ground-cover model tier this frame's records, selection
+/// table and template shapes. Runs every frame the tier exists, so a frame
+/// without authored cover (an interior, `--groundcover-off`) clears it.
+fn prepare_groundcover_models(
+    world: &byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
+    template_draws: &mut [(u32, byroredux_renderer::vulkan::context::DrawCommand)],
+    records: &mut Vec<byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord>,
+    table: &mut Vec<u32>,
+    off: bool,
+) {
+    use byroredux_renderer::vulkan::groundcover_models::{
+        GroundCoverModelFrame, GroundCoverModelShapeInput,
+    };
+    if ctx.groundcover_models.is_none() {
+        return;
+    }
+    let spacing = if off {
+        records.clear();
+        table.clear();
+        None
+    } else {
+        crate::render::groundcover::collect_groundcover_model_records(world, records, table)
+    };
+    // Shapes grouped by record, each record's shapes in spawn order.
+    template_draws.sort_unstable_by_key(|(record, draw)| (*record, draw.entity_id));
+    let shapes: Vec<GroundCoverModelShapeInput<'_>> = if spacing.is_some() {
+        template_draws
+            .iter()
+            .map(|(record, draw)| GroundCoverModelShapeInput {
+                record: *record,
+                draw,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    ctx.prepare_groundcover_models(&GroundCoverModelFrame {
+        records,
+        record_table: table,
+        shapes: &shapes,
+        grid_spacing: spacing.unwrap_or(0.0),
+    });
 }
 
 /// EXAL ground cover (#4054/#4055): collect this frame's chunks, species,

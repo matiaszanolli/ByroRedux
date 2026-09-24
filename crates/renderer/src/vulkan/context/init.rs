@@ -737,6 +737,27 @@ impl VulkanContext {
             None
         };
 
+        // #4413 — the authored-model tier reads the scatter's chunk records,
+        // so it exists only beside the blade pipeline; its placement traces
+        // the same cover-test ray.
+        let groundcover_models = if groundcover.is_some() {
+            match super::super::groundcover_models::GroundCoverModelTier::new(
+                &device,
+                &gpu_allocator,
+                pipeline_cache,
+            ) {
+                Ok(tier) => Some(tier),
+                Err(e) => {
+                    log::warn!(
+                        "Ground-cover model tier creation failed: {e} — no authored ground cover"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let mut water = if device_caps.ray_query_supported {
             match WaterPipeline::new(
                 &device,
@@ -1671,6 +1692,7 @@ impl VulkanContext {
             accel_manager,
             cluster_cull,
             groundcover,
+            groundcover_models,
             // #4052 — created on demand by
             // `VulkanContext::enable_groundcover_bench`, not here: the
             // harness is `--bench-groundcover-sampling` only and init has no

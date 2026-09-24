@@ -77,6 +77,7 @@ fn run_build_pair(
     let _ = build_render_data(
         world,
         &mut draw_commands,
+        &mut Vec::new(),
         &mut water_commands,
         &mut gpu_lights,
         &mut Vec::new(),
@@ -175,6 +176,7 @@ fn water_reemit_ignores_particle_draws_that_share_the_plane_id() {
     let _ = build_render_data(
         &world,
         &mut draws,
+        &mut Vec::new(),
         &mut water,
         &mut Vec::new(),
         &mut Vec::new(),

@@ -609,8 +609,9 @@ fn sanitize_wind(wind: WindField) -> WindField {
 /// The blade species are the engine's own, selected by climate (design
 /// §12.12). `GRAS` records do not become blade species: their models are card
 /// clumps, rocks, ferns and kelp rather than blades, and they belong to the
-/// authored-model tier, which is not built yet. `GroundCoverPalette::resolve`
-/// guarantees a non-empty palette, so the scatter pass never sees one.
+/// authored-model tier (#4413), resolved here into `AuthoredCover` for the
+/// same climate. `GroundCoverPalette::resolve` guarantees a non-empty
+/// palette, so the scatter pass never sees an empty one.
 fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldContext) {
     use crate::groundcover_translate::{
         resolve_palette_for_chain, resolve_wind, resolve_wind_with_direction,
@@ -645,7 +646,7 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
     log::info!(
         target: "engine::groundcover",
         "Ground cover for '{}' (chain {:?}): climate {:?}, {} engine blade species \
-         ({} GRAS records await the authored-model tier), wind {:.1} u/s along [{:.2}, {:.2}]",
+         ({} GRAS records), wind {:.1} u/s along [{:.2}, {:.2}]",
         wctx.worldspace_key,
         chain,
         palette.climate,
@@ -655,6 +656,28 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
         wind.direction[0],
         wind.direction[1],
     );
+    // #4413 — the authored-model tier: every GRAS record draws its own
+    // model, weighted for the same climate the blade palette resolved.
+    match crate::groundcover_translate::resolve_authored_cover(
+        &wctx.record_index.grasses,
+        wctx.record_index.game,
+        palette.climate,
+    ) {
+        Some(cover) => {
+            log::info!(
+                target: "engine::groundcover",
+                "Authored ground cover for '{}': {} of {} GRAS records placeable, grid {} units",
+                wctx.worldspace_key,
+                cover.records.len(),
+                wctx.record_index.grasses.len(),
+                cover.grid_spacing,
+            );
+            world.insert_resource(cover);
+        }
+        None => {
+            world.remove_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>();
+        }
+    }
     world.insert_resource(palette);
     world.insert_resource(wind);
     // #4057 — seed the per-weather dimmer here for the same reason the wind is
@@ -1037,6 +1060,7 @@ pub(crate) fn assemble_exterior_streaming(
     }
     state.last_player_grid = Some(grid);
     state.spawn_lod_water(world, ctx);
+    state.spawn_authored_cover(world, ctx);
     let cam_center = stream_initial_radius(world, ctx, &mut state, grid.0, grid.1, bootstrap_mode);
     // #3536 — deliberately scoped to Skyrim's vanilla MQ101 ("Unbound") quest
     // + SCEN, a M47.2 scripting demo slice (`docs/engine/m47-2-design.md`),

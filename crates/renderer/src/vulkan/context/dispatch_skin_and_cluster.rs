@@ -517,6 +517,45 @@ impl VulkanContext {
         self.record_groundcover_bench(cmd, frame);
     }
 
+    /// #4413 — record the ground-cover model tier's placement once the frame's
+    /// own instance list is uploaded: its instances go in the slots after
+    /// `main_instances`, up to the slot's capacity. Outside the render pass,
+    /// before the geometry pass that draws them.
+    pub(super) fn record_groundcover_models(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        main_instances: u32,
+    ) {
+        if let Some(ref mut tier) = self.groundcover_models {
+            tier.clear_frame();
+        }
+        let tlas = self.ray_query_tlas(frame);
+        let Some(inputs) = self
+            .groundcover
+            .as_ref()
+            .and_then(|gc| gc.model_scatter_inputs(frame, tlas))
+        else {
+            return;
+        };
+        let capacity = self.scene_buffers.instance_capacity(frame) as u32;
+        let tail_capacity = capacity.saturating_sub(main_instances);
+        let instance_buffer = self.scene_buffers.instance_buffers()[frame].buffer;
+        let previous_model_buffer = self.scene_buffers.previous_model_buffers()[frame].buffer;
+        if let Some(ref mut tier) = self.groundcover_models {
+            tier.record(
+                &self.device,
+                cmd,
+                frame,
+                inputs,
+                instance_buffer,
+                previous_model_buffer,
+                main_instances,
+                tail_capacity,
+            );
+        }
+    }
+
     /// This frame's TLAS for a compute pass that ray-queries it
     /// unconditionally, or `None` when this frame's `build_tlas` failed.
     ///

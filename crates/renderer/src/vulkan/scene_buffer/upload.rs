@@ -1125,6 +1125,18 @@ impl super::buffers::SceneBuffers {
         &self.instance_buffers
     }
 
+    /// The previous-model buffers, slot-parallel to [`Self::instance_buffers`].
+    /// The ground-cover model tier writes both past the main instance list
+    /// (#4413).
+    pub fn previous_model_buffers(&self) -> &[GpuBuffer] {
+        &self.previous_model_buffers
+    }
+
+    /// Instances `frame_index`'s instance and previous-model buffers hold.
+    pub fn instance_capacity(&self, frame_index: usize) -> usize {
+        self.instance_capacity[frame_index]
+    }
+
     /// Get the per-frame DEVICE_LOCAL bone palette buffers (M29 — skin
     /// compute reads them as the bone-matrix source per-dispatch). After
     /// #921 these are the device-side targets of the staging copy

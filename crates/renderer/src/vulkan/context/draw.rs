@@ -2102,6 +2102,11 @@ impl VulkanContext {
         // destructure above and that tail, so both come back here too.
         // `batches_scratch` is the same case but has one more use
         // (`record_geometry_pass`), so it is restored just after it.
+        // #4413 — the ground-cover model tier writes its instances after the
+        // list just uploaded, so it records here: after the upload fixed the
+        // list's length, before the geometry pass draws them.
+        self.record_groundcover_models(cmd, frame, gpu_instances.len() as u32);
+
         self.scratch.frame_lights_scratch = frame_lights;
         self.scratch.gpu_instances_scratch = gpu_instances;
         self.scratch.previous_models_scratch = previous_models;

@@ -1010,6 +1010,9 @@ pub(crate) struct RenderFrameView {
 pub(crate) fn build_render_data(
     world: &World,
     draw_commands: &mut Vec<DrawCommand>,
+    // #4413 — the authored ground-cover templates' built draws, tagged with
+    // their record, handed to the ground-cover model tier instead of drawn.
+    cover_template_draws: &mut Vec<(u32, DrawCommand)>,
     water_commands: &mut Vec<WaterDrawCommand>,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
     gpu_fog_volumes: &mut Vec<byroredux_renderer::GpuFogVolume>,
@@ -1026,6 +1029,7 @@ pub(crate) fn build_render_data(
     let has_effect_soft_material = scene_has_effect_soft_material(world);
 
     draw_commands.clear();
+    cover_template_draws.clear();
     water_commands.clear();
     gpu_lights.clear();
     gpu_fog_volumes.clear();
@@ -1128,6 +1132,7 @@ pub(crate) fn build_render_data(
         cam_pos,
         skin_offsets,
         draw_commands,
+        cover_template_draws,
         material_table,
     );
     let ms_static = took(t_static);

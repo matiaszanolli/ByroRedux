@@ -268,6 +268,7 @@ pub(super) fn collect_static_mesh_draws(
     cam_pos: Vec3,
     skin_offsets: &FxHashMap<EntityId, u32>,
     draw_commands: &mut Vec<DrawCommand>,
+    cover_template_draws: &mut Vec<(u32, DrawCommand)>,
     material_table: &mut MaterialTable,
 ) -> TlasPolicyCounts {
     let mut tlas_policy = TlasPolicyCounts::default();
@@ -319,6 +320,9 @@ pub(super) fn collect_static_mesh_draws(
     // in the player's inventory; the tombstone keeps a respawned copy gone).
     let picked_up = world.query::<crate::inventory::PickedUp>();
     let mat_q = world.query::<Material>();
+    // #4413 — authored ground-cover templates: built like any draw (so their
+    // material is interned this frame) but handed to the model tier.
+    let cover_template_q = world.query::<crate::components::AuthoredCoverTemplate>();
     // #525 — `AnimatedUvTransform` overrides the static
     // `Material::uv_offset` / `uv_scale` when an entity has an active
     // UV-scrolling controller (water, lava, conveyor belts, flickering
@@ -440,7 +444,14 @@ pub(super) fn collect_static_mesh_draws(
             // pass through as visible. See #237 (original cull) +
             // #516 (split raster / TLAS predicate).
             let world_bound = wb_q.as_ref().and_then(|q| q.get(entity));
+            // A template sits at the world origin and is never culled: its
+            // draw only carries the shape's material and local transform.
+            let cover_template = cover_template_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|template| template.record);
             let in_raster = no_cull
+                || cover_template.is_some()
                 || match world_bound {
                     Some(wb) if wb.radius > 0.0 => frustum.contains_sphere(wb.center, wb.radius),
                     _ => true,
@@ -461,8 +472,12 @@ pub(super) fn collect_static_mesh_draws(
             // #4053 — one policy, three named reasons. See `tlas_exclusion`.
             let tlas_verdict =
                 tlas_exclusion(is_lod, world_bound, cam_pos, is_decal_mesh, material_kind);
-            tlas_policy.record(tlas_verdict);
-            let in_tlas = tlas_verdict.is_none();
+            // The tier is receive-only, so a template never enters the TLAS
+            // and does not count toward the policy's census.
+            if cover_template.is_none() {
+                tlas_policy.record(tlas_verdict);
+            }
+            let in_tlas = cover_template.is_none() && tlas_verdict.is_none();
             if !in_raster && !in_tlas {
                 continue;
             }
@@ -1240,7 +1255,10 @@ pub(super) fn collect_static_mesh_draws(
                 // the built value to `intern` is one build + one hash;
                 // the old hash-then-closure shape built it twice (#4442).
                 cmd.material_id = material_table.intern(cmd.to_gpu_material());
-                draw_commands.push(cmd);
+                match cover_template {
+                    Some(record) => cover_template_draws.push((record, cmd)),
+                    None => draw_commands.push(cmd),
+                }
             }
         }
     }
@@ -1685,6 +1703,7 @@ mod tests {
             Vec3::ZERO,
             &FxHashMap::default(),
             &mut draw_commands,
+            &mut Vec::new(),
             &mut material_table,
         );
 
@@ -1748,6 +1767,7 @@ mod tests {
             Vec3::ZERO,
             &FxHashMap::default(),
             &mut draw_commands,
+            &mut Vec::new(),
             &mut material_table,
         );
 
@@ -1776,6 +1796,7 @@ mod tests {
             Vec3::ZERO,
             &FxHashMap::default(),
             &mut draw_commands,
+            &mut Vec::new(),
             &mut material_table,
         );
 
@@ -1829,6 +1850,7 @@ mod tests {
             Vec3::ZERO,
             &FxHashMap::default(),
             &mut draw_commands,
+            &mut Vec::new(),
             &mut material_table,
         );
 
@@ -1871,6 +1893,7 @@ mod tests {
             Vec3::ZERO,
             &FxHashMap::default(),
             &mut draw_commands,
+            &mut Vec::new(),
             &mut material_table,
         );
 
@@ -2046,6 +2069,7 @@ mod tests {
             Vec3::ZERO,
             &FxHashMap::default(),
             &mut draw_commands,
+            &mut Vec::new(),
             &mut material_table,
         );
 
@@ -2085,6 +2109,7 @@ mod tests {
             Vec3::ZERO,
             &FxHashMap::default(),
             &mut draw_commands,
+            &mut Vec::new(),
             &mut material_table,
         );
 

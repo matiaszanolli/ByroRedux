@@ -1397,6 +1397,9 @@ fn spawn_collision_shapes(
 // `scene/nif_loader.rs` calls `mesh_instance::try_spawn_morph_slot` where
 // its `SkinnedMesh` is built (#4399).
 pub(crate) mod mesh_instance;
+// #4413 — authored ground-cover templates, spawned through the same
+// `mesh_instance` path as a placed reference.
+pub(crate) mod authored_cover;
 use mesh_instance::{
     prepare_mesh_uploads, resolve_mesh_paths_with_pre_merge, spawn_mesh_instance, PlacementCtx,
 };

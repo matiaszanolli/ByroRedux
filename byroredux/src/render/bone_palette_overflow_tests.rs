@@ -100,6 +100,7 @@ fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, rustc_hash::FxHashMap<Entity
     let _ = build_render_data(
         world,
         &mut draw_commands,
+        &mut Vec::new(),
         &mut water_commands,
         &mut gpu_lights,
         &mut Vec::new(),

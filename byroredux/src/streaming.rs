@@ -695,6 +695,10 @@ pub struct WorldStreamingState {
     /// [`LodWaterPlane`]'s doc for why this isn't reconciled per-block like
     /// `lod_blocks`), reclaimed once in `drain_streaming_state`.
     pub lod_water: Option<crate::streaming::LodWaterPlane>,
+    /// #4413 — pseudo cell root owning the authored ground-cover templates
+    /// (one hidden instance of each `GRAS` model). Spawned once at worldspace
+    /// entry, reclaimed with the other roots in `drain_streaming_state`.
+    pub authored_cover_root: Option<EntityId>,
     /// Cells whose load request is in flight on the worker. Maps
     /// `(gx, gy)` to the generation of the outstanding request.
     /// Drain compares the payload's generation against this map's
@@ -831,6 +835,7 @@ impl WorldStreamingState {
             object_lod_churn: crate::cell_loader::ChurnTracker::default(),
             placement_lod_blocks: HashMap::new(),
             lod_water: None,
+            authored_cover_root: None,
             pending: HashMap::new(),
             next_generation: 0,
             radius_load,
@@ -846,6 +851,28 @@ impl WorldStreamingState {
             payload_rx,
             active_apply: None,
         }
+    }
+
+    /// #4413 — spawn the worldspace's authored ground-cover templates, when
+    /// `install_ground_cover` resolved an [`AuthoredCover`] for it. The
+    /// renderer instances them; see `cell_loader::spawn::authored_cover`.
+    ///
+    /// [`AuthoredCover`]: byroredux_core::ecs::components::groundcover::AuthoredCover
+    pub fn spawn_authored_cover(&mut self, world: &mut World, ctx: &mut VulkanContext) {
+        let Some(cover) = world
+            .try_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>()
+            .map(|cover| cover.clone())
+        else {
+            return;
+        };
+        self.authored_cover_root =
+            crate::cell_loader::spawn::authored_cover::spawn_authored_cover_templates(
+                world,
+                ctx,
+                &self.tex_provider,
+                &mut self.mat_provider,
+                &cover,
+            );
     }
 
     /// Spawn the worldspace-wide distant LOD water quad for this streaming

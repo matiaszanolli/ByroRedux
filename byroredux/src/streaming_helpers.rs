@@ -497,6 +497,10 @@ pub fn drain_streaming_state(
     }
     let cells: Vec<_> = state.loaded.drain().collect();
     let persistent_root = state.persistent_root.take();
+    // #4413 — the authored ground-cover templates are worldspace-scoped: a
+    // pseudo cell root, reclaimed in the same batch as the streamed cells.
+    let authored_cover_root = state.authored_cover_root.take();
+    world.remove_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>();
     // #1536 — LOD blocks (terrain + object) carry no `CellRoot`, so
     // `unload_cell`'s `CellRootIndex` victim walk can't reach them; their
     // ONLY reclaim path is `unload_{,object_}lod_block`. Pre-fix
@@ -542,6 +546,7 @@ pub fn drain_streaming_state(
         .into_iter()
         .map(|((_gx, _gy), slot)| slot.cell_root)
         .chain(persistent_root)
+        .chain(authored_cover_root)
         .collect();
     let unload_timings = cell_loader::unload_cells(world, ctx, &roots);
     // Logged rather than fed to `TelemetryState::record_unload_phases`:

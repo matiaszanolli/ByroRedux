@@ -239,9 +239,28 @@ impl VulkanContext {
             // (post-grouping; bumped in the branches below).
             self.last_draw_call_stats.batch_count = batches.len() as u32;
 
+            // #4413 — the ground-cover model tier draws with the opaque
+            // pipeline, so its shapes go in before the first blended batch:
+            // a transparent surface in front of a plant must blend over it.
+            let mut groundcover_models_drawn = false;
             let mut i = 0;
             while i < batches.len() {
                 let batch = &batches[i];
+                if !groundcover_models_drawn
+                    && matches!(batch.pipeline_key, PipelineKey::Blended { .. })
+                {
+                    groundcover_models_drawn = true;
+                    self.draw_groundcover_models(
+                        cmd,
+                        global_bound,
+                        &mut last_pipeline_key,
+                        &mut last_render_layer,
+                        &mut last_z_test,
+                        &mut last_z_write,
+                        &mut last_z_function,
+                        &mut last_cull_mode,
+                    );
+                }
 
                 // Switch pipeline when rendering mode changes.
                 // Two-sided rendering uses dynamic `cmd_set_cull_mode`
@@ -489,6 +508,19 @@ impl VulkanContext {
                 }
             }
 
+            if !groundcover_models_drawn {
+                self.draw_groundcover_models(
+                    cmd,
+                    global_bound,
+                    &mut last_pipeline_key,
+                    &mut last_render_layer,
+                    &mut last_z_test,
+                    &mut last_z_write,
+                    &mut last_z_function,
+                    &mut last_cull_mode,
+                );
+            }
+
             // ── Water surfaces ────────────────────────────────────────
             //
             // After all opaque + alpha-blend triangle batches have
@@ -689,5 +721,86 @@ mod tests {
             "an unconditional +=2 assumes both halves of the two-sided \
              split recorded; they can both early-out (#2766)"
         );
+    }
+}
+
+impl VulkanContext {
+    /// #4413 — draw the ground-cover model tier's shapes: one indexed
+    /// indirect draw per shape through the opaque main pipeline, with each
+    /// shape's raster state applied through the batch loop's own trackers so
+    /// the loop's change detection stays exact afterwards. The instances were
+    /// written into the main instance buffer's tail by
+    /// `record_groundcover_models`; the global VB/IB must be bound, since
+    /// the draws index the global pools.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_groundcover_models(
+        &self,
+        cmd: vk::CommandBuffer,
+        global_bound: bool,
+        last_pipeline_key: &mut PipelineKey,
+        last_render_layer: &mut Option<byroredux_core::ecs::components::RenderLayer>,
+        last_z_test: &mut bool,
+        last_z_write: &mut bool,
+        last_z_function: &mut u8,
+        last_cull_mode: &mut Option<vk::CullModeFlags>,
+    ) {
+        if !global_bound {
+            return;
+        }
+        let Some((buffer, shapes)) = self
+            .groundcover_models
+            .as_ref()
+            .and_then(|tier| tier.shape_draws())
+        else {
+            return;
+        };
+        let opaque = PipelineKey::Opaque { wireframe: false };
+        // SAFETY: called from `record_geometry_pass`'s render-pass scope, so
+        // `cmd` is recording inside the main render pass with the scene
+        // descriptor sets and the global VB/IB bound; `buffer` is the tier's
+        // indirect buffer, made visible to DRAW_INDIRECT by its emit barrier.
+        unsafe {
+            if *last_pipeline_key != opaque {
+                self.device
+                    .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+                *last_pipeline_key = opaque;
+            }
+            for (index, shape) in shapes.iter().enumerate() {
+                if *last_render_layer != Some(shape.render_layer) {
+                    let (constant, clamp, slope) = shape.render_layer.depth_bias();
+                    self.device.cmd_set_depth_bias(cmd, constant, clamp, slope);
+                    *last_render_layer = Some(shape.render_layer);
+                }
+                if shape.z_test != *last_z_test {
+                    self.device.cmd_set_depth_test_enable(cmd, shape.z_test);
+                    *last_z_test = shape.z_test;
+                }
+                if shape.z_write != *last_z_write {
+                    self.device.cmd_set_depth_write_enable(cmd, shape.z_write);
+                    *last_z_write = shape.z_write;
+                }
+                if shape.z_function != *last_z_function {
+                    self.device
+                        .cmd_set_depth_compare_op(cmd, depth_compare_op(shape.z_function));
+                    *last_z_function = shape.z_function;
+                }
+                let cull = if shape.two_sided {
+                    vk::CullModeFlags::NONE
+                } else {
+                    vk::CullModeFlags::BACK
+                };
+                if *last_cull_mode != Some(cull) {
+                    self.device.cmd_set_cull_mode(cmd, cull);
+                    *last_cull_mode = Some(cull);
+                }
+                self.device.cmd_draw_indexed_indirect(
+                    cmd,
+                    buffer,
+                    index as u64 * std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u64,
+                    1,
+                    std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32,
+                );
+            }
+        }
     }
 }

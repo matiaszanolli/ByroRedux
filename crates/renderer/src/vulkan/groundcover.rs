@@ -1811,6 +1811,34 @@ impl GroundCoverPipeline {
         }
     }
 
+    /// The frame's chunk and cell records, the terrain vertex buffer and the
+    /// camera, for the authored-model tier's placement (#4413) — the same
+    /// chunks the blades scattered over. `None` when the scatter did not run
+    /// this frame (an interior, or no TLAS to trace).
+    pub fn model_scatter_inputs(
+        &self,
+        frame: usize,
+        tlas: Option<vk::AccelerationStructureKHR>,
+    ) -> Option<super::groundcover_models::ModelScatterInputs> {
+        (self.frame_chunk_count > 0).then(|| super::groundcover_models::ModelScatterInputs {
+            chunk_buffer: self.chunk_buffers[frame].buffer,
+            cell_buffer: self.cell_buffers[frame].buffer,
+            vertex_buffer: self.bound_vertex_buffer,
+            chunk_count: self.frame_chunk_count,
+            camera_pos: [
+                self.frame_push.camera_pixels[0],
+                self.frame_push.camera_pixels[1],
+                self.frame_push.camera_pixels[2],
+            ],
+            render_origin: [
+                self.frame_push.origin_time[0],
+                self.frame_push.origin_time[1],
+                self.frame_push.origin_time[2],
+            ],
+            tlas,
+        })
+    }
+
     pub fn stats(&self) -> GroundCoverStats {
         self.stats
     }
@@ -2934,6 +2962,10 @@ mod memory_budget_ledger_tests {
         let section = &section[..section.find("\n## ").unwrap_or(section.len())];
         for (owner, bytes) in [
             ("EXAL ground cover", super::groundcover_resident_bytes()),
+            (
+                "EXAL ground-cover model tier",
+                crate::vulkan::groundcover_models::groundcover_model_resident_bytes(),
+            ),
             (
                 "SKYAL sky bake",
                 crate::vulkan::sky_cube::sky_bake_resident_bytes(),

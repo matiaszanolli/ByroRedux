@@ -325,6 +325,96 @@ impl Default for GroundCoverPalette {
 
 impl Resource for GroundCoverPalette {}
 
+/// How an authored-model record's water distance applies (§12.12 Phase C,
+/// #4413). Read in xEdit's zero-based "Unit from water type" order, which is
+/// the only numbering the vanilla data fits (see `GrasRecord::
+/// water_distance_application`). The two `Either - At Most Above/Below`
+/// variants (6, 7) have no vanilla use and no documented meaning, so the
+/// translate boundary drops a record that authors them rather than guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverWaterRule {
+    /// At least `distance` above the water plane (or anywhere dry-land when
+    /// the cell has no water).
+    AboveAtLeast,
+    /// Above the water plane, by at most `distance`.
+    AboveAtMost,
+    /// Submerged by at least `distance`.
+    BelowAtLeast,
+    /// Submerged by at most `distance`.
+    BelowAtMost,
+    /// At least `distance` from the water plane, either side.
+    EitherAtLeast,
+    /// Within `distance` of the water plane, either side.
+    EitherAtMost,
+}
+
+impl CoverWaterRule {
+    /// The rule for an authored zero-based code, `None` for an unsupported one.
+    pub const fn from_authored(code: u32) -> Option<Self> {
+        match code {
+            0 => Some(Self::AboveAtLeast),
+            1 => Some(Self::AboveAtMost),
+            2 => Some(Self::BelowAtLeast),
+            3 => Some(Self::BelowAtMost),
+            4 => Some(Self::EitherAtLeast),
+            5 => Some(Self::EitherAtMost),
+            _ => None,
+        }
+    }
+
+    /// The code the placement shader switches on — the same zero-based order.
+    pub const fn gpu_code(self) -> u32 {
+        match self {
+            Self::AboveAtLeast => 0,
+            Self::AboveAtMost => 1,
+            Self::BelowAtLeast => 2,
+            Self::BelowAtMost => 3,
+            Self::EitherAtLeast => 4,
+            Self::EitherAtMost => 5,
+        }
+    }
+}
+
+/// One authored ground-cover model — a `GRAS` record, translated (§12.12
+/// Phase C, #4413). Every record draws its own model, whatever it depicts:
+/// grass cards, rocks, ferns, leaf decals and kelp alike.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthoredCoverRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// Model path relative to `Data\Meshes\`.
+    pub model_path: String,
+    pub climate_weight: ClimateWeights,
+    /// Share of grid points that grow this record, `0.0..=1.0`.
+    pub density: f32,
+    pub water_rule: CoverWaterRule,
+    /// Units from the water plane the rule measures.
+    pub water_distance: f32,
+    /// Per-instance scale variation, a fraction of the model's size.
+    pub height_range: f32,
+    /// Per-instance placement jitter around its grid point, in units.
+    pub position_range: f32,
+    /// Scale all three axes, rather than height alone.
+    pub uniform_scaling: bool,
+    /// Tilt the model onto the terrain normal.
+    pub fit_to_slope: bool,
+    /// The model's authored height, when the record carries one.
+    pub nominal_height: Option<f32>,
+}
+
+/// The worldspace's authored-model tier: its records and the grid their
+/// candidates sit on. Absent when the game authors no grass grid spacing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthoredCover {
+    pub records: Vec<AuthoredCoverRecord>,
+    /// Spacing of the candidate grid, in units.
+    pub grid_spacing: f32,
+    /// The worldspace climate the records are weighted for.
+    pub climate: Climate,
+}
+
+impl Resource for AuthoredCover {}
+
 /// Per-weather ground-cover colour multiplier (§12, Phase 5 remainder; #4057).
 ///
 /// Oblivion's `WTHR.HNAM` carries a `grassDimmer` alongside `sunlightDimmer`

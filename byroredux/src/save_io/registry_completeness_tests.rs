@@ -710,6 +710,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("LoadOrderIdentity", "the GlobalFormIdResolver's slot -> plugin table (#4414), installed beside it from the active plugin list on every world setup and cell load — derived configuration, not gameplay state"),
         ("CombatDisposition", "an NPC's AIDT aggression/confidence/aggro radius (#4414), re-stamped from its NPC_ record through the Use AI Data template terminal on every spawn — immutable authored data, same posture as WalkSpeed"),
         ("DetectionConfig", "fSneakMaxDistance / fSneakExteriorDistanceMult (#4414), installed from the load order's GMSTs by populate_scene_runtime on every load — derived configuration"),
+        ("AuthoredCover", "the worldspace's authored ground-cover records (#4413), translated from its GRAS records by install_ground_cover at every worldspace entry — derived configuration"),
+        ("AuthoredCoverTemplate", "marks a hidden authored ground-cover template shape (#4413); templates are spawned per worldspace from GRAS models and reclaimed with the streaming state, never saved"),
         ("SpellCatalog", "canonical spell translations (#4415), rebuilt from the plugin set by populate_scene_runtime on every load — immutable reference data"),
         ("ImageSpaceBase", "the current base image space (#4416), republished from the loaded interior's XCIM at every interior load and from the live weather/worldspace every exterior frame — derived, never saved"),
         ("PlacedItemCount", "REFR XCNT stack size (#4706), rederived identically from the plugin's parsed REFR every cell load — same posture as DoorTeleport; a taken stack persists through the PersistentReferenceStates tombstone"),

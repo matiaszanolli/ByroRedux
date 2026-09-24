@@ -718,6 +718,78 @@ pub(crate) fn collect_groundcover_species_table(world: &World, out: &mut Vec<u32
     out.extend_from_slice(&species_selection_table(&weights));
 }
 
+/// #4413 — the authored-model tier's records and record-selection table for
+/// this frame, from the worldspace's [`AuthoredCover`]. Returns the candidate
+/// grid spacing, or `None` (and empty outputs) when the worldspace has no
+/// authored cover.
+///
+/// Each record's cover-test reach is its tallest scaled instance: its authored
+/// height scaled by its full height variation, or — for the records that
+/// author no height — the blade palette's tallest blade, the reach the blade
+/// scatter already uses.
+///
+/// [`AuthoredCover`]: byroredux_core::ecs::components::groundcover::AuthoredCover
+pub(crate) fn collect_groundcover_model_records(
+    world: &World,
+    records: &mut Vec<byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord>,
+    table: &mut Vec<u32>,
+) -> Option<f32> {
+    use byroredux_core::ecs::components::groundcover::AuthoredCover;
+    use byroredux_renderer::shader_constants::{
+        GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE, GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING,
+    };
+    use byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord;
+    records.clear();
+    table.clear();
+    let cover = world.try_resource::<AuthoredCover>()?;
+    let blade_reach = world
+        .try_resource::<GroundCoverPalette>()
+        .map(|palette| {
+            palette
+                .species
+                .iter()
+                .map(|s| s.height_range.1)
+                .fold(0.0_f32, f32::max)
+        })
+        .unwrap_or(0.0);
+    let count = cover
+        .records
+        .len()
+        .min(byroredux_renderer::shader_constants::GROUNDCOVER_MODEL_MAX_RECORDS as usize);
+    let used = &cover.records[..count];
+    records.extend(used.iter().map(|record| {
+        let mut flags = 0;
+        if record.uniform_scaling {
+            flags |= GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING;
+        }
+        if record.fit_to_slope {
+            flags |= GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE;
+        }
+        GpuGroundCoverModelRecord {
+            density: record.density,
+            water_rule: record.water_rule.gpu_code(),
+            water_distance: record.water_distance,
+            height_range: record.height_range,
+            position_range: record.position_range,
+            flags,
+            shape_first: 0,
+            shape_count: 0,
+            cover_reach: record
+                .nominal_height
+                .map_or(blade_reach, |h| h * (1.0 + record.height_range)),
+            pad0: 0,
+            pad1: 0,
+            pad2: 0,
+        }
+    }));
+    let weights: Vec<f32> = used
+        .iter()
+        .map(|record| record.climate_weight.weight_for(cover.climate))
+        .collect();
+    table.extend_from_slice(&species_selection_table(&weights));
+    Some(cover.grid_spacing)
+}
+
 /// Quantise relative weights into the scatter's fixed-size selection table.
 ///
 /// Largest-remainder apportionment, after reserving one entry for every

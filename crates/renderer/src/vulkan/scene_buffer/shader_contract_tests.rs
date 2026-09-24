@@ -1507,6 +1507,8 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
     let compute_rs = include_str!("../compute.rs");
     let groundcover_scene = include_str!("../../../shaders/include/groundcover_scene.glsl");
     let groundcover_rs = include_str!("../groundcover.rs");
+    let groundcover_models_comp = include_str!("../../../shaders/groundcover_models.comp");
+    let groundcover_models_rs = include_str!("../groundcover_models.rs");
 
     for (label, glsl_src, glsl_decl, rust_src, rust_decl) in [
         // Three GLSL copies against one Rust struct — comparing each to the
@@ -1556,6 +1558,22 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct GroundCoverBlade",
             groundcover_rs,
             "struct GpuGroundCoverBlade",
+        ),
+        // #4413 — the model tier's per-frame uploads, padded field for field
+        // on both sides so this comparator can guard them.
+        (
+            "GcModelRecord",
+            groundcover_models_comp,
+            "struct GcModelRecord",
+            groundcover_models_rs,
+            "struct GpuGroundCoverModelRecord",
+        ),
+        (
+            "GcModelShape",
+            groundcover_models_comp,
+            "struct GcModelShape",
+            groundcover_models_rs,
+            "struct GpuGroundCoverModelShape",
         ),
     ] {
         let glsl = parse_glsl_struct_fields_typed(glsl_src, glsl_decl);
@@ -1735,6 +1753,19 @@ fn every_shader_struct_is_classified() {
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
         ("GcDrawIndirect", ShaderLocal),
+        (
+            "GcModelRecord",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        (
+            "GcModelShape",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        // Written and read only by `groundcover_models.comp`; the host sizes
+        // the slab from a byte stride (`POINT_BYTES`).
+        ("GcModelPoint", ShaderLocal),
+        // `VkDrawIndexedIndirectCommand`, an ash type rather than a mirror.
+        ("GcDrawIndexed", ShaderLocal),
         ("TerrainSample", ShaderLocal),
         ("LocalMedium", ShaderLocal),
         ("DisneyDiffuseSplit", ShaderLocal),
@@ -2873,6 +2904,10 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
             "caustic_splat.comp",
             include_str!("../../../shaders/caustic_splat.comp"),
         ),
+        (
+            "groundcover_models.comp",
+            include_str!("../../../shaders/groundcover_models.comp"),
+        ),
     ];
 
     assert_mirror_list_is_complete("struct GpuInstance", SOURCES, "#2748 / #3564");
@@ -2890,7 +2925,7 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
             Some((ref_name, ref_fields)) => {
                 assert_eq!(
                     ref_fields, &fields,
-                    "GpuInstance layout mismatch: `{ref_name}` vs `{name}`. All five GLSL copies \
+                    "GpuInstance layout mismatch: `{ref_name}` vs `{name}`. Every GLSL copy \
                      of `struct GpuInstance` must declare identical fields in the same order \
                      (Shader Struct Sync invariant, #2748 / REN-D3-2026-08-12-01) — a drift here \
                      silently corrupts per-instance data for whichever copy lags behind."
@@ -3165,7 +3200,7 @@ fn camera_ubo_glsl_copies_stay_in_lockstep() {
             Some((ref_name, ref_fields)) => {
                 assert_eq!(
                     ref_fields, &fields,
-                    "CameraUBO layout mismatch: `{ref_name}` vs `{name}`. All five GLSL copies \
+                    "CameraUBO layout mismatch: `{ref_name}` vs `{name}`. Every GLSL copy \
                      of `uniform CameraUBO` must declare identical fields in the same order \
                      (Shader Struct Sync invariant, #3684) — a drift here silently corrupts \
                      camera data (view/projection matrices, lighting, motion vectors) for \

@@ -1260,6 +1260,15 @@ impl ApplicationHandler for App {
                         if let Some(stats) = ctx.groundcover_stats() {
                             println!("{}", stats.bench_line());
                         }
+                        // #4413 — the authored-model tier's last placement:
+                        // instances the placed plants asked for, and how many
+                        // fit the tail budget.
+                        if let Some(models) = ctx.groundcover_model_stats() {
+                            println!(
+                                "groundcover-models: demanded={} emitted={}",
+                                models.demanded, models.emitted
+                            );
+                        }
                     }
 
                     // #4052 — EXAL ground cover §11.1. One row per measured

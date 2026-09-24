@@ -46,8 +46,12 @@
 //! move the numbers without rewriting the suite.
 
 use byroredux_core::ecs::components::groundcover::{
-    Climate, ClimateWeights, GroundCoverPalette, WindField,
+    AuthoredCover, AuthoredCoverRecord, Climate, ClimateWeights, CoverWaterRule,
+    GroundCoverPalette, WindField,
 };
+use byroredux_plugin::esm::reader::GameKind;
+use byroredux_plugin::esm::records::GrasRecord;
+use std::collections::HashMap;
 
 /// Affinity for a layer whose name matches no keyword.
 ///
@@ -258,7 +262,6 @@ pub fn resolve_palette_for_chain(chain: &[String]) -> GroundCoverPalette {
 /// worldspace matcher does it: standing water is the strongest vegetation
 /// signal, and Skyrim's `FrozenMarshGrass01` must not read as merely
 /// alpine when it names a marsh.
-#[allow(dead_code)] // #4413 — §12.12 Phase C, the authored-model tier, weights records by climate
 fn classify_species_name(editor_id: &str) -> Option<Climate> {
     let lowered = editor_id.to_ascii_lowercase();
     const WETLAND: &[&str] = &[
@@ -294,7 +297,6 @@ fn classify_species_name(editor_id: &str) -> Option<Climate> {
 /// a reduced showing in temperate as the generic middle ground, and a
 /// small but non-zero tail elsewhere. Non-zero matters — a hard zero is
 /// the boolean boundary the whole design exists to remove, one level up.
-#[allow(dead_code)] // #4413, as above
 fn climate_weights_for(climate: Climate) -> ClimateWeights {
     const STRONG: f32 = 2.0;
     const MIDDLE: f32 = 0.4;
@@ -314,6 +316,88 @@ fn climate_weights_for(climate: Climate) -> ClimateWeights {
         alpine: pick(Climate::Alpine),
         wetland: pick(Climate::Wetland),
     }
+}
+
+/// The engine's grass grid spacing per game, in units — `iMinGrassSize`.
+///
+/// Read from each executable's built-in INI default table (the value a
+/// setting takes when no INI overrides it), and checked against the shipped
+/// default INIs where they set it: Oblivion, FO3 and FNV 80
+/// (`Oblivion_default.ini`, `Fallout_default.ini` agree), Skyrim SE and FO4
+/// 20 (`Fallout4_Default.ini` agrees; Skyrim's shipped INIs leave it unset).
+/// UESP's `Oblivion:Ini_Settings`: it "changes the amount of grass per cell,
+/// so lower values means denser fields of grass". Reading it as the spacing
+/// of the candidate grid is this engine's interpretation — see design
+/// §12.12's uncited register.
+///
+/// `None` for a game with no measured value, which leaves the authored-model
+/// tier off rather than inventing a density.
+pub fn grass_grid_spacing(game: GameKind) -> Option<f32> {
+    match game {
+        GameKind::Oblivion | GameKind::Fallout3NV => Some(80.0),
+        GameKind::Skyrim | GameKind::Fallout4 => Some(20.0),
+        _ => None,
+    }
+}
+
+/// Translate a load order's `GRAS` records into the authored-model tier
+/// (§12.12 Phase C, #4413), weighted for `climate`.
+///
+/// A record is dropped when it cannot be placed as authored: no well-formed
+/// `DATA`, no model, a density of zero, or a water rule with no documented
+/// meaning. Everything else is kept, grass or not — the census behind §12.12
+/// found no rule on a model that separates grass from ferns and rocks, which
+/// is exactly why every record draws its own model.
+///
+/// Records are ordered by FormID so the placement selection table, and so
+/// every instance's record, is stable across sessions.
+pub fn resolve_authored_cover(
+    grasses: &HashMap<u32, GrasRecord>,
+    game: GameKind,
+    climate: Climate,
+) -> Option<AuthoredCover> {
+    let grid_spacing = grass_grid_spacing(game)?;
+    let mut form_ids: Vec<u32> = grasses.keys().copied().collect();
+    form_ids.sort_unstable();
+    let records: Vec<AuthoredCoverRecord> = form_ids
+        .into_iter()
+        .filter_map(|form_id| authored_cover_record(&grasses[&form_id]))
+        .collect();
+    (!records.is_empty()).then_some(AuthoredCover {
+        records,
+        grid_spacing,
+        climate,
+    })
+}
+
+/// One `GRAS` record as an authored-model record, or `None` when it cannot
+/// be placed as authored (see [`resolve_authored_cover`]).
+fn authored_cover_record(gras: &GrasRecord) -> Option<AuthoredCoverRecord> {
+    if !gras.has_data || gras.model_path.is_empty() || gras.density == 0 {
+        return None;
+    }
+    let water_rule = CoverWaterRule::from_authored(gras.water_distance_application)?;
+    // Records whose editor ID carries no climate signal are generic
+    // vegetation: weighted like the worldspace matcher's own default.
+    let climate = classify_species_name(&gras.editor_id).unwrap_or(Climate::Temperate);
+    let finite_non_negative = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    Some(AuthoredCoverRecord {
+        form_id: gras.form_id,
+        editor_id: gras.editor_id.clone(),
+        model_path: gras.model_path.clone(),
+        climate_weight: climate_weights_for(climate),
+        // `DATA` density is authored 1–100 across all four corpora: the
+        // percent of grid points that grow the record (§12.12's register).
+        density: f32::from(gras.density.min(100)) / 100.0,
+        water_rule,
+        water_distance: f32::from(gras.distance_from_water),
+        // Vanilla spans 0.0–0.85; a scale factor must stay positive.
+        height_range: finite_non_negative(gras.height_range).min(0.95),
+        position_range: finite_non_negative(gras.position_range),
+        uniform_scaling: gras.scales_uniformly(),
+        fit_to_slope: gras.fits_to_slope(),
+        nominal_height: gras.nominal_height(),
+    })
 }
 
 /// Canonical wind for the current weather when no authored direction is

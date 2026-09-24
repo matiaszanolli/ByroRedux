@@ -450,6 +450,14 @@ struct App {
     ui_dropped_host_calls_menu: Option<String>,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
     draw_commands: Vec<DrawCommand>,
+    /// #4413 — this frame's authored ground-cover template draws (record,
+    /// built draw), for the ground-cover model tier. Retained like
+    /// `draw_commands`.
+    cover_template_draws: Vec<(u32, DrawCommand)>,
+    /// #4413 — per-frame scratch for the model tier's records and table.
+    groundcover_model_records:
+        Vec<byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord>,
+    groundcover_model_table: Vec<u32>,
     /// #4180 — the cooperative work deadline `step_streaming` computed this
     /// iteration, handed on to `step_static_blas_restore` so both between-
     /// frames stages share one allowance instead of each starting a fresh
@@ -876,6 +884,9 @@ impl App {
             ui_dropped_host_calls: 0,
             ui_dropped_host_calls_menu: None,
             draw_commands: Vec::new(),
+            cover_template_draws: Vec::new(),
+            groundcover_model_records: Vec::new(),
+            groundcover_model_table: Vec::new(),
             frame_work_deadline: None,
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),

@@ -62,6 +62,7 @@ fn run_build(world: &World) -> Vec<DrawCommand> {
     let _ = build_render_data(
         world,
         &mut draw_commands,
+        &mut Vec::new(),
         &mut water_commands,
         &mut gpu_lights,
         &mut Vec::new(),

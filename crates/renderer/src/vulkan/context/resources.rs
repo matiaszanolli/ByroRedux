@@ -730,6 +730,32 @@ impl VulkanContext {
         }
     }
 
+    /// Hand this frame's authored-model tier input to the renderer (#4413).
+    /// Resolves each shape's mesh through the live registry, so it must run
+    /// after the frame's last mesh upload. No-op without the tier.
+    pub fn prepare_groundcover_models(
+        &mut self,
+        input: &super::super::groundcover_models::GroundCoverModelFrame<'_>,
+    ) {
+        let frame = self.current_frame;
+        if let Some(ref mut tier) = self.groundcover_models {
+            tier.prepare(
+                &self.device,
+                frame,
+                &self.mesh_registry,
+                &self.texture_registry,
+                input,
+            );
+        }
+    }
+
+    /// Authored-model tier placement totals, or `None` without the tier.
+    pub fn groundcover_model_stats(
+        &self,
+    ) -> Option<super::super::groundcover_models::GroundCoverModelStats> {
+        self.groundcover_models.as_ref().map(|tier| tier.stats())
+    }
+
     /// `groundcover:` telemetry row for the bench summary, or `None` when the
     /// pipeline was never created.
     pub fn groundcover_stats(&self) -> Option<super::super::groundcover::GroundCoverStats> {

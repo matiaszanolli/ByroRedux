@@ -733,6 +733,9 @@ pub struct VulkanContext {
     /// same shadow ray `water.frag` does) or when pipeline creation failed;
     /// ground cover then simply does not render.
     pub groundcover: Option<super::groundcover::GroundCoverPipeline>,
+    /// EXAL ground cover §12.12 Phase C — the authored-model tier (#4413).
+    /// `None` exactly when `groundcover` is, or when its creation failed.
+    pub groundcover_models: Option<super::groundcover_models::GroundCoverModelTier>,
     /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
     /// `None` on every normal run — created only by
     /// `--bench-groundcover-sampling`, because it owns ~3.5 MB of baked

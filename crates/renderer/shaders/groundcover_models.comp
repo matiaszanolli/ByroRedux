@@ -1,0 +1,489 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : require
+// `GpuInstance` carries 64-bit device addresses; this shader writes them as
+// zero, but the type must be recognised to keep the struct byte-identical to
+// the other declaration sites (`gpu_instance_glsl_copies_stay_in_lockstep`).
+#extension GL_EXT_buffer_reference : require
+#extension GL_ARB_gpu_shader_int64 : require
+
+// EXAL ground cover §12.12 Phase C — the authored-model tier (#4413).
+//
+// Every `GRAS` record draws its own model: grass cards, rocks, ferns, leaf
+// decals and kelp alike. Candidates sit on the game's own grass grid
+// (`iMinGrassSize`), each picks a record by climate weight, and is accepted
+// by the record's authored density times the §3 field. Accepted plants are
+// written as ordinary `GpuInstance`s into the tail of the main instance
+// buffer, so the main geometry pass draws them with the shared material
+// shading — cards alpha-test, rocks shade as rock — and receive shadows like
+// any other surface. Like the blades they are receive-only: no TLAS entry.
+//
+// ## Three phases, one shader
+//
+// Instanced draws need each shape's instances contiguous, and a truncated
+// frame must drop the same plants every frame or the tier flickers. Atomic
+// appends satisfy neither, so placement is split:
+//
+//   A PLACE   one workgroup per chunk. Evaluate the chunk's candidates in
+//             lane order, compact accepted points into the chunk's slab, and
+//             count them per record — with in-chunk ranks assigned serially
+//             per batch, so every count and rank is scheduling-independent.
+//   B LAYOUT  one workgroup. Prefix the per-chunk counts per record, then lay
+//             the shapes out back to back in the instance tail, clamped to
+//             its capacity, and write each shape's indexed indirect draw.
+//   C EMIT    one workgroup per chunk. Write every accepted point's instance
+//             for each of its record's shapes at the slot phase B assigned.
+//
+// ## The density field, without moisture
+//
+// §3's field is the product of five factors. Its moisture term is zero below
+// the water plane, which would forbid kelp from growing at all. Authored
+// models carry their own water rule instead (`CoverWaterRule`), so the field
+// here is affinity × slope × shelter × clump and the record's rule decides
+// dry ground from submerged.
+//
+// Compile with:
+//   glslangValidator -V -Icrates/renderer/shaders groundcover_models.comp -o groundcover_models.comp.spv
+
+#include "include/shader_constants.glsl"
+
+layout(local_size_x = GROUNDCOVER_MODEL_WORKGROUP, local_size_y = 1, local_size_z = 1) in;
+
+#include "include/groundcover_scene.glsl"
+
+// Must match Rust `GpuInstance` exactly (see include/bindings.glsl).
+struct GpuInstance {
+    mat4 model;            // offset 0,  64 bytes
+    uint textureIndex;     // offset 64
+    uint boneOffset;       // offset 68
+    uint vertexOffset;     // offset 72
+    uint indexOffset;      // offset 76
+    uint vertexCount;      // offset 80
+    uint flags;            // offset 84
+    uint materialId;       // offset 88
+    float ior;             // offset 92
+    float avgAlbedoR;      // offset 96
+    float avgAlbedoG;      // offset 100
+    float avgAlbedoB;      // offset 104
+    uint surfaceId;        // offset 108
+    uint64_t skinnedVertexAddress; // offset 112
+    uvec2 _reserved;               // offset 120
+    uint64_t morphDeltaAddress;  // offset 128
+    uint64_t morphWeightAddress; // offset 136
+    uint morphTargetCount;       // offset 144
+    uint _reserved2a; // offset 148
+    uint _reserved2b; // offset 152
+    uint _reserved2c; // offset 156 -> total 160
+};
+
+/// One authored record. Mirrors Rust `GpuGroundCoverModelRecord`.
+struct GcModelRecord {
+    float density;       // share of candidates that grow it, 0..1
+    uint waterRule;      // `CoverWaterRule::gpu_code`
+    float waterDistance;
+    float heightRange;   // scale variation fraction
+    float positionRange; // jitter, units
+    uint flags;          // bit 0 uniform scaling, bit 1 fit to slope
+    uint shapeFirst;
+    uint shapeCount;
+    float coverReach;    // height of the cover-test span
+    uint pad0;
+    uint pad1;
+    uint pad2;
+};
+
+/// One shape of a record's model. Mirrors Rust `GpuGroundCoverModelShape`.
+struct GcModelShape {
+    mat4 local;          // model-root-local transform, Y-up
+    uint record;
+    uint materialId;
+    uint textureIndex;
+    uint vertexOffset;   // global vertex offset
+    uint indexOffset;    // global first index
+    uint indexCount;
+    uint vertexCount;
+    uint flags;          // bit 0 the local transform scales non-uniformly
+    float avgAlbedoR;
+    float avgAlbedoG;
+    float avgAlbedoB;
+    float ior;
+};
+
+/// One accepted plant, written by PLACE and read by EMIT.
+struct GcModelPoint {
+    /// xyz = absolute Y-up world position of the root.
+    vec4 position;
+    /// x = record | (candidate << 8), y = rank among the chunk's points of
+    /// that record, z = packSnorm2x16(terrain normal .xz), w = candidate hash.
+    uvec4 meta;
+};
+
+struct GcDrawIndexed {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer GcChunkBuffer {
+    GroundCoverChunk gcChunks[];
+};
+layout(std430, set = 0, binding = 1) readonly buffer GcCellBuffer {
+    GroundCoverCell gcCells[];
+};
+// The global vertex SSBO, read for terrain exactly as the blade scatter does.
+layout(std430, set = 0, binding = 2) readonly buffer GcGlobalVertices {
+    float vertexData[];
+};
+layout(set = 0, binding = 3) uniform accelerationStructureEXT gcTopLevelAS;
+layout(std430, set = 0, binding = 4) readonly buffer GcModelRecords {
+    GcModelRecord gcRecords[];
+};
+/// `GROUNDCOVER_SPECIES_TABLE_SIZE` record indices, filled in proportion to
+/// each record's weight in the worldspace climate.
+layout(std430, set = 0, binding = 5) readonly buffer GcModelTable {
+    uint gcRecordTable[];
+};
+layout(std430, set = 0, binding = 6) readonly buffer GcModelShapes {
+    GcModelShape gcShapes[];
+};
+layout(std430, set = 0, binding = 7) buffer GcModelPoints {
+    GcModelPoint gcPoints[];
+};
+/// `[0, C)`       per-(chunk, record) point counts, C = MAX_CHUNKS × MAX_RECORDS
+/// `[C, 2C)`      per-(chunk, record) base: that record's points in earlier chunks
+/// `[2C, 2C+CH)`  per-chunk accepted point count, CH = MAX_CHUNKS
+/// then per shape (base, count) pairs, then four stats words.
+layout(std430, set = 0, binding = 8) buffer GcModelCounts {
+    uint gcCounts[];
+};
+layout(std430, set = 0, binding = 9) buffer GcModelDraws {
+    GcDrawIndexed gcDraws[];
+};
+layout(std430, set = 0, binding = 10) writeonly buffer GcInstances {
+    GpuInstance gcInstances[];
+};
+layout(std430, set = 0, binding = 11) writeonly buffer GcPreviousModels {
+    mat4 gcPreviousModels[];
+};
+
+layout(push_constant) uniform GcModelPush {
+    /// xyz = Y-up camera position (distance fade).
+    vec4 cameraPos;
+    /// xyz = render origin; w = 1.0 when the cover test may trace the TLAS.
+    vec4 renderOriginEnable;
+    uint phase;
+    uint chunkCount;
+    uint recordCount;
+    uint shapeCount;
+    /// First instance slot after the main instance list.
+    uint tailBase;
+    /// Instance slots the tail may use this frame.
+    uint tailCapacity;
+    float gridSpacing;
+    uint pad;
+} pc;
+
+#include "include/terrain_sample.glsl"
+#include "include/groundcover_density.glsl"
+#define renderOrigin pc.renderOriginEnable
+#include "include/ray_origin.glsl"
+
+/// Same mixer as the blade scatter's `gcHash`.
+uint gcModelHash(uint seed, uint index) {
+    uint h = seed ^ (index * 0x9E3779B9u);
+    h ^= h >> 16;
+    h *= 0x7FEB352Du;
+    h ^= h >> 15;
+    h *= 0x846CA68Bu;
+    h ^= h >> 16;
+    return h;
+}
+
+float gcUnit(uint h) {
+    return float(h & 0xFFFFFFu) * (1.0 / 16777216.0);
+}
+
+/// The record's authored water rule at a root `height` over a cell whose
+/// water plane is `waterY` (or the no-water sentinel).
+bool gcWaterAdmits(GcModelRecord rec, float height, float waterY) {
+    bool dry = waterY <= GROUNDCOVER_NO_WATER;
+    float above = height - waterY;
+    float d = rec.waterDistance;
+    switch (rec.waterRule) {
+    case 0u: return dry || above >= d;                   // Above - At Least
+    case 1u: return !dry && above >= 0.0 && above <= d;  // Above - At Most
+    case 2u: return !dry && -above >= d;                 // Below - At Least
+    case 3u: return !dry && above <= 0.0 && -above <= d; // Below - At Most
+    case 4u: return dry || abs(above) >= d;              // Either - At Least
+    case 5u: return !dry && abs(above) <= d;             // Either - At Most
+    default: return false;
+    }
+}
+
+/// Placed geometry covering the root — a road, a flagstone, a building's
+/// footing — as the blade scatter tests it: straight down through the span
+/// the plant would occupy, against architecture and static props only.
+bool gcCovered(TerrainSample s, vec2 worldXZ, float reach) {
+    if (pc.renderOriginEnable.w < 0.5 || reach <= 0.0) {
+        return false;
+    }
+    vec3 root = vec3(worldXZ.x, s.meshHeight, worldXZ.y);
+    vec3 floorPoint = offsetRayOrigin(root, vec3(0.0, 1.0, 0.0));
+    vec3 top = root + vec3(0.0, reach, 0.0);
+    float span = top.y - floorPoint.y;
+    if (span <= 0.0) {
+        return false;
+    }
+    rayQueryEXT q;
+    rayQueryInitializeEXT(
+        q, gcTopLevelAS,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        VISIBILITY_LAYER_ARCHITECTURE | VISIBILITY_LAYER_STATIC_PROP,
+        top, 0.0, vec3(0.0, -1.0, 0.0), span);
+    while (rayQueryProceedEXT(q)) {}
+    return rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+shared uint sRecordCount[GROUNDCOVER_MODEL_MAX_RECORDS];
+shared uint sAccepted[GROUNDCOVER_MODEL_WORKGROUP];
+shared uint sRecord[GROUNDCOVER_MODEL_WORKGROUP];
+shared uint sSlot[GROUNDCOVER_MODEL_WORKGROUP];
+shared uint sRank[GROUNDCOVER_MODEL_WORKGROUP];
+shared uint sTotal;
+
+void place(uint chunkIdx, uint lane) {
+    for (uint r = lane; r < GROUNDCOVER_MODEL_MAX_RECORDS; r += GROUNDCOVER_MODEL_WORKGROUP) {
+        sRecordCount[r] = 0u;
+    }
+    if (lane == 0u) {
+        sTotal = 0u;
+    }
+    barrier();
+
+    GroundCoverChunk chunk = gcChunks[chunkIdx];
+    uint perSide = uint(ceil(GROUNDCOVER_CHUNK_UNITS / max(pc.gridSpacing, 1.0)));
+    uint candidates = chunk.slotActive != 0u && pc.recordCount > 0u
+        ? min(perSide * perSide, GROUNDCOVER_MODEL_POINTS_PER_CHUNK)
+        : 0u;
+    uint seed = chunk.seed ^ GROUNDCOVER_MODEL_SEED_SALT;
+    GroundCoverCell cell = gcCells[chunk.slotActive != 0u ? chunk.cellIndex : 0u];
+
+    for (uint batch = 0u; batch < candidates; batch += GROUNDCOVER_MODEL_WORKGROUP) {
+        uint candidate = batch + lane;
+        bool accepted = false;
+        uint record = 0u;
+        GcModelPoint point;
+        if (candidate < candidates) {
+            uint h = gcModelHash(seed, candidate);
+            record = min(gcRecordTable[h >> 24], pc.recordCount - 1u);
+            GcModelRecord rec = gcRecords[record];
+            uint gx = candidate % perSide;
+            uint gz = candidate / perSide;
+            vec2 jitter = vec2(
+                gcUnit(gcModelHash(h, 1u)),
+                gcUnit(gcModelHash(h, 2u))) * 2.0 - 1.0;
+            // Chunk-local, +X and +Z-down like the terrain grid. Jitter that
+            // would leave the chunk is reflected back inside it: a point
+            // pushed across a cell edge would sample no terrain and be lost,
+            // thinning a stripe along every cell border.
+            vec2 local = (vec2(float(gx), float(gz)) + 0.5) * pc.gridSpacing
+                + jitter * rec.positionRange;
+            local = abs(local);
+            local = GROUNDCOVER_CHUNK_UNITS - abs(GROUNDCOVER_CHUNK_UNITS - local);
+            vec2 worldXZ = vec2(chunk.baseXZ.x + local.x, chunk.baseXZ.y - local.y);
+            TerrainSample s = byroSampleTerrain(cell.vertexOffset, cell.originXZ, worldXZ);
+            if (s.valid) {
+                float laplacian = byroGcLaplacian(
+                    cell.vertexOffset, cell.originXZ, worldXZ, s.height);
+                GroundCoverFactors f = byroGcDensityFactors(
+                    s, worldXZ, cell.affinity0, cell.affinity1, cell.waterY, laplacian);
+                float field = clamp(f.affinity * f.slope * f.shelter * f.clump, 0.0, 1.0);
+                vec3 world = vec3(worldXZ.x, s.height, worldXZ.y);
+                float fade = byroGcDistanceFade(distance(world, pc.cameraPos.xyz));
+                if (gcUnit(gcModelHash(h, 3u)) < rec.density * field * fade
+                    && gcWaterAdmits(rec, s.height, cell.waterY)
+                    && !gcCovered(s, worldXZ, rec.coverReach)) {
+                    accepted = true;
+                    point.position = vec4(world, 0.0);
+                    point.meta = uvec4(
+                        record | (candidate << 8),
+                        0u,
+                        packSnorm2x16(s.normal.xz),
+                        h);
+                }
+            }
+        }
+        sAccepted[lane] = accepted ? 1u : 0u;
+        sRecord[lane] = record;
+        barrier();
+        // Serial per batch: ranks and slots follow candidate order, never
+        // workgroup scheduling.
+        if (lane == 0u) {
+            for (uint j = 0u; j < GROUNDCOVER_MODEL_WORKGROUP; ++j) {
+                if (sAccepted[j] != 0u) {
+                    sSlot[j] = sTotal++;
+                    sRank[j] = sRecordCount[sRecord[j]]++;
+                }
+            }
+        }
+        barrier();
+        if (accepted) {
+            point.meta.y = sRank[lane];
+            gcPoints[chunkIdx * GROUNDCOVER_MODEL_POINTS_PER_CHUNK + sSlot[lane]] = point;
+        }
+        barrier();
+    }
+
+    for (uint r = lane; r < GROUNDCOVER_MODEL_MAX_RECORDS; r += GROUNDCOVER_MODEL_WORKGROUP) {
+        gcCounts[chunkIdx * GROUNDCOVER_MODEL_MAX_RECORDS + r] = sRecordCount[r];
+    }
+    if (lane == 0u) {
+        gcCounts[GROUNDCOVER_MODEL_CHUNK_TOTAL_REGION + chunkIdx] = sTotal;
+    }
+}
+
+shared uint sRecordTotal[GROUNDCOVER_MODEL_MAX_RECORDS];
+
+void layoutShapes(uint lane) {
+    for (uint r = lane; r < GROUNDCOVER_MODEL_MAX_RECORDS; r += GROUNDCOVER_MODEL_WORKGROUP) {
+        uint running = 0u;
+        for (uint c = 0u; c < pc.chunkCount; ++c) {
+            uint slot = c * GROUNDCOVER_MODEL_MAX_RECORDS + r;
+            gcCounts[GROUNDCOVER_MODEL_BASE_REGION + slot] = running;
+            running += gcCounts[slot];
+        }
+        sRecordTotal[r] = r < pc.recordCount ? running : 0u;
+    }
+    barrier();
+    if (lane == 0u) {
+        uint cursor = 0u;
+        uint demand = 0u;
+        for (uint s = 0u; s < pc.shapeCount; ++s) {
+            GcModelShape shape = gcShapes[s];
+            uint want = sRecordTotal[shape.record];
+            uint count = min(want, pc.tailCapacity - cursor);
+            demand += want;
+            gcCounts[GROUNDCOVER_MODEL_SHAPE_REGION + 2u * s] = cursor;
+            gcCounts[GROUNDCOVER_MODEL_SHAPE_REGION + 2u * s + 1u] = count;
+            GcDrawIndexed draw;
+            draw.indexCount = shape.indexCount;
+            draw.instanceCount = count;
+            draw.firstIndex = shape.indexOffset;
+            draw.vertexOffset = int(shape.vertexOffset);
+            draw.firstInstance = pc.tailBase + cursor;
+            gcDraws[s] = draw;
+            cursor += count;
+        }
+        gcCounts[GROUNDCOVER_MODEL_STATS_REGION] = demand;
+        gcCounts[GROUNDCOVER_MODEL_STATS_REGION + 1u] = cursor;
+    }
+}
+
+/// Rotation taking +Y onto `n` (Rodrigues), for "fit to slope".
+mat3 gcAlignUp(vec3 n) {
+    float c = n.y;
+    if (c > 0.9999) {
+        return mat3(1.0);
+    }
+    vec3 axis = normalize(vec3(n.z, 0.0, -n.x)); // cross(+Y, n)
+    float s = sqrt(max(1.0 - c * c, 0.0));
+    float t = 1.0 - c;
+    return mat3(
+        t * axis.x * axis.x + c,          t * axis.x * axis.y + s * axis.z, t * axis.x * axis.z - s * axis.y,
+        t * axis.x * axis.y - s * axis.z, t * axis.y * axis.y + c,          t * axis.y * axis.z + s * axis.x,
+        t * axis.x * axis.z + s * axis.y, t * axis.y * axis.z - s * axis.x, t * axis.z * axis.z + c);
+}
+
+void emit(uint chunkIdx, uint lane) {
+    uint total = gcCounts[GROUNDCOVER_MODEL_CHUNK_TOTAL_REGION + chunkIdx];
+    GroundCoverChunk chunk = gcChunks[chunkIdx];
+    for (uint i = lane; i < total; i += GROUNDCOVER_MODEL_WORKGROUP) {
+        GcModelPoint point = gcPoints[chunkIdx * GROUNDCOVER_MODEL_POINTS_PER_CHUNK + i];
+        uint record = point.meta.x & 0xFFu;
+        GcModelRecord rec = gcRecords[record];
+        uint rank = gcCounts[GROUNDCOVER_MODEL_BASE_REGION + chunkIdx * GROUNDCOVER_MODEL_MAX_RECORDS + record]
+            + point.meta.y;
+        uint h = point.meta.w;
+
+        float scale = 1.0 + (gcUnit(gcModelHash(h, 4u)) * 2.0 - 1.0) * rec.heightRange;
+        bool uniformScale = (rec.flags & GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING) != 0u;
+        vec3 scale3 = uniformScale ? vec3(scale) : vec3(1.0, scale, 1.0);
+        float yaw = gcUnit(gcModelHash(h, 5u)) * 6.28318530718;
+        float cy = cos(yaw);
+        float sy = sin(yaw);
+        mat3 rot = mat3(cy, 0.0, -sy, 0.0, 1.0, 0.0, sy, 0.0, cy);
+        if ((rec.flags & GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE) != 0u) {
+            vec2 nxz = unpackSnorm2x16(point.meta.z);
+            vec3 n = vec3(nxz.x, sqrt(max(1.0 - dot(nxz, nxz), 0.0)), nxz.y);
+            rot = gcAlignUp(normalize(n)) * rot;
+        }
+        mat3 basis = mat3(rot[0] * scale3.x, rot[1] * scale3.y, rot[2] * scale3.z);
+        mat4 placement = mat4(
+            vec4(basis[0], 0.0),
+            vec4(basis[1], 0.0),
+            vec4(basis[2], 0.0),
+            // Rebased like every rigid instance: `viewProj` is render-origin
+            // relative (#markarth-precision).
+            vec4(point.position.xyz - pc.renderOriginEnable.xyz, 1.0));
+
+        for (uint k = 0u; k < rec.shapeCount; ++k) {
+            uint s = rec.shapeFirst + k;
+            uint count = gcCounts[GROUNDCOVER_MODEL_SHAPE_REGION + 2u * s + 1u];
+            if (rank >= count) {
+                continue;
+            }
+            GcModelShape shape = gcShapes[s];
+            uint slot = pc.tailBase + gcCounts[GROUNDCOVER_MODEL_SHAPE_REGION + 2u * s] + rank;
+            mat4 model = placement * shape.local;
+            GpuInstance inst;
+            inst.model = model;
+            inst.textureIndex = shape.textureIndex;
+            inst.boneOffset = 0u;
+            inst.vertexOffset = shape.vertexOffset;
+            inst.indexOffset = shape.indexOffset;
+            inst.vertexCount = shape.vertexCount;
+            inst.flags = (!uniformScale && rec.heightRange > 0.0)
+                    || (shape.flags & GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM) != 0u
+                ? INSTANCE_FLAG_NON_UNIFORM_SCALE
+                : 0u;
+            inst.materialId = shape.materialId;
+            inst.ior = shape.ior;
+            inst.avgAlbedoR = shape.avgAlbedoR;
+            inst.avgAlbedoG = shape.avgAlbedoG;
+            inst.avgAlbedoB = shape.avgAlbedoB;
+            // Stable temporal identity: the plant's candidate hash and its
+            // shape, never the frame's instance slot.
+            inst.surfaceId = max(gcModelHash(h, 6u + s) & MESH_ID_STABLE_MASK, 1u);
+            inst.skinnedVertexAddress = 0ul;
+            inst._reserved = uvec2(0u);
+            inst.morphDeltaAddress = 0ul;
+            inst.morphWeightAddress = 0ul;
+            inst.morphTargetCount = 0u;
+            inst._reserved2a = 0u;
+            inst._reserved2b = 0u;
+            inst._reserved2c = 0u;
+            gcInstances[slot] = inst;
+            // Placed plants do not move: the previous transform is this one.
+            gcPreviousModels[slot] = model;
+        }
+    }
+}
+
+void main() {
+    uint lane = gl_LocalInvocationID.x;
+    if (pc.phase == GROUNDCOVER_MODEL_PHASE_LAYOUT) {
+        layoutShapes(lane);
+        return;
+    }
+    uint chunkIdx = gl_WorkGroupID.x;
+    if (chunkIdx >= pc.chunkCount) {
+        return;
+    }
+    if (pc.phase == GROUNDCOVER_MODEL_PHASE_PLACE) {
+        place(chunkIdx, lane);
+    } else {
+        emit(chunkIdx, lane);
+    }
+}

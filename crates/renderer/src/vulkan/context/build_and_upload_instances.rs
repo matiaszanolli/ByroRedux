@@ -681,12 +681,18 @@ impl VulkanContext {
         // anything is recorded for `frame`, which is the window the grow needs
         // (see `ensure_instance_capacity`). A failed grow leaves the slot as
         // it was and the upload below clamps to it.
+        // #4413 — plus the ground-cover model tier's tail, which its compute
+        // pass writes after this list once the frame has placements.
+        let model_tail = self
+            .groundcover_models
+            .as_ref()
+            .map_or(0, |tier| tier.tail_request());
         if let Some(allocator) = self.allocator.as_ref() {
             match self.scene_buffers.ensure_instance_capacity(
                 &self.device,
                 allocator,
                 frame,
-                gpu_instances.len(),
+                gpu_instances.len() + model_tail,
             ) {
                 Ok(true) => {
                     if let Some(caustic) = self.post.caustic.as_ref() {

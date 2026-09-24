@@ -18,10 +18,12 @@
 //! exactly where one splat layer stops — and the counter is a continuous
 //! GPU density field with per-game data demoted to a palette hint.
 //!
-//! So the placement fields are decoded here (they are real authored data,
-//! and a future consumer — a compatibility/diagnostic mode, an importer —
-//! may want them) but the ground-cover translate boundary ignores them by
-//! construction. Only the *dimension* fields feed a canonical species.
+//! So the blade palette ignores the placement fields by construction. The
+//! authored-model tier (§12.12 Phase C, #4413), which draws each record's
+//! own model, reads the per-instance ones — density, water rule, jitter,
+//! scale variation, fit-to-slope — but places on the same continuous
+//! density field and climate weights, never on the `LTEX` grid. The slope
+//! limits stay unread: §3's slope gate covers both tiers.
 //!
 //! # Sub-record layout
 //!
@@ -63,12 +65,12 @@
 //!
 //! | field | range | note |
 //! |---|---|---|
-//! | `density` | 1–100 | ignored by design §1 |
+//! | `density` | 1–100 | authored-model tier only (#4413) |
 //! | `min_slope` | 0 | **always** zero, all 168 |
 //! | `max_slope` | 28–90 | degrees; ignored, §3 has its own slope gate |
-//! | `distance_from_water` | 0–390 | ignored |
+//! | `distance_from_water` | 0–390 | authored-model tier's water rule |
 //! | `water_distance_application` | 0–3 | of the 1–8 enum OpenMW documents |
-//! | `position_range` | 7–90 | placement jitter, ignored |
+//! | `position_range` | 7–90 | placement jitter, authored-model tier |
 //! | `height_range` | 0.0–0.85 | **fraction**, not units — the size signal |
 //! | `colour_range` | 0.0–0.5 | fraction |
 //! | `wave_period` | 0.0001–600 | scale differs per game — see below |
@@ -117,8 +119,10 @@ pub struct GrasRecord {
     /// `MODB` — bounding-sphere radius (Oblivion). `0.0` on FO3+, and also
     /// on the 9 of Oblivion's 108 records that ship an un-computed `0.0`.
     pub bound_radius: f32,
-    /// `DATA` — instances per cell quadrant. **Ignored by the ground-cover
-    /// translate boundary** (design §1); see the module doc.
+    /// `DATA` — authored 1–100. The blade palette ignores it (design §1);
+    /// the authored-model tier (§12.12 Phase C, #4413) reads it as the
+    /// percent of grass-grid points that grow the record — an
+    /// interpretation, recorded in §12.12's register.
     pub density: u8,
     /// `DATA` — minimum ground slope, degrees. Always `0` in vanilla data.
     pub min_slope: u8,
@@ -126,7 +130,7 @@ pub struct GrasRecord {
     /// its own slope gate from the terrain normal.
     pub max_slope: u8,
     /// `DATA` — units from water at which [`Self::water_distance_application`]
-    /// applies. Ignored.
+    /// applies. Consumed by the authored-model tier (#4413).
     pub distance_from_water: u16,
     /// `DATA` — how [`Self::distance_from_water`] is applied.
     ///
@@ -144,10 +148,12 @@ pub struct GrasRecord {
     /// Most") is Oblivion's shallow-water `BWCattail01BelowSeaLevel`, an
     /// emergent plant, not a submerged one.
     ///
-    /// Not yet consumed; the authored-model ground cover tier is where it
-    /// belongs (`docs/engine/exal-groundcover.md` §12.12, tracked by #4413).
+    /// Consumed by the authored-model ground cover tier
+    /// (`docs/engine/exal-groundcover.md` §12.12, #4413) as
+    /// `CoverWaterRule`; the undocumented 6/7 drop the record.
     pub water_distance_application: u32,
-    /// `DATA` — per-instance placement jitter, units. Ignored.
+    /// `DATA` — per-instance placement jitter, units. Consumed by the
+    /// authored-model tier (#4413).
     pub position_range: f32,
     /// `DATA` — per-instance height variation as a **fraction** of the
     /// model's own height, `0.0`–`0.85` in vanilla data. This is the one

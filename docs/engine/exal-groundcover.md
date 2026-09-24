@@ -1577,6 +1577,58 @@ Phases:
    density-field points, weighted by climate, honouring its water rule.
 4. **Phase D — the handoff** between blades and authored models.
 
+**Phase C landed (#4413).** How it is built:
+
+- **Translate.** `groundcover_translate::resolve_authored_cover` turns the
+  load order's `GRAS` records into `AuthoredCover`, installed by
+  `install_ground_cover`. The climate weights come from
+  `classify_species_name` / `climate_weights_for`; a record with no climate
+  token is weighted as generic temperate. A record is dropped when it has no
+  `DATA`, no model, zero density, or a water rule of 6/7 (no vanilla use and
+  no documented meaning).
+- **Templates.** Each record's model is spawned once per worldspace through
+  the normal cell-loader mesh path (`cell_loader::spawn::authored_cover`),
+  so its mesh, textures and NIFAL `Material` resolve exactly as a placed
+  object's would. Its shape entities carry `AuthoredCoverTemplate` and are
+  never drawn themselves. The static-mesh collector builds their draw
+  (interning the material into the frame's table) and hands it to the tier.
+  The templates hang off a pseudo cell root that `WorldStreamingState` owns
+  and `drain_streaming_state` reclaims.
+- **Placement** (`groundcover_models.comp`, three phases). Candidates sit on
+  the game's grass grid, one per `iMinGrassSize` square, jittered by
+  `position_range` and reflected back inside the chunk. Each candidate picks
+  a record from a climate-weighted table and is accepted with probability
+  `density × affinity × slope × shelter × clump × distance_fade`. The
+  moisture factor is replaced by the record's own water rule, which is what
+  lets kelp grow below the water plane. The blade tier's cover ray keeps
+  models off roads. Counts and ranks are assigned in candidate order, so the
+  frame is scheduling-independent and a truncated frame drops the same
+  plants every time.
+- **Drawing.** Placed plants are written as `GpuInstance`s into the tail of
+  the main instance buffer (`GROUNDCOVER_MODEL_MAX_INSTANCES`, 32,768 slots)
+  and drawn by the main geometry pipeline, one indexed indirect draw per
+  shape, before the first blended batch. Cards alpha-test and rocks shade
+  as rock through the shared material path. The tier is receive-only, like
+  the blades: it has no TLAS entry.
+
+**Sourced values and interpretations (§12.12 register).**
+
+| Input | Value | Source | Status |
+|---|---|---|---|
+| Grid spacing `iMinGrassSize` | Oblivion, FO3, FNV 80; Skyrim SE, FO4 20 | Each executable's built-in INI default table, cross-checked where the shipped default INIs set it (`Oblivion_default.ini`, `Fallout_default.ini`, `Fallout4_Default.ini`) | Value sourced. **Reading it as the candidate grid spacing is an interpretation.** UESP only says it "changes the amount of grass per cell, so lower values means denser fields of grass" |
+| `GRAS` density | percent of grid points that grow the record | Authored 1–100 in every corpus | **Interpretation** |
+| `height_range` | scale `1 ± height_range` (height only unless "uniform scaling") | Authored fraction 0–0.85 | **Interpretation** of both the ± and the non-uniform axis |
+| `position_range` | jitter radius around the grid point, units | Authored 7–90 | **Interpretation** |
+| Water rule | xEdit zero-based "Unit from water type" 0–5 | `gras.rs` census: only 0/2/3 used; 2 is always kelp, coral or seaweed | Sourced numbering |
+
+**Known limitation.** Selection is by climate alone, as this section
+specifies, so within one worldspace every region draws from the same
+weighted mix. Tamriel's Reach grass and its tundra grass both appear around
+Whiterun. Vanilla keys `GRAS` to a landscape texture (`LTEX.GNAM`). Weighting
+the selection by the local splat layers' own `GRAS` lists would localise
+species without reintroducing the boundary artifact of §1, and is the
+natural next refinement.
+
 Until Phase B supplies sourced blade dimensions, the legacy procedural-shape
 inputs `wind_flow_floor`, `wind_stiffness_attenuation`, `rest_lean`,
 `terrain_normal_weight`, `twist_radians`, `min_visible_half_width`,

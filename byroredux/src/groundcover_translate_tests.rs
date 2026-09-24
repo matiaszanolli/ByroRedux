@@ -367,3 +367,81 @@ fn climate_weights_favour_the_matched_climate_without_zeroing_others() {
         "a zero weight is the boolean boundary §1 removes: {w:?}"
     );
 }
+
+fn gras(form_id: u32, editor_id: &str, density: u8, water: u32) -> GrasRecord {
+    GrasRecord {
+        form_id,
+        editor_id: editor_id.to_string(),
+        model_path: format!("Landscape\\Grass\\{editor_id}.nif"),
+        density,
+        water_distance_application: water,
+        distance_from_water: 40,
+        height_range: 0.3,
+        position_range: 32.0,
+        flags: byroredux_plugin::esm::records::GRAS_FLAG_UNIFORM_SCALING,
+        has_data: true,
+        ..Default::default()
+    }
+}
+
+/// #4413 — every placeable `GRAS` record becomes an authored-model record,
+/// ordered by FormID, weighted by the climate its editor ID names; records
+/// that cannot be placed as authored are dropped rather than guessed at.
+#[test]
+fn authored_cover_keeps_placeable_records_in_form_id_order() {
+    let grasses: HashMap<u32, GrasRecord> = [
+        gras(0x30, "WaterKelpGrass01", 60, 2),
+        gras(0x10, "TundraGrass01", 45, 0),
+        gras(0x20, "FrozenMarshGrass01", 0, 0), // density zero
+        gras(0x40, "OddWaterRule01", 30, 7),    // undocumented rule
+        GrasRecord {
+            has_data: false,
+            ..gras(0x50, "NoData01", 30, 0)
+        },
+    ]
+    .into_iter()
+    .map(|g| (g.form_id, g))
+    .collect();
+
+    let cover = resolve_authored_cover(&grasses, GameKind::Skyrim, Climate::Temperate)
+        .expect("placeable records");
+    assert_eq!(cover.grid_spacing, 20.0);
+    let ids: Vec<u32> = cover.records.iter().map(|r| r.form_id).collect();
+    assert_eq!(ids, [0x10, 0x30]);
+
+    let tundra = &cover.records[0];
+    assert_eq!(tundra.density, 0.45);
+    assert_eq!(tundra.water_rule, CoverWaterRule::AboveAtLeast);
+    assert!(tundra.uniform_scaling && !tundra.fit_to_slope);
+    // No climate token → generic, weighted like the temperate default.
+    assert!(tundra.climate_weight.temperate > tundra.climate_weight.arid);
+
+    let kelp = &cover.records[1];
+    assert_eq!(kelp.water_rule, CoverWaterRule::BelowAtLeast);
+    assert!(kelp.climate_weight.wetland > kelp.climate_weight.temperate);
+
+    // A game with no measured grid spacing leaves the tier off.
+    assert!(resolve_authored_cover(&grasses, GameKind::Starfield, Climate::Temperate).is_none());
+}
+
+/// #4413 — every game's candidate grid fits one chunk's placement slab, so
+/// the model tier never truncates a chunk's candidates.
+#[test]
+fn model_slab_holds_every_vanilla_candidate_grid() {
+    use byroredux_renderer::shader_constants::{
+        GROUNDCOVER_CHUNK_UNITS, GROUNDCOVER_MODEL_POINTS_PER_CHUNK,
+    };
+    for game in [
+        GameKind::Oblivion,
+        GameKind::Fallout3NV,
+        GameKind::Skyrim,
+        GameKind::Fallout4,
+    ] {
+        let spacing = grass_grid_spacing(game).expect("measured spacing");
+        let per_side = (GROUNDCOVER_CHUNK_UNITS / spacing).ceil() as u32;
+        assert!(
+            per_side * per_side <= GROUNDCOVER_MODEL_POINTS_PER_CHUNK,
+            "{game:?}: {per_side}² candidates overflow the slab"
+        );
+    }
+}

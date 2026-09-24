@@ -385,6 +385,52 @@ pub const GROUNDCOVER_BLADES_PER_POINT: u32 = 4;
 /// palette says belongs here.
 pub const GROUNDCOVER_SPECIES_TABLE_SIZE: u32 = 256;
 
+// ── Authored-model tier (§12.12 Phase C, #4413) ─────────────────────────
+
+/// Threads per authored-model workgroup. One workgroup per chunk in the
+/// placement and emit phases.
+pub const GROUNDCOVER_MODEL_WORKGROUP: u32 = 64;
+/// Candidate slots per chunk in the placement slab. A chunk's candidate grid
+/// is `ceil(GROUNDCOVER_CHUNK_UNITS / spacing)²`; the densest measured
+/// spacing (`iMinGrassSize` 20, Skyrim SE and FO4) gives 26² = 676, so every
+/// vanilla grid fits without truncation. Pinned by the binary's
+/// `model_slab_holds_every_vanilla_candidate_grid`.
+pub const GROUNDCOVER_MODEL_POINTS_PER_CHUNK: u32 = 1024;
+/// Records one worldspace's tier can carry. Oblivion's 108 `GRAS` records
+/// are the largest vanilla set.
+pub const GROUNDCOVER_MODEL_MAX_RECORDS: u32 = 128;
+/// Shapes across every record's model.
+pub const GROUNDCOVER_MODEL_MAX_SHAPES: u32 = 256;
+/// Instance slots the tier appends after the main instance list each frame.
+/// An engine budget, not a game value: past it the layout phase truncates
+/// the last shapes deterministically rather than overflowing.
+pub const GROUNDCOVER_MODEL_MAX_INSTANCES: u32 = 32768;
+/// The model shader's three phases, selected by push constant (see
+/// `groundcover_models.comp`'s header).
+pub const GROUNDCOVER_MODEL_PHASE_PLACE: u32 = 0;
+pub const GROUNDCOVER_MODEL_PHASE_LAYOUT: u32 = 1;
+pub const GROUNDCOVER_MODEL_PHASE_EMIT: u32 = 2;
+/// Record flag bits: scale all three axes / tilt onto the terrain normal.
+pub const GROUNDCOVER_MODEL_RECORD_FLAG_UNIFORM_SCALING: u32 = 1;
+pub const GROUNDCOVER_MODEL_RECORD_FLAG_FIT_TO_SLOPE: u32 = 2;
+/// Shape flag bit: the shape's own local transform scales non-uniformly.
+pub const GROUNDCOVER_MODEL_SHAPE_FLAG_NON_UNIFORM: u32 = 1;
+/// Salt separating the model candidate stream from the blade stream: both
+/// derive from a chunk's seed, and must not place plants at blade roots.
+pub const GROUNDCOVER_MODEL_SEED_SALT: u32 = 0x6D0D_E15A;
+/// `gcCounts` layout: per-(chunk, record) counts, then their per-record
+/// bases, then per-chunk totals, then per-shape (base, count) pairs, then
+/// the stats words (demanded, emitted, 2 reserved).
+pub const GROUNDCOVER_MODEL_COUNT_REGION: u32 =
+    GROUNDCOVER_MAX_CHUNKS * GROUNDCOVER_MODEL_MAX_RECORDS;
+pub const GROUNDCOVER_MODEL_BASE_REGION: u32 = GROUNDCOVER_MODEL_COUNT_REGION;
+pub const GROUNDCOVER_MODEL_CHUNK_TOTAL_REGION: u32 = 2 * GROUNDCOVER_MODEL_COUNT_REGION;
+pub const GROUNDCOVER_MODEL_SHAPE_REGION: u32 =
+    GROUNDCOVER_MODEL_CHUNK_TOTAL_REGION + GROUNDCOVER_MAX_CHUNKS;
+pub const GROUNDCOVER_MODEL_STATS_REGION: u32 =
+    GROUNDCOVER_MODEL_SHAPE_REGION + 2 * GROUNDCOVER_MODEL_MAX_SHAPES;
+pub const GROUNDCOVER_MODEL_STATS_WORDS: u32 = 4;
+
 /// Wavelength of the wind flow-noise field, world units.
 ///
 /// §8's requirement is that neighbouring blades sample a *continuous* field at

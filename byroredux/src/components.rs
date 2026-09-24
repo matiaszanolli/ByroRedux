@@ -1996,6 +1996,21 @@ impl Component for WalkSpeed {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// #4413 — one shape of an authored ground-cover model's template: the
+/// `GRAS` record's model, spawned once per worldspace through the normal
+/// mesh path so its material resolves exactly as a placed object's would.
+/// Never drawn itself; the static-mesh collector hands its built draw to the
+/// ground-cover model tier, which instances it across the terrain.
+/// `record` indexes the worldspace's `AuthoredCover::records`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AuthoredCoverTemplate {
+    pub(crate) record: u32,
+}
+
+impl Component for AuthoredCoverTemplate {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// M42.10 — how long an oscillating walker (Wander/Patrol) has been
 /// continuously blocked by a collision this leg. Runtime-only scratch:
 /// `WanderState`/`PatrolState` are save-shaped and must not grow a field
