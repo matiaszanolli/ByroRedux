@@ -287,6 +287,10 @@ struct ScratchBuffers {
     /// Taken in `begin_frame_recording`, restored in `draw_frame` once the
     /// TLAS and SSBO builders have read it. #4193 / #243.
     instance_map_scratch: Vec<Option<u32>>,
+    /// Per-frame bone-palette dispatch plan filled by
+    /// `plan_palette_dispatch`. Taken and restored inside
+    /// `dispatch_skin_and_cluster` so its capacity persists. #4611 / #243.
+    palette_plan_scratch: Vec<super::skin_compute::SkinPalettePushConstants>,
     /// Per-frame scratch buffer for indirect draw commands. Replaces the
     /// per-frame `Vec::collect()` allocation that was untracked by the
     /// scratch-buffer pattern.

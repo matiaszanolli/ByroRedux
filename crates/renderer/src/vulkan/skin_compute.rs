@@ -881,42 +881,57 @@ impl SkinPalettePushConstants {
 /// vertex pass right after it already does for exactly those entities.
 ///
 /// Empty input yields an empty plan: nothing changed, so nothing is stale.
+///
+/// #4611 — the plan is written into the caller's `plan` (cleared first), and
+/// the clamp, sort and merge all happen in place there, so a persistent
+/// caller scratch makes this allocation-free once it has reached its
+/// high-water mark. It runs every frame any skinned pose moved.
 pub fn plan_palette_dispatch(
     dirty_bone_ranges: impl IntoIterator<Item = (u32, u32)>,
     dense_bones: u32,
-) -> Vec<SkinPalettePushConstants> {
-    let mut ranges: Vec<(u32, u32)> = dirty_bone_ranges
-        .into_iter()
-        .map(|(base, end)| (base.min(dense_bones), end.min(dense_bones)))
-        .filter(|(base, end)| base < end)
-        .collect();
-    if ranges.is_empty() {
-        return Vec::new();
+    plan: &mut Vec<SkinPalettePushConstants>,
+) {
+    plan.clear();
+    plan.extend(
+        dirty_bone_ranges
+            .into_iter()
+            .map(|(base, end)| SkinPalettePushConstants {
+                bone_base: base.min(dense_bones),
+                bone_end: end.min(dense_bones),
+            })
+            .filter(|range| range.bone_base < range.bone_end),
+    );
+    if plan.is_empty() {
+        return;
     }
-    ranges.sort_unstable();
+    plan.sort_unstable_by_key(|range| (range.bone_base, range.bone_end));
 
-    let mut runs: Vec<SkinPalettePushConstants> = Vec::with_capacity(ranges.len());
-    for (base, end) in ranges {
-        match runs.last_mut() {
-            Some(run) if base <= run.bone_end => run.bone_end = run.bone_end.max(end),
-            _ => runs.push(SkinPalettePushConstants {
-                bone_base: base,
-                bone_end: end,
-            }),
+    // Merge adjacent/overlapping ranges in place: `plan[..=last]` holds the
+    // runs built so far, each later range either extends the last run or
+    // starts the next one.
+    let mut last = 0;
+    for next in 1..plan.len() {
+        let range = plan[next];
+        if range.bone_base <= plan[last].bone_end {
+            plan[last].bone_end = plan[last].bone_end.max(range.bone_end);
+        } else {
+            last += 1;
+            plan[last] = range;
         }
     }
+    plan.truncate(last + 1);
 
-    let covered: u64 = runs
+    let covered: u64 = plan
         .iter()
         .map(|run| u64::from(run.bone_end - run.bone_base))
         .sum();
     if covered >= u64::from(dense_bones) {
-        return vec![SkinPalettePushConstants {
+        plan.clear();
+        plan.push(SkinPalettePushConstants {
             bone_base: 0,
             bone_end: dense_bones,
-        }];
+        });
     }
-    runs
 }
 
 const SKIN_PALETTE_PUSH_CONSTANTS_SIZE: u32 =
@@ -1747,6 +1762,36 @@ mod tests {
         }
     }
 
+    fn plan(
+        dirty_bone_ranges: impl IntoIterator<Item = (u32, u32)>,
+        dense_bones: u32,
+    ) -> Vec<SkinPalettePushConstants> {
+        let mut plan = Vec::new();
+        plan_palette_dispatch(dirty_bone_ranges, dense_bones, &mut plan);
+        plan
+    }
+
+    /// #4611 — the caller's scratch is reused, not reallocated: a second
+    /// plan into the same Vec keeps its capacity and replaces (never appends
+    /// to) the previous frame's runs, including an empty plan after a full one.
+    #[test]
+    fn a_reused_plan_scratch_keeps_capacity_and_drops_the_previous_plan() {
+        let mut scratch = Vec::new();
+        plan_palette_dispatch([(0, 64), (200, 264), (400, 464)], 4096, &mut scratch);
+        assert_eq!(scratch.len(), 3);
+        let capacity = scratch.capacity();
+        let buffer = scratch.as_ptr();
+
+        plan_palette_dispatch([(128, 192)], 4096, &mut scratch);
+        assert_eq!(scratch, vec![range(128, 192)]);
+        assert_eq!(scratch.capacity(), capacity);
+        assert_eq!(scratch.as_ptr(), buffer, "no reallocation on reuse");
+
+        plan_palette_dispatch(std::iter::empty(), 4096, &mut scratch);
+        assert!(scratch.is_empty());
+        assert_eq!(scratch.capacity(), capacity);
+    }
+
     /// #4204 — one moving actor recomputes its own palette slots, not the
     /// whole population's. This is the case the issue measured: a single
     /// dirty slot among ~677 re-armed a ~97.5 K-slot dense recompute.
@@ -1756,7 +1801,7 @@ mod tests {
         let dense = 677 * stride;
         let slot = 300 * stride;
         assert_eq!(
-            plan_palette_dispatch([(slot, slot + stride)], dense),
+            plan([(slot, slot + stride)], dense),
             vec![range(slot, slot + stride)]
         );
     }
@@ -1766,7 +1811,7 @@ mod tests {
     /// one twitching NPC anywhere defeated.
     #[test]
     fn no_dirty_slots_plans_no_dispatch() {
-        assert!(plan_palette_dispatch(std::iter::empty(), 1024).is_empty());
+        assert!(plan(std::iter::empty(), 1024).is_empty());
     }
 
     /// Neighbouring slots merge into one dispatch, and input order does not
@@ -1774,21 +1819,18 @@ mod tests {
     /// first-sight slots are appended after it.
     #[test]
     fn adjacent_and_overlapping_ranges_merge_into_runs() {
-        let plan = plan_palette_dispatch(
+        let runs = plan(
             [(128, 192), (0, 64), (64, 128), (300, 310), (305, 320)],
             4096,
         );
-        assert_eq!(plan, vec![range(0, 192), range(300, 320)]);
+        assert_eq!(runs, vec![range(0, 192), range(300, 320)]);
     }
 
     /// When the runs would cover the whole high-water range there is nothing
     /// to save, and one dense dispatch is cheaper to record than many.
     #[test]
     fn full_coverage_falls_back_to_the_dense_range() {
-        assert_eq!(
-            plan_palette_dispatch([(0, 64), (64, 128)], 128),
-            vec![range(0, 128)]
-        );
+        assert_eq!(plan([(0, 64), (64, 128)], 128), vec![range(0, 128)]);
     }
 
     /// A range past the high-water mark is clamped to it; one entirely past it
@@ -1796,10 +1838,7 @@ mod tests {
     /// plan that dispatches workgroups for nothing is the waste this fixes.
     #[test]
     fn ranges_are_clamped_to_the_high_water_mark() {
-        assert_eq!(
-            plan_palette_dispatch([(90, 140), (500, 600)], 128),
-            vec![range(90, 128)]
-        );
+        assert_eq!(plan([(90, 140), (500, 600)], 128), vec![range(90, 128)]);
     }
 
     /// Workgroup math is over the range width, not its absolute end — a run at

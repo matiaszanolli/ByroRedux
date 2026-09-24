@@ -181,13 +181,16 @@ impl VulkanContext {
             // `plan_palette_dispatch` still picks the dense range when the
             // dirty set would cover it anyway.
             let stride = crate::shader_constants::MAX_BONES_PER_MESH;
-            let palette_plan = super::super::skin_compute::plan_palette_dispatch(
+            // #4611 — planned into the persistent scratch, restored below.
+            let mut palette_plan = std::mem::take(&mut self.scratch.palette_plan_scratch);
+            super::super::skin_compute::plan_palette_dispatch(
                 self.scene_buffers.palette_dirty_bone_ranges(frame).chain(
                     pending_slots
                         .iter()
                         .map(|&slot| (slot * stride, (slot + 1) * stride)),
                 ),
                 bone_count,
+                &mut palette_plan,
             );
             // D6-04 / #1811 — also skip once `skip_skin_gpu_refresh` is
             // true: the palette buffer already holds the correct output
@@ -252,6 +255,7 @@ impl VulkanContext {
                     );
                 }
             }
+            self.scratch.palette_plan_scratch = palette_plan;
         }
 
         if skin_palette_timer_started {

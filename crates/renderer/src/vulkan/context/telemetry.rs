@@ -149,6 +149,13 @@ impl VulkanContext {
                 u32,
             )>(),
         });
+        // #4611 — the palette dispatch plan, made persistent alongside its row.
+        rows.push(ScratchRow {
+            name: "palette_plan_scratch",
+            len: self.scratch.palette_plan_scratch.len(),
+            capacity: self.scratch.palette_plan_scratch.capacity(),
+            elem_size_bytes: size_of::<super::super::skin_compute::SkinPalettePushConstants>(),
+        });
         rows.push(ScratchRow {
             name: "skin_built_this_frame_scratch",
             len: self.scratch.skin_built_this_frame_scratch.len(),
