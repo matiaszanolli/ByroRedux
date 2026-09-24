@@ -136,6 +136,211 @@ fn impl_target_type(line: &str) -> Option<&str> {
     (end > 0).then(|| &rest[..end])
 }
 
+/// Is the attribute opening at `src[at..]` a test-only gate — `#[cfg(test)]`
+/// or `#[cfg(all(test, …))]` — and if so, where does it end?
+fn test_gate_attribute_end(src: &str, at: usize) -> Option<usize> {
+    let rest = &src[at..];
+    ["#[cfg(test)]", "#[cfg(all(test,", "#[cfg(all(test ,"]
+        .iter()
+        .find(|gate| rest.starts_with(**gate))?;
+    // Bracket-match the attribute itself (`#[` … `]`).
+    let mut depth = 0usize;
+    for (offset, byte) in rest.bytes().enumerate() {
+        match byte {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(at + offset + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Length of the string/char literal or comment starting at `bytes[i]`,
+/// or `None` when `bytes[i]` opens none (so braces inside literals and
+/// comments never count toward item nesting). Lifetimes (`'a`) are not
+/// char literals and return `None`.
+fn skip_literal_or_comment(bytes: &[u8], i: usize) -> Option<usize> {
+    let at = |k: usize| bytes.get(i + k).copied();
+    match (bytes[i], at(1)) {
+        (b'/', Some(b'/')) => Some(
+            bytes[i..]
+                .iter()
+                .position(|b| *b == b'\n')
+                .unwrap_or(bytes.len() - i),
+        ),
+        (b'/', Some(b'*')) => {
+            let mut depth = 0usize;
+            let mut k = i;
+            while k + 1 < bytes.len() {
+                if bytes[k] == b'/' && bytes[k + 1] == b'*' {
+                    depth += 1;
+                    k += 2;
+                } else if bytes[k] == b'*' && bytes[k + 1] == b'/' {
+                    depth -= 1;
+                    k += 2;
+                    if depth == 0 {
+                        return Some(k - i);
+                    }
+                } else {
+                    k += 1;
+                }
+            }
+            Some(bytes.len() - i)
+        }
+        (b'r', Some(b'"' | b'#')) if i == 0 || !bytes[i - 1].is_ascii_alphanumeric() => {
+            let hashes = bytes[i + 1..].iter().take_while(|b| **b == b'#').count();
+            if bytes.get(i + 1 + hashes) != Some(&b'"') {
+                return None;
+            }
+            let body = i + 2 + hashes;
+            let close: Vec<u8> = std::iter::once(b'"')
+                .chain(std::iter::repeat_n(b'#', hashes))
+                .collect();
+            let end = bytes[body..]
+                .windows(close.len())
+                .position(|w| w == close.as_slice())
+                .map_or(bytes.len(), |p| body + p + close.len());
+            Some(end - i)
+        }
+        (b'"', _) => {
+            let mut k = i + 1;
+            while k < bytes.len() {
+                match bytes[k] {
+                    b'\\' => k += 2,
+                    b'"' => return Some(k + 1 - i),
+                    _ => k += 1,
+                }
+            }
+            Some(bytes.len() - i)
+        }
+        (b'\'', Some(b'\\')) => bytes[i + 2..]
+            .iter()
+            .skip(1)
+            .position(|b| *b == b'\'')
+            .map(|p| p + 4),
+        (b'\'', Some(_)) if at(2) == Some(b'\'') => Some(3),
+        _ => None,
+    }
+}
+
+/// #4705 — `src` with every test-gated item removed: each
+/// `#[cfg(test)]` / `#[cfg(all(test, …))]` attribute through the end of
+/// the item it gates — a braced item to its matching `}`, anything else
+/// to its `;` or `,`, or to the enclosing close it sits before (a gated
+/// struct field or match arm). The guard used to keep only
+/// `src.split("#[cfg(test)]").next()`, so every production item below a
+/// file's first mid-file test gate was invisible to it (39 impls, 5 of
+/// them never classified). A whole-file `#![cfg(test)]` yields nothing.
+fn strip_test_gated_items(src: &str) -> String {
+    if src.contains("#![cfg(test)]") {
+        return String::new();
+    }
+    let bytes = src.as_bytes();
+    let mut out = String::with_capacity(src.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(len) = skip_literal_or_comment(bytes, i) {
+            i += len.max(1);
+            continue;
+        }
+        let Some(attribute_end) = (bytes[i] == b'#')
+            .then(|| test_gate_attribute_end(src, i))
+            .flatten()
+        else {
+            i += 1;
+            continue;
+        };
+        out.push_str(&src[copied..i]);
+        let mut depth = 0usize;
+        let mut k = attribute_end;
+        let end = loop {
+            if k >= bytes.len() {
+                break bytes.len();
+            }
+            if let Some(len) = skip_literal_or_comment(bytes, k) {
+                k += len.max(1);
+                continue;
+            }
+            match bytes[k] {
+                b'{' | b'(' | b'[' => depth += 1,
+                b'}' | b')' | b']' if depth == 0 => break k,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break k + 1;
+                    }
+                }
+                b')' | b']' => depth -= 1,
+                b';' | b',' if depth == 0 => break k + 1,
+                _ => {}
+            }
+            k += 1;
+        };
+        // Keep the removed range's line breaks so every surviving line
+        // keeps its source line number in the guard's `file:line` report.
+        out.extend(src[i..end].bytes().filter(|b| *b == b'\n').map(char::from));
+        copied = end;
+        i = end;
+    }
+    out.push_str(&src[copied..]);
+    out
+}
+
+/// #4705 — the stripper the guard below scans through. A mid-file test
+/// module must hide only itself: the pre-fix first-occurrence split lost
+/// every production impl after it.
+#[test]
+fn test_gated_items_are_stripped_without_hiding_what_follows() {
+    let fixture = r##"
+impl Component for Before {}
+#[cfg(test)]
+mod mid_file_tests {
+    struct Fixture;
+    impl Component for Fixture {}
+    const BRACES: &str = "}}}";
+    const RAW: &str = r#"}"#;
+    const CLOSE: char = '}';
+    // a stray } in a comment
+    /* and { in a block comment */
+}
+impl Resource for AfterModule {}
+#[cfg(test)]
+impl Resource for GatedImpl {}
+#[cfg(all(test, feature = "inspect"))]
+fn gated_fn<'a>(x: &'a str) -> &'a str { x }
+struct Mixed {
+    #[cfg(test)]
+    probe: u32,
+    kept: u32,
+}
+#[cfg(test)]
+mod declared_tests;
+impl Component for AfterEverything {}
+"##;
+    let stripped = strip_test_gated_items(fixture);
+    let names: Vec<_> = stripped.lines().filter_map(impl_target_type).collect();
+    assert_eq!(
+        names,
+        ["Before", "AfterModule", "AfterEverything"],
+        "{stripped}"
+    );
+    assert!(stripped.contains("kept: u32") && !stripped.contains("probe"));
+    assert!(!stripped.contains("declared_tests") && !stripped.contains("gated_fn"));
+    assert!(strip_test_gated_items("#![cfg(test)]\nimpl Component for X {}").is_empty());
+    // Line numbers survive the strip: the guard reports `file:line`.
+    let line_of = |text: &str, needle: &str| text.lines().position(|l| l.contains(needle));
+    assert_eq!(
+        line_of(&stripped, "AfterEverything"),
+        line_of(fixture, "AfterEverything")
+    );
+}
+
 /// #2295 (SAVE-D1-12) — registry-completeness guard, generalized past
 /// the NPC-spawn-stamped surface
 /// `npc_spawn_stamped_components_are_saved_or_intentionally_rederived`
@@ -495,6 +700,15 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("GpuMemoryBudget", "constant-after-device-selection VRAM capacity snapshot sampled from vkGetPhysicalDeviceMemoryProperties at renderer init; re-sampled identically on every launch"),
         ("DebugUiState", "the egui debug/console overlay's own UI state (console history, panel visibility, input buffers) — operator tooling, never gameplay in a player save"),
         ("SaveRegistry", "the type-erased save/load driver table itself, built once at startup from the curated component/resource type set — save-system infrastructure, not the gameplay state it describes"),
+        // #4705 — hidden from this guard below a mid-file `#[cfg(test)]`
+        // until the scan stripped test items one by one; each classified
+        // against its real producers.
+        ("ExposureTuning", "operator colour-pipeline tuning, seeded at boot from --auto-exposure/--tonemap (RendererConfig) and mutated only by the exposure/tonemap console commands — render configuration, not gameplay state (LightTuning's posture)"),
+        ("DraugrCombatClips", "decoded Draugr combat clip handles, resolved once at cell load from the archive provider and read-only afterward — same posture as SkyrimWalkClip"),
+        ("DraugrCombatAnim", "family marker re-derived at spawn from the resolved race on both spawn paths (#4700); take state is transient playback, and the death latch re-derives from the saved Dead marker on the first observed tick (seen_alive, #4708)"),
+        ("NavmeshResidency", "NAVM residency generation counter: restarts at 0 after a load so every cached NavPath is stale-by-default, the safe direction (its own #3256 doc)"),
+        ("GlobalFormIdResolver", "load-order -> portable-identity mapping rebuilt from the active plugin list on every world setup and cell load — derived configuration, not gameplay state"),
+        ("PlacedItemCount", "REFR XCNT stack size (#4706), rederived identically from the plugin's parsed REFR every cell load — same posture as DoorTeleport; a taken stack persists through the PersistentReferenceStates tombstone"),
     ];
 
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -510,8 +724,10 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
             .unwrap_or_else(|e| panic!("SAVE-D1-12 guard can't read {}: {e}", path.display()));
         // Test modules commonly declare fixture Component/Resource types in
         // production files. They are not live ECS state and must not pollute
-        // the persistence ledger. Repository convention keeps cfg(test)
-        // modules at file tails; standalone *_tests.rs files are all-test.
+        // the persistence ledger. #4705 — stripped item by item, not cut at
+        // the first gate: several files gate items mid-file, and everything
+        // after the cut used to vanish. Standalone *_tests.rs files are
+        // all-test.
         if path
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -520,7 +736,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         {
             continue;
         }
-        let production_src = src.split("#[cfg(test)]").next().unwrap_or(&src);
+        let production_src = strip_test_gated_items(&src);
         for (i, line) in production_src.lines().enumerate() {
             if let Some(name) = impl_target_type(line) {
                 found.push((name.to_string(), format!("{}:{}", path.display(), i + 1)));
