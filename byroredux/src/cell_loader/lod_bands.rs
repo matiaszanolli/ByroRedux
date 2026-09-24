@@ -186,9 +186,12 @@ impl LodBandLadder {
         // `combined_lod_supported` predicate pins against). Refine
         // distances reuse the FO4 authoring values: FO76 shares FO4's
         // Creation LOD authoring family, no FO76-specific distances are
-        // published, and the ladder's missing level-8 band rides the
-        // #3502 coarsen-to-available escape exactly as the audit
-        // anticipated.
+        // published. (#4736 correction: level 8 is NOT missing — the
+        // 2026-09-20 archives carry 590 level-8 quads in
+        // `GeneratedMeshes02.ba2`; the earlier "missing level-8 band"
+        // premise came from a `…01`-only census. The #3502
+        // coarsen-to-available escape stays as the safety net for
+        // genuinely absent quads.)
         if matches!(game, GameKind::Fallout76) {
             return Some(Self {
                 refine_cells: FALLOUT4_ULTRA_REFINE_BU

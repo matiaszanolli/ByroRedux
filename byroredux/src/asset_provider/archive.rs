@@ -444,6 +444,13 @@ pub(crate) fn parse_grid_coords(s: &str) -> (i32, i32) {
 /// auto-loads nothing — that path is a user listing each member explicitly,
 /// or a mid-series archive we must not re-expand.
 ///
+/// A **two-digit** zero-padded series start (`…01`) auto-loads the same
+/// way (`…02` … `…09`). Two shipped titles use it: Starfield, and FO76 —
+/// whose `.bto` object-LOD family spans `SeventySix -
+/// GeneratedMeshes01.ba2` (1,001 files) and the auto-loaded
+/// `GeneratedMeshes02.ba2` sibling (2,055 more, including the whole
+/// level-8 band; #4736 census).
+///
 /// All cases are harmless when a sibling simply doesn't exist (skipped).
 ///
 /// `opened_paths` tracks every archive path (ASCII-lowercased, matching

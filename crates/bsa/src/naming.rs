@@ -13,7 +13,8 @@
 ///
 ///   * `Foo.bsa`  (no trailing digit, FNV) → `Foo2.bsa` … `Foo9.bsa`
 ///   * `Foo0.bsa` (zero-based series start, Skyrim) → `Foo1.bsa` … `Foo9.bsa`
-///   * `Foo01.bsa` (two-digit zero-padded series start, Starfield) →
+///   * `Foo01.bsa` (two-digit zero-padded series start — Starfield, and
+///     FO76's `GeneratedMeshes01/02.ba2` pair) →
 ///     `Foo02.bsa` … `Foo09.bsa`
 ///   * `Foo2.bsa` (mid-series digit) → none (the user lists members explicitly)
 ///   * `Foo10.bsa` (digit before the `0`) → none (explicit member, not a start)
@@ -27,7 +28,8 @@ pub fn numeric_sibling_paths(path: &str) -> Vec<String> {
         return Vec::new();
     };
 
-    // Starfield two-digit zero-padded series START (`…01`): strip the two
+    // Two-digit zero-padded series START (`…01`) — Starfield, and FO76's
+    // `GeneratedMeshes01.ba2` → `GeneratedMeshes02.ba2` pair: strip the two
     // trailing digits and offer `…02`..`…09`. Guard against a longer digit
     // run before it (`…101` is an explicit 3-digit member, not a 2-digit
     // series start) the same way the single-`0` case guards against `…10`.

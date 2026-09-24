@@ -669,11 +669,17 @@ pub(crate) enum ObjectLodScheme {
 /// draws nothing. See [`LodBandSelection::coarsen_to_available`].
 pub(crate) fn object_lod_scheme(game: GameKind) -> Option<ObjectLodScheme> {
     match game {
-        // FO76 joins under #4488: `SeventySix - GeneratedMeshes01.ba2`
-        // carries 1007 `meshes\terrain\appalachia\objects\
-        // appalachia.<L>.<x>.<y>.bto` (level4 ×795 / level16 ×164 /
-        // level32 ×48; no level 8) — the same level-first BakedBto naming
-        // family Skyrim/FO4 use, one worldspace (appalachia).
+        // FO76 joins under #4488: the `.bto` family lives across TWO
+        // archives (2026-09-20 rewrite — #4736 census): `SeventySix -
+        // GeneratedMeshes01.ba2` carries 1,001
+        // `meshes\terrain\appalachia\objects\appalachia.<L>.<x>.<y>.bto`
+        // (level4 ×789 / level16 ×164 / level32 ×48) and the auto-loaded
+        // `GeneratedMeshes02.ba2` sibling carries 2,055 more (level4
+        // ×1,465 / level8 ×590) — 3,056 total, level 8 included. The
+        // earlier "1,007, no level 8" claim came from a `…01`-only
+        // name-table scan (the #3321 single-archive shape) and is
+        // retired. Same level-first BakedBto naming family Skyrim/FO4
+        // use, one worldspace (appalachia).
         GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 => {
             Some(ObjectLodScheme::BakedBto)
         }
