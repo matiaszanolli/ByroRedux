@@ -86,6 +86,21 @@ fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, resolved: &R
     }
 }
 
+/// #4414 — stamp the actor's `AIDT` combat disposition, read through the
+/// resolved "Use AI Data" terminal, so ambient faction hostility can decide
+/// whether it starts combat. No-op when the game's `AIDT` is not decoded
+/// (Oblivion's 0–100 scale, Starfield) — such an actor never starts combat
+/// on its own.
+fn stamp_combat_disposition(
+    world: &mut World,
+    placement_root: EntityId,
+    resolved: &ResolvedNpc<'_>,
+) {
+    if let Some(ai) = resolved.ai_data.ai_data {
+        world.insert(placement_root, crate::systems::CombatDisposition(ai));
+    }
+}
+
 /// The resolved record's faction membership, `None` when it declares none.
 /// Shared by the NPC stamp above and the player's seed (#4699), so both
 /// read membership through the same TPLT resolution.
@@ -386,6 +401,12 @@ pub(crate) const FALLBACK_ACTOR_CAPSULE_HALF_HEIGHT: f32 = 32.0;
 /// See [`FALLBACK_ACTOR_CAPSULE_HALF_HEIGHT`] — total height
 /// `2 * (32 + 20) = 104` BU ≈ 1.5 m at the 70 BU/m Havok scale.
 pub(crate) const FALLBACK_ACTOR_CAPSULE_RADIUS: f32 = 20.0;
+/// Height of the fallback capsule's centre above the placement root (the
+/// actor's feet): the capsule rests on the floor. Also where ambient faction
+/// hostility (#4414) aims its sight rays — torso height, inside the body the
+/// combat ray targets.
+pub(crate) const FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT: f32 =
+    FALLBACK_ACTOR_CAPSULE_HALF_HEIGHT + FALLBACK_ACTOR_CAPSULE_RADIUS;
 
 /// Give an otherwise shape-less live actor one conservative, targetable body.
 ///
@@ -402,7 +423,11 @@ fn install_fallback_actor_collider(world: &mut World, actor_root: EntityId) -> E
     let collider = world.spawn();
     world.insert(
         collider,
-        Transform::new(Vec3::new(0.0, 52.0, 0.0), Quat::IDENTITY, 1.0),
+        Transform::new(
+            Vec3::new(0.0, FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT, 0.0),
+            Quat::IDENTITY,
+            1.0,
+        ),
     );
     world.insert(collider, GlobalTransform::IDENTITY);
     world.insert(

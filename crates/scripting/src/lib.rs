@@ -19,6 +19,7 @@ pub mod equipment;
 pub mod events;
 pub mod fragment;
 pub mod globals;
+pub mod load_order;
 pub mod magic;
 pub mod obscript;
 pub mod obscript_quests;
@@ -44,7 +45,7 @@ pub use cinematic::{
     ImageSpaceModifierApplication, MotionTypeChangeRequest,
 };
 pub use cleanup::event_cleanup_system;
-pub use combat::{AiCombatState, FactionRelations};
+pub use combat::{AiCombatState, FactionReactionOverride, FactionRelations};
 pub use compatibility::{
     analyze_obscript_bytecode_compatibility, analyze_pex_compatibility,
     analyze_source_compatibility, classify_method_call, classify_static_call,
@@ -83,6 +84,7 @@ pub use fragment::{
     SceneFragments,
 };
 pub use globals::Globals;
+pub use load_order::LoadOrderIdentity;
 pub use magic::{
     add_spell, remove_spell, CanonicalSpell, ConstantModifier, SpellCatalog, SpellList,
 };

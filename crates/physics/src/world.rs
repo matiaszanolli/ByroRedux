@@ -1188,6 +1188,49 @@ impl PhysicsWorld {
             })
     }
 
+    /// #4414 — does solid world geometry block the straight line `from → to`?
+    ///
+    /// The sight test ambient faction hostility gates an attack on. Uses the
+    /// same [`solid_probe_filter`] as every solid-world probe: fixed,
+    /// non-sensor geometry with every actor's bones masked, so neither the
+    /// two actors nor a bystander between them occlude — walls, floors and
+    /// fixed props do. `excluded_body` is the player capsule, a kinematic
+    /// body `exclude_dynamic` does not cover, which a ray aimed at the
+    /// player would otherwise always hit. Same **caller must have called
+    /// [`update_query_pipeline`](Self::update_query_pipeline)** contract as
+    /// the other probes.
+    pub fn line_of_sight_blocked(
+        &self,
+        from: byroredux_core::math::Vec3,
+        to: byroredux_core::math::Vec3,
+        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
+    ) -> bool {
+        let delta = to - from;
+        let distance = delta.length();
+        if distance <= 0.0 || !distance.is_finite() {
+            return false;
+        }
+        let direction = delta / distance;
+        let ray = Ray::new(
+            point![from.x, from.y, from.z],
+            vector![direction.x, direction.y, direction.z],
+        );
+        let mut filter = solid_probe_filter();
+        if let Some(body) = excluded_body {
+            filter = filter.exclude_rigid_body(body);
+        }
+        self.query_pipeline
+            .cast_ray(
+                &self.bodies,
+                &self.colliders,
+                &ray,
+                distance,
+                /* solid = */ true,
+                filter,
+            )
+            .is_some()
+    }
+
     /// Like [`cast_ray_down`](Self::cast_ray_down), but sweeps a capsule of
     /// the given dimensions instead of a zero-width ray. A bare ray can pass
     /// clean through a gap beside a sloped or narrow piece of architecture
@@ -3274,6 +3317,31 @@ mod audit_2026_08_13_regressions {
             filtered.is_some_and(|y| (y - 0.0).abs() < 0.5),
             "excluding the player body must reach the floor, got {filtered:?}"
         );
+    }
+
+    /// #4414 — walls block sight; actor bones (anyone's) and the excluded
+    /// player capsule do not.
+    #[test]
+    fn line_of_sight_is_blocked_by_walls_but_not_by_actors() {
+        let mut w = PhysicsWorld::new();
+        let wall = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(4.0, 200.0, 200.0).build(),
+            wall,
+            &mut w.bodies,
+        );
+        actor_bone(&mut w, Vec3::new(-100.0, 52.0, 0.0), true);
+        let player = player_capsule(&mut w, Vec3::new(-200.0, 64.0, 0.0));
+        w.update_query_pipeline();
+
+        let eye = Vec3::new(-300.0, 52.0, 0.0);
+        assert!(w.line_of_sight_blocked(eye, Vec3::new(300.0, 52.0, 0.0), None));
+        // Through a bystander's bone to the player, whose capsule the ray
+        // ends inside: clear once the player body is excluded.
+        let player_eye = Vec3::new(-200.0, 64.0, 0.0);
+        assert!(w.line_of_sight_blocked(eye, player_eye, None));
+        assert!(!w.line_of_sight_blocked(eye, player_eye, Some(player)));
+        assert!(!w.line_of_sight_blocked(eye, eye, None));
     }
 
     // ── #2873 — ground probes must not see an actor's own bones ──────

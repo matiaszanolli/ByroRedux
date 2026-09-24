@@ -18,9 +18,9 @@
 //!   clip wired to this path yet).
 //! - **No death/target-loss reaction beyond stopping.** An attacker whose
 //!   target dies or despawns simply drops `AiCombatState`; it does not
-//!   flee, alert allies, or pick a new target (no faction-wide aggro
-//!   propagation — see [`byroredux_scripting::FactionRelations`]'s doc for
-//!   why that is a separate, larger AI-perception feature).
+//!   flee or alert allies. A new target comes, if at all, from ambient
+//!   faction hostility (`faction_hostility.rs`, #4414), which re-arms
+//!   `AiCombatState` once the actor is free and sees someone it attacks.
 //! - **No blocking/power-attack/sneak-attack.** Every strike is a flat
 //!   `HitEvent` at [`crate::combat::attack_damage`]'s resolved value —
 //!   the same fields the player's own unarmed swing leaves `false`.

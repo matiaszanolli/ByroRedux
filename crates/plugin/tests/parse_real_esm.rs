@@ -4270,3 +4270,111 @@ fn installed_masters_ability_value_modifiers_resolve() {
         assert!(modifiers > 0, "{master}: no value-modifier effects");
     }
 }
+
+/// #4414 — `AIDT` decodes on every shipped actor that authors one, and
+/// the vanilla ambient-hostile populations read Very Aggressive (the
+/// research census: Skyrim bandits 391/413, FO3 raiders 138/153).
+#[test]
+#[ignore = "needs installed game data (checks every available master)"]
+fn installed_masters_ai_data_decodes() {
+    use byroredux_plugin::esm::records::Aggression;
+    let cases = [
+        (
+            test_paths::FO3_ENV,
+            test_paths::FO3_DEFAULT,
+            "Fallout3.esm",
+            "RaiderFaction",
+        ),
+        (
+            test_paths::FNV_ENV,
+            test_paths::FNV_DEFAULT,
+            "FalloutNV.esm",
+            "",
+        ),
+        (
+            test_paths::SKYRIM_SE_ENV,
+            test_paths::SKYRIM_SE_DEFAULT,
+            "Skyrim.esm",
+            "BanditFaction",
+        ),
+        (
+            test_paths::FO4_ENV,
+            test_paths::FO4_DEFAULT,
+            "Fallout4.esm",
+            "",
+        ),
+    ];
+    for (env, fallback, master, hostile_faction) in cases {
+        let Some(data) = data_dir(env, fallback) else {
+            eprintln!("[AIDT] {master}: skipping, game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(master)).expect("read master");
+        let index = parse_esm(&bytes).expect("parse master");
+        let actors: Vec<_> = index
+            .npcs
+            .values()
+            .chain(index.creatures.values())
+            .collect();
+        let decoded = actors.iter().filter(|a| a.ai_data.is_some()).count();
+        let with_radius = actors
+            .iter()
+            .filter(|a| a.ai_data.is_some_and(|d| d.attack_radius.is_some()))
+            .count();
+        eprintln!(
+            "[AIDT] {master}: {decoded}/{} decoded, {with_radius} with an attack radius",
+            actors.len()
+        );
+        assert!(
+            decoded * 10 >= actors.len() * 9,
+            "{master}: under 90% decoded"
+        );
+        // Ambient hostility's detection range: without this GMST it is off.
+        let detection = index.game_setting_float("fSneakMaxDistance");
+        let exterior = index.game_setting_float("fSneakExteriorDistanceMult");
+        eprintln!("[AIDT] {master}: fSneakMaxDistance {detection:?}, exterior mult {exterior:?}");
+        assert!(
+            detection.is_some_and(|d| d > 0.0),
+            "{master}: no detection range"
+        );
+        if hostile_faction.is_empty() {
+            continue;
+        }
+        let faction = index
+            .factions
+            .values()
+            .find(|f| f.editor_id == hostile_faction)
+            .expect("faction")
+            .form_id;
+        let members: Vec<_> = actors
+            .iter()
+            .filter(|a| a.factions.iter().any(|m| m.faction_form_id == faction))
+            .filter_map(|a| a.ai_data)
+            .collect();
+        let very = members
+            .iter()
+            .filter(|d| d.aggression == Aggression::VeryAggressive)
+            .count();
+        eprintln!(
+            "[AIDT] {master}: {hostile_faction} {very}/{} Very Aggressive",
+            members.len()
+        );
+        assert!(
+            very * 2 > members.len(),
+            "{master}: {hostile_faction} not mostly Very Aggressive"
+        );
+        // The ambient-hostility system adds no implicit same-faction rule:
+        // a Very Aggressive faction's members spare each other only because
+        // the faction authors itself as Ally/Friend (reaction 2/3). Pin it.
+        let self_reaction = index.factions[&faction]
+            .relations
+            .iter()
+            .find(|r| r.other_faction == faction)
+            .map(|r| r.combat_reaction);
+        eprintln!("[AIDT] {master}: {hostile_faction} self-reaction {self_reaction:?}");
+        assert!(
+            matches!(self_reaction, Some(2 | 3)),
+            "{master}: {hostile_faction} does not author itself as an ally"
+        );
+    }
+}

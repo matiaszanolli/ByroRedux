@@ -11,8 +11,10 @@
 
 use crate::asset_provider::Archive;
 use byroredux_core::ecs::Resource;
-use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+use byroredux_core::form_id::{FormIdPair, PluginId};
 use byroredux_plugin::esm;
+use byroredux_scripting::load_order::global_slot_of;
+use byroredux_scripting::LoadOrderIdentity;
 use byroredux_sdk::content::{ContentCatalog, PluginInfo, PluginKind};
 use byroredux_sdk::identity::FormRef;
 use byroredux_sdk::relationships::{
@@ -115,7 +117,9 @@ impl std::ops::Deref for LoadOrder {
 /// authored record that has no ECS entity, such as an inventory stack item.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GlobalFormIdResolver {
-    owners: Vec<(esm::reader::GlobalSlot, PluginId)>,
+    /// #4414 — the slot → plugin table lives in the scripting crate so its
+    /// systems can persist FormIDs portably; this resolver delegates to it.
+    identity: LoadOrderIdentity,
     content_catalog: Arc<ContentCatalog>,
     faction_relationships: Arc<FactionRelationshipCatalog>,
 }
@@ -189,7 +193,7 @@ impl GlobalFormIdResolver {
             }
         };
         let mut resolver = Self {
-            owners,
+            identity: LoadOrderIdentity::new(owners),
             content_catalog,
             faction_relationships: Arc::new(FactionRelationshipCatalog::default()),
         };
@@ -216,7 +220,7 @@ impl GlobalFormIdResolver {
         faction_ids.sort_unstable();
         for faction_id in faction_ids {
             let faction = &factions[&faction_id];
-            let Some(source) = self.resolve(faction.form_id).map(portable_form_ref) else {
+            let Some(source) = self.identity.form_ref(faction.form_id) else {
                 truncated = true;
                 continue;
             };
@@ -229,8 +233,7 @@ impl GlobalFormIdResolver {
                     truncated = true;
                     continue;
                 }
-                let Some(target) = self.resolve(relation.other_faction).map(portable_form_ref)
-                else {
+                let Some(target) = self.identity.form_ref(relation.other_faction) else {
                     truncated = true;
                     continue;
                 };
@@ -263,42 +266,33 @@ impl GlobalFormIdResolver {
     }
 
     pub(crate) fn resolve(&self, form_id: u32) -> Option<FormIdPair> {
-        let slot = global_slot_of(form_id);
-        let plugin = self
-            .owners
-            .iter()
-            .find_map(|(owner, plugin)| (*owner == slot).then_some(*plugin))?;
-        let local = match slot {
-            esm::reader::GlobalSlot::Regular(_) => form_id & 0x00FF_FFFF,
-            esm::reader::GlobalSlot::Light(_) => form_id & 0x0000_0FFF,
-            // #4639 — Starfield medium masters keep a 16-bit object id.
-            esm::reader::GlobalSlot::Medium(_) => form_id & 0x0000_FFFF,
-        };
-        Some(FormIdPair {
-            plugin,
-            local: LocalFormId(local),
-        })
+        self.identity.pair(form_id)
+    }
+
+    /// The load-order identity this resolver was built from, installed as
+    /// its own resource beside it (see [`install_form_resolver`]).
+    pub(crate) fn identity(&self) -> &LoadOrderIdentity {
+        &self.identity
     }
 
     pub(crate) fn global_form_id(&self, form: FormRef) -> Option<u32> {
-        let plugin = PluginId(u128::from_be_bytes(form.source()));
-        let (slot, _) = self.owners.iter().find(|(_, owner)| *owner == plugin)?;
-        let local = form.local();
-        let valid = match slot {
-            esm::reader::GlobalSlot::Regular(_) => local != 0 && local <= 0x00ff_ffff,
-            esm::reader::GlobalSlot::Light(_) => local != 0 && local <= 0x0000_0fff,
-            // #4639 — Starfield medium masters keep a 16-bit object id.
-            esm::reader::GlobalSlot::Medium(_) => local != 0 && local <= 0x0000_ffff,
-        };
-        valid.then(|| slot.compose(local))
+        self.identity.global_form_id(form)
     }
 }
 
-fn portable_form_ref(pair: FormIdPair) -> FormRef {
-    FormRef::new(pair.plugin.0.to_be_bytes(), pair.local.0)
-}
-
 impl Resource for GlobalFormIdResolver {}
+
+/// Install the active load order's resolver and, beside it, the
+/// [`LoadOrderIdentity`] it delegates to — the scripting crate's systems read
+/// the latter to persist FormIDs portably (#4414). Every load path that
+/// replaces the resolver goes through here so the two cannot diverge.
+pub(crate) fn install_form_resolver(
+    world: &mut byroredux_core::ecs::World,
+    resolver: GlobalFormIdResolver,
+) {
+    world.insert_resource(resolver.identity().clone());
+    world.insert_resource(resolver);
+}
 
 /// Resolve a global FormID to the owning plugin's basename.
 /// Used by the loud-fail diagnostic when a REFR's `base_form_id` is
@@ -322,22 +316,6 @@ pub(super) fn plugin_for_form_id(form_id: u32, load_order: &LoadOrder) -> Option
     let slot = global_slot_of(form_id);
     let position = load_order.slots.iter().position(|s| *s == slot)?;
     load_order.names.get(position).map(|s| s.as_str())
-}
-
-/// Inverse of [`esm::reader::GlobalSlot::compose`]: which slot owns this global
-/// FormID. `0xFE` is the light-master space (12-bit sub-index below the top
-/// byte), `0xFD` the Starfield medium-master space (8-bit sub-index, #4639);
-/// anything else is a full-byte regular slot.
-fn global_slot_of(form_id: u32) -> esm::reader::GlobalSlot {
-    const LIGHT_MASTER_BYTE: u32 = 0xFE;
-    const MEDIUM_MASTER_BYTE: u32 = 0xFD;
-    if (form_id >> 24) == LIGHT_MASTER_BYTE {
-        esm::reader::GlobalSlot::Light(((form_id >> 12) & 0x0FFF) as u16)
-    } else if (form_id >> 24) == MEDIUM_MASTER_BYTE {
-        esm::reader::GlobalSlot::Medium(((form_id >> 16) & 0x00FF) as u16)
-    } else {
-        esm::reader::GlobalSlot::Regular((form_id >> 24) as u8)
-    }
 }
 
 /// Build the [`FormIdRemap`] that turns this plugin's local FormIDs
@@ -735,6 +713,7 @@ fn allocate_global_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::form_id::LocalFormId;
     use std::fs;
 
     /// Regression for #4073 (ESM-2026-09-09-D6-02). `install_strings_guard`

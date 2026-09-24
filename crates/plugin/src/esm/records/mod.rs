@@ -52,9 +52,10 @@ pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
 pub use soun::{parse_soun, SounRecord};
 
 pub use actor::{
-    effective_actor_level, parse_clas, parse_fact, parse_npc, parse_race, ClassRecord,
-    CreatureStats, FactionMembership, FactionRecord, FactionRelation, NpcInventoryEntry, NpcRecord,
-    RaceRecord, ACBS_PC_LEVEL_MULT, CREATURE_DATA_LEN,
+    decode_ai_data, effective_actor_level, parse_clas, parse_fact, parse_npc, parse_race,
+    ActorAiData, Aggression, ClassRecord, Confidence, CreatureStats, FactionMembership,
+    FactionRecord, FactionRelation, NpcInventoryEntry, NpcRecord, RaceRecord, ACBS_PC_LEVEL_MULT,
+    CREATURE_DATA_LEN,
 };
 pub use actor_value_derive::{derive_npc_actor_values, derive_resolved_actor_values};
 pub use climate::{parse_clmt, ClimateRecord, ClimateWeather};

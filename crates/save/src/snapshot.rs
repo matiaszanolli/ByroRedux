@@ -231,7 +231,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// value changes the already-saved `ActorValues` column carries. A new
 /// column, not a shape change to an existing one; pre-v27 snapshots are
 /// rejected by the version check, like v26's `ReferenceScriptState`.
-pub const FORMAT_MAJOR: u16 = 27;
+///
+/// v27 -> v28 (#4414): `FactionRelations` joins the saved registry — the
+/// directed, `FormRef`-keyed faction reactions `Faction.SetEnemy` sets, now
+/// read by ambient faction hostility. A new resource column; pre-v28
+/// snapshots are rejected by the version check, like v27's `SpellList`.
+pub const FORMAT_MAJOR: u16 = 28;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

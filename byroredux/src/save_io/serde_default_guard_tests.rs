@@ -612,7 +612,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 27;
+    const BASELINE_MAJOR: u16 = 28;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -640,7 +640,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Vec<u32>` of spell FormIDs, `crates/scripting/src/magic.rs`) joined
     // the saved registry as a new column, the actor's spells that
     // AddSpell/RemoveSpell now mutate.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9aec_33d7_bf89_95f3;
+    // #4414 — refreshed WITH a major bump (v27 -> v28): `FactionRelations`
+    // (a `Vec<FactionReactionOverride>` of directed `FormRef` pairs and a
+    // raw reaction, `crates/scripting/src/combat.rs`) joined the saved
+    // registry as a new resource column.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x26d7_7651_0249_fc74;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

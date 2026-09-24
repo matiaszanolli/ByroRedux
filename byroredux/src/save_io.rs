@@ -574,7 +574,12 @@ pub fn build_save_registry() -> SaveRegistry {
         // applications). No `EntityId`/`FixedString` anywhere.
         // `image_space_modifier_catalog` is static ESM data that rides
         // along redundantly (see the type's own doc comment).
-        .register_resource::<CinematicPresentationState>("CinematicPresentationState");
+        .register_resource::<CinematicPresentationState>("CinematicPresentationState")
+        // #4414 — scripted faction reactions (`Faction.SetEnemy`), which the
+        // ambient hostility system now reads. Keyed by portable `FormRef`
+        // (plugin identity + local object id), never a load-order slot, so
+        // a reload under a changed load order still names the same factions.
+        .register_resource::<byroredux_scripting::FactionRelations>("FactionRelations");
     r
 }
 

@@ -1011,7 +1011,8 @@ pub(crate) fn assemble_exterior_streaming(
     world.insert_resource(cell_loader::LoadedCellIndex(std::sync::Arc::clone(
         &wctx.record_index,
     )));
-    world.insert_resource(
+    cell_loader::load_order::install_form_resolver(
+        world,
         cell_loader::load_order::GlobalFormIdResolver::from_load_order_with_records_and_factions(
             &wctx.load_order,
             &wctx.record_index.record_types,

@@ -373,6 +373,10 @@ pub const TEMPLATE_FLAG_USE_AI_PACKAGES: u16 = 0x0020;
 /// the `SPLO` spell list comes from the template (xEdit ACBS Template
 /// Flags bit 3). Consumed through [`ResolvedNpc::spells`].
 pub const TEMPLATE_FLAG_USE_SPELL_LIST: u16 = 0x0008;
+/// #4414 — "Use AI Data": the `AIDT` combat disposition comes from the
+/// template (xEdit `wbActorTemplateUseAIData`, bit 4 on FO3/FNV and Skyrim).
+/// Consumed through [`ResolvedNpc::ai_data`].
+pub const TEMPLATE_FLAG_USE_AI_DATA: u16 = 0x0010;
 pub const TEMPLATE_FLAG_USE_INVENTORY: u16 = 0x0100;
 
 /// Maximum TPLT recursion depth for [`resolve_inherited_record`] and its
@@ -647,6 +651,8 @@ pub struct ResolvedNpc<'a> {
     /// #4415 — "Use Actor Effect List" / "Spell List" chain terminal: the
     /// `SPLO` spell list.
     pub spells: &'a crate::esm::records::actor::NpcRecord,
+    /// #4414 — "Use AI Data" chain terminal: the `AIDT` disposition.
+    pub ai_data: &'a crate::esm::records::actor::NpcRecord,
     /// The Use-Stats chain shell-first including the terminal, cached so
     /// [`Self::authored_stat_field`] needs no second traversal.
     stats_chain: Vec<&'a crate::esm::records::actor::NpcRecord>,
@@ -704,6 +710,13 @@ impl<'a> ResolvedNpc<'a> {
                 shell_level,
                 index,
                 TEMPLATE_FLAG_USE_SPELL_LIST,
+                0,
+            ),
+            ai_data: resolve_inherited_record(
+                shell,
+                shell_level,
+                index,
+                TEMPLATE_FLAG_USE_AI_DATA,
                 0,
             ),
             stats_chain,

@@ -855,8 +855,9 @@ fn chargen_effects_apply_through_deferred_cinematic_presentation() {
 }
 
 /// MQ101's dragon-attack/keep-escape combat gate (stages 270+):
-/// `Faction.SetEnemy` resolves both `Faction` VMAD properties and marks
-/// them hostile in `FactionRelations`; `Actor.StartCombat` resolves both
+/// `Faction.SetEnemy` resolves both `Faction` VMAD properties and records
+/// each direction's reaction in `FactionRelations`, keyed by portable
+/// identity (#4414); `Actor.StartCombat` resolves both
 /// the acting alias and the player, then arms `AiCombatState` on the
 /// actor. Both go through `DeferredFragmentEffects` — `SetEnemy` because
 /// `FactionRelations` is a resource (the #2269 nested-acquisition
@@ -873,6 +874,14 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
     const ATTACKER_ALIAS: i16 = 5;
 
     let mut world = fixture();
+    let skyrim = byroredux_core::form_id::PluginId::from_filename("Skyrim.esm");
+    let identity = crate::LoadOrderIdentity::new(vec![(
+        byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+        skyrim,
+    )]);
+    let stormcloaks = identity.form_ref(STORMCLOAK_FACTION).unwrap();
+    let player_faction = identity.form_ref(PLAYER_FACTION).unwrap();
+    world.insert_resource(identity);
     let attacker = world.spawn();
     world
         .resource_mut::<crate::SceneActorBindings>()
@@ -912,9 +921,13 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
     };
 
     let effects = [
+        // `abOtherIsNeutralToSelf` set: only the reverse direction is
+        // neutral, which the old undirected pair could not express.
         Effect::SetEnemy {
             faction: ObjectRef::Property("MQ101StormcloakFaction".into()),
             other_faction: ObjectRef::Property("PlayerFaction".into()),
+            self_neutral: false,
+            other_neutral: true,
         },
         Effect::StartCombat {
             actor: crate::translate::effects::ActorRef::Object(ObjectRef::Property(
@@ -948,13 +961,18 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
     assert_eq!(combat_state.attack_cooldown_remaining, 0.0);
 
     // SetEnemy is deferred: not visible until the guard scope drops.
-    assert!(!world
-        .resource::<crate::FactionRelations>()
-        .is_enemy(STORMCLOAK_FACTION, PLAYER_FACTION));
+    assert!(world.resource::<crate::FactionRelations>().is_empty());
     deferred.apply(&world);
-    assert!(world
-        .resource::<crate::FactionRelations>()
-        .is_enemy(STORMCLOAK_FACTION, PLAYER_FACTION));
+    let relations = world.resource::<crate::FactionRelations>();
+    use byroredux_sdk::relationships::CombatReaction;
+    assert_eq!(
+        relations.reaction(stormcloaks, player_faction),
+        Some(CombatReaction::Enemy)
+    );
+    assert_eq!(
+        relations.reaction(player_faction, stormcloaks),
+        Some(CombatReaction::Neutral)
+    );
 }
 
 /// Regression for #2539: lifecycle metadata must come from a snapshot captured

@@ -12,6 +12,79 @@ use super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonName
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
+/// #4414 — an actor's aggression (xEdit `wbAggressionEnum`, FO3 onward).
+/// The CK / GECK "AI Data" pages define what each attacks on sight:
+/// Unaggressive initiates nothing, Aggressive attacks Enemies, Very
+/// Aggressive Enemies and Neutrals, Frenzied anyone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aggression {
+    Unaggressive,
+    Aggressive,
+    VeryAggressive,
+    Frenzied,
+}
+
+/// #4414 — an actor's confidence (xEdit `wbConfidenceEnum`). Only
+/// `Cowardly` changes combat start: "Cowardly actors NEVER engage in combat
+/// under any circumstances" (CK / GECK "AI Data").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confidence {
+    Cowardly,
+    Cautious,
+    Average,
+    Brave,
+    Foolhardy,
+}
+
+/// #4414 — the `AIDT` combat-start inputs, canonical across games.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActorAiData {
+    pub aggression: Aggression,
+    pub confidence: Confidence,
+    /// With "Aggro Radius Behavior" set, the distance inside which a
+    /// Neutral or Enemy is attacked at once. Skyrim/FO4 author it as the
+    /// Attack radius; FO3/FNV author one Aggro Radius and the GECK says a
+    /// target "within half the aggro radius" starts combat immediately.
+    /// The warn behaviour the outer radii drive is not modelled.
+    pub attack_radius: Option<f32>,
+}
+
+/// #4414 — `AIDT` per game (xEdit `wbAIDT`): aggression @0, confidence @1;
+/// FO3/FNV aggro-radius behaviour bool @15 and radius s32 @16; Skyrim/FO4
+/// flags @6 (bit 0 = aggro-radius behaviour), Attack radius u32 @16.
+pub fn decode_ai_data(data: &[u8], game: GameKind) -> Option<ActorAiData> {
+    if data.len() < 20 || matches!(game, GameKind::Oblivion | GameKind::Starfield) {
+        return None;
+    }
+    let aggression = match data[0] {
+        0 => Aggression::Unaggressive,
+        1 => Aggression::Aggressive,
+        2 => Aggression::VeryAggressive,
+        3 => Aggression::Frenzied,
+        _ => return None,
+    };
+    let confidence = match data[1] {
+        0 => Confidence::Cowardly,
+        1 => Confidence::Cautious,
+        2 => Confidence::Average,
+        3 => Confidence::Brave,
+        4 => Confidence::Foolhardy,
+        _ => return None,
+    };
+    let word = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+    let attack_radius = if game == GameKind::Fallout3NV {
+        (data[15] != 0).then(|| word(16) as i32 as f32 / 2.0)
+    } else {
+        (data[6] & 1 != 0).then(|| word(16) as f32)
+    }
+    .filter(|radius| radius.is_finite() && *radius > 0.0);
+    Some(ActorAiData {
+        aggression,
+        confidence,
+        attack_radius,
+    })
+}
+
 /// One faction the NPC belongs to, with their rank within it.
 #[derive(Debug, Clone, Copy)]
 pub struct FactionMembership {
@@ -335,6 +408,11 @@ pub struct NpcRecord {
     pub default_outfit: Option<u32>,
     /// AI packages (`PKID` sub-records, in priority order).
     pub ai_packages: Vec<u32>,
+    /// #4414 — the actor's `AIDT` combat disposition, canonical. `None`
+    /// when the record has no `AIDT` or the game's layout is not decoded
+    /// (Oblivion's 0-100 aggression scale feeds a disposition formula with
+    /// no settled source).
+    pub ai_data: Option<ActorAiData>,
     /// #4415 — the actor's spell list (`SPLO`, one FormID each, load-order
     /// remapped): SPEL / SHOU / LVSP targets, in authored order. FO3/FNV
     /// call it the "Actor Effect" list and author it on NPC_ and CREA;
@@ -937,6 +1015,7 @@ pub fn parse_npc(
         inventory: Vec::new(),
         default_outfit: None,
         ai_packages: Vec::new(),
+        ai_data: None,
         spells: Vec::new(),
         death_item_form_id: 0,
         level: 1,
@@ -1135,6 +1214,7 @@ fn parse_npc_core(
             let raw = SubReader::new(&sub.data).u32_or_default();
             record.spells.push(remap_fid(raw, remap));
         }
+        b"AIDT" => record.ai_data = decode_ai_data(&sub.data, game),
         // DOFT — Skyrim+ default outfit FormID. Pre-Skyrim games
         // don't emit DOFT (NPCs equip directly from inventory).
         // Stored as Option so the equip pipeline can dispatch on

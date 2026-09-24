@@ -442,6 +442,8 @@ pub(crate) fn populate_scene_runtime(
     crate::inventory::install_catalog(world, index);
     // #4415 — canonical spells for runtime `AddSpell` / `RemoveSpell`.
     world.insert_resource(byroredux_scripting::SpellCatalog::from_index(index));
+    // #4414 — the ambient-hostility detection range (`fSneakMaxDistance`).
+    crate::systems::install_detection_config(world, index);
     let imad_count = byroredux_scripting::install_image_space_modifiers(
         world,
         index.imagespace_modifiers.values().cloned(),

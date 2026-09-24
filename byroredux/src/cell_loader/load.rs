@@ -733,7 +733,7 @@ pub fn load_cell_with_masters(
             &index.factions,
         );
     world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index)));
-    world.insert_resource(form_resolver);
+    super::load_order::install_form_resolver(world, form_resolver);
 
     // M40 Phase 2 Stage 3 — record the just-spawned cell root so the
     // transition orchestrator can unload it on the next swap. Cleared
@@ -1104,7 +1104,7 @@ impl InteriorCellApplyJob {
                 &index.factions,
             );
         world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index)));
-        world.insert_resource(form_resolver);
+        super::load_order::install_form_resolver(world, form_resolver);
         world.insert_resource(super::CurrentCellRoot(Some(cell_root)));
         world.insert_resource(super::CurrentCellContext {
             cell_editor_id: cell_editor_id.clone(),

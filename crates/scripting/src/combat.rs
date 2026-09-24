@@ -13,7 +13,8 @@ use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
-use std::collections::HashSet;
+use byroredux_sdk::identity::FormRef;
+use byroredux_sdk::relationships::CombatReaction;
 
 /// An actor forced into combat against `target` by `Effect::StartCombat`.
 ///
@@ -37,50 +38,105 @@ impl Component for AiCombatState {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Faction pairs `Faction.SetEnemy` has marked hostile this session.
+/// Directed faction-to-faction combat reactions scripts have set with
+/// `Faction.SetEnemy`, layered over the load order's authored `XNAM`
+/// relations (the SDK `FactionRelationshipCatalog`).
 ///
-/// Tracked for observability and future consumers; nothing currently
-/// queries it for *ambient* hostility detection — every MQ101 `SetEnemy`
-/// call in the real corpus is paired with an explicit `StartCombat`
-/// (`Fragment_112`/`Fragment_113`/`Fragment_296`), which is what actually
-/// drives `AiCombatState` above. Modeling ambient faction-to-faction
-/// aggro (e.g. "any two hostile-faction actors that see each other start
-/// fighting") is a separate, larger AI-perception feature this slice
-/// deliberately does not attempt.
+/// Directed because the authored data is: `XNAM` on faction A names B and
+/// A's reaction to B, with B's reaction to A a separate record. `SetEnemy`'s
+/// two flags likewise set each direction independently (#4318). Consumed by
+/// the ambient faction-hostility system (#4414), which reads an override
+/// here before the authored relation.
 ///
-/// Not saved: plain `u32` FormIDs rather than `FormIdPair`s, so a
-/// differing load order across a save/reload could silently mismatch —
-/// and since nothing reads this yet (`is_enemy` has no production caller),
-/// losing it on reload changes no behavior. Ambient hostility, the consumer
-/// this is waiting for, is tracked by #4414.
+/// Keyed by portable [`FormRef`] rather than the global FormID, whose
+/// load-order slot means nothing across a save/reload with a different load
+/// order, and saved: a scripted hostility (MQ101 turning the Imperials on
+/// the player) must survive a reload. A handful of entries per playthrough,
+/// so a flat list with replace-on-write rather than a map — which also keeps
+/// the save column a plain JSON array.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactionRelations {
-    hostile_pairs: HashSet<(u32, u32)>,
+    overrides: Vec<FactionReactionOverride>,
+}
+
+/// One directed scripted reaction: how `faction` treats `other_faction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct FactionReactionOverride {
+    pub faction: FormRef,
+    pub other_faction: FormRef,
+    /// The `XNAM` combat-reaction encoding (0 Neutral, 1 Enemy, 2 Ally,
+    /// 3 Friend) — see [`CombatReaction::from_raw`].
+    pub reaction: u32,
 }
 
 impl Resource for FactionRelations {}
 
 impl FactionRelations {
-    fn key(a: u32, b: u32) -> (u32, u32) {
-        if a <= b {
-            (a, b)
-        } else {
-            (b, a)
+    /// `<faction>.SetEnemy(<other_faction>, self_neutral, other_neutral)`:
+    /// `faction` turns hostile to `other_faction` unless `self_neutral`,
+    /// and the reverse direction unless `other_neutral` — a `true` flag makes
+    /// that direction neutral instead (#4318).
+    pub fn set_enemy(
+        &mut self,
+        faction: FormRef,
+        other_faction: FormRef,
+        self_neutral: bool,
+        other_neutral: bool,
+    ) {
+        let reaction = |neutral: bool| {
+            if neutral {
+                CombatReaction::Neutral
+            } else {
+                CombatReaction::Enemy
+            }
+        };
+        self.set_reaction(faction, other_faction, reaction(self_neutral));
+        self.set_reaction(other_faction, faction, reaction(other_neutral));
+    }
+
+    pub fn set_reaction(
+        &mut self,
+        faction: FormRef,
+        other_faction: FormRef,
+        reaction: CombatReaction,
+    ) {
+        let reaction = reaction_raw(reaction);
+        match self
+            .overrides
+            .iter_mut()
+            .find(|o| o.faction == faction && o.other_faction == other_faction)
+        {
+            Some(existing) => existing.reaction = reaction,
+            None => self.overrides.push(FactionReactionOverride {
+                faction,
+                other_faction,
+                reaction,
+            }),
         }
     }
 
-    /// `<faction>.SetEnemy(<other_faction>, false, false)` — marks the pair
-    /// mutually hostile. The two Papyrus flags are `abSelfIsNeutralToOther`
-    /// and `abOtherIsNeutralToSelf`: a `true` one makes that direction
-    /// *neutral* instead, which this single undirected hostile pair cannot
-    /// represent, so the lowerer declines any call that sets either (#4318).
-    pub fn set_enemy(&mut self, faction: u32, other_faction: u32) {
-        self.hostile_pairs.insert(Self::key(faction, other_faction));
+    /// The scripted reaction of `faction` toward `other_faction`, if any.
+    pub fn reaction(&self, faction: FormRef, other_faction: FormRef) -> Option<CombatReaction> {
+        self.overrides
+            .iter()
+            .find(|o| o.faction == faction && o.other_faction == other_faction)
+            .and_then(|o| CombatReaction::from_raw(o.reaction))
     }
 
-    pub fn is_enemy(&self, faction: u32, other_faction: u32) -> bool {
-        self.hostile_pairs
-            .contains(&Self::key(faction, other_faction))
+    pub fn is_empty(&self) -> bool {
+        self.overrides.is_empty()
+    }
+}
+
+/// Inverse of [`CombatReaction::from_raw`].
+fn reaction_raw(reaction: CombatReaction) -> u32 {
+    match reaction {
+        CombatReaction::Neutral => 0,
+        CombatReaction::Enemy => 1,
+        CombatReaction::Ally => 2,
+        CombatReaction::Friend => 3,
     }
 }
 
@@ -95,13 +151,25 @@ pub fn register(world: &mut World) {
 mod tests {
     use super::*;
 
+    fn form(local: u32) -> FormRef {
+        FormRef::new([7; 16], local)
+    }
+
     #[test]
-    fn faction_relations_are_order_independent() {
+    fn set_enemy_sets_each_direction_from_its_own_flag() {
+        let (a, b) = (form(0x13), form(0x9999));
         let mut relations = FactionRelations::default();
-        relations.set_enemy(0x0009_9999, 0x0000_0013);
-        assert!(relations.is_enemy(0x0009_9999, 0x0000_0013));
-        assert!(relations.is_enemy(0x0000_0013, 0x0009_9999));
-        assert!(!relations.is_enemy(0x0009_9999, 0x0000_0014));
+        relations.set_enemy(a, b, false, false);
+        assert_eq!(relations.reaction(a, b), Some(CombatReaction::Enemy));
+        assert_eq!(relations.reaction(b, a), Some(CombatReaction::Enemy));
+
+        // `abOtherIsNeutralToSelf` neutralises only the reverse direction,
+        // and a later call replaces rather than duplicates.
+        relations.set_enemy(a, b, false, true);
+        assert_eq!(relations.reaction(a, b), Some(CombatReaction::Enemy));
+        assert_eq!(relations.reaction(b, a), Some(CombatReaction::Neutral));
+        assert_eq!(relations.overrides.len(), 2);
+        assert_eq!(relations.reaction(a, form(0x14)), None);
     }
 
     #[test]

@@ -257,14 +257,15 @@ pub enum Effect {
     /// not write a save file — see `CinematicPresentationState::
     /// request_save`'s doc for why a mid-fragment write is out of scope.
     RequestSave { auto: bool },
-    /// `<faction>.SetEnemy(<other_faction>, false, false)` — the mutual-enemy
-    /// form. The flags are `abSelfIsNeutralToOther`/`abOtherIsNeutralToSelf`
-    /// and a `true` one makes that direction neutral, so any other shape
-    /// declines (#4318). See [`crate::FactionRelations`] for what this does
-    /// and does not drive at runtime.
+    /// `<faction>.SetEnemy(<other_faction>, abSelfIsNeutralToOther,
+    /// abOtherIsNeutralToSelf)`. Each flag makes its direction *neutral*
+    /// instead of hostile (#4318); the two directions are independent, which
+    /// [`crate::FactionRelations`] records as directed reactions (#4414).
     SetEnemy {
         faction: ObjectRef,
         other_faction: ObjectRef,
+        self_neutral: bool,
+        other_neutral: bool,
     },
     /// `<actor>.StartCombat(<target>)`. See [`crate::AiCombatState`] for
     /// the runtime chase-and-strike behavior this arms.
@@ -1318,21 +1319,22 @@ fn prim_request_auto_save(e: &Expr, _scope: &Scope) -> Option<Effect> {
 }
 
 /// #4318 — Skyrim's own `faction.pex` declares `SetEnemy(Faction akOther,
-/// Bool abSelfIsNeutralToOther, Bool abOtherIsNeutralToSelf)`. A `true` flag
-/// makes that direction *neutral* rather than hostile, which the single
-/// undirected hostile pair in `FactionRelations` cannot represent. This used
-/// to accept the flags under invented names and drop them at dispatch, so
-/// `SetEnemy(x, true, true)` — "mutually neutral" — was recorded as mutual
-/// enmity. Only the literal `false, false` form is modeled; everything else
+/// Bool abSelfIsNeutralToOther = false, Bool abOtherIsNeutralToSelf = false)`.
+/// A `true` flag makes that direction *neutral* rather than hostile, so
+/// `SetEnemy(x, true, true)` is "mutually neutral", not enmity. #4414 made
+/// the relation directed, so both flags are carried; an omitted one takes its
+/// declared default, and a non-literal one is an unknown runtime value and
 /// declines.
 fn prim_set_enemy(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetEnemy")?;
-    if args.len() != 3 || bool_arg(args, 1)? != Some(false) || bool_arg(args, 2)? != Some(false) {
+    if !(1..=3).contains(&args.len()) {
         return None;
     }
     Some(Effect::SetEnemy {
         faction: receiver_object(object, scope)?,
         other_faction: receiver_object(&args[0].value.node, scope)?,
+        self_neutral: bool_arg(args, 1)?.unwrap_or(false),
+        other_neutral: bool_arg(args, 2)?.unwrap_or(false),
     })
 }
 
@@ -2900,6 +2902,8 @@ mod tests {
             Some(Effect::SetEnemy {
                 faction: ObjectRef::Property("::MQ101StormcloakFaction_var".into()),
                 other_faction: ObjectRef::Property("::PlayerFaction_var".into()),
+                self_neutral: false,
+                other_neutral: false,
             })
         );
     }
@@ -2972,57 +2976,67 @@ mod tests {
     }
 
     #[test]
-    fn set_enemy_declines_on_wrong_arg_count() {
-        let expr = Expr::Call {
+    fn set_enemy_defaults_omitted_flags_and_carries_literal_ones() {
+        // #4318 / #4414 — each flag makes one direction neutral; an omitted
+        // flag is its declared `false` default, and a non-literal flag is an
+        // unknown runtime value that declines.
+        let call = |flags: Vec<Expr>| Expr::Call {
             callee: Box::new(sp(Expr::MemberAccess {
                 object: Box::new(sp(Expr::Ident(Identifier("::SomeFaction_var".into())))),
                 member: sp(Identifier("SetEnemy".into())),
             })),
-            args: vec![CallArg {
-                name: None,
-                value: sp(Expr::Ident(Identifier("::OtherFaction_var".into()))),
-            }],
+            args: std::iter::once(Expr::Ident(Identifier("::OtherFaction_var".into())))
+                .chain(flags)
+                .map(|value| CallArg {
+                    name: None,
+                    value: sp(value),
+                })
+                .collect(),
         };
-        assert_eq!(classify_effect(&expr, &Scope::default()), None);
-    }
-
-    #[test]
-    fn set_enemy_declines_unless_both_neutral_flags_are_literal_false() {
-        // #4318 — a `true` `abSelfIsNeutralToOther`/`abOtherIsNeutralToSelf`
-        // makes that direction neutral, which one undirected hostile pair
-        // cannot express; recording it as enmity inverted the call. A
-        // non-literal flag is an unknown runtime value and declines too.
-        let call = |self_neutral: Expr, other_neutral: Expr| Expr::Call {
-            callee: Box::new(sp(Expr::MemberAccess {
-                object: Box::new(sp(Expr::Ident(Identifier("::SomeFaction_var".into())))),
-                member: sp(Identifier("SetEnemy".into())),
-            })),
-            args: vec![
-                CallArg {
-                    name: None,
-                    value: sp(Expr::Ident(Identifier("::OtherFaction_var".into()))),
-                },
-                CallArg {
-                    name: None,
-                    value: sp(self_neutral),
-                },
-                CallArg {
-                    name: None,
-                    value: sp(other_neutral),
-                },
-            ],
+        let lowered = |self_neutral, other_neutral| {
+            Some(Effect::SetEnemy {
+                faction: ObjectRef::Property("::SomeFaction_var".into()),
+                other_faction: ObjectRef::Property("::OtherFaction_var".into()),
+                self_neutral,
+                other_neutral,
+            })
         };
-        for (self_neutral, other_neutral) in [
-            (Expr::BoolLit(true), Expr::BoolLit(false)),
-            (Expr::BoolLit(false), Expr::BoolLit(true)),
-            (Expr::BoolLit(true), Expr::BoolLit(true)),
-            (
+        let scope = Scope::default();
+        assert_eq!(
+            classify_effect(&call(vec![]), &scope),
+            lowered(false, false)
+        );
+        assert_eq!(
+            classify_effect(&call(vec![Expr::BoolLit(true)]), &scope),
+            lowered(true, false)
+        );
+        assert_eq!(
+            classify_effect(
+                &call(vec![Expr::BoolLit(false), Expr::BoolLit(true)]),
+                &scope
+            ),
+            lowered(false, true)
+        );
+        assert_eq!(
+            classify_effect(
+                &call(vec![Expr::BoolLit(true), Expr::BoolLit(true)]),
+                &scope
+            ),
+            lowered(true, true)
+        );
+        for declined in [
+            vec![
                 Expr::Ident(Identifier("bNeutral".into())),
                 Expr::BoolLit(false),
-            ),
+            ],
+            vec![
+                Expr::BoolLit(false),
+                Expr::BoolLit(false),
+                Expr::BoolLit(false),
+            ],
         ] {
-            let expr = call(self_neutral, other_neutral);
-            assert_eq!(classify_effect(&expr, &Scope::default()), None, "{expr:?}");
+            let expr = call(declined);
+            assert_eq!(classify_effect(&expr, &scope), None, "{expr:?}");
         }
     }
 

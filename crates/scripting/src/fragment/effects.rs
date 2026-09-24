@@ -272,11 +272,12 @@ pub struct DeferredFragmentEffects {
     /// reference's cell, and a component cannot survive its own entity's
     /// despawn on cell unload.
     reference_lock_changes: Vec<(u32, DeferredLockChange)>,
-    /// `Effect::SetEnemy` pairs, applied to `FactionRelations` after the
-    /// quest-state guards drop — that resource follows the same nested-
-    /// acquisition caution as `CinematicPresentationState` above (#2269),
-    /// not the "direct component storage, stays nested" exception.
-    faction_relations: Vec<(u32, u32)>,
+    /// `Effect::SetEnemy` calls — `(faction, other_faction, self_neutral,
+    /// other_neutral)` in global FormIDs — applied to `FactionRelations`
+    /// after the quest-state guards drop. That resource follows the same
+    /// nested-acquisition caution as `CinematicPresentationState` above
+    /// (#2269), not the "direct component storage, stays nested" exception.
+    faction_relations: Vec<(u32, u32, bool, bool)>,
     provider_steps: Vec<DeferredProviderFragmentStep>,
 }
 
@@ -418,9 +419,36 @@ impl DeferredFragmentEffects {
             }
         }
         if !self.faction_relations.is_empty() {
+            // #4414 — the relation is saved, so it is keyed by portable
+            // identity. Resolve under the identity guard alone, then take
+            // the relations guard: never both held at once.
+            let resolved = match world.try_resource::<crate::LoadOrderIdentity>() {
+                Some(identity) => self
+                    .faction_relations
+                    .drain(..)
+                    .filter_map(|(faction, other, self_neutral, other_neutral)| {
+                        let pair = identity.form_ref(faction).zip(identity.form_ref(other));
+                        if pair.is_none() {
+                            log::warn!(
+                                "SetEnemy {faction:08X} -> {other:08X} dropped: a faction \
+                                 has no owning plugin in the load order"
+                            );
+                        }
+                        pair.map(|(faction, other)| (faction, other, self_neutral, other_neutral))
+                    })
+                    .collect::<Vec<_>>(),
+                None => {
+                    log::warn!(
+                        "{} SetEnemy call(s) dropped: no LoadOrderIdentity",
+                        self.faction_relations.len()
+                    );
+                    self.faction_relations.clear();
+                    Vec::new()
+                }
+            };
             if let Some(mut relations) = world.try_resource_mut::<crate::FactionRelations>() {
-                for (faction, other_faction) in self.faction_relations.drain(..) {
-                    relations.set_enemy(faction, other_faction);
+                for (faction, other, self_neutral, other_neutral) in resolved {
+                    relations.set_enemy(faction, other, self_neutral, other_neutral);
                 }
             }
         }
@@ -1477,10 +1505,17 @@ fn apply_ai_combat_effect(
         Effect::SetEnemy {
             faction,
             other_faction,
+            self_neutral,
+            other_neutral,
         } => {
             let faction = resolve_property_form_id(vmad, faction.property_name())?;
             let other_faction = resolve_property_form_id(vmad, other_faction.property_name())?;
-            deferred.faction_relations.push((faction, other_faction));
+            deferred.faction_relations.push((
+                faction,
+                other_faction,
+                *self_neutral,
+                *other_neutral,
+            ));
             None
         }
         Effect::StartCombat { actor, target } => {
