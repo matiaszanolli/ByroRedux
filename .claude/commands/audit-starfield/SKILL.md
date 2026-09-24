@@ -37,7 +37,7 @@ Status authority: `ROADMAP.md` compat row (its Starfield parse figure is stale, 
 **Guards**: `decompress_chunk_lz4_*` and the `BA2_V_STARFIELD_V3 =>` arm test (`ba2.rs`).
 **Checklist**:
 - v3: `compression_method` `0` → zlib, `3` → LZ4 block, anything else a hard `InvalidData`; LZ4 gets `unpacked_size` as its output bound. GNRL and DX10 both reach `decompress_chunk`; the per-chunk selector is `packed_size == 0` = raw (v3 DX10 mips mix raw and LZ4 chunks in one texture; the sentinel is unambiguous).
-- **Corpus** — measured 100.00% clean over all 13 archives (120,543 NIFs, 0 truncated / recovered / `NiUnknown`, 2026-09-16); ROADMAP and `game-compatibility.md` still say 99.98% (#4440). Confirm it stays 0 and the texture archives extract. `BSWeakReferenceNode` still captures an **undecoded** remainder into `starfield_tail` (#3524's byte-audit was never done): the 0 is recovery, not decode — growth of that tail is the signal.
+- **Corpus** — 100.00% clean over all 13 archives (120,543 NIFs, 0 truncated / recovered / `NiUnknown`; measured 2026-09-16, re-confirmed 2026-09-24 for #4440, which brought ROADMAP / `game-compatibility.md` / `nif-parser.md` in line). Confirm it stays at 0 and the texture archives extract. `BSWeakReferenceNode` still captures an **undecoded** remainder into `starfield_tail` (#3524's byte-audit was never done): the 0 is recovery, not decode — growth of that tail is the signal.
 - Trace a clutter item, hull, body, weapon and landscape mesh through `import_nif_scene`; new `NiUnknown` = a block introduced since the FO76 baseline.
 **Output**: `/tmp/audit/starfield/dim_1.md`
 

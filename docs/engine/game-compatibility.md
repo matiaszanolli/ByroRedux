@@ -16,9 +16,9 @@ placeholders and truncated trailers as recoverable). The stricter *clean*
 rate (no `NiUnknown`, no truncation) is 100% on FO3 / FNV / Skyrim SE / FO4 /
 FO76 / Oblivion (the 6 pre-Gamebryo NetImmerse marker files with no global
 type table no longer truncate as of the 2026-08-19 baseline regen, #3082),
-and 99.99% aggregate on Starfield (MeshesPatch's populated-`BSWeakReferenceNode`
-truncation tail, fixed by #2105; a residual 6/29,849 files with a distinct,
-still-unexplained cause remain truncated — see #1900 / NIF-D3-02).
+and on Starfield: 100.00% over all 13 mesh archives (120,543 / 120,543,
+re-measured 2026-09-24, #4440). The MeshesPatch and ShatteredSpace-Main01
+residual tails no longer reproduce; #3524 closed on 2026-09-08.
 
 ## Format identification
 
@@ -92,7 +92,7 @@ DLC archives joined on 2026-09-07 (#3925). Prefer that table over this one.
 | Skyrim SE         | BSA v105 (LZ4)     | **100%** (33 424, 7 archives) | 100%    | — |
 | Fallout 4         | BA2 BTDX v1/v7/v8  | **100%** (235 082, 8 archives) | 100%   | FaceGen truncation tail resolved (#1457, 2026-06-14). |
 | Fallout 76        | BA2 BTDX v1 GNRL   | **98.18%** (165 152 / 168 208) | 100%   | A 3 056-NIF truncation tail in the two `GeneratedMeshes` archives, which no gate opened before #3466. |
-| Starfield         | BA2 BTDX v2/v3 LZ4 | **99.98%** aggregate (120 524 / 120 543, 13 archives) | 100% | Per-archive figures are in ROADMAP's matrix. MeshesPatch's populated-`BSWeakReferenceNode` truncation tail (was 325/29 849, mis-attributed to closed #746/#747) fixed by #2105 — an undocumented 2-byte field between the weak-ref array and `unkInt1`, gated on the same `bsver >= SF_FORM_ID` threshold as the per-entry `formID`. A residual 6/29 849 files with a distinct, still-unexplained cause remain truncated. |
+| Starfield         | BA2 BTDX v2/v3 LZ4 | **100.00%** aggregate (120 543 / 120 543, 13 archives, re-measured 2026-09-24) | 100% | Per-archive figures are in ROADMAP's matrix. MeshesPatch's populated-`BSWeakReferenceNode` truncation tail (was 325/29 849, mis-attributed to closed #746/#747) fixed by #2105 — an undocumented 2-byte field between the weak-ref array and `unkInt1`, gated on the same `bsver >= SF_FORM_ID` threshold as the per-entry `formID`. The later 6-file MeshesPatch and 13-file ShatteredSpace-Main01 residuals no longer reproduce (#4440). |
 
 The full multi-game sweep runs the seven `Game` variants in
 [`crates/nif/tests/common/mod.rs`](../../crates/nif/tests/common/mod.rs)
@@ -248,12 +248,11 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 
 #### Starfield
 
-- **NIF parser**: 31,058 / 31,058 on Meshes01; **99.99% aggregate clean**
-  (100% recoverable) across all five mesh archives — MeshesPatch (99.98%,
-  29,849 files) is the sole sub-100% archive; the #2105 fix closed the
-  populated-`BSWeakReferenceNode` truncation tail (was mis-attributed to
-  closed #746/#747), leaving a residual 6/29,849 files with a distinct,
-  still-unexplained cause
+- **NIF parser**: **100.00% clean** across all 13 mesh archives
+  (120,543 / 120,543, re-measured 2026-09-24, #4440); the #2105 fix closed
+  the populated-`BSWeakReferenceNode` truncation tail (was mis-attributed to
+  closed #746/#747), and the later MeshesPatch / ShatteredSpace-Main01
+  residuals no longer reproduce
 - **Mesh archive**: BA2 BTDX v2 GNRL ✓ (32-byte header, +8-byte extension)
 - **Texture archive**: BA2 BTDX v3 DX10 ✓ — verified against the 30
   vanilla Starfield texture archives (see [Archives](archives.md)). The v3
@@ -463,12 +462,12 @@ sequential block-with-inline-name walker.
 
 ### Long-tail parser drift
 
-The residual clean-rate gap is now Starfield-only (Oblivion reached 100%
-clean via the 2026-08-19 baseline regen, #3082) — truncation drift on
-edge-case blocks, surfaced by the per-block baseline gate and tracked in git
-log (#687/#688/#697/#698 closed; the Starfield MeshesPatch tail was
-mis-attributed to #746/#747 before #2105 fixed it, leaving a residual
-6/29,849 files with a distinct, still-unexplained cause). All games stay at
+Starfield's residual clean-rate gap is closed: 100.00% over all 13 mesh
+archives (120,543 / 120,543, re-measured 2026-09-24, #4440). Oblivion reached
+100% clean via the 2026-08-19 baseline regen (#3082). The earlier truncation
+drift on edge-case blocks was surfaced by the per-block baseline gate and is
+tracked in git log (#687/#688/#697/#698 closed; the Starfield MeshesPatch tail
+was mis-attributed to #746/#747 before #2105 fixed it). All games stay at
 100% recoverable. One Starfield NIF
 (`meshes\marker_radius.nif`) requests a 318 MB single-buffer allocation
 exceeding the 256 MB per-allocation cap and is intentionally rejected

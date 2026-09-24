@@ -673,7 +673,7 @@ them, Oblivion and FO76, were wrong in *direction*, not just stale):
 | Skyrim SE | 100% (33 468) | 100% | BSTriShape packed-vertex format |
 | Fallout 4 | 100% vanilla (254 648 incl. third-party) | 100% | FaceGen truncation tail resolved (#1457) |
 | Fallout 76 | **100% clean** (was 98.18%, 165 164 / 168 220) | 100% | The `GeneratedMeshes` tail's gap — `BSDistantObjectExtraData` had no dispatch arm, 112,716 `NiUnknown` blocks across `SeventySix - GeneratedMeshes01/02.ba2` — was closed by #3461 (2026-09-02). This row otherwise predates the 2026-08-30 refresh date above it; see [Game Compatibility](game-compatibility.md) for the current live figure (58 469 files, 100% clean at last measurement). |
-| Starfield | 99.98% clean (120 836) | 100% | BSGeometry / SkinAttach / BoneTranslations dispatch (#708, #754 BSWeakReferenceNode); residual truncation tail tracked at #2105/#3524 |
+| Starfield | **100% clean** — 120 543 / 120 543 over the 13-archive gate, re-measured 2026-09-24 (the 2026-08-30 whole-install sweep counted 120 836 files at 99.98%) | 100% | BSGeometry / SkinAttach / BoneTranslations dispatch (#708, #754 BSWeakReferenceNode); the #2105 truncation tail is fixed and the later residuals no longer reproduce (#3524 closed, #4440) |
 | **Cumulative swept** | **624 702** (was 184 886 pre-widening) | — | full mesh-archive sweeps, per-game counts in [Game Compatibility](game-compatibility.md) |
 
 The two big bring-ups since the N26 era were:
