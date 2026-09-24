@@ -256,11 +256,23 @@ pub struct WaterMaterial {
     /// `u32::MAX` means procedural fallback; the render path fills missing
     /// layers from `normal_map_index` when a legacy record has no NAM paths.
     pub noise_map_indices: [u32; 3],
-    /// World-space scroll vectors for the three wave layers (xy = m/s).
-    /// For `Calm`, the cell loader preserves authored vectors when present.
-    /// For `River` / `Rapids` / `Waterfall`, vector 0 is
-    /// `flow.direction * flow.speed`, vector 1 is a perpendicular
-    /// shear at half speed, and vector 2 carries the authored third layer.
+    /// World-space scroll vectors for the three wave layers, in **UV per
+    /// second** — the velocity the visible pattern travels at, not a UV
+    /// offset rate: the shader advances its sample point at `-scroll·t`, so
+    /// a feature moves along `+scroll` (#4728). That sign convention keeps
+    /// the surface pattern, the physics current, and the rapids foam
+    /// streaks all running the same way.
+    ///
+    /// Composition lives at the translate boundary (`env_translate.rs`),
+    /// not the cell loader: for `River` / `Rapids`, vector 0 is the flow
+    /// term `flow.direction * flow.speed * WATER_SCROLL_UV_PER_BU_PER_S`
+    /// plus the record's converted layer-0 motion; vector 1 is the
+    /// perpendicular shear at half the downstream rate
+    /// (`WATER_PERPENDICULAR_SHEAR_SCROLL`) plus the converted layer-1
+    /// motion; vector 2 carries the converted layer-3 motion verbatim, or
+    /// mirrors vector 0 when the record authors none. `Calm` water keeps
+    /// authored vectors verbatim when present. The weather wind term (same
+    /// world-space convention) is added on top in `render/water.rs`.
     pub scroll_a: [f32; 2],
     pub scroll_b: [f32; 2],
     pub scroll_c: [f32; 2],
