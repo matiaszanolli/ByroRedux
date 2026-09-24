@@ -312,6 +312,18 @@ pub struct WaterParams {
     pub silt_dark_color: [f32; 3],
 }
 
+impl WaterParams {
+    /// #4734 — the dead editor default (`wind_direction` doc above): 90.0°
+    /// on the wire, converted to radians by every producer. A record whose
+    /// value equals this carries **no authored heading** — #2872 ruled a
+    /// zero-variance field cannot be authored velocity, and #3185 ruled a
+    /// name establishes the water's kind but not its axis. Consumers must
+    /// not fabricate a physics current from it.
+    pub fn wind_direction_is_dead_default(&self) -> bool {
+        self.wind_direction == 90.0f32.to_radians()
+    }
+}
+
 impl Default for WaterParams {
     fn default() -> Self {
         Self {

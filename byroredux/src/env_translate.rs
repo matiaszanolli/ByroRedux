@@ -879,7 +879,15 @@ fn classify_water_kind_and_flow(
 
     let mut flow = None;
     if kind.has_directional_flow() {
-        let (sin_theta, cos_theta) = rec.params.wind_direction.sin_cos();
+        // #4734 — FO3/FNV River-by-name creeks (CreekWater01,
+        // RockCreekEstatesWater, …) carry no NAM0/XWCU and the dead editor
+        // default (90°) in `wind_direction`. #2872 ruled a zero-variance
+        // field cannot be authored velocity and #3185 ruled a name
+        // establishes the water's kind but not its axis — this is that
+        // same defect class, axis-fallback edition. Emit no physics flow
+        // rather than fabricate a due-south current; the surface still
+        // scrolls from its authored layers.
+        let authored_heading_available = !rec.params.wind_direction_is_dead_default();
         let canonical = rec
             .linear_velocity
             .filter(|velocity| {
@@ -893,59 +901,79 @@ fn classify_water_kind_and_flow(
                     magnitude,
                 )
             })
-            .unwrap_or_else(|| WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta]));
-        let scroll = canonical.speed * WATER_SCROLL_UV_PER_BU_PER_S;
-        // A current reads as a current only when the surface it drags moves
-        // downstream. Every direction-named vanilla record authors its
-        // per-layer wind directions ~90° off its NAM0 flow (NE/NW/SE
-        // census: RiverWaterFlowNE layer dirs 4.07/4.66/4.40 rad against a
-        // -0.49 rad flow), so their raw addition slid the dominant layer
-        // SIDEWAYS across the river at ~80% of the downstream rate — the
-        // "way too aggressive sideways movement" live report. Keep each
-        // layer's authored speed profile, but confine it to the flow axis:
-        // a quarter of the cross-stream component survives as natural
-        // chop, and the deliberate counter-layer rotation below is halved
-        // to match (0.5 -> 0.25 of the downstream rate).
-        let flow_x = canonical.direction[0];
-        let flow_z = canonical.direction[2];
-        let flow_axis = [flow_x, flow_z];
-        let confine_to_flow = |motion: [f32; 2]| {
-            let along = motion[0] * flow_axis[0] + motion[1] * flow_axis[1];
-            let cross = [motion[0] - along * flow_axis[0], motion[1] - along * flow_axis[1]];
-            [
-                along * flow_axis[0] + cross[0] * WATER_CROSS_STREAM_SCROLL,
-                along * flow_axis[1] + cross[1] * WATER_CROSS_STREAM_SCROLL,
-            ]
-        };
-        let authored_a = confine_to_flow(resolve_water_layer_motion(rec, 0));
-        let authored_b = confine_to_flow(resolve_water_layer_motion(rec, 1));
-        let authored_c = confine_to_flow(resolve_water_layer_motion(rec, 2));
-        mat.scroll_a = [
-            flow_x * scroll + authored_a[0],
-            flow_z * scroll + authored_a[1],
-        ];
-        mat.scroll_b = [
-            -flow_z * scroll * WATER_CROSS_STREAM_SCROLL + authored_b[0],
-            flow_x * scroll * WATER_CROSS_STREAM_SCROLL + authored_b[1],
-        ];
-        mat.scroll_c = if authored_c != [0.0, 0.0] {
-            authored_c
+            .or_else(|| {
+                authored_heading_available.then(|| {
+                    let (sin_theta, cos_theta) = rec.params.wind_direction.sin_cos();
+                    WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta])
+                })
+            });
+        if let Some(canonical) = canonical {
+            let scroll = canonical.speed * WATER_SCROLL_UV_PER_BU_PER_S;
+            // A current reads as a current only when the surface it drags moves
+            // downstream. Every direction-named vanilla record authors its
+            // per-layer wind directions ~90° off its NAM0 flow (NE/NW/SE
+            // census: RiverWaterFlowNE layer dirs 4.07/4.66/4.40 rad against a
+            // -0.49 rad flow), so their raw addition slid the dominant layer
+            // SIDEWAYS across the river at ~80% of the downstream rate — the
+            // "way too aggressive sideways movement" live report. Keep each
+            // layer's authored speed profile, but confine it to the flow axis:
+            // a quarter of the cross-stream component survives as natural
+            // chop, and the deliberate counter-layer rotation below is halved
+            // to match (0.5 -> 0.25 of the downstream rate).
+            let flow_x = canonical.direction[0];
+            let flow_z = canonical.direction[2];
+            let flow_axis = [flow_x, flow_z];
+            let confine_to_flow = |motion: [f32; 2]| {
+                let along = motion[0] * flow_axis[0] + motion[1] * flow_axis[1];
+                let cross = [motion[0] - along * flow_axis[0], motion[1] - along * flow_axis[1]];
+                [
+                    along * flow_axis[0] + cross[0] * WATER_CROSS_STREAM_SCROLL,
+                    along * flow_axis[1] + cross[1] * WATER_CROSS_STREAM_SCROLL,
+                ]
+            };
+            let authored_a = confine_to_flow(resolve_water_layer_motion(rec, 0));
+            let authored_b = confine_to_flow(resolve_water_layer_motion(rec, 1));
+            let authored_c = confine_to_flow(resolve_water_layer_motion(rec, 2));
+            mat.scroll_a = [
+                flow_x * scroll + authored_a[0],
+                flow_z * scroll + authored_a[1],
+            ];
+            mat.scroll_b = [
+                -flow_z * scroll * WATER_CROSS_STREAM_SCROLL + authored_b[0],
+                flow_x * scroll * WATER_CROSS_STREAM_SCROLL + authored_b[1],
+            ];
+            mat.scroll_c = if authored_c != [0.0, 0.0] {
+                authored_c
+            } else {
+                mat.scroll_a
+            };
+            flow = Some(canonical);
         } else {
-            mat.scroll_a
-        };
-        flow = Some(canonical);
-    } else {
-        for (dst, authored) in [
-            (&mut mat.scroll_a, resolve_water_layer_motion(rec, 0)),
-            (&mut mat.scroll_b, resolve_water_layer_motion(rec, 1)),
-            (&mut mat.scroll_c, resolve_water_layer_motion(rec, 2)),
-        ] {
-            if authored != [0.0, 0.0] {
-                *dst = authored;
-            }
+            apply_authored_layer_scrolls(rec, mat);
         }
+    } else {
+        apply_authored_layer_scrolls(rec, mat);
     }
     (kind, flow)
+}
+
+/// The no-current scroll arm: authored noise layers scroll the surface
+/// verbatim (no synthesized flow term). Shared by the calm arm and
+/// #4734's dead-default-creek arm, which keeps its authored layer motion
+/// but refuses to fabricate a physics current.
+fn apply_authored_layer_scrolls(
+    rec: &esm::records::misc::WatrRecord,
+    mat: &mut WaterMaterial,
+) {
+    for (dst, authored) in [
+        (&mut mat.scroll_a, resolve_water_layer_motion(rec, 0)),
+        (&mut mat.scroll_b, resolve_water_layer_motion(rec, 1)),
+        (&mut mat.scroll_c, resolve_water_layer_motion(rec, 2)),
+    ] {
+        if authored != [0.0, 0.0] {
+            *dst = authored;
+        }
+    }
 }
 
 fn resolve_water_texture_paths(
@@ -2848,6 +2876,49 @@ mod tests {
     /// its downstream rate (pre-fix census: ~80%). Uses the vanilla
     /// `RiverWaterFlowNE` authoring — NAM0 (2.54, -1.35), layer dirs
     /// 4.067/4.660/4.398 rad, speeds 0.09/0.04/0.30.
+    /// #4734 — a River-by-name FO3/FNV creek with no NAM0/XWCU and the
+    /// dead editor default (90°) in `wind_direction` must produce **no**
+    /// physics current: #2872 ruled the zero-variance field cannot be
+    /// authored velocity, #3185 ruled a name establishes kind but not
+    /// axis. Pre-fix the fallback fabricated a due-south current
+    /// (+Z) for every such creek. Its authored layer motion still
+    /// scrolls, and a record with an authored NAM0 keeps its flow.
+    #[test]
+    fn dead_default_wind_direction_yields_no_physics_flow_for_named_creeks() {
+        let mut rec = calm_watr(
+            0x000A_0005,
+            "CreekWater01",
+            WaterParams {
+                wind_direction: 90.0f32.to_radians(),
+                noise_wind_directions: [0.25, 0.0, 1.2],
+                noise_wind_speeds: [0.10, 0.0, 0.20],
+                ..WaterParams::default()
+            },
+        );
+        // `CreekWater01` classifies River by name alone.
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec.clone());
+
+        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(rec.form_id));
+        assert!(matches!(kind, WaterKind::River), "the name alone classifies the kind");
+        assert!(
+            flow.is_none(),
+            "dead-default 90° heading must not fabricate a physics current (#4734)"
+        );
+        // Authored layer motion still scrolls the surface (A and C here;
+        // layer B's zero speed leaves the sentinel default in place).
+        assert_eq!(mat.scroll_a, [0.10 * 0.25_f32.cos(), 0.10 * 0.25_f32.sin()]);
+        assert_eq!(mat.scroll_c, [0.20 * 1.2_f32.cos(), 0.20 * 1.2_f32.sin()]);
+
+        // The contrast: an authored NAM0 keeps the flow (and its scroll
+        // synthesis) — the refusal is specifically about the dead default.
+        rec.linear_velocity = Some([1.0, 0.0]);
+        waters.insert(rec.form_id, rec);
+        let (_, _, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0005));
+        let flow = flow.expect("an authored NAM0 current must survive");
+        assert!((flow.speed - 1.0).abs() < 1.0e-6);
+    }
+
     #[test]
     fn riverwater_flowne_scroll_runs_downstream_not_sideways() {
         let rec = calm_watr(
