@@ -373,6 +373,31 @@ fn fo4_effect_only_mesh_preserves_scene_texture_slot_layout() {
     assert_eq!(info.texture_slot_layout, TextureSlotLayout::Fallout4);
 }
 
+/// #4279 — the Own_Emit additive-blend promotion (src = dst = ONE) must
+/// fire from the typed SLSF1 bit on FO4 and from the CRC-era
+/// `EMIT_ENABLED` entry on FO76 / Starfield, where the typed words are
+/// zero; with neither, the default alpha-over factors stay.
+#[test]
+fn own_emit_additive_promotion_reads_the_typed_bit_and_the_crc_flag() {
+    use crate::shader_flags::{bs_shader_crc32::EMIT_ENABLED, fo4_slsf1};
+    use crate::version::bsver;
+    let blend = |info: &MaterialInfo| (info.src_blend_mode, info.dst_blend_mode);
+
+    let mut typed = fully_populated_fo4_shader();
+    typed.shader_flags_1 = fo4_slsf1::OWN_EMIT;
+    assert_eq!(blend(&effect_shader_material_info(typed, bsver::FALLOUT4)), (0, 0));
+
+    for (sf1, sf2) in [(vec![EMIT_ENABLED], vec![]), (vec![], vec![EMIT_ENABLED])] {
+        let mut crc = fully_populated_fo4_shader();
+        crc.sf1_crcs = sf1;
+        crc.sf2_crcs = sf2;
+        assert_eq!(blend(&effect_shader_material_info(crc, bsver::FO76)), (0, 0));
+    }
+
+    let plain = effect_shader_material_info(fully_populated_fo4_shader(), bsver::FO76);
+    assert_eq!(blend(&plain), (6, 7), "SRC_ALPHA / INV_SRC_ALPHA");
+}
+
 // ── #890 / SK-D4-NEW-04 — BSEffect flag-bit capture ──────────────
 //
 // Pre-fix the four BSEffect-relevant flag bits (Soft_Effect,

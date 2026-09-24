@@ -766,12 +766,24 @@ fn apply_bs_effect_shader(
             // same block under `F4SF1`. Select the era's own constant
             // rather than borrowing Skyrim's, same as the
             // `BSLightingShaderProperty` sites above.
+            //
+            // #4279 — and the CRC era (FO76 / Starfield, BSVER >= 132)
+            // writes zero typed words: `EMIT_ENABLED`, the CRC-array
+            // replacement for `Own_Emit`, is the only signal there. Read
+            // both through the same helper #890 uses for this block's
+            // other four flags.
             let own_emit = slsf1_bit(
                 TextureSlotLayout::from_bsver(scene.bsver),
                 crate::shader_flags::skyrim_slsf1::OWN_EMIT,
                 crate::shader_flags::fo4_slsf1::OWN_EMIT,
             );
-            if shader.shader_flags_1 & own_emit != 0 {
+            if super::modern_effect_shader_bit(
+                shader.shader_flags_1,
+                own_emit,
+                &shader.sf1_crcs,
+                &shader.sf2_crcs,
+                crate::shader_flags::bs_shader_crc32::EMIT_ENABLED,
+            ) {
                 info.src_blend_mode = 0; // ONE
                 info.dst_blend_mode = 0; // ONE
             }
