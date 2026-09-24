@@ -397,8 +397,10 @@ pub(crate) fn spawn_btr_block(
                 normal_has_alpha: false,
                 // #4423 — synthetic paths bind no tint texture; see the field doc.
                 tint_has_alpha: false,
-                parallax_height_scale: 0.04,
-                parallax_max_passes: 4.0,
+                parallax_height_scale:
+                    byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE,
+                parallax_max_passes:
+                    byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES,
             },
         );
     }

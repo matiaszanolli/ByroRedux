@@ -327,3 +327,41 @@ fn no_source_file_frames_the_deleted_classify_pbr_as_live() {
             .join("\n"),
     );
 }
+
+/// #4552 — #3073/#4444 put the parallax defaults behind
+/// `DEFAULT_PARALLAX_HEIGHT_SCALE` / `DEFAULT_PARALLAX_MAX_PASSES` so a retune
+/// moves every synthetic `MaterialTextureHandles` producer together. #4444's
+/// sweep missed the `.btr` distant-terrain spawner and the Cornell harness,
+/// which would have split distant terrain by game on the next retune. No
+/// production source may restate either literal; tests may.
+#[test]
+fn no_production_source_restates_the_parallax_default_literals() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest.join("..");
+    let mut found = Vec::new();
+    visit_workspace_rs_files(&workspace_root, &mut |path, contents| {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let in_test_dir = path.components().any(|c| c.as_os_str() == "tests");
+        if name.ends_with("_tests.rs") || in_test_dir {
+            return;
+        }
+        let production = contents
+            .find("#[cfg(test)]")
+            .map_or(contents, |cut| &contents[..cut]);
+        for (idx, line) in production.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            let compact: String = code.split_whitespace().collect();
+            if compact.contains("parallax_height_scale:0.04")
+                || compact.contains("parallax_max_passes:4.0")
+            {
+                found.push(format!("{}:{}  {}", path.display(), idx + 1, line.trim()));
+            }
+        }
+    });
+    assert!(
+        found.is_empty(),
+        "restate the parallax defaults through DEFAULT_PARALLAX_HEIGHT_SCALE / \
+         DEFAULT_PARALLAX_MAX_PASSES, not literals (#4444 / #4552):\n{}",
+        found.join("\n")
+    );
+}
