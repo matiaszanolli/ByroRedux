@@ -971,6 +971,24 @@ pub(crate) fn attach_blend_and_facing_markers(
 /// calls, so terrain now classifies by the same rules as the architecture
 /// standing on it.
 ///
+/// **Phase-2 resolver coverage (#4264):** `resolve_normal_alpha_spec_roughness`
+/// — the spawn-time write-back of the normal-alpha-as-spec roughness
+/// scalar — is invoked only on the two spawn paths that carry a source
+/// `ImportedMaterial` (`scene/nif_loader.rs` for loose NIFs,
+/// `cell_loader/spawn/mesh_instance.rs` for cell references). The three
+/// exterior terrain spawners that use this boundary
+/// (`cell_loader/terrain.rs`, `cell_loader/terrain_lod.rs`,
+/// `cell_loader/terrain_lod_btr.rs`) deliberately do NOT call it: the
+/// heuristic is a fallback for content with no smoothness signal of its
+/// own, and its overwrite arm cannot fire on this boundary's output —
+/// `Material::default()` seeds `specular_strength = 1.0` (the arm requires
+/// `> 1.2`), `env_map_scale` is hardcoded 0.0, and when the bound terrain
+/// normal is alpha-bearing (`terrain.rs` reads the flag off the DDS) the
+/// resolver is a documented no-op because the shader consumes that alpha
+/// per-pixel as the specular mask. If a future change widens the
+/// resolver's gates, these three spawners are where the new reach must be
+/// re-audited before it can touch terrain.
+///
 /// #4304 — for completeness: the one *drawn* surface family that
 /// legitimately bypasses this whole boundary is EXAL ground cover (no
 /// `Material` at all; shaded from `GroundCoverPalette`). That exemption is
@@ -1225,6 +1243,13 @@ pub(crate) fn normal_alpha_spec_roughness(
 /// its timing (once at spawn, not every frame) change. Idempotent (see
 /// [`normal_alpha_spec_roughness`]). Call after all three components are
 /// attached to `entity`.
+///
+/// Scope (#4264): the loose-NIF (`scene/nif_loader.rs`) and cell-reference
+/// (`cell_loader/spawn/mesh_instance.rs`) spawn paths call this; the three
+/// exterior terrain spawners (`terrain.rs`, `terrain_lod.rs`,
+/// `terrain_lod_btr.rs`) deliberately do not — see
+/// [`translate_texture_only_material`]'s Phase-2-coverage paragraph for
+/// why that is inert by construction rather than an omission.
 pub(crate) fn resolve_normal_alpha_spec_roughness(
     world: &mut World,
     entity: EntityId,
