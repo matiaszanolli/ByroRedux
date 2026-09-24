@@ -35,8 +35,12 @@ pub enum SptTagKind {
     /// `u32 count` prefix followed by `count * stride` raw bytes.
     /// Used by tags that ship variable-sized binary arrays
     /// (per `spt_transitions` histogram analysis):
-    /// - `10002` ships an `(u32 N + N bytes)` blob (stride 1).
-    /// - `10003` ships an `(u32 N + N × 8 bytes)` blob (stride 8).
+    /// - `10002` ships an `(u32 N + N × 32 bytes)` blob (stride 32;
+    ///   8 f32s per entry — #4122 corrected the earlier stride-1
+    ///   reading, which desynced the walker on 65 corpus files).
+    /// - `10003` ships an `(u32 N + N × 32 bytes)` blob (stride 32;
+    ///   same 8-f32 entry shape as `10002` — #4122 corrected the
+    ///   earlier stride-8 reading).
     ///
     /// Stride is per-tag, encoded in the dispatch.
     ArrayBytes { stride: u8 },
@@ -123,8 +127,15 @@ pub fn dispatch_tag(tag: u32) -> SptTagKind {
         8003 | 8005 | 8009 => SptTagKind::FixedBytes(52),
         // 11 bytes — observed at 92 % confidence on tag 13008.
         13008 => SptTagKind::FixedBytes(11),
-        // 7 bytes — tag 13013 ships a 7-byte struct (likely u32 + u16 + u8).
-        13013 => SptTagKind::FixedBytes(7),
+        // 4 bytes — #4122: a lone f32 (the same ≈0.0509 constant in
+        // every corpus sample). The earlier FixedBytes(7) reading
+        // over-consumed by 3, so the 8 files whose walk ends at 13013
+        // stopped inside the tail's first tag and read its payload's
+        // misaligned head as the in-range "unknown tag 768". At 4
+        // bytes the stream continues cleanly: 13013 is immediately
+        // followed by the out-of-range tail tag 14007 (u32 payload),
+        // then 14008 — byte-verified on three Oblivion files.
+        13013 => SptTagKind::FixedBytes(4),
         // 16 bytes — tag 12002. Size only; unlike the other FixedBytes
         // entries above, no corpus histogram/confidence is recorded for
         // this one in format-notes.md (see its "Recovered tag" table).
@@ -146,13 +157,24 @@ pub fn dispatch_tag(tag: u32) -> SptTagKind {
         // ── Length-prefixed binary arrays ─────────────────────────
         // Bimodal payload-size histograms in `spt_transitions` decode
         // cleanly when read as `u32 count + count × stride` blobs.
-        // 10002 — stride 1 (length value = byte count): histogram
-        //   buckets 4 / 68 / 100 / 132 / 164 / 196 = 4 + N×64 with
-        //   the count u32 = N×64.
-        10002 => SptTagKind::ArrayBytes { stride: 1 },
-        // 10003 — stride 8: 4B (count=0) and 36B (count=4) modes.
-        // 4 + 4×8 = 36.
-        10003 => SptTagKind::ArrayBytes { stride: 8 },
+        // 10002 — stride 32: `u32 count + count × 32 B`, 8 f32s per
+        //   entry. #4122: the 2026-05-09 stride-1 reading under-
+        //   consumed by 31 B per entry and desynced 65 corpus files
+        //   (small counts surfaced as shift 1–3; the histogram's
+        //   large buckets hide the same desync mod 4). Byte-verified:
+        //   count=2 files carry 64 B of floats ending exactly at tag
+        //   10003, entry 0 byte-identical across files, and the
+        //   histogram buckets are `4 + N×32` for N ∈ {0,2,3,4,5,6}.
+        10002 => SptTagKind::ArrayBytes { stride: 32 },
+        // 10003 — stride 32: `u32 count + count × 32 B`, 8 f32s per
+        //   entry, same stride as 10002. #4122: the 2026-05-09
+        //   stride-8 reading under-consumed by 24 B per entry —
+        //   invisible to the resync shift (a multiple of 4) — and
+        //   left 39 Oblivion files stopped inside the array's own
+        //   floats. Byte-verified: a count=1 file carries 32 B ending
+        //   exactly at tag 10004; the histogram bucket "36 B" is
+        //   `4 + 1×32`, not `4 + 4×8`.
+        10003 => SptTagKind::ArrayBytes { stride: 32 },
 
         _ => SptTagKind::Unknown,
     }
@@ -208,7 +230,7 @@ mod tests {
         assert_eq!(dispatch_tag(8005), SptTagKind::FixedBytes(52));
         assert_eq!(dispatch_tag(8009), SptTagKind::FixedBytes(52));
         assert_eq!(dispatch_tag(13008), SptTagKind::FixedBytes(11));
-        assert_eq!(dispatch_tag(13013), SptTagKind::FixedBytes(7));
+        assert_eq!(dispatch_tag(13013), SptTagKind::FixedBytes(4));
         assert_eq!(dispatch_tag(12002), SptTagKind::FixedBytes(16));
         assert_eq!(dispatch_tag(12003), SptTagKind::FixedBytes(20));
     }
@@ -220,6 +242,17 @@ mod tests {
         ] {
             assert_eq!(dispatch_tag(tag), SptTagKind::String, "tag {} string", tag);
         }
+    }
+
+    /// #4122 — both array tags' strides are pinned at 32 (8 f32s per
+    /// entry): 10002's from the desync localization, 10003's from the
+    /// stop-word gate (its 24-byte-per-entry error was invisible to
+    /// the shift). The earlier stride-1/stride-8 readings desynced or
+    /// short-stopped 104 corpus files between them.
+    #[test]
+    fn array_payload_tags() {
+        assert_eq!(dispatch_tag(10002), SptTagKind::ArrayBytes { stride: 32 });
+        assert_eq!(dispatch_tag(10003), SptTagKind::ArrayBytes { stride: 32 });
     }
 
     #[test]

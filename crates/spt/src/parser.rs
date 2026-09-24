@@ -44,6 +44,39 @@ pub const TAG_MIN: u32 = 100;
 /// bands follow it in every corpus file, not yet dictionaried (#3808).
 pub const TAG_MAX: u32 = 13_999;
 
+/// Byte shift from `stop` (0..4) that maximises known-tag hits when the
+/// stream from `stop` is re-scanned at 4-byte alignment — the measurement
+/// of how far the walker's stop sits from the true TLV grid (#4122).
+///
+/// Returns `(shift, hits)`. A shift-0 mode across a corpus means the
+/// walker stops on the real grid; anything else means it stopped inside
+/// a payload it mis-sized. The shift only sees mis-sizing *mod 4*: an
+/// entry that under-consumes by `4k` bytes still aligns to the grid, so
+/// a shift-0 mode is necessary but not sufficient — pair it with the
+/// stop-word check (a true stop's word is one of the 14 000-band tail
+/// tags) for the full acceptance gate.
+pub fn best_resync_shift(bytes: &[u8], stop: usize) -> (usize, u32) {
+    let mut best_shift = 0usize;
+    let mut best_hits = 0u32;
+    for shift in 0..4usize {
+        let mut hits = 0u32;
+        let mut j = stop + shift;
+        while j + 4 <= bytes.len() {
+            let v = u32::from_le_bytes([bytes[j], bytes[j + 1], bytes[j + 2], bytes[j + 3]]);
+            if (TAG_MIN..=TAG_MAX).contains(&v) && !matches!(dispatch_tag(v), SptTagKind::Unknown)
+            {
+                hits += 1;
+            }
+            j += 4;
+        }
+        if hits > best_hits {
+            best_hits = hits;
+            best_shift = shift;
+        }
+    }
+    (best_shift, best_hits)
+}
+
 /// Parse a `.spt` byte stream into an [`SptScene`].
 ///
 /// Returns `Err(io::Error)` (`InvalidData`) on five fatal conditions:

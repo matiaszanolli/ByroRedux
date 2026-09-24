@@ -21,6 +21,7 @@
 
 use byroredux_bsa::BsaArchive;
 use byroredux_spt::parse_spt;
+use byroredux_spt::parser::best_resync_shift;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default)]
@@ -215,5 +216,155 @@ fn parse_rate_oblivion_spt() {
         stats.coverage_rate() >= 0.95,
         "Oblivion `.spt` parser coverage = {:.1}% (expected ≥ 95 %)",
         stats.coverage_rate() * 100.0,
+    );
+}
+
+/// Lower edge of the tail tag bands #3808's dissection found past the
+/// walker's stop in every corpus file (14 000 / 15 000 / 16 000 / 18 000 /
+/// 19 000 / 20 000 / 21 000 / 22 000). Upper edge keeps float-bit words
+/// (≥ 0x3F000000 ≈ 1.06e9) and other payload debris out.
+const TAIL_TAG_MIN: u32 = 14_000;
+const TAIL_TAG_MAX: u32 = 23_000;
+
+/// Boundary-gate stats for one archive sweep (#4122).
+#[derive(Debug, Default)]
+struct BoundaryStats {
+    total_files: u32,
+    reached_eof: u32,
+    /// Stops whose word sits in `[TAIL_TAG_MIN, TAIL_TAG_MAX]` — the
+    /// walker consumed everything up to the tail's first tag.
+    on_boundary: u32,
+    /// Stops whose resync shift is 0 (`parser::best_resync_shift`).
+    shift_zero: u32,
+    /// `(path, stop word, shift)` for every file failing either check.
+    violations: Vec<(String, u32, usize)>,
+}
+
+/// #4122 — the desync acceptance gate: the walker's stop must sit on the
+/// true TLV boundary in every corpus file. Two properties per file:
+///
+/// 1. the stop word itself is a 14 000–22 000-band tail tag — the walker
+///    consumed the parameter section (and the known-tag run that follows
+///    it past `TAG_MAX`) up to the first tail tag, not into some
+///    mis-sized payload;
+/// 2. `best_resync_shift` == 0 — the stop is on the stream's 4-byte grid
+///    (implied by 1, but asserted separately so a regression names which
+///    property broke).
+///
+/// Pre-fix this gate failed on 73 of 159 files (the #3808 desync table:
+/// 86/159 shift-0), with stop words like `0x3f80` (float bits), `768`
+/// (a misaligned payload head) or `0`. The culprits were two dictionary
+/// entries — `10002` (stride 1, now 32) and `13013` (7 bytes, now 4).
+#[test]
+#[ignore = "needs vanilla game data on disk"]
+fn walker_stops_on_true_tlv_boundary() {
+    let games = [
+        (
+            "FNV",
+            "BYROREDUX_FNV_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+            "Fallout - Meshes.bsa",
+        ),
+        (
+            "FO3",
+            "BYROREDUX_FO3_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+            "Fallout - Meshes.bsa",
+        ),
+        (
+            "OBL",
+            "BYROREDUX_OBL_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+            "Oblivion - Meshes.bsa",
+        ),
+        (
+            "SI",
+            "BYROREDUX_OBL_DATA",
+            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+            "DLCShiveringIsles - Meshes.bsa",
+        ),
+    ];
+
+    let mut totals = BoundaryStats::default();
+    for (label, env_var, fallback, bsa_name) in games {
+        let Some(data) = data_dir(env_var, fallback) else {
+            eprintln!("[{label}] skip: {env_var} unset and fallback missing");
+            continue;
+        };
+        let archive = BsaArchive::open(data.join(bsa_name)).expect("open BSA");
+        let spt_files: Vec<String> = archive
+            .list_files()
+            .into_iter()
+            .filter(|f| f.to_ascii_lowercase().ends_with(".spt"))
+            .map(|f| f.to_string())
+            .collect();
+
+        for path in &spt_files {
+            let Ok(bytes) = archive.extract(path) else {
+                continue;
+            };
+            let Ok(scene) = parse_spt(&bytes) else {
+                continue;
+            };
+            totals.total_files += 1;
+            if scene.reached_eof {
+                totals.reached_eof += 1;
+                continue;
+            }
+            let stop = scene.tail_offset;
+            let shift = best_resync_shift(&bytes, stop).0;
+            let word = if stop + 4 <= bytes.len() {
+                Some(u32::from_le_bytes([
+                    bytes[stop],
+                    bytes[stop + 1],
+                    bytes[stop + 2],
+                    bytes[stop + 3],
+                ]))
+            } else {
+                None
+            };
+            let on_boundary = word.is_some_and(|w| (TAIL_TAG_MIN..=TAIL_TAG_MAX).contains(&w));
+            if on_boundary {
+                totals.on_boundary += 1;
+            }
+            if shift == 0 {
+                totals.shift_zero += 1;
+            }
+            if !on_boundary || shift != 0 {
+                if totals.violations.len() < 12 {
+                    totals.violations.push((path.clone(), word.unwrap_or(0), shift));
+                }
+            }
+        }
+        eprintln!(
+            "[{label}] {} files | {} on boundary | {} shift-0 | {} eof",
+            totals.total_files, totals.on_boundary, totals.shift_zero, totals.reached_eof,
+        );
+    }
+
+    assert!(
+        totals.total_files > 0,
+        "no `.spt` corpus found — set BYROREDUX_FNV_DATA / _FO3_DATA / _OBL_DATA"
+    );
+    assert_eq!(
+        totals.on_boundary,
+        totals.total_files - totals.reached_eof,
+        "{} of {} non-EOF stops landed off the true TLV boundary (stop word \
+         outside [{}, {}]) — a dictionary entry mis-sizes its payload. \
+         Samples (path / stop word / shift): {:?}",
+        totals.total_files - totals.reached_eof - totals.on_boundary,
+        totals.total_files,
+        TAIL_TAG_MIN,
+        TAIL_TAG_MAX,
+        &totals.violations[..totals.violations.len().min(8)],
+    );
+    assert_eq!(
+        totals.shift_zero,
+        totals.total_files - totals.reached_eof,
+        "{} of {} non-EOF stops needed a 1-3 byte resync — the walker \
+         stopped inside a mis-sized payload. Samples: {:?}",
+        totals.total_files - totals.reached_eof - totals.shift_zero,
+        totals.total_files,
+        &totals.violations[..totals.violations.len().min(8)],
     );
 }

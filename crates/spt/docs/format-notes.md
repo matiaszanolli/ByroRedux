@@ -420,9 +420,14 @@ bytes flags?). Likely leaf billboard descriptors.
 
 #### Other notable tags
 
-- `6017`, `10002` — string-prefix tags with wide length distributions.
+- `6017` — string-prefix tag with a wide length distribution.
+- `10002` — `u32 count + count × 32 B` (8 f32s per entry; #4122
+  corrected the 2026-05-09 stride-1 reading).
+- `10003` — `u32 count + count × 32 B`, same entry shape as `10002`
+  (#4122 corrected the stride-8 reading).
 - `13008` — modal 11-byte payload; probably small fixed struct.
-- `13013` — modal 7-byte payload (unusual width — 4-byte u32 + u16 + u8?).
+- `13013` — 4-byte payload, a lone f32 (the same ≈0.0509 constant in
+  every corpus sample; #4122 corrected the 7-byte reading).
 - `12002` (16 B), `12003` (20 B) — sized as `FixedBytes` in `tag.rs`, but
   unlike every other entry in this section, **no corpus observation is
   recorded for either**: no histogram, no confidence figure, no sample
@@ -528,6 +533,10 @@ refinement, not a parser bug.
   — a `u32 count + count bytes` blob. Same shape as a String but
   binary, so the existing `read_string_lp`-style reader works
   modulo the value-type distinction.
+  *#4122 correction (2026-09-24): the buckets are `4 + N×32` for
+  N ∈ {0, 2, 3, 4, 5, 6} — the stride is 32 (8 f32s per entry), not 1.
+  The stride-1 reading under-consumed by 31 B per entry and desynced
+  65 corpus files; see the 2026-09-24 entry below.*
 * **Tag `10003`** — bimodal (`4 / 36 B`). `4 + 4×8 = 36` ⇒
   `ArrayBytes { stride: 8 }`. Removed from the U32 dispatch arm
   because the 4-byte case is just `count = 0` and the analyser's
@@ -631,7 +640,7 @@ arm, enforced by the `!bytes.is_empty()` guard in
 `tag_13005_before_zero_leading_tail_resolves_as_bare`. Revisit only if
 mod content is ever observed emitting a genuine zero-length 13005 string.
 
-### Open: tag `768` bail in the 4 outliers (corrected 2026-07-04, #1821)
+### Settled: tag `768` bail in the 4 outliers (corrected 2026-07-04, #1821; root-caused 2026-09-24, #4122)
 
 After the #999 fix, the same 4 files decode 28 more entries each but
 then bail again — the walker reads tag `768` (offsets 4507 / 5641 /
@@ -683,6 +692,19 @@ gate.
 Tracked here rather than as a dedicated issue — the placeholder
 fallback already covers these 4 trees today, and Oblivion is well
 above the 95 % acceptance gate.
+
+**Root cause (2026-09-24, #4122)**: both readings above were wrong in
+the same way — `13013`'s payload is **4 bytes** (the lone f32 at
+4500-4503), not 7. The "768" word is a misaligned read *inside* the
+region after it: with the true boundary at 4504, the tail opens with
+tag `14007` (u32 payload `3`) then `14008` — the exact recurring
+tail-side cluster (`14007` ranks in 151/159 tails, once per file, 8 B
+before `14008` in every one). The "trailing u16 = 14007" reading
+happened to point at real bytes but attributed them to the payload;
+the "768 = in-range unknown tag" reading kept the walker stopping 3
+bytes into the tail. With `FixedBytes(4)` the 4 outliers walk past
+`13013` and stop cleanly on `14007`, no unknown tag. The byte-level
+decode is in the 2026-09-24 entry below.
 
 ---
 
@@ -777,6 +799,10 @@ of all files the walker stopped *inside* a payload it mis-sized rather
 than at any boundary. `SptScene::tail_offset`'s doc comment ("start of the
 binary geometry tail") describes something the data does not support.
 
+*(2026-09-24, #4122: localized and fixed — mis-sized dictionary entries
+`10002`/`10003` (stride) and `13013` (size); the corpus now reads
+159/159 on the true boundary. See the 2026-09-24 entry below.)*
+
 ### 4. No baked geometry can be present at all
 
 | metric | bytes |
@@ -816,3 +842,86 @@ same measured-modal-payload method that built the current table would
 convert ~1 KB per file of currently-opaque bytes into parameters — with
 the desync in finding 3 fixed first, since a walker that stops mid-payload
 cannot be extended past the stop.
+
+---
+
+## 2026-09-24 — #4122: the desync localized to two mis-sized dictionary entries
+
+The 2026-09-07 dissection (finding 3) measured that 73 of 159 corpus
+files need a 1–3 byte shift from `tail_offset` to resync, and named the
+follow-up: pair the per-file resync shift with the last decoded tag to
+localize the culprit. Done — `spt_tail --culprit` (the shift computation
+moved into the library as `parser::best_resync_shift` so the recon tool
+and the acceptance-gate test share one implementation).
+
+### The (last tag, kind) → shift histogram over all 159 files
+
+| last decoded tag | kind | shift 0 | shift 1 | shift 2 | shift 3 |
+|---:|---|---:|---:|---:|---:|
+| 10002 | ArrayBytes (then stride 1) | 82 | 28 | 33 | 4 |
+| 10003 | ArrayBytes (then stride 8) | 4 | 0 | 0 | 0 |
+| 13013 | FixedBytes (then 7 B) | 0 | 8 | 0 | 0 |
+
+65 + 8 = 73 — exactly the desync table's non-zero rows. Every desynced
+file's walk ends at one of two array tags plus the fixed-size `13013`.
+
+### Culprit 1: `10002` — stride 1 → 32
+
+The count u32 is a **record count**, not a byte count: payload is
+`count × 32 B` (8 f32s per entry). Byte-verified on FNV
+`sugarmaple01` (count 2) and `whiteoak01` (count 3): the float run
+after the count prefix ends **exactly at tag `10003`'s word** in both,
+and entry 0 is byte-identical across files
+(`1.0, 0.5, 0.0, 0.5, 0.0, 0.0, 1.0, 0.0`). The 2026-05-09 histogram
+buckets re-read as `4 + N×32` for N ∈ {0, 2, 3, 4, 5, 6} — the old
+note's "count u32 = N×64" mis-modeled the same numbers. The mod-4
+arithmetic confirms per shift: under-consumption is `31×count`, and
+`31×2 mod 4 = 2` (sugarmaple's shift), `31×3 mod 4 = 1` (whiteoak's).
+
+The 82 shift-0 files ending at `10002` carried count 0 (or counts whose
+31×N error is a multiple of 4 — see the gate below for why that no
+longer matters).
+
+### Culprit 2: `13013` — 7 → 4 bytes
+
+A lone f32 (the same ≈0.0509 constant in every sample). With the true
+boundary at payload+4, the tail opens with tag `14007` (u32 `3`) then
+`14008` — clean TLV, byte-verified on all three Oblivion 13013-enders
+(`shrubms14boxwood`, `treems14willowoakyoungsu`, `treems14canvasfreesu`).
+This root-causes the "768 bail" section above: both the "14007 is a
+tag 3 bytes off the cursor" claim (2026-07-04) and the "768 is an
+in-range unknown tag" rebuttal (same day) were misaligned reads of the
+same 12-byte region. `14007` *is* a real tail-side tag — it recurs in
+151/159 tails, once per file, always 8 B before `14008` — it just sits
+beyond `TAG_MAX`, where the walker never reaches it.
+
+### Culprit 3 (found by the stronger gate): `10003` — stride 8 → 32
+
+The shift only sees mis-sizing *mod 4*, so after fixing `10002` and
+`13013` the corpus read 159/159 shift-0 — and still stopped inside a
+payload in 39 Oblivion files (stop words: float bits `0x3F000000`, or
+`0`). The new acceptance gate (stop word ∈ [14 000, 23 000]) caught
+what the shift cannot. All 39 end at `10003`, count 1: the true payload
+is `count × 32 B` (8 f32s), byte-verified on `shrubvinemaplesnow` —
+`[1.0, 0.73, 0.0, 0.73, 0.0, 0.0, 1.0, 0.0]` ending exactly at tag
+`10004`. The old "36 B = 4 + 4×8" bucket is `4 + 1×32`.
+
+Side confirmation: the same tail decodes `12002` (16 B) and `12003`
+(20 B) cleanly to their next tags — the two FixedBytes sizes that had
+no recorded corpus observation now have one.
+
+### Gate result
+
+`parse_real_spt::walker_stops_on_true_tlv_boundary` (new, `#[ignore]`,
+game-data gated): every non-EOF stop in the 159-file corpus must land
+with its stop word in `[14 000, 23 000]` **and** resync shift 0.
+Pre-fix: 86/159 shift-0, stop words including float bits, `768`, `0`.
+Post-fix: **159/159 on boundary, 159/159 shift-0**; Oblivion's decoded
+entry count rises 21 526 → 22 092 (the previously-skipped payloads are
+now consumed and stored). FNV and FO3 were already boundary-clean and
+stay so.
+
+The desync fix is the precondition the 2026-09-07 closeout named for
+raising `TAG_MAX` and dictionarying the 14 000–22 000 bands; the walker
+now stops at the true boundary in every vanilla file, so that follow-up
+can start from real boundaries instead of mid-payload stops.

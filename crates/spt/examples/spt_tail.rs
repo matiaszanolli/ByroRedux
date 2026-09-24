@@ -44,7 +44,7 @@
 
 use byroredux_bsa::BsaArchive;
 use byroredux_spt::parse_spt;
-use byroredux_spt::parser::{TAG_MAX, TAG_MIN};
+use byroredux_spt::parser::{best_resync_shift, TAG_MAX, TAG_MIN};
 use byroredux_spt::tag::{dispatch_tag, SptTagKind};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -98,6 +98,14 @@ fn main() {
     // statistics can never disagree about where `tail_offset` is.
     if args.first().map(|a| a == "--dump").unwrap_or(false) && args.len() >= 3 {
         dump_one(&args[1], &args[2]);
+        return;
+    }
+    // `--culprit <archive>...` pairs each file's resync shift with the last
+    // tag the walker decoded before stopping, localising which dictionary
+    // entry mis-sizes its payload (#4122). Same binary, same shift
+    // computation, so this can never disagree with the corpus statistics.
+    if args.first().map(|a| a == "--culprit").unwrap_or(false) {
+        localize_culprits(&args[1..]);
         return;
     }
     let archives: Vec<String> = std::mem::take(&mut args);
@@ -174,26 +182,7 @@ fn main() {
             // walker lost sync, which need not be a 4-byte boundary of the
             // real stream — so the shift that maximises known-tag hits is
             // itself the measurement of how far the walker desynced.
-            let mut best_shift = 0usize;
-            let mut best_hits = 0u32;
-            for shift in 0..4usize {
-                let mut hits = 0u32;
-                let mut j = tail_offset + shift;
-                while j + 4 <= bytes.len() {
-                    let v =
-                        u32::from_le_bytes([bytes[j], bytes[j + 1], bytes[j + 2], bytes[j + 3]]);
-                    if (TAG_MIN..=TAG_MAX).contains(&v)
-                        && !matches!(dispatch_tag(v), SptTagKind::Unknown)
-                    {
-                        hits += 1;
-                    }
-                    j += 4;
-                }
-                if hits > best_hits {
-                    best_hits = hits;
-                    best_shift = shift;
-                }
-            }
+            let (best_shift, best_hits) = best_resync_shift(&bytes, tail_offset);
             *desync_shift.entry(best_shift).or_insert(0) += 1;
             if best_hits > 0 {
                 files_with_known_tag_in_tail += 1;
@@ -288,6 +277,143 @@ fn scan_tail(bytes: &[u8], tail_offset: usize) -> Vec<(usize, u32)> {
         i += 1;
     }
     hits
+}
+
+/// Byte shift from `tail_offset` (0..4) that maximises known-tag hits
+/// when re-scanning at 4-byte alignment lives in the library as
+/// [`byroredux_spt::parser::best_resync_shift`] since #4122 — the
+/// acceptance-gate test pins the corpus with the same implementation,
+/// so the tool and the test can never disagree about the shift.
+
+/// #4122 — pair each file's resync shift with the tags the walker decoded
+/// last before stopping. The walker's stop is 1–3 bytes off the true
+/// boundary in 46 % of the corpus (the 2026-09-07 desync table), and a
+/// mis-sized payload desyncs alignment, so the *last* decoded tag is the
+/// one whose dictionary entry under- or over-consumed. Prints a
+/// `(last tag, kind) → shift` histogram plus hex windows around each
+/// desynced stop, sized so the true payload boundary can be read off
+/// directly: the byte at `tail_offset + shift` starts the next real tag
+/// (a 14 000-band value), so the mis-sized entry's true payload length is
+/// `(tail_offset + shift) - payload_start`.
+fn localize_culprits(archives: &[String]) {
+    // (last tag, kind name) → { shift → file count }.
+    let mut per_last_tag: BTreeMap<(u32, String), BTreeMap<usize, u32>> = Default::default();
+    let mut windows_per_key: BTreeMap<(u32, String), u32> = Default::default();
+    const WINDOWS_PER_KEY: u32 = 3;
+    // The tail tag bands (#3808): a true stop's word sits in here.
+    const TAIL_TAG_MIN: u32 = 14_000;
+    const TAIL_TAG_MAX: u32 = 23_000;
+
+    for archive_path in archives {
+        let archive = match BsaArchive::open(archive_path) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("[skip] {}: {}", archive_path, e);
+                continue;
+            }
+        };
+        let spt_files: Vec<String> = archive
+            .list_files()
+            .into_iter()
+            .filter(|f| f.to_ascii_lowercase().ends_with(".spt"))
+            .map(|f| f.to_string())
+            .collect();
+
+        for path in &spt_files {
+            let bytes = match archive.extract(path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[err] {} :: {}: {}", archive_path, path, e);
+                    continue;
+                }
+            };
+            let scene = match parse_spt(&bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[parse-fail] {}: {}", path, e);
+                    continue;
+                }
+            };
+            let tail_offset = scene.tail_offset;
+            if tail_offset >= bytes.len() {
+                continue;
+            }
+            let (shift, _) = best_resync_shift(&bytes, tail_offset);
+            let Some(last) = scene.entries.last() else {
+                continue;
+            };
+            let kind = format!("{:?}", dispatch_tag(last.tag));
+            *per_last_tag
+                .entry((last.tag, kind.clone()))
+                .or_default()
+                .entry(shift)
+                .or_insert(0) += 1;
+
+            let key = (last.tag, kind.clone());
+            // Window any suspect stop: a shifted one (off-grid) or one
+            // whose stop word is not a tail-band tag (on-grid but inside
+            // a payload — the mod-4-invisible mis-sizing class).
+            let stop_word = if tail_offset + 4 <= bytes.len() {
+                u32::from_le_bytes([
+                    bytes[tail_offset],
+                    bytes[tail_offset + 1],
+                    bytes[tail_offset + 2],
+                    bytes[tail_offset + 3],
+                ])
+            } else {
+                0
+            };
+            let suspect = shift > 0
+                || !(TAIL_TAG_MIN..=TAIL_TAG_MAX).contains(&stop_word);
+            if suspect && windows_per_key.get(&key).copied().unwrap_or(0) < WINDOWS_PER_KEY {
+                *windows_per_key.entry(key).or_insert(0) += 1;
+                println!("=== {} :: {} ===", archive_path.rsplit('/').next().unwrap_or(archive_path), path);
+                println!(
+                    "  tail_offset={} shift={}  last decoded entries (tag@offset kind):",
+                    tail_offset, shift
+                );
+                for e in scene.entries.iter().rev().take(3).rev() {
+                    println!(
+                        "    {}@{} {:?}",
+                        e.tag,
+                        e.offset,
+                        dispatch_tag(e.tag)
+                    );
+                }
+                let lo = tail_offset.saturating_sub(24);
+                let hi = (tail_offset + 12).min(bytes.len());
+                print!("  window [{lo}..{hi}):");
+                for (i, b) in bytes[lo..hi].iter().enumerate() {
+                    if (lo + i) % 4 == 0 {
+                        print!(" | {:03x}", lo + i);
+                    }
+                    print!(" {:02x}", b);
+                }
+                println!();
+                let true_boundary = tail_offset + shift;
+                if true_boundary + 4 <= bytes.len() {
+                    let v = u32::from_le_bytes([
+                        bytes[true_boundary],
+                        bytes[true_boundary + 1],
+                        bytes[true_boundary + 2],
+                        bytes[true_boundary + 3],
+                    ]);
+                    println!("  u32 at true boundary (tail_offset+{shift}): {v}");
+                }
+            }
+        }
+    }
+
+    println!("\n# (last decoded tag, kind) → resync shift\n");
+    println!("| tag | kind | shift 0 | shift 1 | shift 2 | shift 3 |");
+    println!("|---:|---|---:|---:|---:|---:|");
+    for ((tag, kind), shifts) in &per_last_tag {
+        let zero = shifts.get(&0).copied().unwrap_or(0);
+        let one = shifts.get(&1).copied().unwrap_or(0);
+        let two = shifts.get(&2).copied().unwrap_or(0);
+        let three = shifts.get(&3).copied().unwrap_or(0);
+        println!("| {tag} | {kind} | {zero} | {one} | {two} | {three} |");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
