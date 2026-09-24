@@ -1057,6 +1057,11 @@ pub struct NiParticleSystem {
     /// decisively, including an authored-zero (None) own budget, which
     /// must NOT fall back to a sibling's (#4550).
     pub data_ref: BlockRef,
+    /// #4561 — the block's own `NiAVObject.flags` (bit 0 = APP_CULLED) and
+    /// `NiObjectNET.name`, so both import walkers can apply the same
+    /// hidden-at-author and editor-marker gates their shape arms do.
+    pub flags: u32,
+    pub name: Option<std::sync::Arc<str>>,
 }
 
 pub fn parse_particle_system(
@@ -1188,6 +1193,8 @@ pub fn parse_particle_system(
         alpha_property_ref,
         modifier_refs,
         data_ref,
+        flags: av.flags,
+        name: av.net.name,
     })
 }
 

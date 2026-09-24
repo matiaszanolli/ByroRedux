@@ -797,6 +797,8 @@ mod particle_local_transform_tests {
             modifier_refs: Vec::new(),
             controller_ref: BlockRef::NULL,
             data_ref: BlockRef::NULL,
+            flags: 0,
+            name: None,
         })
     }
 
@@ -911,6 +913,8 @@ mod particle_local_transform_tests {
                 modifier_refs: Vec::new(),
                 controller_ref: BlockRef::NULL,
                 data_ref: BlockRef::NULL,
+                flags: 0,
+                name: None,
             };
             let scene = NifScene {
                 blocks: vec![Box::new(host), Box::new(ps)],
@@ -1116,6 +1120,8 @@ mod emitter_rate_tests {
             modifier_refs: Vec::new(),
             controller_ref,
             data_ref: BlockRef::NULL,
+            flags: 0,
+            name: None,
         }
     }
 

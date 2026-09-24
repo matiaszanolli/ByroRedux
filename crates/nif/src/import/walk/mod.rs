@@ -219,6 +219,39 @@ fn has_live_visibility_controller(scene: &NifScene, controller_ref: BlockRef) ->
     found
 }
 
+/// #4561 — the particle-leaf counterpart of the #3640 shape gate, shared by
+/// both walkers' `NiParticleSystem` arms: an emitter authored hidden
+/// (`APP_CULLED`) is not imported unless something will un-hide it, and an
+/// editor-marker-named one never is. Emitting a culled one spawned
+/// hidden-at-author FX (state-driven emitters that start culled) from frame
+/// zero.
+///
+/// "Something will un-hide it" is checked two ways. The chain walk
+/// ([`has_live_visibility_controller`]) is the shape arms' test, but a
+/// particle system's chain usually opens with `NiPSys*` controllers the
+/// parser collapses into opaque markers, which stop the walk (#4467) — so a
+/// `NiVisController` behind them would be missed and its emitter dropped.
+/// Any `NiVisController` whose `target_ref` is this block counts too, the
+/// same target-keyed fallback #4467 uses for the emitter controller.
+pub(super) fn particle_system_is_culled(
+    scene: &NifScene,
+    ps: &crate::blocks::particle::NiParticleSystem,
+    block_idx: usize,
+) -> bool {
+    if is_editor_marker(ps.name.as_deref()) {
+        return true;
+    }
+    ps.flags & 0x01 != 0
+        && !has_live_visibility_controller(scene, ps.controller_ref)
+        && !scene.blocks.iter().any(|block| {
+            block.block_type_name() == "NiVisController"
+                && block
+                    .as_any()
+                    .downcast_ref::<crate::blocks::controller::NiPreSplitDataController>()
+                    .is_some_and(|ctlr| ctlr.base.base.target_ref.index() == Some(block_idx))
+        })
+}
+
 /// Maximum recursion depth for `walk_node_hierarchical` and
 /// `walk_node_flat`. Bethesda-shipped NIFs nest at most a few dozen
 /// nodes deep; the cap stops a malformed or adversarial file from
@@ -641,6 +674,9 @@ pub(super) fn walk_node_hierarchical(
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
     {
+        if particle_system_is_culled(scene, ps, block_idx) {
+            return;
+        }
         let pmat = extract_particle_material(scene, ps, ctx.inherited_props, ctx.pool);
         // Retain the block's own local TRS (#1333). The host node's
         // world transform reaches us as the host entity's GlobalTransform

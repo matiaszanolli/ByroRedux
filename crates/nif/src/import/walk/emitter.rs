@@ -812,6 +812,11 @@ pub(crate) fn walk_node_particle_emitters_flat(
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
     {
+        // #4561 — same hidden-at-author / editor-marker gate as the
+        // hierarchical walker's particle arm.
+        if super::particle_system_is_culled(scene, ps, block_idx) {
+            return;
+        }
         // Compose the particle block's own local TRS onto the host-node
         // world transform (#1333). Pre-fix only `parent_transform` (the
         // host world) was used, zeroing any authored emitter offset —

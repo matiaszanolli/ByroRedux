@@ -54,6 +54,8 @@ fn synthetic_particle_block_with_modifiers(
                 modifier_refs,
                 controller_ref: BlockRef::NULL,
                 data_ref: BlockRef::NULL,
+                flags: 0,
+                name: None,
             })
         }
         _ => Box::new(crate::blocks::particle::NiPSysBlock::marker(type_name)),
@@ -335,6 +337,8 @@ fn hierarchical_import_carries_effect_shader_greyscale_lut_to_the_particle_emitt
         modifier_refs: Vec::new(),
         controller_ref: BlockRef::NULL,
         data_ref: BlockRef::NULL,
+        flags: 0,
+        name: None,
     };
     let shader = effect_shader_with_greyscale_texture("fx/palette_grad.dds");
     let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
@@ -381,6 +385,8 @@ fn flat_import_carries_effect_shader_greyscale_lut_to_the_particle_emitter() {
         modifier_refs: Vec::new(),
         controller_ref: BlockRef::NULL,
         data_ref: BlockRef::NULL,
+        flags: 0,
+        name: None,
     };
     let shader = effect_shader_with_greyscale_texture("fx/palette_grad.dds");
     let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
@@ -543,4 +549,106 @@ fn each_particle_system_gets_its_own_emitter_kinematics_and_color_curve() {
         blue,
         "flat import must also keep each system's own color curve (#4261)"
     );
+}
+
+/// #4561 — a `NiParticleSystem` authored `APP_CULLED` (bit 0) with nothing
+/// to un-hide it, or named as an editor marker, is not imported by either
+/// walker, mirroring the #3640 shape gate. Emitting it spawned
+/// hidden-at-author FX from frame zero.
+#[test]
+fn culled_or_marker_particle_systems_are_not_imported_by_either_walker() {
+    fn scene_with(flags: u32, name: Option<&str>) -> NifScene {
+        let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
+        let ps = crate::blocks::particle::NiParticleSystem {
+            original_type: "NiParticleSystem".to_string(),
+            transform: crate::types::NiTransform::default(),
+            properties: Vec::new(),
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
+            modifier_refs: Vec::new(),
+            controller_ref: BlockRef::NULL,
+            data_ref: BlockRef::NULL,
+            flags,
+            name: name.map(std::sync::Arc::from),
+        };
+        scene_from_blocks(vec![Box::new(root), Box::new(ps)])
+    }
+    let mut pool = StringPool::new();
+    for (flags, name, expect, why) in [
+        (0, Some("SmokeEmitter"), 1, "a visible emitter imports"),
+        (
+            0x01,
+            Some("SmokeEmitter"),
+            0,
+            "APP_CULLED with no vis controller",
+        ),
+        (0, Some("EditorMarker_Fx"), 0, "editor-marker name"),
+    ] {
+        let scene = scene_with(flags, name);
+        assert_eq!(
+            import_nif_scene(&scene, &mut pool).particle_emitters.len(),
+            expect,
+            "hierarchical walker: {why}"
+        );
+        assert_eq!(
+            import_nif_particle_emitters(&scene).len(),
+            expect,
+            "flat walker: {why}"
+        );
+    }
+}
+
+/// #4561 — a culled emitter that a `NiVisController` will un-hide must
+/// still be imported, or the controller has nothing to toggle. Particle
+/// chains usually open with opaque `NiPSys*` markers that stop the chain
+/// walk (#4467), so the controller is found by its `target_ref` too.
+#[test]
+fn culled_particle_system_driven_by_a_vis_controller_is_still_imported() {
+    use crate::blocks::controller::{
+        NiPreSplitDataController, NiSingleInterpController, NiTimeControllerBase,
+    };
+    // [0] root → [1] culled particle system, chain head [2] (an opaque
+    // marker the walk cannot pass); [3] NiVisController targeting [1].
+    let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
+    let ps = crate::blocks::particle::NiParticleSystem {
+        original_type: "NiParticleSystem".to_string(),
+        transform: crate::types::NiTransform::default(),
+        properties: Vec::new(),
+        shader_property_ref: BlockRef::NULL,
+        alpha_property_ref: BlockRef::NULL,
+        modifier_refs: Vec::new(),
+        controller_ref: BlockRef(2),
+        data_ref: BlockRef::NULL,
+        flags: 0x01,
+        name: Some(std::sync::Arc::from("StartsHidden")),
+    };
+    let marker = crate::blocks::particle::NiPSysBlock::marker("NiPSysModifierActiveCtlr");
+    let vis = NiPreSplitDataController {
+        type_name: "NiVisController",
+        base: NiSingleInterpController {
+            base: NiTimeControllerBase {
+                next_controller_ref: BlockRef::NULL,
+                flags: 0,
+                frequency: 1.0,
+                phase: 0.0,
+                start_time: 0.0,
+                stop_time: 1.0,
+                target_ref: BlockRef(1),
+            },
+            interpolator_ref: BlockRef::NULL,
+        },
+        data_ref: BlockRef::NULL,
+    };
+    let scene = scene_from_blocks(vec![
+        Box::new(root),
+        Box::new(ps),
+        Box::new(marker),
+        Box::new(vis),
+    ]);
+    let mut pool = StringPool::new();
+    assert_eq!(
+        import_nif_scene(&scene, &mut pool).particle_emitters.len(),
+        1
+    );
+    assert_eq!(import_nif_particle_emitters(&scene).len(), 1);
 }
