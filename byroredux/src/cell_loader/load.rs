@@ -653,8 +653,9 @@ pub fn load_cell_with_masters(
     crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
     crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
     // P2 combat tail — the --cell route must install the combat family
-    // too: the P2 gate smoke drives exactly this route, and the spawn
-    // finalize inserts the DraugrCombatAnim marker regardless (#4551).
+    // too: the P2 gate smoke drives exactly this route, and both spawn
+    // finalizes (runtime and, since #4700, pre-baked) insert the
+    // DraugrCombatAnim marker regardless of route (#4551).
     crate::asset_provider::populate_draugr_combat_clips(world, &index, tex_provider);
 
     // Capture the cell's editor_id BEFORE the `index.cells` move below

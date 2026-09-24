@@ -2051,6 +2051,9 @@ pub(crate) enum CombatTake {
 ///   voice one-shot fire exactly once, and no snapshot is kept (the
 ///   `Dead` marker owns the pose from there, and walk_anim's abandon
 ///   rule already cedes playback to it).
+///
+/// Never serialized: the marker is re-derived at spawn from the race, and
+/// the latch from `Dead` — see [`Self::seen_alive`] (#4708).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct DraugrCombatAnim {
     pub(crate) take: Option<CombatTake>,
@@ -2058,6 +2061,11 @@ pub(crate) struct DraugrCombatAnim {
     pub(crate) captured: Option<WalkAnimSnapshot>,
     pub(crate) inserted_player: bool,
     pub(crate) death_played: bool,
+    /// #4708 — the feedback system has observed this actor alive. A death
+    /// it never saw happen (a corpse respawned on revisit or restored from
+    /// a save, `Dead` from its first observed frame) latches
+    /// `death_played` silently instead of replaying the take and voice.
+    pub(crate) seen_alive: bool,
 }
 
 impl Component for DraugrCombatAnim {

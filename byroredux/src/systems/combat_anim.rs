@@ -22,7 +22,9 @@
 //! * `Dead` → death take + death voice, latched once via
 //!   `DraugrCombatAnim.death_played`. Death keeps no snapshot — the `Dead`
 //!   marker owns the pose from there, and walk_anim's abandon rule already
-//!   cedes playback to it.
+//!   cedes playback to it. #4708: a death this system never saw happen (a
+//!   corpse restored dead) latches silently, and a ragdolled corpse gets
+//!   the voice only — never a take sampled over the physics pose.
 //!
 //! Take protocol mirrors `walk_anim`'s take/restore: capture the pre-take
 //! `AnimationPlayer` (inserting one bound to `AnimationTarget::
@@ -69,6 +71,12 @@ enum TakeAction {
     Restore,
     /// Keep the take, persist the decremented remaining time.
     Tick { remaining: f32 },
+    /// #4708 — latch the death without installing the take: a corpse the
+    /// system never saw alive, or one whose ragdoll already owns the pose.
+    LatchDeath,
+    /// #4708 — first observation of a live actor with nothing to play;
+    /// records `seen_alive` so its later death is a real one.
+    SeenAlive,
 }
 
 struct FeedbackDecision {
@@ -168,17 +176,32 @@ fn combat_feedback_system_inner(
             //    blow produces the death take, never a hit take.
             if dead {
                 if !state.death_played {
+                    let skeleton_root = read_skeleton_root(world, actor);
+                    // #4708 — (b) a corpse restored dead (revisit, save
+                    // load) died in some earlier session: latch, replay
+                    // nothing. (a) The killing blow's `reconcile_dead_actor`
+                    // already removed the actor's players and handed the
+                    // skeleton to physics; a take re-inserted now would
+                    // sample over the ragdoll — the voice alone plays.
+                    let replayed = !state.seen_alive;
+                    let ragdolled = skeleton_root.is_some_and(|root| {
+                        world.get::<crate::ragdoll::RagdollActive>(root).is_some()
+                    });
                     scratch.decisions.push(FeedbackDecision {
                         actor,
-                        action: TakeAction::Install {
-                            kind: CombatTake::Hit,
-                            handle: clips.death,
-                            secs: 0.0,
-                            death: true,
+                        action: if replayed || ragdolled {
+                            TakeAction::LatchDeath
+                        } else {
+                            TakeAction::Install {
+                                kind: CombatTake::Hit,
+                                handle: clips.death,
+                                secs: 0.0,
+                                death: true,
+                            }
                         },
                         snapshot: read_player_snapshot(world, actor),
-                        skeleton_root: read_skeleton_root(world, actor),
-                        sound: Some(FeedbackSound::DeathVoice),
+                        skeleton_root,
+                        sound: (!replayed).then_some(FeedbackSound::DeathVoice),
                     });
                 }
                 continue;
@@ -248,6 +271,18 @@ fn combat_feedback_system_inner(
                     skeleton_root: read_skeleton_root(world, actor),
                     sound: None,
                 });
+                continue;
+            }
+
+            // 5. Alive with nothing to play: record the first sighting.
+            if !state.seen_alive {
+                scratch.decisions.push(FeedbackDecision {
+                    actor,
+                    action: TakeAction::SeenAlive,
+                    snapshot: None,
+                    skeleton_root: None,
+                    sound: None,
+                });
             }
         }
     }
@@ -297,7 +332,7 @@ fn combat_feedback_system_inner(
                         }
                     }
                 }
-                TakeAction::Tick { .. } => {}
+                TakeAction::Tick { .. } | TakeAction::LatchDeath | TakeAction::SeenAlive => {}
             }
         }
     }
@@ -333,6 +368,20 @@ fn combat_feedback_system_inner(
                 TakeAction::Tick { remaining } => {
                     state.take_remaining = *remaining;
                 }
+                TakeAction::LatchDeath => {
+                    state.death_played = true;
+                    state.take = None;
+                    state.take_remaining = 0.0;
+                    state.captured = None;
+                }
+                TakeAction::SeenAlive => {}
+            }
+            // Every decision but a death is made about a live actor.
+            if !matches!(
+                decision.action,
+                TakeAction::LatchDeath | TakeAction::Install { death: true, .. }
+            ) {
+                state.seen_alive = true;
             }
         }
     }
@@ -656,6 +705,8 @@ mod tests {
         let Fixture { world, actor, .. } = spawn_actor(true);
         let mut world = world;
         install_clips(&mut world);
+        // Seen alive first: only a death the system watched happen plays.
+        combat_feedback_system(&world, 1.0 / 60.0);
         world.insert(actor, Dead);
 
         combat_feedback_system(&world, 1.0 / 60.0);
@@ -677,6 +728,7 @@ mod tests {
         let Fixture { world, actor, .. } = spawn_actor(true);
         let mut world = world;
         install_clips(&mut world);
+        combat_feedback_system(&world, 1.0 / 60.0);
         world.insert(actor, Dead);
         hit_event(&mut world, actor, 7);
 
@@ -684,6 +736,51 @@ mod tests {
         assert_eq!(clip_handle(&world, actor), Some(DEATH));
         assert!(combat_anim_state(&world, actor).death_played);
         assert_eq!(combat_anim_state(&world, actor).take, None);
+    }
+
+    /// #4708 (b) — a corpse respawned or reloaded dead (`Dead` from its
+    /// first observed frame, a fresh un-latched marker) replays nothing:
+    /// the latch is derived from `Dead`, the player is left alone.
+    #[test]
+    fn a_corpse_restored_dead_latches_without_replaying_the_death() {
+        let Fixture { world, actor, .. } = spawn_actor(true);
+        let mut world = world;
+        install_clips(&mut world);
+        world.insert(actor, Dead);
+
+        combat_feedback_system(&world, 1.0 / 60.0);
+        assert!(combat_anim_state(&world, actor).death_played);
+        assert_eq!(clip_handle(&world, actor), Some(999), "no death take");
+        combat_feedback_system(&world, 1.0 / 60.0);
+        assert_eq!(clip_handle(&world, actor), Some(999));
+    }
+
+    /// #4708 (a) — the killing blow's `reconcile_dead_actor` removed the
+    /// players and activated the ragdoll before this system runs; the
+    /// death must not re-insert a player over the physics pose.
+    #[test]
+    fn a_ragdolled_death_latches_without_inserting_a_player() {
+        let Fixture {
+            world,
+            actor,
+            skeleton,
+        } = spawn_actor(false);
+        let mut world = world;
+        install_clips(&mut world);
+        world.register::<crate::ragdoll::RagdollActive>();
+        combat_feedback_system(&world, 1.0 / 60.0);
+        assert!(combat_anim_state(&world, actor).seen_alive);
+
+        world.insert(actor, Dead);
+        world.insert(skeleton, crate::ragdoll::RagdollActive);
+        combat_feedback_system(&world, 1.0 / 60.0);
+
+        assert!(combat_anim_state(&world, actor).death_played);
+        assert_eq!(
+            clip_handle(&world, actor),
+            None,
+            "the ragdoll owns the pose"
+        );
     }
 
     /// The aggressor half of the family: an NPC strike takes the ATTACK

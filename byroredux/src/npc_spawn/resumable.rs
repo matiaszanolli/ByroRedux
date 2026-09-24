@@ -164,6 +164,9 @@ struct PrebakedNpcState {
     /// `hide_skin_partitions` format. See `NpcEquipState::facegen_hidden_mask`.
     facegen_hidden_mask: u32,
     equipped_armor_count: u32,
+    /// #4700 — [`RuntimeNpcState::combat_anim_draugr`]'s pre-baked twin,
+    /// from the same `Use Traits`-resolved race.
+    combat_anim_draugr: bool,
     phase: PrebakedPhase,
 }
 
@@ -676,14 +679,18 @@ fn prepare_runtime_state(
         equipped_armor_count: 0,
         blend_skin_seams: matches!(game, GameKind::Oblivion | GameKind::Fallout3NV),
         seam_context: None,
-        // P2 combat tail — the race editor id is the family discriminator
-        // (`DraugrRace…`); humans never match, so only draugr get combat
-        // takes. Case-insensitive because editor ids are authoring text.
-        combat_anim_draugr: race.is_some_and(|race| {
-            race.editor_id.to_ascii_lowercase().contains("draugr")
-        }),
+        combat_anim_draugr: is_draugr_race(race),
         phase: RuntimePhase::Skeleton,
     }
+}
+
+/// P2 combat tail — the race editor id is the family discriminator
+/// (`DraugrRace…`); humans never match, so only draugr get combat takes.
+/// Case-insensitive because editor ids are authoring text. Shared by both
+/// spawn paths (#4700): Draugr are Skyrim-only, so the pre-baked path is
+/// the one that actually meets them.
+fn is_draugr_race(race: Option<&RaceRecord>) -> bool {
+    race.is_some_and(|race| race.editor_id.to_ascii_lowercase().contains("draugr"))
 }
 
 /// The `CREA` counterpart of [`prepare_runtime_state`]'s humanoid recipe
@@ -1786,6 +1793,7 @@ fn prepare_prebaked_state(
         armor,
         facegen_hidden_mask,
         equipped_armor_count: 0,
+        combat_anim_draugr: is_draugr_race(index.races.get(&traits.race_form_id)),
         phase: PrebakedPhase::Skeleton,
     }
 }
@@ -1946,68 +1954,92 @@ fn advance_prebaked_unit(
             };
             UnitOutcome::Continue
         }
-        PrebakedPhase::Finalize => {
-            if state.equipped_armor_count > 0 {
-                log::info!(
-                    "NPC {:08X} ({}): equipped {} armor mesh(es) on pre-baked path \
-                     ({} armor candidates queued)",
-                    npc.form_id,
-                    npc.editor_id,
-                    state.equipped_armor_count,
-                    state.armor.len(),
-                );
-            }
-            if let Some(skeleton_root) = state.skel_root {
-                world.insert(
-                    state.placement_root,
-                    crate::components::AnimationTarget {
-                        skeleton_root,
-                        consumed_idle_serial: 0,
-                    },
-                );
-                // M42.10/M42.11 — prebaked-path actors (Skyrim+) resolve
-                // the same decoded HKX walk clip the runtime path uses,
-                // with the same authored-stride speed derivation.
-                if let Some(handle) = world
-                    .try_resource::<crate::components::SkyrimWalkClip>()
-                    .and_then(|r| r.0)
-                {
-                    let walk_speed = walk_speed_for(world, handle);
-                    let last_pos = world
-                        .query::<Transform>()
-                        .and_then(|q| q.get(state.placement_root).map(|t| t.translation))
-                        .unwrap_or_default();
-                    world.insert(
-                        state.placement_root,
-                        crate::components::WalkAnimation {
-                            walk_handle: handle,
-                            walking: false,
-                            last_pos,
-                            captured: None,
-                            transition_secs: 0.0,
-                        },
-                    );
-                    world.insert(state.placement_root, crate::components::WalkSpeed(walk_speed));
-                }
-            }
-            apply_ai_package_behavior(
-                world,
+        PrebakedPhase::Finalize => finalize_prebaked(state, world, npc, index),
+    }
+}
+
+/// The pre-baked path's finalize unit: animation targeting, the Draugr
+/// combat marker, AI, actor tagging and loot appearance on the assembled
+/// skeleton. Split from [`advance_prebaked_unit`] because it needs no GPU
+/// context, so a test can drive it through the real spawn state (#4700).
+fn finalize_prebaked(
+    state: &mut PrebakedNpcState,
+    world: &mut World,
+    npc: &NpcRecord,
+    index: &EsmIndex,
+) -> UnitOutcome {
+    if state.equipped_armor_count > 0 {
+        log::info!(
+            "NPC {:08X} ({}): equipped {} armor mesh(es) on pre-baked path \
+             ({} armor candidates queued)",
+            npc.form_id,
+            npc.editor_id,
+            state.equipped_armor_count,
+            state.armor.len(),
+        );
+    }
+    if let Some(skeleton_root) = state.skel_root {
+        world.insert(
+            state.placement_root,
+            crate::components::AnimationTarget {
+                skeleton_root,
+                consumed_idle_serial: 0,
+            },
+        );
+        // #4700 — the Draugr family marker, beside `AnimationTarget` as on
+        // the runtime path. Without it every take and impact/death sound
+        // `combat_feedback_system` gates on it stayed silent on Skyrim,
+        // the only game with Draugr.
+        if state.combat_anim_draugr {
+            world.insert(
                 state.placement_root,
-                &byroredux_plugin::equip::ResolvedNpc::resolve(npc, index),
-                index,
+                crate::components::DraugrCombatAnim::default(),
             );
-            // The caller restores eviction state after stamping the placed
-            // ACHR identity, shared with the runtime-mesh spawn path above.
-            tag_descendants_as_actor(world, state.placement_root);
-            super::loot_appearance::install(
-                world,
+        }
+        // M42.10/M42.11 — prebaked-path actors (Skyrim+) resolve
+        // the same decoded HKX walk clip the runtime path uses,
+        // with the same authored-stride speed derivation.
+        if let Some(handle) = world
+            .try_resource::<crate::components::SkyrimWalkClip>()
+            .and_then(|r| r.0)
+        {
+            let walk_speed = walk_speed_for(world, handle);
+            let last_pos = world
+                .query::<Transform>()
+                .and_then(|q| q.get(state.placement_root).map(|t| t.translation))
+                .unwrap_or_default();
+            world.insert(
                 state.placement_root,
-                std::mem::take(&mut state.appearance),
-                &state.skel_map,
+                crate::components::WalkAnimation {
+                    walk_handle: handle,
+                    walking: false,
+                    last_pos,
+                    captured: None,
+                    transition_secs: 0.0,
+                },
             );
-            UnitOutcome::Complete(Some(state.placement_root))
+            world.insert(
+                state.placement_root,
+                crate::components::WalkSpeed(walk_speed),
+            );
         }
     }
+    apply_ai_package_behavior(
+        world,
+        state.placement_root,
+        &byroredux_plugin::equip::ResolvedNpc::resolve(npc, index),
+        index,
+    );
+    // The caller restores eviction state after stamping the placed
+    // ACHR identity, shared with the runtime-mesh spawn path above.
+    tag_descendants_as_actor(world, state.placement_root);
+    super::loot_appearance::install(
+        world,
+        state.placement_root,
+        std::mem::take(&mut state.appearance),
+        &state.skel_map,
+    );
+    UnitOutcome::Complete(Some(state.placement_root))
 }
 
 /// Apply an equip-time biped mask before the scene builder uploads meshes.
@@ -2570,6 +2602,58 @@ mod tests {
         assert_ne!(RuntimePhase::Armor(0), RuntimePhase::Armor(1));
     }
 
+    /// #4700 — a Skyrim Draugr spawned through the pre-baked path (the
+    /// only path Skyrim actors take) must carry `DraugrCombatAnim`, derived
+    /// from its `Use Traits`-resolved race exactly as the runtime path
+    /// derives it; a human spawned the same way must not.
+    #[test]
+    fn prebaked_draugr_spawn_carries_the_combat_anim_marker() {
+        let mut index = EsmIndex::default();
+        for (form_id, editor_id) in [(0x2, "DraugrRace"), (0x5, "NordRace")] {
+            index.races.insert(
+                form_id,
+                RaceRecord {
+                    editor_id: editor_id.into(),
+                    skeleton_models: ["male.nif".into(), "female.nif".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        for (race_form_id, expect_marker) in [(0x2, true), (0x5, false)] {
+            let npc = NpcRecord {
+                form_id: 0x383F7,
+                race_form_id,
+                ..Default::default()
+            };
+            let mut world = World::new();
+            let mut state = prepare_prebaked_state(
+                &mut world,
+                &npc,
+                GameKind::Skyrim,
+                "Skyrim.esm",
+                Vec3::ZERO,
+                Quat::IDENTITY,
+                1.0,
+                &index,
+            );
+            // The skeleton phase's product; the GPU units in between add
+            // meshes, not the marker.
+            state.skel_root = Some(world.spawn());
+            assert!(matches!(
+                finalize_prebaked(&mut state, &mut world, &npc, &index),
+                UnitOutcome::Complete(Some(root)) if root == state.placement_root
+            ));
+            assert_eq!(
+                world
+                    .get::<crate::components::DraugrCombatAnim>(state.placement_root)
+                    .is_some(),
+                expect_marker,
+                "race {race_form_id:#x}"
+            );
+            assert!(world.has::<crate::components::AnimationTarget>(state.placement_root));
+        }
+    }
+
     #[test]
     fn missing_prebaked_facegen_continues_to_armor_and_finalization() {
         let mut world = World::new();
@@ -2585,6 +2669,7 @@ mod tests {
             armor: Vec::new(),
             facegen_hidden_mask: 0,
             equipped_armor_count: 0,
+            combat_anim_draugr: false,
             phase: PrebakedPhase::Facegen,
         };
 
