@@ -91,12 +91,10 @@ impl VulkanContext {
         // discarding it. An opaque placeholder clear there would tint every
         // such pixel (and feed the bloom pyramid a flat wash), so clear to
         // transparent black — zero colour, zero coverage — leaving the
-        // caller's `clear_color` for frames composite actually shows it on
-        // (interiors and the loose-NIF demo). The gate is
-        // `sky_params.is_exterior`, the *same* value that becomes
-        // `depth_params.x` above, so host and shader cannot disagree about
-        // who owns the background.
-        let hdr_clear = if sky_params.is_exterior {
+        // caller's `clear_color` for scenes without an outdoor background.
+        // An interior can show sky through a modeled opening; its clear also
+        // needs zero coverage so alpha surfaces can blend against that sky.
+        let hdr_clear = if sky_params.is_exterior || sky_params.portal_outdoor_sky.is_some() {
             [0.0, 0.0, 0.0, 0.0]
         } else {
             clear_color

@@ -57,6 +57,7 @@ fn empty_cell(editor_id: &str, refr_form_ids: &[u32]) -> CellData {
         display_name: None,
         references: refr_form_ids.iter().copied().map(placed_ref).collect(),
         is_interior: true,
+        show_sky: None,
         grid: None,
         lighting: None,
         landscape: None,

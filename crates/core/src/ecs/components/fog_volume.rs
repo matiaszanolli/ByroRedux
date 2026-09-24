@@ -113,7 +113,9 @@ impl FogBounds {
     pub fn bounding_radius(self) -> f32 {
         match self.shape {
             FogShape::Sphere => self.half_extents.x.abs(),
-            FogShape::Ellipsoid | FogShape::Box => self.half_extents.abs().length(),
+            FogShape::Ellipsoid | FogShape::Box | FogShape::Cone => {
+                self.half_extents.abs().length()
+            }
         }
     }
 }
@@ -125,6 +127,10 @@ pub enum FogShape {
     Sphere,
     Ellipsoid,
     Box,
+    /// Axis-aligned taper in local +Y: `half_extents.x` is bottom radius,
+    /// `.y` is half height, and `.z` is top radius. The owning transform
+    /// rotates the cone; this encoding stays within the existing GPU ABI.
+    Cone,
 }
 
 /// Canonical local-medium behavior.
@@ -152,6 +158,14 @@ pub enum FogProfile {
     /// A high-yield nuclear blast: an intense flash, fast radial impulse, and
     /// a broad buoyant cap over a persistent rising stem.
     NuclearExplosion = 5,
+    /// Passive authored shaft. A cone's narrow source end is a candidate
+    /// sky aperture only when the ray beyond it is clear. Ordinary local
+    /// lights also scatter through the same medium.
+    LightShaft = 6,
+    /// Explicit, bounded source plane at an interior opening. It scatters
+    /// like a light shaft and additionally permits sky and sunlight through
+    /// the plane when a legacy opaque shell lies immediately behind it.
+    SkyAperture = 7,
 }
 
 impl FogProfile {
@@ -283,11 +297,13 @@ mod tests {
         assert_eq!(FogProfile::Explosion as u32, 3);
         assert_eq!(FogProfile::OilExplosion as u32, 4);
         assert_eq!(FogProfile::NuclearExplosion as u32, 5);
+        assert_eq!(FogProfile::LightShaft as u32, 6);
         assert!(FogProfile::OilExplosion.is_explosion());
         assert!(FogProfile::NuclearExplosion.is_explosion());
         assert!(FogProfile::NuclearExplosion.is_nuclear_explosion());
         assert!(FogProfile::OilExplosion.is_oil_explosion());
         assert!(!FogProfile::Flame.is_explosion());
+        assert!(!FogProfile::LightShaft.is_explosion());
     }
 
     #[test]

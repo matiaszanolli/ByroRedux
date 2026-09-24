@@ -21,7 +21,8 @@
 //     final = direct + indirect
 //     output = final
 //
-//   For sky pixels (`depthIsBackground`, exterior only):
+//   For sky pixels (`depthIsBackground`, exterior, Show Sky interior, or
+//                   a bounded modeled interior opening):
 //     Reconstruct world-space view direction from screen UV + inv_view_proj.
 //     Compute sky gradient (horizon → zenith) + cloud layer + sun disc.
 //     output = sky
@@ -33,6 +34,11 @@
 layout(set = 0, binding = 0) uniform sampler2D hdrTex;       // direct light
 layout(set = 0, binding = 1) uniform sampler2D indirectTex;  // demodulated indirect
 layout(set = 0, binding = 2) uniform sampler2D albedoTex;    // surface albedo (multiplies demodulated indirect)
+struct SkyAperture {
+    vec4 center;
+    vec4 half_extents;
+    vec4 inverse_rotation;
+};
 layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 fog_color;      // xyz = beyond-grid aerial tint, w = enabled
     // x = near, y = far, z = XCLL cubic-fog clip distance (0 = no
@@ -40,7 +46,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // Runtime no longer evaluates this non-physical curve. It remains in the
     // contract until XCLL/WTHR values are fitted offline into sigma_t tables.
     vec4 fog_params;
-    vec4 depth_params;   // x = is_exterior, y = uintBitsToFloat(debug flags),
+    vec4 depth_params;   // x = is_exterior (outdoor weather/fog gate), y = uintBitsToFloat(debug flags),
                          // z = uintBitsToFloat(structured debug mode),
                          // w = frame index
     vec4 volume_params;  // x = grid far, y = linear floor, z = linear fraction, w = dither amplitude
@@ -49,7 +55,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 sky_horizon;    // xyz = horizon color (linear RGB), w = froxel grid
                          // slice count (#2470 — texel-center correction for
                          // the volumetricFroxel sampler3D tap below)
-    vec4 sky_lower;      // xyz = below-horizon ground tint (WTHR SKY_LOWER), w = unused (#541)
+    vec4 sky_lower;      // xyz = below-horizon tint; w = interior sky mode (0 off, 1 Show Sky, 2 bounded aperture)
     vec4 sun_dir;        // xyz = sun direction (world-space, normalized), w = sun_intensity
     vec4 sun_color;      // xyz = sun disc color (linear RGB), w = CLMT FNAM sun sprite idx (floatBitsToUint; 0 = procedural disc)
     vec4 cloud_params;   // x=scroll_u, y=scroll_v, z=tile_scale (0=disabled), w=texture_idx(uintBits)
@@ -82,6 +88,8 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // SKYAL — xyz = the directional light surfaces receive
     // (`SkyParams::sun_illuminance`), w unused. Lights the volumetric clouds.
     vec4 sun_illuminance;
+    uvec4 sky_aperture_count;
+    SkyAperture sky_apertures[MAX_COMPOSITE_SKY_APERTURES];
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer
 layout(set = 0, binding = 5) uniform usampler2DArray causticTex; // RGB in three R32_UINT layers (#321)
@@ -405,6 +413,66 @@ SkyDome build_sky_dome() {
     return dome;
 }
 
+// Clear depth in an interior is not by itself a portal: an unloaded scene
+// edge can also leave no fragment. A modeled opening has roof/wall depth on
+// two opposing sides. Probe several screen-space radii for narrow slits and
+// larger skylights without allowing an unbounded void to become sky.
+bool boundedInteriorOpening(ivec2 pixel) {
+    ivec2 size = textureSize(depthTex, 0);
+    bool left = false, right = false, up = false, down = false;
+    for (int step = 0; step < 5; ++step) {
+        int basis = step == 0 ? 8 : (step == 1 ? 16 : (step == 2 ? 32 : (step == 3 ? 64 : 96)));
+        int radius = max(1, (basis * size.x + 160) / 320);
+        ivec2 l = pixel - ivec2(radius, 0);
+        ivec2 r = pixel + ivec2(radius, 0);
+        ivec2 u = pixel - ivec2(0, radius);
+        ivec2 d = pixel + ivec2(0, radius);
+        if (l.x >= 0) left = left || depthIsSurface(texelFetch(depthTex, l, 0).r);
+        if (r.x < size.x) right = right || depthIsSurface(texelFetch(depthTex, r, 0).r);
+        if (u.y >= 0) up = up || depthIsSurface(texelFetch(depthTex, u, 0).r);
+        if (d.y < size.y) down = down || depthIsSurface(texelFetch(depthTex, d, 0).r);
+        if ((left && right) || (up && down)) return true;
+    }
+    return false;
+}
+
+vec3 rotateByApertureQuaternion(vec3 value, vec4 q) {
+    return value + 2.0 * cross(q.xyz, cross(q.xyz, value) + q.w * value);
+}
+
+// Some legacy interiors place a painted window beam immediately below an
+// opaque roof shell. The converted beam's bounded source plane is the opening
+// contract: a camera ray may show outdoor sky only where it crosses that plane
+// before the recorded opaque surface. Other roof and wall pixels keep their
+// ordinary depth and interior lighting.
+bool skyThroughAuthoredWindow(vec2 uv, float depth, bool hasSurface) {
+    uint count = min(params.sky_aperture_count.x, MAX_COMPOSITE_SKY_APERTURES);
+    if (count == 0u) return false;
+    float surfaceDistance = params.fog_params.y;
+    if (hasSurface) {
+        vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
+        vec4 world = params.inv_view_proj * clip;
+        if (abs(world.w) <= 1.0e-6) return false;
+        surfaceDistance = length(world.xyz / world.w - params.camera_pos.xyz);
+    }
+    vec3 ray = screen_to_world_dir(uv);
+    for (uint i = 0u; i < count; ++i) {
+        SkyAperture aperture = params.sky_apertures[i];
+        vec3 localOrigin = rotateByApertureQuaternion(
+            params.camera_pos.xyz - aperture.center.xyz,
+            aperture.inverse_rotation
+        );
+        vec3 localRay = rotateByApertureQuaternion(ray, aperture.inverse_rotation);
+        if (abs(localRay.z) <= 1.0e-5) continue;
+        float reach = -localOrigin.z / localRay.z;
+        if (reach <= 0.05
+            || reach > surfaceDistance + FOG_APERTURE_RIM_PLANE_TOLERANCE_BU) continue;
+        vec2 hit = localOrigin.xy + reach * localRay.xy;
+        if (all(lessThanEqual(abs(hit), aperture.half_extents.xy))) return true;
+    }
+    return false;
+}
+
 void main() {
 
     outReactive = 0.0;
@@ -449,7 +517,12 @@ void main() {
     // depth and lost its direct + indirect lighting in this pass.
     float depth = texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r;
     bool has_surface = depthIsSurface(depth);
-    bool is_sky = !has_surface && (params.depth_params.x > 0.5);
+    bool authored_sky = params.depth_params.x < 0.5 && params.sky_lower.w > 1.5
+        && skyThroughAuthoredWindow(fragUV, depth, has_surface);
+    bool is_sky = authored_sky || (!has_surface
+        && (params.depth_params.x > 0.5
+            || (params.sky_lower.w > 0.5 && params.sky_lower.w < 1.5)
+            || (params.sky_lower.w > 1.5 && boundedInteriorOpening(ivec2(gl_FragCoord.xy)))));
 
     // REN-D8-02 / REN-D16-02 — bloom and the volumetric/height-fog term
     // used to be folded into `combined` only inside the (former) geometry
@@ -506,11 +579,16 @@ void main() {
         // arm is the smaller and safer change; making it exact would mean
         // dividing the premultiply out once — and only once — on both arms.
         vec3 dir = screen_to_world_dir(fragUV);
-        float coverage = clamp(direct4.a, 0.0, 1.0);
-        vec3 skyIndirect = texture(indirectTex, fragUV).rgb;
-        vec3 skyAlbedo = texture(albedoTex, fragUV).rgb;
+        // When a modeled roof lies beyond an authored aperture, the opaque
+        // roof's main-pass colour cannot be retained: it is precisely the
+        // surface the window replaces. Ordinary clear-depth sky still keeps
+        // translucent foreground coverage and indirect light as before.
+        bool roofBehindWindow = authored_sky && has_surface;
+        float coverage = roofBehindWindow ? 0.0 : clamp(direct4.a, 0.0, 1.0);
+        vec3 skyIndirect = roofBehindWindow ? vec3(0.0) : texture(indirectTex, fragUV).rgb;
+        vec3 skyAlbedo = roofBehindWindow ? vec3(0.0) : texture(albedoTex, fragUV).rgb;
         combined = sky_radiance(build_sky_dome(), dir, cloudBaseNoise, cloudDetailNoise, blueNoiseRank()) * (1.0 - coverage)
-            + direct
+            + (roofBehindWindow ? vec3(0.0) : direct)
             + skyIndirect * skyAlbedo;
     } else {
         // Geometry pixel: combine direct + (indirect × albedo) + caustics.
@@ -712,7 +790,10 @@ void main() {
     // the depth ramp keeps the effect negligible at the waterline. This is a
     // screen-space presentation term intentionally kept after the integrated
     // froxel debug return and before bloom; it requires no new descriptor.
-    if (params.underwater.w > 0.0 && params.sun_dir.w > 0.0) {
+    // The composite carries the outdoor palette for an interior aperture;
+    // that palette alone must not create underwater shafts in sealed rooms.
+    if (params.depth_params.x > 0.5
+        && params.underwater.w > 0.0 && params.sun_dir.w > 0.0) {
         vec3 viewDir = screen_to_world_dir(fragUV);
         vec3 sunDirection = normalize(params.sun_dir.xyz);
         float sunAlignment = max(dot(viewDir, sunDirection), 0.0);

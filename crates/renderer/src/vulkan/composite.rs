@@ -40,6 +40,18 @@ use ash::vk;
 const COMPOSITE_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
 const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.spv");
 
+pub const MAX_SKY_APERTURES: usize =
+    crate::shader_constants::MAX_COMPOSITE_SKY_APERTURES as usize;
+
+/// Camera-relative window plane consumed by the composite sky mask.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct CompositeSkyAperture {
+    pub center: [f32; 4],
+    pub half_extents: [f32; 4],
+    pub inverse_rotation: [f32; 4],
+}
+
 /// Composite parameter UBO — fog state + sky rendering parameters.
 ///
 /// Layout must match `CompositeParams` in `composite.frag` exactly.
@@ -74,7 +86,8 @@ pub struct CompositeParams {
     pub sky_horizon: [f32; 4],
     /// `xyz` = below-horizon ground colour from WTHR's `SKY_LOWER`
     /// group (real `Sky-Lower` per nif.xml NAM0 schema, slot 7
-    /// post-#729). `w` = unused. Drives the `compute_sky` shader
+    /// post-#729). `w` = interior sky mode (0 disabled, 1 Show Sky,
+    /// 2 bounded aperture). The colour drives the `compute_sky` shader
     /// branch when `dir.y < 0`. Pre-#541 the shader faked this as
     /// `sky_horizon * 0.3` and the authored colour was discarded.
     pub sky_lower: [f32; 4],
@@ -157,6 +170,10 @@ pub struct CompositeParams {
     /// (`SkyParams::sun_illuminance`), w unused. Lights the volumetric cloud
     /// body. Appended last, so every pre-existing offset is unchanged.
     pub sun_illuminance: [f32; 4],
+    /// x = populated box-aperture count. Remaining lanes reserved.
+    pub sky_aperture_count: [u32; 4],
+    /// Authored window planes in render-origin-relative coordinates.
+    pub sky_apertures: [CompositeSkyAperture; MAX_SKY_APERTURES],
 }
 
 // SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
@@ -1530,11 +1547,15 @@ mod composite_params_layout_tests {
         // SKYAL appended `sun_illuminance` after `caustic_flags`, so every
         // earlier offset above is unchanged and only the total grows.
         assert_eq!(offset_of!(CompositeParams, sun_illuminance), 480);
+        assert_eq!(offset_of!(CompositeParams, sky_aperture_count), 496);
+        assert_eq!(offset_of!(CompositeParams, sky_apertures), 512);
+        assert_eq!(size_of::<CompositeSkyAperture>(), 48);
         assert_eq!(
             size_of::<CompositeParams>(),
-            480 + 16,
-            "CompositeParams must be 496 bytes (27 × vec4 + mat4)"
+            512 + MAX_SKY_APERTURES * 48,
+            "CompositeParams window-plane array must match the GLSL UBO"
         );
+        assert!(size_of::<CompositeParams>() <= 16 * 1024);
     }
 
     #[test]
@@ -1570,7 +1591,8 @@ mod composite_params_layout_tests {
             "composite must classify background against the exact clear value, \
              not the slack epsilon variant"
         );
-        assert!(shader.contains("bool is_sky = !has_surface"));
+        assert!(shader.contains("bool is_sky = authored_sky || (!has_surface"));
+        assert!(shader.contains("bool has_surface = depthIsSurface(depth);"));
         // #2233 — the volumetric/height-fog block used to be gated on
         // `has_surface` alone (sky pixels never got fog, REN-D16-02). It now
         // also runs for `is_sky` so fog extends to the horizon instead of
@@ -1634,7 +1656,7 @@ mod composite_params_layout_tests {
     fn underwater_composite_adds_bounded_sun_aligned_shafts() {
         let shader = include_str!("../../shaders/composite.frag");
         for needle in [
-            "if (params.underwater.w > 0.0 && params.sun_dir.w > 0.0)",
+            "if (params.depth_params.x > 0.5\n        && params.underwater.w > 0.0 && params.sun_dir.w > 0.0)",
             "float shaftLobe = pow(sunAlignment, 18.0);",
             "float depthRamp = 1.0 - exp(-max(underwaterDistance, 0.0) * 0.002);",
             "combined += shaftColor * shaftStrength;",
@@ -1762,7 +1784,7 @@ mod composite_params_layout_tests {
             sky_arm.contains(
                 "sky_radiance(build_sky_dome(), dir, cloudBaseNoise, cloudDetailNoise, blueNoiseRank()) * (1.0 - coverage)"
             )
-                && sky_arm.contains("+ direct"),
+                && sky_arm.contains("roofBehindWindow ? vec3(0.0) : direct"),
             "#2466's coverage-weighted sky and direct terms must survive \
              alongside the #2920 indirect term"
         );

@@ -1280,9 +1280,26 @@ pub const WATER_COLUMN_ABSORPTION_SHAPE: f32 = 2.0;
 // shared source, the same defect class as #1190/#1401).
 /// Camera-centered world-space cluster resolution used for local fog.
 pub const FOG_VOLUME_CLUSTER_DIM: u32 = 16;
-/// Bounded primitive references per cluster. Overflow keeps the nearest
-/// volumes because the CPU input list is distance-sorted.
-pub const MAX_FOG_VOLUMES_PER_CLUSTER: u32 = 8;
+/// Bounded primitive references per cluster. FO3/FNV's busiest shipped cells
+/// place more than 50 baked shafts within 512 world units of one another;
+/// 64 avoids the obvious loss at the former 8-entry cap. Overflow keeps the
+/// nearest volumes because the CPU input list is distance-sorted.
+pub const MAX_FOG_VOLUMES_PER_CLUSTER: u32 = 64;
+/// Candidate authored shaft apertures whose sun-swept footprints can reach a
+/// cluster. Separate from density references so moving shafts cannot evict
+/// smoke/fog from the existing bounded medium list.
+pub const MAX_FOG_PORTALS_PER_CLUSTER: u32 = 128;
+/// Authored box apertures passed to the composite so a modeled legacy shell
+/// behind a window can be replaced by the outdoor sky. A 256-entry UBO stays
+/// below Vulkan's 16 KiB minimum uniform-buffer range.
+pub const MAX_COMPOSITE_SKY_APERTURES: u32 = 256;
+/// Offset from a clear sun ray used to test whether architectural geometry
+/// surrounds an unmarked opening in a sealed interior.
+pub const FOG_APERTURE_RIM_PROBE_RADIUS_BU: f32 = 192.0;
+/// Minimum absolute normal agreement among architectural rim hits.
+pub const FOG_APERTURE_RIM_NORMAL_DOT_MIN: f32 = 0.9;
+/// Maximum displacement of a rim hit from the first hit's plane.
+pub const FOG_APERTURE_RIM_PLANE_TOLERANCE_BU: f32 = 24.0;
 
 // Canonical local-medium profiles. Source-format/game interpretation ends at
 // the FogVolume -> GpuFogVolume boundary; both Rust and GLSL consume these
@@ -1298,6 +1315,8 @@ pub const FOG_VOLUME_PROFILE_EXPLOSION_OIL: f32 =
     byroredux_core::ecs::FogProfile::OilExplosion as u32 as f32;
 pub const FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR: f32 =
     byroredux_core::ecs::FogProfile::NuclearExplosion as u32 as f32;
+pub const FOG_VOLUME_PROFILE_LIGHT_SHAFT: f32 =
+    byroredux_core::ecs::FogProfile::LightShaft as u32 as f32;
 pub const FOG_VOLUME_PROFILES: &[(&str, f32)] = &[
     (
         "FOG_VOLUME_PROFILE_HOMOGENEOUS",
@@ -1313,6 +1332,10 @@ pub const FOG_VOLUME_PROFILES: &[(&str, f32)] = &[
     (
         "FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR",
         FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
+    ),
+    (
+        "FOG_VOLUME_PROFILE_LIGHT_SHAFT",
+        FOG_VOLUME_PROFILE_LIGHT_SHAFT,
     ),
 ];
 

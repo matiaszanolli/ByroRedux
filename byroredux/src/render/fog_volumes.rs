@@ -7,9 +7,10 @@ use byroredux_core::ecs::{
 use byroredux_core::math::Vec3;
 use byroredux_core::radiometry::{blackbody_chromaticity_srgb, linear_srgb_luminance};
 use byroredux_renderer::vulkan::volumetrics::{
-    GpuFogVolume, FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
+    FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
     FOG_VOLUME_PROFILE_EXPLOSION_OIL, FOG_VOLUME_PROFILE_FLAME, FOG_VOLUME_PROFILE_HOMOGENEOUS,
-    FOG_VOLUME_PROFILE_SMOKE, MAX_GPU_FOG_VOLUMES, WORLD_UNITS_PER_METER,
+    FOG_VOLUME_PROFILE_LIGHT_SHAFT, FOG_VOLUME_PROFILE_SMOKE, GpuFogVolume, MAX_GPU_FOG_VOLUMES,
+    WORLD_UNITS_PER_METER,
 };
 
 use super::camera::FrustumPlanes;
@@ -82,7 +83,12 @@ pub(super) fn collect_fog_volumes(
             gpu.half_extents_extinction[1],
             gpu.half_extents_extinction[2],
         );
-        if frustum.contains_sphere(center, extents.length()) {
+        // A source ring outside the camera frustum can cast sunlight into
+        // visible fog. Keep light-shaft portals for the sun-swept cluster
+        // builder even when their old painted-cone density is offscreen.
+        if matches!(volume.profile, FogProfile::LightShaft | FogProfile::SkyAperture)
+            || frustum.contains_sphere(center, extents.length())
+        {
             out.push(gpu);
         }
     }
@@ -167,6 +173,7 @@ fn gpu_volume_from_ecs_with_explosion_age(
         FogShape::Sphere => 0.0,
         FogShape::Ellipsoid => 1.0,
         FogShape::Box => 2.0,
+        FogShape::Cone => 3.0,
     };
     let inverse_rotation = rotation.conjugate();
     let profile = match volume.profile {
@@ -176,6 +183,8 @@ fn gpu_volume_from_ecs_with_explosion_age(
         FogProfile::Explosion => FOG_VOLUME_PROFILE_EXPLOSION,
         FogProfile::OilExplosion => FOG_VOLUME_PROFILE_EXPLOSION_OIL,
         FogProfile::NuclearExplosion => FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
+        FogProfile::LightShaft => FOG_VOLUME_PROFILE_LIGHT_SHAFT,
+        FogProfile::SkyAperture => FOG_VOLUME_PROFILE_LIGHT_SHAFT,
     };
     let base_emission = volume.emissive_radiance.map(sanitize_emission);
     let base_temperature = volume.emission_temperature_k.max(0.0);
@@ -213,7 +222,16 @@ fn gpu_volume_from_ecs_with_explosion_age(
             let (age, lifetime) = explosion_age.unwrap_or((0.0, 0.0));
             [profile, age.clamp(0.0, 1.0), lifetime.max(0.0), 0.0]
         } else {
-            [profile, 0.0, 0.0, 0.0]
+            [
+                profile,
+                0.0,
+                0.0,
+                if volume.profile == FogProfile::SkyAperture {
+                    1.0
+                } else {
+                    0.0
+                },
+            ]
         },
     })
 }
@@ -280,6 +298,46 @@ mod tests {
     use super::*;
     use byroredux_core::ecs::{FogBounds, FogSource};
     use byroredux_core::math::Quat;
+
+    #[test]
+    fn cone_bounds_keep_both_radii_across_gpu_translation() {
+        let volume = FogVolume {
+            bounds: Some(FogBounds {
+                center: Vec3::new(0.0, -917.0, 0.0),
+                rotation: Quat::IDENTITY,
+                half_extents: Vec3::new(448.0, 917.0, 96.0),
+                shape: FogShape::Cone,
+            }),
+            extinction_per_meter: 0.011,
+            single_scatter_albedo: [0.9; 3],
+            edge_softness: 0.45,
+            profile: FogProfile::LightShaft,
+            emissive_radiance: [0.0; 3],
+            emission_temperature_k: 0.0,
+            source: FogSource::AuthoredMesh,
+        };
+        let gpu = gpu_volume_from_ecs(
+            volume,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 2.0),
+        )
+        .unwrap();
+        assert_eq!(gpu.center_shape[3], 3.0);
+        assert_eq!(gpu.profile_params[0], FOG_VOLUME_PROFILE_LIGHT_SHAFT);
+        assert_eq!(gpu.profile_params[3], 0.0);
+        assert_eq!(gpu.half_extents_extinction[..3], [896.0, 1834.0, 192.0]);
+        let aperture = FogVolume {
+            profile: FogProfile::SkyAperture,
+            bounds: Some(FogBounds {
+                shape: FogShape::Box,
+                ..volume.bounds.unwrap()
+            }),
+            ..volume
+        };
+        let gpu = gpu_volume_from_ecs(aperture, GlobalTransform::default()).unwrap();
+        assert_eq!(gpu.profile_params[0], FOG_VOLUME_PROFILE_LIGHT_SHAFT);
+        assert_eq!(gpu.profile_params[3], 1.0);
+        assert!((gpu.half_extents_extinction[3] * WORLD_UNITS_PER_METER - 0.011).abs() < 1.0e-6);
+    }
 
     #[test]
     fn ecs_translation_preserves_optical_depth_under_world_unit_conversion() {

@@ -96,6 +96,18 @@ impl FogMedium {
         }
     }
 
+    /// A clear room can still contain enough dust to reveal a genuine shaft.
+    /// Only interiors with an authored shaft or architectural glass use this floor; an
+    /// existing stronger XCLL/WTHR medium keeps its translated coefficient.
+    /// 0.005 / m is 0.05 optical depth over ten metres, so the room remains
+    /// nearly clear while a sunlit path has something physical to scatter.
+    pub(crate) fn with_sky_aperture_dust_floor(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.extinction_per_meter = self.extinction_per_meter.max(0.005);
+        }
+        self
+    }
+
     /// Adopt an authored FO4/FO76 height profile (#3956).
     ///
     /// `height_range` is the authored height extent in world units; the shader
@@ -832,6 +844,627 @@ pub(crate) fn fog_volume_from_mesh(
     })
 }
 
+/// Replace the explicitly authored window-beam card with a bounded medium.
+/// It scatters whichever real lights reach it. The original flat plane also
+/// supplies a rectangular sky-aperture candidate in sealed interiors: a clear
+/// sun ray must cross that authored plane before the window admits sunlight.
+/// The card's depth
+/// is expanded separately so it occupies real scattering space.
+pub(crate) fn window_beam_volume_from_mesh(
+    model_path: Option<&str>,
+    mesh: &byroredux_nif::import::ImportedMesh,
+) -> Option<FogVolume> {
+    let mut path_parts = model_path?.rsplit(['/', '\\']);
+    let file = path_parts.next()?;
+    let folder = path_parts.next()?;
+    let parent = path_parts.next()?;
+    if !file.eq_ignore_ascii_case("windowlightbeam.nif")
+        || !folder.eq_ignore_ascii_case("ambient")
+        || !parent.eq_ignore_ascii_case("effects")
+        || mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+        || !mesh.material.has_alpha
+    {
+        return None;
+    }
+    let first = Vec3::from_array(*mesh.positions.first()?);
+    if !first.is_finite() {
+        return None;
+    }
+    let (mut lower, mut upper) = (first, first);
+    for &point in &mesh.positions[1..] {
+        let point = Vec3::from_array(point);
+        if !point.is_finite() {
+            return None;
+        }
+        lower = lower.min(point);
+        upper = upper.max(point);
+    }
+    let center = (lower + upper) * 0.5;
+    let mut half_extents = (upper - lower) * 0.5;
+    let span = half_extents.max_element();
+    if !span.is_finite() || half_extents.x <= 1.0 || half_extents.y <= 1.0 || half_extents.z > 0.5 {
+        return None;
+    }
+    // FO4's shipped window beam is a zero-thickness 130 x 198 unit card.
+    // Give the thin axis a volume comparable to the window width rather than
+    // retaining a single raster plane.
+    half_extents = half_extents.max(Vec3::splat(span * 0.3));
+    Some(FogVolume {
+        bounds: Some(FogBounds {
+            center,
+            rotation: Quat::IDENTITY,
+            half_extents,
+            shape: FogShape::Box,
+        }),
+        extinction_per_meter: 0.12,
+        single_scatter_albedo: [0.9; 3],
+        edge_softness: 0.4,
+        profile: FogProfile::LightShaft,
+        emissive_radiance: [0.0; 3],
+        emission_temperature_k: 0.0,
+        source: FogSource::AuthoredMesh,
+    })
+}
+
+/// Oblivion's ordinary dungeon shafts are alpha-textured, zero-thickness
+/// NiTriShape cards. The two `Oblivion/Environment/FXOblivionLightBeam`
+/// variants use the exact same geometry and `lightbeam03.dds` texture as the
+/// dungeon cards, so they share this conversion. Pink and other set-piece
+/// beams may carry authored colors we cannot recover from a single neutral
+/// scattering coefficient.
+pub(crate) fn oblivion_dungeon_beam_volume_from_mesh(
+    model_path: Option<&str>,
+    mesh: &byroredux_nif::import::ImportedMesh,
+) -> Option<FogVolume> {
+    let path = model_path?.replace('/', "\\").to_ascii_lowercase();
+    let file = path.rsplit('\\').next()?;
+    let is_dungeon_fx =
+        path.contains("\\dungeons\\misc\\fx\\") || path.starts_with("dungeons\\misc\\fx\\");
+    let is_realm_fx =
+        path.contains("\\oblivion\\environment\\") || path.starts_with("oblivion\\environment\\");
+    let is_shared_card = (is_dungeon_fx
+        && matches!(
+            file,
+            "fxlightbeam01.nif" | "fxlightbeam02.nif" | "fxlightbeamlong01.nif"
+        ))
+        || (is_realm_fx
+            && matches!(
+                file,
+                "fxoblivionlightbeam01.nif" | "fxoblivionlightbeamlong01.nif"
+            ));
+    if !is_shared_card
+        || mesh.material.material_kind != 0
+        || !mesh.material.has_alpha
+        || mesh.positions.len() != 4
+        || mesh.indices.len() != 6
+    {
+        return None;
+    }
+    let first = Vec3::from_array(mesh.positions[0]);
+    if !first.is_finite() {
+        return None;
+    }
+    let (mut lower, mut upper) = (first, first);
+    for &point in &mesh.positions[1..] {
+        let point = Vec3::from_array(point);
+        if !point.is_finite() {
+            return None;
+        }
+        lower = lower.min(point);
+        upper = upper.max(point);
+    }
+    let mut half_extents = (upper - lower) * 0.5;
+    // The card is flat in local Y. Give it depth relative to its *width*,
+    // not its long axis, so the 344-unit long variant stays narrow.
+    if half_extents.y > 1.0e-3 || half_extents.x <= 1.0 || half_extents.z <= 1.0 {
+        return None;
+    }
+    half_extents.y = half_extents.x * 0.75;
+    Some(FogVolume {
+        bounds: Some(FogBounds {
+            center: (lower + upper) * 0.5,
+            rotation: Quat::IDENTITY,
+            half_extents,
+            shape: FogShape::Box,
+        }),
+        extinction_per_meter: 0.12,
+        single_scatter_albedo: [0.9; 3],
+        edge_softness: 0.4,
+        profile: FogProfile::Homogeneous,
+        emissive_radiance: [0.0; 3],
+        emission_temperature_k: 0.0,
+        source: FogSource::AuthoredMesh,
+    })
+}
+
+/// Convert the shared FO3/FNV ambient beams and Oblivion's narrow dungeon
+/// shaft into analytic cones. The authored mesh supplies the taper, reach,
+/// and peak opacity. Most FO3/FNV placements sit beside a local LIGH, so
+/// their cone tips are not evidence of an outdoor opening. The uncommon
+/// Oblivion pillar shaft has no LIGH placements within 256 units and supplies a solar
+/// aperture candidate; the ray query still requires a clear path through it.
+/// FNV's `RepLightBeams.nif` uses the same 25-vertex fan five times with a
+/// shallower taper; its separate six-vertex light-crack card stays rasterized.
+/// Its placements pair with `RepLightSun`/`Sunlight` records at window holes,
+/// so the narrow source ring may authorize the outdoor sun only when the
+/// geometry ray actually escapes.
+pub(crate) fn authored_cone_beam_volume_from_mesh(
+    model_path: Option<&str>,
+    mesh: &byroredux_nif::import::ImportedMesh,
+) -> Option<FogVolume> {
+    let mut path_parts = model_path?.rsplit(['/', '\\']);
+    let file = path_parts.next()?;
+    let folder = path_parts.next()?;
+    let parent = path_parts.next()?;
+    let fo3_fnv = folder.eq_ignore_ascii_case("ambient")
+        && parent.eq_ignore_ascii_case("effects")
+        && file
+            .get(..11)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("fxlightbeam"))
+        && file
+            .get(file.len().saturating_sub(4)..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".nif"))
+        // NVStrip mixes this 25-vertex cone with a separate 81-vertex effect
+        // mesh. Replacing only one would draw both a volume and painted ray.
+        && !file.eq_ignore_ascii_case("fxlightbeamnvstrip.nif")
+        && mesh.material.material_kind == byroredux_renderer::MATERIAL_KIND_NO_LIGHTING
+        && mesh.positions.len() == 25
+        && mesh.indices.len() == 66;
+    let oblivion = folder.eq_ignore_ascii_case("misc")
+        && parent.eq_ignore_ascii_case("dungeons")
+        && file.eq_ignore_ascii_case("lightbeam01.nif")
+        && mesh.material.material_kind == 0
+        && mesh.positions.len() == 14
+        && mesh.indices.len() == 36;
+    let repcon = folder.eq_ignore_ascii_case("repcon")
+        && parent.eq_ignore_ascii_case("architecture")
+        && file.eq_ignore_ascii_case("replightbeams.nif")
+        && mesh.material.material_kind == byroredux_renderer::MATERIAL_KIND_NO_LIGHTING
+        && mesh.positions.len() == 25
+        && mesh.indices.len() == 66;
+    if !(fo3_fnv || oblivion || repcon)
+        || !mesh.material.has_alpha
+        || mesh.colors.len() != mesh.positions.len()
+        || !mesh.material.mat_alpha.is_finite()
+    {
+        return None;
+    }
+
+    let (mut min_x, mut max_x) = (f32::INFINITY, f32::NEG_INFINITY);
+    let (mut min_z, mut max_z) = (f32::INFINITY, f32::NEG_INFINITY);
+    let mut top_y = f32::NEG_INFINITY;
+    let mut peak_alpha = 0.0f32;
+    for (point, color) in mesh.positions.iter().zip(&mesh.colors) {
+        let point = Vec3::from_array(*point);
+        if !point.is_finite() || !color.iter().all(|channel| channel.is_finite()) {
+            return None;
+        }
+        min_x = min_x.min(point.x);
+        max_x = max_x.max(point.x);
+        min_z = min_z.min(point.z);
+        max_z = max_z.max(point.z);
+        top_y = top_y.max(point.y);
+        peak_alpha = peak_alpha.max(color[3]);
+    }
+    let center_x = (min_x + max_x) * 0.5;
+    let center_z = (min_z + max_z) * 0.5;
+    let mut base_radius = 0.0f32;
+    let mut base_y = 0.0f32;
+    let mut top_radius = 0.0f32;
+    for &point in &mesh.positions {
+        let radial = Vec3::new(point[0] - center_x, 0.0, point[2] - center_z).length();
+        if radial > base_radius {
+            base_radius = radial;
+            base_y = point[1];
+        }
+        if top_y - point[1] < 1.0 {
+            top_radius = top_radius.max(radial);
+        }
+    }
+    let height = top_y - base_y;
+    if !height.is_finite()
+        || height <= 10.0
+        || !base_radius.is_finite()
+        || !top_radius.is_finite()
+        || top_radius <= 1.0
+        || base_radius
+            <= top_radius
+                * if repcon {
+                    1.1
+                } else if oblivion {
+                    1.2
+                } else {
+                    1.5
+                }
+        || peak_alpha <= 0.0
+    {
+        return None;
+    }
+    let effective_alpha = (peak_alpha * mesh.material.mat_alpha).clamp(0.0, 0.95);
+    if effective_alpha <= 1.0e-4 {
+        return None;
+    }
+    let extinction_per_meter = if oblivion {
+        // The Oblivion cylinder's vertex alpha is uniformly 1; its texture
+        // supplies the visual falloff. A fixed modest dust coefficient avoids
+        // interpreting that opaque vertex multiplier as 95% optical depth.
+        0.12
+    } else {
+        let height_metres = height / WORLD_UNITS_PER_METER;
+        (-(1.0 - effective_alpha).ln() / height_metres).clamp(0.001, 0.3)
+    };
+    Some(FogVolume {
+        bounds: Some(FogBounds {
+            center: Vec3::new(center_x, (top_y + base_y) * 0.5, center_z),
+            rotation: Quat::IDENTITY,
+            half_extents: Vec3::new(base_radius, height * 0.5, top_radius),
+            shape: FogShape::Cone,
+        }),
+        extinction_per_meter,
+        single_scatter_albedo: [0.9; 3],
+        edge_softness: 0.45,
+        profile: if oblivion || repcon {
+            FogProfile::LightShaft
+        } else {
+            FogProfile::Homogeneous
+        },
+        emissive_radiance: [0.0; 3],
+        emission_temperature_k: 0.0,
+        source: FogSource::AuthoredMesh,
+    })
+}
+
+/// New Vegas's Nellis hangar asset packs four long beam cards and one short
+/// source cap into its final ten triangles. The four long cards' lit upper
+/// edges identify separate window patches. Keep their media and patches
+/// separate so a sunlit opening does not turn the entire hangar into one
+/// broad beam. A clear sun ray must cross one of those upper edges to enter.
+pub(crate) fn fnv_nellis_hangar_beam_volumes_from_mesh(
+    model_path: Option<&str>,
+    mesh: &byroredux_nif::import::ImportedMesh,
+) -> Option<Vec<FogVolume>> {
+    let mut parts = model_path?.rsplit(['/', '\\']);
+    if !parts
+        .next()?
+        .eq_ignore_ascii_case("NVNellisHangarInteriorLightBeam.nif")
+        || !parts.next()?.eq_ignore_ascii_case("effects")
+        || mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_NO_LIGHTING
+        || !mesh.material.has_alpha
+        || !mesh.material.mat_alpha.is_finite()
+        || mesh.positions.len() != 110
+        || mesh.colors.len() != 110
+        || mesh.indices.len() != 120
+    {
+        return None;
+    }
+
+    let mut volumes = Vec::with_capacity(8);
+    for panel in [0, 2, 3, 4] {
+        let first_index = 90 + panel * 4;
+        let positions = &mesh.positions[first_index..first_index + 4];
+        let colors = &mesh.colors[first_index..first_index + 4];
+        let panel_indices = &mesh.indices[90 + panel * 6..96 + panel * 6];
+        if panel_indices
+            .iter()
+            .any(|&index| (index as usize) < first_index || (index as usize) >= first_index + 4)
+        {
+            return None;
+        }
+        let points = [
+            Vec3::from_array(positions[0]),
+            Vec3::from_array(positions[1]),
+            Vec3::from_array(positions[2]),
+            Vec3::from_array(positions[3]),
+        ];
+        if !points.iter().all(|point| point.is_finite())
+            || !colors
+                .iter()
+                .all(|color| color.iter().all(|channel| channel.is_finite()))
+        {
+            return None;
+        }
+        let top_center = (points[0] + points[1]) * 0.5;
+        let bottom_center = (points[2] + points[3]) * 0.5;
+        let top_span = points[1] - points[0];
+        let span_horizontal = Vec3::new(top_span.x, 0.0, top_span.z);
+        let span_length = span_horizontal.length();
+        let height = top_center.y - bottom_center.y;
+        let effective_alpha =
+            (colors[0][3].max(colors[1][3]) * mesh.material.mat_alpha).clamp(0.0, 0.95);
+        if span_length < 500.0
+            || height < 1000.0
+            || (points[0].y - points[1].y).abs() > 1.0
+            || (points[2].y - points[3].y).abs() > 1.0
+            || effective_alpha <= 1.0e-4
+            || colors[2][3] > 1.0e-3
+            || colors[3][3] > 1.0e-3
+        {
+            return None;
+        }
+        let axis = span_horizontal / span_length;
+        let across = Vec3::new(-axis.z, 0.0, axis.x);
+        let center = (top_center + bottom_center) * 0.5;
+        let half_length = points
+            .iter()
+            .map(|point| (*point - center).dot(axis).abs())
+            .fold(0.0f32, f32::max);
+        // The authored cards have zero thickness. Eighty Bethesda units give
+        // the dusty beam a finite scattering path without filling the hangar.
+        let half_width = points
+            .iter()
+            .map(|point| (*point - center).dot(across).abs())
+            .fold(80.0f32, f32::max);
+        let yaw = (-axis.z).atan2(axis.x);
+        let albedo = [colors[0][0], colors[0][1], colors[0][2]]
+            .map(|channel| (channel * 0.9).clamp(0.0, 1.0));
+        volumes.push(FogVolume {
+            bounds: Some(FogBounds {
+                center,
+                rotation: Quat::from_rotation_y(yaw),
+                half_extents: Vec3::new(half_length, height * 0.5, half_width),
+                shape: FogShape::Box,
+            }),
+            extinction_per_meter: (-(1.0 - effective_alpha).ln()
+                / (height / WORLD_UNITS_PER_METER))
+                .clamp(0.001, 0.3),
+            single_scatter_albedo: albedo,
+            edge_softness: 0.45,
+            profile: FogProfile::Homogeneous,
+            emissive_radiance: [0.0; 3],
+            emission_temperature_k: 0.0,
+            source: FogSource::AuthoredMesh,
+        });
+        volumes.push(FogVolume {
+            bounds: Some(FogBounds {
+                center: top_center,
+                // Local +Z becomes the asset's upper-edge normal (+Y).
+                rotation: Quat::from_rotation_y(yaw)
+                    * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                half_extents: Vec3::new(span_length * 0.5, half_width, 8.0),
+                shape: FogShape::Box,
+            }),
+            extinction_per_meter: 0.005,
+            single_scatter_albedo: albedo,
+            edge_softness: 0.2,
+            profile: FogProfile::SkyAperture,
+            emissive_radiance: [0.0; 3],
+            emission_temperature_k: 0.0,
+            source: FogSource::AuthoredMesh,
+        });
+    }
+    Some(volumes)
+}
+
+/// FNV's SuperWide effect is a broad, faded mesh placed chiefly beside LIGH
+/// records in sealed interiors. Its upper ring is not evidence of outdoor sky,
+/// so keep it a passive cone instead of marking it as a solar aperture.
+pub(crate) fn fnv_superwide_beam_volume_from_mesh(
+    model_path: Option<&str>,
+    mesh: &byroredux_nif::import::ImportedMesh,
+) -> Option<FogVolume> {
+    let path = model_path?.replace('/', "\\").to_ascii_lowercase();
+    if !path.ends_with("effects\\ambient\\fxlightbeamsuperwide01.nif")
+        || mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_NO_LIGHTING
+        || !mesh.material.has_alpha
+        || mesh.positions.len() != 40
+        || mesh.indices.len() != 93
+        || mesh.colors.len() != 40
+        || !mesh.material.mat_alpha.is_finite()
+    {
+        return None;
+    }
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    let mut outer_radius = 0.0f32;
+    let mut peak_alpha = 0.0f32;
+    for (position, color) in mesh.positions.iter().zip(&mesh.colors) {
+        let point = Vec3::from_array(*position);
+        if !point.is_finite() || !color.iter().all(|channel| channel.is_finite()) {
+            return None;
+        }
+        min_y = min_y.min(point.y);
+        max_y = max_y.max(point.y);
+        outer_radius = outer_radius.max(point.x.hypot(point.z));
+        peak_alpha = peak_alpha.max(color[3]);
+    }
+    let height = max_y - min_y;
+    if height <= 10.0 || outer_radius <= 1.0 {
+        return None;
+    }
+    let source_radius = mesh
+        .positions
+        .iter()
+        .filter(|point| max_y - point[1] <= 1.0)
+        .map(|point| point[0].hypot(point[2]))
+        .fold(0.0f32, f32::max);
+    let effective_alpha = (peak_alpha * mesh.material.mat_alpha).clamp(0.0, 0.95);
+    if source_radius <= 1.0 || source_radius >= outer_radius || effective_alpha <= 1.0e-4 {
+        return None;
+    }
+    Some(FogVolume {
+        bounds: Some(FogBounds {
+            center: Vec3::new(0.0, (min_y + max_y) * 0.5, 0.0),
+            rotation: Quat::IDENTITY,
+            half_extents: Vec3::new(outer_radius, height * 0.5, source_radius),
+            shape: FogShape::Cone,
+        }),
+        extinction_per_meter: (-(1.0 - effective_alpha).ln() / (height / WORLD_UNITS_PER_METER))
+            .clamp(0.001, 0.3),
+        single_scatter_albedo: [0.9; 3],
+        edge_softness: 0.65,
+        profile: FogProfile::Homogeneous,
+        emissive_radiance: [0.0; 3],
+        emission_temperature_k: 0.0,
+        source: FogSource::AuthoredMesh,
+    })
+}
+
+/// The two vault-window meshes form short, horizontal, many-sided fans.
+/// Their nearby LIGH placements supply illumination; the mesh itself only
+/// contributes a bounded medium and never declares a sky aperture.
+pub(crate) fn vault_window_beam_volume_from_mesh(
+    model_path: Option<&str>,
+    mesh: &byroredux_nif::import::ImportedMesh,
+) -> Option<FogVolume> {
+    let path = model_path?.replace('/', "\\").to_ascii_lowercase();
+    if !(path.ends_with("effects\\ambient\\fxlightbeamsvaultwidow01.nif")
+        || path.ends_with("effects\\ambient\\fxlightbeamsvaultwidow02.nif"))
+        || mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_NO_LIGHTING
+        || !mesh.material.has_alpha
+        || mesh.positions.len() != 80
+        || mesh.indices.len() != 360
+        || mesh.colors.len() != 80
+        || !mesh.material.mat_alpha.is_finite()
+    {
+        return None;
+    }
+    let first = Vec3::from_array(mesh.positions[0]);
+    if !first.is_finite() {
+        return None;
+    }
+    let (mut lower, mut upper) = (first, first);
+    let mut peak_alpha = 0.0f32;
+    for (position, color) in mesh.positions.iter().zip(&mesh.colors) {
+        let point = Vec3::from_array(*position);
+        if !point.is_finite() || !color.iter().all(|channel| channel.is_finite()) {
+            return None;
+        }
+        lower = lower.min(point);
+        upper = upper.max(point);
+        peak_alpha = peak_alpha.max(color[3]);
+    }
+    let half_extents = (upper - lower) * 0.5;
+    let effective_alpha = (peak_alpha * mesh.material.mat_alpha).clamp(0.0, 0.95);
+    if half_extents.min_element() <= 1.0 || effective_alpha <= 1.0e-4 {
+        return None;
+    }
+    Some(FogVolume {
+        bounds: Some(FogBounds {
+            center: (lower + upper) * 0.5,
+            rotation: Quat::IDENTITY,
+            half_extents,
+            shape: FogShape::Box,
+        }),
+        extinction_per_meter: (-(1.0 - effective_alpha).ln()
+            / (2.0 * half_extents.max_element() / WORLD_UNITS_PER_METER))
+            .clamp(0.001, 0.3),
+        single_scatter_albedo: [0.9; 3],
+        edge_softness: 0.5,
+        profile: FogProfile::Homogeneous,
+        emissive_radiance: [0.0; 3],
+        emission_temperature_k: 0.0,
+        source: FogSource::AuthoredMesh,
+    })
+}
+
+/// FO4's common emergency, fluorescent, and dusty lamp shafts are alpha
+/// effect meshes with no light of their own. Replace the beam submeshes with
+/// a passive medium; keep the separate glow disks in multi-mesh NIFs so the
+/// fixture itself remains visible. These families are overwhelmingly placed
+/// beside LIGH records, and their shapes do not authorize outdoor sunlight.
+pub(crate) fn fo4_ambient_lamp_beam_volume_from_mesh(
+    model_path: Option<&str>,
+    mesh: &byroredux_nif::import::ImportedMesh,
+) -> Option<FogVolume> {
+    let mut parts = model_path?.rsplit(['/', '\\']);
+    let file = parts.next()?;
+    if !parts.next()?.eq_ignore_ascii_case("ambient")
+        || !parts.next()?.eq_ignore_ascii_case("effects")
+        || mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+        || !mesh.material.has_alpha
+        || mesh.colors.len() != mesh.positions.len()
+        || !mesh.material.mat_alpha.is_finite()
+    {
+        return None;
+    }
+    let file = file.to_ascii_lowercase();
+    let signature = (mesh.positions.len(), mesh.indices.len());
+    let horizontal = matches!(
+        file.as_str(),
+        "fluorescentlightbeam.nif" | "fluorescentlightbeamthin.nif"
+    );
+    let matches_beam = match file.as_str() {
+        "emergencylightbeam01.nif" | "emergencylightbeamset.nif" => signature == (242, 1080),
+        "emergencylightbeamsetshort01.nif" => signature == (300, 960),
+        "emergencylightbeamshort.nif" => signature == (150, 480),
+        "fluorescentlightbeam.nif" | "fluorescentlightbeamthin.nif" => signature == (114, 504),
+        "lightbeamthindusty01.nif" | "lightbeamthindustyshort02bright.nif" => {
+            signature == (90, 288) || signature == (60, 192)
+        }
+        "lightbeamthindustyshort.nif" => signature == (30, 96),
+        "lightbeamthindustyshort02.nif" => signature == (90, 288),
+        _ => false,
+    };
+    if !matches_beam {
+        return None;
+    }
+    let first = Vec3::from_array(*mesh.positions.first()?);
+    if !first.is_finite() {
+        return None;
+    }
+    let (mut lower, mut upper) = (first, first);
+    let mut peak_alpha = 0.0f32;
+    for (position, color) in mesh.positions.iter().zip(&mesh.colors) {
+        let point = Vec3::from_array(*position);
+        if !point.is_finite() || !color.iter().all(|channel| channel.is_finite()) {
+            return None;
+        }
+        lower = lower.min(point);
+        upper = upper.max(point);
+        peak_alpha = peak_alpha.max(color[3]);
+    }
+    let half_extents = (upper - lower) * 0.5;
+    let effective_alpha = (peak_alpha * mesh.material.mat_alpha).clamp(0.0, 0.95);
+    if half_extents.min_element() <= 1.0 || effective_alpha <= 1.0e-4 {
+        return None;
+    }
+    // The emergency fans have a real broad base and narrow top. The dusty
+    // variants end at a point and swell mid-span, so an ellipsoid better fits
+    // those than an inverted cone. Read the taper from geometry rather than
+    // the asset name; the far-out alpha-zero card corners then do not set
+    // the volume radius.
+    let center = (lower + upper) * 0.5;
+    let end_band = ((upper.y - lower.y) * 0.02).max(1.0);
+    let (mut low_radius, mut high_radius) = (0.0f32, 0.0f32);
+    for point in &mesh.positions {
+        let radial = (point[0] - center.x).hypot(point[2] - center.z);
+        if point[1] - lower.y <= end_band {
+            low_radius = low_radius.max(radial);
+        }
+        if upper.y - point[1] <= end_band {
+            high_radius = high_radius.max(radial);
+        }
+    }
+    let tapered = !horizontal && high_radius > 1.0 && low_radius > high_radius * 1.5;
+    let (shape, bounds_extents) = if horizontal {
+        (FogShape::Box, half_extents)
+    } else if tapered {
+        (
+            FogShape::Cone,
+            Vec3::new(low_radius, half_extents.y, high_radius),
+        )
+    } else {
+        (FogShape::Ellipsoid, half_extents)
+    };
+    Some(FogVolume {
+        bounds: Some(FogBounds {
+            center,
+            rotation: Quat::IDENTITY,
+            half_extents: bounds_extents,
+            shape,
+        }),
+        extinction_per_meter: (-(1.0 - effective_alpha).ln()
+            / (2.0 * half_extents.max_element() / WORLD_UNITS_PER_METER))
+            .clamp(0.001, 0.3),
+        single_scatter_albedo: [0.9; 3],
+        edge_softness: 0.5,
+        profile: FogProfile::Homogeneous,
+        emissive_radiance: [0.0; 3],
+        emission_temperature_k: 0.0,
+        source: FogSource::AuthoredMesh,
+    })
+}
+
 pub(crate) fn has_fog_token(value: &str) -> bool {
     const FOG_TOKENS: [&str; 6] = ["fog", "smoke", "mist", "steam", "vapor", "cloud"];
     let value = value.to_ascii_lowercase();
@@ -844,6 +1477,33 @@ pub(crate) fn has_fog_token(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sky_aperture_adds_clear_air_dust_without_overriding_stronger_fog() {
+        let clear = FogMedium::DISABLED;
+        assert_eq!(
+            clear
+                .with_sky_aperture_dust_floor(false)
+                .extinction_per_meter,
+            0.0
+        );
+        assert_eq!(
+            clear
+                .with_sky_aperture_dust_floor(true)
+                .extinction_per_meter,
+            0.005
+        );
+        let authored = FogMedium {
+            extinction_per_meter: 0.02,
+            ..clear
+        };
+        assert_eq!(
+            authored
+                .with_sky_aperture_dust_floor(true)
+                .extinction_per_meter,
+            0.02
+        );
+    }
 
     /// The fire path is env-gated for A/B; every test below asserts the
     /// enabled behaviour, so skip rather than fail if a developer has the
@@ -1363,6 +2023,500 @@ mod tests {
             &mesh,
         )
         .is_none());
+    }
+
+    #[test]
+    fn window_beam_card_becomes_scattering_volume_only_for_window_asset() {
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![[-66.0, -183.0, 0.0], [64.0, 15.0, 0.0]],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        mesh.material.material_kind = byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+        mesh.material.has_alpha = true;
+        let volume =
+            window_beam_volume_from_mesh(Some("Meshes/Effects/Ambient/WindowLightBeam.nif"), &mesh)
+                .unwrap();
+        let bounds = volume.bounds.unwrap();
+        assert_eq!(bounds.shape, FogShape::Box);
+        assert_eq!(volume.profile, FogProfile::LightShaft);
+        assert!(bounds.half_extents.z > 0.0, "flat card needs a 3D volume");
+        assert!(volume.is_renderable());
+        assert_eq!(volume.emissive_radiance, [0.0; 3]);
+        assert!(window_beam_volume_from_mesh(
+            Some("Effects\\Ambient\\FluorescentLightBeam.nif"),
+            &mesh,
+        )
+        .is_none());
+        assert!(window_beam_volume_from_mesh(
+            Some("Effects\\Ambient\\EmergencyLightBeam01.nif"),
+            &mesh,
+        )
+        .is_none());
+        mesh.positions[1][2] = 8.0;
+        assert!(
+            window_beam_volume_from_mesh(Some("Effects/Ambient/WindowLightBeam.nif"), &mesh,)
+                .is_none(),
+            "a non-planar mesh cannot declare a window aperture"
+        );
+    }
+
+    #[test]
+    fn oblivion_dungeon_beam_card_gets_width_scaled_depth() {
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![
+                [-15.0, 0.0, -1.0],
+                [15.0, 0.0, 344.0],
+                [-15.0, 0.0, 344.0],
+                [15.0, 0.0, -1.0],
+            ],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![0; 6],
+        );
+        mesh.material.has_alpha = true;
+        let volume = oblivion_dungeon_beam_volume_from_mesh(
+            Some("Meshes\\Dungeons\\Misc\\FX\\FXLightBeamLong01.nif"),
+            &mesh,
+        )
+        .unwrap();
+        let bounds = volume.bounds.unwrap();
+        assert_eq!(bounds.shape, FogShape::Box);
+        assert!((bounds.half_extents.x - 15.0).abs() < 1.0e-4);
+        assert!((bounds.half_extents.y - 11.25).abs() < 1.0e-4);
+        assert!((bounds.half_extents.z - 172.5).abs() < 1.0e-4);
+        assert_eq!(volume.emissive_radiance, [0.0; 3]);
+        assert!(volume.is_renderable());
+        for path in [
+            "Meshes\\Oblivion\\Environment\\FXOblivionLightBeamLong01.nif",
+            "Oblivion\\Environment\\FXOblivionLightBeam01.nif",
+        ] {
+            assert!(
+                oblivion_dungeon_beam_volume_from_mesh(Some(path), &mesh).is_some(),
+                "the realm card shares the dungeon asset's geometry and texture: {path}"
+            );
+        }
+        assert!(oblivion_dungeon_beam_volume_from_mesh(
+            Some("Dungeons\\Misc\\FX\\FXLightBeamPink01.nif"),
+            &mesh,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn oblivion_pillar_beam_keeps_its_narrow_sky_aperture() {
+        let mut positions = Vec::new();
+        for y in [-665.24, 1.32] {
+            let radius = if y < 0.0 { 29.0 } else { 21.8 };
+            for i in 0..7 {
+                let angle = i as f32 * std::f32::consts::TAU / 6.0;
+                positions.push([radius * angle.cos(), y, radius * angle.sin()]);
+            }
+        }
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            positions,
+            vec![[1.0; 4]; 14],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![0; 36],
+        );
+        mesh.material.has_alpha = true;
+        let volume = authored_cone_beam_volume_from_mesh(
+            Some("Meshes\\Dungeons\\Misc\\LightBeam01.nif"),
+            &mesh,
+        )
+        .unwrap();
+        let bounds = volume.bounds.unwrap();
+        assert_eq!(bounds.shape, FogShape::Cone);
+        assert!((bounds.half_extents.x - 29.0).abs() < 0.01);
+        assert!((bounds.half_extents.z - 21.8).abs() < 0.01);
+        assert_eq!(volume.profile, FogProfile::LightShaft);
+        assert_eq!(volume.extinction_per_meter, 0.12);
+    }
+
+    #[test]
+    fn fo3_fnv_ambient_cone_uses_authored_taper_and_opacity() {
+        let mut positions = vec![[0.0, -1802.0, 0.0]; 25];
+        positions[0] = [-448.0, -1708.0, 0.0];
+        positions[1] = [448.0, -1708.0, 0.0];
+        positions[2] = [0.0, -1708.0, -448.0];
+        positions[3] = [0.0, -1708.0, 448.0];
+        positions[4] = [-96.0, 126.0, 0.0];
+        positions[5] = [96.0, 126.0, 0.0];
+        positions[6] = [0.0, 126.0, -96.0];
+        positions[7] = [0.0, 126.0, 96.0];
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            positions,
+            vec![[1.0, 1.0, 1.0, 0.25]; 25],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![0; 66],
+        );
+        mesh.material.material_kind = byroredux_renderer::MATERIAL_KIND_NO_LIGHTING;
+        mesh.material.has_alpha = true;
+        let volume = authored_cone_beam_volume_from_mesh(
+            Some("Meshes\\Effects\\Ambient\\FXLightBeam01.NIF"),
+            &mesh,
+        )
+        .unwrap();
+        let bounds = volume.bounds.unwrap();
+        assert_eq!(bounds.shape, FogShape::Cone);
+        assert!((bounds.half_extents.x - 448.0).abs() < 1.0e-3);
+        assert!((bounds.half_extents.y - 917.0).abs() < 1.0e-3);
+        assert!((bounds.half_extents.z - 96.0).abs() < 1.0e-3);
+        assert!(volume.extinction_per_meter > 0.0);
+        assert_eq!(volume.profile, FogProfile::Homogeneous);
+        assert_eq!(volume.emissive_radiance, [0.0; 3]);
+        mesh.positions.extend(vec![[0.0; 3]; 55]);
+        mesh.colors.extend(vec![[1.0; 4]; 55]);
+        assert!(authored_cone_beam_volume_from_mesh(
+            Some("Effects\\Ambient\\FXLightBeamsVaultWidow01.nif"),
+            &mesh,
+        )
+        .is_none());
+        mesh.positions.truncate(25);
+        mesh.colors.truncate(25);
+        assert!(authored_cone_beam_volume_from_mesh(
+            Some("Effects\\Ambient\\FXLightBeamNVStrip.nif"),
+            &mesh,
+        )
+        .is_none());
+        mesh.positions.pop();
+        assert!(authored_cone_beam_volume_from_mesh(
+            Some("Effects\\Ambient\\FXLightBeam01.nif"),
+            &mesh,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn repcon_beam_fan_becomes_a_volume_but_its_light_crack_remains_a_mesh() {
+        let mut positions = vec![[0.0, -100.0, 0.0]; 25];
+        positions[0] = [120.0, -100.0, 0.0];
+        positions[1] = [-120.0, -100.0, 0.0];
+        positions[2] = [0.0, -100.0, 120.0];
+        positions[3] = [0.0, -100.0, -120.0];
+        positions[4] = [96.0, 0.0, 0.0];
+        positions[5] = [-96.0, 0.0, 0.0];
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            positions,
+            vec![[1.0, 1.0, 1.0, 0.25]; 25],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![0; 66],
+        );
+        mesh.material.material_kind = byroredux_renderer::MATERIAL_KIND_NO_LIGHTING;
+        mesh.material.has_alpha = true;
+        let path = "Architecture\\Repcon\\RepLightBeams.nif";
+        let volume = authored_cone_beam_volume_from_mesh(Some(path), &mesh).unwrap();
+        assert_eq!(volume.bounds.unwrap().shape, FogShape::Cone);
+        assert_eq!(volume.profile, FogProfile::LightShaft);
+        assert!(volume.extinction_per_meter > 0.0);
+        assert!(
+            authored_cone_beam_volume_from_mesh(Some("Effects\\Ambient\\FXLightBeam01.nif"), &mesh)
+                .is_none(),
+            "the shallow taper is specific to the measured RepCon fan"
+        );
+        mesh.positions.truncate(6);
+        mesh.colors.truncate(6);
+        mesh.indices.truncate(6);
+        mesh.material.material_kind = 0;
+        assert!(authored_cone_beam_volume_from_mesh(Some(path), &mesh).is_none());
+    }
+
+    #[test]
+    fn fnv_superwide_lamp_beam_is_passive_scattering_not_a_sky_portal() {
+        let mut positions = vec![[0.0, -525.0, 0.0]; 40];
+        positions[0] = [300.0, -739.0, 0.0];
+        positions[1] = [1311.0, -525.0, 0.0];
+        positions[2] = [0.0, -525.0, 1011.0];
+        positions[3] = [300.0, 126.0, 0.0];
+        positions[4] = [-300.0, 126.0, 0.0];
+        let mut colors = vec![[1.0, 1.0, 1.0, 0.0]; 40];
+        colors[5][3] = 0.3;
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            positions,
+            colors,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![0; 93],
+        );
+        mesh.material.material_kind = byroredux_renderer::MATERIAL_KIND_NO_LIGHTING;
+        mesh.material.has_alpha = true;
+        let volume = fnv_superwide_beam_volume_from_mesh(
+            Some("Meshes\\Effects\\Ambient\\FXLightBeamSuperWide01.nif"),
+            &mesh,
+        )
+        .unwrap();
+        let bounds = volume.bounds.unwrap();
+        assert_eq!(bounds.shape, FogShape::Cone);
+        assert_eq!(volume.profile, FogProfile::Homogeneous);
+        assert!((bounds.half_extents.x - 1311.0).abs() < 1.0e-4);
+        assert!((bounds.half_extents.z - 300.0).abs() < 1.0e-4);
+        assert!(volume.extinction_per_meter > 0.0);
+        assert_eq!(volume.emissive_radiance, [0.0; 3]);
+        assert!(fnv_superwide_beam_volume_from_mesh(
+            Some("Effects\\Ambient\\FXLightBeam01.nif"),
+            &mesh,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn vault_window_fan_uses_its_three_dimensional_bounds_without_adding_a_sun_portal() {
+        let mut positions = vec![[0.0, 100.0, 0.0]; 80];
+        positions[0] = [-150.0, 14.0, -147.0];
+        positions[1] = [107.0, 194.0, 147.0];
+        let mut colors = vec![[1.0, 1.0, 1.0, 0.0]; 80];
+        colors[2][3] = 0.08;
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            positions,
+            colors,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![0; 360],
+        );
+        mesh.material.material_kind = byroredux_renderer::MATERIAL_KIND_NO_LIGHTING;
+        mesh.material.has_alpha = true;
+        let volume = vault_window_beam_volume_from_mesh(
+            Some("Meshes/Effects/Ambient/FXLightBeamsVaultWidow02.nif"),
+            &mesh,
+        )
+        .unwrap();
+        assert_eq!(volume.bounds.unwrap().shape, FogShape::Box);
+        assert_eq!(volume.profile, FogProfile::Homogeneous);
+        assert!(volume.extinction_per_meter > 0.0);
+        assert_eq!(volume.emissive_radiance, [0.0; 3]);
+        assert!(vault_window_beam_volume_from_mesh(
+            Some("Effects/Ambient/FXLightBeamNVStrip.nif"),
+            &mesh,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn fo4_lamp_beam_conversion_keeps_companion_glow_disks() {
+        let mesh_with_signature = |vertices: usize, indices: usize| {
+            let mut positions = vec![[0.0, -20.0, 0.0]; vertices];
+            positions[0] = [-40.0, -100.0, -30.0];
+            positions[1] = [40.0, 20.0, 30.0];
+            let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+                positions,
+                vec![[1.0, 1.0, 1.0, 0.5]; vertices],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![0; indices],
+            );
+            mesh.material.material_kind = byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+            mesh.material.has_alpha = true;
+            mesh.material.mat_alpha = 0.35;
+            mesh
+        };
+        for (file, vertices, indices) in [
+            ("EmergencyLightBeam01.nif", 242, 1080),
+            ("EmergencyLightBeamSet.nif", 242, 1080),
+            ("EmergencyLightBeamSetShort01.nif", 300, 960),
+            ("EmergencyLightBeamShort.nif", 150, 480),
+            ("FluorescentLightBeam.nif", 114, 504),
+            ("FluorescentLightBeamThin.nif", 114, 504),
+            ("LightBeamThinDusty01.nif", 90, 288),
+            ("LightBeamThinDusty01.nif", 60, 192),
+            ("LightBeamThinDustyShort.nif", 30, 96),
+            ("LightBeamThinDustyShort02.nif", 90, 288),
+            ("LightBeamThinDustyShort02Bright.nif", 60, 192),
+        ] {
+            let path = format!("Meshes/Effects/Ambient/{file}");
+            let mesh = mesh_with_signature(vertices, indices);
+            let volume = fo4_ambient_lamp_beam_volume_from_mesh(Some(&path), &mesh)
+                .unwrap_or_else(|| panic!("beam not converted: {file}"));
+            assert_eq!(volume.profile, FogProfile::Homogeneous);
+            assert_eq!(volume.emissive_radiance, [0.0; 3]);
+            assert!(volume.extinction_per_meter > 0.0);
+            assert_eq!(
+                volume.bounds.unwrap().shape,
+                if file.starts_with("Fluorescent") {
+                    FogShape::Box
+                } else {
+                    FogShape::Ellipsoid
+                }
+            );
+        }
+        let glow_disk = mesh_with_signature(58, 168);
+        assert!(fo4_ambient_lamp_beam_volume_from_mesh(
+            Some("Effects/Ambient/EmergencyLightBeam01.nif"),
+            &glow_disk,
+        )
+        .is_none());
+        let floor_disk = mesh_with_signature(57, 252);
+        assert!(fo4_ambient_lamp_beam_volume_from_mesh(
+            Some("Effects/Ambient/LightBeamThinDustyShort.nif"),
+            &floor_disk,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn shipped_fo4_beam_submeshes_match_the_conversion_contract() {
+        let Some(archive_path) = std::env::var_os("BYRO_FO4_MESHES_BA2") else {
+            return;
+        };
+        let archive = byroredux_bsa::Ba2Archive::open(archive_path).unwrap();
+        let mut pool = byroredux_core::string::StringPool::new();
+        for (file, converted_count, retained_count) in [
+            ("EmergencyLightBeam01.nif", 1, 1),
+            ("EmergencyLightBeamSet.nif", 2, 2),
+            ("EmergencyLightBeamSetShort01.nif", 1, 0),
+            ("EmergencyLightBeamShort.nif", 1, 0),
+            ("FluorescentLightBeam.nif", 1, 0),
+            ("FluorescentLightBeamThin.nif", 1, 0),
+            ("LightBeamThinDusty01.nif", 2, 0),
+            ("LightBeamThinDustyShort.nif", 5, 1),
+            ("LightBeamThinDustyShort02Bright.nif", 2, 0),
+        ] {
+            let path = format!("meshes/effects/ambient/{file}");
+            let bytes = archive.extract(&path).unwrap();
+            let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+            let meshes = byroredux_nif::import::import_nif(&scene, &mut pool);
+            let converted = meshes
+                .iter()
+                .filter(|mesh| fo4_ambient_lamp_beam_volume_from_mesh(Some(&path), mesh).is_some())
+                .count();
+            assert_eq!(converted, converted_count, "{file}: beam submeshes");
+            assert_eq!(
+                meshes.len() - converted,
+                retained_count,
+                "{file}: other visual meshes"
+            );
+            if matches!(
+                file,
+                "EmergencyLightBeam01.nif"
+                    | "EmergencyLightBeamSet.nif"
+                    | "EmergencyLightBeamSetShort01.nif"
+            ) {
+                for volume in meshes
+                    .iter()
+                    .filter_map(|mesh| fo4_ambient_lamp_beam_volume_from_mesh(Some(&path), mesh))
+                {
+                    assert_eq!(
+                        volume.bounds.unwrap().shape,
+                        FogShape::Cone,
+                        "{file}: taper"
+                    );
+                }
+            }
+        }
+        let path = "meshes/effects/ambient/WindowLightBeam.nif";
+        let bytes = archive.extract(path).unwrap();
+        let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+        let meshes = byroredux_nif::import::import_nif(&scene, &mut pool);
+        assert_eq!(meshes.len(), 1);
+        let window = window_beam_volume_from_mesh(Some(path), &meshes[0]).unwrap();
+        assert_eq!(window.profile, FogProfile::LightShaft);
+        assert_eq!(window.bounds.unwrap().shape, FogShape::Box);
+    }
+
+    #[test]
+    fn shipped_oblivion_realm_beams_share_the_dungeon_card_contract() {
+        let Some(archive_path) = std::env::var_os("BYRO_OBLIVION_MESHES_BSA") else {
+            return;
+        };
+        let archive = byroredux_bsa::BsaArchive::open(archive_path).unwrap();
+        let mut pool = byroredux_core::string::StringPool::new();
+        for file in ["FXOblivionLightBeam01.nif", "FXOblivionLightBeamLong01.nif"] {
+            let path = format!("meshes/oblivion/environment/{file}");
+            let bytes = archive.extract(&path).unwrap();
+            let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+            let meshes = byroredux_nif::import::import_nif(&scene, &mut pool);
+            assert_eq!(meshes.len(), 1, "{file}: one authored card");
+            let volume = oblivion_dungeon_beam_volume_from_mesh(Some(&path), &meshes[0])
+                .unwrap_or_else(|| panic!("{file}: card not converted"));
+            assert_eq!(volume.bounds.unwrap().shape, FogShape::Box);
+            assert_eq!(volume.profile, FogProfile::Homogeneous);
+            assert_eq!(volume.emissive_radiance, [0.0; 3]);
+        }
+    }
+
+    #[test]
+    fn shipped_repcon_beam_fans_leave_the_light_crack_card_intact() {
+        let Some(archive_path) = std::env::var_os("BYRO_FNV_MESHES_BSA") else {
+            return;
+        };
+        let archive = byroredux_bsa::BsaArchive::open(archive_path).unwrap();
+        let path = "meshes/architecture/repcon/RepLightBeams.nif";
+        let bytes = archive.extract(path).unwrap();
+        let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let meshes = byroredux_nif::import::import_nif(&scene, &mut pool);
+        assert_eq!(meshes.len(), 6, "five beam fans and one light-crack card");
+        let volumes: Vec<_> = meshes
+            .iter()
+            .filter_map(|mesh| authored_cone_beam_volume_from_mesh(Some(path), mesh))
+            .collect();
+        assert_eq!(volumes.len(), 5, "only the beam fans become media");
+        assert!(volumes.iter().all(|volume| {
+            volume.bounds.unwrap().shape == FogShape::Cone
+                && volume.profile == FogProfile::LightShaft
+                && volume.emissive_radiance == [0.0; 3]
+        }));
+    }
+
+    #[test]
+    fn shipped_nellis_hangar_fans_have_four_bounded_window_apertures() {
+        let Some(archive_path) = std::env::var_os("BYRO_FNV_MESHES_BSA") else {
+            return;
+        };
+        let archive = byroredux_bsa::BsaArchive::open(archive_path).unwrap();
+        let path = "meshes/effects/NVNellisHangarInteriorLightBeam.nif";
+        let bytes = archive.extract(path).unwrap();
+        let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let meshes = byroredux_nif::import::import_nif(&scene, &mut pool);
+        assert_eq!(meshes.len(), 1);
+        let volumes = fnv_nellis_hangar_beam_volumes_from_mesh(Some(path), &meshes[0]).unwrap();
+        assert_eq!(volumes.len(), 8);
+        for (panel, pair) in [0, 2, 3, 4].into_iter().zip(volumes.chunks_exact(2)) {
+            let medium = pair[0];
+            let aperture = pair[1];
+            assert_eq!(medium.profile, FogProfile::Homogeneous);
+            assert_eq!(aperture.profile, FogProfile::SkyAperture);
+            let medium_bounds = medium.bounds.unwrap();
+            let aperture_bounds = aperture.bounds.unwrap();
+            assert_eq!(medium_bounds.shape, FogShape::Box);
+            assert_eq!(aperture_bounds.shape, FogShape::Box);
+            assert!(medium_bounds.half_extents.y > aperture_bounds.half_extents.z);
+            for (corner, &position) in meshes[0].positions[90 + panel * 4..94 + panel * 4]
+                .iter()
+                .enumerate()
+            {
+                let point = Vec3::from_array(position);
+                let local = medium_bounds.rotation.inverse() * (point - medium_bounds.center);
+                assert!(
+                    (local.abs() - medium_bounds.half_extents).max_element() <= 0.1,
+                    "panel {panel} corner {corner} lies outside its scattering medium"
+                );
+                if corner < 2 {
+                    let local =
+                        aperture_bounds.rotation.inverse() * (point - aperture_bounds.center);
+                    assert!(
+                        (local.abs() - aperture_bounds.half_extents).max_element() <= 0.1,
+                        "panel {panel} source edge lies outside its sky aperture"
+                    );
+                }
+            }
+            assert_eq!(medium.emissive_radiance, [0.0; 3]);
+            assert_eq!(aperture.emissive_radiance, [0.0; 3]);
+        }
     }
 }
 

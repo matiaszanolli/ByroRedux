@@ -1400,6 +1400,22 @@ impl ApplicationHandler for App {
         cpu_t.atw_scheduler_ms = atw_scheduler_ns as f32 * NS_TO_MS;
         cpu_t.atw_post_ms = atw_post_ns as f32 * NS_TO_MS;
     }
+
+    /// Last callback with the display connection still open. `run_app` takes
+    /// the `EventLoop` by value, so the Wayland connection closes when it
+    /// returns — but `App` lives on until `main` returns. Anything bound to
+    /// that connection must be released here, on every exit path (pause-menu
+    /// Quit, close button, and the error arms that skip `shutdown`).
+    ///
+    /// The debug UI's `egui_winit::State` is one such thing: when
+    /// `egui-winit/clipboard` is unified in (a workspace-wide build pulls it
+    /// through `byro-launcher`'s eframe), it owns a `smithay-clipboard` worker
+    /// thread on the display. Dropped with `App`, that worker's teardown runs
+    /// against the closed connection and the process segfaults after an
+    /// otherwise clean shutdown.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.debug_ui.take();
+    }
 }
 
 // Moved here with the `resumed` arm it pins (#2731); see the note in

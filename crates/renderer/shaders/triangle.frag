@@ -1968,7 +1968,12 @@ void main() {
             // genuinely sees the outdoors. Do not swap the rest of this
             // shader onto it: everything else reading a stale exterior sky
             // from inside is the #2226 leak.
-            vec3 skyColor = exteriorSkyTint.rgb;
+            // The interior composite stays local, while the cubemap is baked
+            // from the outdoor weather palette. Sample in the same outward
+            // direction whose clear ray established this portal, so a window
+            // sees the actual horizon, sun and clouds instead of one zenith
+            // swatch. The helper falls back to the zenith if the bake is absent.
+            vec3 skyColor = exteriorSkyRadianceOr(-N, exteriorSkyTint.rgb);
             // Use the authored glass color directly instead of biasing
             // toward white. Pre-fix this mix started from pure white
             // and leaned heavily that way for low-alpha clear glass

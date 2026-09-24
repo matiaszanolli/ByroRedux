@@ -376,10 +376,12 @@ fn load_scene_content(
         crate::cornell::cornell_oracle_rung(args).unwrap_or_else(|message| panic!("{message}"));
     let combustion_lab = crate::cornell::combustion_lab_mode(args);
     let combustion_lab_nuclear = crate::cornell::combustion_lab_nuclear_mode(args);
+    let godray_lab = crate::cornell::godray_lab_mode(args);
     let cornell_glass_dragon = crate::cornell::glass_dragon_mode(args);
     let cornell_sun = cornell_sun_mode(args);
     let studio_mode = args.iter().any(|arg| arg == "--studio");
     let diagnostic_scene = combustion_lab
+        || godray_lab.is_some()
         || cornell_glass_dragon
         || cornell_oracle.is_some()
         || cornell_sun.is_some()
@@ -388,7 +390,12 @@ fn load_scene_content(
     let mut authored_spawn: Option<cell_loader::SpawnPose> = None;
 
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
-    if combustion_lab {
+    if let Some(sealed) = godray_lab {
+        let (pos, target) = crate::cornell::setup_godray_lab_scene(world, ctx, sealed);
+        harness_cam = Some((pos, target));
+        cam_center = target;
+        has_nif_content = true;
+    } else if combustion_lab {
         let (pos, target) =
             crate::cornell::setup_combustion_lab_scene(world, ctx, combustion_lab_nuclear);
         harness_cam = Some((pos, target));
@@ -532,7 +539,11 @@ fn load_scene_content(
                     // nor a resolvable `LTMP` still gets the engine-default
                     // interior fallback instead of inheriting a stale
                     // resource (FNV-D1-01).
-                    cell_loader::apply_interior_cell_lighting(world, result.lighting.as_ref());
+                    cell_loader::apply_interior_cell_lighting(
+                        world,
+                        result.lighting.as_ref(),
+                        result.show_sky,
+                    );
                     // EX-16 item 1 (#2372) — same "always insert, never
                     // leave a stale prior-cell resource" reasoning as
                     // lighting above; `RegionAmbientRes::default()` is the

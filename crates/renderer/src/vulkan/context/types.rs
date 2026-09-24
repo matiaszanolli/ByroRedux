@@ -624,18 +624,33 @@ pub struct SkyParams {
     /// returns `SkyParams::default()` for any interior, because #1199 /
     /// #2226 established that an interior must never read a stale exterior
     /// `SkyParamsRes` — the whole TOD sky/sun/cloud set leaking into
-    /// interior lighting is a real bug a sealed roof only hides. That is
-    /// correct for every consumer except one: `triangle.frag`'s
-    /// window-portal escape, where a ray that clears the cell genuinely
-    /// sees the outdoor sky, so the interior default transmitted
+    /// interior lighting is a real bug a sealed roof only hides. The
+    /// window-portal escape needs a separate lane because its ray genuinely
+    /// sees the outdoor sky; the interior default transmitted
     /// clear-noon blue at every hour.
     ///
     /// Populated from the surviving `SkyParamsRes` (World-lifetime, not
     /// cell-lifetime — see #1199) and falling back to
-    /// `Self::default().zenith_color` when no exterior has loaded this
-    /// session. Uploaded as `GpuCamera::exterior_sky_tint` and read by
-    /// exactly that one branch, so the interior bypass stays closed.
+    /// the procedural exterior palette when no exterior has loaded this
+    /// session. Uploaded as `GpuCamera::exterior_sky_tint` for the window
+    /// escape fallback; the ordinary interior sky fields stay separate.
     pub exterior_zenith_color: [f32; 3],
+    /// Outdoor palette used to bake the sky cubemap and paint clear-depth
+    /// pixels through interior openings. Ordinary fields still describe the
+    /// cell, so surface lighting and weather classification remain interior.
+    pub portal_outdoor_sky: Option<Box<SkyParams>>,
+    /// Outdoor sun available to interior volumetric rays that pass through
+    /// a verified aperture. Kept separate from the cell's sun fields so
+    /// interior surfaces and the composite sky retain their own lighting.
+    /// RGB is radiance after the time-of-day intensity ramp; zero at night.
+    pub portal_sun_radiance: [f32; 3],
+    /// Direction from a volume sample toward the outdoor sun, Y-up.
+    pub portal_sun_direction: [f32; 3],
+    /// The current interior CELL authors Show Sky / Behave Like Exterior.
+    /// Volumetric rays may see open sky without a glass pane, and background
+    /// pixels with no surface display the outdoor sky while room lighting
+    /// remains interior.
+    pub interior_show_sky: bool,
     /// Horizon color, raw monitor-space per 0e8efc6.
     pub horizon_color: [f32; 3],
     /// Below-horizon ground / lower-hemisphere color from WTHR's
@@ -773,6 +788,10 @@ impl Default for SkyParams {
             // Same value: with no exterior ever loaded there is no live sky
             // to report, and the portal keeps its pre-#3323 transmission.
             exterior_zenith_color: [0.15, 0.3, 0.6],
+            portal_outdoor_sky: None,
+            portal_sun_radiance: [0.0; 3],
+            portal_sun_direction: [0.0, -1.0, 0.0],
+            interior_show_sky: false,
             horizon_color: [0.5, 0.5, 0.45],
             // Pre-#541 fake `horizon * 0.3` baseline preserved as the
             // default; real WTHR-driven exterior cells overwrite from

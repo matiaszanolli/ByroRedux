@@ -1606,9 +1606,9 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             volumetrics_comp,
             "struct FogClusterEntry"
         )),
-        8,
-        "FogClusterEntry's std430 stride left 8 B — a wrong `count` decode is \
-         what makes a stale cluster live under the #3834 partial-upload \
+        16,
+        "FogClusterEntry's std430 stride left 16 B — wrong density/portal \
+         counts can make stale clusters live under the #3834 partial-upload \
          contract (#3982)"
     );
     assert_eq!(
@@ -1676,6 +1676,10 @@ fn every_shader_struct_is_classified() {
         (
             "GpuFogVolume",
             Guarded("gpu_fog_volume_glsl_field_order_matches_rust_struct"),
+        ),
+        (
+            "SkyAperture",
+            Guarded("composite_params_is_16_byte_aligned_std140_shape"),
         ),
         (
             "GpuBoundaryInstance",

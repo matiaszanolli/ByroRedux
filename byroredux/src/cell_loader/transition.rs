@@ -590,7 +590,7 @@ pub(crate) fn finish_interior_cell_load(
     dest_rot: Quat,
 ) -> Vec3 {
     world.insert_resource(result.phases);
-    super::apply_interior_cell_lighting(world, result.lighting.as_ref());
+    super::apply_interior_cell_lighting(world, result.lighting.as_ref(), result.show_sky);
     world.insert_resource(result.region_ambient);
     reposition_camera(world, dest_pos, dest_rot);
     crate::systems::ground_character_body_at(world, dest_pos);

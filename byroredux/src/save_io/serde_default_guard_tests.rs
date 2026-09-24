@@ -626,7 +626,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // Lighting unification: VisibilityMask is still a u8 newtype; only its
     // import policy changed. The tuple-struct scanner also includes its impl
     // (same false positive as W2.10 below). No serialized field changed.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xfdf5_4cba_8b94_555f;
+    // Interior volumetric beams add `FogShape::Cone`. This file-scoped guard
+    // scans its inspect-only derive, but FogVolume (and its FogBounds/FogShape
+    // payload) is NOT_SAVED_BY_DESIGN: it is rebuilt from cell/NIF data on
+    // load. No registered save column or on-disk shape changed.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xeab7_27a8_7cdb_edf2;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

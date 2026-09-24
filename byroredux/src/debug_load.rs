@@ -308,7 +308,11 @@ fn exec_load_interior(
             // Always called (not gated on `Some`) so a cell with no
             // `XCLL`/resolvable `LTMP` still gets the engine-default
             // interior fallback rather than a stale carry-over (FNV-D1-01).
-            cell_loader::apply_interior_cell_lighting(world, result.lighting.as_ref());
+            cell_loader::apply_interior_cell_lighting(
+                world,
+                result.lighting.as_ref(),
+                result.show_sky,
+            );
             // EX-16 item 1 (#2372) — same always-insert reasoning as
             // lighting above (see the comment there).
             world.insert_resource(result.region_ambient);

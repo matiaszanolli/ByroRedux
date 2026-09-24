@@ -1465,7 +1465,7 @@ const FB_LOWER: [f32; 3] = [
     FB_HORIZON[1] * 0.3,
     FB_HORIZON[2] * 0.3,
 ];
-const FB_SUN_COLOR: [f32; 3] = [1.0, 0.95, 0.8];
+pub(crate) const FB_SUN_COLOR: [f32; 3] = [1.0, 0.95, 0.8];
 /// Star colour of the procedural fallback sky — and the one declaration
 /// behind [`WeatherSkyState::default`]'s `stars_color` (#4494, same
 /// anti-drift alias arrangement as [`FB_TOD_HOURS`]).

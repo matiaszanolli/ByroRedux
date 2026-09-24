@@ -732,6 +732,7 @@ pub(super) fn build_fsr_frame_parameters(
 /// `fog_extinction_per_meter`/`fog_single_scatter_albedo`/
 /// `fog_height_reference`), and a positional call site could silently
 /// transpose two of them without a type error.
+#[derive(Clone, Copy)]
 pub(super) struct CompositeParamsInputs<'a> {
     pub(super) fog_color: [f32; 3],
     pub(super) fog_near: f32,
@@ -757,6 +758,7 @@ pub(super) struct CompositeParamsInputs<'a> {
     pub(super) camera_pos: [f32; 3],
     pub(super) render_origin: byroredux_core::math::Vec3,
     pub(super) inv_vp_arr: [[f32; 4]; 4],
+    pub(super) sky_aperture_volumes: &'a [super::super::volumetrics::GpuFogVolume],
     pub(super) underwater: [f32; 4],
     /// Whether `water_caustic_accum` is genuinely live this session — see
     /// `CompositeParams::caustic_flags` (#2508).
@@ -790,9 +792,49 @@ pub(super) fn build_composite_params(
         camera_pos,
         render_origin,
         inv_vp_arr,
+        sky_aperture_volumes,
         underwater,
         water_caustic_active,
     } = inputs;
+    let is_exterior = sky_params.is_exterior;
+    let interior_show_sky = !is_exterior && sky_params.interior_show_sky;
+    let interior_portal_sky = !is_exterior && sky_params.portal_outdoor_sky.is_some();
+    let sky_params = if interior_portal_sky {
+        sky_params.portal_outdoor_sky.as_deref().unwrap_or(sky_params)
+    } else {
+        sky_params
+    };
+    let mut sky_apertures = [super::super::composite::CompositeSkyAperture::default();
+        super::super::composite::MAX_SKY_APERTURES];
+    let mut aperture_count = 0usize;
+    if !is_exterior && interior_portal_sky {
+        for volume in sky_aperture_volumes {
+            if volume.center_shape[3] < 1.5
+                || volume.center_shape[3] > 2.5
+                || (volume.profile_params[0]
+                    - super::super::volumetrics::FOG_VOLUME_PROFILE_LIGHT_SHAFT)
+                    .abs()
+                    >= 0.5
+                || volume.profile_params[3] < 0.5
+            {
+                continue;
+            }
+            if aperture_count == sky_apertures.len() {
+                break;
+            }
+            sky_apertures[aperture_count] = super::super::composite::CompositeSkyAperture {
+                center: [
+                    volume.center_shape[0] - render_origin.x,
+                    volume.center_shape[1] - render_origin.y,
+                    volume.center_shape[2] - render_origin.z,
+                    0.0,
+                ],
+                half_extents: volume.half_extents_extinction,
+                inverse_rotation: volume.inverse_rotation,
+            };
+            aperture_count += 1;
+        }
+    }
     super::super::composite::CompositeParams {
         fog_color: [
             fog_color[0],
@@ -809,7 +851,7 @@ pub(super) fn build_composite_params(
         // only the engine-native physical medium.
         fog_params: [fog_near, fog_far, fog_clip, fog_power],
         depth_params: [
-            if sky_params.is_exterior { 1.0 } else { 0.0 },
+            if is_exterior { 1.0 } else { 0.0 },
             // Categorical debug views must bypass fog, caustics, bloom and
             // dither in the composite pass. Bitcast the same flag word the
             // camera UBO supplies to triangle.frag; no numeric conversion.
@@ -831,7 +873,7 @@ pub(super) fn build_composite_params(
             // default the EXAL boundary substituted when none was authored.
             fog_scale_height_meters * super::super::volumetrics::WORLD_UNITS_PER_METER,
             fog_single_scatter_albedo.clamp(0.0, 1.0),
-            if sky_params.is_exterior && fog_extinction_per_meter > 0.0 {
+            if is_exterior && fog_extinction_per_meter > 0.0 {
                 1.0
             } else {
                 0.0
@@ -856,7 +898,13 @@ pub(super) fn build_composite_params(
             sky_params.lower_color[0],
             sky_params.lower_color[1],
             sky_params.lower_color[2],
-            0.0,
+            if interior_show_sky {
+                1.0
+            } else if interior_portal_sky {
+                2.0
+            } else {
+                0.0
+            },
         ],
         sun_dir: [
             sky_params.sun_direction[0],
@@ -972,6 +1020,26 @@ pub(super) fn build_composite_params(
             sky_params.sun_illuminance[2],
             0.0,
         ],
+        sky_aperture_count: [aperture_count as u32, 0, 0, 0],
+        sky_apertures,
+    }
+}
+
+/// The room's composite remains interior, but escape rays sample an outdoor
+/// cubemap. Keep the two sources explicit so weather cannot leak into the
+/// interior background or disappear behind a flat window tint.
+pub(super) fn build_sky_cube_params(
+    inputs: CompositeParamsInputs<'_>,
+    composite: &super::super::composite::CompositeParams,
+) -> super::super::sky_cube::SkyCubeParams {
+    if let Some(outdoor) = inputs.sky_params.portal_outdoor_sky.as_deref() {
+        let outdoor_composite = build_composite_params(CompositeParamsInputs {
+            sky_params: outdoor,
+            ..inputs
+        });
+        super::super::sky_cube::SkyCubeParams::from_composite(&outdoor_composite)
+    } else {
+        super::super::sky_cube::SkyCubeParams::from_composite(composite)
     }
 }
 
@@ -1021,7 +1089,93 @@ mod interior_dust_emitter_tests {
 
 #[cfg(test)]
 mod composite_params_tests {
-    use super::{build_composite_params, CompositeParamsInputs, SkyParams};
+    use super::{CompositeParamsInputs, SkyParams, build_composite_params, build_sky_cube_params};
+    use crate::vulkan::volumetrics::{FOG_VOLUME_PROFILE_LIGHT_SHAFT, GpuFogVolume};
+
+    #[test]
+    fn interior_portal_sky_preserves_room_weather_gate() {
+        let outdoor = SkyParams {
+            zenith_color: [0.7, 0.2, 0.1],
+            horizon_color: [0.9, 0.4, 0.2],
+            sun_direction: [0.2, 0.8, 0.4],
+            is_exterior: true,
+            ..SkyParams::default()
+        };
+        let room = SkyParams {
+            zenith_color: [0.01, 0.02, 0.03],
+            is_exterior: false,
+            portal_outdoor_sky: Some(Box::new(outdoor)),
+            ..SkyParams::default()
+        };
+        let mut window = GpuFogVolume::default();
+        window.center_shape = [100.0, 200.0, 300.0, 2.0];
+        window.half_extents_extinction = [10.0, 20.0, 5.0, 0.0];
+        window.inverse_rotation = [0.0, 0.0, 0.0, 1.0];
+        window.profile_params[0] = FOG_VOLUME_PROFILE_LIGHT_SHAFT;
+        window.profile_params[3] = 1.0;
+        let mut cone = window;
+        cone.center_shape[3] = 3.0;
+        let mut unmarked_beam = window;
+        unmarked_beam.profile_params[3] = 0.0;
+        let aperture_volumes = [cone, unmarked_beam, window];
+        let inputs = CompositeParamsInputs {
+            fog_color: [0.0; 3],
+            fog_near: 0.0,
+            fog_far: 100.0,
+            fog_extinction_per_meter: 0.0,
+            fog_single_scatter_albedo: 0.0,
+            fog_scale_height_meters: 30.0,
+            fog_clip: 0.0,
+            fog_power: 0.0,
+            fog_height_reference: 0.0,
+            sky_params: &room,
+            render_debug_flags: 0,
+            render_debug_mode: 0,
+            frame_counter: 0,
+            volume_far_distance: 100.0,
+            froxel_slice_count: 64.0,
+            camera_pos: [0.0; 3],
+            render_origin: byroredux_core::math::Vec3::new(10.0, 20.0, 30.0),
+            inv_vp_arr: [[0.0; 4]; 4],
+            sky_aperture_volumes: &aperture_volumes,
+            underwater: [0.0; 4],
+            water_caustic_active: false,
+        };
+        let composite = build_composite_params(inputs);
+        let cube = build_sky_cube_params(inputs, &composite);
+        assert_eq!(composite.depth_params[0], 0.0);
+        assert_eq!(composite.sky_lower[3], 2.0);
+        assert_eq!(composite.sky_zenith[..3], [0.7, 0.2, 0.1]);
+        assert_eq!(composite.height_fog_params[3], 0.0);
+        assert_eq!(composite.sky_aperture_count[0], 1);
+        assert_eq!(composite.sky_apertures[0].center[..3], [90.0, 180.0, 270.0]);
+        assert_eq!(composite.sky_apertures[0].half_extents[..3], [10.0, 20.0, 5.0]);
+        assert_eq!(cube.depth_params[0], 1.0);
+        assert_eq!(cube.sky_zenith[..3], [0.7, 0.2, 0.1]);
+        assert_eq!(cube.sky_horizon[..3], [0.9, 0.4, 0.2]);
+        assert_eq!(cube.sun_dir[..3], [0.2, 0.8, 0.4]);
+
+        // The authored Show Sky bit permits the exterior background through
+        // depth misses, without reclassifying the room as exterior (which
+        // would also turn on rain and the beyond-grid height-fog tail).
+        let show_sky_room = SkyParams {
+            interior_show_sky: true,
+            portal_outdoor_sky: Some(Box::new(SkyParams {
+                zenith_color: [0.7, 0.2, 0.1],
+                is_exterior: true,
+                ..SkyParams::default()
+            })),
+            ..SkyParams::default()
+        };
+        let show_sky = build_composite_params(CompositeParamsInputs {
+            sky_params: &show_sky_room,
+            ..inputs
+        });
+        assert_eq!(show_sky.depth_params[0], 0.0);
+        assert_eq!(show_sky.sky_lower[3], 1.0);
+        assert_eq!(show_sky.sky_zenith[..3], [0.7, 0.2, 0.1]);
+        assert_eq!(show_sky.height_fog_params[3], 0.0);
+    }
 
     /// Regression for #2255 (TD1-NEW-02): pin `build_composite_params`'
     /// field mapping now that it's a standalone, directly-testable
@@ -1058,6 +1212,7 @@ mod composite_params_tests {
             camera_pos: [10.0, 20.0, 30.0],
             render_origin: byroredux_core::math::Vec3::new(1.0, 2.0, 3.0),
             inv_vp_arr: [[0.0; 4]; 4],
+            sky_aperture_volumes: &[],
             underwater: [0.1, 0.2, 0.3, 0.4],
             water_caustic_active: true,
         });
@@ -1129,6 +1284,7 @@ mod composite_params_tests {
             camera_pos: [0.0; 3],
             render_origin: byroredux_core::math::Vec3::ZERO,
             inv_vp_arr: [[0.0; 4]; 4],
+            sky_aperture_volumes: &[],
             underwater: [0.0; 4],
             water_caustic_active: false,
         });
@@ -1916,6 +2072,7 @@ impl VulkanContext {
             sky_params,
             camera_pos,
             inv_vp_arr,
+            fog_volumes,
             underwater,
             water_commands,
             &mut armed_selected_ray_probe_generation,

@@ -1205,6 +1205,26 @@ fn main() {
         "#define MAX_FOG_VOLUMES_PER_CLUSTER {MAX_FOG_VOLUMES_PER_CLUSTER}u"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define MAX_FOG_PORTALS_PER_CLUSTER {MAX_FOG_PORTALS_PER_CLUSTER}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define MAX_COMPOSITE_SKY_APERTURES {MAX_COMPOSITE_SKY_APERTURES}u"
+    )
+    .unwrap();
+    for (name, value) in [
+        ("FOG_APERTURE_RIM_PROBE_RADIUS_BU", FOG_APERTURE_RIM_PROBE_RADIUS_BU),
+        ("FOG_APERTURE_RIM_NORMAL_DOT_MIN", FOG_APERTURE_RIM_NORMAL_DOT_MIN),
+        (
+            "FOG_APERTURE_RIM_PLANE_TOLERANCE_BU",
+            FOG_APERTURE_RIM_PLANE_TOLERANCE_BU,
+        ),
+    ] {
+        writeln!(out, "#define {name} {value:?}").unwrap();
+    }
     for (name, value) in FOG_VOLUME_PROFILES {
         writeln!(out, "#define {name} {value:?}").unwrap();
     }

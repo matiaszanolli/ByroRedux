@@ -37,6 +37,43 @@ fn main() {
 
     println!("nodes:           {}", imported_scene.nodes.len());
     println!("meshes:          {}", imported_scene.meshes.len());
+    for mesh in &imported_scene.meshes {
+        let bounds = mesh.positions.iter().fold(
+            ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]),
+            |(mut lo, mut hi), p| {
+                for axis in 0..3 {
+                    lo[axis] = lo[axis].min(p[axis]);
+                    hi[axis] = hi[axis].max(p[axis]);
+                }
+                (lo, hi)
+            },
+        );
+        println!(
+            "  mesh {:?}: {} vertices, {} triangles, local bounds {:?}..{:?}, \
+             translation {:?}, rotation {:?}, scale {}, parent {:?}",
+            mesh.name,
+            mesh.positions.len(),
+            mesh.indices.len() / 3,
+            bounds.0,
+            bounds.1,
+            mesh.translation,
+            mesh.rotation,
+            mesh.scale,
+            mesh.parent_node,
+        );
+        println!(
+            "    material kind={} alpha={} dst_blend={} flags={:#x}",
+            mesh.material.material_kind,
+            mesh.material.has_alpha,
+            mesh.material.dst_blend_mode,
+            mesh.flags,
+        );
+        if mesh.positions.len() <= 30 {
+            for (index, (position, color)) in mesh.positions.iter().zip(&mesh.colors).enumerate() {
+                println!("    vertex {index:>2}: pos={position:?} rgba={color:?}");
+            }
+        }
+    }
     let nodes_with_collision = imported_scene
         .nodes
         .iter()

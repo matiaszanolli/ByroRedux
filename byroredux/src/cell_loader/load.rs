@@ -111,6 +111,8 @@ pub struct CellLoadResult {
     pub spawn_pose: Option<super::interior_spawn::SpawnPose>,
     /// Interior cell lighting (ambient + directional).
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
+    /// CELL DATA Show Sky / Behave Like Exterior bit.
+    pub show_sky: bool,
     /// Resolved REGN ambient-sound directive (EX-16 item 1, #2372) — the
     /// cell's highest-priority tagging region's `Sound` entry, if any.
     /// `Default` (both fields `None`) when the cell has no `XCLR` regions
@@ -195,6 +197,7 @@ fn engine_default_interior_lighting() -> CellLightingRes {
 pub(crate) fn apply_interior_cell_lighting(
     world: &mut World,
     lighting: Option<&esm::cell::CellLighting>,
+    show_sky: bool,
 ) {
     let res = match lighting {
         Some(lit) => {
@@ -219,6 +222,7 @@ pub(crate) fn apply_interior_cell_lighting(
         }
     };
     world.insert_resource(res);
+    world.insert_resource(crate::components::InteriorSkyExposureRes(show_sky));
 }
 
 /// Convert XCLL's signed-degree azimuth/elevation pair into the renderer's
@@ -614,6 +618,7 @@ pub fn load_cell_with_masters(
     // fallback never fired and these cells rendered with the engine
     // default ambient.
     let resolved_lighting = resolve_cell_lighting(cell, &index);
+    let show_sky = cell.show_sky.unwrap_or(false);
     log::info!("Cell lighting: {:?}", resolved_lighting);
 
     // EX-16 item 2 (#2372) — make this cell's NAVM tiles resident. Must
@@ -761,6 +766,7 @@ pub fn load_cell_with_masters(
         center,
         spawn_pose,
         lighting: resolved_lighting,
+        show_sky,
         region_ambient,
         phases,
     })
@@ -1021,6 +1027,7 @@ impl InteriorCellApplyJob {
             .expect("interior cell existed when its apply job began");
         let phase_started = Instant::now();
         let resolved_lighting = resolve_cell_lighting(cell, &index);
+        let show_sky = cell.show_sky.unwrap_or(false);
         log::info!("Cell lighting: {:?}", resolved_lighting);
 
         let navmesh_first = world.next_entity_id();
@@ -1096,6 +1103,7 @@ impl InteriorCellApplyJob {
             center,
             spawn_pose,
             lighting: resolved_lighting,
+            show_sky,
             region_ambient,
             phases,
         })
@@ -1511,7 +1519,7 @@ mod tests {
         // Fresh world == "no previous cell lighting present".
         assert!(world.try_resource::<CellLightingRes>().is_none());
 
-        apply_interior_cell_lighting(&mut world, Some(&interior_lighting()));
+        apply_interior_cell_lighting(&mut world, Some(&interior_lighting()), false);
 
         let res = world
             .try_resource::<CellLightingRes>()
@@ -1523,6 +1531,22 @@ mod tests {
         );
         assert_eq!(res.ambient, [0.10, 0.10, 0.12], "ambient must propagate");
         assert_eq!(res.fog_far, 8000.0, "fog_far must propagate");
+    }
+
+    #[test]
+    fn interior_sky_exposure_is_replaced_on_cell_transition() {
+        let mut world = World::new();
+        apply_interior_cell_lighting(&mut world, None, true);
+        assert!(world
+            .try_resource::<crate::components::InteriorSkyExposureRes>()
+            .unwrap()
+            .0);
+
+        apply_interior_cell_lighting(&mut world, None, false);
+        assert!(!world
+            .try_resource::<crate::components::InteriorSkyExposureRes>()
+            .unwrap()
+            .0);
     }
 
     /// Regression for FNV-D1-01 — a cell with no `XCLL` and no resolvable
@@ -1559,7 +1583,7 @@ mod tests {
             inheritance_flags: None,
         });
 
-        apply_interior_cell_lighting(&mut world, None);
+        apply_interior_cell_lighting(&mut world, None, false);
 
         let res = world
             .try_resource::<CellLightingRes>()

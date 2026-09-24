@@ -18,9 +18,10 @@ use super::super::scene_buffer::{
     INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT,
 };
 use super::draw::{
-    build_composite_params, is_caustic_source, is_refractive_glass, morph_gpu_fields_for_draw,
-    morph_slot_backs_mesh, rebase_model_matrix, skin_slot_backs_mesh,
-    skinned_vertex_address_for_draw, uses_rigid_motion_history, CompositeParamsInputs, DrawBatch,
+    CompositeParamsInputs, DrawBatch, build_composite_params, build_sky_cube_params,
+    is_caustic_source, is_refractive_glass, morph_gpu_fields_for_draw, morph_slot_backs_mesh,
+    rebase_model_matrix, skin_slot_backs_mesh, skinned_vertex_address_for_draw,
+    uses_rigid_motion_history,
 };
 use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use ash::vk;
@@ -71,6 +72,7 @@ impl VulkanContext {
         sky_params: &SkyParams,
         camera_pos: [f32; 3],
         inv_vp_arr: [[f32; 4]; 4],
+        fog_volumes: &[super::super::volumetrics::GpuFogVolume],
         underwater: [f32; 4],
         water_commands: &[super::super::water::WaterDrawCommand],
         armed_selected_ray_probe_generation: &mut Option<u32>,
@@ -908,7 +910,7 @@ impl VulkanContext {
         // pipeline's presence. Leaving the bake gated on `composite` would
         // make that flag lie whenever composite is absent, and the shader
         // would sample a cube still in `UNDEFINED` layout.
-        let composite_params = build_composite_params(CompositeParamsInputs {
+        let composite_inputs = CompositeParamsInputs {
             fog_color,
             fog_near,
             fog_far,
@@ -937,9 +939,11 @@ impl VulkanContext {
             camera_pos,
             render_origin,
             inv_vp_arr,
+            sky_aperture_volumes: fog_volumes,
             underwater,
             water_caustic_active: self.post.water_caustic_accum.is_some(),
-        });
+        };
+        let composite_params = build_composite_params(composite_inputs);
         if let Some(ref mut composite) = self.post.composite {
             if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                 log::warn!("composite upload_params failed: {e}");
@@ -947,17 +951,18 @@ impl VulkanContext {
         }
 
         {
-            // SKYAL — bake the sky cubemap from the SAME parameters the
-            // composite background will use, so the two cannot disagree
-            // about what sky they are drawing. Recorded here, before the
+            // SKYAL — exteriors bake from the same parameters as the
+            // composite background. Interiors keep their composite settings
+            // but bake the separate outdoor palette for rays that escape a
+            // real window; baking the interior defaults made every such
+            // portal display a flat, time-independent sky. Recorded before the
             // geometry pass, because `raytrace.glsl` samples it from the
             // fragment shader inside that pass; `record_bake` owns both
             // layout transitions.
             // Read before the `&mut self.post.sky_cube` borrow below.
             let bindless_set = self.texture_registry.descriptor_set(frame);
             if let Some(ref mut sky_cube) = self.post.sky_cube {
-                let sky_cube_params =
-                    super::super::sky_cube::SkyCubeParams::from_composite(&composite_params);
+                let sky_cube_params = build_sky_cube_params(composite_inputs, &composite_params);
                 if let Err(e) = sky_cube.upload_params(&self.device, frame, &sky_cube_params) {
                     log::warn!("sky cubemap upload_params failed: {e}");
                 }

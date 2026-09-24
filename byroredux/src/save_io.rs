@@ -1362,7 +1362,11 @@ fn reload_interior_session(
             // `XCLL`/resolvable `LTMP` still gets the engine-default
             // interior fallback rather than a stale carry-over from
             // whatever cell was loaded before the load-apply (FNV-D1-01).
-            crate::cell_loader::apply_interior_cell_lighting(world, r.lighting.as_ref());
+            crate::cell_loader::apply_interior_cell_lighting(
+                world,
+                r.lighting.as_ref(),
+                r.show_sky,
+            );
             ctx.signal_temporal_discontinuity(
                 crate::streaming_helpers::SVGF_TAA_STREAMING_RECOVERY_FRAMES,
             );

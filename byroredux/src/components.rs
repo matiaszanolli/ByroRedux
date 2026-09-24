@@ -591,6 +591,12 @@ impl CellLightingRes {
 
 impl Resource for CellLightingRes {}
 
+/// The current interior CELL explicitly allows outdoor sky through open
+/// geometry. Kept separate from XCLL lighting: sky visibility must not turn
+/// the cell's authored ambient and directional values into exterior ones.
+pub(crate) struct InteriorSkyExposureRes(pub(crate) bool);
+impl Resource for InteriorSkyExposureRes {}
+
 /// Resolved ambient-audio directive for the currently resident cell's
 /// highest-priority `REGN` `Sound` entry (EX-16 item 1, #2372). CPU-only —
 /// carries FormIDs, not decoded audio; `asset_provider::audio`'s

@@ -1257,6 +1257,9 @@ pub(crate) fn build_render_data(
         [0.0; 3]
     };
 
+    let interior_show_sky = world
+        .try_resource::<crate::components::InteriorSkyExposureRes>()
+        .is_some_and(|exposure| exposure.0);
     // Cell ambient color (or default).
     let cell_lit = world.try_resource::<CellLightingRes>();
     // XCLL ambient passed through as-is. This is the only flat/cube cell-fill
@@ -1299,7 +1302,21 @@ pub(crate) fn build_render_data(
         crate::fog::FogMedium::from_legacy_ramp(fog_near, fog_far, None)
     } else {
         authored_fog_medium
-    };
+    }
+    .with_sky_aperture_dust_floor(
+        !fog_overridden
+            && cell_lit.as_ref().is_some_and(|lighting| lighting.is_interior)
+            && (interior_show_sky
+                || gpu_fog_volumes.iter().any(|volume| {
+                    volume.profile_params[0]
+                        == byroredux_renderer::vulkan::volumetrics::FOG_VOLUME_PROFILE_LIGHT_SHAFT
+                })
+                || draw_commands.iter().any(|draw| {
+                    draw.material_kind == byroredux_renderer::MATERIAL_KIND_GLASS
+                        && draw.render_layer
+                            == byroredux_core::ecs::components::RenderLayer::Architecture
+                })),
+    );
     // Retain the authored XCLL cubic-fog curve for diagnostics and a future
     // explicit compatibility toggle. The physical path does not evaluate it.
     let fog_clip = cell_lit

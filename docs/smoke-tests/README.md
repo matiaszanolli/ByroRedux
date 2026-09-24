@@ -1,8 +1,20 @@
 # Smoke tests
 
-Manual / scripted smoke checks that need a real Vulkan device + game data
-on disk — the kind that don't fit `cargo test` because they require a
-windowed engine instance and out-of-tree BSA / ESM files.
+The current implementation and remaining cross-game work for interior
+godrays are recorded in
+[the interior godrays handoff](../engine/interior-godrays-status.md).
+
+`interior-godrays.sh` runs a game-data-free Vulkan comparison of two otherwise
+identical interior rooms: one has an unmarked roof opening, the other has a
+sealed roof. It captures both normal presentation frames and requires a
+localized brightness increase under the opening and outdoor sky confined to
+the opening. Build the debug binary first;
+set `VK_ICD_FILENAMES` and `BYRO_ALLOW_CPU_VULKAN_DEVICE=1` to use lavapipe.
+The captures and logs remain in the printed `/tmp/byro-godray-smoke.*` directory.
+
+Manual / scripted smoke checks that need a Vulkan device and a windowed
+engine instance. Most also need out-of-tree BSA / ESM game data; the controlled
+`interior-godrays.sh` scene does not.
 
 Each script targets a specific milestone close-out gate. Missing game data is
 an explicit `SKIP` with exit code `77`, never a pass. The ordinary CI lane

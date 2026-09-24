@@ -27,7 +27,7 @@ fn parse_cell_xclw_populates_water_height() {
 
     sub_data.extend_from_slice(b"DATA");
     sub_data.extend_from_slice(&1u16.to_le_bytes());
-    sub_data.push(0x01); // is_interior bit.
+    sub_data.push(0x81); // interior + Show Sky / Behave Like Exterior.
 
     sub_data.extend_from_slice(b"XCLW");
     sub_data.extend_from_slice(&4u16.to_le_bytes());
@@ -59,6 +59,7 @@ fn parse_cell_xclw_populates_water_height() {
     assert_eq!(cells.len(), 1, "interior CELL must be registered");
     let cell = cells.get("floodedruin").expect("lowercase key");
     assert!(cell.is_interior);
+    assert_eq!(cell.show_sky, Some(true));
     assert_eq!(
         cell.water_height,
         Some(10.0),
@@ -130,6 +131,7 @@ fn parse_interior_without_edid_uses_form_id_identity_and_keeps_children() {
         .expect("FormID fallback must be a stable lowercase map key");
     assert_eq!(parsed.editor_id, "cell_00ABCDEF");
     assert_eq!(parsed.form_id, cell_form_id);
+    assert_eq!(parsed.show_sky, Some(false));
     assert_eq!(parsed.references.len(), 1);
     assert_eq!(parsed.references[0].form_id, actor_form_id);
 }

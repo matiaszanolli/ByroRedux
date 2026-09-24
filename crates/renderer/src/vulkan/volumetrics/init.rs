@@ -103,7 +103,7 @@ impl VolumetricsPipeline {
             last_combustion_light_topology: None,
             fog_volume_upload: Box::new(GpuFogVolumeUpload::default()),
             fog_cluster_entries: fog_cluster_entries_with_offsets(),
-            fog_cluster_indices: Box::new([0; FOG_VOLUME_INDEX_COUNT]),
+            fog_cluster_indices: vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice(),
             // Full extent: forces the first write to each buffer to cover the
             // whole range, since the allocation is not zero-initialised.
             fog_cluster_dirty_hi: [FOG_VOLUME_CLUSTER_COUNT; MAX_FRAMES_IN_FLIGHT],

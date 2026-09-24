@@ -51,6 +51,7 @@ fn empty_cell(form_id: u32, edid: &str) -> CellData {
         display_name: None,
         references: Vec::new(),
         is_interior: true,
+        show_sky: None,
         grid: None,
         lighting: None,
         landscape: None,

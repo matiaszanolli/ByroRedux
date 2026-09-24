@@ -19,11 +19,11 @@
 // shadow visibility is the standard "trace toward light, miss = lit"
 // test used by every modern RT volumetric path — but per froxel this
 // is NOT a single ray. Worst case: 1 opaque sun ray, +1 glass-masked
-// sun ray for interiors (disambiguating a missing-ceiling no-hit from
-// a real window), then up to MAX_FROXEL_LIGHTS local lights x up to 2
-// rays each (opaque mask, then glass mask) = up to 10 ray-query
+// sun ray for interiors, +4 architectural-rim probes for an unmarked
+// opening, then up to MAX_FROXEL_LIGHTS local lights x up to 2
+// rays each (opaque mask, then glass mask) = up to 14 ray-query
 // traversals per froxel. At the default froxel_xy_divisor=8 160x90x64
-// grid (1280x720 render extent) that is a worst-case ~9.2M ray
+// grid (1280x720 render extent) that is a worst-case ~12.9M ray
 // queries/frame from this pass alone. See
 // REN-D16-2026-08-07-02 / #2509.
 #version 460
@@ -65,8 +65,8 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // #markarth-precision — xyz = camera-relative render origin; added to the
     // inv_view_proj-reconstructed far point to recover ABSOLUTE froxel world
     // positions (the TLAS shadow rays below are cast in absolute space).
-    // w = is_exterior (1.0 exterior, 0.0 interior) — selects the shadow-ray
-    // strategy below.
+    // w = sky-access bit (1.0 exterior or Show Sky interior, 0.0 sealed
+    // interior) — selects the shadow-ray strategy below.
     vec4 render_origin;
     // x = single-scatter albedo, y = backward HG g,
     // z = forward-lobe mix, w = exponential height scale.
@@ -151,12 +151,12 @@ layout(set = 0, binding = 6) uniform sampler3D previousFroxel;
 // 16^3 fixed-capacity cluster list every frame. This keeps the per-froxel loop
 // bounded even in scenes with many legacy smoke systems.
 struct GpuFogVolume {
-    vec4 center_shape;             // xyz center, w 0 sphere / 1 ellipsoid / 2 box
-    vec4 half_extents_extinction;  // xyz half extents, w sigma_t / world unit
+    vec4 center_shape;             // xyz center, w 0 sphere / 1 ellipsoid / 2 box / 3 cone
+    vec4 half_extents_extinction;  // xyz half extents, cone x/z bottom/top radius; w sigma_t / world unit
     vec4 inverse_rotation;         // world-to-local quaternion
     vec4 albedo_edge;              // rgb single-scatter albedo, w edge softness
     vec4 emission_temperature;     // rgb emitted radiance L_e, w blackbody K
-    vec4 profile_params;           // x profile; y normalized explosion age, z lifetime
+    vec4 profile_params;           // x profile; y explosion age; z lifetime; w explicit sky aperture
 };
 
 layout(std430, set = 0, binding = 7) readonly buffer FogVolumeBuffer {
@@ -168,6 +168,8 @@ layout(std430, set = 0, binding = 7) readonly buffer FogVolumeBuffer {
 struct FogClusterEntry {
     uint offset;
     uint count;
+    uint portalOffset;
+    uint portalCount;
 };
 
 layout(std430, set = 0, binding = 8) readonly buffer FogClusterBuffer {
@@ -279,6 +281,104 @@ layout(std430, set = 0, binding = 21) readonly buffer BoundaryIndexBuffer {
     uint boundaryIndexData[];
 };
 
+// A glass hit only establishes an outdoor portal when the pane belongs to
+// architecture. Bottles and glass clutter can sit below a missing ceiling;
+// accepting any GLASS hit there would turn the whole room into a sun shaft.
+// This is the same render-layer criterion as triangle.frag's window portal.
+bool traceArchitecturalWindowGlass(vec3 origin, vec3 direction, float tMax) {
+    if (tMax <= 0.05) return false;
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(
+        rq,
+        topLevelAS,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        VISIBILITY_LAYER_GLASS,
+        origin,
+        0.05,
+        direction,
+        tMax
+    );
+    rayQueryProceedEXT(rq);
+    if (rayQueryGetIntersectionTypeEXT(rq, true)
+        == gl_RayQueryCommittedIntersectionNoneEXT) return false;
+    uint index = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+    if (index >= boundaryInstances.length()) return false;
+    uint layer = (boundaryInstances[index].flags >> INSTANCE_RENDER_LAYER_SHIFT)
+        & INSTANCE_RENDER_LAYER_MASK;
+    return layer == 0u; // RenderLayer::Architecture
+}
+
+// A bare sun-ray miss in an interior is ambiguous: it can pass through a
+// modeled hole, or escape an authoring-omitted ceiling. Query architecture
+// alone around the clear ray, so loose clutter cannot impersonate a rim.
+bool rigidBoundaryNormal(uint instanceIndex, uint primitiveIndex, out vec3 boundaryNormal);
+
+bool traceArchitectureDistance(
+    vec3 origin, vec3 direction, float tMax,
+    out float distance, out vec3 normal
+) {
+    distance = 0.0;
+    normal = vec3(0.0);
+    rayQueryEXT rq;
+    // The plane test needs the nearest architectural surface. A terminate-
+    // on-first-hit query may commit a farther traversal candidate instead.
+    rayQueryInitializeEXT(
+        rq,
+        topLevelAS,
+        gl_RayFlagsOpaqueEXT,
+        VISIBILITY_LAYER_ARCHITECTURE,
+        origin,
+        0.05,
+        direction,
+        tMax
+    );
+    while (rayQueryProceedEXT(rq)) {}
+    if (rayQueryGetIntersectionTypeEXT(rq, true)
+        == gl_RayQueryCommittedIntersectionNoneEXT) return false;
+    distance = rayQueryGetIntersectionTEXT(rq, true);
+    if (!(distance > 0.0 && distance <= tMax)) return false;
+    uint instanceIndex = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+    uint primitiveIndex = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+    return rigidBoundaryNormal(instanceIndex, primitiveIndex, normal);
+}
+
+// Four diagonal probes establish a coherent architectural boundary around
+// an unmarked opening. The 192-BU radius clears ordinary window edges while
+// keeping the probes in the same room for most interiors. Requiring every
+// probe to hit the same approximate plane rejects an entirely absent roof
+// and accidental combinations of unrelated walls. This fallback runs after
+// the ordinary opaque ray misses and no authored/glass portal was found.
+bool hasArchitectureRimAroundSkyRay(vec3 origin, vec3 direction, float tMax) {
+    vec3 helper = abs(direction.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(direction, helper));
+    vec3 bitangent = cross(direction, tangent);
+    vec3 firstHit = vec3(0.0);
+    vec3 firstNormal = vec3(0.0);
+    for (int i = 0; i < 4; ++i) {
+        vec3 offset = FOG_APERTURE_RIM_PROBE_RADIUS_BU * sqrt(0.5) * (
+            tangent * ((i & 1) == 0 ? -1.0 : 1.0)
+            + bitangent * ((i & 2) == 0 ? -1.0 : 1.0)
+        );
+        float distance;
+        vec3 normal;
+        if (!traceArchitectureDistance(
+            origin + offset, direction, tMax, distance, normal
+        )) {
+            return false;
+        }
+        vec3 hit = origin + offset + direction * distance;
+        if (i == 0) {
+            firstHit = hit;
+            firstNormal = normal;
+        } else if (abs(dot(normal, firstNormal)) < FOG_APERTURE_RIM_NORMAL_DOT_MIN
+            || abs(dot(hit - firstHit, firstNormal))
+                > FOG_APERTURE_RIM_PLANE_TOLERANCE_BU) {
+            return false;
+        }
+    }
+    return true;
+}
+
 const float PI = 3.14159265358979323846;
 // Rec. 709 luma weights come from the generated header's `LUMA_REC709`,
 // pinned to `byroredux_core::radiometry::LINEAR_SRGB_LUMA` so CPU and GPU agree
@@ -352,7 +452,8 @@ bool isNuclearExplosionProfile(float profileKind) {
 }
 
 bool isTransportedProfile(float profileKind) {
-    return !isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS);
+    return !isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS)
+        && !isLocalProfile(profileKind, FOG_VOLUME_PROFILE_LIGHT_SHAFT);
 }
 
 // Local structure is source-relative and independent of weather coverage.
@@ -397,7 +498,8 @@ float localProfileRadius(
     float explosionAge,
     float explosionAgeSeconds
 ) {
-    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS)) {
+    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS)
+        || isLocalProfile(profileKind, FOG_VOLUME_PROFILE_LIGHT_SHAFT)) {
         return authoredRadius;
     }
 
@@ -488,7 +590,8 @@ float localDensityProfile(
     float explosionAgeSeconds
 ) {
     float boundary = 1.0 - smoothstep(1.0 - edge, 1.0, profileRadius);
-    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS)) {
+    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_HOMOGENEOUS)
+        || isLocalProfile(profileKind, FOG_VOLUME_PROFILE_LIGHT_SHAFT)) {
         float genericNoise = turbulence.x * 0.72 + turbulence.y * 0.28;
         return boundary * mix(0.55, 1.15, genericNoise);
     }
@@ -635,6 +738,55 @@ bool localFogCluster(vec3 worldPos, out FogClusterEntry cluster) {
     return true;
 }
 
+// The portal cluster indexes authored cone source rings and window planes
+// swept down the current sun direction. It is independent of static density
+// bounds: a real shaft can move across the room as the sun moves. A cone only
+// marks a candidate for a fully clear outdoor ray. An authored window plane
+// also marks the boundary of the interior: an opaque shell behind that plane
+// need not hide its explicitly authored opening.
+bool localSkyAperture(vec3 worldPos, vec3 sunDirection, out float nearestWindowReach) {
+    nearestWindowReach = DIRECTIONAL_SHADOW_TRACE_DISTANCE + 1.0;
+    FogClusterEntry cluster;
+    if (!localFogCluster(worldPos, cluster)) return false;
+    uint candidateCount = min(cluster.portalCount, MAX_FOG_PORTALS_PER_CLUSTER);
+    bool coneCandidate = false;
+    for (uint i = 0u; i < candidateCount; ++i) {
+        uint volumeIndex = fogClusterIndices[cluster.portalOffset + i];
+        if (volumeIndex >= fogVolumeCount) continue;
+        GpuFogVolume volume = fogVolumes[volumeIndex];
+        if (volume.center_shape.w < 1.5
+            || !isLocalProfile(volume.profile_params.x, FOG_VOLUME_PROFILE_LIGHT_SHAFT)) {
+            continue;
+        }
+        vec3 localOrigin = rotateByQuaternion(
+            worldPos - volume.center_shape.xyz,
+            volume.inverse_rotation
+        );
+        vec3 localSun = rotateByQuaternion(sunDirection, volume.inverse_rotation);
+        if (volume.center_shape.w > 2.5) {
+            if (localSun.y <= 1.0e-4) continue;
+            float reach = (volume.half_extents_extinction.y - localOrigin.y) / localSun.y;
+            vec2 apertureHit = localOrigin.xz + reach * localSun.xz;
+            float sourceRadius = volume.half_extents_extinction.z;
+            if (reach >= 0.05 && reach <= DIRECTIONAL_SHADOW_TRACE_DISTANCE
+                && dot(apertureHit, apertureHit) <= sourceRadius * sourceRadius) {
+                coneCandidate = true;
+            }
+        } else {
+            if (volume.profile_params.w < 0.5) continue;
+            if (abs(localSun.z) <= 1.0e-4) continue;
+            float reach = -localOrigin.z / localSun.z;
+            vec2 apertureHit = localOrigin.xy + reach * localSun.xy;
+            if (reach >= 0.05 && reach <= DIRECTIONAL_SHADOW_TRACE_DISTANCE
+                && all(lessThanEqual(abs(apertureHit),
+                    volume.half_extents_extinction.xy))) {
+                nearestWindowReach = min(nearestWindowReach, reach);
+            }
+        }
+    }
+    return coneCandidate || nearestWindowReach <= DIRECTIONAL_SHADOW_TRACE_DISTANCE;
+}
+
 bool evaluateLocalFogVolume(
     GpuFogVolume volume,
     vec3 worldPos,
@@ -652,7 +804,16 @@ bool evaluateLocalFogVolume(
     normalizedOffset = localOffset / extents;
     float shape = volume.center_shape.w;
     float normalizedRadius;
-    if (shape > 1.5) {
+    if (shape > 2.5) {
+        // The cone narrows from its bottom radius at local y=-halfHeight to
+        // its top radius at +halfHeight. Store both radii in the existing
+        // extents lanes, avoiding a second GPU primitive ABI.
+        float axial = normalizedOffset.y;
+        float t = clamp(axial * 0.5 + 0.5, 0.0, 1.0);
+        float radius = mix(extents.x, extents.z, t);
+        normalizedOffset.z = localOffset.z / extents.x;
+        normalizedRadius = max(abs(axial), length(localOffset.xz) / max(radius, 1.0e-4));
+    } else if (shape > 1.5) {
         normalizedRadius = max(
             abs(normalizedOffset.x),
             max(abs(normalizedOffset.y), abs(normalizedOffset.z))
@@ -665,7 +826,7 @@ bool evaluateLocalFogVolume(
     profileKind = clamp(
         volume.profile_params.x,
         FOG_VOLUME_PROFILE_HOMOGENEOUS,
-        FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR
+        FOG_VOLUME_PROFILE_LIGHT_SHAFT
     );
     float timeSeconds = params.temporal_params.z;
     float seed = localVolumeSeed(volume.center_shape.xyz);
@@ -2741,25 +2902,29 @@ void main() {
     // voxels behind a wall are not, and the integration pass
     // propagates the boundary as crisp light shafts.
     //
-    // Exterior vs interior take different strategies for the
+    // Open sky vs sealed interior take different strategies for the
     // no-opaque-hit case (see `render_origin.w` doc comment above and
     // `VolumetricsParams::render_origin` in `volumetrics.rs`):
-    // exterior really does have open sky above, so no-hit genuinely
-    // means lit. A `--cell`-loaded interior has no guaranteed
+    // Exteriors and Show Sky interiors deliberately expose sky, so no-hit
+    // genuinely means lit. An ordinary `--cell`-loaded interior has no guaranteed
     // watertight shell — Bethesda authoring commonly omits ceiling
     // geometry entirely since players never see it from inside — so a
     // bare no-hit there just as often means "the ray escaped through a
     // missing ceiling," not "this froxel sees a real window." The
-    // second, GLASS-only pass (bounded to the froxel volume's own far
+    // architectural-GLASS pass (bounded to the froxel volume's own far
     // plane — real windows are within the room, not out at the sun's
-    // actual distance) disambiguates: a hit there means the ray
-    // genuinely passed through window glass on its way out.
+    // actual distance) disambiguates transparent windows. An authored
+    // LightShaft cone supplies a bounded aperture candidate when the same
+    // clear sun ray crosses its narrow source ring or a window plane. For
+    // geometry with no marker, four coherent architecture hits around the
+    // otherwise-clear ray establish a modeled opening candidate; an omitted
+    // ceiling has no rim and stays dark.
     vec3 ray_origin = world_pos;
     // Toward the sun, i.e. -light_in (light_in is the propagation
     // direction, away from the sun) — #1937.
     vec3 ray_dir = -light_in;
     float visibility;
-    bool isExterior = params.render_origin.w > 0.5;
+    bool hasOpenSky = params.render_origin.w > 0.5;
     bool opaqueHit = traceShadowBinary(
         ray_origin,
         ray_dir,
@@ -2767,15 +2932,32 @@ void main() {
         DIRECTIONAL_SHADOW_TRACE_DISTANCE,
         VISIBILITY_MASK_ALL_OPAQUE
     );
+    float nearestWindowReach = DIRECTIONAL_SHADOW_TRACE_DISTANCE + 1.0;
+    bool authoredAperture = !hasOpenSky
+        && localSkyAperture(ray_origin, ray_dir, nearestWindowReach);
     if (opaqueHit) {
-        visibility = 0.0;
-    } else if (isExterior) {
+        // A bounded authored window plane can stand in for legacy roof/wall
+        // geometry whose baked beam represented a hole. Keep every blocker
+        // between the froxel and the plane; only the opaque shell beyond its
+        // upper edge is bypassed. Cones never use this exception.
+        float clearUntil = nearestWindowReach - FOG_APERTURE_RIM_PLANE_TOLERANCE_BU;
+        visibility = nearestWindowReach <= DIRECTIONAL_SHADOW_TRACE_DISTANCE
+            && (clearUntil <= 0.05 || !traceShadowBinary(
+                ray_origin, ray_dir, 0.05, clearUntil, VISIBILITY_MASK_ALL_OPAQUE
+            )) ? 1.0 : 0.0;
+    } else if (hasOpenSky || authoredAperture) {
         visibility = 1.0;
     } else {
-        bool sawGlass = traceShadowBinary(
-            ray_origin, ray_dir, 0.05, params.volume_params.x, VISIBILITY_LAYER_GLASS
+        bool sawGlass = traceArchitecturalWindowGlass(
+            ray_origin, ray_dir, params.volume_params.x
         );
-        visibility = sawGlass ? 1.0 : 0.0;
+        visibility = sawGlass || (
+            dot(scattering_coef, vec3(1.0)) > 1.0e-7
+            && dot(params.sun_color.rgb, vec3(1.0)) > 1.0e-5
+            && hasArchitectureRimAroundSkyRay(
+                ray_origin, ray_dir, params.volume_params.x
+            )
+        ) ? 1.0 : 0.0;
     }
     if (transportedMediumActive && visibility > 1.0e-4) {
         visibility *= transportedCombustionTransmittance(

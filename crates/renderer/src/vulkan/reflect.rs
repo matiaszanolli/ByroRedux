@@ -313,7 +313,7 @@ pub fn uniform_block_size_by_name(spirv_bytes: &[u8], name: &str) -> Result<Opti
     let last_offset =
         last_offset.ok_or_else(|| anyhow!("{name}: final member has no Offset decoration"))?;
 
-    let last_size = std140_type_size(last_member_type, &types)?;
+    let last_size = std140_type_size(last_member_type, &types, &module.annotations)?;
     Ok(Some((last_offset + last_size).div_ceil(16) * 16))
 }
 
@@ -409,10 +409,15 @@ pub fn max_u_greater_than_rhs_constant(spirv_bytes: &[u8]) -> Result<Option<u32>
     Ok(max)
 }
 
-/// std140 size in bytes of a scalar / vector / square-matrix type — the only
-/// shapes the engine's UBO blocks use. Bails on anything else so an unhandled
-/// member type can never silently under-report a block size.
-fn std140_type_size(type_id: u32, types: &HashMap<u32, Instruction>) -> Result<u32> {
+/// std140 size in bytes of a scalar, vector, matrix, or fixed array. Array
+/// size comes from SPIR-V's explicit ArrayStride decoration; guessing the
+/// stride from the element type would miss padding and silently under-report
+/// a host/shader layout mismatch.
+fn std140_type_size(
+    type_id: u32,
+    types: &HashMap<u32, Instruction>,
+    annotations: &[Instruction],
+) -> Result<u32> {
     let inst = types
         .get(&type_id)
         .ok_or_else(|| anyhow!("type id={type_id} not in type table"))?;
@@ -423,11 +428,31 @@ fn std140_type_size(type_id: u32, types: &HashMap<u32, Instruction>) -> Result<u
         Op::TypeVector => {
             let comp = inst.operands[0].unwrap_id_ref();
             let count = inst.operands[1].unwrap_literal_bit32();
-            Ok(count * std140_type_size(comp, types)?)
+            Ok(count * std140_type_size(comp, types, annotations)?)
         }
         // OpTypeMatrix: [column_type <id>, column_count]. std140 column stride
         // is 16 for the float matrices the engine uses (mat4 → 4×16 = 64).
         Op::TypeMatrix => Ok(inst.operands[1].unwrap_literal_bit32() * 16),
+        Op::TypeArray => {
+            let length_id = inst.operands[1].unwrap_id_ref();
+            let length = types
+                .get(&length_id)
+                .filter(|constant| constant.class.opcode == Op::Constant)
+                .ok_or_else(|| anyhow!("array length id={length_id} is not a constant"))?
+                .operands[0]
+                .unwrap_literal_bit32();
+            let stride = annotations
+                .iter()
+                .find(|decoration| {
+                    decoration.class.opcode == Op::Decorate
+                        && decoration.operands[0].unwrap_id_ref() == type_id
+                        && decoration.operands[1].unwrap_decoration() == Decoration::ArrayStride
+                })
+                .ok_or_else(|| anyhow!("array id={type_id} has no ArrayStride decoration"))?
+                .operands[2]
+                .unwrap_literal_bit32();
+            Ok(length * stride)
+        }
         other => bail!("unsupported UBO member type {other:?} (id={type_id})"),
     }
 }
@@ -862,7 +887,11 @@ mod tests {
     /// cheap/full sampling) then added its cheap-mode, iso-surface, step-size
     /// and zero-density branches, bringing the current module to 54
     /// (confirmed via `spirv-dis`). Shared medium transport adds the
-    /// cancellation-safe thin-slab branch, bringing the count to 55. Pins the
+    /// cancellation-safe thin-slab branch, bringing the count to 55. The
+    /// authored Show Sky interior background gate adds one (56), and the
+    /// bounded-opening depth probes add seventeen more, then the interior
+    /// underwater-sun guard adds one (74). Authored window-plane intersection
+    /// and its bounded surface-depth gate add fourteen (88). Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -871,8 +900,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 55,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 55 — \
+            count, 88,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 88 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

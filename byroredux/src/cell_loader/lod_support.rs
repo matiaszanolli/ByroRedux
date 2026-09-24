@@ -349,6 +349,7 @@ mod tests {
             display_name: None,
             references: Vec::new(),
             is_interior: false,
+            show_sky: None,
             grid: Some(grid),
             lighting: None,
             landscape: None,

@@ -206,6 +206,11 @@ pub struct CellData {
     pub display_name: Option<String>,
     pub references: Vec<PlacedRef>,
     pub is_interior: bool,
+    /// CELL DATA bit 7: Show Sky / Behave Like Exterior. An interior with
+    /// this flag deliberately exposes the outdoor sky through open geometry.
+    /// `None` when DATA is absent in a partial override; merge inherits the
+    /// base cell's flag in that case.
+    pub show_sky: Option<bool>,
     /// Grid coordinates for exterior cells (None for interior).
     pub grid: Option<(i32, i32)>,
     /// Interior cell lighting (from XCLL subrecord).
@@ -1385,6 +1390,9 @@ fn merge_cell_override(base: &CellData, over: &mut CellData) {
     }
     if over.display_name.is_none() {
         over.display_name.clone_from(&base.display_name);
+    }
+    if over.show_sky.is_none() {
+        over.show_sky = base.show_sky;
     }
     merge_cell_references(base, over);
     if over.grid.is_none() {

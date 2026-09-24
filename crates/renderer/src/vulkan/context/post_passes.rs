@@ -47,6 +47,42 @@ struct VolumetricsPassInputs<'a> {
     fog_volumes: &'a [super::super::volumetrics::GpuFogVolume],
 }
 
+/// Select the sun seen by the scattering volume. Interior geometry still
+/// decides visibility in the inject shader; this only supplies outdoor
+/// radiance without changing the interior's surface or composite lighting.
+fn volumetric_sun(sky: &SkyParams, fog_far: f32) -> ([f32; 3], [f32; 4]) {
+    if sky.is_exterior {
+        let intensity = sky.sun_intensity.max(0.0);
+        (
+            sky.sun_direction,
+            [
+                sky.sun_color[0] * intensity,
+                sky.sun_color[1] * intensity,
+                sky.sun_color[2] * intensity,
+                fog_far,
+            ],
+        )
+    } else {
+        (
+            sky.portal_sun_direction,
+            [
+                sky.portal_sun_radiance[0],
+                sky.portal_sun_radiance[1],
+                sky.portal_sun_radiance[2],
+                fog_far,
+            ],
+        )
+    }
+}
+
+fn volumetric_open_sky_flag(sky: &SkyParams) -> f32 {
+    if sky.is_exterior || sky.interior_show_sky {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 impl VulkanContext {
     /// Copy the live depth buffer into the sampleable depth-history image
     /// for next frame's soft-particle fade. Called once per frame right
@@ -483,17 +519,12 @@ impl VulkanContext {
     /// the slot on the first skipped frame — composite then samples an
     /// empty medium, never a prior cell's stale fog.
     ///
-    /// Sun direction + radiance are plumbed from `SkyParams::sun_direction`
-    /// / `sun_color` / `sun_intensity` (#1022 / REN-D18-008). Below-horizon
-    /// (`sun_intensity <= 0`) still zeros `sun_color` regardless of
-    /// interior/exterior — no sun, no godrays, trivially correct either
-    /// way.
+    /// Exterior sun direction + radiance come from `SkyParams::sun_direction`
+    /// / `sun_color` / `sun_intensity` (#1022 / REN-D18-008). Interiors use
+    /// the separate `portal_sun_*` fields so their surface and composite
+    /// lighting remain cell-authored. Both lanes are dark below the horizon.
     ///
-    /// Interior vs exterior no longer zeroes sun/scattering outright
-    /// (pre-fix behavior — see git blame for the old gate). That approach
-    /// was too blunt: it also blocked real sun-through-window godrays the
-    /// moment #928 flips VOLUMETRIC_OUTPUT_CONSUMED on. Instead the inject
-    /// shader itself distinguishes "real window" from "geometry gap" via
+    /// The inject shader distinguishes "real window" from "geometry gap" via
     /// `render_origin.w` (is_exterior) — see the two-pass shadow-ray note
     /// on `VolumetricsParams::render_origin` in `volumetrics.rs` and the
     /// interior-godray investigation: a `--cell`-loaded interior has no
@@ -550,8 +581,13 @@ impl VulkanContext {
                     // It is below normal gameplay fog density, so it does
                     // not turn the room into haze or alter exterior weather.
                     const INTERIOR_DUST_EXTINCTION_PER_METER: f32 = 0.006;
+                    let portal_sun_active = !sky_params.is_exterior
+                        && sky_params
+                            .portal_sun_radiance
+                            .iter()
+                            .any(|channel| *channel > 0.0);
                     let effective_extinction_per_meter = if !sky_params.is_exterior
-                        && local_emitters_present
+                        && (local_emitters_present || portal_sun_active)
                     {
                         fog_extinction_per_meter.max(INTERIOR_DUST_EXTINCTION_PER_METER)
                     } else {
@@ -665,16 +701,7 @@ impl VulkanContext {
                                 index_buf,
                                 index_size,
                             );
-                            let sun_radiance = if sky_params.sun_intensity > 0.0 {
-                                [
-                                    sky_params.sun_color[0] * sky_params.sun_intensity,
-                                    sky_params.sun_color[1] * sky_params.sun_intensity,
-                                    sky_params.sun_color[2] * sky_params.sun_intensity,
-                                    fog_far,
-                                ]
-                            } else {
-                                [0.0, 0.0, 0.0, fog_far]
-                            };
+                            let (sun_direction, sun_radiance) = volumetric_sun(sky_params, fog_far);
                             let vol_params = super::super::volumetrics::VolumetricsParams {
                                 inv_view_proj: inv_vp_arr,
                                 prev_view_proj: [
@@ -716,9 +743,9 @@ impl VulkanContext {
                                     0.0,
                                 ],
                                 sun_dir: [
-                                    sky_params.sun_direction[0],
-                                    sky_params.sun_direction[1],
-                                    sky_params.sun_direction[2],
+                                    sun_direction[0],
+                                    sun_direction[1],
+                                    sun_direction[2],
                                     super::super::volumetrics::DEFAULT_PHASE_G,
                                 ],
                                 sun_color: sun_radiance,
@@ -730,13 +757,14 @@ impl VulkanContext {
                                 ],
                                 // #markarth-precision — inv_view_proj is relative;
                                 // the inject shader adds this to recover absolute
-                                // froxel positions for the TLAS shadow rays. w =
-                                // is_exterior — see doc comment on the struct field.
+                                // froxel positions for the TLAS shadow rays.
+                                // w permits open-sky misses only for exteriors
+                                // and interiors with the authored Show Sky bit.
                                 render_origin: [
                                     render_origin.x,
                                     render_origin.y,
                                     render_origin.z,
-                                    if sky_params.is_exterior { 1.0 } else { 0.0 },
+                                    volumetric_open_sky_flag(sky_params),
                                 ],
                                 medium_params: [
                                     fog_single_scatter_albedo.clamp(0.0, 1.0),
@@ -1439,7 +1467,50 @@ fn skip_clear_decision(ran: bool, already_cleared: bool) -> (bool, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::skip_clear_decision;
+    use super::{skip_clear_decision, volumetric_open_sky_flag, volumetric_sun, SkyParams};
+
+    #[test]
+    fn volumetric_sun_uses_portal_lane_only_inside() {
+        let interior = SkyParams {
+            sun_direction: [0.0, -1.0, 0.0],
+            sun_color: [10.0, 10.0, 10.0],
+            sun_intensity: 5.0,
+            portal_sun_direction: [0.6, 0.8, 0.0],
+            portal_sun_radiance: [2.0, 1.0, 0.5],
+            ..SkyParams::default()
+        };
+        assert_eq!(
+            volumetric_sun(&interior, 4096.0),
+            ([0.6, 0.8, 0.0], [2.0, 1.0, 0.5, 4096.0])
+        );
+
+        let exterior = SkyParams {
+            is_exterior: true,
+            ..interior
+        };
+        assert_eq!(
+            volumetric_sun(&exterior, 4096.0),
+            ([0.0, -1.0, 0.0], [50.0, 50.0, 50.0, 4096.0])
+        );
+    }
+
+    #[test]
+    fn only_authored_open_sky_interiors_allow_unoccluded_sun_rays() {
+        let sealed = SkyParams::default();
+        assert_eq!(volumetric_open_sky_flag(&sealed), 0.0);
+
+        let show_sky = SkyParams {
+            interior_show_sky: true,
+            ..SkyParams::default()
+        };
+        assert_eq!(volumetric_open_sky_flag(&show_sky), 1.0);
+
+        let exterior = SkyParams {
+            is_exterior: true,
+            ..SkyParams::default()
+        };
+        assert_eq!(volumetric_open_sky_flag(&exterior), 1.0);
+    }
 
     /// Regression: #4773 / REN-D8-2026-09-23-01 — `draw_frame` passed
     /// `fog_coverage, fog_scale_height_meters` into parameters declared

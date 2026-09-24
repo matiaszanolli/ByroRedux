@@ -216,6 +216,7 @@ fn parse_cell_group_inner(
                 // 3-byte cstrings.
                 let mut display_name: Option<String> = None;
                 let mut is_interior = false;
+                let mut show_sky = None;
                 let mut lighting = None;
                 let mut water_height: Option<f32> = None;
                 let mut water_height_is_explicit = false;
@@ -290,7 +291,10 @@ fn parse_cell_group_inner(
                         // 4-byte STRINGS-table case for localized
                         // plugins.
                         b"FULL" => display_name = Some(read_lstring_or_zstring(&sub.data)),
-                        b"DATA" if !sub.data.is_empty() => is_interior = sub.data[0] & 1 != 0,
+                        b"DATA" if !sub.data.is_empty() => {
+                            is_interior = sub.data[0] & 1 != 0;
+                            show_sky = Some(sub.data[0] & 0x80 != 0);
+                        }
                         b"XCLW" => {
                             // XCLW: f32 water plane height in world units
                             // (Z-up). Same layout across Oblivion / FO3 / FNV
@@ -667,6 +671,7 @@ fn parse_cell_group_inner(
                             display_name: display_name.clone(),
                             references: Vec::new(),
                             is_interior: true,
+                            show_sky,
                             grid: None,
                             lighting: lighting.clone(),
                             landscape: None,

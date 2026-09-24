@@ -27,6 +27,7 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
         display_name: None,
         references: Vec::new(),
         is_interior: true,
+        show_sky: None,
         grid: None,
         lighting: None,
         landscape: None,
@@ -50,6 +51,21 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
         pathgrids: Vec::new(),
         deleted_refs: Vec::new(),
     }
+}
+
+#[test]
+fn show_sky_inherits_only_when_override_omits_cell_data() {
+    let mut base = make_interior_cell(0x1234, "OpenRoof");
+    base.show_sky = Some(true);
+
+    let mut omitted = make_interior_cell(0x1234, "OpenRoof");
+    merge_cell_override(&base, &mut omitted);
+    assert_eq!(omitted.show_sky, Some(true));
+
+    let mut closed = make_interior_cell(0x1234, "OpenRoof");
+    closed.show_sky = Some(false);
+    merge_cell_override(&base, &mut closed);
+    assert_eq!(closed.show_sky, Some(false));
 }
 
 /// A `PlacedRef` with a given REFR FormID + base FormID (the base encodes

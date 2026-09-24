@@ -557,6 +557,7 @@ fn parse_wrld_children_inner(
                     display_name,
                     references: Vec::new(),
                     is_interior: false,
+                    show_sky: None,
                     grid,
                     lighting: None,
                     landscape: None,

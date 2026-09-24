@@ -37,16 +37,18 @@ use crate::shader_constants::{
     COMBUSTION_LIGHT_GRID_X, COMBUSTION_LIGHT_GRID_Y, COMBUSTION_LIGHT_GRID_Z,
     COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS, COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS,
     COMBUSTION_LIGHT_VOLUME_FIXED_SCALE, FOG_VOLUME_CLUSTER_DIM as GLSL_FOG_VOLUME_CLUSTER_DIM,
+    MAX_FOG_PORTALS_PER_CLUSTER as GLSL_MAX_FOG_PORTALS_PER_CLUSTER,
     MAX_FOG_VOLUMES_PER_CLUSTER as GLSL_MAX_FOG_VOLUMES_PER_CLUSTER, MAX_LIGHTS,
     VISIBILITY_MASK_FULL, WORKGROUP_X, WORKGROUP_Y, WORKGROUP_Z,
 };
 pub use crate::shader_constants::{
     FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
     FOG_VOLUME_PROFILE_EXPLOSION_OIL, FOG_VOLUME_PROFILE_FLAME, FOG_VOLUME_PROFILE_HOMOGENEOUS,
-    FOG_VOLUME_PROFILE_SMOKE,
+    FOG_VOLUME_PROFILE_LIGHT_SHAFT, FOG_VOLUME_PROFILE_SMOKE,
 };
 use anyhow::{Context, Result};
 use ash::vk;
+use byroredux_core::math::{Mat3, Quat, Vec3};
 
 mod init;
 pub(crate) mod noise;
@@ -99,14 +101,14 @@ pub struct VolumetricsParams {
     /// #markarth-precision — xyz = camera-relative render origin; the inject
     /// shader adds it to the `inv_view_proj`-reconstructed far point so froxel
     /// world positions (and their TLAS shadow rays) are absolute. w = 1.0 for
-    /// an exterior cell, 0.0 for interior — selects the inject shader's
-    /// shadow-ray strategy: exterior keeps the single opaque-mask query
-    /// (no-hit = lit, real open sky); interior runs the two-pass query
-    /// (opaque-mask first; only if that misses, a bounded glass-mask pass —
-    /// no-hit-in-either = occluded) so a geometry gap (e.g. a missing
-    /// ceiling mesh) can't masquerade as a window. See the interior-godray
-    /// investigation note in `context/draw.rs` near `VolumetricsParams`
-    /// construction.
+    /// an exterior or a Show Sky interior, 0.0 for a sealed interior —
+    /// selects the inject shader's shadow-ray strategy: open sky keeps the
+    /// single opaque-mask query (no-hit = lit, real open sky). Sealed
+    /// interiors require a bounded architectural-glass hit or a clear sun
+    /// ray through an authored LightShaft source ring after the opaque ray
+    /// misses. An unqualified geometry gap remains dark.
+    /// See the interior-godray investigation note in `context/draw.rs` near
+    /// `VolumetricsParams` construction.
     pub render_origin: [f32; 4],
     /// x = single-scatter albedo, y = backward HG lobe g,
     /// z = forward-lobe mixture, w = height-fog scale height in world units.
@@ -172,7 +174,7 @@ pub fn bfecc_error_correction_multiplier() -> f32 {
 unsafe impl crate::vulkan::buffer::NoUninit for VolumetricsParams {}
 
 /// Maximum authored local volumes uploaded after CPU frustum/distance culling.
-pub const MAX_GPU_FOG_VOLUMES: usize = 128;
+pub const MAX_GPU_FOG_VOLUMES: usize = 512;
 /// Camera-centered world-space cluster resolution used for local fog.
 /// #2229 / REN-D3-02 — derived from `shader_constants_data.rs`'s
 /// `FOG_VOLUME_CLUSTER_DIM` (the single source of truth shared with
@@ -187,7 +189,10 @@ pub const FOG_VOLUME_CLUSTER_COUNT: usize =
 /// `FOG_VOLUME_CLUSTER_DIM` doc for why this derives from the shared
 /// constant instead of a local literal.
 pub const MAX_FOG_VOLUMES_PER_CLUSTER: usize = GLSL_MAX_FOG_VOLUMES_PER_CLUSTER as usize;
-const FOG_VOLUME_INDEX_COUNT: usize = FOG_VOLUME_CLUSTER_COUNT * MAX_FOG_VOLUMES_PER_CLUSTER;
+pub const MAX_FOG_PORTALS_PER_CLUSTER: usize = GLSL_MAX_FOG_PORTALS_PER_CLUSTER as usize;
+const FOG_CLUSTER_INDEX_STRIDE: usize =
+    MAX_FOG_VOLUMES_PER_CLUSTER + MAX_FOG_PORTALS_PER_CLUSTER;
+const FOG_VOLUME_INDEX_COUNT: usize = FOG_VOLUME_CLUSTER_COUNT * FOG_CLUSTER_INDEX_STRIDE;
 
 /// World-space analytic medium primitive consumed by
 /// `volumetrics_inject.comp`.
@@ -196,7 +201,8 @@ const FOG_VOLUME_INDEX_COUNT: usize = FOG_VOLUME_CLUSTER_COUNT * MAX_FOG_VOLUMES
 pub struct GpuFogVolume {
     /// xyz = absolute center; w = shape (0 sphere, 1 ellipsoid, 2 box).
     pub center_shape: [f32; 4],
-    /// xyz = world-space half extents; w = extinction per world unit.
+    /// xyz = world-space half extents; w = extinction per world unit. For a
+    /// cone, x = bottom radius, y = half height, z = top radius.
     pub half_extents_extinction: [f32; 4],
     /// Quaternion rotating world offsets into primitive-local space.
     pub inverse_rotation: [f32; 4],
@@ -224,6 +230,7 @@ pub struct GpuFogVolume {
     /// emission in the shader: passive particle smoke and an authored fog box
     /// can have identical radiometric coefficients but need very different
     /// silhouettes and advection.
+    /// Profile, explosion age, lifetime, and explicit sky-aperture marker.
     pub profile_params: [f32; 4],
 }
 
@@ -306,14 +313,17 @@ unsafe impl crate::vulkan::buffer::NoUninit for GpuFogVolumeUpload {}
 struct GpuFogClusterEntry {
     offset: u32,
     count: u32,
+    portal_offset: u32,
+    portal_count: u32,
 }
 
-// SAFETY: two `u32` fields — tiles the struct's declared size with no
+// SAFETY: four `u32` fields — tiles the struct's declared size with no
 // implicit padding (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for GpuFogClusterEntry {}
 
-/// A fresh fog-cluster entry array with `offset` seeded to its final,
-/// permanent value (`cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER`) — a pure
+/// A fresh fog-cluster entry array with both offsets seeded to their final,
+/// permanent values (`cluster_index * FOG_CLUSTER_INDEX_STRIDE`, then the
+/// portal segment after the density segment) — a pure
 /// function of array position that never changes for the lifetime of the
 /// grid. #3133 (PERF-D4-01): `build_fog_volume_clusters` used to recompute
 /// every entry's `offset` from scratch each frame (a 4096-iteration scalar
@@ -321,7 +331,7 @@ unsafe impl crate::vulkan::buffer::NoUninit for GpuFogClusterEntry {}
 /// always identical to what was already there. Seeding it once here — used
 /// both by `VolumetricsPipeline::new` and by tests that exercise
 /// `build_fog_volume_clusters` directly — lets the per-frame rebuild reset
-/// only `count`, which is the one field a full-rebuild architecture (see the
+/// only the two counts, the fields a full-rebuild architecture (see the
 /// doc comment on `build_fog_volume_clusters`) actually needs touched every
 /// frame.
 /// #3834 — bytes of `GpuFogVolumeUpload` that are meaningful when `count`
@@ -341,7 +351,8 @@ fn fog_volume_upload_bytes(volume_count: usize) -> usize {
 fn fog_cluster_entries_with_offsets() -> Box<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]> {
     let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);
     for (cluster_index, entry) in entries.iter_mut().enumerate() {
-        entry.offset = (cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER) as u32;
+        entry.offset = (cluster_index * FOG_CLUSTER_INDEX_STRIDE) as u32;
+        entry.portal_offset = entry.offset + MAX_FOG_VOLUMES_PER_CLUSTER as u32;
     }
     entries
 }
@@ -516,13 +527,163 @@ pub fn hybrid_slice_coordinate(
 /// guard, not a fragile lone line of defense against replaying a previous
 /// cell's local fog. `indices` needs no per-frame reset at all — see the
 /// comment at its `count = 0` reset loop below for why.
+/// Conservative world-space box for cluster assignment. The old enclosing
+/// sphere expanded a tall, narrow beam's horizontal reach to its full height,
+/// so a few authored shafts filled unrelated clusters before nearby media
+/// could enter the bounded list. A rotated local box remains conservative for
+/// spheres, ellipsoids, boxes, and the cone's base-radius cylinder.
+fn fog_volume_world_aabb_half_extents(volume: &GpuFogVolume) -> Option<[f32; 3]> {
+    let extent = Vec3::from_array([
+        volume.half_extents_extinction[0],
+        volume.half_extents_extinction[1],
+        volume.half_extents_extinction[2],
+    ]);
+    if !extent.is_finite() || extent.min_element() <= 0.0 {
+        return None;
+    }
+    let local = if volume.center_shape[3] < 0.5 {
+        Vec3::splat(extent.x)
+    } else if volume.center_shape[3] > 2.5 {
+        Vec3::new(extent.x, extent.y, extent.x)
+    } else {
+        extent
+    };
+    let inverse = Quat::from_array(volume.inverse_rotation);
+    let rotation = if inverse.is_finite() && inverse.length_squared() > 1.0e-8 {
+        inverse.normalize().conjugate()
+    } else {
+        Quat::IDENTITY
+    };
+    let basis = Mat3::from_quat(rotation);
+    let world = basis.x_axis.abs() * local.x
+        + basis.y_axis.abs() * local.y
+        + basis.z_axis.abs() * local.z;
+    world.is_finite().then_some(world.to_array())
+}
+
+/// World-space candidate envelope of an authored cone ring or window plane
+/// swept along incoming sunlight through the camera-centred grid.
+struct FogPortalSweep {
+    source: Vec3,
+    direction: Vec3,
+    radius: f32,
+    lower: Vec3,
+    upper: Vec3,
+}
+
+fn fog_portal_swept_bounds(
+    volume: &GpuFogVolume,
+    sun_direction: Vec3,
+    grid_min: Vec3,
+    far: f32,
+) -> Option<FogPortalSweep> {
+    if (volume.profile_params[0] - FOG_VOLUME_PROFILE_LIGHT_SHAFT).abs() >= 0.5
+        || volume.center_shape[3] < 1.5
+        || (volume.center_shape[3] < 2.5 && volume.profile_params[3] < 0.5)
+        || !sun_direction.is_finite()
+        || sun_direction.length_squared() <= 1.0e-8
+    {
+        return None;
+    }
+    let half_extents = Vec3::from_array([
+        volume.half_extents_extinction[0],
+        volume.half_extents_extinction[1],
+        volume.half_extents_extinction[2],
+    ]);
+    if !half_extents.is_finite() || half_extents.min_element() <= 0.0 {
+        return None;
+    }
+    let inverse = Quat::from_array(volume.inverse_rotation);
+    if !inverse.is_finite() || inverse.length_squared() <= 1.0e-8 {
+        return None;
+    }
+    let center = Vec3::from_array([
+        volume.center_shape[0],
+        volume.center_shape[1],
+        volume.center_shape[2],
+    ]);
+    let is_cone = volume.center_shape[3] > 2.5;
+    let radius = if is_cone {
+        half_extents.z
+    } else {
+        half_extents.x.hypot(half_extents.y)
+    };
+    let source = if is_cone {
+        center + inverse.normalize().conjugate() * Vec3::Y * half_extents.y
+    } else {
+        center
+    };
+    if !source.is_finite() {
+        return None;
+    }
+    let direction = -sun_direction.normalize();
+    let expanded_min = grid_min - Vec3::splat(radius);
+    let expanded_max = grid_min + Vec3::splat(2.0 * far + radius);
+    let mut t_near = 0.0f32;
+    let mut t_far = f32::INFINITY;
+    for axis in 0..3 {
+        let start = source[axis];
+        let step = direction[axis];
+        if step.abs() < 1.0e-6 {
+            if start < expanded_min[axis] || start > expanded_max[axis] {
+                return None;
+            }
+        } else {
+            let a = (expanded_min[axis] - start) / step;
+            let b = (expanded_max[axis] - start) / step;
+            t_near = t_near.max(a.min(b));
+            t_far = t_far.min(a.max(b));
+        }
+    }
+    if !t_far.is_finite() || t_far < t_near {
+        return None;
+    }
+    let first = source + direction * t_near;
+    let last = source + direction * t_far;
+    let lower = first.min(last) - Vec3::splat(radius);
+    let upper = first.max(last) + Vec3::splat(radius);
+    (lower.is_finite() && upper.is_finite()).then_some(FogPortalSweep {
+        source,
+        direction,
+        radius,
+        lower,
+        upper,
+    })
+}
+
+/// Slab-test each candidate cluster against the sun-swept source ring.
+/// The coarse whole-sweep AABB alone would fill a diagonal rectangle of
+/// unrelated clusters, evicting nearby apertures from their bounded lists.
+fn fog_portal_intersects_cluster(sweep: &FogPortalSweep, cell_min: Vec3, cell_size: f32) -> bool {
+    let lower = cell_min - Vec3::splat(sweep.radius);
+    let upper = cell_min + Vec3::splat(cell_size + sweep.radius);
+    let mut t_near = 0.0f32;
+    let mut t_far = f32::INFINITY;
+    for axis in 0..3 {
+        let start = sweep.source[axis];
+        let step = sweep.direction[axis];
+        if step.abs() < 1.0e-6 {
+            if start < lower[axis] || start > upper[axis] {
+                return false;
+            }
+        } else {
+            let a = (lower[axis] - start) / step;
+            let b = (upper[axis] - start) / step;
+            t_near = t_near.max(a.min(b));
+            t_far = t_far.min(a.max(b));
+        }
+    }
+    t_far >= t_near
+}
+
 fn build_fog_volume_clusters(
     volumes: &[GpuFogVolume],
     camera_pos: [f32; 3],
     far_distance: f32,
+    sun_direction: [f32; 3],
     upload: &mut GpuFogVolumeUpload,
     entries: &mut [GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT],
-    indices: &mut [u32; FOG_VOLUME_INDEX_COUNT],
+    indices: &mut [u32],
 ) -> ([f32; 4], usize) {
     let far = far_distance.max(1.0);
     let cell_size = (2.0 * far) / FOG_VOLUME_CLUSTER_DIM as f32;
@@ -532,11 +693,10 @@ fn build_fog_volume_clusters(
         camera_pos[2] - far,
     ];
 
-    // #3133 (PERF-D4-01) — `offset` is a pure function of array position
-    // (see `fog_cluster_entries_with_offsets`) and is seeded once by every
-    // caller (`VolumetricsPipeline::new` in production, the same helper in
-    // tests below); only `count` needs resetting every frame, so this no
-    // longer re-derives `offset` nor memsets it. `indices` needs no reset at
+    // #3133 (PERF-D4-01) — both offsets are pure functions of array position
+    // (see `fog_cluster_entries_with_offsets`) and are seeded once by every
+    // caller. Only the density and portal counts reset each frame; indices
+    // need no reset at
     // all: the shader only ever reads `fogClusterIndices[cluster.offset +
     // i]` for `i < min(cluster.count, MAX_FOG_VOLUMES_PER_CLUSTER)`
     // (`sampleLocalMedium`, volumetrics_inject.comp), and `count` is reset
@@ -545,11 +705,12 @@ fn build_fog_volume_clusters(
     // is never observed, stale contents or not.
     for entry in entries.iter_mut() {
         entry.count = 0;
+        entry.portal_count = 0;
     }
 
     // #3834 — highest touched cluster index + 1, i.e. the length of the
     // `entries` prefix this frame can leave non-zero. `dispatch` uploads only
-    // that prefix instead of all 4096 entries / 32768 indices. Reported rather
+    // that prefix instead of all 4096 entries and their index segments. Reported rather
     // than rediscovered by a post-hoc scan because the clustering loop below
     // already visits exactly the touched set.
     let mut cluster_hi = 0usize;
@@ -564,19 +725,64 @@ fn build_fog_volume_clusters(
             volume.center_shape[1],
             volume.center_shape[2],
         ];
-        let radius = (volume.half_extents_extinction[0] * volume.half_extents_extinction[0]
-            + volume.half_extents_extinction[1] * volume.half_extents_extinction[1]
-            + volume.half_extents_extinction[2] * volume.half_extents_extinction[2])
-            .sqrt();
-        if !center.iter().all(|value| value.is_finite()) || !radius.is_finite() {
+        let Some(world_extent) = fog_volume_world_aabb_half_extents(volume) else {
             continue;
+        };
+        if !center.iter().all(|value| value.is_finite()) {
+            continue;
+        }
+
+        if let Some(sweep) = fog_portal_swept_bounds(
+            volume,
+            Vec3::from_array(sun_direction),
+            Vec3::from_array(grid_min),
+            far,
+        ) {
+            let mut ranges = [(0usize, 0usize); 3];
+            let mut intersects_grid = true;
+            for axis in 0..3 {
+                let lo = (sweep.lower[axis] - grid_min[axis]) / cell_size;
+                let hi = (sweep.upper[axis] - grid_min[axis]) / cell_size;
+                if hi < 0.0 || lo >= FOG_VOLUME_CLUSTER_DIM as f32 {
+                    intersects_grid = false;
+                    break;
+                }
+                ranges[axis] = (
+                    lo.floor().clamp(0.0, (FOG_VOLUME_CLUSTER_DIM - 1) as f32) as usize,
+                    hi.floor().clamp(0.0, (FOG_VOLUME_CLUSTER_DIM - 1) as f32) as usize,
+                );
+            }
+            if intersects_grid {
+                for z in ranges[2].0..=ranges[2].1 {
+                    for y in ranges[1].0..=ranges[1].1 {
+                        for x in ranges[0].0..=ranges[0].1 {
+                            let cell_min = Vec3::from_array(grid_min)
+                                + Vec3::new(x as f32, y as f32, z as f32) * cell_size;
+                            if !fog_portal_intersects_cluster(&sweep, cell_min, cell_size) {
+                                continue;
+                            }
+                            let cluster_index = x
+                                + y * FOG_VOLUME_CLUSTER_DIM
+                                + z * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
+                            let entry = &mut entries[cluster_index];
+                            if entry.portal_count as usize >= MAX_FOG_PORTALS_PER_CLUSTER {
+                                continue;
+                            }
+                            indices[entry.portal_offset as usize + entry.portal_count as usize] =
+                                volume_index as u32;
+                            entry.portal_count += 1;
+                            cluster_hi = cluster_hi.max(cluster_index + 1);
+                        }
+                    }
+                }
+            }
         }
 
         let mut ranges = [(0usize, 0usize); 3];
         let mut intersects_grid = true;
         for axis in 0..3 {
-            let lower = (center[axis] - radius - grid_min[axis]) / cell_size;
-            let upper = (center[axis] + radius - grid_min[axis]) / cell_size;
+            let lower = (center[axis] - world_extent[axis] - grid_min[axis]) / cell_size;
+            let upper = (center[axis] + world_extent[axis] - grid_min[axis]) / cell_size;
             if upper < 0.0 || lower >= FOG_VOLUME_CLUSTER_DIM as f32 {
                 intersects_grid = false;
                 break;
@@ -645,10 +851,11 @@ fn build_fog_volume_clusters(
 /// Also resolved alongside: the blanket `is_exterior` zero that used
 /// to suppress ALL sun/scattering contribution for interior cells
 /// (too blunt — it also blocked real sun-through-window godrays) is
-/// gone. `volumetrics_inject.comp`'s shadow ray now runs a two-pass
-/// opaque-then-glass-masked query for interiors specifically, so a
-/// geometry gap (e.g. a `--cell`-loaded interior's typically-missing
-/// ceiling mesh) can't masquerade as a window — see
+/// gone. `volumetrics_inject.comp`'s shadow ray now checks opaque geometry,
+/// authored aperture planes/rings, architectural glass, then a coherent
+/// architectural rim for unmarked holes. A bare geometry gap (e.g. a
+/// `--cell`-loaded interior's typically-missing ceiling mesh) no longer
+/// qualifies on its own — see
 /// `VolumetricsParams::render_origin`'s doc comment and the
 /// interior-godray investigation note in `context/draw.rs`.
 ///
@@ -657,10 +864,11 @@ fn build_fog_volume_clusters(
 ///
 /// Per-froxel ray budget: despite `volumetrics_inject.comp`'s header
 /// describing shadow visibility as the standard single "trace toward
-/// light, miss = lit" test, the shader actually casts up to 10 ray-query
+/// light, miss = lit" test, the shader actually casts up to 14 ray-query
 /// traversals per froxel in the worst case (1 opaque + 1 glass-masked sun
-/// ray, plus up to `MAX_FROXEL_LIGHTS` local lights x up to 2 rays each) —
-/// ~9.2M ray queries/frame at the default `froxel_xy_divisor = 8` 160x90x64
+/// ray + 4 architectural-rim probes, plus up to `MAX_FROXEL_LIGHTS` local
+/// lights x up to 2 rays each) — ~12.9M ray queries/frame at the default
+/// `froxel_xy_divisor = 8` 160x90x64
 /// grid for a 1280x720 render extent. See
 /// REN-D16-2026-08-07-02 / #2509.
 pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = true;
@@ -1053,7 +1261,7 @@ pub struct VolumetricsPipeline {
     /// Reused CPU staging state for cluster construction.
     fog_volume_upload: Box<GpuFogVolumeUpload>,
     fog_cluster_entries: Box<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>,
-    fog_cluster_indices: Box<[u32; FOG_VOLUME_INDEX_COUNT]>,
+    fog_cluster_indices: Box<[u32]>,
     /// #3834 — per-frame-in-flight high-water mark: the `entries` prefix
     /// length that the LAST write to `fog_cluster_buffers[frame]` may have
     /// left with a non-zero `count` on the GPU.
@@ -1242,6 +1450,7 @@ impl VolumetricsPipeline {
                 fog_volumes,
                 camera_position,
                 fog_far,
+                [frame_params.sun_dir[0], frame_params.sun_dir[1], frame_params.sun_dir[2]],
                 &mut self.fog_volume_upload,
                 &mut self.fog_cluster_entries,
                 &mut self.fog_cluster_indices,
@@ -1263,18 +1472,18 @@ impl VolumetricsPipeline {
         )?;
         if !fog_volumes.is_empty() {
             // #3834 — upload the touched cluster prefix, not all 4096 entries
-            // / 32768 indices. Union with this buffer's own high-water mark so
+            // and their index segments. Union with this buffer's own high-water mark so
             // a short frame still clears counts a longer earlier frame left on
             // the GPU; see `fog_cluster_dirty_hi`. Indices ride the same
-            // prefix: `offset` is `cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER`
+            // prefix: `offset` is `cluster_index * FOG_CLUSTER_INDEX_STRIDE`
             // (`fog_cluster_entries_with_offsets`), so a cluster prefix maps to
-            // a contiguous index prefix.
+            // contiguous density + portal index segments.
             let write_hi = cluster_hi.max(self.fog_cluster_dirty_hi[frame]);
             self.fog_cluster_buffers[frame]
                 .write_mapped(device, &self.fog_cluster_entries[..write_hi])?;
             self.fog_cluster_index_buffers[frame].write_mapped(
                 device,
-                &self.fog_cluster_indices[..write_hi * MAX_FOG_VOLUMES_PER_CLUSTER],
+                &self.fog_cluster_indices[..write_hi * FOG_CLUSTER_INDEX_STRIDE],
             )?;
             self.fog_cluster_dirty_hi[frame] = cluster_hi;
         }
@@ -2515,6 +2724,7 @@ mod unit_tests {
         assert!(!has_transport_emitter(&[volume(
             FOG_VOLUME_PROFILE_HOMOGENEOUS
         )]));
+        assert!(!has_transport_emitter(&[volume(FOG_VOLUME_PROFILE_LIGHT_SHAFT)]));
         for profile in [
             FOG_VOLUME_PROFILE_SMOKE,
             FOG_VOLUME_PROFILE_FLAME,
@@ -2952,7 +3162,7 @@ mod unit_tests {
             std::mem::size_of::<GpuFogVolumeUpload>(),
             16 + MAX_GPU_FOG_VOLUMES * 96
         );
-        assert_eq!(std::mem::size_of::<GpuFogClusterEntry>(), 8);
+        assert_eq!(std::mem::size_of::<GpuFogClusterEntry>(), 16);
     }
 
     /// #2228 / REN-D3-01 — the size/align pin above cannot catch a within-
@@ -3024,13 +3234,13 @@ mod unit_tests {
 
     // -----------------------------------------------------------------
     // #3834 — bounded per-frame fog uploads. `dispatch` uploads only the
-    // touched cluster prefix instead of the full 176 KB staging set, which is
+    // touched cluster prefix instead of the full fixed-size staging set, which is
     // sound only while the two invariants below hold. Neither is observable
     // from `cargo test` on the GPU side, so pin them on the CPU side here.
     // -----------------------------------------------------------------
 
     /// The `count` header is 16 B and each volume 96 B, so an N-volume frame
-    /// is `16 + 96N` — 112 B for one volume, not the full 12,304 B struct.
+    /// is `16 + 96N` — 112 B for one volume, not the full-capacity struct.
     #[test]
     fn fog_volume_upload_bytes_covers_header_plus_populated_volumes() {
         assert_eq!(
@@ -3056,6 +3266,27 @@ mod unit_tests {
         );
     }
 
+    #[test]
+    fn cone_cluster_bounds_cover_both_radial_axes_after_rotation() {
+        let cone = GpuFogVolume {
+            center_shape: [0.0, 0.0, 0.0, 3.0],
+            half_extents_extinction: [10.0, 100.0, 2.0, 0.01],
+            inverse_rotation: Quat::IDENTITY.to_array(),
+            ..GpuFogVolume::default()
+        };
+        assert_eq!(fog_volume_world_aabb_half_extents(&cone), Some([10.0, 100.0, 10.0]));
+        let rotated = GpuFogVolume {
+            inverse_rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)
+                .conjugate()
+                .to_array(),
+            ..cone
+        };
+        let world = fog_volume_world_aabb_half_extents(&rotated).unwrap();
+        assert!((world[0] - 100.0).abs() < 1.0e-4);
+        assert!((world[1] - 10.0).abs() < 1.0e-4);
+        assert!((world[2] - 10.0).abs() < 1.0e-4);
+    }
+
     /// THE invariant the prefix upload rests on: the returned `cluster_hi`
     /// bounds every cluster this frame gave a non-zero `count`. If a touched
     /// cluster could sit at or above it, `dispatch` would skip uploading that
@@ -3072,11 +3303,12 @@ mod unit_tests {
         };
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries_with_offsets();
-        let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
+        let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
         let (_, cluster_hi) = build_fog_volume_clusters(
             &[volume],
             [0.0; 3],
             160.0,
+            [0.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
@@ -3087,7 +3319,7 @@ mod unit_tests {
             "a volume inside the grid must touch a cluster"
         );
         for (index, entry) in entries.iter().enumerate() {
-            if entry.count > 0 {
+            if entry.count > 0 || entry.portal_count > 0 {
                 assert!(
                     index < cluster_hi,
                     "cluster {index} has count {} but sits at or above cluster_hi {cluster_hi} — \
@@ -3098,16 +3330,129 @@ mod unit_tests {
                 // written index slot must fall inside it too.
                 assert!(
                     entry.offset as usize + entry.count as usize
-                        <= cluster_hi * MAX_FOG_VOLUMES_PER_CLUSTER,
+                        <= cluster_hi * FOG_CLUSTER_INDEX_STRIDE,
                     "cluster {index} writes indices past the uploaded index prefix (#3834)"
+                );
+                assert!(
+                    entry.portal_offset as usize + entry.portal_count as usize
+                        <= cluster_hi * FOG_CLUSTER_INDEX_STRIDE,
+                    "cluster {index} writes portal indices past the uploaded prefix"
                 );
             }
         }
         assert!(
-            entries[cluster_hi..].iter().all(|e| e.count == 0),
+            entries[cluster_hi..]
+                .iter()
+                .all(|e| e.count == 0 && e.portal_count == 0),
             "every entry at or above cluster_hi must be zero, or the prefix upload \
              would leave a live count unwritten (#3834)"
         );
+    }
+
+    #[test]
+    fn authored_source_ring_indexes_a_sun_moving_shaft_beyond_static_fog_bounds() {
+        let shaft = GpuFogVolume {
+            center_shape: [0.0, 0.0, 0.0, 3.0],
+            half_extents_extinction: [10.0, 10.0, 2.0, 0.01],
+            inverse_rotation: Quat::IDENTITY.to_array(),
+            profile_params: [FOG_VOLUME_PROFILE_LIGHT_SHAFT, 0.0, 0.0, 0.0],
+            ..GpuFogVolume::default()
+        };
+        let cluster_at = |x: f32, y: f32, z: f32| {
+            let axis = |value: f32| ((value + 160.0) / 20.0).floor() as usize;
+            axis(x) + axis(y) * FOG_VOLUME_CLUSTER_DIM
+                + axis(z) * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM
+        };
+        let below = cluster_at(0.0, -80.0, 0.0);
+        let moved = cluster_at(-90.0, -80.0, 0.0);
+        let mut upload = GpuFogVolumeUpload::default();
+        let mut entries = fog_cluster_entries_with_offsets();
+        let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+
+        build_fog_volume_clusters(
+            &[shaft],
+            [0.0; 3],
+            160.0,
+            [0.0, 1.0, 0.0],
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert_eq!(entries[below].count, 0, "painted cone ends near y=-10");
+        assert_eq!(entries[below].portal_count, 1);
+        assert_eq!(indices[entries[below].portal_offset as usize], 0);
+        assert_eq!(entries[moved].portal_count, 0);
+
+        let (_, cluster_hi) = build_fog_volume_clusters(
+            &[shaft],
+            [0.0; 3],
+            160.0,
+            [1.0, 1.0, 0.0],
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert_eq!(entries[below].portal_count, 0);
+        assert_eq!(entries[moved].portal_count, 1);
+        assert_eq!(indices[entries[moved].portal_offset as usize], 0);
+        assert!(moved < cluster_hi, "portal-only cluster must be uploaded");
+    }
+
+    #[test]
+    fn flat_window_plane_indexes_its_sun_swept_portal_beyond_the_card_volume() {
+        let window = GpuFogVolume {
+            center_shape: [0.0, 0.0, 0.0, 2.0],
+            half_extents_extinction: [20.0, 30.0, 1.0, 0.01],
+            inverse_rotation: Quat::IDENTITY.to_array(),
+            profile_params: [FOG_VOLUME_PROFILE_LIGHT_SHAFT, 0.0, 0.0, 1.0],
+            ..GpuFogVolume::default()
+        };
+        let mut unmarked_beam = window;
+        unmarked_beam.profile_params[3] = 0.0;
+        assert!(fog_portal_swept_bounds(
+            &unmarked_beam,
+            Vec3::Z,
+            Vec3::splat(-160.0),
+            160.0
+        )
+        .is_none());
+        let cluster_at = |x: f32, y: f32, z: f32| {
+            let axis = |value: f32| ((value + 160.0) / 20.0).floor() as usize;
+            axis(x) + axis(y) * FOG_VOLUME_CLUSTER_DIM
+                + axis(z) * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM
+        };
+        let straight = cluster_at(0.0, 0.0, -120.0);
+        let shifted = cluster_at(-120.0, 0.0, -120.0);
+        let mut upload = GpuFogVolumeUpload::default();
+        let mut entries = fog_cluster_entries_with_offsets();
+        let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+
+        build_fog_volume_clusters(
+            &[window],
+            [0.0; 3],
+            160.0,
+            [0.0, 0.0, 1.0],
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert_eq!(entries[straight].count, 0, "card density ends near z=0");
+        assert_eq!(entries[straight].portal_count, 1);
+        assert_eq!(entries[shifted].portal_count, 0);
+
+        let (_, cluster_hi) = build_fog_volume_clusters(
+            &[window],
+            [0.0; 3],
+            160.0,
+            [1.0, 0.0, 1.0],
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert_eq!(entries[straight].portal_count, 0);
+        assert_eq!(entries[shifted].portal_count, 1);
+        assert_eq!(indices[entries[shifted].portal_offset as usize], 0);
+        assert!(shifted < cluster_hi);
     }
 
     /// An empty frame touches nothing, so the prefix is empty — and
@@ -3124,11 +3469,12 @@ mod unit_tests {
         };
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries_with_offsets();
-        let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
+        let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
         let (_, cluster_hi) = build_fog_volume_clusters(
             &[far_away],
             [0.0; 3],
             160.0,
+            [0.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
@@ -3149,11 +3495,12 @@ mod unit_tests {
         };
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries_with_offsets();
-        let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
+        let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
         let grid = build_fog_volume_clusters(
             &[volume],
             [0.0; 3],
             160.0,
+            [0.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
@@ -3181,11 +3528,12 @@ mod unit_tests {
         };
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries_with_offsets();
-        let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
+        let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
         build_fog_volume_clusters(
             &[volume],
             [0.0; 3],
             160.0,
+            [0.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
@@ -3214,7 +3562,7 @@ mod unit_tests {
         };
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = fog_cluster_entries_with_offsets();
-        let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
+        let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
         let center = FOG_VOLUME_CLUSTER_DIM / 2;
         let center_cluster = center
             + center * FOG_VOLUME_CLUSTER_DIM
@@ -3225,13 +3573,18 @@ mod unit_tests {
             &[volume],
             [0.0; 3],
             160.0,
+            [0.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
         );
         assert_eq!(entries[center_cluster].count, 1);
-        let expected_offset = (center_cluster * MAX_FOG_VOLUMES_PER_CLUSTER) as u32;
+        let expected_offset = (center_cluster * FOG_CLUSTER_INDEX_STRIDE) as u32;
         assert_eq!(entries[center_cluster].offset, expected_offset);
+        assert_eq!(
+            entries[center_cluster].portal_offset,
+            expected_offset + MAX_FOG_VOLUMES_PER_CLUSTER as u32
+        );
 
         // Frame 2: no volumes at all (e.g. the emitter despawned). The
         // buffer is reused as-is, exactly like the real per-frame call —
@@ -3240,6 +3593,7 @@ mod unit_tests {
             &[],
             [0.0; 3],
             160.0,
+            [0.0, 1.0, 0.0],
             &mut upload,
             &mut entries,
             &mut indices,
@@ -3258,7 +3612,7 @@ mod unit_tests {
         for (cluster_index, entry) in entries.iter().enumerate() {
             assert_eq!(
                 entry.offset,
-                (cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER) as u32
+                (cluster_index * FOG_CLUSTER_INDEX_STRIDE) as u32
             );
         }
     }

@@ -101,11 +101,10 @@ unsafe impl crate::vulkan::buffer::NoUninit for SkyCubeParams {}
 impl SkyCubeParams {
     /// Copy the sky fields out of the composite pass's own parameters.
     ///
-    /// Deriving the bake's inputs from `CompositeParams` rather than
-    /// rebuilding them from `SkyParams` is the point: the background and
-    /// the bake then cannot disagree about what sky they are drawing, by
-    /// construction rather than by two builders being kept in step. This
-    /// is the host-side twin of `composite.frag`'s `build_sky_dome()`.
+    /// Derive the bake from a `CompositeParams` assembled for the intended
+    /// sky, so its GPU lanes match `composite.frag`'s `build_sky_dome()`.
+    /// Exteriors reuse the visible composite parameters; interiors assemble
+    /// a separate outdoor set for verified window escape rays.
     pub fn from_composite(p: &crate::vulkan::composite::CompositeParams) -> Self {
         Self {
             sky_zenith: p.sky_zenith,

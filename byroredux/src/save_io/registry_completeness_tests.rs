@@ -400,6 +400,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("AlphaBlend", "spawn-time classification extracted from NiAlphaProperty flags at import, rederived identically every load"),
         ("AmbientPackageRuntime", "NPC_.PKID candidate state rebuilt at spawn and re-evaluated on the first tick against restored clock/CTDA resources"),
         ("CellLightingRes", "WTHR ambient/directional CPU-side mirror, re-flowed from the plugin's parsed lighting record every cell load"),
+        ("InteriorSkyExposureRes", "current CELL Show Sky flag, rederived from parsed CELL DATA on every interior cell load"),
         ("CellRootIndex", "inverted CellRoot->owned-entities index, repopulated by cell_loader::stamp_cell_root every cell load (#791)"),
         ("CloudSimState", "cloud-scroll accumulator, seeded at [0,0] only when absent — both apply_worldspace_weather branches use an is_none() guard so the accumulator survives interior visits and only a fresh session (or save/load round-trip, which does not snapshot it) resets it to [0,0] (see its own #803 doc)"),
         ("WeatherSurfaceState", "history-dependent exterior rain-film and snow-coverage state; session/worldspace simulation state is rebuilt dry rather than serialized until per-cell exposure persistence exists"),

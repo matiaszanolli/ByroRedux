@@ -886,6 +886,7 @@ authoritative rather than re-derived.
 | G-buffer (7 attachments per [`gbuffer.rs`](../../crates/renderer/src/vulkan/gbuffer.rs)'s own table — normal/motion/mesh_id/raw_indirect/albedo at 4 B/px + FSR reactive/transparency masks at 1 B/px = 22 B/px, × 2 FIF; the separate HDR colour, depth and depth-history attachments are counted in their own row below, not here) | ~91 MB (1080p) | ~365 MB (4K) |
 | Composite HDR pair + depth / depth-history (40 B/px, #3993) | ~83 MB (1080p) | ~332 MB (4K) |
 | Cluster light-index buffers (fixed size, 2 FIF, #3993) | ~14 MB | ~14 MB |
+| Volumetric medium + sun-aperture cluster buffers (16³ clusters × (64 density + 128 aperture) indices × 4 B, 16 B entries, 512 × 96 B volumes, 2 FIF) | ~6.5 MB | ~6.5 MB |
 | Scene SSBOs (see [Scene Buffers](#scene-buffers-per-frame-ssbos--ubos); instance pair at starting capacity, peak = grown to `MAX_INSTANCES`) | ~155 MB | ~243 MB |
 | ReSTIR reservoirs (2 FIF) | ~133 MB (1080p) | ~531 MB (4K) |
 | SVGF history + à-trous pair (2 FIF) | ~83 MB (1080p) | ~332 MB (4K) |
@@ -904,7 +905,7 @@ authoritative rather than re-derived.
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.88 GB** | **~4.21 GB at native 4K** — #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount |
+| **Estimated total** | **~1.89 GB** | **~4.22 GB at native 4K** — includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount |
 
 The 6 GB RT-minimum and 4 GB whole-renderer target remain design targets.
 Static BLAS residency is separately enforced at 1 GiB, so a Vulkan driver

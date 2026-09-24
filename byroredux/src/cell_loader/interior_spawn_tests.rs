@@ -71,6 +71,7 @@ fn cell(editor_id: &str, references: Vec<PlacedRef>) -> CellData {
         display_name: None,
         references,
         is_interior: true,
+        show_sky: None,
         grid: None,
         lighting: None,
         landscape: None,

@@ -633,9 +633,10 @@ fn spawn_fog_mesh_instance(
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) enum PreparedMeshUpload {
     Fog(byroredux_core::ecs::FogVolume),
+    FogGroup(Vec<byroredux_core::ecs::FogVolume>),
     Ready { handle: u32, fresh_for_rt: bool },
     Failed,
 }
@@ -699,6 +700,34 @@ pub(super) fn prepare_mesh_uploads(
     let mut shared: Vec<usize> = Vec::new();
 
     for (sub_mesh_index, mesh) in imported.iter().enumerate() {
+        if let Some(volumes) =
+            crate::fog::fnv_nellis_hangar_beam_volumes_from_mesh(pc.mesh_cache_key, mesh)
+        {
+            log::debug!(
+                target: "byroredux::fog",
+                "replaced painted hangar fans with {} media and apertures: model={:?}",
+                volumes.len(),
+                pc.mesh_cache_key,
+            );
+            prepared[sub_mesh_index] = PreparedMeshUpload::FogGroup(volumes);
+            continue;
+        }
+        if let Some(volume) = crate::fog::window_beam_volume_from_mesh(pc.mesh_cache_key, mesh)
+            .or_else(|| crate::fog::oblivion_dungeon_beam_volume_from_mesh(pc.mesh_cache_key, mesh))
+            .or_else(|| crate::fog::authored_cone_beam_volume_from_mesh(pc.mesh_cache_key, mesh))
+            .or_else(|| crate::fog::fnv_superwide_beam_volume_from_mesh(pc.mesh_cache_key, mesh))
+            .or_else(|| crate::fog::vault_window_beam_volume_from_mesh(pc.mesh_cache_key, mesh))
+            .or_else(|| crate::fog::fo4_ambient_lamp_beam_volume_from_mesh(pc.mesh_cache_key, mesh))
+        {
+            log::debug!(
+                target: "byroredux::fog",
+                "replaced painted beam with light-scattering volume: model={:?} mesh={:?}",
+                pc.mesh_cache_key,
+                mesh.name,
+            );
+            prepared[sub_mesh_index] = PreparedMeshUpload::Fog(volume);
+            continue;
+        }
         if let Some(fog_volume) = prepare_fog_mesh_instance(pc, mesh, &paths[sub_mesh_index]) {
             prepared[sub_mesh_index] = PreparedMeshUpload::Fog(fog_volume);
             continue;
@@ -725,8 +754,8 @@ pub(super) fn prepare_mesh_uploads(
         // Deformation has identity outside the vertex buffer (notably the
         // mesh-handle-keyed morph-delta cache). Only immutable geometry enters
         // cross-path sharing; skin/morph owners retain their existing path key.
-        let shareable = mesh.skin.is_none()
-            && mesh.morph_targets.as_ref().is_none_or(Vec::is_empty);
+        let shareable =
+            mesh.skin.is_none() && mesh.morph_targets.as_ref().is_none_or(Vec::is_empty);
         let vertices = super::super::lod_support::imported_mesh_to_vertices(mesh);
         if shareable {
             let upload = SceneMeshUpload {
@@ -1016,6 +1045,12 @@ pub(super) fn spawn_mesh_instance(
     let (mesh_handle, fresh_for_rt) = match prepared {
         PreparedMeshUpload::Fog(fog_volume) => {
             spawn_fog_mesh_instance(world, pc, mesh, paths, fog_volume);
+            return true;
+        }
+        PreparedMeshUpload::FogGroup(volumes) => {
+            for volume in volumes {
+                spawn_fog_mesh_instance(world, pc, mesh, paths, volume);
+            }
             return true;
         }
         PreparedMeshUpload::Ready {
