@@ -20,7 +20,9 @@ use byroredux_plugin::esm::records::{
     PackDataValue, PackLocationTarget, PackRecord, PackTargetKind,
 };
 use byroredux_scripting::condition::ConditionContext;
-use byroredux_scripting::{EvaluatePackageRequest, PackageRegistry, QuestAliasInjectedOverlays};
+use byroredux_scripting::{
+    AiCombatState, EvaluatePackageRequest, PackageRegistry, QuestAliasInjectedOverlays,
+};
 
 /// Whether an AI package's CTDA conditions permit it to be selected for this
 /// actor (M42.2), evaluated through the M47.1 condition evaluator.
@@ -496,6 +498,32 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     remove_component::<NavPath>(world, actor);
 }
 
+/// #4703 — combat pre-empts the ambient package. `StartCombat` arms
+/// `AiCombatState` and `npc_combat_ai_system` moves the actor, but the
+/// ambient movers never read it, so the package's own mover kept driving
+/// the same actor every frame, and a seated actor slid toward its target
+/// still in its sit pose. Called by the combat system for each live
+/// attacker: tear the behavior down (unseating it, releasing its seat
+/// claim, restoring its pre-seat animation) and forget the winner, so
+/// [`ambient_ai_package_system`] — which skips actors in combat —
+/// re-selects and reinstalls it on the first tick after combat ends. A
+/// no-op once suspended, so the per-frame cost is two lookups.
+pub(crate) fn suspend_ambient_behavior_for_combat(world: &World, actor: EntityId) {
+    let active = world
+        .get::<AmbientPackageRuntime>(actor)
+        .is_some_and(|runtime| runtime.active_package_form_id.is_some());
+    if !active && world.get::<Seated>(actor).is_none() {
+        return;
+    }
+    clear_ambient_behavior(world, actor);
+    if let Some(mut runtimes) = world.query_mut::<AmbientPackageRuntime>() {
+        if let Some(runtime) = runtimes.get_mut(actor) {
+            runtime.active_package_form_id = None;
+            runtime.last_evaluated_game_minute = None;
+        }
+    }
+}
+
 fn select_active_package<'a>(
     world: &World,
     actor: EntityId,
@@ -533,7 +561,14 @@ pub(super) fn apply_ai_package_behavior(
     // actor's placement, not the template's) — only the package *list*
     // comes from the resolved terminal.
     let packages_npc = resolved.ai_packages;
-    if packages_npc.ai_packages.is_empty() || world.get::<Dead>(placement_root).is_some() {
+    // #4704 — an empty PKID stack still gets the runtime: it is the only
+    // thing `ambient_ai_package_system` visits, and it is where a quest
+    // alias's injected packages (ALPC) are merged. Returning early here left
+    // every actor whose only package source is an alias (44 forced-ref
+    // aliases on `Skyrim.esm`, e.g. `dunUstengravQST`'s warlocks) standing
+    // idle for good. With no candidates the selection below is `None` and
+    // nothing is installed until an overlay lands.
+    if world.get::<Dead>(placement_root).is_some() {
         return;
     }
 
@@ -644,7 +679,9 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
     };
     let mut updates = Vec::new();
     for (actor, runtime) in runtimes {
-        if world.get::<Dead>(actor).is_some() {
+        // #4703 — an actor in combat is driven by `npc_combat_ai_system`,
+        // which suspended its package; it is re-selected once combat ends.
+        if world.get::<Dead>(actor).is_some() || world.get::<AiCombatState>(actor).is_some() {
             continue;
         }
 
@@ -1250,6 +1287,140 @@ mod tests {
         ambient_ai_package_system(&world, 0.0);
 
         assert!(!world.has::<WanderBehavior>(actor));
+    }
+
+    /// #4703 — `StartCombat` on a Wander-active actor: the combat tick
+    /// suspends the package (no ambient mover left to fight the chase),
+    /// the package system leaves it alone while combat lasts, and it is
+    /// re-selected the tick after combat ends.
+    #[test]
+    fn combat_suspends_the_ambient_package_until_it_ends() {
+        let (mut world, actor) = setup_actor(10.0, vec![pack(0x100, PROCEDURE_WANDER, None)]);
+        assert!(world.has::<WanderBehavior>(actor));
+        let target = world.spawn();
+        world.insert(
+            actor,
+            byroredux_core::ecs::components::Transform::from_translation(Vec3::ZERO),
+        );
+        world.insert(
+            target,
+            byroredux_core::ecs::components::Transform::from_translation(Vec3::new(
+                1000.0, 0.0, 0.0,
+            )),
+        );
+        world.insert(
+            actor,
+            AiCombatState {
+                target,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+
+        crate::systems::npc_combat_ai_system(&world, 0.1);
+        assert!(!world.has::<WanderBehavior>(actor), "combat owns the actor");
+        assert_eq!(
+            world
+                .get::<AmbientPackageRuntime>(actor)
+                .unwrap()
+                .active_package_form_id,
+            None
+        );
+        ambient_ai_package_system(&world, 0.0);
+        assert!(
+            !world.has::<WanderBehavior>(actor),
+            "no re-selection while in combat"
+        );
+
+        world.remove::<AiCombatState>(actor);
+        ambient_ai_package_system(&world, 0.0);
+        assert!(world.has::<WanderBehavior>(actor), "restored after combat");
+        assert_eq!(
+            world
+                .get::<AmbientPackageRuntime>(actor)
+                .unwrap()
+                .active_package_form_id,
+            Some(0x100)
+        );
+    }
+
+    /// #4703 — a seated Sandbox actor put into combat stands up: `Seated`
+    /// and its seat claim go, instead of sliding toward the target in its
+    /// sit pose.
+    #[test]
+    fn combat_unseats_a_seated_actor() {
+        let (mut world, actor) = setup_actor(10.0, vec![pack(0x100, PROCEDURE_SANDBOX, None)]);
+        let furniture = 700;
+        world.query_mut::<Seated>().unwrap().insert(
+            actor,
+            Seated {
+                furniture,
+                animation_restore: Default::default(),
+            },
+        );
+        world
+            .resource_mut::<SeatReservations>()
+            .0
+            .insert((furniture, 0), actor);
+        let target = world.spawn();
+        world.insert(
+            actor,
+            byroredux_core::ecs::components::Transform::from_translation(Vec3::ZERO),
+        );
+        world.insert(
+            target,
+            byroredux_core::ecs::components::Transform::from_translation(Vec3::new(
+                1000.0, 0.0, 0.0,
+            )),
+        );
+        world.insert(
+            actor,
+            AiCombatState {
+                target,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+
+        crate::systems::npc_combat_ai_system(&world, 0.1);
+
+        assert!(!world.has::<Seated>(actor));
+        assert!(!world.has::<SandboxBehavior>(actor));
+        assert!(world.resource::<SeatReservations>().0.is_empty());
+    }
+
+    /// #4704 — an actor with an empty PKID stack still gets the runtime,
+    /// so a quest alias's injected package is evaluated and applied.
+    #[test]
+    fn alias_package_runs_on_an_actor_with_no_base_packages() {
+        let (mut world, actor) = setup_actor(10.0, Vec::new());
+        assert_eq!(
+            world
+                .get::<AmbientPackageRuntime>(actor)
+                .map(|runtime| runtime.active_package_form_id),
+            Some(None),
+            "the runtime exists with nothing selected"
+        );
+        install_package_records(&mut world, [pack(0x200, PROCEDURE_WANDER, None)]);
+        let mut injected = AliasInjectedData::default();
+        injected.packages.push(0x200);
+        world.insert(
+            actor,
+            QuestAliasInjectedOverlays([((QuestFormId(0x900), 1), injected)].into_iter().collect()),
+        );
+        world
+            .query_mut::<EvaluatePackageRequest>()
+            .unwrap()
+            .insert(actor, EvaluatePackageRequest);
+
+        ambient_ai_package_system(&world, 0.0);
+
+        assert!(world.has::<WanderBehavior>(actor));
+        assert_eq!(
+            world
+                .get::<AmbientPackageRuntime>(actor)
+                .unwrap()
+                .active_package_form_id,
+            Some(0x200)
+        );
     }
 
     #[test]

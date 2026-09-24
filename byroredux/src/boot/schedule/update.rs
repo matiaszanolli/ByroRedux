@@ -230,6 +230,14 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_scripting::AiCombatState>()
             // #4574 — the chase arm reads the authored stride (M42.11).
             .reads::<crate::components::WalkSpeed>()
+            // #4703 — each live attacker's ambient package is suspended
+            // through `clear_ambient_behavior`: the runtime winner reset,
+            // the seat released and its animation park undone, plus every
+            // ambient Behavior/State pair that function removes.
+            .writes::<crate::components::AmbientPackageRuntime>()
+            .writes::<byroredux_core::ecs::components::Seated>()
+            .writes_resource::<crate::components::SeatReservations>()
+            .writes::<byroredux_core::animation::AnimationPlayer>()
             .writes::<byroredux_scripting::HitEvent>(),
     );
     scheduler.add_exclusive_with_access(

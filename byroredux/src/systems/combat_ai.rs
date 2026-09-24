@@ -58,6 +58,8 @@ struct CombatAiScratch {
     decisions: Vec<Decision>,
     steps: Vec<ChaseStep>,
     pending: Vec<PendingStrike>,
+    /// #4703 — live attackers whose ambient package combat pre-empts.
+    suspended: Vec<EntityId>,
 }
 
 /// Mirrors `wander_system_inner`'s read/write split: gather a decision per
@@ -76,10 +78,12 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
         decisions,
         steps,
         pending,
+        suspended,
     } = scratch;
     decisions.clear();
     steps.clear();
     pending.clear();
+    suspended.clear();
     {
         let Some(combat_q) = world.query::<AiCombatState>() else {
             return;
@@ -129,6 +133,10 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
                 continue;
             };
 
+            // #4703 — the fight goes on: this attacker's ambient package
+            // is suspended below, once every guard of the gather pass is
+            // released.
+            suspended.push(entity);
             let to_target = target_transform.translation - actor_transform.translation;
             // #4605 — reach, damage and cooldown resolve in the SECOND pass
             // (`resolve_pending_strikes` below): computing them here held
@@ -223,6 +231,10 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
 
     // #4605 — the second pass runs with NO storage guard live.
     resolve_pending_strikes(world, dt, pending, decisions, steps);
+
+    for &attacker in suspended.iter() {
+        crate::npc_spawn::suspend_ambient_behavior_for_combat(world, attacker);
+    }
 
     if decisions.is_empty() {
         return;
