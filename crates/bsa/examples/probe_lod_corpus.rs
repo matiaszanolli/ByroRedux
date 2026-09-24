@@ -80,6 +80,7 @@ fn main() {
         > = Default::default();
         let mut far_nif = 0usize;
         let mut distantlod = 0usize;
+        let mut high_variant = 0usize;
         let mut creation = 0usize;
         let mut creation_terrain: std::collections::BTreeMap<
             String,
@@ -98,6 +99,14 @@ fn main() {
             }
             if l.contains("distantlod\\") {
                 distantlod += 1;
+            }
+            // #4468 — the Fallout-legacy DLC archives bake a second,
+            // higher-detail object-quad variant beside the plain form
+            // (FO3 `Anchorage - Main.bsa` 60, FNV `LonesomeRoad -
+            // Main.bsa` 19); count it so the variant stays visible in
+            // the census.
+            if l.contains(".high.") {
+                high_variant += 1;
             }
             // #4737 — the Creation family: `meshes\terrain\<ws>\` holds the
             // per-quad baked terrain (`.btr`) beside its `objects\` folder
@@ -155,7 +164,7 @@ fn main() {
             *bucket.entry(world).or_default().entry(level).or_default() += 1;
         }
         println!(
-            "{path}\n  landscape\\lod entries={lod}  _far.nif={far_nif}  distantlod={distantlod}  meshes\\terrain .btr/.bto={creation}"
+            "{path}\n  landscape\\lod entries={lod}  _far.nif={far_nif}  distantlod={distantlod}  .high.={high_variant}  meshes\\terrain .btr/.bto={creation}"
         );
         for (label, map) in [
             ("terrain", &terrain),

@@ -667,6 +667,22 @@ pub(crate) enum ObjectLodScheme {
 /// subdivide-on-missing-asset rule went unchallenged until FO3: subdividing
 /// a level-8 quad on these worldspaces lands on absent level-4 assets and
 /// draws nothing. See [`LodBandSelection::coarsen_to_available`].
+///
+/// #4468 — the Fallout-legacy DLC archives bake a second, higher-detail
+/// object-quad filename variant `<world>.level<L>.high.<x>.<y>.nif` beside
+/// the plain form. Verified census (`probe_lod_corpus`'s `.high.` counter +
+/// `bsa_list`): FO3 `Anchorage - Main.bsa` ships 60 — dlc02anchoragebattle
+/// 12, dlc02chinesehq 13, dlc02glacier 21, dlc02overlook 11, tlandscape 3 —
+/// and FNV `LonesomeRoad - Main.bsa` ships 19 (nvdlc04dividevistaworld);
+/// all level4, and every `.high.` coordinate has a plain sibling in the
+/// same archive (set-difference = 0 in both), so the plain-form descent
+/// still finds a quad everywhere the variant exists — a detail-fidelity
+/// difference only, no coverage hole. [`object_lod_archive_path`] builds
+/// only the plain form, deliberately: no source documents vanilla's
+/// LOD-distance selection rule for the variant, and inventing one is the
+/// invented-behavior work the project's no-guessing policy exists to
+/// prevent. A future consumer must probe `.high.` first and fall back to
+/// plain (never the reverse), keeping the verified sibling invariant.
 pub(crate) fn object_lod_scheme(game: GameKind) -> Option<ObjectLodScheme> {
     match game {
         // FO76 joins under #4488: the `.bto` family lives across TWO
