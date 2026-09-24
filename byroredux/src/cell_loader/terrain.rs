@@ -170,18 +170,7 @@ pub(super) fn build_cell_splat_layers(
     // At most three non-canonical bases exist, leaving at least five lanes
     // for actual ATXT/VTXT painting. Base transitions go first so later
     // authored masks retain their intended visual precedence.
-    let authored_budget = 8 - base_transitions.len();
-    if sorted.len() > authored_budget {
-        let drop_count = sorted.len() - authored_budget;
-        log::warn!(
-            "Terrain cell has {} authored splat layers plus {} BTXT transitions; capping authored layers at {} (dropping {} with smallest total coverage). #470",
-            sorted.len(),
-            base_transitions.len(),
-            authored_budget,
-            drop_count,
-        );
-        select_top_by_coverage(&mut sorted, authored_budget);
-    }
+    cap_splat_layers_to_shader_budget(base_transitions.len(), &mut sorted);
 
     let mut layers = Vec::with_capacity(base_transitions.len() + sorted.len());
     for (base_ltex, per_quadrant_alpha) in base_transitions {
@@ -410,6 +399,42 @@ fn terrain_layer_normal_path(
     authored
         .map(str::to_string)
         .or_else(|| diffuse.and_then(|d| derive_present_normal_map_path(tex_provider, d)))
+}
+
+/// #4732 — the 8-channel splat budget as one pure step, extracted from
+/// `build_cell_splat_layers` so the unit test drives THIS arithmetic
+/// rather than a test-side copy that could never fail when the production
+/// formula changed. Base-transition layers go first (at most one per
+/// quadrant slot, so ≤ 4 — the premise the packer's `splat1[i - 4]`
+/// indexing and `spawn_terrain_mesh`'s `debug_assert!` lean on); authored
+/// layers are coverage-truncated to the remaining shader channels.
+pub(super) fn cap_splat_layers_to_shader_budget(
+    base_transition_count: usize,
+    sorted: &mut Vec<(u32, u16, PerQuadrantAlpha)>,
+) {
+    debug_assert!(
+        base_transition_count <= 4,
+        "{base_transition_count} base transitions exceed the four-quadrant \
+         premise the splat packer's splat1[i - 4] indexing leans on",
+    );
+    let authored_budget = splat_shader_budget(base_transition_count);
+    if sorted.len() > authored_budget {
+        let drop_count = sorted.len() - authored_budget;
+        log::warn!(
+            "Terrain cell has {} authored splat layers plus {base_transition_count} BTXT transitions; capping authored layers at {authored_budget} (dropping {drop_count} with smallest total coverage). #470",
+            sorted.len(),
+        );
+        select_top_by_coverage(sorted, authored_budget);
+    }
+}
+
+/// The budget arithmetic itself: authored splat lanes left of the 8
+/// shader-side channels (`Vertex` packs splat weights as 2× RGBA8 = 8
+/// channels per vertex) after the base transitions take theirs. The
+/// `.min(8)` keeps a premise-breaking transition count from underflowing
+/// in release; the `debug_assert!` above is what fails in debug.
+fn splat_shader_budget(base_transition_count: usize) -> usize {
+    8 - base_transition_count.min(8)
 }
 
 /// In-place coverage-aware selection of the top `max_layers` splat layers from
@@ -1672,14 +1697,40 @@ mod tests {
             "four distinct non-canonical bases must yield four transitions"
         );
 
-        // The budget arithmetic exactly as `build_cell_splat_layers` runs
-        // it, for arbitrarily many authored layers.
-        let authored_budget = 8 - transitions.len();
-        let capped = 20usize.min(authored_budget);
-        assert!(
-            transitions.len() + capped <= 8,
+        // #4732 — the pin drives the production arithmetic itself
+        // (`cap_splat_layers_to_shader_budget`), not a test-side copy of
+        // the formula, so a budget edit fails here instead of compiling
+        // green and indexing `splat1[i - 4]` out of bounds in the first
+        // exterior cell. Worst-case fully-mixed cell: four transitions
+        // plus more authored layers than modded merges ship (9–12), so
+        // the cap must truncate to exactly the 8-channel packer bound.
+        let mut sorted: Vec<(u32, u16, PerQuadrantAlpha)> = (0..12)
+            .map(|i| layer(0xE000_0000 + i as u32, 100 + i as u16, 0, 1.0))
+            .collect();
+        cap_splat_layers_to_shader_budget(transitions.len(), &mut sorted);
+        assert_eq!(
+            transitions.len() + sorted.len(),
+            8,
             "layer count {} exceeds the 2×RGBA8 packer budget of 8",
-            transitions.len() + capped
+            transitions.len() + sorted.len()
+        );
+        // The survivors keep the coverage-aware selection semantics: all
+        // twelve fixtures carry identical full coverage, so the truncation
+        // falls back to the deterministic (layer, ltex) ordering.
+        for w in sorted.windows(2) {
+            assert!(w[0].1 <= w[1].1, "survivors not ordered by layer field");
+        }
+
+        // The three-transition shape the issue names: 9 authored layers
+        // against 3 transitions still lands inside the budget.
+        let mut sorted: Vec<(u32, u16, PerQuadrantAlpha)> = (0..9)
+            .map(|i| layer(0xE000_0000 + i as u32, 100 + i as u16, 0, 1.0))
+            .collect();
+        cap_splat_layers_to_shader_budget(3, &mut sorted);
+        assert_eq!(
+            3 + sorted.len(),
+            8,
+            "three transitions must leave exactly five authored lanes"
         );
     }
 
