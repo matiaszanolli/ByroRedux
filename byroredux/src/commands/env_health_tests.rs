@@ -253,6 +253,7 @@ fn healthy_weather() -> crate::components::WeatherDataRes {
         weather: crate::components::WeatherSkyState::default(),
         grass_dimmer: 1.0,
         sunlight_dimmer: 1.0,
+        image_space: Default::default(),
     }
 }
 

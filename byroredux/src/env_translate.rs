@@ -285,6 +285,10 @@ mod pnam {
     pub(super) const INHERIT_WATER: u16 = 0x08;
     /// `CNAM` — climate.
     pub(super) const INHERIT_CLIMATE: u16 = 0x10;
+    /// `INAM` — image space (FO3/FNV). Unlike bits 0-4 this one is not in
+    /// the #2735 correlation table: its meaning is xEdit's name for the
+    /// bit ("Use Image Space Data", `wbDefinitionsFNV.pas` WRLD PNAM).
+    pub(super) const INHERIT_IMAGE_SPACE: u16 = 0x20;
 }
 
 use pnam::INHERIT_CLIMATE as PNAM_INHERIT_CLIMATE;
@@ -1444,7 +1448,47 @@ pub(crate) fn translate_weather(
         sunlight_dimmer: wthr
             .oblivion_hdr
             .map_or(1.0, |hdr| hdr.sunlight_dimmer.max(0.0)),
+        // Needs the IMGS index this translation does not see; the caller
+        // fills it through `exterior_image_spaces` (#4416).
+        image_space: Default::default(),
     }
+}
+
+/// #4416 — an exterior's base image space per WTHR time-of-day slot
+/// (Sunrise, Day, Sunset, Night), the canonical grade `weather_system`
+/// samples. Precedence, per the record definitions (xEdit, #4416):
+///
+/// 1. The weather's own `IMSP` (Skyrim/FO4). A NULL slot is the identity.
+/// 2. Otherwise the worldspace's `INAM` (FO3/FNV), inherited up the `WNAM`
+///    chain through PNAM bit 5 ("Use Image Space Data") like the other
+///    inheritable worldspace fields, in all four slots.
+/// 3. Otherwise the identity grade.
+///
+/// An IMGS FormID with no decodable grade also reads as the identity.
+pub(crate) fn exterior_image_spaces(
+    weather: Option<&WeatherRecord>,
+    worldspaces: &HashMap<String, WorldspaceRecord>,
+    worldspace_key: &str,
+    image_spaces: &HashMap<u32, byroredux_plugin::esm::records::ImgsRecord>,
+) -> [byroredux_scripting::ImageSpace; 4] {
+    let decode = |form: Option<u32>| {
+        form.and_then(|form| image_spaces.get(&form))
+            .and_then(|imgs| imgs.image_space)
+            .unwrap_or_default()
+    };
+    if let Some(slots) = weather
+        .map(|w| w.image_spaces)
+        .filter(|slots| slots.iter().any(Option::is_some))
+    {
+        return slots.map(decode);
+    }
+    let worldspace = inherit_up_chain(
+        worldspaces,
+        worldspace_key,
+        pnam::INHERIT_IMAGE_SPACE,
+        |_, w| w.image_space_form,
+    );
+    [decode(worldspace); 4]
 }
 
 // ── Procedural fallback (no resolved climate / weather) ──
@@ -1593,6 +1637,7 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
         weather: WeatherSkyState::default(),
         grass_dimmer: 1.0,
         sunlight_dimmer: 1.0,
+        image_space: Default::default(),
     }
 }
 
@@ -1765,6 +1810,77 @@ mod tests {
 
     /// Two-worldspace fixture: child `"c"` under parent `"p"`, with the
     /// child's PNAM bits set to `child_flags`.
+    /// #4416 — exterior image-space precedence: the weather's own `IMSP`
+    /// (Skyrim/FO4) wins; otherwise the worldspace's `INAM` (FO3/FNV),
+    /// inherited through PNAM bit 5 only when the child authors none; a
+    /// NULL slot or an undecodable IMGS is the identity.
+    #[test]
+    fn exterior_image_space_prefers_weather_then_inherited_worldspace() {
+        use byroredux_plugin::esm::records::ImgsRecord;
+        use byroredux_scripting::ImageSpace;
+        let grade = |saturation| ImageSpace {
+            saturation,
+            ..ImageSpace::default()
+        };
+        let image_spaces = HashMap::from([
+            (
+                0xA1,
+                ImgsRecord {
+                    form_id: 0xA1,
+                    image_space: Some(grade(0.5)),
+                    ..Default::default()
+                },
+            ),
+            (
+                0xA2,
+                ImgsRecord {
+                    form_id: 0xA2,
+                    image_space: Some(grade(0.8)),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let inheriting = parent_child(
+            WorldspaceRecord {
+                image_space_form: Some(0xA2),
+                ..Default::default()
+            },
+            pnam::INHERIT_IMAGE_SPACE,
+            WorldspaceRecord::default(),
+        );
+        let resolve = |weather: Option<&WeatherRecord>, worldspaces| {
+            exterior_image_spaces(weather, worldspaces, "c", &image_spaces)
+        };
+
+        assert_eq!(
+            resolve(None, &inheriting),
+            [grade(0.8); 4],
+            "inherited INAM"
+        );
+        let not_flagged = parent_child(
+            WorldspaceRecord {
+                image_space_form: Some(0xA2),
+                ..Default::default()
+            },
+            0,
+            WorldspaceRecord::default(),
+        );
+        assert_eq!(resolve(None, &not_flagged), [ImageSpace::default(); 4]);
+
+        let mut weather = WeatherRecord::default();
+        weather.image_spaces = [Some(0xA1), None, Some(0xA1), Some(0xFFFF)];
+        assert_eq!(
+            resolve(Some(&weather), &inheriting),
+            [
+                grade(0.5),
+                ImageSpace::default(),
+                grade(0.5),
+                ImageSpace::default()
+            ],
+            "IMSP wins; NULL and unknown slots are the identity"
+        );
+    }
+
     fn parent_child(
         parent: WorldspaceRecord,
         child_flags: u16,

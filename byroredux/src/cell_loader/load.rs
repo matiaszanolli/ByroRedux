@@ -113,6 +113,9 @@ pub struct CellLoadResult {
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
     /// CELL DATA Show Sky / Behave Like Exterior bit.
     pub show_sky: bool,
+    /// #4416 — the cell's `XCIM` image space, decoded (identity when the
+    /// cell authors none, or the IMGS has no decodable grade).
+    pub image_space: byroredux_scripting::ImageSpace,
     /// Resolved REGN ambient-sound directive (EX-16 item 1, #2372) — the
     /// cell's highest-priority tagging region's `Sound` entry, if any.
     /// `Default` (both fields `None`) when the cell has no `XCLR` regions
@@ -194,10 +197,22 @@ fn engine_default_interior_lighting() -> CellLightingRes {
 /// directional as a scene light to prevent wall light leakage. The 9
 /// extended XCLL fields (`fog_clip`, `directional_ambient`, …) are
 /// propagated by `from_cell_lighting` (#861).
+/// #4416 — a cell's `XCIM` image space, decoded through the IMGS index.
+fn cell_image_space(
+    cell: &esm::cell::CellData,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> byroredux_scripting::ImageSpace {
+    cell.image_space_form
+        .and_then(|form| index.image_spaces.get(&form))
+        .and_then(|imgs| imgs.image_space)
+        .unwrap_or_default()
+}
+
 pub(crate) fn apply_interior_cell_lighting(
     world: &mut World,
     lighting: Option<&esm::cell::CellLighting>,
     show_sky: bool,
+    image_space: byroredux_scripting::ImageSpace,
 ) {
     let res = match lighting {
         Some(lit) => {
@@ -223,6 +238,9 @@ pub(crate) fn apply_interior_cell_lighting(
     };
     world.insert_resource(res);
     world.insert_resource(crate::components::InteriorSkyExposureRes(show_sky));
+    // #4416 — the interior's own base grade for the IMAD composition; the
+    // weather system leaves it alone while `is_interior` holds.
+    world.insert_resource(byroredux_scripting::ImageSpaceBase(image_space));
 }
 
 /// Convert XCLL's signed-degree azimuth/elevation pair into the renderer's
@@ -618,6 +636,7 @@ pub fn load_cell_with_masters(
     // fallback never fired and these cells rendered with the engine
     // default ambient.
     let resolved_lighting = resolve_cell_lighting(cell, &index);
+    let image_space = cell_image_space(cell, &index);
     let show_sky = cell.show_sky.unwrap_or(false);
     log::info!("Cell lighting: {:?}", resolved_lighting);
 
@@ -775,6 +794,7 @@ pub fn load_cell_with_masters(
         spawn_pose,
         lighting: resolved_lighting,
         show_sky,
+        image_space,
         region_ambient,
         phases,
     })
@@ -1043,6 +1063,7 @@ impl InteriorCellApplyJob {
             .expect("interior cell existed when its apply job began");
         let phase_started = Instant::now();
         let resolved_lighting = resolve_cell_lighting(cell, &index);
+        let image_space = cell_image_space(cell, &index);
         let show_sky = cell.show_sky.unwrap_or(false);
         log::info!("Cell lighting: {:?}", resolved_lighting);
 
@@ -1120,6 +1141,7 @@ impl InteriorCellApplyJob {
             spawn_pose,
             lighting: resolved_lighting,
             show_sky,
+            image_space,
             region_ambient,
             phases,
         })
@@ -1535,7 +1557,12 @@ mod tests {
         // Fresh world == "no previous cell lighting present".
         assert!(world.try_resource::<CellLightingRes>().is_none());
 
-        apply_interior_cell_lighting(&mut world, Some(&interior_lighting()), false);
+        apply_interior_cell_lighting(
+            &mut world,
+            Some(&interior_lighting()),
+            false,
+            Default::default(),
+        );
 
         let res = world
             .try_resource::<CellLightingRes>()
@@ -1552,13 +1579,13 @@ mod tests {
     #[test]
     fn interior_sky_exposure_is_replaced_on_cell_transition() {
         let mut world = World::new();
-        apply_interior_cell_lighting(&mut world, None, true);
+        apply_interior_cell_lighting(&mut world, None, true, Default::default());
         assert!(world
             .try_resource::<crate::components::InteriorSkyExposureRes>()
             .unwrap()
             .0);
 
-        apply_interior_cell_lighting(&mut world, None, false);
+        apply_interior_cell_lighting(&mut world, None, false, Default::default());
         assert!(!world
             .try_resource::<crate::components::InteriorSkyExposureRes>()
             .unwrap()
@@ -1599,7 +1626,7 @@ mod tests {
             inheritance_flags: None,
         });
 
-        apply_interior_cell_lighting(&mut world, None, false);
+        apply_interior_cell_lighting(&mut world, None, false, Default::default());
 
         let res = world
             .try_resource::<CellLightingRes>()

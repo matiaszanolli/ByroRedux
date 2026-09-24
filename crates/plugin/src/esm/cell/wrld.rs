@@ -88,6 +88,13 @@ pub(crate) fn parse_wrld_group(
                         b"CNAM" if sub.data.len() >= 4 => {
                             climate_fid = read_form_id(reader, &sub.data);
                         }
+                        // #4416 — INAM, the worldspace's IMGS image space
+                        // (FO3/FNV only; xEdit `wbDefinitionsFNV.pas`
+                        // WRLD). Inherited through PNAM bit 5, "Use Image
+                        // Space Data".
+                        b"INAM" if sub.data.len() >= 4 => {
+                            record.image_space_form = read_form_id(reader, &sub.data);
+                        }
                         // WNAM — parent worldspace FormID (cross-game).
                         b"WNAM" if sub.data.len() >= 4 => {
                             record.parent_worldspace = read_form_id(reader, &sub.data);

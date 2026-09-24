@@ -67,6 +67,53 @@ impl Default for ImageSpaceModifier {
     }
 }
 
+/// A cell's base image space — the canonical form of an `IMGS` record's
+/// cinematic grade (#4416), which the frame's IMAD modifiers compose onto
+/// (`value = base x mult + add`).
+///
+/// Decoded at the parser boundary from FO3/FNV's `DNAM` or Skyrim/FO4's
+/// `CNAM` + `TNAM`, so nothing downstream branches on the game. The HDR
+/// block (eye adaptation, bloom, sunlight scale) is not carried: the
+/// renderer's exposure and bloom are its own physically based model, and
+/// no mapping from Bethesda's HDR parameters onto it is sourced.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageSpace {
+    pub saturation: f32,
+    pub brightness: f32,
+    pub contrast: f32,
+    /// Tint RGB (0..1) and amount — the same `[r, g, b, weight]` shape as
+    /// [`ImageSpaceModifier::tint_color`], so the modifier's tint blends
+    /// over this one by alpha.
+    pub tint_color: [f32; 4],
+}
+
+impl Default for ImageSpace {
+    /// The identity grade: a cell with no image space looks exactly as it
+    /// did before image spaces were read.
+    fn default() -> Self {
+        Self {
+            saturation: 1.0,
+            brightness: 1.0,
+            contrast: 1.0,
+            tint_color: [1.0, 1.0, 1.0, 0.0],
+        }
+    }
+}
+
+impl ImageSpace {
+    /// Component-wise blend, for time-of-day weather slots and weather
+    /// cross-fades (the same linear interpolation the sky colours use).
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        Self {
+            saturation: mix(self.saturation, other.saturation),
+            brightness: mix(self.brightness, other.brightness),
+            contrast: mix(self.contrast, other.contrast),
+            tint_color: std::array::from_fn(|i| mix(self.tint_color[i], other.tint_color[i])),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ImageSpaceModifier;

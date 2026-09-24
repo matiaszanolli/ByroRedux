@@ -1462,6 +1462,14 @@ pub(crate) struct WeatherDataRes {
     /// blends two weathers this fades with the palette like
     /// [`Self::grass_dimmer`] does.
     pub(crate) sunlight_dimmer: f32,
+    /// #4416 — the exterior's base image space per WTHR time-of-day slot
+    /// (Sunrise, Day, Sunset, Night), resolved at the EXAL boundary by
+    /// [`crate::env_translate::exterior_image_spaces`]: the weather's own
+    /// `IMSP` on Skyrim/FO4, else the worldspace's inherited `INAM`
+    /// (FO3/FNV) in all four slots, else the identity grade. Sampled and
+    /// cross-faded with the sky colours by `weather_system`, which
+    /// publishes it as `ImageSpaceBase` in exteriors.
+    pub(crate) image_space: [byroredux_scripting::ImageSpace; 4],
 }
 impl Resource for WeatherDataRes {}
 

@@ -671,18 +671,35 @@ fn sample_dalc_cube(
     slot_b: usize,
     t: f32,
 ) -> Option<crate::components::DalcCubeYup> {
-    use byroredux_plugin::esm::records::weather::*;
     let cubes = cubes?;
-    let fold = |slot: usize| match slot {
+    Some(crate::components::DalcCubeYup::lerp(
+        &cubes[fold_to_four_tod_slots(slot_a)],
+        &cubes[fold_to_four_tod_slots(slot_b)],
+        t,
+    ))
+}
+
+/// The 6-slot sky-colour TOD index onto 4-slot WTHR data (sunrise, day,
+/// sunset, night): high_noon reads day, midnight reads night. Shared by
+/// every 4-slot consumer ([`sample_dalc_cube`], [`sample_image_space`]).
+fn fold_to_four_tod_slots(slot: usize) -> usize {
+    use byroredux_plugin::esm::records::weather::*;
+    match slot {
         TOD_HIGH_NOON => TOD_DAY,
         TOD_MIDNIGHT => TOD_NIGHT,
         s => s,
-    };
-    Some(crate::components::DalcCubeYup::lerp(
-        &cubes[fold(slot_a)],
-        &cubes[fold(slot_b)],
-        t,
-    ))
+    }
+}
+
+/// #4416 — the exterior base image space at the colour interpolator's
+/// `(slot_a, slot_b, t)`, over the 4-slot `IMSP` table.
+fn sample_image_space(
+    slots: &[byroredux_scripting::ImageSpace; 4],
+    slot_a: usize,
+    slot_b: usize,
+    t: f32,
+) -> byroredux_scripting::ImageSpace {
+    slots[fold_to_four_tod_slots(slot_a)].lerp(slots[fold_to_four_tod_slots(slot_b)], t)
 }
 
 /// #2816 — a flat, isotropic stand-in cube for the side of a WTHR
@@ -814,6 +831,8 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // sample instead of re-reading the (by-then-replaced) live
     // `WeatherDataRes` after the fact.
     let dalc_source = sample_dalc_cube(wd.skyrim_dalc_per_tod.as_ref(), slot_a, slot_b, t);
+    // #4416 — the exterior's base image space, same 4-slot fold as DALC.
+    let image_space_source = sample_image_space(&wd.image_space, slot_a, slot_b, t);
 
     // Fog distance: lerp between day and night fog based on the same
     // TOD slot pair the colour interpolator just walked. Pre-#897 this
@@ -1157,6 +1176,33 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             cell_lit.fog_near = fog_near;
             cell_lit.fog_far = fog_far;
             cell_lit.fog_medium = fog_medium;
+        }
+    }
+
+    // #4416 — publish the exterior's base image space for the IMAD
+    // composition. Interiors own theirs (the cell's `XCIM`, set at load),
+    // so the same `!is_interior` gate as the lighting writes above. The
+    // cross-fade target is re-read in the canonical `WeatherDataRes ->
+    // WeatherTransitionRes` order while `wd` is still live.
+    if world
+        .try_resource::<CellLightingRes>()
+        .is_none_or(|cell| !cell.is_interior)
+    {
+        let image_space = if transition_t > 0.0 {
+            let tr = world
+                .try_resource::<WeatherTransitionRes>()
+                .expect("transition_t > 0 implies WeatherTransitionRes");
+            let keys_b = build_tod_keys(tr.target.tod_hours);
+            let (b_a, b_b, b_t) = pick_tod_pair(&keys_b, hour);
+            image_space_source.lerp(
+                sample_image_space(&tr.target.image_space, b_a, b_b, b_t),
+                transition_t,
+            )
+        } else {
+            image_space_source
+        };
+        if let Some(mut base) = world.try_resource_mut::<byroredux_scripting::ImageSpaceBase>() {
+            base.0 = image_space;
         }
     }
 
@@ -2087,9 +2133,48 @@ mod interior_gate_tests {
             weather: crate::components::WeatherSkyState::default(),
             grass_dimmer: 1.0,
             sunlight_dimmer: 1.0,
+            image_space: Default::default(),
         });
 
         world
+    }
+
+    /// #4416 — in an exterior the weather system publishes the base image
+    /// space sampled at the live hour (noon folds onto the Day slot); in an
+    /// interior it leaves the cell's own `XCIM` grade alone.
+    #[test]
+    fn exterior_image_space_is_published_and_interior_one_kept() {
+        use byroredux_plugin::esm::records::weather::{TOD_DAY, TOD_NIGHT};
+        use byroredux_scripting::{ImageSpace, ImageSpaceBase};
+        let day = ImageSpace {
+            saturation: 0.7,
+            brightness: 1.1,
+            contrast: 1.3,
+            tint_color: [0.9, 0.8, 0.7, 0.2],
+        };
+        let interior = ImageSpace {
+            saturation: 0.3,
+            ..ImageSpace::default()
+        };
+        for is_interior in [false, true] {
+            let mut world = build_world(is_interior);
+            {
+                let mut wd = world.resource_mut::<WeatherDataRes>();
+                wd.image_space[TOD_DAY] = day;
+                wd.image_space[TOD_NIGHT] = ImageSpace {
+                    saturation: 0.1,
+                    ..ImageSpace::default()
+                };
+            }
+            world.insert_resource(ImageSpaceBase(interior));
+            weather_system(&world, 0.0);
+            let published = world.resource::<ImageSpaceBase>().0;
+            assert_eq!(
+                published,
+                if is_interior { interior } else { day },
+                "is_interior = {is_interior}"
+            );
+        }
     }
 
     /// Interior gate — `cell_lit.fog_color` (and the rest of the gated
@@ -2336,6 +2421,7 @@ mod seeded_at_wrong_tod_resample_tests {
             weather: crate::components::WeatherSkyState::default(),
             grass_dimmer: 1.0,
             sunlight_dimmer: 1.0,
+            image_space: Default::default(),
         });
 
         // The buggy seed: direction already correct (below-horizon
@@ -2445,6 +2531,7 @@ mod dalc_cube_crossfade_tests {
             weather: crate::components::WeatherSkyState::default(),
             grass_dimmer: 1.0,
             sunlight_dimmer: 1.0,
+            image_space: Default::default(),
         }
     }
 
@@ -2591,6 +2678,7 @@ mod hnam_dimmer_tests {
             weather: crate::components::WeatherSkyState::default(),
             grass_dimmer,
             sunlight_dimmer,
+            image_space: Default::default(),
         }
     }
 

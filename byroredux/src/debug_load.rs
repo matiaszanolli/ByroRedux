@@ -312,6 +312,7 @@ fn exec_load_interior(
                 world,
                 result.lighting.as_ref(),
                 result.show_sky,
+                result.image_space,
             );
             // EX-16 item 1 (#2372) — same always-insert reasoning as
             // lighting above (see the comment there).

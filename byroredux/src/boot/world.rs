@@ -373,6 +373,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
 
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
+    // #4416 — the IMAD composition's base grade; identity until a cell or
+    // an exterior weather publishes one.
+    world.insert_resource(byroredux_scripting::ImageSpaceBase::default());
 
     // M47.0 Phase 2 — the SCPT `editor_id` → spawner map consulted by
     // `attach_scpt_script` (the pre-Skyrim `SCRI` → `SCPT` →

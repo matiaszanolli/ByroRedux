@@ -5,6 +5,7 @@ use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, Com
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
+use byroredux_core::imagespace::ImageSpace;
 use std::collections::HashMap;
 
 /// Navigation mesh master record (`NAVI`). Skyrim+ splits navigation
@@ -1328,56 +1329,107 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord]) -> LgtmRecord {
     out
 }
 
-/// Image-space record (`IMGS`). Drives per-cell HDR / colour-grading
-/// settings — cells reference an IMGS via `XCIM` to override the
-/// worldspace-default tone-map / cinematic / tint LUT.
+/// Image-space record (`IMGS`) — a cell's (or a weather slot's) base
+/// colour grade. Interiors reference one through `CELL.XCIM`; FO3/FNV
+/// exteriors through `WRLD.INAM`; Skyrim/FO4 exteriors through the
+/// weather's per-time-of-day `WTHR.IMSP`.
 ///
-/// Skyrim ships ~1k IMGS entries; almost every Solitude / Whiterun
-/// interior overrides the worldspace default. Vanilla Skyrim's
-/// `DNAM` is 152 bytes (HDR eye-adapt + cinematic
-/// saturation/brightness/contrast + tint RGBA + bloom params);
-/// FO3/FNV's is the 56-byte subset. Pre-#624 the entire top-level
-/// `IMGS` group fell through to the catch-all skip in `parse_esm`,
-/// so XCIM cross-references couldn't resolve to anything in the
-/// index.
+/// #4416 — decoded at the parser boundary into the canonical
+/// [`ImageSpace`] (cinematic saturation / brightness / contrast + tint),
+/// so no consumer branches on the game. Layouts, from xEdit
+/// (`wbDefinitions{FO3,FNV,TES5,FO4}.pas`, IMGS) checked against the
+/// shipped masters:
 ///
-/// This stub captures `EDID` + the raw `DNAM` payload so a future
-/// per-cell HDR-LUT consumer can decode the tone-map fields lazily
-/// without re-walking the ESM. Nothing reads `EsmIndex::image_spaces` yet:
-/// the DNAM decode and the render-side consumer are tracked by #4416.
-/// (Image-space *modifiers*, `IMAD`, are a separate path that already
-/// reaches the renderer through the MQ101 cinematic slice.)
+/// - **FO3/FNV** keep everything in one `DNAM`, and its layout follows the
+///   DNAM *size*, not the record's form version (xEdit gates "Skin
+///   Dimmer" on form version 10, but the 148-byte version-11..13 records
+///   do not carry it): 132 and 148 bytes put saturation @96, contrast
+///   @104, brightness @108, tint RGB @112 and tint amount @124; 152 bytes
+///   insert Skin Dimmer @56 and shift those to @100/@108/@112/@116/@128.
+///   The contrast pivot ("Contrast Avg Lum Value") is not carried — the
+///   presentation grade pivots on a fixed mid-grey.
+/// - **Skyrim / FO4 / FO76** split the blocks: `CNAM` = saturation,
+///   brightness, contrast; `TNAM` = tint amount then RGB; `DNAM` is depth
+///   of field there. Skyrim's two `Default*` records carry only the
+///   legacy 56-byte `ENAM` (7 HDR floats, the cinematic triple, then tint
+///   amount + RGB per xEdit; UESP lists that tail as unknown).
+/// - **Oblivion** has no IMGS (its HDR lives on `WTHR.HNAM`); Starfield's
+///   is a reflection blob. Both decode to `None`.
 #[derive(Debug, Clone, Default)]
 pub struct ImgsRecord {
     pub form_id: u32,
     pub editor_id: String,
-    /// Raw `DNAM` payload — Skyrim 152 B (HDR + cinematic + tint),
-    /// FO3/FNV 56 B (subset). `None` when the record has no DNAM
-    /// (rare; a few legacy entries on FO3/FNV).
-    pub dnam_raw: Option<Vec<u8>>,
+    /// The decoded grade; `None` when the record carries no layout this
+    /// decoder knows (see the type doc), which consumers treat as the
+    /// identity grade.
+    pub image_space: Option<ImageSpace>,
 }
 
-/// Parse an `IMGS` record into an [`ImgsRecord`]. Mirrors the
-/// stub-shape of [`parse_lgtm`] — captures EDID + the data payload
-/// and defers field-by-field decoding to the consumer. See #624 /
-/// SK-D6-NEW-03.
-pub fn parse_imgs(form_id: u32, subs: &[SubRecord]) -> ImgsRecord {
-    let mut out = ImgsRecord {
-        form_id,
-        ..Default::default()
-    };
-    // #2414 / TD2-117 — the universal named fields come from the
-    // shared walker instead of a hand-rolled copy of its arms. It
-    // ignores every other sub-record, so the per-record loop below
-    // is unchanged.
+/// Parse an `IMGS` record into an [`ImgsRecord`] (#624, #4416).
+pub fn parse_imgs(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: crate::esm::reader::GameKind,
+) -> ImgsRecord {
     let common = CommonNamedFields::from_subs_with_remap(subs, &None);
-    out.editor_id = common.editor_id;
-    for sub in subs {
-        if &sub.sub_type == b"DNAM" {
-            out.dnam_raw = Some(sub.data.clone());
-        }
+    ImgsRecord {
+        form_id,
+        editor_id: common.editor_id,
+        image_space: decode_image_space(subs, game),
     }
-    out
+}
+
+fn decode_image_space(
+    subs: &[SubRecord],
+    game: crate::esm::reader::GameKind,
+) -> Option<ImageSpace> {
+    use crate::esm::reader::GameKind;
+    let floats = |data: &[u8]| -> Vec<f32> {
+        data.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    };
+    let find = |code: &[u8; 4]| subs.iter().find(|s| &s.sub_type == code).map(|s| &s.data);
+    match game {
+        GameKind::Fallout3NV => {
+            let f = floats(find(b"DNAM")?);
+            // Float indices of (saturation, contrast, brightness, tint rgb,
+            // tint amount) per DNAM size; see the type doc.
+            let (sat, con, bri, tint) = match f.len() * 4 {
+                132 | 148 => (24, 26, 27, 28),
+                152 => (25, 27, 28, 29),
+                _ => return None,
+            };
+            Some(ImageSpace {
+                saturation: f[sat],
+                brightness: f[bri],
+                contrast: f[con],
+                tint_color: [f[tint], f[tint + 1], f[tint + 2], f[tint + 3]],
+            })
+        }
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 => {
+            let cinematic = find(b"CNAM").map(|d| floats(d)).filter(|f| f.len() >= 3);
+            let tint = find(b"TNAM").map(|d| floats(d)).filter(|f| f.len() >= 4);
+            if cinematic.is_none() && tint.is_none() {
+                let legacy = find(b"ENAM").map(|d| floats(d)).filter(|f| f.len() >= 14)?;
+                return Some(ImageSpace {
+                    saturation: legacy[7],
+                    brightness: legacy[8],
+                    contrast: legacy[9],
+                    tint_color: [legacy[11], legacy[12], legacy[13], legacy[10]],
+                });
+            }
+            let mut out = ImageSpace::default();
+            if let Some(c) = cinematic {
+                (out.saturation, out.brightness, out.contrast) = (c[0], c[1], c[2]);
+            }
+            if let Some(t) = tint {
+                out.tint_color = [t[1], t[2], t[3], t[0]];
+            }
+            Some(out)
+        }
+        GameKind::Oblivion | GameKind::Starfield => None,
+    }
 }
 
 /// `ACTI` activator record. FO3/FNV/Oblivion wall switches, buttons,
@@ -1851,35 +1903,86 @@ mod tests {
         assert_eq!(l.fresnel_power, Some(3.5));
     }
 
-    /// Regression for #624 / SK-D6-NEW-03. IMGS records were dropped
-    /// on the parse_esm catch-all skip pre-fix; this tests the stub
-    /// parser captures EDID + raw DNAM so XCIM cross-references can
-    /// resolve through `EsmIndex.image_spaces`.
-    #[test]
-    fn parse_imgs_captures_edid_and_dnam_payload() {
-        // 56-byte DNAM patterned with distinct bytes so a future
-        // field decoder catches misalignment vs the captured raw
-        // payload. Vanilla FO3/FNV ship the 56-byte form; Skyrim
-        // extends to 152 — the stub captures whatever DNAM length
-        // the file ships with.
-        let dnam: Vec<u8> = (0u8..56).collect();
-        let subs = vec![sub(b"EDID", b"InteriorWarmDim\0"), sub(b"DNAM", &dnam)];
-        let imgs = parse_imgs(0x000A_1234, &subs);
-        assert_eq!(imgs.form_id, 0x000A_1234);
-        assert_eq!(imgs.editor_id, "InteriorWarmDim");
-        assert_eq!(imgs.dnam_raw.as_deref(), Some(dnam.as_slice()));
+    fn floats_le(values: &[f32]) -> Vec<u8> {
+        values.iter().flat_map(|v| v.to_le_bytes()).collect()
     }
 
-    /// Companion: an IMGS record with no DNAM (legacy FO3 entries)
-    /// captures EDID and leaves `dnam_raw` at None — pinning the
-    /// stub's "best-effort capture" semantics so a future consumer
-    /// doesn't have to guard against the absent case downstream.
+    /// #4416 — FO3/FNV's single `DNAM` decodes by size: 132/148 bytes
+    /// without Skin Dimmer, 152 bytes with it (every later field one
+    /// float further on).
     #[test]
-    fn parse_imgs_without_dnam_leaves_payload_none() {
+    fn fo3_imgs_dnam_decodes_the_grade_by_size() {
+        use crate::esm::reader::GameKind;
+        for (size, first) in [(132usize, 24usize), (148, 24), (152, 25)] {
+            let mut f = vec![0.0f32; size / 4];
+            f[first] = 0.8; // saturation
+            f[first + 2] = 1.4; // contrast
+            f[first + 3] = 0.95; // brightness
+            f[first + 4..first + 8].copy_from_slice(&[0.2, 0.4, 0.6, 0.35]);
+            let subs = vec![sub(b"EDID", b"FNVInterior\0"), sub(b"DNAM", &floats_le(&f))];
+            let space = parse_imgs(0x10, &subs, GameKind::Fallout3NV)
+                .image_space
+                .unwrap_or_else(|| panic!("{size}-byte DNAM"));
+            assert_eq!(
+                (space.saturation, space.contrast, space.brightness),
+                (0.8, 1.4, 0.95),
+                "{size}"
+            );
+            assert_eq!(space.tint_color, [0.2, 0.4, 0.6, 0.35], "{size}");
+        }
+        let odd = vec![sub(b"DNAM", &[0u8; 56])];
+        assert!(parse_imgs(0x11, &odd, GameKind::Fallout3NV)
+            .image_space
+            .is_none());
+    }
+
+    /// #4416 — Skyrim/FO4 carry the grade in `CNAM` (saturation,
+    /// brightness, contrast) and `TNAM` (amount first, then RGB); their
+    /// `DNAM` is depth of field and must not be read as the grade. The
+    /// two `Default*` records carry only the legacy 56-byte `ENAM`.
+    #[test]
+    fn skyrim_imgs_reads_cnam_tnam_and_the_legacy_enam() {
+        use crate::esm::reader::GameKind;
+        let subs = vec![
+            sub(b"EDID", b"WhiterunInterior\0"),
+            sub(b"CNAM", &floats_le(&[0.9, 1.1, 1.3])),
+            sub(b"TNAM", &floats_le(&[0.25, 1.0, 0.5, 0.0])),
+            sub(b"DNAM", &floats_le(&[7.0, 7.0, 7.0, 7.0])),
+        ];
+        let space = parse_imgs(0x20, &subs, GameKind::Skyrim)
+            .image_space
+            .unwrap();
+        assert_eq!(
+            (space.saturation, space.brightness, space.contrast),
+            (0.9, 1.1, 1.3)
+        );
+        assert_eq!(space.tint_color, [1.0, 0.5, 0.0, 0.25]);
+
+        let mut legacy = vec![3.0f32; 7];
+        legacy.extend([0.8, 1.2, 1.4, 0.1, 0.3, 0.6, 0.9]);
+        let subs = vec![sub(b"ENAM", &floats_le(&legacy))];
+        let space = parse_imgs(0x21, &subs, GameKind::Fallout4)
+            .image_space
+            .unwrap();
+        assert_eq!(
+            (space.saturation, space.brightness, space.contrast),
+            (0.8, 1.2, 1.4)
+        );
+        assert_eq!(space.tint_color, [0.3, 0.6, 0.9, 0.1]);
+    }
+
+    /// Games without a decodable IMGS grade yield `None` — the identity.
+    #[test]
+    fn imgs_without_a_known_layout_decodes_to_none() {
+        use crate::esm::reader::GameKind;
         let subs = vec![sub(b"EDID", b"LegacyImagespace\0")];
-        let imgs = parse_imgs(0x000A_5678, &subs);
+        let imgs = parse_imgs(0x000A_5678, &subs, GameKind::Skyrim);
         assert_eq!(imgs.editor_id, "LegacyImagespace");
-        assert!(imgs.dnam_raw.is_none());
+        assert!(imgs.image_space.is_none());
+        let dnam = vec![sub(b"DNAM", &[0u8; 152])];
+        assert!(parse_imgs(0x1, &dnam, GameKind::Oblivion)
+            .image_space
+            .is_none());
     }
 
     #[test]

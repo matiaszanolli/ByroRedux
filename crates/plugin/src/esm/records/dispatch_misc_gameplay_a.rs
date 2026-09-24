@@ -109,13 +109,11 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         b"LGTM" => extract_records(reader, end, b"LGTM", &mut |fid, subs| {
             index.lighting_templates.insert(fid, parse_lgtm(fid, subs));
         })?,
-        // #624 / SK-D6-NEW-03 — IMGS imagespace records. CELL.XCIM
-        // cross-references resolve here. Currently a stub (EDID +
-        // raw DNAM payload); full DNAM struct decode + IMAD
-        // modifier graph deferred to M48 alongside the per-cell
-        // HDR-LUT renderer consumer.
+        // #624 / #4416 — IMGS image spaces, decoded to the canonical
+        // grade per game (`parse_imgs`). CELL.XCIM, WRLD.INAM and
+        // WTHR.IMSP resolve here.
         b"IMGS" => extract_records(reader, end, b"IMGS", &mut |fid, subs| {
-            index.image_spaces.insert(fid, parse_imgs(fid, subs));
+            index.image_spaces.insert(fid, parse_imgs(fid, subs, game));
         })?,
         b"HDPT" => extract_records(reader, end, b"HDPT", &mut |fid, subs| {
             index.head_parts.insert(fid, parse_hdpt(fid, subs));

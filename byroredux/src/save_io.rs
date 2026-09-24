@@ -1366,6 +1366,7 @@ fn reload_interior_session(
                 world,
                 r.lighting.as_ref(),
                 r.show_sky,
+                r.image_space,
             );
             ctx.signal_temporal_discontinuity(
                 crate::streaming_helpers::SVGF_TAA_STREAMING_RECOVERY_FRAMES,

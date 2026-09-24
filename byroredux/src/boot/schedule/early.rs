@@ -100,7 +100,9 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_core::ecs::components::groundcover::WindField>()
             .writes_resource::<byroredux_core::ecs::components::groundcover::WindField>()
             .writes_resource::<crate::components::SkyParamsRes>()
-            .writes_resource::<crate::components::CloudSimState>(),
+            .writes_resource::<crate::components::CloudSimState>()
+            // #4416 — publishes the exterior's base image space.
+            .writes_resource::<byroredux_scripting::ImageSpaceBase>(),
     );
     scheduler.add_to_with_access(
         Stage::Early,

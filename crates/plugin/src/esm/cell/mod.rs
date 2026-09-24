@@ -1114,6 +1114,10 @@ pub struct WorldspaceRecord {
     /// Parent-use flags (PNAM). Bits select which fields inherit
     /// from the parent worldspace. Zero on TES4 (no PNAM authored).
     pub parent_flags: u16,
+    /// Image space (`INAM`, an IMGS FormID) — FO3/FNV exteriors' base
+    /// colour grade (#4416). `None` when unauthored; later games take
+    /// theirs from the weather's `IMSP` instead.
+    pub image_space_form: Option<u32>,
     /// Default music FormID (ZNAM, MUSC record). `None` when the
     /// worldspace defers to the DefaultObjectManager music.
     pub default_music: Option<u32>,

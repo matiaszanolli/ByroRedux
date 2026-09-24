@@ -4056,3 +4056,75 @@ fn installed_masters_gras_spot_records_decode_field_for_field() {
 
     assert!(checked > 0, "no installed master was available to check");
 }
+
+/// #4416 — every shipped `IMGS` decodes to a plausible canonical grade on
+/// the four games that author one (FO3/FNV `DNAM` by size; Skyrim/FO4
+/// `CNAM`/`TNAM`/legacy `ENAM`). A misaligned offset shows up as a
+/// non-finite or wildly out-of-range value, or as a record that no longer
+/// decodes.
+#[test]
+#[ignore = "needs installed game data (checks every available master)"]
+fn installed_masters_image_spaces_decode_to_plausible_grades() {
+    let cases = [
+        (test_paths::FO3_ENV, test_paths::FO3_DEFAULT, "Fallout3.esm"),
+        (
+            test_paths::FNV_ENV,
+            test_paths::FNV_DEFAULT,
+            "FalloutNV.esm",
+        ),
+        (
+            test_paths::SKYRIM_SE_ENV,
+            test_paths::SKYRIM_SE_DEFAULT,
+            "Skyrim.esm",
+        ),
+        (test_paths::FO4_ENV, test_paths::FO4_DEFAULT, "Fallout4.esm"),
+    ];
+    let mut checked = 0;
+    for (env, fallback, master) in cases {
+        let Some(data) = data_dir(env, fallback) else {
+            eprintln!("[IMGS] {master}: skipping, game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(master)).expect("read master");
+        let index = parse_esm(&bytes).expect("parse master");
+        assert!(!index.image_spaces.is_empty(), "{master}: no IMGS records");
+        let mut undecoded = Vec::new();
+        for imgs in index.image_spaces.values() {
+            let Some(space) = imgs.image_space else {
+                undecoded.push(imgs.editor_id.clone());
+                continue;
+            };
+            for (name, v) in [
+                ("saturation", space.saturation),
+                ("brightness", space.brightness),
+                ("contrast", space.contrast),
+            ] {
+                assert!(
+                    v.is_finite() && (0.0..=10.0).contains(&v),
+                    "{master} {}: {name} = {v}",
+                    imgs.editor_id
+                );
+            }
+            for v in space.tint_color {
+                assert!(
+                    v.is_finite() && (0.0..=1.0).contains(&v),
+                    "{master} {}: tint {:?}",
+                    imgs.editor_id,
+                    space.tint_color
+                );
+            }
+        }
+        eprintln!(
+            "[IMGS] {master}: {} records, {} undecoded {:?}",
+            index.image_spaces.len(),
+            undecoded.len(),
+            undecoded
+        );
+        assert!(
+            undecoded.is_empty(),
+            "{master}: undecoded IMGS {undecoded:?}"
+        );
+        checked += 1;
+    }
+    eprintln!("[IMGS] {checked} master(s) checked");
+}

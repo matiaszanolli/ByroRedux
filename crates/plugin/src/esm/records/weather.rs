@@ -313,6 +313,12 @@ pub struct WeatherRecord {
     /// Skyrim precipitation/visual-effect form references, when authored.
     pub skyrim_precipitation_effect: Option<u32>,
     pub skyrim_visual_effect: Option<u32>,
+    /// #4416 — Skyrim/FO4 `IMSP`: the IMGS image space per time of day,
+    /// Sunrise / Day / Sunset / Night (xEdit `wbWeatherImageSpaces`; FO4's
+    /// four later Early/Late Sunrise/Sunset slots are not read — the
+    /// weather TOD model has no such keys). `None` = NULL / unauthored.
+    /// FO3/FNV weathers carry IMADs per slot instead, and no IMGS.
+    pub image_spaces: [Option<u32>; 4],
     /// Cloud texture paths. FNV/FO3 ship 4 layers (DNAM/CNAM/ANAM/BNAM
     /// = layers 0–3 in schema-emission order); Oblivion ships 2
     /// (DNAM = 0, CNAM = 1). Paths are `textures\`-root-relative
@@ -380,6 +386,7 @@ impl Default for WeatherRecord {
             skyrim_moon_glare: [SkyColor::default(); 4],
             skyrim_precipitation_effect: None,
             skyrim_visual_effect: None,
+            image_spaces: [None; 4],
             cloud_textures: [None, None, None, None],
             skyrim_cloud_textures: [const { None }; 32],
             oblivion_hdr: None,
@@ -420,6 +427,10 @@ pub fn parse_wthr(
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
+            // #4416 — FO4 authors IMSP like Skyrim (FO3/FNV never do).
+            b"IMSP" if sub.data.len() >= 16 => {
+                record.image_spaces = parse_image_spaces(&sub.data, remap);
+            }
 
             // NAM0: sky colors. Two on-disk strides exist:
             //   - 240 B = 10 groups × 6 TOD slots × 4 B (FNV default + later games):
@@ -628,6 +639,16 @@ pub fn parse_wthr(
 /// Return the exact Creation-era NAM0 `(group_count, tod_slot_count)` for
 /// canonical FO4/FO76 payload sizes. xEdit gates the extra four TOD samples at
 /// form version 111 and the final two fog-high groups at form version 119.
+/// `IMSP` — the first four IMGS FormIDs (Sunrise, Day, Sunset, Night),
+/// load-order remapped; a NULL slot is `None`. See
+/// [`WeatherRecord::image_spaces`].
+fn parse_image_spaces(data: &[u8], remap: &Option<FormIdRemap>) -> [Option<u32>; 4] {
+    std::array::from_fn(|slot| {
+        let raw = u32::from_le_bytes(data[slot * 4..slot * 4 + 4].try_into().unwrap());
+        (raw != 0).then(|| remap_fid(raw, remap))
+    })
+}
+
 fn creation_nam0_shape(size: usize) -> Option<(usize, usize)> {
     match size {
         272 => Some((17, 4)),
@@ -964,6 +985,9 @@ fn parse_wthr_skyrim(
                     u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
                     remap,
                 ));
+            }
+            b"IMSP" if sub.data.len() >= 16 => {
+                record.image_spaces = parse_image_spaces(&sub.data, remap);
             }
             // #4069 — NNAM is an RFCT (visual effect) cross-reference.
             b"NNAM" if sub.data.len() >= 4 => {

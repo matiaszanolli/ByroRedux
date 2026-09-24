@@ -49,7 +49,19 @@ pub struct ImageSpaceModifierApplication {
 /// `ImageSpaceModifierView`, down to the non-obvious identity defaults, with a
 /// hand-written 14-assignment bridge between them. One definition now lives in
 /// `byroredux-core` and both crates re-export it.
-pub use byroredux_core::imagespace::ImageSpaceModifier;
+pub use byroredux_core::imagespace::{ImageSpace, ImageSpaceModifier};
+
+/// #4416 — the image space the frame's IMAD modifiers compose onto: the
+/// current interior's `XCIM`, or the exterior's weather / worldspace grade,
+/// published by the binary each time it changes. Absent or default is the
+/// identity grade, which reproduces the pre-#4416 frame exactly.
+///
+/// Derived state: rebuilt from the loaded cell and the live weather, never
+/// saved.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ImageSpaceBase(pub ImageSpace);
+
+impl Resource for ImageSpaceBase {}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
@@ -379,6 +391,12 @@ pub fn install_image_space_modifiers(
 /// Sample every active IMAD and advance its authored lifetime. Schedule after
 /// animation-event delivery so a callback is visible in the same frame.
 pub fn image_space_modifier_system(world: &World, dt: f32) {
+    // Copied out before the state's write guard opens: no two resource
+    // guards are ever held together here.
+    let base = world
+        .try_resource::<ImageSpaceBase>()
+        .map(|base| base.0)
+        .unwrap_or_default();
     let Some(mut state) = world.try_resource_mut::<CinematicPresentationState>() else {
         return;
     };
@@ -389,6 +407,7 @@ pub fn image_space_modifier_system(world: &World, dt: f32) {
     state.image_space_modifier_frame = assemble_image_space_frame(
         &state.image_space_modifier_catalog,
         &state.active_image_space_modifiers,
+        &base,
     );
 
     let CinematicPresentationState {
@@ -403,11 +422,25 @@ pub fn image_space_modifier_system(world: &World, dt: f32) {
     });
 }
 
+/// #4416 — the grade starts from the cell's base image space and each
+/// active IMAD applies `value = value x mult + add` on top (the GECK's
+/// ImageSpace Modifiers rule: "multiply by zero and add the target value"
+/// to set a parameter outright), `strength` easing both terms from the
+/// identity (`mult = 1`, `add = 0`). With the identity base this is exactly
+/// the old `1 x (mult + add)` factor. The IMAD tint composites over the
+/// base tint by alpha, as successive IMAD tints already did.
 fn assemble_image_space_frame(
     catalog: &HashMap<u32, ImadRecord>,
     active: &[ActiveImageSpaceModifier],
+    base: &ImageSpace,
 ) -> ImageSpaceModifier {
-    let mut frame = ImageSpaceModifier::default();
+    let mut frame = ImageSpaceModifier {
+        saturation: base.saturation,
+        brightness: base.brightness,
+        contrast: base.contrast,
+        tint_color: base.tint_color,
+        ..ImageSpaceModifier::default()
+    };
     let mut radial_center_weight = 0.0;
     let mut radial_center_sum = [0.0; 2];
 
@@ -446,19 +479,27 @@ fn assemble_image_space_frame(
             radial_center_weight += weight;
         }
 
-        frame.saturation *= grade_factor(
+        apply_grade(
+            &mut frame.saturation,
             &record.saturation_mult,
             &record.saturation_add,
             time,
             strength,
         );
-        frame.brightness *= grade_factor(
+        apply_grade(
+            &mut frame.brightness,
             &record.brightness_mult,
             &record.brightness_add,
             time,
             strength,
         );
-        frame.contrast *= grade_factor(&record.contrast_mult, &record.contrast_add, time, strength);
+        apply_grade(
+            &mut frame.contrast,
+            &record.contrast_mult,
+            &record.contrast_add,
+            time,
+            strength,
+        );
         composite_color(
             &mut frame.tint_color,
             sample_color(&record.tint_color, time, [1.0, 1.0, 1.0, 0.0]),
@@ -480,9 +521,16 @@ fn assemble_image_space_frame(
     frame
 }
 
-fn grade_factor(mult: &[ImadScalarKey], add: &[ImadScalarKey], time: f32, strength: f32) -> f32 {
-    let authored = sample_scalar(mult, time, 1.0) + sample_scalar(add, time, 0.0);
-    (1.0 + (authored - 1.0) * strength).max(0.0)
+fn apply_grade(
+    value: &mut f32,
+    mult: &[ImadScalarKey],
+    add: &[ImadScalarKey],
+    time: f32,
+    strength: f32,
+) {
+    let mult = 1.0 + (sample_scalar(mult, time, 1.0) - 1.0) * strength;
+    let add = sample_scalar(add, time, 0.0) * strength;
+    *value = (*value * mult + add).max(0.0);
 }
 
 /// Shared keyed-linear-interpolation control flow behind `sample_scalar` /
@@ -745,6 +793,61 @@ mod tests {
                 .image_space_modifier_frame,
             ImageSpaceModifier::default()
         );
+    }
+
+    /// #4416 — with no IMAD active the frame IS the cell's base image space;
+    /// an active IMAD applies `base x mult + add` on top of it (not onto
+    /// the identity), and its tint composites over the base tint by alpha.
+    #[test]
+    fn imads_compose_onto_the_base_image_space() {
+        const IMAD: u32 = 0x0010_1DAD;
+        let key = |value| vec![ImadScalarKey { time: 0.0, value }];
+        let catalog = HashMap::from([(
+            IMAD,
+            ImadRecord {
+                form_id: IMAD,
+                duration_seconds: 10.0,
+                saturation_mult: key(0.5),
+                brightness_add: key(0.25),
+                tint_color: vec![ImadColorKey {
+                    time: 0.0,
+                    color: [0.0, 0.0, 1.0, 0.5],
+                }],
+                ..Default::default()
+            },
+        )]);
+        let base = ImageSpace {
+            saturation: 0.8,
+            brightness: 1.2,
+            contrast: 1.4,
+            tint_color: [1.0, 0.0, 0.0, 0.5],
+        };
+
+        let idle = assemble_image_space_frame(&catalog, &[], &base);
+        assert_eq!(
+            (
+                idle.saturation,
+                idle.brightness,
+                idle.contrast,
+                idle.tint_color
+            ),
+            (0.8, 1.2, 1.4, [1.0, 0.0, 0.0, 0.5])
+        );
+
+        let active = [ActiveImageSpaceModifier {
+            application: ImageSpaceModifierApplication {
+                form_id: IMAD,
+                strength: 1.0,
+            },
+            elapsed_seconds: 0.0,
+        }];
+        let frame = assemble_image_space_frame(&catalog, &active, &base);
+        assert!((frame.saturation - 0.4).abs() < 1e-6, "0.8 x 0.5");
+        assert!((frame.brightness - 1.45).abs() < 1e-6, "1.2 x 1 + 0.25");
+        assert_eq!(frame.contrast, 1.4, "no contrast tracks: the base stands");
+        // Alpha-over: 0.5 + 0.5 x (1 - 0.5) = 0.75 combined weight.
+        assert!((frame.tint_color[3] - 0.75).abs() < 1e-6);
+        assert!(frame.tint_color[0] > 0.0 && frame.tint_color[2] > 0.0);
     }
 
     /// Regression for #2260 (TD2-101): pin `sample_scalar`'s keyed-lerp

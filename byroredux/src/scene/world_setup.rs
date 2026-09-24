@@ -219,6 +219,7 @@ pub(crate) fn apply_worldspace_weather(
         world,
         ctx,
         tex_provider,
+        wctx,
         wctx.climate.as_ref(),
         wctx.default_weather.as_ref(),
     );
@@ -238,6 +239,7 @@ fn apply_environment(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
+    wctx: &cell_loader::ExteriorWorldContext,
     climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
     default_weather: Option<&byroredux_plugin::esm::records::WeatherRecord>,
 ) {
@@ -361,7 +363,15 @@ fn apply_environment(
         }
         // Full NAM0 table + per-climate TOD breakpoints + Skyrim DALC cube
         // (Z-up→Y-up once), all resolved at the EXAL boundary.
-        let new_weather = crate::env_translate::translate_weather(wthr, climate);
+        let mut new_weather = crate::env_translate::translate_weather(wthr, climate);
+        // #4416 — the exterior's base image space: this weather's IMSP, or
+        // the worldspace's inherited INAM.
+        new_weather.image_space = crate::env_translate::exterior_image_spaces(
+            Some(wthr),
+            &wctx.record_index.cells.worldspaces,
+            &wctx.worldspace_key,
+            &wctx.record_index.image_spaces,
+        );
         // First-time bootstrap: insert directly. A subsequent worldspace
         // change (door-walking interior↔exterior, M40 Phase 2) will
         // trigger the 8-second crossfade via WeatherTransitionRes.
@@ -497,7 +507,7 @@ pub(crate) fn apply_cell_climate_override(
         climate.map(|c| c.editor_id.as_str()).unwrap_or("<none>"),
         weather.map(|w| w.editor_id.as_str()).unwrap_or("<none>"),
     );
-    apply_environment(world, ctx, tex_provider, climate, weather);
+    apply_environment(world, ctx, tex_provider, wctx, climate, weather);
     *applied_climate = effective;
     true
 }
@@ -1334,6 +1344,7 @@ mod tests {
             grass_dimmer: 1.0,
             // #sunlight-dimmer — fixtures exercise no HNAM dimming.
             sunlight_dimmer: 1.0,
+            image_space: Default::default(),
         }
     }
 
