@@ -1060,6 +1060,10 @@ fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<Player
     };
     let flow_q = world.query::<WaterFlow>();
     let surface_q = world.query::<WaterSurfaceMesh>();
+    // #4791 — optional like `flow_q`: the storage exists only once an XWCU
+    // reference has spawned a marker, so an absent storage means "no
+    // placed currents", never "no water".
+    let current_q = world.query::<WaterCurrentVolume>();
     let bottom = pos.y - half_span;
     let top = pos.y + half_span;
     let mut best: Option<(PlayerWaterState, f32)> = None;
@@ -1106,19 +1110,19 @@ fn player_water_state(world: &World, pos: Vec3, half_span: f32) -> Option<Player
         // barrel beside them felt both. Both sources now contribute as
         // velocity vectors; a single-source case stays verbatim.
         let plane_flow = flow_q.as_ref().and_then(|q| q.get(entity).copied());
-        let marker_flow = {
-            let cq = world.query::<WaterCurrentVolume>()?;
-            let marker = cq.iter().find(|(_, current)| {
-                let v = &current.volume;
-                pos.x >= v.min[0]
-                    && pos.x <= v.max[0]
-                    && pos.y >= v.min[1]
-                    && pos.y <= v.max[1]
-                    && pos.z >= v.min[2]
-                    && pos.z <= v.max[2]
-            });
-            marker.map(|(_, current)| current.flow)
-        };
+        let marker_flow = current_q.as_ref().and_then(|cq| {
+            cq.iter()
+                .find(|(_, current)| {
+                    let v = &current.volume;
+                    pos.x >= v.min[0]
+                        && pos.x <= v.max[0]
+                        && pos.y >= v.min[1]
+                        && pos.y <= v.max[1]
+                        && pos.z >= v.min[2]
+                        && pos.z <= v.max[2]
+                })
+                .map(|(_, current)| current.flow)
+        });
         let flow = match (plane_flow, marker_flow) {
             (Some(a), Some(b)) => {
                 let x = a.direction[0] * a.speed + b.direction[0] * b.speed;
@@ -1639,6 +1643,40 @@ mod tests {
         );
     }
     use byroredux_core::ecs::components::water::WaterMaterial;
+
+    /// #4791 — the `WaterCurrentVolume` storage exists only after an XWCU
+    /// reference spawns a marker, so most water cells never create it. The
+    /// #4691 rewrite put that query's `?` in a block, where it returned
+    /// `None` from the whole sampler: no swim, breath or water damage in any
+    /// session without a marker. The sibling test registers the storage and
+    /// could not see it.
+    #[test]
+    fn player_water_state_survives_an_unregistered_current_volume_storage() {
+        let mut world = World::new();
+        world.register::<WaterPlane>();
+        world.register::<WaterVolume>();
+
+        let lake = world.spawn();
+        world.insert(
+            lake,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            lake,
+            WaterVolume {
+                min: [-10.0, -5.0, -10.0],
+                max: [10.0, 0.0, 10.0],
+            },
+        );
+
+        let state = player_water_state(&world, Vec3::new(0.0, -2.5, 0.0), 40.0)
+            .expect("a submerged capsule must get a water state with no current markers loaded");
+        assert!(state.flow.is_none());
+    }
 
     /// #3974 — the kinematic player's sampler reads a placed
     /// `WaterCurrentVolume` marker containing the capsule centre
