@@ -1218,9 +1218,16 @@ mod tests {
         let src = include_str!("../../shaders/water.frag");
         assert!(src.contains("vec3 fallAxis = length(push.flow.xyz) > 1.0e-5"));
         assert!(src.contains("uvWorld = vec2(dot(vWorldPos, sheetAcross), dot(vWorldPos, fallAxis));"));
-        assert!(src.contains("normalScrollA = vec2(0.0, -length(push.scroll.xy));"));
-        assert!(src.contains("normalScrollB = vec2(0.0, -length(push.scroll.zw));"));
-        assert!(src.contains("normalScrollC = vec2(0.0, -length(push.scroll_c.xy));"));
+        // #4728 — the sample point advances at -scroll·t, so features travel
+        // along +scroll: the vertical-only waterfall vectors keep +V
+        // (fallAxis is downward) to move the pattern down the sheet. The
+        // negated form was the pre-#4728 compensation for the flat
+        // branches' inverted sign and ran the fall back UP under the fixed
+        // convention.
+        assert!(src.contains("normalScrollA = vec2(0.0, length(push.scroll.xy));"));
+        assert!(src.contains("normalScrollB = vec2(0.0, length(push.scroll.zw));"));
+        assert!(src.contains("normalScrollC = vec2(0.0, length(push.scroll_c.xy));"));
+        assert!(!src.contains("normalScrollA = vec2(0.0, -length("));
         assert!(src.contains("flowOffset = vec2(0.0);"));
     }
 
