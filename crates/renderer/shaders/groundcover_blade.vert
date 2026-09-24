@@ -178,6 +178,24 @@ layout(location = 14) out vec2 vCardUv;
 layout(location = 15) flat out uint vCard;
 layout(location = 16) out float vCardWeight;
 
+// ── §12.3 ground-colour coupling inputs (#4056) ─────────────────────────
+// Sampled once at the blade base, where the blade meets the ground it takes
+// its colour from. The splat weights ride along with the terrain normal the
+// vertex shader already re-samples; the diffuse fetch itself happens in the
+// fragment stage, where the bindless `textures[]` array is readable without
+// widening its descriptor stages (and their per-stage bindless budget).
+/// Terrain diffuse UV rebuilt from world position — the same
+/// `col/32 * tiles`, `(1 - row/32) * tiles` mapping
+/// `cell_loader/terrain.rs` authored the terrain vertices with.
+layout(location = 17) out vec2 vTerrainUv;
+/// Splat weights for LAND layers 0-3 / 4-7 at the blade base.
+layout(location = 18) out vec4 vTerrainSplat0;
+layout(location = 19) out vec4 vTerrainSplat1;
+/// Terrain-tile SSBO slot for the layer diffuse indices, or
+/// `GROUNDCOVER_NO_TERRAIN_TILE`. `flat`: it is a per-cell constant and a
+/// non-uniform index into `terrainTiles[]` must not be interpolated.
+layout(location = 20) flat out uint vTerrainTileSlot;
+
 // The scene set already binds CameraUBO at set 1 / binding 1.  Only the
 // leading fields through `jitter` are declared here; the descriptor's full
 // range is larger, which Vulkan permits, and this avoids another clock or
@@ -378,6 +396,31 @@ void main() {
     vec3 up = ground.valid ? normalize(mix(
         vec3(0.0, 1.0, 0.0), ground.normal, GROUNDCOVER_TERRAIN_NORMAL_WEIGHT))
                            : vec3(0.0, 1.0, 0.0);
+
+    // ── §12.3 ground-colour coupling: the blade-base terrain sample ─────
+    //
+    // The species gradient is blended toward the terrain's own albedo at the
+    // base, by the per-species coupling weight riding `tipColour.a`. The
+    // fetch runs in the fragment stage; this block only captures what it
+    // needs from the sample the vertex shader already takes: the splat
+    // weights, the rebuilt diffuse UV and the tile slot naming the layer
+    // textures. An invalid sample zeroes the splats — no substrate, nothing
+    // to couple to — and the sentinel slot makes the fragment skip outright.
+    vTerrainSplat0 = ground.splat0;
+    vTerrainSplat1 = ground.splat1;
+    vTerrainTileSlot = ground.valid
+        ? cell.terrainTileSlot
+        : GROUNDCOVER_NO_TERRAIN_TILE;
+    // Inverse of `cell_loader/terrain.rs`'s UV authoring: `u = col/32 *
+    // TILES`, `v = (1 - row/32) * TILES`, with `col = (base.x - ox)/128`
+    // and `row = (oz - base.z)/128` — the same grid mapping
+    // `byroSampleTerrain` inverts (`terrain_sample.glsl`), where the row
+    // axis runs *opposite* world Z. Pinned against the Rust authoring
+    // formula by `groundcover_terrain_uv_matches_terrain_rs` (#4056).
+    vTerrainUv = vec2(
+        (base.x - cell.originXZ.x) * (LAND_TEXTURE_TILES_PER_CELL / EXTERIOR_CELL_UNITS),
+        (base.z - cell.originXZ.y) * (LAND_TEXTURE_TILES_PER_CELL / EXTERIOR_CELL_UNITS)
+            + LAND_TEXTURE_TILES_PER_CELL);
 
     // Per-blade yaw. The ribbon's width axis is perpendicular to both `up` and
     // the blade's facing, so a blade is a flat ribbon standing on the ground

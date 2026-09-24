@@ -58,6 +58,21 @@ pub const LAND_GRID_VERTS: usize = 33;
 /// Derived rather than typed: `EXTERIOR_CELL_UNITS / (LAND_GRID_VERTS - 1)`.
 pub const LAND_VERTEX_SPACING: f32 = EXTERIOR_CELL_UNITS / (LAND_GRID_VERTS as f32 - 1.0);
 
+/// Texture tiles per cell side for `LAND` diffuse/splat sampling (12.0).
+///
+/// Per openmw's ESM4 (Oblivion+) terrain (`Storage::getTextureTileCount` →
+/// `2 * ESM4::Land::sQuadTexturePerSide`, with `sQuadTexturePerSide = 6`):
+/// 2 quadrants per cell side × 6 texture tiles per quadrant. The host
+/// authors terrain vertex UVs from it (`cell_loader/terrain.rs`), and
+/// §12.3's ground-colour coupling reconstructs the same UV in the blade
+/// vertex shader from world position — so the *shader* needs this number
+/// too. It reaches GLSL through `shader_constants_data.rs` →
+/// `include/shader_constants.glsl`, one definition rather than a Rust one
+/// and a GLSL one drifting apart. The drift would be invisible in isolation
+/// (the grass would just take its ground colour from a slightly wrong texel)
+/// and only shows as a colour mismatch against the terrain behind the blade.
+pub const LAND_TEXTURE_TILES_PER_CELL: f32 = 12.0;
+
 /// Cell-grid `(gx, gy)` → Y-up world-space origin of that cell's
 /// south-west corner. Composes the cell-size scale with the Z-up→Y-up
 /// flip in one step:

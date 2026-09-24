@@ -33,9 +33,13 @@ struct GroundCoverCell {
     /// water must reach `byroGcMoisture` as the sentinel, not as 0.0 — see
     /// that function.
     float waterY;
+    /// Terrain-tile SSBO slot carrying this cell's splat layer diffuse
+    /// indices — §12.3's ground-colour coupling samples them at the blade
+    /// base (#4056). `0xFFFFFFFF` when the cell has no splat terrain; a
+    /// valid slot can be 0, so "absent" cannot be 0.
+    uint terrainTileSlot;
     float pad1;
     float pad2;
-    float pad3;
 };
 
 /// One 512-unit ground-cover chunk — §4's unit of dispatch, culling and LOD.

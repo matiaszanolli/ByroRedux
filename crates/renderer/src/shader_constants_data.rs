@@ -144,6 +144,13 @@ pub const VERTEX_SPLAT1_OFFSET_FLOATS: u32 = 21;
 pub const LAND_GRID_VERTS: u32 = byroredux_core::math::coord::LAND_GRID_VERTS as u32;
 pub const LAND_VERTEX_SPACING: f32 = byroredux_core::math::coord::LAND_VERTEX_SPACING;
 pub const EXTERIOR_CELL_UNITS: f32 = byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+/// §12.3 ground-colour coupling (#4056): the blade vertex shader rebuilds
+/// the terrain diffuse UV from world position with this factor, the same
+/// factor `cell_loader/terrain.rs` authored the terrain vertices' UV with.
+/// A drift would sample the grass's ground colour from the wrong texel —
+/// visible only as a subtle colour mismatch against the terrain itself.
+pub const LAND_TEXTURE_TILES_PER_CELL: f32 =
+    byroredux_core::math::coord::LAND_TEXTURE_TILES_PER_CELL;
 
 // Ground-cover chunking + the §11.1 sampling bench (#4052).
 //
@@ -198,6 +205,12 @@ pub const GROUNDCOVER_DEFAULT_AFFINITY: f32 =
 /// Sentinel water height meaning "no water plane in this cell"; see
 /// `byroGcMoisture`, whose no-water path returns 1.0.
 pub const GROUNDCOVER_NO_WATER: f32 = byroredux_core::ecs::components::groundcover::NO_WATER_HEIGHT;
+
+/// §12.3 (#4056) — `GpuGroundCoverCell::terrain_tile_slot` sentinel: the
+/// cell has no splat terrain, so the blade fragment skips the ground-colour
+/// coupling. A valid slot index can be 0, which is why "absent" is not 0.
+pub const GROUNDCOVER_NO_TERRAIN_TILE: u32 =
+    byroredux_core::ecs::components::groundcover::GROUNDCOVER_NO_TERRAIN_TILE;
 
 /// `slope_gate` — terrain `normal.y` below which no ground cover grows, and
 /// above which it is unattenuated. Smoothstepped between.

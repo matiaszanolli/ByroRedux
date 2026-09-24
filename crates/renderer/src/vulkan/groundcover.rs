@@ -97,11 +97,20 @@ pub struct GpuGroundCoverCell {
     /// **must** arrive as the sentinel — see `byroGcMoisture`, whose no-water
     /// path returns 1.0 rather than 0.0.
     pub water_y: f32,
-    pub pad1: [f32; 3],
+    /// The terrain-tile SSBO slot carrying this cell's splat layer diffuse
+    /// indices — §12.3's ground-colour coupling samples them at the blade
+    /// base (#4056). `u32::MAX` when the cell has no splat terrain; a valid
+    /// slot can be 0, so "absent" cannot be 0.
+    pub terrain_tile_slot: u32,
+    pub pad1: [f32; 2],
 }
 // SAFETY: `#[repr(C)]` over `f32`/`u32` only, explicitly padded to 64 bytes
 // with named fields, so every byte is initialised by a field write.
 unsafe impl NoUninit for GpuGroundCoverCell {}
+
+/// Sentinel for [`GpuGroundCoverCell::terrain_tile_slot`] — re-exported from
+/// core so the GLSL mirror and this struct cannot disagree about the value.
+pub use byroredux_core::ecs::components::groundcover::GROUNDCOVER_NO_TERRAIN_TILE;
 
 /// One fixed residency-ring slot. Mirrors `GroundCoverChunk` in the shared
 /// GLSL header.  Inactive slots remain in the uploaded prefix so their index

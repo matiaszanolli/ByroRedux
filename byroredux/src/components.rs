@@ -450,6 +450,12 @@ pub(crate) struct TerrainCoverInputs {
     /// would be an entire high-desert worldspace with no ground cover and
     /// nothing in the log to say why.
     pub(crate) water_y: f32,
+    /// The terrain-tile SSBO slot this cell's splat layers live in, so
+    /// §12.3's ground-colour coupling can sample the layer diffuse
+    /// textures the terrain itself shades with (#4056). `u32::MAX` when
+    /// the cell has no splat terrain (`allocate_terrain_tile` was never
+    /// called) — a valid slot index can be 0, so "absent" cannot be 0.
+    pub(crate) terrain_tile_slot: u32,
     /// Authored `GRAS` FormID lists associated with the same eight LAND
     /// splat lanes as `layer_affinity` — each lane carries its LTEX's
     /// full `GNAM` array in authored order (#4642), empty when the layer

@@ -632,7 +632,10 @@ Each phase is independently useful and independently reviewable.
   projected-pixel T0→T1 ribbon cross-fade are implemented; Tier 1 renders one
   widened representative per four-blade near tuft; Tier 2 groups those roots
   into palette-atlas clump cards with area-preserving fade. Tier 3 landed first
-  so every later tier is authored against a correct backdrop. Fixed-camera
+  so every later tier is authored against a correct backdrop. §12.3's
+  ground-colour coupling is implemented (2026-09-24): the blade fragment
+  blends the species gradient toward the terrain albedo sampled at the blade
+  base, by the per-species weight, fading to zero at the tip. Fixed-camera
   visual acceptance remains pending.
 - **Phase 4 — RT proxy shell.** Per-chunk shell, stochastic-absorption hit
   handling, refit on density change. **Gated, not scheduled** (revised
@@ -1182,6 +1185,24 @@ ground, a per-species base gradient is a smaller input than §7 assumed. Worth
 measuring before building the texture-sampling path, not after.
 
 **Type change.** `GroundCoverSpecies` gains a coupling weight.
+
+**IMPLEMENTED (2026-09-24, #4056).** The weight rides the GPU species
+record's `tipColour.a` (already carried since the type landed; this change
+added its only reader). The blade vertex shader captures the terrain sample
+it already takes at the blade base — splat weights, the terrain-tile slot
+added to `GroundCoverCell`, and the terrain diffuse UV rebuilt from world
+position — and the fragment blends the species gradient toward the
+splat-weighted average of the cell's painted layer diffuse textures, by
+`coupling × (1 - blade_t)`: strongest at the root, zero at the tip. Cards
+skip the term (their colour already comes from the shared palette atlas, so
+they cannot drift from the ground). The UV reconstruction is pinned against
+the terrain vertex authoring formula by
+`groundcover_terrain_uv_matches_terrain_rs` — the row axis runs opposite
+world Z, and getting that sign wrong samples a mirrored row, the failure
+class `terrain_sample.glsl`'s own block warns about. The fragment fetches
+with `textureGrad` on unconditionally captured varying derivatives: a 2×2
+pixel quad routinely straddles two blades, so nothing in the loop is
+quad-uniform (#4016's hazard class).
 
 ### 12.4 Interaction
 

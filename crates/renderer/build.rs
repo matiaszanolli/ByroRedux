@@ -199,6 +199,9 @@ fn main() {
     writeln!(out, "#define LAND_GRID_VERTS {LAND_GRID_VERTS}u").unwrap();
     writeln!(out, "#define LAND_VERTEX_SPACING {LAND_VERTEX_SPACING:?}").unwrap();
     writeln!(out, "#define EXTERIOR_CELL_UNITS {EXTERIOR_CELL_UNITS:?}").unwrap();
+    // §12.3 ground-colour coupling (#4056): the blade vertex shader rebuilds
+    // the terrain diffuse UV from world position with this factor.
+    writeln!(out, "#define LAND_TEXTURE_TILES_PER_CELL {LAND_TEXTURE_TILES_PER_CELL:?}").unwrap();
     writeln!(
         out,
         "#define VERTEX_TANGENT_OFFSET_FLOATS {VERTEX_TANGENT_OFFSET_FLOATS}u"
@@ -245,6 +248,9 @@ fn main() {
     writeln!(out).unwrap();
 
     writeln!(out, "// Ground-cover density field + scatter (#4054)").unwrap();
+    // §12.3 ground-colour coupling (#4056): `terrain_tile_slot` sentinel —
+    // the `u` suffix matters, the value overflows a signed int literal.
+    writeln!(out, "#define GROUNDCOVER_NO_TERRAIN_TILE {GROUNDCOVER_NO_TERRAIN_TILE}u").unwrap();
     for (name, value) in [
         ("GROUNDCOVER_DEFAULT_AFFINITY", GROUNDCOVER_DEFAULT_AFFINITY),
         ("GROUNDCOVER_NO_WATER", GROUNDCOVER_NO_WATER),

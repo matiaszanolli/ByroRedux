@@ -326,6 +326,7 @@ pub(crate) fn collect_groundcover_frame(
                 vertex_offset: gpu_mesh.global_vertex_offset,
                 water_y: cover.water_y,
                 layer_affinity: cover.layer_affinity,
+                terrain_tile_slot: cover.terrain_tile_slot,
             },
             origin.origin_xz,
         ));
@@ -419,7 +420,11 @@ pub(crate) fn collect_groundcover_frame(
                         cell.layer_affinity[7],
                     ],
                     water_y: cell.water_y,
-                    pad1: [0.0; 3],
+                    // §12.3's ground-colour coupling reads the cell's layer
+                    // diffuse indices from the terrain-tile SSBO through
+                    // this slot (#4056). u32::MAX = no splat terrain.
+                    terrain_tile_slot: cell.terrain_tile_slot,
+                    pad1: [0.0; 2],
                 });
                 let index = (cells.len() - 1) as u32;
                 emitted.insert(candidate.cell, index);
@@ -544,6 +549,9 @@ pub(crate) struct EntityCell {
     vertex_offset: u32,
     water_y: f32,
     layer_affinity: [f32; 8],
+    /// §12.3's terrain-tile slot for the layer diffuse indices (#4056),
+    /// `u32::MAX` when the cell has no splat terrain.
+    terrain_tile_slot: u32,
 }
 
 /// CPU payload for the bindless Tier-3 detail atlas. Its rows are generated
@@ -1289,6 +1297,36 @@ mod tests {
         assert!(out.iter().all(|species| species.card_atlas == [37, 0, 0, 0]));
     }
 
+    /// §12.3's per-species ground-coupling weight must reach the GPU record
+    /// lane the blade fragment shader reads (`tipColour.a`) — the blending
+    /// toward the terrain albedo is authored per species, and a default of
+    /// zero would silently pin every sward to the species gradient (#4056).
+    /// The fallback palette's own coupling weight is the expected value here.
+    #[test]
+    fn species_table_carries_the_ground_coupling_weight() {
+        let world = World::new();
+        let mut out = Vec::new();
+        collect_groundcover_species(&world, GroundCoverDimmer::NEUTRAL, 0, &mut out);
+        let fallback = byroredux_core::ecs::components::groundcover::GroundCoverSpecies::DEFAULT_TEMPERATE;
+        assert!((out[0].tip_colour[3] - fallback.ground_coupling).abs() < 1.0e-6);
+
+        let mut palette_world = World::new();
+        let mut species = fallback;
+        species.ground_coupling = 0.7;
+        palette_world.insert_resource(
+            byroredux_core::ecs::components::groundcover::GroundCoverPalette {
+                species: vec![species],
+                climate: byroredux_core::ecs::components::groundcover::Climate::Temperate,
+            },
+        );
+        let mut out = Vec::new();
+        collect_groundcover_species(&palette_world, GroundCoverDimmer(0.5), 0, &mut out);
+        assert!(
+            (out[0].tip_colour[3] - 0.7).abs() < 1.0e-6,
+            "an authored coupling weight must survive the dimmer unchanged"
+        );
+    }
+
     /// §12.4's disturber list is the actors, nearest first, capped. The cap
     /// is why the sort matters: an unsorted list truncated at 64 would drop
     /// whichever actors the ECS happened to iterate last, which is not stable
@@ -1395,6 +1433,63 @@ mod tests {
                  that term and the two would compound (#4057)"
             );
             assert!(base < tip, "the sheath is still paler than the lamina");
+        }
+    }
+
+    /// #4056 — §12.3's blade-side terrain UV formula must reproduce the UV
+    /// `cell_loader/terrain.rs` authored the terrain vertices with, or the
+    /// ground colour a blade couples to is sampled from the wrong texel —
+    /// plausible-looking, wrong, and only visible as a colour mismatch
+    /// against the terrain behind the blade (the exact failure class
+    /// `terrain_sample.glsl`'s grid-mapping block warns about, mirrored row
+    /// included). The blade vertex shader can't be executed here, so both
+    /// formulas are transliterated and compared over a world-position sweep
+    /// of one cell; the shader reads the same constants from
+    /// `shader_constants.glsl`, whose values come from the same core items
+    /// this test uses.
+    #[test]
+    fn groundcover_terrain_uv_matches_terrain_rs() {
+        use byroredux_core::math::coord::{
+            EXTERIOR_CELL_UNITS, LAND_GRID_VERTS, LAND_TEXTURE_TILES_PER_CELL,
+            LAND_VERTEX_SPACING,
+        };
+
+        let origin = [16384.0_f32, -8192.0_f32];
+        let tiles = LAND_TEXTURE_TILES_PER_CELL;
+        // The authoring formula, verbatim from `cell_loader/terrain.rs`'s
+        // vertex loop: `u = col/(GRID-1) * tiles`,
+        // `v = (1 - row/(GRID-1)) * tiles`, row/col the grid indices.
+        let authored = |wx: f32, wz: f32| {
+            let col = (wx - origin[0]) / LAND_VERTEX_SPACING;
+            let row = (origin[1] - wz) / LAND_VERTEX_SPACING;
+            (
+                col / (LAND_GRID_VERTS as f32 - 1.0) * tiles,
+                (1.0 - row / (LAND_GRID_VERTS as f32 - 1.0)) * tiles,
+            )
+        };
+        // The blade shader's reconstruction: world position scaled out of the
+        // cell size, with the row axis' world-Z opposition folded into the
+        // `+ tiles` offset.
+        let blade_shader = |wx: f32, wz: f32| {
+            (
+                (wx - origin[0]) * (tiles / EXTERIOR_CELL_UNITS),
+                (wz - origin[1]) * (tiles / EXTERIOR_CELL_UNITS) + tiles,
+            )
+        };
+
+        // Every grid vertex plus off-grid bilinear positions: the terrain
+        // sample the blade takes is at an arbitrary base, not a vertex.
+        for step in 0..=64u32 {
+            let t = step as f32 / 64.0;
+            let wx = origin[0] + t * EXTERIOR_CELL_UNITS * 0.75;
+            let wz = origin[1] - t * EXTERIOR_CELL_UNITS * 0.6;
+            let (au, av) = authored(wx, wz);
+            let (bu, bv) = blade_shader(wx, wz);
+            assert!(
+                (au - bu).abs() < 1.0e-4 && (av - bv).abs() < 1.0e-4,
+                "blade UV {bu:.6},{bv:.6} diverges from the authored {au:.6},{av:.6} \
+                 at world {wx},{wz}"
+            );
         }
     }
 }

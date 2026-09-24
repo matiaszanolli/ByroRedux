@@ -49,6 +49,14 @@ layout(location = 14) in vec2 vCardUv;
 layout(location = 15) flat in uint vCard;
 layout(location = 16) in float vCardWeight;
 
+// §12.3 ground-colour coupling (#4056): the blade-base terrain sample the
+// vertex shader captured — splat weights, the rebuilt diffuse UV and the
+// terrain-tile slot naming the layer diffuse textures. See the blend below.
+layout(location = 17) in vec2 vTerrainUv;
+layout(location = 18) in vec4 vTerrainSplat0;
+layout(location = 19) in vec4 vTerrainSplat1;
+layout(location = 20) flat in uint vTerrainTileSlot;
+
 layout(location = 0) out vec4 outColor;
 layout(location = 2) out vec2 outMotion;
 layout(location = 5) out vec4 outAlbedo;
@@ -111,6 +119,56 @@ void main() {
     vec3 albedo = vCard != 0u
         ? cardSample.rgb
         : mix(sp.baseColour.rgb, sp.tipColour.rgb, vBladeT);
+
+    // ── §12.3 ground-colour coupling (#4056) ────────────────────────────
+    //
+    // Blend the species gradient toward the terrain's own albedo at the
+    // blade base, by the per-species coupling weight riding `tipColour.a`:
+    // a meadow on red clay is not the green of one on peat, and when grass
+    // and ground disagree the grass reads as a layer resting *on* the
+    // terrain rather than as part of it. The weight fades to zero at the
+    // tip — the coupling roots the plant, it does not dye the whole blade.
+    //
+    // Cards skip this: their colour already comes from the same
+    // palette-generated atlas the terrain detail layer samples, so they
+    // cannot drift from the ground in the first place.
+    //
+    // The layer loop mirrors `triangle.frag`'s splat blend, with two
+    // differences that are both load-bearing. The `continue` branches below
+    // branch on per-fragment varyings, and a 2×2 pixel quad routinely
+    // straddles two blades of thin geometry — so nothing here is
+    // quad-uniform and `textureGrad` with explicitly captured varying
+    // derivatives is the only sound fetch (#4016's class of hazard; the
+    // derivatives are captured unconditionally, before any branch, for the
+    // same reason `triangle.frag` captures its splat gradients outside
+    // `terrainSplatActive`). And the blend is a weighted average over the
+    // painted layers, not `mix` against a base texture: the blade's base
+    // has no BTXT base layer of its own, and averaging the layers the splat
+    // actually paints is the ground colour the blade is standing in.
+    vec2 terrainUvDx = dFdx(vTerrainUv);
+    vec2 terrainUvDy = dFdy(vTerrainUv);
+    if (vCard == 0u && vTerrainTileSlot != GROUNDCOVER_NO_TERRAIN_TILE) {
+        GpuTerrainTile groundTile = terrainTiles[nonuniformEXT(vTerrainTileSlot)];
+        vec3 groundAlbedo = vec3(0.0);
+        float weightSum = 0.0;
+        for (uint i = 0u; i < 8u; ++i) {
+            float w = i < 4u
+                ? vTerrainSplat0[i]
+                : vTerrainSplat1[i - 4u];
+            if (w <= 0.0) continue;
+            uint layerIdx = groundTile.layerDiffuseIndex[i];
+            if (layerIdx == 0u) continue; // layer slot unused
+            groundAlbedo += w * textureGrad(
+                textures[nonuniformEXT(layerIdx)],
+                vTerrainUv, terrainUvDx, terrainUvDy).rgb;
+            weightSum += w;
+        }
+        if (weightSum > 0.0) {
+            float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
+            albedo = mix(albedo, groundAlbedo / weightSum, coupling);
+        }
+    }
+
     // Per-blade colour jitter. A field of identically-coloured blades reads as
     // one object with a texture on it rather than as many plants.
     albedo *= mix(

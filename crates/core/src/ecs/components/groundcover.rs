@@ -123,6 +123,14 @@ pub const DEFAULT_COVER_AFFINITY: f32 = 0.15;
 /// into GLSL, which has neither.
 pub const NO_WATER_HEIGHT: f32 = -1.0e30;
 
+/// `GpuGroundCoverCell::terrain_tile_slot` sentinel: the cell has no splat
+/// terrain, so §12.3's ground-colour coupling has no layer textures to
+/// sample (#4056). A valid slot index can be 0, which is why "absent" is
+/// not 0. Lives in core rather than on the renderer's GPU record because
+/// the GLSL mirror reaches shaders through `shader_constants_data.rs`,
+/// which can only name core items.
+pub const GROUNDCOVER_NO_TERRAIN_TILE: u32 = u32::MAX;
+
 /// One kind of ground cover in a worldspace's palette.
 ///
 /// Field-for-field the design's §7 shape. Every field is a *rendering* or

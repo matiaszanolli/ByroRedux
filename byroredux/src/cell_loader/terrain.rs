@@ -35,15 +35,17 @@ use byroredux_nif::import::MaterialTextureSet;
 /// Number of times a LAND diffuse/splat texture tiles across one exterior
 /// cell edge. Bethesda's LAND format carries no per-texture tiling field, so
 /// this is a fixed engine constant: the diffuse repeats `2 × quad-textures-
-/// per-side` times per cell. Per openmw's ESM4 (Oblivion+) terrain
-/// (`Storage::getTextureTileCount` → `2 * ESM4::Land::sQuadTexturePerSide`,
-/// with `sQuadTexturePerSide = 6`) that is **12** — 2 quadrants per cell side
-/// × 6 texture tiles per quadrant. Pre-fix the UV ran 0→1 across the whole
-/// 4096-BU cell (≈1 texel / 16 BU), so every exterior surface read as a
-/// blurry gray average regardless of mip level; the texture has to tile so
-/// near terrain shows real detail. `Lod` terrain reuses this same factor
-/// (`terrain_lod`) so the seam at the full-detail boundary tiles identically.
-pub(super) const LAND_TEXTURE_TILES_PER_CELL: f32 = 12.0;
+/// per-side` times per cell — **12**. Pre-fix the UV ran 0→1 across the
+/// whole 4096-BU cell (≈1 texel / 16 BU), so every exterior surface read as
+/// a blurry gray average regardless of mip level.
+///
+/// Lives in `byroredux_core::math::coord` (2026-09-24, #4056): §12.3's
+/// ground-colour coupling reconstructs the same UV in the blade vertex
+/// shader from world position, so the renderer's GLSL constants need the
+/// same number — one definition in core reaching both hosts through
+/// `shader_constants_data.rs` rather than a bin-side constant and a GLSL
+/// literal drifting apart.
+pub(crate) use byroredux_core::math::coord::LAND_TEXTURE_TILES_PER_CELL;
 
 /// Resolved terrain splat layers for one cell — up to 8 cell-global layers,
 /// each with its bindless texture handle and the per-quadrant alpha grids
@@ -1164,6 +1166,12 @@ pub(super) fn spawn_terrain_mesh(
             layer_affinity,
             water_y: cover_water_y,
             authored_grass,
+            // #4056 — the slot §12.3's ground-colour coupling reads the
+            // cell's layer diffuse indices from. The core sentinel (not 0)
+            // when there is no splat terrain: a valid slot can be 0.
+            terrain_tile_slot: terrain_tile_index.unwrap_or(
+                byroredux_core::ecs::components::groundcover::GROUNDCOVER_NO_TERRAIN_TILE,
+            ),
         },
     );
     // #renderlayer — terrain LAND tiles ARE the architectural floor
