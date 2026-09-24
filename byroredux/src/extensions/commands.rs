@@ -462,6 +462,7 @@ pub(super) fn apply_pending_actor_value_writes(world: &World, host: &mut Extensi
         }
         drop(values);
         drop(resolver);
+        let committed: Vec<EntityId> = staged.keys().copied().collect();
         let mut live = world
             .query_mut::<ActorValues>()
             .ok_or_else(|| "ActorValues storage disappeared before commit".to_owned())?;
@@ -471,10 +472,50 @@ pub(super) fn apply_pending_actor_value_writes(world: &World, host: &mut Extensi
                 .ok_or_else(|| "actor-value target disappeared before commit".to_owned())?;
             *target = values;
         }
+        drop(live);
+        commit_actor_value_deaths(world, &committed);
         Ok(())
     })();
     if let Err(error) = apply {
         host.record_host_fault(format!("deferred actor-value batch rejected: {error}"));
+    }
+}
+
+/// #4702 — the SDK batch is a Health writer outside `combat_damage_system`,
+/// so it owes the same alive→dead transition every other Health writer
+/// performs (`combat_damage_system`, `water_damage_system`, player
+/// drowning): an actor whose Health current value the batch left at or
+/// below zero, and which is not already `Dead`, gets the persisted `Dead`
+/// fact now and its structural consequences queued for the Late-stage
+/// sink. A `SetBase`/`ModifyPermanent` that lowers the ceiling kills
+/// exactly as a `Damage` does — the test is on the composed current value.
+fn commit_actor_value_deaths(world: &World, committed: &[EntityId]) {
+    use byroredux_core::ecs::components::{ActorVitals, Dead};
+    let killed: Vec<EntityId> = {
+        let (Some(vitals), Some(values)) =
+            (world.query::<ActorVitals>(), world.query::<ActorValues>())
+        else {
+            return;
+        };
+        let dead = world.query::<Dead>();
+        committed
+            .iter()
+            .copied()
+            .filter(|&entity| {
+                dead.as_ref().is_none_or(|dead| dead.get(entity).is_none())
+                    && vitals.get(entity).is_some_and(|vitals| {
+                        values
+                            .get(entity)
+                            .is_some_and(|values| values.current(vitals.health) <= 0.0)
+                    })
+            })
+            .collect()
+    };
+    for entity in killed {
+        if let Some(mut dead) = world.query_mut::<Dead>() {
+            dead.insert(entity, Dead);
+        }
+        crate::combat::queue_dead_actor_reconciliation(world, entity);
     }
 }
 

@@ -94,6 +94,14 @@ pub(crate) struct PendingDeathReconciliations {
 
 impl Resource for PendingDeathReconciliations {}
 
+#[cfg(test)]
+impl PendingDeathReconciliations {
+    /// The actors awaiting the Late-stage sink, in queue order.
+    pub(crate) fn queued(&self) -> &[EntityId] {
+        &self.actors
+    }
+}
+
 pub(crate) fn queue_dead_actor_reconciliation(world: &World, actor: EntityId) {
     let Some(mut pending) = world.try_resource_mut::<PendingDeathReconciliations>() else {
         log::error!("PendingDeathReconciliations missing; actor {actor} remains unreconciled");

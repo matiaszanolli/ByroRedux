@@ -3692,6 +3692,78 @@ fn actor_value_projection_and_deferred_apply_use_portable_avif_identity_atomical
     )));
 }
 
+/// #4702 — an SDK batch that drives Health to zero (by `Damage`, or by
+/// lowering the ceiling with `SetBase`) performs the same alive→dead
+/// transition as every other Health writer: `Dead` inserted and the
+/// structural reconciliation queued. A non-lethal batch, a non-Health AV
+/// and an already-dead actor are left alone.
+#[test]
+fn deferred_actor_value_batch_that_zeroes_health_kills_the_actor() {
+    use byroredux_core::ecs::components::{ActorVitals, Dead};
+    let mut world = World::new();
+    world.register::<Dead>();
+    world.insert_resource(crate::combat::PendingDeathReconciliations::default());
+    let order = crate::cell_loader::load_order::LoadOrder::new(
+        vec!["Skyrim.esm".into()],
+        vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+    );
+    world.insert_resource(
+        crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+    );
+    let form = |local| {
+        FormRef::new(
+            byroredux_core::form_id::PluginId::from_filename("Skyrim.esm")
+                .0
+                .to_be_bytes(),
+            local,
+        )
+    };
+    const HEALTH: u32 = 0x2C9;
+    const STAMINA: u32 = 0x2CA;
+    let actor = |world: &mut World| {
+        let actor = world.spawn();
+        let mut values = ActorValues::new();
+        values.set_base(HEALTH, 50.0);
+        values.set_base(STAMINA, 50.0);
+        world.insert(actor, values);
+        world.insert(actor, ActorVitals { health: HEALTH });
+        actor
+    };
+    let damaged = actor(&mut world);
+    let rebased = actor(&mut world);
+    let winded = actor(&mut world);
+    let grazed = actor(&mut world);
+    let corpse = actor(&mut world);
+    world.insert(corpse, Dead);
+
+    let mut host =
+        ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
+    for (entity, avif, operation, value) in [
+        (damaged, HEALTH, ActorValueOperation::Damage, 60.0),
+        (rebased, HEALTH, ActorValueOperation::SetBase, 0.0),
+        (winded, STAMINA, ActorValueOperation::Damage, 60.0),
+        (grazed, HEALTH, ActorValueOperation::Damage, 10.0),
+        (corpse, HEALTH, ActorValueOperation::Damage, 60.0),
+    ] {
+        let handle = host.bind_entity(entity, None).unwrap();
+        host.pending_actor_value_writes
+            .push(ActorValueCommand::new(handle, form(avif), operation, value).unwrap());
+    }
+    apply_pending_actor_value_writes(&world, &mut host);
+
+    assert!(world.has::<Dead>(damaged), "Damage past zero");
+    assert!(world.has::<Dead>(rebased), "SetBase to zero");
+    assert!(!world.has::<Dead>(winded), "only Health is lethal");
+    assert!(!world.has::<Dead>(grazed), "a non-lethal hit");
+    assert_eq!(
+        world
+            .resource::<crate::combat::PendingDeathReconciliations>()
+            .queued(),
+        &[damaged, rebased][..],
+        "exactly the two new deaths are reconciled; the corpse is not re-queued"
+    );
+}
+
 #[test]
 fn inventory_projection_aggregates_portable_forms_and_equipment_slots() {
     let mut world = World::new();
