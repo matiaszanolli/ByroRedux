@@ -2385,7 +2385,13 @@ mod tests {
     #[test]
     fn every_exterior_spawner_inserts_a_boundary_material() {
         let crate_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let boundary_fns = ["translate_texture_only_material(", "translate_material("];
+        // #4632 — the `.btr` spawner lowers through the authored-MSN
+        // texture-only variant, so the needle list carries it too.
+        let boundary_fns = [
+            "translate_texture_only_material(",
+            "translate_texture_only_material_with_authored_msn(",
+            "translate_material(",
+        ];
 
         let mut checked_files: Vec<String> = Vec::new();
         for root in SPAWNER_ROOTS {

@@ -2870,11 +2870,14 @@ mod tests {
         // along-flow — and composes on top of the current-driven term.
         assert!((mat.scroll_a[0] - 0.0).abs() < 1e-6);
         assert!((mat.scroll_a[1] - (scroll + 0.10)).abs() < 1e-6);
-        // Layer B: raw π/2 converts to (−1, 0) — pure cross-stream — and
-        // survives VERBATIM now (the #4544 quartering is gone); the
-        // deliberate perpendicular shear returns to the documented half
-        // rate.
-        assert!((mat.scroll_b[0] - (0.20 + scroll * WATER_PERPENDICULAR_SHEAR_SCROLL)).abs() < 1e-6);
+        // Layer B: raw π/2 converts to (−1, 0) — pure cross-stream toward
+        // −X — and survives VERBATIM now (the #4544 quartering is gone);
+        // the deliberate perpendicular shear also points −X here (flow is
+        // +Z, the shear term is (−flow_z, flow_x)) and returns to the
+        // documented half rate.
+        assert!(
+            (mat.scroll_b[0] - (-0.20 - scroll * WATER_PERPENDICULAR_SHEAR_SCROLL)).abs() < 1e-6
+        );
         assert!(mat.scroll_b[1].abs() < 1e-6);
         // Layer C: raw 0.25 converts to (−sin 0.25, cos 0.25)·0.30 verbatim.
         assert!((mat.scroll_c[0] - -0.30 * 0.25_f32.sin()).abs() < 1e-6);
