@@ -375,3 +375,69 @@ fn fog_medium_secondary_fields_are_gated() {
         ]
     );
 }
+
+/// #4731 — tie `check_water_plane`'s hand-kept field walk to
+/// `WaterMaterial`'s actual fields. Every float leaf of the default
+/// material (via the `inspect` Serialize derive the debug server already
+/// enables) must be walked by one of the two rules, and every walked name
+/// must still be a real field — so a struct addition reaches the `env:
+/// FAIL` gate instead of silently bypassing it, and a rename cannot leave
+/// a stale entry guarding nothing. Five WATAL fields landed within two
+/// days in August 2026; that burst rate is exactly how the #4483 class
+/// re-opens.
+#[test]
+fn water_plane_walk_covers_every_float_field_of_water_material() {
+    let json = serde_json::to_value(WaterMaterial::default())
+        .expect("WaterMaterial must serialize to JSON under the inspect feature");
+    let serde_json::Value::Object(map) = &json else {
+        panic!("WaterMaterial must serialize to an object, got {json:?}");
+    };
+    let float_fields: Vec<&str> = map
+        .iter()
+        .filter(|(_, value)| json_value_is_all_f64(value))
+        .map(|(key, _)| key.as_str())
+        .collect();
+    assert!(
+        float_fields.len() >= 48,
+        "fixture sanity: the default material must expose its float fields \
+         (48 walked today); got {float_fields:?}"
+    );
+
+    let mat = WaterMaterial::default();
+    let walked: Vec<&str> = super::water_radiance_fields(&mat)
+        .into_iter()
+        .chain(super::water_finite_fields(&mat))
+        .map(|(name, _)| name)
+        .collect();
+    for field in &float_fields {
+        assert!(
+            walked.contains(field),
+            "WaterMaterial float field `{field}` is not walked by \
+             check_water_plane — a new WATAL field would reach water.frag's \
+             push constants ungated by the finite/radiance rules (#4731, \
+             the #4483 class)"
+        );
+    }
+    for name in &walked {
+        assert!(
+            map.contains_key(*name),
+            "check_water_plane walks `{name}`, which is not a WaterMaterial \
+             field any more — the walk kept a stale entry after a rename \
+             (#4731)"
+        );
+    }
+}
+
+/// A JSON value is a float field (or a non-empty array of them). serde_json
+/// keeps the representation: f32/f64 serialize as f64-repr numbers, u32
+/// indices as u64 — so `is_f64()` separates the walked float leaves from
+/// the structural integer fields the walk deliberately skips.
+fn json_value_is_all_f64(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Number(number) => number.is_f64(),
+        serde_json::Value::Array(items) => {
+            !items.is_empty() && items.iter().all(json_value_is_all_f64)
+        }
+        _ => false,
+    }
+}

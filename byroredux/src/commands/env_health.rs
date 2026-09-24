@@ -142,12 +142,13 @@ fn check_fog_medium(out: &mut Vec<EnvFinding>, prefix: &str, medium: &FogMedium)
     );
 }
 
-/// Walk one resolved `WaterMaterial` (#4483). Every `f32` here reaches
-/// `water.frag`'s push constants verbatim: colours get the radiance rule,
-/// every other scalar the finite rule. Structural fields (indices, flags,
-/// the normal encoding) have no non-finite value space and are skipped.
-fn check_water_plane(out: &mut Vec<EnvFinding>, prefix: &str, mat: &WaterMaterial) {
-    for (field, values) in [
+/// The radiance-rule fields `check_water_plane` walks, as (name, values)
+/// pairs. Extracted from the inline walk so the #4731 struct-completeness
+/// test can tie the walked names to `WaterMaterial`'s own serialized
+/// fields instead of trusting a hand-kept list to stay in sync with the
+/// struct.
+fn water_radiance_fields(mat: &WaterMaterial) -> Vec<(&'static str, &[f32])> {
+    vec![
         ("shallow_color", &mat.shallow_color[..]),
         ("deep_color", &mat.deep_color[..]),
         ("underwater_color", &mat.underwater_color[..]),
@@ -158,71 +159,86 @@ fn check_water_plane(out: &mut Vec<EnvFinding>, prefix: &str, mat: &WaterMateria
         ("night_shallow_color", &mat.night_shallow_color[..]),
         ("night_deep_color", &mat.night_deep_color[..]),
         ("night_reflection_tint", &mat.night_reflection_tint[..]),
-    ] {
-        check_radiance(out, &format!("{prefix}.{field}"), values);
-    }
-    for (field, values) in [
-        ("fog_near", &[mat.fog_near][..]),
-        ("fog_far", &[mat.fog_far][..]),
-        ("depth_amount", &[mat.depth_amount][..]),
-        ("underwater_fog_near", &[mat.underwater_fog_near][..]),
-        ("underwater_fog_far", &[mat.underwater_fog_far][..]),
-        ("underwater_fog_amount", &[mat.underwater_fog_amount][..]),
-        ("opacity", &[mat.opacity][..]),
+    ]
+}
+
+/// The finite-rule fields `check_water_plane` walks — see
+/// [`water_radiance_fields`] for why this is a function and not an inline
+/// literal (#4731).
+fn water_finite_fields(mat: &WaterMaterial) -> Vec<(&'static str, &[f32])> {
+    vec![
+        ("fog_near", std::slice::from_ref(&mat.fog_near)),
+        ("fog_far", std::slice::from_ref(&mat.fog_far)),
+        ("depth_amount", std::slice::from_ref(&mat.depth_amount)),
+        ("underwater_fog_near", std::slice::from_ref(&mat.underwater_fog_near)),
+        ("underwater_fog_far", std::slice::from_ref(&mat.underwater_fog_far)),
+        ("underwater_fog_amount", std::slice::from_ref(&mat.underwater_fog_amount)),
+        ("opacity", std::slice::from_ref(&mat.opacity)),
         ("alpha_controls", &mat.alpha_controls[..]),
-        ("fresnel_f0", &[mat.fresnel_f0][..]),
-        ("reflectivity", &[mat.reflectivity][..]),
+        ("fresnel_f0", std::slice::from_ref(&mat.fresnel_f0)),
+        ("reflectivity", std::slice::from_ref(&mat.reflectivity)),
         (
             "reflection_hdr_multiplier",
-            &[mat.reflection_hdr_multiplier][..],
+            std::slice::from_ref(&mat.reflection_hdr_multiplier),
         ),
-        ("day_fog_near", &[mat.day_fog_near][..]),
-        ("day_fog_far", &[mat.day_fog_far][..]),
-        ("night_fog_near", &[mat.night_fog_near][..]),
-        ("night_fog_far", &[mat.night_fog_far][..]),
+        ("day_fog_near", std::slice::from_ref(&mat.day_fog_near)),
+        ("day_fog_far", std::slice::from_ref(&mat.day_fog_far)),
+        ("night_fog_near", std::slice::from_ref(&mat.night_fog_near)),
+        ("night_fog_far", std::slice::from_ref(&mat.night_fog_far)),
         ("scroll_a", &mat.scroll_a[..]),
         ("scroll_b", &mat.scroll_b[..]),
         ("scroll_c", &mat.scroll_c[..]),
-        ("uv_scale_a", &[mat.uv_scale_a][..]),
-        ("uv_scale_b", &[mat.uv_scale_b][..]),
-        ("uv_scale_c", &[mat.uv_scale_c][..]),
+        ("uv_scale_a", std::slice::from_ref(&mat.uv_scale_a)),
+        ("uv_scale_b", std::slice::from_ref(&mat.uv_scale_b)),
+        ("uv_scale_c", std::slice::from_ref(&mat.uv_scale_c)),
         ("uv_offset", &mat.uv_offset[..]),
         (
             "noise_amplitude_scales",
             &mat.noise_amplitude_scales[..],
         ),
-        ("noise_falloff", &[mat.noise_falloff][..]),
+        ("noise_falloff", std::slice::from_ref(&mat.noise_falloff)),
         ("normal_falloff", &mat.normal_falloff[..]),
         ("displacement", &mat.displacement[..]),
-        ("rain_start_size", &[mat.rain_start_size][..]),
-        ("rain_velocity", &[mat.rain_velocity][..]),
-        ("rain_falloff", &[mat.rain_falloff][..]),
-        ("rain_dampener", &[mat.rain_dampener][..]),
-        ("normal_magnitude", &[mat.normal_magnitude][..]),
+        ("rain_start_size", std::slice::from_ref(&mat.rain_start_size)),
+        ("rain_velocity", std::slice::from_ref(&mat.rain_velocity)),
+        ("rain_falloff", std::slice::from_ref(&mat.rain_falloff)),
+        ("rain_dampener", std::slice::from_ref(&mat.rain_dampener)),
+        ("normal_magnitude", std::slice::from_ref(&mat.normal_magnitude)),
         (
             "above_water_fog_amount",
-            &[mat.above_water_fog_amount][..],
+            std::slice::from_ref(&mat.above_water_fog_amount),
         ),
         ("depth_weights", &mat.depth_weights[..]),
         ("effect_controls", &mat.effect_controls[..]),
-        ("specular_magnitude", &[mat.specular_magnitude][..]),
-        ("specular_radius", &[mat.specular_radius][..]),
-        ("flowmap_scale", &[mat.flowmap_scale][..]),
+        ("specular_magnitude", std::slice::from_ref(&mat.specular_magnitude)),
+        ("specular_radius", std::slice::from_ref(&mat.specular_radius)),
+        ("flowmap_scale", std::slice::from_ref(&mat.flowmap_scale)),
         (
             "absorption_coefficients",
             &mat.absorption_coefficients[..],
         ),
         ("concentration", &mat.concentration[..]),
-        ("foam_strength", &[mat.foam_strength][..]),
-        ("shoreline_width", &[mat.shoreline_width][..]),
-        ("ior", &[mat.ior][..]),
-        ("wave_amplitude", &[mat.wave_amplitude][..]),
-        ("wave_frequency", &[mat.wave_frequency][..]),
-        ("angular_velocity", &[mat.angular_velocity][..]),
-        ("rain_response", &[mat.rain_response][..]),
-        ("sun_specular_power", &[mat.sun_specular_power][..]),
-        ("roughness", &[mat.roughness][..]),
-    ] {
+        ("foam_strength", std::slice::from_ref(&mat.foam_strength)),
+        ("shoreline_width", std::slice::from_ref(&mat.shoreline_width)),
+        ("ior", std::slice::from_ref(&mat.ior)),
+        ("wave_amplitude", std::slice::from_ref(&mat.wave_amplitude)),
+        ("wave_frequency", std::slice::from_ref(&mat.wave_frequency)),
+        ("angular_velocity", std::slice::from_ref(&mat.angular_velocity)),
+        ("rain_response", std::slice::from_ref(&mat.rain_response)),
+        ("sun_specular_power", std::slice::from_ref(&mat.sun_specular_power)),
+        ("roughness", std::slice::from_ref(&mat.roughness)),
+    ]
+}
+
+/// Walk one resolved `WaterMaterial` (#4483). Every `f32` here reaches
+/// `water.frag`'s push constants verbatim: colours get the radiance rule,
+/// every other scalar the finite rule. Structural fields (indices, flags,
+/// the normal encoding) have no non-finite value space and are skipped.
+fn check_water_plane(out: &mut Vec<EnvFinding>, prefix: &str, mat: &WaterMaterial) {
+    for (field, values) in water_radiance_fields(mat) {
+        check_radiance(out, &format!("{prefix}.{field}"), values);
+    }
+    for (field, values) in water_finite_fields(mat) {
         check_finite(out, &format!("{prefix}.{field}"), values);
     }
 }
