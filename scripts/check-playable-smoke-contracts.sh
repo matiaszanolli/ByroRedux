@@ -197,4 +197,43 @@ grep -Fq 'check FAIL 0 1 1' "$M47_SMOKE" \
 grep -Fq 'hard_fail=1' "$M47_SMOKE" \
     || fail "m47-triggers.sh no longer has a HARD failure path for zero recognized REFRs"
 
+# EXT-D7-2026-09-21-01 / #4730 — every gate the workflow dispatches must
+# resolve to a real script. The m-exteriors arm passed `m-exteriors.sh`
+# into run_gate, which appends `.sh` itself, so CI executed
+# `docs/smoke-tests/m-exteriors.sh.sh` (status 127) and the whole exterior
+# matrix measured nothing. Guard both the literal run_gate call sites and
+# the workflow's declared `gate` options that route through the dynamic
+# `*` arm. Comment text is stripped first so prose mentioning run_gate
+# cannot satisfy — or break — the scan.
+WORKFLOW="$ROOT_DIR/.github/workflows/playable-smoke.yml"
+mapfile -t LITERAL_GATES < <(
+    sed 's/#.*//' "$WORKFLOW" \
+        | grep -oE 'run_(declared_)?gate [a-zA-Z0-9-]+' \
+        | sed -E 's/run_(declared_)?gate //' | sort -u
+)
+(( ${#LITERAL_GATES[@]} >= 1 )) \
+    || fail "playable-smoke.yml declares no literal run_gate calls — did the dispatch shape change?"
+for gate in "${LITERAL_GATES[@]}"; do
+    [[ -f "$ROOT_DIR/docs/smoke-tests/$gate.sh" ]] \
+        || fail "playable-smoke.yml calls run_gate $gate but docs/smoke-tests/$gate.sh does not exist (run_gate appends .sh itself)"
+done
+echo "playable-smoke-contracts: PASS -- literal run_gate calls resolve to scripts (${LITERAL_GATES[*]})"
+
+mapfile -t GATE_OPTIONS < <(
+    sed -n '/^      gate:/,/^jobs:/p' "$WORKFLOW" \
+        | grep -E '^[[:space:]]+- ' | sed 's/^[[:space:]]*- //'
+)
+(( ${#GATE_OPTIONS[@]} >= 1 )) \
+    || fail "playable-smoke.yml declares no gate options — did the input shape change?"
+for gate in "${GATE_OPTIONS[@]}"; do
+    case "$gate" in
+        # `all` is the fixture-declared bundle; the other two are dedicated
+        # arms that never hand a script name to run_gate.
+        all|m-exteriors-static|groundcover-eval) continue ;;
+    esac
+    [[ -f "$ROOT_DIR/docs/smoke-tests/$gate.sh" ]] \
+        || fail "playable-smoke.yml offers gate option $gate but docs/smoke-tests/$gate.sh does not exist"
+done
+echo "playable-smoke-contracts: PASS -- workflow gate options resolve to scripts"
+
 echo "playable-smoke-contracts: PASS"

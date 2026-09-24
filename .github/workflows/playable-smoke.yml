@@ -100,7 +100,11 @@ jobs:
             m-exteriors-static)
               ext_game="$GAME"
               if [[ "$ext_game" == skyrim_se ]]; then ext_game=skyrim; fi
-              run_gate m-exteriors.sh "$ext_game" static
+              # run_gate appends `.sh` itself — passing `m-exteriors.sh`
+              # here made CI execute docs/smoke-tests/m-exteriors.sh.sh,
+              # a path that never exists (EXT-D7-2026-09-21-01 / #4730),
+              # so every dispatch of the exterior matrix measured nothing.
+              run_gate m-exteriors "$ext_game" static
               ;;
             # The ground-cover eval is not game-parameterised: its four
             # reference cases pin one FNV and one Skyrim pose each
