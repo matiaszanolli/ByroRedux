@@ -1373,23 +1373,49 @@ mod tests {
     /// on the route every smoke test drives (the spawn finalize inserts
     /// the `DraugrCombatAnim` marker regardless). Source-level pin in the
     /// established include_str! pattern — driving the installer live
-    /// needs real archives; counting the calls needs only this file.
+    /// needs real archives; counting the calls needs only the sources.
+    ///
+    /// #4635 — the count runs over `#[cfg(test)]`-stripped source (the
+    /// `material_translate.rs` meta-guard cut): the needle literals used
+    /// to self-count inside this test body, so a route deleted whole
+    /// (walk + combat together) read as "no regression". Counting the
+    /// bare installer names also covers the exterior route
+    /// (`scene/world_setup.rs`), whose call sites spell their arguments
+    /// differently. The per-file floor is today's real production count:
+    /// two interior sites in `load.rs`, one in world setup.
     #[test]
     fn every_animation_route_installs_the_combat_family_too() {
-        let source = include_str!("load.rs");
-        let walk = source.matches("populate_skyrim_walk_clip(world, &index, tex_provider)").count();
-        let combat = source
-            .matches("populate_draugr_combat_clips(world, &index, tex_provider)")
-            .count();
-        assert_eq!(
-            walk, combat,
-            "each populate_skyrim_walk_clip install site must have the \
-             populate_draugr_combat_clips sibling (#4551) — a route that \
-             spawns the DraugrCombatAnim marker without the clip resource \
-             makes the P2 combat takes silently no-op"
-        );
-        assert!(walk >= 2, "the --cell route has two install sites; a \
-             dropped site is the bug this pin exists for");
+        let production = |name: &str, src: &'static str| -> &'static str {
+            src.split_once("#[cfg(test)]")
+                .map(|(prod, _)| prod)
+                .unwrap_or_else(|| {
+                    panic!("{name} lost its `#[cfg(test)]` cut point — the meta-guard needs it")
+                })
+        };
+        for (name, whole_file, floor) in [
+            ("cell_loader/load.rs", include_str!("load.rs"), 2),
+            (
+                "scene/world_setup.rs",
+                include_str!("../scene/world_setup.rs"),
+                1,
+            ),
+        ] {
+            let source = production(name, whole_file);
+            let walk = source.matches("populate_skyrim_walk_clip").count();
+            let combat = source.matches("populate_draugr_combat_clips").count();
+            assert_eq!(
+                walk, combat,
+                "{name}: each populate_skyrim_walk_clip install site must have the \
+                 populate_draugr_combat_clips sibling (#4551) — a route that \
+                 spawns the DraugrCombatAnim marker without the clip resource \
+                 makes the P2 combat takes silently no-op"
+            );
+            assert!(
+                walk >= floor,
+                "{name}: floor of {floor} install site(s) broken — a route \
+                 deleted whole is the bug this pin exists for (#4635)"
+            );
+        }
     }
 
     /// #3671 — the resumable interior path must use the existing reference
