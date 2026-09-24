@@ -1246,20 +1246,33 @@ pub(crate) fn promote_weather_transition_target(world: &World) {
     let Some(tr) = world.try_resource::<WeatherTransitionRes>() else {
         return;
     };
-    let new_sky = tr.target.sky_colors;
-    let new_fog = tr.target.fog;
-    let new_fog_media = tr.target.fog_media;
-    let new_tod = tr.target.tod_hours;
-    let tr_target_wind = tr.target.wind_speed;
-    let tr_target_precipitation = tr.target.precipitation;
-    let tr_target_dalc = tr.target.skyrim_dalc_per_tod;
-    let tr_target_cloud_velocities = tr.target.cloud_layer_velocities;
-    let tr_target_cloud_velocities_authored = tr.target.cloud_layer_velocities_authored;
-    let tr_target_cloud_colors = tr.target.cloud_layer_colors;
-    let tr_target_cloud_alphas = tr.target.cloud_layer_alphas;
-    let tr_target_weather = tr.target.weather;
-    let tr_target_sunlight_dimmer = tr.target.sunlight_dimmer;
-    let tr_target_grass_dimmer = tr.target.grass_dimmer;
+    // #4733 — exhaustive destructuring (no `..`): adding a
+    // `WeatherDataRes` field is a compile error at this promotion site
+    // instead of a silently unpromoted field — the hand-copied variant of
+    // this body dropped a field four times (#1101 wind_speed, #1102 DALC,
+    // #4481 both HNAM dimmers, #3985 the authored-velocity flags). The
+    // `&` pattern copies each field out while `tr` is alive; the write
+    // below stays after the #3263 lock-order drop. `image_space` is
+    // deliberately not promoted verbatim: the completion frame
+    // lerp-samples the target's image space through `sample_image_space`
+    // instead of a raw copy.
+    let &WeatherDataRes {
+        sky_colors: new_sky,
+        fog: new_fog,
+        fog_media: new_fog_media,
+        tod_hours: new_tod,
+        wind_speed: tr_target_wind,
+        precipitation: tr_target_precipitation,
+        skyrim_dalc_per_tod: tr_target_dalc,
+        cloud_layer_velocities: tr_target_cloud_velocities,
+        cloud_layer_velocities_authored: tr_target_cloud_velocities_authored,
+        cloud_layer_colors: tr_target_cloud_colors,
+        cloud_layer_alphas: tr_target_cloud_alphas,
+        weather: tr_target_weather,
+        sunlight_dimmer: tr_target_sunlight_dimmer,
+        grass_dimmer: tr_target_grass_dimmer,
+        image_space: _,
+    } = &tr.target;
     // Lock-order boundary (#3263): weather_system holds WeatherDataRes while
     // reading WeatherTransitionRes. Do not move the WeatherDataRes write
     // above this drop or borrow `tr.target` through it; either change would
