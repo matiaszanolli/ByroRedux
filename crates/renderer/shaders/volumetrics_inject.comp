@@ -2923,49 +2923,59 @@ void main() {
     // Toward the sun, i.e. -light_in (light_in is the propagation
     // direction, away from the sun) — #1937.
     vec3 ray_dir = -light_in;
-    float visibility;
-    bool hasOpenSky = params.render_origin.w > 0.5;
-    bool opaqueHit = traceShadowBinary(
-        ray_origin,
-        ray_dir,
-        0.05,
-        DIRECTIONAL_SHADOW_TRACE_DISTANCE,
-        VISIBILITY_MASK_ALL_OPAQUE
-    );
-    float nearestWindowReach = DIRECTIONAL_SHADOW_TRACE_DISTANCE + 1.0;
-    bool authoredAperture = !hasOpenSky
-        && localSkyAperture(ray_origin, ray_dir, nearestWindowReach);
-    if (opaqueHit) {
-        // A bounded authored window plane can stand in for legacy roof/wall
-        // geometry whose baked beam represented a hole. Keep every blocker
-        // between the froxel and the plane; only the opaque shell beyond its
-        // upper edge is bypassed. Cones never use this exception.
-        float clearUntil = nearestWindowReach - FOG_APERTURE_RIM_PLANE_TOLERANCE_BU;
-        visibility = nearestWindowReach <= DIRECTIONAL_SHADOW_TRACE_DISTANCE
-            && (clearUntil <= 0.05 || !traceShadowBinary(
-                ray_origin, ray_dir, 0.05, clearUntil, VISIBILITY_MASK_ALL_OPAQUE
-            )) ? 1.0 : 0.0;
-    } else if (hasOpenSky || authoredAperture) {
-        visibility = 1.0;
-    } else {
-        bool sawGlass = traceArchitecturalWindowGlass(
-            ray_origin, ray_dir, params.volume_params.x
-        );
-        visibility = sawGlass || (
-            dot(scattering_coef, vec3(1.0)) > 1.0e-7
-            && dot(params.sun_color.rgb, vec3(1.0)) > 1.0e-5
-            && hasArchitectureRimAroundSkyRay(
-                ray_origin, ray_dir, params.volume_params.x
-            )
-        ) ? 1.0 : 0.0;
-    }
-    if (transportedMediumActive && visibility > 1.0e-4) {
-        visibility *= transportedCombustionTransmittance(
-            world_pos,
+    float visibility = 0.0;
+    // #4793 / #4785 — `visibility` feeds only the sun in-scatter term
+    // `scattering_coef * phase * sun_color * visibility` below, so when either
+    // factor is exactly zero every ray here is multiplied away. `sun_color`
+    // is a dispatch uniform (zeroed at night, and interiors take the portal
+    // sun, which is zero at night too), so that half of the test is
+    // warp-uniform; a froxel with no scattering medium skips on its own.
+    bool sunTermLive = any(greaterThan(params.sun_color.rgb, vec3(0.0)))
+        && any(greaterThan(scattering_coef, vec3(0.0)));
+    if (sunTermLive) {
+        bool hasOpenSky = params.render_origin.w > 0.5;
+        bool opaqueHit = traceShadowBinary(
+            ray_origin,
             ray_dir,
+            0.05,
             DIRECTIONAL_SHADOW_TRACE_DISTANCE,
-            jitter.z
+            VISIBILITY_MASK_ALL_OPAQUE
         );
+        float nearestWindowReach = DIRECTIONAL_SHADOW_TRACE_DISTANCE + 1.0;
+        bool authoredAperture = !hasOpenSky
+            && localSkyAperture(ray_origin, ray_dir, nearestWindowReach);
+        if (opaqueHit) {
+            // A bounded authored window plane can stand in for legacy roof/wall
+            // geometry whose baked beam represented a hole. Keep every blocker
+            // between the froxel and the plane; only the opaque shell beyond its
+            // upper edge is bypassed. Cones never use this exception.
+            float clearUntil = nearestWindowReach - FOG_APERTURE_RIM_PLANE_TOLERANCE_BU;
+            visibility = nearestWindowReach <= DIRECTIONAL_SHADOW_TRACE_DISTANCE
+                && (clearUntil <= 0.05 || !traceShadowBinary(
+                    ray_origin, ray_dir, 0.05, clearUntil, VISIBILITY_MASK_ALL_OPAQUE
+                )) ? 1.0 : 0.0;
+        } else if (hasOpenSky || authoredAperture) {
+            visibility = 1.0;
+        } else {
+            bool sawGlass = traceArchitecturalWindowGlass(
+                ray_origin, ray_dir, params.volume_params.x
+            );
+            visibility = sawGlass || (
+                dot(scattering_coef, vec3(1.0)) > 1.0e-7
+                && dot(params.sun_color.rgb, vec3(1.0)) > 1.0e-5
+                && hasArchitectureRimAroundSkyRay(
+                    ray_origin, ray_dir, params.volume_params.x
+                )
+            ) ? 1.0 : 0.0;
+        }
+        if (transportedMediumActive && visibility > 1.0e-4) {
+            visibility *= transportedCombustionTransmittance(
+                world_pos,
+                ray_dir,
+                DIRECTIONAL_SHADOW_TRACE_DISTANCE,
+                jitter.z
+            );
+        }
     }
 
     // In-scattered radiance from the sun at this voxel, gated on

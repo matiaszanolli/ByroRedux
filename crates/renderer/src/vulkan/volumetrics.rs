@@ -2391,6 +2391,53 @@ mod unit_tests {
         );
     }
 
+    /// #4793 / #4785 — every sun-visibility ray (opaque, aperture scan,
+    /// glass, rim probes, soot march) sits behind the `sunTermLive` test, so
+    /// a zero-radiance sun (night; interiors' portal sun at night) or a
+    /// froxel with no scattering medium traces none of them. The sun term is
+    /// `scattering_coef * phase * sun_color * visibility`, so the skip is
+    /// output-identical.
+    #[test]
+    fn sun_visibility_rays_are_gated_on_a_live_sun_term() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let gate = shader
+            .find("if (sunTermLive) {")
+            .expect("the sun block must be gated on sunTermLive (#4793)");
+        assert!(
+            shader.contains("any(greaterThan(params.sun_color.rgb, vec3(0.0)))")
+                && shader.contains("any(greaterThan(scattering_coef, vec3(0.0)))"),
+            "sunTermLive must test both factors of the sun in-scatter term"
+        );
+        let inscatter = shader
+            .find("scattering_coef * phase * params.sun_color.rgb * visibility")
+            .expect("sun in-scatter term");
+        assert!(
+            gate < inscatter,
+            "the gate must precede the sun in-scatter term"
+        );
+        let gated = &shader[gate..inscatter];
+        for call in [
+            "traceShadowBinary(",
+            "localSkyAperture(ray_origin, ray_dir",
+            "traceArchitecturalWindowGlass(",
+            "hasArchitectureRimAroundSkyRay(",
+            "transportedCombustionTransmittance(",
+        ] {
+            assert!(
+                gated.contains(call),
+                "{call} must stay inside the sunTermLive block (#4793)"
+            );
+        }
+        let before_gate = &shader[..gate];
+        let sun_block_start = before_gate
+            .rfind("vec3 ray_dir = -light_in;")
+            .expect("sun ray setup");
+        assert!(
+            !before_gate[sun_block_start..].contains("traceShadowBinary("),
+            "no sun-visibility ray may be traced before the sunTermLive gate"
+        );
+    }
+
     #[test]
     fn injector_consumes_authored_spectral_albedo_and_density_volumes() {
         let shader = include_str!("../../shaders/volumetrics_inject.comp");
