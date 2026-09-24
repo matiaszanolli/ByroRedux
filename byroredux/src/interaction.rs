@@ -705,6 +705,9 @@ pub(crate) enum InteractionKind {
     Door,
     Container,
     Corpse,
+    /// #4697 — a loose world item ([`crate::inventory::is_pickup_target`]);
+    /// activation routes through `container_loot_system` to `pickup_loot`.
+    Pickup,
 }
 
 impl InteractionKind {
@@ -713,6 +716,7 @@ impl InteractionKind {
             Self::Activate => "Activate",
             Self::Door => "Open",
             Self::Container | Self::Corpse => "Take all",
+            Self::Pickup => "Take",
         }
     }
 }
@@ -1098,13 +1102,14 @@ pub(crate) fn camera_ray(world: &World) -> Option<(Vec3, Vec3)> {
 /// #3698 (ECS-P2-02) — the scratch map is taken OUT of
 /// `InteractionCandidateScratch` (via `mem::take`, dropping the write
 /// guard immediately) before `populate_candidates` runs, not populated
-/// in place while the guard is held. `populate_candidates` acquires five
+/// in place while the guard is held. `populate_candidates` acquires
 /// component read guards (`DoorTeleport`, `RumbleOnActivate`,
 /// `QuestAdvanceOnActivate`, `TwoStateActivator`,
-/// `MG07LabyrinthianDoor`) — doing that while
+/// `MG07LabyrinthianDoor`, and since #4697/#4698 `SceneAliasCandidate`
+/// and `FormIdComponent`) — doing that while
 /// `InteractionCandidateScratch`'s write guard was still open recorded
-/// five scratch→component edges per frame in the global lock-order
-/// graph. Same capacity-reuse contract as before: whatever the caller
+/// one scratch→component edge per guard per frame in the global
+/// lock-order graph. Same capacity-reuse contract as before: whatever the caller
 /// (`select_interaction_target`) hands back into the resource after
 /// using this frame's map (`scratch.candidates = candidates;`, further
 /// down this file) is what's taken out here next frame.
@@ -1141,6 +1146,28 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
                 InteractionKind::Container
             };
             candidates.insert(entity, kind);
+        }
+    }
+    // #4697 — loose items. Prefilter on the catalog while only
+    // `SceneAliasCandidate` is held (item placements are a small share of
+    // all placement roots), then run the full pickup predicate per survivor
+    // with every guard released, the same order the loot-source arm keeps.
+    let item_placements: Vec<_> = world
+        .try_resource::<crate::inventory::InventoryCatalog>()
+        .and_then(|catalog| {
+            let identities = world.query::<byroredux_scripting::SceneAliasCandidate>()?;
+            Some(
+                identities
+                    .iter()
+                    .filter(|(_, identity)| catalog.is_pickup_base(identity.base_form_id))
+                    .map(|(entity, _)| entity)
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    for entity in item_placements {
+        if crate::inventory::is_pickup_target(world, entity) {
+            candidates.entry(entity).or_insert(InteractionKind::Pickup);
         }
     }
     if let Some(query) = world.query::<DoorTeleport>() {
@@ -1190,6 +1217,20 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
                     .or_insert(InteractionKind::Activate);
             }
         }
+    }
+    // #4698 — a `Disable()`d placement keeps its root (#3278: FormID,
+    // `DoorTeleport`, `Locked`, container `Inventory`) but spawns nothing
+    // visible or solid, so it must not be a candidate either. Read live,
+    // so a `Disable()` on a resident reference stops interaction at once
+    // even though its meshes only go on the next load.
+    if world
+        .try_resource::<byroredux_scripting::ReferenceEnableState>()
+        .is_some()
+    {
+        candidates.retain(|entity, _| {
+            let placement = world.get::<FormIdComponent>(*entity).map(|id| id.0);
+            !crate::cell_loader::spawn::placement_is_disabled(world, placement)
+        });
     }
 }
 
@@ -1953,6 +1994,191 @@ mod tests {
             );
             assert_eq!(world.get::<Inventory>(player).unwrap().items, expected);
         }
+    }
+
+    /// Register a single MISC item base in a fresh catalog, the shape
+    /// `install_catalog` builds from a real plugin index.
+    fn install_misc_catalog(world: &mut World, base: u32, name: &str) {
+        use byroredux_plugin::esm::records::{
+            common::CommonItemFields, EsmIndex, ItemKind, ItemRecord,
+        };
+        let mut index = EsmIndex::default();
+        index.items.insert(
+            base,
+            ItemRecord {
+                form_id: base,
+                common: CommonItemFields {
+                    full_name: name.into(),
+                    ..Default::default()
+                },
+                kind: ItemKind::Misc,
+            },
+        );
+        crate::inventory::install_catalog(world, &index);
+    }
+
+    /// A placed REFR of `base` with its own interned placement identity —
+    /// the `stamp_quest_reference` shape every cell-loaded root carries.
+    fn spawn_placed_reference(
+        world: &mut World,
+        center: Vec3,
+        reference: u32,
+        base: u32,
+    ) -> EntityId {
+        let entity = world.spawn();
+        world.insert(entity, Transform::new(center, Quat::IDENTITY, 1.0));
+        world.insert(entity, WorldBound::new(center, 10.0));
+        let form = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("Test.esm"),
+            local: LocalFormId(reference),
+        });
+        world.insert(entity, FormIdComponent(form));
+        world.insert(
+            entity,
+            byroredux_scripting::SceneAliasCandidate {
+                reference_form_id: reference,
+                base_form_id: base,
+                ..Default::default()
+            },
+        );
+        entity
+    }
+
+    /// #4697 / #4706 — the whole input path for a loose item: aim + E
+    /// selects a "Take" candidate, the activation reaches `pickup_loot`,
+    /// the player gains the authored `XCNT` stack, the placement is marked
+    /// and its tombstone parked (a respawn of the same REFR comes back
+    /// already taken), and the taken item stops being a candidate.
+    #[test]
+    fn physical_activate_picks_up_a_loose_item_stack() {
+        use byroredux_core::ecs::components::{Inventory, ItemStack};
+        let mut world = input_fixture();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        world.register::<crate::inventory::PickedUp>();
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(
+            crate::cell_loader::reference_state::PersistentReferenceStates::default(),
+        );
+        let player = spawn_camera(&mut world);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(player, Inventory::new());
+        install_misc_catalog(&mut world, 0xA110, "Rounds");
+        let item = spawn_placed_reference(&mut world, Vec3::new(0.0, 0.0, -80.0), 0x0B0B, 0xA110);
+        world.insert(item, crate::inventory::PlacedItemCount(12));
+
+        world
+            .resource_mut::<InputState>()
+            .keys_held
+            .insert(KeyCode::KeyE);
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+        let selected = world.resource::<InteractionState>().target.unwrap();
+        assert_eq!(selected.entity, item);
+        assert_eq!(selected.kind, InteractionKind::Pickup);
+        assert_eq!(selected.kind.verb(), "Take");
+        crate::inventory::container_loot_system(&world, 0.0);
+
+        assert_eq!(
+            world.get::<Inventory>(player).unwrap().items,
+            vec![ItemStack::new(0xA110, 12)],
+            "the whole authored stack, not one item"
+        );
+        assert!(world.has::<crate::inventory::PickedUp>(item));
+        assert_eq!(
+            crate::notifications::drain(&world),
+            vec!["Added Rounds (12)".to_owned()]
+        );
+
+        // The tombstone is parked: the same REFR respawned comes back taken.
+        let respawn = world.spawn();
+        let form = world.get::<FormIdComponent>(item).unwrap().0;
+        world.insert(respawn, FormIdComponent(form));
+        assert!(crate::cell_loader::reference_state::restore(
+            &mut world, respawn
+        ));
+        assert!(world.has::<crate::inventory::PickedUp>(respawn));
+
+        // A taken item is no longer offered.
+        world.resource_mut::<InputState>().keys_held.clear();
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+        assert!(world.resource::<InteractionState>().target.is_none());
+    }
+
+    /// #4698 — a `Disable()`d door or container keeps its root payloads
+    /// (#3278) but is neither selected nor activated; re-enabling it
+    /// restores both.
+    #[test]
+    fn disabled_door_and_container_are_not_interaction_candidates() {
+        use byroredux_core::ecs::components::{Inventory, ItemStack};
+        use byroredux_plugin::esm::records::{ContainerRecord, EsmIndex};
+        let mut world = input_fixture();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(byroredux_scripting::ReferenceEnableState::default());
+        let player = spawn_camera(&mut world);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(player, Inventory::new());
+        let mut index = EsmIndex::default();
+        index.containers.insert(
+            0xCAFE,
+            ContainerRecord {
+                form_id: 0xCAFE,
+                editor_id: "TestChest".into(),
+                full_name: "Chest".into(),
+                model_path: String::new(),
+                weight: 0.0,
+                flags: 0,
+                open_sound: 0,
+                close_sound: 0,
+                script_form_id: 0,
+                script_instance: None,
+                contents: Vec::new(),
+            },
+        );
+        crate::inventory::install_catalog(&mut world, &index);
+
+        let door = spawn_placed_reference(&mut world, Vec3::new(0.0, 0.0, -80.0), 0xD00, 0x5678);
+        world.insert(
+            door,
+            DoorTeleport {
+                destination_form_id: 0x1234,
+                position_zup: [0.0; 3],
+                rotation_zup: [0.0; 3],
+            },
+        );
+        let chest = spawn_placed_reference(&mut world, Vec3::new(0.0, 0.0, -60.0), 0xC0, 0xCAFE);
+        world.insert(
+            chest,
+            Inventory {
+                items: vec![ItemStack::new(0x1234, 3)],
+            },
+        );
+        for reference in [0xD00, 0xC0] {
+            world
+                .resource_mut::<byroredux_scripting::ReferenceEnableState>()
+                .set_enabled(reference, false);
+        }
+
+        let candidates = collect_candidates(&world);
+        assert!(!candidates.contains_key(&door), "disabled door");
+        assert!(!candidates.contains_key(&chest), "disabled container");
+        world
+            .resource_mut::<InputState>()
+            .keys_held
+            .insert(KeyCode::KeyE);
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+        assert!(world.resource::<InteractionState>().target.is_none());
+        assert!(!world.has::<byroredux_scripting::ActivateEvent>(door));
+        assert!(!world.has::<byroredux_scripting::ActivateEvent>(chest));
+
+        world
+            .resource_mut::<byroredux_scripting::ReferenceEnableState>()
+            .set_enabled(0xD00, true);
+        let candidates = collect_candidates(&world);
+        assert_eq!(candidates.get(&door), Some(&InteractionKind::Door));
+        assert!(!candidates.contains_key(&chest));
     }
 
     #[test]

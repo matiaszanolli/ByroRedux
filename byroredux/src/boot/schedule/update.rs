@@ -145,6 +145,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::papyrus_demo::RumbleOnActivate>()
             .reads::<byroredux_scripting::papyrus_demo::quest_advance::QuestAdvanceOnActivate>()
             .reads::<byroredux_scripting::papyrus_demo::mg07_door::MG07LabyrinthianDoor>()
+            // #4697 — pickup candidates skip taken placements; #4698 —
+            // disabled placements are filtered against the enable ledger.
+            .reads::<crate::inventory::PickedUp>()
+            .reads_resource::<byroredux_scripting::ReferenceEnableState>()
             .writes::<byroredux_scripting::ActivateEvent>(),
     );
     scheduler.add_exclusive_with_access(
@@ -166,6 +170,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<crate::inventory::PickedUp>()
             .reads::<byroredux_core::ecs::components::Owned>()
             .reads::<byroredux_core::ecs::components::FactionRanks>()
+            // #4706 — the placed stack size pickup_loot grants.
+            .reads::<crate::inventory::PlacedItemCount>()
             .writes::<byroredux_core::ecs::components::Inventory>(),
     );
     // Combat follows the same producer-before-consumer event contract as

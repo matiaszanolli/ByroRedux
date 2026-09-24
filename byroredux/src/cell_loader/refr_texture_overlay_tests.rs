@@ -47,6 +47,7 @@ fn empty_placed_ref(base_form_id: u32) -> PlacedRef {
         script_instance: None,
         lock: None,
         water_velocity: None,
+        item_count: None,
     }
 }
 

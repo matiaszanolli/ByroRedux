@@ -555,6 +555,10 @@ pub struct PlacedRef {
     /// reference does not author a local current. CELL-level `XWCU` is not
     /// read: its shipped entries carry no velocity (see `xwcu_linear_velocity`).
     pub water_velocity: Option<[f32; 3]>,
+    /// Placed stack size from the REFR's `XCNT` (#4706): `Some(n)` for an
+    /// item placement authored as a stack of `n` (vanilla: 2–50, e.g. FO3's
+    /// stacks of 12 rounds). `None` when absent — a single item.
+    pub item_count: Option<u32>,
 }
 
 /// Lock state decoded from a REFR's `XLOC` sub-record.

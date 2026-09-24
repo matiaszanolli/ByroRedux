@@ -107,6 +107,13 @@ impl InventoryCatalog {
         )
         .ok()
     }
+
+    /// A base whose placements are picked up directly: a catalogued item
+    /// that is not a container. The per-placement half (no own inventory,
+    /// not dead, not already taken) is [`is_pickup_target`].
+    pub(crate) fn is_pickup_base(&self, base_form_id: u32) -> bool {
+        !self.containers.contains(&base_form_id) && self.entries.contains_key(&base_form_id)
+    }
 }
 
 impl Resource for InventoryCatalog {}
@@ -916,8 +923,7 @@ pub(crate) fn transfer_loot(
 /// clears with one unequip event per slot, and locked/non-container
 /// activations are rejected inside the transfer's own safety gates. An
 /// already-empty source transfers nothing and says nothing. A loose world
-/// item is picked up directly — one item per placement, the Bethesda REFR
-/// convention.
+/// item is picked up directly — the whole placed stack (`XCNT`, #4706).
 pub(crate) fn container_loot_system(world: &World, _dt: f32) {
     let Some(player) = world
         .try_resource::<PlayerEntity>()
@@ -965,9 +971,9 @@ pub(crate) fn is_pickup_target(world: &World, entity: byroredux_core::ecs::Entit
     else {
         return false;
     };
-    world.try_resource::<InventoryCatalog>().is_some_and(|catalog| {
-        !catalog.containers.contains(&base) && catalog.entries.contains_key(&base)
-    })
+    world
+        .try_resource::<InventoryCatalog>()
+        .is_some_and(|catalog| catalog.is_pickup_base(base))
 }
 
 /// Marker on a placement whose item the player already picked up. Keeps the
@@ -980,9 +986,20 @@ impl Component for PickedUp {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Execute a pickup: append one stack of the placement's base item to the
-/// player's inventory, hide the placement's meshes, park the tombstone, and
-/// publish the item/activation events. `false` when `target` is not a
+/// Authored stack size of an item placement — the REFR's `XCNT` (#4706).
+/// Stamped on the placement root at spawn only when the REFR authors one;
+/// an unstamped placement is a single item. Re-derived from the plugin on
+/// every load, so it is never serialized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlacedItemCount(pub(crate) u32);
+impl Component for PlacedItemCount {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Execute a pickup: append one stack of the placement's base item (its
+/// authored [`PlacedItemCount`], else one) to the player's inventory, hide
+/// the placement's meshes, park the tombstone, and publish the
+/// item/activation events. `false` when `target` is not a
 /// pickup target or the player cannot receive items.
 pub(crate) fn pickup_loot(
     world: &World,
@@ -999,6 +1016,9 @@ pub(crate) fn pickup_loot(
         return false;
     };
     let stolen = transfer_is_theft(world, player, target);
+    let count = world
+        .get::<PlacedItemCount>(target)
+        .map_or(1, |count| count.0.max(1));
     {
         let Some(mut inventories) = world.query_mut::<Inventory>() else {
             return false;
@@ -1006,7 +1026,7 @@ pub(crate) fn pickup_loot(
         let Some(destination) = inventories.get_mut(player) else {
             return false;
         };
-        destination.items.push(ItemStack::new(base, 1));
+        destination.items.push(ItemStack::new(base, count));
     }
     // A `&World` system inserts through the query write guard (the
     // `apply_player_drowning_damage` pattern), which needs the storage to
@@ -1026,10 +1046,13 @@ pub(crate) fn pickup_loot(
         }
     }
     crate::cell_loader::reference_state::mark_picked_up(world, target);
-    let name = world
+    let mut name = world
         .try_resource::<InventoryCatalog>()
         .and_then(|catalog| catalog.entries.get(&base).map(|entry| entry.name.clone()))
         .unwrap_or_else(|| format!("Item {base:08X}"));
+    if count > 1 {
+        name = format!("{name} ({count})");
+    }
     crate::notifications::push(
         world,
         if stolen {
@@ -1043,7 +1066,7 @@ pub(crate) fn pickup_loot(
         player,
         [byroredux_scripting::ItemTransfer {
             item_form_id: base,
-            count: 1,
+            count,
             added: true,
             stolen,
         }],

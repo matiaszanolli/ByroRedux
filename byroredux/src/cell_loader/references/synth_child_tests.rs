@@ -34,6 +34,7 @@ fn actor_placement_fixture() -> esm::cell::PlacedRef {
         script_instance: None,
         lock: None,
         water_velocity: None,
+        item_count: None,
     }
 }
 
@@ -397,6 +398,7 @@ fn is_primary_synth_gates_every_identity_stamp_call_site() {
         script_instance: None,
         lock: None,
         water_velocity: None,
+        item_count: None,
     };
     let load_order =
         crate::cell_loader::load_order::LoadOrder::all_regular(vec!["Test.esm".to_string()]);
@@ -546,6 +548,7 @@ fn logical_quest_reference_spawns_identity_and_attaches_scripts() {
         script_instance: None,
         lock: None,
         water_velocity: None,
+        item_count: None,
     };
     let load_order =
         crate::cell_loader::load_order::LoadOrder::all_regular(vec!["Test.esm".to_string()]);

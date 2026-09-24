@@ -850,6 +850,11 @@ pub(super) fn spawn_synth_child(
                 },
             );
         }
+        // #4706 — `XCNT` is REFR-level too: the placed stack `pickup_loot`
+        // grants whole.
+        if let Some(count) = placed_ref.item_count {
+            world.insert(placement_root, crate::inventory::PlacedItemCount(count));
+        }
         // P3 pickup tombstones — plain item placements have no other restore
         // boundary (NPCs restore inside `stamp_quest_reference`, CONT
         // inventories at their own attach step just below), so consume a

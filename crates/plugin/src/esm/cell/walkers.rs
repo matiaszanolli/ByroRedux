@@ -896,6 +896,8 @@ fn parse_refr_group_inner(
             // "Locked" is checked), so presence alone is the lock gate.
             let mut lock: Option<LockData> = None;
             let mut water_velocity: Option<[f32; 3]> = None;
+            // #4706 — REFR stack size (`XCNT`).
+            let mut item_count: Option<u32> = None;
             // SCR-D7-01 / #1737 — the REFR's own `VMAD` (Skyrim+
             // objectReference override scripts), decoded so the cell loader
             // can attach them additively with the base record's scripts.
@@ -1133,6 +1135,17 @@ fn parse_refr_group_inner(
                             water_velocity = Some(velocity);
                         }
                     }
+                    // #4706 — XCNT, the placed stack size of an item REFR
+                    // (a signed 32-bit count, same layout on every
+                    // supported game; vanilla authors 2–50). Absent means
+                    // one; a non-positive count is treated as absent.
+                    b"XCNT" => {
+                        item_count = r
+                            .i32()
+                            .ok()
+                            .and_then(|count| u32::try_from(count).ok())
+                            .filter(|count| *count > 0);
+                    }
                     _ => {}
                 }
             }
@@ -1172,6 +1185,7 @@ fn parse_refr_group_inner(
                     script_instance: ref_script_instance,
                     lock,
                     water_velocity,
+                    item_count,
                 });
             }
         } else if &header.record_type == b"LAND" {

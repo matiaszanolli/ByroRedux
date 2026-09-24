@@ -162,6 +162,27 @@ fn refr_xwcu_rejects_partial_entries() {
     assert_eq!(refr.water_velocity, None);
 }
 
+/// #4706 — `XCNT` is the placed stack size of an item REFR. A stack of 12
+/// (FO3's common ammo placement) must survive the parse; absent means a
+/// single item, and a non-positive count never fabricates a stack.
+#[test]
+fn refr_xcnt_decodes_the_placed_stack_size() {
+    let stack = parse_one_refr(&build_refr_with_subs(
+        0x1234,
+        &[(b"XCNT", 12i32.to_le_bytes().as_slice())],
+    ));
+    assert_eq!(stack.item_count, Some(12));
+    let single = parse_one_refr(&build_refr_with_subs(0x1234, &[]));
+    assert_eq!(single.item_count, None);
+    for bogus in [0i32, -3] {
+        let refr = parse_one_refr(&build_refr_with_subs(
+            0x1234,
+            &[(b"XCNT", bogus.to_le_bytes().as_slice())],
+        ));
+        assert_eq!(refr.item_count, None, "XCNT {bogus}");
+    }
+}
+
 /// #2906 / ESM-D3-01 — every FormID-bearing REFR field must cross the
 /// plugin-local → global boundary. The plugin declares one master (raw self
 /// index 1) but is loaded at global slot 2, making the remap deliberately
