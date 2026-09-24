@@ -219,6 +219,12 @@ pub struct NiPSysEmitter {
 pub struct NiPSysEmitterCtlr {
     pub base: crate::blocks::controller::NiTimeControllerBase,
     pub interpolator_ref: BlockRef,
+    /// #4560 — nif.xml `Data: Ref<NiPSysEmitterCtlrData>` (until 10.1.0.103):
+    /// the legacy birth-rate link, in the slot that becomes `Visibility
+    /// Interpolator` from 10.1.0.104. Kept so the rate import can follow
+    /// THIS controller's own data instead of a whole-scene first match.
+    /// `NULL` at 10.1.0.104+, where the slot is the visibility interpolator.
+    pub data_ref: BlockRef,
 }
 
 /// `NiPSysEmitterCtlrData` — legacy (pre-interpolator) birth-rate data
@@ -945,10 +951,16 @@ pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysEmitterCtl
     // here, unconditionally, at every version this parser covers — so unlike
     // the interpolator_ref read above (whose PRESENCE is version-gated), this
     // one is not.
-    let _vis_interpolator_or_data_ref = stream.read_block_ref()?;
+    let vis_interpolator_or_data_ref = stream.read_block_ref()?;
+    let data_ref = if stream.version() < NifVersion::V10_1_0_104 {
+        vis_interpolator_or_data_ref
+    } else {
+        BlockRef::NULL
+    };
     Ok(NiPSysEmitterCtlr {
         base,
         interpolator_ref,
+        data_ref,
     })
 }
 

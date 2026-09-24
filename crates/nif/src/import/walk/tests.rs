@@ -1032,6 +1032,7 @@ mod emitter_rate_tests {
                 target_ref: BlockRef::NULL,
             },
             interpolator_ref,
+            data_ref: BlockRef::NULL,
         }
     }
 
@@ -1154,6 +1155,44 @@ mod emitter_rate_tests {
             "the ctlr behind an opaque sibling head must be found via its \
              base.target_ref (#4467)"
         );
+    }
+
+    /// #4560 — the legacy (pre-10.1.0.104) tier follows each system's OWN
+    /// controller `Data` link. Two legacy emitters in one file used to both
+    /// take the first `NiPSysEmitterCtlrData` in block order; each now gets
+    /// its own rate, and a data block no controller links is attributed to
+    /// nobody.
+    #[test]
+    fn legacy_emitter_ctlr_data_resolves_per_instance() {
+        use crate::blocks::particle::NiPSysEmitterCtlrData;
+        let mut scene = NifScene::default();
+        // [0] / [1] the two systems' legacy birth-rate data.
+        scene.blocks.push(Box::new(NiPSysEmitterCtlrData {
+            birth_rate_first: Some(7.0),
+        }));
+        scene.blocks.push(Box::new(NiPSysEmitterCtlrData {
+            birth_rate_first: Some(40.0),
+        }));
+        // [2] system A's legacy ctlr (no interpolator), data at [0].
+        let mut ctlr_a = emitter_ctlr(BlockRef::NULL);
+        ctlr_a.data_ref = BlockRef(0u32);
+        scene.blocks.push(Box::new(ctlr_a));
+        // [3] system B's legacy ctlr, data at [1].
+        let mut ctlr_b = emitter_ctlr(BlockRef::NULL);
+        ctlr_b.data_ref = BlockRef(1u32);
+        scene.blocks.push(Box::new(ctlr_b));
+
+        assert_eq!(extract_emitter_rate(&scene, BlockRef(2u32)), Some(7.0));
+        assert_eq!(
+            extract_emitter_rate(&scene, BlockRef(3u32)),
+            Some(40.0),
+            "system B must read its own data, not the first in block order"
+        );
+
+        // [4] a legacy ctlr with no Data link: the unlinked data blocks
+        // above belong to other controllers and must not be borrowed.
+        scene.blocks.push(Box::new(emitter_ctlr(BlockRef::NULL)));
+        assert_eq!(extract_emitter_rate(&scene, BlockRef(4u32)), None);
     }
 
     /// The fallback is per-instance, not a scene-wide first-match: a

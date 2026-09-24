@@ -740,6 +740,9 @@ fn ni_psys_emitter_ctlr_reads_data_ref_below_10_1_0_104() {
         ctrl.interpolator_ref.is_null(),
         "base interpolator_ref is since=10.1.0.104 — must not be read below it"
     );
+    // #4560 — the legacy Data link is kept, so the rate import can follow
+    // this controller's own NiPSysEmitterCtlrData.
+    assert_eq!(ctrl.data_ref.index(), Some(88));
     assert_eq!(stream.position() as usize, bytes.len());
 }
 
@@ -769,6 +772,10 @@ fn ni_psys_emitter_ctlr_reads_visibility_interpolator_at_10_1_0_104() {
         .downcast_ref::<crate::blocks::particle::NiPSysEmitterCtlr>()
         .expect("downcast NiPSysEmitterCtlr");
     assert_eq!(ctrl.interpolator_ref.index(), Some(9));
+    assert!(
+        ctrl.data_ref.is_null(),
+        "from 10.1.0.104 the slot is the Visibility Interpolator, not Data (#4560)"
+    );
     assert_eq!(stream.position() as usize, bytes.len());
 }
 

@@ -412,17 +412,24 @@ pub(crate) fn extract_emitter_max_particles(scene: &NifScene, data_ref: BlockRef
 /// 361/361 FO3 ctlrs (and 393/393 SSE) target their `NiParticleSystem`
 /// directly, so the fallback is total over the measured corpus, not a
 /// heuristic.
-fn find_own_emitter_ctlr_interpolator(
+///
+/// #4560 — returns both of the controller's rate links, so the legacy tier
+/// resolves through the same per-instance lookup as the modern one.
+fn find_own_emitter_ctlr_refs(
     scene: &NifScene,
     controller_ref: BlockRef,
-) -> Option<BlockRef> {
+) -> Option<EmitterCtlrRefs> {
     use crate::blocks::particle::{NiPSysEmitterCtlr, NiParticleSystem};
 
-    let mut found: Option<BlockRef> = None;
+    let refs = |ctlr: &NiPSysEmitterCtlr| EmitterCtlrRefs {
+        interpolator: ctlr.interpolator_ref,
+        legacy_data: ctlr.data_ref,
+    };
+    let mut found: Option<EmitterCtlrRefs> = None;
     crate::anim::walk_controller_chain(scene, controller_ref, |_idx, block, _base| {
         if found.is_none() {
             if let Some(ctlr) = block.as_any().downcast_ref::<NiPSysEmitterCtlr>() {
-                found = Some(ctlr.interpolator_ref);
+                found = Some(refs(ctlr));
             }
         }
     });
@@ -446,17 +453,29 @@ fn find_own_emitter_ctlr_interpolator(
                     .and_then(|tb| tb.as_any().downcast_ref::<NiParticleSystem>())
                     .is_some_and(|sys| sys.controller_ref == controller_ref)
             })
-            .map(|ctlr| ctlr.interpolator_ref)
+            .map(refs)
     })
 }
 
-/// Legacy `NiPSysEmitterCtlrData` tier (below) stays a whole-scene scan:
-/// deprecated pre-10.2 (nif.xml), attached via an even older
-/// `NiParticleSystemController` (until v10.0.1.0) this codebase doesn't
-/// currently link back to a specific `NiParticleSystem` at all — a
-/// residual, lower-priority scope this #4261 pass didn't extend to. The
-/// modern tier above resolves per-instance: own-chain walk first, then
-/// the #4467 target-ref fallback for chains the walk cannot traverse.
+/// The rate links of one particle system's own `NiPSysEmitterCtlr`
+/// (plain `BlockRef`s, to sidestep threading a borrow out through the
+/// chain-walk callback).
+#[derive(Clone, Copy)]
+struct EmitterCtlrRefs {
+    /// `NiSingleInterpController.Interpolator` (10.1.0.104+).
+    interpolator: BlockRef,
+    /// Pre-10.1.0.104 `Data` link to `NiPSysEmitterCtlrData` (#4560).
+    legacy_data: BlockRef,
+}
+
+/// Both tiers resolve per-instance through the same lookup: own-chain walk
+/// first, then the #4467 target-ref fallback for chains the walk cannot
+/// traverse. #4560 — the legacy `NiPSysEmitterCtlrData` tier used to stay a
+/// whole-scene first match (cross-attributing rates in a multi-emitter
+/// file) on the premise that the data hung off an older
+/// `NiParticleSystemController`; per nif.xml it is `NiPSysEmitterCtlr`'s own
+/// `Data` ref (until 10.1.0.103), now captured as `data_ref`. An unlinked
+/// data block is not attributed to anyone.
 pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -> Option<f32> {
     use crate::anim::resolve_blend_interpolator_target;
     use crate::blocks::interpolator::{NiBlendFloatInterpolator, NiFloatData, NiFloatInterpolator};
@@ -644,8 +663,9 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
     }
 
     fn resolve(scene: &NifScene, controller_ref: BlockRef, curves: CurveTier) -> Option<f32> {
+        let own = find_own_emitter_ctlr_refs(scene, controller_ref);
         // Modern: controller → interpolator → (keyed data | constant).
-        if let Some(interp_ref) = find_own_emitter_ctlr_interpolator(scene, controller_ref) {
+        if let Some(interp_ref) = own.map(|refs| refs.interpolator) {
             if let Some(interp_idx) = interp_ref.index() {
                 if let Some(r) = float_interpolator_rate(scene, interp_idx, curves) {
                     return Some(r);
@@ -700,11 +720,10 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
                 }
             }
         }
-        // Legacy: NiPSysEmitterCtlrData first birth-rate key.
-        scene
-            .blocks
-            .iter()
-            .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlrData>())
+        // Legacy: this controller's own NiPSysEmitterCtlrData (#4560), first
+        // birth-rate key.
+        own.and_then(|refs| refs.legacy_data.index())
+            .and_then(|idx| scene.get_as::<NiPSysEmitterCtlrData>(idx))
             .and_then(|d| d.birth_rate_first)
             .and_then(sane)
     }
