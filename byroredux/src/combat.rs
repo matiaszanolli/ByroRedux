@@ -128,9 +128,11 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     // the mode checked — so a fly-cam session inflated the swing counter and
     // reported a cooldown the player never incurred, corrupting the very
     // telemetry `combat.status` (the P2 gate's console surface) reads.
-    let in_character_mode = world
+    let can_swing = world
         .try_resource::<PlayerMode>()
-        .is_some_and(|mode| *mode == PlayerMode::Character);
+        .is_some_and(|mode| *mode == PlayerMode::Character)
+        // #4701 — a dead player's attack edge is not a swing either.
+        && crate::systems::player_can_act(world);
 
     // #3697 (ECS-P2-01) — resolved before `CombatState`'s write guard opens,
     // not from inside it. `attack_cooldown_seconds` reads `EquippedWeapon`,
@@ -165,7 +167,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             // strands `blocking` true.
             state.blocking = block_held;
             state.cooldown_remaining = (state.cooldown_remaining - dt.max(0.0)).max(0.0);
-            if attack_pressed && in_character_mode && state.cooldown_remaining <= 0.0 {
+            if attack_pressed && can_swing && state.cooldown_remaining <= 0.0 {
                 state.cooldown_remaining = armed_cooldown;
                 true
             } else {
@@ -187,7 +189,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
                     .and_then(|q| q.get(actor).map(|state| state.cooldown_remaining))
             });
             log::debug!(
-                "combat.input: attack edge rejected player={aggressor:?} character={in_character_mode} cooldown={cooldown:?} dt={dt}"
+                "combat.input: attack edge rejected player={aggressor:?} can_swing={can_swing} cooldown={cooldown:?} dt={dt}"
             );
         }
         // Deliberately NOT `record_miss`: every miss reason below describes a
@@ -1384,6 +1386,26 @@ mod tests {
             state.last.is_none(),
             "the mode bail deliberately leaves `last` untouched — it is not a miss"
         );
+    }
+
+    /// #4701 — a `Dead` player's attack edge is refused exactly like a
+    /// fly-cam press: no swing counted, no cooldown armed, no `HitEvent`.
+    #[test]
+    fn dead_player_attack_press_is_not_a_swing() {
+        let (mut world, aggressor) = attack_edge_fixture(PlayerMode::Character);
+        world.insert(aggressor, Dead);
+        press_attack(&world);
+
+        combat_input_system(&world, 1.0 / 60.0);
+
+        let state = world.resource::<CombatState>();
+        assert_eq!(state.attacks_started, 0);
+        assert!(state.last.is_none());
+        drop(state);
+        assert_eq!(melee_state_of(&world, aggressor).cooldown_remaining, 0.0);
+        assert!(world
+            .query::<byroredux_scripting::HitEvent>()
+            .is_none_or(|events| events.iter().next().is_none()));
     }
 
     #[test]

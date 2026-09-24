@@ -309,10 +309,11 @@ fn disk_round_trip_with_perk(index: &EsmIndex, potion: u32, restoration: f32, pe
                 .current(health),
             (40.0 + (slot + u32::from(consumed)) as f32 * restoration).min(100.0)
         );
-        assert_eq!(
-            crate::notifications::drain(&live).len(),
-            usize::from(consumed)
-        );
+        // One line either way: "Used …" or, for the refused third
+        // dose, the #4707 "Can't use … now".
+        let lines = crate::notifications::drain(&live);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].starts_with("Used "), consumed, "{lines:?}");
     }
 }
 

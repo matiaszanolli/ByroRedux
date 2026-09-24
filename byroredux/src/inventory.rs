@@ -1009,6 +1009,11 @@ pub(crate) fn container_loot_system(world: &World, _dt: f32) {
     else {
         return;
     };
+    // #4701 — a corpse at the controls loots nothing. Scripted activations
+    // by the player (`script.activate`, fragments) hit the same gate as E.
+    if !crate::systems::player_can_act(world) {
+        return;
+    }
     let events: Vec<_> = world
         .query::<byroredux_scripting::ActivateEvent>()
         .map(|events| {
@@ -1350,16 +1355,73 @@ fn consume_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
 }
 
 /// Apply a native-menu action to the canonical player components.
+///
+/// #4707 — a refusal is told to the player, not only logged: every
+/// `Unavailable` pushes one "Can't … now" notification, the counterpart
+/// of the "Used {name}" line a successful use pushes.
 pub(crate) fn apply_action(
     world: &mut World,
     action: byroredux_debug_ui::InventoryAction,
 ) -> MutationResult {
-    if let byroredux_debug_ui::InventoryAction::Consume { index, form_id } = action {
-        return consume_item(world, index, form_id);
-    }
-    let byroredux_debug_ui::InventoryAction::ToggleEquip { index } = action else {
-        unreachable!()
+    use byroredux_debug_ui::InventoryAction;
+    let result = match action {
+        InventoryAction::Consume { index, form_id } => consume_item(world, index, form_id),
+        InventoryAction::ToggleEquip { index } => toggle_equip(world, index),
     };
+    if result == MutationResult::Unavailable {
+        notify_refused_action(world, action);
+    }
+    result
+}
+
+/// The player-visible half of a refused menu action (#4707). The item is
+/// named from the catalog; the row's base form stands in when the catalog
+/// has no entry, the same fallback [`pickup_loot`] uses.
+fn notify_refused_action(world: &World, action: byroredux_debug_ui::InventoryAction) {
+    use byroredux_debug_ui::InventoryAction;
+    let (verb, form_id) = match action {
+        InventoryAction::Consume { form_id, .. } => ("use", Some(form_id)),
+        InventoryAction::ToggleEquip { index } => (
+            "equip",
+            world
+                .try_resource::<PlayerEntity>()
+                .and_then(|player| player.0)
+                .and_then(|player| {
+                    world
+                        .get::<Inventory>(player)?
+                        .get(InventoryIndex(index))
+                        .map(|stack| stack.base_form_id)
+                }),
+        ),
+    };
+    let name = form_id.map(|form_id| {
+        world
+            .try_resource::<InventoryCatalog>()
+            .and_then(|catalog| {
+                catalog
+                    .entries
+                    .get(&form_id)
+                    .map(|entry| entry.name.clone())
+            })
+            .unwrap_or_else(|| format!("Item {form_id:08X}"))
+    });
+    crate::notifications::push(
+        world,
+        format!(
+            "Can't {verb} {} now",
+            name.as_deref().unwrap_or("that item")
+        ),
+    );
+}
+
+/// Equip or unequip one player inventory row through the catalog's
+/// recorded destination.
+fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
+    // #4701 — `consume_item` carries its own `Dead` refusal; equip is the
+    // other half of the menu and refuses the same way.
+    if !crate::systems::player_can_act(world) {
+        return MutationResult::Unavailable;
+    }
     let Some(player) = world
         .try_resource::<PlayerEntity>()
         .and_then(|player| player.0)
@@ -1560,6 +1622,14 @@ mod tests {
             "the mesh descendant must carry the marker too — the render skips \
              read it there (#4571)"
         );
+    }
+
+    /// #4707 — a refused `Consume` leaves exactly one player-visible
+    /// "Can't use … now" line (and nothing else) behind.
+    fn assert_one_refusal(world: &World) {
+        let lines = crate::notifications::drain(world);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("Can't use "), "{lines:?}");
     }
 
     fn restoration(
@@ -1946,7 +2016,7 @@ mod tests {
             80.0
         );
         assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 1);
-        assert!(crate::notifications::drain(&world).is_empty());
+        assert_one_refusal(&world);
     }
 
     #[test]
@@ -1986,7 +2056,10 @@ mod tests {
             world.get::<EquipmentSlots>(player).unwrap().weapon,
             Some(InventoryIndex(2))
         );
-        assert_eq!(crate::notifications::drain(&world).len(), 2);
+        // Two "Used" lines, then the refusal of the emptied row (#4707).
+        let lines = crate::notifications::drain(&world);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[2].starts_with("Can't use "), "{lines:?}");
     }
 
     #[test]
@@ -2033,7 +2106,7 @@ mod tests {
                 world.get::<ActorValues>(player).unwrap().current(1000),
                 40.0
             );
-            assert!(crate::notifications::drain(&world).is_empty());
+            assert_one_refusal(&world);
         }
     }
 
@@ -2074,7 +2147,7 @@ mod tests {
                     world.get::<ActorValues>(player).unwrap().current(1000),
                     40.0
                 );
-                assert!(crate::notifications::drain(&world).is_empty());
+                assert_one_refusal(&world);
                 if !missing_pool {
                     let mut pool = world.resource_mut::<ItemInstancePool>();
                     assert_eq!(pool.live_count(), 0);
@@ -2751,6 +2824,53 @@ mod tests {
                     equipped: false,
                 },
             ]
+        );
+    }
+
+    /// #4701 / #4707 — a `Dead` player's equip toggle is refused without
+    /// touching `EquipmentSlots`, and every refused menu action tells the
+    /// player so instead of only logging.
+    #[test]
+    fn refused_menu_actions_notify_and_a_dead_player_cannot_toggle_equipment() {
+        use byroredux_core::ecs::components::Dead;
+        let (mut world, player) = fixture();
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+        world.insert(player, Dead);
+
+        let result = apply_action(
+            &mut world,
+            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        );
+        assert_eq!(result, MutationResult::Unavailable);
+        assert!(!world
+            .get::<EquipmentSlots>(player)
+            .unwrap()
+            .is_equipped(InventoryIndex(0)));
+        let result = apply_action(
+            &mut world,
+            byroredux_debug_ui::InventoryAction::Consume {
+                index: 1,
+                form_id: 0x5678,
+            },
+        );
+        assert_eq!(result, MutationResult::Unavailable);
+        assert_eq!(
+            crate::notifications::drain(&world),
+            vec![
+                "Can't equip Iron Armor now".to_owned(),
+                "Can't use Iron Arrow now".to_owned(),
+            ]
+        );
+
+        world.remove::<Dead>(player);
+        let result = apply_action(
+            &mut world,
+            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        );
+        assert_eq!(result, MutationResult::Equipped);
+        assert!(
+            crate::notifications::drain(&world).is_empty(),
+            "a successful toggle says nothing new"
         );
     }
 

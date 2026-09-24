@@ -92,6 +92,18 @@ pub(crate) fn player_controller_system(world: &World, dt: f32) {
     }
 }
 
+/// #4701 — the one gate every non-movement player-input consumer checks
+/// (attack, activate, loot, equip, consume): a `Dead` player does none of
+/// them. Movement has its own `Dead` early-out in
+/// [`character_controller_system`]. No player entity (fly-cam, tests)
+/// leaves the decision to each consumer's own player lookup.
+pub(crate) fn player_can_act(world: &World) -> bool {
+    world
+        .try_resource::<PlayerEntity>()
+        .and_then(|player| player.0)
+        .is_none_or(|player| world.get::<Dead>(player).is_none())
+}
+
 fn player_accepts_movement_input(world: &World, player: EntityId) -> bool {
     let controls_allow_movement = world
         .try_resource::<byroredux_scripting::PlayerControlState>()

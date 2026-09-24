@@ -1340,7 +1340,10 @@ pub(crate) fn ray_sphere_distance(origin: Vec3, direction: Vec3, bound: WorldBou
 }
 
 fn activate_target(world: &World, target: InteractionTarget) {
-    if activation_is_blocked(world, target.entity) || !unlock_with_carried_key(world, target.entity)
+    // #4701 — a dead player opens no doors and fires no `ActivateEvent`.
+    if !crate::systems::player_can_act(world)
+        || activation_is_blocked(world, target.entity)
+        || !unlock_with_carried_key(world, target.entity)
     {
         return;
     }
@@ -2179,6 +2182,50 @@ mod tests {
         let candidates = collect_candidates(&world);
         assert_eq!(candidates.get(&door), Some(&InteractionKind::Door));
         assert!(!candidates.contains_key(&chest));
+    }
+
+    /// #4701 — a `Dead` player's E press selects (the prompt is harmless)
+    /// but fires no activation, and a player activation that still reaches
+    /// the loot consumer (a script's or console's `Activate`) moves nothing.
+    #[test]
+    fn dead_player_neither_activates_nor_loots() {
+        use byroredux_core::ecs::components::{Dead, Inventory, ItemStack};
+        let mut world = input_fixture();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        world.register::<Dead>();
+        world.insert_resource(FormIdPool::new());
+        let player = spawn_camera(&mut world);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(player, Inventory::new());
+        world.insert(player, Dead);
+        install_misc_catalog(&mut world, 0xA110, "Rounds");
+        let door = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -80.0));
+        let item = spawn_placed_reference(&mut world, Vec3::new(0.0, 0.0, -150.0), 0x0B0B, 0xA110);
+
+        world
+            .resource_mut::<InputState>()
+            .keys_held
+            .insert(KeyCode::KeyE);
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+        assert!(!world.has::<byroredux_scripting::ActivateEvent>(door));
+        assert_eq!(world.resource::<InteractionTrace>().activation_count, 0);
+
+        world.insert(
+            item,
+            byroredux_scripting::ActivateEvent { activator: player },
+        );
+        crate::inventory::container_loot_system(&world, 0.0);
+        assert!(world.get::<Inventory>(player).unwrap().items.is_empty());
+        assert!(crate::notifications::drain(&world).is_empty());
+
+        world.remove::<Dead>(player);
+        crate::inventory::container_loot_system(&world, 0.0);
+        assert_eq!(
+            world.get::<Inventory>(player).unwrap().items,
+            vec![ItemStack::new(0xA110, 1)],
+            "the same activation lands once the player is alive"
+        );
     }
 
     #[test]
