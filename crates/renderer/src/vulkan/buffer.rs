@@ -2398,10 +2398,24 @@ mod staging_release_capacity_tests {
              allocation footprint (#4593 / #4512)"
         );
         assert!(
-            production
-                .contains("previous.release_to(&mut self.terrain_tile_staging_pool, byte_size);"),
-            "the terrain ring's previous-slot release must carry the \
-             requested `byte_size` (#4593)"
+            production.contains(
+                "previous.release_to(&mut self.terrain_tile_staging_pool, previous_size);"
+            ),
+            "the terrain ring's previous-slot release must carry the size \
+             that guard was acquired at (#4593 / #4790)"
+        );
+        // #4790 — the current call's `byte_size` describes the buffer about
+        // to be acquired, not the one being returned; labelling the old
+        // buffer with it lets best-fit hand an undersized buffer back.
+        assert!(
+            !production
+                .contains("previous.release_to(&mut self.terrain_tile_staging_pool, byte_size)"),
+            "the terrain ring must not release the previous slot's guard at \
+             the current upload's size (#4790)"
+        );
+        assert!(
+            production.contains("Some((staging, byte_size))"),
+            "the terrain ring must record each guard's acquired size (#4790)"
         );
     }
 }

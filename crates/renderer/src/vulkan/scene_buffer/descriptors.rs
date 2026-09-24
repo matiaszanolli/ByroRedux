@@ -405,7 +405,7 @@ impl super::buffers::SceneBuffers {
         }
         self.selected_ray_probe_buffers.clear();
         for staging in &mut self.terrain_tile_staging_buffers {
-            if let Some(staging) = staging.take() {
+            if let Some((staging, _)) = staging.take() {
                 staging.destroy();
             }
         }

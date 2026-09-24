@@ -1030,13 +1030,20 @@ impl super::buffers::SceneBuffers {
         // buffer. Keep the newly acquired guard in the slot until the same
         // fence retires, so the staging source cannot be overwritten while
         // the GPU is still consuming it.
-        if let Some(previous) = self.terrain_tile_staging_buffers[frame_index].take() {
-            // #4593 — the REQUESTED byte_size, not the allocation footprint
+        if let Some((previous, previous_size)) =
+            self.terrain_tile_staging_buffers[frame_index].take()
+        {
+            // #4593 — the REQUESTED size, not the allocation footprint
             // (#4512's rule): a footprint entry can exceed the VkBuffer's
             // create size by the driver's rounding slack, and the pool's
             // best-fit then hands a later acquire a too-small buffer whose
             // vkCmdCopyBuffer region overruns it.
-            previous.release_to(&mut self.terrain_tile_staging_pool, byte_size);
+            //
+            // #4790 — and the size THIS guard was acquired at, not this
+            // call's `byte_size`: the tile prefix grows between uses of a
+            // slot, and a smaller buffer labelled with the larger size is
+            // exactly the entry the acquire below would pick next.
+            previous.release_to(&mut self.terrain_tile_staging_pool, previous_size);
         }
         let (staging_buffer, staging_alloc) = self.terrain_tile_staging_pool.acquire(byte_size)?;
         let mut staging = super::super::buffer::StagingGuard::new(
@@ -1098,7 +1105,7 @@ impl super::buffers::SceneBuffers {
             );
         }
 
-        self.terrain_tile_staging_buffers[frame_index] = Some(staging);
+        self.terrain_tile_staging_buffers[frame_index] = Some((staging, byte_size));
 
         Ok(())
     }
