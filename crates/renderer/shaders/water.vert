@@ -206,8 +206,13 @@ void main() {
         const float DEFAULT_SCROLL_B = 0.0286531;
         float waveRateA = clamp(length(water.scroll.xy) / DEFAULT_SCROLL_A, 0.25, 4.0);
         float waveRateB = clamp(length(water.scroll.zw) / DEFAULT_SCROLL_B, 0.25, 4.0);
+        // #4728 — both dominant layers travel ALONG their scroll-derived
+        // direction (sin(kx - wt) moves +x), matching the canonical
+        // `WaterFlow` contract; wave A used the opposite time sign and ran
+        // its crest upwind/upstream against the physics current. The CPU
+        // mirror in `crates/physics/src/water.rs` moves in lockstep.
         float phaseA = dot(absolutePos.xz, dirA) * spatialA * 6.2831853
-                     + water.timing.x * frequency * waveRateA * 6.2831853;
+                     - water.timing.x * frequency * waveRateA * 6.2831853;
         float phaseB = dot(absolutePos.xz, dirB) * spatialB * 6.2831853
                      - water.timing.x * frequency * waveRateB * 4.7123890;
         // Author data can contain corrupt/extreme values; keep displacement

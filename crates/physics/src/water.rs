@@ -377,9 +377,11 @@ pub fn authored_wave_height_with_weather(
         .clamp(0.25, 4.0);
     let rate_b = ((scroll_b[0] * scroll_b[0] + scroll_b[1] * scroll_b[1]).sqrt() / 0.0286531)
         .clamp(0.25, 4.0);
+    // #4728 — wave A travels along +dir_a (the −t sign), in lockstep with
+    // `water.vert`'s phaseA under the same convention flip.
     let phase_a =
         (position.x * dir_a[0] + position.z * dir_a[1]) * spatial_a * std::f32::consts::TAU
-            + time_secs * frequency * rate_a * std::f32::consts::TAU;
+            - time_secs * frequency * rate_a * std::f32::consts::TAU;
     let phase_b =
         (position.x * dir_b[0] + position.z * dir_b[1]) * spatial_b * std::f32::consts::TAU
             - time_secs * frequency * rate_b * (std::f32::consts::TAU * 0.75);
@@ -1133,6 +1135,29 @@ mod tests {
     use rapier3d::prelude::*;
 
     const G_Y: f32 = -686.7; // PhysicsWorld gravity, BU/s².
+
+    /// #4728 — the CPU crest mirror must move wave A along +dir_a in
+    /// lockstep with `water.vert`'s flipped phaseA (−t sign). Pre-fix the
+    /// CPU used +t, so buoyancy sampled a crest orientation that ran
+    /// opposite the rendered wave whenever weather scroll was live.
+    #[test]
+    fn cpu_wave_phase_a_travels_along_dir_a_in_lockstep_with_the_shader() {
+        // Scan only the production half so this test's own literals cannot
+        // satisfy the scan (the established meta-guard shape).
+        let (prod, _) = include_str!("water.rs")
+            .split_once("#[cfg(test)]")
+            .expect("water.rs must keep its test module");
+        assert!(
+            prod.contains("- time_secs * frequency * rate_a * std::f32::consts::TAU"),
+            "phase_a must use the −t sign so its crest travels along +dir_a \
+             (#4728, in lockstep with water.vert)"
+        );
+        assert!(
+            !prod.contains("+ time_secs * frequency * rate_a"),
+            "the +t phase_a form must not come back — it ran the CPU crest \
+             against the rendered wave direction"
+        );
+    }
 
     #[test]
     fn placed_current_volume_is_collected_without_becoming_a_water_surface() {

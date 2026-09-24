@@ -1133,6 +1133,49 @@ mod tests {
         );
     }
 
+    /// #4728 — the flat-water pattern must travel along +scroll, not
+    /// −scroll: `sampleScrollingNormal` advances its sample point at
+    /// `-scroll * time` in BOTH branches (textured and procedural), the
+    /// waterfall branch keeps its vertical-only vectors positive-V (down
+    /// the sheet under the same convention), and `water.vert` drives BOTH
+    /// wave phases with the −t sign so their crests travel along their
+    /// scroll-derived directions. Pre-fix the flat branches added
+    /// `+scroll * time` and wave A used `+t`, so every flowing surface's
+    /// visible motion ran upstream against the physics current and the
+    /// rapids foam streaks.
+    #[test]
+    fn water_pattern_moves_along_scroll_not_against_it() {
+        let frag = include_str!("../../shaders/water.frag");
+        assert!(
+            frag.matches("- scroll * time").count() >= 2
+                && !frag.contains("+ scroll * time"),
+            "sampleScrollingNormal must advance the sample point at \
+             -scroll·t in both branches so features travel along +scroll \
+             (#4728)"
+        );
+        let waterfall = frag
+            .split_once("kind == WATER_WATERFALL")
+            .map(|(_, rest)| rest)
+            .expect("water.frag must keep the waterfall branch");
+        for vector in ["normalScrollA", "normalScrollB", "normalScrollC"] {
+            let assignment = format!("{vector} = vec2(0.0, length(");
+            assert!(
+                waterfall.contains(&assignment),
+                "{vector} must keep +V (down the sheet) under the \
+                 along-+scroll convention; a negated vector would run the \
+                 fall back UP"
+            );
+        }
+        let vert = include_str!("../../shaders/water.vert");
+        assert!(
+            vert.contains("- water.timing.x * frequency * waveRateA")
+                && vert.contains("- water.timing.x * frequency * waveRateB")
+                && !vert.contains("+ water.timing.x * frequency * waveRateA"),
+            "water.vert wave phases must both use the −t sign so wave A and \
+             B travel along their directions, not against them (#4728)"
+        );
+    }
+
     #[test]
     fn water_fragment_shader_uses_authored_underwater_response() {
         let src = include_str!("../../shaders/water.frag");

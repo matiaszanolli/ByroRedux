@@ -300,7 +300,12 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
         // multiplier puts the tangent-space normal at
         // `(±0.12, ±0.12, 1)` worst case → world tilt < 10°, well
         // under the 23° threshold where crest foam starts firing.
-        vec2 uv = (uvBase - originOffset) * scale + uvOffset + scroll * time;
+        // #4728 — scroll is the pattern's world-space velocity: the sample
+        // point moves at -scroll so a texture feature travels along
+        // +scroll (downstream for a river current, downwind for the
+        // weather term), matching the physics current and the rapids
+        // foam streaks.
+        vec2 uv = (uvBase - originOffset) * scale + uvOffset - scroll * time;
         float h0 = valueNoise(uv * 4.0 * freqScale);
         float h1 = valueNoise(uv * 9.0 * freqScale + 17.0);
         float h2 = valueNoise(uv * 16.0 * freqScale + 41.0);
@@ -344,7 +349,7 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
     // `originOffset` (small, since fragments render near the camera)
     // plus a bounded fractional remainder.
     vec2 o = floor(originOffset * scale * freqScale);
-    vec2 uv = uvBase * scale * freqScale - o + uvOffset + scroll * time;
+    vec2 uv = uvBase * scale * freqScale - o + uvOffset - scroll * time;
     vec3 n = texture(textures[nonuniformEXT(normalMapIndex)], uv).xyz * 2.0 - 1.0;
     // `WaterNormalEncoding::OffsetNoise` (FO3/FNV): the texel is an offset
     // on the surface up axis, not a unit normal — FNV's WATER000.pso builds
@@ -758,13 +763,15 @@ void main() {
         // its hash input origin-relative (#1997) without disturbing the
         // textured branch's absolute (wrapping) UV.
         uvOrigin = vec2(dot(renderOrigin.xyz, sheetAcross), dot(renderOrigin.xyz, fallAxis));
-        // A sampled texture moves opposite its UV scroll. `fallAxis` is
-        // downward, hence negative V advances the pattern down the sheet.
-        // Retain each authored layer's rate, but remove horizontal weather /
-        // tangent contamination from this vertical-only representation.
-        normalScrollA = vec2(0.0, -length(push.scroll.xy));
-        normalScrollB = vec2(0.0, -length(push.scroll.zw));
-        normalScrollC = vec2(0.0, -length(push.scroll_c.xy));
+        // The sample point moves at -scroll, so a texture feature travels
+        // along +scroll (#4728). `fallAxis` points downward and V grows
+        // along it, so the vertical-only vectors keep the pattern advancing
+        // down the sheet. Retain each authored layer's rate, but remove
+        // horizontal weather / tangent contamination from this
+        // vertical-only representation.
+        normalScrollA = vec2(0.0, length(push.scroll.xy));
+        normalScrollB = vec2(0.0, length(push.scroll.zw));
+        normalScrollC = vec2(0.0, length(push.scroll_c.xy));
         // Flow-map vectors are tangent/UV-space, so they cannot establish
         // a dependable world-down direction on legacy waterfall meshes.
         // The canonical WaterFlow above owns motion for this representation.
