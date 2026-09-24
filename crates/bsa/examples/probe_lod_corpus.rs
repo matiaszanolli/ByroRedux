@@ -16,6 +16,13 @@
 //! Splits `landscape\\lod` entries into the *terrain* quadtree and its
 //! *blocks* (object-LOD) sibling, per worldspace, per level.
 //!
+//! #4737 — the fourth family, the Creation baked-quad scheme used by
+//! Skyrim, FO4 and FO76 (`meshes\terrain\<ws>\<ws>.<L>.<x>.<y>.btr` and
+//! the `objects\*.bto` sibling), is counted too, per worldspace, per
+//! level; BA2 names use `/`, normalised here. #4502 opened the BA2s but
+//! matched none of the families those games actually ship, so the census
+//! printed a false zero for exactly the games it was run on.
+//!
 //! Usage:
 //!   cargo run -p byroredux-bsa --example probe_lod_corpus -- <ARCHIVE> [ARCHIVE ...]
 
@@ -73,13 +80,57 @@ fn main() {
         > = Default::default();
         let mut far_nif = 0usize;
         let mut distantlod = 0usize;
+        let mut creation = 0usize;
+        let mut creation_terrain: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, usize>,
+        > = Default::default();
+        let mut creation_objects: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, usize>,
+        > = Default::default();
         for f in archive.list_files() {
-            let l = f.to_ascii_lowercase();
+            // #4737 — BA2 names use `/`; the Creation matcher below keys on
+            // the BSA-style backslash form.
+            let l = f.to_ascii_lowercase().replace('/', "\\");
             if l.ends_with("_far.nif") {
                 far_nif += 1;
             }
             if l.contains("distantlod\\") {
                 distantlod += 1;
+            }
+            // #4737 — the Creation family: `meshes\terrain\<ws>\` holds the
+            // per-quad baked terrain (`.btr`) beside its `objects\` folder
+            // of object-LOD (`.bto`). Level-first stem: `<ws>.<L>.<x>.<y>`.
+            if let Some(rest) = l.strip_prefix("meshes\\terrain\\") {
+                let (world, file) = match rest.split_once('\\') {
+                    Some(pair) => pair,
+                    None => continue,
+                };
+                let (stem, ext) = match file.rsplit_once('.') {
+                    Some(pair) => pair,
+                    None => continue,
+                };
+                if !matches!(ext, "btr" | "bto") {
+                    continue;
+                }
+                // <ws>.<L>.<x>.<y> — the level is the second dot field;
+                // anything else is not a quadtree quad name.
+                let level = match stem.split('.').nth(1) {
+                    Some(level) if stem.split('.').count() >= 4 => level,
+                    _ => continue,
+                };
+                creation += 1;
+                let bucket = if file.starts_with("objects\\") {
+                    &mut creation_objects
+                } else {
+                    &mut creation_terrain
+                };
+                *bucket
+                    .entry(world.to_string())
+                    .or_default()
+                    .entry(level.to_string())
+                    .or_default() += 1;
             }
             if !l.contains("landscape\\lod\\") {
                 continue;
@@ -104,9 +155,14 @@ fn main() {
             *bucket.entry(world).or_default().entry(level).or_default() += 1;
         }
         println!(
-            "{path}\n  landscape\\lod entries={lod}  _far.nif={far_nif}  distantlod={distantlod}"
+            "{path}\n  landscape\\lod entries={lod}  _far.nif={far_nif}  distantlod={distantlod}  meshes\\terrain .btr/.bto={creation}"
         );
-        for (label, map) in [("terrain", &terrain), ("blocks ", &blocks)] {
+        for (label, map) in [
+            ("terrain", &terrain),
+            ("blocks ", &blocks),
+            ("btr    ", &creation_terrain),
+            ("bto    ", &creation_objects),
+        ] {
             for (world, levels) in map {
                 let n: usize = levels.values().sum();
                 println!("    {label} {world}: {n}  {levels:?}");
