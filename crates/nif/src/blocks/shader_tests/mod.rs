@@ -361,8 +361,8 @@ fn make_starfield_header(name: &str) -> NifHeader {
 /// nif.xml `#BS_F76# = (BSVER == 155)` ("Fallout 76 stream 155 only"),
 /// Starfield omits the WetnessParams `unknown_2` and the Luminance /
 /// Translucency / texture-array tail. Name index 0 is "" so the block
-/// takes the full-body path (a non-empty Starfield name is a
-/// content-hash material reference → stub).
+/// takes the full-body path (a non-empty Starfield name is a material
+/// reference → stub).
 ///
 /// #2616 / SF-D6-01 — Starfield DOES carry `shader_type` (it reuses the
 /// FO76 `BSShaderType155` enum, per `parse_fo76_plus`'s own doc), and
@@ -422,7 +422,7 @@ fn build_starfield_bs_lighting_minimal() -> Vec<u8> {
 
 /// Build a minimal **Starfield** (BSVER 172) full-body `BSEffectShaderProperty`.
 /// Name index 0 is "" so the block takes the full-body path (a non-empty
-/// Starfield name is a content-hash material reference → stub). The NiObjectNET
+/// Starfield name is a material reference → stub). The NiObjectNET
 /// name is a header-table INDEX (`0i32`); every `BSEffectShaderProperty` texture
 /// field is a length-prefixed INLINE sized string (`0u32` length = empty), and
 /// `controller_ref` is a `-1` BlockRef.

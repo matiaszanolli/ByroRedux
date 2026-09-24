@@ -158,11 +158,11 @@ impl BSEffectShaderProperty {
 
         // FO76+ stopcond: Name is an external `.bgem` / `.mat` material-file
         // reference (sibling of the BSLightingShaderProperty gate above).
-        // #1510 — Starfield (bsver >= 172) material references are
-        // suffix-less content-hash paths (`<hash>\<hash>`) that
-        // `is_material_reference` misses; a Starfield full-body block
-        // instead carries an EMPTY name, so `!name.is_empty()` is the
-        // correct stub discriminator there. FO76 (152..171) keeps the
+        // #1510 — a Starfield (bsver >= 172) full-body block carries an
+        // EMPTY name, so `!name.is_empty()` is the stub discriminator
+        // there: it also catches the suffix-less references
+        // `is_material_reference` misses, which vanilla authors only as
+        // the degenerate directory `Materials\` (#4439 census). FO76 (152..171) keeps the
         // suffix-aware test so editor labels with no path suffix continue
         // through to the full body parse — see #749 / SF-D3-01. This must
         // stay in lockstep with `BSLightingShaderProperty::parse_fo76_plus`.

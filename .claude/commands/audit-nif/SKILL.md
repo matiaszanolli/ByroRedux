@@ -237,7 +237,7 @@ parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
   `starfield_tail` to `block_size`. The material-reference stub gate is `!name.is_empty()`
   for `bsver >= STARFIELD` (hash-path refs carry no `.bgem` suffix) but the suffix-aware
   `is_material_reference` for FO76 (152..171); `BSEffectShaderProperty` and
-  `BSLightingShaderProperty::parse_fo76_plus` must stay in lockstep (`parse_bs_effect_starfield_hashpath_name_stubs`).
+  `BSLightingShaderProperty::parse_fo76_plus` must stay in lockstep (`parse_bs_effect_starfield_suffixless_name_stubs`).
 - Starfield shader-type translation is keyed at the **parser** boundary
   (`parse_with_size` routes every `bsver >= 155` through `parse_fo76_plus`), not the
   slot-table layout tag; `normalize_shader_type` masks types 4/5 — a Starfield FaceTint (3)

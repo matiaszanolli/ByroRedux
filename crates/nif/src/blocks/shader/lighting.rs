@@ -578,14 +578,16 @@ impl BSLightingShaderProperty {
         if let Some(name) = net.name.as_deref() {
             // #1510 — FO76 keeps the suffix-aware check (#749: an
             // editor-labelled block with no `.mat`/`.bgsm` suffix carries
-            // a full inline body, so it must NOT stub). Starfield material
-            // references are content-hash paths with NO suffix
-            // (`<hash>\<hash>`), so `is_material_reference` misses them and
-            // the parser ran the full-body path into the 12-byte stub,
-            // over-reading 8 B past EOF. In Starfield a full-body block
-            // instead carries an EMPTY name, so `!name.is_empty()` is the
-            // correct stub discriminator there — matching the a9c7bc9e
-            // baseline (Starfield BSLSP 0 unknown).
+            // a full inline body, so it must NOT stub). In Starfield a
+            // full-body block carries an EMPTY name, so `!name.is_empty()`
+            // is the stub discriminator there — matching the a9c7bc9e
+            // baseline (Starfield BSLSP 0 unknown). #4439 — measured over
+            // 120,543 vanilla NIFs: 478,691 stub names end in `.mat`, 1,783
+            // in `.bgsm`/`.bgem`, and the 387 suffix-less ones are all the
+            // degenerate directory `Materials\` (384) or `\Materials` (3),
+            // never a content-hash path. Those are what the suffix-aware
+            // test missed: it ran the full-body path into the 12-byte stub
+            // and over-read 8 B past EOF.
             let is_ref = if bsver >= crate::version::bsver::STARFIELD {
                 !name.is_empty()
             } else {

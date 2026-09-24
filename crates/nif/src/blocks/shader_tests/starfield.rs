@@ -271,26 +271,28 @@ fn parse_bs_lighting_starfield_tail_empty_without_size_or_drift() {
     );
 }
 
-/// #1510 — Starfield material references are content-hash paths with NO
-/// `.mat`/`.bgsm` suffix, so `is_material_reference` misses them. For
+/// #1510 — a Starfield material reference can carry NO `.mat`/`.bgsm`
+/// suffix, so `is_material_reference` misses it. #4439: vanilla authors
+/// only the degenerate directory `Materials\` in that form (387 of
+/// 480,861 stub names; no content-hash path exists). For
 /// BSVER >= STARFIELD a non-empty Name means a reference (full bodies
 /// carry an empty name), so the parser must return the stub and let
 /// block_size skip the rest — NOT run the full-body path into the
 /// 12-byte stub. That #749 mismatch produced 171 of the 1036 NiUnknown;
 /// `!name.is_empty()` (the a9c7bc9e baseline gate) fixes it.
 #[test]
-fn parse_bs_lighting_starfield_hashpath_name_stubs() {
-    // Header string 0 is a content-hash path (two hex segments, no
-    // suffix) — `is_material_reference` would reject it.
-    let header = make_starfield_header("8f3a91c4\\b27e5d06");
-    let data = build_starfield_bs_lighting_minimal(); // name idx 0 → the hash-path
+fn parse_bs_lighting_starfield_suffixless_name_stubs() {
+    // Header string 0 is the measured suffix-less form —
+    // `is_material_reference` would reject it.
+    let header = make_starfield_header("Materials\\");
+    let data = build_starfield_bs_lighting_minimal(); // name idx 0 → `Materials\`
     let mut stream = NifStream::new(&data, &header);
 
     let prop =
-        BSLightingShaderProperty::parse(&mut stream).expect("Starfield hash-path BLSP must stub");
+        BSLightingShaderProperty::parse(&mut stream).expect("Starfield suffix-less BLSP must stub");
     assert!(
         prop.material_reference,
-        "a non-empty (hash-path) Starfield name must take the stub path",
+        "a non-empty (suffix-less) Starfield name must take the stub path",
     );
     assert_eq!(
         stream.position(),
@@ -299,35 +301,35 @@ fn parse_bs_lighting_starfield_hashpath_name_stubs() {
     );
 }
 
-/// #1721 — sibling of `parse_bs_lighting_starfield_hashpath_name_stubs`.
-/// Starfield material references are content-hash paths with NO
-/// `.mat`/`.bgsm` suffix, so `is_material_reference` misses them. For
+/// #1721 — sibling of `parse_bs_lighting_starfield_suffixless_name_stubs`.
+/// A suffix-less Starfield reference (vanilla: `Materials\`, #4439) is
+/// missed by `is_material_reference`. For
 /// BSVER >= STARFIELD a non-empty Name means a reference (full bodies
 /// carry an empty name), so `BSEffectShaderProperty::parse` must return
 /// the 12-byte stub and let block_size skip the rest — NOT run the
 /// full-body path off bytes the block doesn't carry. Pre-#1721 the
 /// effect-shader parser kept the suffix-aware `is_material_reference`
 /// gate (the #1510 fix only reached the BSLightingShaderProperty
-/// sibling), so a hash-path effect shader over-read garbage
+/// sibling), so a suffix-less effect shader over-read garbage
 /// source-texture / base-color / falloff fields into its material.
 #[test]
-fn parse_bs_effect_starfield_hashpath_name_stubs() {
-    // Header string 0 is a content-hash path (two hex segments, no
-    // suffix) — `is_material_reference` would reject it.
-    let header = make_starfield_header("8f3a91c4\\b27e5d06");
+fn parse_bs_effect_starfield_suffixless_name_stubs() {
+    // Header string 0 is the measured suffix-less form —
+    // `is_material_reference` would reject it.
+    let header = make_starfield_header("Materials\\");
     // Only the NiObjectNET base is present; a full body would follow on
-    // disk for a non-reference, but a hash-path name must stub before it.
+    // disk for a non-reference, but a suffix-less name must stub before it.
     let mut data = Vec::new();
-    data.extend_from_slice(&0i32.to_le_bytes()); // name idx 0 → the hash-path
+    data.extend_from_slice(&0i32.to_le_bytes()); // name idx 0 → `Materials\`
     data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count = 0
     data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
     let mut stream = NifStream::new(&data, &header);
 
     let prop =
-        BSEffectShaderProperty::parse(&mut stream).expect("Starfield hash-path BSEffect must stub");
+        BSEffectShaderProperty::parse(&mut stream).expect("Starfield suffix-less BSEffect must stub");
     assert!(
         prop.material_reference,
-        "a non-empty (hash-path) Starfield name must take the stub path",
+        "a non-empty (suffix-less) Starfield name must take the stub path",
     );
     assert_eq!(
         stream.position(),
