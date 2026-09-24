@@ -166,12 +166,6 @@ impl StreamStateSnapshots {
 
 /// The global FormID an entity's `FormIdComponent` resolves to, matching
 /// the key space `resolve_entity_by_global_form_id` searches.
-fn global_form_id(world: &World, entity: EntityId) -> Option<u32> {
-    let fid = world.get::<FormIdComponent>(entity).map(|fid| fid.0)?;
-    let pool = world.try_resource::<FormIdPool>()?;
-    pool.resolve(fid).map(|pair| pair.local.0)
-}
-
 /// Capture the keep-set state of every victim that has any, keyed by FormID.
 ///
 /// Called from `unload_cell_inner` before the despawn. Actors with nothing
@@ -182,36 +176,61 @@ pub(crate) fn capture_actor_snapshots(world: &mut World, victims: &[EntityId]) {
     if victims.is_empty() || world.try_resource::<StreamStateSnapshots>().is_none() {
         return;
     }
-    let mut captured: Vec<(u32, ActorStreamSnapshot)> = Vec::new();
-    for &victim in victims {
-        let Some(form_id) = global_form_id(world, victim) else {
-            continue;
+    // #4616 — the probes are hoisted out of the per-victim loop: one shared
+    // query guard per component plus one FormIdPool read, acquired once
+    // instead of a TypeId lookup + tracked read per probe per victim. Every
+    // guard is a shared read and drops at the end of this block; the
+    // `StreamStateSnapshots` write below happens strictly after, keeping
+    // the no-guard-across-resource-write rule.
+    let captured = {
+        let form_q = world.query::<FormIdComponent>();
+        let xform_q = world.query::<Transform>();
+        let seated_q = world.query::<Seated>();
+        let package_q = world.query::<AmbientPackageRuntime>();
+        let travel_q = world.query::<TravelState>();
+        let traveled_q = world.query::<Traveled>();
+        let pool = world.try_resource::<FormIdPool>();
+        // `global_form_id` through the hoisted guards — victims and seated
+        // furniture both resolve here.
+        let form_id_of = |entity: EntityId| -> Option<u32> {
+            let fid = form_q.as_ref()?.get(entity)?.0;
+            pool.as_ref()?.resolve(fid).map(|pair| pair.local.0)
         };
-        let Some(position) = world.get::<Transform>(victim).map(|t| t.translation) else {
-            continue;
-        };
-        let seated = world.get::<Seated>(victim).map(|seated| *seated);
-        let seated_furniture_form_id =
-            seated.and_then(|seated| global_form_id(world, seated.furniture));
-        let seated_animation_restore = seated_furniture_form_id
-            .and(seated)
-            .map(|seated| seated.animation_restore);
-        let snapshot = ActorStreamSnapshot {
-            position,
-            active_package_form_id: world
-                .get::<AmbientPackageRuntime>(victim)
-                .and_then(|runtime| runtime.active_package_form_id),
-            travel_destination: world
-                .get::<TravelState>(victim)
-                .map(|state| state.destination),
-            traveled: world.get::<Traveled>(victim).is_some(),
-            seated_furniture_form_id,
-            seated_animation_restore,
-        };
-        if snapshot.has_package_state() {
-            captured.push((form_id, snapshot));
+        let mut captured: Vec<(u32, ActorStreamSnapshot)> = Vec::new();
+        for &victim in victims {
+            let Some(form_id) = form_id_of(victim) else {
+                continue;
+            };
+            let Some(position) = xform_q.as_ref().and_then(|q| q.get(victim)).map(|t| t.translation)
+            else {
+                continue;
+            };
+            let seated = seated_q.as_ref().and_then(|q| q.get(victim)).copied();
+            let seated_furniture_form_id =
+                seated.as_ref().and_then(|seated| form_id_of(seated.furniture));
+            let seated_animation_restore = seated_furniture_form_id
+                .and(seated)
+                .map(|seated| seated.animation_restore);
+            let snapshot = ActorStreamSnapshot {
+                position,
+                active_package_form_id: package_q
+                    .as_ref()
+                    .and_then(|q| q.get(victim))
+                    .and_then(|runtime| runtime.active_package_form_id),
+                travel_destination: travel_q
+                    .as_ref()
+                    .and_then(|q| q.get(victim))
+                    .map(|state| state.destination),
+                traveled: traveled_q.as_ref().is_some_and(|q| q.get(victim).is_some()),
+                seated_furniture_form_id,
+                seated_animation_restore,
+            };
+            if snapshot.has_package_state() {
+                captured.push((form_id, snapshot));
+            }
         }
-    }
+        captured
+    };
     if captured.is_empty() {
         return;
     }

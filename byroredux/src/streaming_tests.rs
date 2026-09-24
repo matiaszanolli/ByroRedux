@@ -236,6 +236,7 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     telemetry.record_unload_slice(Duration::from_millis(1), 3);
     telemetry.record_unload_phases(UnloadPhaseTimings {
         ownership_index: Duration::from_millis(1),
+        snapshot_capture: Duration::from_millis(1),
         handle_collection: Duration::from_millis(2),
         gpu_release: Duration::from_millis(3),
         owned_state_release: Duration::from_millis(4),

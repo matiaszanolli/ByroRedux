@@ -94,6 +94,11 @@ fn strip_retained_cell_root(world: &mut World, victims: &[EntityId], retained: &
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UnloadPhaseTimings {
     pub ownership_index: Duration,
+    /// #4616 — the two per-victim capture passes (actor stream snapshots +
+    /// reference state). They sat between the `ownership_index` and
+    /// `handle_collection` phases, so their cost landed in no bucket at
+    /// all.
+    pub snapshot_capture: Duration,
     pub handle_collection: Duration,
     pub gpu_release: Duration,
     pub owned_state_release: Duration,
@@ -104,6 +109,9 @@ pub struct UnloadPhaseTimings {
 impl UnloadPhaseTimings {
     fn absorb(&mut self, other: Self) {
         self.ownership_index = self.ownership_index.saturating_add(other.ownership_index);
+        self.snapshot_capture = self
+            .snapshot_capture
+            .saturating_add(other.snapshot_capture);
         self.handle_collection = self
             .handle_collection
             .saturating_add(other.handle_collection);
@@ -242,8 +250,14 @@ fn unload_cell_inner(
     // package, Travel progress, seat) across the despawn below. Keyed by
     // FormID, so the restore never depends on an `EntityId` that respawn
     // will not reissue. Actors with nothing accumulated produce no row.
+    // #4616 — timed as its own phase: these two per-victim passes used to
+    // sit between `ownership_index` and the next `phase_started`, so a
+    // radius-3 crossing's 7-cell capture cost was invisible to every
+    // UnloadPhaseTimings bucket.
+    let phase_started = Instant::now();
     crate::cell_loader::stream_snapshot::capture_actor_snapshots(world, &victims);
     crate::cell_loader::reference_state::capture(world, &victims);
+    timings.snapshot_capture = phase_started.elapsed();
 
     // Collect every GPU handle the victims hold (mesh / texture /
     // terrain-tile slot) in one fan-out walk, then release them below.

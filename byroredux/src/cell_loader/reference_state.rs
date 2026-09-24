@@ -100,29 +100,51 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
     let player = world
         .try_resource::<crate::systems::PlayerEntity>()
         .and_then(|p| p.0);
-    let mut rows = Vec::new();
-    for &entity in victims {
-        if player == Some(entity) {
-            continue;
-        }
-        let Some(pair) = identity(world, entity) else {
-            continue;
-        };
-        let inventory = world.get::<Inventory>(entity).map(|inv| inv.items.clone());
-        let dead = world.get::<Dead>(entity).is_some();
-        let picked_up = world
-            .get::<crate::inventory::PickedUp>(entity)
-            .is_some();
+    // #4616 — the probes are hoisted out of the per-victim loop: one shared
+    // query guard per component plus the FormIdPool / ItemInstancePool
+    // reads, acquired once instead of a TypeId lookup + tracked read per
+    // probe per victim. Every guard is a shared read and drops at the end
+    // of this block; the `PersistentReferenceStates` write below happens
+    // strictly after, keeping the no-guard-across-resource-write rule.
+    let rows = {
+        let form_q = world.query::<FormIdComponent>();
+        let inventory_q = world.query::<Inventory>();
+        let dead_q = world.query::<Dead>();
+        let picked_up_q = world.query::<crate::inventory::PickedUp>();
+        let equipment_q = world.query::<EquipmentSlots>();
+        let weapon_q = world.query::<EquippedWeapon>();
+        let values_q = world.query::<ActorValues>();
+        let pool = world.try_resource::<FormIdPool>();
+        let instances = world.try_resource::<ItemInstancePool>();
+        let mut rows = Vec::new();
+        for &entity in victims {
+            if player == Some(entity) {
+                continue;
+            }
+            let Some(pair) = form_q
+                .as_ref()
+                .and_then(|q| q.get(entity).map(|c| c.0))
+                .and_then(|id| pool.as_ref().and_then(|pool| pool.resolve(id).copied()))
+            else {
+                continue;
+            };
+            let inventory = inventory_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .map(|inv| inv.items.clone());
+            let dead = dead_q.as_ref().is_some_and(|q| q.get(entity).is_some());
+            let picked_up = picked_up_q
+                .as_ref()
+                .is_some_and(|q| q.get(entity).is_some());
         if inventory.is_none() && !dead && !picked_up {
             continue;
         }
         let stored = inventory.map(|items| {
-            let pool = world.try_resource::<ItemInstancePool>();
             items
                 .into_iter()
                 .map(|stack| {
                     let instance = match stack.instance {
-                        Some(id) => Some(pool.as_ref()?.get(id)?.clone()),
+                        Some(id) => Some(instances.as_ref()?.get(id)?.clone()),
                         None => None,
                     };
                     Some(StoredStack {
@@ -143,22 +165,29 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
             }
             None => None,
         };
-        rows.push((
-            pair,
-            ReferenceState {
-                inventory,
-                equipment: world
-                    .get::<EquipmentSlots>(entity)
-                    .map(|slots| slots.clone()),
-                weapon: world.get::<EquippedWeapon>(entity).map(|weapon| *weapon),
-                actor_values: world
-                    .get::<ActorValues>(entity)
-                    .map(|values| values.clone()),
-                dead,
-                picked_up,
-            },
-        ));
-    }
+            rows.push((
+                pair,
+                ReferenceState {
+                    inventory,
+                    equipment: equipment_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .cloned(),
+                    weapon: weapon_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .copied(),
+                    actor_values: values_q
+                        .as_ref()
+                        .and_then(|q| q.get(entity))
+                        .cloned(),
+                    dead,
+                    picked_up,
+                },
+            ));
+        }
+        rows
+    };
     world
         .resource_mut::<PersistentReferenceStates>()
         .rows

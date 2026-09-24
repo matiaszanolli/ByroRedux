@@ -170,6 +170,7 @@ pub struct StreamingTelemetry {
     pub dispatch_slices: StreamingLatencySummary,
     pub unload_slices: StreamingLatencySummary,
     pub unload_ownership_index: StreamingLatencySummary,
+    pub unload_snapshot_capture: StreamingLatencySummary,
     pub unload_handle_collection: StreamingLatencySummary,
     pub unload_gpu_release: StreamingLatencySummary,
     pub unload_owned_state_release: StreamingLatencySummary,
@@ -251,6 +252,7 @@ impl StreamingTelemetry {
             return;
         }
         self.unload_ownership_index.record(timings.ownership_index);
+        self.unload_snapshot_capture.record(timings.snapshot_capture);
         self.unload_handle_collection
             .record(timings.handle_collection);
         self.unload_gpu_release.record(timings.gpu_release);
@@ -330,7 +332,7 @@ impl StreamingTelemetry {
              full_superseded={} lod_samples={} lod_avg_ms={:.2} lod_max_ms={:.2} \
              lod_superseded={} queued={} unloaded={} worker_payloads={} \
              dispatch_avg_ms={:.2} dispatch_max_ms={:.2} unload_max_ms={:.2} \
-             unload_index_max_ms={:.2} unload_collect_max_ms={:.2} \
+             unload_index_max_ms={:.2} unload_snapshot_max_ms={:.2} unload_collect_max_ms={:.2} \
              unload_gpu_max_ms={:.2} unload_owned_max_ms={:.2} \
              unload_despawn_max_ms={:.2} unload_finalize_max_ms={:.2} \
              worker_queue_avg_ms={:.2} worker_queue_max_ms={:.2} \
@@ -355,6 +357,7 @@ impl StreamingTelemetry {
             self.dispatch_slices.max_ms(),
             self.unload_slices.max_ms(),
             self.unload_ownership_index.max_ms(),
+            self.unload_snapshot_capture.max_ms(),
             self.unload_handle_collection.max_ms(),
             self.unload_gpu_release.max_ms(),
             self.unload_owned_state_release.max_ms(),
