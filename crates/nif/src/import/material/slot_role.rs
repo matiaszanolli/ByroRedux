@@ -415,6 +415,28 @@ pub fn slot_to_role(context: TextureSlotContext, slot: u32) -> Option<TextureRol
                 None
             }
         }
+        // #4430 — the one slot-2 arm that ignores `context.glow_map`, and
+        // deliberately so until a source for FO4's real rule exists: the
+        // census says the NIF bit is unreliable in BOTH directions.
+        // `Fallout4 - Meshes.ba2` + `MeshesExtra.ba2`, non-tint
+        // `BSLightingShaderProperty` with slot 2 populated:
+        //
+        // | `Glow_Map` | emissive authored | count |
+        // |---|---|---|
+        // | clear | no  | 2,493 (inert) |
+        // | clear | yes | 137 — 116 genuine `_g.dds` glow maps (Glowing
+        // |       |     | Ones, the Mirelurk Queen), 20 `_d.dds` diffuses
+        // |       |     | (Institute terminal screens, lit floor lamps), 1
+        // |       |     | `ColorWhiteUtility` |
+        // | set   | no / yes | 3,254 / 5,951 |
+        //
+        // Gating on the bit as Skyrim does (#3068) would strip the mask from
+        // those 116 glow maps; routing without it (today) masks emission with
+        // a diffuse on the 20. BGSM v<=2 has its own `glowmap` bool beside
+        // `glow_texture` (65 false — 5 of them `emit_enabled` — vs 249 true
+        // across Materials + the three DLC mains), which the merge does not
+        // read either. Open: does FO4's lit shader sample slot 2 without
+        // `Glow_Map`, and does BGSM `glowmap` override the NIF bit?
         (TextureSlotLayout::Fallout4, 2) => {
             if tint_family {
                 Some(TextureRole::Tint)

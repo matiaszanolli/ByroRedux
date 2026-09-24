@@ -691,6 +691,10 @@ fn merge_bgsm_arm(
             pool,
             texture_exists,
         );
+        // #4430 — filled regardless of the BGSM's own `glowmap` bool (65
+        // vanilla `glow_texture` materials say false, 249 true). Whether
+        // that bool gates the glow sample in FO4 is unsourced, so it is not
+        // consulted yet; see the FO4 slot-2 arm in `slot_role.rs`.
         fill(
             &mut material.textures.emissive,
             &bgsm.glow_texture,

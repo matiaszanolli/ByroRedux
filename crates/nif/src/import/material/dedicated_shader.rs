@@ -360,9 +360,13 @@ fn apply_bs_lighting_shader(
         // here — F4SF1 bit 12 (`Model_Space_Normals`) and F4SF2 bit 25
         // (`Alpha_Test`) — both of which mean other things on Skyrim
         // (which routes alpha-test through `NiAlphaProperty` instead). The
-        // `Glow_Map` bit (F4SF2 bit 6) participates only in the texture-slot
-        // vocabulary above; the BGSM merge remains authoritative for external
-        // FO4 material files.
+        // `Glow_Map` bit (F4SF2 bit 6) is computed above into
+        // `TextureSlotContext.glow_map`, but the FO4 slot-2 arm in
+        // `slot_role.rs` does NOT read it (#4430 — the census there shows the
+        // bit is unreliable in both directions, and no FO4 source for the
+        // real rule is in hand); the BGSM merge remains authoritative for
+        // external FO4 material files, and it does not read BGSM `glowmap`
+        // either.
         // These are a LOWER-priority source than the BGSM merge — vanilla
         // FO4 leaves them unset and sources the same attributes from the
         // `.bgsm` (authoritative); `asset_provider`'s BGSM merge
