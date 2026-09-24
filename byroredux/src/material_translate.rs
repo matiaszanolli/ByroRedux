@@ -548,6 +548,18 @@ pub(crate) fn attach_mesh_water(
     }
 }
 
+/// The canonical `Material::texture_clamp_mode` for `source` — what
+/// [`translate_material`] stores. Exposed for the one spawn path that must
+/// resolve its base texture *before* the `Material` exists (object-LOD, whose
+/// translate takes the resolved path as input), so it samples with the same
+/// clamp the component will carry instead of the hardcoded WRAP of
+/// `resolve_texture` (#4553 / #610).
+pub(crate) fn translate_texture_clamp_mode(source: &ImportedMaterial) -> u8 {
+    // #2571 (OBL-D5-01) — copied verbatim; spawn sites read the canonical
+    // value instead of re-reading `ImportedMaterial` independently.
+    source.texture_clamp_mode
+}
+
 /// Translate a source-normalized [`ImportedMaterial`] + caller-resolved
 /// paths into the
 /// canonical [`Material`] component.
@@ -800,10 +812,9 @@ pub(crate) fn translate_material(
         // deliberately, so an ungated read would turn every FNV decal into an
         // anisotropic surface.
         anisotropic: 0.0,
-        // #2571 (OBL-D5-01) — copied verbatim so spawn sites read the
-        // canonical component instead of re-reading `ImportedMaterial`
-        // independently. See the field docs on `Material`.
-        texture_clamp_mode: source.texture_clamp_mode,
+        // #2571 (OBL-D5-01) — see `translate_texture_clamp_mode` and the
+        // field docs on `Material`.
+        texture_clamp_mode: translate_texture_clamp_mode(source),
         parallax_height_in_alpha: source.parallax_height_in_alpha,
         src_blend_mode: source.src_blend_mode,
         dst_blend_mode: source.dst_blend_mode,
@@ -3190,6 +3201,13 @@ mod canonical_completeness_harness {
         assert_ne!(material.effect_shader_flags & BACK_LIGHTING, 0);
         // #2571 (OBL-D5-01)
         assert_eq!(material.texture_clamp_mode, 1);
+        // #4553 — object-LOD resolves its base texture through this helper
+        // before the Material exists; it must agree with what translate
+        // stores.
+        assert_eq!(
+            translate_texture_clamp_mode(&source),
+            material.texture_clamp_mode
+        );
         assert_eq!(material.src_blend_mode, 2);
         assert_eq!(material.dst_blend_mode, 3);
         assert!(material.parallax_height_in_alpha, "#3462");

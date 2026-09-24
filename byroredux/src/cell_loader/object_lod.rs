@@ -53,7 +53,7 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::VulkanContext;
 
-use crate::asset_provider::{resolve_texture, TextureProvider};
+use crate::asset_provider::{resolve_texture, resolve_texture_with_clamp, TextureProvider};
 use crate::components::IsLodTerrain;
 
 use super::exterior::ExteriorWorldContext;
@@ -77,7 +77,8 @@ pub(crate) struct ObjectLodBlock {
     pub(crate) texture_handle: u32,
     /// Every DISTINCT non-atlas sub-mesh texture handle resolved for this
     /// quad (#3412's per-sub-mesh resolution, #4253). One entry per
-    /// successful (non-fallback) `resolve_texture` call beyond the atlas —
+    /// successful (non-fallback) resolve beyond the atlas — one per distinct
+    /// `(path, clamp mode)` since #4553 —
     /// each such call is exactly one refcount increment on the registry, so
     /// this Vec is exactly what `unload_object_lod_block` must release to
     /// balance it. Deliberately NOT deduped by handle value: two distinct
@@ -427,9 +428,12 @@ fn spawn_object_lod_quad(
     // sub-mesh: a quad's sub-meshes overwhelmingly share a handful of
     // textures, so this stays the same order of work the single-atlas resolve
     // was. Seeded with the atlas so a sub-mesh naming it explicitly reuses the
-    // handle above rather than re-entering the registry.
-    let mut resolved: rustc_hash::FxHashMap<String, u32> = rustc_hash::FxHashMap::default();
-    resolved.insert(atlas_path.clone(), atlas);
+    // handle above rather than re-entering the registry. #4553 — keyed by
+    // (path, clamp mode): the registry itself caches per `(path, clamp)`, and
+    // the atlas (worldspace-authored, no material) is resolved at the default
+    // WRAP (3).
+    let mut resolved: rustc_hash::FxHashMap<(String, u8), u32> = rustc_hash::FxHashMap::default();
+    resolved.insert((atlas_path.clone(), 3), atlas);
     // #4253 — every successful (non-fallback) resolve beyond the atlas seed
     // above is its own refcount increment; recorded here (not reverse-
     // derived from `resolved`'s final values) so a fallback-substituted
@@ -487,12 +491,22 @@ fn spawn_object_lod_quad(
                 .base_color
                 .and_then(|sym| pool.resolve(sym)),
         );
+        // #4553 — the canonical clamp `insert_object_lod_submesh_material`'s
+        // `translate_material` will store below; resolved here because that
+        // translate takes this resolve's outcome as input.
+        let clamp_mode = crate::material_translate::translate_texture_clamp_mode(&mesh.material);
         let (tex_path, texture) = match authored {
             Some(p) => {
-                let handle = match resolved.get(&p) {
+                let key = (p, clamp_mode);
+                let handle = match resolved.get(&key) {
                     Some(&h) => h,
                     None => {
-                        let h = resolve_texture(ctx, tex_provider, Some(p.as_str()));
+                        let h = resolve_texture_with_clamp(
+                            ctx,
+                            tex_provider,
+                            Some(key.0.as_str()),
+                            clamp_mode,
+                        );
                         // A miss falls back to the worldspace atlas rather
                         // than to the magenta placeholder: an imposter with
                         // the wrong atlas still reads as distant scenery,
@@ -507,14 +521,14 @@ fn spawn_object_lod_quad(
                             extra_texture_handles.push(h);
                             h
                         };
-                        resolved.insert(p.clone(), h);
+                        resolved.insert(key.clone(), h);
                         h
                     }
                 };
                 if handle == atlas {
                     (atlas_path.clone(), atlas)
                 } else {
-                    (p, handle)
+                    (key.0, handle)
                 }
             }
             None => (atlas_path.clone(), atlas),
@@ -889,8 +903,8 @@ mod release_texture_set_tests {
 
     /// Two distinct authored paths that happen to resolve to the SAME
     /// underlying handle each still took their own registry refcount
-    /// increment (`resolve_texture` is called once per distinct PATH, not
-    /// deduped by result) — the release set must therefore NOT dedupe by
+    /// increment (the resolve runs once per distinct `(path, clamp)` key,
+    /// not deduped by result) — the release set must therefore NOT dedupe by
     /// value either, or one of the two increments would never be balanced.
     #[test]
     fn does_not_dedupe_extra_handles_by_value() {
@@ -1207,5 +1221,36 @@ mod tests {
             "spawn_object_lod_quad must pass tex_provider as the MeshResolver, \
              not call the no-resolver import_nif_scene overload",
         );
+    }
+}
+
+/// #4553 — both LOD spawn paths sample a sub-mesh's base texture with the
+/// canonical clamp its `Material` carries, like the full-detail spawns
+/// (#2571 / #610): they attach no `MaterialTextureHandles`, so the base
+/// texture is the only sampler an authored CLAMP can reach. Resolving with
+/// plain `resolve_texture` hardcodes WRAP. (The GPU resolve itself needs a
+/// device, so this pins the call shape.)
+#[cfg(test)]
+mod lod_clamp_resolve_tests {
+    fn production(src: &'static str) -> &'static str {
+        src.find("#[cfg(test)]").map_or(src, |cut| &src[..cut])
+    }
+
+    #[test]
+    fn object_lod_submesh_resolve_uses_the_canonical_clamp() {
+        let src = production(include_str!("object_lod.rs"));
+        assert!(src.contains("translate_texture_clamp_mode(&mesh.material)"));
+        assert!(src.contains("resolve_texture_with_clamp("));
+        assert!(
+            src.matches("resolve_texture(ctx, tex_provider").count() == 1,
+            "only the worldspace atlas (no material) may resolve at default WRAP"
+        );
+    }
+
+    #[test]
+    fn placement_lod_resolve_uses_the_canonical_clamp() {
+        let src = production(include_str!("placement_lod.rs"));
+        assert!(src.contains("material.texture_clamp_mode,"));
+        assert!(!src.contains("resolve_texture(ctx"));
     }
 }

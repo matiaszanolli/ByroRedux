@@ -60,7 +60,7 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::VulkanContext;
 
-use crate::asset_provider::{resolve_texture, TextureProvider};
+use crate::asset_provider::{resolve_texture_with_clamp, TextureProvider};
 use crate::components::IsLodTerrain;
 
 use super::euler::euler_zup_to_quat_yup_refr;
@@ -276,7 +276,7 @@ pub(crate) struct PlacementLodBlock {
     /// Unique global-SSBO mesh ranges (one per uploaded `_far.nif`
     /// sub-mesh; shared across that group's placements). Dropped on unload.
     pub(crate) mesh_handles: Vec<u32>,
-    /// Per-sub-mesh diffuse `TextureHandle`s acquired via `resolve_texture`
+    /// Per-sub-mesh diffuse `TextureHandle`s acquired via `resolve_texture_with_clamp`
     /// (one refcount bump each). Released once each on unload — `despawn`
     /// has no GPU side effects, so without this the refcount never reaches
     /// 0 (#1537, sibling of the object-LOD / terrain-LOD leak). Never `0`.
@@ -567,7 +567,16 @@ fn spawn_placement_lod_cell(
                 0,
             );
             let tex_str = owned_textures.base_color.clone();
-            let raw = resolve_texture(ctx, tex_provider, tex_str.as_deref());
+            // #4553 — sample with the canonical clamp the Material carries,
+            // like the full-detail spawns (#2571 / #610); placement-LOD
+            // attaches no MaterialTextureHandles, so this base texture is
+            // the only sampler an authored CLAMP can reach.
+            let raw = resolve_texture_with_clamp(
+                ctx,
+                tex_provider,
+                tex_str.as_deref(),
+                material.texture_clamp_mode,
+            );
             let texture = if raw == ctx.texture_registry.fallback() {
                 0
             } else {
