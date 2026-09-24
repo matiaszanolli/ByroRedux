@@ -127,6 +127,8 @@ pub(crate) fn populate_idle_clip_runtime(
                     &skeleton,
                     &animation,
                     &mut pool,
+                    false,
+                    None,
                 )
             };
             world
@@ -192,25 +194,19 @@ pub(crate) fn populate_skyrim_walk_clip(world: &mut World, index: &EsmIndex, pro
     let handle = {
         let clip = {
             let mut pool = world.resource_mut::<StringPool>();
-            let mut clip = convert_hkx_clip(
+            convert_hkx_clip(
                 SKYRIM_WALK_PATH,
                 // Not an `idlecart*` event → no synthesized completion
-                // events, `CycleType::Loop`, and the accum-root lookup
-                // below is what binds COM (the cart idles do it through
-                // their exit-event branch instead).
+                // events and `CycleType::Loop`; the accum-root argument
+                // binds COM inside the boundary (#4563) — the cart idles
+                // get the same bone through their exit-event branch.
                 "walkforward",
                 &skeleton,
                 &animation,
                 &mut pool,
-            );
-            if let Some(com) = skeleton
-                .bones
-                .iter()
-                .find(|bone| bone.name.eq_ignore_ascii_case("NPC COM [COM ]"))
-            {
-                clip.accum_root_name = Some(pool.intern(&com.name));
-            }
-            clip
+                false,
+                Some("NPC COM [COM ]"),
+            )
         };
         world
             .resource_mut::<AnimationClipRegistry>()
@@ -228,9 +224,9 @@ pub(crate) fn populate_skyrim_walk_clip(world: &mut World, index: &EsmIndex, pro
 // (decode-verified 2026-09-21 against `Skyrim - Animations.bsa`): every
 // clip carries 84 tracks against the 84-bone `skeletonf` rig, so
 // `convert_hkx_clip`'s pairing applies unchanged. All three takes are
-// ONE-SHOT: the walk installer keeps its clip looping, this one forces
-// `CycleType::Clamp` after conversion so the sampler holds the final
-// pose instead of cycling back into the strike.
+// ONE-SHOT: the walk installer keeps its clip looping, this one requests
+// the boundary's `one_shot` policy (`CycleType::Clamp`, #4563) so the
+// sampler holds the final pose instead of cycling back into the strike.
 
 const DRAUGR_SKELETON_PATH: &str = r"meshes\actors\draugr\character assets\skeletonf.hkx";
 const DRAUGR_ATTACK_PATH: &str = r"meshes\actors\draugr\animations\2hmattackforwardb.hkx";
@@ -297,11 +293,12 @@ pub(crate) fn populate_draugr_combat_clips(
                     return None;
                 }
             };
-            let mut clip = {
+            let clip = {
                 let mut pool = world.resource_mut::<StringPool>();
-                convert_hkx_clip(path, event, &skeleton, &animation, &mut pool)
+                // One-shot take — the boundary applies the Clamp (#4563),
+                // no post-conversion override.
+                convert_hkx_clip(path, event, &skeleton, &animation, &mut pool, true, None)
             };
-            clip.cycle_type = byroredux_core::animation::CycleType::Clamp;
             let secs = clip.duration;
             let handle = world
                 .resource_mut::<AnimationClipRegistry>()
@@ -389,12 +386,28 @@ fn idle_animation_candidates(event: &str) -> Vec<String> {    let event = event.
         .collect()
 }
 
+/// #4563 — the one decision point for canonical clip fields on the HKX
+/// path. Caller-declared policy rides in as arguments (`one_shot`,
+/// `accum_root`) instead of install sites mutating the converted clip
+/// afterwards; everything downstream of the signature is decided here, so
+/// the COM lookup cannot drift between the walk installer and the
+/// cart-exit branch, and a future `AnimationClip` policy change has a
+/// single site to check.
+///
+/// * `one_shot` — force [`CycleType::Clamp`] regardless of completion
+///   events (combat takes play once and hold their final pose).
+/// * `accum_root` — bind this bone (case-insensitive, e.g.
+///   `NPC COM [COM ]`) as the accumulation root; `None` keeps the
+///   boundary default of binding COM only for cart-exit completion
+///   events. A name the rig doesn't have warns and binds nothing.
 fn convert_hkx_clip(
     path: &str,
     idle_event: &str,
     skeleton: &HkxSkeleton,
     animation: &HkxAnimation,
     pool: &mut StringPool,
+    one_shot: bool,
+    accum_root: Option<&str>,
 ) -> AnimationClip {
     let mut channels =
         FxHashMap::with_capacity_and_hasher(animation.tracks.len(), Default::default());
@@ -474,7 +487,22 @@ fn convert_hkx_clip(
     }
 
     let completion_events = behavior_completion_events(idle_event);
-    let accum_root_name = if completion_events.is_empty() {
+    let accum_root_name = if let Some(requested) = accum_root {
+        let bound = skeleton
+            .bones
+            .iter()
+            .find(|bone| bone.name.eq_ignore_ascii_case(requested))
+            .map(|bone| pool.intern(&bone.name));
+        if bound.is_none() {
+            log::warn!(
+                "HKX '{path}' (event '{idle_event}'): requested accum root \
+                 '{requested}' is not a bone of skeleton '{}' — no root-motion \
+                 accumulation binds",
+                skeleton.name,
+            );
+        }
+        bound
+    } else if completion_events.is_empty() {
         None
     } else {
         skeleton
@@ -507,10 +535,10 @@ fn convert_hkx_clip(
     AnimationClip {
         name: path.to_owned(),
         duration: animation.duration,
-        cycle_type: if behavior_completion_events(idle_event).is_empty() {
-            CycleType::Loop
-        } else {
+        cycle_type: if one_shot || !completion_events.is_empty() {
             CycleType::Clamp
+        } else {
+            CycleType::Loop
         },
         frequency: 1.0,
         // No phase in this source: these clips are built from behaviour-graph
@@ -607,7 +635,7 @@ mod tests {
         };
 
         let mut pool = StringPool::new();
-        let clip = convert_hkx_clip("test.hkx", "IdleTest", &skeleton, &animation, &mut pool);
+        let clip = convert_hkx_clip("test.hkx", "IdleTest", &skeleton, &animation, &mut pool, false, None);
 
         assert_eq!(
             clip.channels.len(),
@@ -676,6 +704,8 @@ mod tests {
             &skeleton,
             &animation,
             &mut pool,
+            false,
+            None,
         );
 
         assert_eq!(
@@ -775,6 +805,8 @@ mod tests {
             &skeleton,
             &animation,
             &mut pool,
+            false,
+            None,
         );
 
         assert_eq!(
@@ -802,6 +834,102 @@ mod tests {
             clip.text_keys.iter().all(|(t, _)| *t == 3.0),
             "synthesized events fire at the clip end"
         );
+    }
+
+    /// #4563 — cycle type and accum-root binding are decided *inside* the
+    /// boundary from the caller-declared policy (`one_shot`, `accum_root`).
+    /// The walk installer used to re-implement the COM lookup on the
+    /// converted clip and the combat installer used to force `Clamp`
+    /// afterwards; this pin keeps those overrides on the boundary's
+    /// arguments so install sites cannot drift apart.
+    #[test]
+    fn hkx_clip_policy_arguments_decide_cycle_and_accum_root_inside_the_boundary() {
+        use byroredux_hkx::{HkxBone, HkxTransform};
+
+        let skeleton = HkxSkeleton {
+            name: "TestSkeleton".to_string(),
+            bones: vec![
+                HkxBone {
+                    name: "NPC Root [Root]".to_string(),
+                    parent_index: -1,
+                    reference_pose: HkxTransform::IDENTITY,
+                },
+                HkxBone {
+                    name: "NPC COM [COM ]".to_string(),
+                    parent_index: 0,
+                    reference_pose: HkxTransform::IDENTITY,
+                },
+            ],
+        };
+        let animation = HkxAnimation {
+            duration: 1.0,
+            num_frames: 1,
+            frame_duration: 1.0,
+            tracks: vec![vec![HkxTransform::IDENTITY]],
+            track_to_bone: vec![0],
+            annotations: Vec::new(),
+        };
+        let mut pool = StringPool::new();
+
+        // `one_shot` forces Clamp even with no completion events — the
+        // combat-take contract.
+        let clip = convert_hkx_clip(
+            "a.hkx",
+            "attackforward",
+            &skeleton,
+            &animation,
+            &mut pool,
+            true,
+            None,
+        );
+        assert_eq!(clip.cycle_type, CycleType::Clamp);
+        assert_eq!(clip.accum_root_name, None);
+
+        // Default policy keeps the Loop a non-cart event always had.
+        let clip = convert_hkx_clip(
+            "a.hkx",
+            "attackforward",
+            &skeleton,
+            &animation,
+            &mut pool,
+            false,
+            None,
+        );
+        assert_eq!(clip.cycle_type, CycleType::Loop);
+
+        // The accum-root request binds inside the boundary —
+        // case-insensitively, the same lookup the cart-exit branch uses.
+        let clip = convert_hkx_clip(
+            "a.hkx",
+            "walkforward",
+            &skeleton,
+            &animation,
+            &mut pool,
+            false,
+            Some("npc com [com ]"),
+        );
+        assert_eq!(
+            clip.accum_root_name,
+            Some(pool.intern("NPC COM [COM ]")),
+            "the walk installer's COM binding must come from the boundary"
+        );
+        assert_eq!(
+            clip.cycle_type,
+            CycleType::Loop,
+            "an accum-root request must not silently change cycle policy"
+        );
+
+        // A requested bone the rig doesn't have binds nothing (warned).
+        let clip = convert_hkx_clip(
+            "a.hkx",
+            "walkforward",
+            &skeleton,
+            &animation,
+            &mut pool,
+            false,
+            Some("NPC NOT [NOT ]"),
+        );
+        assert_eq!(clip.accum_root_name, None);
     }
 
     /// Opt-in: parses the whole of `Skyrim.esm` and decodes real HKX out of
