@@ -31,16 +31,19 @@ pub use byroredux_core::ecs::components::LightKind;
 pub struct ImportedLight {
     /// World-space position (Y-up).
     pub translation: [f32; 3],
-    /// Unit direction (Y-up) — zero for ambient/point, camera-facing
-    /// meaningful only for directional and spot lights.
+    /// Unit direction (Y-up): column 0 of the light's world rotation for
+    /// every kind (#4395), negated for directional lights so it points
+    /// toward the light. Meaningful only for directional and spot lights;
+    /// consumers ignore it for ambient/point.
     pub direction: [f32; 3],
     /// Diffuse RGB in 0..1 (multiplied by dimmer, ignoring alpha).
     pub color: [f32; 3],
     /// Effective radius in Bethesda units, derived from the attenuation
     /// parameters. Zero for ambient/directional (infinite reach).
     pub radius: f32,
-    /// Kind tag for the renderer. 0 = ambient, 1 = directional,
-    /// 2 = point, 3 = spot.
+    /// Light kind — the canonical `EmitterKind` (`LightKind` is its alias).
+    /// The GPU's numeric packing lives in `gpu_light_from_emitter`
+    /// (`byroredux/src/render/lights.rs`), not here.
     pub kind: LightKind,
     /// Outer cone half-angle in radians (0.0 for non-spot).
     pub outer_angle: f32,
@@ -969,8 +972,11 @@ pub struct ImportedMesh {
     ///     (in the tangent record's 4 normbytes).
     ///   - **Starfield** (BSGeometry): UDEC3 (10:10:10:2) packed in
     ///     `tangents_raw: Vec<u32>`. The 2-bit W is the bitangent sign.
-    ///     Wired through to `tangents_raw` today; UDEC3 unpack into
-    ///     `[f32; 4]` is a follow-up to this issue.
+    ///     Unpacked into this field by `import/mesh/bs_geometry.rs`
+    ///     (`unpack_udec3_xyzw`, with the W lane snapped to exact ±1 by
+    ///     `clamp_sign` — #1086 / #2246), falling back to
+    ///     `synthesize_tangents_yup` when the stream carries no tangents
+    ///     (#1232). Pinned by `bs_geometry_tangent_tests.rs`.
     pub tangents: Vec<[f32; 4]>,
     /// UV coordinates. Empty if the mesh has no UVs.
     pub uvs: Vec<[f32; 2]>,
@@ -1348,15 +1354,20 @@ pub struct ImportedSkin {
     /// **Global skin transform** (`NiSkinData::skinTransform`, the
     /// per-skin field, NOT the per-bone one). Bethesda's legacy
     /// NiSkinData ships this as a non-identity transform on every body
-    /// NIF. The OpenMW skinning evaluator
-    /// (`components/sceneutil/riggeometry.cpp:175-208`) composes it
-    /// into the runtime palette as the OUTERMOST factor; NifSkope's
-    /// partition path silently drops it (`tools/nifskope/src/gl/glmesh.cpp:875`)
-    /// which is why our pre-Phase-1b.x palette computed `bone × invBind`
-    /// without it and produced the body-skinning ribbon artifact. Y-up
-    /// converted at extraction; identity if the source NIF didn't carry
-    /// one (FO4+ BSSkin paths). See M41.0 Phase 1b.x research in
-    /// `byroredux/tests/skinning_e2e.rs`.
+    /// NIF. Captured Y-up at extraction; identity when the source NIF
+    /// carries none (FO4+ BSSkin paths).
+    ///
+    /// **Informational / diagnostic only — the runtime palette does NOT
+    /// compose it** (#4555). Since #771 each bone's `bind_inverse` is
+    /// nifly's compose-ready `transformSkinToBone`, which already encodes
+    /// the skin-to-skeleton offset, so `SkinnedMesh::compute_palette_into`
+    /// builds `bone_world × bind_inverse` alone; multiplying this transform
+    /// in as well double-applies the offset on every legacy body NIF.
+    /// `compute_palette_into`'s doc and its
+    /// `palette_matches_nifly_skin_to_bone_semantics_with_non_identity_global`
+    /// test are the authority. (OpenMW composes it as the outermost factor
+    /// because its bind matrices omit that offset; the M41.0 Phase 1b.x
+    /// history is in `byroredux/tests/skinning_e2e.rs`.)
     pub global_skin_transform: [[f32; 4]; 4],
     /// Per-partition dismemberment flags (`BSDismemberSkinInstance`'s
     /// `BodyPartInfo`), in the same order as the linked `NiSkinPartition`'s

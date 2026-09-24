@@ -1424,9 +1424,11 @@ tolerance. Two alternatives were rejected:
   rasterizer-only bit, skipped for off-frustum draws, and ray-query consumers
   are forbidden from reading it.
 - *A terrain bit in `VisibilityMask`.* That mask is core light-record data, and
-  `for_legacy_projection(false)` maps legacy lights to `ARCHITECTURE` alone, so
-  moving terrain to its own bit would silently stop those lights being shadowed
-  by terrain.
+  when this was decided `for_legacy_projection(false)` mapped legacy lights to
+  `ARCHITECTURE` alone, so moving terrain to its own bit would have silently
+  stopped those lights being shadowed by terrain. (Since `b9e961eeb` the
+  projection mask is `FULL` for every light, so that hazard is gone; the
+  core-light-data objection still stands.)
 
 **Measured.** Same scene and camera: `covered=1106` of 6,469 accepted blades
 (17%) rejected, the road interior clear of roots. The remaining blades that

@@ -148,13 +148,19 @@ pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32)
 /// "would be exactly the guess the shadow-side default exists to avoid".
 /// Applying the same default to Starfield is consistency, not a new claim.
 ///
-/// The behaviour this restores is not marginal. With the zero mask,
-/// `LightSource::from_legacy_world_units` computed
-/// `VisibilityMask::for_legacy_projection(false)` — the conservative
-/// architecture/props/actors set — for **every** placed Starfield light,
-/// so foliage, glass and effects cast no shadow from any of them: the
-/// whole-game version of the silent-flatness failure this default was
-/// written to prevent.
+/// At the time the behaviour this restored was not marginal. With the zero
+/// mask, `LightSource::from_legacy_world_units` computed
+/// `VisibilityMask::for_legacy_projection(false)` for **every** placed
+/// Starfield light — then `ARCHITECTURE` only, broadened to
+/// `ARCHITECTURE | DYNAMIC_ACTOR` by `3ce970a5a` — so props, foliage, glass
+/// and effects cast no shadow from any of them: the whole-game version of
+/// the silent-flatness failure this default was written to prevent.
+///
+/// #4557 — history, not the current mask: since `b9e961eeb` (lighting
+/// unification) `for_legacy_projection` returns `VisibilityMask::FULL`
+/// whatever its argument, so shadow flags no longer narrow any light's
+/// visibility query. They are still carried through to `LightSource` for
+/// diagnostics, which is what the canonicalization below preserves.
 ///
 /// The animation sibling stays at `0`, and the asymmetry is the documented
 /// one: an unverified bit must not create motion, but it may cast a shadow.
@@ -1043,16 +1049,20 @@ mod tests {
             canonical_light_shadow_flags(GameKind::Starfield, all_bits_set, 0),
             LIGHT_FLAG_SHADOW_MASK,
             "Starfield must take the same permissive shadow mask as every other \
-             game: its flags word is real, and dropping a shadow bit leaves the \
-             scene silently flat with nothing to trace it back to. Zeroing it \
-             made every placed Starfield light ARCHITECTURE-only (#3987)"
+             game: its flags word is real. Zeroing it (#3987) once narrowed every \
+             placed Starfield light to the conservative legacy mask; the mask is \
+             FULL for every light since the lighting unification, but the \
+             decoded flags must still reach LightSource intact"
         );
     }
 
-    /// The consequence the zero mask had, pinned at the layer it was felt.
-    /// `VisibilityMask::for_legacy_projection(false)` is the conservative
-    /// architecture/props/actors set, so a Starfield light decoding no
-    /// shadow bits cast nothing on foliage, glass or effects.
+    /// The layer the zero mask was felt at. When #3987 landed,
+    /// `VisibilityMask::for_legacy_projection(false)` was a conservative
+    /// subset (`ARCHITECTURE`, later `| DYNAMIC_ACTOR`), so a Starfield
+    /// light decoding no shadow bits cast nothing on the rest. Since the
+    /// lighting unification the projection mask is `FULL` either way; the
+    /// pin now guards that the decoded shadow bits survive to `LightSource`
+    /// (#4557).
     #[test]
     fn a_starfield_shadow_bit_survives_into_the_projection_mask() {
         use byroredux_core::ecs::LIGHT_FLAG_SHADOW_MASK;
@@ -1060,9 +1070,8 @@ mod tests {
         assert_ne!(
             decoded, 0,
             "a Starfield LIGH carrying shadow bits must reach \
-             LightSource::from_legacy_world_units with them intact — at zero it \
-             falls to for_legacy_projection(false), the conservative set \
-             without foliage/glass/effects"
+             LightSource::from_legacy_world_units with them intact (#3987 / \
+             #4557)"
         );
     }
 }

@@ -305,9 +305,16 @@ propagating the nearest-ancestor billboard mode onto `ImportedMesh` itself in
 `walk_node_flat` (the flat walk's per-mesh sibling of `ImportedNode::
 billboard_mode`) and attaching `Billboard` per mesh entity in
 `byroredux/src/cell_loader/spawn.rs`, reusing the #1235 `flags`-parity pattern.
-The `.spt` SpeedTree placeholder path (#994) is unaffected — it never goes
-through `walk_node_flat` and keeps using `placement_root_billboard` on its own
-single-node scene.
+The `.spt` SpeedTree placeholder path (#994) never goes through
+`walk_node_flat`, but it no longer uses the placement root either: since #3076
+(`aee8783f2`) its root is a plain anchor (`billboard_mode: None`, pinned by
+`placeholder_uses_default_size_without_bounds`) and the placeholder quad carries
+`BILLBOARD_MODE_BS_ROTATE_ABOUT_UP` on `ImportedMesh.billboard_mode`, which the
+same per-mesh #2206 consumer attaches. `CachedNifImport::placement_root_billboard`
+is therefore never set by any producer — a documented dead seam (the
+"currently unreachable" branch in `cell_loader/spawn.rs`) kept for a future
+`NiBillboardNode`-rooted producer. (#4558: #3533's fix swept the code comments
+but missed this paragraph.)
 
 Four fields are **raw-tier-parked with translation formally deferred** — verified
 (2026-05-28) to have *zero* engine consumers. They are NOT leaks: they sit on the

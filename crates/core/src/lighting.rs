@@ -221,7 +221,9 @@ pub struct Emitter {
     /// Radius of the actual luminous surface, not its influence range.
     pub source_radius: Meters,
     /// Unit direction toward the light for directional emitters, or outward
-    /// from the source for spots. Point/ambient emitters use zero.
+    /// from the source for spots. Not meaningful for point/ambient emitters
+    /// and ignored by their consumers: NIF-imported ones carry column 0 of
+    /// the world rotation (#4395), other sources zero.
     pub direction: [f32; 3],
     /// Cosine of a spot's outer half-angle. Other kinds use zero.
     pub outer_cone_cos: f32,

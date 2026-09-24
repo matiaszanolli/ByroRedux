@@ -1684,9 +1684,12 @@ fn spawn_nif_nodes(
         // etc. without re-reading the source NIF. APP_CULLED (bit 0) is
         // already consumed by the import-time visibility filter in
         // `walk.rs`, so every spawned node arrives with that bit clear.
-        // We still emit the component unconditionally (not gated on
-        // `flags != 0`) so a future toggle-visible system can just flip
-        // the bit on the existing component. See #222.
+        // Gated on `flags != 0`, like the mesh-entity and cell
+        // placement-root siblings: `SceneFlags::from_nif(0)` is the
+        // default (visible, no bits), so a zero-flags node gets no row.
+        // A future toggle-visible system must therefore insert the
+        // component when it is absent, not only flip a bit on an
+        // existing one (#4559). See #222.
         if node.flags != 0 {
             world.insert(entity, SceneFlags::from_nif(node.flags));
         }
