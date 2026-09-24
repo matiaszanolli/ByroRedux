@@ -42,8 +42,13 @@ applies with identity indices (the cart-catalog machinery, unchanged).
 Freeze rule: the gate uses the **2HM/2GS family** — the fixture's concrete
 weapon leaves (`0001CB64` Draugr Battleaxe, `000236A5` Draugr Greatsword)
 are both two-handed (`p2-combat-fixture.md`), so `1hmattackx2` is listed
-only as a decode-verified alternate, not a gate asset. The power-chop clip
-is the primary attack; `2hmattackforwardb` is its non-power sibling.
+only as a decode-verified alternate, not a gate asset. The installed
+primary attack is `2hmattackforwardb`: the generic 2HM take matches both
+weapon leaves, where the greatsword-specific power chop would fit only one.
+`2gsattackforwardpowerchop2` stays the decode-verified power alternate.
+(#4564 — the wiring commit `ec3a18d2f` installed the 2HM take and its
+real-data gate verified it; the earlier "power chop is primary" freeze
+wording is superseded by what ships.)
 
 Clip **annotations** decode with the tracks (7–8 per attack clip). Havok
 clip annotations are the natural hit-timing marker for "play the impact
