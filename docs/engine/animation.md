@@ -256,6 +256,12 @@ when an actor bring-up actually needs sequence blending. Rebuilding it
 alongside a real consumer is the point; the previous attempt shipped the
 half that had no way to be wrong.
 
+Reopen tracking: #4128. When an actor bring-up milestone wires it, the
+issue's completeness gate applies — a regression test must drive at
+least one real KFM-triggered sequence transition end-to-end (spawn →
+catalog → transition → blended pose), not just unit tests on the
+isolated state machine.
+
 ## Root motion
 
 [`root_motion.rs`](../../crates/core/src/animation/root_motion.rs)
