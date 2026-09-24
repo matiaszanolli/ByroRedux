@@ -121,21 +121,6 @@ pub const fn main_body_bit(game: GameKind) -> Option<u8> {
     }
 }
 
-/// Returns true when an armor's biped-flags bitmask occupies the
-/// game's main-body slot. Used by the spawn pipeline to skip the
-/// base-body NIF (`upperbody.nif` etc.) when an equipped armor's
-/// mesh already covers the torso — vanilla armors include exposed
-/// body parts inline, so doubling up causes z-fight + 2× skinned
-/// bone palette load.
-///
-/// Verified against xEdit `dev-4.1.6` definitions (2026-05-07).
-pub fn armor_covers_main_body(game: GameKind, biped_flags: u32) -> bool {
-    match main_body_bit(game) {
-        Some(bit) => biped_flags & (1u32 << bit) != 0,
-        None => false,
-    }
-}
-
 /// Resolve an `ItemRecord` (assumed to be an ARMO) to the path of the
 /// worn mesh that should spawn on an actor of the given gender + race.
 /// Returns `None` if the item is not an armor record, has no mesh, or
@@ -1041,30 +1026,28 @@ mod template_tests;
 mod tests {
     use super::*;
 
+    // #4714 — these four pins used to assert through
+    // `armor_covers_main_body`, a wrapper nothing in production called
+    // (the spawn pipeline's `NpcEquipState::main_body_covered` reads
+    // `main_body_bit` directly). The wrapper is gone; the pins are about
+    // the per-game bit table, so they now call it directly.
+
     #[test]
     fn fnv_upper_body_bit_is_2() {
         // 0x0004 = bit 2 = "Upper Body" per xEdit wbDefinitionsFNV.pas:4031
-        assert!(armor_covers_main_body(GameKind::Fallout3NV, 0x0004));
-        // Bit 0 (Head), bit 1 (Hair), bit 4 (Right Hand) all leave
-        // body uncovered.
-        assert!(!armor_covers_main_body(GameKind::Fallout3NV, 0x0001));
-        assert!(!armor_covers_main_body(GameKind::Fallout3NV, 0x0002));
-        assert!(!armor_covers_main_body(GameKind::Fallout3NV, 0x0010));
+        assert_eq!(main_body_bit(GameKind::Fallout3NV), Some(2));
     }
 
     #[test]
     fn oblivion_upper_body_bit_is_2() {
         // wbDefinitionsTES4.pas:1332 — bit 2 = "Upper Body".
-        assert!(armor_covers_main_body(GameKind::Oblivion, 0x0004));
-        assert!(!armor_covers_main_body(GameKind::Oblivion, 0x0001));
+        assert_eq!(main_body_bit(GameKind::Oblivion), Some(2));
     }
 
     #[test]
     fn skyrim_body_bit_is_2() {
         // wbDefinitionsTES5.pas:2593 — bit 2 = "32 - Body".
-        assert!(armor_covers_main_body(GameKind::Skyrim, 0x0004));
-        // Bit 7 = "37 - Feet", doesn't cover torso.
-        assert!(!armor_covers_main_body(GameKind::Skyrim, 0x0080));
+        assert_eq!(main_body_bit(GameKind::Skyrim), Some(2));
     }
 
     #[test]
@@ -1073,8 +1056,7 @@ mod tests {
         // "32 - FaceGen Head", which does NOT cover the actor's
         // torso even though the SBP enum value is the same as
         // Skyrim's body slot.
-        assert!(armor_covers_main_body(GameKind::Fallout4, 0x0008));
-        assert!(!armor_covers_main_body(GameKind::Fallout4, 0x0004));
+        assert_eq!(main_body_bit(GameKind::Fallout4), Some(3));
     }
 
     /// #4074 — the FO76/Starfield arms are an inference, and the danger is
@@ -1115,13 +1097,20 @@ mod tests {
                 "the provisional arms track FO4 by assumption (#4074); if this \
                  diverges, the divergence needs its own citation",
             );
-            assert!(armor_covers_main_body(game, 0x0008));
-            assert!(!armor_covers_main_body(game, 0x0004));
+            // The bit-position equivalents of the removed
+            // `armor_covers_main_body` assertions: bit 3 covers, bit 2
+            // (FaceGen Head) does not.
+            assert_eq!(main_body_bit(game), Some(3));
         }
+        assert!(main_body_bit(GameKind::Fallout4).is_some());
     }
 
     #[test]
     fn empty_flags_never_cover_body() {
+        // No game has a `None` bit here except TES3-era titles the equip
+        // path never sees, so every supported arm returns a bit position —
+        // `None` is the "this game has no ARMO through this codepath"
+        // answer, kept distinct from "the bitmask is empty".
         for game in [
             GameKind::Oblivion,
             GameKind::Fallout3NV,
@@ -1130,7 +1119,7 @@ mod tests {
             GameKind::Fallout76,
             GameKind::Starfield,
         ] {
-            assert!(!armor_covers_main_body(game, 0));
+            assert!(main_body_bit(game).is_some());
         }
     }
 
