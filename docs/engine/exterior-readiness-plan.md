@@ -712,11 +712,36 @@ choice is deliberately unmade, and each would be its own follow-up issue.
    the shared helper directly). Still open: §7 steps 2 (this item's own
    reconcile-comparison wiring) and 3 (EX-16 item 4's snapshot/restore)
    — this only lands the shared identity mechanism both need.
-3. [ ] **FO4 previs/occlusion** (`.uvd`, XPCI-equivalent) — zero parser,
-   zero consumer (`byroredux/src/cell_loader/precombined.rs:25-31`
-   documents this as a known deferred sub-item). Still true; still
-   recommended as its own research-spike issue rather than folded in
-   here — the visibility-set payload itself remains fully unknown.
+3. [ ] **FO4 previs/occlusion** (`.uvd`, XPCI-equivalent) — **envelope
+   parser landed** (`crates/bsa/src/uvd.rs`, `byroredux_bsa::
+   parse_uvd_header`), re-derived against the **complete** 1 413-file
+   corpus of the base game plus three DLC previs archives (#3810,
+   2026-09-09/09-15; commit `f1e4c7565`). Decoded and validated: magic,
+   self-size, tile size, the six-float world-space AABB at `0x14..0x2C`
+   (the 2026-08-23 pass read five and cut the box mid-`max`), a
+   32-byte-stride entry table (`table_bytes == 32 * entry_count`, exact
+   on all 1 413), a fixed `table_offset` of 336, and the count carried
+   twice (`0x38` + `0x90`) — all enforced by the parser, not merely
+   reported. Three plausible relations were disproved on the full corpus
+   (see the module's "Rejected" list). The 2026-08-23 five-float /
+   three-sample reading below is superseded.
+   **Bounds = the owning cell's neighbourhood (2026-09-15)**: resolved
+   against every `CELL` in `Fallout4.esm` + the three DLC masters, an
+   exterior file's AABB is exactly the owning cell's 3×3 block of
+   4 096-unit cells on X/Y (1 095/1 095, centre cell equal to `XCLC`;
+   interiors 318/318 are content bounds with no grid relation), exposed
+   as `UvdHeader::exterior_cell_grid` — a consumer can key previs to a
+   cell from the file alone, without a parsed ESM.
+   **Still uncracked**: the visibility-set payload from `table_offset`
+   onward — high-entropy, evidently bit-packed (high-entropy run, then a
+   monotonically increasing byte-index array, then a float table ended
+   by an `FLT_MAX` sentinel); the section directory at `0x2C..0xB0` is
+   narrowed but not determined (three stride candidates, the best holds
+   1 410/1 413 — a lead, not a layout, so deliberately not encoded).
+   No consumer exists; the payload decode is the remaining research
+   problem, of the same class as #3809's Havok blob.
+   `crates/bsa/examples/probe_uvd_corpus.rs` re-runs every figure here.
+   `_physics.nif`/`_precomb.nif` correction: see item 4 below.
 
    **Partial crack, 2026-08-23**: "no niftools spec is cited anywhere in
    the codebase" doesn't mean unstartable — real FO4 data was available
