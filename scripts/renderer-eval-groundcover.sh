@@ -87,12 +87,15 @@ if [[ -n "${window_size}" ]]; then
 fi
 
 mkdir -p "${output_root}"
-# Always build (cheap when fresh) so a capture can never be attributed to a
-# stale binary. Stale-SPIR-V trap (SKYAL §4): a recompiled .spv does not
-# reliably trigger a cargo rebuild — after any shader edit run
-#   touch crates/renderer/src/lib.rs
-# before this build. (A renderer build.rs rerun-if-changed on shaders/** is
-# the structural fix, tracked separately.)
+# Stale-SPIR-V preflight (#4738): a recompiled .spv does not reliably
+# trigger a cargo rebuild, and the landed build.rs rerun-if-changed on
+# shaders/** only dirties the crate — it does NOT recompile SPIR-V — so an
+# edited-but-not-recompiled shader would silently ship stale artifacts.
+# check-shader-artifacts.sh recompiles every first-party shader and fails
+# on any byte drift, so no capture below can be judged through a stale
+# shader (the #4490 / #4577 composite.frag class).
+"${repo_root}/scripts/check-shader-artifacts.sh"
+
 cargo build --manifest-path "${repo_root}/Cargo.toml" --release -p byroredux --bin byroredux
 engine="${repo_root}/target/release/byroredux"
 manifest="${output_root}/manifest.tsv"

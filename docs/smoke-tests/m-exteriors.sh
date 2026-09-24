@@ -99,13 +99,16 @@ cleanup_active () {
 }
 trap cleanup_active EXIT INT TERM
 
-# Always build (cheap when fresh): a pre-existing binary is not evidence it
-# is current, and a stale one invalidates every capture below. Stale-SPIR-V
-# trap (SKYAL §4): a recompiled .spv does not reliably trigger a cargo
-# rebuild — after any shader edit run
-#   touch crates/renderer/src/lib.rs
-# before this build. (A renderer build.rs rerun-if-changed on shaders/** is
-# the structural fix, tracked separately.)
+# Stale-SPIR-V preflight (#4738): a recompiled .spv does not reliably
+# trigger a cargo rebuild, and the landed build.rs rerun-if-changed on
+# shaders/** only dirties the crate — it does NOT recompile SPIR-V — so an
+# edited-but-not-recompiled shader would silently ship stale artifacts.
+# check-shader-artifacts.sh recompiles every first-party shader and fails
+# on any byte drift, so no capture below can be judged through a stale
+# shader (the #4490 / #4577 composite.frag class).
+echo "exterior-smoke: checking shader artifacts are up to date"
+"$REPO_ROOT/scripts/check-shader-artifacts.sh"
+
 echo "exterior-smoke: building release engine and debug client"
 cargo build --release --quiet -p byroredux -p byro-dbg
 
