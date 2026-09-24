@@ -1155,7 +1155,9 @@ fn build_npc_equip_state<'a>(
     game: GameKind,
     gender: Gender,
 ) -> NpcEquipState<'a> {
-    let npc = resolved.shell;
+    // #4812 — no read here touches the shell any more: race/traits, stats
+    // and the outfit+CNTO all come from their own template terminals, and
+    // identity fields were already `resolved`'s before #4457.
     let race_form_id = resolved.r#traits.race_form_id;
     struct ExpandedEquip {
         form_id: u32,
@@ -1172,9 +1174,17 @@ fn build_npc_equip_state<'a>(
     // record's `level` is not a level, and `expand_leveled_form_id` filters
     // `entry.level <= actor_level` then takes the highest eligible tier, so the
     // raw multiplier made every entry eligible and always drew the top one.
-    let actor_level = effective_actor_level(npc);
+    //
+    // #4812 — the level is the Use **Stats** terminal's, not the shell's:
+    // TPLT 0x02 covers level, so a templated actor whose own record sits at
+    // level 1 while its terminal carries the real level was expanding its
+    // leveled gear at the wrong tier. Same source `resolve_actor_spells`
+    // already reads (equip.rs).
+    let actor_level = effective_actor_level(resolved.stats);
     let mut expanded: Vec<ExpandedEquip> = Vec::new();
     let mut resolved_buf = Vec::new();
+    // #4696 — the carry-list expander's (form_id, count) pairs.
+    let mut loot_buf = Vec::new();
 
     // #2093 / SKY-D3-NEW-01 — race default skin (`RACE.WNAM`) is the
     // lowest-priority body layer, not a lootable inventory item. OTFT/CNTO
@@ -1220,7 +1230,14 @@ fn build_npc_equip_state<'a>(
     // LVLI dispatcher. Skyrim+ NPCs typically reference leveled
     // lists for outfit variety; the pre-fix loop skipped LVLI refs
     // silently. See M41 Phase 2 close-out / #896.
-    if let Some(otft_fid) = npc.default_outfit {
+    //
+    // #4812 — xEdit places DOFT in the Inventory group, so the outfit is
+    // the "Use Inventory" terminal's (TPLT 0x100 covers "Inventory tab,
+    // including all outfits"): a shell whose own record carries no DOFT —
+    // or an LVLN-resolved shell that lost its chain — dressed from the
+    // terminal record instead. `npc` (the shell) remains the reader of
+    // identity fields only.
+    if let Some(otft_fid) = resolved.inventory.default_outfit {
         if let Some(otft) = index.outfits.get(&otft_fid) {
             for &fid in &otft.items {
                 resolved_buf.clear();
@@ -1247,19 +1264,29 @@ fn build_npc_equip_state<'a>(
     // templated Skyrim NPCs with an empty own CNTO (leveled actors that
     // inherit gear via TPLT) spawned naked. Negative counts are
     // remove-from-inventory deltas; clamp at runtime.
+    //
+    // #4696 — carry lists expand through `expand_leveled_loot`, the same
+    // pair-producing walk the container path uses, not the flat
+    // `expand_leveled_form_id`: the flat walk assigned every leaf the
+    // calling CNTO entry's own count, dropping the nested LVLO counts, so
+    // a corpse held about a quarter of what the same list yields in a
+    // container (FNV WithAmmo10mmPistolNPC: ×2 vs ×16 10mm). The worn-gear
+    // outfit loop above keeps the flat walk — a count doesn't apply to a
+    // piece of clothing.
     for entry in &resolved.inventory.inventory {
         let count = entry.count.max(0) as u32;
         if count == 0 {
             continue;
         }
         resolved_buf.clear();
-        byroredux_plugin::equip::expand_leveled_form_id(
+        byroredux_plugin::equip::expand_leveled_loot(
             entry.item_form_id,
-            actor_level,
+            count,
+            actor_level.max(0) as u16,
             index,
-            &mut resolved_buf,
+            &mut loot_buf,
         );
-        expanded.extend(resolved_buf.iter().copied().map(|form_id| ExpandedEquip {
+        expanded.extend(loot_buf.drain(..).map(|(form_id, count)| ExpandedEquip {
             form_id,
             source_form_id: entry.item_form_id,
             count,

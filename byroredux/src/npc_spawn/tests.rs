@@ -2695,3 +2695,161 @@ fn resolve_inherited_call_sites_are_enumerated_and_pinned() {
          the boundary that genuinely cannot host the resolution: {counts:?}"
     );
 }
+
+/// #4812 — a TPLT shell with no `DOFT` of its own must dress from the
+/// "Use Inventory" terminal's outfit (xEdit places DOFT in the Inventory
+/// group; TPLT 0x100 covers it), and its leveled gear must expand at the
+/// **Use Stats** terminal's level, not the shell's. Pre-fix both reads hit
+/// `resolved.shell`, so a shell at level 1 over a level-20 terminal
+/// spawned with no outfit at all — 775 Skyrim shells in exactly that
+/// shape (2,716 placed ACHRs through LVLN resolution).
+#[test]
+fn prebaked_equip_state_reads_outfit_and_level_from_tplt_terminals() {
+    use byroredux_plugin::equip::{TEMPLATE_FLAG_USE_INVENTORY, TEMPLATE_FLAG_USE_STATS};
+    use byroredux_plugin::esm::records::container::{LeveledEntry, LeveledList};
+    use byroredux_plugin::esm::records::outfit::OtftRecord;
+
+    const SHELL: u32 = 0x0100_0020;
+    const TERMINAL: u32 = 0x0100_0021;
+    const OTFT: u32 = 0x0002_0001;
+    const LVL_GEAR: u32 = 0x0003_0001;
+    const GEAR: u32 = 0x0000_C0DE;
+
+    // The terminal's outfit references a leveled list whose only entry is
+    // level-gated at 10: with the terminal's level (20) it expands; with
+    // the shell's own level (1) it would not — one fixture covering both
+    // wrong reads.
+    let mut terminal = test_npc(TERMINAL, "LvlDraugrAmbushTemplate");
+    terminal.default_outfit = Some(OTFT);
+    terminal.level = 20;
+
+    let mut shell = test_npc(SHELL, "LvlTemplatedNpc");
+    shell.level = 1;
+    shell.template_form_id = TERMINAL;
+    shell.template_flags = TEMPLATE_FLAG_USE_INVENTORY | TEMPLATE_FLAG_USE_STATS;
+
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
+    index.npcs.insert(TERMINAL, terminal);
+    index.outfits.insert(
+        OTFT,
+        OtftRecord {
+            form_id: OTFT,
+            editor_id: String::new(),
+            items: vec![LVL_GEAR],
+        },
+    );
+    index.leveled_items.insert(
+        LVL_GEAR,
+        LeveledList {
+            form_id: LVL_GEAR,
+            editor_id: String::new(),
+            chance_none: 0,
+            flags: 0,
+            entries: vec![LeveledEntry {
+                level: 10,
+                form_id: GEAR,
+                count: 1,
+            }],
+        },
+    );
+    index.items.insert(GEAR, misc_item(GEAR));
+
+    let state =
+        build_npc_equip_state(&ResolvedNpc::resolve(&shell, &index), &index, GameKind::Skyrim, Gender::Male);
+
+    let rows: Vec<(u32, u32)> = (0..state.inventory.len() as u32)
+        .filter_map(|i| state.inventory.get(byroredux_core::ecs::components::InventoryIndex(i)))
+        .map(|s| (s.base_form_id, s.count))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![(GEAR, 1)],
+        "the shell must wear the terminal's outfit expanded at the \
+         terminal's level — pre-fix the shell's missing DOFT and level 1 \
+         produced an empty inventory (naked draugr/bandit/guard)"
+    );
+}
+
+/// #4696 — the same LVLI reached through an NPC's CNTO and through a
+/// container's CONT must yield identical `(form_id, count)` stacks. The
+/// carry-list path used to run the flat expander, which dropped the nested
+/// LVLO counts: a corpse held ~1/4 of what the same list yields in a
+/// container (FNV WithAmmo10mmPistolNPC: ×2 vs ×16 10mm).
+#[test]
+fn cnto_leveled_counts_match_the_container_path() {
+    use byroredux_plugin::esm::records::container::{LeveledEntry, LeveledList};
+    use byroredux_plugin::esm::records::NpcInventoryEntry;
+
+    const NPC: u32 = 0x0100_0030;
+    const LVL_A: u32 = 0x0004_0001;
+    const LVL_B: u32 = 0x0004_0002;
+    const ITEM: u32 = 0x0000_D0D0;
+
+    let mut npc = test_npc(NPC, "LootCarrierNpc");
+    npc.inventory.push(NpcInventoryEntry {
+        item_form_id: LVL_A,
+        count: 2,
+    });
+
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
+    // Two nested single-pick lists, each multiplying the caller's count.
+    index.leveled_items.insert(
+        LVL_A,
+        LeveledList {
+            form_id: LVL_A,
+            editor_id: String::new(),
+            chance_none: 0,
+            flags: 0,
+            entries: vec![LeveledEntry {
+                level: 1,
+                form_id: LVL_B,
+                count: 3,
+            }],
+        },
+    );
+    index.leveled_items.insert(
+        LVL_B,
+        LeveledList {
+            form_id: LVL_B,
+            editor_id: String::new(),
+            chance_none: 0,
+            flags: 0,
+            entries: vec![LeveledEntry {
+                level: 1,
+                form_id: ITEM,
+                count: 5,
+            }],
+        },
+    );
+    index.items.insert(ITEM, misc_item(ITEM));
+
+    // NPC side: `build_npc_equip_state`'s inventory rows.
+    let state =
+        build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
+    let mut npc_rows: Vec<(u32, u32)> = (0..state.inventory.len() as u32)
+        .filter_map(|i| state.inventory.get(byroredux_core::ecs::components::InventoryIndex(i)))
+        .map(|s| (s.base_form_id, s.count))
+        .collect();
+    npc_rows.sort_unstable();
+
+    // Container side: the exact expansion `attach_container_inventory`
+    // runs for a CONT whose contents carry the same (LVL_A, 2) entry.
+    let mut container_rows: Vec<(u32, u32)> = Vec::new();
+    byroredux_plugin::equip::expand_leveled_loot(LVL_A, 2, 10, &index, &mut container_rows);
+    container_rows.sort_unstable();
+
+    assert_eq!(
+        npc_rows,
+        vec![(ITEM, 30)],
+        "nested LVLO counts must multiply on the corpse path too — \
+         pre-fix this was (ITEM, 2), the container's 30 / the corpse's 2 \
+         is the divergence the issue measured corpus-wide"
+    );
+    assert_eq!(npc_rows, container_rows, "corpse loot must equal container loot for the same list");
+}
