@@ -2086,7 +2086,15 @@ impl ExteriorCellApplyJob {
             self.references.take(),
             budget,
         );
-        stamp_cell_root_range(world, self.cell_root, first_entity, world.next_entity_id());
+        let last_entity = world.next_entity_id();
+        stamp_cell_root_range(world, self.cell_root, first_entity, last_entity);
+        // #4699 — CELL `XOWN` for placements with no ownership of their own.
+        crate::inventory::stamp_cell_ownership(
+            world,
+            cell.ownership.as_ref(),
+            first_entity,
+            last_entity,
+        );
 
         match progress {
             ReferenceLoadProgress::Pending(references) => {

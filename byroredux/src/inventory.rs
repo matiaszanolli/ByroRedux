@@ -77,6 +77,9 @@ pub(crate) struct InventoryCatalog {
     restorations: FxHashMap<u32, Vec<byroredux_plugin::consumables::ConditionalRestoration>>,
     entries: FxHashMap<u32, InventoryItemDefinition>,
     containers: rustc_hash::FxHashSet<u32>,
+    /// #4699 — the Player `NPC_` base (`player_npc_form_id`): the identity
+    /// vanilla authors in `XOWN` for player-owned property.
+    player_base_form_id: u32,
 }
 
 impl InventoryCatalog {
@@ -152,6 +155,11 @@ pub(crate) struct PlayerCharacterTemplate {
     /// record: exactly what `derive_npc_actor_values` already consumed,
     /// which is the honest value the old note claimed didn't exist.
     background: Option<byroredux_core::character::Background>,
+    /// #4699 — the Player record's own (TPLT-resolved) faction membership,
+    /// the exemption the theft rule reads. Independent of the actor-value
+    /// derivation: a record whose values derive to nothing still has its
+    /// factions.
+    factions: Option<byroredux_core::ecs::components::FactionRanks>,
 }
 
 impl Resource for PlayerCharacterTemplate {}
@@ -257,12 +265,14 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
         return PlayerCharacterTemplate::default();
     };
     // #4457 — resolve once, derive through the resolved view.
-    let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values(
-        &byroredux_plugin::equip::ResolvedNpc::resolve(player, index),
-        index,
-    );
+    let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(player, index);
+    let factions = crate::npc_spawn::faction_ranks_of(&resolved);
+    let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values(&resolved, index);
     if pairs.is_empty() {
-        return PlayerCharacterTemplate::default();
+        return PlayerCharacterTemplate {
+            factions,
+            ..Default::default()
+        };
     }
     // #4678 — level + Background ride the same resolved Player record the
     // derivation just consumed, so the stamps can't disagree with the
@@ -312,6 +322,7 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 }),
                 level: Some(level),
                 background,
+                factions,
             }
         }
         None => {
@@ -327,6 +338,7 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 }),
                 level: Some(level.max(0) as u16),
                 background,
+                factions,
             }
         }
     }
@@ -398,6 +410,7 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
         restorations,
         entries,
         containers: index.containers.keys().copied().collect(),
+        player_base_form_id: player_npc_form_id(index.game),
     });
     world.insert_resource(build_player_template(index));
     world.insert_resource(build_player_character_template(index));
@@ -642,6 +655,12 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
     if let Some(background) = character.background {
         world.insert(player, background);
     }
+    // #4699 — the player's own authored factions (FNV PlayerFaction and
+    // 21 more; 4 on Skyrim), so the theft rule's membership exemption and
+    // `GetFactionRank`/`GetInFaction` on the player read real data.
+    if let Some(factions) = character.factions {
+        world.insert(player, factions);
+    }
 }
 
 pub(crate) fn is_loot_source(world: &World, entity: byroredux_core::ecs::EntityId) -> bool {
@@ -669,32 +688,91 @@ pub(crate) fn is_loot_source(world: &World, entity: byroredux_core::ecs::EntityI
         .is_some_and(|catalog| catalog.containers.contains(&base))
 }
 
+/// #4699 — CELL-level ownership (`XOWN`/`XRNK`/`XGLB` on the CELL) as the
+/// fallback for placements that author none of their own. A REFR's own
+/// `XOWN` overrides its cell's (#692, stamped in `synth_child`), so only
+/// roots still without [`Owned`] take the cell's. Scoped to what the theft
+/// rule reads — containers and loose items (catalogued bases) — so actors
+/// and statics in an owned interior carry nothing. Called once per loaded
+/// entity range, beside the `CellRoot` stamp for the same range.
+///
+/// [`Owned`]: byroredux_core::ecs::components::Owned
+pub(crate) fn stamp_cell_ownership(
+    world: &mut World,
+    ownership: Option<&byroredux_plugin::esm::cell::CellOwnership>,
+    first: byroredux_core::ecs::EntityId,
+    last: byroredux_core::ecs::EntityId,
+) {
+    use byroredux_core::ecs::components::Owned;
+    let Some(ownership) = ownership else {
+        return;
+    };
+    let targets: Vec<_> = {
+        let Some(catalog) = world.try_resource::<InventoryCatalog>() else {
+            return;
+        };
+        let Some(identities) = world.query::<byroredux_scripting::SceneAliasCandidate>() else {
+            return;
+        };
+        let owned = world.query::<Owned>();
+        (first..last)
+            .filter(|&entity| {
+                identities.get(entity).is_some_and(|identity| {
+                    catalog.containers.contains(&identity.base_form_id)
+                        || catalog.is_pickup_base(identity.base_form_id)
+                }) && owned
+                    .as_ref()
+                    .is_none_or(|owned| owned.get(entity).is_none())
+            })
+            .collect()
+    };
+    let owned = Owned {
+        owner_form_id: ownership.owner_form_id,
+        faction_rank: ownership.faction_rank,
+        global_var_form_id: ownership.global_var_form_id,
+    };
+    world.insert_batch(targets.into_iter().map(|entity| (entity, owned)));
+}
+
 /// P3's minimal theft rule (no witness/bounty system — recorded, not
 /// punished): a transfer is theft when the source is owned and the owner is
-/// neither the player's own reference (0x14) nor a faction the player holds
-/// any rank in. `XRNK` rank minimums are not evaluated yet; membership is
-/// the exemption bar.
+/// neither the player nor a faction the player holds the required rank in.
+///
+/// #4699 — "the player" is the Player `NPC_` base (0x7), what vanilla
+/// authors in `XOWN` on player-owned containers; the 0x14 PlayerRef
+/// sentinel this used to compare against appears in no master's `XOWN`,
+/// so every player-owned container read as stolen. The faction exemption
+/// honours the `XRNK` rank bar when one is authored (any rank otherwise),
+/// against the player's own seeded [`FactionRanks`]. Cell-level ownership
+/// reaches `Owned` through [`stamp_cell_ownership`].
+///
+/// [`FactionRanks`]: byroredux_core::ecs::components::FactionRanks
 fn transfer_is_theft(
     world: &World,
     player: byroredux_core::ecs::EntityId,
     source: byroredux_core::ecs::EntityId,
 ) -> bool {
-    let Some(owned) = world.get::<byroredux_core::ecs::components::Owned>(source) else {
+    let Some(owned) = world
+        .get::<byroredux_core::ecs::components::Owned>(source)
+        .map(|owned| *owned)
+    else {
         return false;
     };
-    let player_reference = world
-        .get::<byroredux_scripting::SceneAliasCandidate>(player)
-        .map(|identity| identity.reference_form_id)
-        .unwrap_or(0);
-    if owned.owner_form_id == player_reference {
+    let player_base = world
+        .try_resource::<InventoryCatalog>()
+        .map(|catalog| catalog.player_base_form_id);
+    if player_base == Some(owned.owner_form_id) {
         return false;
     }
-    if let Some(ranks) = world.get::<byroredux_core::ecs::components::FactionRanks>(player) {
-        if ranks.rank(owned.owner_form_id).is_some() {
-            return false;
-        }
-    }
-    true
+    let member = world
+        .get::<byroredux_core::ecs::components::FactionRanks>(player)
+        .and_then(|ranks| ranks.rank(owned.owner_form_id))
+        .is_some_and(|rank| {
+            owned
+                .faction_rank
+                .is_none_or(|required| i32::from(rank) >= required)
+        });
+    !member
 }
 
 /// Which stacks a loot transfer moves out of a source inventory.
@@ -2129,6 +2207,7 @@ mod tests {
         world.insert_resource(InventoryCatalog {
             restorations: Default::default(),
             containers: Default::default(),
+            player_base_form_id: PLAYER_NPC_FORM_ID,
             entries: FxHashMap::from_iter([
                 (
                     0x1234,
@@ -2280,6 +2359,92 @@ mod tests {
                 vec![ItemStack::new(0x5678, 7)]
             );
         }
+    }
+
+    /// #4699 — the theft rule's three inputs: player-owned property is the
+    /// Player base (0x7) in `XOWN`, never stolen; CELL ownership reaches
+    /// only containers/items with no `XOWN` of their own; and the faction
+    /// exemption honours the `XRNK` rank bar.
+    #[test]
+    fn theft_rule_reads_the_player_base_cell_ownership_and_the_rank_bar() {
+        use byroredux_core::ecs::components::{FactionRanks, Owned};
+        use byroredux_plugin::esm::cell::CellOwnership;
+        let (mut world, player) = fixture();
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+        world.register::<Owned>();
+
+        let own_chest = activated_container(&mut world, player);
+        world.insert(
+            own_chest,
+            Owned {
+                owner_form_id: PLAYER_NPC_FORM_ID,
+                faction_rank: None,
+                global_var_form_id: None,
+            },
+        );
+        let outcome = transfer_loot(&world, player, own_chest, LootSelection::All).unwrap();
+        assert!(!outcome.stolen, "the player's own chest");
+        assert_eq!(
+            crate::notifications::drain(&world),
+            vec!["Took 7 items".to_owned()]
+        );
+
+        // A shop interior: CELL XOWN names the merchant faction, rank 2+.
+        let first = world.next_entity_id();
+        let shop_chest = activated_container(&mut world, player);
+        let refr_owned = activated_container(&mut world, player);
+        world.insert(
+            refr_owned,
+            Owned {
+                owner_form_id: 0xABBA,
+                faction_rank: None,
+                global_var_form_id: None,
+            },
+        );
+        let shopkeeper = world.spawn();
+        world.insert(
+            shopkeeper,
+            byroredux_scripting::SceneAliasCandidate {
+                reference_form_id: 0x5EED,
+                base_form_id: 0xBEEF,
+                ..Default::default()
+            },
+        );
+        let merchants = CellOwnership {
+            owner_form_id: 0xF00D,
+            faction_rank: Some(2),
+            global_var_form_id: None,
+        };
+        let last = world.next_entity_id();
+        stamp_cell_ownership(&mut world, Some(&merchants), first, last);
+        assert_eq!(
+            world
+                .get::<Owned>(shop_chest)
+                .map(|owned| owned.owner_form_id),
+            Some(0xF00D),
+            "a container with no XOWN inherits its cell's"
+        );
+        assert_eq!(
+            world
+                .get::<Owned>(refr_owned)
+                .map(|owned| owned.owner_form_id),
+            Some(0xABBA),
+            "a REFR's own XOWN overrides its cell's"
+        );
+        assert!(!world.has::<Owned>(shopkeeper), "actors are not property");
+
+        // Below the rank bar it is theft; at the bar it is not.
+        world.insert(player, FactionRanks::from_pairs([(0xF00D, 1)]));
+        assert!(transfer_is_theft(&world, player, shop_chest));
+        world.insert(player, FactionRanks::from_pairs([(0xF00D, 2)]));
+        assert!(!transfer_is_theft(&world, player, shop_chest));
+        world.remove::<FactionRanks>(player);
+        let outcome = transfer_loot(&world, player, shop_chest, LootSelection::All).unwrap();
+        assert!(outcome.stolen);
+        assert_eq!(
+            crate::notifications::drain(&world),
+            vec!["Stolen 7 items".to_owned()]
+        );
     }
 
     #[test]
@@ -2904,6 +3069,26 @@ mod tests {
         let empty = build_player_character_template(&EsmIndex::default());
         assert!(empty.values.is_none());
         assert_eq!(empty.vitals, None);
+
+        // #4699 — factions do not hinge on the derivation: a Player record
+        // whose values derive to nothing (no AVIFs) still seeds them.
+        let mut bare = EsmIndex::default();
+        bare.npcs.insert(
+            PLAYER_NPC_FORM_ID,
+            NpcRecord {
+                factions: vec![byroredux_plugin::esm::records::FactionMembership {
+                    faction_form_id: 0x1B2A4,
+                    rank: 0,
+                }],
+                ..Default::default()
+            },
+        );
+        let seeded = build_player_character_template(&bare);
+        assert!(seeded.values.is_none());
+        assert_eq!(
+            seeded.factions.map(|ranks| ranks.rank(0x1B2A4)),
+            Some(Some(0))
+        );
     }
 
     /// #4458 — the production path end to end: `install_catalog` builds
@@ -2914,7 +3099,9 @@ mod tests {
     fn attach_to_player_stamps_the_character_seed() {
         use byroredux_core::character::CharacterRulesProfile;
         use byroredux_core::ecs::components::{ActorValues, ActorVitals};
-        use byroredux_plugin::esm::records::{AvifRecord, ClassRecord, NpcRecord};
+        use byroredux_plugin::esm::records::{
+            AvifRecord, ClassRecord, FactionMembership, NpcRecord,
+        };
 
         let mut index = EsmIndex {
             character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
@@ -2943,6 +3130,10 @@ mod tests {
                 class_form_id: 0x2000,
                 race_form_id: 0x0007,
                 level: 1,
+                factions: vec![FactionMembership {
+                    faction_form_id: 0x1B2A4,
+                    rank: 0,
+                }],
                 ..Default::default()
             },
         );
@@ -2951,6 +3142,13 @@ mod tests {
         install_catalog(&mut world, &index);
         let player = world.spawn();
         attach_to_player(&mut world, player);
+        // #4699 — the Player record's own factions ride the same attach.
+        assert_eq!(
+            world
+                .get::<byroredux_core::ecs::components::FactionRanks>(player)
+                .map(|ranks| ranks.rank(0x1B2A4)),
+            Some(Some(0))
+        );
 
         let values = world
             .get::<ActorValues>(player)

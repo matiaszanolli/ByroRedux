@@ -637,6 +637,13 @@ pub fn load_cell_with_masters(
     let last_entity = world.next_entity_id();
     let cell_root = world.spawn();
     stamp_cell_root(world, cell_root, first_entity, last_entity);
+    // #4699 — CELL `XOWN` for placements with no ownership of their own.
+    crate::inventory::stamp_cell_ownership(
+        world,
+        cell.ownership.as_ref(),
+        first_entity,
+        last_entity,
+    );
     world.insert(cell_root, CellFormId(cell.form_id));
 
     // SCEN players are global quest runtime entities, not cell-owned content.
@@ -980,7 +987,15 @@ impl InteriorCellApplyJob {
             .phases
             .references
             .saturating_add(phase_started.elapsed());
-        stamp_cell_root_range(world, self.cell_root, first_entity, world.next_entity_id());
+        let last_entity = world.next_entity_id();
+        stamp_cell_root_range(world, self.cell_root, first_entity, last_entity);
+        // #4699 — CELL `XOWN` for placements with no ownership of their own.
+        crate::inventory::stamp_cell_ownership(
+            world,
+            cell.ownership.as_ref(),
+            first_entity,
+            last_entity,
+        );
 
         match progress {
             ReferenceLoadProgress::Pending(references) => {

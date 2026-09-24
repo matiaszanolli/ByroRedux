@@ -81,22 +81,28 @@ use byroredux_plugin::equip::{Gender, ResolvedNpc};
 /// and its own (typically empty) `FACT` list previously never inherited
 /// the template's membership.
 fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, resolved: &ResolvedNpc<'_>) {
-    // #4457 — the "Use Factions" terminal arrives pre-resolved from the
-    // population boundary (`spawn_placement_root`); this stamp cannot read
-    // the shell's own list by accident.
-    if resolved.factions.factions.is_empty() {
-        return;
+    if let Some(ranks) = faction_ranks_of(resolved) {
+        world.insert(placement_root, ranks);
     }
-    world.insert(
-        placement_root,
-        FactionRanks::from_pairs(
-            resolved
-                .factions
-                .factions
-                .iter()
-                .map(|f| (f.faction_form_id, f.rank)),
-        ),
-    );
+}
+
+/// The resolved record's faction membership, `None` when it declares none.
+/// Shared by the NPC stamp above and the player's seed (#4699), so both
+/// read membership through the same TPLT resolution.
+pub(crate) fn faction_ranks_of(resolved: &ResolvedNpc<'_>) -> Option<FactionRanks> {
+    // #4457 — the "Use Factions" terminal arrives pre-resolved from the
+    // population boundary (`spawn_placement_root`); this cannot read the
+    // shell's own list by accident.
+    if resolved.factions.factions.is_empty() {
+        return None;
+    }
+    Some(FactionRanks::from_pairs(
+        resolved
+            .factions
+            .factions
+            .iter()
+            .map(|f| (f.faction_form_id, f.rank)),
+    ))
 }
 
 /// Stamp an [`ActorValues`] component on the NPC's placement root, derived
