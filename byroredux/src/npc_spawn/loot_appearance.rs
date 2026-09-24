@@ -120,6 +120,65 @@ pub(crate) fn mesh_entities_under(world: &World, root: EntityId) -> Vec<EntityId
     meshes
 }
 
+/// Collision entities standing in for `root`'s placement: standalone ECS
+/// entities tagged [`PhysicsSourceForm`] with the placement's form id, one
+/// per collider a compound bhk shape spawned (#1698). They are deliberately
+/// NOT descendants of the root — their transforms are world-composed, and
+/// `Parent`-ing them would double-transform under propagation — which is
+/// exactly why the `PickedUp` subtree marker cannot reach them and a taken
+/// item's colliders must be swept separately (#4818).
+pub(crate) fn collision_entities_of(world: &World, root: EntityId) -> Vec<EntityId> {
+    use byroredux_core::ecs::components::{FormIdComponent, PhysicsSourceForm};
+
+    let Some(root_form) = world.get::<FormIdComponent>(root).map(|form| form.0) else {
+        return Vec::new();
+    };
+    let Some(forms) = world.query::<PhysicsSourceForm>() else {
+        return Vec::new();
+    };
+    forms
+        .iter()
+        .filter(|(_, form)| form.0 == root_form)
+        .map(|(entity, _)| entity)
+        .collect()
+}
+
+/// #4818 — remove the taken item's bodies from the [`PhysicsWorld`] so a
+/// picked-up placement stops blocking line of sight and shoving neighbours
+/// around. Runs from `&World`: the write is interior-mutability resource
+/// access, taken strictly after the component read guards above are
+/// dropped (the `release_victim_rapier_bodies` two-phase pattern).
+///
+/// Collision entities whose bodies were never registered (spawned this
+/// frame, physics not yet ticked) carry no [`RapierHandles`] and are left
+/// for the caller that owns `&mut World` — the tombstone-restore path
+/// despawns them outright; the live pickup path never sees one, because
+/// selection itself proves the collider was registered (the activation ray
+/// hit it).
+///
+/// Returns the number of bodies removed.
+pub(crate) fn remove_collision_bodies(world: &World, root: EntityId) -> usize {
+    use byroredux_physics::{PhysicsWorld, RapierHandles};
+
+    let entities = collision_entities_of(world, root);
+    if entities.is_empty() {
+        return 0;
+    }
+    let handles_q = world.query::<RapierHandles>();
+    let bodies: Vec<_> = entities
+        .iter()
+        .filter_map(|entity| handles_q.as_ref().and_then(|q| q.get(*entity)).copied())
+        .collect();
+    drop(handles_q);
+    let Some(mut physics) = world.try_resource_mut::<PhysicsWorld>() else {
+        return 0;
+    };
+    bodies
+        .iter()
+        .filter(|handles| physics.remove_body(handles.body))
+        .count()
+}
+
 fn set_hidden(world: &mut World, root: EntityId, hidden: bool) {
     for entity in mesh_entities_under(world, root) {
         if hidden {

@@ -1150,6 +1150,12 @@ pub(crate) fn pickup_loot(
         }
     }
     crate::cell_loader::reference_state::mark_picked_up(world, target);
+    // #4818 — the collision entities are standalone (world-composed
+    // transforms, no `Parent`), so the PickedUp subtree marker above cannot
+    // reach them: without this sweep the taken item leaves an invisible
+    // solid in the aim line that blocks selection of whatever sits behind
+    // it and can be shoved around as a ghost body.
+    crate::npc_spawn::loot_appearance::remove_collision_bodies(world, target);
     let mut name = world
         .try_resource::<InventoryCatalog>()
         .and_then(|catalog| catalog.entries.get(&base).map(|entry| entry.name.clone()))
@@ -3599,5 +3605,148 @@ mod tests {
         // Unpinned absent key → full bar; pins still win.
         assert_eq!(fraction(&world, Some(0x999), None), 1.0);
         assert_eq!(fraction(&world, Some(health), Some(0.3)), 0.3);
+    }
+
+    /// #4818 — a taken item's collision entities are standalone (never
+    /// descendants), so the `PickedUp` subtree marker cannot reach them.
+    /// `pickup_loot` must sweep the bodies out of the `PhysicsWorld`, or
+    /// the front bottle of a shelf row stays an invisible solid that
+    /// blocks the aim ray to the item behind it and can be shoved around.
+    #[test]
+    fn pickup_removes_the_taken_item_collision_bodies() {
+        use byroredux_core::ecs::components::{
+            CollisionShape, FormIdComponent, GlobalTransform, PhysicsSourceForm, RigidBodyData,
+        };
+        use byroredux_core::ecs::{EntityId, Transform};
+        use byroredux_core::math::{Quat, Vec3};
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        use byroredux_core::ecs::resources::ItemInstancePool;
+        use byroredux_physics::{PhysicsWorld, RapierHandles};
+        use byroredux_scripting::SceneAliasCandidate;
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<CollisionShape>();
+        world.register::<RigidBodyData>();
+        world.register::<RapierHandles>();
+        world.register::<PickedUp>();
+        world.register::<Inventory>();
+        world.register::<FormIdComponent>();
+        world.register::<PhysicsSourceForm>();
+        world.register::<SceneAliasCandidate>();
+        world.insert_resource(PhysicsWorld::new());
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(ItemInstancePool::new());
+        world.insert_resource(
+            crate::cell_loader::reference_state::PersistentReferenceStates::default(),
+        );
+
+        let id = world
+            .resource_mut::<FormIdPool>()
+            .intern(FormIdPair {
+                plugin: PluginId::from_filename("FalloutNV"),
+                local: LocalFormId(0x1234),
+            });
+
+        // The player and the placement.
+        let player = world.spawn();
+        world.insert(player, Inventory::new());
+        let target = world.spawn();
+        world.insert(target, FormIdComponent(id));
+        world.insert(
+            target,
+            SceneAliasCandidate {
+                reference_form_id: 0xC0DE_1234,
+                base_form_id: 0x5678,
+                ..Default::default()
+            },
+        );
+
+        // The placement's collision proxy: standalone, tagged with the
+        // placement's stable form id, and registered into Rapier exactly
+        // as `physics_sync_system` would.
+        let collider: EntityId = world.spawn();
+        let position = Vec3::new(1.0, 0.5, 2.0);
+        world.insert(collider, Transform::new(position, Quat::IDENTITY, 1.0));
+        world.insert(
+            collider,
+            GlobalTransform {
+                translation: position,
+                ..GlobalTransform::IDENTITY
+            },
+        );
+        world.insert(
+            collider,
+            CollisionShape::Cuboid {
+                half_extents: Vec3::new(4.0, 4.0, 4.0),
+            },
+        );
+        world.insert(collider, RigidBodyData::STATIC);
+        world.insert(collider, PhysicsSourceForm(id));
+
+        // A second item behind the first, in the aim line, with its own
+        // placement and collider.
+        let behind = world.spawn();
+        let behind_id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV"),
+            local: LocalFormId(0x2345),
+        });
+        world.insert(behind, FormIdComponent(behind_id));
+        world.insert(
+            behind,
+            SceneAliasCandidate {
+                reference_form_id: 0xC0DE_2345,
+                base_form_id: 0x5678,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            byroredux_physics::register_newcomers_and_refresh_queries(&world),
+            1,
+            "the fixture's collider must register"
+        );
+        assert_eq!(world.resource::<PhysicsWorld>().body_count(), 1);
+
+        // The catalog must know the base for the item to be a pickup
+        // target.
+        let mut entries = rustc_hash::FxHashMap::default();
+        entries.insert(
+            0x5678u32,
+            InventoryItemDefinition {
+                name: "Bottle".to_string(),
+                category: "Misc",
+                value: 1,
+                weight: 0.1,
+                details: String::new(),
+                equip_target: None,
+                weapon_damage: None,
+                weapon_reach: 0.0,
+                weapon_speed: 0.0,
+            },
+        );
+        world.insert_resource(InventoryCatalog {
+            restorations: rustc_hash::FxHashMap::default(),
+            entries,
+            containers: rustc_hash::FxHashSet::default(),
+            player_base_form_id: 0x14,
+        });
+
+        assert!(pickup_loot(&world, player, target), "the front item must be pickable");
+        assert_eq!(
+            world.resource::<PhysicsWorld>().body_count(),
+            0,
+            "the taken item's body must leave the solver"
+        );
+        // The behind item was never picked up (no `PersistentReferenceStates`
+        // restock here — just the collider bookkeeping): its collider never
+        // existed, and the taken item's body is the only one that left.
+        assert!(!pickup_loot(&world, player, target), "already picked up");
+        assert_eq!(
+            world.resource::<PhysicsWorld>().body_count(),
+            0,
+            "the taken item's body stays gone"
+        );
     }
 }

@@ -257,8 +257,52 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
                 markers.insert(mesh, crate::inventory::PickedUp);
             }
         }
+        // #4818 — the respawned placement's colliders are standalone
+        // entities, not descendants, and this restore runs *after* they
+        // spawn (`spawn.rs` registers shapes before `synth_child.rs` gets
+        // to the per-placement state), so the marker cannot cover them.
+        // Despawn them outright — `&mut World` makes the full teardown
+        // available, and a not-yet-registered body (physics hasn't ticked
+        // since the respawn) must not be left for `collect_newcomers` to
+        // register the frame after this.
+        let colliders = crate::npc_spawn::loot_appearance::collision_entities_of(world, entity);
+        if !colliders.is_empty() {
+            super::unload::release_victim_rapier_bodies(world, &colliders);
+            world.despawn_batch(colliders);
+        }
     }
     true
+}
+
+/// #4695 — re-run the per-placement restore for every reference currently
+/// resident, consuming any parked row that applies. The save-load path
+/// needs this: its cell reload runs inside [`without_parked_state`], whose
+/// whole point is that the store is *absent* while the cell respawns — so
+/// every spawn-time [`restore`] call bails, and the saved rows only arrive
+/// with the post-reload resource restore, after the population already
+/// exists. Without this pass a picked-up placement in the saved cell comes
+/// back restocked while the player's loaded inventory already holds the
+/// item — the duplication GAME-D7-2026-09-21-01 measured. The same window
+/// covers every other parked fact (inventory, equipment, weapon, actor
+/// values, dead), which is why this re-runs the whole [`restore`], not a
+/// picked-up-only sweep.
+///
+/// Rows whose reference is not resident are untouched — they stay parked
+/// for the next eviction/respawn, as always. Call only after the saved
+/// [`PersistentReferenceStates`] is installed; while the store is absent
+/// every call is a no-op by construction.
+pub(crate) fn restore_resident(world: &mut World) -> usize {
+    let candidates: Vec<EntityId> = match world.query::<FormIdComponent>() {
+        Some(query) => query.iter().map(|(entity, _)| entity).collect(),
+        None => return 0,
+    };
+    let mut applied = 0;
+    for entity in candidates {
+        if restore(world, entity) {
+            applied += 1;
+        }
+    }
+    applied
 }
 
 /// Park a pickup tombstone for a placement whose item the player just took
@@ -492,5 +536,69 @@ mod tests {
         assert!(restore(&mut dst, first));
         assert_eq!(dst.get::<Inventory>(second).unwrap().items[0].count, 7);
         assert!(dst.get::<Inventory>(first).unwrap().is_empty());
+    }
+
+    /// #4695 — the save-reload window. A pickup tombstone parked while the
+    /// placement is resident is saved in `PersistentReferenceStates` whole,
+    /// but the load path runs its cell reload inside `without_parked_state`
+    /// (store absent → spawn-time `restore` bails) and installs the saved
+    /// store only afterwards. `restore_resident` is the pass that re-runs
+    /// the per-placement restore once the saved store is live: the
+    /// tombstone re-stamps `PickedUp` (and sweeps the standalone collision
+    /// entities, #4818), the row is consumed, and a second pass is a no-op.
+    #[test]
+    fn save_reload_window_tombstone_is_applied_by_restore_resident() {
+        use crate::npc_spawn::loot_appearance::collision_entities_of;
+
+        let mut world = world();
+        let root = reference(&mut world, "FalloutNV", 0x1234);
+        let root_form = world.get::<FormIdComponent>(root).map(|form| form.0).unwrap();
+        // The placement's collision proxies are standalone entities sharing
+        // the placement's stable form id (#1698) — never descendants.
+        let collider = world.spawn();
+        world.insert(collider, crate::inventory::PickedUp);
+        world.remove::<crate::inventory::PickedUp>(collider);
+        world.insert(collider, byroredux_core::ecs::components::PhysicsSourceForm(root_form));
+
+        // The player takes the item: marker + tombstone row.
+        world.insert(root, crate::inventory::PickedUp);
+        mark_picked_up(&world, root);
+        assert!(world
+            .resource::<PersistentReferenceStates>()
+            .rows
+            .iter()
+            .any(|(_, state)| state.picked_up));
+
+        // The session ends; a load respawns the placement as a NEW entity
+        // carrying the same stable identity. The reload runs inside
+        // `without_parked_state`, so the spawn-time restore bails — the
+        // exact window the bug lives in.
+        world.despawn(root);
+        let mut respawned = None;
+        without_parked_state(&mut world, |world| {
+            let entity = reference(world, "FalloutNV", 0x1234);
+            let applied = restore(world, entity);
+            assert!(!applied, "store is absent during the reload — restore must bail");
+            respawned = Some(entity);
+        });
+        let respawned = respawned.expect("reload spawned the placement");
+        assert!(world.get::<crate::inventory::PickedUp>(respawned).is_none());
+        assert!(
+            world.get::<byroredux_core::ecs::components::PhysicsSourceForm>(collider).is_some(),
+            "the respawned collider is still there pre-pass — as in the live reload"
+        );
+
+        // The saved store is installed (here: restored by
+        // `without_parked_state`), and the post-reload pass consumes the
+        // row against the now-resident placement.
+        assert_eq!(restore_resident(&mut world), 1);
+        assert!(world.get::<crate::inventory::PickedUp>(respawned).is_some());
+        assert!(
+            collision_entities_of(&world, respawned).is_empty(),
+            "#4818 — the tombstone's collision entities must be swept with it"
+        );
+        // The row was consumed: a second pass finds nothing to do.
+        assert_eq!(restore_resident(&mut world), 0);
+        assert!(world.resource::<PersistentReferenceStates>().rows.is_empty());
     }
 }

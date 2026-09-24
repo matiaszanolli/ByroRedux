@@ -1753,6 +1753,20 @@ pub fn execute_pending_save_loads(
         notify_player(world, message);
         return;
     }
+    // #4695 — the reload above ran inside `without_parked_state`, so every
+    // spawn-time `restore` call bailed with the store absent, and the saved
+    // store only exists again now. Re-run the per-placement restore across
+    // the resident population so rows that apply to already-spawned
+    // placements are consumed: the pickup tombstone of an item taken in
+    // this very cell first among them, but the window equally covers
+    // inventory/equipment/weapon/actor-values/dead rows. Rows whose
+    // reference is not resident stay parked for the next eviction.
+    let restored_rows = crate::cell_loader::reference_state::restore_resident(world);
+    if restored_rows > 0 {
+        log::debug!(
+            "save load: {restored_rows} parked reference row(s) applied to resident placements"
+        );
+    }
     // #4139 — purge continuations whose locals hold session-local
     // `EntityRef` handles. This column was registered on the claim that
     // "all nested identities are stable manifest strings"; `locals` can in
