@@ -87,9 +87,12 @@ pub(crate) struct GroundCoverResidency {
     /// #4607 — reconcile's intermediates, cleared on entry each frame so
     /// their allocations persist instead of rebuilding per exterior frame.
     desired: FxHashMap<ChunkKey, ChunkCandidate>,
-    wanted: FxHashSet<ChunkKey>,
     resident: FxHashSet<ChunkKey>,
     pending: Vec<(ChunkKey, ChunkCandidate)>,
+    /// #4798 — the per-frame reconcile output itself is a persistent
+    /// field: `reconcile` returns a borrow of it, so the caller's ~5 KB
+    /// `Vec` is no longer a fresh allocation every exterior frame.
+    placements: Vec<(usize, ChunkCandidate)>,
 }
 
 impl GroundCoverResidency {
@@ -119,24 +122,28 @@ impl GroundCoverResidency {
     /// The placement budget is the plan's cited starting value (24 chunks per
     /// frame): a teleport fills in over several frames instead of forcing one
     /// large scatter dispatch.  Existing residents are never re-slotted.
-    fn reconcile(&mut self, candidates: &[ChunkCandidate], delta_seconds: f32) -> Vec<(usize, ChunkCandidate)> {
+    fn reconcile(
+        &mut self,
+        candidates: &[ChunkCandidate],
+        delta_seconds: f32,
+    ) -> Vec<(usize, ChunkCandidate)> {
         const PLACEMENTS_PER_FRAME: usize = 24;
 
         self.ensure_slot_count();
         // #4607 — scratch fields, cleared (not reallocated) each frame.
+        // #4798 — the old `wanted` key set was a duplicate of `desired`'s
+        // key set (~135 inserts + lookups per frame); the eviction check
+        // below reads `desired` directly.
         let desired = &mut self.desired;
-        let wanted = &mut self.wanted;
         desired.clear();
         desired.extend(
             candidates
                 .iter()
                 .map(|candidate| (ChunkKey::from_base(candidate.base_xz), *candidate)),
         );
-        wanted.clear();
-        wanted.extend(desired.keys().copied());
 
         for (index, slot) in self.slots.iter_mut().enumerate() {
-            if slot.is_some_and(|key| !wanted.contains(&key)) {
+            if slot.is_some_and(|key| !desired.contains_key(&key)) {
                 *slot = None;
                 self.entry_progress[index] = 0.0;
             }
@@ -186,19 +193,34 @@ impl GroundCoverResidency {
             }
         }
 
-        self.slots
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, key)| {
-                let key = (*key)?;
-                // A slot can only contain a key from `wanted`: stale slots
-                // were evicted above, and newly placed keys came from it.
-                desired
-                    .get(&key)
-                    .copied()
-                    .map(|candidate| (slot, candidate))
-            })
-            .collect()
+        // #4798 — the output fills the persistent `placements` field and is
+        // handed out with `mem::take`, so the caller's ~5 KB per-frame `Vec`
+        // allocation is gone; the caller hands the buffer back through
+        // [`Self::restore_placements`] when it is done reading it, keeping
+        // the allocation across frames.
+        self.placements.clear();
+        self.placements.extend(
+            self.slots
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, key)| {
+                    let key = (*key)?;
+                    // A slot can only contain a key from `desired`: stale
+                    // slots were evicted above, and newly placed keys came
+                    // from it.
+                    desired
+                        .get(&key)
+                        .copied()
+                        .map(|candidate| (slot, candidate))
+                }),
+        );
+        std::mem::take(&mut self.placements)
+    }
+
+    /// #4798 — hand a [`Self::reconcile`] output buffer back so its
+    /// allocation serves the next frame instead of being dropped.
+    fn restore_placements(&mut self, placements: Vec<(usize, ChunkCandidate)>) {
+        self.placements = placements;
     }
 
     fn entry_progress(&self, slot: usize) -> f32 {
@@ -347,6 +369,8 @@ pub(crate) fn collect_groundcover_frame(
     // The residency ring owns the fixed GPU slabs.  Do not retain the old
     // nearest-first truncation here: it still made a teleport or a larger
     // draw radius silently drop coverage at one edge instead of queuing it.
+    // #4798 — `residents` is the residency's persistent buffer (taken, not
+    // fresh), handed back at the end of this function.
     let residents = residency.reconcile(&candidates, delta_seconds);
     let mut truncated = 0;
 
@@ -369,7 +393,7 @@ pub(crate) fn collect_groundcover_frame(
         .max()
         .unwrap_or(0);
     chunks.resize(slot_count, GpuGroundCoverChunk::default());
-    for (slot, candidate) in residents {
+    for (slot, candidate) in residents.iter().copied() {
         let index = match emitted.get(&candidate.cell).copied() {
             Some(index) => index,
             None => {
@@ -414,6 +438,7 @@ pub(crate) fn collect_groundcover_frame(
     debug_assert!(chunks.len() <= GROUNDCOVER_MAX_CHUNKS as usize);
     debug_assert!(cells.len() <= MAX_GROUNDCOVER_CELLS);
     let _ = CHUNKS_PER_CELL;
+    residency.restore_placements(residents);
     truncated
 }
 
