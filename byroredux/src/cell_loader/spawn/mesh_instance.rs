@@ -1447,11 +1447,12 @@ pub(super) fn spawn_mesh_instance(
     //   - `!mesh.skinned` — never synthesize for animated bodies.
     //   - `!mesh.material.is_decal && !mesh.material.alpha_test` — skip overlay planes.
     //   - ≥ 1 triangle of geometry.
-    // Scale: the physics sync places bodies by GlobalTransform
-    // translation+rotation only (it ignores scale — bhk shapes bake
-    // havok_scale into their verts at extract time). So we bake the
-    // composed `final_scale` into the trimesh verts here to match
-    // the rendered geometry.
+    // Scale: the trimesh verts stay in canonical local units and
+    // `final_scale` rides the ghost's `Transform`/`GlobalTransform`;
+    // the Rapier sink (`collision_shape_to_parts`) applies it exactly
+    // once. Never also bake it into the verts — that is the scale²
+    // bug #3064/#3959 fixed. Contract: `docs/engine/physal.md` §2
+    // (#4408).
     // #1294 — gate on `base_layer` (pre-escalation REFR record-type
     // classification), NOT `final_layer` (post-escalation render
     // layer). The small-STAT-to-Clutter escalation
