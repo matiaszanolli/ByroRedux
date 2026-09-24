@@ -2093,6 +2093,34 @@ mod tests {
     /// list.  A vacant ring slot must remain an explicit 32-byte record and
     /// produce a no-op indirect command; otherwise the next resident shifts
     /// into its slab even though the host-side ring says it did not move.
+    /// #4729 — the blade lean must follow WindField's declared "blows
+    /// toward" sense (`+windDir` in engine XZ), the same direction the §8
+    /// gust advection rolls its waves. The old `-windDir.y` mirrored the
+    /// lean on Z, so blades leaned against their own gust waves on any
+    /// wind with a north-south component.
+    #[test]
+    fn blade_lean_follows_the_wind_blows_toward_sense() {
+        let blade = include_str!("../../shaders/groundcover_blade.vert");
+        assert!(
+            blade.contains("normalize(vec3(windDir.x, 0.0, windDir.y))"),
+            "byroGcWindBend's leanDir must lean blades along +windDir in \
+             engine XZ (#4729)"
+        );
+        assert!(
+            !blade.contains("-windDir.y"),
+            "the mirrored `-windDir.y` lean must not come back — it leaned \
+             blades against their own gust waves (#4729)"
+        );
+        // The gust advection was already correct: the noise field sampled
+        // at `base.xz - windDir·v·t` makes wave crests travel +windDir.
+        // Pin it so a future "fix" cannot invert the pair's agreement.
+        assert!(
+            blade.contains("base.xz - windDir"),
+            "gust advection must keep sampling at base - windDir·v·t so \
+             crests travel along +windDir (the lean's sense)"
+        );
+    }
+
     #[test]
     fn inactive_residency_slots_remain_explicit_and_are_skipped_by_scatter() {
         let inactive = GpuGroundCoverChunk::default();

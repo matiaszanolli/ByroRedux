@@ -228,16 +228,22 @@ fn apply_speedtree_wind(
         Vec2::X
     };
     let along_wind = position.x * wind_dir.x + position.z * wind_dir.y;
+    // #4729 — the gust wave travels ALONG the wind (crest x = (rate·t −
+    // φ)/k moves +direction), the same sense as the grass advection.
     let phase = along_wind * 0.017;
-    let wave = (elapsed * (0.35 + strength * 0.85) + phase).sin();
+    let wave = (elapsed * (0.35 + strength * 0.85) - phase).sin();
     let response = tree.response.clamp(0.0, 4.0);
     let stiffness = tree.stiffness.clamp(0.0, 1.0);
     let bend = strength * 0.16 * response * (1.0 - stiffness);
-    // World-horizontal bend axis perpendicular to the atmospheric direction.
-    // Pre-multiplication keeps the lean fixed in world space even when `base`
-    // is a camera-facing billboard rotation. A positive mean makes reversing
-    // the wind reverse the sustained lean; the sine is only the oscillation.
-    let axis = Vec3::new(-wind_dir.y, 0.0, wind_dir.x);
+    // World-horizontal bend axis perpendicular to the atmospheric direction,
+    // oriented so the positive angle tips the crown DOWNWIND: rotating +θ
+    // around the negated perpendicular takes +Y toward +wind_dir. Pre-fix
+    // the axis was the raw perpendicular and the crown leaned upwind,
+    // opposite the grass beneath it (#4729). Pre-multiplication keeps the
+    // lean fixed in world space even when `base` is a camera-facing
+    // billboard rotation. A positive mean makes reversing the wind reverse
+    // the sustained lean; the sine is only the oscillation.
+    let axis = Vec3::new(wind_dir.y, 0.0, -wind_dir.x);
     let angle = bend * (0.65 + 0.35 * wave);
     Quat::from_axis_angle(axis, angle) * base
 }
@@ -370,6 +376,25 @@ mod tests {
         assert_ne!(
             calm, rotate_about_up,
             "SpeedTreeWind marker must drive trees using the legacy RotateAboutUp mode"
+        );
+
+        // #4729 — the sustained lean must point DOWNWIND: tilting the
+        // crown's up axis by the rotation must move it along +direction.
+        // Wind toward +x leans the crown east; wind toward +z leans it
+        // game-north — the same sense as the grass leaning beneath the
+        // tree. (Pre-fix the bend axis was the raw perpendicular, so the
+        // crown leaned upwind on both axes.)
+        let crown_east = rotation_after_wind(BillboardMode::BsRotateAboutUp, [1.0, 0.0], 220.0)
+            * Vec3::Y;
+        assert!(
+            crown_east.x > 0.0,
+            "wind toward +x must lean the crown toward +x, got {crown_east:?}"
+        );
+        let crown_north = rotation_after_wind(BillboardMode::BsRotateAboutUp, [0.0, 1.0], 220.0)
+            * Vec3::Y;
+        assert!(
+            crown_north.z > 0.0,
+            "wind toward +z must lean the crown toward +z, got {crown_north:?}"
         );
     }
 

@@ -473,7 +473,14 @@ impl Resource for GroundCoverDimmer {}
 /// collided; interaction is out of scope (§10).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindField {
-    /// Unit horizontal direction. Normalised on construction.
+    /// Unit horizontal direction in the engine's XZ plane — the way the
+    /// wind **blows toward**, as `(x, z)`: `[1, 0]` blows east, `[0, 1]`
+    /// game-north. One frame, one sense, declared once (#4729 — the five
+    /// consumers used to disagree): grass gust waves roll and blades lean
+    /// along +direction, SpeedTree crowns lean and their gust waves travel
+    /// along +direction, wind drag pushes floating bodies along
+    /// +direction, and the water weather-scroll term moves ripples
+    /// downwind. Normalised on construction.
     pub direction: [f32; 2],
     /// Base speed, canonical units per second.
     pub speed: f32,

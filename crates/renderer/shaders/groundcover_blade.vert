@@ -253,8 +253,13 @@ vec3 byroGcWindBend(
         * mix(GROUNDCOVER_WIND_FLOW_FLOOR, 1.0, clamp(flow, 0.0, 1.0))
         * gust * (1.0 - GROUNDCOVER_WIND_STIFFNESS_ATTENUATION * stiffness);
     bendFraction = clamp(bendFraction, 0.0, 1.0) * GROUNDCOVER_WIND_MAX_BEND;
+    // #4729 — the lean follows WindField's declared "blows toward" sense:
+    // blades tip along +windDir in engine XZ, the same direction their §8
+    // gust waves roll (the advection above already moves +windDir). The
+    // old code mirrored the lean's Z component against every other
+    // consumer of the field.
     vec3 leanDir = length(windDir) > GROUNDCOVER_BLADE_VECTOR_EPSILON
-        ? normalize(vec3(windDir.x, 0.0, -windDir.y))
+        ? normalize(vec3(windDir.x, 0.0, windDir.y))
         : facing;
     vec3 lateralDir = vec3(-leanDir.z, 0.0, leanDir.x);
     float restLean = GROUNDCOVER_REST_LEAN_BASE
