@@ -612,7 +612,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 26;
+    const BASELINE_MAJOR: u16 = 27;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -636,7 +636,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `QuestStageState.events` beside it. It is never written and is
     // defaulted (a fresh process-unique value) on read, so no snapshot's
     // bytes change in either direction; only the scanned source span moved.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xbb3b_3030_546d_e9a3;
+    // #4415 — refreshed WITH a major bump (v26 -> v27): `SpellList` (a
+    // `Vec<u32>` of spell FormIDs, `crates/scripting/src/magic.rs`) joined
+    // the saved registry as a new column, the actor's spells that
+    // AddSpell/RemoveSpell now mutate.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9aec_33d7_bf89_95f3;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

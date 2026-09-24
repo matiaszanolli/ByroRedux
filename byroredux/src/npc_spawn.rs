@@ -105,6 +105,32 @@ pub(crate) fn faction_ranks_of(resolved: &ResolvedNpc<'_>) -> Option<FactionRank
     ))
 }
 
+/// #4415 — stamp the actor's [`SpellList`](byroredux_scripting::SpellList)
+/// (own + race `SPLO`, leveled lists resolved at its level) and apply its
+/// constant spells' permanent value changes to the `ActorValues`
+/// [`stamp_actor_values`] just inserted — through the same canonical spell
+/// translation a scripted `AddSpell` uses. No-op for an actor with no spells.
+fn stamp_spell_list(
+    world: &mut World,
+    placement_root: EntityId,
+    resolved: &ResolvedNpc<'_>,
+    index: &EsmIndex,
+) {
+    let spells = byroredux_plugin::equip::resolve_actor_spells(resolved, index);
+    if spells.is_empty() {
+        return;
+    }
+    if let Some(values) =
+        world.get_mut::<byroredux_core::ecs::components::ActorValues>(placement_root)
+    {
+        for &spell in &spells {
+            let canonical = byroredux_scripting::magic::canonical_spell(index, spell);
+            byroredux_scripting::magic::apply_modifiers(values, &canonical.constant_modifiers, 1.0);
+        }
+    }
+    world.insert(placement_root, byroredux_scripting::SpellList(spells));
+}
+
 /// Stamp an [`ActorValues`] component on the NPC's placement root, derived
 /// from the active game's authored/derived character rules, so condition and
 /// combat systems read the same values. No-op when the derivation yields

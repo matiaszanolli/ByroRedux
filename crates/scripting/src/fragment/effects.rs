@@ -678,6 +678,16 @@ pub(crate) fn apply_effect(
         Effect::SetEnemy { .. } | Effect::StartCombat { .. } | Effect::EvaluatePackage { .. } => {
             apply_ai_combat_effect(effect, context, vmad, world, deferred)
         }
+        Effect::AddSpell { actor, spell } | Effect::RemoveSpell { actor, spell } => {
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let spell = resolve_property_form_id(vmad, spell.property_name())?;
+            if matches!(effect, Effect::AddSpell { .. }) {
+                crate::magic::add_spell(world, actor, spell);
+            } else {
+                crate::magic::remove_spell(world, actor, spell);
+            }
+            None
+        }
         Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
         Effect::Conditional { .. } => {
             unreachable!("conditional effects are expanded by apply_effects")
@@ -1664,6 +1674,8 @@ fn apply_quest_scoped_effect(
         | Effect::RequestSave { .. }
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
+        | Effect::AddSpell { .. }
+        | Effect::RemoveSpell { .. }
         | Effect::PlayIdle { .. }
         | Effect::SetVehicle { .. }
         | Effect::TetherToHorse { .. }

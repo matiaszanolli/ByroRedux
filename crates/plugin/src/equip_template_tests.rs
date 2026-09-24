@@ -147,3 +147,59 @@ fn nested_lists_preserve_intermediate_authored_fields() {
         Some(0xD53)
     );
 }
+
+/// #4415 — an actor's spells: its own SPLO through the "Spell List"
+/// template chain (not the shell's own list when the bit is set), then its
+/// Use-Traits race's SPLO, every LVSP resolved at the actor's level, the
+/// duplicate dropped.
+#[test]
+fn actor_spells_follow_the_template_chain_add_race_spells_and_level_lists() {
+    use crate::esm::records::{RaceRecord, SpelRecord};
+    let mut index = EsmIndex::default();
+    for form_id in [0x50, 0x51, 0x52, 0x53] {
+        index.spells.insert(
+            form_id,
+            SpelRecord {
+                form_id,
+                ..Default::default()
+            },
+        );
+    }
+    // Level-gated list: 0x52 from level 1, 0x53 from level 10.
+    index
+        .leveled_spells
+        .insert(0x60, list(0x60, &[(1, 0x52), (10, 0x53)]));
+    index.races.insert(
+        0xD53,
+        RaceRecord {
+            form_id: 0xD53,
+            spells: vec![0x51, 0x50],
+            ..Default::default()
+        },
+    );
+    index.npcs.insert(
+        2,
+        NpcRecord {
+            form_id: 2,
+            race_form_id: 0xD53,
+            level: 5,
+            spells: vec![0x50, 0x60],
+            ..Default::default()
+        },
+    );
+    let shell = NpcRecord {
+        form_id: 1,
+        template_form_id: 2,
+        template_flags: TEMPLATE_FLAG_USE_SPELL_LIST
+            | TEMPLATE_FLAG_USE_TRAITS
+            | TEMPLATE_FLAG_USE_STATS,
+        spells: vec![0xDEAD],
+        ..Default::default()
+    };
+    let resolved = ResolvedNpc::resolve(&shell, &index);
+    assert_eq!(
+        resolve_actor_spells(&resolved, &index),
+        vec![0x50, 0x52, 0x51],
+        "template spells, the level-5 pick of the LVSP, then the race's (0x50 once)"
+    );
+}

@@ -102,6 +102,8 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "Perks",
     // Stable source/AV FormIDs and scalar rate/remaining simulation seconds.
     "TimedRestorations",
+    // #4415 — spell FormIDs (u32) only.
+    "SpellList",
     // Combat state is session-stable: the weapon points into the saved
     // Inventory by u32 index and Dead is a zero-field lifecycle marker.
     "EquippedWeapon",
@@ -392,6 +394,11 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_component::<ActorValues>("ActorValues")
         .register_replacing_component::<byroredux_core::character::Perks>("Perks")
         .register_replacing_component::<byroredux_core::ecs::components::TimedRestorations>("TimedRestorations")
+        // #4415 — the actor's spells. Stamped at spawn from SPLO and mutated
+        // by AddSpell / RemoveSpell; the ActorValues column above already
+        // carries the permanent changes those spells made, so the two must
+        // round-trip together.
+        .register_component::<byroredux_scripting::SpellList>("SpellList")
         // #3027 (SAVE-D1-2026-08-16-02) — registered (so a hand load of an
         // older save still resolves the column), but deliberately absent
         // from `MUTABLE_DELTA_COLUMNS` below: despite the name/field

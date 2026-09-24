@@ -2,7 +2,7 @@
 
 use super::super::common::{read_lstring_or_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
-use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use anyhow::Result;
 
@@ -27,25 +27,65 @@ pub fn read_sub<T: SubRecordSchema>(sub: &SubRecord) -> Result<T> {
     T::read(&mut reader)
 }
 
-/// SPIT (Spell Header) schema.
-/// FO3/FNV: 16 bytes (magicka_cost u32, spell_type u32, level u32, spell_flags u32)
-/// Skyrim+: 20+ bytes (same as above + cast_type u32 @16, …)
-/// Phase C schema decoder with per-game size branching.
-#[derive(Debug, Clone, Copy)]
-struct SpellHeader {
-    pub cost: u32, // @0
-    pub spell_flags: u32, // @12
-                   // Skyrim adds: cast_type: u32 @16, … (not decoded here)
+/// #4415 — a spell's type, canonical across games (xEdit SPIT "Type"
+/// enum: Oblivion/FO3/FNV @0, Skyrim/FO4 @8).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SpellType {
+    /// A castable spell ("Actor Effect" on FO3/FNV).
+    #[default]
+    Spell,
+    Disease,
+    Power,
+    LesserPower,
+    /// A constant effect the actor always carries: its value modifiers are
+    /// permanent while the spell is on the actor.
+    Ability,
+    Poison,
+    Addiction,
+    /// Skyrim shouts' voice spells.
+    Voice,
+    /// Any other value, raw.
+    Other(u32),
 }
 
-impl SubRecordSchema for SpellHeader {
-    const CODE: [u8; 4] = *b"SPIT";
+impl SpellType {
+    fn from_raw(raw: u32) -> Self {
+        match raw {
+            0 => Self::Spell,
+            1 => Self::Disease,
+            2 => Self::Power,
+            3 => Self::LesserPower,
+            4 => Self::Ability,
+            5 => Self::Poison,
+            10 => Self::Addiction,
+            11 => Self::Voice,
+            other => Self::Other(other),
+        }
+    }
+}
 
-    fn read(r: &mut SubReader) -> Result<Self> {
-        let cost = r.u32_or_default();
-        r.skip_or_eof(8); // spell_type (u32) + level (u32) at offsets 4..12
-        let spell_flags = r.u32_or_default();
-        Ok(SpellHeader { cost, spell_flags })
+/// #4415 — `SPIT` per game (xEdit SPIT): Oblivion/FO3/FNV are Type @0,
+/// Cost @4, Level @8, Flags in the LOW BYTE @12 (Oblivion's high three
+/// bytes are often `0xCDCDCD` filler); Skyrim/FO4/FO76 are Cost @0, Flags
+/// u32 @4, Type @8 (Charge Time f32 @12). Returns `(type, cost, flags)`.
+/// The pre-#4415 decoder read cost @0 and flags @12 for every game, so
+/// FO3/FNV "cost" was the type and Skyrim "flags" the charge time's bits.
+fn decode_spit(data: &[u8], game: GameKind) -> Option<(SpellType, u32, u32)> {
+    if data.len() < 16 {
+        return None;
+    }
+    let read = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+    match game {
+        GameKind::Oblivion => Some((
+            SpellType::from_raw(read(0) & 0xFF),
+            read(4),
+            read(12) & 0xFF,
+        )),
+        GameKind::Fallout3NV => Some((SpellType::from_raw(read(0)), read(4), read(12) & 0xFF)),
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 => {
+            Some((SpellType::from_raw(read(8)), read(0), read(4)))
+        }
+        GameKind::Starfield => None,
     }
 }
 
@@ -494,27 +534,6 @@ pub struct MagicEffectItem {
     pub duration: u32,
 }
 
-/// EFIT (Effect Item) schema — fixed 12 bytes, identical across every game
-/// that carries an EFID/EFIT chain. Phase C schema decoder.
-#[derive(Debug, Clone, Copy)]
-struct EffectItemHeader {
-    pub magnitude: f32, // @0
-    pub area: u32,      // @4
-    pub duration: u32,  // @8
-}
-
-impl SubRecordSchema for EffectItemHeader {
-    const CODE: [u8; 4] = *b"EFIT";
-
-    fn read(r: &mut SubReader) -> Result<Self> {
-        Ok(EffectItemHeader {
-            magnitude: r.f32_or_default(),
-            area: r.u32_or_default(),
-            duration: r.u32_or_default(),
-        })
-    }
-}
-
 /// Accumulator for the EFID → EFIT pair chain shared by `parse_spel` and
 /// `parse_ench` (TD2-110 / #2069), which decoded it verbatim twice.
 ///
@@ -524,13 +543,40 @@ impl SubRecordSchema for EffectItemHeader {
 /// form ID and the following `EFIT` consumes it, clearing the latch so a
 /// stray second `EFIT` cannot re-bind the same effect. An `EFIT` with no
 /// pending `EFID` is dropped rather than pushed with a null effect ID.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct MagicEffectAccumulator {
+    game: GameKind,
     pending_efid: u32,
     items: Vec<MagicEffectItem>,
 }
 
 impl MagicEffectAccumulator {
+    fn for_game(game: GameKind) -> Self {
+        Self {
+            game,
+            pending_efid: 0,
+            items: Vec::new(),
+        }
+    }
+
+    /// `EFIT` per game (xEdit): FO3/FNV 20 bytes with an integer magnitude
+    /// @0, then area, duration; Oblivion 24 bytes led by the 4-char effect
+    /// code, integer magnitude @4; Skyrim/FO4 12 bytes, float magnitude @0.
+    /// Pre-#4415 every game's magnitude was read as an `f32`, so an FO3/FNV
+    /// spell magnitude of 5 decoded as ~7e-45. Returns (magnitude, area,
+    /// duration).
+    fn decode_efit(&self, data: &[u8]) -> Option<(f32, u32, u32)> {
+        let read = |offset: usize| {
+            data.get(offset..offset + 4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        };
+        match self.game {
+            GameKind::Fallout3NV => Some((read(0)? as f32, read(4)?, read(8)?)),
+            GameKind::Oblivion => Some((read(4)? as f32, read(8)?, read(12)?)),
+            _ => Some((f32::from_bits(read(0)?), read(4)?, read(8)?)),
+        }
+    }
+
     /// Feed one `EFID` or `EFIT` sub-record. Any other sub-type is ignored,
     /// so callers can delegate a combined `b"EFID" | b"EFIT"` match arm here.
     ///
@@ -545,14 +591,14 @@ impl MagicEffectAccumulator {
                 self.pending_efid = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             b"EFIT" if sub.data.len() >= 12 && self.pending_efid != 0 => {
-                let Ok(header) = read_sub::<EffectItemHeader>(sub) else {
+                let Some((magnitude, area, duration)) = self.decode_efit(&sub.data) else {
                     return;
                 };
                 self.items.push(MagicEffectItem {
                     effect_form_id: self.pending_efid,
-                    magnitude: header.magnitude,
-                    area: header.area,
-                    duration: header.duration,
+                    magnitude,
+                    area,
+                    duration,
                 });
                 self.pending_efid = 0;
             }
@@ -570,21 +616,30 @@ pub struct SpelRecord {
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
-    /// Flags from SPIT offset 12 (or 8 on some pre-FNV variants).
-    /// Bit 0 = `Manual Cost`, bit 2 = `Touch Explodes`.
+    /// #4415 — the spell's type (ability, power, disease, …); see
+    /// `decode_spit` for the per-game offsets.
+    pub spell_type: SpellType,
+    /// `SPIT` flags — the low byte on Oblivion/FO3/FNV (bit 0 Manual Cost,
+    /// bit 2 PC Start Spell, bit 7 Touch Explodes), a u32 on Skyrim/FO4.
     pub spell_flags: u32,
-    /// Magicka cost from SPIT offset 0.
+    /// `SPIT` cost (@4 on Oblivion/FO3/FNV, where it is unused; @0 on
+    /// Skyrim/FO4).
     pub cost: u32,
     /// Magic effects applied by this spell. Built from EFID/EFIT pairs.
     pub effects: Vec<MagicEffectItem>,
 }
 
-pub fn parse_spel(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> SpelRecord {
+pub fn parse_spel(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> SpelRecord {
     let mut out = SpelRecord {
         form_id,
         ..Default::default()
     };
-    let mut effects = MagicEffectAccumulator::default();
+    let mut effects = MagicEffectAccumulator::for_game(game);
     // #2414 / TD2-117 — the universal named fields come from the
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
@@ -595,9 +650,10 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     for sub in subs {
         match &sub.sub_type {
             b"SPIT" => {
-                if let Ok(header) = read_sub::<SpellHeader>(sub) {
-                    out.cost = header.cost;
-                    out.spell_flags = header.spell_flags;
+                if let Some((spell_type, cost, flags)) = decode_spit(&sub.data, game) {
+                    out.spell_type = spell_type;
+                    out.cost = cost;
+                    out.spell_flags = flags;
                 }
             }
             b"EFID" | b"EFIT" => effects.feed(sub, remap),
@@ -643,7 +699,53 @@ pub struct MgefRecord {
     pub projectile_speed: f32,
     /// Effect shader form ID from DATA offset 32 (u32).
     pub effect_shader_id: u32,
+    /// #4415 — the effect's archetype, canonical across games. `None`
+    /// where the record has none (Oblivion, which keys effects by 4-char
+    /// code) or its `DATA` is not a known layout.
+    pub archetype: Option<MagicArchetype>,
+    /// #4415 — the actor value the archetype acts on (`DATA` @68).
+    pub primary_actor_value: Option<ActorValueRef>,
+    /// #4415 — Skyrim/FO4 Dual Value Modifier's second actor value (@88),
+    /// scaled by [`Self::second_actor_value_weight`] (@60).
+    pub secondary_actor_value: Option<ActorValueRef>,
+    pub second_actor_value_weight: f32,
 }
+
+/// #4415 — a magic effect's archetype, the canonical subset the runtime
+/// applies (xEdit `wbDefinitions{FO3,FNV,TES5,FO4}.pas` MGEF DATA
+/// archetype enum; FO3/FNV have only Value Modifier of these four).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MagicArchetype {
+    /// Modifies one actor value by the effect magnitude.
+    ValueModifier,
+    /// Skyrim/FO4 — the same, holding the value at its peak.
+    PeakValueModifier,
+    /// Skyrim/FO4 — primary actor value, plus the secondary one scaled by
+    /// the second-AV weight.
+    DualValueModifier,
+    /// Skyrim/FO4 — damages the target's value and restores the caster's.
+    Absorb,
+    /// Any other archetype, by its raw per-game value.
+    Other(u32),
+}
+
+/// #4415 — how a magic effect names an actor value, per game: a game-local
+/// actor-value index (FO3/FNV/Skyrim) or an AVIF FormID (FO4+). Resolved to
+/// the canonical AVIF FormID by `EsmIndex::resolve_actor_value`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorValueRef {
+    Index(u32),
+    Form(u32),
+}
+
+/// `MGEF` flag bits shared by every game with an archetype (xEdit; same
+/// positions on Oblivion too).
+///
+/// "Recover": the change is undone when the effect ends (a buff/debuff on
+/// the value's maximum) rather than applied as ongoing damage/restoration.
+pub const MGEF_FLAG_RECOVER: u32 = 0x2;
+/// "Detrimental": the magnitude is applied as a negative change.
+pub const MGEF_FLAG_DETRIMENTAL: u32 = 0x4;
 
 impl Default for MgefRecord {
     fn default() -> Self {
@@ -663,7 +765,59 @@ impl Default for MgefRecord {
             light_form_id: 0,
             projectile_speed: 0.0,
             effect_shader_id: 0,
+            archetype: None,
+            primary_actor_value: None,
+            secondary_actor_value: None,
+            second_actor_value_weight: 0.0,
         }
+    }
+}
+
+/// #4415 — decode the archetype and actor value(s) from `DATA` (xEdit
+/// MGEF DATA; our offsets for FO3/FNV and TES5 were confirmed against it):
+/// FO3/FNV 72 bytes, archetype u32 @64, actor value index s32 @68;
+/// Skyrim/FO4/FO76 152 bytes, archetype @64, primary AV @68, second-AV
+/// weight f32 @60, second AV @88 — an index on Skyrim, an AVIF FormID on
+/// FO4+ (remapped). `-1` / NULL means none.
+fn decode_mgef_archetype(
+    out: &mut MgefRecord,
+    data: &[u8],
+    game: crate::esm::reader::GameKind,
+    remap: &Option<FormIdRemap>,
+) {
+    use crate::esm::reader::GameKind;
+    let read = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+    let index_ref = |raw: u32| (raw as i32 >= 0).then_some(ActorValueRef::Index(raw));
+    let form_ref = |raw: u32| (raw != 0).then(|| ActorValueRef::Form(remap_fid(raw, remap)));
+    match game {
+        GameKind::Fallout3NV if data.len() >= 72 => {
+            out.archetype = Some(match read(64) {
+                0 => MagicArchetype::ValueModifier,
+                other => MagicArchetype::Other(other),
+            });
+            out.primary_actor_value = index_ref(read(68));
+        }
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 if data.len() >= 152 => {
+            out.archetype = Some(match read(64) {
+                0 => MagicArchetype::ValueModifier,
+                4 => MagicArchetype::Absorb,
+                5 => MagicArchetype::DualValueModifier,
+                34 => MagicArchetype::PeakValueModifier,
+                other => MagicArchetype::Other(other),
+            });
+            let skyrim = game == GameKind::Skyrim;
+            let reference = |raw| {
+                if skyrim {
+                    index_ref(raw)
+                } else {
+                    form_ref(raw)
+                }
+            };
+            out.primary_actor_value = reference(read(68));
+            out.secondary_actor_value = reference(read(88));
+            out.second_actor_value_weight = f32::from_bits(read(60));
+        }
+        _ => {}
     }
 }
 
@@ -675,6 +829,9 @@ pub fn parse_mgef_for_game(
 ) -> MgefRecord {
     let mut out = parse_mgef(form_id, subs, remap);
     use crate::esm::reader::GameKind;
+    if let Some(data) = subs.iter().rev().find(|s| &s.sub_type == b"DATA") {
+        decode_mgef_archetype(&mut out, &data.data, game, remap);
+    }
     if !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV)
         || subs
             .iter()
@@ -829,12 +986,17 @@ pub struct EnchRecord {
     pub effects: Vec<MagicEffectItem>,
 }
 
-pub fn parse_ench(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> EnchRecord {
+pub fn parse_ench(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> EnchRecord {
     let mut out = EnchRecord {
         form_id,
         ..Default::default()
     };
-    let mut effects = MagicEffectAccumulator::default();
+    let mut effects = MagicEffectAccumulator::for_game(game);
     // #2414 / TD2-117 — the universal named fields come from the
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
@@ -1054,16 +1216,47 @@ mod tests {
         assert!(p.entries.is_empty());
     }
 
+    /// #4415 — `SPIT` per game: FO3/FNV (and Oblivion) lead with the spell
+    /// type, cost @4, flags in the low byte @12; Skyrim/FO4 lead with cost,
+    /// flags @4, type @8. The pre-#4415 decoder read cost @0 / flags @12
+    /// everywhere.
     #[test]
-    fn parse_spel_picks_spit_cost_and_flags() {
-        let mut spit = Vec::new();
-        spit.extend_from_slice(&42u32.to_le_bytes()); // cost
-        spit.extend_from_slice(&[0u8; 8]); // padding to flags offset
-        spit.extend_from_slice(&0x0000_0004u32.to_le_bytes()); // flags
-        let subs = vec![sub(b"EDID", b"Fireball\0"), sub(b"SPIT", &spit)];
-        let s = parse_spel(0xF6F6, &subs, &None);
-        assert_eq!(s.cost, 42);
-        assert_eq!(s.spell_flags, 0x0000_0004);
+    fn parse_spel_decodes_spit_per_game() {
+        let words = |w: [u32; 4]| w.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let fo3 = vec![sub(b"SPIT", &words([4, 42, 0, 0xCDCD_CD04]))];
+        let s = parse_spel(0xF6F6, &fo3, GameKind::Fallout3NV, &None);
+        assert_eq!(
+            (s.spell_type, s.cost, s.spell_flags),
+            (SpellType::Ability, 42, 0x04)
+        );
+
+        let mut skyrim = words([60, 0x20000, 0, 0]);
+        skyrim[12..16].copy_from_slice(&0.5f32.to_le_bytes()); // charge time
+        skyrim.extend_from_slice(&[0u8; 20]);
+        let subs = vec![sub(b"EDID", b"Flames\0"), sub(b"SPIT", &skyrim)];
+        let s = parse_spel(0xF6F7, &subs, GameKind::Skyrim, &None);
+        assert_eq!(
+            (s.spell_type, s.cost, s.spell_flags),
+            (SpellType::Spell, 60, 0x20000)
+        );
+
+        let oblivion = vec![sub(b"SPIT", &words([0xCDCD_CD02, 5, 0, 0x81]))];
+        let s = parse_spel(0xF6F8, &oblivion, GameKind::Oblivion, &None);
+        assert_eq!((s.spell_type, s.spell_flags), (SpellType::Power, 0x81));
+    }
+
+    /// #4415 — FO3/FNV `EFIT` carries an integer magnitude; reading it as a
+    /// float turned 25 into ~3.5e-44.
+    #[test]
+    fn fo3_efit_magnitude_is_an_integer() {
+        let mut efit = Vec::new();
+        for value in [25u32, 0, 30, 0, 16] {
+            efit.extend_from_slice(&value.to_le_bytes());
+        }
+        let subs = vec![sub(b"EFID", &0xAAAAu32.to_le_bytes()), sub(b"EFIT", &efit)];
+        let s = parse_spel(0x1, &subs, GameKind::Fallout3NV, &None);
+        assert_eq!(s.effects[0].magnitude, 25.0);
+        assert_eq!(s.effects[0].duration, 30);
     }
 
     #[test]
@@ -1083,7 +1276,7 @@ mod tests {
             sub(b"FULL", b"Pulse\0"),
             sub(b"ENIT", &enit),
         ];
-        let e = parse_ench(0x000E_5C77, &subs, &None);
+        let e = parse_ench(0x000E_5C77, &subs, GameKind::Skyrim, &None);
         assert_eq!(e.editor_id, "PulseEnchant");
         assert_eq!(e.full_name, "Pulse");
         assert_eq!(e.enchantment_type, 2);
@@ -1106,7 +1299,7 @@ mod tests {
         enit.extend_from_slice(&3u32.to_le_bytes()); // Skyrim cast_type
         assert_eq!(enit.len(), 20);
         let subs = vec![sub(b"EDID", b"FireDmg\0"), sub(b"ENIT", &enit)];
-        let e = parse_ench(0x0001_F25D, &subs, &None);
+        let e = parse_ench(0x0001_F25D, &subs, GameKind::Skyrim, &None);
         assert_eq!(e.charge_amount, 50);
         assert_eq!(e.enchant_cost, 200);
     }
@@ -1117,7 +1310,7 @@ mod tests {
         // leave scalars at their defaults so the surrounding records
         // still load.
         let subs = vec![sub(b"EDID", b"BrokenEnchant\0"), sub(b"ENIT", &[0u8; 8])];
-        let e = parse_ench(0xDEAD_BEEF, &subs, &None);
+        let e = parse_ench(0xDEAD_BEEF, &subs, GameKind::Skyrim, &None);
         assert_eq!(e.editor_id, "BrokenEnchant");
         assert_eq!(e.enchantment_type, 0);
         assert_eq!(e.charge_amount, 0);
@@ -1425,7 +1618,7 @@ mod tests {
             sub(b"EFID", &0xBBBBu32.to_le_bytes()),
             sub(b"EFIT", &efit2),
         ];
-        let s = parse_spel(0x6666, &subs, &None);
+        let s = parse_spel(0x6666, &subs, GameKind::Skyrim, &None);
         assert_eq!(s.effects.len(), 2);
         assert_eq!(s.effects[0].effect_form_id, 0xAAAA);
         assert_eq!(s.effects[0].magnitude, 5.0);
@@ -1450,7 +1643,7 @@ mod tests {
             sub(b"EFID", &0x0100_7777u32.to_le_bytes()), // self-ref
             sub(b"EFIT", &efit),
         ];
-        let s = parse_spel(0x6667, &subs, &remap);
+        let s = parse_spel(0x6667, &subs, GameKind::Skyrim, &remap);
         assert_eq!(s.effects.len(), 1);
         assert_eq!(
             s.effects[0].effect_form_id, 0x0200_7777,
@@ -1479,7 +1672,7 @@ mod tests {
             sub(b"EFID", &0x1234u32.to_le_bytes()),
             sub(b"EFIT", &efit),
         ];
-        let e = parse_ench(0x7777, &subs, &None);
+        let e = parse_ench(0x7777, &subs, GameKind::Skyrim, &None);
         assert_eq!(e.effects.len(), 1);
         assert_eq!(e.effects[0].effect_form_id, 0x1234);
         assert_eq!(e.effects[0].magnitude, 1.5);
@@ -1503,7 +1696,7 @@ mod tests {
             sub(b"SPIT", &spit),
             sub(b"EFIT", &efit), // EFIT without prior EFID
         ];
-        let s = parse_spel(0x8888, &subs, &None);
+        let s = parse_spel(0x8888, &subs, GameKind::Skyrim, &None);
         assert!(s.effects.is_empty());
     }
 
@@ -1532,7 +1725,7 @@ mod tests {
             sub(b"EFIT", &efit),
             sub(b"EFIT", &efit), // no intervening EFID — must be dropped
         ];
-        let s = parse_spel(0x9999, &subs, &None);
+        let s = parse_spel(0x9999, &subs, GameKind::Skyrim, &None);
         assert_eq!(s.effects.len(), 1, "the consumed EFID must not re-bind");
         assert_eq!(s.effects[0].effect_form_id, 0xCAFE);
 
@@ -1546,7 +1739,7 @@ mod tests {
             sub(b"EFIT", &efit),
             sub(b"EFIT", &efit),
         ];
-        let e = parse_ench(0x9998, &subs, &None);
+        let e = parse_ench(0x9998, &subs, GameKind::Skyrim, &None);
         assert_eq!(e.effects.len(), 1);
         assert_eq!(e.effects[0].effect_form_id, 0xBEEF);
     }
@@ -1581,37 +1774,6 @@ mod tests {
         };
 
         let result = read_sub::<EnchantmentHeader>(&wrong_sub);
-        assert!(result.is_err(), "should reject mismatched sub_type");
-    }
-
-    #[test]
-    fn spell_header_schema_reads_correctly() {
-        // Test the Phase C schema decoder for SPIT (FO3/FNV 16-byte layout).
-        let mut spit = Vec::new();
-        spit.extend_from_slice(&75u32.to_le_bytes()); // cost
-        spit.extend_from_slice(&2u32.to_le_bytes()); // spell_type
-        spit.extend_from_slice(&15u32.to_le_bytes()); // level
-        spit.extend_from_slice(&0x0000_0001u32.to_le_bytes()); // spell_flags
-
-        let sub = SubRecord {
-            sub_type: *b"SPIT",
-            data: spit,
-        };
-
-        let header = read_sub::<SpellHeader>(&sub).expect("read schema");
-        assert_eq!(header.cost, 75);
-        assert_eq!(header.spell_flags, 0x0000_0001);
-    }
-
-    #[test]
-    fn spell_header_schema_rejects_wrong_type() {
-        // Schema should reject if sub_type doesn't match CODE.
-        let wrong_sub = SubRecord {
-            sub_type: *b"XXXX",
-            data: vec![0u8; 16],
-        };
-
-        let result = read_sub::<SpellHeader>(&wrong_sub);
         assert!(result.is_err(), "should reject mismatched sub_type");
     }
 

@@ -369,6 +369,10 @@ pub const TEMPLATE_FLAG_USE_FACTIONS: u16 = 0x0004;
 /// consumer; `apply_ai_package_behavior` read the shell's own (possibly
 /// empty or stale) `ai_packages` list unconditionally.
 pub const TEMPLATE_FLAG_USE_AI_PACKAGES: u16 = 0x0020;
+/// #4415 — "Use Actor Effect List" (FO3/FNV) / "Spell List" (Skyrim):
+/// the `SPLO` spell list comes from the template (xEdit ACBS Template
+/// Flags bit 3). Consumed through [`ResolvedNpc::spells`].
+pub const TEMPLATE_FLAG_USE_SPELL_LIST: u16 = 0x0008;
 pub const TEMPLATE_FLAG_USE_INVENTORY: u16 = 0x0100;
 
 /// Maximum TPLT recursion depth for [`resolve_inherited_record`] and its
@@ -640,6 +644,9 @@ pub struct ResolvedNpc<'a> {
     pub ai_packages: &'a crate::esm::records::actor::NpcRecord,
     /// "Use Inventory" chain terminal: the `CNTO` carry list.
     pub inventory: &'a crate::esm::records::actor::NpcRecord,
+    /// #4415 — "Use Actor Effect List" / "Spell List" chain terminal: the
+    /// `SPLO` spell list.
+    pub spells: &'a crate::esm::records::actor::NpcRecord,
     /// The Use-Stats chain shell-first including the terminal, cached so
     /// [`Self::authored_stat_field`] needs no second traversal.
     stats_chain: Vec<&'a crate::esm::records::actor::NpcRecord>,
@@ -690,6 +697,13 @@ impl<'a> ResolvedNpc<'a> {
                 shell_level,
                 index,
                 TEMPLATE_FLAG_USE_INVENTORY,
+                0,
+            ),
+            spells: resolve_inherited_record(
+                shell,
+                shell_level,
+                index,
+                TEMPLATE_FLAG_USE_SPELL_LIST,
                 0,
             ),
             stats_chain,
@@ -791,16 +805,94 @@ fn expand_leveled_inner(
     out: &mut Vec<u32>,
     depth: u32,
 ) {
+    // Unknown form ID — neither a base item nor a leveled list. Could be a
+    // record the dispatch hasn't categorised yet, or a load-order conflict.
+    // Dropping it is correct for the equip use case this helper serves
+    // (see `non_item_leaf_kind`), so the caller's log — which already names
+    // the originating outfit / NPC — is the only unconditional signal. Name
+    // the record class at `debug!` when the form *is* indexed, just not as
+    // an item (#3341): a future container/loot consumer reusing this helper
+    // needs the boundary to be visible rather than silent.
+    let on_unknown = |form_id: u32| {
+        if let Some(kind) = non_item_leaf_kind(form_id, index) {
+            log::debug!(
+                "expand_leveled_form_id: leaf {:08X} resolves to {} — not an \
+                 equippable item, dropped. Correct for equip; a loot/container \
+                 consumer needs expand_leveled_any (#3341).",
+                form_id,
+                kind,
+            );
+        }
+    };
+    expand_leveled_list(
+        form_id,
+        actor_level,
+        &index.leveled_items,
+        &|form_id| index.items.contains_key(&form_id),
+        &on_unknown,
+        out,
+        depth,
+    );
+}
+
+/// #4415 — [`expand_leveled_form_id`]'s walk over leveled *spell* lists:
+/// a `SPLO` entry naming an `LVSP` expands to the SPEL(s) eligible at
+/// `actor_level`, with the same deterministic selection. Anything that is
+/// neither a SPEL nor an LVSP (a Skyrim shout, `SHOU`) is dropped.
+pub fn expand_leveled_spell(form_id: u32, actor_level: i16, index: &EsmIndex, out: &mut Vec<u32>) {
+    expand_leveled_list(
+        form_id,
+        actor_level,
+        &index.leveled_spells,
+        &|form_id| index.spells.contains_key(&form_id),
+        &|_| {},
+        out,
+        0,
+    );
+}
+
+/// #4415 — an actor's spell list: its own `SPLO` (through the "Spell List"
+/// template chain) followed by its race's, every `LVSP` resolved at the
+/// actor's level, duplicates dropped in first-seen order.
+pub fn resolve_actor_spells(resolved: &ResolvedNpc<'_>, index: &EsmIndex) -> Vec<u32> {
+    let level = crate::esm::records::effective_actor_level(resolved.stats);
+    let race_spells = index
+        .races
+        .get(&resolved.r#traits.race_form_id)
+        .map(|race| race.spells.as_slice())
+        .unwrap_or_default();
+    let mut expanded = Vec::new();
+    for &form_id in resolved.spells.spells.iter().chain(race_spells) {
+        expand_leveled_spell(form_id, level, index, &mut expanded);
+    }
+    let mut seen = std::collections::HashSet::new();
+    expanded.retain(|form_id| seen.insert(*form_id));
+    expanded
+}
+
+/// The shared leveled-list walk behind [`expand_leveled_form_id`] and
+/// [`expand_leveled_spell`]: `is_leaf` names the base records the list
+/// resolves to, `lists` the leveled records, `on_unknown` sees any form that
+/// is neither.
+fn expand_leveled_list(
+    form_id: u32,
+    actor_level: i16,
+    lists: &std::collections::HashMap<u32, crate::esm::records::LeveledList>,
+    is_leaf: &dyn Fn(u32) -> bool,
+    on_unknown: &dyn Fn(u32),
+    out: &mut Vec<u32>,
+    depth: u32,
+) {
     // Direct base record — push and stop. Most outfit entries land
     // here on the first call.
     //
     // Ordered *above* the depth guard deliberately (#3340): a terminal
-    // base item costs no further recursion, so discarding one that
+    // base record costs no further recursion, so discarding one that
     // happens to sit exactly at the boundary loses a leaf for no
-    // benefit. The cap exists to bound LVLI→LVLI chains and to break
-    // cycles — and cycles run through `leveled_items`, never through
-    // `items`, so this early return can't spin.
-    if index.items.contains_key(&form_id) {
+    // benefit. The cap exists to bound list→list chains and to break
+    // cycles — and cycles run through the leveled lists, never through
+    // the leaves, so this early return can't spin.
+    if is_leaf(form_id) {
         out.push(form_id);
         return;
     }
@@ -814,25 +906,8 @@ fn expand_leveled_inner(
         return;
     }
     // Leveled list — recurse on the eligible entry / entries.
-    let Some(lvli) = index.leveled_items.get(&form_id) else {
-        // Unknown form ID — neither a base item nor a leveled list.
-        // Could be a record the dispatch hasn't categorised yet, or a
-        // load-order conflict. Dropping it is correct for the equip use
-        // case this helper serves (see `non_item_leaf_kind`), so the
-        // caller's log — which already names the originating outfit /
-        // NPC — is the only unconditional signal. Name the record class
-        // at `debug!` when the form *is* indexed, just not as an item
-        // (#3341): a future container/loot consumer reusing this helper
-        // needs the boundary to be visible rather than silent.
-        if let Some(kind) = non_item_leaf_kind(form_id, index) {
-            log::debug!(
-                "expand_leveled_form_id: leaf {:08X} resolves to {} — not an \
-                 equippable item, dropped. Correct for equip; a loot/container \
-                 consumer needs expand_leveled_any (#3341).",
-                form_id,
-                kind,
-            );
-        }
+    let Some(list) = lists.get(&form_id) else {
+        on_unknown(form_id);
         return;
     };
 
@@ -840,7 +915,7 @@ fn expand_leveled_inner(
     // `Calculate for each item` (bit 1 / 0x02) changes roll cardinality, not
     // entry selection; treating it as Use All over-equipped 1,491 vanilla
     // Skyrim NPCs (#3217).
-    let eligible: Vec<&_> = lvli
+    let eligible: Vec<&_> = list
         .entries
         .iter()
         .filter(|e| e.level as i32 <= actor_level as i32)
@@ -849,10 +924,18 @@ fn expand_leveled_inner(
         return;
     }
 
-    let multi_pick = lvli.flags & 0x04 != 0;
+    let multi_pick = list.flags & 0x04 != 0;
     if multi_pick {
         for entry in &eligible {
-            expand_leveled_inner(entry.form_id, actor_level, index, out, depth + 1);
+            expand_leveled_list(
+                entry.form_id,
+                actor_level,
+                lists,
+                is_leaf,
+                on_unknown,
+                out,
+                depth + 1,
+            );
         }
     } else {
         // Single-pick: highest-level eligible entry. Stable across
@@ -861,7 +944,15 @@ fn expand_leveled_inner(
             .iter()
             .max_by_key(|e| e.level)
             .expect("eligible non-empty per check above");
-        expand_leveled_inner(pick.form_id, actor_level, index, out, depth + 1);
+        expand_leveled_list(
+            pick.form_id,
+            actor_level,
+            lists,
+            is_leaf,
+            on_unknown,
+            out,
+            depth + 1,
+        );
     }
 }
 

@@ -225,7 +225,13 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// once-only-script ledger, #4334): a newly saved resource, not a shape
 /// change to an existing column; pre-v26 snapshots are rejected by the
 /// version check so a re-armed trigger cannot survive a load.
-pub const FORMAT_MAJOR: u16 = 26;
+///
+/// v26 -> v27 (#4415): `SpellList` joins the saved registry — the actor's
+/// spells, which `AddSpell`/`RemoveSpell` now mutate and whose permanent
+/// value changes the already-saved `ActorValues` column carries. A new
+/// column, not a shape change to an existing one; pre-v27 snapshots are
+/// rejected by the version check, like v26's `ReferenceScriptState`.
+pub const FORMAT_MAJOR: u16 = 27;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

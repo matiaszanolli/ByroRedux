@@ -19,6 +19,7 @@ pub mod equipment;
 pub mod events;
 pub mod fragment;
 pub mod globals;
+pub mod magic;
 pub mod obscript;
 pub mod obscript_quests;
 pub mod obscript_runtime;
@@ -82,6 +83,9 @@ pub use fragment::{
     SceneFragments,
 };
 pub use globals::Globals;
+pub use magic::{
+    add_spell, remove_spell, CanonicalSpell, ConstantModifier, SpellCatalog, SpellList,
+};
 pub use obscript::{
     decode_extender_calls, legacy_load_order_call, ObscriptArgument, ObscriptCall, ObscriptDecode,
     ObscriptDialect, ObscriptLoadOrderCallError,
@@ -161,6 +165,9 @@ pub fn register(world: &mut World) {
     world.register::<TimerExpired>();
     world.register::<AnimationTextKeyEvents>();
     world.register::<ScriptTimer>();
+    // #4415 — actor spell lists (stamped at spawn, mutated by AddSpell /
+    // RemoveSpell effects through `query_mut`, so pre-registered).
+    world.register::<SpellList>();
     // Canonical event markers. OnInitEvent + OnCellLoadEvent +
     // OnTriggerEnterEvent + EquipmentEventBatch join the existing
     // ActivateEvent / HitEvent / TimerExpired in the script-event

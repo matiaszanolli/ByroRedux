@@ -1190,6 +1190,7 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
         facegen_face_clamp: None,
         race_reactions: Vec::new(),
         default_skin: None,
+        spells: Vec::new(),
     };
     race.default_skin = Some(SKIN);
 
@@ -1446,6 +1447,7 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         facegen_face_clamp: None,
         race_reactions: Vec::new(),
         default_skin: Some(SKIN),
+        spells: Vec::new(),
     };
     let mut npc = test_npc(0x0100_0045, "PartialSkinDisplacementNpc");
     npc.race_form_id = RACE;
@@ -1523,6 +1525,7 @@ fn prebaked_equip_state_keeps_zero_mask_race_skin() {
         facegen_face_clamp: None,
         race_reactions: Vec::new(),
         default_skin: None,
+        spells: Vec::new(),
     };
     race.default_skin = Some(SKIN);
 
@@ -1598,6 +1601,7 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
         facegen_face_clamp: None,
         race_reactions: Vec::new(),
         default_skin: None,
+        spells: Vec::new(),
     };
     race.default_skin = Some(SKIN);
 
@@ -1677,6 +1681,7 @@ fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
         facegen_face_clamp: None,
         race_reactions: Vec::new(),
         default_skin: None,
+        spells: Vec::new(),
     };
     race.default_skin = Some(SKIN);
 
@@ -1798,6 +1803,7 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
         facegen_face_clamp: None,
         race_reactions: Vec::new(),
         default_skin: None,
+        spells: Vec::new(),
     };
     race.default_skin = Some(SKIN);
 

@@ -4128,3 +4128,145 @@ fn installed_masters_image_spaces_decode_to_plausible_grades() {
     }
     eprintln!("[IMGS] {checked} master(s) checked");
 }
+
+/// #4415 — `EsmIndex::resolve_actor_value`'s index → AVIF block layout,
+/// pinned at both ends of every block against the shipped masters'
+/// AVIF EditorIDs (including the legacy names the layout exists to see
+/// past: Skyrim Illusion @21 is `AVMysticism`).
+#[test]
+#[ignore = "needs installed game data (checks every available master)"]
+fn installed_masters_actor_value_indices_resolve_by_layout() {
+    use byroredux_plugin::esm::records::ActorValueRef;
+    let fallout_pins: &[(u32, &str)] = &[
+        (0, "AVAggression"),
+        (4, "AVMood"),
+        (5, "AVStrength"),
+        (11, "AVLuck"),
+        (12, "AVActionPoints"),
+        (16, "AVHealth"),
+        (31, "AVBrainCondition"),
+        (32, "AVBarter"),
+        (45, "AVUnarmed"),
+        (46, "AVInventoryWeight"),
+        (72, "AVIgnoreCrippledLimbs"),
+    ];
+    let cases: [(&str, &str, &str, Vec<(u32, &str)>); 3] = [
+        (
+            test_paths::FO3_ENV,
+            test_paths::FO3_DEFAULT,
+            "Fallout3.esm",
+            fallout_pins.to_vec(),
+        ),
+        (
+            test_paths::FNV_ENV,
+            test_paths::FNV_DEFAULT,
+            "FalloutNV.esm",
+            [
+                fallout_pins,
+                &[(73, "AVDehydration"), (76, "AVDamageThreshold")],
+            ]
+            .concat(),
+        ),
+        (
+            test_paths::SKYRIM_SE_ENV,
+            test_paths::SKYRIM_SE_DEFAULT,
+            "Skyrim.esm",
+            vec![
+                (0, "AVAggression"),
+                (5, "AVAssistance"),
+                (6, "AVOneHanded"),
+                (21, "AVMysticism"),
+                (23, "AVEnchanting"),
+                (24, "AVHealth"),
+                (38, "AVVoiceRate"),
+                (39, "AVDamageResist"),
+                (163, "AVReflectDamage"),
+            ],
+        ),
+    ];
+    for (env, fallback, master, pins) in cases {
+        let Some(data) = data_dir(env, fallback) else {
+            eprintln!("[AV index] {master}: skipping, game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(master)).expect("read master");
+        let index = parse_esm(&bytes).expect("parse master");
+        for (av, expected) in pins {
+            let form = index
+                .resolve_actor_value(ActorValueRef::Index(av))
+                .unwrap_or_else(|| panic!("{master}: index {av} resolved to nothing"));
+            assert_eq!(
+                index.actor_values[&form].editor_id, expected,
+                "{master} index {av}"
+            );
+        }
+    }
+}
+
+/// #4415 — the `SPIT` / `MGEF` decodes on shipped data: abilities exist,
+/// value-modifier effects exist, and every value-modifier actor value a
+/// vanilla ability names resolves to an AVIF.
+#[test]
+#[ignore = "needs installed game data (checks every available master)"]
+fn installed_masters_ability_value_modifiers_resolve() {
+    use byroredux_plugin::esm::records::{MagicArchetype, SpellType};
+    let cases = [
+        (test_paths::FO3_ENV, test_paths::FO3_DEFAULT, "Fallout3.esm"),
+        (
+            test_paths::FNV_ENV,
+            test_paths::FNV_DEFAULT,
+            "FalloutNV.esm",
+        ),
+        (
+            test_paths::SKYRIM_SE_ENV,
+            test_paths::SKYRIM_SE_DEFAULT,
+            "Skyrim.esm",
+        ),
+        (test_paths::FO4_ENV, test_paths::FO4_DEFAULT, "Fallout4.esm"),
+    ];
+    for (env, fallback, master) in cases {
+        let Some(data) = data_dir(env, fallback) else {
+            eprintln!("[abilities] {master}: skipping, game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(master)).expect("read master");
+        let index = parse_esm(&bytes).expect("parse master");
+        let abilities: Vec<_> = index
+            .spells
+            .values()
+            .filter(|s| s.spell_type == SpellType::Ability)
+            .collect();
+        let (mut modifiers, mut resolved, mut unresolved) = (0, 0, Vec::new());
+        for spell in &abilities {
+            for effect in &spell.effects {
+                let Some(mgef) = index.magic_effects.get(&effect.effect_form_id) else {
+                    continue;
+                };
+                if !matches!(
+                    mgef.archetype,
+                    Some(MagicArchetype::ValueModifier | MagicArchetype::PeakValueModifier)
+                ) {
+                    continue;
+                }
+                modifiers += 1;
+                match mgef
+                    .primary_actor_value
+                    .and_then(|av| index.resolve_actor_value(av))
+                {
+                    Some(_) => resolved += 1,
+                    None => unresolved.push((mgef.editor_id.clone(), mgef.primary_actor_value)),
+                }
+            }
+        }
+        unresolved.sort_by(|a, b| a.0.cmp(&b.0));
+        unresolved.dedup();
+        eprintln!(
+            "[abilities] {master}: {} abilities, {modifiers} value-modifier effects, \
+             {resolved} resolved, unresolved {:?}",
+            abilities.len(),
+            unresolved
+        );
+        assert!(!abilities.is_empty(), "{master}: no abilities decoded");
+        assert!(modifiers > 0, "{master}: no value-modifier effects");
+    }
+}

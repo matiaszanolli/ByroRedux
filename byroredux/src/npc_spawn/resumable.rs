@@ -2088,6 +2088,7 @@ fn spawn_placement_root<'a>(
     let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, index);
     stamp_faction_ranks(world, placement_root, &resolved);
     stamp_actor_values(world, placement_root, &resolved, index);
+    stamp_spell_list(world, placement_root, &resolved, index);
     stamp_creature_attack(world, placement_root, &resolved);
     stamp_character_components(world, placement_root, &resolved);
     (placement_root, resolved)

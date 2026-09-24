@@ -73,7 +73,8 @@ pub use items::{
     parse_scrl, parse_weap, ItemKind, ItemRecord,
 };
 pub use misc::{
-    active_package, parse_acti, parse_arma, parse_avif, parse_bptd, parse_cobj, parse_csty,
+    active_package, parse_acti, parse_arma, parse_avif, ActorValueRef, MagicArchetype, SpellType,
+    MGEF_FLAG_DETRIMENTAL, MGEF_FLAG_RECOVER, parse_bptd, parse_cobj, parse_csty,
     parse_dial, parse_eczn, parse_efsh, parse_ench, parse_expl, parse_eyes, parse_hair, parse_hdpt,
     parse_idle, parse_imad, parse_imgs, parse_imod, parse_info, parse_ipct, parse_ipds, parse_lgtm,
     parse_mesg, parse_mgef, parse_mgef_for_game, parse_minimal_esm_record, parse_navi, parse_navm,

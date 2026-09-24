@@ -160,6 +160,11 @@ pub(crate) struct PlayerCharacterTemplate {
     /// derivation: a record whose values derive to nothing still has its
     /// factions.
     factions: Option<byroredux_core::ecs::components::FactionRanks>,
+    /// #4415 — the Player record's spell list (own + race `SPLO`, leveled
+    /// lists resolved) and the permanent value changes its constant spells
+    /// make, translated through the same canonical path as NPC spawn.
+    spells: Vec<u32>,
+    spell_modifiers: Vec<byroredux_scripting::ConstantModifier>,
 }
 
 impl Resource for PlayerCharacterTemplate {}
@@ -267,10 +272,19 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
     // #4457 — resolve once, derive through the resolved view.
     let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(player, index);
     let factions = crate::npc_spawn::faction_ranks_of(&resolved);
+    let spells = byroredux_plugin::equip::resolve_actor_spells(&resolved, index);
+    let spell_modifiers: Vec<_> = spells
+        .iter()
+        .flat_map(|&spell| {
+            byroredux_scripting::magic::canonical_spell(index, spell).constant_modifiers
+        })
+        .collect();
     let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values(&resolved, index);
     if pairs.is_empty() {
         return PlayerCharacterTemplate {
             factions,
+            spells,
+            spell_modifiers,
             ..Default::default()
         };
     }
@@ -323,6 +337,8 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 level: Some(level),
                 background,
                 factions,
+                spells,
+                spell_modifiers,
             }
         }
         None => {
@@ -339,6 +355,8 @@ fn build_player_character_template(index: &EsmIndex) -> PlayerCharacterTemplate 
                 level: Some(level.max(0) as u16),
                 background,
                 factions,
+                spells,
+                spell_modifiers,
             }
         }
     }
@@ -633,9 +651,12 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
         .try_resource::<PlayerCharacterTemplate>()
         .map(|template| template.clone())
         .unwrap_or_default();
-    if let Some(values) = character.values {
+    if let Some(mut values) = character.values {
+        // #4415 — the Player record's constant spells (racial abilities).
+        byroredux_scripting::magic::apply_modifiers(&mut values, &character.spell_modifiers, 1.0);
         world.insert(player, values);
     }
+    world.insert(player, byroredux_scripting::SpellList(character.spells));
     if let Some(vitals) = character.vitals {
         world.insert(player, vitals);
     }
@@ -3258,10 +3279,33 @@ mod tests {
             },
         );
 
+        // #4415 — a racial spell reaches the player's spell list.
+        index.races.insert(
+            0x0007,
+            byroredux_plugin::esm::records::RaceRecord {
+                form_id: 0x0007,
+                spells: vec![0x0070],
+                ..Default::default()
+            },
+        );
+        index.spells.insert(
+            0x0070,
+            byroredux_plugin::esm::records::SpelRecord {
+                form_id: 0x0070,
+                ..Default::default()
+            },
+        );
+
         let mut world = World::new();
         install_catalog(&mut world, &index);
         let player = world.spawn();
         attach_to_player(&mut world, player);
+        assert_eq!(
+            world
+                .get::<byroredux_scripting::SpellList>(player)
+                .map(|l| l.0.clone()),
+            Some(vec![0x0070])
+        );
         // #4699 — the Player record's own factions ride the same attach.
         assert_eq!(
             world

@@ -269,6 +269,12 @@ pub enum Effect {
     /// `<actor>.StartCombat(<target>)`. See [`crate::AiCombatState`] for
     /// the runtime chase-and-strike behavior this arms.
     StartCombat { actor: ActorRef, target: ActorRef },
+    /// #4415 — `<actor>.AddSpell(<spell>[, abVerbose])`: put the spell on the
+    /// actor's `SpellList`, applying a constant spell's value changes. The
+    /// verbose flag only chooses whether a HUD message shows.
+    AddSpell { actor: ActorRef, spell: ObjectRef },
+    /// #4415 — `<actor>.RemoveSpell(<spell>)`, undoing the above.
+    RemoveSpell { actor: ActorRef, spell: ObjectRef },
     /// `<actor>.PlayIdle(<idle>)`. The runtime preserves the IDLE FormID as
     /// an animation-backend request even when the current game uses HKX.
     PlayIdle { actor: ActorRef, idle: ObjectRef },
@@ -711,6 +717,8 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_request_auto_save,
     prim_set_enemy,
     prim_start_combat,
+    prim_add_spell,
+    prim_remove_spell,
     prim_play_idle,
     prim_set_vehicle,
     prim_tether_to_horse,
@@ -1344,6 +1352,31 @@ fn prim_start_combat(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::StartCombat {
         actor,
         target: receiver_actor(&args[0].value.node, scope)?,
+    })
+}
+
+/// #4415 — Skyrim's `actor.psc` declares `AddSpell(Spell akSpell, Bool
+/// abVerbose = true)`; the flag only picks whether the "spell added"
+/// message shows, so either form lowers.
+fn prim_add_spell(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "AddSpell")?;
+    if !(1..=2).contains(&args.len()) || (args.len() == 2 && bool_arg(args, 1)?.is_none()) {
+        return None;
+    }
+    Some(Effect::AddSpell {
+        actor: receiver_actor(object, scope)?,
+        spell: receiver_object(&args[0].value.node, scope)?,
+    })
+}
+
+fn prim_remove_spell(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "RemoveSpell")?;
+    if args.len() != 1 {
+        return None;
+    }
+    Some(Effect::RemoveSpell {
+        actor: receiver_actor(object, scope)?,
+        spell: receiver_object(&args[0].value.node, scope)?,
     })
 }
 
@@ -2818,8 +2851,10 @@ mod tests {
         // Real vanilla shape: `QF_MQ101_0003372B::Fragment_11` (stage 80),
         // minus the trailing `AddRaceSpells()` call — that one is a
         // MQ101QuestScript-authored helper (not a `Game` global) and still
-        // declines the whole fragment (no RACE `SPLO` spell-list decoder
-        // exists yet).
+        // declines the whole fragment. Its body (RemoveRaceSpells, then an
+        // if/elseif chain over the player's race adding Conjure Familiar /
+        // Sparks / Fury) needs cross-script helper inlining, elseif and a
+        // player-race guard; AddSpell/RemoveSpell themselves lower (#4415).
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_30()\n\
@@ -2886,6 +2921,53 @@ mod tests {
                 )),
                 target: ActorRef::Player,
             }])
+        );
+    }
+
+    /// #4415 — `AddSpell` with or without its `abVerbose` flag, and
+    /// `RemoveSpell`, lower onto the spell-list effects (the shapes
+    /// `MQ101QuestScript.AddRaceSpells` / `RemoveRaceSpells` use).
+    #[test]
+    fn lowers_add_and_remove_spell() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Spell Property Fury Auto\n\
+             Function Fragment_9()\n\
+             Game.GetPlayer().AddSpell(Fury, true)\n\
+             Game.GetPlayer().AddSpell(Fury)\n\
+             Game.GetPlayer().RemoveSpell(Fury)\n\
+             EndFunction\n",
+        );
+        let fury = || ObjectRef::Property("Fury".into());
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::AddSpell {
+                    actor: ActorRef::Player,
+                    spell: fury(),
+                },
+                Effect::AddSpell {
+                    actor: ActorRef::Player,
+                    spell: fury(),
+                },
+                Effect::RemoveSpell {
+                    actor: ActorRef::Player,
+                    spell: fury(),
+                },
+            ])
+        );
+        let variable_flag = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Spell Property Fury Auto\n\
+             Bool Property bLoud Auto\n\
+             Function Fragment_9()\n\
+             Game.GetPlayer().AddSpell(Fury, bLoud)\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&variable_flag),
+            None,
+            "a non-literal flag declines"
         );
     }
 

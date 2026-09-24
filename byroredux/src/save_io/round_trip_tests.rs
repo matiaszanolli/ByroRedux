@@ -49,6 +49,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         "Perks",
         // TimedRestorations: source/AV u32 FormIDs, f32 rate, f64 time.
         "TimedRestorations",
+        // #4415 — SpellList: Vec<u32> spell FormIDs, global-space.
+        "SpellList",
         // EquippedWeapon: u32 inventory index + u32 base FormID + f32
         // damage. Dead: empty marker. Neither carries session identity.
         "EquippedWeapon",

@@ -735,6 +735,52 @@ impl EsmIndex {
             .map(|avif| avif.form_id)
     }
 
+    /// #4415 — resolve a magic effect's actor value to the AVIF FormID that
+    /// keys `ActorValues`. FO4+ effects already name the AVIF; FO3/FNV and
+    /// Skyrim name a game-local actor-value *index*, mapped here through
+    /// the vanilla master's AVIF FormID layout rather than by name.
+    ///
+    /// Name matching is wrong for these games: the AVIF EditorIDs keep
+    /// older names for re-purposed indices (Skyrim index 21 Illusion is
+    /// `AVMysticism` at `0x45B`; FNV index 51 Turbo is `AVDetectLifeRange`
+    /// at `0x5E1`). The masters instead lay the AVIFs out in contiguous
+    /// blocks in index order, measured on Fallout3.esm, FalloutNV.esm and
+    /// Skyrim.esm and pinned at every block's ends by
+    /// `installed_masters_actor_value_indices_resolve_by_layout`:
+    ///
+    /// | Indices | FO3 / FNV | Skyrim |
+    /// |---|---|---|
+    /// | AI block | 0..=4 @ `0x514` | 0..=5 @ `0x4B0` |
+    /// | SPECIAL / skills | 5..=11 @ `0x3E8` | skills 6..=23 @ `0x44C` |
+    /// | derived | 12..=31 @ `0x44C` | 24..=38 @ `0x3E8` |
+    /// | skills | 32..=45 @ `0x4B0` | — |
+    /// | rest | 46..=76 @ `0x5DC` | 39..=163 @ `0x5CE` |
+    ///
+    /// An index whose slot has no AVIF record (several engine-only values)
+    /// resolves to `None`, as does Oblivion (no AVIF records).
+    pub fn resolve_actor_value(&self, reference: super::ActorValueRef) -> Option<u32> {
+        use crate::esm::reader::GameKind;
+        let form_id = match reference {
+            super::ActorValueRef::Form(form_id) => form_id,
+            super::ActorValueRef::Index(index) => {
+                let (first, base) = match (self.game, index) {
+                    (GameKind::Fallout3NV, 0..=4) => (0, 0x514),
+                    (GameKind::Fallout3NV, 5..=11) => (5, 0x3E8),
+                    (GameKind::Fallout3NV, 12..=31) => (12, 0x44C),
+                    (GameKind::Fallout3NV, 32..=45) => (32, 0x4B0),
+                    (GameKind::Fallout3NV, 46..=76) => (46, 0x5DC),
+                    (GameKind::Skyrim, 0..=5) => (0, 0x4B0),
+                    (GameKind::Skyrim, 6..=23) => (6, 0x44C),
+                    (GameKind::Skyrim, 24..=38) => (24, 0x3E8),
+                    (GameKind::Skyrim, 39..=163) => (39, 0x5CE),
+                    _ => return None,
+                };
+                base + (index - first)
+            }
+        };
+        self.actor_values.contains_key(&form_id).then_some(form_id)
+    }
+
     /// Resolve Health in the same global AVIF FormID space as every other
     /// actor value and CTDA `GetActorValue` operand.
     pub fn health_actor_value_key(&self) -> Option<u32> {

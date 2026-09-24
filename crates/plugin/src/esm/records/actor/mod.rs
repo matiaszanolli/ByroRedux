@@ -335,6 +335,11 @@ pub struct NpcRecord {
     pub default_outfit: Option<u32>,
     /// AI packages (`PKID` sub-records, in priority order).
     pub ai_packages: Vec<u32>,
+    /// #4415 — the actor's spell list (`SPLO`, one FormID each, load-order
+    /// remapped): SPEL / SHOU / LVSP targets, in authored order. FO3/FNV
+    /// call it the "Actor Effect" list and author it on NPC_ and CREA;
+    /// Skyrim/FO4 precede it with an `SPCT` count, which is not needed.
+    pub spells: Vec<u32>,
     /// Death item leveled list (DEST in some games, INAM in others).
     pub death_item_form_id: u32,
     /// Base level (from DATA).
@@ -608,6 +613,10 @@ pub struct RaceRecord {
     /// Drives the Radiant-AI faction-mood calculation for Oblivion
     /// NPCs interacting across racial lines.
     pub race_reactions: Vec<(u32, i32)>,
+    /// #4415 — the race's spell list (`SPLO`): racial abilities and
+    /// powers every member of the race carries. Oblivion / Skyrim / FO4;
+    /// FO3/FNV RACE records author none.
+    pub spells: Vec<u32>,
     /// Default "naked skin" ARMO form ID from the Skyrim+ `WNAM`
     /// sub-record — the race's implicit base-layer armor every actor
     /// wears beneath OTFT/CNTO gear. `None` outside `uses_prebaked_
@@ -928,6 +937,7 @@ pub fn parse_npc(
         inventory: Vec::new(),
         default_outfit: None,
         ai_packages: Vec::new(),
+        spells: Vec::new(),
         death_item_form_id: 0,
         level: 1,
         calc_min: 0,
@@ -1120,6 +1130,10 @@ fn parse_npc_core(
         b"PKID" if sub.data.len() >= 4 => {
             let raw = SubReader::new(&sub.data).u32_or_default();
             record.ai_packages.push(remap_fid(raw, remap));
+        }
+        b"SPLO" if sub.data.len() >= 4 => {
+            let raw = SubReader::new(&sub.data).u32_or_default();
+            record.spells.push(remap_fid(raw, remap));
         }
         // DOFT — Skyrim+ default outfit FormID. Pre-Skyrim games
         // don't emit DOFT (NPCs equip directly from inventory).
@@ -1485,6 +1499,7 @@ pub fn parse_race(
         facegen_face_clamp: None,
         race_reactions: Vec::new(),
         default_skin: None,
+        spells: Vec::new(),
     };
 
     let is_oblivion = matches!(game, GameKind::Oblivion);
@@ -1525,6 +1540,11 @@ pub fn parse_race(
     for sub in subs {
         match &sub.sub_type {
             b"DESC" => record.description = read_lstring_or_zstring(&sub.data),
+            // #4415 — racial spell list, same one-FormID shape as NPC_.
+            b"SPLO" if sub.data.len() >= 4 => {
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.spells.push(remap_fid(raw, remap));
+            }
             // DATA (TES4 / FO3 / FONV — 36 bytes total):
             //   8 × (u8 skill_index, u8 bonus)    16 B
             //   heightMale + heightFemale (2 × f32) 8 B

@@ -708,6 +708,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("DraugrCombatAnim", "family marker re-derived at spawn from the resolved race on both spawn paths (#4700); take state is transient playback, and the death latch re-derives from the saved Dead marker on the first observed tick (seen_alive, #4708)"),
         ("NavmeshResidency", "NAVM residency generation counter: restarts at 0 after a load so every cached NavPath is stale-by-default, the safe direction (its own #3256 doc)"),
         ("GlobalFormIdResolver", "load-order -> portable-identity mapping rebuilt from the active plugin list on every world setup and cell load — derived configuration, not gameplay state"),
+        ("SpellCatalog", "canonical spell translations (#4415), rebuilt from the plugin set by populate_scene_runtime on every load — immutable reference data"),
         ("ImageSpaceBase", "the current base image space (#4416), republished from the loaded interior's XCIM at every interior load and from the live weather/worldspace every exterior frame — derived, never saved"),
         ("PlacedItemCount", "REFR XCNT stack size (#4706), rederived identically from the plugin's parsed REFR every cell load — same posture as DoorTeleport; a taken stack persists through the PersistentReferenceStates tombstone"),
     ];

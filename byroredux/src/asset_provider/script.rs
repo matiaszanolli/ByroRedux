@@ -440,6 +440,8 @@ pub(crate) fn populate_scene_runtime(
     // drift from the three siblings below.
     populate_quest_fragments(world, index);
     crate::inventory::install_catalog(world, index);
+    // #4415 — canonical spells for runtime `AddSpell` / `RemoveSpell`.
+    world.insert_resource(byroredux_scripting::SpellCatalog::from_index(index));
     let imad_count = byroredux_scripting::install_image_space_modifiers(
         world,
         index.imagespace_modifiers.values().cloned(),
