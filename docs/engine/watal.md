@@ -429,17 +429,25 @@ paint flat 0.08 grey) and `m-exteriors.sh water` floors its capture mean —
 `reflection_intensity_contract_tests` in `vulkan/water.rs` pins the GLSL source
 shape.
 
-**Directional-scroll confinement (#4544, 2026-09-20):** on water carrying a
-canonical current, each authored layer's wind motion is confined to the flow
-axis at the translate boundary — the along-flow component survives verbatim,
-the cross-stream component is quartered (`WATER_CROSS_STREAM_SCROLL`), and the
-deliberate counter-layer rotation drops from 0.5× to 0.25× of the downstream
-rate. Census: every direction-named vanilla record authors its layer dirs ~90°
-off its own NAM0 flow, so the raw sum slid the dominant layer sideways at ~80%
-of the downstream rate (live report: "way too aggressive"). Calm water keeps
-authored layer motion verbatim. Pinned by
-`flowing_water_confines_authored_layer_motion_to_the_flow_axis` and
-`riverwater_flowne_scroll_runs_downstream_not_sideways` in `env_translate.rs`.
+**Directional-scroll frame (#4544 superseded by #4727, 2026-09-24):** WATR's
+per-layer wind angles are compass-style bearings in the record's Z-up frame,
+and the engine XZ plane reads them rotated +90° — the conversion lives at the
+translate boundary (`watr_angle_to_engine_xz` in `env_translate.rs`), so the
+authored layers run downstream and compose with the flow term verbatim. The
+#4544 paragraph this replaces treated the same measurement as authoring: it
+confined each layer to the flow axis (`WATER_CROSS_STREAM_SCROLL = 0.25`) and
+halved the perpendicular shear — masking the ~90° frame error by discarding
+~70% of the authored speed profile while what survived still pointed mostly
+sideways. With the frame corrected the confinement is gone and the shear
+returns to the documented 0.5× (`WATER_PERPENDICULAR_SHEAR_SCROLL`). Census:
+Skyrim's 51 non-zero layers sit −84.1° off their own NAM0 raw (R = 0.72,
+Rayleigh p ≈ 6e-12), +5.9° under the fix; FO4's 108 layers −87.7° → +2.3°.
+The physics current fallback for NAM0-less records reads the same field
+through the same conversion. Pinned by
+`authored_layer_motion_runs_downstream_and_composes_verbatim`,
+`riverwater_flowne_layers_run_downstream_under_the_corrected_frame`, and the
+ignored real-data sibling `riverwater_flowne_real_record_layers_run_downstream`
+in `env_translate.rs`.
 
 **Caustic camera-visibility gate (#4545, 2026-09-20):** the refracted-sun
 caustic deposit is projected to the floor hit's screen pixel, so an occluder

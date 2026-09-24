@@ -524,18 +524,36 @@ pub(crate) fn worldspace_name_chain(
 /// scale up in proportion to the current the physics sink is simulating.
 const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
 
-/// Fraction of an authored layer's cross-stream motion that survives on
-/// directional water (river / rapids / waterfall carries a canonical
-/// [`WaterFlow`]).
+/// Fraction of the downstream rate at which scroll vector 1 crosses the
+/// current — the canonical perpendicular shear the `WaterMaterial.scroll_*`
+/// contract documents.
 ///
-/// The per-layer wind directions in shipped records sit ~90° off their own
-/// NAM0 flow, so without this the dominant layer slides sideways across the
-/// current at ~80% of the downstream rate — read live as "way too
-/// aggressive" sideways movement. A quarter keeps a visible trace of
-/// cross-chop (real rivers are not rails) while cutting the lateral drift
-/// by ~70%. Calm water keeps authored layer motion verbatim; this only
-/// applies where a current exists to define "sideways".
-const WATER_CROSS_STREAM_SCROLL: f32 = 0.25;
+/// #4727 restores the pre-#4544 value of 0.5: #4544 halved it to 0.25 to
+/// offset a ~90° frame error in the per-layer wind angles that slid the
+/// dominant layer sideways across the current. With that frame corrected
+/// at the boundary ([`watr_angle_to_engine_xz`]) the authored layers run
+/// downstream and compose verbatim, so the compensating attenuation — and
+/// the old `WATER_CROSS_STREAM_SCROLL` confinement — are gone.
+const WATER_PERPENDICULAR_SHEAR_SCROLL: f32 = 0.5;
+
+/// #4727 — WATR's authored noise-wind angles (the per-layer DNAM offsets,
+/// and the `wind_direction` alias Skyrim promotes from DNAM) are
+/// compass-style bearings in the record's Z-up frame; the engine XZ plane
+/// reads them rotated +90° (φ = β + 90°). Census over the shipped masters:
+/// layer-minus-flow circular mean −84.1° raw on Skyrim's 51 non-zero
+/// layers (R = 0.72, 48/51 negative, Rayleigh p ≈ 6e-12) and −87.7° on
+/// FO4's 108 (R = 0.65, 96/108 negative, p ≈ 1e-19); under this conversion
+/// the means land at +5.9° / +2.3° — the layers run downstream — while
+/// every mirror shape collapses to R ≤ 0.36. The direction-named Skyrim
+/// editor IDs confirm per record (RiverWaterFlowNE layer 0: 82° raw,
+/// 8° corrected against its NE current).
+///
+/// Per the no-guessing rule the conversion is pinned to the census by
+/// `riverwater_flowne_layers_run_downstream_under_the_corrected_frame`
+/// (and its ignored real-data sibling) in this module's tests.
+fn watr_angle_to_engine_xz(beta_radians: f32) -> f32 {
+    beta_radians + core::f32::consts::FRAC_PI_2
+}
 
 fn resolve_water_colors(
     waters: &HashMap<u32, esm::records::misc::WatrRecord>,
@@ -842,7 +860,10 @@ fn resolve_water_layer_motion(rec: &esm::records::misc::WatrRecord, layer: usize
     let speed = rec.params.noise_wind_speeds[layer];
     let direction = rec.params.noise_wind_directions[layer];
     if speed.is_finite() && speed > 0.0 && direction.is_finite() {
-        let (sin_theta, cos_theta) = direction.sin_cos();
+        // #4727 — the authored angle is a Z-up compass bearing; the
+        // Z-up→Y-up frame conversion happens HERE, at the parse→canonical
+        // boundary, never re-derived at render time.
+        let (sin_theta, cos_theta) = watr_angle_to_engine_xz(direction).sin_cos();
         [cos_theta * speed, sin_theta * speed]
     } else {
         [0.0, 0.0]
@@ -903,44 +924,36 @@ fn classify_water_kind_and_flow(
             })
             .or_else(|| {
                 authored_heading_available.then(|| {
-                    let (sin_theta, cos_theta) = rec.params.wind_direction.sin_cos();
+                    // #4727 — the same frame conversion as the layers: on
+                    // Skyrim this field carries the promoted DNAM layer
+                    // angle, so an un-converted read aims the physics
+                    // current ~90° off course.
+                    let (sin_theta, cos_theta) =
+                        watr_angle_to_engine_xz(rec.params.wind_direction).sin_cos();
                     WaterFlow::for_kind(kind, [cos_theta, 0.0, sin_theta])
                 })
             });
         if let Some(canonical) = canonical {
             let scroll = canonical.speed * WATER_SCROLL_UV_PER_BU_PER_S;
-            // A current reads as a current only when the surface it drags moves
-            // downstream. Every direction-named vanilla record authors its
-            // per-layer wind directions ~90° off its NAM0 flow (NE/NW/SE
-            // census: RiverWaterFlowNE layer dirs 4.07/4.66/4.40 rad against a
-            // -0.49 rad flow), so their raw addition slid the dominant layer
-            // SIDEWAYS across the river at ~80% of the downstream rate — the
-            // "way too aggressive sideways movement" live report. Keep each
-            // layer's authored speed profile, but confine it to the flow axis:
-            // a quarter of the cross-stream component survives as natural
-            // chop, and the deliberate counter-layer rotation below is halved
-            // to match (0.5 -> 0.25 of the downstream rate).
+            // #4727 — the per-layer angles are converted to the engine XZ
+            // frame at the boundary (resolve_water_layer_motion), so the
+            // authored layers run downstream and compose with the flow term
+            // verbatim. The #4544 cross-stream confinement is gone: it
+            // compensated exactly the frame error the conversion fixes and
+            // discarded ~70% of the authored speed profile while what
+            // survived still pointed mostly sideways.
             let flow_x = canonical.direction[0];
             let flow_z = canonical.direction[2];
-            let flow_axis = [flow_x, flow_z];
-            let confine_to_flow = |motion: [f32; 2]| {
-                let along = motion[0] * flow_axis[0] + motion[1] * flow_axis[1];
-                let cross = [motion[0] - along * flow_axis[0], motion[1] - along * flow_axis[1]];
-                [
-                    along * flow_axis[0] + cross[0] * WATER_CROSS_STREAM_SCROLL,
-                    along * flow_axis[1] + cross[1] * WATER_CROSS_STREAM_SCROLL,
-                ]
-            };
-            let authored_a = confine_to_flow(resolve_water_layer_motion(rec, 0));
-            let authored_b = confine_to_flow(resolve_water_layer_motion(rec, 1));
-            let authored_c = confine_to_flow(resolve_water_layer_motion(rec, 2));
+            let authored_a = resolve_water_layer_motion(rec, 0);
+            let authored_b = resolve_water_layer_motion(rec, 1);
+            let authored_c = resolve_water_layer_motion(rec, 2);
             mat.scroll_a = [
                 flow_x * scroll + authored_a[0],
                 flow_z * scroll + authored_a[1],
             ];
             mat.scroll_b = [
-                -flow_z * scroll * WATER_CROSS_STREAM_SCROLL + authored_b[0],
-                flow_x * scroll * WATER_CROSS_STREAM_SCROLL + authored_b[1],
+                -flow_z * scroll * WATER_PERPENDICULAR_SHEAR_SCROLL + authored_b[0],
+                flow_x * scroll * WATER_PERPENDICULAR_SHEAR_SCROLL + authored_b[1],
             ];
             mat.scroll_c = if authored_c != [0.0, 0.0] {
                 authored_c
@@ -2829,7 +2842,7 @@ mod tests {
     }
 
     #[test]
-    fn flowing_water_confines_authored_layer_motion_to_the_flow_axis() {
+    fn authored_layer_motion_runs_downstream_and_composes_verbatim() {
         let mut rec = calm_watr(
             0x000A_0002,
             "LocalizedWater",
@@ -2849,78 +2862,36 @@ mod tests {
         let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0002));
         assert!(matches!(kind, WaterKind::River));
         let flow = flow.expect("flowing water must carry its canonical current");
-        // wind_direction 0 → the fallback current runs along +X, so the flow
-        // axis is (1, 0) and "cross-stream" is the scroll-y lane.
+        // wind_direction 0 is a raw Z-up bearing; under the corrected frame
+        // (#4727: φ = β + 90°) it reads as engine +Z, so the current runs
+        // north and the perpendicular shear is the scroll-x lane.
         let scroll = flow.speed * WATER_SCROLL_UV_PER_BU_PER_S;
-        // Layer A: authored (0.10, 0) is already along-flow and survives
-        // verbatim on top of the current-driven term.
-        assert!((mat.scroll_a[0] - (scroll + 0.10)).abs() < 1e-6);
-        assert!(mat.scroll_a[1].abs() < 1e-6);
-        // Layer B: authored (0, 0.20) is PURE cross-stream and must be cut to
-        // the quarter-fraction; the deliberate counter-rotation uses the same
-        // fraction of the downstream rate (pre-fix it rotated at 0.5×).
-        assert!((mat.scroll_b[0] - 0.0).abs() < 1e-6);
-        assert!((mat.scroll_b[1] - (0.20 * WATER_CROSS_STREAM_SCROLL + scroll * WATER_CROSS_STREAM_SCROLL)).abs() < 1e-6);
-        // Layer C: authored (0.30·cos 0.25, 0.30·sin 0.25) keeps its
-        // along-flow component; its cross component is quartered.
-        assert!((mat.scroll_c[0] - 0.30 * 0.25_f32.cos()).abs() < 1e-6);
-        assert!(
-            (mat.scroll_c[1] - 0.30 * 0.25_f32.sin() * WATER_CROSS_STREAM_SCROLL).abs() < 1e-6,
-            "cross-stream authored motion must be attenuated, not preserved"
-        );
+        // Layer A: raw bearing 0 converts to (−sin 0, cos 0) = +Z — fully
+        // along-flow — and composes on top of the current-driven term.
+        assert!((mat.scroll_a[0] - 0.0).abs() < 1e-6);
+        assert!((mat.scroll_a[1] - (scroll + 0.10)).abs() < 1e-6);
+        // Layer B: raw π/2 converts to (−1, 0) — pure cross-stream — and
+        // survives VERBATIM now (the #4544 quartering is gone); the
+        // deliberate perpendicular shear returns to the documented half
+        // rate.
+        assert!((mat.scroll_b[0] - (0.20 + scroll * WATER_PERPENDICULAR_SHEAR_SCROLL)).abs() < 1e-6);
+        assert!(mat.scroll_b[1].abs() < 1e-6);
+        // Layer C: raw 0.25 converts to (−sin 0.25, cos 0.25)·0.30 verbatim.
+        assert!((mat.scroll_c[0] - -0.30 * 0.25_f32.sin()).abs() < 1e-6);
+        assert!((mat.scroll_c[1] - 0.30 * 0.25_f32.cos()).abs() < 1e-6);
     }
 
-    /// The #4544 counterpart guard: with the authored cross-stream motion
-    /// quartered and the counter-layer rotation halved, the dominant layer's
-    /// lateral drift on a real NE river record must fall to ~a quarter of
-    /// its downstream rate (pre-fix census: ~80%). Uses the vanilla
-    /// `RiverWaterFlowNE` authoring — NAM0 (2.54, -1.35), layer dirs
-    /// 4.067/4.660/4.398 rad, speeds 0.09/0.04/0.30.
-    /// #4734 — a River-by-name FO3/FNV creek with no NAM0/XWCU and the
-    /// dead editor default (90°) in `wind_direction` must produce **no**
-    /// physics current: #2872 ruled the zero-variance field cannot be
-    /// authored velocity, #3185 ruled a name establishes kind but not
-    /// axis. Pre-fix the fallback fabricated a due-south current
-    /// (+Z) for every such creek. Its authored layer motion still
-    /// scrolls, and a record with an authored NAM0 keeps its flow.
+    /// #4727 — the census relation pinned against the vanilla
+    /// `RiverWaterFlowNE` authoring (NAM0 (2.54, -1.35), layer dirs
+    /// 4.067/4.660/4.398 rad, speeds 0.09/0.04/0.30): under the corrected
+    /// engine frame every authored layer runs downstream — layer 0 within
+    /// ~10° of the record's own NAM0 current (raw it sat 82° off) — and
+    /// the dominant scroll drifts sideways by only a fraction of its
+    /// downstream rate. Pre-#4544 the raw angles slid the dominant layer
+    /// ~80% sideways; #4544 masked that by discarding ~70% of the authored
+    /// speed profile; this is the frame fix that removes the cause.
     #[test]
-    fn dead_default_wind_direction_yields_no_physics_flow_for_named_creeks() {
-        let mut rec = calm_watr(
-            0x000A_0005,
-            "CreekWater01",
-            WaterParams {
-                wind_direction: 90.0f32.to_radians(),
-                noise_wind_directions: [0.25, 0.0, 1.2],
-                noise_wind_speeds: [0.10, 0.0, 0.20],
-                ..WaterParams::default()
-            },
-        );
-        // `CreekWater01` classifies River by name alone.
-        let mut waters = HashMap::new();
-        waters.insert(rec.form_id, rec.clone());
-
-        let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(rec.form_id));
-        assert!(matches!(kind, WaterKind::River), "the name alone classifies the kind");
-        assert!(
-            flow.is_none(),
-            "dead-default 90° heading must not fabricate a physics current (#4734)"
-        );
-        // Authored layer motion still scrolls the surface (A and C here;
-        // layer B's zero speed leaves the sentinel default in place).
-        assert_eq!(mat.scroll_a, [0.10 * 0.25_f32.cos(), 0.10 * 0.25_f32.sin()]);
-        assert_eq!(mat.scroll_c, [0.20 * 1.2_f32.cos(), 0.20 * 1.2_f32.sin()]);
-
-        // The contrast: an authored NAM0 keeps the flow (and its scroll
-        // synthesis) — the refusal is specifically about the dead default.
-        rec.linear_velocity = Some([1.0, 0.0]);
-        waters.insert(rec.form_id, rec);
-        let (_, _, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0005));
-        let flow = flow.expect("an authored NAM0 current must survive");
-        assert!((flow.speed - 1.0).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn riverwater_flowne_scroll_runs_downstream_not_sideways() {
+    fn riverwater_flowne_layers_run_downstream_under_the_corrected_frame() {
         let rec = calm_watr(
             0x000A_0009,
             "RiverWaterFlowNE",
@@ -2930,6 +2901,8 @@ mod tests {
                 ..WaterParams::default()
             },
         );
+        let layer_dirs = rec.params.noise_wind_directions;
+        let layer_speeds = rec.params.noise_wind_speeds;
         let rec = esm::records::misc::WatrRecord {
             linear_velocity: Some([2.54, -1.35]),
             ..rec
@@ -2941,14 +2914,76 @@ mod tests {
         let f = flow.direction;
         let axis = [f[0], f[2]];
         assert!(axis[0] > 0.8 && axis[1] < -0.3, "flow must point ENE in engine XZ");
+        let flow_bearing = axis[1].atan2(axis[0]);
+        // Every non-zero authored layer runs within 10° of the current.
+        for (layer, &speed) in layer_speeds.iter().enumerate() {
+            if !(speed.is_finite() && speed > 0.0) {
+                continue;
+            }
+            let angle = watr_angle_to_engine_xz(layer_dirs[layer]);
+            let delta = (angle - flow_bearing).abs();
+            let delta = delta.min(std::f32::consts::TAU - delta);
+            assert!(
+                delta.to_degrees() <= 10.0,
+                "layer {layer} runs {:.1}° off the NAM0 current under the \
+                 corrected frame — the authored layers must run downstream",
+                delta.to_degrees()
+            );
+        }
+        // The dominant scroll rides the current, not sideways across it.
         let (along, cross) = (mat.scroll_a[0] * axis[0] + mat.scroll_a[1] * axis[1],
                               -mat.scroll_a[0] * axis[1] + mat.scroll_a[1] * axis[0]);
+        assert!(along > 0.0, "the dominant layer must travel downstream");
         let cross_ratio = (cross.abs() / along.max(1e-6)).abs();
         assert!(
             cross_ratio < 0.35,
             "dominant layer drifts {cross_ratio:.2}× its downstream rate — \
-             sideways current motion must stay well under half (pre-fix ~0.80)"
+             sideways current motion must stay well under half"
         );
+    }
+
+    /// #4727 — the same census relation against the shipped record itself
+    /// (the synthetic pin above freezes the vanilla authoring; this one
+    /// re-reads it live, so re-authored angles still get the frame checked
+    /// against their own NAM0). Opt-in like the other real-data tests:
+    /// needs `Skyrim.esm` on disk.
+    #[test]
+    #[ignore = "needs Skyrim SE game data on disk"]
+    fn riverwater_flowne_real_record_layers_run_downstream() {
+        let data_dir = std::env::var_os("BYROREDUX_SKYRIM_DATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(
+                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+                )
+            });
+        let esm_path = data_dir.join("Skyrim.esm");
+        if !esm_path.is_file() {
+            return;
+        }
+        let index = byroredux_plugin::esm::parse_esm(&std::fs::read(esm_path).unwrap()).unwrap();
+        let rec = index
+            .waters
+            .values()
+            .find(|rec| rec.editor_id.eq_ignore_ascii_case("RiverWaterFlowNE"))
+            .expect("Skyrim.esm must ship RiverWaterFlowNE");
+        let velocity = rec
+            .linear_velocity
+            .expect("RiverWaterFlowNE authors a NAM0 current");
+        let flow_bearing = velocity[1].atan2(velocity[0]);
+        for (layer, &speed) in rec.params.noise_wind_speeds.iter().enumerate() {
+            if !(speed.is_finite() && speed > 0.0) {
+                continue;
+            }
+            let angle = watr_angle_to_engine_xz(rec.params.noise_wind_directions[layer]);
+            let delta = (angle - flow_bearing).abs();
+            let delta = delta.min(std::f32::consts::TAU - delta);
+            assert!(
+                delta.to_degrees() <= 10.0,
+                "layer {layer} runs {:.1}° off the record's own NAM0 current",
+                delta.to_degrees()
+            );
+        }
     }
 
     #[test]
@@ -2988,7 +3023,9 @@ mod tests {
             "LocalizedRiver",
             WaterParams {
                 flowmap_scale: 3.0,
-                wind_direction: 0.0,
+                // Raw −90° reads as engine +X under the corrected frame
+                // (#4727), keeping this test's along-X current.
+                wind_direction: -std::f32::consts::FRAC_PI_2,
                 ..WaterParams::default()
             },
         );
@@ -3286,9 +3323,12 @@ mod tests {
         let (mat, kind, flow, _, _) = resolve_water_material(&waters, Some(0x000A_0003));
         assert!(matches!(kind, WaterKind::Calm));
         assert!(flow.is_none());
-        assert!(mat.scroll_a[0].abs() < 1e-6);
-        assert!((mat.scroll_a[1] - 0.03).abs() < 1e-6);
-        assert!((mat.scroll_b[0] - 0.02).abs() < 1e-6);
+        // #4727 — raw bearing π/2 reads as engine −X under the corrected
+        // frame (φ = β + 90°), and raw 0 reads as +Z.
+        assert!((mat.scroll_a[0] - -0.03).abs() < 1e-6);
+        assert!(mat.scroll_a[1].abs() < 1e-6);
+        assert!(mat.scroll_b[0].abs() < 1e-6);
+        assert!((mat.scroll_b[1] - 0.02).abs() < 1e-6);
     }
 
     // ── #2872 — WaterFlow.speed unit ──────────────────────────────
