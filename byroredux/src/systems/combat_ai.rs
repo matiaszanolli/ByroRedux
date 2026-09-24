@@ -42,6 +42,24 @@ struct Decision {
     strike: Option<(EntityId, f32)>,
 }
 
+/// #4605 — per-attacker snapshot for the guard-free second pass: (entity,
+/// actor translation, actor rotation, target translation, distance², combat
+/// state).
+type PendingStrike = (EntityId, Vec3, Quat, Vec3, f32, AiCombatState);
+/// `(decision index, from, rotation, target_xz, speed)` for each attacker
+/// still closing the distance, stepped once the storage guards are gone.
+type ChaseStep = (usize, Vec3, Quat, Vec3, f32);
+
+/// Closure-persistent scratch (#4613): the three per-tick buffers are
+/// cleared, not reallocated, so an active fight stops allocating once they
+/// reach their high-water mark.
+#[derive(Default)]
+struct CombatAiScratch {
+    decisions: Vec<Decision>,
+    steps: Vec<ChaseStep>,
+    pending: Vec<PendingStrike>,
+}
+
 /// Mirrors `wander_system_inner`'s read/write split: gather a decision per
 /// `AiCombatState` entity while holding storage read guards, resolve the
 /// chase steps against `PhysicsWorld` with no storage guard held, then apply
@@ -52,16 +70,16 @@ struct Decision {
 /// `ragdoll_writeback_system`'s `Transform → PhysicsWorld` order and closed a
 /// cycle in the lock-order checker — the "no storage under a `PhysicsWorld`
 /// guard" rule #2134, #3262 and #3655 restructured their systems to follow.
-pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
+fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScratch) {
     let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
-    let mut decisions = Vec::new();
-    // `(decision index, from, rotation, target_xz)` for each attacker still
-    // closing the distance, stepped once the storage guards are gone.
-    let mut steps = Vec::new();
-    // #4605 — per-attacker snapshot for the guard-free second pass:
-    // (entity, actor translation, actor rotation, target translation,
-    // distance², combat state).
-    let mut pending: Vec<(EntityId, Vec3, Quat, Vec3, f32, AiCombatState)> = Vec::new();
+    let CombatAiScratch {
+        decisions,
+        steps,
+        pending,
+    } = scratch;
+    decisions.clear();
+    steps.clear();
+    pending.clear();
     {
         let Some(combat_q) = world.query::<AiCombatState>() else {
             return;
@@ -138,9 +156,9 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
     fn resolve_pending_strikes(
         world: &World,
         dt: f32,
-        pending: &[(EntityId, Vec3, Quat, Vec3, f32, AiCombatState)],
+        pending: &[PendingStrike],
         decisions: &mut Vec<Decision>,
-        steps: &mut Vec<(usize, Vec3, Quat, Vec3, f32)>,
+        steps: &mut Vec<ChaseStep>,
     ) {
         for &(entity, actor_translation, actor_rotation, target_translation, dist_sq, state) in
             pending
@@ -204,7 +222,7 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
     }
 
     // #4605 — the second pass runs with NO storage guard live.
-    resolve_pending_strikes(world, dt, &pending, &mut decisions, &mut steps);
+    resolve_pending_strikes(world, dt, pending, decisions, steps);
 
     if decisions.is_empty() {
         return;
@@ -212,7 +230,7 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
 
     if !steps.is_empty() {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
-        for (index, from, rotation, target_xz, speed) in steps {
+        for &(index, from, rotation, target_xz, speed) in steps.iter() {
             let (new_pos, new_rotation) =
                 step_toward(from, rotation, target_xz, dt, speed, physics.as_deref());
             decisions[index].new_translation = new_pos;
@@ -227,7 +245,7 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
     // strike is held instead: the attacker stays ready and lands it next
     // frame, so no hit is lost and simultaneous attackers fall out of step.
     if let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() {
-        for decision in &mut decisions {
+        for decision in decisions.iter_mut() {
             let Some((target, damage)) = decision.strike else {
                 continue;
             };
@@ -255,7 +273,7 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
         }
     }
     if let Some(mut transforms) = world.query_mut::<Transform>() {
-        for decision in &decisions {
+        for decision in decisions.iter() {
             if let Some(transform) = transforms.get_mut(decision.entity) {
                 transform.translation = decision.new_translation;
                 if let Some(rotation) = decision.new_rotation {
@@ -265,7 +283,7 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
         }
     }
     if let Some(mut states) = world.query_mut::<AiCombatState>() {
-        for decision in &decisions {
+        for decision in decisions.iter() {
             match decision.state {
                 Some(state) => states.insert(decision.entity, state),
                 None => {
@@ -274,6 +292,22 @@ pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
             }
         }
     }
+}
+
+/// System factory — returns a closure with persistent [`CombatAiScratch`],
+/// mirroring [`crate::systems::make_combat_feedback_system`] (#4613).
+pub(crate) fn make_npc_combat_ai_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut scratch = CombatAiScratch::default();
+    move |world: &World, dt: f32| {
+        npc_combat_ai_system_inner(world, dt, &mut scratch);
+    }
+}
+
+/// Kept for test ergonomics, mirroring `combat_feedback_system`'s
+/// `#[cfg(test)]` twin.
+#[cfg(test)]
+pub(crate) fn npc_combat_ai_system(world: &World, dt: f32) {
+    npc_combat_ai_system_inner(world, dt, &mut CombatAiScratch::default());
 }
 
 #[cfg(test)]
@@ -289,6 +323,53 @@ mod tests {
         world.register::<Dead>();
         world.register::<ActorVitals>();
         world
+    }
+
+    /// #4613 — the factory's scratch is reused across ticks: a second chase
+    /// frame refills the same buffers (same allocation) instead of building
+    /// fresh Vecs, and the chase still advances.
+    #[test]
+    fn combat_scratch_is_reused_across_ticks() {
+        let mut world = fixture();
+        let attacker = world.spawn();
+        let target = world.spawn();
+        world.insert(attacker, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            target,
+            Transform::from_translation(Vec3::new(1000.0, 0.0, 0.0)),
+        );
+        world.insert(
+            attacker,
+            AiCombatState {
+                target,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+
+        let mut scratch = CombatAiScratch::default();
+        npc_combat_ai_system_inner(&world, 1.0, &mut scratch);
+        let first_x = world.get::<Transform>(attacker).unwrap().translation.x;
+        assert_eq!(scratch.decisions.len(), 1);
+        assert_eq!(scratch.steps.len(), 1);
+        let buffers = (
+            scratch.decisions.as_ptr(),
+            scratch.steps.as_ptr(),
+            scratch.pending.as_ptr(),
+        );
+
+        npc_combat_ai_system_inner(&world, 1.0, &mut scratch);
+        assert_eq!(
+            (
+                scratch.decisions.as_ptr(),
+                scratch.steps.as_ptr(),
+                scratch.pending.as_ptr(),
+            ),
+            buffers,
+            "per-tick buffers must be cleared and refilled, not reallocated"
+        );
+        assert_eq!(scratch.decisions.len(), 1, "cleared, not appended to");
+        let second_x = world.get::<Transform>(attacker).unwrap().translation.x;
+        assert!(second_x > first_x, "the chase keeps advancing");
     }
 
     #[test]
@@ -552,8 +633,8 @@ mod tests {
     fn physics_world_is_taken_only_between_the_storage_passes() {
         const SRC: &str = include_str!("combat_ai.rs");
         let body = SRC
-            .split_once("pub(crate) fn npc_combat_ai_system")
-            .expect("npc_combat_ai_system definition")
+            .split_once("fn npc_combat_ai_system_inner(")
+            .expect("npc_combat_ai_system_inner definition")
             .1
             .split_once("#[cfg(test)]")
             .expect("test module marker")

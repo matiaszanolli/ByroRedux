@@ -94,6 +94,8 @@ struct FeedbackScratch {
     last_attacks_started: u64,
     swings: VecDeque<Vec3>,
     decisions: Vec<FeedbackDecision>,
+    /// This tick's `(target, aggressor)` HitEvent snapshot (#4613).
+    hit_events: Vec<(EntityId, EntityId)>,
 }
 
 fn combat_feedback_system_inner(
@@ -117,15 +119,17 @@ fn combat_feedback_system_inner(
     // query here is read-only, so all borrows drop before the write pass.
     scratch.decisions.clear();
     {
-        let hit_events: Vec<(EntityId, EntityId)> = world
-            .query::<byroredux_scripting::HitEvent>()
-            .map(|events| {
+        // #4613 — refilled in place; a fresh `collect` allocated every frame
+        // of an active fight.
+        scratch.hit_events.clear();
+        if let Some(events) = world.query::<byroredux_scripting::HitEvent>() {
+            scratch.hit_events.extend(
                 events
                     .iter()
-                    .map(|(entity, event)| (entity, event.aggressor))
-                    .collect()
-            })
-            .unwrap_or_default();
+                    .map(|(entity, event)| (entity, event.aggressor)),
+            );
+        }
+        let hit_events = &scratch.hit_events;
 
         // Swing sound — `attacks_started` advanced this frame. Position is
         // the player's; a swing without a resolvable player pose (fly-cam,
@@ -337,6 +341,9 @@ fn combat_feedback_system_inner(
     while let Some(position) = scratch.swings.pop_front() {
         play_oneshot_cached(world, scratch, SWING_SOUND_PATH, position);
     }
+    // `play_oneshot_cached` needs `&mut scratch`, so the decisions are taken
+    // for the loop — and put back after it (#4613): an unrestored take
+    // regrew `decisions` from zero capacity every frame of an active take.
     let decisions = std::mem::take(&mut scratch.decisions);
     for decision in &decisions {
         let Some(sound) = decision.sound else {
@@ -357,6 +364,7 @@ fn combat_feedback_system_inner(
             }
         }
     }
+    scratch.decisions = decisions;
 }
 
 fn read_player_snapshot(world: &World, actor: EntityId) -> Option<WalkAnimSnapshot> {
@@ -579,6 +587,36 @@ mod tests {
         let state = combat_anim_state(&world, actor);
         assert_eq!(state.take, None);
         assert_eq!(state.captured.map(|c| c.clip_handle), None);
+    }
+
+    /// #4613 — the sound tail takes `decisions` for its loop and must put it
+    /// back: an unrestored `mem::take` left the closure-persistent scratch at
+    /// zero capacity, so every frame of an active take regrew it. The
+    /// HitEvent snapshot is persistent scratch too.
+    #[test]
+    fn feedback_scratch_keeps_its_buffers_across_frames() {
+        let Fixture { world, actor, .. } = spawn_actor(true);
+        let mut world = world;
+        install_clips(&mut world);
+        let mut scratch = FeedbackScratch::default();
+
+        hit_event(&mut world, actor, 7);
+        combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
+        assert_eq!(clip_handle(&world, actor), Some(HIT), "the take fired");
+        assert!(
+            scratch.decisions.capacity() > 0,
+            "decisions must survive the sound tail's take"
+        );
+        assert_eq!(scratch.hit_events, vec![(actor, 7)]);
+        let buffers = (scratch.decisions.as_ptr(), scratch.hit_events.as_ptr());
+
+        hit_event(&mut world, actor, 7);
+        combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
+        assert_eq!(
+            (scratch.decisions.as_ptr(), scratch.hit_events.as_ptr()),
+            buffers,
+            "a second frame reuses both buffers"
+        );
     }
 
     /// A draugr without a pre-existing player gets one inserted (bound to

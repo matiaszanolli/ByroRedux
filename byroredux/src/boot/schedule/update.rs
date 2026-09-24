@@ -208,7 +208,7 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // the frame's HitEvents.
     scheduler.add_exclusive_with_access(
         Stage::Update,
-        crate::systems::npc_combat_ai_system,
+        crate::systems::make_npc_combat_ai_system(),
         Access::new()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
             .reads_resource::<byroredux_core::character::MeleeDamageConfig>()
