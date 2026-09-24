@@ -555,11 +555,41 @@ pub(crate) struct GroundCoverDetailAtlas {
     pub(crate) signature: u64,
 }
 
+/// #4609 — the atlas cache key plus species count, computed in O(species):
+/// the same hash `build_groundcover_detail_atlas` derives (count + every
+/// gradient channel's bits) but WITHOUT running the per-texel pixel build.
+/// `publish_groundcover_detail_atlas` compares this against the published
+/// atlas's signature first, so the steady-state frame never allocates the
+/// pixel buffer or runs the ~768 `powf` calls (≈24.6K at the 32-species
+/// cap) only to throw the pixels away.
+pub(crate) fn groundcover_detail_atlas_signature(world: &World) -> (u64, u32) {
+    use byroredux_core::ecs::components::groundcover::GroundCoverSpecies;
+
+    let fallback = [GroundCoverSpecies::DEFAULT_TEMPERATE];
+    let palette = world.try_resource::<GroundCoverPalette>();
+    let species: &[GroundCoverSpecies] = match palette.as_ref() {
+        Some(p) if !p.species.is_empty() => &p.species,
+        _ => &fallback,
+    };
+    let count = species.len().min(MAX_GROUNDCOVER_SPECIES);
+    let mut signature = count as u64;
+    for species in species.iter().take(count) {
+        for channel in species.colour_gradient.iter().flatten() {
+            signature = signature.rotate_left(7) ^ u64::from(channel.to_bits());
+        }
+    }
+    (signature, count as u32)
+}
+
 /// Build one repeatable texture row per palette species. RGB is the species'
 /// own base/tip gradient. Alpha is a small deterministic blade silhouette:
 /// terrain consumes it as compact height detail while Tier 2 uses the same
 /// palette-owned rows as clump-card cutouts. `d_ground`, evaluated in the
 /// terrain fragment, remains the sole density authority.
+///
+/// #4609 — only called when [`groundcover_detail_atlas_signature`] reports a
+/// palette change (or to build the very first atlas); the steady-state
+/// frame compares signatures and reuses the published image in place.
 pub(crate) fn build_groundcover_detail_atlas(world: &World) -> GroundCoverDetailAtlas {
     use byroredux_core::ecs::components::groundcover::GroundCoverSpecies;
 
@@ -728,6 +758,11 @@ pub(crate) fn collect_groundcover_species(
 /// Indexed in the same order and truncated at the same
 /// [`MAX_GROUNDCOVER_SPECIES`] as [`collect_groundcover_species`], so a table
 /// entry always names a species the GPU buffer holds.
+///
+/// #4609 — the result changes only with the palette or the palette's
+/// climate, so the caller gates the rebuild on
+/// [`groundcover_species_table_signature`] (O(species)) instead of paying
+/// the weights `Vec` + selection sort every frame.
 pub(crate) fn collect_groundcover_species_table(world: &World, out: &mut Vec<u32>) {
     out.clear();
     let weights: Vec<f32> = match world.try_resource::<GroundCoverPalette>() {
@@ -741,6 +776,29 @@ pub(crate) fn collect_groundcover_species_table(world: &World, out: &mut Vec<u32
         _ => vec![1.0],
     };
     out.extend_from_slice(&species_selection_table(&weights));
+}
+
+/// #4609 — O(species) cache key for [`collect_groundcover_species_table`]:
+/// every species' climate weight bits plus the palette's own climate, the
+/// exact inputs the selection table derives from. A `None`/empty palette
+/// hashes as the single built-in fallback it produces.
+pub(crate) fn groundcover_species_table_signature(world: &World) -> u64 {
+    let mut signature = 0x9E37_79B9_7F4A_7C15u64;
+    match world.try_resource::<GroundCoverPalette>() {
+        Some(palette) if !palette.species.is_empty() => {
+            signature ^= palette.climate as u64;
+            for species in palette.species.iter().take(MAX_GROUNDCOVER_SPECIES) {
+                let w = &species.climate_weight;
+                for value in [w.temperate, w.arid, w.alpine, w.wetland] {
+                    signature = signature.rotate_left(9) ^ u64::from(value.to_bits());
+                }
+            }
+        }
+        // Matches `collect_groundcover_species_table`'s single built-in
+        // fallback: the table is the constant [1.0].
+        _ => signature ^= u64::MAX,
+    }
+    signature
 }
 
 /// #4413 — the authored-model tier's records and record-selection table for
@@ -1098,6 +1156,49 @@ mod tests {
             CHUNK_BOUND_RADIUS >= half_diagonal - 1.0e-3,
             "{CHUNK_BOUND_RADIUS} must bound a {GROUNDCOVER_CHUNK_UNITS}-unit chunk's \
              half-diagonal {half_diagonal}"
+        );
+    }
+
+    /// #4609 — the O(species) cache keys must agree with the values they
+    /// gate: the atlas signature equals the built atlas's own signature on
+    /// both the fallback palette and a resolved multi-species one, and the
+    /// species-table signature is stable across consecutive reads but
+    /// moves when the palette's climate weights change. If the cheap key
+    /// drifts from the expensive build's own signature, a changed palette
+    /// would publish stale pixels forever.
+    #[test]
+    fn groundcover_cache_keys_agree_with_the_builds_they_gate() {
+        let world = World::new();
+        let (signature, count) = groundcover_detail_atlas_signature(&world);
+        let atlas = build_groundcover_detail_atlas(&world);
+        assert_eq!(count, atlas.species_count);
+        assert_eq!(signature, atlas.signature, "fallback palette key drift");
+
+        let mut palette_world = World::new();
+        palette_world.insert_resource(GroundCoverPalette::resolve(
+            Vec::new(),
+            byroredux_core::ecs::components::groundcover::Climate::Arid,
+        ));
+        let (signature, count) = groundcover_detail_atlas_signature(&palette_world);
+        let atlas = build_groundcover_detail_atlas(&palette_world);
+        assert_eq!(count, atlas.species_count);
+        assert_eq!(signature, atlas.signature, "resolved palette key drift");
+
+        let first = groundcover_species_table_signature(&world);
+        let second = groundcover_species_table_signature(&world);
+        assert_eq!(first, second, "the table key must be stable per palette");
+
+        let mut changed = World::new();
+        let mut species = vec![byroredux_core::ecs::components::groundcover::GroundCoverSpecies::DEFAULT_TEMPERATE];
+        species[0].climate_weight.temperate = 0.5;
+        changed.insert_resource(byroredux_core::ecs::components::groundcover::GroundCoverPalette {
+            species,
+            climate: byroredux_core::ecs::components::groundcover::Climate::Temperate,
+        });
+        assert_ne!(
+            groundcover_species_table_signature(&changed),
+            groundcover_species_table_signature(&world),
+            "a changed climate weight must move the table key"
         );
     }
 

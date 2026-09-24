@@ -554,7 +554,12 @@ struct App {
     groundcover_species: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverSpecies>,
     /// The scatter's species selection table (§7), rebuilt alongside
     /// `groundcover_species` each frame from the palette's climate weights.
+    /// #4609 — rebuilt only when `groundcover_species_table_signature`
+    /// moves (palette or climate change), not every frame.
     groundcover_species_table: Vec<u32>,
+    /// #4609 — the O(species) cache key the species-table rebuild is gated
+    /// on.
+    groundcover_species_table_signature: u64,
     /// §12.4's per-frame disturber list (#4058). Caller-owned scratch, so the
     /// allocation persists across frames like the chunk and cell vectors.
     groundcover_disturbers: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverDisturber>,
@@ -920,6 +925,7 @@ impl App {
             groundcover_detail_atlas: None,
             groundcover_species: Vec::new(),
             groundcover_species_table: Vec::new(),
+            groundcover_species_table_signature: 0,
             groundcover_disturbers: Vec::new(),
             groundcover_debug_points: false,
             groundcover_off: false,

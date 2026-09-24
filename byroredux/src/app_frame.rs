@@ -45,6 +45,17 @@ fn publish_groundcover_detail_atlas(
     atlas_state: &mut Option<(u32, u64)>,
     ctx: &mut byroredux_renderer::VulkanContext,
 ) {
+    // #4609 — signature first, O(species): the steady-state frame reuses
+    // the published image in place and never builds the pixel buffer (and
+    // its per-texel `powf` calls) just to compare a signature against it.
+    let (signature, species_count) =
+        crate::render::groundcover::groundcover_detail_atlas_signature(world);
+    if let Some((handle, cached)) = *atlas_state {
+        if cached == signature {
+            ctx.set_groundcover_detail_atlas(handle, species_count);
+            return;
+        }
+    }
     let atlas = crate::render::groundcover::build_groundcover_detail_atlas(world);
     let edge = GROUNDCOVER_DETAIL_ATLAS_EDGE;
     let height = edge * atlas.species_count.max(1);
@@ -384,6 +395,7 @@ impl App {
                     chunks: &mut self.groundcover_chunks,
                     species: &mut self.groundcover_species,
                     species_table: &mut self.groundcover_species_table,
+                    species_table_signature: &mut self.groundcover_species_table_signature,
                     disturbers: &mut self.groundcover_disturbers,
                     detail_atlas: &mut self.groundcover_detail_atlas,
                     truncation_logged: &mut self.groundcover_truncation_logged,
@@ -731,6 +743,7 @@ struct GroundCoverScratch<'a> {
     chunks: &'a mut Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverChunk>,
     species: &'a mut Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverSpecies>,
     species_table: &'a mut Vec<u32>,
+    species_table_signature: &'a mut u64,
     disturbers: &'a mut Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverDisturber>,
     detail_atlas: &'a mut Option<(u32, u64)>,
     truncation_logged: &'a mut bool,
@@ -838,7 +851,18 @@ fn collect_and_prepare_groundcover(
         );
         // §7 — built from the same palette, in the same order and
         // truncation, so every entry names a species just collected.
-        crate::render::groundcover::collect_groundcover_species_table(world, gc.species_table);
+        // #4609 — the table changes only with the palette or climate, so
+        // the weights + sort rebuild run only when the O(species)
+        // signature moves, not every frame (interiors included).
+        let table_signature =
+            crate::render::groundcover::groundcover_species_table_signature(world);
+        if *gc.species_table_signature != table_signature {
+            crate::render::groundcover::collect_groundcover_species_table(
+                world,
+                gc.species_table,
+            );
+            *gc.species_table_signature = table_signature;
+        }
         // #4058 — §12.4's disturbers. Collected here rather than in
         // `build_render_data` for the same reason the chunks are: this
         // is where the frame's camera position is settled, and the
