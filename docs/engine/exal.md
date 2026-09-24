@@ -667,9 +667,13 @@ render-pass / pipeline.
    record-header flag** to cull full models at finer-than-quad granularity
    (today's actual-resident-cell footprint rule avoids the conflict at whole
    quad granularity);
-   `.btr` per-quad **normal map** (`_n.dds`) — the block carries the mesh's own
-   per-vertex normals today, matching the synth path; the `PlacementLodProvider`
-   for Oblivion/FO3/FNV (`DistantLOD\*.lod` → `_far.nif`).
+   `.btr` per-quad **normal map** (`_n`/`_msn` DDS) — wired #2371, and
+   **model-space since #4632**: every normal-mapped `.btr` shape authors
+   `Model_Space_Normals` (census, zero exceptions), the authored bit rides
+   into the canonical `Material` at the translate boundary, and the bound
+   DDS's own format decides the z channel (`resolve_msn_z_source`); the
+   `PlacementLodProvider` for Oblivion/FO3/FNV (`DistantLOD\*.lod` →
+   `_far.nif`).
 
    **Object/terrain LOD atlas texturing fixed (2026-06-19, M35):** the
    object-LOD atlas (`<world>.objects.dds`) and the per-quad `.btr` terrain

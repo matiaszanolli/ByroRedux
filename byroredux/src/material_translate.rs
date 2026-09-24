@@ -976,6 +976,35 @@ pub(crate) fn attach_blend_and_facing_markers(
 /// `Material` at all; shaded from `GroundCoverPalette`). That exemption is
 /// recorded in `nifal.md` §3.
 pub(crate) fn translate_texture_only_material(texture_path: Option<String>) -> Material {
+    translate_texture_only_material_with_authored_msn(texture_path, false)
+}
+
+/// #4632 — the texture-only variant for populations whose *source data*
+/// still authors a model-space-normals bit: `.btr` distant-terrain NIFs
+/// carry `Model_Space_Normals` on every normal-mapped shape (census,
+/// zero exceptions: SE 9,584/9,584, LE 4,416/4,416, FO4 8,271/8,271), and
+/// their per-quad `_n`/`_msn` maps are model-space. The classification
+/// happens HERE, at the parser→`Material` boundary — never re-derived at
+/// render time — and the Phase-2
+/// `resolve_msn_z_source` decides the z channel from the bound DDS at the
+/// spawn path. `false` (the [`translate_texture_only_material`] wrapper)
+/// stays honest for populations with no source material record at all
+/// (near terrain, water plates).
+pub(crate) fn translate_texture_only_material_with_authored_msn(
+    texture_path: Option<String>,
+    model_space_normals: bool,
+) -> Material {
+    let msn_flag = if model_space_normals {
+        byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS
+    } else {
+        0
+    };
+    let mut material = translate_texture_only_material_inner(texture_path);
+    material.effect_shader_flags |= msn_flag;
+    material
+}
+
+fn translate_texture_only_material_inner(texture_path: Option<String>) -> Material {
     let mut material = Material {
         texture_path,
         // NaN sentinel = "no authored override" — exactly what
@@ -2264,6 +2293,45 @@ mod tests {
         for m in [&land, &rock, &untextured] {
             assert_eq!(m.env_map_scale, 0.0);
         }
+    }
+
+    /// #4632 — the `.btr` distant-terrain population's source NIFs author
+    /// `Model_Space_Normals` on every normal-mapped shape (census, zero
+    /// exceptions), so the texture-only boundary must carry the flag into
+    /// the canonical `Material` when the spawner forwards it — and the
+    /// plain wrapper (no source material record at all) must keep the bit
+    /// unset. This is the CANONICAL-BOUNDARY half of the fix: the
+    /// classification lives here, never re-derived at render time.
+    #[test]
+    fn btr_texture_only_material_carries_the_authored_msn_flag() {
+        use byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS;
+
+        let terrain = translate_texture_only_material_with_authored_msn(
+            Some("textures\\terrain\\tamriel\\tamriel.4.88.8.dds".to_string()),
+            true,
+        );
+        assert_eq!(
+            terrain.effect_shader_flags & MODEL_SPACE_NORMALS,
+            MODEL_SPACE_NORMALS,
+            "an authored model-space `.btr` must lower with the MSN bit set"
+        );
+
+        let unflagged = translate_texture_only_material_with_authored_msn(
+            Some("textures\\terrain\\tamriel\\tamriel.4.88.8.dds".to_string()),
+            false,
+        );
+        assert_eq!(
+            unflagged.effect_shader_flags & MODEL_SPACE_NORMALS,
+            0,
+            "a shape that did not author the bit must not gain it"
+        );
+
+        // The plain wrapper serves populations with no source record —
+        // no flag there either.
+        let plain = translate_texture_only_material(Some(
+            "textures\\landscape\\dirt02.dds".to_string(),
+        ));
+        assert_eq!(plain.effect_shader_flags & MODEL_SPACE_NORMALS, 0);
     }
 
     /// #2444 (MAT-D3-02) — every exterior draw population must spawn with a

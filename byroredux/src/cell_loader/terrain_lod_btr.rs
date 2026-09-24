@@ -41,9 +41,9 @@
 //! `meshes\terrain\<world>\<world>.<level>.<x>.<y>.btr` with `(x, y)` the
 //! quad's SW-corner cell on that worldspace's own level-aligned grid. Diffuse sibling:
 //! `textures\terrain\<world>\<world>.<level>.<x>.<y>.dds`, with the
-//! tangent-space normal map at the same stem plus `_n` (wired in #2371 —
-//! see [`btr_normal_path`], which also documents why FO4's `_msn`
-//! model-space variant is not bound yet).
+//! per-quad normal map at the same stem plus `_n` on Skyrim / `_msn` on
+//! FO4 (wired in #2371; the maps are **model-space** and bound with the
+//! authored flag since #4632 — see [`btr_normal_path_candidates`]).
 //!
 //! ## Placement convention (verified against real data)
 //!
@@ -118,26 +118,42 @@ pub(crate) fn btr_diffuse_path(worldspace_key: &str, level: i32, qx: i32, qy: i3
     format!("textures\\terrain\\{w}\\{w}.{level}.{qx}.{qy}.dds")
 }
 
-/// Per-quad **tangent-space** normal map for a distant-terrain `.btr`: the
-/// diffuse path's stem plus the `_n` suffix
-/// (`textures\terrain\<world>\<world>.<level>.<x>.<y>_n.dds`).
+/// Candidate per-quad normal maps for a distant-terrain `.btr`, the
+/// diffuse path's stem plus the game's suffix — most-specific first.
 ///
-/// Skyrim ships one of these for every `.btr` at every level — measured on
-/// `Skyrim - Textures7.bsa` (2026-08-12): 4608 / 1152 / 288 / 72 DDS at
-/// levels 4 / 8 / 16 / 32, exactly twice the 2304 / 576 / 144 / 36 `.btr`
-/// count, i.e. one diffuse + one `_n` each.
+/// **The maps are model-space, not tangent-space** (#4632): every vanilla
+/// normal-mapped `.btr` shape authors `Model_Space_Normals` (census, zero
+/// exceptions — SE 9,584/9,584, LE 4,416/4,416, FO4 8,271/8,271), and the
+/// texel basis measurement confirms it (on 12,497 flat vertices the mean
+/// texel reads (0.11, 0.93) — a tangent-space map would read ~(0,0,1);
+/// the best axis mapping on steep vertices is texel (r,g,b) ↔ world
+/// (X, up, Y), cos +0.657 vs +0.142 for the identity). The spawner binds
+/// the map together with the authored
+/// `MAT_FLAG_MODEL_SPACE_NORMALS` bit, so the shader's #3922 MSN branch
+/// consumes it in the model basis.
 ///
-/// **FO4 is deliberately not covered here.** Its terrain LOD normals are
-/// `_msn` (`commonwealth.32.32.0_msn.dds`) — *model*-space, not tangent
-/// space. Binding those into the tangent-space normal slot would shade
-/// worse than no normal map at all. Routing them correctly needs the
-/// `MAT_FLAG_MODEL_SPACE_NORMALS` bit, which reaches the shader only through
-/// a `Material` component, and LOD entities carry none — that is #2444
-/// (MAT-D3-02). Until it lands, FO4 distant terrain keeps the mesh's own
-/// per-vertex normals.
-pub(crate) fn btr_normal_path(worldspace_key: &str, level: i32, qx: i32, qy: i32) -> String {
+/// Skyrim ships a `_n` sibling for every `.btr` at every level — measured
+/// on `Skyrim - Textures7.bsa` (2026-08-12): 4608 / 1152 / 288 / 72 DDS at
+/// levels 4 / 8 / 16 / 32, exactly one diffuse + one `_n` each. FO4's
+/// terrain bakes `_msn` (`commonwealth.32.32.0_msn.dds`); DiamondCity's 85
+/// flagged quads kept the `_n` suffix, so FO4 tries `_msn` first and
+/// falls back to `_n` — the suffix only changes WHERE the map lives,
+/// never HOW it shades.
+pub(crate) fn btr_normal_path_candidates(
+    worldspace_key: &str,
+    level: i32,
+    qx: i32,
+    qy: i32,
+    game: byroredux_plugin::esm::reader::GameKind,
+) -> Vec<String> {
     let w = worldspace_key.to_ascii_lowercase();
-    format!("textures\\terrain\\{w}\\{w}.{level}.{qx}.{qy}_n.dds")
+    let stem = format!("textures\\terrain\\{w}\\{w}.{level}.{qx}.{qy}");
+    match game {
+        byroredux_plugin::esm::reader::GameKind::Fallout4 => {
+            vec![format!("{stem}_msn.dds"), format!("{stem}_n.dds")]
+        }
+        _ => vec![format!("{stem}_n.dds")],
+    }
 }
 
 /// Whether this `.btr` sub-mesh hangs off the authored `WATER` node.
@@ -249,6 +265,15 @@ pub(crate) fn spawn_btr_block(
     // docs): scale all three axes by `level` and offset to the quad's SW
     // world corner. Translation and rotation are identity on every shipped
     // block, so only the scale is reproduced here.
+    // #4632 — every vanilla normal-mapped `.btr` shape authors
+    // `Model_Space_Normals` (census in [`btr_normal_path_candidates`]);
+    // OR'd over the land sub-meshes (the water plate is dropped below and
+    // never binds the per-quad normal map).
+    let authored_model_space_normals = imported
+        .meshes
+        .iter()
+        .filter(|mesh| !btr_mesh_is_water(&imported.nodes, mesh.parent_node))
+        .any(|mesh| mesh.material.model_space_normals);
     let mut vertices: Vec<Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     for mesh in &imported.meshes {
@@ -319,23 +344,25 @@ pub(crate) fn spawn_btr_block(
         _ => tex_handle,
     };
 
-    // Per-quad tangent-space normal map (#2371). Absent for FO4 (which bakes
-    // `_msn` model-space normals instead — see [`btr_normal_path`]) and for
-    // any quad whose sibling is missing; the entity then simply carries no
-    // normal map and shades from the mesh's own per-vertex normals, exactly
-    // as before. The fallback handle is treated as "absent" rather than bound
-    // so distant terrain never samples the checker as a normal map.
-    // (`resolve_texture` returns the fallback handle *without* acquiring a
-    // reference, so a miss must be discarded by value, never `drop_texture`d
-    // — same contract `object_lod` relies on for its atlas.) Linear upload:
-    // the texels are vectors the shader remaps with `* 2 - 1`.
-    let normal_path = btr_normal_path(worldspace_key, level, qx, qy);
-    let resolved_normal = resolve_linear_texture(ctx, tex_provider, Some(normal_path.as_str()));
-    let normal_handle = if resolved_normal == ctx.texture_registry.fallback() {
-        0
-    } else {
-        resolved_normal
-    };
+    // Per-quad normal map (#2371; game-aware candidates since #4632 —
+    // the maps are model-space and ride with the authored MSN bit). Absent
+    // for any quad whose siblings are all missing; the entity then simply
+    // carries no normal map and shades from the mesh's own per-vertex
+    // normals, exactly as before. The fallback handle is treated as
+    // "absent" rather than bound so distant terrain never samples the
+    // checker as a normal map. (`resolve_texture` returns the fallback
+    // handle *without* acquiring a reference, so a miss must be discarded
+    // by value, never `drop_texture`d — same contract `object_lod` relies
+    // on for its atlas.) Linear upload: the texels are vectors the shader
+    // remaps with `* 2 - 1`.
+    let mut normal_handle = 0;
+    for candidate in btr_normal_path_candidates(worldspace_key, level, qx, qy, game) {
+        let resolved = resolve_linear_texture(ctx, tex_provider, Some(candidate.as_str()));
+        if resolved != ctx.texture_registry.fallback() {
+            normal_handle = resolved;
+            break;
+        }
+    }
 
     // World-space bound over the baked (already world-space) vertices.
     let bound = world_bound(&vertices);
@@ -394,7 +421,11 @@ pub(crate) fn spawn_btr_block(
                 // Terrain LOD normals carry no legacy gloss channel, and the
                 // quads have no authored parallax — keep the shader's
                 // defaults (see `components::MaterialTextureHandles`).
-                normal_has_alpha: false,
+                // #4632 — the alpha bit comes from the bound DDS itself
+                // (the `.btr` maps are DXT5 with a signed authored blue
+                // axis), which is exactly the signal
+                // `resolve_msn_z_source` needs below.
+                normal_has_alpha: ctx.texture_registry.handle_has_alpha(normal_handle),
                 // #4423 — synthetic paths bind no tint texture; see the field doc.
                 tint_has_alpha: false,
                 parallax_height_scale:
@@ -415,12 +446,27 @@ pub(crate) fn spawn_btr_block(
     // reach the shader with its normal-space flag. `.btr` is Skyrim/FO4-only
     // (FNV distant terrain goes through `terrain_lod.rs`), so this is a
     // NIFAL-invariant hole rather than an FNV-visible one.
+    // #4632 — the authored `Model_Space_Normals` bit rides into the
+    // canonical `Material` here, at the boundary, so the shader's MSN
+    // branch shades the per-quad map in the model basis instead of the
+    // tangent basis (pre-fix the ~69°-off normal on flat distant terrain
+    // swung direct-sun N·L from ~+0.9 below zero with sun azimuth).
     world.insert(
         entity,
-        crate::material_translate::translate_texture_only_material(base_texture_path),
+        crate::material_translate::translate_texture_only_material_with_authored_msn(
+            base_texture_path,
+            authored_model_space_normals,
+        ),
     );
     world.insert(entity, RenderLayer::Architecture);
     world.insert(entity, IsLodTerrain);
+
+    // #4632 — the Phase-2 z-source decision: the `.btr` maps are DXT5
+    // with an authored, signed blue axis (alpha constant 255 — not
+    // DXT5nm), so `MAT_FLAG_MSN_HAS_AUTHORED_Z` must be resolved from the
+    // bound DDS's format here; reconstructing |z| in the shader would
+    // lose the sign over half the terrain's folds.
+    crate::material_translate::resolve_msn_z_source(world, entity);
 
     Some(LodBlock {
         entity,
@@ -508,28 +554,73 @@ mod tests {
     /// #2371 — the normal map is the diffuse stem plus `_n`, at every band.
     /// These paths are present verbatim in `Skyrim - Textures7.bsa`
     /// (2026-08-12), which ships one `_n` per `.btr` at all four levels.
+    /// #4632 — the candidates are game-aware: FO4 tries `_msn` first (the
+    /// Commonwealth bake) and falls back to `_n` (DiamondCity's 85 flagged
+    /// quads kept the suffix); both maps are model-space, so the suffix
+    /// only changes where the map lives, never how it shades.
     #[test]
     fn btr_normal_is_the_diffuse_stem_plus_n_suffix() {
+        use byroredux_plugin::esm::reader::GameKind;
         assert_eq!(
-            btr_normal_path("Tamriel", 4, -44, -56),
-            "textures\\terrain\\tamriel\\tamriel.4.-44.-56_n.dds"
+            btr_normal_path_candidates("Tamriel", 4, -44, -56, GameKind::Skyrim),
+            vec!["textures\\terrain\\tamriel\\tamriel.4.-44.-56_n.dds"]
         );
         assert_eq!(
-            btr_normal_path("tamriel", 16, -16, -80),
-            "textures\\terrain\\tamriel\\tamriel.16.-16.-80_n.dds"
+            btr_normal_path_candidates("tamriel", 16, -16, -80, GameKind::Skyrim),
+            vec!["textures\\terrain\\tamriel\\tamriel.16.-16.-80_n.dds"]
         );
         assert_eq!(
-            btr_normal_path("Tamriel", 32, 32, -96),
-            "textures\\terrain\\tamriel\\tamriel.32.32.-96_n.dds"
+            btr_normal_path_candidates("Tamriel", 32, 32, -96, GameKind::Skyrim),
+            vec!["textures\\terrain\\tamriel\\tamriel.32.32.-96_n.dds"]
+        );
+        assert_eq!(
+            btr_normal_path_candidates("Commonwealth", 32, 32, 0, GameKind::Fallout4),
+            vec![
+                "textures\\terrain\\commonwealth\\commonwealth.32.32.0_msn.dds",
+                "textures\\terrain\\commonwealth\\commonwealth.32.32.0_n.dds"
+            ]
         );
 
-        // It is exactly the diffuse path with `_n` before the extension —
-        // the two must not drift apart.
+        // The Skyrim candidate is exactly the diffuse path with `_n`
+        // before the extension — the two must not drift apart.
         for level in [4, 8, 16, 32] {
             let diffuse = btr_diffuse_path("Tamriel", level, 8, -4);
-            let normal = btr_normal_path("Tamriel", level, 8, -4);
+            let normal = btr_normal_path_candidates("Tamriel", level, 8, -4, GameKind::Skyrim)
+                .remove(0);
             assert_eq!(normal, diffuse.replace(".dds", "_n.dds"));
         }
+    }
+
+    /// #4632 — source pin: the spawner must forward the NIF's authored
+    /// `Model_Space_Normals` into the boundary variant (not drop it like
+    /// the pre-fix code did) and must run the Phase-2 z-source decision
+    /// after inserting `Material` + `MaterialTextureHandles`, so the DXT5
+    /// signed-blue maps keep their sign instead of being reconstructed
+    /// as |z|.
+    #[test]
+    fn btr_spawner_forwards_the_authored_msn_flag_and_resolves_the_z_source() {
+        let (prod, _) = include_str!("terrain_lod_btr.rs")
+            .split_once("#[cfg(test)]")
+            .expect("terrain_lod_btr.rs must keep its test module");
+        assert!(
+            prod.contains("mesh.material.model_space_normals"),
+            "the spawner must read the authored model_space_normals bit off \
+             the imported land meshes"
+        );
+        assert!(
+            prod.contains("translate_texture_only_material_with_authored_msn(")
+                && prod.contains("authored_model_space_normals,"),
+            "the lowered `.btr` Material must carry the authored flag"
+        );
+        assert!(
+            prod.contains("resolve_msn_z_source(world, entity)"),
+            "the Phase-2 z-source decision must run at the `.btr` spawn path"
+        );
+        assert!(
+            prod.contains("handle_has_alpha(normal_handle)"),
+            "normal_has_alpha must come from the bound DDS, not a hardcoded \
+             false"
+        );
     }
 
     #[test]
