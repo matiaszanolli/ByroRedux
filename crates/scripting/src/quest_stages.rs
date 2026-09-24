@@ -57,6 +57,33 @@ use crate::papyrus_demo::PapyrusPlayerEntity;
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestFormId(pub u32);
 
+/// #4612 — a change key for quest-derived presentation (the HUD objective
+/// list): every state change stamps a fresh value from one process-wide
+/// counter, and so does every construction, so two distinct states never
+/// share a revision — a resource replaced wholesale (save-load, re-register)
+/// cannot collide with a key a consumer cached from its predecessor.
+/// Not serialized: a loaded resource simply starts with a fresh revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QuestRevision(u64);
+
+static NEXT_QUEST_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl QuestRevision {
+    fn fresh() -> Self {
+        Self(NEXT_QUEST_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
+    fn bump(&mut self) {
+        *self = Self::fresh();
+    }
+}
+
+impl Default for QuestRevision {
+    fn default() -> Self {
+        Self::fresh()
+    }
+}
+
 /// Runtime state of every active quest, keyed by FormID.
 ///
 /// One `QuestStageData` per quest the player has interacted with;
@@ -78,6 +105,9 @@ pub struct QuestStageState {
     /// subscriber cursors are process-local and restart cleanly after load.
     #[cfg_attr(feature = "save", serde(skip, default))]
     events: QuestEventRuntime,
+    /// Stamped by every quest-state mutator (not by event delivery).
+    #[cfg_attr(feature = "save", serde(skip, default))]
+    revision: QuestRevision,
 }
 
 impl Resource for QuestStageState {}
@@ -142,6 +172,7 @@ impl QuestStageState {
         quest: QuestFormId,
         start_up_stage: Option<u16>,
     ) -> Option<QuestStageAdvanced> {
+        self.revision.bump();
         if let Some(data) = self.quests.get_mut(&quest) {
             if data.status != QuestStatus::Stopped {
                 return None;
@@ -207,6 +238,7 @@ impl QuestStageState {
     /// Papyrus `Quest.Stop()`. Stopping preserves stage/history so `Start()`
     /// can resume it; completed quests remain completed until `Reset()`.
     pub fn stop(&mut self, quest: QuestFormId) -> bool {
+        self.revision.bump();
         let Some(data) = self.quests.get_mut(&quest) else {
             return false;
         };
@@ -221,6 +253,7 @@ impl QuestStageState {
 
     /// Papyrus `Quest.CompleteQuest()`.
     pub fn complete(&mut self, quest: QuestFormId) -> bool {
+        self.revision.bump();
         let Some(data) = self.quests.get_mut(&quest) else {
             return false;
         };
@@ -232,6 +265,7 @@ impl QuestStageState {
 
     /// Apply a terminal QSDT `Fail Quest` log entry.
     pub fn fail(&mut self, quest: QuestFormId) -> bool {
+        self.revision.bump();
         let Some(data) = self.quests.get_mut(&quest) else {
             return false;
         };
@@ -243,6 +277,7 @@ impl QuestStageState {
 
     /// Papyrus `Quest.SetActive(active)` journal selection.
     pub fn set_active(&mut self, quest: QuestFormId, active: bool) -> bool {
+        self.revision.bump();
         let Some(data) = self.quests.get_mut(&quest) else {
             return false;
         };
@@ -269,6 +304,7 @@ impl QuestStageState {
     /// (which is also the implementation Skyrim's `SetStage` falls
     /// back to when the runtime can't resolve the flags).
     pub fn set_stage(&mut self, quest: QuestFormId, stage: u16) -> u16 {
+        self.revision.bump();
         let entry = self.quests.entry(quest).or_default();
         let prev = entry.current_stage;
         entry.current_stage = stage;
@@ -310,7 +346,13 @@ impl QuestStageState {
     /// Used by quest-restart sequences (Daedric quests that
     /// re-trigger on second playthrough, radiant quests that loop).
     pub fn reset(&mut self, quest: QuestFormId) {
+        self.revision.bump();
         self.quests.remove(&quest);
+    }
+
+    /// #4612 — the change key for quest-state-derived presentation.
+    pub fn revision(&self) -> QuestRevision {
+        self.revision
     }
 
     /// Iterate every quest currently tracked. Used by the save
@@ -357,6 +399,9 @@ impl QuestStageState {
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestObjectiveState {
     quests: HashMap<QuestFormId, HashMap<i32, ObjectiveStatus>>,
+    /// Stamped by every objective mutator.
+    #[cfg_attr(feature = "save", serde(skip, default))]
+    revision: QuestRevision,
 }
 
 impl Resource for QuestObjectiveState {}
@@ -378,6 +423,7 @@ pub struct ObjectiveStatus {
 
 impl QuestObjectiveState {
     fn entry(&mut self, quest: QuestFormId, objective: i32) -> &mut ObjectiveStatus {
+        self.revision.bump();
         self.quests
             .entry(quest)
             .or_default()
@@ -405,6 +451,7 @@ impl QuestObjectiveState {
     /// already represented in the lazy runtime store. Normal fragment dispatch
     /// uses the full authored objective table in `QuestDefinitionRegistry`.
     pub fn complete_all(&mut self, quest: QuestFormId) {
+        self.revision.bump();
         if let Some(objs) = self.quests.get_mut(&quest) {
             for status in objs.values_mut() {
                 if status.displayed {
@@ -417,6 +464,7 @@ impl QuestObjectiveState {
     /// Fail every objective already represented in runtime state. Used as a
     /// compatibility fallback when a caller has no installed QUST definition.
     pub fn fail_all(&mut self, quest: QuestFormId) {
+        self.revision.bump();
         if let Some(objs) = self.quests.get_mut(&quest) {
             for status in objs.values_mut() {
                 status.failed = true;
@@ -447,7 +495,13 @@ impl QuestObjectiveState {
     }
 
     pub fn reset(&mut self, quest: QuestFormId) {
+        self.revision.bump();
         self.quests.remove(&quest);
+    }
+
+    /// #4612 — the change key for objective-derived presentation.
+    pub fn revision(&self) -> QuestRevision {
+        self.revision
     }
 
     /// Read an objective's status; default (all false) for untouched.
@@ -710,6 +764,9 @@ impl Resource for QuestAliasReadinessGateRegistry {}
 #[derive(Debug, Clone, Default)]
 pub struct QuestDefinitionRegistry {
     definitions: Arc<HashMap<QuestFormId, QuestDefinition>>,
+    /// Stamped by both definition writers. A clone keeps it — clones share
+    /// the definitions too — until a write stamps a fresh one.
+    revision: QuestRevision,
 }
 
 impl Resource for QuestDefinitionRegistry {}
@@ -729,6 +786,11 @@ struct QuestDefinition {
 }
 
 impl QuestDefinitionRegistry {
+    /// #4612 — the change key for definition-derived presentation.
+    pub fn revision(&self) -> QuestRevision {
+        self.revision
+    }
+
     pub fn contains(&self, quest: QuestFormId) -> bool {
         self.definitions.contains_key(&quest)
     }
@@ -1022,7 +1084,11 @@ pub fn install_start_game_quests(
     let count = quests.len();
     world.resource_mut::<StartGameQuestRegistry>().quests = quests;
     world.resource_mut::<StartGameQuestRegistry>().initial_flags = initial_flags;
-    world.resource_mut::<QuestDefinitionRegistry>().definitions = Arc::new(definitions);
+    {
+        let mut registry = world.resource_mut::<QuestDefinitionRegistry>();
+        registry.definitions = Arc::new(definitions);
+        registry.revision.bump();
+    }
     count
 }
 
@@ -1043,6 +1109,10 @@ pub fn install_engine_start_quest(
         .quests
         .insert(quest, start_up_stage)
         != Some(start_up_stage);
+    world
+        .resource_mut::<QuestDefinitionRegistry>()
+        .revision
+        .bump();
     Arc::make_mut(&mut world.resource_mut::<QuestDefinitionRegistry>().definitions)
         .entry(quest)
         .or_insert_with(|| QuestDefinition {

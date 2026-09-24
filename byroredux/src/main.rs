@@ -681,6 +681,9 @@ struct App {
     /// from `&self.world`, which `DebugUiState::run`'s closure
     /// can't reach.
     debug_ui_refresh_entities: bool,
+    /// #4612 — the always-on HUD's objective list, rebuilt only when quest
+    /// state changes; lent to each frame's `PanelSnapshot`.
+    objective_hud_cache: objectives::ObjectiveHudCache,
     /// #1584 — persistent scratch sets for the per-frame `meshes_in_use` /
     /// `textures_in_use` dedup walk in `about_to_wait`. Hoisted off the hot
     /// path so it `clear()`+reuses them instead of allocating two fresh
@@ -941,6 +944,7 @@ impl App {
             debug_ui: None,
             pending_player_messages,
             debug_ui_refresh_entities: false,
+            objective_hud_cache: objectives::ObjectiveHudCache::default(),
             in_use_mesh_scratch: std::collections::HashSet::new(),
             in_use_tex_scratch: std::collections::HashSet::new(),
             last_redraw_end: None,

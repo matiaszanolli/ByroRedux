@@ -15,7 +15,7 @@
 
 use byroredux_core::ecs::World;
 use byroredux_scripting::quest_stages::{
-    ObjectiveStatus, QuestDefinitionRegistry, QuestObjectiveState, QuestStageState,
+    ObjectiveStatus, QuestDefinitionRegistry, QuestObjectiveState, QuestRevision, QuestStageState,
 };
 use byroredux_scripting::QuestStatus;
 
@@ -96,6 +96,55 @@ pub(crate) fn snapshot(world: &World) -> Option<Vec<byroredux_debug_ui::Objectiv
     (!lines.is_empty()).then(|| lines.into_iter().map(|(_, _, view)| view).collect())
 }
 
+/// #4612 — the always-on HUD's objective list, rebuilt only when quest
+/// state changes. [`snapshot`] scans every quest and builds Strings; its
+/// inputs change only on quest/objective/definition events, so the built
+/// list is kept here keyed by the three resources' [`QuestRevision`]s.
+///
+/// The list is *lent* to the frame's `PanelSnapshot` (moved out, not cloned)
+/// and handed back after the UI has drawn it, so an unchanged quest state
+/// costs a key compare per frame and no allocation. A lend that is never
+/// handed back (the list was dropped) rebuilds on the next lend.
+#[derive(Default)]
+pub(crate) struct ObjectiveHudCache {
+    key: Option<[QuestRevision; 3]>,
+    lines: Option<Vec<byroredux_debug_ui::ObjectiveView>>,
+    lent: bool,
+}
+
+impl ObjectiveHudCache {
+    /// The current objective lines, moved out of the cache. Pair with
+    /// [`give_back`](Self::give_back) once the frame is done with them.
+    pub(crate) fn lend(&mut self, world: &World) -> Option<Vec<byroredux_debug_ui::ObjectiveView>> {
+        let key = revisions(world);
+        if self.lent || key.is_none() || key != self.key {
+            self.lines = snapshot(world);
+            self.key = key;
+        }
+        self.lent = true;
+        self.lines.take()
+    }
+
+    /// Return what [`lend`](Self::lend) handed out. Ignored when nothing is
+    /// on loan — e.g. a snapshot built by the uncached debug-overlay path.
+    pub(crate) fn give_back(&mut self, lines: Option<Vec<byroredux_debug_ui::ObjectiveView>>) {
+        if self.lent {
+            self.lines = lines;
+            self.lent = false;
+        }
+    }
+}
+
+/// `None` when any input resource is absent — the snapshot is then `None` too,
+/// and the cache simply rebuilds (a cheap early-out) instead of keying on it.
+/// One resource guard at a time, like [`snapshot`].
+fn revisions(world: &World) -> Option<[QuestRevision; 3]> {
+    let stages = world.try_resource::<QuestStageState>()?.revision();
+    let objectives = world.try_resource::<QuestObjectiveState>()?.revision();
+    let definitions = world.try_resource::<QuestDefinitionRegistry>()?.revision();
+    Some([stages, objectives, definitions])
+}
+
 /// Authored display name for a quest, falling back editor id → formatted
 /// FormID so an unnamed quest still labels its objective honestly.
 fn quest_display_name(definitions: &QuestDefinitionRegistry, quest: byroredux_scripting::QuestFormId) -> String {
@@ -169,6 +218,85 @@ mod tests {
     /// call per registry, because the call replaces the definition table.
     fn install_authored_quests(world: &mut World, quests: &[QustRecord]) {
         byroredux_scripting::quest_stages::install_start_game_quests(world, quests.to_vec());
+    }
+
+    /// #4612 — an unchanged quest state reuses the lent list (same buffer,
+    /// no rebuild); any objective change rebuilds it; a lend that was never
+    /// handed back rebuilds rather than showing nothing.
+    #[test]
+    fn hud_cache_reuses_the_list_until_quest_state_changes() {
+        let mut world = quest_world();
+        let quest = QuestFormId(0x1000);
+        install_authored_quests(&mut world, &[authored_quest(0x1000, "A Testable Errand")]);
+        world
+            .resource_mut::<QuestStageState>()
+            .start_quest(quest, Some(10));
+        world
+            .resource_mut::<QuestObjectiveState>()
+            .set_displayed(quest, 10, true);
+
+        let mut cache = ObjectiveHudCache::default();
+        let first = cache
+            .lend(&world)
+            .expect("a displayed objective must compose");
+        let buffer = first.as_ptr();
+        cache.give_back(Some(first));
+
+        let second = cache.lend(&world).expect("still displayed");
+        assert_eq!(
+            second.as_ptr(),
+            buffer,
+            "unchanged state must reuse the list"
+        );
+        cache.give_back(Some(second));
+
+        world
+            .resource_mut::<QuestObjectiveState>()
+            .set_completed(quest, 10, true);
+        assert!(
+            cache.lend(&world).is_none(),
+            "completing the only objective must invalidate the cached line"
+        );
+        cache.give_back(None);
+
+        world
+            .resource_mut::<QuestObjectiveState>()
+            .set_displayed(quest, 20, true);
+        let lent = cache
+            .lend(&world)
+            .expect("a newly displayed objective shows");
+        drop(lent); // never handed back
+        let again = cache
+            .lend(&world)
+            .expect("a dropped loan rebuilds, not blanks");
+        assert_eq!(again[0].text, "Finish A Testable Errand");
+    }
+
+    /// #4612 — revisions are process-unique: a resource replaced wholesale
+    /// (save-load, re-register) never repeats a key cached from its
+    /// predecessor, so the cache cannot serve the old state's lines.
+    #[test]
+    fn replaced_quest_resources_never_reuse_a_cached_key() {
+        let mut world = quest_world();
+        let quest = QuestFormId(0x1000);
+        install_authored_quests(&mut world, &[authored_quest(0x1000, "A Testable Errand")]);
+        world
+            .resource_mut::<QuestStageState>()
+            .start_quest(quest, Some(10));
+        world
+            .resource_mut::<QuestObjectiveState>()
+            .set_displayed(quest, 10, true);
+        let mut cache = ObjectiveHudCache::default();
+        let lines = cache.lend(&world);
+        assert!(lines.is_some());
+        cache.give_back(lines);
+
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(QuestObjectiveState::default());
+        assert!(
+            cache.lend(&world).is_none(),
+            "fresh (empty) quest state must not serve the previous lines"
+        );
     }
 
     #[test]

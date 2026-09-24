@@ -630,7 +630,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // scans its inspect-only derive, but FogVolume (and its FogBounds/FogShape
     // payload) is NOT_SAVED_BY_DESIGN: it is rebuilt from cell/NIF data on
     // load. No registered save column or on-disk shape changed.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xeab7_27a8_7cdb_edf2;
+    // #4612 — refreshed WITHOUT a major bump: `QuestStageState` and
+    // `QuestObjectiveState` gained a `revision: QuestRevision` change key for
+    // the HUD objective cache, declared `#[serde(skip, default)]` exactly like
+    // `QuestStageState.events` beside it. It is never written and is
+    // defaulted (a fresh process-unique value) on read, so no snapshot's
+    // bytes change in either direction; only the scanned source span moved.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xbb3b_3030_546d_e9a3;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
@@ -693,6 +699,43 @@ fn saved_type_shape_changes_require_format_major_bump() {
         actual, BASELINE_SHAPE_FINGERPRINT,
         "saved serialized type shape changed without updating FORMAT_MAJOR/baseline; actual={actual:#018x}"
     );
+}
+
+/// #4612 — the quest resources' `revision` change key is transient: it is
+/// never serialized, and a v26 document (which has no such key) still
+/// decodes. This is what lets the shape fingerprint above move without a
+/// FORMAT_MAJOR bump.
+#[test]
+fn quest_revision_keys_never_reach_a_save() {
+    use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
+    use byroredux_scripting::QuestFormId;
+
+    let quest = QuestFormId(0x1000);
+    let mut stages = QuestStageState::default();
+    stages.start_quest(quest, Some(10));
+    let mut objectives = QuestObjectiveState::default();
+    objectives.set_displayed(quest, 10, true);
+
+    let stages_json = serde_json::to_value(&stages).expect("serialize stages");
+    let objectives_json = serde_json::to_value(&objectives).expect("serialize objectives");
+    for json in [&stages_json, &objectives_json] {
+        assert!(
+            json.get("revision").is_none(),
+            "revision must stay out of the save: {json}"
+        );
+    }
+
+    let restored: QuestStageState =
+        serde_json::from_value(stages_json).expect("a revision-less document decodes");
+    assert_eq!(restored.get_stage(quest), 10);
+    assert_ne!(
+        restored.revision(),
+        stages.revision(),
+        "a loaded resource starts with a fresh revision"
+    );
+    let restored: QuestObjectiveState =
+        serde_json::from_value(objectives_json).expect("a revision-less document decodes");
+    assert!(restored.get(quest, 10).displayed);
 }
 
 /// #4322 — `SetInChargen`'s flags were renamed to Skyrim's declared

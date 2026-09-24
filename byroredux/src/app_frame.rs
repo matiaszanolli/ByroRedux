@@ -133,8 +133,10 @@ impl App {
         //
         // #1376: build_debug_ui_snapshot deep-clones two BTreeMaps +
         // a Vec of Strings every frame. Gate those diagnostics on
-        // `visible`; the interaction prompt is the only snapshot field
-        // populated while the operator overlay is hidden.
+        // `visible`; while the operator overlay is hidden only the player
+        // HUD fields are populated (interaction prompt, HUD settings,
+        // vitals, objectives). #4612: the objective list is lent from
+        // `objective_hud_cache` and handed back after the UI pass.
         if let Some(visible) = crate::studio_host::take_overlay_request(&self.world) {
             if let Some(ui) = self.debug_ui.as_mut() {
                 ui.set_visible(visible);
@@ -178,7 +180,7 @@ impl App {
                     byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
                     true,
                 ),
-                objectives: crate::objectives::snapshot(&self.world),
+                objectives: self.objective_hud_cache.lend(&self.world),
                 ..Default::default()
             }
         };
@@ -198,7 +200,8 @@ impl App {
         if bench_window_open {
             snapshot.show_crosshair = false;
             snapshot.vitals = None;
-            snapshot.objectives = None;
+            self.objective_hud_cache
+                .give_back(snapshot.objectives.take());
         }
         self.debug_ui_refresh_entities = false;
         snapshot.loading_tip = self.loading_screen.tip().map(str::to_owned);
@@ -206,7 +209,8 @@ impl App {
             snapshot.show_crosshair = false;
             snapshot.interaction_prompt = None;
             snapshot.vitals = None;
-            snapshot.objectives = None;
+            self.objective_hud_cache
+                .give_back(snapshot.objectives.take());
         }
 
         let player_messages = crate::notifications::drain(&self.world);
@@ -224,6 +228,8 @@ impl App {
             } else {
                 (None, byroredux_debug_ui::PanelOutputs::default())
             };
+        self.objective_hud_cache
+            .give_back(snapshot.objectives.take());
 
         let (resume_game, quit_game) = apply_debug_ui_outputs(
             &mut self.world,
