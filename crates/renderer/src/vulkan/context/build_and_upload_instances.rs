@@ -41,6 +41,45 @@ pub(super) struct BuildInstancesOutput {
 }
 
 impl VulkanContext {
+    /// Grow `frame`'s instance SSBOs to hold `needed` instances, rebinding the
+    /// caustic pipeline's descriptor when the buffers are replaced (#4199).
+    ///
+    /// **A failed grow is warned about and leaves the slot as it was**, so a
+    /// caller must read the result back from
+    /// `scene_buffers.instance_capacity(frame)` rather than assume the request
+    /// was met. The frame calls this twice, and both calls are load-bearing:
+    /// `begin_frame_recording` first, so the TLAS's `instance_custom_index`
+    /// space is the capacity the slot really has (#4833), then
+    /// `build_and_upload_instances` with the final count plus the ground-cover
+    /// tail and the UI instance, which the map does not cover. The second is
+    /// a no-op whenever the first already sufficed.
+    ///
+    /// Sound at either site for the same reason `ensure_instance_capacity`
+    /// documents: both run after `sync_and_acquire_frame`'s fence wait and
+    /// before any command that binds this slot's scene set is recorded.
+    pub(super) fn grow_instance_ssbos(&mut self, frame: usize, needed: usize) {
+        let Some(allocator) = self.allocator.as_ref() else {
+            return;
+        };
+        match self
+            .scene_buffers
+            .ensure_instance_capacity(&self.device, allocator, frame, needed)
+        {
+            Ok(true) => {
+                if let Some(caustic) = self.post.caustic.as_ref() {
+                    caustic.rebind_instance_buffer(
+                        &self.device,
+                        frame,
+                        self.scene_buffers.instance_buffers()[frame].buffer,
+                        self.scene_buffers.instance_buffer_size(frame),
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(e) => log::warn!("Failed to grow instance SSBOs: {e:#}"),
+        }
+    }
+
     /// Translate `draw_commands` into `GpuInstance`s + `DrawBatch`es, upload
     /// the instance/material/terrain-tile SSBOs, upload the composite/SVGF/
     /// TAA/water per-frame UBOs, and emit the bulk pre-render-pass barrier.
@@ -583,12 +622,25 @@ impl VulkanContext {
         // via a code change, never via content, so it cannot fire on a user's
         // machine mid-recording the way the content-dependent MAX_INSTANCES
         // check could (#956).
+        //
+        // #4833 — the map is capped at the slot's instance capacity, which a
+        // failed grow leaves below the draw count, while the SSBO builder is
+        // not (`upload_instances` drops the tail instead). So the expected
+        // mapped count is the compaction's, clipped to that capacity — not
+        // the compaction's alone, which would fire on exactly the frame the
+        // cap exists for. The capacity read here is the one the map was built
+        // against: nothing grows the slot between `begin_frame_recording` and
+        // the grow below.
+        let mapped_cap = super::super::scene_buffer::instance_map_cap(
+            self.scene_buffers.instance_capacity(frame),
+        );
         debug_assert_eq!(
-            gpu_instances.len(),
+            gpu_instances.len().min(mapped_cap),
             instance_map.iter().flatten().count(),
             "AS<->SSBO index contract broken: the SSBO compaction produced {} \
-             entries but build_instance_map mapped {} draw commands. A filter \
-             was added to one compaction and not the other (#419 / #2913).",
+             entries (mappable up to the slot's capacity {mapped_cap}) but \
+             build_instance_map mapped {} draw commands. A filter was added to \
+             one compaction and not the other (#419 / #2913).",
             gpu_instances.len(),
             instance_map.iter().flatten().count(),
         );
@@ -687,27 +739,7 @@ impl VulkanContext {
             .groundcover_models
             .as_ref()
             .map_or(0, |tier| tier.tail_request());
-        if let Some(allocator) = self.allocator.as_ref() {
-            match self.scene_buffers.ensure_instance_capacity(
-                &self.device,
-                allocator,
-                frame,
-                gpu_instances.len() + model_tail,
-            ) {
-                Ok(true) => {
-                    if let Some(caustic) = self.post.caustic.as_ref() {
-                        caustic.rebind_instance_buffer(
-                            &self.device,
-                            frame,
-                            self.scene_buffers.instance_buffers()[frame].buffer,
-                            self.scene_buffers.instance_buffer_size(frame),
-                        );
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => log::warn!("Failed to grow instance SSBOs: {e:#}"),
-            }
-        }
+        self.grow_instance_ssbos(frame, gpu_instances.len() + model_tail);
 
         // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {
@@ -1581,6 +1613,79 @@ mod instance_capacity_growth_pin {
         assert!(
             arm.contains("Ok(true) =>") && arm.contains(".rebind_instance_buffer("),
             "a grow must rebind the caustic pipeline's set, which also names the buffer"
+        );
+        // #4833 — the grow is a helper now, shared with `begin_frame_recording`;
+        // the frame builder must still CALL it before it uploads.
+        let call = src
+            .find("self.grow_instance_ssbos(frame, gpu_instances.len() + model_tail)")
+            .expect("build_and_upload_instances must still grow for the final count plus tail");
+        assert!(
+            call < upload,
+            "the final grow must precede the upload, or the upload clamps to the old capacity"
+        );
+    }
+
+    /// #4833 (REN-D1-2026-09-24-01) — the TLAS's `instance_custom_index` values
+    /// are read back as instance-SSBO indices by every RT hit shader, unbounded.
+    /// Since #4199 the SSBO is smaller than `MAX_INSTANCES` and a grow can fail,
+    /// so the map the TLAS is built from has to be capped at the capacity the
+    /// slot really has, and the grow has to happen BEFORE the map is built — it
+    /// used to run only afterwards, in `build_and_upload_instances`, leaving the
+    /// map (and the TLAS) naming slots up to the constant `MAX_INSTANCES`.
+    /// The call site needs a device, so it is pinned at source level; the map's
+    /// own contract is tested in `acceleration/tests/tlas_tests.rs`.
+    #[test]
+    fn tlas_instance_map_is_built_after_the_grow_and_capped_at_real_capacity() {
+        let src = production(include_str!("begin_frame_recording.rs"));
+        let grow = src
+            .find("self.grow_instance_ssbos(frame, draw_commands.len())")
+            .expect("the map must be built against a capacity the frame already tried to grow");
+        let map = src
+            .find("build_instance_map(")
+            .expect("begin_frame_recording must still build the instance map");
+        assert!(
+            grow < map,
+            "the grow must precede the map, or the map is capped at a capacity the \
+             grow was about to change (#4833)"
+        );
+        let cap_def = src
+            .find("let map_cap")
+            .expect("the map's cap must be computed from the slot's capacity");
+        assert!(
+            grow < cap_def && cap_def < map,
+            "the cap must be read AFTER the grow attempt and before the map is built"
+        );
+        let cap_expr = &src[cap_def..map];
+        assert!(
+            cap_expr.contains("instance_map_cap(") && cap_expr.contains("instance_capacity(frame)"),
+            "the map cap must be `instance_map_cap` of the slot's actual capacity, not the \
+             constant `MAX_INSTANCES` (#4833)"
+        );
+        let call = &src[map..];
+        let args = &call[..call.find("|i|").expect("the keep closure follows the cap")];
+        assert!(
+            args.contains("map_cap") && !args.contains("MAX_INSTANCES"),
+            "build_instance_map must be handed the capacity-derived cap; the literal \
+             `MAX_INSTANCES` is the pre-fix bug (#4833). Args were: {args}"
+        );
+    }
+
+    /// The other half of the same contract: the SSBO builder is not capped by
+    /// capacity (the upload drops the tail instead), so the AS↔SSBO consistency
+    /// assert has to expect the mapped count clipped to the capacity the map was
+    /// built against — or it fires on exactly the frame #4833 exists for.
+    #[test]
+    fn as_ssbo_consistency_assert_expects_the_capacity_clipped_count() {
+        let src = production(include_str!("build_and_upload_instances.rs"));
+        let assert_at = src
+            .find("debug_assert_eq!(\n            gpu_instances.len().min(mapped_cap),")
+            .expect(
+                "the #2913 assert must compare against the compaction clipped to the map's cap",
+            );
+        let before = &src[..assert_at];
+        assert!(
+            before.contains("instance_map_cap(") && before.contains(".instance_capacity(frame)"),
+            "mapped_cap must be the slot's capacity run through `instance_map_cap` (#4833)"
         );
     }
 

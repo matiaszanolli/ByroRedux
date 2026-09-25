@@ -294,11 +294,14 @@ pub(super) fn decide_use_update(
 /// it landed the two filter predicates were independent and could
 /// silently diverge.
 ///
-/// `max_kept` enforces the SSBO cap (`scene_buffer::MAX_INSTANCES`).
-/// Beyond it `keep` returns are forced to `None` so the TLAS doesn't
-/// emit instances whose `instance_custom_index` would point past the
-/// SSBO upload — that would produce garbage reads on every shadow /
-/// reflection / GI ray hit against an over-cap instance. Caller is
+/// `max_kept` enforces the SSBO cap. It must be the instance capacity the
+/// frame's slot ACTUALLY has — `min(MAX_INSTANCES, instance_capacity(frame))`
+/// after the grow attempt (#4833) — not the constant `MAX_INSTANCES`: since
+/// #4199 the SSBO starts smaller and a grow can fail. Beyond the cap `keep`
+/// returns are forced to `None` so the TLAS doesn't emit instances whose
+/// `instance_custom_index` would point past the SSBO upload — that would
+/// produce garbage reads on every shadow / reflection / GI ray hit against
+/// an over-cap instance. Caller is
 /// expected to have sorted the draw list so cap-clipped tail entries
 /// are the lowest-priority ones (RT-only off-frustum occluders per
 /// the `!in_raster` prefix in `byroredux::render::draw_sort_key`),

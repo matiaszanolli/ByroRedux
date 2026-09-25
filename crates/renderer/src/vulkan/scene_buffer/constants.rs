@@ -195,6 +195,27 @@ pub const fn grown_instance_capacity(current: usize, needed: usize) -> usize {
         capacity
     }
 }
+/// The cap `build_instance_map` must be given for a frame slot whose instance
+/// SSBO holds `capacity` entries (#4833). The TLAS's `instance_custom_index`
+/// values are read straight back as indices into that buffer by every RT hit
+/// shader, unbounded, so the map may name no slot at or past what the buffer
+/// actually holds — whatever [`MAX_INSTANCES`] would allow. Since #4199 the
+/// buffer starts at [`INITIAL_INSTANCE_CAPACITY`] and a grow can fail, so the
+/// two differ.
+///
+/// `capacity` never exceeds [`MAX_INSTANCES`] today ([`grown_instance_capacity`]
+/// clamps it), so the second bound is a belt against a future growth policy
+/// rather than a live one. A function rather than an inline `min` so the rule
+/// has one home and a test that runs it, instead of a source-shape check that
+/// can only see that the call was made.
+pub const fn instance_map_cap(capacity: usize) -> usize {
+    if capacity < MAX_INSTANCES {
+        capacity
+    } else {
+        MAX_INSTANCES
+    }
+}
+
 /// Compile-time guard: `instance_custom_index` in the TLAS instance struct
 /// is a 24-bit field (`Packed24_8`).  If `MAX_INSTANCES` is ever bumped past
 /// 2^24 the TLAS build will silently truncate SSBO indices and corrupt every

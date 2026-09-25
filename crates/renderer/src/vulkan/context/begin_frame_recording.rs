@@ -144,13 +144,30 @@ impl VulkanContext {
         // path anchor here predated the `acceleration.rs` → `acceleration/`
         // split; symbols survive refactors, file paths do not.)
         let tlas_t0 = Instant::now();
+        // #4833 — the TLAS's `instance_custom_index` values are read straight
+        // back as instance-SSBO indices by every RT hit shader
+        // (`instances[hitInstanceIdx]`, unbounded, `robustBufferAccess` off).
+        // Since #4199 the SSBO starts at `INITIAL_INSTANCE_CAPACITY` and grows
+        // on demand, so capping the map at the constant `MAX_INSTANCES` let it
+        // name slots the buffer does not have whenever a grow failed — and
+        // the grow used to run only later, in `build_and_upload_instances`,
+        // after the map and the TLAS were already built. Grow FIRST, for the
+        // draw count (an upper bound on what survives the residency filter),
+        // then cap the map at the capacity the slot actually ended up with.
+        // A failed grow now yields a TLAS that names only slots the SSBO
+        // holds; the tail instances it drops are the RT-only occluders the
+        // draw sort puts last.
+        self.grow_instance_ssbos(frame, draw_commands.len());
+        let map_cap = super::super::scene_buffer::instance_map_cap(
+            self.scene_buffers.instance_capacity(frame),
+        );
         // #4193 — reuse the persistent scratch (#243); `draw_frame` hands it
         // back once TLAS and SSBO building have read it.
         let mut instance_map = std::mem::take(&mut self.scratch.instance_map_scratch);
         super::super::acceleration::build_instance_map(
             &mut instance_map,
             draw_commands.len(),
-            super::super::scene_buffer::MAX_INSTANCES,
+            map_cap,
             |i| {
                 self.mesh_registry
                     .get(draw_commands[i].mesh_handle)

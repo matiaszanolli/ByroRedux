@@ -99,6 +99,64 @@ fn instance_map_reused_scratch_drops_the_previous_frame() {
     assert_eq!(scratch, vec![None, Some(0), Some(1)]);
 }
 
+/// #4833 (REN-D1-2026-09-24-01) — the cap handed to `build_instance_map` is the
+/// instance SSBO's capacity for the frame slot, not the constant `MAX_INSTANCES`.
+/// Every RT hit shader indexes `instances[]` with the TLAS's custom index and no
+/// bound, so a map entry at or past the capacity is an out-of-bounds read.
+///
+/// Fakes the failed-grow state — the slot still holds its initial capacity while
+/// the frame has more draws — which the call site cannot produce without a
+/// device. The pre-fix cap (`MAX_INSTANCES`) is run alongside to show the map it
+/// produced named slots the buffer does not have.
+#[test]
+fn instance_map_capped_at_capacity_names_only_slots_the_ssbo_holds() {
+    use crate::vulkan::scene_buffer::{
+        grown_instance_capacity, instance_map_cap, INITIAL_INSTANCE_CAPACITY, MAX_INSTANCES,
+    };
+    let draws = INITIAL_INSTANCE_CAPACITY + 100;
+    let held = INITIAL_INSTANCE_CAPACITY; // the grow failed: capacity unchanged
+    assert_eq!(
+        grown_instance_capacity(held, draws),
+        held * 2,
+        "premise: this frame needs a grow, and a successful one would double the slot"
+    );
+
+    // Pre-fix: capped at the constant, the map names every draw — the last 100
+    // at custom indices `held..held + 100`, past the SSBO.
+    let pre_fix = map_of(draws, MAX_INSTANCES, |_| true);
+    assert_eq!(
+        pre_fix.iter().flatten().copied().max(),
+        Some((draws - 1) as u32)
+    );
+    assert!(
+        pre_fix.iter().flatten().any(|&slot| slot as usize >= held),
+        "pre-fix the TLAS named slots the SSBO does not hold"
+    );
+
+    // Fixed: capped at the capacity the slot has, so nothing is named past it and
+    // the surviving entries are the compacted prefix.
+    let fixed = map_of(draws, instance_map_cap(held), |_| true);
+    assert_eq!(fixed.iter().flatten().count(), held);
+    assert!(fixed.iter().flatten().all(|&slot| (slot as usize) < held));
+    assert!(fixed[..held].iter().all(Option::is_some));
+    assert!(
+        fixed[held..].iter().all(Option::is_none),
+        "the tail past capacity is dropped from the TLAS, not wrapped or clamped"
+    );
+
+    // A successful grow lifts the cap and nothing is dropped.
+    let grown = grown_instance_capacity(held, draws);
+    let after_grow = map_of(draws, instance_map_cap(grown), |_| true);
+    assert_eq!(after_grow.iter().flatten().count(), draws);
+
+    // The rule itself: the capacity when the slot holds less than the constant,
+    // the constant as the ceiling.
+    assert_eq!(instance_map_cap(held), held);
+    assert_eq!(instance_map_cap(0), 0);
+    assert_eq!(instance_map_cap(MAX_INSTANCES), MAX_INSTANCES);
+    assert_eq!(instance_map_cap(MAX_INSTANCES + 1), MAX_INSTANCES);
+}
+
 #[test]
 fn instance_map_empty_list_produces_empty_map() {
     let map = map_of(0, NO_CAP, |_| true);
