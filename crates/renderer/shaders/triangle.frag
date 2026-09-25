@@ -925,14 +925,15 @@ void main() {
     // policy above; reflection and GI retain `N_bias` pending their own
     // transport-specific conversion.
     //
-    // Intentional asymmetry: the window-portal escape ray (#421 / line
-    // ~1318) does NOT use `N_bias`. Its contract requires starting
-    // OUTSIDE the pane (the side away from the camera), which is `-N`
-    // with raw `N`. Substituting `N_bias` there would invert the bias
-    // direction at every surviving fragment and break portal escape.
-    // The `windowFacing > 0.1` gate above the portal site guarantees
-    // raw `-N` always points away from the camera at that location.
-    // See REN-D9-NEW-02 / #821.
+    // The window-portal escape ray (#421) is the one consumer that wants the
+    // OPPOSITE side: it must leave the pane away from the camera, which is
+    // `-N_bias` by construction — orienting from the viewer rather than from
+    // the authored normal sign, because a pane's `N` can face either way
+    // (single-sided panes keep the authored normal, two-sided ones are only
+    // flipped by winding, not by the viewer). #821 documented this as an
+    // asymmetry with raw `N` and asserted the `windowFacing` gate made raw
+    // `-N` point away from the camera; it did the opposite (#4832), so the
+    // portal now derives both its gate and its direction from `N_bias`.
     vec3 N_bias = dot(N, V) < 0.0 ? -N : N;
 
     const bool compileDisableDirectShadows =
@@ -1895,38 +1896,39 @@ void main() {
     }
 
     if (isWindow && reflectionGlassRayEnabled) {
-        // Fire the portal-escape ray along the surface OUTWARD normal,
-        // not along `-V` (camera look direction). Pre-#421 the ray
-        // used `-V`, which at oblique viewing angles continued along
-        // the camera's line of sight and hit the interior sidewall /
-        // ceiling / opposite wall — the `!hitsInterior` check failed
-        // and the fragment fell through to the opaque alpha-blend
-        // path. Only near-perpendicular window fragments lit up.
-        // `-N` fires straight through the glass plane to the outside
-        // regardless of viewing angle, which is what portal semantics
-        // require. See #421 / audit REN-RT-H3.
+        // Fire the portal-escape ray through the glass plane, along the
+        // pane's normal axis, not along `-V` (camera look direction).
+        // Pre-#421 the ray used `-V`, which at oblique viewing angles
+        // continued along the camera's line of sight and hit the interior
+        // sidewall / ceiling / opposite wall — the `!hitsInterior` check
+        // failed and the fragment fell through to the opaque alpha-blend
+        // path. Only near-perpendicular window fragments lit up. The
+        // normal axis exits the building through the pane regardless of
+        // viewing angle, which is what portal semantics require. See
+        // #421 / audit REN-RT-H3.
+        //
+        // The direction is oriented from the VIEWER, never from the sign of
+        // the authored normal (#4832): `N_bias` faces the camera, so
+        // `-N_bias` always leaves on the far side of the pane. Pre-#4832
+        // this was `-N` behind a `dot(-V, N) > 0.1` gate, and that pair is
+        // self-contradictory — the gate only passes when `N` points AWAY
+        // from the camera, which makes `-N` point back INTO the room. A
+        // normally oriented pane (`N` toward the camera) failed the gate,
+        // kept the pessimistic `hitsInterior` and was demoted to the IOR
+        // path; the panes that passed fired into the room. Either way no
+        // interior window ever transmitted the sky.
         //
         // Defensive grazing-angle gate: at very oblique incidence
         // (dot < 0.1, ~84° from normal) portal escape is ambiguous
         // anyway — the glass is effectively edge-on and the fragment
         // barely covers a pixel. Fall back to the opaque alpha-blend
         // path rather than fire a ray whose hit result is noisy.
-        float windowFacing = dot(-V, N);
+        float windowFacing = dot(N_bias, V);
+        vec3 throughDir = -N_bias;
         bool hitsInterior = true; // pessimistic default → alpha-blend path.
         if (windowFacing > 0.1) {
-            // NOTE: this site is the ONLY RT ray in this shader that
-            // biases AGAINST the V-aligned `N_bias` hoisted at the top
-            // of the function. The window-portal contract requires
-            // starting OUTSIDE the pane (the side away from the camera),
-            // which is `-N` with raw `N`. The `windowFacing > 0.1` gate
-            // above guarantees `dot(-V, N) > 0.1` so `-N` always points
-            // away from the camera at this code location. Do NOT replace
-            // `N` here with `N_bias` — that would invert the bias
-            // direction at every surviving fragment and break portal
-            // escape. See REN-D9-NEW-02 / #821.
-            vec3 throughDir = -N;
             vec3 windowOrigin = offsetRayOriginForDirection(
-                fragWorldPos, N, throughDir);
+                fragWorldPos, N_bias, throughDir);
             rayQueryEXT windowRQ;
             rayQueryInitializeEXT(
                 windowRQ, topLevelAS,
@@ -1973,7 +1975,7 @@ void main() {
             // direction whose clear ray established this portal, so a window
             // sees the actual horizon, sun and clouds instead of one zenith
             // swatch. The helper falls back to the zenith if the bake is absent.
-            vec3 skyColor = exteriorSkyRadianceOr(-N, exteriorSkyTint.rgb);
+            vec3 skyColor = exteriorSkyRadianceOr(throughDir, exteriorSkyTint.rgb);
             // Use the authored glass color directly instead of biasing
             // toward white. Pre-fix this mix started from pure white
             // and leaned heavily that way for low-alpha clear glass

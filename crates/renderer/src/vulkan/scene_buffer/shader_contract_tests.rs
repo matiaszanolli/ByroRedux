@@ -6014,6 +6014,99 @@ fn froxel_bilateral_rejects_a_doorway_depth_step() {
     }
 }
 
+/// #4832 — the window portal's escape ray must leave the pane on the far side
+/// FROM THE VIEWER. `V` points at the camera, so a ray with `dot(dir, V) < 0`
+/// heads away from it — through the glass to the outside — and one with
+/// `dot(dir, V) > 0` heads back into the room.
+///
+/// The pre-fix pair was `windowFacing = dot(-V, N)` gating `throughDir = -N`.
+/// The gate passes only when `N` points away from the camera, which makes `-N`
+/// point at it: `dot(-N, V) == windowFacing > 0.1`. Every fragment the gate
+/// admitted fired into the room and every normally-oriented pane (`N` toward
+/// the camera) was refused, so no interior window ever transmitted the sky.
+/// This mirrors the corrected orientation (`N_bias` is `N` flipped toward the
+/// viewer) over both authored normal signs and both camera sides, and the
+/// source pin below ties the shader to it.
+#[test]
+fn window_portal_ray_leaves_the_pane_away_from_the_viewer() {
+    use byroredux_core::math::Vec3;
+    let v = Vec3::new(0.3, 0.1, 0.9).normalize(); // toward the camera
+    for n in [
+        Vec3::new(0.0, 0.0, 1.0),  // normal facing the camera
+        Vec3::new(0.0, 0.0, -1.0), // authored inverted: facing away
+        Vec3::new(0.6, 0.0, 0.8).normalize(),
+        Vec3::new(-0.6, 0.0, -0.8).normalize(),
+    ] {
+        // Shader: `N_bias = dot(N, V) < 0.0 ? -N : N;`
+        let n_bias = if n.dot(v) < 0.0 { -n } else { n };
+        let window_facing = n_bias.dot(v);
+        let through_dir = -n_bias;
+        assert!(
+            window_facing > 0.1,
+            "a pane seen at this angle must pass the grazing gate for either normal sign: \
+             n = {n:?}, facing = {window_facing}"
+        );
+        assert!(
+            through_dir.dot(v) < -0.1,
+            "the portal ray must point away from the camera for n = {n:?}, got \
+             dot(dir, V) = {}",
+            through_dir.dot(v)
+        );
+
+        // The retired pair, for the record: whenever its gate admitted a
+        // fragment, its ray pointed back at the camera.
+        let old_facing = (-v).dot(n);
+        if old_facing > 0.1 {
+            assert!(
+                (-n).dot(v) > 0.1,
+                "fixture sanity: the retired `-N` ray must have pointed toward the camera \
+                 whenever its gate passed (n = {n:?})"
+            );
+        }
+    }
+}
+
+/// Source pin for the orientation above, bounded to the portal block (from its
+/// `if` to the IOR path's first declaration) and comment-stripped: the block's
+/// own prose names `dot(-V, N)` and `-N` to explain what was wrong, so a raw
+/// `contains` would be tripped by the explanation.
+#[test]
+fn window_portal_orients_gate_ray_and_sky_sample_from_the_viewer() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let block = frag
+        .split_once("if (isWindow && reflectionGlassRayEnabled) {")
+        .expect("triangle.frag lost the window-portal block")
+        .1
+        .split_once("float glassFresnel = 0.0;")
+        .expect("triangle.frag lost the declaration that follows the portal block")
+        .0;
+    let code = code_lines(block);
+
+    for required in [
+        "float windowFacing = dot(N_bias, V);",
+        "vec3 throughDir = -N_bias;",
+        "if (windowFacing > 0.1) {",
+        "offsetRayOriginForDirection(\n                fragWorldPos, N_bias, throughDir)",
+        "windowOrigin,\n                0.0,\n                throughDir,",
+        // The sky the pane transmits is sampled along the ray that established
+        // the portal, not along a re-derived direction.
+        "exteriorSkyRadianceOr(throughDir, exteriorSkyTint.rgb)",
+    ] {
+        assert!(
+            code.contains(required),
+            "the window portal lost `{required}` (#4832) — gate, ray and sky sample must \
+             all derive from the viewer-facing N_bias / throughDir:\n{code}"
+        );
+    }
+    for banned in ["dot(-V, N)", "= -N;", "exteriorSkyRadianceOr(-N"] {
+        assert!(
+            !code.contains(banned),
+            "the window portal regained `{banned}` — that is the authored-normal-sign \
+             orientation #4832 removed:\n{code}"
+        );
+    }
+}
+
 /// #3927 — the lit palette branch must sample the LUT's V axis with the
 /// authored scalar, not pin it to a constant.
 ///
