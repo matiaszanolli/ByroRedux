@@ -597,7 +597,8 @@ impl AccelerationManager {
             //
             // Set TRIANGLE_FACING_CULL_DISABLE on `draw_cmd.two_sided`, so
             // the AS INSTANCE records the same two-sided intent the
-            // rasterizer's cull-mode pipeline key carries (PipelineKey).
+            // rasterizer applies through dynamic `cmd_set_cull_mode` (#930;
+            // a `group_state` batch-merge axis, not a `PipelineKey` axis).
             // #4580 — the bit is bookkeeping, not behaviour, today: it only
             // matters to rays that request facing culling
             // (gl_RayFlagsCullBackFacingTrianglesEXT /
