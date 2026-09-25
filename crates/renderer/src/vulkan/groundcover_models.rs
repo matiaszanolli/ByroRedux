@@ -95,10 +95,13 @@ struct GpuGroundCoverModelShape {
 // struct's 16-byte std430 alignment), no implicit padding.
 unsafe impl NoUninit for GpuGroundCoverModelShape {}
 
-/// `VkDrawIndexedIndirectCommand` stride.
-const DRAW_STRIDE: u64 = 20;
-/// Bytes of one `GcModelPoint` in the placement slab.
-const POINT_BYTES: u64 = 32;
+/// `VkDrawIndexedIndirectCommand` stride. Also the std430 size of the shader's
+/// `GcDrawIndexed`, pinned by `name_diverging_glsl_rust_mirrors_stay_in_lockstep`.
+pub(super) const DRAW_STRIDE: u64 = 20;
+/// Bytes of one `GcModelPoint` in the placement slab — pinned against the
+/// shader's std430 size by `name_diverging_glsl_rust_mirrors_stay_in_lockstep`,
+/// since the slab is sized from this literal rather than a mirrored struct.
+pub(super) const POINT_BYTES: u64 = 32;
 /// `gcCounts` length — the shared region layout plus the stats words.
 const STATS_WORDS: u64 = GROUNDCOVER_MODEL_STATS_WORDS as u64;
 const COUNT_WORDS: u64 = GROUNDCOVER_MODEL_STATS_REGION as u64 + STATS_WORDS;

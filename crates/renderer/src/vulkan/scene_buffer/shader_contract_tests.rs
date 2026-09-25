@@ -120,6 +120,45 @@ fn selected_ray_probe_is_bounded_and_captures_the_detailed_shadow_query() {
     assert!(publish_barrier.contains("vk::AccessFlags::HOST_READ"));
 }
 
+/// Every GLSL file that declares its own `struct GpuInstance`, shared by the
+/// three tests that scan the copies: the #417 field-presence check, the #2748
+/// lockstep check and the #3231 vec3 guard.
+///
+/// One list rather than one per test, because that is how the sixth copy
+/// (`groundcover_models.comp`, `aabd99a05`) was added to the lockstep test's
+/// private list and missed by both siblings (#4850) — the vec3 rule being the
+/// one whose violation produced a silent device-lost hang. Each test still runs
+/// `assert_mirror_list_is_complete` against this list, so a seventh declaration
+/// fails all three until it is added here.
+const GPU_INSTANCE_GLSL_MIRRORS: &[(&str, &str)] = &[
+    // #1583/#1590 — the `struct GpuInstance` declaration was lifted out of
+    // `triangle.frag` into this shared header (`triangle.frag` now
+    // `#include`s it). The other five mirrors below still embed their own copy.
+    (
+        "include/bindings.glsl",
+        include_str!("../../../shaders/include/bindings.glsl"),
+    ),
+    (
+        "triangle.vert",
+        include_str!("../../../shaders/triangle.vert"),
+    ),
+    ("ui.vert", include_str!("../../../shaders/ui.vert")),
+    // #1498 / REN2-13 — water.vert consumes `model` for vertex displacement;
+    // it was omitted from the presence guard even though its layout matched.
+    ("water.vert", include_str!("../../../shaders/water.vert")),
+    (
+        "caustic_splat.comp",
+        include_str!("../../../shaders/caustic_splat.comp"),
+    ),
+    // #4413 — the ground-cover model tier writes plants as ordinary
+    // `GpuInstance`s into the tail of the main instance buffer, so its copy
+    // has to keep the stride byte-identical.
+    (
+        "groundcover_models.comp",
+        include_str!("../../../shaders/groundcover_models.comp"),
+    ),
+];
+
 /// Regression: #417 — every shader that declares its own copy of
 /// `struct GpuInstance` must name required fields correctly (originally
 /// the final u32 slot as `materialKind`, not `_pad1` or any other legacy
@@ -128,7 +167,7 @@ fn selected_ray_probe_is_bounded_and_captures_the_detailed_shadow_query() {
 /// checked). The Rust side guards offsets via
 /// `gpu_instance_field_offsets_match_shader_contract`; this test is
 /// presence-only (`src.contains(...)`) — it does NOT check field order
-/// or that all five mirrors match each other or the Rust struct. That
+/// or that all six mirrors match each other or the Rust struct. That
 /// full lockstep guard is `gpu_instance_glsl_copies_stay_in_lockstep`
 /// (#2748 / REN-D3-2026-08-12-01); this test stays as a cheap
 /// complementary check for the specific stale-name / missing-field /
@@ -141,30 +180,14 @@ fn selected_ray_probe_is_bounded_and_captures_the_detailed_shadow_query() {
 /// `uint _pad1;` after the triangle.* / ui.vert rename).
 #[test]
 fn every_shader_struct_gpu_instance_names_expected_fields() {
-    const SOURCES: &[(&str, &str)] = &[
-        (
-            "triangle.vert",
-            include_str!("../../../shaders/triangle.vert"),
-        ),
-        // #1583/#1590 — the `struct GpuInstance` declaration was lifted
-        // out of `triangle.frag` into the shared `include/bindings.glsl`
-        // (`triangle.frag` now `#include`s it). The other four mirrors
-        // below still embed their own copy.
-        (
-            "include/bindings.glsl",
-            include_str!("../../../shaders/include/bindings.glsl"),
-        ),
-        ("ui.vert", include_str!("../../../shaders/ui.vert")),
-        (
-            "caustic_splat.comp",
-            include_str!("../../../shaders/caustic_splat.comp"),
-        ),
-        // #1498 / REN2-13 — water.vert is the 5th GpuInstance mirror
-        // (consumes `model` for vertex displacement); it was omitted
-        // from this drift guard even though its layout already matches.
-        ("water.vert", include_str!("../../../shaders/water.vert")),
-    ];
-    for (name, src) in SOURCES {
+    // #4850 — the discovery leg the lockstep test already had: without it a
+    // new copy is simply never scanned for the stale names below.
+    assert_mirror_list_is_complete(
+        "struct GpuInstance",
+        GPU_INSTANCE_GLSL_MIRRORS,
+        "#417 / #4850",
+    );
+    for (name, src) in GPU_INSTANCE_GLSL_MIRRORS {
         assert!(
             src.contains("struct GpuInstance"),
             "{name} no longer declares `struct GpuInstance` — update \
@@ -1559,6 +1582,15 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             groundcover_rs,
             "struct GpuGroundCoverBlade",
         ),
+        // #4849 — neither side pads (four vec4 + one uvec4, no `pad*`), so the
+        // field-for-field comparator applies as it does to the blade record.
+        (
+            "GroundCoverSpecies",
+            groundcover_scene,
+            "struct GroundCoverSpecies",
+            groundcover_rs,
+            "struct GpuGroundCoverSpecies",
+        ),
         // #4413 — the model tier's per-frame uploads, padded field for field
         // on both sides so this comparator can guard them.
         (
@@ -1639,6 +1671,43 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
          blade buffer is sized from — the scatter would write past the SSBO's \
          end (#4335)"
     );
+    assert_eq!(
+        std430_struct_size(&parse_glsl_struct_fields_typed(
+            groundcover_scene,
+            "struct GroundCoverSpecies"
+        )),
+        std::mem::size_of::<crate::vulkan::groundcover::GpuGroundCoverSpecies>(),
+        "GroundCoverSpecies's std430 stride no longer matches the Rust mirror the \
+         palette buffer is uploaded from — every species past the first would be \
+         read misaligned (#4849)"
+    );
+
+    // #4849 — `GcModelPoint` and `GcDrawIndexed` have no Rust struct at all: the
+    // host sizes the placement slab and the indirect-draw buffer from
+    // hand-written byte strides. `host_mirrors_match_the_shader_strides` pins
+    // `DRAW_STRIDE` against `vk::DrawIndexedIndirectCommand` but neither
+    // constant against the GLSL, so growing either struct in the shader would
+    // have written past its buffer with a green suite.
+    use crate::vulkan::groundcover_models::{DRAW_STRIDE, POINT_BYTES};
+    assert_eq!(
+        std430_struct_size(&parse_glsl_struct_fields_typed(
+            groundcover_models_comp,
+            "struct GcModelPoint"
+        )) as u64,
+        POINT_BYTES,
+        "GcModelPoint's std430 stride left `POINT_BYTES` — the placement slab is \
+         sized from that literal, so the shader would write past the slab (#4849)"
+    );
+    assert_eq!(
+        std430_struct_size(&parse_glsl_struct_fields_typed(
+            groundcover_models_comp,
+            "struct GcDrawIndexed"
+        )) as u64,
+        DRAW_STRIDE,
+        "GcDrawIndexed's std430 stride left `DRAW_STRIDE` — the indirect-draw \
+         buffer is sized from that literal and `host_mirrors_match_the_shader_strides` \
+         ties it to `VkDrawIndexedIndirectCommand`, so this is the shader's leg (#4849)"
+    );
 }
 
 /// How each GLSL struct relates to the Rust tree. See
@@ -1649,7 +1718,11 @@ enum MirrorClass {
     /// A Rust counterpart exists, but no field-level comparison yet. Carries
     /// the specific blocker, not a shrug.
     MirroredPendingGuard(&'static str),
-    /// No Rust counterpart — a GLSL-local working type.
+    /// No Rust counterpart — a GLSL-local working type. A byte-stride constant
+    /// the host sizes a buffer from IS a counterpart, though the
+    /// `declares_rust_struct` check below cannot see one: such a struct is
+    /// `Guarded` by a test that pins its std430 size to the constant, or
+    /// `MirroredPendingGuard` until one exists (#4849).
     ShaderLocal,
 }
 
@@ -1716,23 +1789,31 @@ fn every_shader_struct_is_classified() {
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
         // Found by this very walk, after #3982 was filed — the ground-cover
-        // stratum (#4054-#4058) landed five more name-diverging mirrors. They
-        // are NOT guarded: each Rust side carries explicit `pad*` fields that
-        // the GLSL side leaves to std430's implicit padding, so the
-        // field-name-and-order comparator above reports a length mismatch on
-        // structs that are actually in sync. Guarding them needs a
-        // padding-aware comparison, which is its own piece of work.
+        // stratum (#4054-#4058) landed five more name-diverging mirrors.
+        // `GroundCoverSpecies` has no padding on either side and is guarded
+        // below. The other two are parked, and the reason is NOT padding: both
+        // GLSL declarations now spell their pads out. What actually stops
+        // `name_diverging_glsl_rust_mirrors_stay_in_lockstep`'s comparator is
+        // named on each entry (#4849).
         (
             "GroundCoverCell",
-            MirroredPendingGuard("GpuGroundCoverCell pads explicitly (pad0, pad1)"),
+            MirroredPendingGuard(
+                "`rust_glsl_scalar_type_matches` has no `vec2` row, and the tail is \
+                 GLSL `pad1, pad2` (two floats) against Rust `pad1: [f32; 2]` — \
+                 9 fields vs 8, so the count leg fails on a struct that is in sync",
+            ),
         ),
         (
             "GroundCoverChunk",
-            MirroredPendingGuard("sibling of GroundCoverCell"),
+            MirroredPendingGuard(
+                "`rust_glsl_scalar_type_matches` has no `vec2`/`uvec2` row, and \
+                 GLSL `slotActive` is Rust `active` — a name alias `normalize_ident` \
+                 does not fold",
+            ),
         ),
         (
             "GroundCoverSpecies",
-            MirroredPendingGuard("sibling of GroundCoverCell"),
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
         (
             "BenchCell",
@@ -1761,11 +1842,22 @@ fn every_shader_struct_is_classified() {
             "GcModelShape",
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
-        // Written and read only by `groundcover_models.comp`; the host sizes
-        // the slab from a byte stride (`POINT_BYTES`).
-        ("GcModelPoint", ShaderLocal),
-        // `VkDrawIndexedIndirectCommand`, an ash type rather than a mirror.
-        ("GcDrawIndexed", ShaderLocal),
+        // Written and read only by `groundcover_models.comp`, but the host
+        // sizes the placement slab from a byte stride (`POINT_BYTES`), so a
+        // counterpart exists — as a literal, not a struct. The guard pins the
+        // GLSL std430 size to it (#4849).
+        (
+            "GcModelPoint",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
+        // The counterpart is `VkDrawIndexedIndirectCommand`, an ash type, via
+        // the host's `DRAW_STRIDE`. The guard pins the GLSL std430 size to that
+        // constant; `host_mirrors_match_the_shader_strides` pins the constant to
+        // the ash type (#4849).
+        (
+            "GcDrawIndexed",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
         ("TerrainSample", ShaderLocal),
         ("LocalMedium", ShaderLocal),
         ("DisneyDiffuseSplit", ShaderLocal),
@@ -2864,14 +2956,14 @@ fn gpu_light_glsl_copies_stay_in_lockstep() {
     }
 }
 
-// ── GpuInstance five-way GLSL lockstep (#2748 / REN-D3-2026-08-12-01) ──
+// ── GpuInstance six-way GLSL lockstep (#2748 / REN-D3-2026-08-12-01) ──
 
-/// #2748 — `struct GpuInstance` is hand-duplicated across **five** GLSL
+/// #2748 — `struct GpuInstance` is hand-duplicated across **six** GLSL
 /// sources (`include/bindings.glsl`, `triangle.vert`, `ui.vert`,
-/// `water.vert`, `caustic_splat.comp`), the largest mirror fan-out of any
-/// GPU struct in the codebase. Its only prior guard,
+/// `water.vert`, `caustic_splat.comp`, `groundcover_models.comp`), the
+/// largest mirror fan-out of any GPU struct in the codebase. Its only prior guard,
 /// `every_shader_struct_gpu_instance_names_expected_fields` below, is
-/// presence-only (`src.contains(...)`) — it never compared the five
+/// presence-only (`src.contains(...)`) — it never compared the
 /// declarations to each other or to the Rust struct, and never checked
 /// field order or completeness. `caustic_splat.comp` uses a multi-name
 /// declaration (`float avgAlbedoR, avgAlbedoG, avgAlbedoB;`) where every
@@ -2880,7 +2972,7 @@ fn gpu_light_glsl_copies_stay_in_lockstep() {
 /// multi-name declarations, unlike the raw-line `strip_struct_body` used
 /// for `GpuLight`) rather than comparing stripped source text directly.
 ///
-/// First asserts all five mirrors declare an identical field list, name
+/// First asserts all six mirrors declare an identical field list, name
 /// and order alike; then reuses `parse_rust_struct_fields` /
 /// `normalize_ident` (the same #1657 machinery
 /// `gpu_material_glsl_field_order_matches_rust_struct` uses) to assert
@@ -2889,31 +2981,14 @@ fn gpu_light_glsl_copies_stay_in_lockstep() {
 /// `GpuMaterial` and `GpuLight` already have.
 #[test]
 fn gpu_instance_glsl_copies_stay_in_lockstep() {
-    const SOURCES: &[(&str, &str)] = &[
-        (
-            "include/bindings.glsl",
-            include_str!("../../../shaders/include/bindings.glsl"),
-        ),
-        (
-            "triangle.vert",
-            include_str!("../../../shaders/triangle.vert"),
-        ),
-        ("ui.vert", include_str!("../../../shaders/ui.vert")),
-        ("water.vert", include_str!("../../../shaders/water.vert")),
-        (
-            "caustic_splat.comp",
-            include_str!("../../../shaders/caustic_splat.comp"),
-        ),
-        (
-            "groundcover_models.comp",
-            include_str!("../../../shaders/groundcover_models.comp"),
-        ),
-    ];
-
-    assert_mirror_list_is_complete("struct GpuInstance", SOURCES, "#2748 / #3564");
+    assert_mirror_list_is_complete(
+        "struct GpuInstance",
+        GPU_INSTANCE_GLSL_MIRRORS,
+        "#2748 / #3564",
+    );
 
     let mut reference: Option<(&str, Vec<String>)> = None;
-    for (name, src) in SOURCES {
+    for (name, src) in GPU_INSTANCE_GLSL_MIRRORS {
         let fields = parse_glsl_struct_fields(src, "struct GpuInstance");
         assert!(
             fields.len() >= 14,
@@ -2938,7 +3013,7 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
     // `#[repr(C)]` struct's declaration order (the offset source of
     // truth, pinned separately by
     // `gpu_instance_field_offsets_match_shader_contract`).
-    let (_, glsl_fields) = reference.expect("SOURCES is non-empty");
+    let (_, glsl_fields) = reference.expect("GPU_INSTANCE_GLSL_MIRRORS is non-empty");
     let rust_src = include_str!("gpu_types.rs");
     let rust_fields = parse_rust_struct_fields(rust_src, "pub struct GpuInstance");
 
@@ -2949,7 +3024,7 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
         rust_norm.len(),
         glsl_norm.len(),
         "GpuInstance field COUNT differs: Rust has {} {:?}, GLSL mirrors have {} {:?}. The Rust \
-         `struct GpuInstance` (gpu_types.rs) and its five GLSL mirrors must stay in lockstep — \
+         `struct GpuInstance` (gpu_types.rs) and its six GLSL mirrors must stay in lockstep — \
          see #2748 / REN-D3-2026-08-12-01.",
         rust_norm.len(),
         rust_fields,
@@ -2986,23 +3061,16 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
 /// see past struct boundaries to verify generically.
 #[test]
 fn gpu_instance_glsl_declarations_never_use_a_3_component_vector_type() {
-    const SOURCES: &[(&str, &str)] = &[
-        (
-            "include/bindings.glsl",
-            include_str!("../../../shaders/include/bindings.glsl"),
-        ),
-        (
-            "triangle.vert",
-            include_str!("../../../shaders/triangle.vert"),
-        ),
-        ("ui.vert", include_str!("../../../shaders/ui.vert")),
-        ("water.vert", include_str!("../../../shaders/water.vert")),
-        (
-            "caustic_splat.comp",
-            include_str!("../../../shaders/caustic_splat.comp"),
-        ),
-    ];
-    for (name, src) in SOURCES {
+    // #4850 — this guard used to scan a private five-entry list with no
+    // discovery leg, so the sixth copy (`groundcover_models.comp`) was never
+    // checked: the lockstep test compares field NAMES only, so a `uvec3` in
+    // its tail lanes kept names and order identical and passed everything.
+    assert_mirror_list_is_complete(
+        "struct GpuInstance",
+        GPU_INSTANCE_GLSL_MIRRORS,
+        "#3231 / #4850",
+    );
+    for (name, src) in GPU_INSTANCE_GLSL_MIRRORS {
         let body = extract_struct_body(src, "struct GpuInstance")
             .unwrap_or_else(|| panic!("{name}: source must declare `struct GpuInstance`"));
         // Strip `//` line comments first (same as parse_glsl_struct_fields_typed)
