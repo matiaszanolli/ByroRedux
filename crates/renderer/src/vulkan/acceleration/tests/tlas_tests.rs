@@ -506,17 +506,18 @@ fn shadow_mask_bucket_selection_is_pinned() {
     // FO3/FNV's effect family imports as NO_LIGHTING (102), and Oblivion's
     // beam/glow cards are kind 0 + additive (dst_blend == ONE). Both must
     // reach the EFFECT layer or ground fog/beam/glow cards shadow the floor
-    // and cut volumetric in-scatter at every card.
+    // and cut volumetric in-scatter at every card. Both are BLENDED cards
+    // (#4834 — kind 102 alone is not the signal; see the fixture below).
     assert_eq!(
         shadow_mask_for_instance(
-            crate::vulkan::scene_buffer::MATERIAL_KIND_NO_LIGHTING,
+            MATERIAL_KIND_NO_LIGHTING,
             RenderLayer::Architecture,
-            false,
+            true,
             7,
             0.0,
         ),
         VISIBILITY_LAYER_EFFECT as u8,
-        "FO3/FNV NoLighting FX cards (kind 102) must not occlude (#4576)",
+        "FO3/FNV blended NoLighting FX cards (kind 102) must not occlude (#4576)",
     );
     assert_eq!(
         shadow_mask_for_instance(0, RenderLayer::Architecture, true, 0, 0.0),
@@ -541,12 +542,107 @@ fn shadow_mask_bucket_selection_is_pinned() {
     // the post-f97775ca8 state the audit overturned: FO3/FNV's effect
     // family imports as NO_LIGHTING, so opaque-bucketing them made ground
     // fog and mist cards shadow the floor. The #4576 fixtures above pin
-    // the EFFECT routing.
+    // the EFFECT routing for BLENDED cards; non-blended kind 102 is pinned by
+    // `non_blended_no_lighting_geometry_keeps_its_opaque_shadow_bucket` (#4834).
 
 
     const {
         assert!(VISIBILITY_MASK_FULL <= 0xFF);
     }
+}
+
+/// #4834 (REN-D1-2026-09-24-02) — `BSShaderNoLightingProperty` (kind 102) is the
+/// FO3/FNV "fullbright" shader class, applied to solid assets as well as FX, so
+/// it is not a "not an occluder" signal on its own. #4576 routed every kind-102
+/// draw to the EFFECT layer, which no `ALL_OPAQUE` shadow ray includes: a census
+/// of the vanilla meshes found 1,281 FNV / 415 FO3 kind-102 meshes with no
+/// blending at all — aspen foliage (~1,000 tris), elevator door panels, armor,
+/// building shells, cliff sub-meshes — casting no direct shadow for any light,
+/// blocking no sun shafts, and missing from the caustic and ground-cover rays.
+///
+/// Only a BLENDED kind-102 draw is the ground fog / mist / beam / glow card
+/// #4576 targeted. Not blended, it is geometry and keeps its render layer's
+/// opaque bucket. `alpha_blend` is blended transparency (`has_alpha`), so an
+/// alpha-TESTED cutout is non-blended and casts its shadow through the any-hit
+/// coverage test like any other foliage.
+///
+/// NOT verified against a live scene: the audit called for an FNV A/B (Jacobstown
+/// aspens, Lucky 38 elevators, `rt.masks`) before choosing between this and
+/// carrying an explicit non-occluder bit across the NIFAL boundary. This is the
+/// audit's first option and returns non-blended kind 102 to the state it was in
+/// before #4576.
+#[test]
+fn non_blended_no_lighting_geometry_keeps_its_opaque_shadow_bucket() {
+    use crate::shader_constants::{
+        VISIBILITY_LAYER_ARCHITECTURE, VISIBILITY_LAYER_DYNAMIC_ACTOR, VISIBILITY_LAYER_EFFECT,
+        VISIBILITY_LAYER_FOLIAGE, VISIBILITY_LAYER_STATIC_PROP,
+    };
+    use crate::vulkan::scene_buffer::MATERIAL_KIND_NO_LIGHTING;
+    use byroredux_core::ecs::components::RenderLayer;
+    use byroredux_core::lighting::VisibilityMask;
+
+    // Every render layer, at both an additive-looking `dst_blend` (0 = ONE) and
+    // an alpha-over one: with blending off, `dst_blend` is meaningless and must
+    // not matter.
+    for (layer, bucket, what) in [
+        (
+            RenderLayer::Architecture,
+            VISIBILITY_LAYER_ARCHITECTURE,
+            "building shells / doors",
+        ),
+        (RenderLayer::Clutter, VISIBILITY_LAYER_STATIC_PROP, "props"),
+        (RenderLayer::Actor, VISIBILITY_LAYER_DYNAMIC_ACTOR, "armor"),
+        (
+            RenderLayer::Decal,
+            VISIBILITY_LAYER_FOLIAGE,
+            "cutout foliage",
+        ),
+    ] {
+        for dst_blend in [0u8, 7] {
+            let mask =
+                shadow_mask_for_instance(MATERIAL_KIND_NO_LIGHTING, layer, false, dst_blend, 0.0);
+            assert_eq!(
+                mask, bucket as u8,
+                "non-blended kind 102 ({what}, {layer:?}, dst_blend {dst_blend}) keeps its \
+                 render layer's bucket (#4834)"
+            );
+            assert_ne!(
+                VisibilityMask::ALL_OPAQUE.bits() & mask,
+                0,
+                "…so it is visible to opaque shadow rays and casts a shadow (#4834)"
+            );
+        }
+    }
+
+    // The class #4576 targeted is untouched: BLENDED kind 102, whatever the
+    // blend factors, is still a non-occluder — including on an actor layer,
+    // where the kind arm outranks the actor-preservation arm.
+    for layer in [
+        RenderLayer::Architecture,
+        RenderLayer::Clutter,
+        RenderLayer::Actor,
+    ] {
+        for dst_blend in [0u8, 7] {
+            let mask =
+                shadow_mask_for_instance(MATERIAL_KIND_NO_LIGHTING, layer, true, dst_blend, 0.0);
+            assert_eq!(
+                mask, VISIBILITY_LAYER_EFFECT as u8,
+                "blended kind 102 ({layer:?}, dst_blend {dst_blend}) stays an FX card (#4576)"
+            );
+        }
+    }
+
+    // The diagnostic twin describes the same routing: no divert cause for the
+    // geometry, the effect cause for the card.
+    assert_eq!(
+        mask_divert_cause(MATERIAL_KIND_NO_LIGHTING, RenderLayer::Actor, false, 7, 0.0),
+        None,
+        "non-blended kind 102 is not diverted, so the census must not count it as one"
+    );
+    assert_eq!(
+        mask_divert_cause(MATERIAL_KIND_NO_LIGHTING, RenderLayer::Actor, true, 7, 0.0),
+        Some(MaskDivertCause::EffectShader)
+    );
 }
 
 /// #3305 (REN-2026-08-26-01) — the branch ORDER inside
@@ -812,7 +908,7 @@ fn divert_cause_matches_the_mask_it_explains() {
     };
     use crate::vulkan::scene_buffer::{
         MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS,
-        MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+        MATERIAL_KIND_MULTI_LAYER_PARALLAX, MATERIAL_KIND_NO_LIGHTING,
     };
     use byroredux_core::ecs::components::RenderLayer;
 
@@ -835,12 +931,17 @@ fn divert_cause_matches_the_mask_it_explains() {
         assert_ne!(layer_bucket(layer), VISIBILITY_LAYER_EFFECT as u8);
     }
 
+    // #4834 — kind 102 (`NO_LIGHTING`) belongs in the sweep: its routing
+    // depends on `alpha_blend` (a blended card diverts, non-blended geometry
+    // does not), and a sweep without it never exercised the twin's copy of that
+    // rule. #4576's message said this loop gained kind 102; it had not.
     let kinds = [
         0u32,
         MATERIAL_KIND_GLASS,
         MATERIAL_KIND_MULTI_LAYER_PARALLAX,
         MATERIAL_KIND_EFFECT_SHADER,
         MATERIAL_KIND_FIRE_REFRACTION,
+        MATERIAL_KIND_NO_LIGHTING,
     ];
     let mut saw_each = [false; 3];
 
@@ -923,7 +1024,7 @@ fn every_actor_instance_is_either_bucketed_or_diverted_exactly_once() {
     use crate::shader_constants::VISIBILITY_LAYER_DYNAMIC_ACTOR;
     use crate::vulkan::scene_buffer::{
         MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS,
-        MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+        MATERIAL_KIND_MULTI_LAYER_PARALLAX, MATERIAL_KIND_NO_LIGHTING,
     };
     use byroredux_core::ecs::components::RenderLayer;
 
@@ -933,6 +1034,7 @@ fn every_actor_instance_is_either_bucketed_or_diverted_exactly_once() {
         MATERIAL_KIND_MULTI_LAYER_PARALLAX,
         MATERIAL_KIND_EFFECT_SHADER,
         MATERIAL_KIND_FIRE_REFRACTION,
+        MATERIAL_KIND_NO_LIGHTING,
     ] {
         for alpha_blend in [false, true] {
             for scale in [0.0f32, 1.0] {

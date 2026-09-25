@@ -992,16 +992,7 @@ pub(super) fn shadow_mask_for_instance(
         crate::shader_constants::VISIBILITY_LAYER_GLASS as u8
     } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_EFFECT_SHADER
         || material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION
-        // #4576 — the pre-Skyrim effect families author "not an occluder"
-        // through kind 102 (BSShaderNoLightingProperty, the FO3/FNV effect
-        // import — kind 102 is NOT in the Skyrim effect family) and through
-        // additive blending (Oblivion's kind-0 beam/glow cards). Without
-        // these arms, f97775ca8's blend-divert removal put ground fog,
-        // light beams and glow shells in opaque shadow buckets: 4,699 FNV /
-        // 2,119 FO3 / 1,011 Oblivion census instances shadowing the floor
-        // and cutting volumetric in-scatter at every card.
-        || material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_NO_LIGHTING
-        || (alpha_blend && dst_blend == GAMEBRYO_DST_BLEND_ONE)
+        || is_legacy_fx_card(material_kind, alpha_blend, dst_blend)
     {
         crate::shader_constants::VISIBILITY_LAYER_EFFECT as u8
     // Character meshes frequently carry a blended hair, lashes, or clothing
@@ -1024,10 +1015,11 @@ pub(super) fn shadow_mask_for_instance(
         // shadowed through (Bleak Falls Barrow 01 census: 636/5594
         // instances shadow-invisible). True non-occluders are separated by
         // MATERIAL KIND above (effect shader, fire refraction, refractive
-        // glass, no-lighting) — the authored "not solid" signals — and by
-        // ADDITIVE blending, the one blend state that never represents a
-        // surface (#4576). Ordinary alpha-over blends reach here and keep
-        // their opaque bucket.
+        // glass) — the authored "not solid" signal — and, for the pre-Skyrim
+        // families whose kind is not that signal on its own, by
+        // `is_legacy_fx_card` (#4576, #4834). Ordinary alpha-over blends reach
+        // here and keep their opaque bucket, and so does non-blended
+        // no-lighting geometry.
         match render_layer {
             RenderLayer::Architecture => {
                 crate::shader_constants::VISIBILITY_LAYER_ARCHITECTURE as u8
@@ -1079,6 +1071,39 @@ pub(super) enum MaskDivertCause {
 /// the Gamebryo enum, not "disabled".
 const GAMEBRYO_DST_BLEND_ONE: u8 = 0;
 
+/// The pre-Skyrim "this card is not an occluder" signal: a BLENDED draw that is
+/// either `BSShaderNoLightingProperty` (kind 102, FO3/FNV's effect import) or
+/// additively blended (Oblivion's kind-0 beam/glow cards).
+///
+/// #4576 — Skyrim+ authors its effect family as `MATERIAL_KIND_EFFECT_SHADER`,
+/// so the kind arms alone suffice there; FO3/FNV and Oblivion do not, and
+/// without this the blend-divert removal put ground fog, light beams and glow
+/// shells in opaque shadow buckets (4,699 FNV / 2,119 FO3 / 1,011 Oblivion
+/// census instances shadowing the floor and cutting volumetric in-scatter at
+/// every card).
+///
+/// #4834 — kind 102 alone is NOT that signal. It is the FO3/FNV "fullbright"
+/// shader class and is applied to solid assets as well as FX: a census of the
+/// vanilla FNV/FO3 meshes found 1,281 / 415 kind-102 meshes with no blending
+/// at all, including aspen foliage, elevator door panels, armor and building
+/// shells. Sent to the EFFECT layer they cast no shadow for any light, drop out
+/// of volumetric occlusion, and vanish from the caustic and ground-cover rays.
+/// #4576's own census counted blended cards, so kind 102 is honoured only
+/// together with blending — the state the ground fog, mist, beams and glow
+/// shells it targeted actually have. Additive blending was already gated on it.
+///
+/// `alpha_blend` is `AlphaBlend`-component presence, i.e. the NIF's blended
+/// transparency (`has_alpha`), not alpha TEST: a cutout leaf card is not blended.
+///
+/// One function for [`shadow_mask_for_instance`] and [`mask_divert_cause`], so
+/// the diagnostic twin cannot describe a different routing than the mask.
+#[inline]
+fn is_legacy_fx_card(material_kind: u32, alpha_blend: bool, dst_blend: u8) -> bool {
+    alpha_blend
+        && (material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_NO_LIGHTING
+            || dst_blend == GAMEBRYO_DST_BLEND_ONE)
+}
+
 pub(super) fn mask_divert_cause(
     material_kind: u32,
     render_layer: byroredux_core::ecs::components::RenderLayer,
@@ -1096,12 +1121,10 @@ pub(super) fn mask_divert_cause(
         Some(MaskDivertCause::EffectShader)
     } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION {
         Some(MaskDivertCause::FireRefraction)
-    } else if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_NO_LIGHTING
-        || (alpha_blend && dst_blend == GAMEBRYO_DST_BLEND_ONE)
-    {
-        // #4576 — same fold as shadow_mask_for_instance's EFFECT arm; the
-        // legacy non-occluder signals. Labelled EffectShader: kind 102 and
-        // additive cards ARE effect-family content on their games.
+    } else if is_legacy_fx_card(material_kind, alpha_blend, dst_blend) {
+        // #4576 / #4834 — the same predicate as shadow_mask_for_instance's
+        // EFFECT arm, not a copy of it. Labelled EffectShader: blended kind
+        // 102 and additive cards ARE effect-family content on their games.
         Some(MaskDivertCause::EffectShader)
     } else {
         None
