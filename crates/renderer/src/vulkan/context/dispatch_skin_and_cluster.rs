@@ -208,6 +208,9 @@ impl VulkanContext {
                         skin_palette_timer_started = true;
                     }
                 }
+                // #4829 — descriptor range = the whole buffer, never this
+                // frame's `bone_dispatch_bytes` (frozen by the cache).
+                let bone_world_size = self.scene_buffers.bone_world_buffers()[frame].size;
                 let bone_world_buf = self.scene_buffers.bone_world_buffers()[frame].buffer;
                 let bind_inverse_buf = self.scene_buffers.bind_inverses_persistent().buffer;
                 let bind_inverse_size = self.scene_buffers.bone_buffer_size();
@@ -221,7 +224,7 @@ impl VulkanContext {
                         frame,
                         super::super::skin_compute::PaletteDispatchBuffers {
                             bone_world_buffer: bone_world_buf,
-                            bone_world_buffer_size: bone_dispatch_bytes,
+                            bone_world_buffer_size: bone_world_size,
                             bind_inverse_buffer: bind_inverse_buf,
                             bind_inverse_buffer_size: bind_inverse_size,
                             palette_buffer: palette_buf,

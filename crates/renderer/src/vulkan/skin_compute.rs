@@ -963,7 +963,14 @@ const SKIN_PALETTE_PUSH_CONSTANTS_SIZE: u32 =
 pub struct PaletteDispatchBuffers {
     /// Per-frame bone world-transform buffer.
     pub bone_world_buffer: vk::Buffer,
-    /// Byte size of `bone_world_buffer`.
+    /// Byte size of `bone_world_buffer` — the WHOLE buffer, a constant for the
+    /// renderer's lifetime. It is the descriptor `range` the shader may index
+    /// (`boneWorld[slot]` for every slot the push-constant ranges reach), NOT
+    /// this frame's dispatch extent: `dispatch` skips the descriptor rewrite
+    /// while the key is unchanged, so a range that tracked the per-frame
+    /// skinned population was frozen at the first dispatch's value and later,
+    /// larger frames read past it (#4829). The extent already travels in the
+    /// push-constant ranges.
     pub bone_world_buffer_size: vk::DeviceSize,
     /// Bind-pose inverse-bind-matrix buffer.
     pub bind_inverse_buffer: vk::Buffer,
@@ -973,6 +980,30 @@ pub struct PaletteDispatchBuffers {
     pub palette_buffer: vk::Buffer,
     /// Byte size of `palette_buffer`.
     pub palette_buffer_size: vk::DeviceSize,
+}
+
+/// What `SkinPaletteComputePipeline::dispatch` compares to decide whether a
+/// frame slot's descriptor set is still valid: the three buffer handles AND the
+/// three descriptor ranges. #4829 — the key was the handles alone, so a caller
+/// passing a range that varied per frame (the skinned-population extent) had
+/// the first dispatch's range cached forever. Keying on the ranges makes the
+/// cache correct whatever the caller passes; the caller additionally passes
+/// constants so the steady state still writes nothing.
+type PaletteDescriptorKey = (vk::Buffer, vk::Buffer, vk::Buffer, [vk::DeviceSize; 3]);
+
+impl PaletteDispatchBuffers {
+    fn descriptor_key(&self) -> PaletteDescriptorKey {
+        (
+            self.bone_world_buffer,
+            self.bind_inverse_buffer,
+            self.palette_buffer,
+            [
+                self.bone_world_buffer_size,
+                self.bind_inverse_buffer_size,
+                self.palette_buffer_size,
+            ],
+        )
+    }
 }
 
 pub struct SkinPaletteComputePipeline {
@@ -989,12 +1020,13 @@ pub struct SkinPaletteComputePipeline {
     /// array is enough.
     descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
     /// #1197 / PERF-DIM7-03 — per-FIF cache of the
-    /// `(bone_world, bind_inverse, palette)` buffer triple currently
-    /// bound in `descriptor_sets[frame]`. `None` = never written;
-    /// first dispatch on each FIF is the cold write. All three
-    /// handles are stable for the renderer lifetime today, so
-    /// `dispatch` skips the three writes on every steady-state call.
-    descriptor_bindings: [Option<(vk::Buffer, vk::Buffer, vk::Buffer)>; MAX_FRAMES_IN_FLIGHT],
+    /// `(bone_world, bind_inverse, palette)` buffer triple — plus, since
+    /// #4829, the three descriptor ranges — currently bound in
+    /// `descriptor_sets[frame]`. `None` = never written; first dispatch on
+    /// each FIF is the cold write. All three handles and ranges are stable
+    /// for the renderer lifetime today, so `dispatch` skips the three
+    /// writes on every steady-state call.
+    descriptor_bindings: [Option<PaletteDescriptorKey>; MAX_FRAMES_IN_FLIGHT],
     /// #1197 — per-frame counter, paired with [`SkinComputePipeline`]'s
     /// counter. Surfaced through `tex.skin`. Pre-fix this dispatched
     /// 3 writes per frame unconditionally; post-fix steady state is 0.
@@ -1163,6 +1195,14 @@ impl SkinPaletteComputePipeline {
         if ranges.is_empty() {
             return;
         }
+        // #1197 — compare against the cached binding key. Steady-state hits
+        // this cache every frame post-warm-up because all three buffer
+        // handles AND their descriptor ranges are renderer-lifetime
+        // constants. The comparison is still required for correctness in
+        // case a future refactor rotates a handle. #4829 — the ranges are
+        // part of the key: with handles alone, a range that changed after
+        // the first dispatch of a frame slot was never rewritten.
+        let live_key = buffers.descriptor_key();
         let PaletteDispatchBuffers {
             bone_world_buffer,
             bone_world_buffer_size,
@@ -1172,12 +1212,6 @@ impl SkinPaletteComputePipeline {
             palette_buffer_size,
         } = buffers;
         let descriptor_set = self.descriptor_sets[frame_index];
-        // #1197 — compare against cached binding triple. Steady-state
-        // hits this cache every frame post-warm-up because all three
-        // palette-pipeline buffer handles are renderer-lifetime
-        // stable. The comparison is still required for correctness in
-        // case a future refactor rotates one of them.
-        let live_key = (bone_world_buffer, bind_inverse_buffer, palette_buffer);
         let needs_write = self.descriptor_bindings[frame_index] != Some(live_key);
         if needs_write {
             let world_info = [vk::DescriptorBufferInfo {
@@ -1696,6 +1730,88 @@ mod tests {
                  SkinComputePipeline::dispatch got in #2743"
             );
         }
+    }
+
+    // ── #4829 — frozen `boneWorld` descriptor range ──────────────────
+
+    /// The defect itself. `dispatch` rewrites a frame slot's descriptors only
+    /// when its cache key changes. The key was the three buffer handles, so a
+    /// caller whose `bone_world_buffer_size` varied per frame (the skinned
+    /// population's extent, which grows and contracts) had the FIRST
+    /// dispatch's range cached for good, and `skin_palette.comp` then indexed
+    /// `boneWorld[slot]` past it on later, larger frames — out-of-range
+    /// storage-buffer reads with `robustBufferAccess` off. Same handles,
+    /// different range must be a cache miss, for every one of the three
+    /// bindings.
+    #[test]
+    fn palette_descriptor_key_tracks_each_descriptor_range() {
+        use ash::vk::Handle;
+        let base = PaletteDispatchBuffers {
+            bone_world_buffer: vk::Buffer::from_raw(0x10),
+            bone_world_buffer_size: 4096,
+            bind_inverse_buffer: vk::Buffer::from_raw(0x20),
+            bind_inverse_buffer_size: 8192,
+            palette_buffer: vk::Buffer::from_raw(0x30),
+            palette_buffer_size: 8192,
+        };
+        assert_eq!(
+            base.descriptor_key(),
+            base.descriptor_key(),
+            "an unchanged dispatch must stay a cache hit (steady state writes nothing)"
+        );
+        for (what, changed) in [
+            (
+                "bone_world range",
+                PaletteDispatchBuffers { bone_world_buffer_size: 8192, ..base },
+            ),
+            (
+                "bind_inverse range",
+                PaletteDispatchBuffers { bind_inverse_buffer_size: 16384, ..base },
+            ),
+            (
+                "palette range",
+                PaletteDispatchBuffers { palette_buffer_size: 16384, ..base },
+            ),
+        ] {
+            assert_ne!(
+                base.descriptor_key(),
+                changed.descriptor_key(),
+                "a changed {what} on unchanged buffer handles must be a descriptor-cache miss, \
+                 or the first dispatch's range is frozen for the frame slot (#4829)"
+            );
+        }
+    }
+
+    /// The caller half: `boneWorld`'s descriptor range is the WHOLE buffer (a
+    /// renderer-lifetime constant), so the steady state still hits the cache;
+    /// the per-frame extent (`bone_world_dispatch_bytes`) only sizes
+    /// `bone_count` and reaches the shader through the push-constant ranges.
+    /// Passing the extent as the range is exactly the #4829 bug. Needles are
+    /// composed at runtime so this test's own text cannot satisfy them.
+    #[test]
+    fn palette_dispatch_range_is_the_whole_buffer_not_the_frame_extent() {
+        let src = include_str!("context/dispatch_skin_and_cluster.rs");
+        let production = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+        let flat: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+
+        let extent_as_range = format!("bone_world_buffer_size:{}", "bone_dispatch_bytes");
+        assert!(
+            !flat.contains(&extent_as_range),
+            "the boneWorld descriptor range must not be this frame's dispatch extent (#4829)"
+        );
+        let whole_buffer = format!("bone_world_buffer_size:{}", "bone_world_size");
+        assert!(
+            flat.contains(&whole_buffer),
+            "PaletteDispatchBuffers.bone_world_buffer_size must be the whole buffer's size (#4829)"
+        );
+        let bound_from_buffer = format!(
+            "letbone_world_size={}[frame].size;",
+            "self.scene_buffers.bone_world_buffers()"
+        );
+        assert!(
+            flat.contains(&bound_from_buffer),
+            "the range must be the bone-world GpuBuffer's own size, a renderer-lifetime constant (#4829)"
+        );
     }
 
     /// `descriptor_writes_this_frame` is interior-mutability-backed
