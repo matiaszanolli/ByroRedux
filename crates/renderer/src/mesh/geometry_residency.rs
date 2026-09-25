@@ -451,4 +451,42 @@ mod tests {
         registry.note_mesh_provenance(9000, MeshUploadSource::NifLoader, false, Some("ghost"));
         assert!(registry.mesh_provenance.is_empty());
     }
+
+    /// #4802 — provenance is census-only and the census reads live handles
+    /// only, so the entry must leave with the last holder. It used to stay
+    /// forever: every mesh ever uploaded kept an owned label in host RAM.
+    #[test]
+    fn provenance_is_pruned_when_the_last_holder_releases() {
+        let mut registry = MeshRegistry::new();
+        let vertices = [Vertex::new([1.0; 3], [1.0; 3], [0.0, 1.0, 0.0], [0.0; 2]); 3];
+        let shared = registry
+            .upload_scene_mesh_global_only(&vertices, &[0, 1, 2])
+            .unwrap();
+        let solo = registry
+            .upload_scene_mesh_global_only(&vertices, &[0, 1, 2])
+            .unwrap();
+        registry.note_mesh_provenance(
+            shared,
+            MeshUploadSource::CellLoader,
+            false,
+            Some("props\\chair.nif#0"),
+        );
+        registry.note_mesh_provenance(solo, MeshUploadSource::CellLoader, false, None);
+        // A second placement holds `shared`, the way `acquire_cached` would.
+        registry.mesh_ref_counts[shared as usize] = 2;
+
+        registry.drop_mesh(shared);
+        assert!(
+            registry.mesh_provenance.contains_key(&shared),
+            "one holder is still live — its provenance must survive a partial release"
+        );
+
+        registry.drop_mesh(shared);
+        registry.drop_meshes(&[solo]);
+        assert!(
+            registry.mesh_provenance.is_empty(),
+            "provenance for freed handles leaked: {:?}",
+            registry.mesh_provenance.keys().collect::<Vec<_>>()
+        );
+    }
 }

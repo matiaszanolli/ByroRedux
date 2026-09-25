@@ -376,9 +376,12 @@ pub struct MeshRegistry {
     /// the three slot-creation sites (`upload`,
     /// `upload_scene_mesh_global_only`, `upload_scene_meshes_batched`)
     /// stay untouched — provenance is attached after a successful
-    /// upload, exactly where the asset identity is known. Cleared in
-    /// lockstep with `meshes` in [`Self::destroy_all`] so a
-    /// post-shutdown handle reuse can never inherit stale labels.
+    /// upload, exactly where the asset identity is known. Pruned when the
+    /// last holder releases the handle (`release_mesh_ref`, #4802) so a
+    /// long exterior soak does not accrete a label per mesh ever
+    /// uploaded, and cleared in lockstep with `meshes` in
+    /// [`Self::destroy_all`] so a post-shutdown handle reuse can never
+    /// inherit stale labels.
     mesh_provenance: HashMap<u32, MeshProvenance>,
     /// Staging pool reused across global-geometry-SSBO builds and
     /// rebuilds. Lazy-initialised on the first `build_geometry_ssbo`
@@ -1085,6 +1088,13 @@ impl MeshRegistry {
         if *rc > 0 {
             return false;
         }
+
+        // #4802 — census-only provenance dies with the mesh. Handles are
+        // never reused (slots are append-only) and the census reads live
+        // handles only, so a surviving entry is host RAM that nothing can
+        // ever look up again. Same last-holder arm as `mesh_cache` /
+        // `geometry_cache` pruning in `drop_mesh` / `drop_meshes`.
+        self.mesh_provenance.remove(&handle);
 
         // Last holder released — perform the GPU-side drop. Take the
         // owned buffers (if present) and queue for 2-frame deferred
