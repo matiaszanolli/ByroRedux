@@ -254,6 +254,25 @@ impl TlasPolicyCounts {
     }
 }
 
+/// What one [`collect_static_mesh_draws`] walk learned that a later stage would
+/// otherwise have to re-derive by scanning the finished `draw_commands` list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct StaticMeshSummary {
+    pub tlas_policy: TlasPolicyCounts,
+    /// #4799 — at least one pushed draw is [`is_architecture_glass`]. The
+    /// sky-aperture dust floor in `build_render_data` used to answer this by
+    /// walking the whole post-sort list (~480 B per `DrawCommand`, every
+    /// interior frame). The push site already holds both fields.
+    pub saw_architecture_glass: bool,
+}
+
+/// A window-like draw: architecture-layer glass. An interior with one has a
+/// sky aperture even when the cell is not flagged to show the sky.
+fn is_architecture_glass(material_kind: u32, render_layer: RenderLayer) -> bool {
+    material_kind == byroredux_renderer::MATERIAL_KIND_GLASS
+        && render_layer == RenderLayer::Architecture
+}
+
 /// Walk every (GlobalTransform, MeshHandle) entity, apply per-entity
 /// optional-component overrides, frustum-cull, intern materials, and
 /// append the resulting `DrawCommand`s to `draw_commands`.
@@ -261,6 +280,9 @@ impl TlasPolicyCounts {
 /// Must run AFTER `build_skinned_palettes` (uses `skin_offsets` to
 /// stamp the per-mesh bone offset onto each draw) and BEFORE the
 /// `draw_commands` sort.
+///
+/// Returns the per-frame [`StaticMeshSummary`] — facts the walk already had in
+/// hand, so callers need not rescan `draw_commands` for them.
 pub(super) fn collect_static_mesh_draws(
     world: &World,
     frustum: &FrustumPlanes,
@@ -270,8 +292,9 @@ pub(super) fn collect_static_mesh_draws(
     draw_commands: &mut Vec<DrawCommand>,
     cover_template_draws: &mut Vec<(u32, DrawCommand)>,
     material_table: &mut MaterialTable,
-) -> TlasPolicyCounts {
+) -> StaticMeshSummary {
     let mut tlas_policy = TlasPolicyCounts::default();
+    let mut saw_architecture_glass = false;
     // ── Render-data query bundle (#246) ──────────────────────────────
     //
     // Collect draw commands from entities with (GlobalTransform,
@@ -1257,12 +1280,19 @@ pub(super) fn collect_static_mesh_draws(
                 cmd.material_id = material_table.intern(cmd.to_gpu_material());
                 match cover_template {
                     Some(record) => cover_template_draws.push((record, cmd)),
-                    None => draw_commands.push(cmd),
+                    None => {
+                        saw_architecture_glass |=
+                            is_architecture_glass(cmd.material_kind, cmd.render_layer);
+                        draw_commands.push(cmd);
+                    }
                 }
             }
         }
     }
-    tlas_policy
+    StaticMeshSummary {
+        tlas_policy,
+        saw_architecture_glass,
+    }
 }
 
 #[cfg(test)]
@@ -1739,6 +1769,94 @@ mod tests {
             [0.2, 0.4, 0.6].map(quantize_fade),
             "the animated diffuse color must survive to_gpu_material interning"
         );
+    }
+
+    /// Run the static walk over `world` and hand back its summary plus the
+    /// draw list it appended to.
+    fn collect_summary(world: &World) -> (StaticMeshSummary, Vec<DrawCommand>) {
+        let frustum = FrustumPlanes::from_view_proj(Mat4::IDENTITY);
+        let mut draw_commands = Vec::new();
+        let mut material_table = MaterialTable::new();
+        let summary = collect_static_mesh_draws(
+            world,
+            &frustum,
+            Mat4::IDENTITY,
+            Vec3::ZERO,
+            &FxHashMap::default(),
+            &mut draw_commands,
+            &mut Vec::new(),
+            &mut material_table,
+        );
+        (summary, draw_commands)
+    }
+
+    /// #4799 — the walk reports architecture glass so `build_render_data`
+    /// no longer rescans the sorted draw list every interior frame. The flag
+    /// must agree with the scan it replaced on every material/layer pairing:
+    /// only glass on the `Architecture` layer counts.
+    #[test]
+    fn saw_architecture_glass_matches_the_scan_it_replaced() {
+        let glass = byroredux_renderer::MATERIAL_KIND_GLASS;
+        let cases = [
+            // (material_kind, layer, expected)
+            (glass, None, true), // absent RenderLayer defaults to Architecture
+            (glass, Some(RenderLayer::Architecture), true),
+            (glass, Some(RenderLayer::Clutter), false),
+            (glass, Some(RenderLayer::Decal), false),
+            (0, Some(RenderLayer::Architecture), false),
+            (0, None, false),
+        ];
+        for (material_kind, layer, expected) in cases {
+            let mut world = World::new();
+            let entity = spawn_mesh_entity(&mut world);
+            world.insert(
+                entity,
+                Material {
+                    material_kind,
+                    ..Default::default()
+                },
+            );
+            if let Some(layer) = layer {
+                world.insert(entity, layer);
+            }
+
+            let (summary, draw_commands) = collect_summary(&world);
+            assert_eq!(draw_commands.len(), 1, "kind={material_kind} layer={layer:?}");
+            assert_eq!(
+                summary.saw_architecture_glass, expected,
+                "kind={material_kind} layer={layer:?}"
+            );
+            let scanned = draw_commands
+                .iter()
+                .any(|d| is_architecture_glass(d.material_kind, d.render_layer));
+            assert_eq!(
+                summary.saw_architecture_glass, scanned,
+                "flag diverged from the draw-list scan: kind={material_kind} layer={layer:?}"
+            );
+        }
+    }
+
+    /// The flag is a scene-wide OR — one window among many plain draws is
+    /// enough, and a scene with none must read false.
+    #[test]
+    fn saw_architecture_glass_is_an_or_over_the_scene() {
+        let mut world = World::new();
+        for _ in 0..3 {
+            spawn_mesh_entity(&mut world);
+        }
+        assert!(!collect_summary(&world).0.saw_architecture_glass);
+
+        let window = spawn_mesh_entity(&mut world);
+        world.insert(
+            window,
+            Material {
+                material_kind: byroredux_renderer::MATERIAL_KIND_GLASS,
+                ..Default::default()
+            },
+        );
+        let (summary, draw_commands) = collect_summary(&world);
+        assert_eq!(draw_commands.len(), 4);
+        assert!(summary.saw_architecture_glass);
     }
 
     /// A mesh with NO animated sinks must read the static `Material`

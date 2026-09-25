@@ -1125,7 +1125,7 @@ pub(crate) fn build_render_data(
 
     // Static mesh main loop — see `render::static_meshes::collect_static_mesh_draws`.
     let t_static = mark(profile);
-    let tlas_policy = static_meshes::collect_static_mesh_draws(
+    let static_summary = static_meshes::collect_static_mesh_draws(
         world,
         &frustum,
         vp_mat,
@@ -1135,6 +1135,7 @@ pub(crate) fn build_render_data(
         cover_template_draws,
         material_table,
     );
+    let tlas_policy = static_summary.tlas_policy;
     let ms_static = took(t_static);
     let n_draws = draw_commands.len();
     // Particle billboards — see `render::particles::emit_particles`.
@@ -1316,11 +1317,9 @@ pub(crate) fn build_render_data(
                     volume.profile_params[0]
                         == byroredux_renderer::vulkan::volumetrics::FOG_VOLUME_PROFILE_LIGHT_SHAFT
                 })
-                || draw_commands.iter().any(|draw| {
-                    draw.material_kind == byroredux_renderer::MATERIAL_KIND_GLASS
-                        && draw.render_layer
-                            == byroredux_core::ecs::components::RenderLayer::Architecture
-                })),
+                // #4799 — answered by the static walk that already read both
+                // fields, not by rescanning the sorted list every frame.
+                || static_summary.saw_architecture_glass),
     );
     // Retain the authored XCLL cubic-fog curve for diagnostics and a future
     // explicit compatibility toggle. The physical path does not evaluate it.
