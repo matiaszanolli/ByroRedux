@@ -2124,7 +2124,14 @@ mod tests {
     /// site or dropping the invalidate as redundant.
     #[test]
     fn readback_constructor_uses_the_readback_memory_location() {
-        let src = include_str!("buffer.rs");
+        // Production text only: `include_str!` pulls in this module too, and
+        // every definition asserted below is also spelled out in its literals,
+        // so a deleted `invalidate_if_needed` would still be "found" in the
+        // test's own text.
+        let src = include_str!("buffer.rs")
+            .split_once("\n#[cfg(test)]")
+            .expect("buffer.rs lost its test modules")
+            .0;
         let start = src
             .find("pub fn create_host_readback(")
             .expect("create_host_readback must still exist (#2752)");
@@ -2145,13 +2152,18 @@ mod tests {
 
         // The invalidate primitive is the prerequisite that made the location
         // switch safe; it must not be deleted as an apparent no-op.
+        let invalidate = src
+            .find("pub fn invalidate_if_needed(")
+            .expect(
+                "GpuBuffer::invalidate_if_needed is what makes a non-coherent \
+                 readback allocation sound (#2740 / REN-D4-04)",
+            );
+        let invalidate_body = &src[invalidate..];
+        let invalidate_body = &invalidate_body[..invalidate_body
+            .find("\n    }\n")
+            .expect("invalidate_if_needed must close at impl indentation")];
         assert!(
-            src.contains("pub fn invalidate_if_needed("),
-            "GpuBuffer::invalidate_if_needed is what makes a non-coherent \
-             readback allocation sound (#2740 / REN-D4-04)"
-        );
-        assert!(
-            src.contains("invalidate_mapped_memory_ranges"),
+            invalidate_body.contains(".invalidate_mapped_memory_ranges("),
             "invalidate_if_needed must actually issue vkInvalidateMappedMemoryRanges"
         );
     }

@@ -2695,11 +2695,20 @@ fn material_kind_multi_layer_parallax_has_no_raw_literal_call_sites() {
 ///   read-modify-write against `sceneImage`.
 #[test]
 fn bloom_dispatches_after_composite_and_applies_itself_downstream() {
-    let post_passes = include_str!("../context/post_passes.rs");
+    // Production text only, and only `record_post_passes` itself: the file's
+    // own test module spells out both call expressions, so a call deleted from
+    // the function was still "found" further down and the order held.
+    let post_passes = include_str!("../context/post_passes.rs")
+        .split_once("\n#[cfg(test)]")
+        .expect("post_passes.rs lost its test module")
+        .0;
     let record_post_passes_start = post_passes
         .find("pub(super) fn record_post_passes")
         .expect("record_post_passes must exist");
     let body = &post_passes[record_post_passes_start..];
+    let body = &body[..body
+        .find("\n    }\n")
+        .expect("record_post_passes must close at impl indentation")];
     let composite_call = body
         .find("self.record_composite_pass(cmd, frame)")
         .expect("record_post_passes must call record_composite_pass");
