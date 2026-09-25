@@ -877,6 +877,48 @@ fn decode_sse_packed_buffer_tangents_without_normals_keeps_stride_aligned() {
     assert!(decoded.tangents.is_empty());
 }
 
+/// #4617 — the SSE global-buffer decoder pre-sizes its tangent `Vec` the same
+/// conditional way `decode_bs_vertex_stream` does (#4206, sibling of #559's
+/// reconstruction path), and nothing pinned it. 100 vertices, not a power of
+/// two: push-doubling from empty would end at 128, the pre-size at 100.
+#[test]
+fn decode_sse_packed_buffer_presizes_tangents_only_for_a_tangent_quad() {
+    const VERTEX_COUNT: usize = 100;
+    let pack = |attrs: u64, vertex_size: u32| {
+        let vertex_desc: u64 = (attrs << 44) | ((vertex_size as u64 / 4) & 0xF);
+        // Non-degenerate bytes; positions/normals/tangents are not asserted.
+        let raw = (0..VERTEX_COUNT * vertex_size as usize)
+            .map(|i| 0x40 + (i as u8 & 0x3F))
+            .collect();
+        SseSkinGlobalBuffer {
+            vertex_desc,
+            vertex_size,
+            raw_bytes: raw,
+        }
+    };
+
+    // VF_VERTEX | VF_NORMALS | VF_TANGENTS: 16 B position block (f32 xyz +
+    // Bitangent X), 4 B normal + Bitangent Y, 4 B tangent + Bitangent Z.
+    let with_quad = super::decode_sse_packed_buffer(&pack(0x019, 24))
+        .expect("full tangent-space SSE buffer must decode");
+    assert_eq!(with_quad.tangents.len(), VERTEX_COUNT);
+    assert_eq!(
+        with_quad.tangents.capacity(),
+        VERTEX_COUNT,
+        "tangents must be reserved once for the whole buffer, not grown by push"
+    );
+
+    // VF_VERTEX | VF_NORMALS: no tangent quad, so no reservation.
+    let without_quad = super::decode_sse_packed_buffer(&pack(0x009, 20))
+        .expect("normals-only SSE buffer must decode");
+    assert!(without_quad.tangents.is_empty());
+    assert_eq!(
+        without_quad.tangents.capacity(),
+        0,
+        "the pre-size is conditional on the tangent quad"
+    );
+}
+
 /// Regression for #2817 (REN-D19-05) — an SSE global buffer with neither
 /// `VF_NORMALS` nor `VF_UVS` set decodes `normals` / `uvs` as the
 /// renderer-safe `[0,1,0]` / `[0,0]` fallback fill (so the parallel arrays

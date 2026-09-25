@@ -43,6 +43,12 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 // before the next acquires it. Declare the guard BEFORE the profiler so
 // drop order (reverse) releases the profiler first, then the lock.
 // `into_inner` ignores poisoning so one failing test doesn't cascade.
+//
+// Order within a test is lock -> build the fixture -> start the profiler.
+// dhat counts every allocation in the process while a profiler is live, so a
+// fixture built before the lock is taken lands in whichever sibling test's
+// profiler happens to be running. That was invisible while every fixture was
+// a few hundred bytes; it is not once one is 16 KB (#4617).
 static DHAT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // ── Synthetic Skyrim SE fixture (single NiNode root) ────────────────
@@ -145,13 +151,12 @@ fn build_skyrim_se_minimal_nif() -> Vec<u8> {
 /// affect steady-state memory pressure.
 #[test]
 fn parse_skyrim_se_single_node_stays_within_heap_budget() {
-    let nif_bytes = build_skyrim_se_minimal_nif();
-
     // The profiler is `Drop`-tied — collected stats reflect everything
     // allocated while it's live. Snapshot is taken inside the scope so
     // teardown allocations (the Vec / scene cleanup) don't pollute the
     // measurement.
     let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let nif_bytes = build_skyrim_se_minimal_nif();
     let _profiler = dhat::Profiler::builder().testing().build();
     let scene = parse_nif(&nif_bytes).expect("synthetic Skyrim SE NIF should parse");
     let stats = dhat::HeapStats::get();
@@ -246,18 +251,34 @@ fn bs_tri_shape_block() -> Vec<u8> {
 // fixture builds an FO4 (BSVER 130) BSTriShape with 16 real packed
 // half-float-position vertices so the loop actually runs.
 
-/// FO4-era BSTriShape body carrying 16 packed half-float-position
-/// vertices, no triangles. `vertex_desc` sets only `VF_VERTEX`
-/// (0x001) with a 2-quad (8-byte) stride: 3×f16 position + 1×f16
-/// unused-W padding (nif.xml `BSVertexData`, no `VF_TANGENTS` so the
-/// trailing slot is discarded, not `Bitangent X`). All coordinates
-/// are `0x0000` (half-float zero) — content doesn't matter, only that
-/// `num_vertices` is non-zero so `decode_bs_vertex_stream`'s
-/// allocate-then-push path actually executes.
-fn bs_tri_shape_block_with_vertices(num_vertices: u16) -> Vec<u8> {
+/// FO4-era BSTriShape body carrying `num_vertices` packed half-float-
+/// position vertices, no triangles. Without `tangent_space`, `vertex_desc`
+/// sets only `VF_VERTEX` (0x001) with a 2-quad (8-byte) stride: 3×f16
+/// position + 1×f16 unused-W padding (nif.xml `BSVertexData`, no
+/// `VF_TANGENTS` so the trailing slot is discarded, not `Bitangent X`).
+///
+/// With `tangent_space` it sets `VF_VERTEX | VF_NORMALS | VF_TANGENTS`
+/// (0x019, a 4-quad / 16-byte stride): position + `Bitangent X`, a 4-byte
+/// normal + `Bitangent Y`, and a 4-byte tangent + `Bitangent Z`. That is the
+/// descriptor every normal-mapped Skyrim SE+/FO4+ mesh carries, and the only
+/// one that runs `decode_bs_vertex_stream`'s conditional tangent pre-size
+/// (#4206, guarded by #4617).
+///
+/// Every position is `0x0000` (half-float zero) and every normal / tangent
+/// byte is `0x80` — content doesn't matter, only that `num_vertices` is
+/// non-zero so `decode_bs_vertex_stream`'s allocate-then-push path actually
+/// executes.
+fn bs_tri_shape_block_with_vertices(num_vertices: u16, tangent_space: bool) -> Vec<u8> {
     const VF_VERTEX: u64 = 0x001;
-    let vertex_size_quads: u64 = 2; // 8 bytes/vertex ÷ 4
-    let vertex_desc = (VF_VERTEX << 44) | vertex_size_quads;
+    const VF_NORMALS: u64 = 0x008;
+    const VF_TANGENTS: u64 = 0x010;
+    let (attrs, stride): (u64, u32) = if tangent_space {
+        (VF_VERTEX | VF_NORMALS | VF_TANGENTS, 16)
+    } else {
+        (VF_VERTEX, 8)
+    };
+    let vertex_size_quads = (stride / 4) as u64;
+    let vertex_desc = (attrs << 44) | vertex_size_quads;
 
     let mut d = Vec::new();
     // NiObjectNET: name=-1 (no string), extra_data count=0, controller=-1
@@ -287,14 +308,19 @@ fn bs_tri_shape_block_with_vertices(num_vertices: u16) -> Vec<u8> {
     d.extend_from_slice(&vertex_desc.to_le_bytes());
     w32(&mut d, 0); // num_triangles (FO4+ BSVER>=130: u32)
     w16(&mut d, num_vertices);
-    let data_size = 8u32 * num_vertices as u32; // stride(8) × num_vertices + 0 triangles
+    let data_size = stride * num_vertices as u32; // stride × num_vertices + 0 triangles
     w32(&mut d, data_size);
-    // Packed vertex stream: per vertex, 3×half position + 1×half padding.
+    // Packed vertex stream: per vertex, 3×half position + 1×half (unused W,
+    // or `Bitangent X` under VF_TANGENTS), then the normal and tangent quads
+    // when `tangent_space`.
     for _ in 0..num_vertices {
         w16(&mut d, 0x0000); // x (half 0.0)
         w16(&mut d, 0x0000); // y
         w16(&mut d, 0x0000); // z
-        w16(&mut d, 0x0000); // unused W (no VF_TANGENTS)
+        w16(&mut d, 0x0000); // unused W / Bitangent X
+        if tangent_space {
+            d.extend_from_slice(&[0x80; 8]); // normal + Bitangent Y, tangent + Bitangent Z
+        }
     }
     // No trailing particle_data_size field — FO4+ (BSVER >= 130) drops it
     // (`stream.bsver() < bsver::FALLOUT4` gate in `bs_tri_shape.rs`).
@@ -305,7 +331,7 @@ fn bs_tri_shape_block_with_vertices(num_vertices: u16) -> Vec<u8> {
 /// BSTriShape. `parse_nif` walks every declared block regardless of
 /// scene-graph connectivity, so no NiNode wrapper is needed (mirrors
 /// `build_skyrim_se_minimal_nif`'s single-block minimalism).
-fn build_fo4_packed_vertex_nif(num_vertices: u16) -> Vec<u8> {
+fn build_fo4_packed_vertex_nif(num_vertices: u16, tangent_space: bool) -> Vec<u8> {
     let mut nif = Vec::new();
     nif.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
     w32(&mut nif, 0x14020007); // version 20.2.0.7
@@ -328,7 +354,10 @@ fn build_fo4_packed_vertex_nif(num_vertices: u16) -> Vec<u8> {
     w32(&mut nif, 0); // num_groups
 
     let block_start = nif.len();
-    nif.extend_from_slice(&bs_tri_shape_block_with_vertices(num_vertices));
+    nif.extend_from_slice(&bs_tri_shape_block_with_vertices(
+        num_vertices,
+        tangent_space,
+    ));
     let block_size = (nif.len() - block_start) as u32;
     nif[block_sizes_offset..block_sizes_offset + 4].copy_from_slice(&block_size.to_le_bytes());
     nif
@@ -342,9 +371,8 @@ fn build_fo4_packed_vertex_nif(num_vertices: u16) -> Vec<u8> {
 /// fixtures above never execute that loop body at all.
 #[test]
 fn parse_fo4_packed_vertices_stays_within_heap_budget() {
-    let nif_bytes = build_fo4_packed_vertex_nif(16);
-
     let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let nif_bytes = build_fo4_packed_vertex_nif(16, false);
     let _profiler = dhat::Profiler::builder().testing().build();
     let scene = parse_nif(&nif_bytes).expect("synthetic FO4 packed-vertex NIF should parse");
     let stats = dhat::HeapStats::get();
@@ -368,6 +396,63 @@ fn parse_fo4_packed_vertices_stays_within_heap_budget() {
          likely reverted an allocate_vec(nv) reservation to Vec::new() + \
          per-element push growth. See #2114 / D8-02 + #833 / #831.",
         stats.max_bytes
+    );
+}
+
+/// #4617 — tangent pre-size gate (#4206). Parses the same 1000-vertex FO4
+/// BSTriShape twice, once with `VF_VERTEX` only and once with the full
+/// `VF_VERTEX | VF_NORMALS | VF_TANGENTS` tangent space, and bounds what the
+/// tangent-carrying mesh costs *over* the plain one.
+///
+/// Two things differ from the sibling gates above. The dhat fixtures never set
+/// `VF_TANGENTS`, so `decode_bs_vertex_stream`'s conditional pre-size never
+/// ran under a heap bound and a revert to `Vec::new()` stayed green. And the
+/// bound is on `total_blocks` / `total_bytes`, not `max_*`: growing a `Vec`
+/// by push-doubling only adds transient blocks, so the peak is set by the
+/// final capacity either way and barely moves. The count is 1000, not a power
+/// of two, so doubling overshoots (1024 entries) rather than landing on it.
+///
+/// Measured 2026-09-25 (`total_blocks` / `total_bytes`):
+///
+/// | tangent_space | pre-sized     | tangents reverted to `Vec::new()` |
+/// |---------------|---------------|-----------------------------------|
+/// | false         | 17 / 48 504   | 17 / 48 504                       |
+/// | true          | 19 / 64 632   | 27 / 81 336                       |
+/// | difference    | +2 / +16 128  | +10 / +32 832                     |
+///
+/// The bounds sit midway between the two differences, so the gate trips on
+/// the revert and tolerates a few allocations from the test harness's own
+/// threads on the other side (a parallel run has been seen to add ~2 blocks
+/// to one of the two measurements).
+#[test]
+fn parse_fo4_tangent_space_vertices_presizes_the_tangent_vec() {
+    let measure = |tangent_space: bool| {
+        let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let nif_bytes = build_fo4_packed_vertex_nif(1000, tangent_space);
+        let _profiler = dhat::Profiler::builder().testing().build();
+        let scene = parse_nif(&nif_bytes).expect("synthetic FO4 tangent-space NIF should parse");
+        let stats = dhat::HeapStats::get();
+        assert_eq!(scene.blocks.len(), 1, "fixture has one BSTriShape block");
+        (stats.total_blocks, stats.total_bytes)
+    };
+    let (plain_blocks, plain_bytes) = measure(false);
+    let (tangent_blocks, tangent_bytes) = measure(true);
+
+    let extra_blocks = tangent_blocks.saturating_sub(plain_blocks);
+    let extra_bytes = tangent_bytes.saturating_sub(plain_bytes);
+    assert!(
+        extra_blocks <= 6,
+        "tangent-space mesh allocated {extra_blocks} more blocks than the same mesh \
+         without tangents (measured +2 pre-sized, +10 when reverted) — \
+         decode_bs_vertex_stream likely lost its conditional tangent pre-size and is \
+         growing by push-doubling. See #4206 / #4617."
+    );
+    assert!(
+        extra_bytes < 24 * 1024,
+        "tangent-space mesh allocated {extra_bytes} more bytes than the same mesh \
+         without tangents (measured +16128 pre-sized, +32832 when reverted) — \
+         decode_bs_vertex_stream likely lost its conditional tangent pre-size and is \
+         growing by push-doubling. See #4206 / #4617."
     );
 }
 
@@ -477,9 +562,8 @@ fn build_skyrim_se_geometry_particle_nif() -> Vec<u8> {
 /// than only under audit-cadence grep.
 #[test]
 fn parse_skyrim_se_geometry_particle_stays_within_heap_budget() {
-    let nif_bytes = build_skyrim_se_geometry_particle_nif();
-
     let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let nif_bytes = build_skyrim_se_geometry_particle_nif();
     let _profiler = dhat::Profiler::builder().testing().build();
     let scene = parse_nif(&nif_bytes).expect("synthetic geometry+particle NIF should parse");
     let stats = dhat::HeapStats::get();
@@ -633,9 +717,8 @@ fn build_skin_blocks_nif() -> Vec<u8> {
 /// measured by the same dhat CI job as the sibling parser fixtures.
 #[test]
 fn parse_skin_blocks_stays_within_heap_budget() {
-    let nif_bytes = build_skin_blocks_nif();
-
     let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let nif_bytes = build_skin_blocks_nif();
     let _profiler = dhat::Profiler::builder().testing().build();
     let scene = parse_nif(&nif_bytes).expect("synthetic skin-block NIF should parse");
     let stats = dhat::HeapStats::get();

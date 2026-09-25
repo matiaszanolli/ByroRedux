@@ -1359,3 +1359,7 @@ mod bsvertex_flag_constant_tests;
 #[cfg(test)]
 #[path = "../tri_shape_vertex_desc_offset_tests.rs"]
 mod vertex_desc_offset_tests;
+
+#[cfg(test)]
+#[path = "../tri_shape_tangent_presize_tests.rs"]
+mod tangent_presize_tests;
