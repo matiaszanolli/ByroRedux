@@ -46,11 +46,14 @@ impl VulkanContext {
     /// resource via [`crate::vulkan::context::VulkanContext`] each
     /// frame and are surfaced by the `ctx.scratch` console command.
     ///
-    /// **Maintenance**: every persistent `Vec` scratch declared in this
+    /// **Maintenance**: every persistent container scratch declared in this
     /// crate must show up here. Adding a new scratch field on
     /// `VulkanContext` (or its sub-managers) without a row added below
     /// reintroduces the pre-R6 blind spot where scratches grow with
-    /// zero observability.
+    /// zero observability. The rule is enforced from source, not from a
+    /// list of names: `scratch_telemetry_coverage_tests` (in
+    /// `context/mod.rs`) walks the crate for `*_scratch` container fields
+    /// and fails on any without a row here (#4610).
     ///
     /// Reuses the caller's `Vec` to avoid a per-frame allocation in
     /// the telemetry path itself. Capacity stabilises at the number of
@@ -83,6 +86,14 @@ impl VulkanContext {
             len: self.scratch.batches_scratch.len(),
             capacity: self.scratch.batches_scratch.capacity(),
             elem_size_bytes: size_of::<draw::DrawBatch>(),
+        });
+        // #4610 — the `draw_idx -> ssbo_idx` map (#4193). Sized to the frame's
+        // draw count like `batches_scratch`, so it grows with the same scenes.
+        rows.push(ScratchRow {
+            name: "instance_map_scratch",
+            len: self.scratch.instance_map_scratch.len(),
+            capacity: self.scratch.instance_map_scratch.capacity(),
+            elem_size_bytes: size_of::<Option<u32>>(),
         });
         // #2486 / D5-01 — the two rigid-motion history maps are members of
         // the same per-frame scratch cluster (`clear` + `reserve` + shrink),

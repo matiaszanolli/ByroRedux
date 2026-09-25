@@ -13,8 +13,8 @@
 //! Moved verbatim: the split is a relocation, not a rewrite.
 
 use byroredux_core::ecs::{
-    ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, RtIntegrityStats, ScratchTelemetry,
-    ShadowMaskCensus, SkinCoverageStats, TotalTime,
+    ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, RtIntegrityStats, ScratchRow,
+    ScratchTelemetry, ShadowMaskCensus, SkinCoverageStats, TotalTime,
 };
 use byroredux_core::settings::SettingsRegistry;
 use byroredux_platform::window::{self, WindowConfig};
@@ -33,6 +33,41 @@ use crate::helpers::world_resource_set;
 use crate::systems::toggle_player_mode;
 use crate::App;
 use crate::{bench_frame_distribution, bench_gpu_inactive_token};
+
+/// One [`ScratchRow`] for a `Vec`. The element type is inferred from the field,
+/// so a row cannot report a size for a type the field no longer has.
+#[allow(clippy::ptr_arg)] // `capacity()` is the whole point; a slice has none.
+fn vec_row<T>(name: &'static str, vec: &Vec<T>) -> ScratchRow {
+    ScratchRow {
+        name,
+        len: vec.len(),
+        capacity: vec.capacity(),
+        elem_size_bytes: std::mem::size_of::<T>(),
+    }
+}
+
+/// [`vec_row`] for a hash map. Like the renderer's own hash-container rows,
+/// `capacity x elem_size` under-counts a hash table's real footprint (no
+/// control bytes, no load-factor slack): a proportional signal, not an
+/// allocator-exact figure.
+fn map_row<K, V, S>(name: &'static str, map: &std::collections::HashMap<K, V, S>) -> ScratchRow {
+    ScratchRow {
+        name,
+        len: map.len(),
+        capacity: map.capacity(),
+        elem_size_bytes: std::mem::size_of::<(K, V)>(),
+    }
+}
+
+/// [`map_row`] for a hash set.
+fn set_row<K, S>(name: &'static str, set: &std::collections::HashSet<K, S>) -> ScratchRow {
+    ScratchRow {
+        name,
+        len: set.len(),
+        capacity: set.capacity(),
+        elem_size_bytes: std::mem::size_of::<K>(),
+    }
+}
 
 impl App {
     /// Shared orderly shutdown for both the OS close button and the native
@@ -703,9 +738,9 @@ impl ApplicationHandler for App {
             ctx.fill_scratch_telemetry(&mut tlm.rows);
             tlm.renderer_row_count = tlm.rows.len();
 
-            // #3694 — the engine binary's own seven `build_render_data`
-            // scratches (`render/mod.rs`'s own doc names this exact set as
-            // "owned by the caller and cleared on entry"). Appended after
+            // #3694 — the engine binary's own `build_render_data` scratches
+            // (`render/mod.rs`'s own doc names this set as "owned by the
+            // caller and cleared on entry"). Appended after
             // `fill_scratch_telemetry`'s rows rather than folded into it:
             // that function only ever sees renderer-owned fields, and
             // `draw_commands` in particular is the quantity five of its
@@ -713,58 +748,44 @@ impl ApplicationHandler for App {
             // `batches_scratch`, both rigid-motion maps) are `reserve()`d
             // against, so it belongs in the same report even though it
             // lives on `App`, not `VulkanContext`.
-            use byroredux_core::ecs::ScratchRow;
-            tlm.rows.push(ScratchRow {
-                name: "draw_commands",
-                len: self.draw_commands.len(),
-                capacity: self.draw_commands.capacity(),
-                elem_size_bytes: std::mem::size_of::<
-                    byroredux_renderer::vulkan::context::DrawCommand,
-                >(),
-            });
-            tlm.rows.push(ScratchRow {
-                name: "water_commands",
-                len: self.water_commands.len(),
-                capacity: self.water_commands.capacity(),
-                elem_size_bytes: std::mem::size_of::<
-                    byroredux_renderer::vulkan::water::WaterDrawCommand,
-                >(),
-            });
-            tlm.rows.push(ScratchRow {
-                name: "gpu_lights",
-                len: self.gpu_lights.len(),
-                capacity: self.gpu_lights.capacity(),
-                elem_size_bytes: std::mem::size_of::<byroredux_renderer::GpuLight>(),
-            });
-            tlm.rows.push(ScratchRow {
-                name: "gpu_fog_volumes",
-                len: self.gpu_fog_volumes.len(),
-                capacity: self.gpu_fog_volumes.capacity(),
-                elem_size_bytes: std::mem::size_of::<byroredux_renderer::GpuFogVolume>(),
-            });
-            tlm.rows.push(ScratchRow {
-                name: "light_sort_scratch",
-                len: self.light_sort_scratch.len(),
-                capacity: self.light_sort_scratch.capacity(),
-                elem_size_bytes: std::mem::size_of::<(f32, byroredux_renderer::GpuLight)>(),
-            });
-            tlm.rows.push(ScratchRow {
-                name: "bone_world",
-                len: self.bone_world.len(),
-                capacity: self.bone_world.capacity(),
-                elem_size_bytes: std::mem::size_of::<[[f32; 4]; 4]>(),
-            });
-            // Hash-container row: same len/capacity-only caveat as the
-            // renderer's own `skin_dispatch_seen_scratch` /
-            // `blend_seen_scratch` rows — no control-byte / load-factor
-            // slack, a proportional signal rather than an allocator-exact
-            // one.
-            tlm.rows.push(ScratchRow {
-                name: "skin_offsets",
-                len: self.skin_offsets.len(),
-                capacity: self.skin_offsets.capacity(),
-                elem_size_bytes: std::mem::size_of::<(byroredux_core::ecs::EntityId, u32)>(),
-            });
+            //
+            // #4610 — every container field of `App` is either a row here or
+            // named, with its reason, in `app_scratch_telemetry_coverage_tests`
+            // at the bottom of this file, which derives that set from
+            // `main.rs`. The ground-cover collectors, the ground-cover model
+            // tier and the handle-dedup sets used to have no row at all.
+            let gc = &self.groundcover_collect_scratch;
+            tlm.rows.extend([
+                vec_row("draw_commands", &self.draw_commands),
+                vec_row("cover_template_draws", &self.cover_template_draws),
+                vec_row("groundcover_model_records", &self.groundcover_model_records),
+                vec_row("groundcover_model_table", &self.groundcover_model_table),
+                vec_row("water_commands", &self.water_commands),
+                vec_row("gpu_lights", &self.gpu_lights),
+                vec_row("gpu_fog_volumes", &self.gpu_fog_volumes),
+                vec_row("light_sort_scratch", &self.light_sort_scratch),
+                vec_row("bone_world", &self.bone_world),
+                map_row("skin_offsets", &self.skin_offsets),
+                vec_row("groundcover_cells", &self.groundcover_cells),
+                vec_row("groundcover_chunks", &self.groundcover_chunks),
+                vec_row("groundcover_species", &self.groundcover_species),
+                vec_row("groundcover_species_table", &self.groundcover_species_table),
+                vec_row("groundcover_disturbers", &self.groundcover_disturbers),
+                // `GroundCoverCollectScratch`'s four containers, named
+                // `<App field>.<its field>`.
+                vec_row(
+                    "groundcover_collect_scratch.resident_cells",
+                    &gc.resident_cells,
+                ),
+                vec_row("groundcover_collect_scratch.candidates", &gc.candidates),
+                map_row("groundcover_collect_scratch.emitted", &gc.emitted),
+                vec_row(
+                    "groundcover_collect_scratch.disturber_found",
+                    &gc.disturber_found,
+                ),
+                set_row("in_use_mesh_scratch", &self.in_use_mesh_scratch),
+                set_row("in_use_tex_scratch", &self.in_use_tex_scratch),
+            ]);
         }
 
         // EX-05 / #2736 — mirror the pre-tonemap non-finite pixel counters so
@@ -1450,6 +1471,200 @@ mod bench_camera_startup_order_tests {
         assert!(
             seed < scheduler,
             "bench origin must be captured before character camera sync can overwrite it"
+        );
+    }
+}
+
+/// #4610 — `about_to_wait` publishes a `ScratchTelemetry` row for every
+/// persistent scratch on `App`, so a buffer that grows with the scene is
+/// visible in `ctx.scratch`. The maintenance rule used to be "remember to add
+/// one", which is how the ground-cover collectors, the ground-cover model tier
+/// and the handle-dedup sets shipped with none.
+///
+/// This derives the set to cover from `main.rs` instead: every container field
+/// of `App` must be a row below, or be named in [`NOT_SCRATCH`] with the reason
+/// it is not a scratch. A new container field therefore forces a decision.
+#[cfg(test)]
+mod app_scratch_telemetry_coverage_tests {
+    /// Container fields of `App` that are deliberately not per-frame scratch.
+    const NOT_SCRATCH: [(&str, &str); 3] = [
+        (
+            "ui_reported_host_methods",
+            "a dedup set capped by MAX_DISTINCT_HOST_METHOD_NAMES (#2964), not a per-frame buffer",
+        ),
+        (
+            "bench_cpu_frame_ms",
+            "one sample per rendered frame of the finite --bench window, dropped at exit",
+        ),
+        (
+            "pending_player_messages",
+            "drained by the resume path (`.drain(..)`), so it holds nothing across frames",
+        ),
+    ];
+
+    /// Structs an `App` field can hold whose own container fields are scratch,
+    /// with the source that declares them. A row is named
+    /// `<App field>.<struct field>`.
+    const SCRATCH_GROUPS: [(&str, &str); 1] = [(
+        "GroundCoverCollectScratch",
+        include_str!("render/groundcover.rs"),
+    )];
+
+    const CONTAINERS: [&str; 6] = [
+        "Vec",
+        "VecDeque",
+        "FxHashMap",
+        "FxHashSet",
+        "HashMap",
+        "HashSet",
+    ];
+
+    /// The text between the braces of `struct <name> {`.
+    fn struct_body<'a>(src: &'a str, header: &str) -> &'a str {
+        let start = src
+            .find(header)
+            .unwrap_or_else(|| panic!("`{header}` not found"))
+            + header.len();
+        let mut depth = 1;
+        for (offset, c) in src[start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            if depth == 0 {
+                return &src[start..start + offset];
+            }
+        }
+        panic!("`{header}` is never closed");
+    }
+
+    /// `(name, type)` of each field, splitting on commas outside any bracket so
+    /// `HashMap<K, V>` and multi-line types stay whole. Comment lines are
+    /// dropped first.
+    fn fields(body: &str) -> Vec<(String, String)> {
+        let code: String = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (mut out, mut current, mut depth, mut prev) = (Vec::new(), String::new(), 0i32, ' ');
+        let mut flush = |current: &mut String| {
+            if let Some((name, ty)) = current.split_once(':') {
+                let ty = ty.split_whitespace().collect::<Vec<_>>().join(" ");
+                out.push((
+                    name.trim().trim_start_matches("pub(crate) ").to_string(),
+                    ty,
+                ));
+            }
+            current.clear();
+        };
+        for c in code.chars() {
+            match c {
+                '<' | '(' | '[' | '{' => depth += 1,
+                // `->` inside a `Fn() -> T` type is not a closing bracket.
+                '>' if prev == '-' => {}
+                '>' | ')' | ']' | '}' => depth -= 1,
+                _ => {}
+            }
+            if c == ',' && depth == 0 {
+                flush(&mut current);
+            } else {
+                current.push(c);
+            }
+            prev = c;
+        }
+        flush(&mut current);
+        out
+    }
+
+    /// The last path segment of a type, before any generics.
+    fn head(ty: &str) -> &str {
+        let base = ty.split('<').next().unwrap_or(ty);
+        base.rsplit("::").next().unwrap_or(base).trim()
+    }
+
+    fn is_container(ty: &str) -> bool {
+        CONTAINERS.contains(&head(ty))
+    }
+
+    #[test]
+    fn every_container_field_of_app_is_a_scratch_row_or_named_not_scratch() {
+        let main_src = include_str!("main.rs");
+        let app_fields = fields(struct_body(main_src, "\nstruct App {"));
+
+        // The rows this file publishes, and nothing else it says: the test
+        // module below spells every name it looks for.
+        let production = include_str!("app_events.rs")
+            .split_once("\n#[cfg(test)]\nmod ")
+            .expect("app_events.rs has test modules")
+            .0;
+        let rows_start = production
+            .find("tlm.rows.extend([")
+            .expect("about_to_wait must publish the App scratch rows");
+        let rows = &production[rows_start..];
+        let rows = &rows[..rows.find("]);").expect("the row list is closed")];
+
+        // Liveness: a parser that stopped matching would pass vacuously.
+        let names: Vec<&str> = app_fields.iter().map(|(n, _)| n.as_str()).collect();
+        for sentinel in [
+            "draw_commands",
+            "groundcover_model_records",
+            "skin_offsets",
+            "groundcover_collect_scratch",
+        ] {
+            assert!(
+                names.contains(&sentinel),
+                "the App field scan no longer finds `{sentinel}`; fix the scan first"
+            );
+        }
+
+        let mut problems = Vec::new();
+        for (name, ty) in &app_fields {
+            if is_container(ty) {
+                let excused = NOT_SCRATCH.iter().any(|(field, _)| field == name);
+                let has_row = rows.contains(&format!("\"{name}\", &self.{name})"));
+                if excused && has_row {
+                    problems.push(format!("`{name}` is both a row and in NOT_SCRATCH"));
+                } else if !excused && !has_row {
+                    problems.push(format!(
+                        "`App::{name}: {ty}` has no ScratchTelemetry row and is not in NOT_SCRATCH"
+                    ));
+                }
+            } else if let Some((group, group_src)) =
+                SCRATCH_GROUPS.iter().find(|(g, _)| *g == head(ty))
+            {
+                let inner = fields(struct_body(group_src, &format!("struct {group} {{")));
+                for (field, field_ty) in inner.iter().filter(|(_, t)| is_container(t)) {
+                    if !rows.contains(&format!("\"{name}.{field}\"")) {
+                        problems.push(format!(
+                            "`{group}::{field}: {field_ty}` (App::{name}) has no \
+                             `\"{name}.{field}\"` row"
+                        ));
+                    }
+                }
+            } else if head(ty).ends_with("Scratch") {
+                problems.push(format!(
+                    "`App::{name}: {ty}` looks like a scratch group; add it to SCRATCH_GROUPS \
+                     so its containers are covered"
+                ));
+            }
+        }
+
+        // An entry naming a field that is gone would silently excuse a future
+        // field of the same name.
+        for (field, _) in NOT_SCRATCH {
+            if !names.contains(&field) {
+                problems.push(format!(
+                    "NOT_SCRATCH names `{field}`, which is no longer an App field"
+                ));
+            }
+        }
+
+        assert!(
+            problems.is_empty(),
+            "\n{}\n(add a row in `about_to_wait`, or a NOT_SCRATCH entry saying why it is not a scratch — #4610)",
+            problems.join("\n")
         );
     }
 }

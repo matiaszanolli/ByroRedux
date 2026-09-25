@@ -23,11 +23,25 @@ pub(crate) fn production_text(src: &str) -> &str {
         .0
 }
 
+/// Every `.rs` file under `dir`, recursively. For the tests that walk the
+/// crate's own source to derive what a guard must cover, rather than naming it.
+#[cfg(test)]
+pub(crate) fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("readable source directory") {
+        let path = entry.expect("readable directory entry").path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::production_text;
+    use super::{production_text, rust_files};
     use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     #[test]
     fn cuts_at_the_first_test_module_and_not_at_a_test_only_import() {
@@ -79,17 +93,6 @@ mod tests {
         ("vulkan/texture.rs", 3),
         ("vulkan/water.rs", 2),
     ];
-
-    fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("readable source directory") {
-            let path = entry.expect("readable directory entry").path();
-            if path.is_dir() {
-                rust_files(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                out.push(path);
-            }
-        }
-    }
 
     /// The count of unwrapped self-including `include_str!` calls in `text`,
     /// which is the source of `file`.

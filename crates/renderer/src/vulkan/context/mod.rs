@@ -2028,20 +2028,20 @@ mod rigid_history_hasher_tests {
     }
 }
 
-/// #3693 — `fill_scratch_telemetry`'s own doc states the maintenance rule:
-/// every persistent `Vec` (or hash-container) scratch declared in this
-/// crate must show up as a row. `VulkanContext::new` needs a live Vulkan
-/// device to actually call the function, so (matching this file's
-/// `rigid_history_hasher_tests` pattern) this pins the four rows the issue
-/// found missing at the source level instead.
+/// #3693 / #4610 — `fill_scratch_telemetry`'s own doc states the maintenance
+/// rule: every persistent container scratch declared in this crate must show
+/// up as a row. `VulkanContext::new` needs a live Vulkan device to actually
+/// call the function, so (matching this file's `rigid_history_hasher_tests`
+/// pattern) this checks it at the source level.
+///
+/// #3693 pinned the four rows it found missing by name, so it could only ever
+/// catch a scratch someone had already remembered: `instance_map_scratch`
+/// (#4193) shipped without a row and the guard stayed green. This derives the
+/// set to cover from the crate's own field declarations instead.
 #[cfg(test)]
 mod scratch_telemetry_coverage_tests {
-    /// Scoped to the production portion of this file (everything before
-    /// its first `#[cfg(test)]` module) — this module's own assertions
-    /// reference the same row-name strings they check for, so an unscoped
-    /// search would self-match regardless of the producer's state. Same
-    /// convention `rigid_history_hasher_tests::production_src` and
-    /// #3674/#3675/#3690 established.
+    use std::path::Path;
+
     /// #4217 — the `fill_*` accessors moved to `telemetry.rs`, which carries
     /// no test module of its own, so there is nothing to strip: the whole
     /// file is production source. The self-match hazard the `mod.rs` version
@@ -2050,8 +2050,94 @@ mod scratch_telemetry_coverage_tests {
         include_str!("telemetry.rs")
     }
 
+    /// `text` up to its first `#[cfg(test)] mod`. Unlike
+    /// `source_scan::production_text` this tolerates a file with no test
+    /// module, which most of the crate's files are.
+    fn production_part(text: &str) -> &str {
+        text.split_once("\n#[cfg(test)]\nmod ")
+            .map_or(text, |(head, _)| head)
+    }
+
+    fn strip_visibility(line: &str) -> &str {
+        if let Some(rest) = line.strip_prefix("pub(") {
+            return rest.split_once(") ").map_or(line, |(_, after)| after);
+        }
+        line.strip_prefix("pub ").unwrap_or(line)
+    }
+
+    /// The names of struct fields declared as `<name>_scratch: <container><..>`.
+    /// A declaration, not an initialiser (`Vec::new()` has no `<`), a
+    /// parameter (`&mut Vec<..>` starts with `&`) or a doc line. Fields that
+    /// merely contain the word (`scratch_buffers`, `pending_destroy_scratch:
+    /// DeferredDestroyQueue<..>`, the AS-build scratch sizes) are GPU buffers
+    /// or non-container state, not CPU-side scratch, and do not match.
+    fn scratch_fields(text: &str) -> Vec<String> {
+        const CONTAINERS: [&str; 6] = [
+            "Vec",
+            "VecDeque",
+            "FxHashMap",
+            "FxHashSet",
+            "HashMap",
+            "HashSet",
+        ];
+        production_part(text)
+            .lines()
+            .filter_map(|line| {
+                let line = strip_visibility(line.trim_start());
+                let (name, ty) = line.split_once(':')?;
+                let is_field_name = name.ends_with("_scratch")
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+                // The type's last path segment before its `<`, so a qualified
+                // `std::collections::HashSet<u32>` counts and an initialiser
+                // (`Vec::new()`, `Vec::<u8>::new()`) does not.
+                let (head, _) = ty.trim_start().split_once('<')?;
+                let head = head.rsplit("::").next().unwrap_or(head);
+                (is_field_name && CONTAINERS.contains(&head)).then(|| name.to_string())
+            })
+            .collect()
+    }
+
+    /// Every such field in the crate must appear as a row name in
+    /// `fill_scratch_telemetry`. A row name that *ends with* the field name
+    /// counts (`water_param_scratch` reports `WaterPipeline::param_scratch`).
     #[test]
-    fn fill_scratch_telemetry_covers_all_four_previously_missing_scratches() {
+    fn fill_scratch_telemetry_covers_every_scratch_field_in_the_crate() {
+        let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        crate::source_scan::rust_files(&src_root, &mut files);
+
+        let mut fields: Vec<(String, String)> = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).expect("readable source file");
+            let relative = file
+                .strip_prefix(&src_root)
+                .expect("file is under src")
+                .to_string_lossy()
+                .replace('\\', "/");
+            fields.extend(
+                scratch_fields(&text)
+                    .into_iter()
+                    .map(|field| (field, relative.clone())),
+            );
+        }
+
+        // The scan must find what it claims to guard, in more than one struct
+        // and file — a regex that stopped matching would otherwise pass
+        // vacuously. `instance_map_scratch` is the one #4610 found missing.
+        for (sentinel, file) in [
+            ("instance_map_scratch", "vulkan/context/mod.rs"),
+            ("tlas_missing_samples_scratch", "vulkan/acceleration/mod.rs"),
+            ("param_scratch", "vulkan/water.rs"),
+        ] {
+            assert!(
+                fields.iter().any(|(f, p)| f == sentinel && p == file),
+                "the scratch-field scan no longer finds `{sentinel}` in {file}; \
+                 fix the scan before trusting this guard"
+            );
+        }
+
         let full_src = production_src();
         let fn_start = full_src
             .find("pub fn fill_scratch_telemetry(")
@@ -2062,20 +2148,18 @@ mod scratch_telemetry_coverage_tests {
             .expect("fill_skin_coverage_stats must still follow fill_scratch_telemetry");
         let body = &full_src[fn_start..fn_end];
 
-        for name in [
-            "blend_seen_scratch",
-            "tlas_addresses_scratch",
-            "tlas_missing_samples_scratch",
-            "water_param_scratch",
-        ] {
-            assert!(
-                body.contains(&format!("name: \"{name}\"")),
-                "`fill_scratch_telemetry` no longer emits a row named \
-                 \"{name}\" — every persistent scratch declared in this \
-                 crate must show up here, per the function's own \
-                 maintenance rule (#3693)",
-            );
-        }
+        let missing: Vec<String> = fields
+            .iter()
+            .filter(|(field, _)| !body.contains(&format!("{field}\"")))
+            .map(|(field, file)| format!("`{field}` ({file})"))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "`fill_scratch_telemetry` has no row for {} — every persistent scratch \
+             declared in this crate must show up here, per the function's own \
+             maintenance rule (#3693, #4610)",
+            missing.join(", "),
+        );
     }
 }
 
