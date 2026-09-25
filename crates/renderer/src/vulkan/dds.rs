@@ -508,6 +508,7 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 r_mask | g_mask | b_mask != 0,
                 "Uncompressed {bpp}-bpp DDS has empty RGB channel masks — cannot decode",
             );
+            validate_expand_masks(bpp, r_mask, g_mask, b_mask, a_mask)?;
             Ok(DdsMetadata {
                 width,
                 height,
@@ -656,10 +657,47 @@ fn scale_channel(val: u32, mask: u32) -> u8 {
         return 0;
     }
     let shift = mask.trailing_zeros();
-    let max = mask >> shift; // largest raw value the channel can hold
-    let raw = (val & mask) >> shift;
+    // #4830 — widen BEFORE multiplying. The masks are arbitrary header-
+    // controlled `u32`s, so `max` can reach `u32::MAX` and `raw * 255 + max / 2`
+    // overflowed `u32` once a mask spanned more than ~24 bits: a panic in every
+    // overflow-checked build, a silently wrapped channel in release. In `u64`
+    // the numerator is at most `255 * u32::MAX + u32::MAX / 2`, which fits,
+    // and `raw <= max` (`raw` is `val & mask` shifted down by the mask's
+    // trailing zeros) bounds the quotient by 255, so the narrowing is lossless.
+    let max = u64::from(mask >> shift); // largest raw value the channel can hold
+    let raw = u64::from((val & mask) >> shift);
     // Round-to-nearest expansion of [0, max] onto [0, 255].
     ((raw * 255 + max / 2) / max) as u8
+}
+
+/// A 16/24-bpp `DDPF_RGB` channel mask may only select bits that exist in the
+/// pixel: bits at or above `bpp` can never be set by a `bpp`-bit source value,
+/// so a mask reaching past them describes a channel that reads back as
+/// constant garbage (`raw` is bounded by the source pixel while `max` spans
+/// the phantom bits). #4830 — such a header is corrupt or hostile; rejecting
+/// it here sends the texture to the checkerboard fallback instead of decoding
+/// noise. All four masks are checked because the expander applies every
+/// non-zero one.
+fn validate_expand_masks(
+    bpp: u32,
+    r_mask: u32,
+    g_mask: u32,
+    b_mask: u32,
+    a_mask: u32,
+) -> Result<()> {
+    let pixel_bits = if bpp >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << bpp) - 1
+    };
+    for (channel, mask) in [("R", r_mask), ("G", g_mask), ("B", b_mask), ("A", a_mask)] {
+        ensure!(
+            mask & !pixel_bits == 0,
+            "Uncompressed {bpp}-bpp DDS {channel} channel mask {mask:#010x} selects bits \
+             beyond the {bpp}-bit pixel — corrupt header",
+        );
+    }
+    Ok(())
 }
 
 /// Dimension of mip level `mip_level` of a `dim`-wide/tall image: halved
@@ -1079,6 +1117,98 @@ mod tests {
         assert_eq!(scale_channel(0x01, 0x01), 255); // 1-bit set → 255
         assert_eq!(scale_channel(0xFF00, 0xFF00), 255); // 8-bit high byte
         assert_eq!(scale_channel(0, 0), 0); // empty mask
+    }
+
+    /// #4830 — the panic itself. `raw * 255 + max / 2` was `u32` arithmetic
+    /// over header-controlled masks: with a mask wider than ~24 bits and a
+    /// bright pixel the sum exceeded `u32::MAX` — "attempt to add/multiply with
+    /// overflow" in every overflow-checked build (the `dev` and `test`
+    /// profiles), a silently wrapped channel in release. The inputs below all
+    /// overflowed pre-fix; `scale_channel` must now be total.
+    #[test]
+    fn scale_channel_is_total_over_header_controlled_masks() {
+        // The reproducer from the audit: a 24-bit white pixel under an
+        // all-ones mask (raw = 0xFF_FFFF, max = 0xFFFF_FFFF). Exact result:
+        // 16_777_215 / 4_294_967_295 * 255 ≈ 0.996, which rounds to 1.
+        assert_eq!(scale_channel(0x00FF_FFFF, 0xFFFF_FFFF), 1);
+        // A channel that genuinely spans the whole `u32`: full → 255.
+        assert_eq!(scale_channel(0xFFFF_FFFF, 0xFFFF_FFFF), 255);
+        for mask in [
+            0xFFFF_FFFFu32,
+            0x8000_0000,
+            0xFF00_0000,
+            0x7FFF_FFFF,
+            0xFFFF_FF00,
+            0xF0F0_F0F0,
+            0x0000_0001,
+        ] {
+            for val in [0u32, 1, 0x00FF_FFFF, 0x8000_0000, 0xFFFF_FFFF] {
+                // Total: the call itself is the assertion (it panicked pre-fix
+                // under overflow checks). A full-mask value must hit 255.
+                let out = scale_channel(val, mask);
+                if val & mask == mask {
+                    assert_eq!(out, 255, "val {val:#x} under mask {mask:#x} selects the max");
+                }
+            }
+        }
+    }
+
+    /// #4830 — `upload_pixels` is public and `RgbExpand`'s fields are plain
+    /// data, so the expander must be safe on hostile masks even when
+    /// `parse_dds`'s validation is bypassed.
+    #[test]
+    fn expand_survives_hostile_masks_that_bypass_parse() {
+        let data = make_rgb_header(
+            1,
+            1,
+            24,
+            [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0],
+            &[0xFF, 0xFF, 0xFF],
+        );
+        let mut meta = parse_dds(&data).unwrap();
+        meta.expand = Some(RgbExpand {
+            src_bpp: 24,
+            r_mask: 0xFFFF_FFFF,
+            g_mask: 0xFF00_0000,
+            b_mask: 0x8000_0001,
+            a_mask: 0xFFFF_FF00,
+        });
+        // Pre-fix this panicked ("attempt to add with overflow"); now it
+        // returns one RGBA pixel.
+        assert_eq!(expand_uncompressed_rgb(&meta, &data).len(), 4);
+    }
+
+    /// #4830 — a mask that selects bits beyond the pixel can never be sampled
+    /// from a `bpp`-bit value: the header is corrupt. It must be rejected (the
+    /// caller falls back to the checkerboard), for each of the four masks, not
+    /// decoded into noise.
+    #[test]
+    fn reject_channel_masks_that_reach_beyond_the_pixel() {
+        // The audit's reproducer header: 24-bpp with an all-ones red mask.
+        let bad_red = make_rgb_header(
+            1,
+            1,
+            24,
+            [0xFFFF_FFFF, 0x0000_FF00, 0x0000_00FF, 0],
+            &[0xFF, 0xFF, 0xFF],
+        );
+        let err = parse_dds(&bad_red).unwrap_err().to_string();
+        assert!(err.contains("R channel mask"), "unexpected error: {err}");
+
+        // 16-bpp: a mask bit at position 16 is outside the pixel, in each channel.
+        for (channel, masks) in [
+            ("R", [0x1_7C00u32, 0x03E0, 0x001F, 0x8000]),
+            ("G", [0x7C00, 0x1_03E0, 0x001F, 0x8000]),
+            ("B", [0x7C00, 0x03E0, 0x1_001F, 0x8000]),
+            ("A", [0x7C00, 0x03E0, 0x001F, 0x1_8000]),
+        ] {
+            let data = make_rgb_header(1, 1, 16, masks, &[0, 0]);
+            let err = parse_dds(&data).unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("{channel} channel mask")),
+                "{channel} mask past bit 15 must be rejected, got: {err}"
+            );
+        }
     }
 
     #[test]
