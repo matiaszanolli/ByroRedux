@@ -218,6 +218,10 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
                 cov.gpu_groundcover_scatter_active,
             ),
         );
+        gpu_pass_ms.insert(
+            "exposure_meter".to_string(),
+            gpu_bracket_ms(cov.gpu_exposure_meter_ms, cov.gpu_exposure_meter_active),
+        );
     }
 
     let mut cpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();

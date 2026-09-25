@@ -1124,6 +1124,8 @@ impl ApplicationHandler for App {
                                     s.gpu_sky_cube_ms,
                                     // #4315 — appended last, same rule.
                                     s.gpu_groundcover_scatter_ms,
+                                    // #4618 — appended last, same rule.
+                                    s.gpu_exposure_meter_ms,
                                 ],
                                 [
                                     s.gpu_skin_dispatch_active,
@@ -1144,10 +1146,14 @@ impl ApplicationHandler for App {
                                     s.gpu_depth_history_copy_active,
                                     s.gpu_sky_cube_active,
                                     s.gpu_groundcover_scatter_active,
+                                    s.gpu_exposure_meter_active,
                                 ],
                             )
                         })
-                        .unwrap_or(([0.0; 18], [false; 18]));
+                        .unwrap_or((
+                            [0.0; crate::BENCH_GPU_KEYS.len()],
+                            [false; crate::BENCH_GPU_KEYS.len()],
+                        ));
                     let gpu_inactive = bench_gpu_inactive_token(gpu_active);
                     let rt_integrity_line = self
                         .world
@@ -1168,7 +1174,8 @@ impl ApplicationHandler for App {
                          gpu_presentation={:.3} gpu_tlas_build={:.3} \
                          gpu_caustic_splat={:.3} gpu_skin_palette={:.3} \
                          gpu_depth_history_copy={:.3} gpu_sky_cube={:.3} \
-                         gpu_groundcover_scatter={:.3}] gpu_inactive={} \
+                         gpu_groundcover_scatter={:.3} gpu_exposure_meter={:.3}] \
+                         gpu_inactive={} \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
                          sim_time_s={:.6} entities={} meshes={} textures={} \
@@ -1217,6 +1224,7 @@ impl ApplicationHandler for App {
                         gpu[15],
                         gpu[16],
                         gpu[17],
+                        gpu[18],
                         gpu_inactive,
                         systems_ms,
                         ticks_per_frame,

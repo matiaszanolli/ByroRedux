@@ -1083,6 +1083,14 @@ impl VulkanContext {
                 return;
             };
             let exposure = &self.post.exposure;
+            // #4618 — the bracket wraps the dispatch and the two stage-wide
+            // barriers `dispatch` records around it. It sits inside the two
+            // skip paths above (`exposure_meter_failed`, the raw-debug gate)
+            // and the missing-resource `else`, so a frame that never ran the
+            // meter reads inactive rather than ~0 ms.
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_exposure_meter_start(&self.device, cmd, frame);
+            }
             meter.dispatch(
                 &self.device,
                 cmd,
@@ -1091,6 +1099,9 @@ impl VulkanContext {
                 exposure.image(frame),
                 exposure.view(frame),
             );
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_exposure_meter_end(&self.device, cmd, frame);
+            }
         }
     }
 
@@ -2000,5 +2011,64 @@ mod tests {
             gate < dispatch && body[gate..dispatch].contains("return;"),
             "record_bloom_pass must return before dispatch for raw correctness views"
         );
+    }
+}
+
+/// #4618 — the exposure meter ran every frame in no GPU-timer bracket, the
+/// third pass to (#3676, #4315) after the bracket set was thought complete.
+/// This derives the set to check from `record_post_passes`'s own call list, so
+/// a new pass added there without a bracket fails here instead of showing up
+/// later as unexplained frame time.
+#[cfg(test)]
+mod post_pass_gpu_timer_bracket_tests {
+    /// Passes `record_post_passes` calls that are deliberately not bracketed,
+    /// each with why. Empty: all ten are bracketed.
+    const UNBRACKETED: [(&str, &str); 0] = [];
+
+    /// A method's text: from its `fn <name>(` header to the first closing
+    /// brace at the method indent (nested blocks are indented deeper).
+    fn method<'a>(src: &'a str, name: &str) -> &'a str {
+        let header = format!("fn {name}(");
+        let start = src
+            .find(&header)
+            .unwrap_or_else(|| panic!("`{header}` not found in post_passes.rs"));
+        let body = &src[start..];
+        &body[..body.find("\n    }\n").expect("method closes at its indent")]
+    }
+
+    #[test]
+    fn every_post_pass_is_gpu_timer_bracketed_or_deliberately_not() {
+        let src = crate::source_scan::production_text(include_str!("post_passes.rs"));
+        let calls = method(src, "record_post_passes");
+
+        let passes: Vec<&str> = calls
+            .match_indices("self.record_")
+            .filter_map(|(at, _)| {
+                let rest = &calls[at + "self.".len()..];
+                Some(&rest[..rest.find('(')?])
+            })
+            .filter(|name| name.ends_with("_pass"))
+            .collect();
+
+        // Liveness: a scan that stopped matching would pass vacuously.
+        assert!(
+            passes.len() >= 10 && passes.contains(&"record_exposure_meter_pass"),
+            "the post-pass call scan found {passes:?}; fix the scan before trusting this guard"
+        );
+
+        for pass in passes {
+            let excused = UNBRACKETED.iter().any(|(name, _)| *name == pass);
+            let bracketed = method(src, pass).contains("timers.cmd_");
+            assert!(
+                bracketed || excused,
+                "`{pass}` runs every frame from `record_post_passes` but writes no GPU timestamps, \
+                 so its cost lands in no `gpu_timers` bracket (#3676, #4315, #4618). Bracket it \
+                 (see `gpu_timers.rs`), or add it to UNBRACKETED with the reason it is not worth measuring"
+            );
+            assert!(
+                !(bracketed && excused),
+                "`{pass}` is bracketed and also in UNBRACKETED; drop the stale entry"
+            );
+        }
     }
 }

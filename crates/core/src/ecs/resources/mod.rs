@@ -750,6 +750,11 @@ pub struct SkinCoverageStats {
     /// resident ground-cover chunks. The blade draw itself is inside
     /// `gpu_main_render_ms`, not here.
     pub gpu_groundcover_scatter_ms: f32,
+    /// Exposure meter (#4618) — the luminance reduction of the post-bloom
+    /// scene and the write of the exposure texel FSR and presentation both
+    /// read, both barriers included. Inactive on a raw-debug-view frame and
+    /// after the meter latches a failure.
+    pub gpu_exposure_meter_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2513 / REN-D20-NEW-03) ───
     //
@@ -778,6 +783,7 @@ pub struct SkinCoverageStats {
     pub gpu_depth_history_copy_active: bool,
     pub gpu_sky_cube_active: bool,
     pub gpu_groundcover_scatter_active: bool,
+    pub gpu_exposure_meter_active: bool,
 }
 
 /// CPU-side per-frame wall-clock breakdown — populated by the

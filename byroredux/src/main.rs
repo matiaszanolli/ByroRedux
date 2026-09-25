@@ -128,7 +128,7 @@ fn bench_frame_max_over_p95(distribution: [f64; 3]) -> f64 {
 
 /// Bench-line key for each GPU bracket the `bench:` summary reports, in the
 /// order `app_events` copies them out of `SkinCoverageStats`.
-const BENCH_GPU_KEYS: [&str; 18] = [
+const BENCH_GPU_KEYS: [&str; 19] = [
     "skin_disp",
     "blas_refit",
     "taa",
@@ -150,6 +150,8 @@ const BENCH_GPU_KEYS: [&str; 18] = [
     "sky_cube",
     // #4315 — EXAL ground-cover interaction + scatter, appended, same rule.
     "groundcover_scatter",
+    // #4618 — the exposure meter, appended, same rule.
+    "exposure_meter",
 ];
 
 /// Value of the `bench:` line's `gpu_inactive=` token — the brackets whose
@@ -162,7 +164,7 @@ const BENCH_GPU_KEYS: [&str; 18] = [
 /// extractor matching while giving the TSV the one bit it was missing — which
 /// zeros are real measurements. `none` (not the empty string) when every
 /// reported bracket ran, so a truncated line can never read as "all active".
-fn bench_gpu_inactive_token(active: [bool; 18]) -> String {
+fn bench_gpu_inactive_token(active: [bool; BENCH_GPU_KEYS.len()]) -> String {
     let inactive: Vec<&str> = BENCH_GPU_KEYS
         .iter()
         .zip(active)
@@ -325,14 +327,17 @@ mod bench_frame_distribution_tests {
     /// pass that ran and measured zero.
     #[test]
     fn inactive_brackets_are_named_never_silently_zero() {
-        assert_eq!(bench_gpu_inactive_token([true; 18]), "none");
         assert_eq!(
-            bench_gpu_inactive_token([false; 18]),
+            bench_gpu_inactive_token([true; BENCH_GPU_KEYS.len()]),
+            "none"
+        );
+        assert_eq!(
+            bench_gpu_inactive_token([false; BENCH_GPU_KEYS.len()]),
             BENCH_GPU_KEYS.join(",")
         );
         // The realistic case: no skinned draws and TAA off under an FSR
         // preset, everything else measured.
-        let mut active = [true; 18];
+        let mut active = [true; BENCH_GPU_KEYS.len()];
         active[0] = false;
         active[1] = false;
         active[2] = false;
@@ -346,8 +351,8 @@ mod bench_frame_distribution_tests {
     fn bench_gpu_keys_match_the_reported_bracket_order() {
         assert_eq!(
             BENCH_GPU_KEYS.len(),
-            18,
-            "the bench line reports 18 of gpu_timers.rs's 19 brackets — the \
+            19,
+            "the bench line reports 19 of gpu_timers.rs's 20 brackets — the \
              ground-cover *sampling bench* owns its own report. Note the two \
              ground-cover brackets are different passes: the production \
              interaction+scatter compute IS on the line (#4315); only the \
@@ -363,6 +368,7 @@ mod bench_frame_distribution_tests {
         assert_eq!(BENCH_GPU_KEYS[15], "depth_history_copy");
         assert_eq!(BENCH_GPU_KEYS[16], "sky_cube");
         assert_eq!(BENCH_GPU_KEYS[17], "groundcover_scatter");
+        assert_eq!(BENCH_GPU_KEYS[18], "exposure_meter");
     }
 
     /// #3629 — the key list and the printed line were free to drift, and

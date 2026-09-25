@@ -37,7 +37,7 @@ Each dimension lists landed fixes as `Guard:` lines — **verify the symbol/test
 
 ## Per-frame pass inventory (verify against code; a pass missing here is itself a finding)
 
-Command-buffer order (`draw_frame` phases, `vulkan/context/`). Timer = `GpuTimerSnapshot` field (19 brackets); a new pass needs a bracket, a row here and a `memory-budget.md` row.
+Command-buffer order (`draw_frame` phases, `vulkan/context/`). Timer = `GpuTimerSnapshot` field (20 brackets); a new pass needs a bracket, a row here and a `memory-budget.md` row.
 
 | Pass | Where | Runs when | Scales with | Timer |
 |---|---|---|---|---|
@@ -58,7 +58,8 @@ Command-buffer order (`draw_frame` phases, `vulkan/context/`). Timer = `GpuTimer
 | SSAO, composite | `ssao.comp`; `composite.frag` (linear HDR) | every frame | render pixels | `ssao_ms`, `composite_ms` |
 | Bloom | down/up chain + `bloom_apply.comp` | skipped under raw debug views | pixels | `bloom_ms` |
 | TAA | `taa.comp` | only `--upscaler taa` | pixels | `taa_ms` |
-| Upscale, presentation | FSR 3.1 or native blit; exposure + ACES (+ UI quad) | every frame | output pixels (presentation does not shrink with FSR presets) | `upscale_ms`, `presentation_ms` |
+| Exposure meter | `exposure_meter.comp` via `record_exposure_meter_pass` (one workgroup; fixed mode writes a constant, auto mode does 4,096 scattered fetches); skipped on raw-debug views | every frame | fixed | `exposure_meter_ms` |
+| Upscale, presentation | FSR 3.1 or native blit; tone-map (ACES / AgX) × exposure texel (+ UI quad) | every frame | output pixels (presentation does not shrink with FSR presets) | `upscale_ms`, `presentation_ms` |
 
 Outside the loop: lazy blend-pipeline variant compilation (seconds each on a cold driver cache) and the streaming/teardown paths (Dim 7).
 

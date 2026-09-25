@@ -2,11 +2,11 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, `QUERIES_PER_FRAME` (38) TIMESTAMP queries
-//! each — 19 start/end brackets, bumped from 32/16 by #4052's
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` (40) TIMESTAMP queries
+//! each — 20 start/end brackets, bumped from 32/16 by #4052's
 //! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
-//! sky-cubemap bake, and again from 36/18 by the production ground-cover
-//! scatter (#4315):
+//! sky-cubemap bake, again from 36/18 by the production ground-cover
+//! scatter (#4315), and again from 38/19 by the exposure meter (#4618):
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -36,8 +36,8 @@
 //! | 23   | volumetrics inject+integrate — end     |
 //! | 24   | frame upscale (FSR / native blit) — start |
 //! | 25   | frame upscale (FSR / native blit) — end   |
-//! | 26   | presentation (exposure + ACES → swapchain) — start |
-//! | 27   | presentation (exposure + ACES → swapchain) — end   |
+//! | 26   | presentation (tone-map ACES / AgX × exposure texel → swapchain) — start |
+//! | 27   | presentation (tone-map ACES / AgX × exposure texel → swapchain) — end   |
 //! | 28   | skin palette + bone-buffer transfers — start         |
 //! | 29   | skin palette + bone-buffer transfers — end           |
 //! | 30   | depth → history copy — start                         |
@@ -48,6 +48,8 @@
 //! | 35   | SKYAL sky-cubemap bake (sky + cloud march) — end     |
 //! | 36   | ground-cover interaction + scatter — start           |
 //! | 37   | ground-cover interaction + scatter — end             |
+//! | 38   | exposure meter (luminance reduce + exposure texel) — start |
+//! | 39   | exposure meter (luminance reduce + exposure texel) — end   |
 //!
 //! The original four brackets (skin dispatch / skin palette / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
@@ -98,8 +100,9 @@ use ash::vk;
 
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 
-/// One TIMESTAMP query per bracket endpoint × nineteen brackets.
-const QUERIES_PER_FRAME: u32 = 38;
+/// Two TIMESTAMP queries per bracket (start, end); the module doc's table is
+/// the one place that counts them.
+const QUERIES_PER_FRAME: u32 = 40;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -154,6 +157,13 @@ const Q_SKY_CUBE_END: u32 = 35;
 /// it, which ran in no bracket at all.
 const Q_GROUNDCOVER_SCATTER_START: u32 = 36;
 const Q_GROUNDCOVER_SCATTER_END: u32 = 37;
+/// #4618 — the exposure meter: the luminance reduction and the exposure-texel
+/// write, with the two stage-wide barriers around the dispatch. It runs every
+/// frame between bloom's end and TAA / the upscale, so before this it fell in
+/// no bracket (the #3676 / #4315 class). Appended last so existing consumers
+/// keep their column positions.
+const Q_EXPOSURE_METER_START: u32 = 38;
+const Q_EXPOSURE_METER_END: u32 = 39;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -202,7 +212,8 @@ pub struct GpuTimerSnapshot {
     pub svgf_ms: f32,
     /// Composite pass — fullscreen fragment shader combining HDR +
     /// SVGF indirect + albedo + bloom + caustic + volumetrics into
-    /// the swapchain image with ACES tone-mapping. Phase-7 bracket.
+    /// the scene image as linear HDR (tone mapping happens later, in the
+    /// presentation pass, #4202). Phase-7 bracket.
     pub composite_ms: f32,
     /// SSAO compute — 16 samples per pixel, full-screen. Phase-7.
     pub ssao_ms: f32,
@@ -223,8 +234,9 @@ pub struct GpuTimerSnapshot {
     /// after a latched dispatch failure. Reads `0.0` only when the
     /// upscaler is absent entirely.
     pub upscale_ms: f32,
-    /// Presentation pass — exposure + ACES tone-map from the upscaled HDR
-    /// image into the swapchain, at **output** resolution.
+    /// Presentation pass — the exposure texel's multiply and the tone-map
+    /// (ACES or AgX) from the upscaled HDR image into the swapchain, at
+    /// **output** resolution.
     ///
     /// Reported separately from the render-resolution passes because it is
     /// the part of the frame that does *not* shrink with an FSR preset.
@@ -254,6 +266,13 @@ pub struct GpuTimerSnapshot {
     /// `record_scatter` skips on. Unlike `groundcover_bench_ms` this is
     /// production work that runs on every exterior frame.
     pub groundcover_scatter_ms: f32,
+    /// Exposure meter (#4618) — the log-luminance reduction of the post-bloom
+    /// scene and the write of this frame's exposure texel, both barriers
+    /// included. One workgroup, so it is small in fixed mode (the shader
+    /// writes a constant without sampling) and 4,096 scattered fetches in auto
+    /// mode. Inactive on a raw-debug-view frame and after the meter latches a
+    /// failure, the two cases `record_exposure_meter_pass` skips on.
+    pub exposure_meter_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2278 / PERF-D9-01) ───────
     //
@@ -283,6 +302,7 @@ pub struct GpuTimerSnapshot {
     pub groundcover_bench_active: bool,
     pub sky_cube_active: bool,
     pub groundcover_scatter_active: bool,
+    pub exposure_meter_active: bool,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
@@ -330,6 +350,8 @@ const BIT_GROUNDCOVER_BENCH: u32 = 0x0001_0000;
 const BIT_SKY_CUBE: u32 = 0x0002_0000;
 /// #4315 — the production ground-cover scatter.
 const BIT_GROUNDCOVER_SCATTER: u32 = 0x0004_0000;
+/// #4618 — the exposure meter.
+const BIT_EXPOSURE_METER: u32 = 0x0008_0000;
 
 /// Build a [`GpuTimerSnapshot`] from a raw batched TIMESTAMP read.
 /// Pulled out of [`GpuPerFrameTimers::read_and_reset`] as a pure
@@ -425,6 +447,10 @@ fn snapshot_from_bits(
     snap.groundcover_scatter_active = bits & BIT_GROUNDCOVER_SCATTER != 0;
     if snap.groundcover_scatter_active {
         snap.groundcover_scatter_ms = bracket_ms(Q_GROUNDCOVER_SCATTER_START);
+    }
+    snap.exposure_meter_active = bits & BIT_EXPOSURE_METER != 0;
+    if snap.exposure_meter_active {
+        snap.exposure_meter_ms = bracket_ms(Q_EXPOSURE_METER_START);
     }
     snap
 }
@@ -1227,6 +1253,44 @@ impl GpuPerFrameTimers {
         self.active_bits[frame] |= BIT_GROUNDCOVER_SCATTER;
     }
 
+    pub fn cmd_exposure_meter_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_EXPOSURE_METER_START,
+            );
+        }
+    }
+
+    /// Write the exposure-meter END timestamp. `BOTTOM_OF_PIPE`, so the
+    /// trailing barrier that publishes the exposure texel to FSR and the
+    /// presentation pass is inside the bracket.
+    pub fn cmd_exposure_meter_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                Q_EXPOSURE_METER_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_EXPOSURE_METER;
+    }
+
     /// Destroy every query pool. Caller must wait for queue idle
     /// before calling (matches the rest of VulkanContext's Drop
     /// ordering — query pools share the destroy-before-device
@@ -1385,6 +1449,35 @@ mod tests {
         assert_eq!(snap.groundcover_scatter_ms, 0.0);
     }
 
+    /// #4618 — the exposure meter ran every frame between bloom's end and
+    /// TAA / the upscale, inside no bracket, so neither its fixed-mode cost
+    /// nor its auto-mode cost (one workgroup, 4,096 scattered fetches between
+    /// two stage-wide barriers) could be measured while auto-exposure and AgX
+    /// were being evaluated as defaults. Its bit must drive its own slots,
+    /// and only those, in both directions — the neighbouring brackets
+    /// (bloom before it, TAA after) are the easy ones to cross-wire.
+    #[test]
+    fn exposure_meter_bracket_reports_measured_duration() {
+        let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_EXPOSURE_METER_START as usize] = 2_000;
+        ticks[Q_EXPOSURE_METER_END as usize] = 5_000;
+        ticks[Q_BLOOM_START as usize] = 10;
+        ticks[Q_BLOOM_END as usize] = 99_999;
+
+        let snap = snapshot_from_bits(BIT_EXPOSURE_METER, &ticks, 0.5);
+        assert!(snap.exposure_meter_active);
+        assert_eq!(snap.exposure_meter_ms, 3_000.0 * 0.5);
+        // Bloom's ticks are populated but its bit is not set: it must read
+        // inactive and zero, not pick up the meter's reading.
+        assert!(!snap.bloom_active);
+        assert_eq!(snap.bloom_ms, 0.0);
+
+        let snap = snapshot_from_bits(BIT_BLOOM, &ticks, 0.5);
+        assert!(snap.bloom_active);
+        assert!(!snap.exposure_meter_active);
+        assert_eq!(snap.exposure_meter_ms, 0.0);
+    }
+
     /// Regression for #4210 / PERF-D9-2026-09-11-03 — the module doc's
     /// bracket table (the `| Slot | Bracket |` markdown table at the top
     /// of this file) is unstructured prose with nothing else forcing it
@@ -1433,10 +1526,11 @@ mod tests {
     /// and pool counts — the exact rot #4210's own history predicted for
     /// the next bump. The module header
     /// is the one place that states the live numbers (`QUERIES_PER_FRAME`
-    /// (38) … 19 start/end brackets, plus the bump history "32/16 → 34/17
-    /// → 36/18"); every other comment stays count-free so the next bracket
-    /// addition has one number to move. The stale spellings are assembled
-    /// from fragments below so this test's own source can't match them.
+    /// (40) … 20 start/end brackets, plus the bump history "32/16 → 34/17
+    /// → 36/18 → 38/19"); every other comment stays count-free so the next
+    /// bracket addition has one number to move. The stale spellings are
+    /// assembled from fragments below so this test's own source can't match
+    /// them. Each bump adds the spellings it retires (#4618 added 38/19's).
     #[test]
     fn prose_outside_the_module_header_carries_no_bracket_counts() {
         let src = include_str!("gpu_timers.rs");
@@ -1445,6 +1539,10 @@ mod tests {
             format!("currently {}", 18),
             format!("{}-query", 36),
             format!("full {}", 36),
+            format!("nine{}", "teen"),
+            format!("currently {}", 19),
+            format!("{}-query", 38),
+            format!("full {}", 38),
         ];
         for pattern in &rotted {
             assert!(
