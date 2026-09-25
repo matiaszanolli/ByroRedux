@@ -63,26 +63,34 @@ bool depthIsBackgroundEps(float z, float eps) {
 #endif
 }
 
-// Recover the view-space eye distance a depth sample encodes.
+// Recover the view-space depth (distance along the camera's forward axis, in
+// world units) that a depth sample encodes at `ndcXY`.
 //
-// The GLSL twin of `Camera::linear_distance_from_depth` /
-// `linear_distance_from_depth_reversed` (core), and the one place a *decode*
-// has to know the mapping — reconstructing a world position through
-// `inv_view_proj` does not, because the inverse matrix already carries it.
+// Decoded from the inverse view-projection alone, so it needs no near/far
+// planes and no knowledge of the mapping — the inverse matrix already carries
+// both. That is the point: a decode that takes `near`/`far` as arguments is
+// only correct with the camera projection's own planes, and no shader UBO
+// carries them (`CameraUBO.screen.zw` and `CompositeParams.fog_params.xy` are
+// the cell's authored FOG near/far — a different pair, 0/0 with no lighting).
+// Feeding those to an `n / (1 - z*(1 - n/f))` inverse made the #4588 caustic
+// gate 3 %..56 % instead of 3 %, and left composite's froxel bilateral inert
+// whenever fog near was ~0 (#4831).
 //
-// Conventional: z = f/(f-n) * (1 - n/d)  =>  d = n / (1 - z*(1 - n/f))
-// Reversed:     z = (n/d - n/f)/(1 - n/f) =>  d = n / (z*(1 - n/f) + n/f)
+// Derivation: with `ndc = (x, y, z, 1)`, `P_h = invViewProj * ndc` satisfies
+// `viewProj * P_h = ndc`, so the clip position of the world point
+// `P_h.xyz / P_h.w` is `ndc / P_h.w` and its `clip.w` — the perspective
+// divisor, i.e. the view-space depth — is `1 / P_h.w`. Exact for any
+// invertible view-projection with a standard perspective last row, including
+// the TAA-jittered one, under either mapping.
 //
-// The two differ only by the affine flip `z -> 1 - z`, which is why the
-// denominators are mirror images.
-float depthLinearize(float z, float nearPlane, float farPlane) {
-    float nOverF = nearPlane / max(farPlane, 1.0e-4);
-#if BYRO_REVERSED_Z
-    float denom = z * (1.0 - nOverF) + nOverF;
-#else
-    float denom = 1.0 - z * (1.0 - nOverF);
-#endif
-    return nearPlane / max(denom, 1.0e-6);
+// The GLSL counterpart of `Camera::linear_distance_from_depth` /
+// `linear_distance_from_depth_reversed` (core), which take the planes because
+// the CPU has them.
+float depthViewSpace(mat4 invViewProj, vec2 ndcXY, float z) {
+    float w = (invViewProj * vec4(ndcXY, z, 1.0)).w;
+    // Floor only guards the divide: a surface sample's w is 1/depth, so it
+    // stays orders of magnitude above this (400000 BU far -> 2.5e-6).
+    return 1.0 / max(abs(w), 1.0e-9);
 }
 
 // True when encoded depth `a` is strictly nearer the camera than `b`.

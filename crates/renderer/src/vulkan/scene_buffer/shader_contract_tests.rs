@@ -5667,46 +5667,351 @@ fn the_depth_literal_scanner_recognises_the_shapes_it_exists_to_catch() {
 /// `composite.frag`'s `linearViewDepth` was exactly that — an inlined
 /// `n*f / (f - z*(f-n))`, correct today and silently wrong under reversed-Z,
 /// feeding the froxel bilateral's depth-compatibility test and the height-fog
-/// term. It now delegates to `depthLinearize`, whose two branches are the
-/// GLSL twins of `Camera::linear_distance_from_depth` and
-/// `linear_distance_from_depth_reversed`.
+/// term. #3308 moved it behind a plane-taking `depthLinearize`; #4831 then
+/// found the planes it was handed were the cell's authored FOG near/far, not
+/// the projection's, and replaced it with `depthViewSpace`, which decodes
+/// from `inv_view_proj` alone (`1 / (invViewProj * ndc).w`) and so needs
+/// neither the planes nor the mapping.
 ///
 /// The scan below is the general form: no shader may divide by a
-/// `farPlane - <depth> * (...)` denominator of its own.
+/// `farPlane - <depth> * (...)` denominator of its own, and no shader may
+/// resurrect a decode that takes near/far as arguments.
 #[test]
 fn every_depth_linearisation_goes_through_the_convention_header() {
     let convention = include_str!("../../../shaders/include/depth_convention.glsl");
-    assert!(convention.contains("float depthLinearize(float z, float nearPlane, float farPlane)"));
-    // Both branches present — a header that lost the reversed arm would still
-    // compile and still be wrong the moment the mapping flips.
-    assert!(convention.contains("float denom = z * (1.0 - nOverF) + nOverF;"));
-    assert!(convention.contains("float denom = 1.0 - z * (1.0 - nOverF);"));
-
-    let composite = include_str!("../../../shaders/composite.frag");
     assert!(
-        composite.contains("return depthLinearize(deviceDepth, nearPlane, farPlane);"),
-        "composite's linearViewDepth must delegate to the convention header"
+        convention.contains("float depthViewSpace(mat4 invViewProj, vec2 ndcXY, float z)"),
+        "depth_convention.glsl lost its matrix-only depth decode (#4831)"
+    );
+    assert!(
+        convention.contains("(invViewProj * vec4(ndcXY, z, 1.0)).w"),
+        "depthViewSpace must read the perspective divisor out of the inverse \
+         view-projection — that is what makes it plane- and mapping-free (#4831)"
     );
 
-    // No shader may re-inline a conventional linearisation. The needle is the
-    // shape of that inverse's denominator — a `farPlane`/`far`-minus-depth
-    // product — composed at runtime so this test's own source cannot match it.
+    let composite = include_str!("../../../shaders/composite.frag");
+    let linear_view_depth = extract_fn_body(composite, "float linearViewDepth(")
+        .expect("composite.frag lost linearViewDepth");
+    assert!(
+        linear_view_depth
+            .contains("depthViewSpace(params.inv_view_proj, uv * 2.0 - 1.0, deviceDepth)"),
+        "composite's linearViewDepth must delegate to the convention header, decoding \
+         through inv_view_proj (#4831); got `{linear_view_depth}`"
+    );
+
+    // No shader may re-inline a conventional linearisation, and none may call
+    // the retired plane-taking decode. Both needles are composed at runtime so
+    // this test's own source cannot match them.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let mut files = Vec::new();
     collect_shader_files(&dir, &mut files);
-    let needle = format!("{}{}", "farPlane - ", "deviceDepth");
+    let inlined = format!("{}{}", "farPlane - ", "deviceDepth");
+    let plane_taking = format!("{}{}", "depthLinear", "ize(");
     let mut offenders = Vec::new();
     for path in &files {
         let src = std::fs::read_to_string(path).expect("read shader");
-        if src.contains(&needle) {
+        if src.contains(&inlined) || src.contains(&plane_taking) {
             offenders.push(path.file_name().unwrap().to_string_lossy().into_owned());
         }
     }
     assert!(
         offenders.is_empty(),
-        "these inline a conventional depth linearisation instead of calling \
-         depthLinearize (#3308): {offenders:?}"
+        "these inline a conventional depth linearisation or call the retired \
+         plane-taking decode instead of depthViewSpace (#3308 / #4831): {offenders:?}"
     );
+}
+
+/// #4831 — the two depth decodes that fed a near/far pair into an
+/// `n / (1 - z*(1 - n/f))` inverse were handed the cell's authored FOG range
+/// (`CameraUBO.screen.zw`, `CompositeParams.fog_params.xy`) rather than the
+/// projection's planes, which no UBO carries. The decode is now matrix-only;
+/// pin that neither site can quietly grow a fog-lane dependency back.
+///
+/// Each assertion is bounded to the region it guards — the comment blocks
+/// above those regions name the very lanes that used to be misused, so a
+/// whole-file `contains` would be satisfied (or tripped) by prose.
+#[test]
+fn depth_decode_sites_read_no_fog_lanes() {
+    let composite = include_str!("../../../shaders/composite.frag");
+    let linear_view_depth = extract_fn_body(composite, "float linearViewDepth(")
+        .expect("composite.frag lost linearViewDepth");
+    assert!(
+        !linear_view_depth.contains("fog_params"),
+        "composite's linearViewDepth reads a fog lane again (#4831): `{linear_view_depth}`"
+    );
+    let bilateral = extract_fn_body(composite, "float froxelColumnDepthWeight(")
+        .expect("composite.frag lost froxelColumnDepthWeight");
+    assert!(
+        bilateral.contains("linearViewDepth(candidateUv, candidateDepth)")
+            && !bilateral.contains("fog_params"),
+        "the froxel bilateral must decode the candidate column at ITS OWN pixel \
+         through linearViewDepth and read no fog lane (#4831): `{bilateral}`"
+    );
+
+    let caustic = include_str!("../../../shaders/caustic_splat.comp");
+    let gate = caustic
+        .split_once("float receiverZ = texelFetch(depthTex, hitPixel, 0).r;")
+        .expect("caustic_splat.comp lost the #4545 landing-pixel depth gate")
+        .1
+        .split_once("const float OCCLUSION_EPS")
+        .expect("caustic_splat.comp lost OCCLUSION_EPS")
+        .0;
+    assert!(
+        gate.contains("depthViewSpace(invViewProj, pixelNdc(hitPixel), receiverZ)")
+            && gate.contains("float dHit = clip.w;"),
+        "the caustic gate must decode the receiver through invViewProj and take the \
+         hit's depth from the clip.w it was projected with (#4831): `{gate}`"
+    );
+    for lane in ["screen.z", "screen.w", "nearPlane", "farPlane"] {
+        assert!(
+            !code_lines(gate).contains(lane),
+            "the caustic occlusion gate reads `{lane}` again — `screen.zw` are the \
+             cell's FOG near/far, not the projection planes (#4831)"
+        );
+    }
+}
+
+/// `src` with every `//` comment removed, so a scan for an identifier cannot
+/// be satisfied or tripped by the prose explaining why it is gone.
+fn code_lines(src: &str) -> String {
+    src.lines()
+        .map(|l| l.split_once("//").map_or(l, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The camera the depth-decode mirrors project through: the engine's real
+/// content-scale camera (near 5 BU, far `DEFAULT_RENDER_DISTANCE`), so the
+/// planes under test are the production ones and not a fixture's.
+struct DepthFixture {
+    view_proj: byroredux_core::math::Mat4,
+    inv_view_proj: byroredux_core::math::Mat4,
+    mapping: byroredux_core::ecs::components::DepthMapping,
+    eye: byroredux_core::math::Vec3,
+    forward: byroredux_core::math::Vec3,
+    right: byroredux_core::math::Vec3,
+    up: byroredux_core::math::Vec3,
+}
+
+impl DepthFixture {
+    fn new(mapping: byroredux_core::ecs::components::DepthMapping) -> Self {
+        use byroredux_core::ecs::components::Camera;
+        use byroredux_core::math::Vec3;
+        let camera = Camera::for_content_scale(true);
+        let eye = Vec3::new(1234.0, 210.0, -880.0);
+        let forward = Vec3::new(0.3, -0.05, -1.0).normalize();
+        let right = forward.cross(Vec3::Y).normalize();
+        let up = right.cross(forward).normalize();
+        let view = byroredux_core::math::Mat4::look_at_rh(eye, eye + forward, Vec3::Y);
+        let view_proj = camera.projection_matrix_with(mapping) * view;
+        Self {
+            view_proj,
+            inv_view_proj: view_proj.inverse(),
+            mapping,
+            eye,
+            forward,
+            right,
+            up,
+        }
+    }
+
+    /// World point `depth` units along the camera's forward axis, offset
+    /// laterally by `(dx, dy)` — an off-axis pixel, so the depth is NOT the
+    /// euclidean distance and a decode that returned that would be caught.
+    fn point_at(&self, depth: f32, dx: f32, dy: f32) -> byroredux_core::math::Vec3 {
+        self.eye + self.forward * depth + self.right * dx + self.up * dy
+    }
+
+    /// What the depth attachment holds for `p` and the NDC xy it lands on.
+    fn encode(&self, p: byroredux_core::math::Vec3) -> ([f32; 2], f32, f32) {
+        let clip = self.view_proj * p.extend(1.0);
+        let ndc = clip.truncate() / clip.w;
+        ([ndc.x, ndc.y], ndc.z, clip.w)
+    }
+
+    /// `depthViewSpace` — the ONLY input the decode is given is
+    /// `inv_view_proj`, exactly what `CameraUBO.invViewProj` /
+    /// `CompositeParams.inv_view_proj` carry.
+    fn shader_view_depth(&self, ndc_xy: [f32; 2], z: f32) -> f32 {
+        let w = (self.inv_view_proj * byroredux_core::math::Vec4::new(ndc_xy[0], ndc_xy[1], z, 1.0)).w;
+        1.0 / w.abs().max(1.0e-9)
+    }
+
+    /// `depthIsInFront`.
+    fn in_front(&self, a: f32, b: f32) -> bool {
+        if self.mapping.is_reversed() {
+            a > b
+        } else {
+            a < b
+        }
+    }
+}
+
+/// The retired decode: `n / (1 - z*(1 - n/f))` fed the cell's fog range as if
+/// it were the projection's planes (conventional mapping only — that is all it
+/// ever handled correctly).
+fn retired_fog_plane_depth(z: f32, fog_near: f32, fog_far: f32) -> f32 {
+    let n = fog_near.max(1.0e-4);
+    let f = fog_far.max(n + 1.0);
+    n / (1.0 - z * (1.0 - n / f)).max(1.0e-6)
+}
+
+fn both_mappings() -> [byroredux_core::ecs::components::DepthMapping; 2] {
+    use byroredux_core::ecs::components::DepthMapping;
+    [DepthMapping::Conventional, DepthMapping::Reversed]
+}
+
+/// #4831 — `depthViewSpace` recovers the true view-space depth from the
+/// inverse view-projection alone, under either mapping, at off-axis pixels,
+/// across the range the caustic gate and the froxel bilateral care about.
+#[test]
+fn depth_view_space_decodes_true_depth_from_inv_view_proj_alone() {
+    for mapping in both_mappings() {
+        let fx = DepthFixture::new(mapping);
+        for depth in [10.0_f32, 50.0, 300.0, 1000.0, 6000.0] {
+            for (dx, dy) in [(0.0, 0.0), (0.4, -0.2), (-0.5, 0.3)] {
+                let p = fx.point_at(depth, dx * depth, dy * depth);
+                let (ndc_xy, z, clip_w) = fx.encode(p);
+                // The hit's depth is the clip.w it was projected with.
+                assert!(
+                    (clip_w - depth).abs() <= depth * 1.0e-4,
+                    "{mapping:?}: clip.w must be the view depth, got {clip_w} for {depth}"
+                );
+                let decoded = fx.shader_view_depth(ndc_xy, z);
+                assert!(
+                    (decoded - depth).abs() <= depth * 2.0e-3,
+                    "{mapping:?}: decoded {decoded} for true view depth {depth} at \
+                     offset ({dx}, {dy})"
+                );
+            }
+        }
+    }
+}
+
+/// #4588 / #4831 — the caustic occlusion gate, mirrored through the inputs the
+/// shader really receives. The pre-#4831 pin encoded and decoded with the same
+/// true planes, so it passed no matter what `caustic_splat.comp` bound; this one
+/// decodes the pixel from `inv_view_proj` and takes the hit's depth from
+/// `clip.w`, as the shader does, and reads `OCCLUSION_EPS` out of the shader so
+/// the mirror cannot drift from it.
+#[test]
+fn caustic_occlusion_gate_holds_its_tolerance_at_every_distance() {
+    let shader = include_str!("../../../shaders/caustic_splat.comp");
+    let eps: f32 = shader
+        .split_once("const float OCCLUSION_EPS = ")
+        .expect("caustic_splat.comp lost OCCLUSION_EPS")
+        .1
+        .split_once(';')
+        .expect("OCCLUSION_EPS is unterminated")
+        .0
+        .trim()
+        .parse()
+        .expect("OCCLUSION_EPS is a float literal");
+    assert!(
+        (eps - 0.03).abs() < 1.0e-6,
+        "the gate's documented tolerance is 3 % of the hit distance; if it was retuned \
+         on purpose, update this test's fixtures with it"
+    );
+
+    for mapping in both_mappings() {
+        let fx = DepthFixture::new(mapping);
+        // Receiver hit `d_hit` away; a nearer occluder on the same pixel ray.
+        let rejects = |d_hit: f32, occluder_fraction: f32| -> bool {
+            let hit = fx.point_at(d_hit, 0.25 * d_hit, -0.1 * d_hit);
+            let (ndc_xy, z_hit, d_hit_w) = fx.encode(hit);
+            // The occluder is nearer along the SAME pixel ray, and owns the
+            // depth sample there.
+            let to_hit = hit - fx.eye;
+            let occluder = fx.eye + to_hit * (1.0 - occluder_fraction);
+            let (_, z_pixel, _) = fx.encode(occluder);
+            let d_pixel = fx.shader_view_depth(ndc_xy, z_pixel);
+            fx.in_front(z_pixel, z_hit) && d_pixel < d_hit_w * (1.0 - eps)
+        };
+        for d_hit in [50.0_f32, 300.0, 1000.0] {
+            assert!(
+                rejects(d_hit, 0.15),
+                "{mapping:?}: a 15 % occluder must be rejected at {d_hit} BU"
+            );
+            assert!(
+                rejects(d_hit, 0.05),
+                "{mapping:?}: a 5 % occluder is past the 3 % band and must be rejected \
+                 at {d_hit} BU"
+            );
+            assert!(
+                !rejects(d_hit, 0.01),
+                "{mapping:?}: a 1 % depth difference is rasterization quantization and \
+                 must not be rejected at {d_hit} BU"
+            );
+            assert!(
+                !rejects(d_hit, 0.0),
+                "{mapping:?}: the receiver itself must not reject at {d_hit} BU"
+            );
+        }
+    }
+
+    // Fixture sanity — the retired decode, fed the audit's fog pairs, misses the
+    // 15 % occluder the real one catches. If this stops holding, this test lost
+    // its point (the old "NDC slop" sanity in #4588 played the same role).
+    let fx = DepthFixture::new(byroredux_core::ecs::components::DepthMapping::Conventional);
+    for (fog_near, fog_far, d_hit) in [(1500.0, 9000.0, 300.0), (100.0, 2000.0, 1000.0)] {
+        let hit = fx.point_at(d_hit, 0.0, 0.0);
+        let (_, z_hit, _) = fx.encode(hit);
+        let occluder = fx.point_at(d_hit * 0.85, 0.0, 0.0);
+        let (_, z_pixel, _) = fx.encode(occluder);
+        let old_hit = retired_fog_plane_depth(z_hit, fog_near, fog_far);
+        let old_pixel = retired_fog_plane_depth(z_pixel, fog_near, fog_far);
+        assert!(
+            !(old_pixel < old_hit * (1.0 - eps)),
+            "fixture sanity: fog ({fog_near}, {fog_far}) at {d_hit} BU must have hidden a \
+             15 % occluder from the retired decode"
+        );
+    }
+}
+
+/// #4831 — composite's froxel bilateral (`froxelColumnDepthWeight`) exists to
+/// stop in-scatter bleeding across a depth edge (the doorway leak). With the
+/// decode reading fog lanes it never fired when fog near was ~0. Mirror its
+/// weight through the real decode: a 2x depth step must reject, a same-surface
+/// neighbour must not.
+#[test]
+fn froxel_bilateral_rejects_a_doorway_depth_step() {
+    let shader = include_str!("../../../shaders/composite.frag");
+    let body = extract_fn_body(shader, "float froxelColumnDepthWeight(")
+        .expect("composite.frag lost froxelColumnDepthWeight");
+    assert!(
+        body.contains("float tolerance = max(2.0, referenceDistance * 0.01);")
+            && body.contains("1.0 - smoothstep(tolerance, tolerance * 4.0,"),
+        "the bilateral's tolerance changed; retune this mirror with it: `{body}`"
+    );
+    let smoothstep = |lo: f32, hi: f32, x: f32| {
+        let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let weight = |reference: f32, candidate: f32| {
+        let tolerance = (0.01 * reference).max(2.0);
+        1.0 - smoothstep(tolerance, tolerance * 4.0, (candidate - reference).abs())
+    };
+
+    for mapping in both_mappings() {
+        let fx = DepthFixture::new(mapping);
+        let decode_at = |depth: f32, dx: f32| {
+            let p = fx.point_at(depth, dx, 0.0);
+            let (ndc_xy, z, _) = fx.encode(p);
+            fx.shader_view_depth(ndc_xy, z)
+        };
+        for reference in [50.0_f32, 300.0, 1000.0, 5000.0] {
+            let same = weight(reference, decode_at(reference, 0.05 * reference));
+            let doorway = weight(reference, decode_at(reference * 2.0, 0.0));
+            assert!(
+                same > 0.99,
+                "{mapping:?}: a same-depth neighbour must keep full weight at {reference} BU, got {same}"
+            );
+            assert!(
+                doorway < 1.0e-3,
+                "{mapping:?}: a 2x depth step must be rejected at {reference} BU, got {doorway}"
+            );
+        }
+    }
 }
 
 /// #3927 — the lit palette branch must sample the LUT's V axis with the

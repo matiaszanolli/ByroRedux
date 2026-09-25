@@ -289,8 +289,9 @@ mod tests {
         ("caustic_splat.comp", "TINT_CHANNEL_FLOOR"),
         ("caustic_splat.comp", "CAUSTIC_TEMPORAL_JITTER_PX"),
         // #4588 — the glass-occlusion gate's relative tolerance is local to
-        // the gate it parameterizes (paired with the CPU mirror's EPS in
-        // caustic.rs), not a cross-shader budget.
+        // the gate it parameterizes (the CPU mirror in
+        // `shader_contract_tests.rs` reads it out of the shader), not a
+        // cross-shader budget.
         ("caustic_splat.comp", "OCCLUSION_EPS"),
         ("composite.frag", "CAUSTIC_FIREFLY_MAX"),
         ("water.frag", "NORMAL_PLANE_EPS"),

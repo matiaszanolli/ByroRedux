@@ -1237,51 +1237,6 @@ impl CausticPipeline {
 //     uploads.
 
 #[cfg(test)]
-mod glass_occlusion_gate_tests {
-    /// #4588 — CPU mirror of the shader's occlusion rejection, pinning the
-    /// view-space tolerance at the three audit distances. Conventional
-    /// depth: z = f/(f-n) * (1 - n/d) (the exact encoding depth_convention
-    /// .glsl's depthLinearize inverts); the old raw-NDC slop
-    /// (1e-4 + z*5e-3) is computed alongside to show what it missed.
-    fn rejects(near: f32, far: f32, d_hit: f32, d_pixel: f32) -> (bool, bool) {
-        let encode = |d: f32| far / (far - near) * (1.0 - near / d);
-        let z_hit = encode(d_hit);
-        let z_pixel = encode(d_pixel);
-        // Conventional depth: nearer surfaces have SMALLER z, so "the
-        // pixel's surface is in front of the hit" is z_pixel < z_hit —
-        // depthIsInFront(a, b) == a < b in this convention.
-        let old_slop = 1.0e-4 + z_hit * 5.0e-3;
-        let old_rejects = z_pixel < z_hit && (z_hit - z_pixel) > old_slop;
-        // New gate: linearized relative tolerance (OCCLUSION_EPS = 3%).
-        const EPS: f32 = 0.03;
-        let new_rejects = z_pixel < z_hit && d_pixel < d_hit * (1.0 - EPS);
-        (old_rejects, new_rejects)
-    }
-
-    #[test]
-    fn the_linearized_gate_catches_occluders_the_ndc_slop_missed() {
-        // Near plane 5 BU (NEAR_PLANE_BU_SCALE); an occluder 15% in front
-        // of the receiver must be rejected at every audit distance.
-        for (d_hit, label) in [(50.0, "50 BU"), (300.0, "300 BU"), (1000.0, "1000 BU")] {
-            let d_pixel = d_hit * 0.85;
-            let (old, new) = rejects(5.0, 1.0e6, d_hit, d_pixel);
-            assert!(new, "occluder 15% in front at {label} must be rejected");
-            if d_hit >= 300.0 {
-                assert!(
-                    !old,
-                    "fixture sanity at {label}: the old NDC slop must have \
-                     missed this (else this test lost its point)"
-                );
-            }
-        }
-        // And a same-surface hit (0.5% apart) must still pass — the gate
-        // cannot over-reject its own rasterization quantization band.
-        let (_, new) = rejects(5.0, 1.0e6, 300.0, 300.0 * 0.995);
-        assert!(!new, "a same-surface depth pair must not be rejected");
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::{
         caustic_megabytes, caustic_subresource_range, CAUSTIC_BYTES_PER_PIXEL, CAUSTIC_COLOR_LAYERS,

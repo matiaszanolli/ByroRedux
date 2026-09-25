@@ -146,14 +146,20 @@ float hybridSliceCoordinate(float distanceAlongRay) {
     return froxelSliceCoordinate(distanceAlongRay, params.volume_params.xyz);
 }
 
-// #3308 — delegates to `include/depth_convention.glsl` so the decode flips
-// with the depth mapping. The previous body inlined the conventional inverse
-// `n*f / (f - z*(f-n))`, which returns nonsense under reversed-Z; this
-// wrapper exists only to bind the near/far planes out of `fog_params`.
-float linearViewDepth(float deviceDepth) {
-    float nearPlane = max(params.fog_params.x, 1.0e-4);
-    float farPlane = max(params.fog_params.y, nearPlane + 1.0);
-    return depthLinearize(deviceDepth, nearPlane, farPlane);
+// View-space depth (distance along the camera's forward axis, world units) of
+// the surface `deviceDepth` encodes at `uv`.
+//
+// #3308 — delegates to `include/depth_convention.glsl` so the decode is one
+// implementation across depth mappings. #4831 — and takes NO near/far: this
+// used to bind `fog_params.xy` as the projection planes, but those are the
+// cell's authored FOG near/far. With fog near ~0 (58 % of Skyrim interiors,
+// 12 % of FNV interiors, 46-67 % of day weathers) every distance up to
+// 6000 BU decoded to <= ~0.12, far under the bilateral's 2.0 floor, so the
+// doorway-leak guard below never rejected anything; with fog near > 0
+// distances compressed toward fog far and a 2x depth step was accepted. The
+// inverse view-projection carries the real planes and the mapping.
+float linearViewDepth(vec2 uv, float deviceDepth) {
+    return depthViewSpace(params.inv_view_proj, uv * 2.0 - 1.0, deviceDepth);
 }
 
 // Depth-aware bilateral reconstruction of the coarse froxel image. Ordinary
@@ -167,7 +173,8 @@ float linearViewDepth(float deviceDepth) {
 float froxelColumnDepthWeight(
     ivec2 column,
     ivec3 froxelSize,
-    float referenceDepth
+    float referenceDepth,
+    float referenceDistance
 ) {
     ivec2 depthSize = textureSize(depthTex, 0);
     ivec2 representativePixel = clamp(
@@ -185,8 +192,8 @@ float froxelColumnDepthWeight(
         return 1.0;
     }
 
-    float referenceDistance = linearViewDepth(referenceDepth);
-    float candidateDistance = linearViewDepth(candidateDepth);
+    vec2 candidateUv = (vec2(representativePixel) + 0.5) / vec2(depthSize);
+    float candidateDistance = linearViewDepth(candidateUv, candidateDepth);
     float tolerance = max(2.0, referenceDistance * 0.01);
     return 1.0 - smoothstep(tolerance, tolerance * 4.0,
         abs(candidateDistance - referenceDistance));
@@ -214,6 +221,9 @@ vec4 sampleVolumetricColumn(
     int z1 = min(z0 + 1, size.z - 1);
     float zBlend = fract(z);
 
+    // Same for all four taps — decode the reference once, not per column.
+    float referenceDistance = linearViewDepth(uv, referenceDepth);
+
     vec4 accumulated = vec4(0.0);
     float accumulatedWeight = 0.0;
     for (int y = 0; y < 2; ++y) {
@@ -225,7 +235,8 @@ vec4 sampleVolumetricColumn(
             );
             vec2 axisWeight = mix(vec2(1.0) - blend, blend, vec2(x, y));
             float weight = axisWeight.x * axisWeight.y
-                * froxelColumnDepthWeight(column, size, referenceDepth);
+                * froxelColumnDepthWeight(
+                    column, size, referenceDepth, referenceDistance);
             vec4 columnValue = mix(
                 texelFetch(volumetricFroxel, ivec3(column, z0), 0),
                 texelFetch(volumetricFroxel, ivec3(column, z1), 0),
@@ -799,7 +810,7 @@ void main() {
         float sunAlignment = max(dot(viewDir, sunDirection), 0.0);
         float shaftLobe = pow(sunAlignment, 18.0);
         float underwaterDistance = has_surface
-            ? linearViewDepth(depth)
+            ? linearViewDepth(fragUV, depth)
             : params.volume_params.x;
         float depthRamp = 1.0 - exp(-max(underwaterDistance, 0.0) * 0.002);
         float shaftStrength = shaftLobe * depthRamp

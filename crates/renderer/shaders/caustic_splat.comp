@@ -192,9 +192,14 @@ layout(push_constant) uniform CausticPush {
 // If a future pass here genuinely needs the codec, add
 // `#include "include/oct_codec.glsl"` — do not paste a copy back.
 
+// Pixel centre in NDC xy — the screen half of every depth-buffer reconstruction
+// below (`causticScreen.zw` is the reciprocal of the caustic target size).
+vec2 pixelNdc(ivec2 pixel) {
+    return (vec2(pixel) + 0.5) * causticScreen.zw * 2.0 - 1.0;
+}
+
 vec3 reconstructWorldPos(ivec2 pixel, float depth) {
-    vec2 uv = (vec2(pixel) + 0.5) * causticScreen.zw;
-    vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 ndc = vec4(pixelNdc(pixel), depth, 1.0);
     vec4 world = invViewProj * ndc;
     // #markarth-precision — invViewProj is the camera-RELATIVE inverse; lift to
     // ABSOLUTE world (caustic source selection + TLAS interactions are absolute).
@@ -624,16 +629,22 @@ void main() {
         // growing ~d^2/near: at 300 BU with the 5-unit near plane the old
         // gate tolerated occluders within ~23% of the receiver distance,
         // and the motivating bottle case stopped rejecting past ~50-100 BU.
-        // Linearized (screen.zw carry the fog near/far ramp, the same
-        // linearization range composite.frag's depthLinearize call uses),
-        // reject when the pixel's surface sits meaningfully in FRONT of the
-        // hit: d_pixel < d_hit * (1 - eps), with eps covering same-surface
-        // rasterization quantization and the +/-8 px temporal jitter.
+        // Linearized, reject when the pixel's surface sits meaningfully in
+        // FRONT of the hit: d_pixel < d_hit * (1 - eps), with eps covering
+        // same-surface rasterization quantization and the +/-8 px temporal
+        // jitter.
+        //
+        // #4831 — both depths are decoded from the matrices, never from a
+        // near/far pair. #4588 first fed `screen.zw` to a plane-taking
+        // linearizer, but those lanes are the cell's authored FOG near/far,
+        // not the projection's planes, so the "3 %" gate was 4-56 % wherever
+        // fog near was nonzero (looser than the NDC slop it replaced past
+        // fog near ~1000). The hit's view depth is the `clip.w` it was just
+        // projected with; the pixel's comes from `invViewProj`, which carries
+        // the real planes and the depth mapping.
         float receiverZ = texelFetch(depthTex, hitPixel, 0).r;
-        float nearPlane = max(screen.z, 1.0e-4);
-        float farPlane = max(screen.w, nearPlane + 1.0);
-        float dPixel = depthLinearize(receiverZ, nearPlane, farPlane);
-        float dHit = depthLinearize(ndc.z, nearPlane, farPlane);
+        float dPixel = depthViewSpace(invViewProj, pixelNdc(hitPixel), receiverZ);
+        float dHit = clip.w;
         const float OCCLUSION_EPS = 0.03; // 3% of the hit's view distance
         if (depthIsInFront(receiverZ, ndc.z)
             && dPixel < dHit * (1.0 - OCCLUSION_EPS)) {
