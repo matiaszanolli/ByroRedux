@@ -2703,7 +2703,7 @@ mod tests {
     /// observable from behaviour.
     #[test]
     fn step_cost_rationale_is_scoped_to_history_and_names_the_real_cost_centre() {
-        let src = include_str!("world.rs");
+        let src = crate::source_scan::production_text(include_str!("world.rs"));
         let start = src
             .find("        // Static-scene fast path")
             .expect("the fast path rationale is still here");
@@ -2757,7 +2757,7 @@ mod tests {
     /// them in sync.
     #[test]
     fn kinematic_count_doc_agrees_with_the_fast_paths_own_rationale() {
-        let src = include_str!("world.rs");
+        let src = crate::source_scan::production_text(include_str!("world.rs"));
         let accessor_start = src
             .find("pub fn active_island_counts")
             .expect("the accessor must still exist under this name");

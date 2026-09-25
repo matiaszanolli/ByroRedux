@@ -2253,7 +2253,7 @@ mod tick_documentation_tests {
     /// doc-drift regressions) tying the doc to the call it describes.
     #[test]
     fn module_doc_covers_the_buoyancy_phase_and_its_ordering() {
-        let src = include_str!("sync.rs");
+        let src = crate::source_scan::production_text(include_str!("sync.rs"));
         let doc: String = src
             .lines()
             .take_while(|line| line.starts_with("//!"))
@@ -2343,7 +2343,7 @@ mod tick_documentation_tests {
     /// name twice from going unnoticed.
     #[test]
     fn profile_accessors_read_their_own_variables() {
-        let src = include_str!("sync.rs");
+        let src = crate::source_scan::production_text(include_str!("sync.rs"));
         assert!(src.contains(r#"var_os("BYRO_PROFILE")"#));
         assert!(src.contains(r#"var_os("BYRO_PROFILE_FALLERS")"#));
         // Both are absent from this test process, so both must be false —

@@ -21,6 +21,8 @@ pub mod components;
 pub mod config;
 pub mod convert;
 pub mod ragdoll;
+#[cfg(test)]
+pub(crate) mod source_scan;
 pub mod sync;
 pub mod water;
 pub mod world;
