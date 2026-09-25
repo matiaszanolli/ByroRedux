@@ -2449,7 +2449,9 @@ impl<'a> MeshBuilder<'a> {
             rt_enabled: rt,
             cache_key: None,
         };
-        let first = match self.ctx.mesh_registry.acquire_matching_scene_mesh(&probe) {
+        let (matching, fingerprint) = self.ctx.mesh_registry
+            .acquire_matching_scene_mesh_with_fingerprint(&probe);
+        let first = match matching {
             Some(handle) => handle,
             None => {
                 let upload_ctx = GpuUploadCtx {
@@ -2463,9 +2465,10 @@ impl<'a> MeshBuilder<'a> {
                     .mesh_registry
                     .upload_scene_mesh(upload_ctx, verts, idxs, rt, None)
                     .expect("Cornell shared scene-mesh upload failed");
-                self.ctx
-                    .mesh_registry
-                    .register_scene_geometry_for_sharing(handle);
+                self.ctx.mesh_registry.register_scene_geometry_for_sharing_with_fingerprint(
+                    handle,
+                    Some(fingerprint),
+                );
                 handle
             }
         };

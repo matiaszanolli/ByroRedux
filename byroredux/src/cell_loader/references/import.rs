@@ -190,6 +190,7 @@ pub(super) fn parse_and_import_nif(
 
     Some(Arc::new(CachedNifImport {
         meshes,
+        beam_volumes: Default::default(),
         geometry_dedup: Vec::new(),
         collisions,
         collision_authoring,
@@ -566,6 +567,7 @@ pub(super) fn parse_and_import_spt(
 
     Some(Arc::new(CachedNifImport {
         meshes: imported.meshes,
+        beam_volumes: Default::default(),
         geometry_dedup: Vec::new(),
         // No collisions / lights / particles / animation clips on
         // the placeholder. A tree-trunk collider would come with real

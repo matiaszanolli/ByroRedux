@@ -468,9 +468,7 @@ pub(crate) fn water_volume_from_mesh(
             min: [world_min.x, world_min.y - depth, world_min.z],
             max: world_max.to_array(),
         };
-        let surface = WaterSurfaceMesh {
-            triangles: triangles.into(),
-        };
+        let surface = WaterSurfaceMesh::new(triangles);
         return (volume, Some(surface));
     }
 

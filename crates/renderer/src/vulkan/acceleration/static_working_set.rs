@@ -1,29 +1,50 @@
 //! Current-frame ownership is independent of the LRU clock. Several BLAS
 //! batches may advance that clock before the upcoming TLAS has been built.
 
-use rustc_hash::FxHashSet;
-
-#[derive(Default)]
 pub(super) struct StaticBlasWorkingSet {
-    handles: FxHashSet<u32>,
+    /// Current generation for each dense mesh-handle slot. Handles are
+    /// registry slot IDs, so direct indexing replaces per-frame hashing;
+    /// zero means the slot has not been marked in the current generation.
+    stamps: Vec<u32>,
+    generation: u32,
+}
+
+impl Default for StaticBlasWorkingSet {
+    fn default() -> Self {
+        Self {
+            stamps: Vec::new(),
+            generation: 1,
+        }
+    }
 }
 
 impl StaticBlasWorkingSet {
     pub fn clear(&mut self) {
-        self.handles.clear();
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.stamps.fill(0);
+            self.generation = 1;
+        }
     }
 
     pub fn insert(&mut self, handle: u32) {
-        self.handles.insert(handle);
+        let index = handle as usize;
+        if self.stamps.len() <= index {
+            self.stamps.resize(index + 1, 0);
+        }
+        self.stamps[index] = self.generation;
     }
 
     pub fn replace(&mut self, handles: &[u32]) {
         self.clear();
-        self.handles.extend(handles.iter().copied());
+        for &handle in handles {
+            self.insert(handle);
+        }
     }
 
     pub fn can_evict(&self, handle: u32, last_used: u64, current: u64, min_idle: u64) -> bool {
-        !self.handles.contains(&handle) && current.saturating_sub(last_used) >= min_idle
+        self.stamps.get(handle as usize) != Some(&self.generation)
+            && current.saturating_sub(last_used) >= min_idle
     }
 }
 

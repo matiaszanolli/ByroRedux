@@ -50,6 +50,8 @@ pub enum CollisionShape {
 
 impl Component for CollisionShape {
     type Storage = SparseSetStorage<Self>;
+    // Physics caches the absence of unregistered shapes using membership generations.
+    const TRACK_CHANGES: bool = true;
 }
 
 /// Rigid body motion type — controls how the physics engine treats the body.

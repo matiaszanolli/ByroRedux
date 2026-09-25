@@ -799,8 +799,9 @@ pub(super) fn build_composite_params(
     let is_exterior = sky_params.is_exterior;
     let interior_show_sky = !is_exterior && sky_params.interior_show_sky;
     let interior_portal_sky = !is_exterior && sky_params.portal_outdoor_sky.is_some();
+    let outdoor = sky_params.portal_outdoor_sky.map(|palette| palette.as_sky_params());
     let sky_params = if interior_portal_sky {
-        sky_params.portal_outdoor_sky.as_deref().unwrap_or(sky_params)
+        outdoor.as_ref().unwrap_or(sky_params)
     } else {
         sky_params
     };
@@ -1032,12 +1033,117 @@ pub(super) fn build_sky_cube_params(
     inputs: CompositeParamsInputs<'_>,
     composite: &super::super::composite::CompositeParams,
 ) -> super::super::sky_cube::SkyCubeParams {
-    if let Some(outdoor) = inputs.sky_params.portal_outdoor_sky.as_deref() {
-        let outdoor_composite = build_composite_params(CompositeParamsInputs {
-            sky_params: outdoor,
-            ..inputs
-        });
-        super::super::sky_cube::SkyCubeParams::from_composite(&outdoor_composite)
+    if let Some(outdoor) = inputs.sky_params.portal_outdoor_sky.as_ref() {
+        // Build only the sky-cube subset. Routing this through
+        // `build_composite_params` also zeroed and filled its 256-entry
+        // aperture array, even though the cube bake consumes only sky data.
+        let weather = &outdoor.weather;
+        super::super::sky_cube::SkyCubeParams {
+            sky_zenith: [
+                outdoor.zenith_color[0],
+                outdoor.zenith_color[1],
+                outdoor.zenith_color[2],
+                outdoor.sun_size,
+            ],
+            sky_horizon: [
+                outdoor.horizon_color[0],
+                outdoor.horizon_color[1],
+                outdoor.horizon_color[2],
+                inputs.froxel_slice_count,
+            ],
+            sky_lower: [
+                outdoor.lower_color[0],
+                outdoor.lower_color[1],
+                outdoor.lower_color[2],
+                if !outdoor.is_exterior && outdoor.interior_show_sky {
+                    1.0
+                } else {
+                    0.0
+                },
+            ],
+            sun_dir: [
+                outdoor.sun_direction[0],
+                outdoor.sun_direction[1],
+                outdoor.sun_direction[2],
+                outdoor.sun_intensity,
+            ],
+            sun_color: [
+                outdoor.sun_color[0],
+                outdoor.sun_color[1],
+                outdoor.sun_color[2],
+                f32::from_bits(outdoor.sun_texture_index),
+            ],
+            cloud_params: [
+                outdoor.cloud_scroll[0],
+                outdoor.cloud_scroll[1],
+                outdoor.cloud_tile_scale,
+                f32::from_bits(outdoor.cloud_texture_index),
+            ],
+            cloud_params_1: [
+                outdoor.cloud_scroll_1[0],
+                outdoor.cloud_scroll_1[1],
+                outdoor.cloud_tile_scale_1,
+                f32::from_bits(outdoor.cloud_texture_index_1),
+            ],
+            cloud_params_2: [
+                outdoor.cloud_scroll_2[0],
+                outdoor.cloud_scroll_2[1],
+                outdoor.cloud_tile_scale_2,
+                f32::from_bits(outdoor.cloud_texture_index_2),
+            ],
+            cloud_params_3: [
+                outdoor.cloud_scroll_3[0],
+                outdoor.cloud_scroll_3[1],
+                outdoor.cloud_tile_scale_3,
+                f32::from_bits(outdoor.cloud_texture_index_3),
+            ],
+            cloud_tint_0: weather.cloud_tints[0],
+            cloud_tint_1: weather.cloud_tints[1],
+            cloud_tint_2: weather.cloud_tints[2],
+            cloud_tint_3: weather.cloud_tints[3],
+            weather_params: [
+                weather.precipitation[0],
+                weather.precipitation[1],
+                weather.thunder_frequency,
+                outdoor.weather_time_seconds,
+            ],
+            weather_wind: [
+                weather.wind_direction[0],
+                weather.wind_speed,
+                weather.wind_direction[1],
+                0.0,
+            ],
+            weather_lightning: [
+                weather.lightning_color[0],
+                weather.lightning_color[1],
+                weather.lightning_color[2],
+                weather.moon_glare,
+            ],
+            weather_sky: [
+                weather.stars_color[0],
+                weather.stars_color[1],
+                weather.stars_color[2],
+                weather.sun_glare,
+            ],
+            weather_aurora: [
+                weather.aurora_intensity,
+                if weather.aurora_follows_sun { 1.0 } else { 0.0 },
+                weather.cloud_coverage,
+                0.0,
+            ],
+            depth_params: [
+                if outdoor.is_exterior { 1.0 } else { 0.0 },
+                f32::from_bits(inputs.render_debug_flags),
+                f32::from_bits(inputs.render_debug_mode),
+                (inputs.frame_counter & 0x00ff_ffff) as f32,
+            ],
+            sun_illuminance: [
+                outdoor.sun_illuminance[0],
+                outdoor.sun_illuminance[1],
+                outdoor.sun_illuminance[2],
+                0.0,
+            ],
+        }
     } else {
         super::super::sky_cube::SkyCubeParams::from_composite(composite)
     }
@@ -1104,7 +1210,7 @@ mod composite_params_tests {
         let room = SkyParams {
             zenith_color: [0.01, 0.02, 0.03],
             is_exterior: false,
-            portal_outdoor_sky: Some(Box::new(outdoor)),
+            portal_outdoor_sky: Some(outdoor.into()),
             ..SkyParams::default()
         };
         let mut window = GpuFogVolume::default();
@@ -1151,6 +1257,7 @@ mod composite_params_tests {
         assert_eq!(composite.sky_apertures[0].center[..3], [90.0, 180.0, 270.0]);
         assert_eq!(composite.sky_apertures[0].half_extents[..3], [10.0, 20.0, 5.0]);
         assert_eq!(cube.depth_params[0], 1.0);
+        assert_eq!(cube.sky_lower[3], 0.0);
         assert_eq!(cube.sky_zenith[..3], [0.7, 0.2, 0.1]);
         assert_eq!(cube.sky_horizon[..3], [0.9, 0.4, 0.2]);
         assert_eq!(cube.sun_dir[..3], [0.2, 0.8, 0.4]);
@@ -1160,11 +1267,11 @@ mod composite_params_tests {
         // would also turn on rain and the beyond-grid height-fog tail).
         let show_sky_room = SkyParams {
             interior_show_sky: true,
-            portal_outdoor_sky: Some(Box::new(SkyParams {
+            portal_outdoor_sky: Some(SkyParams {
                 zenith_color: [0.7, 0.2, 0.1],
                 is_exterior: true,
                 ..SkyParams::default()
-            })),
+            }.into()),
             ..SkyParams::default()
         };
         let show_sky = build_composite_params(CompositeParamsInputs {

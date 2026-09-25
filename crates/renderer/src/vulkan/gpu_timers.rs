@@ -2,7 +2,7 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, `QUERIES_PER_FRAME` (40) TIMESTAMP queries
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` (46) TIMESTAMP queries
 //! each — 20 start/end brackets, bumped from 32/16 by #4052's
 //! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
 //! sky-cubemap bake, again from 36/18 by the production ground-cover
@@ -50,6 +50,12 @@
 //! | 37   | ground-cover interaction + scatter — end             |
 //! | 38   | exposure meter (luminance reduce + exposure texel) — start |
 //! | 39   | exposure meter (luminance reduce + exposure texel) — end   |
+//! | 40 | groundcover models — start |
+//! | 41 | groundcover models — end |
+//! | 42 | volumetrics inject — start |
+//! | 43 | volumetrics inject — end |
+//! | 44 | volumetrics integrate — start |
+//! | 45 | volumetrics integrate — end |
 //!
 //! The original four brackets (skin dispatch / skin palette / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
@@ -102,7 +108,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 
 /// Two TIMESTAMP queries per bracket (start, end); the module doc's table is
 /// the one place that counts them.
-const QUERIES_PER_FRAME: u32 = 40;
+const QUERIES_PER_FRAME: u32 = 46;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -164,15 +170,21 @@ const Q_GROUNDCOVER_SCATTER_END: u32 = 37;
 /// keep their column positions.
 const Q_EXPOSURE_METER_START: u32 = 38;
 const Q_EXPOSURE_METER_END: u32 = 39;
+const Q_GROUNDCOVER_MODELS_START: u32 = 40;
+const Q_GROUNDCOVER_MODELS_END: u32 = 41;
+const Q_VOLUMETRICS_INJECT_START: u32 = 42;
+const Q_VOLUMETRICS_INJECT_END: u32 = 43;
+const Q_VOLUMETRICS_INTEGRATE_START: u32 = 44;
+const Q_VOLUMETRICS_INTEGRATE_END: u32 = 45;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
 /// first complete pipelined cycle.
 ///
-/// **Upper bound, not a precise attribution (#2040 / PERF-D9-01).** Every
-/// bracket's START timestamp is written at `vk::PipelineStageFlags::
-/// TOP_OF_PIPE` (see the `cmd_*_start` methods below), the earliest point
-/// in the pipeline. If prior in-flight GPU work is still draining when a
+/// **Upper bound, not a precise attribution (#2040 / PERF-D9-01).** Many
+/// brackets start at `TOP_OF_PIPE`, the earliest point in the pipeline.
+/// Main render, volumetrics and ground-cover models instead start at
+/// `COMPUTE_SHADER` to exclude preceding compute work's queue drain. If prior in-flight GPU work is still draining when a
 /// bracket's START command reaches the front of the queue, that queue-wait
 /// is absorbed into the bracket's reported time rather than attributed to
 /// whatever was still running. Each field is therefore a ceiling on that
@@ -181,6 +193,7 @@ const Q_EXPOSURE_METER_END: u32 = 39;
 /// queue-wait could be double-counted across adjacent brackets.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GpuTimerSnapshot {
+    pub volumetrics_state: byroredux_core::ecs::resources::VolumetricsFrameState,
     pub skin_dispatch_ms: f32,
     /// Bone-world / bind-inverse transfer commands plus `skin_palette.comp`.
     /// Host-side staging memcpys are intentionally not included: timestamps
@@ -273,6 +286,9 @@ pub struct GpuTimerSnapshot {
     /// mode. Inactive on a raw-debug-view frame and after the meter latches a
     /// failure, the two cases `record_exposure_meter_pass` skips on.
     pub exposure_meter_ms: f32,
+    pub groundcover_models_ms: f32,
+    pub volumetrics_inject_ms: f32,
+    pub volumetrics_integrate_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2278 / PERF-D9-01) ───────
     //
@@ -303,10 +319,14 @@ pub struct GpuTimerSnapshot {
     pub sky_cube_active: bool,
     pub groundcover_scatter_active: bool,
     pub exposure_meter_active: bool,
+    pub groundcover_models_active: bool,
+    pub volumetrics_inject_active: bool,
+    pub volumetrics_integrate_active: bool,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
 pub struct GpuPerFrameTimers {
+    volumetrics_state: [byroredux_core::ecs::resources::VolumetricsFrameState; MAX_FRAMES_IN_FLIGHT],
     pools: [vk::QueryPool; MAX_FRAMES_IN_FLIGHT],
     /// Ticks → milliseconds multiplier
     /// (`timestamp_period_ns * 1e-6`).
@@ -352,6 +372,9 @@ const BIT_SKY_CUBE: u32 = 0x0002_0000;
 const BIT_GROUNDCOVER_SCATTER: u32 = 0x0004_0000;
 /// #4618 — the exposure meter.
 const BIT_EXPOSURE_METER: u32 = 0x0008_0000;
+const BIT_GROUNDCOVER_MODELS: u32 = 1 << 20;
+const BIT_VOLUMETRICS_INJECT: u32 = 1 << 21;
+const BIT_VOLUMETRICS_INTEGRATE: u32 = 1 << 22;
 
 /// Build a [`GpuTimerSnapshot`] from a raw batched TIMESTAMP read.
 /// Pulled out of [`GpuPerFrameTimers::read_and_reset`] as a pure
@@ -452,6 +475,18 @@ fn snapshot_from_bits(
     if snap.exposure_meter_active {
         snap.exposure_meter_ms = bracket_ms(Q_EXPOSURE_METER_START);
     }
+    snap.groundcover_models_active = bits & BIT_GROUNDCOVER_MODELS != 0;
+    if snap.groundcover_models_active {
+        snap.groundcover_models_ms = bracket_ms(Q_GROUNDCOVER_MODELS_START);
+    }
+    snap.volumetrics_inject_active = bits & BIT_VOLUMETRICS_INJECT != 0;
+    if snap.volumetrics_inject_active {
+        snap.volumetrics_inject_ms = bracket_ms(Q_VOLUMETRICS_INJECT_START);
+    }
+    snap.volumetrics_integrate_active = bits & BIT_VOLUMETRICS_INTEGRATE != 0;
+    if snap.volumetrics_integrate_active {
+        snap.volumetrics_integrate_ms = bracket_ms(Q_VOLUMETRICS_INTEGRATE_START);
+    }
     snap
 }
 
@@ -501,6 +536,7 @@ impl GpuPerFrameTimers {
             pools,
             ticks_to_ms: caps.timestamp_period_ns * 1.0e-6,
             active_bits: [0; MAX_FRAMES_IN_FLIGHT],
+            volumetrics_state: [Default::default(); MAX_FRAMES_IN_FLIGHT],
             last_snapshot: GpuTimerSnapshot::default(),
         }))
     }
@@ -553,6 +589,10 @@ impl GpuPerFrameTimers {
         }
 
         self.last_snapshot = snapshot_from_bits(bits, &ticks, self.ticks_to_ms);
+        if self.last_snapshot.volumetrics_inject_active {
+            self.last_snapshot.volumetrics_state = self.volumetrics_state[frame];
+        }
+        self.volumetrics_state[frame] = Default::default();
 
         // Reset the slot for the upcoming frame's writes.
         // SAFETY: the fence preceding `read_and_reset` guarantees all GPU work for
@@ -561,6 +601,10 @@ impl GpuPerFrameTimers {
             device.reset_query_pool(pool, 0, QUERIES_PER_FRAME);
         }
         self.active_bits[frame] = 0;
+    }
+
+    pub fn note_volumetrics_state(&mut self, frame: usize, state: byroredux_core::ecs::resources::VolumetricsFrameState) {
+        self.volumetrics_state[frame] = state;
     }
 
     /// Last snapshot read by [`Self::read_and_reset`]. Zero-defaulted
@@ -713,10 +757,10 @@ impl GpuPerFrameTimers {
     }
 
     /// Write the main-render-pass START timestamp. Caller writes
-    /// this immediately before `cmd_begin_render_pass`; the END
-    /// goes right after `cmd_end_render_pass`. `TOP_OF_PIPE` on
-    /// start so the timestamp captures the moment work for the
-    /// pass is queued, not when prior compute work finishes.
+    /// this immediately before `cmd_begin_render_pass`; the END goes right
+    /// after `cmd_end_render_pass`. Use `COMPUTE_SHADER` for the START so
+    /// earlier compute work, including the sky-cube bake recorded before
+    /// this pass, completes before the interval begins.
     pub fn cmd_main_render_start(
         &mut self,
         device: &ash::Device,
@@ -727,7 +771,7 @@ impl GpuPerFrameTimers {
         unsafe {
             device.cmd_write_timestamp(
                 cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
                 self.pools[frame],
                 Q_MAIN_RENDER_START,
             );
@@ -1040,7 +1084,7 @@ impl GpuPerFrameTimers {
         unsafe {
             device.cmd_write_timestamp(
                 cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
                 self.pools[frame],
                 Q_VOLUMETRICS_START,
             );
@@ -1291,6 +1335,111 @@ impl GpuPerFrameTimers {
         self.active_bits[frame] |= BIT_EXPOSURE_METER;
     }
 
+    pub fn cmd_groundcover_models_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_GROUNDCOVER_MODELS_START,
+            );
+        }
+    }
+
+    pub fn cmd_groundcover_models_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                Q_GROUNDCOVER_MODELS_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_GROUNDCOVER_MODELS;
+    }
+
+    pub fn cmd_volumetrics_inject_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_VOLUMETRICS_INJECT_START,
+            );
+        }
+    }
+
+    pub fn cmd_volumetrics_inject_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_VOLUMETRICS_INJECT_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_VOLUMETRICS_INJECT;
+    }
+
+    pub fn cmd_volumetrics_integrate_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_VOLUMETRICS_INTEGRATE_START,
+            );
+        }
+    }
+
+    pub fn cmd_volumetrics_integrate_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_VOLUMETRICS_INTEGRATE_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_VOLUMETRICS_INTEGRATE;
+    }
+
     /// Destroy every query pool. Caller must wait for queue idle
     /// before calling (matches the rest of VulkanContext's Drop
     /// ordering — query pools share the destroy-before-device
@@ -1476,6 +1625,72 @@ mod tests {
         assert!(snap.bloom_active);
         assert!(!snap.exposure_meter_active);
         assert_eq!(snap.exposure_meter_ms, 0.0);
+    }
+
+    #[test]
+    fn groundcover_models_bracket_reports_measured_duration() {
+        let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_GROUNDCOVER_MODELS_START as usize] = 2_000;
+        ticks[Q_GROUNDCOVER_MODELS_END as usize] = 5_000;
+        ticks[Q_BLOOM_START as usize] = 10;
+        ticks[Q_BLOOM_END as usize] = 99_999;
+
+        let snap = snapshot_from_bits(BIT_GROUNDCOVER_MODELS, &ticks, 0.5);
+        assert!(snap.groundcover_models_active);
+        assert_eq!(snap.groundcover_models_ms, 3_000.0 * 0.5);
+        // Bloom's ticks are populated but its bit is not set: it must read
+        // inactive and zero, not pick up the meter's reading.
+        assert!(!snap.bloom_active);
+        assert_eq!(snap.bloom_ms, 0.0);
+
+        let snap = snapshot_from_bits(BIT_BLOOM, &ticks, 0.5);
+        assert!(snap.bloom_active);
+        assert!(!snap.groundcover_models_active);
+        assert_eq!(snap.groundcover_models_ms, 0.0);
+    }
+
+    #[test]
+    fn volumetrics_inject_bracket_reports_measured_duration() {
+        let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_VOLUMETRICS_INJECT_START as usize] = 2_000;
+        ticks[Q_VOLUMETRICS_INJECT_END as usize] = 5_000;
+        ticks[Q_BLOOM_START as usize] = 10;
+        ticks[Q_BLOOM_END as usize] = 99_999;
+
+        let snap = snapshot_from_bits(BIT_VOLUMETRICS_INJECT, &ticks, 0.5);
+        assert!(snap.volumetrics_inject_active);
+        assert_eq!(snap.volumetrics_inject_ms, 3_000.0 * 0.5);
+        // Bloom's ticks are populated but its bit is not set: it must read
+        // inactive and zero, not pick up the meter's reading.
+        assert!(!snap.bloom_active);
+        assert_eq!(snap.bloom_ms, 0.0);
+
+        let snap = snapshot_from_bits(BIT_BLOOM, &ticks, 0.5);
+        assert!(snap.bloom_active);
+        assert!(!snap.volumetrics_inject_active);
+        assert_eq!(snap.volumetrics_inject_ms, 0.0);
+    }
+
+    #[test]
+    fn volumetrics_integrate_bracket_reports_measured_duration() {
+        let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_VOLUMETRICS_INTEGRATE_START as usize] = 2_000;
+        ticks[Q_VOLUMETRICS_INTEGRATE_END as usize] = 5_000;
+        ticks[Q_BLOOM_START as usize] = 10;
+        ticks[Q_BLOOM_END as usize] = 99_999;
+
+        let snap = snapshot_from_bits(BIT_VOLUMETRICS_INTEGRATE, &ticks, 0.5);
+        assert!(snap.volumetrics_integrate_active);
+        assert_eq!(snap.volumetrics_integrate_ms, 3_000.0 * 0.5);
+        // Bloom's ticks are populated but its bit is not set: it must read
+        // inactive and zero, not pick up the meter's reading.
+        assert!(!snap.bloom_active);
+        assert_eq!(snap.bloom_ms, 0.0);
+
+        let snap = snapshot_from_bits(BIT_BLOOM, &ticks, 0.5);
+        assert!(snap.bloom_active);
+        assert!(!snap.volumetrics_integrate_active);
+        assert_eq!(snap.volumetrics_integrate_ms, 0.0);
     }
 
     /// Regression for #4210 / PERF-D9-2026-09-11-03 — the module doc's

@@ -222,6 +222,18 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
             "exposure_meter".to_string(),
             gpu_bracket_ms(cov.gpu_exposure_meter_ms, cov.gpu_exposure_meter_active),
         );
+        gpu_pass_ms.insert(
+            "groundcover_models".to_string(),
+            gpu_bracket_ms(cov.gpu_groundcover_models_ms, cov.gpu_groundcover_models_active),
+        );
+        gpu_pass_ms.insert(
+            "volumetrics_inject".to_string(),
+            gpu_bracket_ms(cov.gpu_volumetrics_inject_ms, cov.gpu_volumetrics_inject_active),
+        );
+        gpu_pass_ms.insert(
+            "volumetrics_integrate".to_string(),
+            gpu_bracket_ms(cov.gpu_volumetrics_integrate_ms, cov.gpu_volumetrics_integrate_active),
+        );
     }
 
     let mut cpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();

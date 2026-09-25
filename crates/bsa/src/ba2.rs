@@ -451,18 +451,17 @@ impl Ba2Archive {
                 poisoned.into_inner()
             }
         };
-        match entry {
+        let payload = match entry {
             Ba2Entry::General {
                 offset,
                 packed_size,
                 unpacked_size,
-            } => extract_general(
+            } => Ba2ExtractPayload::General(read_chunk_payload(
                 &mut *file,
                 *offset,
                 *packed_size,
                 *unpacked_size,
-                self.compression,
-            ),
+            )?),
             Ba2Entry::Dx10 {
                 dxgi_format,
                 width,
@@ -470,18 +469,25 @@ impl Ba2Archive {
                 num_mips,
                 is_cubemap,
                 chunks,
-            } => extract_dx10(
-                &mut *file,
-                Dx10TexInfo {
+            } => Ba2ExtractPayload::Dx10 {
+                info: Dx10TexInfo {
                     dxgi_format: *dxgi_format,
                     width: *width,
                     height: *height,
                     num_mips: *num_mips,
                     is_cubemap: *is_cubemap,
                 },
-                chunks,
-                self.compression,
-            ),
+                chunks: read_dx10_chunk_payloads(&mut *file, chunks)?,
+            },
+        };
+        drop(file);
+        match payload {
+            Ba2ExtractPayload::General(payload) => {
+                finish_chunk_payload(payload, self.compression)
+            }
+            Ba2ExtractPayload::Dx10 { info, chunks } => {
+                finish_dx10_payload(info, chunks, self.compression)
+            }
         }
     }
 }
@@ -880,23 +886,50 @@ fn decompress_chunk(
     }
 }
 
-fn extract_general<R: Read + Seek>(
+enum ChunkPayload {
+    Raw(Vec<u8>),
+    Compressed { bytes: Vec<u8>, unpacked_size: usize },
+}
+
+enum Ba2ExtractPayload {
+    General(ChunkPayload),
+    Dx10 {
+        info: Dx10TexInfo,
+        chunks: Vec<ChunkPayload>,
+    },
+}
+
+fn read_chunk_payload<R: Read + Seek>(
     reader: &mut R,
     offset: u64,
     packed_size: u32,
     unpacked_size: u32,
-    compression: Ba2Compression,
-) -> io::Result<Vec<u8>> {
+) -> io::Result<ChunkPayload> {
     reader.seek(SeekFrom::Start(offset))?;
     if packed_size == 0 {
-        // Uncompressed.
         let mut buf = vec![0u8; unpacked_size as usize];
         reader.read_exact(&mut buf)?;
-        Ok(buf)
+        Ok(ChunkPayload::Raw(buf))
     } else {
         let mut packed = vec![0u8; packed_size as usize];
         reader.read_exact(&mut packed)?;
-        decompress_chunk(&packed, unpacked_size as usize, compression)
+        Ok(ChunkPayload::Compressed {
+            bytes: packed,
+            unpacked_size: unpacked_size as usize,
+        })
+    }
+}
+
+fn finish_chunk_payload(
+    payload: ChunkPayload,
+    compression: Ba2Compression,
+) -> io::Result<Vec<u8>> {
+    match payload {
+        ChunkPayload::Raw(bytes) => Ok(bytes),
+        ChunkPayload::Compressed {
+            bytes,
+            unpacked_size,
+        } => decompress_chunk(&bytes, unpacked_size, compression),
     }
 }
 
@@ -912,29 +945,43 @@ struct Dx10TexInfo {
     is_cubemap: bool,
 }
 
+#[cfg(test)]
 fn extract_dx10<R: Read + Seek>(
     reader: &mut R,
     info: Dx10TexInfo,
     chunks: &[Dx10Chunk],
     compression: Ba2Compression,
 ) -> io::Result<Vec<u8>> {
-    // Pull each chunk's bytes (compressed or raw) and concatenate.
+    let payloads = read_dx10_chunk_payloads(reader, chunks)?;
+    finish_dx10_payload(info, payloads, compression)
+}
+
+fn read_dx10_chunk_payloads<R: Read + Seek>(
+    reader: &mut R,
+    chunks: &[Dx10Chunk],
+) -> io::Result<Vec<ChunkPayload>> {
+    chunks
+        .iter()
+        .map(|chunk| {
+            read_chunk_payload(
+                reader,
+                chunk.offset,
+                chunk.packed_size,
+                chunk.unpacked_size,
+            )
+        })
+        .collect()
+}
+
+fn finish_dx10_payload(
+    info: Dx10TexInfo,
+    chunks: Vec<ChunkPayload>,
+    compression: Ba2Compression,
+) -> io::Result<Vec<u8>> {
     let mut pixel_data = Vec::new();
     for chunk in chunks {
-        reader.seek(SeekFrom::Start(chunk.offset))?;
-        if chunk.packed_size == 0 {
-            let mut buf = vec![0u8; chunk.unpacked_size as usize];
-            reader.read_exact(&mut buf)?;
-            pixel_data.extend_from_slice(&buf);
-        } else {
-            let mut packed = vec![0u8; chunk.packed_size as usize];
-            reader.read_exact(&mut packed)?;
-            let buf = decompress_chunk(&packed, chunk.unpacked_size as usize, compression)?;
-            pixel_data.extend_from_slice(&buf);
-        }
+        pixel_data.extend_from_slice(&finish_chunk_payload(chunk, compression)?);
     }
-
-    // Reconstruct a DDS header in front of the pixel data.
     let mut dds = build_dds_header(
         info.dxgi_format,
         info.width,

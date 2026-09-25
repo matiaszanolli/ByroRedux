@@ -204,7 +204,7 @@ ENGINE_COMMIT="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unkno
 {
   printf '# harness=%s engine=%s mode=renderer-stepped camera=%s runs=%s frames=%s\n' \
     "$HARNESS_COMMIT" "$ENGINE_COMMIT" "$CAMERA_PATH" "$RUNS" "$FRAMES"
-  printf 'scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\tgpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\tgpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\tgpu_inactive\traster_cmds\n'
+  printf 'scene\tconfig\trun\tmode\tcamera\twall_fps\twall_ms\tfence_ms\tbrd_ms\tgpu_main\tgpu_svgf\tgpu_composite\tgpu_ssao\tgpu_volumetrics\tgpu_upscale\tgpu_presentation\tgpu_bloom\tsim_time_s\tentities\tdraws\tlights\ttlas\tstate_hash\tgpu_inactive\traster_cmds\tgpu_sky_cube\tgpu_tlas_build\tgpu_cluster_cull\trt_tier\tgpu_groundcover_models\tgpu_volumetrics_inject\tgpu_volumetrics_integrate\tvolumetric_rt_tier\tvolumetric_light_cap\tfroxel_x\tfroxel_y\tfroxel_z\ttransport_armed\tfog_volume_count\tfog_cluster_max_density\tfog_cluster_max_portal\n'
 } > "$TSV"
 
 for scene in "${SCENES[@]}"; do
@@ -282,6 +282,25 @@ print("\t".join([
     # on. `-` = an engine build that predates the bench-line token. Appended
     # after gpu_inactive for the same field-number reason.
     token("bench_draws_raster_cmds"),
+    # #4808 — include the bake timer in the archived frame sample so sky-cube
+    # work is not silently absorbed into gpu_main_render.
+    num("gpu_sky_cube"),
+    num("gpu_tlas_build"),
+    num("gpu_cluster_cull"),
+    num("rt_tier"),
+    num("gpu_groundcover_models"),
+    num("gpu_volumetrics_inject"),
+    num("gpu_volumetrics_integrate"),
+    num("volumetric_rt_tier"),
+    num("volumetric_light_cap"),
+    num("froxel_x"),
+    num("froxel_y"),
+    num("froxel_z"),
+    num("transport_armed"),
+    num("fog_volume_count"),
+    num("fog_cluster_max_density"),
+    num("fog_cluster_max_portal"),
+
 ]))
 PY
 )"

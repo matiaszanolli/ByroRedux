@@ -288,6 +288,7 @@ fn packed_proxy_placement_scale_is_applied_once_end_to_end() {
     );
     let cached = CachedNifImport {
         meshes: vec![mesh],
+        beam_volumes: Default::default(),
         geometry_dedup: Vec::new(),
         collisions: Vec::new(),
         collision_authoring: CollisionAuthoringSummary {
@@ -524,6 +525,7 @@ fn packed_proxy_is_keyframed_and_parented_to_visual_placement() {
     );
     let cached = CachedNifImport {
         meshes: vec![mesh],
+        beam_volumes: Default::default(),
         geometry_dedup: Vec::new(),
         collisions: Vec::new(),
         collision_authoring: CollisionAuthoringSummary {

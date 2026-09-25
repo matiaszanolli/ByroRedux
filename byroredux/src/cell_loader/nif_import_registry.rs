@@ -193,6 +193,10 @@ pub(super) fn merge_external_materials(
 
 /// Parsed + imported NIF scene data cached per unique model path.
 pub(crate) struct CachedNifImport {
+    /// Model-local beam media, materialized once on the first placement.
+    /// The import registry keys this immutable scene by model path, so both
+    /// successful matches and rejections can be reused across all placements.
+    pub(super) beam_volumes: std::sync::OnceLock<Vec<Option<Arc<[byroredux_core::ecs::FogVolume]>>>>,
     pub(super) meshes: Vec<byroredux_nif::import::ImportedMesh>,
     /// #3510 — per-mesh geometry representative, parallel to `meshes`.
     ///
@@ -345,6 +349,29 @@ pub(crate) struct CachedNifImport {
     // field here mirroring `bsx_flags` and attach `BSBound` in `spawn.rs` for
     // route parity. A future consumer keying off `BSBound` must not assume it
     // exists on cell-loaded entities.
+}
+
+impl CachedNifImport {
+    pub(super) fn beam_volumes(
+        &self,
+        model_path: Option<&str>,
+    ) -> &[Option<Arc<[byroredux_core::ecs::FogVolume]>>] {
+        self.beam_volumes.get_or_init(|| {
+            self.meshes.iter().map(|mesh| {
+                crate::fog::fnv_nellis_hangar_beam_volumes_from_mesh(model_path, mesh)
+                    .or_else(|| {
+                        crate::fog::window_beam_volume_from_mesh(model_path, mesh)
+                            .or_else(|| crate::fog::oblivion_dungeon_beam_volume_from_mesh(model_path, mesh))
+                            .or_else(|| crate::fog::authored_cone_beam_volume_from_mesh(model_path, mesh))
+                            .or_else(|| crate::fog::fnv_superwide_beam_volume_from_mesh(model_path, mesh))
+                            .or_else(|| crate::fog::vault_window_beam_volume_from_mesh(model_path, mesh))
+                            .or_else(|| crate::fog::fo4_ambient_lamp_beam_volume_from_mesh(model_path, mesh))
+                            .map(|volume| vec![volume])
+                    })
+                    .map(Arc::from)
+            }).collect()
+        })
+    }
 }
 
 /// Process-lifetime cache of parsed-and-imported NIF scenes keyed by

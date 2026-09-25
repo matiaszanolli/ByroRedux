@@ -1099,6 +1099,8 @@ pub struct VulkanContext {
     /// volume. Reset to `false` the moment a real dispatch runs (or fails —
     /// see the comment at the call site) and on resize.
     pub volumetrics_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT],
+    /// Reused volume list shared by the volumetric dispatch gate and injection.
+    volumetric_fog_scratch: Vec<super::volumetrics::GpuFogVolume>,
     pipeline_cache: vk::PipelineCache,
     /// Opaque pipeline (depth write on, no blend). Two-sided rendering
     /// uses dynamic `cmd_set_cull_mode` per draw, not a separate

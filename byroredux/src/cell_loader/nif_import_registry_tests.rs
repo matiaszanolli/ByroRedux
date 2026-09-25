@@ -19,6 +19,7 @@ use crate::parsed_nif_cache::ParsedNifCache;
 pub(crate) fn dummy_cached() -> Arc<CachedNifImport> {
     Arc::new(CachedNifImport {
         meshes: Vec::new(),
+        beam_volumes: Default::default(),
         geometry_dedup: Vec::new(),
         collisions: Vec::new(),
         collision_authoring: Default::default(),
@@ -651,4 +652,33 @@ fn touch_keys_spends_no_tick_on_a_non_resident_key() {
 
     reg.touch_keys(["door.nif"].iter().copied());
     assert_eq!(reg.next_tick, tick_before + 1, "one resident, one tick");
+}
+
+#[test]
+fn beam_classification_reuses_positive_and_negative_model_results() {
+    let mut cached = Arc::try_unwrap(dummy_cached()).ok().unwrap();
+    let mut beam = byroredux_nif::import::ImportedMesh::from_geometry(
+        vec![[-66.0, -183.0, 0.0], [64.0, 15.0, 0.0]],
+        Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+    );
+    beam.material.material_kind = byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+    beam.material.has_alpha = true;
+    let mut opaque = byroredux_nif::import::ImportedMesh::from_geometry(
+        beam.positions.clone(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+    );
+    opaque.material.has_alpha = false;
+    cached.meshes = vec![beam, opaque];
+    let path = Some("Meshes/Effects/Ambient/WindowLightBeam.nif");
+    let first = cached.beam_volumes(path);
+    assert!(first[1].is_none());
+    let allocation = first.as_ptr();
+    let media = first[0].as_ref().unwrap().clone();
+    assert_eq!(media.len(), 1);
+    assert!(media[0].is_renderable());
+    for _ in 0..100 {
+        let next = cached.beam_volumes(path);
+        assert_eq!(next.as_ptr(), allocation);
+        assert!(Arc::ptr_eq(next[0].as_ref().unwrap(), &media));
+        assert!(next[1].is_none());
+    }
 }

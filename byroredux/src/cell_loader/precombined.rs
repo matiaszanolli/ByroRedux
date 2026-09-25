@@ -826,6 +826,7 @@ pub(super) fn build_precombine_meshes(
 fn geometry_only_cached(meshes: Vec<ImportedMesh>, geometry_dedup: Vec<u32>) -> CachedNifImport {
     CachedNifImport {
         meshes,
+        beam_volumes: Default::default(),
         geometry_dedup,
         collisions: Vec::new(),
         collision_authoring: Default::default(),

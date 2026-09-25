@@ -128,7 +128,7 @@ fn bench_frame_max_over_p95(distribution: [f64; 3]) -> f64 {
 
 /// Bench-line key for each GPU bracket the `bench:` summary reports, in the
 /// order `app_events` copies them out of `SkinCoverageStats`.
-const BENCH_GPU_KEYS: [&str; 19] = [
+const BENCH_GPU_KEYS: [&str; 22] = [
     "skin_disp",
     "blas_refit",
     "taa",
@@ -152,6 +152,10 @@ const BENCH_GPU_KEYS: [&str; 19] = [
     "groundcover_scatter",
     // #4618 — the exposure meter, appended, same rule.
     "exposure_meter",
+    "groundcover_models",
+    "volumetrics_inject",
+    "volumetrics_integrate",
+
 ];
 
 /// Value of the `bench:` line's `gpu_inactive=` token — the brackets whose
@@ -351,8 +355,8 @@ mod bench_frame_distribution_tests {
     fn bench_gpu_keys_match_the_reported_bracket_order() {
         assert_eq!(
             BENCH_GPU_KEYS.len(),
-            19,
-            "the bench line reports 19 of gpu_timers.rs's 20 brackets — the \
+            22,
+            "the bench line reports 22 of gpu_timers.rs's 23 brackets — the \
              ground-cover *sampling bench* owns its own report. Note the two \
              ground-cover brackets are different passes: the production \
              interaction+scatter compute IS on the line (#4315); only the \

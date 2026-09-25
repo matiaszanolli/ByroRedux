@@ -267,6 +267,39 @@ fn has_transport_emitter(volumes: &[GpuFogVolume]) -> bool {
 /// its `simulationDt` clamps the sentinel to 0.
 pub(crate) const TRANSPORT_EXPIRED_DT: f32 = -1.0;
 
+/// A submitted expiry write has already emptied the target field. The
+/// shader may skip both transport reads and stores for this frame slot.
+const TRANSPORT_KNOWN_EMPTY_DT: f32 = -2.0;
+
+#[derive(Default)]
+struct TransportFieldState {
+    empty: [bool; MAX_FRAMES_IN_FLIGHT],
+    pending_clear: Option<usize>,
+}
+
+impl TransportFieldState {
+    fn prepare(&mut self, frame: usize, active: bool) -> bool {
+        self.pending_clear = None;
+        if active {
+            // A new source invalidates the global empty proof. Be conservative
+            // even if this command buffer is later abandoned.
+            self.empty.fill(false);
+            return false;
+        }
+        if self.empty[frame] {
+            return true;
+        }
+        self.pending_clear = Some(frame);
+        false
+    }
+
+    fn submitted(&mut self) {
+        if let Some(frame) = self.pending_clear.take() {
+            self.empty[frame] = true;
+        }
+    }
+}
+
 /// The `fog_reference.w` the inject shader receives: the history-accounted
 /// step while transport is active — including `0.0` on a paused frame, which
 /// holds the field — and [`TRANSPORT_EXPIRED_DT`] once it has lapsed.
@@ -368,6 +401,8 @@ struct FogClusterBuild {
     /// Highest touched cluster index + 1 — the entry prefix that can hold a
     /// non-zero count (#3834).
     cluster_hi: usize,
+    /// Lowest touched entry, or FOG_VOLUME_CLUSTER_COUNT for an empty build.
+    cluster_lo: usize,
     /// Live length of the dense index list: every touched cluster's density
     /// and portal segments lie in `indices[..index_len]` (#4792).
     index_len: usize,
@@ -576,6 +611,37 @@ fn fog_volume_world_aabb_half_extents(volume: &GpuFogVolume) -> Option<[f32; 3]>
     world.is_finite().then_some(world.to_array())
 }
 
+/// Cull before both the dispatch/transport gate and cluster construction.
+/// A distant source must not arm the grid-wide simulation or its linger.
+/// Keep remote apertures whose sunlight sweep can still reach this grid.
+pub(crate) fn filter_fog_volumes_for_grid(
+    volumes: &[GpuFogVolume],
+    camera_pos: [f32; 3],
+    far_distance: f32,
+    sun_direction: [f32; 3],
+    portal_sweep: bool,
+    out: &mut Vec<GpuFogVolume>,
+) {
+    let camera = Vec3::from_array(camera_pos);
+    let far = far_distance.max(1.0);
+    out.clear();
+    out.extend(volumes.iter().filter(|volume| {
+        let center = Vec3::new(volume.center_shape[0], volume.center_shape[1], volume.center_shape[2]);
+        let Some(extent) = fog_volume_world_aabb_half_extents(volume) else { return false };
+        if !center.is_finite() {
+            return false;
+        }
+        let radius = Vec3::from_array(extent).length();
+        center.distance(camera) <= far + radius
+            || (portal_sweep && fog_portal_swept_bounds(
+                volume,
+                Vec3::from_array(sun_direction),
+                camera - Vec3::splat(far),
+                far,
+            ).is_some())
+    }).copied());
+}
+
 /// World-space candidate envelope of an authored cone ring or window plane
 /// swept along incoming sunlight through the camera-centred grid.
 struct FogPortalSweep {
@@ -735,6 +801,7 @@ fn build_fog_volume_clusters(
     // than rediscovered by a post-hoc scan because the clustering loop below
     // already visits exactly the touched set.
     let mut cluster_hi = 0usize;
+    let mut cluster_lo = FOG_VOLUME_CLUSTER_COUNT;
 
     let volume_count = volumes.len().min(MAX_GPU_FOG_VOLUMES);
     upload.count = [volume_count as u32, 0, 0, 0];
@@ -801,6 +868,7 @@ fn build_fog_volume_clusters(
                             });
                             entry.portal_count += 1;
                             cluster_hi = cluster_hi.max(cluster_index + 1);
+                            cluster_lo = cluster_lo.min(cluster_index);
                         }
                     }
                 }
@@ -846,6 +914,7 @@ fn build_fog_volume_clusters(
                     });
                     entry.count += 1;
                     cluster_hi = cluster_hi.max(cluster_index + 1);
+                    cluster_lo = cluster_lo.min(cluster_index);
                 }
             }
         }
@@ -879,8 +948,13 @@ fn build_fog_volume_clusters(
     FogClusterBuild {
         grid: [grid_min[0], grid_min[1], grid_min[2], cell_size.recip()],
         cluster_hi,
+        cluster_lo,
         index_len: next as usize,
     }
+}
+
+fn fog_cluster_write_range(current: (usize, usize), previous: (usize, usize)) -> (usize, usize) {
+    (current.0.min(previous.0), current.1.max(previous.1))
 }
 
 /// Single source of truth for whether the composite shader actually
@@ -1323,22 +1397,10 @@ pub struct VolumetricsPipeline {
     fog_cluster_indices: Box<[u32]>,
     /// Admission-order scratch for the dense index packing (#4792).
     fog_cluster_refs: Vec<FogClusterRef>,
-    /// #3834 — per-frame-in-flight high-water mark: the `entries` prefix
-    /// length that the LAST write to `fog_cluster_buffers[frame]` may have
-    /// left with a non-zero `count` on the GPU.
-    ///
-    /// Each buffer is written independently every N frames, so a short frame
-    /// cannot simply upload its own touched prefix: clusters above it may
-    /// still hold a non-zero count from the last time *this* buffer was
-    /// written, and the shader would read them as live. Uploading
-    /// `0..max(this_frame, stored)` overwrites those with the CPU array's
-    /// zeros, after which everything above is known-zero again and the mark
-    /// can drop to this frame's own extent.
-    ///
-    /// Seeded to the full count so the FIRST write to each buffer is
-    /// complete: `create_host_visible` does not zero the allocation, so
-    /// before that first write the whole range is indeterminate.
-    fog_cluster_dirty_hi: [usize; MAX_FRAMES_IN_FLIGHT],
+    /// Last possibly nonzero entry range for each frame slot. The next
+    /// upload covers its union with the new range to clear stale counts.
+    /// Initially full because host-visible allocations are not zeroed.
+    fog_cluster_dirty_range: [(usize, usize); MAX_FRAMES_IN_FLIGHT],
 
     // ── Integration pass (Phase 3) ───────────────────────────────────
     integration_pipeline: vk::Pipeline,
@@ -1356,6 +1418,7 @@ pub struct VolumetricsPipeline {
     integration_param_buffers: Vec<GpuBuffer>,
     history_valid: bool,
     dispatched_this_frame: bool,
+    transport_fields: TransportFieldState,
     /// Last successfully submitted simulation time and the time recorded by
     /// the current command buffer. Promoting pending -> last only from
     /// `mark_frame_completed` keeps failed submissions from advancing dt.
@@ -1409,6 +1472,8 @@ impl VolumetricsPipeline {
         frame: usize,
         params: &VolumetricsParams,
         fog_volumes: &[GpuFogVolume],
+        mut timers: Option<&mut super::gpu_timers::GpuPerFrameTimers>,
+        rt_tier: u32,
     ) -> Result<()> {
         // #1105 / REN-D18-003 — injection descriptor binding 2 (TLAS) is
         // not written at construction; caller is required to call
@@ -1474,7 +1539,11 @@ impl VolumetricsPipeline {
             simulation_time,
             self.combustion_active_until_seconds,
         );
-        frame_params.fog_reference[3] = transport_simulation_dt(combustion_active, simulation_dt);
+        frame_params.fog_reference[3] = if self.transport_fields.prepare(frame, combustion_active) {
+            TRANSPORT_KNOWN_EMPTY_DT
+        } else {
+            transport_simulation_dt(combustion_active, simulation_dt)
+        };
         self.pending_simulation_time_seconds = Some(simulation_time);
         let camera_position = [
             frame_params.camera_pos[0],
@@ -1483,9 +1552,11 @@ impl VolumetricsPipeline {
         ];
         self.combustion_light_grid_centers[frame] = camera_position;
         self.combustion_light_grid_valid[frame] = true;
-        // #3835 — this dispatch's inject pass will `atomicAdd` into the moment
-        // buffer, so it is dirty until a drain zeroes it again.
-        self.combustion_moment_dirty[frame] = true;
+        // #3835 / #4786 — only a live transport source can contribute a
+        // luminous moment. With no emitter and no linger, transport receives
+        // the expiry sentinel and writes an empty field, so this slot's moment
+        // buffer remains zero and does not need a host drain.
+        self.combustion_moment_dirty[frame] |= combustion_active;
         let fog_far = self.far_distance_world().max(1.0);
         // #2242 (REN-D16-04) — `fog_volume_upload.count` (the shader's
         // `fogVolumeCount`) is rewritten unconditionally in BOTH branches
@@ -1497,6 +1568,7 @@ impl VolumetricsPipeline {
         // touched this frame, so their contents (which could be a
         // previous frame's, or a previous cell's) are never read.
         let mut cluster_hi = 0usize;
+        let mut cluster_lo = FOG_VOLUME_CLUSTER_COUNT;
         let mut index_len = 0usize;
         frame_params.local_volume_grid = if fog_volumes.is_empty() {
             self.fog_volume_upload.count = [0; 4];
@@ -1525,9 +1597,25 @@ impl VolumetricsPipeline {
                 &mut self.fog_cluster_refs,
             );
             cluster_hi = build.cluster_hi;
+            cluster_lo = build.cluster_lo;
             index_len = build.index_len;
             build.grid
         };
+        if let Some(timers) = timers.as_deref_mut() {
+            let (max_density_count, max_portal_count) = self.fog_cluster_entries[..cluster_hi]
+                .iter().fold((0, 0), |(density, portal), entry| {
+                    (density.max(entry.count), portal.max(entry.portal_count))
+                });
+            timers.note_volumetrics_state(frame, byroredux_core::ecs::resources::VolumetricsFrameState {
+                rt_tier,
+                light_cap: frame_params.fog_reference[2].max(0.0) as u32,
+                froxel_extent: [self.extent.width, self.extent.height, self.extent.depth],
+                transport_armed: combustion_active && simulation_dt > 0.0,
+                fog_volume_count: self.fog_volume_upload.count[0],
+                max_density_count,
+                max_portal_count,
+            });
+        }
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&frame_params))?;
         // #3834 — bound to the header plus the volumes actually populated.
         // The shader early-outs on `fogVolumeCount == 0u` and otherwise reads
@@ -1541,22 +1629,24 @@ impl VolumetricsPipeline {
             fog_volume_upload_bytes(self.fog_volume_upload.count[0] as usize),
         )?;
         if !fog_volumes.is_empty() {
-            // #3834 — upload the touched cluster prefix, not all 4096 entries
-            // and their index segments. Union with this buffer's own high-water mark so
-            // a short frame still clears counts a longer earlier frame left on
-            // the GPU; see `fog_cluster_dirty_hi`. #4792 — the index list is
-            // packed densely, so only its live length is uploaded: every entry
-            // this frame gave a non-zero count points inside it, and entries
-            // at or above `cluster_hi` upload with count 0, so no stale slot
-            // past `index_len` is ever read.
-            let write_hi = cluster_hi.max(self.fog_cluster_dirty_hi[frame]);
-            self.fog_cluster_buffers[frame]
-                .write_mapped(device, &self.fog_cluster_entries[..write_hi])?;
+            // Only entry counts need a stale-range union. The packed index
+            // array still uploads its live prefix because zero-count entries
+            // never dereference old indices.
+            let (write_lo, write_hi) = fog_cluster_write_range(
+                (cluster_lo, cluster_hi), self.fog_cluster_dirty_range[frame],
+            );
+            if write_lo < write_hi {
+                self.fog_cluster_buffers[frame].write_mapped_at(
+                    device,
+                    write_lo * std::mem::size_of::<GpuFogClusterEntry>(),
+                    &self.fog_cluster_entries[write_lo..write_hi],
+                )?;
+            }
             if index_len > 0 {
                 self.fog_cluster_index_buffers[frame]
                     .write_mapped(device, &self.fog_cluster_indices[..index_len])?;
             }
-            self.fog_cluster_dirty_hi[frame] = cluster_hi;
+            self.fog_cluster_dirty_range[frame] = (cluster_lo, cluster_hi);
         }
         // HOST → COMPUTE_SHADER (UBO flush). Defense-in-depth, not a spec
         // requirement (#4182): mapped writes made before `queue_submit` are
@@ -1610,6 +1700,9 @@ impl VolumetricsPipeline {
             history_barriers.as_flattened(),
         );
 
+        if let Some(timers) = timers.as_deref_mut() {
+            timers.cmd_volumetrics_inject_start(device, cmd, frame);
+        }
         // ── Stage C: dispatch injection ──────────────────────────────
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
@@ -1624,6 +1717,9 @@ impl VolumetricsPipeline {
         let inj_groups_y = self.extent.height.div_ceil(WORKGROUP_Y);
         let inj_groups_z = self.extent.depth.div_ceil(WORKGROUP_Z);
         device.cmd_dispatch(cmd, inj_groups_x, inj_groups_y, inj_groups_z);
+        if let Some(timers) = timers.as_deref_mut() {
+            timers.cmd_volumetrics_inject_end(device, cmd, frame);
+        }
 
         // ── Stage D: barrier between injection and integration ──────
         // Sequence the injection WRITE on the lighting volume against
@@ -1659,6 +1755,9 @@ impl VolumetricsPipeline {
             &[inj_to_int, pre_int_write],
         );
 
+        if let Some(timers) = timers.as_deref_mut() {
+            timers.cmd_volumetrics_integrate_start(device, cmd, frame);
+        }
         // ── Stage E: dispatch integration ────────────────────────────
         device.cmd_bind_pipeline(
             cmd,
@@ -1678,6 +1777,9 @@ impl VolumetricsPipeline {
         let int_groups_x = self.extent.width.div_ceil(WORKGROUP_X);
         let int_groups_y = self.extent.height.div_ceil(WORKGROUP_Y);
         device.cmd_dispatch(cmd, int_groups_x, int_groups_y, 1);
+        if let Some(timers) = timers {
+            timers.cmd_volumetrics_integrate_end(device, cmd, frame);
+        }
 
         // ── Stage F: post-integration barrier ────────────────────────
         // Make the integrated-volume WRITE visible to the composite
@@ -1712,6 +1814,7 @@ impl VolumetricsPipeline {
     pub fn signal_history_reset(&mut self) {
         self.history_valid = false;
         self.dispatched_this_frame = false;
+        self.transport_fields = TransportFieldState::default();
         self.last_simulation_time_seconds = None;
         self.pending_simulation_time_seconds = None;
         self.combustion_active_until_seconds = f32::NEG_INFINITY;
@@ -1723,6 +1826,7 @@ impl VolumetricsPipeline {
     pub fn mark_frame_completed(&mut self) {
         if self.dispatched_this_frame {
             self.history_valid = true;
+            self.transport_fields.submitted();
             self.dispatched_this_frame = false;
             self.last_simulation_time_seconds = self.pending_simulation_time_seconds.take();
         }
@@ -1977,6 +2081,7 @@ impl VolumetricsPipeline {
         }
         self.history_valid = false;
         self.dispatched_this_frame = false;
+        self.transport_fields = TransportFieldState::default();
         self.last_simulation_time_seconds = None;
         self.pending_simulation_time_seconds = None;
         self.combustion_active_until_seconds = f32::NEG_INFINITY;
@@ -2604,10 +2709,14 @@ mod unit_tests {
                 "transported combustion lost a coupled physical contract: {contract}"
             );
         }
-        assert!(
-            shader.contains("|| isTransportedProfile(profileKind))"),
-            "dynamic profiles must not also render their old analytic body"
-        );
+        let analytic_sampler = shader.split_once("LocalMedium sampleLocalMedium(vec3 worldPos)")
+            .expect("analytic sampler").1;
+        let reject = analytic_sampler.find("isTransportedProfile(authoredProfile)")
+            .expect("dynamic profiles must not also render their old analytic body");
+        let continue_at = analytic_sampler[reject..].find("continue;").unwrap() + reject;
+        let evaluate = analytic_sampler.find("evaluateLocalFogVolume(").unwrap();
+        assert!(continue_at < evaluate,
+            "transported profiles must be discarded before density and turbulence evaluation (#4787)");
         assert!(
             !shader.contains("bool blocked = carriesCombustion(probeChemistry)"),
             "solid crossing must be gated by advected source chemistry, not the destination cell"
@@ -2666,7 +2775,7 @@ mod unit_tests {
             "texture(previousCombustionState, previousUvw)",
             "opticalDepth += sigmaT * (distanceEnd - distanceStart);",
             "return exp(-clamp(opticalDepth, 0.0, 20.0));",
-            "bool transportedMediumActive = transported_combustion.extinction > 1.0e-7;",
+            "transportedMediumActive = transported_combustion.extinction > 1.0e-7;",
             "visibility *= transportedCombustionTransmittance(",
             "localVisibility *= transportedCombustionTransmittance(",
         ] {
@@ -3677,6 +3786,108 @@ mod unit_tests {
             emission_temperature: [0.0; 4],
             profile_params: [FOG_VOLUME_PROFILE_SMOKE, 0.0, 0.0, 0.0],
         }
+    }
+
+    #[test]
+    fn cluster_upload_range_excludes_untouched_prefix_and_clears_old_counts() {
+        let volume = smoke_at([10.0, 10.0, 70.0], 5.0);
+        let mut upload = GpuFogVolumeUpload::default();
+        let mut entries = fog_cluster_entries();
+        let mut indices = vec![0; FOG_VOLUME_INDEX_COUNT].into_boxed_slice();
+        let build = cluster_frame(&[volume], [0.0; 3], &mut upload, &mut entries, &mut indices);
+        assert!(build.cluster_lo > 0);
+        assert!(build.cluster_lo < build.cluster_hi);
+        for (index, entry) in entries.iter().enumerate() {
+            if entry.count > 0 || entry.portal_count > 0 {
+                assert!((build.cluster_lo..build.cluster_hi).contains(&index));
+            }
+        }
+        let empty = (FOG_VOLUME_CLUSTER_COUNT, 0);
+        let current = (build.cluster_lo, build.cluster_hi);
+        assert_eq!(fog_cluster_write_range(current, empty), current);
+        assert_eq!(fog_cluster_write_range(empty, current), current);
+        assert_eq!(fog_cluster_write_range(current, (0, FOG_VOLUME_CLUSTER_COUNT)),
+            (0, FOG_VOLUME_CLUSTER_COUNT));
+        assert_eq!(fog_cluster_write_range((100, 120), (300, 350)), (100, 350));
+    }
+
+    #[test]
+    fn transport_empty_slots_require_submitted_clears_and_rearm_for_new_sources() {
+        let mut fields = TransportFieldState::default();
+        assert!(!fields.prepare(0, false));
+        // Abandoned recording must not establish an empty-field proof.
+        assert!(!fields.prepare(0, false));
+        fields.submitted();
+        assert!(fields.prepare(0, false));
+        assert!(!fields.prepare(1, false));
+        fields.submitted();
+        assert!(fields.prepare(1, false));
+        // Paused-but-active transport must retain its history, not skip it.
+        assert!(!fields.prepare(0, true));
+        fields.submitted();
+        assert!(!fields.prepare(1, false));
+        fields.submitted();
+        assert!(!fields.prepare(0, false));
+        fields.submitted();
+        assert!(fields.prepare(0, false));
+        assert!(fields.prepare(1, false));
+        assert!(TRANSPORT_KNOWN_EMPTY_DT < TRANSPORT_EXPIRED_DT);
+    }
+
+    #[test]
+    fn known_empty_transport_skips_history_stores_and_source_sampling() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let main = shader.split_once("void main()").unwrap().1;
+        let guarded = main.split_once("if (!transportKnownEmpty) {").unwrap().1
+            .split_once("// View direction").unwrap().0;
+        for operation in ["transportCombustion(", "imageStore(combustionState",
+            "combustionDynamics,", "imageStore(combustionOptical"] {
+            assert!(guarded.contains(operation), "missing empty-field gate: {operation}");
+        }
+        let active_only = main.split_once("if (!transportExpired) {").unwrap().1
+            .split_once("local_medium.extinction +=").unwrap().0;
+        assert!(active_only.contains("accumulateCombustionLightMoment("));
+        assert!(active_only.contains("flameSourceSampleRatio("));
+    }
+
+    #[test]
+    fn distant_transport_emitters_do_not_arm_grid_simulation() {
+        let mut flame = smoke_at([10_000.0, 0.0, 0.0], 10.0);
+        flame.profile_params[0] = FOG_VOLUME_PROFILE_FLAME;
+        let mut filtered = Vec::new();
+        filter_fog_volumes_for_grid(&[flame], [0.0; 3], 100.0, [0.0, 1.0, 0.0], false, &mut filtered);
+        assert!(filtered.is_empty());
+        assert!(!combustion_transport_active(&filtered, 50.0, f32::NEG_INFINITY));
+        // Moving the grid to the same source admits it without changing its data.
+        filter_fog_volumes_for_grid(&[flame], [10_000.0, 0.0, 0.0], 100.0, [0.0, 1.0, 0.0], false, &mut filtered);
+        assert!(combustion_transport_active(&filtered, 50.0, f32::NEG_INFINITY));
+        let pointer = filtered.as_ptr();
+        filter_fog_volumes_for_grid(&[], [0.0; 3], 100.0, [0.0, 1.0, 0.0], false, &mut filtered);
+        assert!(filtered.is_empty());
+        assert_eq!(filtered.as_ptr(), pointer);
+        // Culling a source does not erase the existing transported plume's linger.
+        assert!(combustion_transport_active(&filtered, 50.0, 60.0));
+    }
+
+    #[test]
+    fn volume_grid_filter_keeps_intersecting_extents_and_remote_sun_apertures() {
+        let large = smoke_at([150.0, 0.0, 0.0], 60.0);
+        let mut portal = smoke_at([0.0, 200.0, 0.0], 5.0);
+        portal.center_shape[3] = 2.0;
+        portal.profile_params = [FOG_VOLUME_PROFILE_LIGHT_SHAFT, 0.0, 0.0, 1.0];
+        let distant = smoke_at([500.0, 0.0, 0.0], 5.0);
+        let invalid = smoke_at([f32::NAN, 0.0, 0.0], 5.0);
+        let mut filtered = Vec::new();
+        filter_fog_volumes_for_grid(&[large, portal, distant, invalid], [0.0; 3], 100.0,
+            [0.0, 1.0, 0.0], true, &mut filtered);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].center_shape, large.center_shape);
+        assert_eq!(filtered[1].center_shape, portal.center_shape);
+        // An aperture only needs remote retention when its sun sweep is used.
+        filter_fog_volumes_for_grid(&[portal], [0.0; 3], 100.0, [0.0, 1.0, 0.0], false, &mut filtered);
+        assert!(filtered.is_empty());
+        filter_fog_volumes_for_grid(&[portal], [0.0; 3], 100.0, [0.0, -1.0, 0.0], true, &mut filtered);
+        assert!(filtered.is_empty());
     }
 
     /// #4792 — the index list is packed densely: its live length equals the

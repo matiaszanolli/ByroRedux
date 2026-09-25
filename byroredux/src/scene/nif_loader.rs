@@ -191,34 +191,59 @@ pub(crate) fn load_nif_bytes(
     (count, root)
 }
 
-/// The imported scene for `path`, for read-only inspection: the shared
-/// import cache's entry when one exists, otherwise a fresh parse that is
-/// **not** inserted. Inspection-only callers (spawn-time NPC seam blending
-/// reads neighbouring body / outfit meshes before those parts spawn) must
-/// not populate the cache with an import made without the caller's
-/// material provider. `None` when the archive lacks the path or it fails to
-/// parse.
+/// Reuse the same fully resolved import for seam inspection and later spawn.
+/// The material provider is passed through so inspecting an outfit first
+/// cannot cache a scene missing its external materials.
 pub(crate) fn peek_or_parse_scene(
     world: &mut World,
     path: &str,
     tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
 ) -> Option<std::sync::Arc<byroredux_nif::import::ImportedScene>> {
-    let cached = world
-        .resource::<crate::scene_import_cache::SceneImportCache>()
-        .peek(&path.to_ascii_lowercase());
-    if cached.is_some() {
+    cached_scene(world, path, None, tex_provider, mat_provider)
+}
+
+fn cached_scene(
+    world: &mut World,
+    path: &str,
+    data: Option<&[u8]>,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+) -> Option<std::sync::Arc<byroredux_nif::import::ImportedScene>> {
+    let key = path.to_ascii_lowercase();
+    let cached = world.resource_mut::<crate::scene_import_cache::SceneImportCache>().get(&key);
+    if let Some(cached) = cached {
         return cached;
     }
-    let data = tex_provider.extract_mesh(path)?;
-    parse_import_and_merge(world, &data, path, tex_provider, None).map(std::sync::Arc::new)
+    let extracted;
+    let data = if let Some(data) = data {
+        data
+    } else {
+        extracted = tex_provider.extract_mesh(path)?;
+        &extracted
+    };
+    let scene = parse_import_and_merge(world, data, path, tex_provider, mat_provider)
+        .map(std::sync::Arc::new);
+    world.resource_mut::<crate::scene_import_cache::SceneImportCache>().insert(key, scene)
+}
+
+fn apply_spawn_hook(
+    mut scene: std::sync::Arc<byroredux_nif::import::ImportedScene>,
+    hook: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)>,
+) -> std::sync::Arc<byroredux_nif::import::ImportedScene> {
+    if let Some(hook) = hook {
+        // Clone the cached pristine scene only for actors needing deformation.
+        // The cache's copy must never inherit another actor's face or seams.
+        hook(std::sync::Arc::make_mut(&mut scene));
+    }
+    scene
 }
 
 /// Parse + import + BGSM-merge a NIF scene from raw bytes. Shared
 /// helper for [`load_nif_bytes_with_skeleton`]'s cache-miss path
 /// (where the result is wrapped in `Arc` and inserted into
 /// [`crate::scene_import_cache::SceneImportCache`]) and its
-/// hook-bypass path (where the per-NPC `pre_spawn_hook` then mutates
-/// the result before spawn). Returns `None` on parse failure so the
+/// seam-inspection path. Per-NPC hooks mutate a copy of the cached result. Returns `None` on parse failure so the
 /// caller can record a negative cache entry. See #880 / CELL-PERF-02.
 ///
 /// Branches on `label`'s extension to route SpeedTree `.spt` bytes
@@ -436,83 +461,12 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     Option<EntityId>,
     std::collections::HashMap<std::sync::Arc<str>, EntityId>,
 ) {
-    // #880 / CELL-PERF-02 — cache the parse + import + BGSM-merge
-    // pipeline by lowercased path. Pre-fix every NPC spawn re-parsed
-    // skeleton + body + hand NIFs from BSA bytes (~280 redundant
-    // parses for Megaton-scale interiors). The cache is bypassed
-    // when a `pre_spawn_hook` is provided (head-with-FaceGen-morph
-    // path) because each NPC's morph is unique — caching the
-    // already-morphed scene would hand the same face to every NPC.
-    // The skeleton/body/hand calls all pass `pre_spawn_hook: None`,
-    // so they hit the cache.
-    let cache_key = label.to_ascii_lowercase();
-    let is_spt = cache_key.ends_with(".spt");
-    let cached_arc: Option<std::sync::Arc<byroredux_nif::import::ImportedScene>>;
-    let mut owned_for_hook: Option<byroredux_nif::import::ImportedScene> = None;
-
-    if let Some(hook) = pre_spawn_hook {
-        // M41.0 Phase 3b — pre-spawn hook bypass. NPC head spawn
-        // uses this hook to apply FaceGen FGGS / FGGA slider deltas
-        // to `imported.meshes[head].positions` so the per-NPC unique
-        // face shape lands in the GPU upload below. Recorded as a
-        // bypass-parse so the cache's `parses` counter still
-        // reflects total parse_nif invocations.
-        {
-            let mut cache = world.resource_mut::<crate::scene_import_cache::SceneImportCache>();
-            cache.record_bypass_parse();
-        }
-        let mut imported =
-            match parse_import_and_merge(world, data, label, tex_provider, mat_provider) {
-                Some(s) => s,
-                None => return (0, None, std::collections::HashMap::new()),
-            };
-        hook(&mut imported);
-        owned_for_hook = Some(imported);
-        cached_arc = None;
-    } else {
-        // Cache routing: read-lock probe → parse + import + insert
-        // on miss. Three-tier shape mirrors `cell_loader::load_references`
-        // (#523). Negative-cache entries (failed parses) short-circuit
-        // subsequent NPC spawns of the same path so the warning log
-        // doesn't spam.
-        let cached = {
-            let mut cache = world.resource_mut::<crate::scene_import_cache::SceneImportCache>();
-            cache.get(&cache_key)
-        };
-        cached_arc = match cached {
-            Some(Some(arc)) => Some(arc),
-            Some(None) => {
-                // Negative-cached parse failure — propagate the empty
-                // result without re-parsing.
-                return (0, None, std::collections::HashMap::new());
-            }
-            None => {
-                let imported_opt =
-                    parse_import_and_merge(world, data, label, tex_provider, mat_provider);
-                let arc_opt = imported_opt.map(std::sync::Arc::new);
-                let mut cache = world.resource_mut::<crate::scene_import_cache::SceneImportCache>();
-                let stored = cache.insert(cache_key, arc_opt);
-                match stored {
-                    Some(arc) => Some(arc),
-                    None => return (0, None, std::collections::HashMap::new()),
-                }
-            }
-        };
-    }
-
-    // Bind a single `&ImportedScene` reference for the rest of the
-    // function — the spawn loops only read. The borrow is anchored
-    // in either `cached_arc` (cache hit / cache-miss insert) or
-    // `owned_for_hook` (per-NPC FaceGen morph path); whichever one
-    // is `Some` holds the live data.
-    let imported: &byroredux_nif::import::ImportedScene = if let Some(ref s) = owned_for_hook {
-        s
-    } else {
-        cached_arc
-            .as_ref()
-            .expect("either hook bypass or cache lookup must populate one branch")
-            .as_ref()
+    let is_spt = label.to_ascii_lowercase().ends_with(".spt");
+    let Some(cached) = cached_scene(world, label, Some(data), tex_provider, mat_provider) else {
+        return (0, None, std::collections::HashMap::new());
     };
+    let owned = apply_spawn_hook(cached, pre_spawn_hook);
+    let imported = owned.as_ref();
 
     // Phases 1 + 2 — the node hierarchy and its parent links (#3858).
     let (node_entities, node_by_name, rest_pose_by_name) = spawn_nif_nodes(world, imported, is_spt);
@@ -1175,15 +1129,19 @@ fn spawn_nif_mesh(
     // what lets duplicated NPC gear in past the pool limit instead of
     // failing its upload.
     let shareable = npc_source_geometry_shareable(mesh);
-    let shared_handle = shareable.then(|| {
-        ctx.mesh_registry.acquire_matching_scene_mesh(&SceneMeshUpload {
-            vertices: &vertices,
-            indices: &mesh.indices,
-            rt_enabled: for_rt,
-            cache_key: None,
-        })
-    });
-    let (mesh_handle, fresh_source) = match shared_handle.flatten() {
+    let (shared_handle, fingerprint) = if shareable {
+        let (handle, fingerprint) = ctx.mesh_registry
+            .acquire_matching_scene_mesh_with_fingerprint(&SceneMeshUpload {
+                vertices: &vertices,
+                indices: &mesh.indices,
+                rt_enabled: for_rt,
+                cache_key: None,
+            });
+        (handle, Some(fingerprint))
+    } else {
+        (None, None)
+    };
+    let (mesh_handle, fresh_source) = match shared_handle {
         Some(handle) => (handle, false),
         None => {
             // upload_scene_mesh registers the vertices/indices into the
@@ -1213,8 +1171,10 @@ fn spawn_nif_mesh(
                 }
             };
             if shareable {
-                ctx.mesh_registry
-                    .register_scene_geometry_for_sharing(handle);
+                ctx.mesh_registry.register_scene_geometry_for_sharing_with_fingerprint(
+                    handle,
+                    fingerprint,
+                );
             }
             (handle, true)
         }
@@ -1976,5 +1936,42 @@ fn attach_nif_skin_binding(
     } else {
         // No authored skin — nothing attached (#4399's canonical gate).
         false
+    }
+}
+
+#[cfg(test)]
+mod cache_hook_tests {
+    use super::*;
+    use crate::scene_import_cache::SceneImportCache;
+    use std::sync::Arc;
+
+    #[test]
+    fn repeated_hand_hooks_reuse_the_import_and_keep_actor_deformation_private() {
+        let mut world = World::new();
+        world.insert_resource(SceneImportCache::new());
+        let provider = TextureProvider::new();
+        let scene = Arc::new(byroredux_nif::import::ImportedScene {
+            nodes: Vec::new(),
+            meshes: vec![byroredux_nif::import::ImportedMesh::from_geometry(
+                vec![[1.0, 2.0, 3.0]], Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+            )],
+            particle_emitters: Vec::new(), bsx_flags: None, bs_bound: None,
+            phantom_bounds: None, attach_points: None, child_attach_connections: None,
+            furniture_markers: Vec::new(), embedded_clip: None, ragdoll: None, lights: Vec::new(),
+        });
+        world.resource_mut::<SceneImportCache>().insert("hand.nif".into(), Some(scene.clone()));
+        for actor in 1..=10 {
+            // Empty input cannot parse: this must take the existing import.
+            let cached = cached_scene(&mut world, "HAND.NIF", Some(&[]), &provider, None).unwrap();
+            assert!(Arc::ptr_eq(&cached, &scene));
+            let deformed = apply_spawn_hook(cached, Some(&mut |scene| {
+                scene.meshes[0].positions[0][0] = actor as f32 * 10.0;
+            }));
+            assert_eq!(deformed.meshes[0].positions[0][0], actor as f32 * 10.0);
+            assert_eq!(scene.meshes[0].positions[0], [1.0, 2.0, 3.0]);
+        }
+        let inspected = peek_or_parse_scene(&mut world, "hand.nif", &provider, None).unwrap();
+        assert!(Arc::ptr_eq(&inspected, &scene));
+        assert_eq!(world.resource::<SceneImportCache>().parses(), 1);
     }
 }

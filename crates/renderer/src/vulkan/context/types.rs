@@ -638,7 +638,7 @@ pub struct SkyParams {
     /// Outdoor palette used to bake the sky cubemap and paint clear-depth
     /// pixels through interior openings. Ordinary fields still describe the
     /// cell, so surface lighting and weather classification remain interior.
-    pub portal_outdoor_sky: Option<Box<SkyParams>>,
+    pub portal_outdoor_sky: Option<OutdoorSkyParams>,
     /// Outdoor sun available to interior volumetric rays that pass through
     /// a verified aperture. Kept separate from the cell's sun fields so
     /// interior surfaces and the composite sky retain their own lighting.
@@ -734,6 +734,117 @@ pub struct SkyParams {
     /// Monotonic session time used to animate rain, snow, lightning, and
     /// aurora without coupling the renderer to GameTimeRes.
     pub weather_time_seconds: f32,
+}
+
+/// The outdoor palette held by value for an interior's sky bake. Keeping
+/// this non-recursive avoids allocating a boxed SkyParams on every frame.
+#[derive(Clone, Copy)]
+pub struct OutdoorSkyParams {
+    pub zenith_color: [f32; 3],
+    pub exterior_zenith_color: [f32; 3],
+    pub portal_sun_radiance: [f32; 3],
+    pub portal_sun_direction: [f32; 3],
+    pub interior_show_sky: bool,
+    pub horizon_color: [f32; 3],
+    pub lower_color: [f32; 3],
+    pub sun_direction: [f32; 3],
+    pub sun_color: [f32; 3],
+    pub sun_size: f32,
+    pub sun_intensity: f32,
+    pub sun_illuminance: [f32; 3],
+    pub sun_angular_radius: f32,
+    pub is_exterior: bool,
+    pub cloud_scroll: [f32; 2],
+    pub cloud_tile_scale: f32,
+    pub cloud_texture_index: u32,
+    pub sun_texture_index: u32,
+    pub cloud_scroll_1: [f32; 2],
+    pub cloud_tile_scale_1: f32,
+    pub cloud_texture_index_1: u32,
+    pub cloud_scroll_2: [f32; 2],
+    pub cloud_tile_scale_2: f32,
+    pub cloud_texture_index_2: u32,
+    pub cloud_scroll_3: [f32; 2],
+    pub cloud_tile_scale_3: f32,
+    pub cloud_texture_index_3: u32,
+    pub dalc_cube: Option<SkyDalcCube>,
+    pub weather: SkyWeatherParams,
+    pub weather_time_seconds: f32,
+}
+
+impl From<SkyParams> for OutdoorSkyParams {
+    fn from(sky: SkyParams) -> Self {
+        Self {
+            zenith_color: sky.zenith_color,
+            exterior_zenith_color: sky.exterior_zenith_color,
+            portal_sun_radiance: sky.portal_sun_radiance,
+            portal_sun_direction: sky.portal_sun_direction,
+            interior_show_sky: sky.interior_show_sky,
+            horizon_color: sky.horizon_color,
+            lower_color: sky.lower_color,
+            sun_direction: sky.sun_direction,
+            sun_color: sky.sun_color,
+            sun_size: sky.sun_size,
+            sun_intensity: sky.sun_intensity,
+            sun_illuminance: sky.sun_illuminance,
+            sun_angular_radius: sky.sun_angular_radius,
+            is_exterior: sky.is_exterior,
+            cloud_scroll: sky.cloud_scroll,
+            cloud_tile_scale: sky.cloud_tile_scale,
+            cloud_texture_index: sky.cloud_texture_index,
+            sun_texture_index: sky.sun_texture_index,
+            cloud_scroll_1: sky.cloud_scroll_1,
+            cloud_tile_scale_1: sky.cloud_tile_scale_1,
+            cloud_texture_index_1: sky.cloud_texture_index_1,
+            cloud_scroll_2: sky.cloud_scroll_2,
+            cloud_tile_scale_2: sky.cloud_tile_scale_2,
+            cloud_texture_index_2: sky.cloud_texture_index_2,
+            cloud_scroll_3: sky.cloud_scroll_3,
+            cloud_tile_scale_3: sky.cloud_tile_scale_3,
+            cloud_texture_index_3: sky.cloud_texture_index_3,
+            dalc_cube: sky.dalc_cube,
+            weather: sky.weather,
+            weather_time_seconds: sky.weather_time_seconds,
+        }
+    }
+}
+
+impl OutdoorSkyParams {
+    pub(super) fn as_sky_params(self) -> SkyParams {
+        SkyParams {
+            portal_outdoor_sky: None,
+            zenith_color: self.zenith_color,
+            exterior_zenith_color: self.exterior_zenith_color,
+            portal_sun_radiance: self.portal_sun_radiance,
+            portal_sun_direction: self.portal_sun_direction,
+            interior_show_sky: self.interior_show_sky,
+            horizon_color: self.horizon_color,
+            lower_color: self.lower_color,
+            sun_direction: self.sun_direction,
+            sun_color: self.sun_color,
+            sun_size: self.sun_size,
+            sun_intensity: self.sun_intensity,
+            sun_illuminance: self.sun_illuminance,
+            sun_angular_radius: self.sun_angular_radius,
+            is_exterior: self.is_exterior,
+            cloud_scroll: self.cloud_scroll,
+            cloud_tile_scale: self.cloud_tile_scale,
+            cloud_texture_index: self.cloud_texture_index,
+            sun_texture_index: self.sun_texture_index,
+            cloud_scroll_1: self.cloud_scroll_1,
+            cloud_tile_scale_1: self.cloud_tile_scale_1,
+            cloud_texture_index_1: self.cloud_texture_index_1,
+            cloud_scroll_2: self.cloud_scroll_2,
+            cloud_tile_scale_2: self.cloud_tile_scale_2,
+            cloud_texture_index_2: self.cloud_texture_index_2,
+            cloud_scroll_3: self.cloud_scroll_3,
+            cloud_tile_scale_3: self.cloud_tile_scale_3,
+            cloud_texture_index_3: self.cloud_texture_index_3,
+            dalc_cube: self.dalc_cube,
+            weather: self.weather,
+            weather_time_seconds: self.weather_time_seconds,
+        }
+    }
 }
 
 /// Depth-of-field parameters for the current frame.

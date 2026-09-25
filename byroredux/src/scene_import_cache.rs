@@ -11,12 +11,9 @@
 //! separate wrapper, but the bookkeeping core is shared via
 //! [`crate::parsed_nif_cache::ParsedNifCache`]. See #880 / CELL-PERF-02.
 //!
-//! `pre_spawn_hook` complication: head NIFs with FaceGen morphs apply
-//! per-NPC mutations to `imported.meshes[i].positions`. The cache is
-//! consulted only when `pre_spawn_hook` is `None` — skeleton, body,
-//! hand, and head-without-morph spawns hit the cache; head-with-morph
-//! stays on the legacy parse-per-call path. This still captures
-//! ≥ 6/7 of the audit's ~280 redundant parses.
+//! Per-NPC hooks clone the pristine cached import before deforming it. Seam
+//! inspection fills the same cache with resolved materials, so hands and
+//! outfits inspected before spawn still parse only once per resident path.
 //!
 //! **Memory bound** (#3760 / SAFE-2026-08-30-D3-01): each entry is a
 //! full `Arc<ImportedScene>` — positions/normals/tangents/UVs/indices
@@ -53,18 +50,9 @@ use crate::parsed_nif_cache::ParsedNifCache;
 /// lower than `NifImportRegistry`'s 2048 — see the module doc.
 const DEFAULT_MAX_ENTRIES: usize = 300;
 
-/// Wrapper around the shared `ParsedNifCache` core that adds the
-/// bypass-parse counter for the head-FaceGen path that intentionally
-/// skips the cache, plus a half-eviction memory bound (#3760).
+/// Shared parsed imports with a half-eviction memory bound (#3760).
 pub(crate) struct SceneImportCache {
     core: ParsedNifCache<ImportedScene>,
-    /// Parses recorded via [`Self::record_bypass_parse`] —
-    /// pre_spawn_hook = Some path that skipped the cache. Tracked
-    /// separately from the core's lifetime hits/misses so the test
-    /// plan can pin "10 NPCs sharing one skeleton parse exactly
-    /// once" while head-with-FaceGen calls still increment a
-    /// telemetry counter.
-    bypass_parses: u64,
     /// Insertion-order key tracker driving half-eviction on overflow
     /// (#3760) — same shape as `MaterialProvider::bgem_cache_order`.
     insertion_order: VecDeque<String>,
@@ -97,7 +85,6 @@ impl SceneImportCache {
         }
         Self {
             core: ParsedNifCache::new(),
-            bypass_parses: 0,
             insertion_order: VecDeque::new(),
             max_entries,
             evictions: 0,
@@ -161,29 +148,12 @@ impl SceneImportCache {
         to_return
     }
 
-    /// Record a parse that bypassed the cache (currently only the
-    /// `pre_spawn_hook = Some` path — head NIF with FaceGen morphs).
-    /// Bumps `bypass_parses` AND the core's miss counter so the
-    /// total `parses()` telemetry reflects every `parse_nif`
-    /// invocation, cache-routed or otherwise.
-    pub(crate) fn record_bypass_parse(&mut self) {
-        self.bypass_parses = self.bypass_parses.saturating_add(1);
-        self.core.record_miss();
-    }
-
-    /// Total parse_nif + import calls observed across the process
-    /// lifetime: cache-miss inserts (every `Some(_)` entry plus
-    /// negative-cached `None`) + hook-bypass parses. The cache's
-    /// `parsed_count` + `failed_count` give the LIVE entry shape;
-    /// `parses()` is the cumulative count that the regression test
-    /// pins against ("spawn 10 NPCs sharing one skeleton, count
-    /// `parse_nif` calls, assert exactly 1").
+    /// Successful and failed cache fills observed over the cache lifetime.
     #[cfg(test)]
     pub(crate) fn parses(&self) -> u64 {
         self.core
             .parsed_count()
             .saturating_add(self.core.failed_count())
-            .saturating_add(self.bypass_parses)
     }
 
     #[cfg(test)]
@@ -229,7 +199,7 @@ mod tests {
     //! The bookkeeping primitives themselves
     //! (`ParsedNifCache::insert` / `get` / counter math) are
     //! exercised by `parsed_nif_cache::tests`; this module tests the
-    //! wrapper-level glue (bypass_parses tracking, parses()
+    //! wrapper-level glue (parses()
     //! aggregation, get's hit/miss bumping).
     use super::*;
     use byroredux_nif::import::ImportedScene;
@@ -258,7 +228,6 @@ mod tests {
     fn cache_with_cap(max_entries: usize) -> SceneImportCache {
         SceneImportCache {
             core: ParsedNifCache::new(),
-            bypass_parses: 0,
             insertion_order: VecDeque::new(),
             max_entries,
             evictions: 0,
@@ -307,26 +276,6 @@ mod tests {
             cache.parses(),
             1,
             "warm hit must not re-parse a failed entry"
-        );
-    }
-
-    /// `record_bypass_parse` bumps the bypass counter AND the core
-    /// miss counter so the aggregate `parses()` reflects the full
-    /// parse_nif invocation count. Mirrors the head-NIF-with-
-    /// FaceGen path that intentionally skips caching for per-NPC
-    /// morph uniqueness.
-    #[test]
-    fn bypass_parses_increment_counter_without_cache_growth() {
-        let mut cache = SceneImportCache::new();
-        let pre_len = cache.len();
-        cache.record_bypass_parse();
-        cache.record_bypass_parse();
-        assert_eq!(cache.parses(), 2);
-        assert_eq!(cache.misses(), 2, "bypass parses are misses too");
-        assert_eq!(
-            cache.len(),
-            pre_len,
-            "bypass parses do not populate the cache"
         );
     }
 

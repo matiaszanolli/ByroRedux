@@ -132,7 +132,7 @@ pub struct ImportedCollision {
 }
 
 /// A scene graph node (NiNode) extracted from a NIF file.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImportedNode {
     /// Node name from the NIF (e.g., "Bip01 Head", "Scene Root").
     /// Uses `Arc<str>` to share the string table entry without heap allocation.
@@ -939,7 +939,7 @@ impl Default for ImportedMaterial {
 }
 
 /// A mesh extracted from a NIF file, ready for GPU upload.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImportedMesh {
     /// Vertices in renderer format: position + color + normal + UV.
     pub positions: Vec<[f32; 3]>,
@@ -1596,7 +1596,7 @@ pub struct ImportedChildAttachConnections {
 }
 
 /// A fully imported NIF scene with hierarchy preserved.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImportedScene {
     /// Scene graph nodes (NiNode hierarchy).
     pub nodes: Vec<ImportedNode>,

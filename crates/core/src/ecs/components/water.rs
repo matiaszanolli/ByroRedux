@@ -637,39 +637,79 @@ impl WaterVolume {
 /// ([`WaterVolume::surface_y_at`]); the volume stays the coarse AABB reject.
 #[derive(Debug, Clone)]
 pub struct WaterSurfaceMesh {
-    pub triangles: Arc<[[[f32; 3]; 3]]>,
+    // Keep geometry immutable so the construction-time index cannot become stale.
+    triangles: Arc<[[[f32; 3]; 3]]>,
+    grid: Option<Arc<surface_grid::SurfaceGrid>>,
 }
+
+mod surface_grid;
+
+// Shared with the grid bounds: the broad phase must include the same slack
+// as the exact barycentric test, including columns just outside an edge.
+const WATER_SURFACE_EDGE_EPSILON: f32 = 1.0e-4;
 
 impl Component for WaterSurfaceMesh {
     type Storage = SparseSetStorage<Self>;
 }
 
 impl WaterSurfaceMesh {
+    /// Build the immutable XZ lookup once when the placed surface is created.
+    /// Cloning the component shares both geometry and index with physics.
+    pub fn new(triangles: Vec<[[f32; 3]; 3]>) -> Self {
+        let grid = (triangles.len() > 8)
+            .then(|| surface_grid::SurfaceGrid::new(&triangles))
+            .flatten()
+            .map(Arc::new);
+        Self { triangles: triangles.into(), grid }
+    }
+
     /// Height of the triangle surface over `(x, z)` nearest to
     /// `reference_y`, or `None` when no triangle covers the column.
     pub fn surface_y_at(&self, x: f32, z: f32, reference_y: f32) -> Option<f32> {
+        if !x.is_finite() || !z.is_finite() || !reference_y.is_finite() {
+            return None;
+        }
         // Barycentric slack so a column exactly on a shared edge or vertex
         // is not lost to rounding between the two triangles that own it.
-        const EDGE_EPSILON: f32 = 1.0e-4;
-        let mut best: Option<f32> = None;
-        for [a, b, c] in self.triangles.iter() {
+        let mut best: Option<(f32, usize)> = None;
+        let mut visit = |index: usize| {
+            let [a, b, c] = &self.triangles[index];
             let det = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
             // Vertical (edge-on in XZ) triangles cover no column.
             if det.abs() <= f32::EPSILON {
-                continue;
+                return;
             }
             let l1 = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / det;
             let l2 = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / det;
             let l3 = 1.0 - l1 - l2;
-            if l1 < -EDGE_EPSILON || l2 < -EDGE_EPSILON || l3 < -EDGE_EPSILON {
-                continue;
+            if l1 < -WATER_SURFACE_EDGE_EPSILON
+                || l2 < -WATER_SURFACE_EDGE_EPSILON
+                || l3 < -WATER_SURFACE_EDGE_EPSILON
+            {
+                return;
             }
             let y = l1 * a[1] + l2 * b[1] + l3 * c[1];
-            if best.is_none_or(|prev| (y - reference_y).abs() < (prev - reference_y).abs()) {
-                best = Some(y);
+            // Cell and large-triangle lists are visited separately. Preserve
+            // the original source-order tie break when two layers are equidistant.
+            if y.is_finite() && best.is_none_or(|(prev, previous_index)| {
+                let distance = (y - reference_y).abs();
+                let previous_distance = (prev - reference_y).abs();
+                distance < previous_distance || (distance == previous_distance && index < previous_index)
+            }) {
+                best = Some((y, index));
+            }
+        };
+        if let Some(grid) = &self.grid {
+            for &index in grid.candidates(x, z)?.iter().chain(grid.large_triangles()) {
+                visit(index);
+            }
+        } else {
+            // Tiny surfaces have a bounded scan without an index allocation.
+            for index in 0..self.triangles.len() {
+                visit(index);
             }
         }
-        best
+        best.map(|(height, _)| height)
     }
 }
 
@@ -772,9 +812,7 @@ mod surface_mesh_tests {
     fn sloped_strip() -> WaterSurfaceMesh {
         let (a, b) = ([0.0, 50.0, 0.0], [100.0, 0.0, 0.0]);
         let (c, d) = ([100.0, 0.0, 10.0], [0.0, 50.0, 10.0]);
-        WaterSurfaceMesh {
-            triangles: vec![[a, b, c], [a, c, d]].into(),
-        }
+        WaterSurfaceMesh::new(vec![[a, b, c], [a, c, d]])
     }
 
     #[test]
@@ -809,10 +847,85 @@ mod surface_mesh_tests {
         let high = [[0.0, 30.0, 0.0], [10.0, 30.0, 0.0], [0.0, 30.0, 10.0]];
         // Vertical sheet: edge-on in XZ, covers no column.
         let sheet = [[0.0, 0.0, 1.0], [10.0, 0.0, 1.0], [10.0, 30.0, 1.0]];
-        let mesh = WaterSurfaceMesh {
-            triangles: vec![low, high, sheet].into(),
-        };
+        let mesh = WaterSurfaceMesh::new(vec![low, high, sheet]);
         assert_eq!(mesh.surface_y_at(2.0, 2.0, 5.0), Some(0.0));
         assert_eq!(mesh.surface_y_at(2.0, 2.0, 25.0), Some(30.0));
+    }
+
+    fn tiled_surface() -> Vec<[[f32; 3]; 3]> {
+        let mut triangles = Vec::new();
+        for z in 0..24 {
+            for x in 0..24 {
+                // Leave holes: the index must not turn an AABB into water.
+                if x % 7 == 3 && z % 5 == 1 {
+                    continue;
+                }
+                for layer in [0.0, 30.0] {
+                    let point = |dx, dz| {
+                        let x = x as f32 + dx;
+                        [x, layer - x * 0.5, z as f32 + dz]
+                    };
+                    let (a, b, c, d) = (
+                        point(0.0, 0.0), point(1.0, 0.0),
+                        point(1.0, 1.0), point(0.0, 1.0),
+                    );
+                    triangles.extend([[a, b, c], [a, c, d]]);
+                }
+            }
+        }
+        triangles
+    }
+
+    #[test]
+    fn indexed_water_matches_full_scan_at_edges_holes_and_overlapping_layers() {
+        let indexed = WaterSurfaceMesh::new(tiled_surface());
+        let reference = WaterSurfaceMesh { triangles: indexed.triangles.clone(), grid: None };
+        let grid = indexed.grid.as_ref().expect("large surface has an index");
+        let visited = grid.candidates(10.25, 10.25).unwrap().len()
+            + grid.large_triangles().len();
+        assert!(visited < indexed.triangles.len() / 8, "visited {visited} triangles");
+        // Includes the outer edge, cell boundaries, shared diagonals, and holes.
+        for z in -1..=49 {
+            for x in -1..=49 {
+                for reference_y in [-10.0, 5.0, 25.0] {
+                    let (x, z) = (x as f32 * 0.5, z as f32 * 0.5);
+                    assert_eq!(indexed.surface_y_at(x, z, reference_y),
+                        reference.surface_y_at(x, z, reference_y), "at ({x}, {z})");
+                }
+            }
+        }
+        for x in [-0.00005, 0.99995, 1.00005, 23.99995, 24.00005] {
+            assert_eq!(indexed.surface_y_at(x, 0.5, 0.0),
+                reference.surface_y_at(x, 0.5, 0.0), "edge slack at {x}");
+        }
+    }
+
+    #[test]
+    fn large_triangles_keep_source_order_ties_without_grid_storage_explosion() {
+        let mut triangles = vec![
+            [[0.0, 30.0, 0.0], [24.0, 30.0, 0.0], [0.0, 30.0, 24.0]],
+        ];
+        triangles.extend(tiled_surface());
+        let indexed = WaterSurfaceMesh::new(triangles);
+        let grid = indexed.grid.as_ref().unwrap();
+        assert!(grid.large_triangles().contains(&0));
+        let reference = WaterSurfaceMesh { triangles: indexed.triangles.clone(), grid: None };
+        // The large triangle precedes the local cell triangles in source order,
+        // but is visited after them by the index. Equal distances keep that order.
+        assert_eq!(indexed.surface_y_at(0.0, 0.0, 15.0), Some(30.0));
+        for reference_y in [-30.0, 0.0, 15.0, 30.0] {
+            assert_eq!(indexed.surface_y_at(1.25, 1.25, reference_y),
+                reference.surface_y_at(1.25, 1.25, reference_y));
+        }
+    }
+
+    #[test]
+    fn indexed_water_handles_empty_degenerate_and_nonfinite_inputs() {
+        assert_eq!(WaterSurfaceMesh::new(Vec::new()).surface_y_at(0.0, 0.0, 0.0), None);
+        let mesh = WaterSurfaceMesh::new(vec![[[1.0, 2.0, 3.0]; 3]; 20]);
+        assert_eq!(mesh.surface_y_at(1.0, 3.0, 2.0), None);
+        assert_eq!(mesh.surface_y_at(f32::NAN, 3.0, 2.0), None);
+        let invalid = WaterSurfaceMesh::new(vec![[[f32::NAN; 3]; 3]; 20]);
+        assert_eq!(invalid.surface_y_at(0.0, 0.0, 0.0), None);
     }
 }

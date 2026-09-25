@@ -64,6 +64,12 @@ impl VulkanContext {
 
         rows.clear();
         rows.push(ScratchRow {
+            name: "volumetric_fog_scratch",
+            len: self.volumetric_fog_scratch.len(),
+            capacity: self.volumetric_fog_scratch.capacity(),
+            elem_size_bytes: size_of::<super::super::volumetrics::GpuFogVolume>(),
+        });
+        rows.push(ScratchRow {
             name: "gpu_instances_scratch",
             len: self.scratch.gpu_instances_scratch.len(),
             capacity: self.scratch.gpu_instances_scratch.capacity(),
@@ -284,12 +290,16 @@ impl VulkanContext {
             stats.gpu_bloom_ms = snap.bloom_ms;
             stats.gpu_caustic_splat_ms = snap.caustic_splat_ms;
             stats.gpu_volumetrics_ms = snap.volumetrics_ms;
+            stats.volumetrics_state = snap.volumetrics_state;
             stats.gpu_upscale_ms = snap.upscale_ms;
             stats.gpu_presentation_ms = snap.presentation_ms;
             stats.gpu_depth_history_copy_ms = snap.depth_history_copy_ms;
             stats.gpu_sky_cube_ms = snap.sky_cube_ms;
             stats.gpu_groundcover_scatter_ms = snap.groundcover_scatter_ms;
             stats.gpu_exposure_meter_ms = snap.exposure_meter_ms;
+            stats.gpu_groundcover_models_ms = snap.groundcover_models_ms;
+            stats.gpu_volumetrics_inject_ms = snap.volumetrics_inject_ms;
+            stats.gpu_volumetrics_integrate_ms = snap.volumetrics_integrate_ms;
             // #2513 / REN-D20-NEW-03 — copy the "did this bracket actually
             // run" flags too, closing the gap #2278 opened at the producer
             // but nothing downstream ever read.
@@ -312,6 +322,9 @@ impl VulkanContext {
             stats.gpu_sky_cube_active = snap.sky_cube_active;
             stats.gpu_groundcover_scatter_active = snap.groundcover_scatter_active;
             stats.gpu_exposure_meter_active = snap.exposure_meter_active;
+            stats.gpu_groundcover_models_active = snap.groundcover_models_active;
+            stats.gpu_volumetrics_inject_active = snap.volumetrics_inject_active;
+            stats.gpu_volumetrics_integrate_active = snap.volumetrics_integrate_active;
         } else {
             stats.gpu_skin_dispatch_ms = 0.0;
             stats.gpu_skin_palette_ms = 0.0;
@@ -326,12 +339,16 @@ impl VulkanContext {
             stats.gpu_bloom_ms = 0.0;
             stats.gpu_caustic_splat_ms = 0.0;
             stats.gpu_volumetrics_ms = 0.0;
+            stats.volumetrics_state = Default::default();
             stats.gpu_upscale_ms = 0.0;
             stats.gpu_presentation_ms = 0.0;
             stats.gpu_depth_history_copy_ms = 0.0;
             stats.gpu_sky_cube_ms = 0.0;
             stats.gpu_groundcover_scatter_ms = 0.0;
             stats.gpu_exposure_meter_ms = 0.0;
+            stats.gpu_groundcover_models_ms = 0.0;
+            stats.gpu_volumetrics_inject_ms = 0.0;
+            stats.gpu_volumetrics_integrate_ms = 0.0;
             // No `GpuPerFrameTimers` at all (driver lacks timestamp
             // support) — every bracket is inactive, not just zero.
             stats.gpu_skin_dispatch_active = false;
@@ -353,6 +370,9 @@ impl VulkanContext {
             stats.gpu_sky_cube_active = false;
             stats.gpu_groundcover_scatter_active = false;
             stats.gpu_exposure_meter_active = false;
+            stats.gpu_groundcover_models_active = false;
+            stats.gpu_volumetrics_inject_active = false;
+            stats.gpu_volumetrics_integrate_active = false;
         }
         stats.slots_active = self.skin_slots.len() as u32;
         stats.slot_pool_capacity = if self.skin_compute.is_some() {

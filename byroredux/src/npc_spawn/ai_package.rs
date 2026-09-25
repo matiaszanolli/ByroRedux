@@ -652,11 +652,25 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
 
     // Pass 2 — the gate. Only the survivors (usually none) go on to pay for a
     // `package_candidates` clone and a `Dead` lookup.
-    let due: Vec<EntityId> = last_evaluated
+    let mut due: Vec<EntityId> = last_evaluated
         .into_iter()
         .filter(|(actor, last)| requested.contains(actor) || *last != Some(minute))
         .map(|(actor, _)| actor)
         .collect();
+    if due.is_empty() {
+        return;
+    }
+
+    // Reject suspended actors before cloning their candidate stacks. Keep
+    // the last evaluation minute untouched: combat clears it so ambient AI
+    // resumes immediately when combat ends, even within the same minute.
+    // Separate query scopes preserve the component lock-order invariant.
+    if let Some(dead) = world.query::<Dead>() {
+        due.retain(|&actor| dead.get(actor).is_none());
+    }
+    if let Some(combat) = world.query::<AiCombatState>() {
+        due.retain(|&actor| combat.get(actor).is_none());
+    }
     if due.is_empty() {
         return;
     }
@@ -679,12 +693,6 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
     };
     let mut updates = Vec::new();
     for (actor, runtime) in runtimes {
-        // #4703 — an actor in combat is driven by `npc_combat_ai_system`,
-        // which suspended its package; it is re-selected once combat ends.
-        if world.get::<Dead>(actor).is_some() || world.get::<AiCombatState>(actor).is_some() {
-            continue;
-        }
-
         // QUST ALPC packages override the actor base's PKID stack for as
         // long as the alias remains filled. Stable source ordering avoids
         // depending on HashMap iteration when several quests overlay one

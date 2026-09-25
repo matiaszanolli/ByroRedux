@@ -560,12 +560,13 @@ fn prepare_fog_mesh_instance(
     paths: &ResolvedMeshPaths,
 ) -> Option<byroredux_core::ecs::FogVolume> {
     let texture_path = paths.textures.base_color.as_deref();
-    let fog_semantics = pc.mesh_cache_key.is_some_and(crate::fog::has_fog_token)
-        || texture_path.is_some_and(crate::fog::has_fog_token)
-        || mesh.name.as_deref().is_some_and(crate::fog::has_fog_token);
     let Some(fog_volume) = crate::fog::fog_volume_from_mesh(pc.mesh_cache_key, texture_path, mesh)
     else {
-        if fog_semantics {
+        if log::log_enabled!(target: "byroredux::fog", log::Level::Debug)
+            && (pc.mesh_cache_key.is_some_and(crate::fog::has_fog_token)
+                || texture_path.is_some_and(crate::fog::has_fog_token)
+                || mesh.name.as_deref().is_some_and(crate::fog::has_fog_token))
+        {
             log::debug!(
                 target: "byroredux::fog",
                 "authored fog mesh candidate kept on legacy path: model={:?} texture={:?} \
@@ -636,7 +637,7 @@ fn spawn_fog_mesh_instance(
 #[derive(Clone)]
 pub(super) enum PreparedMeshUpload {
     Fog(byroredux_core::ecs::FogVolume),
-    FogGroup(Vec<byroredux_core::ecs::FogVolume>),
+    FogGroup(std::sync::Arc<[byroredux_core::ecs::FogVolume]>),
     Ready { handle: u32, fresh_for_rt: bool },
     Failed,
 }
@@ -646,6 +647,7 @@ struct FreshMeshUpload {
     vertices: Vec<byroredux_renderer::Vertex>,
     for_rt: bool,
     shareable: bool,
+    geometry_fingerprint: Option<u64>,
 }
 
 /// Census-only provenance for a freshly uploaded cell-placement mesh: names
@@ -678,9 +680,11 @@ fn note_cell_upload_provenance(
 pub(super) fn prepare_mesh_uploads(
     ctx: &mut VulkanContext,
     pc: &PlacementCtx,
-    imported: &[byroredux_nif::import::ImportedMesh],
+    cached: &CachedNifImport,
     paths: &[ResolvedMeshPaths],
 ) -> Vec<PreparedMeshUpload> {
+    let imported = &cached.meshes;
+    let beam_volumes = cached.beam_volumes(pc.mesh_cache_key);
     let mut prepared = vec![PreparedMeshUpload::Failed; imported.len()];
     let mut fresh: Vec<FreshMeshUpload> = Vec::new();
     let mut fresh_by_content: std::collections::HashMap<u64, Vec<usize>> = Default::default();
@@ -700,32 +704,8 @@ pub(super) fn prepare_mesh_uploads(
     let mut shared: Vec<usize> = Vec::new();
 
     for (sub_mesh_index, mesh) in imported.iter().enumerate() {
-        if let Some(volumes) =
-            crate::fog::fnv_nellis_hangar_beam_volumes_from_mesh(pc.mesh_cache_key, mesh)
-        {
-            log::debug!(
-                target: "byroredux::fog",
-                "replaced painted hangar fans with {} media and apertures: model={:?}",
-                volumes.len(),
-                pc.mesh_cache_key,
-            );
-            prepared[sub_mesh_index] = PreparedMeshUpload::FogGroup(volumes);
-            continue;
-        }
-        if let Some(volume) = crate::fog::window_beam_volume_from_mesh(pc.mesh_cache_key, mesh)
-            .or_else(|| crate::fog::oblivion_dungeon_beam_volume_from_mesh(pc.mesh_cache_key, mesh))
-            .or_else(|| crate::fog::authored_cone_beam_volume_from_mesh(pc.mesh_cache_key, mesh))
-            .or_else(|| crate::fog::fnv_superwide_beam_volume_from_mesh(pc.mesh_cache_key, mesh))
-            .or_else(|| crate::fog::vault_window_beam_volume_from_mesh(pc.mesh_cache_key, mesh))
-            .or_else(|| crate::fog::fo4_ambient_lamp_beam_volume_from_mesh(pc.mesh_cache_key, mesh))
-        {
-            log::debug!(
-                target: "byroredux::fog",
-                "replaced painted beam with light-scattering volume: model={:?} mesh={:?}",
-                pc.mesh_cache_key,
-                mesh.name,
-            );
-            prepared[sub_mesh_index] = PreparedMeshUpload::Fog(volume);
+        if let Some(volumes) = &beam_volumes[sub_mesh_index] {
+            prepared[sub_mesh_index] = PreparedMeshUpload::FogGroup(volumes.clone());
             continue;
         }
         if let Some(fog_volume) = prepare_fog_mesh_instance(pc, mesh, &paths[sub_mesh_index]) {
@@ -757,6 +737,7 @@ pub(super) fn prepare_mesh_uploads(
         let shareable =
             mesh.skin.is_none() && mesh.morph_targets.as_ref().is_none_or(Vec::is_empty);
         let vertices = super::super::lod_support::imported_mesh_to_vertices(mesh);
+        let mut geometry_fingerprint = None;
         if shareable {
             let upload = SceneMeshUpload {
                 vertices: &vertices,
@@ -764,16 +745,18 @@ pub(super) fn prepare_mesh_uploads(
                 rt_enabled: for_rt,
                 cache_key: pc.mesh_cache_key.map(|key| (key, sub_mesh_index_u32)),
             };
-            if let Some(handle) = ctx.mesh_registry.acquire_matching_scene_mesh(&upload) {
+            let (matching_handle, fingerprint) = ctx
+                .mesh_registry
+                .acquire_matching_scene_mesh_with_fingerprint(&upload);
+            geometry_fingerprint = Some(fingerprint);
+            if let Some(handle) = matching_handle {
                 prepared[sub_mesh_index] = PreparedMeshUpload::Ready {
                     handle,
                     fresh_for_rt: false,
                 };
                 continue;
             }
-            let bucket = fresh_by_content
-                .entry(upload.geometry_fingerprint())
-                .or_default();
+            let bucket = fresh_by_content.entry(fingerprint).or_default();
             if let Some(&representative) = bucket.iter().find(|&&index| {
                 let candidate = &fresh[index];
                 upload.same_geometry(&SceneMeshUpload {
@@ -800,6 +783,7 @@ pub(super) fn prepare_mesh_uploads(
             vertices,
             for_rt,
             shareable,
+            geometry_fingerprint,
         });
     }
 
@@ -838,8 +822,10 @@ pub(super) fn prepare_mesh_uploads(
         Ok(handles) => {
             for (fresh_mesh, handle) in fresh.iter().zip(handles) {
                 if fresh_mesh.shareable {
-                    ctx.mesh_registry
-                        .register_scene_geometry_for_sharing(handle);
+                    ctx.mesh_registry.register_scene_geometry_for_sharing_with_fingerprint(
+                        handle,
+                        fresh_mesh.geometry_fingerprint,
+                    );
                 }
                 note_cell_upload_provenance(
                     ctx,
@@ -901,8 +887,10 @@ pub(super) fn prepare_mesh_uploads(
                 match upload_result {
                     Ok(handle) => {
                         if fresh_mesh.shareable {
-                            ctx.mesh_registry
-                                .register_scene_geometry_for_sharing(handle);
+                            ctx.mesh_registry.register_scene_geometry_for_sharing_with_fingerprint(
+                                handle,
+                                fresh_mesh.geometry_fingerprint,
+                            );
                         }
                         note_cell_upload_provenance(
                             ctx,
@@ -1048,7 +1036,7 @@ pub(super) fn spawn_mesh_instance(
             return true;
         }
         PreparedMeshUpload::FogGroup(volumes) => {
-            for volume in volumes {
+            for volume in volumes.iter().cloned() {
                 spawn_fog_mesh_instance(world, pc, mesh, paths, volume);
             }
             return true;

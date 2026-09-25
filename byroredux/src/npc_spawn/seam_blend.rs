@@ -34,6 +34,9 @@ use byroredux_core::math::{Mat4, Vec3};
 use byroredux_nif::import::ImportedMesh;
 use std::collections::HashMap;
 
+mod vertex_grid;
+use vertex_grid::VertexGrid;
+
 /// Bind-space distance within which a neighbour skin vertex counts as the
 /// other side of an edge vertex's cut. Sized to the widest measured FO3 gap:
 /// a wrist edge sits 2.0–2.4 units from the sleeve's skin edge on
@@ -65,6 +68,7 @@ pub(crate) struct NeighborSkin {
     pub source: String,
     pub texture: String,
     pub positions: Vec<Vec3>,
+    vertex_grid: VertexGrid,
     pub normals: Vec<Vec3>,
     pub uvs: Vec<[f32; 2]>,
 }
@@ -81,42 +85,8 @@ pub(crate) struct SeamContext {
     pub textures: HashMap<(String, usize), String>,
 }
 
-/// Mean-colour sampler over DDS textures from the actor's archives, decoding
-/// each texture's header once.
-pub(crate) struct ToneSampler<'a> {
-    provider: &'a crate::asset_provider::TextureProvider,
-    textures: HashMap<String, Option<(byroredux_renderer::vulkan::dds::DdsMetadata, Vec<u8>)>>,
-}
-
-impl<'a> ToneSampler<'a> {
-    pub(crate) fn new(provider: &'a crate::asset_provider::TextureProvider) -> Self {
-        Self {
-            provider,
-            textures: HashMap::new(),
-        }
-    }
-
-    /// Mean colour around `uv` of `texture`, `None` when it is missing or in
-    /// a format the sampler does not decode.
-    pub(crate) fn sample(&mut self, texture: &str, uv: [f32; 2]) -> Option<[f32; 3]> {
-        let provider = self.provider;
-        let entry = self
-            .textures
-            .entry(texture.to_ascii_lowercase())
-            .or_insert_with(|| {
-                let data = provider.extract(texture)?;
-                let meta = byroredux_renderer::vulkan::dds::parse_dds(&data).ok()?;
-                Some((meta, data))
-            });
-        let (meta, data) = entry.as_ref()?;
-        byroredux_renderer::vulkan::dds::sample_region_rgb(
-            meta,
-            data,
-            uv,
-            TONE_SAMPLE_TEXTURE_WIDTH,
-        )
-    }
-}
+mod tone;
+pub(crate) use tone::ToneSampler;
 
 /// Per-vertex bind-space skinning matrix and position of a skinned mesh, or
 /// `None` when the mesh is unskinned or its skin data is incomplete.
@@ -197,6 +167,7 @@ pub(crate) fn neighbor_from_mesh(
     Some(NeighborSkin {
         source: source.to_ascii_lowercase(),
         texture: texture.to_owned(),
+        vertex_grid: VertexGrid::new(&positions, SEAM_MATCH_RADIUS),
         positions,
         normals,
         uvs: mesh.uvs.clone(),
@@ -278,6 +249,7 @@ pub(crate) fn blend_part_seams(
 
     // (vertex, mean neighbour normal, tone ratio if both sides sampled)
     let mut matched: Vec<(usize, Vec3, Option<[f32; 3]>)> = Vec::new();
+    let mut candidates = Vec::new();
     for vertex in boundary_vertices(&positions, &mesh.indices) {
         let here = positions[vertex];
         let mut normal = Vec3::ZERO;
@@ -285,8 +257,9 @@ pub(crate) fn blend_part_seams(
         let mut coloured = 0u32;
         let mut hits = 0u32;
         for neighbor in &neighbors {
-            for (j, there) in neighbor.positions.iter().enumerate() {
-                if (*there - here).length_squared() > SEAM_MATCH_RADIUS * SEAM_MATCH_RADIUS {
+            neighbor.vertex_grid.candidates(here, &mut candidates);
+            for &j in &candidates {
+                if (neighbor.positions[j] - here).length_squared() > SEAM_MATCH_RADIUS * SEAM_MATCH_RADIUS {
                     continue;
                 }
                 hits += 1;

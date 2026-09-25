@@ -555,6 +555,7 @@ impl VulkanContext {
                 previous_model_buffer,
                 main_instances,
                 tail_capacity,
+                self.gpu_timers.as_mut(),
             );
         }
     }

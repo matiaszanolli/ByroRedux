@@ -770,7 +770,7 @@ pub(super) fn spawn_placed_instances(
         collision_fallback,
         spawned_nif_lights,
     };
-    let prepared_meshes = prepare_mesh_uploads(ctx, &pc, imported, &resolved_paths);
+    let prepared_meshes = prepare_mesh_uploads(ctx, &pc, cached, &resolved_paths);
     for (sub_mesh_index, (mesh, prepared)) in imported.iter().zip(prepared_meshes).enumerate() {
         if spawn_mesh_instance(
             world,

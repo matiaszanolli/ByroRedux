@@ -586,6 +586,16 @@ impl VulkanContext {
                             .portal_sun_radiance
                             .iter()
                             .any(|channel| *channel > 0.0);
+                    let (sun_direction, sun_radiance) = volumetric_sun(sky_params, fog_far);
+                    super::super::volumetrics::filter_fog_volumes_for_grid(
+                        fog_volumes,
+                        camera_pos,
+                        vol.far_distance_world(),
+                        sun_direction,
+                        portal_sun_active,
+                        &mut self.volumetric_fog_scratch,
+                    );
+                    let fog_volumes = self.volumetric_fog_scratch.as_slice();
                     let effective_extinction_per_meter = if !sky_params.is_exterior
                         && (local_emitters_present || portal_sun_active)
                     {
@@ -701,7 +711,6 @@ impl VulkanContext {
                                 index_buf,
                                 index_size,
                             );
-                            let (sun_direction, sun_radiance) = volumetric_sun(sky_params, fog_far);
                             let vol_params = super::super::volumetrics::VolumetricsParams {
                                 inv_view_proj: inv_vp_arr,
                                 prev_view_proj: [
@@ -818,7 +827,10 @@ impl VulkanContext {
                                 timers.cmd_volumetrics_start(&self.device, cmd, frame);
                             }
                             let vol_result =
-                                vol.dispatch(&self.device, cmd, frame, &vol_params, fog_volumes);
+                                vol.dispatch(&self.device, cmd, frame, &vol_params, fog_volumes,
+                                    self.gpu_timers.as_mut(), self.scene_buffers.current_ray_budget(
+                                        self.renderer_config.rt_test_ray_quality_tier,
+                                    ).quality_tier);
                             if let Some(ref mut timers) = self.gpu_timers {
                                 timers.cmd_volumetrics_end(&self.device, cmd, frame);
                             }

@@ -157,7 +157,7 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
             // into an interior. On a direct `--cell` boot the same exterior
             // procedural fallback is baked for the portal instead.
             exterior_zenith_color: outdoor.zenith_color,
-            portal_outdoor_sky: Some(Box::new(outdoor)),
+            portal_outdoor_sky: Some(outdoor.into()),
             ..SkyParams::default()
         };
     }

@@ -89,6 +89,7 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // world space matching camera_pos/render_origin — ground height near
     // the camera, or camera Y as a fallback. y = emissive history weight,
     // z = adaptive local-light cap, w = clamped simulation delta seconds.
+    // w = -1 clears expired transport; -2 means this slot is already empty.
     vec4 fog_reference;
     // xy = normalized horizontal wind direction in renderer X/Z space,
     // z = base speed and w = gust amplitude, in world units per second.
@@ -901,6 +902,14 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
         float profileKind;
         float densityProfile;
         vec2 localTurbulence;
+        // Transported profiles are sourced from the combustion history
+        // fields. Reject them before radius, turbulence and density sampling.
+        float authoredProfile = volumeProfileKind(volume);
+        if (isnan(authoredProfile)
+                || isinf(authoredProfile)
+                || isTransportedProfile(authoredProfile)) {
+            continue;
+        }
         if (!evaluateLocalFogVolume(
                 volume,
                 worldPos,
@@ -908,8 +917,7 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
                 localOffset,
                 profileKind,
                 densityProfile,
-                localTurbulence)
-                || isTransportedProfile(profileKind)) {
+                localTurbulence)) {
             continue;
         }
         float sigmaT = max(volume.half_extents_extinction.w, 0.0) * densityProfile;
@@ -2489,35 +2497,37 @@ void transportCombustion(
             * WORLD_UNITS_PER_METER;
         dynamics.y += aerosolLift * dt;
 
-        vec3 metres = worldPos / WORLD_UNITS_PER_METER;
-        float coarseWaveNumber = 2.0 * PI
-            / COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS;
-        float detailWaveNumber = 2.0 * PI
-            / COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS;
-        vec3 coarseCurl = curlField(
-            metres * coarseWaveNumber
-                + vec3(
-                    0.06,
-                    -COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS,
-                    0.04
-                ) * (coarseWaveNumber * params.temporal_params.z)
-        );
-        const float detailRotation = 0.7417649321;
-        vec3 detailCurl = rotateY(
-            curlField(
-                rotateY(metres, detailRotation) * detailWaveNumber
+        if (activity > 0.0) {
+            vec3 metres = worldPos / WORLD_UNITS_PER_METER;
+            float coarseWaveNumber = 2.0 * PI
+                / COMBUSTION_TURBULENCE_COARSE_EDDY_SCALE_METERS;
+            float detailWaveNumber = 2.0 * PI
+                / COMBUSTION_TURBULENCE_DETAIL_EDDY_SCALE_METERS;
+            vec3 coarseCurl = curlField(
+                metres * coarseWaveNumber
                     + vec3(
-                        -0.08,
-                        -COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS,
-                        0.11
-                    ) * (detailWaveNumber * params.temporal_params.z)
-            ),
-            -detailRotation
-        );
-        vec3 turbulentAcceleration = (
-            coarseCurl * 0.72 + detailCurl * 0.42
-        ) * (1.1 * WORLD_UNITS_PER_METER * activity);
-        dynamics.xyz += turbulentAcceleration * dt;
+                        0.06,
+                        -COMBUSTION_TURBULENCE_COARSE_RISE_SPEED_MPS,
+                        0.04
+                    ) * (coarseWaveNumber * params.temporal_params.z)
+            );
+            const float detailRotation = 0.7417649321;
+            vec3 detailCurl = rotateY(
+                curlField(
+                    rotateY(metres, detailRotation) * detailWaveNumber
+                        + vec3(
+                            -0.08,
+                            -COMBUSTION_TURBULENCE_DETAIL_RISE_SPEED_MPS,
+                            0.11
+                        ) * (detailWaveNumber * params.temporal_params.z)
+                ),
+                -detailRotation
+            );
+            vec3 turbulentAcceleration = (
+                coarseCurl * 0.72 + detailCurl * 0.42
+            ) * (1.1 * WORLD_UNITS_PER_METER * activity);
+            dynamics.xyz += turbulentAcceleration * dt;
+        }
         dynamics.xyz *= exp(
             -COMBUSTION_VELOCITY_DAMPING_PER_SECOND * dt
         );
@@ -2773,29 +2783,32 @@ void main() {
     float simulationDt = clamp(params.fog_reference.w, 0.0, 1.0 / 15.0);
     // TRANSPORT_EXPIRED_DT (volumetrics.rs) — negative w = transport lapsed.
     bool transportExpired = params.fog_reference.w < 0.0;
-    vec4 chemistry;
-    vec4 combustion_dynamics;
-    vec4 combustion_optical;
-    transportCombustion(
-        field_world_pos,
-        field_segment_start,
-        field_segment_end,
-        neighbor_step_x,
-        neighbor_step_y,
-        neighbor_step_z,
-        simulationDt,
-        transportExpired,
-        chemistry,
-        combustion_dynamics,
-        combustion_optical
-    );
-    imageStore(combustionState, coord, chemistry);
-    imageStore(
-        combustionDynamics,
-        coord,
-        combustion_dynamics
-    );
-    imageStore(combustionOptical, coord, combustion_optical);
+    vec4 chemistry = vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
+    vec4 combustion_dynamics = vec4(0.0);
+    vec4 combustion_optical = vec4(0.0);
+    bool transportKnownEmpty = params.fog_reference.w < -1.5;
+    if (!transportKnownEmpty) {
+        transportCombustion(
+            field_world_pos,
+            field_segment_start,
+            field_segment_end,
+            neighbor_step_x,
+            neighbor_step_y,
+            neighbor_step_z,
+            simulationDt,
+            transportExpired,
+            chemistry,
+            combustion_dynamics,
+            combustion_optical
+        );
+        imageStore(combustionState, coord, chemistry);
+        imageStore(
+            combustionDynamics,
+            coord,
+            combustion_dynamics
+        );
+        imageStore(combustionOptical, coord, combustion_optical);
+    }
 
     // View direction points FROM the sample point TOWARD the camera.
     // #4776 — exactly `normalize(camera_pos - world_pos)` for every t > 0,
@@ -2826,26 +2839,30 @@ void main() {
     float density_scale = proceduralDensityScale(world_pos, params.fog_reference.x);
     float global_extinction = params.camera_pos.w * density_scale;
     LocalMedium local_medium = sampleLocalMedium(field_world_pos);
-    LocalMedium transported_combustion = combustionMedium(
-        chemistry,
-        combustion_optical
-    );
-    bool transportedMediumActive = transported_combustion.extinction > 1.0e-7;
-    accumulateCombustionLightMoment(
-        coord,
-        size,
-        field_world_pos,
-        fieldFrontT,
-        fieldBackT,
-        transported_combustion
-    );
-    float flame_source_sample_ratio = flameSourceSampleRatio(
-        field_world_pos,
-        world_pos
-    );
-    transported_combustion.extinction *= flame_source_sample_ratio;
-    transported_combustion.scattering *= flame_source_sample_ratio;
-    transported_combustion.emission *= flame_source_sample_ratio;
+    LocalMedium transported_combustion = LocalMedium(vec3(0.0), 0.0, vec3(0.0));
+    bool transportedMediumActive = false;
+    if (!transportExpired) {
+        transported_combustion = combustionMedium(
+            chemistry,
+            combustion_optical
+        );
+        transportedMediumActive = transported_combustion.extinction > 1.0e-7;
+        accumulateCombustionLightMoment(
+            coord,
+            size,
+            field_world_pos,
+            fieldFrontT,
+            fieldBackT,
+            transported_combustion
+        );
+        float flame_source_sample_ratio = flameSourceSampleRatio(
+            field_world_pos,
+            world_pos
+        );
+        transported_combustion.extinction *= flame_source_sample_ratio;
+        transported_combustion.scattering *= flame_source_sample_ratio;
+        transported_combustion.emission *= flame_source_sample_ratio;
+    }
     local_medium.extinction += transported_combustion.extinction;
     local_medium.scattering += transported_combustion.scattering;
     local_medium.emission += transported_combustion.emission;

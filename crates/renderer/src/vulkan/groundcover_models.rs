@@ -651,6 +651,7 @@ impl GroundCoverModelTier {
         previous_model_buffer: vk::Buffer,
         tail_base: u32,
         tail_capacity: u32,
+        mut timers: Option<&mut super::gpu_timers::GpuPerFrameTimers>,
     ) {
         if self.frame_shape_count == 0 || scatter.chunk_count == 0 || tail_capacity == 0 {
             return;
@@ -726,6 +727,9 @@ impl GroundCoverModelTier {
             grid_spacing: self.frame_grid_spacing,
             pad: 0,
         };
+        if let Some(timers) = timers.as_deref_mut() {
+            timers.cmd_groundcover_models_start(device, cmd, frame);
+        }
         // SAFETY: `cmd` is recording outside a render pass; the pipeline,
         // layout, set and every bound buffer are live for the frame.
         unsafe {
@@ -797,6 +801,9 @@ impl GroundCoverModelTier {
                     .src_offset(GROUNDCOVER_MODEL_STATS_REGION as u64 * 4)
                     .size(STATS_WORDS * 4)],
             );
+        }
+        if let Some(timers) = timers {
+            timers.cmd_groundcover_models_end(device, cmd, frame);
         }
         self.pending_stats[frame] = true;
         self.frame_recorded = true;

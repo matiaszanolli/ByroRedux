@@ -390,17 +390,39 @@ fn update_terrain_seam_stats(
 /// several VWD statics is one overlap incident, not one per REFR. The
 /// marker is a sparse ZST (most placements aren't VWD-flagged), so querying
 /// it first and looking up `GlobalTransform` per hit is cheaper than a
-/// joint query would be over the far larger `GlobalTransform` set.
+/// joint query would be over the far larger `GlobalTransform` set. Both
+/// read queries are hoisted so each storage lock is acquired once.
 fn resident_vwd_refr_cells(world: &byroredux_core::ecs::World) -> Vec<(i32, i32)> {
-    let mut cells = std::collections::HashSet::new();
-    if let Some(q) = world.query::<crate::components::VisibleWhenDistant>() {
-        for (entity, _) in q.iter() {
-            if let Some(t) = world.get::<byroredux_core::ecs::GlobalTransform>(entity) {
-                cells.insert(streaming::world_pos_to_grid(
-                    t.translation.x,
-                    t.translation.z,
-                ));
-            }
+    type Vwd = crate::components::VisibleWhenDistant;
+    type GlobalTransform = byroredux_core::ecs::GlobalTransform;
+    // Keep the TypeId-sorted acquisition order used by multi-component
+    // queries; these two read locks span the sparse marker iteration.
+    let (vwd_query, transform_query) = if std::any::TypeId::of::<Vwd>()
+        < std::any::TypeId::of::<GlobalTransform>()
+    {
+        let Some(vwd) = world.query::<Vwd>() else {
+            return Vec::new();
+        };
+        let Some(transform) = world.query::<GlobalTransform>() else {
+            return Vec::new();
+        };
+        (vwd, transform)
+    } else {
+        let Some(transform) = world.query::<GlobalTransform>() else {
+            return Vec::new();
+        };
+        let Some(vwd) = world.query::<Vwd>() else {
+            return Vec::new();
+        };
+        (vwd, transform)
+    };
+    let mut cells = rustc_hash::FxHashSet::default();
+    for (entity, _) in vwd_query.iter() {
+        if let Some(t) = transform_query.get(entity) {
+            cells.insert(streaming::world_pos_to_grid(
+                t.translation.x,
+                t.translation.z,
+            ));
         }
     }
     cells.into_iter().collect()

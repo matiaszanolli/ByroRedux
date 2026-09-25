@@ -904,6 +904,10 @@ impl Newcomer {
 
 fn collect_newcomers(world: &World) -> Vec<Newcomer> {
     let mut out = Vec::new();
+    // Resource and component locks never overlap. Keep the existing component
+    // acquisition order shared with push_kinematic.
+    let registered_generations = world.try_resource::<PhysicsWorld>()
+        .and_then(|pw| pw.registered_shape_generations);
 
     // #2867 — this check used to live at the BOTTOM of `register_newcomers`,
     // *after* every newcomer's body and colliders had already been committed
@@ -933,6 +937,17 @@ fn collect_newcomers(world: &World) -> Vec<Newcomer> {
         return out;
     };
 
+    // Equal counts alone do not prove equal entity sets: a stale handle can
+    // coexist with a new shape. Reuse only a previous full membership check,
+    // with generations that also detect remove/insert at unchanged counts.
+    let generations = (
+        shape_q.storage().structural_generation(),
+        handles_q.storage().structural_generation(),
+    );
+    if registered_generations == Some(generations) {
+        return out;
+    }
+
     // Acquired last — matches `push_kinematic`'s Handles → Body → Global
     // order so the two functions never present the lock-order detector
     // with opposite edges for the same pair (#313).
@@ -943,10 +958,14 @@ fn collect_newcomers(world: &World) -> Vec<Newcomer> {
     // Optional — a World with no live actors never registers the storage.
     let bone_q = world.query::<ActorBoneCollider>();
 
+    let mut all_registered = true;
     for (entity, shape) in shape_q.iter() {
         if handles_q.contains(entity) {
             continue;
         }
+        // Do not cache an incomplete entity: its body or transform may arrive
+        // later without changing shape/handle membership.
+        all_registered = false;
         let Some(body_data) = body_q.get(entity) else {
             continue;
         };
@@ -960,6 +979,13 @@ fn collect_newcomers(world: &World) -> Vec<Newcomer> {
             global: *global,
             is_actor_bone: bone_q.as_ref().is_some_and(|q| q.contains(entity)),
         });
+    }
+
+    if all_registered {
+        drop((bone_q, gq, body_q, shape_q, handles_q));
+        if let Some(mut pw) = world.try_resource_mut::<PhysicsWorld>() {
+            pw.registered_shape_generations = Some(generations);
+        }
     }
 
     out
@@ -1352,7 +1378,7 @@ fn pull_dynamic(world: &World) {
 
 #[cfg(test)]
 mod phase_sync_tests {
-    use super::{physics_sync_system, register_newcomers_and_refresh_queries};
+    use super::{collect_newcomers, physics_sync_system, register_newcomers_and_refresh_queries};
     use crate::components::RapierHandles;
     use crate::world::PhysicsWorld;
     use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
@@ -1757,6 +1783,53 @@ mod phase_sync_tests {
         let pw = world.resource::<PhysicsWorld>();
         assert_eq!(pw.bodies.len(), 4, "one body per newcomer, registered once");
         assert_eq!(pw.colliders.len(), 4);
+        assert!(pw.registered_shape_generations.is_some());
+    }
+
+    #[test]
+    fn newcomer_cache_detects_membership_changes_even_when_counts_match() {
+        let mut world = physics_world();
+        let old = world.spawn();
+        world.insert(old, Transform::IDENTITY);
+        world.insert(old, GlobalTransform::IDENTITY);
+        world.insert(old, unit_box());
+        world.insert(old, RigidBodyData::STATIC);
+        assert_eq!(register_newcomers_and_refresh_queries(&world), 1);
+        assert!(collect_newcomers(&world).is_empty());
+        assert!(world.resource::<PhysicsWorld>().registered_shape_generations.is_some());
+
+        // One stale handle and one new shape: row counts still match, but
+        // the newcomer must be found on both registration entry paths.
+        world.remove::<CollisionShape>(old);
+        let new = world.spawn();
+        world.insert(new, Transform::IDENTITY);
+        world.insert(new, GlobalTransform::IDENTITY);
+        world.insert(new, unit_box());
+        world.insert(new, RigidBodyData::STATIC);
+        let newcomers = collect_newcomers(&world);
+        assert_eq!(newcomers.len(), 1);
+        assert_eq!(newcomers[0].entity, new);
+        assert_eq!(register_newcomers_and_refresh_queries(&world), 1);
+        assert!(collect_newcomers(&world).is_empty());
+
+        world.remove::<RapierHandles>(new);
+        let newcomers = collect_newcomers(&world);
+        assert_eq!(newcomers.len(), 1);
+        assert_eq!(newcomers[0].entity, new);
+    }
+
+    #[test]
+    fn newcomer_cache_does_not_hide_late_body_or_transform_components() {
+        let mut world = physics_world();
+        let entity = world.spawn();
+        world.insert(entity, unit_box());
+        assert!(collect_newcomers(&world).is_empty());
+        world.insert(entity, RigidBodyData::STATIC);
+        assert!(collect_newcomers(&world).is_empty());
+        world.insert(entity, GlobalTransform::IDENTITY);
+        let newcomers = collect_newcomers(&world);
+        assert_eq!(newcomers.len(), 1);
+        assert_eq!(newcomers[0].entity, entity);
     }
 }
 

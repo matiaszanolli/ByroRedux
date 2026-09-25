@@ -1283,7 +1283,18 @@ impl CompositePipeline {
         frame: usize,
         params: &CompositeParams,
     ) -> Result<()> {
-        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(params))
+        // The shader only reads entries below `sky_aperture_count.x`. Keep
+        // the fixed std140 block allocation/layout, but avoid copying and
+        // flushing the unused 12 KB aperture tail on ordinary frames.
+        let aperture_count = (params.sky_aperture_count[0] as usize)
+            .min(MAX_SKY_APERTURES);
+        let prefix_bytes = std::mem::offset_of!(CompositeParams, sky_apertures)
+            + aperture_count * std::mem::size_of::<CompositeSkyAperture>();
+        self.param_buffers[frame].write_mapped_prefix(
+            device,
+            std::slice::from_ref(params),
+            prefix_bytes,
+        )
     }
 
     /// The HDR colour views, one per frame in flight.

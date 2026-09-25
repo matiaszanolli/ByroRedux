@@ -123,6 +123,7 @@ pub(crate) fn finish_partial_import(
 
     let cached = Arc::new(CachedNifImport {
         meshes,
+        beam_volumes: Default::default(),
         geometry_dedup: Vec::new(),
         collisions,
         collision_authoring,

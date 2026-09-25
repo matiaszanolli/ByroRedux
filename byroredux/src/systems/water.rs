@@ -1189,9 +1189,7 @@ mod tests {
             let (c, d) = ([100.0, 0.0, 10.0], [0.0, 50.0, 10.0]);
             world.insert(
                 water,
-                WaterSurfaceMesh {
-                    triangles: vec![[a, b, c], [a, c, d]].into(),
-                },
+                WaterSurfaceMesh::new(vec![[a, b, c], [a, c, d]]),
             );
             submersion_system(&world, 0.016);
             let state = world

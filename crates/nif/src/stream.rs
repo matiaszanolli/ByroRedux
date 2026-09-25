@@ -795,68 +795,41 @@ impl<'a> NifStream<'a> {
 /// and pass it in rather than recomputing.
 ///
 /// #3062 / PERF-D8-01 — this used to start from `vec![T::default(); count]`,
-/// whose entire cost the following `read_exact` discards. For the primitive
-/// and array instantiations std's internal `IsZero` specialisation turned
-/// that into a `calloc`, so the waste was invisible; `NiPoint3` is a plain
-/// `#[repr(C)]` struct that does not qualify, so its instantiation ran a real
-/// per-element default-construct pass over every vertex in every NIF. Reading
-/// into uninitialised capacity removes the pre-fill for *every* instantiation
-/// rather than special-casing the one that was measurably paying for it.
+/// whose initialization was discarded by the read. The uninitialized-capacity
+/// optimization avoided that pass, but #4594 correctly rejected passing spare
+/// Vec capacity to a general `Read` implementation. The current path
+/// initializes the final Vec to a valid zero pattern, then reads directly
+/// into it: it keeps the safety guarantee and avoids the separate scratch
+/// buffer and byte copy.
 // #4594 — this function is generic over `io::Read` only to reuse the
 // `read_exact` bounds/progress contract; it is instantiated exclusively with
 // `Cursor<&[u8]>` (both callers), whose `read_exact` is a `memcpy` over the
-// cursor's own slice. Copying from that slice directly — instead of handing
-// `read_exact` a `&mut [u8]` over uninitialised `Vec` capacity — removes the
-// unsafe assumption that dominated the old SAFETY argument. `Read` is a
-// SAFE trait: implementations may both read and write the buffer, so
-// `read_exact` over uninitialised memory is UB by std's own docs regardless
-// of how benign our reader is.
+// cursor's own slice. `Read` is a SAFE trait: implementations may both read
+// and write the buffer, so `read_exact` over uninitialised memory is UB by
+// std's own docs regardless of how benign our reader is. Initialize the
+// destination values first, then let the reader fill their storage directly;
+// this keeps the soundness fix without a second byte-buffer allocation/copy.
 pub(crate) fn read_pod_vec_from<T: AnyBitPattern>(
     reader: &mut impl io::Read,
     count: usize,
     byte_count: usize,
 ) -> io::Result<Vec<T>> {
     debug_assert_eq!(byte_count, count * std::mem::size_of::<T>());
-    let mut out: Vec<T> = Vec::with_capacity(count);
-    // Snapshot the bytes via `Read::read` into a fully-initialised scratch
-    // buffer (zero-filled), so no uninitialised memory is ever exposed to
-    // the reader or formed into a reference. `read` may return fewer bytes
-    // per call; `read_exact`'s loop semantics are reproduced with the same
-    // `UnexpectedEof` error on a short source.
-    let mut scratch = vec![0u8; byte_count];
-    let mut filled = 0usize;
-    while filled < byte_count {
-        let n = reader.read(&mut scratch[filled..])?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!(
-                    "read_pod_vec: source ended after {filled} of {byte_count} bytes"
-                ),
-            ));
-        }
-        filled += n;
-    }
-    // SAFETY:
-    // - `out.as_mut_ptr()` is non-null and aligned to `align_of::<T>()` even
-    //   at capacity 0 (`Vec` uses a dangling *aligned* pointer).
-    // - `copy_nonoverlapping` reads ONLY the scratch bytes just filled by
-    //   `read` (every byte initialised), and writes into `out`'s reserved
-    //   capacity — the two ranges cannot overlap (`out` was allocated after
-    //   `scratch` exists and neither aliases the other).
-    // - `T: AnyBitPattern` guarantees every `size_of::<T>()`-byte sequence is
-    //   a valid, padding-free `T`, so the copied bytes are valid values.
-    // - `set_len(count)` runs AFTER the copy, so all `count * size_of::<T>()`
-    //   bytes are initialised before the length is set; `T: Copy` means the
-    //   untouched capacity has no drop glue either.
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            scratch.as_ptr(),
-            out.as_mut_ptr().cast::<u8>(),
-            byte_count,
-        );
-        out.set_len(count);
-    }
+    // AnyBitPattern's safety contract guarantees the zero bit pattern is a
+    // valid value. Initializing the final Vec gives Read a fully initialized
+    // byte slice to fill, with no scratch allocation or copy.
+    // SAFETY: zero is one of the valid bit patterns required by AnyBitPattern.
+    let zero = unsafe { std::mem::zeroed::<T>() };
+    let mut out = vec![zero; count];
+    // SAFETY: `AnyBitPattern` promises that every byte pattern is valid and
+    // has no padding. The Vec owns `count * size_of::<T>() == byte_count`
+    // initialized bytes, and no typed reference to its elements is live while
+    // `read_exact` writes through this byte view. Partial reads still leave
+    // every element valid if `read_exact` returns an error.
+    let bytes = unsafe {
+        std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), byte_count)
+    };
+    reader.read_exact(bytes)?;
     Ok(out)
 }
 

@@ -17,6 +17,7 @@ pub struct RapierHandles {
 
 impl Component for RapierHandles {
     type Storage = SparseSetStorage<Self>;
+    const TRACK_CHANGES: bool = true;
 }
 
 /// Marks an entity whose collider belongs to a **live actor's skeleton** —

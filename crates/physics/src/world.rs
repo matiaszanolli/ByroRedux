@@ -236,6 +236,9 @@ pub struct PhysicsWorld {
     /// `bodies.insert` calls that bypass these points (test fixtures) are
     /// not indexed — production code has none.
     pub(crate) dynamic_bodies: Vec<RigidBodyHandle>,
+    /// Shape/handle storage generations at the last scan that proved every
+    /// shape had handles. Membership changes invalidate the proof (#3477).
+    pub(crate) registered_shape_generations: Option<(u64, u64)>,
     /// Lifetime count of solver-explosion recoveries (`restored > 0` in
     /// `step`). #4683 (PHYS-D3-2026-09-21-01): the recovery used to report
     /// itself only through one `log::error!`, invisible to every ragdoll
@@ -355,6 +358,7 @@ impl PhysicsWorld {
             pending_wake: true,
             colliders_dirty: false,
             dynamic_bodies: Vec::new(),
+            registered_shape_generations: None,
             recoveries_total: 0,
             recoveries_last_frame: 0,
             bodies_parked_total: 0,

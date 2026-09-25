@@ -28,6 +28,16 @@ impl MeshRegistry {
     /// Opt in a successfully uploaded immutable mesh. Skins/morphs carry
     /// additional identity outside these buffers and must not opt in.
     pub fn register_scene_geometry_for_sharing(&mut self, handle: u32) {
+        self.register_scene_geometry_for_sharing_with_fingerprint(handle, None);
+    }
+
+    /// Register geometry when the caller already computed its fingerprint
+    /// from the sanitized upload payload.
+    pub fn register_scene_geometry_for_sharing_with_fingerprint(
+        &mut self,
+        handle: u32,
+        fingerprint: Option<u64>,
+    ) {
         if self.deferred_compaction.is_some() {
             return;
         }
@@ -46,10 +56,8 @@ impl MeshRegistry {
             rt_enabled: mesh.rt_capable,
             cache_key: None,
         };
-        let bucket = self
-            .geometry_cache
-            .entry((upload.geometry_fingerprint(), dedicated))
-            .or_default();
+        let fingerprint = fingerprint.unwrap_or_else(|| upload.geometry_fingerprint());
+        let bucket = self.geometry_cache.entry((fingerprint, dedicated)).or_default();
         if !bucket.contains(&handle) {
             bucket.push(handle);
         }
@@ -59,27 +67,47 @@ impl MeshRegistry {
     /// path as another alias. A hit owns one refcount, just like a path hit.
     /// Safe after admission closes: no buffers or source ranges are appended.
     pub fn acquire_matching_scene_mesh(&mut self, upload: &SceneMeshUpload<'_>) -> Option<u32> {
-        self.acquire_matching_geometry(upload, true)
+        self.acquire_matching_scene_mesh_with_fingerprint(upload).0
     }
 
+    /// Like `acquire_matching_scene_mesh`, and also returns the fingerprint
+    /// used for lookup so fresh uploads can reuse it when entering the cache.
+    pub fn acquire_matching_scene_mesh_with_fingerprint(
+        &mut self,
+        upload: &SceneMeshUpload<'_>,
+    ) -> (Option<u32>, u64) {
+        self.acquire_matching_geometry_with_fingerprint(upload, true)
+    }
+
+    #[cfg(test)]
     fn acquire_matching_geometry(
         &mut self,
         upload: &SceneMeshUpload<'_>,
         dedicated: bool,
     ) -> Option<u32> {
-        // CPU pools already use the new layout while old mesh offsets remain
-        // published during chunked compaction. Do not read the wrong ranges.
-        if self.deferred_compaction.is_some() {
-            return None;
-        }
+        self.acquire_matching_geometry_with_fingerprint(upload, dedicated).0
+    }
+
+    fn acquire_matching_geometry_with_fingerprint(
+        &mut self,
+        upload: &SceneMeshUpload<'_>,
+        dedicated: bool,
+    ) -> (Option<u32>, u64) {
         let indices = Self::sanitize_scene_indices(upload.vertices.len(), upload.indices);
         let sanitized = SceneMeshUpload {
             indices: &indices,
             ..*upload
         };
-        let candidates = self
-            .geometry_cache
-            .get(&(sanitized.geometry_fingerprint(), dedicated))?;
+        let fingerprint = sanitized.geometry_fingerprint();
+        // CPU pools already use the new layout while old mesh offsets remain
+        // published during chunked compaction. Do not read the wrong ranges.
+        // Still return the sanitized fingerprint used by a subsequent upload.
+        if self.deferred_compaction.is_some() {
+            return (None, fingerprint);
+        }
+        let Some(candidates) = self.geometry_cache.get(&(fingerprint, dedicated)) else {
+            return (None, fingerprint);
+        };
         let handle = candidates.iter().copied().find(|&handle| {
             let Some(mesh) = self.get(handle) else {
                 return false;
@@ -104,8 +132,9 @@ impl MeshRegistry {
                 rt_enabled: mesh.rt_capable,
                 cache_key: None,
             })
-        })?;
-        self.acquire_mesh_alias(handle, upload.cache_key)
+        });
+        let acquired = handle.and_then(|handle| self.acquire_mesh_alias(handle, upload.cache_key));
+        (acquired, fingerprint)
     }
 
     /// Acquire an already-validated representative for a same-batch duplicate.
@@ -226,5 +255,28 @@ mod tests {
             .insert((upload.geometry_fingerprint(), false), vec![handle]);
         assert_eq!(registry.acquire_matching_geometry(&upload, false), None);
         assert_eq!(registry.refcount(handle), Some(1));
+    }
+
+    #[test]
+    fn lookup_fingerprint_can_register_fresh_geometry_after_index_sanitization() {
+        let mut registry = MeshRegistry::new();
+        let vertices = triangle();
+        let upload = SceneMeshUpload {
+            vertices: &vertices,
+            indices: &[0, 1, 99],
+            rt_enabled: false,
+            cache_key: None,
+        };
+        let (missing, fingerprint) = registry.acquire_matching_geometry_with_fingerprint(&upload, false);
+        assert_eq!(missing, None);
+        // GPU uploads clamp indices to the last vertex. Registration must use
+        // that identity, including when lookup returned no representative.
+        let handle = registry.upload_scene_mesh_global_only(&vertices, upload.indices).unwrap();
+        registry.register_scene_geometry_for_sharing_with_fingerprint(handle, Some(fingerprint));
+        let sanitized = SceneMeshUpload { indices: &[0, 1, 2], ..upload };
+        let (hit, reused_fingerprint) = registry.acquire_matching_geometry_with_fingerprint(&sanitized, false);
+        assert_eq!(hit, Some(handle));
+        assert_eq!(reused_fingerprint, fingerprint);
+        assert_eq!(registry.acquire_matching_geometry(&upload, false), Some(handle));
     }
 }

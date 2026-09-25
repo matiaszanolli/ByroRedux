@@ -803,7 +803,7 @@ fn advance_runtime_unit(
     // `RuntimeNpcState::skeleton_path` at prepare time so creatures can carry
     // their own, and nothing else in this function needed it.
     tex_provider: &TextureProvider,
-    mat_provider: Option<&mut MaterialProvider>,
+    mut mat_provider: Option<&mut MaterialProvider>,
     idle_pool: &[u32],
     index: &EsmIndex,
 ) -> UnitOutcome {
@@ -832,7 +832,7 @@ fn advance_runtime_unit(
                 &skel_data,
                 skel_path,
                 tex_provider,
-                mat_provider,
+                mat_provider.as_deref_mut(),
                 None,
                 None,
                 None,
@@ -858,6 +858,7 @@ fn advance_runtime_unit(
                     state,
                     world,
                     tex_provider,
+                    mat_provider.as_deref_mut(),
                 )));
             }
             state.phase = RuntimePhase::Body(0);
@@ -871,13 +872,13 @@ fn advance_runtime_unit(
             match tex_provider.extract_mesh(body_path) {
                 Some(body_data) => {
                     // Hands carry the wrist cut; they are the only body part
-                    // blended (per NPC, so this bypasses the import cache for
-                    // them). The torso / legs stay shared and untouched.
+                    // blended on a private copy of the cached import. The torso
+                    // and legs stay shared and untouched.
                     let hand_seams = state
                         .seam_context
                         .clone()
                         .filter(|_| is_hand_part(body_path));
-                    let mut tone_sampler = super::seam_blend::ToneSampler::new(tex_provider);
+                    let mut tone_sampler = super::seam_blend::ToneSampler::new(world, tex_provider);
                     let mut blend_hand = |scene: &mut byroredux_nif::import::ImportedScene| {
                         let Some(context) = hand_seams.as_deref() else {
                             return;
@@ -1298,7 +1299,7 @@ fn spawn_runtime_head(
     let egm_bytes = recipe
         .and_then(|_| facegen_sidecar_path(head_path, "egm"))
         .and_then(|path| tex_provider.extract_mesh(&path));
-    let egm_file =
+    let mut egm_file =
         egm_bytes
             .as_ref()
             .and_then(|bytes| match byroredux_facegen::EgmFile::parse(bytes) {
@@ -1317,16 +1318,12 @@ fn spawn_runtime_head(
     // every NiTriShape vertex to Y-up (`zup_point_to_yup`) before this hook
     // sees it. Adding them raw applied forward/back deltas as up/down — most
     // visibly across the nose, the most heavily morphed region.
-    let yup_morphs = egm_file.as_ref().map(|egm| {
-        (
-            yup_egm_morphs(&egm.fggs_morphs),
-            yup_egm_morphs(&egm.fgga_morphs),
-        )
-    });
-    let mut hook_state = match (recipe, egm_file.as_ref(), yup_morphs.as_ref()) {
-        (Some(recipe), Some(egm), Some(morphs)) => {
-            Some((egm, morphs, recipe.fggs, recipe.fgga, npc.form_id))
-        }
+    if let Some(egm) = egm_file.as_mut() {
+        yup_egm_morphs(&mut egm.fggs_morphs);
+        yup_egm_morphs(&mut egm.fgga_morphs);
+    }
+    let mut hook_state = match (recipe, egm_file.as_ref()) {
+        (Some(recipe), Some(egm)) => Some((egm, recipe.fggs, recipe.fgga, npc.form_id)),
         _ => None,
     };
     // The race / gender head texture replaces the head NIF's own base
@@ -1340,7 +1337,7 @@ fn spawn_runtime_head(
     // Seam blending runs after the morph, on the head as it will render.
     let seam_context = state.seam_context.clone();
     let own_head_texture = state.head_texture.clone();
-    let mut tone_sampler = super::seam_blend::ToneSampler::new(tex_provider);
+    let mut tone_sampler = super::seam_blend::ToneSampler::new(world, tex_provider);
     let has_hook = hook_state.is_some() || head_texture.is_some() || seam_context.is_some();
     let mut hook = |scene: &mut byroredux_nif::import::ImportedScene| {
         if let Some(texture) = head_texture {
@@ -1390,16 +1387,12 @@ fn apply_head_morphs(
     scene: &mut byroredux_nif::import::ImportedScene,
     morphs: Option<(
         &byroredux_facegen::EgmFile,
-        &(
-            Vec<byroredux_facegen::EgmMorph>,
-            Vec<byroredux_facegen::EgmMorph>,
-        ),
         [f32; 50],
         [f32; 30],
         u32,
     )>,
 ) {
-    let Some((egm, (fggs_morphs, fgga_morphs), fggs, fgga, form_id)) = morphs else {
+    let Some((egm, fggs, fgga, form_id)) = morphs else {
         return;
     };
     let mut deformed_meshes = 0;
@@ -1407,8 +1400,8 @@ fn apply_head_morphs(
         if mesh.positions.is_empty() {
             continue;
         }
-        let after_sym = byroredux_facegen::apply_morphs(&mesh.positions, fggs_morphs, &fggs);
-        mesh.positions = byroredux_facegen::apply_morphs(&after_sym, fgga_morphs, &fgga);
+        let after_sym = byroredux_facegen::apply_morphs(&mesh.positions, &egm.fggs_morphs, &fggs);
+        mesh.positions = byroredux_facegen::apply_morphs(&after_sym, &egm.fgga_morphs, &fgga);
         deformed_meshes += 1;
     }
     log::debug!(
@@ -1512,12 +1505,13 @@ fn spawn_shared_skeleton_part(
 /// placement root, read before any animation attaches) and the skin meshes
 /// of every body and armour NIF this actor will wear, with their resolved
 /// diffuse textures. Neighbour scenes come from the shared import cache, or
-/// a parse that is not inserted (`peek_or_parse_scene`), so spawn order —
+/// a fully material-resolved cache fill, so spawn order —
 /// the outfit loads after the head — does not matter.
 fn build_seam_context(
     state: &RuntimeNpcState,
     world: &mut World,
     tex_provider: &TextureProvider,
+    mut mat_provider: Option<&mut MaterialProvider>,
 ) -> super::seam_blend::SeamContext {
     let mut context = super::seam_blend::SeamContext::default();
     for (name, &bone) in &state.skel_map {
@@ -1537,7 +1531,7 @@ fn build_seam_context(
         .iter()
         .chain(state.armor.iter().map(|armor| &armor.model_path));
     for path in sources {
-        let Some(scene) = crate::scene::peek_or_parse_scene(world, path, tex_provider) else {
+        let Some(scene) = crate::scene::peek_or_parse_scene(world, path, tex_provider, mat_provider.as_deref_mut()) else {
             continue;
         };
         let source = path.to_ascii_lowercase();
@@ -1712,18 +1706,12 @@ fn bake_fallout_hair_tint(
 /// Convert parsed EGM morphs from Gamebyro's Z-up frame into the importer's
 /// Y-up vertex frame, with the same mapping the NIF importer applies to the
 /// base vertices they deform.
-fn yup_egm_morphs(morphs: &[byroredux_facegen::EgmMorph]) -> Vec<byroredux_facegen::EgmMorph> {
-    morphs
-        .iter()
-        .map(|morph| byroredux_facegen::EgmMorph {
-            scale: morph.scale,
-            deltas: morph
-                .deltas
-                .iter()
-                .map(|&delta| byroredux_core::math::coord::zup_to_yup_pos(delta))
-                .collect(),
-        })
-        .collect()
+fn yup_egm_morphs(morphs: &mut [byroredux_facegen::EgmMorph]) {
+    for morph in morphs {
+        for delta in &mut morph.deltas {
+            *delta = byroredux_core::math::coord::zup_to_yup_pos(*delta);
+        }
+    }
 }
 
 fn head_parts_use_head_bone_mount(game: GameKind) -> bool {
@@ -2319,7 +2307,10 @@ mod tests {
         // A vertex imported from Gamebyro (1, 2, 3).
         let base = [zup_to_yup_pos([1.0, 2.0, 3.0])];
         for delta in [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [0.5, -0.25, 2.0]] {
-            let morphs = yup_egm_morphs(&[morph(delta)]);
+            let mut morphs = [morph(delta)];
+            let allocation = morphs[0].deltas.as_ptr();
+            yup_egm_morphs(&mut morphs);
+            assert_eq!(allocation, morphs[0].deltas.as_ptr());
             let got = byroredux_facegen::apply_morphs(&base, &morphs, &[1.0])[0];
             // Same result as morphing in Gamebyro space, then importing.
             let want = zup_to_yup_pos([1.0 + delta[0], 2.0 + delta[1], 3.0 + delta[2]]);
@@ -2331,11 +2322,9 @@ mod tests {
             }
         }
         // Gamebyro up (+Z) is engine up (+Y).
-        let up = byroredux_facegen::apply_morphs(
-            &base,
-            &yup_egm_morphs(&[morph([0.0, 0.0, 1.0])]),
-            &[1.0],
-        )[0];
+        let mut morphs = [morph([0.0, 0.0, 1.0])];
+        yup_egm_morphs(&mut morphs);
+        let up = byroredux_facegen::apply_morphs(&base, &morphs, &[1.0])[0];
         assert!(up[1] > base[0][1]);
     }
 

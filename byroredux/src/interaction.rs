@@ -749,13 +749,26 @@ impl InteractionState {
 /// allocating a fresh `std::collections::HashMap` (SipHash) every frame
 /// the crosshair path runs. `select_interaction_target` moves the map
 /// out via `std::mem::take` for the duration of its own use and hands it
-/// back afterward so the allocated capacity survives to next frame.
+/// back afterward so the allocated capacity survives to next frame. The
+/// selection rows and sorted targets use the same ownership pattern (#3475).
 #[derive(Default)]
 pub(crate) struct InteractionCandidateScratch {
     pub(crate) candidates: FxHashMap<EntityId, InteractionKind>,
+    targets: Vec<InteractionTarget>,
+    rows: Vec<InteractionCandidate>,
 }
 
 impl Resource for InteractionCandidateScratch {}
+
+/// Per-selection snapshot. Each storage is read once in a separate scope,
+/// avoiding both per-candidate guards and nested component/resource locks.
+struct InteractionCandidate {
+    entity: EntityId,
+    kind: InteractionKind,
+    bound: Option<WorldBound>,
+    blocked: bool,
+    required_key: Option<u32>,
+}
 
 /// Last canonical activation retained past transient-event cleanup.
 #[derive(Debug, Clone, PartialEq)]
@@ -852,23 +865,30 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
     let (origin, direction) = camera_ray(world)?;
     let candidates = collect_candidates(world);
     let physical_corpses = corpse_collider_actors(world, &candidates);
+    let (mut rows, mut targets) = world.try_resource_mut::<InteractionCandidateScratch>()
+        .map(|mut scratch| (std::mem::take(&mut scratch.rows), std::mem::take(&mut scratch.targets)))
+        .unwrap_or_default();
+    rows.clear();
+    targets.clear();
+    rows.extend(candidates.iter().map(|(&entity, &kind)| InteractionCandidate {
+        entity, kind, bound: None, blocked: false, required_key: None,
+    }));
+    snapshot_interaction_candidates(world, &mut rows);
 
-    let mut targets: Vec<_> = candidates
-        .iter()
-        .filter(|(entity, _)| !activation_is_blocked(world, **entity))
+    targets.extend(rows.iter()
+        .filter(|row| !row.blocked)
         // Collider-backed corpses must be targeted at the body, not also at
         // the stale placement-root bound after the ragdoll has moved away.
-        .filter(|(entity, _)| !physical_corpses.contains(*entity))
-        .filter_map(|(entity, kind)| {
-            let bound = interaction_bound(world, *entity)?;
+        .filter(|row| !physical_corpses.contains(&row.entity))
+        .filter_map(|row| {
+            let bound = row.bound?;
             let distance = ray_sphere_distance(origin, direction, bound)?;
             (distance <= INTERACTION_REACH_BU).then_some(InteractionTarget {
-                entity: *entity,
-                kind: *kind,
+                entity: row.entity,
+                kind: row.kind,
                 distance,
             })
-        })
-        .collect();
+        }));
     // A ragdoll may fall away from the placement root's bound. Its nearest
     // physical hit identifies the same canonical actor inventory; never cast
     // through the first obstruction to find a body behind a wall.
@@ -878,7 +898,7 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
     {
         if let Some((entity, distance)) = ray_hit_actor(world, origin, direction) {
             if candidates.get(&entity) == Some(&InteractionKind::Corpse)
-                && !activation_is_blocked(world, entity)
+                && rows.iter().any(|row| row.entity == entity && !row.blocked)
             {
                 targets.retain(|target| target.entity != entity);
                 targets.push(InteractionTarget {
@@ -889,15 +909,65 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
             }
         }
     }
-    // #3059 — hand the map's allocated capacity back to the scratch
-    // resource for next frame instead of letting it drop here.
+    targets.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+    let selected = targets.iter().copied()
+        .find(|target| target_has_line_of_sight(world, *target, origin, direction));
+    // #3059 / #3475 — retain the map and vector capacities. Release every
+    // query/physics guard before returning the buffers to the resource.
     if let Some(mut scratch) = world.try_resource_mut::<InteractionCandidateScratch>() {
         scratch.candidates = candidates;
+        scratch.rows = rows;
+        scratch.targets = targets;
     }
-    targets.sort_by(|a, b| a.distance.total_cmp(&b.distance));
-    targets
-        .into_iter()
-        .find(|target| target_has_line_of_sight(world, *target, origin, direction))
+    selected
+}
+
+fn snapshot_interaction_candidates(world: &World, rows: &mut [InteractionCandidate]) {
+    if let Some(locks) = world.query::<Locked>() {
+        for row in rows.iter_mut() {
+            if let Some(lock) = locks.get(row.entity) {
+                row.blocked = true;
+                row.required_key = lock.key_form_id.filter(|key| *key != 0);
+            }
+        }
+    }
+    if rows.iter().any(|row| row.required_key.is_some()) {
+        let player = world.try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
+            .map(|player| player.0);
+        if let Some(inventory) = player
+            .and_then(|entity| world.get::<byroredux_core::ecs::components::Inventory>(entity))
+        {
+            for row in rows.iter_mut() {
+                if let Some(key) = row.required_key {
+                    row.blocked = !inventory.items.iter()
+                        .any(|stack| stack.base_form_id == key && stack.count > 0);
+                }
+            }
+        }
+    }
+    if let Some(doors) = world.query::<byroredux_scripting::papyrus_demo::mg07_door::MG07LabyrinthianDoor>() {
+        for row in rows.iter_mut() {
+            row.blocked |= doors.get(row.entity)
+                .is_some_and(|door| door.disabled || door.activation_blocked);
+        }
+    }
+    if let Some(bounds) = world.query::<WorldBound>() {
+        for row in rows.iter_mut().filter(|row| !row.blocked) {
+            row.bound = bounds.get(row.entity).copied().filter(|bound| bound.radius > 0.0);
+        }
+    }
+    if let Some(transforms) = world.query::<GlobalTransform>() {
+        for row in rows.iter_mut().filter(|row| !row.blocked && row.bound.is_none()) {
+            row.bound = transforms.get(row.entity)
+                .map(|transform| WorldBound::new(transform.translation, FALLBACK_INTERACTION_RADIUS_BU));
+        }
+    }
+    if let Some(transforms) = world.query::<Transform>() {
+        for row in rows.iter_mut().filter(|row| !row.blocked && row.bound.is_none()) {
+            row.bound = transforms.get(row.entity)
+                .map(|transform| WorldBound::new(transform.translation, FALLBACK_INTERACTION_RADIUS_BU));
+        }
+    }
 }
 
 fn corpse_collider_actors(
@@ -1298,23 +1368,6 @@ fn unlock_with_carried_key(world: &World, target: EntityId) -> bool {
     }
     crate::notifications::push(world, "Unlocked with key");
     true
-}
-
-fn interaction_bound(world: &World, entity: EntityId) -> Option<WorldBound> {
-    if let Some(bound) = world.get::<WorldBound>(entity).map(|bound| *bound) {
-        if bound.radius > 0.0 {
-            return Some(bound);
-        }
-    }
-
-    world
-        .get::<GlobalTransform>(entity)
-        .map(|transform| WorldBound::new(transform.translation, FALLBACK_INTERACTION_RADIUS_BU))
-        .or_else(|| {
-            world.get::<Transform>(entity).map(|transform| {
-                WorldBound::new(transform.translation, FALLBACK_INTERACTION_RADIUS_BU)
-            })
-        })
 }
 
 /// Return the first forward intersection of a normalized camera ray with an
@@ -1889,6 +1942,7 @@ mod tests {
                 },
             );
             assert!(activation_is_blocked(&world, door));
+            assert!(select_interaction_target(&world).is_none());
             assert!(!unlock_with_carried_key(&world, door));
             assert!(world.has::<Locked>(door));
         }
@@ -2291,6 +2345,12 @@ mod tests {
             .resource::<InteractionCandidateScratch>()
             .candidates
             .capacity();
+        let (rows_ptr, targets_ptr) = {
+            let scratch = world.resource::<InteractionCandidateScratch>();
+            assert!(!scratch.rows.is_empty());
+            assert!(!scratch.targets.is_empty());
+            (scratch.rows.as_ptr(), scratch.targets.as_ptr())
+        };
         assert!(
             capacity_after_first >= 2,
             "scratch must hold at least the two candidates just collected, \
@@ -2307,12 +2367,44 @@ mod tests {
             .resource::<InteractionCandidateScratch>()
             .candidates
             .capacity();
+        {
+            let scratch = world.resource::<InteractionCandidateScratch>();
+            assert_eq!(scratch.rows.as_ptr(), rows_ptr);
+            assert_eq!(scratch.targets.as_ptr(), targets_ptr);
+        }
         assert!(
             capacity_after_second >= capacity_after_first,
             "reused scratch capacity must not shrink between calls: \
              {capacity_after_first} -> {capacity_after_second}"
         );
         let _ = door_a;
+    }
+
+    #[test]
+    fn selection_snapshot_preserves_bound_and_transform_fallback_priority() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        let mut rows = vec![InteractionCandidate {
+            entity, kind: InteractionKind::Door, bound: None,
+            blocked: false, required_key: None,
+        }];
+        snapshot_interaction_candidates(&world, &mut rows);
+        assert!(rows[0].bound.is_none());
+        world.insert(entity, Transform::from_translation(Vec3::new(10.0, 0.0, 0.0)));
+        snapshot_interaction_candidates(&world, &mut rows);
+        assert_eq!(rows[0].bound.unwrap().center.x, 10.0);
+        world.insert(entity, GlobalTransform::new(Vec3::new(20.0, 0.0, 0.0), Quat::IDENTITY, 1.0));
+        rows[0].bound = None;
+        snapshot_interaction_candidates(&world, &mut rows);
+        assert_eq!(rows[0].bound.unwrap().center.x, 20.0);
+        world.insert(entity, WorldBound::new(Vec3::new(30.0, 0.0, 0.0), 10.0));
+        rows[0].bound = None;
+        snapshot_interaction_candidates(&world, &mut rows);
+        assert_eq!(rows[0].bound.unwrap().center.x, 30.0);
+        world.insert(entity, WorldBound::new(Vec3::ZERO, 0.0));
+        rows[0].bound = None;
+        snapshot_interaction_candidates(&world, &mut rows);
+        assert_eq!(rows[0].bound.unwrap().center.x, 20.0);
     }
 
     /// #3698 (ECS-P2-02) — `collect_candidates` must take the scratch map

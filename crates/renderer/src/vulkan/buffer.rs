@@ -1320,6 +1320,23 @@ impl GpuBuffer {
         self.write_mapped_bytes(device, byte_view(data))
     }
 
+    /// Write a typed slice at a byte offset, preserving all bytes outside
+    /// the range. Unlike prefix writes, an out-of-bounds range is an error.
+    pub fn write_mapped_at<T: NoUninit>(
+        &mut self,
+        device: &ash::Device,
+        byte_offset: usize,
+        data: &[T],
+    ) -> Result<()> {
+        let bytes = byte_view(data);
+        let end = byte_offset.checked_add(bytes.len()).context("Mapped write range overflow")?;
+        let mapped = self.allocation.as_mut().context("Buffer has no allocation")?
+            .mapped_slice_mut().context("Buffer not mapped")?;
+        mapped.get_mut(byte_offset..end).context("Mapped write range exceeds buffer capacity")?
+            .copy_from_slice(bytes);
+        self.flush_range(device, byte_offset as vk::DeviceSize, bytes.len() as vk::DeviceSize)
+    }
+
     /// Write only the first `prefix_bytes` of `data` to the buffer, starting
     /// at offset 0. Caps at the true byte length, so an over-large request
     /// degrades to a full `write_mapped` rather than reading out of bounds.

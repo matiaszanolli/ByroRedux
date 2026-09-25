@@ -616,6 +616,18 @@ impl ScratchTelemetry {
     }
 }
 
+/// Volumetric dispatch inputs retained alongside the same frame's GPU timers.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct VolumetricsFrameState {
+    pub rt_tier: u32,
+    pub light_cap: u32,
+    pub froxel_extent: [u32; 3],
+    pub transport_armed: bool,
+    pub fog_volume_count: u32,
+    pub max_density_count: u32,
+    pub max_portal_count: u32,
+}
+
 /// Per-frame skinned-mesh BLAS coverage telemetry.
 ///
 /// Refreshed each frame by the engine binary via
@@ -632,6 +644,8 @@ impl ScratchTelemetry {
 /// frame": `refits_succeeded == dispatches_total` is the green-bar.
 #[derive(Debug, Default)]
 pub struct SkinCoverageStats {
+    /// State from the same submitted frame as the GPU timing snapshot.
+    pub volumetrics_state: VolumetricsFrameState,
     /// Unique skinned entities in this frame's draw_commands (those with
     /// `bone_offset > 0`). Denominator for everything below.
     pub dispatches_total: u32,
@@ -755,6 +769,9 @@ pub struct SkinCoverageStats {
     /// read, both barriers included. Inactive on a raw-debug-view frame and
     /// after the meter latches a failure.
     pub gpu_exposure_meter_ms: f32,
+    pub gpu_groundcover_models_ms: f32,
+    pub gpu_volumetrics_inject_ms: f32,
+    pub gpu_volumetrics_integrate_ms: f32,
 
     // ── Per-bracket "ran this frame" flags (#2513 / REN-D20-NEW-03) ───
     //
@@ -784,6 +801,9 @@ pub struct SkinCoverageStats {
     pub gpu_sky_cube_active: bool,
     pub gpu_groundcover_scatter_active: bool,
     pub gpu_exposure_meter_active: bool,
+    pub gpu_groundcover_models_active: bool,
+    pub gpu_volumetrics_inject_active: bool,
+    pub gpu_volumetrics_integrate_active: bool,
 }
 
 /// CPU-side per-frame wall-clock breakdown — populated by the
@@ -860,11 +880,14 @@ pub struct CpuFrameTimings {
     /// (kira mutex, physics island fence, audio queue flush)
     /// lands here. Phase 10.
     pub atw_scheduler_ms: f32,
-    /// Wall time of the post-scheduler steps in `about_to_wait`:
-    /// `step_streaming` (M40 exterior streaming drain),
-    /// `step_debug_loads` (debug-UI queued NIF / cell loads),
-    /// `step_cell_transition` (`door.teleport` dispatch), window
-    /// title update. Phase 10.
+    /// Wall time from the start of `about_to_wait`'s post-scheduler phase
+    /// through its tail. This includes post-scheduler steps such as
+    /// `step_streaming`, debug loads, cell transitions, and window-title
+    /// updates, plus the nested `render_one_frame` call. In steady state it
+    /// therefore contains `rof_pre_draw_ms + rof_draw_call_ms +
+    /// rof_post_draw_ms`. It is sequential with `atw_pre_ms` and
+    /// `atw_scheduler_ms`; those three `about_to_wait` phases are siblings.
+    /// Phase 10.
     pub atw_post_ms: f32,
     /// `render_one_frame`'s pre-draw_frame phase: egui run,
     /// build_render_data (ECS walk producing draw_commands),

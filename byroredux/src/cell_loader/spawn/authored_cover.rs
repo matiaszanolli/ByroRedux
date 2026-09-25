@@ -142,7 +142,7 @@ fn spawn_template(
         collision_fallback: MissingCollisionFallback::None,
         spawned_nif_lights: 0,
     };
-    let prepared = prepare_mesh_uploads(ctx, &pc, &cached.meshes, &resolved);
+    let prepared = prepare_mesh_uploads(ctx, &pc, &cached, &resolved);
     // Templates never enter the TLAS (the tier is receive-only), so the BLAS
     // specs a fresh upload queues are dropped rather than built.
     let mut blas_specs = Vec::new();

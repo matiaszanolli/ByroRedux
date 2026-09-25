@@ -75,7 +75,7 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
         "main_render={} depth_history_copy={} tlas={} svgf={} composite={} cluster_cull={} \
          ssao={} bloom={} caustic={} volumetrics={} skin={} blas_refit={} \
          taa={} skin_palette={} upscale={} presentation={} sky_cube={} \
-         groundcover_scatter={} exposure_meter={}",
+         groundcover_scatter={} exposure_meter={} groundcover_models={} volumetrics_inject={} volumetrics_integrate={} rt_tier={} volumetric_light_cap={} froxel_extent={}x{}x{} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={}",
         ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
         ms(
             cov.gpu_depth_history_copy_ms,
@@ -101,6 +101,18 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
             cov.gpu_groundcover_scatter_active,
         ),
         ms(cov.gpu_exposure_meter_ms, cov.gpu_exposure_meter_active),
+        ms(cov.gpu_groundcover_models_ms, cov.gpu_groundcover_models_active),
+        ms(cov.gpu_volumetrics_inject_ms, cov.gpu_volumetrics_inject_active),
+        ms(cov.gpu_volumetrics_integrate_ms, cov.gpu_volumetrics_integrate_active),
+        cov.volumetrics_state.rt_tier,
+        cov.volumetrics_state.light_cap,
+        cov.volumetrics_state.froxel_extent[0],
+        cov.volumetrics_state.froxel_extent[1],
+        cov.volumetrics_state.froxel_extent[2],
+        u32::from(cov.volumetrics_state.transport_armed),
+        cov.volumetrics_state.fog_volume_count,
+        cov.volumetrics_state.max_density_count,
+        cov.volumetrics_state.max_portal_count,
     )
 }
 
@@ -109,8 +121,10 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
 /// decisive localizer for a multi-second frame whose GPU passes are cheap:
 /// `fence_wait` large ⇒ the GPU is hung on a PRIOR submission (the host is
 /// blocked in `wait_for_fences` until the driver resets); `atw_post` large
-/// with small `fence_wait`/`rof_*` ⇒ the stall is CPU cell-load
-/// (`step_streaming` + uploads, which `atw_post` brackets); `acquire` /
+/// with small `fence_wait` and `rof_*` ⇒ the stall is in the remaining
+/// post-scheduler work (for example cell-load steps and uploads). In steady
+/// state `atw_post` contains the entire `render_one_frame` interval, including
+/// all three `rof_*` phases; `acquire` /
 /// `submit_present` large ⇒ compositor / present stall. `between_frames`
 /// large with everything else small ⇒ the frame isn't the engine's fault at
 /// all (compositor throttling, Wayland frame-callback wait, event-loop
@@ -118,11 +132,12 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
 /// and no longer double-counts this frame's own `rof_*` work. (WATAL §0
 /// hunt.)
 ///
-/// The buckets nest, not sum: `atw_post` ⊇ `atw_pre`/`atw_scheduler`'s
-/// sibling work, `rof_post_draw` ⊇ the remainder of `render_one_frame`
-/// after `rof_pre_draw`/`rof_draw_call` close — see each field's own doc
-/// in `CpuFrameTimings` for its exact bracket. Adding every field on this
-/// line does not reconstruct total frame time; `between_frames` (#3692)
+/// The buckets nest, not sum: `atw_post` contains the three `rof_*` phases,
+/// and `rof_post_draw` is the remainder of `render_one_frame` after
+/// `rof_pre_draw`/`rof_draw_call` close. `atw_pre`, `atw_scheduler`, and
+/// `atw_post` are sequential siblings. See each field's own doc in
+/// `CpuFrameTimings` for its exact bracket. Adding every field on this line
+/// does not reconstruct total frame time; `between_frames` (#3692)
 /// is the one bucket that is NOT nested inside another printed one, since
 /// it covers the gap outside `render_one_frame` entirely.
 fn cpu_breakdown(t: &CpuFrameTimings) -> String {

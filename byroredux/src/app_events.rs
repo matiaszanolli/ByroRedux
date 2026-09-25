@@ -69,6 +69,19 @@ fn set_row<K, S>(name: &'static str, set: &std::collections::HashSet<K, S>) -> S
     }
 }
 
+fn record_about_to_wait_timings(
+    world: &byroredux_core::ecs::World,
+    atw_pre_ns: u64,
+    atw_scheduler_ns: u64,
+    atw_post_t0: Instant,
+) {
+    const NS_TO_MS: f32 = 1.0e-6;
+    let mut cpu_t = world.resource_mut::<byroredux_core::ecs::CpuFrameTimings>();
+    cpu_t.atw_pre_ms = atw_pre_ns as f32 * NS_TO_MS;
+    cpu_t.atw_scheduler_ms = atw_scheduler_ns as f32 * NS_TO_MS;
+    cpu_t.atw_post_ms = atw_post_t0.elapsed().as_nanos() as f32 * NS_TO_MS;
+}
+
 impl App {
     /// Shared orderly shutdown for both the OS close button and the native
     /// pause menu's Quit action.
@@ -1126,6 +1139,9 @@ impl ApplicationHandler for App {
                                     s.gpu_groundcover_scatter_ms,
                                     // #4618 — appended last, same rule.
                                     s.gpu_exposure_meter_ms,
+                                    s.gpu_groundcover_models_ms,
+                                    s.gpu_volumetrics_inject_ms,
+                                    s.gpu_volumetrics_integrate_ms,
                                 ],
                                 [
                                     s.gpu_skin_dispatch_active,
@@ -1147,6 +1163,9 @@ impl ApplicationHandler for App {
                                     s.gpu_sky_cube_active,
                                     s.gpu_groundcover_scatter_active,
                                     s.gpu_exposure_meter_active,
+                                    s.gpu_groundcover_models_active,
+                                    s.gpu_volumetrics_inject_active,
+                                    s.gpu_volumetrics_integrate_active,
                                 ],
                             )
                         })
@@ -1155,6 +1174,17 @@ impl ApplicationHandler for App {
                             [false; crate::BENCH_GPU_KEYS.len()],
                         ));
                     let gpu_inactive = bench_gpu_inactive_token(gpu_active);
+                    let rt_tier = self
+                        .renderer
+                        .as_ref()
+                        .map(|ctx| {
+                            ctx.scene_buffers
+                                .current_ray_budget(ctx.renderer_config.rt_test_ray_quality_tier)
+                                .quality_tier
+                        })
+                        .unwrap_or(0);
+                    let vol_state = self.world.try_resource::<SkinCoverageStats>()
+                        .map(|s| s.volumetrics_state).unwrap_or_default();
                     let rt_integrity_line = self
                         .world
                         .try_resource::<RtIntegrityStats>()
@@ -1174,14 +1204,14 @@ impl ApplicationHandler for App {
                          gpu_presentation={:.3} gpu_tlas_build={:.3} \
                          gpu_caustic_splat={:.3} gpu_skin_palette={:.3} \
                          gpu_depth_history_copy={:.3} gpu_sky_cube={:.3} \
-                         gpu_groundcover_scatter={:.3} gpu_exposure_meter={:.3}] \
+                         gpu_groundcover_scatter={:.3} gpu_exposure_meter={:.3} gpu_groundcover_models={:.3} gpu_volumetrics_inject={:.3} gpu_volumetrics_integrate={:.3}] \
                          gpu_inactive={} \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          camera_pos={:.3},{:.3},{:.3} camera_forward={:.6},{:.6},{:.6} \
                          sim_time_s={:.6} entities={} meshes={} textures={} \
                          draws={}/{}b/{}c bench_draws_raster_cmds={} \
                          lights={} tlas={} state_hash={:016x} \
-                         skin={}/{}+{}",
+                         skin={}/{}+{} rt_tier={} volumetric_rt_tier={} volumetric_light_cap={} froxel_x={} froxel_y={} froxel_z={} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={}",
                         bench_mode,
                         bench_mode.gate_label(),
                         bench_mode.dt_label(),
@@ -1225,6 +1255,9 @@ impl ApplicationHandler for App {
                         gpu[16],
                         gpu[17],
                         gpu[18],
+                        gpu[19],
+                        gpu[20],
+                        gpu[21],
                         gpu_inactive,
                         systems_ms,
                         ticks_per_frame,
@@ -1252,7 +1285,8 @@ impl ApplicationHandler for App {
                         scene_state.lights,
                         scene_state.tlas_eligible,
                         scene_state.state_hash,
-                        // #4417 — appended last, same #3629 rule. The
+                        // #4417 — appended after the existing bench fields,
+                        // same #3629 rule. The
                         // once-a-second `engine::stats` line is gated on
                         // `TotalTime` crossing a boundary, and
                         // `renderer-static` freezes `dt`, so that line never
@@ -1263,6 +1297,18 @@ impl ApplicationHandler for App {
                         stats.skin_pool_live,
                         stats.skin_pool_max,
                         stats.skin_pool_overflow_attempts,
+                        // #4808 — append the adaptive RT quality tier so the
+                        // FSR harness can group GPU timings by active tier.
+                        rt_tier,
+                        vol_state.rt_tier,
+                        vol_state.light_cap,
+                        vol_state.froxel_extent[0],
+                        vol_state.froxel_extent[1],
+                        vol_state.froxel_extent[2],
+                        u32::from(vol_state.transport_armed),
+                        vol_state.fog_volume_count,
+                        vol_state.max_density_count,
+                        vol_state.max_portal_count,
                     );
                     if let Some(line) = rt_integrity_line {
                         println!("{line}");
@@ -1356,6 +1402,12 @@ impl ApplicationHandler for App {
                                     drop(bridge);
                                     self.screenshot_requested = true;
                                     self.screenshot_deadline_frames = 60;
+                                    record_about_to_wait_timings(
+                                        &self.world,
+                                        atw_pre_ns,
+                                        atw_scheduler_ns,
+                                        atw_post_t0,
+                                    );
                                     return; // keep running frames
                                 }
                             }
@@ -1381,6 +1433,12 @@ impl ApplicationHandler for App {
                             }
                         } else if self.screenshot_deadline_frames > 0 {
                             self.screenshot_deadline_frames -= 1;
+                            record_about_to_wait_timings(
+                                &self.world,
+                                atw_pre_ns,
+                                atw_scheduler_ns,
+                                atw_post_t0,
+                            );
                             return; // keep pumping
                         } else {
                             eprintln!("screenshot: timed out waiting for PNG result",);
@@ -1429,14 +1487,12 @@ impl ApplicationHandler for App {
         // kept here as the historical motivation for the pre/scheduler/
         // post split, not as a currently-accurate reference number — a
         // fresh measurement would read lower.
-        const NS_TO_MS: f32 = 1.0e-6;
-        let atw_post_ns = atw_post_t0.elapsed().as_nanos() as u64;
-        let mut cpu_t = self
-            .world
-            .resource_mut::<byroredux_core::ecs::CpuFrameTimings>();
-        cpu_t.atw_pre_ms = atw_pre_ns as f32 * NS_TO_MS;
-        cpu_t.atw_scheduler_ms = atw_scheduler_ns as f32 * NS_TO_MS;
-        cpu_t.atw_post_ms = atw_post_ns as f32 * NS_TO_MS;
+        record_about_to_wait_timings(
+            &self.world,
+            atw_pre_ns,
+            atw_scheduler_ns,
+            atw_post_t0,
+        );
     }
 
     /// Last callback with the display connection still open. `run_app` takes

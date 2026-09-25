@@ -107,7 +107,7 @@ impl VolumetricsPipeline {
             fog_cluster_refs: Vec::new(),
             // Full extent: forces the first write to each buffer to cover the
             // whole range, since the allocation is not zero-initialised.
-            fog_cluster_dirty_hi: [FOG_VOLUME_CLUSTER_COUNT; MAX_FRAMES_IN_FLIGHT],
+            fog_cluster_dirty_range: [(0, FOG_VOLUME_CLUSTER_COUNT); MAX_FRAMES_IN_FLIGHT],
             integration_pipeline: vk::Pipeline::null(),
             integration_pipeline_layout: vk::PipelineLayout::null(),
             integration_descriptor_set_layout: vk::DescriptorSetLayout::null(),
@@ -117,6 +117,7 @@ impl VolumetricsPipeline {
             integration_param_buffers: Vec::new(),
             history_valid: false,
             dispatched_this_frame: false,
+            transport_fields: TransportFieldState::default(),
             last_simulation_time_seconds: None,
             pending_simulation_time_seconds: None,
             combustion_active_until_seconds: f32::NEG_INFINITY,

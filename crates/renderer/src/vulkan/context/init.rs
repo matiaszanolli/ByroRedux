@@ -1770,6 +1770,7 @@ impl VulkanContext {
             caustic_failed: false,
             caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
             volumetrics_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
+            volumetric_fog_scratch: Vec::new(),
             command_pool,
             transfer_pool,
             transfer_fence,
