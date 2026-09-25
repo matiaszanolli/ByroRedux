@@ -1666,14 +1666,20 @@ pub(super) fn needs_two_sided_blend_split(b: &DrawBatch) -> bool {
 /// cell this codebase's own comments cite — which is why this is
 /// defence-in-depth at an already-declared lossy ceiling rather than a live
 /// spec violation.
+///
+/// `indirect_draws_supported` is `DeviceCapabilities::indirect_draws_supported`
+/// (#4827): `multiDrawIndirect` AND `drawIndirectFirstInstance`. The second
+/// bit is not optional — every batch after the first has a non-zero
+/// `firstInstance` in its command, which is only legal with that feature
+/// (VUID-VkDrawIndexedIndirectCommand-firstInstance-00554).
 pub(super) fn should_use_indirect_draws(
     global_bound: bool,
-    multi_draw_indirect_supported: bool,
+    indirect_draws_supported: bool,
     indirect_upload_ok: bool,
     batch_count: usize,
 ) -> bool {
     global_bound
-        && multi_draw_indirect_supported
+        && indirect_draws_supported
         && indirect_upload_ok
         && batch_count <= MAX_INDIRECT_DRAWS
 }

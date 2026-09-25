@@ -213,7 +213,10 @@ impl VulkanContext {
             // outright rather than record a read past the allocation.
             let use_indirect = should_use_indirect_draws(
                 global_bound,
-                self.device_caps.multi_draw_indirect_supported,
+                // #4827 — both `multiDrawIndirect` AND
+                // `drawIndirectFirstInstance`: every batch after the first has
+                // a non-zero `firstInstance` in its indirect command.
+                self.device_caps.indirect_draws_supported(),
                 self.indirect_upload_ok,
                 batches.len(),
             );

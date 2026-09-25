@@ -740,7 +740,22 @@ impl VulkanContext {
         // #4413 — the authored-model tier reads the scatter's chunk records,
         // so it exists only beside the blade pipeline; its placement traces
         // the same cover-test ray.
-        let groundcover_models = if groundcover.is_some() {
+        //
+        // #4827 — its draws are GPU-emitted `VkDrawIndexedIndirectCommand`s
+        // whose `firstInstance` is the tier's slot in the instance-SSBO tail
+        // (non-zero whenever the frame has any main instance), so it needs
+        // `drawIndirectFirstInstance` and has no direct-draw fallback: on a
+        // device without both indirect features the tier is simply not
+        // created, exactly like a failed creation below.
+        let groundcover_models = if groundcover.is_some() && !device_caps.indirect_draws_supported()
+        {
+            log::warn!(
+                "Ground-cover model tier disabled: the device lacks multiDrawIndirect and/or \
+                 drawIndirectFirstInstance (its indirect draws carry a non-zero firstInstance) \
+                 — no authored ground cover"
+            );
+            None
+        } else if groundcover.is_some() {
             match super::super::groundcover_models::GroundCoverModelTier::new(
                 &device,
                 &gpu_allocator,

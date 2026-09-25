@@ -775,10 +775,12 @@ impl VulkanContext {
         // One `VkDrawIndexedIndirectCommand` per DrawBatch, laid out in
         // the same order as `batches` so the draw loop can reference a
         // contiguous range of the buffer for each pipeline group.
-        // Populated regardless of `device_caps.multi_draw_indirect_supported`
-        // — the upload is ~N × 20 B for small N, and this keeps the
-        // indirect path always ready when it is enabled.
-        if !batches.is_empty() && self.device_caps.multi_draw_indirect_supported {
+        // Populated whenever the device can execute indirect draws at all
+        // (`DeviceCapabilities::indirect_draws_supported`: `multiDrawIndirect`
+        // AND `drawIndirectFirstInstance`, #4827) — the upload is ~N × 20 B
+        // for small N, and this keeps the indirect path always ready when it
+        // is enabled.
+        if !batches.is_empty() && self.device_caps.indirect_draws_supported() {
             let indirect_scratch = &mut self.scratch.indirect_draws_scratch;
             indirect_scratch.clear();
             indirect_scratch.extend(batches.iter().map(|b| vk::DrawIndexedIndirectCommand {

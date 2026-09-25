@@ -43,6 +43,17 @@ pub struct DeviceCapabilities {
     /// batches sharing `(pipeline_key, is_decal)` into a single
     /// command-buffer entry. See #309.
     pub multi_draw_indirect_supported: bool,
+    /// True if the physical device exposes `drawIndirectFirstInstance` in
+    /// `VkPhysicalDeviceFeatures`. Without it every
+    /// `VkDrawIndexedIndirectCommand::firstInstance` must be 0
+    /// (VUID-VkDrawIndexedIndirectCommand-firstInstance-00554), but the
+    /// engine's indirect draws carry the batch's instance-SSBO index in
+    /// `firstInstance` — `triangle.vert` reads it back as `gl_InstanceIndex` —
+    /// so every batch after the first is non-zero. The batched draw path and
+    /// the ground-cover model tier (whose GPU-emitted draws have no direct
+    /// fallback) therefore need this feature; see
+    /// [`DeviceCapabilities::indirect_draws_supported`]. #4827.
+    pub draw_indirect_first_instance_supported: bool,
     /// True if the physical device exposes `fillModeNonSolid` in
     /// `VkPhysicalDeviceFeatures`. Required to bind a pipeline whose
     /// `polygon_mode` is `vk::PolygonMode::LINE` (wireframe). Universally
@@ -172,6 +183,22 @@ impl DeviceCapabilities {
     /// the single source of truth for that gate. See #1478 / #1636.
     pub fn gpu_timers_supported(&self) -> bool {
         self.timestamp_supported && self.host_query_reset_supported
+    }
+
+    /// Whether the engine's indirect-draw paths may be used on this device.
+    /// BOTH features are required: `multiDrawIndirect` (a single
+    /// `vkCmdDrawIndexedIndirect` with `drawCount > 1`) and
+    /// `drawIndirectFirstInstance` (a non-zero `firstInstance` inside the
+    /// indirect commands — every batch after the first carries its
+    /// instance-SSBO index there). Enabling only the former leaves every
+    /// non-first batch in violation of
+    /// VUID-VkDrawIndexedIndirectCommand-firstInstance-00554. When this is
+    /// false the batched path falls back to direct `cmd_draw_indexed` calls,
+    /// which take `firstInstance` as a plain argument and need no feature,
+    /// and the ground-cover model tier (GPU-emitted indirect draws, no direct
+    /// fallback) is not created. #4827.
+    pub fn indirect_draws_supported(&self) -> bool {
+        self.multi_draw_indirect_supported && self.draw_indirect_first_instance_supported
     }
 }
 
@@ -515,6 +542,7 @@ fn is_device_suitable(
         0.0
     };
     let multi_draw_indirect_supported = features.multi_draw_indirect == vk::TRUE;
+    let draw_indirect_first_instance_supported = features.draw_indirect_first_instance == vk::TRUE;
     let fill_mode_non_solid_supported = features.fill_mode_non_solid == vk::TRUE;
     let texture_compression_bc = features.texture_compression_bc == vk::TRUE;
 
@@ -658,6 +686,7 @@ fn is_device_suitable(
                 max_sampler_anisotropy,
                 max_sampler_lod_bias: properties.limits.max_sampler_lod_bias,
                 multi_draw_indirect_supported,
+                draw_indirect_first_instance_supported,
                 fill_mode_non_solid_supported,
                 max_bindless_sampled_images,
                 min_accel_struct_scratch_offset_alignment,
@@ -723,6 +752,13 @@ pub fn create_logical_device(
         // pre-#309 per-batch loop) kicks in if the device doesn't
         // expose it.
         .multi_draw_indirect(caps.multi_draw_indirect_supported)
+        // #4827 — every batch after the first carries its instance-SSBO
+        // index as `VkDrawIndexedIndirectCommand::firstInstance`, which is
+        // only legal with this feature (VUID-VkDrawIndexedIndirectCommand-
+        // firstInstance-00554). Enabled whenever the device exposes it;
+        // `DeviceCapabilities::indirect_draws_supported` requires both bits
+        // and routes every indirect consumer to its fallback otherwise.
+        .draw_indirect_first_instance(caps.draw_indirect_first_instance_supported)
         // #869 — enables `vk::PolygonMode::LINE` so wireframe pipeline
         // variants can be created. Silently downgrades to FILL when
         // the device doesn't expose it (mobile / some compute-only
@@ -1136,5 +1172,94 @@ mod caps_tests {
         assert!(!caps(true, false, true).gpu_timers_supported());
         assert!(!caps(false, true, true).gpu_timers_supported());
         assert!(!caps(false, false, false).gpu_timers_supported());
+    }
+
+    /// #4827 — indirect draws need BOTH `multiDrawIndirect` and
+    /// `drawIndirectFirstInstance`. Every batch after the first carries its
+    /// instance-SSBO index as `firstInstance`, which is illegal in an indirect
+    /// command without the second feature
+    /// (VUID-VkDrawIndexedIndirectCommand-firstInstance-00554). Enabling
+    /// only `multiDrawIndirect` — the shipped state before this fix — must not
+    /// count as "indirect draws supported".
+    #[test]
+    fn indirect_draws_require_both_indirect_features() {
+        let caps = |multi: bool, first_instance: bool| DeviceCapabilities {
+            multi_draw_indirect_supported: multi,
+            draw_indirect_first_instance_supported: first_instance,
+            ..Default::default()
+        };
+        assert!(caps(true, true).indirect_draws_supported());
+        assert!(
+            !caps(true, false).indirect_draws_supported(),
+            "multiDrawIndirect alone leaves every non-first batch's firstInstance illegal"
+        );
+        assert!(!caps(false, true).indirect_draws_supported());
+        assert!(!caps(false, false).indirect_draws_supported());
+    }
+
+    /// #4827 — the feature is probed AND enabled wherever `multiDrawIndirect`
+    /// is, and no indirect consumer bypasses the combined predicate. Pinned by
+    /// source inspection (a unit test cannot conjure a `VkDevice`). Needles are
+    /// composed at runtime so this module's own text cannot satisfy them
+    /// (#3442) — and the slices stop at each file's `#[cfg(test)]` boundary.
+    #[test]
+    fn first_instance_feature_is_enabled_and_every_indirect_consumer_is_gated() {
+        fn production(source: &str) -> String {
+            let end = source.find("#[cfg(test)]").unwrap_or(source.len());
+            source[..end]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect()
+        }
+
+        let device = production(include_str!("device.rs"));
+        for needle in [
+            format!(".{}(caps.{}_supported)", "multi_draw_indirect", "multi_draw_indirect"),
+            format!(
+                ".{}(caps.{}_supported)",
+                "draw_indirect_first_instance", "draw_indirect_first_instance"
+            ),
+            format!("features.{}==vk::TRUE", "draw_indirect_first_instance"),
+        ] {
+            assert!(
+                device.contains(&needle),
+                "device.rs must probe and enable `{needle}` — `multiDrawIndirect` \
+                 without `drawIndirectFirstInstance` violates \
+                 VUID-VkDrawIndexedIndirectCommand-firstInstance-00554 (#4827)"
+            );
+        }
+
+        // The two indirect gates must read the combined predicate, never the
+        // single `multiDrawIndirect` bit.
+        let gate = format!("device_caps.{}()", "indirect_draws_supported");
+        let single = format!("device_caps.{}", "multi_draw_indirect_supported");
+        for (name, src) in [
+            ("context/geometry_pass.rs", production(include_str!("context/geometry_pass.rs"))),
+            (
+                "context/build_and_upload_instances.rs",
+                production(include_str!("context/build_and_upload_instances.rs")),
+            ),
+        ] {
+            assert!(
+                src.contains(&gate),
+                "{name} must gate its indirect-draw path on `{gate}` (#4827)"
+            );
+            assert!(
+                !src.contains(&single),
+                "{name} must not gate indirect draws on `multiDrawIndirect` alone (#4827)"
+            );
+        }
+
+        // The model tier's draws are GPU-emitted with a non-zero
+        // `firstInstance` and have no direct fallback: it must be created only
+        // when the combined predicate holds.
+        let init = production(include_str!("context/init.rs"));
+        let tier = format!("{}::new(", "GroundCoverModelTier");
+        let tier_pos = init.find(&tier).expect("init.rs must create the model tier");
+        assert!(
+            init[..tier_pos].contains(&format!("!device_caps.{}()", "indirect_draws_supported")),
+            "the ground-cover model tier must not be created without \
+             `indirect_draws_supported()` (#4827)"
+        );
     }
 }
