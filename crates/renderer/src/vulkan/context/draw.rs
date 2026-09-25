@@ -3176,6 +3176,22 @@ mod is_caustic_source_tests {
 /// (#654 ordering check).
 #[cfg(test)]
 mod host_readback_flush_edge_tests {
+    /// `draw_frame`'s body — production text only. Every needle below also
+    /// appears as a literal in this module, so a search over the whole file
+    /// can be satisfied by the test itself (#4604's defect class, again in
+    /// #4842); slicing to the method's own extent excludes every test module.
+    fn draw_frame_body() -> &'static str {
+        let src = include_str!("draw.rs");
+        let start = src
+            .find("\n    pub fn draw_frame(")
+            .expect("draw_frame must still exist under this signature");
+        let end = start
+            + src[start..]
+                .find("\n    }\n")
+                .expect("draw_frame's closing brace at impl indentation");
+        &src[start..end]
+    }
+
     /// #4602 — the global device→host edge must be the LAST command before
     /// `end_command_buffer`, so it covers every readback writer recorded
     /// this frame (the ground-cover counter copy, the screenshot copy, the
@@ -3185,33 +3201,54 @@ mod host_readback_flush_edge_tests {
     /// test cannot match its own literals.
     #[test]
     fn the_host_flush_edge_precedes_end_command_buffer_and_follows_every_writer() {
-        let src = include_str!("draw.rs");
+        let body = draw_frame_body();
         let edge = ("memory_barrier(\n                &self.device,\n                cmd,\n                vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::FRAGMENT_SHADER,").to_string();
-        let edge_pos = src
+        let edge_pos = body
             .find(&edge)
             .expect("the #4602 device→host flush edge must stay in draw_frame's tail — a fence's dependency covers only device access; the host readbacks need HOST_READ in a memory dependency's destination scope");
-        // Every host-readback writer recorded in this tail must precede
-        // the edge (the presentation pass and the screenshot copy are the
-        // last two; the ground-cover and depth-capture copies record
-        // earlier in the buffer).
-        // Search only the production region BEFORE the edge, so the test's
-        // own literals (which sit after it) can't satisfy the ordering.
-        let production = &src[..edge_pos];
+        // Every host-readback writer recorded in this tail must precede the
+        // edge. The presentation pass records inside `record_post_passes`
+        // (a bare `presentation` search would be satisfied by any comment
+        // that names it); the screenshot copy is the last writer and the
+        // depth-capture copy records earlier in the buffer.
+        let production = &body[..edge_pos];
         for writer in [
+            "self.depth_capture_record_copy(cmd)",
+            "self.record_post_passes(",
             "self.screenshot_record_copy(cmd, swapchain_image)",
-            "presentation",
         ] {
             assert!(
                 production.contains(writer),
                 "`{writer}` must be recorded BEFORE the host flush edge (#4602)"
             );
         }
-        // And the edge must precede end_command_buffer.
-        let end = ".end_command_buffer(cmd)".to_string();
-        assert!(
-            src[edge_pos..].contains(&end),
-            "end_command_buffer must follow the host flush edge (#4602)"
-        );
+        // And the edge must precede end_command_buffer, with nothing recorded
+        // in between — the edge covers only the writers before it, so a
+        // command recorded after it reopens the stale-host-read window.
+        let end = [".end_command_buffer(", "cmd)"].concat();
+        let end_pos = body[edge_pos..]
+            .find(&end)
+            .map(|rel| edge_pos + rel)
+            .expect("end_command_buffer must follow the host flush edge (#4602)");
+        // Skip the edge call itself: its arguments are the only `barrier`
+        // text the gap may hold.
+        let edge_end = edge_pos
+            + body[edge_pos..]
+                .find(");")
+                .expect("the flush edge is a call");
+        let gap: String = body[edge_end..end_pos]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for recorded in ["cmd", "record_", "barrier"] {
+            assert!(
+                !gap.contains(recorded),
+                "`{recorded}` between the host flush edge and end_command_buffer: the \
+                 edge must be the last recorded command or its writers are not covered \
+                 (#4602). Gap:\n{gap}"
+            );
+        }
     }
 }
 
