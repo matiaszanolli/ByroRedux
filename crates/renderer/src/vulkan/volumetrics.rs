@@ -3862,7 +3862,7 @@ mod unit_tests {
         const DOC: &str = include_str!("../../../../docs/engine/memory-budget.md");
 
         // The six volume vectors this cost is derived from must still exist.
-        const SRC: &str = include_str!("volumetrics.rs");
+        let src = crate::source_scan::production_text(include_str!("volumetrics.rs"));
         let volume_fields = [
             "lighting_volumes: Vec<FroxelSlot>",
             "integrated_volumes: Vec<FroxelSlot>",
@@ -3878,7 +3878,7 @@ mod unit_tests {
         );
         for field in volume_fields {
             assert!(
-                SRC.contains(field),
+                src.contains(field),
                 "`{field}` is gone — the per-slot volume set changed, so \
                  FROXEL_BYTES_PER_SLOT ({FROXEL_BYTES_PER_SLOT}) and the \
                  memory-budget ledger both need re-deriving (#3117)"

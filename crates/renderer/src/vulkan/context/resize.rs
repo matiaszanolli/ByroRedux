@@ -1572,7 +1572,7 @@ mod tests {
     /// `mem::take` happening before the create_swapchain call.
     #[test]
     fn old_image_views_destroyed_between_new_swapchain_creation_and_old_destroy() {
-        let src = include_str!("resize.rs");
+        let src = crate::source_scan::production_text(include_str!("resize.rs"));
 
         // Find the four key landmarks in the source:
         //   1. The `mem::take` capture of old image views.

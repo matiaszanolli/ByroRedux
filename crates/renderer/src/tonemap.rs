@@ -342,7 +342,7 @@ mod tests {
         }
         // Full-precision table entries must not be silently re-rounded in
         // the Rust mirror (the pin above reads the GLSL, this reads Rust).
-        let here = include_str!("tonemap.rs");
+        let here = crate::source_scan::production_text(include_str!("tonemap.rs"));
         for table_entry in ["0.842_479_06", "1.151_903_1", "-0.099_029_74"] {
             assert!(
                 here.contains(table_entry),

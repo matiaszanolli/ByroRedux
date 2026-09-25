@@ -1465,7 +1465,7 @@ mod tests {
              caustic source normal starts transport on the receiver behind glass"
         );
 
-        let host = include_str!("caustic.rs");
+        let host = crate::source_scan::production_text(include_str!("caustic.rs"));
         assert!(host.contains("write_storage_buffer(set, 9, &vertex_info)"));
         assert!(host.contains("write_storage_buffer(set, 10, &index_info)"));
 

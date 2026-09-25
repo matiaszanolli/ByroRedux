@@ -2295,12 +2295,12 @@ mod denoiser_anchor_rot_tests {
             (
                 "svgf dispatch fence precondition",
                 "wait_for_fences",
-                include_str!("svgf.rs"),
+                crate::source_scan::production_text(include_str!("svgf.rs")),
             ),
             (
                 "post_passes bloom in-place scene add",
                 "apply_to_scene",
-                include_str!("context/post_passes.rs"),
+                crate::source_scan::production_text(include_str!("context/post_passes.rs")),
             ),
             // #4009 — the caustic / water / volumetrics half of the sweep.
             (
@@ -2321,22 +2321,22 @@ mod denoiser_anchor_rot_tests {
             (
                 "volumetrics TLAS write mirror",
                 "CausticPipeline::write_tlas",
-                include_str!("volumetrics.rs"),
+                crate::source_scan::production_text(include_str!("volumetrics.rs")),
             ),
             (
                 "resize bloom-init parity",
                 "`VulkanContext::new`'s `bloom_views`",
-                include_str!("context/resize.rs"),
+                crate::source_scan::production_text(include_str!("context/resize.rs")),
             ),
             (
                 "resize frame-counter consumers",
                 "`taa_jitter`",
-                include_str!("context/resize.rs"),
+                crate::source_scan::production_text(include_str!("context/resize.rs")),
             ),
             (
                 "resize recovery-budget source",
                 "streaming_helpers.rs",
-                include_str!("context/resize.rs"),
+                crate::source_scan::production_text(include_str!("context/resize.rs")),
             ),
             (
                 "water.frag caustic normal rationale",

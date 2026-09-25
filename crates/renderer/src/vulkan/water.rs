@@ -1086,7 +1086,7 @@ mod tests {
     /// comment above `hdr_blend` for the failure this caused.
     #[test]
     fn water_hdr_alpha_lane_uses_coverage_alpha_factors_not_a_hardcoded_replace() {
-        let src = include_str!("water.rs");
+        let src = crate::source_scan::production_text(include_str!("water.rs"));
         assert!(
             src.contains("coverage_alpha_factors(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)"),
             "hdr_blend's alpha lane must derive from coverage_alpha_factors, matching every \

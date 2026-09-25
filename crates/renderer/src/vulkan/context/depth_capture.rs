@@ -357,7 +357,7 @@ impl VulkanContext {
 mod depth_format_guard_tests {
     #[test]
     fn record_copy_refuses_non_d32_sfloat_before_arming_the_pending_readback() {
-        let src = include_str!("depth_capture.rs");
+        let src = crate::source_scan::production_text(include_str!("depth_capture.rs"));
 
         let format_check_pos = src
             .find("if self.swapchain.depth_format != vk::Format::D32_SFLOAT {")

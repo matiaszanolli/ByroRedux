@@ -505,7 +505,7 @@ mod skin_slot_drain_is_not_nested_under_skin_compute_tests {
     /// `VkSurfaceKHR`, `VkInstance` and debug messenger along with it.
     #[test]
     fn skin_slot_drain_sits_outside_the_skin_compute_guard() {
-        let src = include_str!("teardown.rs");
+        let src = crate::source_scan::production_text(include_str!("teardown.rs"));
 
         let drain_pos = src
             .find("for (_eid, mut slot) in std::mem::take(&mut self.skin_slots)")

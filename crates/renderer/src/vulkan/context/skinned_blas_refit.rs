@@ -1077,7 +1077,7 @@ mod skin_publish_barrier_consumer_tests {
 mod skin_built_this_frame_skip_tests {
     #[test]
     fn built_entities_are_marked_only_on_successful_build_and_skip_the_refit() {
-        let src = include_str!("skinned_blas_refit.rs");
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
 
         let insert_pos = src
             .find("built_this_frame.insert(entity_id);")
@@ -1124,7 +1124,7 @@ mod skin_built_this_frame_skip_tests {
 mod skin_blas_build_failure_suppression_tests {
     #[test]
     fn failed_builds_are_recorded_gated_and_cleared_with_the_slot_set() {
-        let src = include_str!("skinned_blas_refit.rs");
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
 
         let gate_pos = src
             .find("if needs_blas && self.failed_skin_blas.contains(&entity_id) {")
@@ -1173,7 +1173,7 @@ mod skin_blas_build_failure_suppression_tests {
 
     #[test]
     fn the_refit_loop_skips_entities_that_have_no_blas_to_refit() {
-        let src = include_str!("skinned_blas_refit.rs");
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
 
         let no_blas_guard_pos = src.find("if !accel.has_skinned_blas(entity_id) {").expect(
             "the refit loop must skip entities with no BLAS — `refit_skinned_blas` \
@@ -1200,7 +1200,7 @@ mod skin_blas_build_failure_suppression_tests {
 mod skin_chain_timing_is_consumed_tests {
     #[test]
     fn the_elapsed_time_is_stored_on_the_coverage_frame_not_discarded() {
-        let src = include_str!("skinned_blas_refit.rs");
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
 
         // Matched as two fragments rather than one exact line so
         // `cargo fmt` re-wrapping the statement can't fail the test for
@@ -1254,7 +1254,7 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
     /// observable at runtime without a device that has no RT support.
     #[test]
     fn morph_eviction_drain_sits_outside_the_skin_compute_accel_guard() {
-        let src = include_str!("skinned_blas_refit.rs");
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
 
         let guard_open_pos = src
             .find("if let (Some(skin_pipeline), Some(ref mut accel)) =")
@@ -1287,7 +1287,7 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
 
     #[test]
     fn eviction_drain_sits_outside_the_input_buffer_bone_buffer_guard() {
-        let src = include_str!("skinned_blas_refit.rs");
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
 
         let guard_open_pos = src
             .find("if let (Some((input_buffer, input_size)), Some(bone_buf)) =")

@@ -23,6 +23,8 @@
 pub(crate) mod deferred_destroy;
 pub mod mesh;
 pub mod shader_constants;
+#[cfg(test)]
+pub(crate) mod source_scan;
 pub mod texture_registry;
 pub mod tonemap;
 pub mod vertex;

@@ -310,7 +310,7 @@ fn stage_weights_into(pending: &mut [f32], mut weight_at: impl FnMut(usize) -> f
 mod tests {
     #[test]
     fn morph_slot_shares_deltas_but_keeps_entity_weights() {
-        let source = include_str!("morph_compute.rs");
+        let source = crate::source_scan::production_text(include_str!("morph_compute.rs"));
         assert!(
             source.contains("delta: Arc<MorphDelta>"),
             "MorphSlot must retain the mesh-static delta through Arc"

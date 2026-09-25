@@ -1558,7 +1558,7 @@ mod svgf_scene_static_signal_tests {
     /// for that class of function (see the sibling modules above).
     #[test]
     fn svgf_temporal_alpha_is_fed_the_combined_camera_and_light_rig_signal() {
-        let src = include_str!("build_and_upload_instances.rs");
+        let src = crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
 
         assert!(
             src.contains("let caustic_history_valid = camera_static && caustic_scene_static;"),

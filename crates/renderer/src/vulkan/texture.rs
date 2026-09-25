@@ -1049,7 +1049,7 @@ mod one_time_lock_scope_tests {
     /// (#1211) precedent.
     #[test]
     fn queue_guard_released_before_one_time_fence_wait() {
-        let src = include_str!("texture.rs");
+        let src = crate::source_scan::production_text(include_str!("texture.rs"));
         let lock_pos = src
             .find("graphics queue lock poisoned")
             .expect("one-time helper should lock the graphics queue");
@@ -1333,7 +1333,7 @@ mod dds_upload_guard_tests {
     /// previously claimed an assertion that did not exist).
     #[test]
     fn rgba_overwrite_validates_against_creation_extent() {
-        let src = include_str!("texture.rs");
+        let src = crate::source_scan::production_text(include_str!("texture.rs"));
         assert!(
             src.contains("creation_extent: vk::Extent3D"),
             "Texture must store its creation extent (#4515)",

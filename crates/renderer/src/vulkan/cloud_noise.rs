@@ -225,7 +225,9 @@ impl CloudNoiseVolumes {
 
 #[cfg(test)]
 mod tests {
-    const SRC: &str = include_str!("cloud_noise.rs");
+    fn src() -> &'static str {
+        crate::source_scan::production_text(include_str!("cloud_noise.rs"))
+    }
     const INIT: &str = include_str!("context/init.rs");
     const TEARDOWN: &str = include_str!("context/teardown.rs");
 
@@ -234,8 +236,8 @@ mod tests {
     #[test]
     fn the_volumes_reuse_the_existing_generator() {
         assert!(
-            SRC.contains("cached_base_density_noise()")
-                && SRC.contains("cached_detail_density_noise()"),
+            src().contains("create_density_noise_staging(device, allocator)")
+                && src().contains("record_density_noise_upload("),
             "cloud noise must upload the volumes volumetrics/noise.rs already generates",
         );
     }
@@ -287,7 +289,7 @@ mod tests {
     fn the_sampler_repeats_on_all_three_axes() {
         for axis in ["address_mode_u", "address_mode_v", "address_mode_w"] {
             assert!(
-                SRC.contains(&format!(".{axis}(vk::SamplerAddressMode::REPEAT)")),
+                src().contains(&format!(".{axis}(vk::SamplerAddressMode::REPEAT)")),
                 "the cloud noise sampler must REPEAT along {axis}",
             );
         }

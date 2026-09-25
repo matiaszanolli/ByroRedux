@@ -763,7 +763,7 @@ mod tests {
         assert!(groups_x * WORKGROUP_X >= SKY_CUBE_FACE_SIZE);
         assert!(groups_y * WORKGROUP_Y >= SKY_CUBE_FACE_SIZE);
 
-        let src = include_str!("sky_cube.rs");
+        let src = crate::source_scan::production_text(include_str!("sky_cube.rs"));
         let body = src
             .split_once("unsafe fn dispatch(")
             .expect("dispatch still exists")
@@ -885,7 +885,7 @@ mod tests {
     /// flags not including COMPUTE.
     #[test]
     fn the_bake_declares_both_the_sets_it_uses() {
-        let src = include_str!("sky_cube.rs");
+        let src = crate::source_scan::production_text(include_str!("sky_cube.rs"));
         assert!(
             src.contains("let set_layouts = [partial.descriptor_set_layout, bindless_layout];"),
             "the bake's pipeline layout must declare set 0 AND the bindless set 1",

@@ -2116,11 +2116,14 @@ mod upload_geometry_guard_tests {
     /// allocator), which no unit test can build.
     #[test]
     fn upload_scene_mesh_validates_before_touching_the_global_pool() {
-        let source = include_str!("mesh.rs");
+        let source = crate::source_scan::production_text(include_str!("mesh.rs"));
         let at = source
             .find("pub fn upload_scene_mesh(")
             .expect("upload_scene_mesh must still exist");
         let body = &source[at..];
+        let body = &body[..body
+            .find("\n    }\n")
+            .expect("upload_scene_mesh must close at impl indentation")];
         let guard = body
             .find("validate_upload_geometry(")
             .expect("upload_scene_mesh must validate its geometry");

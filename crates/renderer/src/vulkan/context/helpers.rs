@@ -1049,7 +1049,7 @@ mod prose_pointer_tests {
     fn the_rp1_overflow_error_pointers_name_the_file_that_has_it() {
         const RP1_MESSAGE: &str = "RP-1: visible instance count";
 
-        let owner = include_str!("build_and_upload_instances.rs");
+        let owner = crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
         assert!(
             owner.contains(RP1_MESSAGE),
             "the RP-1 instance-overflow log::error! moved out of \
@@ -1070,7 +1070,7 @@ mod prose_pointer_tests {
         );
 
         for (label, src) in [
-            ("context/helpers.rs", include_str!("helpers.rs")),
+            ("context/helpers.rs", crate::source_scan::production_text(include_str!("helpers.rs"))),
             (
                 "acceleration/tlas.rs",
                 include_str!("../acceleration/tlas.rs"),
@@ -1094,7 +1094,7 @@ mod prose_pointer_tests {
     /// layout by hand as a precondition (#3628).
     #[test]
     fn the_gbuffer_doc_agrees_with_the_render_pass_depth_final_layout() {
-        let code = include_str!("helpers.rs");
+        let code = crate::source_scan::production_text(include_str!("helpers.rs"));
         assert!(
             code.contains("final_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)"),
             "create_render_pass no longer gives depth a \

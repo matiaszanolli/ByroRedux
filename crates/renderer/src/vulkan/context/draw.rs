@@ -3160,6 +3160,26 @@ mod is_caustic_source_tests {
     }
 }
 
+/// `draw_frame`'s body — production text only. `draw.rs`'s test modules are
+/// interleaved with production code, so a scan cannot simply cut the file at its
+/// first test module the way [`crate::source_scan::production_text`] does; and
+/// every needle a source-scan test searches for is also spelled out in its own
+/// literals, so a search over the whole file can be satisfied by the test itself
+/// (#4604's defect class, again in #4842). Slicing to the method's own extent
+/// excludes every test module.
+#[cfg(test)]
+fn draw_frame_body() -> &'static str {
+    let src = include_str!("draw.rs");
+    let start = src
+        .find("\n    pub fn draw_frame(")
+        .expect("draw_frame must still exist under this signature");
+    let end = start
+        + src[start..]
+            .find("\n    }\n")
+            .expect("draw_frame's closing brace at impl indentation");
+    &src[start..end]
+}
+
 /// Regression for #1211 / REN-SAFETY. `draw_frame` must early-return
 /// when `self.swapchain.framebuffers` is empty (the state left behind when
 /// `recreate_swapchain` fails partway). Without the guard the first
@@ -3176,21 +3196,7 @@ mod is_caustic_source_tests {
 /// (#654 ordering check).
 #[cfg(test)]
 mod host_readback_flush_edge_tests {
-    /// `draw_frame`'s body — production text only. Every needle below also
-    /// appears as a literal in this module, so a search over the whole file
-    /// can be satisfied by the test itself (#4604's defect class, again in
-    /// #4842); slicing to the method's own extent excludes every test module.
-    fn draw_frame_body() -> &'static str {
-        let src = include_str!("draw.rs");
-        let start = src
-            .find("\n    pub fn draw_frame(")
-            .expect("draw_frame must still exist under this signature");
-        let end = start
-            + src[start..]
-                .find("\n    }\n")
-                .expect("draw_frame's closing brace at impl indentation");
-        &src[start..end]
-    }
+    use super::draw_frame_body;
 
     /// #4602 — the global device→host edge must be the LAST command before
     /// `end_command_buffer`, so it covers every readback writer recorded
@@ -3264,7 +3270,7 @@ mod framebuffers_empty_guard_tests {
     /// acquire against the file that actually contains them.
     #[test]
     fn draw_frame_guards_on_empty_framebuffers_before_acquire() {
-        let src = include_str!("draw.rs");
+        let src = super::draw_frame_body();
 
         // The production guard — take the FIRST occurrence that is not this
         // test's own literal by searching from the top (the guard at the
@@ -3325,7 +3331,7 @@ mod skin_dispatch_ran_ordering_tests {
     /// submit succeeds, and a rollback at each of the three sites.
     #[test]
     fn every_tail_err_site_rolls_back_the_recorded_skin_state() {
-        let src = include_str!("draw.rs");
+        let src = super::draw_frame_body();
 
         let call_site = src
             .find("self.dispatch_skin_and_cluster(")
@@ -3383,7 +3389,7 @@ mod skin_dispatch_ran_ordering_tests {
     /// outcome (#1796 for the first, #3991 for the second).
     #[test]
     fn the_submit_time_flag_is_reset_alongside_the_record_time_latch() {
-        let src = include_str!("draw.rs");
+        let src = super::draw_frame_body();
         let record_reset = src
             .find("self.skin_dispatch_ran = false;")
             .expect("draw_frame must reset skin_dispatch_ran (#1796)");
@@ -3396,7 +3402,7 @@ mod skin_dispatch_ran_ordering_tests {
         assert!(record_reset < fb_guard && submit_reset < fb_guard);
         // And the flag is only ever SET from the record-time latch, inside the
         // promotion — never at recording time, which is the bug this fixes.
-        let refit = include_str!("skinned_blas_refit.rs");
+        let refit = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
         assert!(
             refit.contains("self.skin_state_submitted = self.skin_dispatch_ran;"),
             "the submit-time flag must be derived from the record-time latch \
@@ -3406,7 +3412,7 @@ mod skin_dispatch_ran_ordering_tests {
 
     #[test]
     fn skin_dispatch_ran_is_reset_before_both_early_return_guards() {
-        let src = include_str!("draw.rs");
+        let src = super::draw_frame_body();
 
         let reset_pos = src
             .find("self.skin_dispatch_ran = false;")
@@ -3437,7 +3443,8 @@ mod skin_dispatch_ran_ordering_tests {
             .find("self.dispatch_skin_and_cluster(")
             .expect("draw_frame must call dispatch_skin_and_cluster (#1796)");
         assert!(
-            include_str!("dispatch_skin_and_cluster.rs").contains("record_skinned_blas_refit("),
+            crate::source_scan::production_text(include_str!("dispatch_skin_and_cluster.rs"))
+                .contains("record_skinned_blas_refit("),
             "dispatch_skin_and_cluster must still be what reaches \
              record_skinned_blas_refit, or this test's anchor is measuring the \
              wrong call (#1796 / #3991)"
@@ -3472,7 +3479,7 @@ mod skin_dispatch_ran_ordering_tests {
 mod bind_inverse_upload_failed_reset_tests {
     #[test]
     fn bind_inverse_upload_failed_is_reset_alongside_skin_dispatch_ran() {
-        let src = include_str!("draw.rs");
+        let src = super::draw_frame_body();
 
         let skin_reset_pos = src
             .find("self.skin_dispatch_ran = false;")
@@ -3855,15 +3862,7 @@ mod draw_frame_size_budget_tests {
     /// its own phase file (`context/<phase>.rs`) instead.
     #[test]
     fn draw_frame_stays_within_its_line_budget() {
-        let src = include_str!("draw.rs");
-        let start = src
-            .find("\n    pub fn draw_frame(")
-            .expect("draw_frame must still exist under this signature");
-        let end = start
-            + src[start..]
-                .find("\n    }\n")
-                .expect("draw_frame's closing brace at impl indentation");
-        let lines = src[start..end].matches('\n').count() + 1;
+        let lines = super::draw_frame_body().matches('\n').count() + 1;
         assert!(
             lines <= DRAW_FRAME_LINE_BUDGET,
             "draw_frame is {lines} lines (budget {DRAW_FRAME_LINE_BUDGET}); move the new \

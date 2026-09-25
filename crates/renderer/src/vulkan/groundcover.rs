@@ -2407,7 +2407,7 @@ mod tests {
     fn tiered_indirect_streams_preserve_fixed_blade_slabs() {
         let scatter = include_str!("../../shaders/groundcover_scatter.comp");
         let blade = include_str!("../../shaders/groundcover_blade.vert");
-        let module = include_str!("groundcover.rs");
+        let module = crate::source_scan::production_text(include_str!("groundcover.rs"));
         assert_eq!(GROUNDCOVER_INDIRECT_STREAMS, 3);
         assert!(scatter.contains("uint midIndex = chunkIdx + GROUNDCOVER_MAX_CHUNKS;"));
         assert!(scatter.contains("gcDraws[midIndex].firstVertex = sliceBase * midVertsPerPoint;"));

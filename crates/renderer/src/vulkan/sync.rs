@@ -642,18 +642,18 @@ mod tests {
             ),
             (
                 "depth_capture_staging",
-                include_str!("context/depth_capture.rs"),
+                crate::source_scan::production_text(include_str!("context/depth_capture.rs")),
             ),
             (
                 "depth_capture_pending_readback",
-                include_str!("context/depth_capture.rs"),
+                crate::source_scan::production_text(include_str!("context/depth_capture.rs")),
             ),
             (
                 "terrain_tile_buffer",
                 include_str!("scene_buffer/upload.rs"),
             ),
             ("screenshot_staging", include_str!("context/screenshot.rs")),
-            ("weight_buffer", include_str!("morph_compute.rs")),
+            ("weight_buffer", crate::source_scan::production_text(include_str!("morph_compute.rs"))),
             // #4516 — the MenuXml HUD's 3-buffer overlay rotation lives in
             // the bin crate; `include_str!` reaches it by repo-relative
             // path the same way the docs/ scans elsewhere in this crate do.

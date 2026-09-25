@@ -647,7 +647,7 @@ impl VulkanContext {
 mod bind_inverse_upload_failure_latch_tests {
     #[test]
     fn upload_pending_bind_inverses_failure_arm_sets_the_latch() {
-        let src = include_str!("dispatch_skin_and_cluster.rs");
+        let src = crate::source_scan::production_text(include_str!("dispatch_skin_and_cluster.rs"));
 
         let warn_pos = src
             .find("Failed to upload pending bind_inverses: {e}")

@@ -226,7 +226,7 @@ mod tests {
     /// `include_str!`-based tests above).
     #[test]
     fn reservoir_buffers_zero_fill_on_create_and_resize() {
-        let src = include_str!("restir.rs");
+        let src = crate::source_scan::production_text(include_str!("restir.rs"));
         assert!(
             src.contains("Self::zero_fill(device, queue, pool, &buffers)?;"),
             "new() must zero-fill its freshly allocated slots"
