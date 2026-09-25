@@ -171,6 +171,12 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
     outdoor_sky_params(world, &sky_res, cell_directional)
 }
 
+/// `cell_directional` is the active cell's `(is_interior, directional colour,
+/// directional fade)`. `Some` lights the clouds with the sun the cell's
+/// surfaces receive; `None` (the interior portal palette, where the cell's
+/// directional is the room's XCLL key and not the sky's) lights them with the
+/// exterior's own sunlight colour instead, so a cloud seen through a window
+/// matches the same weather outdoors (#4839).
 fn outdoor_sky_params(
     world: &World,
     sky_res: &SkyParamsRes,
@@ -225,7 +231,9 @@ fn outdoor_sky_params(
         sun_intensity: sky_res.sun_intensity,
         // The same call `collect_lights` makes for the surfaces' directional
         // light, so the volumetric clouds are lit by the sun the terrain is.
-        sun_illuminance: cell_directional.map_or([0.0; 3], |(interior, color, fade)| {
+        sun_illuminance: {
+            let (interior, color, fade) =
+                cell_directional.unwrap_or((false, sky_res.weather.sunlight_color, None));
             super::compute_directional_upload(
                 &color,
                 interior,
@@ -233,7 +241,7 @@ fn outdoor_sky_params(
                 fade,
                 weather.cloud_coverage,
             )
-        }),
+        },
         // Tangent-plane disk approximation valid only for α < ~0.05 rad
         // (derivation documented at the directional-shadow-jitter block in
         // triangle.frag's legacy-WRS arm, next to `sunAngularRadius`; the
@@ -276,6 +284,7 @@ fn outdoor_sky_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::WeatherSkyState;
 
     fn interior_lighting(directional_ambient: Option<[[f32; 3]; 6]>) -> CellLightingRes {
         CellLightingRes {
@@ -397,6 +406,11 @@ mod tests {
         assert!(params.dalc_cube.is_none());
         assert_eq!(params.weather.surface_wetness, 0.0);
         assert_eq!(params.weather.surface_snow, 0.0);
+        assert_eq!(
+            params.sun_illuminance, default.sun_illuminance,
+            "the room's own sky lane must stay unlit by the exterior sun — \
+             only the portal palette carries it (#4839)"
+        );
         // #3323 — the one deliberate exception, added *after* #2226 and
         // narrower than what #2226 removed. `exterior_zenith_color` is a
         // separate lane read by exactly one shader branch (the window-portal
@@ -418,6 +432,41 @@ mod tests {
         assert!(outside.is_exterior);
         assert_eq!(outside.zenith_color, [0.3, 0.5, 0.9]);
         assert_eq!(outside.sun_direction, [0.5, 0.8, 0.3]);
+    }
+
+    /// #4839 — clouds seen through an aperture are lit by the exterior's own
+    /// sunlight. Not the room's XCLL directional (a different quantity), and
+    /// not `portal_sun_radiance` (sun-disc colour × 0–4, different units).
+    #[test]
+    fn interior_portal_sky_clouds_are_lit_by_the_exterior_sunlight() {
+        let mut world = World::new();
+        let mut room = interior_lighting(None);
+        room.directional_color = [0.2, 0.2, 0.2];
+        world.insert_resource(room);
+        let mut sky = stale_exterior_daytime_sky();
+        // Clear sky at full daylight, so the illuminance is exactly the colour.
+        sky.weather = WeatherSkyState {
+            cloud_coverage: 0.0,
+            sunlight_color: [0.9, 0.6, 0.3],
+            ..WeatherSkyState::default()
+        };
+        world.insert_resource(sky);
+
+        let outside = build_sky_params(&world).portal_outdoor_sky.unwrap();
+        assert_eq!(outside.sun_illuminance, [0.9, 0.6, 0.3]);
+
+        // A heavier cloud column between the sun and the cloud body dims it,
+        // exactly as it does outdoors.
+        world
+            .try_resource_mut::<SkyParamsRes>()
+            .unwrap()
+            .weather
+            .cloud_coverage = 1.0;
+        let overcast = build_sky_params(&world).portal_outdoor_sky.unwrap();
+        assert!(
+            overcast.sun_illuminance[0] < outside.sun_illuminance[0]
+                && overcast.sun_illuminance[0] > 0.0
+        );
     }
 
     /// Direct `--cell` boot still has a procedural outdoor sky for the
@@ -453,6 +502,11 @@ mod tests {
         assert!(noon_outside.is_exterior);
         assert_eq!(noon_outside.sun_direction, noon.portal_sun_direction);
         assert!(noon_outside.sun_intensity > 0.0);
+        assert!(
+            noon_outside.sun_illuminance.iter().all(|c| *c > 0.0),
+            "the procedural exterior's sun must light its clouds through an \
+             interior aperture too (#4839)"
+        );
         assert_eq!(noon.sun_direction, SkyParams::default().sun_direction);
         assert!(!noon.is_exterior);
 
@@ -462,7 +516,9 @@ mod tests {
             .set_hour(0.0);
         let midnight = build_sky_params(&world);
         assert_eq!(midnight.portal_sun_radiance, [0.0; 3]);
-        assert_eq!(midnight.portal_outdoor_sky.unwrap().sun_intensity, 0.0);
+        let midnight_outside = midnight.portal_outdoor_sky.unwrap();
+        assert_eq!(midnight_outside.sun_intensity, 0.0);
+        assert_eq!(midnight_outside.sun_illuminance, [0.0; 3]);
     }
 
     #[test]

@@ -540,6 +540,7 @@ fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSk
         thunder_frequency: lerp1(a.thunder_frequency, b.thunder_frequency, t),
         lightning_color: lerp3(a.lightning_color, b.lightning_color, t),
         stars_color: lerp3(a.stars_color, b.stars_color, t),
+        sunlight_color: lerp3(a.sunlight_color, b.sunlight_color, t),
         sun_glare: lerp1(a.sun_glare, b.sun_glare, t),
         moon_glare: lerp1(a.moon_glare, b.moon_glare, t),
         aurora_intensity: lerp1(a.aurora_intensity, b.aurora_intensity, t),
@@ -580,6 +581,24 @@ mod procedural_cloud_transition_tests {
         let halfway = lerp_weather_sky(source, target, 0.5);
 
         assert!((halfway.cloud_coverage - 0.5).abs() < f32::EPSILON);
+    }
+
+    /// #4839 — the exterior sun colour the interior portal sky reads is
+    /// cross-faded with the weather, not snapped to the target's on frame one.
+    #[test]
+    fn sunlight_color_crossfades_with_the_rest_of_the_weather_state() {
+        let source = WeatherSkyState {
+            sunlight_color: [1.0, 0.0, 0.25],
+            ..WeatherSkyState::default()
+        };
+        let target = WeatherSkyState {
+            sunlight_color: [0.0, 1.0, 0.75],
+            ..WeatherSkyState::default()
+        };
+
+        let halfway = lerp_weather_sky(source, target, 0.5);
+
+        assert_eq!(halfway.sunlight_color, [0.5; 3]);
     }
 }
 
@@ -1124,7 +1143,15 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         sky.sun_color = sun_col;
         sky.sun_direction = sun_dir;
         sky.sun_intensity = sun_intensity;
-        sky.weather = weather;
+        // #4839 — the exterior sun colour rides along with the rest of the
+        // sampled weather, because `CellLightingRes::directional_color` stops
+        // carrying it once an interior owns that resource. It is the very
+        // value written there below, so an interior aperture and the
+        // exterior terrain are lit by the same sun.
+        sky.weather = WeatherSkyState {
+            sunlight_color: sunlight,
+            ..weather
+        };
         // #993 — DALC cube write-through. `None` on every non-Skyrim
         // cell, so the renderer's future consumer can branch on
         // `current_dalc_cube.is_some()` to gate the 6-axis sample.
@@ -2231,6 +2258,40 @@ mod interior_gate_tests {
             [0.3, 0.3, 0.3],
             "interior directional_color was overwritten — #782 regression"
         );
+    }
+
+    /// #4839 — the exterior sun colour must reach `SkyParamsRes` on both sides
+    /// of the interior gate. Inside an interior `CellLightingRes` is owned by
+    /// the room (see the fog test above), so `SkyParamsRes` is the only place
+    /// the portal sky can read it from; outdoors it must still equal what the
+    /// terrain's directional light is written from.
+    #[test]
+    fn sky_params_carry_the_sampled_sunlight_on_both_sides_of_the_interior_gate() {
+        for is_interior in [false, true] {
+            let mut world = build_world(is_interior);
+            world
+                .try_resource_mut::<WeatherDataRes>()
+                .unwrap()
+                .sunlight_dimmer = 0.5;
+            world.insert_resource(crate::env_translate::procedural_fallback_sky([
+                0.0, 1.0, 0.0,
+            ]));
+
+            weather_system(&world, 0.016);
+
+            let sky = world.try_resource::<SkyParamsRes>().unwrap();
+            assert_eq!(
+                sky.weather.sunlight_color, [0.5; 3],
+                "sunlight is the sampled palette colour scaled by the HNAM \
+                 dimmer, is_interior = {is_interior}"
+            );
+            let cell_lit = world.try_resource::<CellLightingRes>().unwrap();
+            if is_interior {
+                assert_eq!(cell_lit.directional_color, [0.3; 3], "room key untouched");
+            } else {
+                assert_eq!(cell_lit.directional_color, sky.weather.sunlight_color);
+            }
+        }
     }
 
     /// Exterior path still works — weather_system MUST update fog on

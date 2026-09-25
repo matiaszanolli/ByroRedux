@@ -1285,7 +1285,7 @@ pub(crate) const NEUTRAL_SUN_GLARE: f32 = 1.0;
 /// useful for the first frame before that system has run.
 fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
     use byroredux_plugin::esm::records::weather::{
-        SKY_STARS, WTHR_AURORA_ALWAYS_VISIBLE, WTHR_AURORA_FOLLOWS_SUN,
+        SKY_STARS, SKY_SUNLIGHT, WTHR_AURORA_ALWAYS_VISIBLE, WTHR_AURORA_FOLLOWS_SUN,
     };
     let slot = tod_slot.min(3);
     let mut cloud_tints = [[1.0; 4]; 4];
@@ -1337,6 +1337,7 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
         thunder_frequency: wthr.thunder_frequency as f32 / 255.0,
         lightning_color,
         stars_color: wthr.sky_colors[SKY_STARS][slot].to_rgb_f32(),
+        sunlight_color: wthr.sky_colors[SKY_SUNLIGHT][slot].to_rgb_f32(),
         sun_glare: if wthr.sun_glare == 0 {
             NEUTRAL_SUN_GLARE
         } else {
@@ -1539,7 +1540,7 @@ pub(crate) fn exterior_image_spaces(
 // the render-setup path (EXAL §3: the fallback is an explicit canonical
 // constructor, not a render-time heuristic).
 const FB_AMBIENT: [f32; 3] = [0.15, 0.14, 0.12];
-const FB_SUNLIGHT: [f32; 3] = [1.0, 0.95, 0.8];
+pub(crate) const FB_SUNLIGHT: [f32; 3] = [1.0, 0.95, 0.8];
 const FB_FOG_COLOR: [f32; 3] = [0.65, 0.7, 0.8];
 const FB_ZENITH: [f32; 3] = [0.15, 0.3, 0.65];
 const FB_HORIZON: [f32; 3] = [0.55, 0.5, 0.42];

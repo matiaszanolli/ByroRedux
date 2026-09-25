@@ -1191,6 +1191,13 @@ pub(crate) struct WeatherSkyState {
     pub(crate) lightning_color: [f32; 3],
     /// Current TOD-sampled star colour from WTHR SKY_STARS.
     pub(crate) stars_color: [f32; 3],
+    /// Current TOD-sampled, dimmer-scaled WTHR sunlight colour (`SKY_SUNLIGHT`),
+    /// cross-faded with the weather transition. `weather_system` writes the
+    /// same value to an exterior's `CellLightingRes::directional_color`, but
+    /// that resource belongs to the active interior once one is loaded, so
+    /// it cannot supply the exterior sun to the interior portal sky
+    /// (#4839). This is the exterior sun colour that survives the transition.
+    pub(crate) sunlight_color: [f32; 3],
     /// Sun glare multiplier from WTHR DATA.
     pub(crate) sun_glare: f32,
     /// Moon glare multiplier from Skyrim NAM3 / Moon Glare colour data.
@@ -1227,6 +1234,9 @@ impl Default for WeatherSkyState {
             thunder_frequency: 0.0,
             lightning_color: [1.0; 3],
             stars_color: crate::env_translate::FB_STARS_COLOR,
+            // The procedural fallback's sunlight, aliased from the one
+            // declaration `procedural_fallback_cell_lighting` also uses.
+            sunlight_color: crate::env_translate::FB_SUNLIGHT,
             // Aliased from the fallback constants `weather_sky_state`
             // substitutes for unauthored glare data — one declaration each.
             sun_glare: crate::env_translate::NEUTRAL_SUN_GLARE,
