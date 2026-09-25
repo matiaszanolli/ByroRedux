@@ -90,10 +90,10 @@ impl VulkanContext {
             }
         }
         // #3231 — MorphSlot owns its private weight buffer and an Arc to a
-        // mesh-shared delta. Destroying every slot releases the final delta
-        // reference as well; the weak cache is only an index and is cleared
-        // after its owners are gone.
-        for (_eid, mut slot) in std::mem::take(&mut self.morph_slots) {
+        // mesh-shared delta. Destroying every slot destroys the delta with the
+        // last one, even though the weak cache still indexes it (#4838); the
+        // cache is only an index and is cleared after its owners are gone.
+        for (_eid, slot) in std::mem::take(&mut self.morph_slots) {
             slot.destroy(&self.device, alloc);
         }
         self.morph_delta_cache.clear();

@@ -173,9 +173,7 @@ impl MorphSlot {
         ) {
             Ok(slot) => Ok(slot),
             Err(error) => {
-                if let Ok(mut delta) = Arc::try_unwrap(delta) {
-                    delta.destroy(device, allocator);
-                }
+                release_shared(delta, |delta| delta.destroy(device, allocator));
                 Err(error)
             }
         }
@@ -266,16 +264,40 @@ impl MorphSlot {
         Ok(())
     }
 
-    /// Destroy this entity's weight buffer and, when this is the final
+    /// Destroy this entity's weight buffer and, when this is the final strong
     /// reference, the mesh-shared delta buffer. Caller must have waited for
     /// the device to go idle, or otherwise guaranteed no in-flight command
     /// buffer still references either buffer's device address — same
     /// precondition `SkinSlot`'s teardown carries.
-    pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        self.weight_buffer.destroy(device, allocator);
-        if let Some(delta) = Arc::get_mut(&mut self.delta) {
-            delta.destroy(device, allocator);
+    ///
+    /// Consumes the slot so the `Arc` can be handed to [`release_shared`]:
+    /// `VulkanContext::morph_delta_cache` keeps a `Weak` to every live delta,
+    /// which makes `Arc::get_mut` return `None` for the final slot too and
+    /// would leave the delta to the `GpuBuffer::Drop` safety net (#4838).
+    pub fn destroy(self, device: &ash::Device, allocator: &SharedAllocator) {
+        let Self {
+            delta,
+            mut weight_buffer,
+            ..
+        } = self;
+        weight_buffer.destroy(device, allocator);
+        release_shared(delta, |delta| delta.destroy(device, allocator));
+    }
+}
+
+/// Run `destroy` on the value behind `shared` when this is its last *strong*
+/// reference; otherwise just drop this handle. Returns whether `destroy` ran.
+///
+/// `Arc::try_unwrap` succeeds at `strong_count == 1` however many `Weak`s
+/// remain, unlike `Arc::get_mut`, which also demands no `Weak` and so can
+/// never succeed for a resource that a lookup cache indexes weakly (#4838).
+pub(crate) fn release_shared<T>(shared: Arc<T>, destroy: impl FnOnce(&mut T)) -> bool {
+    match Arc::try_unwrap(shared) {
+        Ok(mut value) => {
+            destroy(&mut value);
+            true
         }
+        Err(_) => false,
     }
 }
 
@@ -315,9 +337,21 @@ mod tests {
             source.contains("delta: Arc<MorphDelta>"),
             "MorphSlot must retain the mesh-static delta through Arc"
         );
+        // `MorphSlot::destroy` specifically: the create-error branch also calls
+        // `release_shared`, so a whole-file scan would survive losing this one.
+        let destroy_body = source
+            .split_once("pub fn destroy(self")
+            .and_then(|(_, rest)| rest.split_once("\n    }\n"))
+            .expect("MorphSlot::destroy must take the slot by value")
+            .0;
         assert!(
-            source.contains("if let Some(delta) = Arc::get_mut(&mut self.delta)"),
-            "only the final MorphSlot reference may destroy the shared delta"
+            destroy_body
+                .contains("release_shared(delta, |delta| delta.destroy(device, allocator));"),
+            "only the final MorphSlot reference may destroy the shared delta (#4838)"
+        );
+        assert!(
+            !source.contains("Arc::get_mut("),
+            "Arc::get_mut is defeated by the delta cache's Weak; use release_shared (#4838)"
         );
         assert!(
             source.contains("weight_buffer: GpuBuffer"),
@@ -339,6 +373,37 @@ mod tests {
             .find("self.flush_pending_morph_weights()")
             .expect("draw_frame must flush staged morph weights");
         assert!(wait < flush, "morph host write must follow the fence wait");
+    }
+
+    /// #4838 — `VulkanContext::morph_delta_cache` holds a `Weak` to every live
+    /// delta, and `Arc::get_mut` refuses to hand out `&mut` while any `Weak`
+    /// exists, so the final slot's release silently skipped `destroy`.
+    #[test]
+    fn release_shared_destroys_on_last_strong_ref_despite_a_weak() {
+        use super::release_shared;
+        use std::sync::Arc;
+
+        let first = Arc::new(0u32);
+        let second = Arc::clone(&first);
+        let cache_entry = Arc::downgrade(&first);
+
+        let mut destroyed = 0;
+        assert!(
+            !release_shared(first, |_| destroyed += 1),
+            "a slot that is not the last owner must not destroy the shared value"
+        );
+        assert_eq!(destroyed, 0);
+        assert!(
+            cache_entry.upgrade().is_some(),
+            "the other owner keeps it alive"
+        );
+
+        assert!(
+            release_shared(second, |_| destroyed += 1),
+            "the last strong owner must destroy even though the cache's Weak is alive"
+        );
+        assert_eq!(destroyed, 1);
+        assert!(cache_entry.upgrade().is_none());
     }
 
     // ── #3687 (PERF-D6-2026-08-30-02) ─────────────────────────────────

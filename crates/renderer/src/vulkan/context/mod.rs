@@ -802,9 +802,11 @@ pub struct VulkanContext {
         FxHashMap<byroredux_core::ecs::storage::EntityId, super::morph_compute::MorphSlot>,
     /// Mesh-handle keyed weak references to the immutable morph delta
     /// allocations held by `morph_slots`. Weak entries make the cache a
-    /// lookup index, not an additional VRAM owner: after the last entity
-    /// slot is evicted, its `Arc<MorphDelta>` destroys the delta buffer and
-    /// the dead key is pruned by the eviction pass.
+    /// lookup index, not an additional VRAM owner: the last entity slot's
+    /// `MorphSlot::destroy` destroys the delta buffer, and the dead key is
+    /// pruned by the eviction pass. That destroy has to go through
+    /// `Arc::try_unwrap`, not `Arc::get_mut` — these `Weak`s are still alive
+    /// while it runs (#4838).
     pub(crate) morph_delta_cache: FxHashMap<u32, Weak<super::morph_compute::MorphDelta>>,
     /// Entities whose `create_slot` call returned `OUT_OF_POOL_MEMORY`
     /// (or otherwise errored) on a prior frame — gate the retry path

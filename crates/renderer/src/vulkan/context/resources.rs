@@ -130,9 +130,9 @@ impl VulkanContext {
                 // delta when its per-entity weight allocation fails. Free it
                 // here when this was the final strong reference; existing
                 // slots keep a cached delta alive and therefore remain safe.
-                if let Ok(mut delta) = Arc::try_unwrap(delta) {
-                    delta.destroy(&self.device, allocator);
-                }
+                super::super::morph_compute::release_shared(delta, |delta| {
+                    delta.destroy(&self.device, allocator)
+                });
                 Err(error)
             }
         }

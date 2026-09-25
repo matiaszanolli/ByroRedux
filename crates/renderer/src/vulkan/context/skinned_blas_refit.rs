@@ -971,7 +971,7 @@ impl VulkanContext {
                     morph_evictees.len()
                 );
                 for eid in morph_evictees {
-                    if let Some(mut slot) = self.morph_slots.remove(&eid) {
+                    if let Some(slot) = self.morph_slots.remove(&eid) {
                         slot.destroy(&self.device, alloc);
                     }
                 }
